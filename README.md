@@ -26,7 +26,7 @@ V0.3自测可用，公网中继暂时使用自己的域名。同网环境下优�
 
 然后下面这些都是Codex写的：
 
-## 当前版本：1.0.1
+## 当前版本：1.0.2
 
 1.0 新增第四位运行时：**DSH Desktop（DeepSeek Harness）**。Bridge 不再启动任何 DSH
 旁路进程，而是直接附着正在运行的 DSH 宿主——按进程发现回环端口、探测 `host.describe`
@@ -55,6 +55,9 @@ Bridge 0.9.2 新增可切换的主题家族：在原有 Sunstone 暖极简基线
 Sunstone。主题对比度在四个组合下全部通过 axe/WCAG 4.5:1 门禁。
 
 逐版本摘要（完整记录见 [CHANGELOG.md](CHANGELOG.md)）：
+
+- **1.0.2**：修复 Hermes 冷会话 resume 后的历史 RPC 走错 live alias 的问题；启动时
+  不再为全部历史会话反复导入 history，避免 Bridge 开启后持续高 CPU/高耗电。
 
 - **1.0.1**：彻底移除 DSH Desktop 拉起路径——Bridge 不再启动或复活 DSH 应用，
   宿主离线时如实呈现并按节奏重发现；修复用户退出 DSH 后被 Bridge 重新拉起的问题。

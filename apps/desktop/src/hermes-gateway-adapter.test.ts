@@ -52,6 +52,33 @@ class FakeHermesClient extends EventEmitter {
     if (method === "session.resume") {
       const model = this.running ? this.pendingModel ?? this.settings.model : this.settings.model;
       const provider = this.running ? this.pendingProvider ?? this.settings.provider : this.settings.provider;
+      const requested = typeof params?.session_id === "string" ? params.session_id : "";
+      if (requested === "hermes-1") {
+        return {
+          status: "ok",
+          session_id: "hermes-live-1",
+          session_key: "hermes-1",
+          info: {
+            model,
+            provider,
+            reasoning_effort: this.settings.reasoning,
+            fast: this.settings.fast === "fast",
+          },
+        } as T;
+      }
+      if (requested === "20260810_000001_abcdef") {
+        return {
+          status: "ok",
+          session_id: "alias-restart",
+          stored_session_id: requested,
+          info: {
+            model,
+            provider,
+            reasoning_effort: this.settings.reasoning,
+            fast: this.settings.fast === "fast",
+          },
+        } as T;
+      }
       return {
         status: "ok",
         info: {
@@ -209,24 +236,24 @@ describe("HermesGatewayAdapter", () => {
     expect(client.requests).toContainEqual({
       method: "config.set",
       params: {
-        session_id: "hermes-1",
+        session_id: "hermes-live-1",
         key: "model",
         value: "claude-haiku --provider anthropic --session",
       },
     });
     expect(client.requests).toContainEqual({
       method: "config.set",
-      params: { session_id: "hermes-1", key: "reasoning", value: "high" },
+      params: { session_id: "hermes-live-1", key: "reasoning", value: "high" },
     });
     expect(client.requests).toContainEqual({
       method: "config.set",
-      params: { session_id: "hermes-1", key: "fast", value: "normal" },
+      params: { session_id: "hermes-live-1", key: "fast", value: "normal" },
     });
 
     await adapter.configureSession("hermes-1", { reasoningEffort: null, fast: null });
     expect(client.requests).toContainEqual({
       method: "config.set",
-      params: { session_id: "hermes-1", key: "reasoning", value: "none" },
+      params: { session_id: "hermes-live-1", key: "reasoning", value: "none" },
     });
 
     await adapter.close();
@@ -358,7 +385,10 @@ describe("HermesGatewayAdapter", () => {
       method: "session.resume",
       params: { session_id: "20260810_000001_abcdef" },
     });
-    const resumeCalls = client.requests.filter((entry) => entry.method === "session.resume").length;
+    expect(client.requests).toContainEqual({
+      method: "session.history",
+      params: { session_id: "alias-restart" },
+    });
     await expect(restarted.startTurn({
       nativeSessionId: "20260810_000001_abcdef",
       text: "重启后继续",
@@ -367,9 +397,8 @@ describe("HermesGatewayAdapter", () => {
     })).resolves.toMatchObject({ state: "running" });
     expect(client.requests).toContainEqual({
       method: "prompt.submit",
-      params: { session_id: "20260810_000001_abcdef", text: "重启后继续" },
+      params: { session_id: "alias-restart", text: "重启后继续" },
     });
-    expect(client.requests.filter((entry) => entry.method === "session.resume").length).toBeGreaterThan(resumeCalls);
     await restarted.close();
   });
 });

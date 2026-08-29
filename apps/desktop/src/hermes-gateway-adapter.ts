@@ -315,6 +315,13 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
     if (this.sessionMap.has(sessionId)) return sessionId;
     return this.aliasToStored.get(sessionId) ?? sessionId;
   }
+
+  private rememberLiveAlias(storedSessionId: string, alias: string): void {
+    if (!alias || alias === storedSessionId) return;
+    this.liveAliases.add(alias);
+    this.storedToAlias.set(storedSessionId, alias);
+    this.aliasToStored.set(alias, storedSessionId);
+  }
   private client: HermesRpcClient | undefined;
   private sidecar: HermesSidecar | undefined;
   private startingChild: ChildProcessWithoutNullStreams | undefined;
@@ -807,6 +814,8 @@ export class HermesGatewayAdapter extends DesktopRuntimeAdapter {
       };
     }
     const result = await this.requireClient().request<Record<string, unknown>>("session.resume", { session_id: nativeSessionId });
+    const liveSessionId = text(result.session_id);
+    if (liveSessionId) this.rememberLiveAlias(nativeSessionId, liveSessionId);
     this.applySessionInfo(nativeSessionId, record(result.info));
     return result;
   }

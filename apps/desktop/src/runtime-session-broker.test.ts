@@ -36,6 +36,7 @@ async function waitFor(check: () => boolean, label = "condition"): Promise<void>
 class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
   readonly turnInputs: RuntimeAdapterTurnInput[] = [];
   readonly resolved: Array<{ requestId: string; decision: BridgePermissionDecision }> = [];
+  readonly historyCalls: string[] = [];
   private readonly rows = new Map<string, RuntimeAdapterSession>();
   private readonly historyRows = new Map<string, RuntimeAdapterHistoryItem[]>();
 
@@ -91,6 +92,7 @@ class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
   }
 
   async history(nativeSessionId: string): Promise<RuntimeAdapterHistoryItem[]> {
+    this.historyCalls.push(nativeSessionId);
     return (this.historyRows.get(nativeSessionId) ?? []).map((item) => ({ ...item }));
   }
 
@@ -384,6 +386,36 @@ describe("RuntimeSessionBroker", () => {
         data: expect.objectContaining({ text: "没有主动通知的原生更新" }),
       }),
     ]));
+    await broker.close();
+  });
+
+  it("does not import history for every session discovered at startup", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-startup-"));
+    directories.push(directory);
+    const codex = new FakeRuntimeAdapter("codex-desktop", "existing-native");
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"), 1);
+    const broker = new RuntimeSessionBroker(
+      new RuntimeAdapterRegistry([codex]),
+      eventLog,
+      undefined,
+      { liveSyncIntervalMs: 60_000 },
+    );
+    await broker.initialize();
+    await broker.refreshDiscoveredSessions();
+    await broker.syncLiveHistories();
+
+    expect(codex.historyCalls).toEqual([]);
+
+    codex.setHistory("existing-native", [{
+      id: "changed-native-message",
+      role: "assistant",
+      text: "后来变化的会话",
+      createdAt: 40,
+    }]);
+    codex.mutateSilently("existing-native", { lastActivityAt: 40 });
+    await broker.refreshDiscoveredSessions();
+    await broker.syncLiveHistories();
+    expect(codex.historyCalls).toEqual(["existing-native"]);
     await broker.close();
   });
 

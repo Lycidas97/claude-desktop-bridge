@@ -1,3 +1,13 @@
+## 1.0.2
+
+- Stop the Hermes history-sync power burn: a resumed stored session now keeps
+  its live gateway alias, so Bridge no longer repeats a doomed `session.history`
+  call with the stale id.
+- Runtime history discovery no longer imports history for every session found
+  at startup. Failed or unchanged idle sessions stay out of the 1.2s live-sync
+  queue; the default background cadence is now 5 seconds. Phone-initiated
+  history reads continue to work, and changed/active sessions still sync.
+
 ## 1.0.1
 
 - DSH Desktop launch path removed entirely: Bridge no longer starts or

@@ -146,7 +146,7 @@ export class RuntimeSessionBroker extends EventEmitter {
     options: RuntimeSessionBrokerOptions = {},
   ) {
     super();
-    this.liveSyncIntervalMs = Math.max(500, options.liveSyncIntervalMs ?? 1_200);
+    this.liveSyncIntervalMs = Math.max(1_000, options.liveSyncIntervalMs ?? 5_000);
     this.evidence = options.evidence;
     registry.on("changed", () => {
       const before = this.sessionFingerprints();
@@ -708,6 +708,7 @@ export class RuntimeSessionBroker extends EventEmitter {
   private queueChangedHistories(before: Map<string, string>): boolean {
     let changed = false;
     for (const session of this.listSessions()) {
+      if (!before.has(session.sessionId)) continue;
       if (before.get(session.sessionId) === sessionFingerprint(session)) continue;
       this.historySyncPending.add(session.sessionId);
       changed = true;

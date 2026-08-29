@@ -13,7 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@bridge/protocol": "1.0.1",
+    "@bridge/protocol": "1.0.2",
     "@capacitor/app": "^8.1.1",
     "@capacitor/core": "^8.4.2",
     "@capacitor/filesystem": "^8.1.2",

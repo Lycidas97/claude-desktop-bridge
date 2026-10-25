@@ -64,6 +64,7 @@ import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
 import { IconButton } from "./IconButton.js";
+import { MarkdownText } from "./MarkdownText.js";
 import { ThemeMenu } from "./ThemeMenu.js";
 import {
   aggregateFileChanges,
@@ -1172,7 +1173,11 @@ function DesktopSessions({
                   key={entry.item.id}
                 >
                   <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? selectedRuntimeName : entry.item.toolName ?? "Bridge"}</strong></div>
-                  <div className="conversation-text">{entry.item.text}</div>
+                  {entry.item.role === "assistant" || entry.item.role === "user" ? (
+                    <MarkdownText text={entry.item.text} />
+                  ) : (
+                    <div className="conversation-text">{entry.item.text}</div>
+                  )}
                   {entry.item.attachments?.length ? (
                     <div className="conversation-attachments">
                       {entry.item.attachments.map((attachment) => attachment.data ? (

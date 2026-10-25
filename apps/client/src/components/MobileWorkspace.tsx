@@ -74,6 +74,7 @@ import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
 import { IconButton } from "./IconButton.js";
+import { MarkdownText } from "./MarkdownText.js";
 import { ThemeMenu } from "./ThemeMenu.js";
 import {
   SessionConfigurationDialog,
@@ -1671,7 +1672,13 @@ export function MobileWorkspace({
                 <time>{formatTime(entry.item.createdAt)}</time>
               </div>
               {entry.item.role === "tool" && <Wrench size={16} aria-hidden="true" />}
-              {entry.item.text && <div className="conversation-text">{entry.item.text}</div>}
+              {entry.item.text && (
+                entry.item.role === "assistant" || entry.item.role === "user" ? (
+                  <MarkdownText text={entry.item.text} />
+                ) : (
+                  <div className="conversation-text">{entry.item.text}</div>
+                )
+              )}
               {entry.item.attachments?.length ? (
                 <div className="conversation-attachments">
                   {entry.item.attachments.map((attachment) => attachment.data ? (

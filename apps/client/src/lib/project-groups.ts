@@ -1,3 +1,5 @@
+export const PROJECT_PREVIEW_SESSION_LIMIT = 3;
+
 export function toggleCollapsedProject(
   current: Set<string>,
   projectId: string,
@@ -25,3 +27,28 @@ export function collapseProjects(projectIds: Iterable<string>): Set<string> {
 export function expandAllProjects(): Set<string> {
   return new Set();
 }
+
+export function sortProjectSessionsByRecent<T extends { lastActivityAt: number }>(
+  sessions: readonly T[],
+): T[] {
+  return [...sessions].sort((left, right) => right.lastActivityAt - left.lastActivityAt);
+}
+
+export function previewProjectSessions<T extends { lastActivityAt: number }>(
+  sessions: readonly T[],
+  limit = PROJECT_PREVIEW_SESSION_LIMIT,
+): {
+  preview: T[];
+  totalCount: number;
+  hiddenCount: number;
+} {
+  const sorted = sortProjectSessionsByRecent(sessions);
+  const safeLimit = Math.max(0, limit);
+  const preview = sorted.slice(0, safeLimit);
+  return {
+    preview,
+    totalCount: sorted.length,
+    hiddenCount: Math.max(0, sorted.length - preview.length),
+  };
+}
+

@@ -381,23 +381,32 @@ export function EvidenceInlineSummary({
   onOpen(): void;
   entering?: boolean;
 }) {
+  if (
+    evidence.state !== "failed"
+    && evidence.changeCount === 0
+    && evidence.artifactCount === 0
+  ) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (evidence.changeCount > 0) parts.push(`${evidence.changeCount} 处文件变更`);
+  if (evidence.artifactCount > 0) parts.push(`${evidence.artifactCount} 个产物`);
+  if (evidence.toolCount > 0) parts.push(`${evidence.toolCount} 次工具调用`);
+  if (parts.length === 0) parts.push("本轮执行记录");
+
   return (
     <button type="button" className={`evidence-inline-summary ${evidence.confidence}${entering ? " is-entering" : ""}`} onClick={onOpen}>
       <span className="evidence-inline-icon">
         {evidence.state === "collecting"
-          ? <LoaderCircle className="is-spinning" size={17} />
+          ? <LoaderCircle className="is-spinning" size={15} />
           : evidence.state === "failed"
-            ? <AlertTriangle size={17} />
-            : <CheckCircle2 size={17} />}
+            ? <AlertTriangle size={15} />
+            : <CheckCircle2 size={15} />}
       </span>
-      <span>
-        <strong>成果证据</strong>
-        <small>
-          {evidence.toolCount} 个工具 · {evidence.changeCount} 处文件变化 · {evidence.artifactCount} 个产物
-          {evidence.usage ? ` · ${usageLabel(evidence.usage)}` : ""}
-        </small>
+      <span className="evidence-inline-copy">
+        <strong>{parts.join(" · ")}</strong>
       </span>
-      <b>{confidenceLabel(evidence.confidence)}</b>
+      <b>查看</b>
     </button>
   );
 }

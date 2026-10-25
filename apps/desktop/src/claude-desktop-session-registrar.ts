@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import {
+  appendFile,
   chmod,
   link,
   lstat,
@@ -332,7 +333,19 @@ export class ClaudeDesktopSessionRegistrar {
     }
 
     const transcriptMetadata = await stat(transcriptPath);
-    const lastActivityAt = Math.max(input.lastActivityAt, transcriptMetadata.mtimeMs);
+    await this.ensureTranscriptCustomTitle(transcriptPath, input.sessionId, input.title);
+    if (platform === "darwin" && !this.options.listProfiles) {
+      const liveAdopted = await this.tryLiveAdoptViaDeepLink(
+        input.sessionId,
+        desktopSessionId,
+        metadataPath,
+        target.sessionsRoot,
+        now,
+      );
+      if (liveAdopted) return liveAdopted;
+    }
+
+    const lastActivityAt = Math.round(Math.max(input.lastActivityAt, transcriptMetadata.mtimeMs));
     const metadata = {
       sessionId: desktopSessionId,
       cliSessionId: input.sessionId,
@@ -361,6 +374,66 @@ export class ClaudeDesktopSessionRegistrar {
       profileSessionsRoot: target.sessionsRoot,
       claudePidAtRegistration: target.pid,
     };
+  }
+
+  private async ensureTranscriptCustomTitle(
+    transcriptPath: string,
+    sessionId: string,
+    title: string,
+  ): Promise<void> {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    try {
+      const raw = await readFile(transcriptPath, "utf8");
+      if (raw.includes('"type":"custom-title"')) return;
+      const record = JSON.stringify({
+        type: "custom-title",
+        customTitle: trimmed,
+        sessionId,
+        uuid: randomUUID(),
+        timestamp: new Date().toISOString(),
+      });
+      await appendFile(transcriptPath, `${raw.endsWith("\n") ? "" : "\n"}${record}\n`, "utf8");
+    } catch {
+      // Best-effort title stamp; adoption still works without it.
+    }
+  }
+
+  private async tryLiveAdoptViaDeepLink(
+    sessionId: string,
+    desktopSessionId: string,
+    metadataPath: string,
+    sessionsRoot: string,
+    now: number,
+  ): Promise<DesktopSessionRegistrationResult | undefined> {
+    try {
+      await execFile("/usr/bin/open", ["-g", `claude://resume?session=${sessionId}`], {
+        encoding: "utf8",
+      });
+    } catch {
+      return undefined;
+    }
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const adopted = await this.readMetadata(metadataPath);
+      if (
+        adopted &&
+        adopted.sessionId === desktopSessionId &&
+        adopted.cliSessionId === sessionId
+      ) {
+        return {
+          state: "registered",
+          detail: "Claude Desktop 已实时同步这条 Bridge 会话。",
+          desktopSessionId,
+          registeredAt: now,
+          updatedAt: now,
+          metadataPath,
+          metadataSha256: adopted.hash,
+          profileSessionsRoot: sessionsRoot,
+        };
+      }
+    }
+    return undefined;
   }
 
   async removeOwned(
@@ -420,7 +493,7 @@ export class ClaudeDesktopSessionRegistrar {
     const active = profiles.find((profile) => (
       previous.profileSessionsRoot === join(profile.userDataDir, "claude-code-sessions")
     ));
-    const stillNeedsRestart = previous.state === "restart-required" && (
+    const stillNeedsRestart = !current.adoptedFromOtherSurface && previous.state === "restart-required" && (
       !active ||
       active.pid === previous.claudePidAtRegistration
     );
@@ -643,6 +716,7 @@ export class ClaudeDesktopSessionRegistrar {
     titleSource?: string;
     createdAt?: number;
     lastActivityAt?: number;
+    adoptedFromOtherSurface?: boolean;
     hash: string;
   } | undefined> {
     try {
@@ -659,6 +733,7 @@ export class ClaudeDesktopSessionRegistrar {
         titleSource?: unknown;
         createdAt?: unknown;
         lastActivityAt?: unknown;
+        adoptedFromOtherSurface?: unknown;
       };
       if (
         typeof value.sessionId !== "string" ||
@@ -677,6 +752,7 @@ export class ClaudeDesktopSessionRegistrar {
         ...(typeof value.lastActivityAt === "number"
           ? { lastActivityAt: value.lastActivityAt }
           : {}),
+        ...(value.adoptedFromOtherSurface === true ? { adoptedFromOtherSurface: true } : {}),
         hash: sha256(contents),
       };
     } catch {

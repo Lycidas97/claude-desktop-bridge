@@ -26,7 +26,7 @@ const DIRECT_BUFFER_LOW_WATER = 128 * 1024;
 const DIRECT_SIGNAL_TTL_MS = 60_000;
 const DIRECT_ACK_TTL_MS = 5 * 60_000;
 const DEFAULT_DIRECT_TIMEOUT_MS = 5_000;
-const DEFAULT_RETRY_DELAY_MS = 30_000;
+const DEFAULT_RETRY_DELAY_MS = 120_000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const HEARTBEAT_TIMEOUT_MS = 45_000;
 
@@ -643,6 +643,7 @@ export class WebRtcTransport implements BridgeTransport {
         toDeviceId: deviceId,
         crypto: selectedCrypto,
         ttlMs: payload.action === "ack" ? DIRECT_ACK_TTL_MS : DIRECT_SIGNAL_TTL_MS,
+        ...(payload.action !== "ack" ? { temporary: true } : {}),
       },
     );
   }

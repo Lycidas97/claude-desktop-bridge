@@ -1607,7 +1607,7 @@ export function MobileWorkspace({
       height: stream.scrollHeight,
     };
     const jump = () => endRef.current?.scrollIntoView({ block: "end" });
-    if (previous.sessionId !== selectedSessionId) {
+    if (previous.sessionId !== selectedSessionId || previous.count === 0) {
       jump();
       return;
     }
@@ -1629,6 +1629,41 @@ export function MobileWorkspace({
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     endRef.current?.scrollIntoView({ block: "end", behavior: reduced ? "auto" : "smooth" });
   }, [streamKeys, selectedSessionId]);
+
+  const autoBackfillCountRef = useRef<{ sessionId?: string; count: number }>({ count: 0 });
+  useEffect(() => {
+    if (!selectedSessionId) {
+      autoBackfillCountRef.current = { count: 0 };
+      return;
+    }
+    if (autoBackfillCountRef.current.sessionId !== selectedSessionId) {
+      autoBackfillCountRef.current = { sessionId: selectedSessionId, count: 0 };
+    }
+    if (
+      connection !== "connected" ||
+      !selectedHistory ||
+      selectedHistory.status !== "ready" ||
+      !selectedHistory.hasMore ||
+      !selectedHistory.nextCursor ||
+      selectedHistory.items.length === 0
+    ) {
+      return;
+    }
+    if (autoBackfillCountRef.current.count >= 4) return;
+    const timer = setTimeout(() => {
+      autoBackfillCountRef.current.count += 1;
+      void onLoadOlderHistory(selectedSessionId);
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [
+    connection,
+    onLoadOlderHistory,
+    selectedHistory?.hasMore,
+    selectedHistory?.items.length,
+    selectedHistory?.nextCursor,
+    selectedHistory?.status,
+    selectedSessionId,
+  ]);
 
   useEffect(() => {
     if (search.trim()) setCollapsedProjectIds(new Set());
@@ -2034,7 +2069,20 @@ export function MobileWorkspace({
         </div>
 
         {sessionView === "conversation" ? (
-        <section className="conversation-stream" aria-live="polite" ref={streamRef}>
+        <section
+          className="conversation-stream"
+          aria-live="polite"
+          ref={streamRef}
+          onScroll={(event) => {
+            if (
+              event.currentTarget.scrollTop < 180 &&
+              selectedHistory?.hasMore &&
+              selectedHistory.status === "ready"
+            ) {
+              void onLoadOlderHistory(selectedSession.sessionId);
+            }
+          }}
+        >
           {selectedHistory?.hasMore && (
             <button
               type="button"
@@ -2043,11 +2091,11 @@ export function MobileWorkspace({
               onClick={() => void onLoadOlderHistory(selectedSession.sessionId)}
             >
               {selectedHistory.status === "loading" && <LoaderCircle className="is-spinning" size={15} />}
-              加载更早消息
+              {selectedHistory.status === "loading" ? "正在分段加载更早消息…" : "加载更早消息"}
             </button>
           )}
           {selectedHistory?.status === "loading" && selectedHistory.items.length === 0 && (
-            <div className="conversation-loading"><LoaderCircle className="is-spinning" size={20} />正在读取完整会话</div>
+            <div className="conversation-loading"><LoaderCircle className="is-spinning" size={20} />正在加载最新对话…</div>
           )}
           {selectedHistory?.status === "error" && selectedHistory.items.length === 0 && (
             <div className="conversation-empty">

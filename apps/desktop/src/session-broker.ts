@@ -1647,7 +1647,7 @@ export class SessionBroker extends EventEmitter {
     let startIndex = all.length;
     let messageCount = 0;
     let totalBytes = 0;
-    const maxPageBytes = 175_000;
+    const maxPageBytes = before ? 96_000 : 56_000;
     while (startIndex > 0 && messageCount < pageSize) {
       const candidate = all[startIndex - 1]!;
       const itemBytes = Buffer.byteLength(JSON.stringify(candidate), "utf8");

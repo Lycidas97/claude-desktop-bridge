@@ -795,19 +795,28 @@ async function exists(path: string): Promise<boolean> {
   return access(path).then(() => true, () => false);
 }
 
+const transcriptFilePathCache = new Map<string, string>();
+
 export async function findClaudeTranscriptFile(
   projectsRoot: string,
   sessionId: string,
   cwd?: string,
 ): Promise<string | undefined> {
   if (!SAFE_SESSION_ID.test(sessionId)) return undefined;
+  const cacheKey = `${projectsRoot}\0${sessionId}`;
+  const cachedPath = transcriptFilePathCache.get(cacheKey);
+  if (cachedPath && await exists(cachedPath)) return cachedPath;
+
   const filename = `${sessionId}.jsonl`;
   const directCandidates = [
     join(projectsRoot, filename),
     ...(cwd ? [join(projectsRoot, projectDirectoryName(cwd), filename)] : []),
   ];
   for (const candidate of directCandidates) {
-    if (await exists(candidate)) return candidate;
+    if (await exists(candidate)) {
+      transcriptFilePathCache.set(cacheKey, candidate);
+      return candidate;
+    }
   }
 
   let directories;
@@ -820,7 +829,10 @@ export async function findClaudeTranscriptFile(
     const candidates = directories.slice(offset, offset + 40).map((entry) => join(projectsRoot, entry.name, filename));
     const matches = await Promise.all(candidates.map(async (candidate) => await exists(candidate) ? candidate : undefined));
     const match = matches.find((candidate): candidate is string => candidate !== undefined);
-    if (match) return match;
+    if (match) {
+      transcriptFilePathCache.set(cacheKey, match);
+      return match;
+    }
   }
   return undefined;
 }
@@ -861,11 +873,33 @@ function transcriptTurnBoundary<T extends TranscriptTurnNode>(
   return nodes.size > 0;
 }
 
+const transcriptSnapshotCache = new Map<string, {
+  signature: string;
+  allMessages: ClaudeHistoryMessage[];
+  userMessages: ClaudeHistoryMessage[];
+  atTurnBoundary?: boolean;
+}>();
+
 export async function parseClaudeTranscriptSnapshot(
   path: string,
   options: ClaudeHistoryReadOptions = {},
   userLimit = 200,
 ): Promise<ClaudeTranscriptSnapshot> {
+  const fileStat = await stat(path).catch(() => undefined);
+  if (!fileStat) {
+    return { available: false, messages: [], truncated: false, userMessages: [] };
+  }
+  const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}:${userLimit}`;
+  const cached = transcriptSnapshotCache.get(path);
+  if (cached && cached.signature === cacheSignature) {
+    return {
+      available: true,
+      ...trimHistory(cached.allMessages, options),
+      userMessages: cached.userMessages,
+      ...(cached.atTurnBoundary !== undefined ? { atTurnBoundary: cached.atTurnBoundary } : {}),
+    };
+  }
+
   const nodes = new Map<string, TranscriptNode>();
   const referencedParents = new Set<string>();
   const userMessages: ClaudeHistoryMessage[] = [];
@@ -1023,6 +1057,16 @@ export async function parseClaudeTranscriptSnapshot(
       });
     }
   }
+  if (transcriptSnapshotCache.size > 128) {
+    const oldestKey = transcriptSnapshotCache.keys().next().value;
+    if (typeof oldestKey === "string") transcriptSnapshotCache.delete(oldestKey);
+  }
+  transcriptSnapshotCache.set(path, {
+    signature: cacheSignature,
+    allMessages: messages,
+    userMessages,
+    ...(atTurnBoundary !== undefined ? { atTurnBoundary } : {}),
+  });
   return {
     available: true,
     ...trimHistory(messages, options),
@@ -1057,56 +1101,8 @@ export async function readClaudeTranscriptUserMessages(
 }
 
 export async function isClaudeTranscriptAtTurnBoundary(path: string): Promise<boolean> {
-  const nodes = new Map<string, TranscriptTurnNode>();
-  const referencedParents = new Set<string>();
-  let index = 0;
-  let lastMainUuid: string | undefined;
-  try {
-    const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
-    for await (const line of lines) {
-      index += 1;
-      let value: unknown;
-      try {
-        value = JSON.parse(line) as unknown;
-      } catch {
-        continue;
-      }
-      if (!isRecord(value) || typeof value.uuid !== "string" || !value.uuid) continue;
-      const existing = nodes.get(value.uuid);
-      const parentUuid = existing?.parentUuid ?? resolveTranscriptParentUuid(value, nodes, lastMainUuid);
-      if (parentUuid) referencedParents.add(parentUuid);
-      const message = isRecord(value.message) ? value.message : undefined;
-      const text = message ? textFromContent(message.content) : "";
-      const type = value.type === "user" || value.type === "assistant"
-        ? value.type
-        : existing?.type;
-      nodes.set(value.uuid, {
-        index: existing?.index ?? index,
-        uuid: value.uuid,
-        ...(parentUuid ? { parentUuid } : {}),
-        ...(type ? { type } : {}),
-        ...(existing?.interruptedBoundary || (value.type === "user" && isClaudeTranscriptControlMessage("user", text))
-          ? { interruptedBoundary: true }
-          : {}),
-        ...(existing?.nonTurnUser || (value.type === "user" && isNonTurnUserRecord(value, text))
-          ? { nonTurnUser: true }
-          : {}),
-        ...(message && typeof message.stop_reason === "string"
-          ? { stopReason: message.stop_reason }
-          : existing?.stopReason
-            ? { stopReason: existing.stopReason }
-            : {}),
-      });
-      if (value.isSidechain !== true) lastMainUuid = value.uuid;
-    }
-  } catch {
-    return false;
-  }
-
-  const terminal = [...nodes.values()]
-    .filter((node) => !referencedParents.has(node.uuid))
-    .sort((left, right) => right.index - left.index)[0];
-  return terminal ? transcriptTurnBoundary(nodes, terminal) : false;
+  const snapshot = await parseClaudeTranscriptSnapshot(path, { limit: 1 });
+  return snapshot.available ? Boolean(snapshot.atTurnBoundary) : false;
 }
 
 export async function readClaudeSessionHistory(
@@ -1382,10 +1378,23 @@ async function parseSingleSubagentFile(
   return summary;
 }
 
+const parentSubagentCache = new Map<string, {
+  signature: string;
+  summaries: BridgeSubagentSummary[];
+}>();
+
 async function parseParentTranscriptSubagents(
   transcriptPath: string,
   processAlive: boolean,
 ): Promise<BridgeSubagentSummary[]> {
+  const fileStat = await stat(transcriptPath).catch(() => undefined);
+  if (!fileStat) return [];
+  const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}:${processAlive ? 1 : 0}`;
+  const cached = parentSubagentCache.get(transcriptPath);
+  if (cached && cached.signature === cacheSignature) {
+    return cached.summaries;
+  }
+
   const callsByToolId = new Map<string, {
     toolUseId: string;
     agentId?: string;
@@ -1489,6 +1498,11 @@ async function parseParentTranscriptSubagents(
       durationMs: Math.max(0, updatedAt - call.startedAt),
     });
   }
+  if (parentSubagentCache.size > 128) {
+    const oldestKey = parentSubagentCache.keys().next().value;
+    if (typeof oldestKey === "string") parentSubagentCache.delete(oldestKey);
+  }
+  parentSubagentCache.set(transcriptPath, { signature: cacheSignature, summaries: results });
   return results;
 }
 

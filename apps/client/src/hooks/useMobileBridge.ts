@@ -2271,99 +2271,126 @@ export function useMobileBridge() {
     }));
   }, []);
 
+  const openingSessionsRef = useRef(new Map<string, Promise<void>>());
+
   const openSession = useCallback(async (sessionId: string) => {
-    setState((current) => ({
-      ...current,
-      histories: {
-        ...current.histories,
-        [sessionId]: {
-          status: "loading",
-          items: current.histories[sessionId]?.items ?? [],
-          hasMore: current.histories[sessionId]?.hasMore ?? false,
-          ...(current.histories[sessionId]?.nextCursor
-            ? { nextCursor: current.histories[sessionId].nextCursor }
-            : {}),
-          },
-        },
-      evidence: {
-        ...current.evidence,
-        [sessionId]: {
-          status: "loading",
-          items: current.evidence[sessionId]?.items ?? [],
-          hasMore: current.evidence[sessionId]?.hasMore ?? false,
-          ...(current.evidence[sessionId]?.nextCursor
-            ? { nextCursor: current.evidence[sessionId]!.nextCursor }
-            : {}),
-        },
-      },
-    }));
-    try {
-      const [response, evidenceResponse] = await Promise.all([
-        sendRequest("session.open", { sessionId }, { wait: true }),
-        sendRequest("evidence.list", { sessionId, limit: 30 }, {
-          wait: true,
-          timeoutMs: 45_000,
-        }).catch(() => undefined),
-      ]);
-      if (!response?.ok) throw new Error(response?.error?.message ?? "会话打开失败");
-      const result = response.result as { history?: BridgeHistoryPage; session?: BridgeSessionInfo };
-      if (!result.history) throw new Error("电脑未返回会话历史");
-      const evidenceResult = evidenceResponse?.ok
-        ? evidenceResponse.result as { evidence?: BridgeEvidencePage }
-        : undefined;
+    const inflight = openingSessionsRef.current.get(sessionId);
+    if (inflight) return inflight;
+    const task = (async () => {
       setState((current) => ({
         ...current,
         histories: {
           ...current.histories,
           [sessionId]: {
-            status: "ready",
-            items: result.history!.items,
-            hasMore: result.history!.hasMore,
-            ...(result.history!.nextCursor ? { nextCursor: result.history!.nextCursor } : {}),
-          },
-        },
-        evidence: {
-          ...current.evidence,
-          [sessionId]: evidenceResult?.evidence ? {
-            status: "ready",
-            items: mergeEvidence(
-              current.evidence[sessionId]?.items ?? [],
-              evidenceResult.evidence.items,
-            ),
-            hasMore: evidenceResult.evidence.hasMore,
-            ...(evidenceResult.evidence.nextCursor
-              ? { nextCursor: evidenceResult.evidence.nextCursor }
-              : {}),
-          } : {
-            status: "error",
-            items: current.evidence[sessionId]?.items ?? [],
-            hasMore: false,
-          },
-        },
-      }));
-    } catch (error) {
-      setState((current) => ({
-        ...current,
-        histories: {
-          ...current.histories,
-          [sessionId]: {
-            status: "error",
+            status: "loading",
             items: current.histories[sessionId]?.items ?? [],
             hasMore: current.histories[sessionId]?.hasMore ?? false,
-            error: error instanceof Error ? error.message : "会话打开失败",
+            ...(current.histories[sessionId]?.nextCursor
+              ? { nextCursor: current.histories[sessionId].nextCursor }
+              : {}),
           },
         },
         evidence: {
           ...current.evidence,
           [sessionId]: {
-            status: current.evidence[sessionId]?.items.length ? "ready" : "error",
+            status: "loading",
             items: current.evidence[sessionId]?.items ?? [],
             hasMore: current.evidence[sessionId]?.hasMore ?? false,
+            ...(current.evidence[sessionId]?.nextCursor
+              ? { nextCursor: current.evidence[sessionId]!.nextCursor }
+              : {}),
           },
         },
-        error: error instanceof Error ? error.message : "会话打开失败",
       }));
-    }
+      try {
+        const response = await sendRequest("session.open", { sessionId, limit: 16 }, {
+          wait: true,
+          timeoutMs: 25_000,
+        });
+        if (!response?.ok) throw new Error(response?.error?.message ?? "会话打开失败");
+        const result = response.result as { history?: BridgeHistoryPage; session?: BridgeSessionInfo };
+        if (!result.history) throw new Error("电脑未返回会话历史");
+        setState((current) => ({
+          ...current,
+          histories: {
+            ...current.histories,
+            [sessionId]: {
+              status: "ready",
+              items: result.history!.items,
+              hasMore: result.history!.hasMore,
+              ...(result.history!.nextCursor ? { nextCursor: result.history!.nextCursor } : {}),
+            },
+          },
+        }));
+        void sendRequest("evidence.list", { sessionId, limit: 12 }, {
+          wait: true,
+          timeoutMs: 30_000,
+        }).then((evidenceResponse) => {
+          const evidenceResult = evidenceResponse?.ok
+            ? evidenceResponse.result as { evidence?: BridgeEvidencePage }
+            : undefined;
+          setState((current) => ({
+            ...current,
+            evidence: {
+              ...current.evidence,
+              [sessionId]: evidenceResult?.evidence ? {
+                status: "ready",
+                items: mergeEvidence(
+                  current.evidence[sessionId]?.items ?? [],
+                  evidenceResult.evidence.items,
+                ),
+                hasMore: evidenceResult.evidence.hasMore,
+                ...(evidenceResult.evidence.nextCursor
+                  ? { nextCursor: evidenceResult.evidence.nextCursor }
+                  : {}),
+              } : {
+                status: current.evidence[sessionId]?.items.length ? "ready" : "error",
+                items: current.evidence[sessionId]?.items ?? [],
+                hasMore: false,
+              },
+            },
+          }));
+        }).catch(() => {
+          setState((current) => ({
+            ...current,
+            evidence: {
+              ...current.evidence,
+              [sessionId]: {
+                status: current.evidence[sessionId]?.items.length ? "ready" : "error",
+                items: current.evidence[sessionId]?.items ?? [],
+                hasMore: current.evidence[sessionId]?.hasMore ?? false,
+              },
+            },
+          }));
+        });
+      } catch (error) {
+        setState((current) => ({
+          ...current,
+          histories: {
+            ...current.histories,
+            [sessionId]: {
+              status: "error",
+              items: current.histories[sessionId]?.items ?? [],
+              hasMore: current.histories[sessionId]?.hasMore ?? false,
+              error: error instanceof Error ? error.message : "会话打开失败",
+            },
+          },
+          evidence: {
+            ...current.evidence,
+            [sessionId]: {
+              status: current.evidence[sessionId]?.items.length ? "ready" : "error",
+              items: current.evidence[sessionId]?.items ?? [],
+              hasMore: current.evidence[sessionId]?.hasMore ?? false,
+            },
+          },
+          error: error instanceof Error ? error.message : "会话打开失败",
+        }));
+      }
+    })().finally(() => {
+      openingSessionsRef.current.delete(sessionId);
+    });
+    openingSessionsRef.current.set(sessionId, task);
+    return task;
   }, [sendRequest]);
 
   const loadOlderEvidence = useCallback(async (sessionId: string) => {
@@ -2461,6 +2488,7 @@ export function useMobileBridge() {
   const loadOlderHistory = useCallback(async (sessionId: string) => {
     const current = stateRef.current.histories[sessionId];
     if (!current?.nextCursor || current.status === "loading") return;
+    const requestedCursor = current.nextCursor;
     setState((stateValue) => ({
       ...stateValue,
       histories: {
@@ -2471,31 +2499,44 @@ export function useMobileBridge() {
     try {
       const response = await sendRequest("session.history", {
         sessionId,
-        cursor: current.nextCursor,
-        limit: 50,
-      }, { wait: true });
+        cursor: requestedCursor,
+        limit: 25,
+      }, { wait: true, timeoutMs: 25_000 });
       if (!response?.ok) throw new Error(response?.error?.message ?? "历史加载失败");
       const result = response.result as { history?: BridgeHistoryPage };
       if (!result.history) throw new Error("电脑未返回历史");
       const page = result.history;
-      setState((stateValue) => ({
-        ...stateValue,
-        histories: {
-          ...stateValue.histories,
-          [sessionId]: {
-            status: "ready",
-            items: [...page.items, ...current.items],
-            hasMore: page.hasMore,
-            ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+      setState((stateValue) => {
+        const existingItems = stateValue.histories[sessionId]?.items ?? current.items;
+        const seen = new Set<string>();
+        const mergedItems: BridgeHistoryItem[] = [];
+        for (const item of [...page.items, ...existingItems]) {
+          if (seen.has(item.id)) continue;
+          seen.add(item.id);
+          mergedItems.push(item);
+        }
+        return {
+          ...stateValue,
+          histories: {
+            ...stateValue.histories,
+            [sessionId]: {
+              status: "ready",
+              items: mergedItems,
+              hasMore: page.hasMore,
+              ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+            },
           },
-        },
-      }));
+        };
+      });
     } catch {
       setState((stateValue) => ({
         ...stateValue,
         histories: {
           ...stateValue.histories,
-          [sessionId]: { ...current, status: "error" },
+          [sessionId]: {
+            ...(stateValue.histories[sessionId] ?? current),
+            status: "ready",
+          },
         },
       }));
     }

@@ -342,8 +342,17 @@ export class EvidenceStore {
           ORDER BY started_at DESC, id DESC
           LIMIT ?
         `).all(sessionId, boundedLimit + 1) as SqlRow[];
-    const hasMore = rows.length > boundedLimit;
-    const items = rows.slice(0, boundedLimit).map((row) => this.bundleWithArtifacts(bundleFromRow(row)));
+    const allItems = rows.slice(0, boundedLimit).map((row) => this.bundleWithArtifacts(bundleFromRow(row)));
+    const items: BridgeEvidenceBundle[] = [];
+    let totalBytes = 0;
+    const maxPageBytes = 64_000;
+    for (const item of allItems) {
+      const itemBytes = Buffer.byteLength(JSON.stringify(item), "utf8");
+      if (items.length > 0 && totalBytes + itemBytes > maxPageBytes) break;
+      items.push(item);
+      totalBytes += itemBytes;
+    }
+    const hasMore = rows.length > boundedLimit || items.length < allItems.length;
     return {
       sessionId,
       items,

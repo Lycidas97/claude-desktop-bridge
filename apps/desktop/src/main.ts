@@ -127,12 +127,7 @@ async function desktopMain(): Promise<void> {
   await removeLegacyConnector(connectorPaths()).catch(() => undefined);
 
   const identityProtector = fileSecretProtector();
-  const evidenceProtector = isolatedPackagedQa
-    ? fileSecretProtector()
-    : safeStorageSecretProtector(safeStorage);
-  if (!evidenceProtector.available()) {
-    throw new Error("OS secret storage is required for the evidence encryption key");
-  }
+  const evidenceProtector = fileSecretProtector();
   const repository = new DesktopConfigRepository(
     configPath(),
     identityProtector,

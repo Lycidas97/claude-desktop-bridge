@@ -1034,7 +1034,7 @@ export class DesktopController extends EventEmitter {
       if (!session) throw new Error("Session not found");
       return {
         session,
-        history: await this.broker.history(sessionId, undefined, 50),
+        history: await this.broker.history(sessionId, undefined, numberParam(params, "limit", 18)),
         latestSeq: this.eventLog.latestSeq(),
       };
     }

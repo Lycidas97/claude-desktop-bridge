@@ -1,11 +1,15 @@
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { access, readdir, stat } from "node:fs/promises";
+import { access, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import type { BridgeEffort, BridgeModelInfo } from "@bridge/protocol";
 
 const execFileAsync = promisify(execFile);
+const GATEWAY_EFFORT_LEVELS = new Set<BridgeEffort>(["low", "medium", "high", "xhigh", "max"]);
+const GATEWAY_LONG_CONTEXT_TOKENS = 1_000_000;
+const GATEWAY_MODELS_TIMEOUT_MS = 4_000;
 
 function pathIsWithin(root: string, candidate: string): boolean {
   const relation = relative(resolve(root), resolve(candidate));
@@ -219,4 +223,225 @@ export async function prepareClaudeRuntime(
     ...(credentialPath ? { credentialPath } : {}),
     ...(version ? { version } : {}),
   };
+}
+
+export interface ClaudeGatewayConfig {
+  baseUrl: string;
+  authToken?: string;
+  apiKey?: string;
+  authScheme?: "bearer" | "x-api-key";
+}
+
+interface HostCredentialsFile {
+  env?: Record<string, unknown>;
+  ANTHROPIC_BASE_URL?: unknown;
+  ANTHROPIC_AUTH_TOKEN?: unknown;
+  ANTHROPIC_API_KEY?: unknown;
+  CLAUDE_CODE_HOST_AUTH_ENV_VAR?: unknown;
+}
+
+interface ConfigLibraryMetaFile {
+  appliedId?: unknown;
+}
+
+interface ConfigLibraryEntryFile {
+  inferenceProvider?: unknown;
+  inferenceGatewayBaseUrl?: unknown;
+  inferenceGatewayAuthScheme?: unknown;
+  inferenceGatewayApiKey?: unknown;
+}
+
+interface GatewayModelPayload {
+  id?: unknown;
+  display_name?: unknown;
+  description?: unknown;
+  max_input_tokens?: unknown;
+  supports_1m?: unknown;
+  reasoning?: unknown;
+  reasoning_levels?: unknown;
+  supported_reasoning_levels?: unknown;
+}
+
+interface GatewayModelsResponsePayload {
+  data?: unknown;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+export async function resolveClaudeGatewayConfig(
+  runtime: Pick<ClaudeRuntime, "credentialPath" | "environment"> | undefined,
+): Promise<ClaudeGatewayConfig | undefined> {
+  if (!runtime) return undefined;
+  let baseUrl: string | undefined;
+  let authToken: string | undefined;
+  let apiKey: string | undefined;
+  let authScheme: "bearer" | "x-api-key" | undefined;
+
+  if (runtime.credentialPath) {
+    try {
+      const parsed = JSON.parse(await readFile(runtime.credentialPath, "utf8")) as HostCredentialsFile;
+      const env = parsed && typeof parsed.env === "object" && parsed.env !== null && !Array.isArray(parsed.env)
+        ? parsed.env
+        : (parsed as Record<string, unknown>);
+      baseUrl = nonEmptyString(env?.ANTHROPIC_BASE_URL);
+      authToken = nonEmptyString(env?.ANTHROPIC_AUTH_TOKEN);
+      apiKey = nonEmptyString(env?.ANTHROPIC_API_KEY);
+      if (env?.CLAUDE_CODE_HOST_AUTH_ENV_VAR === "ANTHROPIC_API_KEY") authScheme = "x-api-key";
+      else if (env?.CLAUDE_CODE_HOST_AUTH_ENV_VAR === "ANTHROPIC_AUTH_TOKEN") authScheme = "bearer";
+    } catch {
+      // Ignore unreadable or missing credential files and fall back to configLibrary / environment.
+    }
+
+    const configLibraryDir = join(dirname(runtime.credentialPath), "configLibrary");
+    try {
+      const meta = JSON.parse(await readFile(join(configLibraryDir, "_meta.json"), "utf8")) as ConfigLibraryMetaFile;
+      const appliedId = nonEmptyString(meta?.appliedId);
+      if (appliedId && /^[a-z0-9._-]+$/iu.test(appliedId)) {
+        const entry = JSON.parse(
+          await readFile(join(configLibraryDir, `${appliedId}.json`), "utf8"),
+        ) as ConfigLibraryEntryFile;
+        baseUrl ??= nonEmptyString(entry?.inferenceGatewayBaseUrl);
+        if (entry?.inferenceGatewayAuthScheme === "bearer" || entry?.inferenceGatewayAuthScheme === "x-api-key") {
+          authScheme ??= entry.inferenceGatewayAuthScheme;
+        }
+        const gatewayKey = nonEmptyString(entry?.inferenceGatewayApiKey);
+        if (gatewayKey) {
+          if (authScheme === "x-api-key") apiKey ??= gatewayKey;
+          else authToken ??= gatewayKey;
+        }
+      }
+    } catch {
+      // Optional configLibrary metadata is only present on Claude-3p profiles with a saved gateway.
+    }
+  }
+
+  baseUrl ??= nonEmptyString(runtime.environment?.ANTHROPIC_BASE_URL);
+  authToken ??= nonEmptyString(runtime.environment?.ANTHROPIC_AUTH_TOKEN);
+  apiKey ??= nonEmptyString(runtime.environment?.ANTHROPIC_API_KEY);
+  if (!authScheme) {
+    if (runtime.environment?.CLAUDE_CODE_HOST_AUTH_ENV_VAR === "ANTHROPIC_API_KEY") {
+      authScheme = "x-api-key";
+    } else if (runtime.environment?.CLAUDE_CODE_HOST_AUTH_ENV_VAR === "ANTHROPIC_AUTH_TOKEN") {
+      authScheme = "bearer";
+    }
+  }
+
+  if (!baseUrl) return undefined;
+  try {
+    const parsedUrl = new URL(baseUrl);
+    if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") return undefined;
+  } catch {
+    return undefined;
+  }
+  return {
+    baseUrl,
+    ...(authToken ? { authToken } : {}),
+    ...(apiKey ? { apiKey } : {}),
+    ...(authScheme ? { authScheme } : {}),
+  };
+}
+
+export function parseClaudeGatewayModels(items: unknown[]): BridgeModelInfo[] {
+  const existingIds = new Set<string>();
+  for (const raw of items) {
+    if (!raw || typeof raw !== "object") continue;
+    const id = nonEmptyString((raw as GatewayModelPayload).id);
+    if (id) existingIds.add(id.toLocaleLowerCase());
+  }
+  const results: BridgeModelInfo[] = [];
+  const seen = new Set<string>();
+  for (const raw of items) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as GatewayModelPayload;
+    const id = nonEmptyString(item.id);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const displayName = nonEmptyString(item.display_name) ?? id;
+    const description = nonEmptyString(item.description);
+    const rawLevels = Array.isArray(item.supported_reasoning_levels)
+      ? item.supported_reasoning_levels
+      : Array.isArray(item.reasoning_levels)
+        ? item.reasoning_levels
+        : undefined;
+    const supportedEffortLevels = rawLevels?.filter((level): level is BridgeEffort => (
+      typeof level === "string" && GATEWAY_EFFORT_LEVELS.has(level as BridgeEffort)
+    ));
+    const supportsEffort = typeof item.reasoning === "boolean"
+      ? item.reasoning
+      : supportedEffortLevels && supportedEffortLevels.length > 0
+        ? true
+        : undefined;
+    results.push({
+      value: id,
+      displayName,
+      ...(description ? { description } : {}),
+      ...(supportsEffort !== undefined ? { supportsEffort } : {}),
+      ...(supportedEffortLevels?.length ? { supportedEffortLevels } : {}),
+    });
+
+    const supports1m = typeof item.supports_1m === "boolean"
+      ? item.supports_1m
+      : typeof item.max_input_tokens === "number" && item.max_input_tokens >= GATEWAY_LONG_CONTEXT_TOKENS;
+    const longContextId = `${id}[1m]`;
+    if (
+      supports1m &&
+      !/\[1m\]/iu.test(id) &&
+      !existingIds.has(longContextId.toLocaleLowerCase()) &&
+      !seen.has(longContextId)
+    ) {
+      seen.add(longContextId);
+      results.push({
+        value: longContextId,
+        displayName: `${displayName} 1M`,
+        description: description ? `${description} · 1M context window` : "1M context window",
+        ...(supportsEffort !== undefined ? { supportsEffort } : {}),
+        ...(supportedEffortLevels?.length ? { supportedEffortLevels } : {}),
+      });
+    }
+  }
+  return results;
+}
+
+export async function discoverClaudeGatewayModels(
+  runtime: Pick<ClaudeRuntime, "credentialPath" | "environment"> | undefined,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = GATEWAY_MODELS_TIMEOUT_MS,
+): Promise<BridgeModelInfo[]> {
+  const gateway = await resolveClaudeGatewayConfig(runtime);
+  if (!gateway) return [];
+  const trimmedBase = gateway.baseUrl.replace(/\/+$/u, "");
+  const endpoint = `${trimmedBase.endsWith("/v1") ? trimmedBase : `${trimmedBase}/v1`}/models?limit=1000`;
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    "anthropic-version": "2023-06-01",
+  };
+  if (gateway.authScheme === "x-api-key") {
+    const key = gateway.apiKey ?? gateway.authToken;
+    if (key) headers["x-api-key"] = key;
+  } else {
+    const token = gateway.authToken ?? gateway.apiKey;
+    if (token) headers.authorization = `Bearer ${token}`;
+    if (gateway.apiKey) headers["x-api-key"] = gateway.apiKey;
+  }
+  let response: Response;
+  try {
+    response = await fetchImpl(endpoint, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    return [];
+  }
+  if (!response.ok) return [];
+  let payload: GatewayModelsResponsePayload;
+  try {
+    payload = (await response.json()) as GatewayModelsResponsePayload;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(payload?.data)) return [];
+  return parseClaudeGatewayModels(payload.data);
 }

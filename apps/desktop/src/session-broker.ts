@@ -48,7 +48,10 @@ import {
 } from "./claude-session-catalog.js";
 import { PermissionBroker, type PermissionDecision } from "./permission-broker.js";
 import type { ClaudeRuntimePaths } from "./platform.js";
-import { prepareClaudeRuntime } from "./claude-runtime-discovery.js";
+import {
+  discoverClaudeGatewayModels,
+  prepareClaudeRuntime,
+} from "./claude-runtime-discovery.js";
 import type { BridgeEventDraft, SessionEventLog } from "./session-event-log.js";
 import {
   ANTHROPIC_API_PROFILE_ID,
@@ -206,6 +209,7 @@ export interface SessionBrokerOptions {
   maxParallelTurns?: number;
   hostFactory?: (options: ClaudeSessionHostOptions) => SessionHostRuntime;
   prepareRuntime?: typeof prepareClaudeRuntime;
+  discoverGatewayModels?: typeof discoverClaudeGatewayModels;
   scanSessionProcesses?: typeof scanClaudeSessionProcesses;
   runtimeRetryDelayMs?: number;
   managedDesktop?: ManagedDesktopRuntime;
@@ -334,6 +338,7 @@ export class SessionBroker extends EventEmitter {
   private readonly maxParallelTurns: number;
   private readonly hostFactory: NonNullable<SessionBrokerOptions["hostFactory"]>;
   private readonly runtimeFactory: typeof prepareClaudeRuntime;
+  private readonly gatewayModelDiscoverer: typeof discoverClaudeGatewayModels;
   private readonly sessionProcessScanner: typeof scanClaudeSessionProcesses;
   private readonly managedTransport: ManagedDesktopTransportRuntime | undefined;
   private readonly runtimeStates = new Map<string, SessionRuntimeState>();
@@ -348,6 +353,7 @@ export class SessionBroker extends EventEmitter {
   private readonly terminalTurns = new Map<string, TerminalTurnReceipt>();
   private catalog: ClaudeCatalogSnapshot = { projects: [], sessions: [], observedAt: 0 };
   private runtime: Awaited<ReturnType<typeof prepareClaudeRuntime>> | undefined;
+  private gatewayModelsDiscovered = false;
   private modelCatalogComplete = false;
   private modelCatalogDiscoveryAttempted = false;
   private defaultPermissionMode: BridgePermissionMode = "standard";
@@ -384,6 +390,7 @@ export class SessionBroker extends EventEmitter {
     this.maxParallelTurns = options.maxParallelTurns ?? 2;
     this.hostFactory = options.hostFactory ?? ((hostOptions) => new ClaudeSessionHost(hostOptions));
     this.runtimeFactory = options.prepareRuntime ?? prepareClaudeRuntime;
+    this.gatewayModelDiscoverer = options.discoverGatewayModels ?? discoverClaudeGatewayModels;
     this.sessionProcessScanner = options.scanSessionProcesses ?? scanClaudeSessionProcesses;
     this.managedTransport = options.managedTransport
       ?? (options.managedDesktop instanceof ClaudeDesktopManager
@@ -518,6 +525,13 @@ export class SessionBroker extends EventEmitter {
       const next = await this.runtimeFactory(process.env, previous);
       if (this.closed) return false;
       this.runtime = next;
+      const credentialChanged = (
+        previous?.credentialPath !== next.credentialPath ||
+        previous?.environment?.ANTHROPIC_BASE_URL !== next.environment?.ANTHROPIC_BASE_URL
+      );
+      if (credentialChanged || !this.gatewayModelsDiscovered) {
+        await this.refreshGatewayModels(next);
+      }
       const changed = (
         previous?.executablePath !== next.executablePath ||
         previous?.credentialPath !== next.credentialPath ||
@@ -667,6 +681,9 @@ export class SessionBroker extends EventEmitter {
       const turnState = state?.turnState
         ?? (source && this.options.observer.isDesktopBusy(sessionId) ? "running" : "idle");
       const profile = this.effectiveProfile(sessionId, cwd);
+      const modelDisplayName = this.gatewayModelsDiscovered
+        ? this.resolveModelDisplayName(this.modelForHost(profile))
+        : undefined;
       const route = this.options.conversationState?.route(sessionId);
       const item: BridgeSessionInfo = {
         sessionId,
@@ -701,6 +718,7 @@ export class SessionBroker extends EventEmitter {
             ? { currentSummary: `恢复的未完成任务 · ${compact(queuedTurn.text)}` }
             : {}),
         ...(profile.model ? { model: profile.model } : {}),
+        ...(modelDisplayName ? { modelDisplayName } : {}),
         ...(profile.effort ? { effort: profile.effort } : {}),
         ...(state?.configurationPending ? { configurationPending: true } : {}),
         ...(bridge?.fallbackConfirmedAt ? { fallbackConfirmed: true } : {}),
@@ -782,6 +800,11 @@ export class SessionBroker extends EventEmitter {
       (session.desktopSessionId || this.managedTransport.desktopSessionId(sessionId)),
     );
 
+    if (discoverModels && !this.gatewayModelsDiscovered) {
+      if (await this.refreshGatewayModels()) {
+        modelsComplete = true;
+      }
+    }
     if (
       discoverModels &&
       !host &&
@@ -798,10 +821,14 @@ export class SessionBroker extends EventEmitter {
     }
     if (host && discoverModels) {
       const [modelsResult, contextResult] = await Promise.allSettled([
-        host.supportedModels(),
+        this.gatewayModelsDiscovered ? Promise.resolve([]) : host.supportedModels(),
         host.contextUsage(),
       ]);
-      if (modelsResult.status === "fulfilled" && modelsResult.value.length > 0) {
+      if (
+        !this.gatewayModelsDiscovered &&
+        modelsResult.status === "fulfilled" &&
+        modelsResult.value.length > 0
+      ) {
         modelsComplete = true;
         this.modelCatalogComplete = true;
         this.rememberModels(modelsResult.value);
@@ -1967,7 +1994,20 @@ export class SessionBroker extends EventEmitter {
     }
   }
 
-  private rememberModels(models: Awaited<ReturnType<SessionHostRuntime["supportedModels"]>>): void {
+  private async refreshGatewayModels(
+    runtime = this.runtime,
+  ): Promise<boolean> {
+    const models = await this.gatewayModelDiscoverer(runtime).catch(() => []);
+    if (!models.length) return false;
+    this.gatewayModelsDiscovered = true;
+    this.modelCatalogComplete = true;
+    this.rememberModels(models);
+    return true;
+  }
+
+  private rememberModels(
+    models: Array<BridgeModelInfo | Awaited<ReturnType<SessionHostRuntime["supportedModels"]>>[number]>,
+  ): void {
     if (models.length > 0) this.modelCache.clear();
     for (const model of models) {
       if (!model.value) continue;
@@ -2046,7 +2086,7 @@ export class SessionBroker extends EventEmitter {
     }
     return [...models.values()].sort((left, right) => (
       Number(right.value === selected) - Number(left.value === selected)
-      || left.displayName.localeCompare(right.displayName, "zh-CN")
+      || (this.gatewayModelsDiscovered ? 0 : left.displayName.localeCompare(right.displayName, "zh-CN"))
     ));
   }
 
@@ -2056,7 +2096,23 @@ export class SessionBroker extends EventEmitter {
       ?? models.find((candidate) => candidate.resolvedModel === model);
   }
 
+  private resolveModelDisplayName(value: string | undefined): string | undefined {
+    if (!value) return undefined;
+    const cached = this.findModelInfo(value, [...this.modelCache.values()]);
+    if (cached?.displayName) return cached.displayName;
+    if (/\[1m\]/iu.test(value)) {
+      const baseValue = value.replace(/\[1m\]/giu, "");
+      const baseCached = this.findModelInfo(baseValue, [...this.modelCache.values()]);
+      if (baseCached?.displayName) {
+        return `${baseCached.displayName}${this.gatewayModelsDiscovered ? " 1M" : " · 1M"}`;
+      }
+    }
+    return undefined;
+  }
+
   private modelDisplayName(value: string): string {
+    const resolved = this.resolveModelDisplayName(value);
+    if (resolved) return resolved;
     const longContext = /\[1m\]/iu.test(value);
     const normalized = value
       .replace(/\[1m\]/giu, "")

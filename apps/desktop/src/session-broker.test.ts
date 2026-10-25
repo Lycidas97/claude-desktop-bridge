@@ -1981,6 +1981,110 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
+  it("prefers custom gateway /v1/models catalog and preserves gateway display names across turns", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-gateway-models-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    await mkdir(cwd, { recursive: true });
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd, {
+        sourceProfile: "claude-3p",
+        hostModel: "gateway-model-alpha[1m]",
+        hostEffort: "high",
+      })],
+      observedAt: Date.now(),
+    });
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+      discoverGatewayModels: async () => [
+        {
+          value: "gateway-model-beta",
+          displayName: "Claude Sonnet 4.6 · Gateway",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        },
+        {
+          value: "gateway-model-beta[1m]",
+          displayName: "Claude Sonnet 4.6 · Gateway 1M",
+          description: "1M context window",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        },
+        {
+          value: "gateway-model-alpha",
+          displayName: "Claude Opus 4.6 · Gateway",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        },
+        {
+          value: "gateway-model-alpha[1m]",
+          displayName: "Claude Opus 4.6 · Gateway 1M",
+          description: "1M context window",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        },
+      ],
+    });
+    await broker.initialize();
+
+    expect(broker.session(sessionId)).toMatchObject({
+      model: "gateway-model-alpha[1m]",
+      modelDisplayName: "Claude Opus 4.6 · Gateway 1M",
+      effort: "high",
+    });
+
+    const config = await broker.configuration(sessionId);
+    expect(hosts).toHaveLength(0);
+    expect(config).toMatchObject({
+      model: "gateway-model-alpha[1m]",
+      modelsComplete: true,
+      availableModels: [
+        expect.objectContaining({
+          value: "gateway-model-alpha[1m]",
+          displayName: "Claude Opus 4.6 · Gateway 1M",
+        }),
+        expect.objectContaining({
+          value: "gateway-model-beta",
+          displayName: "Claude Sonnet 4.6 · Gateway",
+        }),
+        expect.objectContaining({
+          value: "gateway-model-beta[1m]",
+          displayName: "Claude Sonnet 4.6 · Gateway 1M",
+        }),
+        expect.objectContaining({
+          value: "gateway-model-alpha",
+          displayName: "Claude Opus 4.6 · Gateway",
+        }),
+      ],
+    });
+
+    await broker.close();
+    await eventLog.close();
+  });
+
   it("preserves complete Agent SDK tool results in the turn evidence lifecycle", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-evidence-"));
     directories.push(root);

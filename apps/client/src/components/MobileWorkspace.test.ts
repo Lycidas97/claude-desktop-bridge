@@ -16,6 +16,7 @@ import {
   ownershipLabel,
   permissionPresentation,
   restorableSessionId,
+  sessionProfile,
   stoppableBridgeTask,
   supportsProviderSwitching,
   supportsRuntimeHandoff,
@@ -29,6 +30,32 @@ describe("restorableSessionId", () => {
     expect(restorableSessionId("session-1", sessions)).toBe("session-1");
     expect(restorableSessionId("removed-session", sessions)).toBeUndefined();
     expect(restorableSessionId(undefined, sessions)).toBeUndefined();
+  });
+});
+
+describe("sessionProfile", () => {
+  it("uses modelDisplayName from custom gateway catalog when present", () => {
+    const baseSession: BridgeSessionInfo = {
+      sessionId: "session-1",
+      projectId: "project-1",
+      projectName: "Project",
+      cwd: "/tmp/project",
+      title: "Task",
+      source: "desktop",
+      ownership: "DESKTOP_OBSERVED",
+      transport: "bridge-host",
+      turnState: "idle",
+      lastActivityAt: 1,
+      pendingCount: 0,
+      model: "gateway-model-alpha[1m]",
+      effort: "high",
+    };
+
+    expect(sessionProfile(baseSession)).toBe("gateway model alpha 1M · HIGH");
+    expect(sessionProfile({
+      ...baseSession,
+      modelDisplayName: "Claude Opus 4.6 · Gateway 1M",
+    })).toBe("Claude Opus 4.6 · Gateway 1M · HIGH");
   });
 });
 

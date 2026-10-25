@@ -1,12 +1,14 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  discoverClaudeGatewayModels,
   findClaudeHostCredentials,
   findClaudeExecutable,
   isSafeForBackgroundRuntimeScan,
   prepareClaudeRuntime,
+  resolveClaudeGatewayConfig,
 } from "./claude-runtime-discovery.js";
 
 const directories: string[] = [];
@@ -92,5 +94,97 @@ describe("Claude runtime discovery privacy", () => {
 
     await expect(findClaudeHostCredentials({ APPDATA: appData }, home, undefined, "win32"))
       .resolves.toBe(credential);
+  });
+
+  it("discovers custom gateway models, display names, and 1M variants from Claude-3p credentials", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-gateway-models-"));
+    directories.push(root);
+    const credentialPath = join(root, "host-creds-test.json");
+    await writeFile(credentialPath, JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "test-gateway-token",
+        ANTHROPIC_API_KEY: "",
+        CLAUDE_CODE_HOST_AUTH_ENV_VAR: "ANTHROPIC_AUTH_TOKEN",
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:3425/",
+      },
+    }), "utf8");
+
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("http://127.0.0.1:3425/v1/models?limit=1000");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe("Bearer test-gateway-token");
+      expect(headers.get("anthropic-version")).toBe("2023-06-01");
+      return new Response(JSON.stringify({
+        data: [
+          {
+            id: "gateway-model-alpha",
+            display_name: "Claude Opus 4.6 · Gateway",
+            max_input_tokens: 1_000_000,
+            reasoning: true,
+            supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
+          },
+          {
+            id: "gateway-model-beta",
+            display_name: "Claude Sonnet 4.6 · Gateway",
+            max_input_tokens: 200_000,
+            supports_1m: false,
+            reasoning: true,
+            supported_reasoning_levels: ["low", "medium", "high"],
+          },
+        ],
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const models = await discoverClaudeGatewayModels(
+      { credentialPath, environment: {} },
+      fetchImpl,
+    );
+    expect(models).toEqual([
+      {
+        value: "gateway-model-alpha",
+        displayName: "Claude Opus 4.6 · Gateway",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      },
+      {
+        value: "gateway-model-alpha[1m]",
+        displayName: "Claude Opus 4.6 · Gateway 1M",
+        description: "1M context window",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      },
+      {
+        value: "gateway-model-beta",
+        displayName: "Claude Sonnet 4.6 · Gateway",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high"],
+      },
+    ]);
+  });
+
+  it("falls back to Claude-3p configLibrary when host-creds omits the gateway base URL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-gateway-configlib-"));
+    directories.push(root);
+    const credentialPath = join(root, "host-creds-test.json");
+    const configLibrary = join(root, "configLibrary");
+    const appliedId = "00000000-0000-4000-8000-000000000001";
+    await mkdir(configLibrary, { recursive: true });
+    await writeFile(credentialPath, "{}\n", "utf8");
+    await writeFile(join(configLibrary, "_meta.json"), JSON.stringify({ appliedId }), "utf8");
+    await writeFile(join(configLibrary, `${appliedId}.json`), JSON.stringify({
+      inferenceProvider: "gateway",
+      inferenceGatewayBaseUrl: "http://127.0.0.1:3425/v1",
+      inferenceGatewayAuthScheme: "bearer",
+      inferenceGatewayApiKey: "configlib-token",
+    }), "utf8");
+
+    await expect(resolveClaudeGatewayConfig({
+      credentialPath,
+      environment: {},
+    })).resolves.toEqual({
+      baseUrl: "http://127.0.0.1:3425/v1",
+      authToken: "configlib-token",
+      authScheme: "bearer",
+    });
   });
 });

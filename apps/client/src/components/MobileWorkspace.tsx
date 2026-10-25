@@ -157,10 +157,11 @@ function mobileConnectionLabel(
 }
 
 export function sessionProfile(session: BridgeSessionInfo): string {
-  const model = session.model
-    ?.replace(/^claude-/iu, "")
-    .replace(/\[1m\]/giu, " 1M")
-    .replaceAll("-", " ");
+  const model = session.modelDisplayName
+    ?? session.model
+      ?.replace(/^claude-/iu, "")
+      .replace(/\[1m\]/giu, " 1M")
+      .replaceAll("-", " ");
   const native = isNativeRuntimeId(session.runtimeId);
   return [
     native && session.provider ? session.provider : undefined,

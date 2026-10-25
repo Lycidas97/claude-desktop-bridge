@@ -543,6 +543,8 @@ export interface BridgeSessionInfo {
   /** Native runtime provider for Codex/Hermes; never a Bridge provider profile. */
   provider?: string;
   model?: string;
+  /** Human-readable display name resolved from the host or gateway model catalog. */
+  modelDisplayName?: string;
   effort?: BridgeEffort;
   /** Native runtime reasoning setting for Codex/Hermes. */
   reasoningEffort?: string;

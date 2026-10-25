@@ -9,6 +9,7 @@ import type {
   BridgeFileChangeSummary,
   BridgeHistoryItem,
   BridgeHostSnapshot,
+  BridgeInteractivePrompt,
   BridgePermissionInfo,
   BridgePermissionMode,
   BridgeRuntimeGoalStatus,
@@ -16,6 +17,7 @@ import type {
   BridgeRuntimeHandoffPreview,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
+  BridgeSubagentSummary,
   BridgeTransportMetrics,
   BridgeDesktopAppStatus,
   SocketState,
@@ -61,9 +63,12 @@ import type {
 } from "../hooks/useMobileBridge.js";
 import type { ThemeControl } from "../hooks/useTheme.js";
 import {
+  PROJECT_PREVIEW_SESSION_LIMIT,
   collapseProjects,
   expandAllProjects,
   expandProject,
+  previewProjectSessions,
+  sortProjectSessionsByRecent,
   toggleCollapsedProject,
 } from "../lib/project-groups.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
@@ -193,6 +198,287 @@ export function ownershipLabel(session: BridgeSessionInfo): string {
   return "待机";
 }
 
+function activeSessionBadgeLabel(session: BridgeSessionInfo): string | undefined {
+  if (session.ownership === "OWNERSHIP_CONFLICT") return "冲突";
+  if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "待接管";
+  if (session.turnState === "running") return "运行中";
+  if (session.turnState === "queued") return `${Math.max(1, session.pendingCount)} 排队`;
+  if (session.turnState === "waiting") return "待处理";
+  return undefined;
+}
+
+function conciseModelName(session: BridgeSessionInfo): string {
+  const raw = session.modelDisplayName
+    ?? session.model
+      ?.replace(/^claude-/iu, "")
+      .replace(/\[1m\]/giu, " 1M")
+      .replaceAll("-", " ");
+  return raw || "默认模型";
+}
+
+function conciseSessionSubtitle(session: BridgeSessionInfo): string {
+  const active = activeSessionBadgeLabel(session);
+  const model = conciseModelName(session);
+  const effort = (isNativeRuntimeId(session.runtimeId) ? session.reasoningEffort : session.effort)?.toLocaleUpperCase();
+  const modelPart = effort ? `${model} · ${effort}` : model;
+  return active ? `${active} · ${modelPart}` : modelPart;
+}
+
+type DisplayTimelineNode =
+  | ConversationTimelineEntry
+  | { kind: "tool-group"; id: string; tools: ConversationItem[] };
+
+function groupTimelineTools(timeline: ConversationTimelineEntry[]): DisplayTimelineNode[] {
+  const result: DisplayTimelineNode[] = [];
+  for (const entry of timeline) {
+    if (entry.kind === "message" && entry.item.role === "tool" && !entry.item.subagent) {
+      const prev = result.at(-1);
+      if (prev && prev.kind === "tool-group") {
+        prev.tools.push(entry.item);
+      } else {
+        result.push({
+          kind: "tool-group",
+          id: `tool-group:${entry.item.id}`,
+          tools: [entry.item],
+        });
+      }
+      continue;
+    }
+    result.push(entry);
+  }
+  return result;
+}
+
+export function SubagentCard({
+  item,
+  entering = false,
+}: {
+  item: ConversationItem;
+  entering?: boolean;
+}) {
+  const subagent = item.subagent;
+  if (!subagent) return null;
+  const isRunning = subagent.state === "running";
+  const agentBadge = subagent.agentType && subagent.agentType !== "general-purpose"
+    ? `Subagent · ${subagent.agentType}`
+    : "Subagent";
+  const durationLabel = subagent.durationMs && subagent.durationMs >= 1_000
+    ? `${Math.round(subagent.durationMs / 1_000)}s`
+    : undefined;
+  const recentTools = subagent.recentTools ?? [];
+  const hasDetails = Boolean(subagent.reportText || subagent.latestText || recentTools.length > 0);
+  return (
+    <article
+      className={`conversation-subagent-card ${isRunning ? "is-running" : "is-completed"}${entering ? " is-entering" : ""}`}
+    >
+      <div className="subagent-card-header">
+        <div className="subagent-card-title-row">
+          <span className={`subagent-status-badge ${isRunning ? "running" : "completed"}`}>
+            {isRunning ? <LoaderCircle className="is-spinning" size={13} /> : <Check size={13} />}
+            <span>{agentBadge}</span>
+          </span>
+          <strong className="subagent-description">{subagent.description}</strong>
+        </div>
+        <div className="subagent-card-meta">
+          {subagent.toolCount > 0 && <span>{subagent.toolCount} 步</span>}
+          {durationLabel && <span>{durationLabel}</span>}
+          <span className={`subagent-state-label ${isRunning ? "running" : "completed"}`}>
+            {isRunning ? "运行中" : "已完成"}
+          </span>
+        </div>
+      </div>
+
+      {isRunning && (subagent.latestText || recentTools.length > 0) && (
+        <div className="subagent-live-progress">
+          {subagent.latestText && (
+            <div className="subagent-live-note">{subagent.latestText}</div>
+          )}
+          {recentTools.length > 0 && (
+            <div className="subagent-recent-tools">
+              {recentTools.slice(-3).map((toolLine, idx) => (
+                <span className="subagent-tool-pill" key={`${idx}:${toolLine}`}>
+                  {toolLine}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {hasDetails && (
+        <details className="subagent-details">
+          <summary>
+            <span>
+              {subagent.reportText
+                ? "查看子代理结论与执行记录"
+                : recentTools.length > 0
+                  ? `查看已执行的 ${recentTools.length} 个步骤`
+                  : "查看子代理进度"}
+            </span>
+            <ChevronDown size={14} className="subagent-details-chevron" aria-hidden="true" />
+          </summary>
+          <div className="subagent-details-body">
+            {recentTools.length > 0 && (
+              <div className="subagent-steps-section">
+                <div className="subagent-section-label">最近执行步骤</div>
+                <div className="subagent-recent-tools">
+                  {recentTools.map((toolLine, idx) => (
+                    <span className="subagent-tool-pill" key={`${idx}:${toolLine}`}>
+                      {toolLine}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {(subagent.reportText || subagent.latestText) && (
+              <div className="subagent-report-section">
+                <div className="subagent-section-label">
+                  {subagent.reportText ? "子代理回报" : "当前输出"}
+                </div>
+                <MarkdownText text={subagent.reportText ?? subagent.latestText ?? ""} />
+              </div>
+            )}
+          </div>
+        </details>
+      )}
+    </article>
+  );
+}
+
+export function InteractivePromptCard({
+  prompt,
+  canSend = true,
+  busy = false,
+  onSelectOption,
+}: {
+  prompt: BridgeInteractivePrompt;
+  canSend?: boolean;
+  busy?: boolean;
+  onSelectOption?: (message: string) => void;
+}) {
+  const isWrapUp = prompt.kind === "wrap-up";
+  const actions = prompt.actions ?? [];
+  const questions = prompt.questions ?? [];
+  const answered = Boolean(prompt.answered);
+  const selectedAction = actions.find((action) => action.selected);
+  const interactive = !answered && canSend && !busy && Boolean(onSelectOption);
+
+  const badgeLabel = isWrapUp
+    ? actions.length === 1
+      ? "待确认操作"
+      : actions.length > 1
+        ? "下一步选项"
+        : "待回答问题"
+    : "提问与选择";
+
+  return (
+    <section
+      className={`interactive-prompt-card ${answered ? "is-answered" : "is-pending"}`}
+      aria-label={badgeLabel}
+    >
+      <div className="interactive-prompt-header">
+        <span className={`interactive-prompt-badge ${answered ? "answered" : "pending"}`}>
+          {answered ? <Check size={12} /> : null}
+          <span>{badgeLabel}</span>
+        </span>
+        <span className="interactive-prompt-status">
+          {answered
+            ? selectedAction
+              ? `已选：${selectedAction.label}`
+              : "已回复"
+            : prompt.blocked
+              ? "等待确认后继续"
+              : "点击选项直接发送"}
+        </span>
+      </div>
+
+      {prompt.recap && (
+        <div className="interactive-prompt-recap">{prompt.recap}</div>
+      )}
+
+      {isWrapUp && prompt.ask && (
+        <div className="interactive-prompt-ask">{prompt.ask}</div>
+      )}
+
+      {isWrapUp && actions.length > 0 && (
+        <div className="interactive-prompt-options">
+          {actions.map((action, idx) => {
+            const isPrimary = idx === 0 && !answered;
+            const showDetail = Boolean(action.message && action.message !== action.label);
+            return (
+              <button
+                type="button"
+                key={`${idx}:${action.label}`}
+                className={`interactive-option-button ${isPrimary ? "is-primary" : ""}${action.selected ? " is-selected" : ""}`}
+                disabled={!interactive}
+                onClick={() => {
+                  if (interactive && onSelectOption) {
+                    onSelectOption(action.message || action.label);
+                  }
+                }}
+              >
+                <div className="interactive-option-top">
+                  <strong className="interactive-option-label">{action.label}</strong>
+                  {action.selected ? (
+                    <span className="interactive-option-tag is-selected">
+                      <Check size={11} /> 已选
+                    </span>
+                  ) : !answered && idx === 0 ? (
+                    <span className="interactive-option-tag is-recommended">
+                      {actions.length === 1 ? "确认" : "推荐"}
+                    </span>
+                  ) : null}
+                </div>
+                {showDetail && (
+                  <small className="interactive-option-detail">{action.message}</small>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {!isWrapUp && questions.map((question, qIdx) => (
+        <div className="interactive-question-block" key={`${qIdx}:${question.question}`}>
+          <div className="interactive-prompt-ask">
+            {question.header && (
+              <span className="interactive-question-chip">{question.header}</span>
+            )}
+            <span>{question.question}</span>
+          </div>
+          <div className="interactive-prompt-options">
+            {question.options.map((opt, optIdx) => (
+              <button
+                type="button"
+                key={`${optIdx}:${opt.label}`}
+                className={`interactive-option-button ${optIdx === 0 && !answered ? "is-primary" : ""}${opt.selected ? " is-selected" : ""}`}
+                disabled={!interactive}
+                onClick={() => {
+                  if (interactive && onSelectOption) {
+                    onSelectOption(opt.label);
+                  }
+                }}
+              >
+                <div className="interactive-option-top">
+                  <strong className="interactive-option-label">{opt.label}</strong>
+                  {opt.selected && (
+                    <span className="interactive-option-tag is-selected">
+                      <Check size={11} /> 已选
+                    </span>
+                  )}
+                </div>
+                {opt.description && (
+                  <small className="interactive-option-detail">{opt.description}</small>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 // Runtime label helpers live in lib/runtime-labels.ts (shared with the
 // evidence panel); re-exported here so existing component imports stay put.
 export {
@@ -288,7 +574,10 @@ export function conversationItems(
       (item.role === "user" || item.role === "assistant") &&
       isClaudeTranscriptControlMessage(item.role, item.text)
     ) continue;
-    items.set(item.id, item);
+    const normalizedId = item.role === "tool" && !item.id.startsWith("tool:")
+      ? `tool:${item.id.replace(/:completed$/u, "")}`
+      : item.id;
+    items.set(normalizedId, normalizedId === item.id ? item : { ...item, id: normalizedId });
   }
   const sessionEvents = events.filter((event) => event.sessionId === sessionId);
   const acceptedRequests = new Set(
@@ -332,19 +621,29 @@ export function conversationItems(
     if (event.type === "session.observed") {
       const role = event.data.role;
       const text = eventText(event);
+      const interactivePrompt = event.data.interactivePrompt && typeof event.data.interactivePrompt === "object"
+        ? event.data.interactivePrompt as BridgeInteractivePrompt
+        : undefined;
       if (
         (role === "user" || role === "assistant") &&
-        text &&
-        !isClaudeTranscriptControlMessage(role, text)
+        (text || interactivePrompt) &&
+        (!text || !isClaudeTranscriptControlMessage(role, text))
       ) {
-        items.set(event.itemId ?? event.eventId, {
-          id: event.itemId ?? event.eventId,
+        const itemId = event.itemId ?? event.eventId;
+        const prev = items.get(itemId);
+        items.set(itemId, {
+          id: itemId,
           sessionId,
           ...(event.turnId ? { turnId: event.turnId } : {}),
           role,
           text,
           createdAt: event.timestamp,
           origin: event.origin,
+          ...(interactivePrompt
+            ? { interactivePrompt }
+            : prev?.interactivePrompt
+              ? { interactivePrompt: prev.interactivePrompt }
+              : {}),
         });
       }
     }
@@ -384,38 +683,80 @@ export function conversationItems(
     }
     if (event.type === "assistant.completed") {
       const text = eventText(event);
-      if (!text) continue;
-      items.set(event.itemId ?? event.eventId, {
-        id: event.itemId ?? event.eventId,
+      const interactivePrompt = event.data.interactivePrompt && typeof event.data.interactivePrompt === "object"
+        ? event.data.interactivePrompt as BridgeInteractivePrompt
+        : undefined;
+      if (!text && !interactivePrompt) continue;
+      const itemId = event.itemId ?? event.eventId;
+      const prev = items.get(itemId);
+      items.set(itemId, {
+        id: itemId,
         sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
         role: "assistant",
         text,
         createdAt: event.timestamp,
         origin: "claude-host",
+        ...(interactivePrompt
+          ? { interactivePrompt }
+          : prev?.interactivePrompt
+            ? { interactivePrompt: prev.interactivePrompt }
+            : {}),
       });
     }
     if (event.type === "tool.started" || event.type === "tool.progress" || event.type === "tool.completed") {
       const id = event.itemId ?? event.eventId;
-      const existing = toolByItem.get(id);
-      const toolName = typeof event.data.toolName === "string"
+      const existing = toolByItem.get(id) ?? items.get(`tool:${id}`);
+      const toolName = typeof event.data.toolName === "string" && event.data.toolName
         ? event.data.toolName
         : existing?.toolName ?? "工具";
       const text = eventText(event) || existing?.text || toolName;
       const fileChanges = Array.isArray(event.data.fileChanges)
         ? event.data.fileChanges as BridgeFileChangeSummary[]
         : existing?.fileChanges;
+      const incomingSubagent = event.data.subagent && typeof event.data.subagent === "object"
+        ? event.data.subagent as BridgeSubagentSummary
+        : undefined;
+      const prevSubagent = existing?.subagent;
+      const subagent = incomingSubagent && prevSubagent
+        ? (
+            incomingSubagent.state === "completed" ||
+            (prevSubagent.state !== "completed" && incomingSubagent.updatedAt >= prevSubagent.updatedAt)
+          )
+          ? {
+              ...prevSubagent,
+              ...incomingSubagent,
+              toolCount: Math.max(prevSubagent.toolCount, incomingSubagent.toolCount),
+              ...(incomingSubagent.recentTools?.length
+                ? { recentTools: incomingSubagent.recentTools }
+                : prevSubagent.recentTools?.length
+                  ? { recentTools: prevSubagent.recentTools }
+                  : {}),
+              ...(incomingSubagent.latestText
+                ? { latestText: incomingSubagent.latestText }
+                : prevSubagent.latestText
+                  ? { latestText: prevSubagent.latestText }
+                  : {}),
+              ...(incomingSubagent.reportText
+                ? { reportText: incomingSubagent.reportText }
+                : prevSubagent.reportText
+                  ? { reportText: prevSubagent.reportText }
+                  : {}),
+            }
+          : prevSubagent
+        : incomingSubagent ?? prevSubagent;
       toolByItem.set(id, {
         id: `tool:${id}`,
         sessionId,
-        ...(event.turnId ? { turnId: event.turnId } : {}),
+        ...(event.turnId ? { turnId: event.turnId } : existing?.turnId ? { turnId: existing.turnId } : {}),
         role: "tool",
         toolName,
         text,
         createdAt: existing?.createdAt ?? event.timestamp,
         origin: "claude-host",
-        state: event.type === "tool.completed" ? "completed" : "running",
+        state: subagent?.state ?? (event.type === "tool.completed" ? "completed" : "running"),
         ...(fileChanges?.length ? { fileChanges } : {}),
+        ...(subagent ? { subagent } : {}),
       });
     }
     if (event.type === "turn.failed" || event.type === "turn.interrupted") {
@@ -455,7 +796,33 @@ export function conversationItems(
   }
   for (const item of deltaByStream.values()) items.set(item.id, item);
   for (const item of toolByItem.values()) items.set(item.id, item);
-  return [...items.values()].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+  const sorted = [...items.values()].sort(
+    (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+  );
+  for (let i = 0; i < sorted.length; i += 1) {
+    const current = sorted[i]!;
+    if (!current.interactivePrompt || current.interactivePrompt.answered) continue;
+    const nextUser = sorted.slice(i + 1).find((candidate) => candidate.role === "user" && candidate.text.trim());
+    if (!nextUser) continue;
+    const reply = nextUser.text.trim();
+    sorted[i] = {
+      ...current,
+      interactivePrompt: {
+        ...current.interactivePrompt,
+        answered: true,
+        ...(current.interactivePrompt.actions
+          ? {
+              actions: current.interactivePrompt.actions.map((action) => (
+                action.message.trim() === reply || action.label.trim() === reply
+                  ? { ...action, selected: true }
+                  : action
+              )),
+            }
+          : {}),
+      },
+    };
+  }
+  return sorted;
 }
 
 export function conversationTimeline(
@@ -1035,6 +1402,9 @@ export function MobileWorkspace({
   const [sessionActionError, setSessionActionError] = useState<string>();
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
+  const [desktopControlsExpanded, setDesktopControlsExpanded] = useState(false);
+  const [activeProjectId, setActiveProjectId] = useState<string>();
+  const [projectSearch, setProjectSearch] = useState("");
   const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
   const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
   const [quitDesktopTarget, setQuitDesktopTarget] = useState<BridgeDesktopRuntimeId>();
@@ -1093,12 +1463,12 @@ export function MobileWorkspace({
     }
     return [...groups.entries()].map(([projectId, projectSessions]) => ({
       project: snapshot?.projects.find((project) => project.projectId === projectId),
-      sessions: projectSessions,
+      sessions: sortProjectSessionsByRecent(projectSessions),
     }));
   }, [runtimeFilter, search, sessions, snapshot?.projects]);
-  const archivedSessions = useMemo(() => sessions.filter((session) => (
+  const archivedSessions = useMemo(() => sortProjectSessionsByRecent(sessions.filter((session) => (
     Boolean(session.archivedAt) && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
-  )), [runtimeFilter, sessions]);
+  ))), [runtimeFilter, sessions]);
   const menuSession = menuSessionId ? sessions.find((session) => session.sessionId === menuSessionId) : undefined;
   const canManageSessions = Boolean(onArchiveSession || onDeleteSession);
   const menuSessionBusy = Boolean(menuSession && (
@@ -1151,6 +1521,23 @@ export function MobileWorkspace({
     writeLastSession(activeHostId);
   }, [activeHostId, selectedSessionId, sessions, snapshot]);
 
+  const autoRetriedSessionRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (connection !== "connected" || !selectedSessionId) {
+      autoRetriedSessionRef.current = undefined;
+      return;
+    }
+    if (
+      !selectedHistory ||
+      (selectedHistory.status === "error" && selectedHistory.items.length === 0)
+    ) {
+      const retryKey = `${selectedSessionId}:${connection}`;
+      if (autoRetriedSessionRef.current === retryKey) return;
+      autoRetriedSessionRef.current = retryKey;
+      void onOpenSession(selectedSessionId);
+    }
+  }, [connection, onOpenSession, selectedHistory, selectedSessionId]);
+
   useEffect(() => registerMobileBackHandler(() => {
     if (providerOpen) {
       setProviderOpen(false);
@@ -1188,8 +1575,14 @@ export function MobileWorkspace({
       setSelectedSessionId(undefined);
       return true;
     }
+    if (activeProjectId) {
+      setActiveProjectId(undefined);
+      setProjectSearch("");
+      return true;
+    }
     return false;
   }, 100), [
+    activeProjectId,
     configurationOpen,
     createOpen,
     deleteSessionConfirmOpen,
@@ -1285,6 +1678,36 @@ export function MobileWorkspace({
     setCollapsedProjectIds((current) => toggleCollapsedProject(current, projectId));
   }
 
+  function openProjectGroup(projectId: string): void {
+    setProjectSearch("");
+    setActiveProjectId(projectId);
+  }
+
+  function closeProjectGroup(): void {
+    setProjectSearch("");
+    setActiveProjectId(undefined);
+  }
+
+  function openCreateDialogForProject(targetProjectId?: string): void {
+    const targetProject = targetProjectId
+      ? snapshot?.projects.find((project) => project.projectId === targetProjectId)
+      : undefined;
+    const runtimeId = targetProject?.runtimeId
+      ?? (runtimeFilter === "all"
+        ? snapshot?.runtimes?.find((runtime) => (
+            runtime.state === "ready" && runtime.capabilities.includes("session.create")
+          ))?.id ?? "claude-desktop"
+        : runtimeFilter);
+    setCreateRuntimeId(runtimeId);
+    setCreateProjectId(
+      targetProject?.projectId
+      ?? snapshot?.projects.find((project) => project.runtimeId === runtimeId)?.projectId
+      ?? snapshot?.projects[0]?.projectId
+      ?? "",
+    );
+    setCreateOpen(true);
+  }
+
   async function runDesktopAppAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<void> {
     if (desktopAction) return;
     if (action === "quit") setQuitDesktopTarget(undefined);
@@ -1320,6 +1743,22 @@ export function MobileWorkspace({
     } catch {
       setText(nextText);
       setAttachments(nextAttachments);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function sendQuickReply(promptText: string): Promise<void> {
+    if (
+      !selectedSession ||
+      selectedSession.allowedActions?.canSend === false ||
+      sending ||
+      !promptText.trim()
+    ) return;
+    setSending(true);
+    try {
+      await onSendTurn(selectedSession.sessionId, promptText.trim(), [], steer);
+      setSteer(false);
     } finally {
       setSending(false);
     }
@@ -1428,78 +1867,64 @@ export function MobileWorkspace({
     const otherPermissionSession = otherPermission
       ? sessions.find((session) => session.sessionId === otherPermission.sessionId)
       : undefined;
+    const evidenceCount = (selectedEvidence?.items.length ?? 0) + (fileChangesSummary ? 1 : 0);
+    const hasEvidenceOrInEvidenceView = evidenceCount > 0 || sessionView === "evidence";
+    const displayNodes = groupTimelineTools(timeline);
     return (
       <main className="mobile-workspace conversation-workspace">
         <header className="mobile-topbar conversation-topbar">
           <IconButton label="返回会话列表" onClick={() => setSelectedSessionId(undefined)}><ArrowLeft size={21} /></IconButton>
-          <div className="mobile-device">
-            <strong>{selectedSession.title}</strong>
-            <span className={`session-presence ${selectedSession.turnState}`}>
-              <i />{runtimeName} · {ownershipLabel(selectedSession)}
-            </span>
-          </div>
-        </header>
-        <div className="session-action-strip" role="toolbar" aria-label="会话操作">
-          {providerSwitchingAvailable && (
-            <button
-              type="button"
-              className="session-provider-trigger"
-              onClick={() => setProviderOpen(true)}
-            >
-              <ArrowRightLeft size={14} />
-              <span>{providerName(selectedSession.activeProviderProfileId, providers)}</span>
-            </button>
-          )}
-          {runtimeHandoffAvailable && selectedSession.allowedActions?.canRelay !== false && (
-            <button
-              type="button"
-              className="session-provider-trigger"
-              onClick={() => setRelayOpen(true)}
-            >
-              <Forward size={14} />
-              <span>接力</span>
-            </button>
-          )}
-          {!providerSwitchingAvailable && !runtimeHandoffAvailable && desktopRuntimeId(selectedSession) !== "claude-desktop" && (
-            <span
-              className="session-provider-trigger is-static"
-              title={`${runtimeName} 是独立的会话域，不提供跨 Desktop 接力`}
-            >
-              <ArrowRightLeft size={14} />
-              <span>{runtimeProviderLabel(desktopRuntimeId(selectedSession))}</span>
-            </span>
-          )}
-          {canConfigure && (
-            <button
-              type="button"
-              className="session-provider-trigger"
-              onClick={() => setConfigurationOpen(true)}
-            >
-              <Settings2 size={14} />
-              <span>{sessionProfile(selectedSession)}</span>
-            </button>
-          )}
-          {canStop && (
-            <button
-              type="button"
-              className="session-provider-trigger is-stop"
-              disabled={stopping}
-              onClick={() => stopTarget && void stopTask(stopTarget.sessionId)}
-            >
-              {stopping ? <LoaderCircle className="is-spinning" size={14} /> : <CircleStop size={14} />}
-              <span>{stopping ? "停止中" : stoppingBlocker ? "停止阻塞任务" : "停止"}</span>
-            </button>
-          )}
           <button
             type="button"
-            className="session-provider-trigger"
-            disabled={refreshing}
-            onClick={() => void runRefresh(selectedSession.sessionId)}
+            className="mobile-device mobile-device-button"
+            disabled={!canConfigure}
+            onClick={() => {
+              if (canConfigure) setConfigurationOpen(true);
+            }}
           >
-            {refreshing ? <LoaderCircle className="is-spinning" size={14} /> : syncFlash ? <Check size={14} /> : <RefreshCw size={14} />}
-            <span>{syncFlash ? "已同步" : "同步"}</span>
+            <strong>{selectedSession.title}</strong>
+            <span className={`session-presence ${selectedSession.turnState}`}>
+              <i />{conciseSessionSubtitle(selectedSession)}
+            </span>
           </button>
-        </div>
+          <div className="conversation-topbar-actions">
+            {canStop && (
+              <button
+                type="button"
+                className="session-provider-trigger is-stop"
+                disabled={stopping}
+                onClick={() => stopTarget && void stopTask(stopTarget.sessionId)}
+              >
+                {stopping ? <LoaderCircle className="is-spinning" size={13} /> : <CircleStop size={13} />}
+                <span>{stopping ? "停止中" : stoppingBlocker ? "停止阻塞" : "停止"}</span>
+              </button>
+            )}
+            {hasEvidenceOrInEvidenceView && (
+              <button
+                type="button"
+                className={`session-provider-trigger ${sessionView === "evidence" ? "is-active" : ""}`}
+                onClick={() => setSessionView((current) => current === "evidence" ? "conversation" : "evidence")}
+              >
+                <span>{sessionView === "evidence" ? "返回对话" : `成果${(selectedEvidence?.items.length ?? 0) > 0 ? ` ${selectedEvidence!.items.length}` : ""}`}</span>
+              </button>
+            )}
+            <IconButton
+              label={syncFlash ? "已同步" : "同步会话"}
+              disabled={refreshing}
+              onClick={() => void runRefresh(selectedSession.sessionId)}
+            >
+              {refreshing ? <LoaderCircle className="is-spinning" size={18} /> : syncFlash ? <Check size={18} /> : <RefreshCw size={18} />}
+            </IconButton>
+            {canConfigure && (
+              <IconButton
+                label="模型与权限设置"
+                onClick={() => setConfigurationOpen(true)}
+              >
+                <Settings2 size={18} />
+              </IconButton>
+            )}
+          </div>
+        </header>
 
         {selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
           <div className="session-channel-warning">
@@ -1592,24 +2017,6 @@ export function MobileWorkspace({
           </button>
         )}
 
-        <nav className="session-view-switch" aria-label="会话视图">
-          <button
-            type="button"
-            className={sessionView === "conversation" ? "active" : ""}
-            onClick={() => setSessionView("conversation")}
-          >
-            对话
-          </button>
-          <button
-            type="button"
-            className={sessionView === "evidence" ? "active" : ""}
-            onClick={() => setSessionView("evidence")}
-          >
-            成果
-            {(selectedEvidence?.items.length ?? 0) > 0 && <b>{selectedEvidence!.items.length}</b>}
-          </button>
-        </nav>
-
         <div className={`permission-dock-slot ${activePermission || otherPermission ? "has-attention" : ""}`}>
           {activePermission ? (
             <button type="button" className="permission-dock" onClick={() => setPermissionOpen(true)}>
@@ -1655,52 +2062,106 @@ export function MobileWorkspace({
               <span>从下方发出第一条指令。</span>
             </div>
           )}
-          {timeline.map((entry) => entry.kind === "evidence" ? (
-            <EvidenceInlineSummary
-              evidence={entry.evidence}
-              key={`evidence:${entry.evidence.id}`}
-              entering={streamEntering(`evidence:${entry.evidence.id}`)}
-              onOpen={() => setSessionView("evidence")}
-            />
-          ) : (
-            <article
-              className={`conversation-item ${entry.item.role} ${entry.item.live ? "live" : ""}${streamEntering(entry.item.id) ? " is-entering" : ""}`}
-              key={entry.item.id}
-            >
-              <div className="conversation-item-meta">
-                <strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? runtimeName : entry.item.role === "tool" ? entry.item.toolName : "Bridge"}</strong>
-                <time>{formatTime(entry.item.createdAt)}</time>
-              </div>
-              {entry.item.role === "tool" && <Wrench size={16} aria-hidden="true" />}
-              {entry.item.text && (
-                entry.item.role === "assistant" || entry.item.role === "user" ? (
-                  <MarkdownText text={entry.item.text} />
-                ) : (
-                  <div className="conversation-text">{entry.item.text}</div>
-                )
-              )}
-              {entry.item.attachments?.length ? (
-                <div className="conversation-attachments">
-                  {entry.item.attachments.map((attachment) => attachment.data ? (
-                    <img key={attachment.id} src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} loading="lazy" />
+          {displayNodes.map((node) => {
+            if (node.kind === "evidence") {
+              return (
+                <EvidenceInlineSummary
+                  evidence={node.evidence}
+                  key={`evidence:${node.evidence.id}`}
+                  entering={streamEntering(`evidence:${node.evidence.id}`)}
+                  onOpen={() => setSessionView("evidence")}
+                />
+              );
+            }
+            if (node.kind === "tool-group") {
+              const uniqueNames = [...new Set(node.tools.map((t) => t.toolName || "工具"))].slice(0, 3);
+              const anyRunning = node.tools.some((t) => t.state === "running");
+              const singleTool = node.tools.length === 1 ? node.tools[0] : undefined;
+              const summaryText = singleTool
+                ? `${singleTool.toolName || "工具"}${singleTool.text && singleTool.text !== singleTool.toolName ? ` · ${singleTool.text}` : ""}`
+                : `${anyRunning ? "正在执行" : "已调用"} ${node.tools.length} 个工具 (${uniqueNames.join("、")})`;
+              return (
+                <details className={`conversation-tool-group ${anyRunning ? "is-running" : ""}`} key={node.id}>
+                  <summary>
+                    <Wrench size={13} aria-hidden="true" />
+                    <span>{summaryText}</span>
+                    <ChevronDown size={13} className="tool-group-chevron" aria-hidden="true" />
+                  </summary>
+                  <div className="conversation-tool-group-list">
+                    {node.tools.map((tool) => (
+                      <div className="conversation-tool-row" key={tool.id}>
+                        <strong>{tool.toolName || "工具"}</strong>
+                        {tool.text && tool.text !== tool.toolName && <span>{tool.text}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              );
+            }
+            const item = node.item;
+            if (item.subagent) {
+              return (
+                <SubagentCard
+                  item={item}
+                  key={item.id}
+                  entering={streamEntering(item.id)}
+                />
+              );
+            }
+            const showDelivery = Boolean(
+              item.delivery
+              && item.delivery !== "session-received"
+              && item.delivery !== "completed",
+            );
+            return (
+              <article
+                className={`conversation-item ${item.role} ${item.live ? "live" : ""}${streamEntering(item.id) ? " is-entering" : ""}`}
+                key={item.id}
+              >
+                {item.role === "system" && (
+                  <div className="conversation-item-meta">
+                    <strong>Bridge</strong>
+                    <time>{formatTime(item.createdAt)}</time>
+                  </div>
+                )}
+                {item.text && (
+                  item.role === "assistant" || item.role === "user" ? (
+                    <MarkdownText text={item.text} />
                   ) : (
-                    <span className="attachment-chip" key={attachment.id}>{attachment.name}</span>
-                  ))}
-                </div>
-              ) : null}
-              {entry.item.delivery && <div className={`delivery-state ${entry.item.delivery}`}>{deliveryLabel(entry.item.delivery)}</div>}
-              {entry.item.delivery === "failed" && entry.item.error && (
-                <div className="delivery-error-detail">{entry.item.error}</div>
-              )}
-              {entry.item.delivery === "uncertain" && entry.item.commandId && (
-                <div className="uncertain-delivery-actions">
-                  <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(entry.item.commandId!, "confirm")}>确认已发送</button>
-                  <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(entry.item.commandId!, "retry")}>检查后重发</button>
-                </div>
-              )}
-              {entry.item.live && <span className="stream-caret" aria-label="正在生成" />}
-            </article>
-          ))}
+                    <div className="conversation-text">{item.text}</div>
+                  )
+                )}
+                {item.interactivePrompt && (
+                  <InteractivePromptCard
+                    prompt={item.interactivePrompt}
+                    canSend={selectedSession.allowedActions?.canSend !== false && !officialActive}
+                    busy={sending}
+                    onSelectOption={(replyText) => void sendQuickReply(replyText)}
+                  />
+                )}
+                {item.attachments?.length ? (
+                  <div className="conversation-attachments">
+                    {item.attachments.map((attachment) => attachment.data ? (
+                      <img key={attachment.id} src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} loading="lazy" />
+                    ) : (
+                      <span className="attachment-chip" key={attachment.id}>{attachment.name}</span>
+                    ))}
+                  </div>
+                ) : null}
+                {showDelivery && <div className={`delivery-state ${item.delivery}`}>{deliveryLabel(item.delivery!)}</div>}
+                {item.delivery === "failed" && item.error && (
+                  <div className="delivery-error-detail">{item.error}</div>
+                )}
+                {item.delivery === "uncertain" && item.commandId && (
+                  <div className="uncertain-delivery-actions">
+                    <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(item.commandId!, "confirm")}>确认已发送</button>
+                    <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(item.commandId!, "retry")}>检查后重发</button>
+                  </div>
+                )}
+                {item.live && <span className="stream-caret" aria-label="正在生成" />}
+              </article>
+            );
+          })}
           <div ref={endRef} />
         </section>
         ) : (
@@ -1886,13 +2347,73 @@ export function MobileWorkspace({
     );
   }
 
+  const desktopApps = snapshot?.desktopApps ?? [{
+    id: "claude-desktop" as const,
+    name: "Claude Desktop",
+    state: snapshot?.claudeDesktop?.state ?? "unavailable",
+    detail: snapshot?.claudeDesktop?.detail ?? "正在读取电脑端运行状态。",
+    canLaunch: snapshot?.claudeDesktop?.canLaunch ?? false,
+    canQuit: snapshot?.claudeDesktop?.canQuit ?? false,
+  }];
+  const runningDesktopApps = desktopApps.filter((app) => app.state === "running");
+  const populatedRuntimeCount = new Set(sessions.map((session) => desktopRuntimeId(session))).size;
+  const showRuntimeFilter = populatedRuntimeCount > 1 && (snapshot?.runtimes?.length ?? 0) > 1;
+  const isArchivedGroupPage = activeProjectId === "__archived__";
+  const activeGroupProject = activeProjectId && !isArchivedGroupPage
+    ? snapshot?.projects.find((project) => project.projectId === activeProjectId)
+    : undefined;
+  const activeGroupSessionsAll = activeProjectId
+    ? isArchivedGroupPage
+      ? archivedSessions
+      : sortProjectSessionsByRecent(sessions.filter((session) => (
+          !session.archivedAt
+          && session.projectId === activeProjectId
+          && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
+        )))
+    : [];
+  const activeGroupQuery = projectSearch.trim().toLocaleLowerCase();
+  const activeGroupSessions = activeGroupQuery
+    ? activeGroupSessionsAll.filter((session) => (
+        `${session.title}\n${session.currentSummary ?? ""}\n${desktopRuntimeName(desktopRuntimeId(session))}`
+          .toLocaleLowerCase()
+          .includes(activeGroupQuery)
+      ))
+    : activeGroupSessionsAll;
+  const activeGroupName = isArchivedGroupPage
+    ? "已归档会话"
+    : activeGroupProject?.name
+      ?? activeGroupSessionsAll[0]?.projectName
+      ?? sessions.find((session) => session.projectId === activeProjectId)?.projectName
+      ?? "项目分组";
+  const activeGroupCwd = isArchivedGroupPage
+    ? "归档会话保留历史，可随时恢复"
+    : activeGroupProject?.cwd
+      ?? activeGroupSessionsAll[0]?.cwd
+      ?? sessions.find((session) => session.projectId === activeProjectId)?.cwd
+      ?? "";
+
+  const hostStatusText = activeProjectId
+    ? `${activeGroupSessionsAll.length} 个会话 · ${desktopName}`
+    : desktopOnline
+      ? (pendingOutbound > 0 ? `在线 · ${pendingOutbound} 条待发` : "在线")
+      : connection === "connecting" || connection === "reconnecting"
+        ? "正在连接"
+        : (pendingOutbound > 0 ? `离线 · ${pendingOutbound} 条待发` : "离线");
+
   return (
     <main className="mobile-workspace host-detail-workspace">
       <header className="mobile-topbar">
-        <IconButton label="返回主机列表" onClick={onBackToHosts}><ArrowLeft size={21} /></IconButton>
+        {activeProjectId ? (
+          <IconButton label="返回分组界面" onClick={closeProjectGroup}><ArrowLeft size={21} /></IconButton>
+        ) : (
+          <IconButton label="返回主机列表" onClick={onBackToHosts}><ArrowLeft size={21} /></IconButton>
+        )}
         <div className="mobile-device">
-          <strong>{desktopName}</strong>
-          <span className={desktopOnline ? "online" : ""}><i />{desktopOnline ? "在线" : connection === "connecting" ? "正在连接" : "离线"}</span>
+          <strong>{activeProjectId ? activeGroupName : desktopName}</strong>
+          <span className={desktopOnline ? "online" : ""}>
+            <i />
+            {hostStatusText}
+          </span>
         </div>
         <IconButton
           label="强制同步"
@@ -1904,46 +2425,117 @@ export function MobileWorkspace({
         <ThemeMenu control={themeControl} iconSize={19} />
       </header>
 
-      <section className={`mobile-transport-band ${connection === "connected" && desktopOnline ? "online" : ""}`}>
-        <span>
-          <i aria-hidden="true" />
-          <strong>{mobileConnectionLabel(connection, desktopOnline, transportMetrics, snapshot?.host.version)}</strong>
-        </span>
-        <small>
-          {transportMetrics?.rttMs !== undefined ? `${Math.round(transportMetrics.rttMs)} ms` : "等待链路"}
-          {" · "}{pendingOutbound} 条待发送
-        </small>
-      </section>
-
-      <section className="host-detail">
-        <div className="host-detail-heading">
-          <div>
-            <span>Bridge 1.0</span>
-            <h1>项目与会话</h1>
+      {activeProjectId ? (
+        <section className="host-detail project-detail-view">
+          <div className="catalog-toolbar">
+            <label className="session-search">
+              <Search size={16} />
+              <input
+                value={projectSearch}
+                onChange={(event) => setProjectSearch(event.target.value)}
+                placeholder={`搜索「${activeGroupName}」`}
+              />
+            </label>
+            {!isArchivedGroupPage && (
+              <button
+                type="button"
+                className="primary-button catalog-create-btn"
+                disabled={!snapshot?.projects.length}
+                onClick={() => openCreateDialogForProject(activeProjectId)}
+              >
+                <Plus size={16} />新建
+              </button>
+            )}
           </div>
+          {activeGroupCwd && <div className="project-detail-cwd">{activeGroupCwd}</div>}
+          {showRuntimeFilter && (
+            <nav className="runtime-filter" aria-label="Desktop 运行时筛选">
+              <button type="button" className={runtimeFilter === "all" ? "active" : ""} onClick={() => setRuntimeFilter("all")}>全部</button>
+              {snapshot!.runtimes!.map((runtime) => (
+                <button
+                  type="button"
+                  key={runtime.id}
+                  className={runtimeFilter === runtime.id ? "active" : ""}
+                  disabled={runtime.state !== "ready" && runtime.sessionCount === 0}
+                  onClick={() => setRuntimeFilter(runtime.id)}
+                >
+                  {desktopRuntimeName(runtime.id)}
+                </button>
+              ))}
+            </nav>
+          )}
+          {activeGroupSessions.length === 0 ? (
+            <div className="session-catalog-loading">
+              <strong>{projectSearch ? "没有匹配的会话" : "此分组暂无会话"}</strong>
+              <span>{projectSearch ? "换一个关键词试试。" : "可点击右上角新建会话，或返回查看其它项目。"}</span>
+            </div>
+          ) : (
+            <div className="session-rows project-detail-rows">
+              {activeGroupSessions.map((session) => {
+                const badge = isArchivedGroupPage ? "已归档" : activeSessionBadgeLabel(session);
+                return (
+                  <div className="session-row-v2" data-session-id={session.sessionId} key={session.sessionId}>
+                    <button
+                      type="button"
+                      className="session-row-hit"
+                      onClick={() => void selectSession(session.sessionId)}
+                    >
+                      <span className={`session-state-dot ${session.turnState}`} />
+                      <span className="session-row-copy">
+                        <strong>{session.title}</strong>
+                        <small>
+                          {populatedRuntimeCount > 1 ? `${desktopRuntimeName(desktopRuntimeId(session))} · ` : ""}
+                          {relativeTime(session.lastActivityAt)}
+                          {!isArchivedGroupPage && session.currentSummary ? ` · ${session.currentSummary}` : ""}
+                        </small>
+                      </span>
+                      {badge && <span className={`session-row-status ${session.turnState}`}>{badge}</span>}
+                    </button>
+                    {canManageSessions && (
+                      <IconButton
+                        label="会话操作"
+                        className="session-row-action"
+                        onClick={() => {
+                          setSessionActionError(undefined);
+                          setMenuSessionId(session.sessionId);
+                        }}
+                      >
+                        <MoreHorizontal size={18} />
+                      </IconButton>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      ) : (
+      <section className="host-detail">
+        <div className="catalog-toolbar">
+          <label className="session-search">
+            <Search size={16} />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或会话" />
+          </label>
+          {groupedProjectIds.length > 1 && (
+            <IconButton
+              label={allProjectsCollapsed ? "全部展开" : "全部折叠"}
+              onClick={() => setCollapsedProjectIds(
+                allProjectsCollapsed ? expandAllProjects() : collapseProjects(groupedProjectIds),
+              )}
+            >
+              {allProjectsCollapsed ? <ChevronsDown size={17} /> : <ChevronsUp size={17} />}
+            </IconButton>
+          )}
           <button
             type="button"
-            className="primary-button"
+            className="primary-button catalog-create-btn"
             disabled={!snapshot?.projects.length}
-            onClick={() => {
-              const runtimeId = runtimeFilter === "all"
-                ? snapshot?.runtimes?.find((runtime) => (
-                    runtime.state === "ready" && runtime.capabilities.includes("session.create")
-                  ))?.id ?? "claude-desktop"
-                : runtimeFilter;
-              setCreateRuntimeId(runtimeId);
-              setCreateProjectId(
-                snapshot?.projects.find((project) => project.runtimeId === runtimeId)?.projectId
-                ?? snapshot?.projects[0]?.projectId
-                ?? "",
-              );
-              setCreateOpen(true);
-            }}
+            onClick={() => openCreateDialogForProject()}
           >
-            <Plus size={17} />新建
+            <Plus size={16} />新建
           </button>
         </div>
-        {(snapshot?.runtimes?.length ?? 0) > 0 && (
+        {showRuntimeFilter && (
           <nav className="runtime-filter" aria-label="Desktop 运行时筛选">
             <button type="button" className={runtimeFilter === "all" ? "active" : ""} onClick={() => setRuntimeFilter("all")}>全部</button>
             {snapshot!.runtimes!.map((runtime) => (
@@ -1959,69 +2551,6 @@ export function MobileWorkspace({
             ))}
           </nav>
         )}
-        {(snapshot?.desktopApps ?? [{
-          id: "claude-desktop" as const,
-          name: "Claude Desktop",
-          state: snapshot?.claudeDesktop?.state ?? "unavailable",
-          detail: snapshot?.claudeDesktop?.detail ?? "正在读取电脑端运行状态。",
-          canLaunch: snapshot?.claudeDesktop?.canLaunch ?? false,
-          canQuit: snapshot?.claudeDesktop?.canQuit ?? false,
-        }]).map((desktopApp) => (
-          <section className={`mobile-desktop-control ${desktopApp.state}`} key={desktopApp.id}>
-            <div className="mobile-desktop-control-copy">
-              <i aria-hidden="true" />
-              <span>
-                <strong>{desktopApp.name}</strong>
-                <small className={desktopActionError?.runtimeId === desktopApp.id ? "desktop-app-error" : undefined}>
-                  {desktopActionError?.runtimeId === desktopApp.id ? desktopActionError.message : desktopApp.detail}
-                </small>
-              </span>
-            </div>
-            <div className="mobile-desktop-control-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={Boolean(desktopAction) || !desktopOnline || !desktopApp.canLaunch}
-                onClick={() => void runDesktopAppAction(desktopApp.id, "launch")}
-              >
-                <Play size={15} />
-                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "launch" ? "启动中" : "启动"}
-              </button>
-              <button
-                type="button"
-                className="danger-button"
-                disabled={Boolean(desktopAction) || !desktopOnline || !desktopApp.canQuit}
-                onClick={() => setQuitDesktopTarget(desktopApp.id)}
-              >
-                <Power size={15} />
-                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "quit" ? "退出中" : "退出"}
-              </button>
-            </div>
-          </section>
-        ))}
-        <label className="session-search">
-          <Search size={17} />
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或会话" />
-        </label>
-        <div className="project-list-toolbar">
-          <span>{groupedProjectIds.length} 个项目</span>
-          <div>
-            <button
-              type="button"
-              disabled={groupedProjectIds.length === 0 || allProjectsCollapsed}
-              onClick={() => setCollapsedProjectIds(collapseProjects(groupedProjectIds))}
-            >
-              <ChevronsUp size={15} />全部折叠
-            </button>
-            <button
-              type="button"
-              disabled={groupedProjectIds.length === 0 || allProjectsExpanded}
-              onClick={() => setCollapsedProjectIds(expandAllProjects())}
-            >
-              <ChevronsDown size={15} />全部展开
-            </button>
-          </div>
-        </div>
         {permissions[0] && (
           <button type="button" className="host-permission-alert" onClick={() => void selectSession(permissions[0]!.sessionId)}>
             <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
@@ -2053,29 +2582,122 @@ export function MobileWorkspace({
         <div className="project-groups">
           {grouped.map((group) => {
             const projectId = group.project?.projectId ?? group.sessions[0]!.projectId;
+            const projectName = group.project?.name ?? group.sessions[0]!.projectName;
             const expanded = !collapsedProjectIds.has(projectId);
             const sessionsId = `mobile-project-${encodeURIComponent(projectId)}`;
+            const { preview, totalCount, hiddenCount } = previewProjectSessions(
+              group.sessions,
+              PROJECT_PREVIEW_SESSION_LIMIT,
+            );
             return (
               <section className={`project-group ${expanded ? "expanded" : "collapsed"}`} key={projectId}>
-                <button
-                  type="button"
-                  className="project-group-toggle"
-                  aria-expanded={expanded}
-                  aria-controls={sessionsId}
-                  onClick={() => toggleProject(projectId)}
-                >
-                  <span className="project-group-toggle-copy">
-                    <span>
-                      <strong>{group.project?.name ?? group.sessions[0]!.projectName}</strong>
-                      <b>{group.sessions.length} 个会话</b>
+                <div className="project-group-header">
+                  <button
+                    type="button"
+                    className="project-group-open"
+                    aria-expanded={expanded}
+                    aria-controls={sessionsId}
+                    onClick={() => toggleProject(projectId)}
+                  >
+                    <span className="project-group-toggle-copy">
+                      <span>
+                        <strong>{projectName}</strong>
+                        <b className="project-count-pill">{totalCount}</b>
+                      </span>
                     </span>
-                    <small>{group.project?.cwd ?? group.sessions[0]!.cwd}</small>
-                  </span>
-                  {expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-                </button>
+                    <span className="project-group-chevron">
+                      {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </span>
+                  </button>
+                  {totalCount > PROJECT_PREVIEW_SESSION_LIMIT && (
+                    <button
+                      type="button"
+                      className="project-group-collapse-btn project-group-all-btn"
+                      aria-label={`查看 ${projectName} 全部 ${totalCount} 个会话`}
+                      onClick={() => openProjectGroup(projectId)}
+                    >
+                      全部
+                    </button>
+                  )}
+                </div>
                 {expanded && (
                   <div className="session-rows" id={sessionsId}>
-                    {group.sessions.map((session) => (
+                    {preview.map((session) => {
+                      const badge = activeSessionBadgeLabel(session);
+                      return (
+                        <div className="session-row-v2" data-session-id={session.sessionId} key={session.sessionId}>
+                          <button
+                            type="button"
+                            className="session-row-hit"
+                            onClick={() => void selectSession(session.sessionId)}
+                          >
+                            <span className={`session-state-dot ${session.turnState}`} />
+                            <span className="session-row-copy">
+                              <strong>{session.title}</strong>
+                              <small>
+                                {populatedRuntimeCount > 1 ? `${desktopRuntimeName(desktopRuntimeId(session))} · ` : ""}
+                                {relativeTime(session.lastActivityAt)}
+                                {session.currentSummary ? ` · ${session.currentSummary}` : ""}
+                              </small>
+                            </span>
+                            {badge && <span className={`session-row-status ${session.turnState}`}>{badge}</span>}
+                          </button>
+                          {canManageSessions && (
+                            <IconButton
+                              label="会话操作"
+                              className="session-row-action"
+                              onClick={() => {
+                                setSessionActionError(undefined);
+                                setMenuSessionId(session.sessionId);
+                              }}
+                            >
+                              <MoreHorizontal size={18} />
+                            </IconButton>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {hiddenCount > 0 && (
+                      <button
+                        type="button"
+                        className="project-group-more-button"
+                        onClick={() => openProjectGroup(projectId)}
+                      >
+                        <span>查看全部 {totalCount} 个会话</span>
+                        <ChevronRight size={15} />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </section>
+            );
+          })}
+          {canManageSessions && archivedSessions.length > 0 && (() => {
+            const archivedPreview = previewProjectSessions(archivedSessions, PROJECT_PREVIEW_SESSION_LIMIT);
+            return (
+              <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
+                <div className="project-group-header">
+                  <button
+                    type="button"
+                    className="project-group-open"
+                    aria-expanded={archivedExpanded}
+                    aria-controls="mobile-archived-sessions"
+                    onClick={() => setArchivedExpanded((current) => !current)}
+                  >
+                    <span className="project-group-toggle-copy">
+                      <span>
+                        <strong>已归档</strong>
+                        <b className="project-count-pill">{archivedPreview.totalCount}</b>
+                      </span>
+                    </span>
+                    <span className="project-group-chevron">
+                      {archivedExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </span>
+                  </button>
+                </div>
+                {archivedExpanded && (
+                  <div className="session-rows" id="mobile-archived-sessions">
+                    {archivedPreview.preview.map((session) => (
                       <div className="session-row-v2" data-session-id={session.sessionId} key={session.sessionId}>
                         <button
                           type="button"
@@ -2085,10 +2707,8 @@ export function MobileWorkspace({
                           <span className={`session-state-dot ${session.turnState}`} />
                           <span className="session-row-copy">
                             <strong>{session.title}</strong>
-                            <small>{desktopRuntimeName(desktopRuntimeId(session))} · {relativeTime(session.lastActivityAt)}{session.currentSummary ? ` · ${session.currentSummary}` : ""}</small>
+                            <small>{relativeTime(session.lastActivityAt)}</small>
                           </span>
-                          <span className="session-row-status">{ownershipLabel(session)}</span>
-                          <ChevronRight size={18} />
                         </button>
                         {canManageSessions && (
                           <IconButton
@@ -2104,66 +2724,83 @@ export function MobileWorkspace({
                         )}
                       </div>
                     ))}
+                    {archivedPreview.hiddenCount > 0 && (
+                      <button
+                        type="button"
+                        className="project-group-more-button"
+                        onClick={() => openProjectGroup("__archived__")}
+                      >
+                        <span>查看全部 {archivedPreview.totalCount} 个归档会话</span>
+                        <ChevronRight size={15} />
+                      </button>
+                    )}
                   </div>
                 )}
               </section>
             );
-          })}
-          {canManageSessions && archivedSessions.length > 0 && (
-            <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
-              <button
-                type="button"
-                className="project-group-toggle"
-                aria-expanded={archivedExpanded}
-                aria-controls="mobile-archived-sessions"
-                onClick={() => setArchivedExpanded((current) => !current)}
-              >
-                <span className="project-group-toggle-copy">
-                  <span>
-                    <strong>已归档</strong>
-                    <b>{archivedSessions.length} 个会话</b>
-                  </span>
-                  <small>归档会话保留历史，可随时恢复</small>
-                </span>
-                {archivedExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-              </button>
-              {archivedExpanded && (
-                <div className="session-rows" id="mobile-archived-sessions">
-                  {archivedSessions.map((session) => (
-                    <div className="session-row-v2" data-session-id={session.sessionId} key={session.sessionId}>
-                      <button
-                        type="button"
-                        className="session-row-hit"
-                        onClick={() => void selectSession(session.sessionId)}
-                      >
-                        <span className={`session-state-dot ${session.turnState}`} />
-                        <span className="session-row-copy">
-                          <strong>{session.title}</strong>
-                          <small>{desktopRuntimeName(desktopRuntimeId(session))} · {relativeTime(session.lastActivityAt)}</small>
-                        </span>
-                        <span className="session-row-status">已归档</span>
-                        <ChevronRight size={18} />
-                      </button>
-                      {canManageSessions && (
-                        <IconButton
-                          label="会话操作"
-                          className="session-row-action"
-                          onClick={() => {
-                            setSessionActionError(undefined);
-                            setMenuSessionId(session.sessionId);
-                          }}
-                        >
-                          <MoreHorizontal size={18} />
-                        </IconButton>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
+          })()}
         </div>
+
+        <section className={`desktop-agents-drawer ${desktopControlsExpanded ? "expanded" : "collapsed"}`}>
+          <button
+            type="button"
+            className="desktop-agents-toggle"
+            aria-expanded={desktopControlsExpanded}
+            onClick={() => setDesktopControlsExpanded((current) => !current)}
+          >
+            <span className="desktop-agents-summary">
+              <i className={runningDesktopApps.length > 0 ? "running" : ""} aria-hidden="true" />
+              <strong>桌面应用控制</strong>
+              <small>
+                {runningDesktopApps.length > 0
+                  ? `${runningDesktopApps.map((app) => app.name.replace(/\s*Desktop$/u, "")).join(" · ")} 运行中`
+                  : "启动或退出电脑端应用"}
+              </small>
+            </span>
+            <span className="desktop-agents-toggle-meta">
+              {desktopControlsExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+            </span>
+          </button>
+          {desktopControlsExpanded && (
+            <div className="desktop-agents-list">
+              {desktopApps.map((desktopApp) => (
+                <section className={`mobile-desktop-control ${desktopApp.state}`} key={desktopApp.id}>
+                  <div className="mobile-desktop-control-copy">
+                    <i aria-hidden="true" />
+                    <span>
+                      <strong>{desktopApp.name}</strong>
+                      <small className={desktopActionError?.runtimeId === desktopApp.id ? "desktop-app-error" : undefined}>
+                        {desktopActionError?.runtimeId === desktopApp.id ? desktopActionError.message : desktopApp.detail}
+                      </small>
+                    </span>
+                  </div>
+                  <div className="mobile-desktop-control-actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={Boolean(desktopAction) || !desktopOnline || !desktopApp.canLaunch}
+                      onClick={() => void runDesktopAppAction(desktopApp.id, "launch")}
+                    >
+                      <Play size={15} />
+                      {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "launch" ? "启动中" : "启动"}
+                    </button>
+                    <button
+                      type="button"
+                      className="danger-button"
+                      disabled={Boolean(desktopAction) || !desktopOnline || !desktopApp.canQuit}
+                      onClick={() => setQuitDesktopTarget(desktopApp.id)}
+                    >
+                      <Power size={15} />
+                      {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "quit" ? "退出中" : "退出"}
+                    </button>
+                  </div>
+                </section>
+              ))}
+            </div>
+          )}
+        </section>
       </section>
+      )}
 
       {menuSession && canManageSessions && (
         <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {

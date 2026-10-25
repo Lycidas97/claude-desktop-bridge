@@ -21,7 +21,7 @@ const DATABASE_NAME = "claude-bridge";
 const DATABASE_VERSION = 3;
 const LEGACY_IDENTITY_KEY = "current";
 const HOST_KEY_PREFIX = "host:";
-const MESSAGE_LIMIT = 5_000;
+const MESSAGE_LIMIT = 150;
 
 interface StoredCrypto {
   key: string;
@@ -62,32 +62,50 @@ export interface StoredBridgeHost {
   crypto: BridgeCrypto;
 }
 
+const UPSTREAM_DEFAULT_RELAY = "wss://relay.alioxis.com/ws";
 const PACKAGED_PUBLIC_RELAY = String(
-  import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? "wss://relay.alioxis.com/ws",
+  import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? UPSTREAM_DEFAULT_RELAY,
 ).trim();
 const PACKAGED_SERVICE_ORIGIN = String(
-  import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? "https://relay.alioxis.com",
+  import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? "https://bridge.alioxis.com",
 ).trim();
 const PACKAGED_ICE_SERVERS = parseBridgeIceServers(String(
   import.meta.env.VITE_BRIDGE_ICE_SERVERS ?? DEFAULT_BRIDGE_ICE_SERVERS_JSON,
 ));
 
+function isCustomPackagedRelay(): boolean {
+  return Boolean(
+    PACKAGED_PUBLIC_RELAY &&
+    PACKAGED_PUBLIC_RELAY !== UPSTREAM_DEFAULT_RELAY,
+  );
+}
+
+function isDisallowedUpstreamRelay(url: string | undefined): boolean {
+  if (!url || !isCustomPackagedRelay()) return false;
+  return url !== PACKAGED_PUBLIC_RELAY;
+}
+
 function refreshStoredRelayEndpoints(stored: StoredCrypto): BridgeEndpoint[] {
-  return (stored.relayEndpoints ?? []).map((endpoint, index) => {
-    if (
-      PACKAGED_PUBLIC_RELAY &&
-      endpoint.kind === "public-relay" &&
-      endpoint.id === "public" &&
-      endpoint.url !== PACKAGED_PUBLIC_RELAY
-    ) {
-      return {
-        ...endpoint,
-        id: `legacy-public-${index}`,
-        priority: Math.max(endpoint.priority, 30),
-      };
-    }
-    return endpoint;
-  });
+  if (isCustomPackagedRelay()) {
+    return [bridgeEndpoint(PACKAGED_PUBLIC_RELAY, 10, "public")];
+  }
+  return (stored.relayEndpoints ?? [])
+    .filter((endpoint) => !isDisallowedUpstreamRelay(endpoint.url))
+    .map((endpoint, index) => {
+      if (
+        PACKAGED_PUBLIC_RELAY &&
+        endpoint.kind === "public-relay" &&
+        endpoint.id === "public" &&
+        endpoint.url !== PACKAGED_PUBLIC_RELAY
+      ) {
+        return {
+          ...endpoint,
+          id: `legacy-public-${index}`,
+          priority: Math.max(endpoint.priority, 30),
+        };
+      }
+      return endpoint;
+    });
 }
 
 function serviceOriginForRelay(relayUrl: string): string {
@@ -110,10 +128,13 @@ function transportForStored(stored: StoredCrypto): {
   relayUrl: string;
   iceServers: BridgeIceServer[];
 } {
+  const legacyRelayUrl = isDisallowedUpstreamRelay(stored.identity.relayUrl)
+    ? PACKAGED_PUBLIC_RELAY
+    : stored.identity.relayUrl;
   const relayEndpoints = normalizeBridgeEndpoints([
     ...(PACKAGED_PUBLIC_RELAY ? [bridgeEndpoint(PACKAGED_PUBLIC_RELAY, 10, "public")] : []),
     ...refreshStoredRelayEndpoints(stored),
-    bridgeEndpoint(stored.identity.relayUrl, 100, "legacy"),
+    bridgeEndpoint(legacyRelayUrl, 100, "legacy"),
   ]);
   const active = selectBridgeEndpoint(
     relayEndpoints,
@@ -315,11 +336,29 @@ export class BridgeVault {
       const updatedAt = stored.updatedAt ?? 0;
       if (existing && existing.updatedAt > updatedAt) continue;
       const transport = transportForStored(normalizedStored);
-      if (iceServersChanged(normalizedStored, transport.iceServers)) {
+      const sanitizedDesktopRelayUrl = isDisallowedUpstreamRelay(normalizedStored.desktopRelayUrl)
+        ? PACKAGED_PUBLIC_RELAY
+        : normalizedStored.desktopRelayUrl;
+      const relayMigrationNeeded = (
+        normalizedStored.identity.relayUrl !== transport.relayUrl ||
+        normalizedStored.serviceOrigin !== transport.serviceOrigin ||
+        normalizedStored.activeEndpoint !== transport.activeEndpoint ||
+        normalizedStored.desktopRelayUrl !== sanitizedDesktopRelayUrl ||
+        JSON.stringify(normalizedStored.relayEndpoints ?? []) !== JSON.stringify(transport.relayEndpoints)
+      );
+      if (iceServersChanged(normalizedStored, transport.iceServers) || relayMigrationNeeded) {
         // Persist this narrow default migration in place. It intentionally
-        // leaves the pairing identity, encrypted cache and Relay routes alone.
+        // leaves the pairing identity and encrypted cache alone while purging
+        // any disallowed upstream relay references.
         store.put({
           ...normalizedStored,
+          identity: { ...normalizedStored.identity, relayUrl: transport.relayUrl },
+          serviceOrigin: transport.serviceOrigin,
+          relayEndpoints: transport.relayEndpoints,
+          activeEndpoint: transport.activeEndpoint,
+          ...(sanitizedDesktopRelayUrl !== undefined
+            ? { desktopRelayUrl: sanitizedDesktopRelayUrl }
+            : {}),
           iceServers: transport.iceServers,
         } satisfies StoredCrypto);
       }
@@ -336,8 +375,8 @@ export class BridgeVault {
         serviceOrigin: transport.serviceOrigin,
         relayEndpoints: transport.relayEndpoints,
         activeEndpoint: transport.activeEndpoint,
-        ...(normalizedStored.desktopRelayUrl !== undefined
-          ? { desktopRelayUrl: normalizedStored.desktopRelayUrl }
+        ...(sanitizedDesktopRelayUrl !== undefined
+          ? { desktopRelayUrl: sanitizedDesktopRelayUrl }
           : {}),
         iceServers: transport.iceServers,
         ...(normalizedStored.migratedAt !== undefined ? { migratedAt: normalizedStored.migratedAt } : {}),
@@ -425,6 +464,7 @@ export class BridgeVault {
    */
   async setDesktopRelay(roomId: string, url: string): Promise<void> {
     if (!url.startsWith("ws://") && !url.startsWith("wss://")) return;
+    if (isDisallowedUpstreamRelay(url)) return;
     const database = await this.open();
     const transaction = database.transaction("identity", "readwrite");
     const store = transaction.objectStore("identity");

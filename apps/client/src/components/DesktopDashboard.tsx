@@ -74,11 +74,13 @@ import {
   desktopRuntimeName,
   fileToAttachment,
   goalStatusLabel,
+  InteractivePromptCard,
   isNativeRuntimeId,
   PermissionPrompt,
   runtimeProviderLabel,
   sessionProfile,
   stoppableBridgeTask,
+  SubagentCard,
   supportsRuntimeHandoff,
 } from "./MobileWorkspace.js";
 import {
@@ -508,6 +510,25 @@ function DesktopSessions({
     } catch {
       setText(nextText);
       setAttachments(nextAttachments);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function sendQuickReply(promptText: string): Promise<void> {
+    if (!selected || selected.allowedActions?.canSend === false || sending || !promptText.trim()) return;
+    setSending(true);
+    try {
+      unwrap(await apiRequest({
+        method: steer ? "turn.steer" : "turn.start",
+        params: {
+          sessionId: selected.sessionId,
+          text: promptText.trim(),
+          attachments: [],
+        },
+        idempotencyKey: crypto.randomUUID(),
+      }));
+      setSteer(false);
     } finally {
       setSending(false);
     }
@@ -1167,16 +1188,32 @@ function DesktopSessions({
                   entering={streamEntering(`evidence:${entry.evidence.id}`)}
                   onOpen={() => setSessionView("evidence")}
                 />
+              ) : entry.item.subagent ? (
+                <SubagentCard
+                  item={entry.item}
+                  key={entry.item.id}
+                  entering={streamEntering(entry.item.id)}
+                />
               ) : (
                 <article
                   className={`conversation-item ${entry.item.role}${streamEntering(entry.item.id) ? " is-entering" : ""}`}
                   key={entry.item.id}
                 >
                   <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? selectedRuntimeName : entry.item.toolName ?? "Bridge"}</strong></div>
-                  {entry.item.role === "assistant" || entry.item.role === "user" ? (
-                    <MarkdownText text={entry.item.text} />
-                  ) : (
-                    <div className="conversation-text">{entry.item.text}</div>
+                  {entry.item.text && (
+                    entry.item.role === "assistant" || entry.item.role === "user" ? (
+                      <MarkdownText text={entry.item.text} />
+                    ) : (
+                      <div className="conversation-text">{entry.item.text}</div>
+                    )
+                  )}
+                  {entry.item.interactivePrompt && (
+                    <InteractivePromptCard
+                      prompt={entry.item.interactivePrompt}
+                      canSend={selected.allowedActions?.canSend !== false && !officialActive}
+                      busy={sending}
+                      onSelectOption={(replyText) => void sendQuickReply(replyText)}
+                    />
                   )}
                   {entry.item.attachments?.length ? (
                     <div className="conversation-attachments">

@@ -3,6 +3,8 @@ import {
   collapseProjects,
   expandAllProjects,
   expandProject,
+  previewProjectSessions,
+  sortProjectSessionsByRecent,
   toggleCollapsedProject,
 } from "./project-groups.js";
 
@@ -26,4 +28,27 @@ describe("project group collapse state", () => {
     expect([...collapseProjects(["project-a", "project-b"])]).toEqual(["project-a", "project-b"]);
     expect(expandAllProjects()).toEqual(new Set());
   });
+
+  it("limits inline group preview to the 3 most recent sessions and reports remaining count", () => {
+    const sessions = [
+      { id: "s1", lastActivityAt: 100 },
+      { id: "s2", lastActivityAt: 500 },
+      { id: "s3", lastActivityAt: 300 },
+      { id: "s4", lastActivityAt: 400 },
+      { id: "s5", lastActivityAt: 200 },
+    ];
+
+    const result = previewProjectSessions(sessions);
+    expect(result.preview.map((item) => item.id)).toEqual(["s2", "s4", "s3"]);
+    expect(result.totalCount).toBe(5);
+    expect(result.hiddenCount).toBe(2);
+    expect(sortProjectSessionsByRecent(sessions).map((item) => item.id)).toEqual([
+      "s2",
+      "s4",
+      "s3",
+      "s5",
+      "s1",
+    ]);
+  });
 });
+

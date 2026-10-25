@@ -545,6 +545,78 @@ describe("conversationItems", () => {
 
     expect(conversationItems("session-1", undefined, events, [])).toEqual([]);
   });
+
+  it("merges subagent progress and completion reports across history and live events", () => {
+    const events: BridgeEvent[] = [
+      {
+        eventId: "sub-prog-1",
+        seq: 1,
+        timestamp: 100,
+        origin: "claude-desktop",
+        type: "tool.progress",
+        sessionId: "session-1",
+        itemId: "toolu_sub_1",
+        data: {
+          toolName: "Agent",
+          summary: "Verify claims (3 步)",
+          subagent: {
+            agentId: "a123",
+            toolUseId: "toolu_sub_1",
+            agentType: "Explore",
+            description: "Verify claims",
+            state: "running",
+            toolCount: 3,
+            recentTools: ["Read a.ts", "Grep foo"],
+            latestText: "Checking references...",
+            startedAt: 100,
+            updatedAt: 150,
+          },
+        },
+      },
+      {
+        eventId: "sub-done-1",
+        seq: 2,
+        timestamp: 200,
+        origin: "claude-desktop",
+        type: "tool.completed",
+        sessionId: "session-1",
+        itemId: "toolu_sub_1",
+        data: {
+          toolName: "Agent",
+          summary: "Verify claims (5 步)",
+          subagent: {
+            agentId: "a123",
+            toolUseId: "toolu_sub_1",
+            agentType: "Explore",
+            description: "Verify claims",
+            state: "completed",
+            toolCount: 5,
+            recentTools: ["Read a.ts", "Grep foo", "Bash pytest"],
+            reportText: "All claims verified.",
+            startedAt: 100,
+            updatedAt: 200,
+            durationMs: 100_000,
+          },
+        },
+      },
+    ];
+
+    const items = conversationItems("session-1", undefined, events, []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: "tool:toolu_sub_1",
+      role: "tool",
+      toolName: "Agent",
+      state: "completed",
+      subagent: {
+        agentId: "a123",
+        description: "Verify claims",
+        state: "completed",
+        toolCount: 5,
+        reportText: "All claims verified.",
+      },
+    });
+  });
 });
 
 describe("permissionPresentation", () => {

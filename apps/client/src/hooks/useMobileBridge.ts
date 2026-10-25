@@ -49,6 +49,7 @@ import { Capacitor } from "@capacitor/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridgeVault, type StoredBridgeHost } from "../lib/vault.js";
 import { downloadBridgeArtifact } from "../lib/artifact-download.js";
+import { diagLog, setDiagBridgeStateSummary } from "../lib/diagnostics.js";
 import { isReplayableMobileEnvelope } from "../lib/outbox.js";
 import { nativePushRegistration, onNativePushWake } from "../lib/push-wake.js";
 
@@ -475,10 +476,29 @@ function evidencePageFromResponse(response: BridgeResponse): BridgeEvidencePage 
 }
 
 function shouldExtendLocalEvidenceCache(payload: BridgePayload): boolean {
-  if (payload.kind === "event") return payload.event.type.startsWith("evidence.");
+  if (payload.kind === "event") {
+    return payload.event.type === "evidence.ready" || payload.event.type === "evidence.failed";
+  }
   return payload.kind === "response" && Boolean(
     previewFromResponse(payload) || evidencePageFromResponse(payload),
   );
+}
+
+function shouldPersistIncomingMessage(payload: BridgePayload, localTurns: LocalTurn[]): boolean {
+  if (payload.kind === "snapshot") return true;
+  if (payload.kind === "event") {
+    return (
+      payload.event.type !== "assistant.delta" &&
+      payload.event.type !== "session.desktop-registration" &&
+      payload.event.type !== "evidence.started" &&
+      payload.event.type !== "evidence.updated"
+    );
+  }
+  if (payload.kind === "response") {
+    return shouldExtendLocalEvidenceCache(payload) ||
+      localTurns.some((turn) => turn.requestId === payload.requestId);
+  }
+  return false;
 }
 
 function mergeEvidence(
@@ -830,11 +850,21 @@ async function readStoredHostState(
   localTurns: LocalTurn[];
   latestSeq: number;
 }> {
-  const envelopes = storedEnvelopes ?? await bridgeVault.listMessages(crypto.identity.roomId);
+  const t0 = Date.now();
+  const allEnvelopes = storedEnvelopes ?? await bridgeVault.listMessages(crypto.identity.roomId).catch((err) => {
+    diagLog("error", "vault", "listMessages 异常", String(err));
+    return [];
+  });
+  const envelopes = allEnvelopes.length > 120 ? allEnvelopes.slice(-120) : allEnvelopes;
   const results = await Promise.allSettled(envelopes.map((envelope) => crypto.decrypt(envelope)));
   const messages = results
     .filter((result): result is PromiseFulfilledResult<DecryptedEnvelope> => result.status === "fulfilled")
     .map((result) => result.value);
+  diagLog("info", "vault", `readStoredHostState(${crypto.identity.roomId}) 完成 (${Date.now() - t0}ms)`, {
+    totalEnvelopes: allEnvelopes.length,
+    slicedEnvelopes: envelopes.length,
+    decryptedMessages: messages.length,
+  });
   const snapshot = [...messages].reverse().find((message) => message.payload.kind === "snapshot")?.payload;
   const events = mergeBridgeEvents(
     [],
@@ -1143,10 +1173,23 @@ export function useMobileBridge() {
       method,
       params: { ...params, client: clientMetadata() },
     };
-    const envelope = await crypto.encrypt(request, "mobile", "desktop");
+    const persistOutbox = Boolean(
+      options.allowOffline || method === "turn.start" || method === "turn.steer",
+    );
+    const envelope = await crypto.encrypt(
+      request,
+      "mobile",
+      "desktop",
+      Date.now(),
+      undefined,
+      undefined,
+      persistOutbox ? undefined : true,
+    );
     envelopeRequestsRef.current.set(envelope.id, request.requestId);
-    await Promise.all([bridgeVault.saveMessage(envelope), bridgeVault.addOutbox(envelope)]);
-    setState((current) => ({ ...current, pendingOutbound: current.pendingOutbound + 1 }));
+    if (persistOutbox) {
+      await Promise.all([bridgeVault.saveMessage(envelope), bridgeVault.addOutbox(envelope)]);
+      setState((current) => ({ ...current, pendingOutbound: current.pendingOutbound + 1 }));
+    }
     if (method === "turn.start" || method === "turn.steer") {
       const attachments = Array.isArray(params.attachments)
         ? params.attachments.flatMap((attachment) => {
@@ -1210,16 +1253,16 @@ export function useMobileBridge() {
     return responsePromise;
   }, []);
 
-  const resumeEvents = useCallback(async (bootstrap = false) => {
+  const resumeEvents = useCallback(async (bootstrap = false, fromSeq?: number) => {
     try {
       const events: BridgeEvent[] = [];
-      let cursor = stateRef.current.latestSeq;
-      for (let page = 0; page < 100; page += 1) {
+      let cursor = fromSeq ?? stateRef.current.latestSeq;
+      for (let page = 0; page < 20; page += 1) {
         const response = await sendRequest("events.resume", {
           afterSeq: cursor,
-          limit: 1_000,
+          limit: 250,
           ...(bootstrap && cursor === 0 ? { bootstrap: true } : {}),
-        }, { wait: true });
+        }, { wait: true, timeoutMs: 8_000 });
         if (!response?.ok) break;
         const result = response.result as {
           events?: unknown;
@@ -1359,6 +1402,11 @@ export function useMobileBridge() {
     ).filter((endpoint): endpoint is BridgeEndpoint & {
       kind: "public-relay" | "lan-relay";
     } => endpoint.kind !== "direct");
+    diagLog("info", "bridge", `start(roomId=${roomId}, bootstrap=${bootstrap})`, {
+      identityRelayUrl: crypto.identity.relayUrl,
+      storedDesktopRelayUrl: storedHost?.desktopRelayUrl,
+      relayEndpoints,
+    });
     setState((current) => ({
       ...current,
       loading: false,
@@ -1532,8 +1580,23 @@ export function useMobileBridge() {
         return;
       }
       void bridgeVault.listOutbox(roomId).then((outbox) => {
-        if (!isCurrent() || outbox.length === 0) return;
+        if (!isCurrent()) return;
         const now = Date.now();
+        // Home hunting: if this connection is camping on a relay the desktop
+        // isn't using, cycle the router so it re-probes the desktop's home
+        // relay even when the outbox is empty.
+        const home = desktopHomeRef.current;
+        if (
+          home &&
+          relay.endpoint !== home &&
+          !linkHasDesktop &&
+          now - lastHuntAt > 20_000
+        ) {
+          lastHuntAt = now;
+          relay.cycle();
+          return;
+        }
+        if (outbox.length === 0) return;
         const attemptedAt = sendAttemptedAtRef.current;
         // Half-dead uplink: envelopes were actually written to this link and
         // nothing was confirmed for 25s. Gated sends never attempt, so they
@@ -1546,23 +1609,16 @@ export function useMobileBridge() {
           relay.cycle();
           return;
         }
-        // Home hunting: the outbox has mail but this connection is camping on
-        // a relay the desktop isn't using. Cycle the router so it re-probes
-        // the desktop's home relay instead of waiting for a lifecycle event.
-        const home = desktopHomeRef.current;
-        if (
-          home &&
-          relay.endpoint !== home &&
-          !linkHasDesktop &&
-          now - lastHuntAt > 45_000
-        ) {
-          lastHuntAt = now;
-          relay.cycle();
-        }
       }).catch(() => undefined);
     }, 10_000);
     socket.onState((connection) => {
       if (!isCurrent()) return;
+      diagLog("info", "bridge", `socket.onState -> ${connection}`, {
+        endpoint: socket.endpoint,
+        path: socket.path,
+        home: desktopHomeRef.current,
+        linkHasDesktop,
+      });
       if (connection !== "connected") linkHasDesktop = false;
       setState((current) => ({
         ...current,
@@ -1622,9 +1678,15 @@ export function useMobileBridge() {
         if (!isProvisionalPairing()) void (async () => {
           const bootstrapResume = bootstrapPending;
           bootstrapPending = false;
-          await resumeEvents(bootstrapResume);
-          if (!isCurrent() || socket.state !== "connected") return;
+          const previousSeq = stateRef.current.latestSeq;
           const snapshotSynced = await refreshSnapshot().catch(() => false);
+          if (!isCurrent() || socket.state !== "connected") return;
+          if (previousSeq > 0) {
+            await resumeEvents(false, previousSeq);
+          } else if (bootstrapResume || !snapshotSynced) {
+            await resumeEvents(true);
+          }
+          if (!isCurrent() || socket.state !== "connected") return;
           const sessionListSynced = snapshotSynced || await refreshSessionList().catch(() => false);
           if (sessionListSynced && rejectedOutbox.length > 0 && isCurrent()) {
             setState((current) => ({ ...current, connectionIssue: undefined }));
@@ -1657,6 +1719,7 @@ export function useMobileBridge() {
         linkHasDesktop = desktopHere;
         if (desktopHere) {
           learnHome(relay.endpoint);
+          setState((current) => ({ ...current, desktopOnline: true, error: undefined }));
           void flushOutbox();
         }
         if (!desktopHere) {
@@ -1667,7 +1730,12 @@ export function useMobileBridge() {
         linkHasDesktop = frame.online;
         if (frame.online) {
           learnHome(relay.endpoint);
+          setState((current) => ({ ...current, desktopOnline: true, error: undefined }));
           void flushOutbox();
+          if (!isProvisionalPairing()) {
+            void refreshSnapshot().catch(() => undefined);
+            void resumeEvents();
+          }
         }
         if (!frame.online) setState((current) => ({ ...current, desktopOnline: false }));
       }
@@ -1801,53 +1869,80 @@ export function useMobileBridge() {
         learnHome(relay.endpoint);
       }
       setState((current) => ({ ...current, desktopOnline: true, connectionIssue: undefined }));
-      void (async () => {
-        const cachedEnvelope = shouldExtendLocalEvidenceCache(message.payload)
-          ? await crypto.encrypt(
-              message.payload,
-              message.header.from,
-              message.header.to,
-              Date.now(),
-              LOCAL_EVIDENCE_CACHE_TTL_MS,
-              message.header.to === "mobile" ? crypto.identity.deviceId : undefined,
-            )
-          : encrypted;
-        await bridgeVault.saveMessage(cachedEnvelope);
-        socket.ack([encrypted.id]);
-        const event = message.payload.kind === "event" ? message.payload.event : undefined;
-        const isNewPermission = Boolean(
-          event &&
-          (event.type === "permission.requested" || event.type === "question.requested") &&
-          !stateRef.current.events.some((candidate) => candidate.eventId === event.eventId),
-        );
-        handlePayload(message.payload, encrypted, crypto);
-        if (isNewPermission && document.visibilityState === "visible") {
-          navigator.vibrate?.([120, 60, 120]);
-        }
+      socket.ack([encrypted.id]);
+      const event = message.payload.kind === "event" ? message.payload.event : undefined;
+      const isNewPermission = Boolean(
+        event &&
+        (event.type === "permission.requested" || event.type === "question.requested") &&
+        !stateRef.current.events.some((candidate) => candidate.eventId === event.eventId),
+      );
+      // Drop stale queued RPC responses (>60s old with no active waiter) before
+      // they trigger redundant state Churn on reconnect.
+      if (message.payload.kind === "response" && Date.now() - message.header.sentAt > 60_000) {
+        const responseRequestId = message.payload.requestId;
         if (
-          document.visibilityState !== "visible" &&
-          typeof Notification !== "undefined" &&
-          Notification.permission === "granted" &&
-          event && (
-            event.type === "assistant.completed" ||
-            event.type === "permission.requested" ||
-            event.type === "question.requested" ||
-            event.type === "turn.failed"
-          )
+          !pendingResponsesRef.current.has(responseRequestId) &&
+          !stateRef.current.localTurns.some((turn) => turn.requestId === responseRequestId)
         ) {
-            new Notification(crypto.identity.desktopName, {
-              body: event.type === "permission.requested" || event.type === "question.requested"
-                ? "Claude 正在等待你处理"
-                : "Bridge 有新的会话动态",
-              icon: "/icon-192.png",
-              tag: encrypted.id,
-            });
+          return;
         }
-      })().catch(() => setState((current) => ({ ...current, error: "新消息暂时无法保存" })));
+      }
+      handlePayload(message.payload, encrypted, crypto);
+      if (isNewPermission && document.visibilityState === "visible") {
+        navigator.vibrate?.([120, 60, 120]);
+      }
+      if (
+        document.visibilityState !== "visible" &&
+        typeof Notification !== "undefined" &&
+        Notification.permission === "granted" &&
+        event && (
+          event.type === "assistant.completed" ||
+          event.type === "permission.requested" ||
+          event.type === "question.requested" ||
+          event.type === "turn.failed"
+        )
+      ) {
+        new Notification(crypto.identity.desktopName, {
+          body: event.type === "permission.requested" || event.type === "question.requested"
+            ? "Claude 正在等待你处理"
+            : "Bridge 有新的会话动态",
+          icon: "/icon-192.png",
+          tag: encrypted.id,
+        });
+      }
+      // Avoid flooding IndexedDB with stale catch-up events during a queued
+      // replay burst; refreshSnapshot() + resumeEvents() persists the rebased
+      // state right after reconnect.
+      const isStaleReplayEvent = (
+        message.payload.kind === "event" &&
+        Date.now() - message.header.sentAt > 60_000 &&
+        message.payload.event.type !== "permission.requested" &&
+        message.payload.event.type !== "question.requested"
+      );
+      if (
+        !isStaleReplayEvent &&
+        shouldPersistIncomingMessage(message.payload, stateRef.current.localTurns)
+      ) {
+        void (async () => {
+          const cachedEnvelope = shouldExtendLocalEvidenceCache(message.payload)
+            ? await crypto.encrypt(
+                message.payload,
+                message.header.from,
+                message.header.to,
+                Date.now(),
+                LOCAL_EVIDENCE_CACHE_TTL_MS,
+                message.header.to === "mobile" ? crypto.identity.deviceId : undefined,
+              )
+            : encrypted;
+          await bridgeVault.saveMessage(cachedEnvelope);
+        })().catch(() => undefined);
+      }
     });
+    diagLog("info", "bridge", `调用 socket.connect() -> ${relay.endpoint}`);
     socket.connect();
     connectionTimerRef.current = setTimeout(() => {
       if (!isCurrent() || socket.state === "connected") return;
+      diagLog("error", "bridge", `connectionTimer 超时: state=${socket.state} endpoint=${socket.endpoint}`);
       setState((current) => ({
         ...current,
         connectionIssue: {
@@ -1859,9 +1954,52 @@ export function useMobileBridge() {
   }, [handlePayload, refreshSessionList, refreshSnapshot, resumeEvents, updateHostCache]);
 
   useEffect(() => {
+    setDiagBridgeStateSummary({
+      loading: state.loading,
+      activeHostId: state.activeHostId,
+      desktopName: state.desktopName,
+      connection: state.connection,
+      desktopOnline: state.desktopOnline,
+      latestSeq: state.latestSeq,
+      pendingOutbound: state.pendingOutbound,
+      connectionIssue: state.connectionIssue,
+      transportMetrics: state.transportMetrics,
+      error: state.error,
+      hostsCount: state.hosts.length,
+      hosts: state.hosts.map((h) => ({
+        roomId: h.roomId,
+        desktopName: h.desktopName,
+        relayUrl: h.relayUrl,
+        needsRepair: h.needsRepair,
+        status: h.status,
+        path: h.path,
+      })),
+    });
+  }, [
+    state.activeHostId,
+    state.connection,
+    state.connectionIssue,
+    state.desktopName,
+    state.desktopOnline,
+    state.error,
+    state.hosts,
+    state.latestSeq,
+    state.loading,
+    state.pendingOutbound,
+    state.transportMetrics,
+  ]);
+
+  useEffect(() => {
     let active = true;
     void (async () => {
+      diagLog("info", "bridge", "读取本机已配对主机列表 (bridgeVault.listHosts)...");
       const hosts = await bridgeVault.listHosts();
+      diagLog("info", "bridge", `bridgeVault.listHosts 返回 ${hosts.length} 台主机`, hosts.map((h) => ({
+        roomId: h.roomId,
+        relayUrl: h.relayUrl,
+        desktopRelayUrl: h.desktopRelayUrl,
+        needsRepair: h.needsRepair,
+      })));
       if (!active) return;
       cryptoByRoomRef.current = new Map(hosts.map((host) => [host.roomId, host.crypto]));
       const summaries = await Promise.all(hosts.map(async (host) => {
@@ -1871,14 +2009,27 @@ export function useMobileBridge() {
       if (!active) return;
       setState((current) => ({ ...current, loading: false, hosts: summaries }));
       const lastRoomId = readLastActiveHost();
-      const lastHost = lastRoomId ? hosts.find((host) => host.roomId === lastRoomId) : undefined;
+      const lastHost = (lastRoomId ? hosts.find((host) => host.roomId === lastRoomId) : undefined)
+        ?? (hosts.length === 1 ? hosts[0] : undefined);
       if (lastRoomId && (!lastHost || lastHost.needsRepair)) writeLastActiveHost();
-      if (lastHost && !lastHost.needsRepair) await start(lastHost.crypto, false);
-    })().catch(() => setState((current) => ({
-      ...current,
-      loading: false,
-      error: "无法读取本机配对信息",
-    })));
+      if (lastHost && !lastHost.needsRepair) {
+        writeLastActiveHost(lastHost.roomId);
+        await start(lastHost.crypto, false);
+      } else {
+        diagLog("warn", "bridge", "未自动启动连接", {
+          lastRoomId,
+          hostsCount: hosts.length,
+          needsRepair: lastHost?.needsRepair,
+        });
+      }
+    })().catch((err) => {
+      diagLog("error", "bridge", "读取本机配对信息异常", err instanceof Error ? err.message : String(err));
+      setState((current) => ({
+        ...current,
+        loading: false,
+        error: "无法读取本机配对信息",
+      }));
+    });
     return () => {
       active = false;
       if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
@@ -1893,8 +2044,11 @@ export function useMobileBridge() {
     const socket = socketRef.current;
     if (!socket) return;
     socket.connect();
-    if (socket.state === "connected") void resumeEvents();
-  }, [resumeEvents]);
+    if (socket.state === "connected") {
+      void refreshSnapshot().catch(() => undefined);
+      void resumeEvents();
+    }
+  }, [refreshSnapshot, resumeEvents]);
 
   useEffect(() => onNativePushWake(reconnectAndResume), [reconnectAndResume]);
 

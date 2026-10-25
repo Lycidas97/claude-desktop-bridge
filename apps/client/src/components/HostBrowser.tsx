@@ -8,26 +8,20 @@ import { IconButton } from "./IconButton.js";
 import { ThemeMenu } from "./ThemeMenu.js";
 
 function statusLabel(host: PairedHost): string {
-  if (host.needsRepair) return "需要重新配对";
-  if (host.status === "running") return `${host.activeTurns} 个任务运行中`;
-  if (host.status === "attention") return "需要处理";
+  if (host.needsRepair) return "需重配";
+  if (host.status === "running") return `${host.activeTurns} 个任务中`;
+  if (host.status === "attention") return "待处理";
   if (host.status === "offline") return "离线";
-  return "待机";
-}
-
-function pathLabel(host: PairedHost): string {
-  if (host.path === "public-relay") return "安全中继";
-  if (host.path === "direct") return "直连";
-  return "局域网连接";
+  return "在线";
 }
 
 function lastSeenLabel(host: PairedHost): string {
   if (host.needsRepair) return "旧版配对，需要重新扫码";
   if (!host.lastSeenAt) return "已配对";
   const elapsed = Math.max(0, Date.now() - host.lastSeenAt);
-  if (elapsed < 60_000) return "刚刚在线";
-  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} 分钟前在线`;
-  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} 小时前在线`;
+  if (elapsed < 60_000) return "刚刚活跃";
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} 小时前`;
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(host.lastSeenAt);
 }
 
@@ -90,10 +84,6 @@ export function HostBrowser({
       </header>
 
       <section className="host-browser" aria-label="已配对的电脑">
-        <div className="host-browser-heading">
-          <div><span>Bridge</span><h1>主机</h1></div>
-          <b>{hosts.length}</b>
-        </div>
         <div className="host-rows">
           {hosts.map((host) => (
             <div className="host-row-shell" key={host.roomId}>
@@ -106,12 +96,12 @@ export function HostBrowser({
                 <span className="host-row-icon"><Laptop size={19} /></span>
                 <span className="host-row-copy">
                   <strong>{host.desktopName}</strong>
-                  <small>{openingHostId === host.roomId ? "正在连接" : `${pathLabel(host)} · ${lastSeenLabel(host)}`}</small>
+                  <small>{openingHostId === host.roomId ? "正在连接" : lastSeenLabel(host)}</small>
                 </span>
                 <span className={`host-row-state ${host.needsRepair || host.status === "attention" ? "warning" : host.status}`}>
                   <i />{statusLabel(host)}
                 </span>
-                <ChevronRight size={19} aria-hidden="true" />
+                <ChevronRight size={18} aria-hidden="true" />
               </button>
               <IconButton
                 className="host-remove-button"

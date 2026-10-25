@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Moon, Sun } from "lucide-react";
+import { Activity, Moon, Sun } from "lucide-react";
 import type { Theme, ThemeControl, ThemeFamily } from "../hooks/useTheme.js";
+import { setDiagDialogOpen, useDiagnosticLogs } from "../lib/diagnostics.js";
 import { IconButton } from "./IconButton.js";
 
 const MODES: Array<{ value: Theme; label: string; icon: typeof Sun }> = [
@@ -30,6 +31,7 @@ export function ThemeMenu({
 }) {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLDivElement>(null);
+  const { enabled: diagEnabled } = useDiagnosticLogs();
 
   useEffect(() => {
     if (!open) return;
@@ -89,6 +91,18 @@ export function ThemeMenu({
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            className="theme-menu-diag-btn"
+            onClick={() => {
+              setOpen(false);
+              setDiagDialogOpen(true);
+            }}
+          >
+            <Activity size={14} />
+            <span>连接诊断</span>
+            {diagEnabled && <b className="theme-menu-diag-badge">记录中</b>}
+          </button>
         </div>
       )}
     </div>

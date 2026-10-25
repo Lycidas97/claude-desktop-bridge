@@ -21,7 +21,7 @@ import type {
 } from "./transport.js";
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
-const HEARTBEAT_TIMEOUT_MS = 45_000;
+const HEARTBEAT_TIMEOUT_MS = 75_000;
 
 export interface RelayTransportOptions extends BridgeSocketOptions {
   path?: Exclude<BridgeTransportPath, "direct">;
@@ -56,6 +56,7 @@ export class RelayTransport implements BridgeTransport {
       if (state === "connected") {
         this.lastConnectedAt = Date.now();
         this.lastPongAt = Date.now();
+        this.lastError = undefined;
         this.startHeartbeat();
       } else if (state === "closed") {
         this.stopHeartbeat();
@@ -63,9 +64,10 @@ export class RelayTransport implements BridgeTransport {
       this.emitMetrics();
     });
     this.socket.onFrame((frame) => {
+      this.lastPongAt = Date.now();
       if (frame.type === "pong") {
         this.rttValue = Math.max(0, Date.now() - frame.at);
-        this.lastPongAt = Date.now();
+        this.lastError = undefined;
         this.emitMetrics();
       } else if (frame.type === "error") {
         this.lastError = `${frame.code}: ${frame.message}`;

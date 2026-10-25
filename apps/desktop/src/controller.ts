@@ -306,7 +306,15 @@ export class DesktopController extends EventEmitter {
     }
     this.eventLog.on("event", (event: BridgeEvent) => {
       this.emit("event", event);
-      void this.broadcast({ kind: "event", event });
+      if (
+        event.type === "session.desktop-registration" ||
+        (event.origin === "claude-desktop" && event.type === "evidence.updated")
+      ) {
+        this.queuePublish();
+        return;
+      }
+      const persistOffline = event.type === "permission.requested" || event.type === "question.requested";
+      void this.broadcast({ kind: "event", event }, !persistOffline);
       this.queuePublish();
     });
     this.broker.on("changed", () => void this.publish());
@@ -775,6 +783,8 @@ export class DesktopController extends EventEmitter {
           if (device.role !== "mobile") continue;
           if (this.acceptsDevice(device.deviceId)) {
             this.onlineDevices.add(device.deviceId);
+            if (this.isPairedDevice(device.deviceId)) void this.rememberDevice(device.deviceId);
+            void this.sendSnapshot(device.deviceId);
           } else {
             this.rejectUnknownDevice(device.deviceId);
           }
@@ -842,11 +852,12 @@ export class DesktopController extends EventEmitter {
       message.payload.method !== "artifact.preview" &&
       message.payload.method !== "artifact.transfer.read"
     ) this.cacheResponse(response);
+    const temporaryResponse = message.payload.method !== "turn.start" && message.payload.method !== "turn.steer";
     await this.sendToDevice(
       response,
       message.header.fromDeviceId,
       message.payload.method.startsWith("artifact.") ? ARTIFACT_TRANSFER_TTL_MS : undefined,
-      message.payload.method.startsWith("artifact."),
+      temporaryResponse,
     ).catch(() => undefined);
     this.socket?.ack([encrypted.id]);
     if (
@@ -889,13 +900,12 @@ export class DesktopController extends EventEmitter {
       return { desktopApps: await this.desktopAppStatuses(true) };
     }
     if (request.method === "snapshot.get") {
-      // Re-discover native sessions (debounced) so a phone pulling a snapshot
-      // also sees threads created directly inside the Desktop apps, instead
-      // of only the desktop's cached state.
+      // Trigger native session discovery asynchronously so snapshot.get returns
+      // immediately over the relay (<50ms) instead of blocking for 2-3s.
       const now = Date.now();
       if (now - this.lastDiscoveryRefreshAt >= DISCOVERY_REFRESH_MIN_INTERVAL_MS) {
         this.lastDiscoveryRefreshAt = now;
-        await this.runtimeSessions?.refreshDiscoveredSessions().catch(() => undefined);
+        void this.runtimeSessions?.refreshDiscoveredSessions().catch(() => undefined);
       }
       return { snapshot: await this.snapshot() };
     }
@@ -1415,13 +1425,38 @@ export class DesktopController extends EventEmitter {
           hasMore: false,
         };
       }
-      const events = this.eventLog.replay(
+      const limit = numberParam(params, "limit", 250);
+      const rawEvents = this.eventLog.replay(
         afterSeq,
-        numberParam(params, "limit", 500),
+        limit,
         stringParam(params, "sessionId", false),
       );
       const latestSeq = this.eventLog.latestSeq();
-      const nextSeq = events.at(-1)?.seq ?? afterSeq;
+      const events: BridgeEvent[] = [];
+      let scannedSeq = afterSeq;
+      let bytes = 0;
+      let truncatedByBytes = false;
+      const maxPageBytes = 40 * 1024;
+      for (const event of rawEvents) {
+        if (
+          event.type === "session.desktop-registration" ||
+          event.type === "evidence.started" ||
+          event.type === "evidence.updated"
+        ) {
+          scannedSeq = event.seq;
+          continue;
+        }
+        const serializedLength = JSON.stringify(event).length;
+        if (events.length > 0 && bytes + serializedLength > maxPageBytes) {
+          truncatedByBytes = true;
+          break;
+        }
+        events.push(event);
+        bytes += serializedLength;
+        scannedSeq = event.seq;
+      }
+      const reachedEnd = !truncatedByBytes && rawEvents.length < Math.max(1, Math.min(limit, 1_000));
+      const nextSeq = reachedEnd ? Math.max(scannedSeq, latestSeq) : scannedSeq;
       return {
         events,
         latestSeq,
@@ -1493,7 +1528,7 @@ export class DesktopController extends EventEmitter {
   }
 
   private async sendSnapshot(deviceId: string): Promise<void> {
-    await this.sendToDevice({ kind: "snapshot", snapshot: await this.snapshot() }, deviceId).catch(() => undefined);
+    await this.sendToDevice({ kind: "snapshot", snapshot: await this.snapshot() }, deviceId, undefined, true).catch(() => undefined);
   }
 
   private async sendToDevice(
@@ -1513,9 +1548,9 @@ export class DesktopController extends EventEmitter {
     });
   }
 
-  private async broadcast(payload: BridgePayload): Promise<void> {
+  private async broadcast(payload: BridgePayload, temporary = false): Promise<void> {
     const devices = this.config?.devices.filter((device) => device.pairedAt && !device.revokedAt) ?? [];
-    await Promise.allSettled(devices.map((device) => this.sendToDevice(payload, device.deviceId)));
+    await Promise.allSettled(devices.map((device) => this.sendToDevice(payload, device.deviceId, undefined, temporary)));
   }
 
   private registerPendingDevices(): void {
@@ -1642,7 +1677,7 @@ export class DesktopController extends EventEmitter {
     const previousKey = this.lastPublishedSessionKey;
     this.lastPublishedSessionKey = sessionKey;
     if (previousKey !== sessionKey) {
-      await this.broadcast({ kind: "snapshot", snapshot });
+      await this.broadcast({ kind: "snapshot", snapshot }, true);
     }
     return snapshot;
   }

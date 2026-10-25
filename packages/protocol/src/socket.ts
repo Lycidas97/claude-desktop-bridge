@@ -46,6 +46,7 @@ interface IncomingTransfer {
   parts: Array<Uint8Array<ArrayBuffer> | undefined>;
   received: number;
   byteLength: number;
+  staleTimer?: ReturnType<typeof setTimeout>;
 }
 
 function sameChunkTransfer(left: EncryptedEnvelopeChunk, right: EncryptedEnvelopeChunk): boolean {
@@ -129,6 +130,9 @@ export class BridgeSocket {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.ws?.close(1000, "client closed");
     this.ws = undefined;
+    for (const transfer of this.incomingTransfers.values()) {
+      if (transfer.staleTimer) clearTimeout(transfer.staleTimer);
+    }
     this.incomingTransfers.clear();
     for (const pending of this.missingChunkRequests.values()) {
       clearTimeout(pending.timer);
@@ -184,8 +188,9 @@ export class BridgeSocket {
       total,
       sha256: digest,
     };
-    const missing = await this.queryMissingChunks(manifest);
+    const missing = manifest.temporary ? undefined : await this.queryMissingChunks(manifest);
     const indexes = missing ?? Array.from({ length: total }, (_, index) => index);
+    let sentChunks = 0;
     for (const index of indexes) {
       if (index < 0 || index >= total) continue;
       if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
@@ -198,6 +203,10 @@ export class BridgeSocket {
         data: toBase64Url(serialized.slice(start, start + ENVELOPE_CHUNK_BYTES)),
       };
       this.ws.send(JSON.stringify({ type: "envelope-chunk", chunk }));
+      sentChunks += 1;
+      if (sentChunks % 4 === 0 && sentChunks < indexes.length) {
+        await new Promise((resolve) => setTimeout(resolve, 6));
+      }
     }
   }
 
@@ -326,11 +335,22 @@ export class BridgeSocket {
 
   private async acceptChunk(chunk: EncryptedEnvelopeChunk): Promise<EncryptedEnvelope | undefined> {
     this.pruneTransfers();
+    if (this.role === "mobile" && Date.now() - chunk.sentAt > 60_000) {
+      const existing = this.incomingTransfers.get(chunk.transferId);
+      if (existing?.staleTimer) clearTimeout(existing.staleTimer);
+      this.incomingTransfers.delete(chunk.transferId);
+      this.ack([chunk.transferId]);
+      return undefined;
+    }
     let transfer = this.incomingTransfers.get(chunk.transferId);
     if (!transfer) {
-      if (this.incomingTransfers.size >= 8) {
-        const oldest = this.incomingTransfers.keys().next().value as string | undefined;
-        if (oldest) this.incomingTransfers.delete(oldest);
+      if (this.incomingTransfers.size >= 64) {
+        const oldestKey = this.incomingTransfers.keys().next().value as string | undefined;
+        if (oldestKey) {
+          const oldest = this.incomingTransfers.get(oldestKey);
+          if (oldest?.staleTimer) clearTimeout(oldest.staleTimer);
+          this.incomingTransfers.delete(oldestKey);
+        }
       }
       transfer = {
         chunk,
@@ -341,16 +361,27 @@ export class BridgeSocket {
       this.incomingTransfers.set(chunk.transferId, transfer);
     }
     if (!sameChunkTransfer(transfer.chunk, chunk)) {
+      if (transfer.staleTimer) clearTimeout(transfer.staleTimer);
       this.incomingTransfers.delete(chunk.transferId);
       return undefined;
     }
+    if (transfer.staleTimer) clearTimeout(transfer.staleTimer);
     if (!transfer.parts[chunk.index]) {
       const part = fromBase64Url(chunk.data);
       transfer.parts[chunk.index] = part;
       transfer.received += 1;
       transfer.byteLength += part.byteLength;
     }
-    if (transfer.received !== chunk.total) return undefined;
+    if (transfer.received !== chunk.total) {
+      const transferId = chunk.transferId;
+      transfer.staleTimer = setTimeout(() => {
+        const pending = this.incomingTransfers.get(transferId);
+        if (!pending || pending.received === pending.chunk.total) return;
+        this.incomingTransfers.delete(transferId);
+        this.ack([transferId]);
+      }, 45_000);
+      return undefined;
+    }
     this.incomingTransfers.delete(chunk.transferId);
     if (transfer.byteLength > 16 * 1024 * 1024) return undefined;
     const serialized = new Uint8Array(transfer.byteLength);
@@ -419,8 +450,8 @@ export class BridgeSocket {
     }
     this.reconnectAttempt += 1;
     this.setState("reconnecting");
-    const delay = Math.min(30_000, 750 * 2 ** Math.min(this.reconnectAttempt - 1, 5));
-    const jitter = Math.floor(Math.random() * 400);
+    const delay = Math.min(8_000, 500 * 2 ** Math.min(this.reconnectAttempt - 1, 4));
+    const jitter = Math.floor(Math.random() * 250);
     this.reconnectTimer = setTimeout(() => this.connect(), delay + jitter);
   }
 

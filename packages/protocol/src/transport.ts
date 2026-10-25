@@ -111,7 +111,11 @@ export class TransportRouter implements BridgeTransport {
 
   connect(): void {
     this.stopped = false;
-    if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = undefined;
+    }
+    this.cycleAttempt = 0;
     if (this.active && this.active.state !== "closed") {
       this.active.connect();
       return;
@@ -287,7 +291,7 @@ export class TransportRouter implements BridgeTransport {
     this.activeIndex = -1;
     this.cycleAttempt += 1;
     this.emitState("reconnecting");
-    const delay = Math.min(30_000, 750 * 2 ** Math.min(this.cycleAttempt - 1, 5));
+    const delay = Math.min(8_000, 500 * 2 ** Math.min(this.cycleAttempt - 1, 4));
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined;
       if (!this.stopped) this.activate(0);

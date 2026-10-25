@@ -359,11 +359,19 @@ function migrateV2(config: DesktopConfigFileV2, defaults: DesktopConfigDefaults)
   };
 }
 
+const UPSTREAM_DEFAULT_RELAY = "wss://relay.alioxis.com/ws";
+
 function refreshV3Endpoints(
   config: DesktopConfigFileV3 | DesktopConfigFileV4,
   defaults: DesktopConfigDefaults,
 ): BridgeEndpoint[] {
-  const refreshed = config.relayEndpoints.map((endpoint, index) => {
+  const refreshed = config.relayEndpoints
+    .filter((endpoint) => !(
+      defaults.publicRelayUrl &&
+      defaults.publicRelayUrl !== UPSTREAM_DEFAULT_RELAY &&
+      endpoint.url === UPSTREAM_DEFAULT_RELAY
+    ))
+    .map((endpoint, index) => {
     // 0.9.5: heal fossil LAN endpoints. Pairing-era builds baked the LAN IP of
     // that day into the config; DHCP moves make it a dead candidate forever.
     // Rewrite any private-IPv4 LAN entry to the current primary address.

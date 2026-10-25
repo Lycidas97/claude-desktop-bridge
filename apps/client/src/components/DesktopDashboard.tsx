@@ -78,6 +78,7 @@ import {
   runtimeProviderLabel,
   sessionProfile,
   stoppableBridgeTask,
+  SubagentCard,
   supportsRuntimeHandoff,
 } from "./MobileWorkspace.js";
 import {
@@ -1165,6 +1166,12 @@ function DesktopSessions({
                   key={`evidence:${entry.evidence.id}`}
                   entering={streamEntering(`evidence:${entry.evidence.id}`)}
                   onOpen={() => setSessionView("evidence")}
+                />
+              ) : entry.item.subagent ? (
+                <SubagentCard
+                  item={entry.item}
+                  key={entry.item.id}
+                  entering={streamEntering(entry.item.id)}
                 />
               ) : (
                 <article

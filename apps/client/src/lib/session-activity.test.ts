@@ -44,6 +44,32 @@ describe("sessionActivity", () => {
     ]);
     expect(activity?.since).toBe(400);
   });
+
+  it("surfaces running subagents in the composer activity line even after an assistant message", () => {
+    const activity = sessionActivity({ turnState: "idle" }, [
+      { role: "user", createdAt: 100 },
+      {
+        role: "tool",
+        toolName: "Agent",
+        state: "running",
+        createdAt: 150,
+        subagent: {
+          agentId: "a1",
+          description: "Audit chapter 3 citations",
+          state: "running",
+          toolCount: 4,
+          startedAt: 150,
+          updatedAt: 180,
+        },
+      },
+      { role: "assistant", createdAt: 200 },
+    ]);
+    expect(activity).toEqual({
+      kind: "running",
+      label: "子代理运行中 · Audit chapter 3 citations (4 步)",
+      since: 100,
+    });
+  });
 });
 
 describe("formatElapsed", () => {

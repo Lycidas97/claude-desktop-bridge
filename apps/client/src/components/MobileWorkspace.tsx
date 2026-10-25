@@ -16,6 +16,7 @@ import type {
   BridgeRuntimeHandoffPreview,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
+  BridgeSubagentSummary,
   BridgeTransportMetrics,
   BridgeDesktopAppStatus,
   SocketState,
@@ -124,6 +125,102 @@ export function restorableSessionId(
   return candidate && sessions.some((session) => session.sessionId === candidate)
     ? candidate
     : undefined;
+}
+
+export function SubagentCard({
+  item,
+  entering = false,
+}: {
+  item: ConversationItem;
+  entering?: boolean;
+}) {
+  const subagent = item.subagent;
+  if (!subagent) return null;
+  const isRunning = subagent.state === "running";
+  const agentBadge = subagent.agentType && subagent.agentType !== "general-purpose"
+    ? `Subagent · ${subagent.agentType}`
+    : "Subagent";
+  const durationLabel = subagent.durationMs && subagent.durationMs >= 1_000
+    ? `${Math.round(subagent.durationMs / 1_000)}s`
+    : undefined;
+  const recentTools = subagent.recentTools ?? [];
+  const hasDetails = Boolean(subagent.reportText || subagent.latestText || recentTools.length > 0);
+  return (
+    <article
+      className={`conversation-subagent-card ${isRunning ? "is-running" : "is-completed"}${entering ? " is-entering" : ""}`}
+    >
+      <div className="subagent-card-header">
+        <div className="subagent-card-title-row">
+          <span className={`subagent-status-badge ${isRunning ? "running" : "completed"}`}>
+            {isRunning ? <LoaderCircle className="is-spinning" size={13} /> : <Check size={13} />}
+            <span>{agentBadge}</span>
+          </span>
+          <strong className="subagent-description">{subagent.description}</strong>
+        </div>
+        <div className="subagent-card-meta">
+          {subagent.toolCount > 0 && <span>{subagent.toolCount} 步</span>}
+          {durationLabel && <span>{durationLabel}</span>}
+          <span className={`subagent-state-label ${isRunning ? "running" : "completed"}`}>
+            {isRunning ? "运行中" : "已完成"}
+          </span>
+        </div>
+      </div>
+
+      {isRunning && (subagent.latestText || recentTools.length > 0) && (
+        <div className="subagent-live-progress">
+          {subagent.latestText && (
+            <div className="subagent-live-note">{subagent.latestText}</div>
+          )}
+          {recentTools.length > 0 && (
+            <div className="subagent-recent-tools">
+              {recentTools.slice(-3).map((toolLine, idx) => (
+                <span className="subagent-tool-pill" key={`${idx}:${toolLine}`}>
+                  {toolLine}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {hasDetails && (
+        <details className="subagent-details">
+          <summary>
+            <span>
+              {subagent.reportText
+                ? "查看子代理结论与执行记录"
+                : recentTools.length > 0
+                  ? `查看已执行的 ${recentTools.length} 个步骤`
+                  : "查看子代理进度"}
+            </span>
+            <ChevronDown size={14} className="subagent-details-chevron" aria-hidden="true" />
+          </summary>
+          <div className="subagent-details-body">
+            {recentTools.length > 0 && (
+              <div className="subagent-steps-section">
+                <div className="subagent-section-label">最近执行步骤</div>
+                <div className="subagent-recent-tools">
+                  {recentTools.map((toolLine, idx) => (
+                    <span className="subagent-tool-pill" key={`${idx}:${toolLine}`}>
+                      {toolLine}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {(subagent.reportText || subagent.latestText) && (
+              <div className="subagent-report-section">
+                <div className="subagent-section-label">
+                  {subagent.reportText ? "子代理回报" : "当前输出"}
+                </div>
+                <div className="conversation-text">{subagent.reportText ?? subagent.latestText ?? ""}</div>
+              </div>
+            )}
+          </div>
+        </details>
+      )}
+    </article>
+  );
 }
 
 export type ConversationTimelineEntry =
@@ -286,7 +383,10 @@ export function conversationItems(
       (item.role === "user" || item.role === "assistant") &&
       isClaudeTranscriptControlMessage(item.role, item.text)
     ) continue;
-    items.set(item.id, item);
+    const normalizedId = item.role === "tool" && !item.id.startsWith("tool:")
+      ? `tool:${item.id.replace(/:completed$/u, "")}`
+      : item.id;
+    items.set(normalizedId, normalizedId === item.id ? item : { ...item, id: normalizedId });
   }
   const sessionEvents = events.filter((event) => event.sessionId === sessionId);
   const acceptedRequests = new Set(
@@ -395,25 +495,57 @@ export function conversationItems(
     }
     if (event.type === "tool.started" || event.type === "tool.progress" || event.type === "tool.completed") {
       const id = event.itemId ?? event.eventId;
-      const existing = toolByItem.get(id);
-      const toolName = typeof event.data.toolName === "string"
+      const existing = toolByItem.get(id) ?? items.get(`tool:${id}`);
+      const toolName = typeof event.data.toolName === "string" && event.data.toolName
         ? event.data.toolName
         : existing?.toolName ?? "工具";
       const text = eventText(event) || existing?.text || toolName;
       const fileChanges = Array.isArray(event.data.fileChanges)
         ? event.data.fileChanges as BridgeFileChangeSummary[]
         : existing?.fileChanges;
+      const incomingSubagent = event.data.subagent && typeof event.data.subagent === "object"
+        ? event.data.subagent as BridgeSubagentSummary
+        : undefined;
+      const prevSubagent = existing?.subagent;
+      const subagent = incomingSubagent && prevSubagent
+        ? (
+            incomingSubagent.state === "completed" ||
+            (prevSubagent.state !== "completed" && incomingSubagent.updatedAt >= prevSubagent.updatedAt)
+          )
+          ? {
+              ...prevSubagent,
+              ...incomingSubagent,
+              toolCount: Math.max(prevSubagent.toolCount, incomingSubagent.toolCount),
+              ...(incomingSubagent.recentTools?.length
+                ? { recentTools: incomingSubagent.recentTools }
+                : prevSubagent.recentTools?.length
+                  ? { recentTools: prevSubagent.recentTools }
+                  : {}),
+              ...(incomingSubagent.latestText
+                ? { latestText: incomingSubagent.latestText }
+                : prevSubagent.latestText
+                  ? { latestText: prevSubagent.latestText }
+                  : {}),
+              ...(incomingSubagent.reportText
+                ? { reportText: incomingSubagent.reportText }
+                : prevSubagent.reportText
+                  ? { reportText: prevSubagent.reportText }
+                  : {}),
+            }
+          : prevSubagent
+        : incomingSubagent ?? prevSubagent;
       toolByItem.set(id, {
         id: `tool:${id}`,
         sessionId,
-        ...(event.turnId ? { turnId: event.turnId } : {}),
+        ...(event.turnId ? { turnId: event.turnId } : existing?.turnId ? { turnId: existing.turnId } : {}),
         role: "tool",
         toolName,
         text,
         createdAt: existing?.createdAt ?? event.timestamp,
         origin: "claude-host",
-        state: event.type === "tool.completed" ? "completed" : "running",
+        state: subagent?.state ?? (event.type === "tool.completed" ? "completed" : "running"),
         ...(fileChanges?.length ? { fileChanges } : {}),
+        ...(subagent ? { subagent } : {}),
       });
     }
     if (event.type === "turn.failed" || event.type === "turn.interrupted") {
@@ -1659,6 +1791,12 @@ export function MobileWorkspace({
               key={`evidence:${entry.evidence.id}`}
               entering={streamEntering(`evidence:${entry.evidence.id}`)}
               onOpen={() => setSessionView("evidence")}
+            />
+          ) : entry.item.subagent ? (
+            <SubagentCard
+              item={entry.item}
+              key={entry.item.id}
+              entering={streamEntering(entry.item.id)}
             />
           ) : (
             <article

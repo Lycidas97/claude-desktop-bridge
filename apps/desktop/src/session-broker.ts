@@ -18,6 +18,7 @@ import type {
   BridgeSessionConfiguration,
   BridgeSessionContextUsage,
   BridgeSessionInfo,
+  BridgeSubagentSummary,
   BridgeTurnState,
 } from "@bridge/protocol";
 import type {
@@ -40,6 +41,7 @@ import {
   findClaudeTranscriptFile,
   readClaudeSessionContextEstimate,
   readClaudeSessionHistory,
+  readClaudeSessionSubagents,
 } from "./claude-history.js";
 import {
   projectIdForCwd,
@@ -1512,18 +1514,34 @@ export class SessionBroker extends EventEmitter {
           createdAt: session.lastActivityAt,
           updatedAt: session.lastActivityAt,
         }];
-    const transcripts = await Promise.all(transcriptSources.map(async (lane) => ({
-      lane,
-      transcript: await readClaudeSessionHistory(
-        this.options.paths.projects,
-        lane.nativeSessionId!,
-        session.cwd,
-        {
-          limit: Math.min(10_000, pageSize * 3),
-          ...(before ? { before: { createdAt: before.at, id: before.id } } : {}),
-        },
-      ),
-    })));
+    const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId);
+    const runtimeState = this.runtimeStates.get(sessionId);
+    const processAlive = Boolean(
+      observed?.processAlive ||
+      observed?.activeTask ||
+      runtimeState?.active ||
+      this.options.observer.isDesktopBusy(sessionId),
+    );
+    const transcripts = await Promise.all(transcriptSources.map(async (lane) => {
+      const [transcript, subagents] = await Promise.all([
+        readClaudeSessionHistory(
+          this.options.paths.projects,
+          lane.nativeSessionId!,
+          session.cwd,
+          {
+            limit: Math.min(10_000, pageSize * 3),
+            ...(before ? { before: { createdAt: before.at, id: before.id } } : {}),
+          },
+        ),
+        readClaudeSessionSubagents(
+          this.options.paths.projects,
+          lane.nativeSessionId!,
+          session.cwd,
+          processAlive,
+        ),
+      ]);
+      return { lane, transcript, subagents };
+    }));
     const transcriptItems: BridgeHistoryItem[] = transcripts.flatMap(({ lane, transcript }) => (
       transcript.messages.map((message) => ({
         id: message.id,
@@ -1531,6 +1549,21 @@ export class SessionBroker extends EventEmitter {
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
+        origin: lane.providerKind === "claude-official"
+          ? "claude-desktop" as const
+          : "claude-host" as const,
+      }))
+    ));
+    const subagentItems: BridgeHistoryItem[] = transcripts.flatMap(({ lane, subagents }) => (
+      subagents.map((subagent) => ({
+        id: subagent.toolUseId ?? `subagent:${subagent.agentId}`,
+        sessionId,
+        role: "tool" as const,
+        toolName: "Agent",
+        text: `${subagent.description} (${subagent.toolCount} 步)`,
+        state: subagent.state,
+        subagent,
+        createdAt: subagent.startedAt,
         origin: lane.providerKind === "claude-official"
           ? "claude-desktop" as const
           : "claude-host" as const,
@@ -1555,11 +1588,45 @@ export class SessionBroker extends EventEmitter {
       const existing = merged.get(item.id);
       if (!existing || item.origin !== "claude-desktop") merged.set(item.id, item);
     }
+    for (const subItem of subagentItems) {
+      if (
+        before &&
+        !(subItem.createdAt < before.at || (subItem.createdAt === before.at && subItem.id < before.id))
+      ) continue;
+      const existing = merged.get(subItem.id);
+      if (!existing) {
+        merged.set(subItem.id, subItem);
+      } else if (subItem.subagent) {
+        merged.set(subItem.id, {
+          ...existing,
+          toolName: existing.toolName || "Agent",
+          text: subItem.text,
+          state: subItem.state,
+          subagent: subItem.subagent,
+        });
+      }
+    }
     const all = [...merged.values()]
       .sort(historyOrder)
       .filter((item) => !before || item.createdAt < before.at || (item.createdAt === before.at && item.id < before.id));
-    const items = all.slice(-pageSize);
-    const hasMore = transcripts.some(({ transcript }) => transcript.truncated) || all.length > items.length;
+    let startIndex = all.length;
+    let messageCount = 0;
+    let totalBytes = 0;
+    const maxPageBytes = 175_000;
+    while (startIndex > 0 && messageCount < pageSize) {
+      const candidate = all[startIndex - 1]!;
+      const itemBytes = Buffer.byteLength(JSON.stringify(candidate), "utf8");
+      if (totalBytes + itemBytes > maxPageBytes && startIndex < all.length) {
+        break;
+      }
+      startIndex -= 1;
+      totalBytes += itemBytes;
+      if (candidate.role !== "tool") {
+        messageCount += 1;
+      }
+    }
+    const items = all.slice(startIndex);
+    const hasMore = transcripts.some(({ transcript }) => Boolean(transcript.nextCursor)) || startIndex > 0;
     return {
       sessionId,
       items,
@@ -2335,6 +2402,7 @@ export class SessionBroker extends EventEmitter {
           at: event.at,
         }));
       }
+      const subagent = this.initialSubagentSummary(event.toolName, event.itemId, event.input, event.at);
       await this.record({
         sessionId: event.sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
@@ -2346,6 +2414,7 @@ export class SessionBroker extends EventEmitter {
           toolName: event.toolName,
           input: event.input,
           summary: this.toolSummary(event.toolName, event.input),
+          ...(subagent ? { subagent } : {}),
         },
       });
       return;
@@ -2374,6 +2443,52 @@ export class SessionBroker extends EventEmitter {
           at: event.at,
         }));
       }
+      const outputText = this.extractToolOutputText(event.output);
+      if (
+        (toolName === "Agent" || toolName === "Task") &&
+        outputText &&
+        /Async agent launched successfully/iu.test(outputText)
+      ) {
+        const startedEvent = this.options.eventLog.latestItem(event.sessionId, "tool.started", event.itemId);
+        const prevSubagent = startedEvent?.data.subagent as BridgeSubagentSummary | undefined;
+        const agentIdMatch = outputText.match(/agentId:\s*([^\s(]+)/u);
+        const subagent: BridgeSubagentSummary = {
+          agentId: agentIdMatch?.[1] ?? prevSubagent?.agentId ?? event.itemId,
+          toolUseId: event.itemId,
+          ...(prevSubagent?.agentType ? { agentType: prevSubagent.agentType } : {}),
+          description: prevSubagent?.description ?? "后台子代理运行中",
+          state: "running",
+          toolCount: prevSubagent?.toolCount ?? 0,
+          startedAt: prevSubagent?.startedAt ?? event.at,
+          updatedAt: event.at,
+        };
+        await this.record({
+          sessionId: event.sessionId,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          itemId: event.itemId,
+          timestamp: subagent.startedAt,
+          origin: eventOrigin,
+          type: "tool.progress",
+          data: {
+            toolName,
+            summary: `${subagent.description} (后台运行中)`,
+            subagent,
+          },
+        });
+        return;
+      }
+      const startedEvent = this.options.eventLog.latestItem(event.sessionId, "tool.started", event.itemId);
+      const progressEvent = this.options.eventLog.latestItem(event.sessionId, "tool.progress", event.itemId);
+      const prevSubagent = (progressEvent?.data.subagent ?? startedEvent?.data.subagent) as BridgeSubagentSummary | undefined;
+      const completedSubagent: BridgeSubagentSummary | undefined = prevSubagent
+        ? {
+            ...prevSubagent,
+            state: "completed",
+            updatedAt: event.at,
+            durationMs: Math.max(0, event.at - prevSubagent.startedAt),
+            ...(outputText && !prevSubagent.reportText ? { reportText: outputText } : {}),
+          }
+        : undefined;
       await this.record({
         sessionId: event.sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
@@ -2381,7 +2496,13 @@ export class SessionBroker extends EventEmitter {
         timestamp: event.at,
         origin: eventOrigin,
         type: "tool.completed",
-        data: { toolName, summary: toolName ? `${toolName} completed` : "Tool completed" },
+        data: {
+          toolName,
+          summary: completedSubagent
+            ? `${completedSubagent.description}${completedSubagent.toolCount ? ` (${completedSubagent.toolCount} 步)` : ""}`
+            : toolName ? `${toolName} completed` : "Tool completed",
+          ...(completedSubagent ? { subagent: completedSubagent } : {}),
+        },
       });
       return;
     }
@@ -2908,10 +3029,59 @@ export class SessionBroker extends EventEmitter {
   private toolSummary(toolName: string, input: unknown): string {
     if (input && typeof input === "object") {
       const value = input as Record<string, unknown>;
-      const target = value.command ?? value.file_path ?? value.path ?? value.query;
+      const target = value.description ?? value.command ?? value.file_path ?? value.path ?? value.query ?? value.prompt;
       if (typeof target === "string") return `${toolName}: ${compact(target, 120)}`;
     }
     return `${toolName} started`;
+  }
+
+  private initialSubagentSummary(
+    toolName: string,
+    itemId: string,
+    input: unknown,
+    startedAt: number,
+  ): BridgeSubagentSummary | undefined {
+    if (toolName !== "Agent" && toolName !== "Task") return undefined;
+    const record = input && typeof input === "object" ? input as Record<string, unknown> : {};
+    const description = typeof record.description === "string" && record.description.trim()
+      ? compact(record.description, 120)
+      : typeof record.prompt === "string" && record.prompt.trim()
+        ? compact(record.prompt, 120)
+        : "Subagent";
+    const agentType = typeof record.subagent_type === "string" && record.subagent_type.trim()
+      ? record.subagent_type.trim()
+      : undefined;
+    return {
+      agentId: itemId,
+      toolUseId: itemId,
+      ...(agentType ? { agentType } : {}),
+      description,
+      state: "running",
+      toolCount: 0,
+      startedAt,
+      updatedAt: startedAt,
+    };
+  }
+
+  private extractToolOutputText(output: unknown): string | undefined {
+    if (typeof output === "string") return output.trim() || undefined;
+    if (Array.isArray(output)) {
+      const parts = output
+        .map((entry) => {
+          if (typeof entry === "string") return entry;
+          if (entry && typeof entry === "object" && typeof (entry as { text?: unknown }).text === "string") {
+            return (entry as { text: string }).text;
+          }
+          return "";
+        })
+        .filter(Boolean);
+      const joined = parts.join("\n").trim();
+      return joined || undefined;
+    }
+    if (output && typeof output === "object" && typeof (output as { text?: unknown }).text === "string") {
+      return ((output as { text: string }).text).trim() || undefined;
+    }
+    return undefined;
   }
 
   private sortPending(): void {

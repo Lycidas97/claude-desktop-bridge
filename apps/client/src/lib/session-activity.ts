@@ -1,10 +1,11 @@
-import type { BridgeSessionInfo, BridgeTurnState } from "@bridge/protocol";
+import type { BridgeSessionInfo, BridgeSubagentSummary, BridgeTurnState } from "@bridge/protocol";
 
 export interface SessionActivityItem {
   role: string;
   state?: BridgeTurnState | string;
   createdAt: number;
   toolName?: string;
+  subagent?: BridgeSubagentSummary;
 }
 
 export interface SessionActivity {
@@ -25,11 +26,21 @@ export function sessionActivity(
   items: readonly SessionActivityItem[],
 ): SessionActivity | undefined {
   if (!session) return undefined;
+  const lastUser = [...items].reverse().find((item) => item.role === "user");
+  const since = lastUser?.createdAt;
+  const runningSubagents = items.filter(
+    (item) => item.role === "tool" && item.subagent?.state === "running",
+  );
+  if (runningSubagents.length > 0) {
+    const latest = runningSubagents[runningSubagents.length - 1]!.subagent!;
+    const label = runningSubagents.length === 1
+      ? `子代理运行中 · ${latest.description}${latest.toolCount ? ` (${latest.toolCount} 步)` : ""}`
+      : `${runningSubagents.length} 个子代理运行中 · ${latest.description}`;
+    return { kind: "running", label, ...(since ?? latest.startedAt ? { since: since ?? latest.startedAt } : {}) };
+  }
   if (session.turnState === "queued") return { kind: "queued", label: "排队等待中" };
   if (session.turnState !== "running") return undefined;
   const last = items[items.length - 1];
-  const lastUser = [...items].reverse().find((item) => item.role === "user");
-  const since = lastUser?.createdAt;
   if (last?.role === "tool" && last.state === "running") {
     return { kind: "running", label: `正在运行 · ${last.toolName ?? "工具"}`, ...(since ? { since } : {}) };
   }

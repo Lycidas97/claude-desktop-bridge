@@ -632,6 +632,21 @@ export interface BridgePermissionPolicy {
   source: BridgePermissionPolicySource;
 }
 
+export interface BridgeSubagentSummary {
+  agentId: string;
+  toolUseId?: string;
+  agentType?: string;
+  description: string;
+  state: "running" | "completed" | "failed";
+  toolCount: number;
+  recentTools?: string[];
+  latestText?: string;
+  reportText?: string;
+  startedAt: number;
+  updatedAt: number;
+  durationMs?: number;
+}
+
 export interface BridgeHistoryItem {
   id: string;
   sessionId: string;
@@ -648,6 +663,7 @@ export interface BridgeHistoryItem {
    * aggregate edits Codex-style instead of rendering one noisy card each.
    */
   fileChanges?: BridgeFileChangeSummary[];
+  subagent?: BridgeSubagentSummary;
 }
 
 export interface BridgeFileChangeSummary {

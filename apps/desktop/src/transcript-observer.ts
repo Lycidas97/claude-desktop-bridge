@@ -4,8 +4,10 @@ import { stat } from "node:fs/promises";
 import type { ClaudeHistoryMessage } from "@bridge/protocol";
 import {
   ClaudeTranscriptEvidenceCursor,
+  getClaudeSubagentsMtimeMs,
   isClaudeTranscriptAtTurnBoundary,
   parseClaudeTranscriptSnapshot,
+  readClaudeTranscriptSubagents,
 } from "./claude-history.js";
 import type { ObservedDesktopEvidence } from "./evidence-manager.js";
 import {
@@ -43,6 +45,8 @@ export class TranscriptObserver extends EventEmitter {
   private readonly transcriptTurnBoundaries = new Map<string, boolean>();
   private readonly externalWriteVersions = new Map<string, number>();
   private readonly knownEvidence = new Map<string, string>();
+  private readonly knownSubagents = new Map<string, Map<string, string>>();
+  private readonly runningSubagentSessions = new Set<string>();
   private readonly sessionAliases = new Map<string, string>();
   private evidenceFailureReported = false;
   private readonly evidenceCursors = new Map<string, {
@@ -76,7 +80,7 @@ export class TranscriptObserver extends EventEmitter {
   isDesktopBusy(sessionId: string, now = Date.now()): boolean {
     const session = this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
     if (!session) return false;
-    if (session.activeTask) return true;
+    if (session.activeTask || this.runningSubagentSessions.has(sessionId)) return true;
     if (!session.processAlive) return false;
     const atTurnBoundary = this.transcriptTurnBoundaries.get(sessionId);
     if (atTurnBoundary !== undefined) return !atTurnBoundary;
@@ -129,14 +133,20 @@ export class TranscriptObserver extends EventEmitter {
           if (session.transcriptPath && !this.evidenceCursors.has(session.sessionId)) {
             this.evidenceBackfill.add(session.sessionId);
           }
+          const subagentsMtimeMs = session.transcriptPath && initialCandidates.has(session.sessionId)
+            ? await getClaudeSubagentsMtimeMs(session.transcriptPath)
+            : 0;
+          const combinedMtimeMs = Math.max(session.transcriptMtimeMs, subagentsMtimeMs);
+          session.transcriptMtimeMs = combinedMtimeMs;
+          session.lastActivityAt = Math.max(session.lastActivityAt, combinedMtimeMs);
           const previousMtime = this.lastMtime.get(session.sessionId);
-          this.lastMtime.set(session.sessionId, session.transcriptMtimeMs);
+          this.lastMtime.set(session.sessionId, combinedMtimeMs);
           if (
             initialCandidates.has(session.sessionId) &&
             !this.knownUserMessages.has(session.sessionId)
           ) {
             await this.primeTranscript(session);
-          } else if (previousMtime !== undefined && previousMtime !== session.transcriptMtimeMs) {
+          } else if (previousMtime !== undefined && previousMtime !== combinedMtimeMs) {
             this.lastChangedAt.set(session.sessionId, now);
             await this.observeTranscript(session);
           }
@@ -161,10 +171,16 @@ export class TranscriptObserver extends EventEmitter {
       Boolean(session.transcriptPath) &&
       (index < 24 || session.processAlive || session.activeTask)
     ));
-    const mtimes = await Promise.all(candidates.map(async (session) => ({
-      session,
-      mtimeMs: await stat(session.transcriptPath!).then((metadata) => metadata.mtimeMs, () => 0),
-    })));
+    const mtimes = await Promise.all(candidates.map(async (session) => {
+      const [mainMtime, subMtime] = await Promise.all([
+        stat(session.transcriptPath!).then((metadata) => metadata.mtimeMs, () => 0),
+        getClaudeSubagentsMtimeMs(session.transcriptPath!),
+      ]);
+      return {
+        session,
+        mtimeMs: Math.max(mainMtime, subMtime),
+      };
+    }));
     let changed = false;
     for (const { session, mtimeMs } of mtimes) {
       const previousMtime = this.lastMtime.get(session.sessionId);
@@ -210,13 +226,17 @@ export class TranscriptObserver extends EventEmitter {
     for (const message of result.messages) {
       if (message.role === "user") continue;
       const persisted = this.options.eventLog.latestItem(session.sessionId, "session.observed", message.id);
-      const previousText = known.get(message.id)
-        ?? (typeof persisted?.data.text === "string" ? persisted.data.text : undefined);
-      if (previousText === message.text) continue;
-      known.set(message.id, message.text);
+      const persistedSig = persisted
+        ? `${typeof persisted.data.text === "string" ? persisted.data.text : ""}\0${persisted.data.interactivePrompt ? JSON.stringify(persisted.data.interactivePrompt) : ""}`
+        : undefined;
+      const currentSig = `${message.text}\0${message.interactivePrompt ? JSON.stringify(message.interactivePrompt) : ""}`;
+      const previousSig = known.get(message.id) ?? persistedSig;
+      if (previousSig === currentSig) continue;
+      known.set(message.id, currentSig);
       await this.appendObserved(session, message);
     }
     this.knownMessages.set(session.sessionId, known);
+    await this.observeSubagents(session, false);
     await this.observeEvidence(session);
   }
 
@@ -226,13 +246,59 @@ export class TranscriptObserver extends EventEmitter {
     this.updateTurnBoundary(session.sessionId, result.atTurnBoundary);
     this.knownMessages.set(
       session.sessionId,
-      new Map(result.messages.map((message) => [message.id, message.text])),
+      new Map(result.messages.map((message) => [
+        message.id,
+        `${message.text}\0${message.interactivePrompt ? JSON.stringify(message.interactivePrompt) : ""}`,
+      ])),
     );
     this.knownUserMessages.set(
       session.sessionId,
       new Map(result.userMessages.map((message) => [message.id, message.text])),
     );
+    await this.observeSubagents(session, true);
     await this.observeEvidence(session);
+  }
+
+  private async observeSubagents(session: ObservedClaudeSession, primeOnly: boolean): Promise<void> {
+    if (!session.transcriptPath) return;
+    const subagents = await readClaudeTranscriptSubagents(
+      session.transcriptPath,
+      Boolean(session.processAlive || session.activeTask),
+    );
+    const anyRunning = subagents.some((subagent) => subagent.state === "running");
+    if (anyRunning) {
+      this.runningSubagentSessions.add(session.sessionId);
+    } else {
+      this.runningSubagentSessions.delete(session.sessionId);
+    }
+    const known = this.knownSubagents.get(session.sessionId) ?? new Map<string, string>();
+    const sessionId = this.sessionAliases.get(session.sessionId) ?? session.sessionId;
+    for (const subagent of subagents) {
+      const itemId = subagent.toolUseId ?? `subagent:${subagent.agentId}`;
+      const signature = JSON.stringify({
+        state: subagent.state,
+        toolCount: subagent.toolCount,
+        recentTools: subagent.recentTools,
+        latestText: subagent.latestText,
+        reportText: subagent.reportText,
+      });
+      if (known.get(itemId) === signature) continue;
+      known.set(itemId, signature);
+      if (primeOnly && subagent.state !== "running") continue;
+      await this.options.eventLog.append({
+        sessionId,
+        itemId,
+        timestamp: subagent.startedAt,
+        origin: "claude-desktop",
+        type: subagent.state === "running" ? "tool.progress" : "tool.completed",
+        data: {
+          toolName: "Agent",
+          summary: `${subagent.description} (${subagent.toolCount} 步)`,
+          subagent,
+        },
+      });
+    }
+    this.knownSubagents.set(session.sessionId, known);
   }
 
   private updateTurnBoundary(sessionId: string, atTurnBoundary: boolean | undefined): void {
@@ -316,7 +382,11 @@ export class TranscriptObserver extends EventEmitter {
       timestamp: message.createdAt || Date.now(),
       origin: "claude-desktop",
       type,
-      data: { role: message.role, text: message.text },
+      data: {
+        role: message.role,
+        text: message.text,
+        ...(message.interactivePrompt ? { interactivePrompt: message.interactivePrompt } : {}),
+      },
     });
   }
 }

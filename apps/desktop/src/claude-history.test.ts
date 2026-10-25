@@ -10,6 +10,7 @@ import {
   parseClaudeTranscriptEvidence,
   readClaudeSessionContextEstimate,
   readClaudeSessionHistory,
+  readClaudeTranscriptSubagents,
   readClaudeTranscriptUserMessages,
 } from "./claude-history.js";
 
@@ -203,6 +204,55 @@ describe("Claude transcript history", () => {
     await expect(readClaudeTranscriptUserMessages(transcript)).resolves.toEqual([
       expect.objectContaining({ id: "user-1", text: "先开始工作" }),
       expect.objectContaining({ id: "user-2", text: "继续完成剩余内容" }),
+    ]);
+  });
+
+  it("bridges across compact_boundary and re-emitted preservedSegment nodes without losing earlier history", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-history-compact-boundary-"));
+    directories.push(root);
+    const transcript = join(root, "compact-boundary.jsonl");
+    await writeFile(transcript, [
+      line({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "第一轮需求" } }),
+      line({ type: "assistant", uuid: "assistant-1", parentUuid: "user-1", message: { role: "assistant", content: "第一轮回复" } }),
+      line({ type: "user", uuid: "user-2", parentUuid: "assistant-1", message: { role: "user", content: "第二轮需求" } }),
+      line({ type: "assistant", uuid: "assistant-2", parentUuid: "user-2", message: { role: "assistant", content: "第二轮回复" } }),
+      line({
+        type: "system",
+        subtype: "compact_boundary",
+        uuid: "boundary-1",
+        parentUuid: null,
+        logicalParentUuid: "ephemeral-attachment-id",
+        compactMetadata: {
+          trigger: "auto",
+          preservedSegment: {
+            headUuid: "user-2",
+            anchorUuid: "compact-summary-1",
+            tailUuid: "assistant-2",
+          },
+        },
+      }),
+      line({
+        type: "user",
+        uuid: "compact-summary-1",
+        parentUuid: "boundary-1",
+        isCompactSummary: true,
+        message: { role: "user", content: "This session is being continued from a previous conversation." },
+      }),
+      // Re-emitted preserved segment on resume with headUuid.parentUuid rewritten to anchorUuid
+      line({ type: "user", uuid: "user-2", parentUuid: "compact-summary-1", message: { role: "user", content: "第二轮需求" } }),
+      line({ type: "assistant", uuid: "assistant-2", parentUuid: "user-2", message: { role: "assistant", content: "第二轮回复" } }),
+      line({ type: "user", uuid: "user-3", parentUuid: "assistant-2", message: { role: "user", content: "压缩后的第三轮需求" } }),
+      line({ type: "assistant", uuid: "assistant-3", parentUuid: "user-3", message: { role: "assistant", content: "第三轮回复" } }),
+    ].join("\n"), "utf8");
+
+    const result = await parseClaudeTranscript(transcript);
+    expect(result.messages).toEqual([
+      expect.objectContaining({ id: "user-1", role: "user", text: "第一轮需求" }),
+      expect.objectContaining({ id: "assistant-1", role: "assistant", text: "第一轮回复" }),
+      expect.objectContaining({ id: "user-2", role: "user", text: "第二轮需求" }),
+      expect.objectContaining({ id: "assistant-2", role: "assistant", text: "第二轮回复" }),
+      expect.objectContaining({ id: "user-3", role: "user", text: "压缩后的第三轮需求" }),
+      expect.objectContaining({ id: "assistant-3", role: "assistant", text: "第三轮回复" }),
     ]);
   });
 
@@ -540,5 +590,304 @@ describe("Claude transcript history", () => {
     await rename(transcript, `${transcript}.old`);
     await writeFile(transcript, replacement.replaceAll("user-2", "user-3"), "utf8");
     expect((await cursor.read(transcript))[0]?.id).toBe("user-3");
+  });
+
+  it("parses running and completed subagent progress and reports from subagents directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-subagents-"));
+    directories.push(root);
+    const transcript = join(root, "session-sub.jsonl");
+    const subagentsDir = join(root, "session-sub", "subagents");
+    await mkdir(subagentsDir, { recursive: true });
+    await writeFile(transcript, line({
+      type: "user",
+      uuid: "user-1",
+      parentUuid: null,
+      message: { role: "user", content: "Run subagents" },
+    }), "utf8");
+
+    await writeFile(join(subagentsDir, "agent-a111.meta.json"), JSON.stringify({
+      agentType: "Explore",
+      description: "Scan repository layout",
+      toolUseId: "toolu_sub_1",
+      finished: false,
+    }), "utf8");
+    await writeFile(join(subagentsDir, "agent-a111.jsonl"), [
+      line({
+        type: "user",
+        uuid: "sub1-u1",
+        timestamp: "2026-07-22T10:00:01.000Z",
+        message: { role: "user", content: "Find key files" },
+      }),
+      line({
+        type: "assistant",
+        uuid: "sub1-a1",
+        timestamp: "2026-07-22T10:00:03.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Checking desktop broker and history parser..." },
+            { type: "tool_use", id: "t1", name: "Read", input: { file_path: "apps/desktop/src/claude-history.ts" } },
+          ],
+        },
+      }),
+    ].join("\n"), "utf8");
+
+    await writeFile(join(subagentsDir, "agent-a222.meta.json"), JSON.stringify({
+      agentType: "general-purpose",
+      description: "Verify citation claims",
+      toolUseId: "toolu_sub_2",
+      finished: true,
+    }), "utf8");
+    await writeFile(join(subagentsDir, "agent-a222.jsonl"), [
+      line({
+        type: "user",
+        uuid: "sub2-u1",
+        timestamp: "2026-07-22T10:00:02.000Z",
+        message: { role: "user", content: "Verify claims" },
+      }),
+      line({
+        type: "assistant",
+        uuid: "sub2-a1",
+        timestamp: "2026-07-22T10:00:05.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "t2", name: "Bash", input: { command: "pytest tests/" } },
+            { type: "tool_use", id: "t3", name: "SubagentHandback", input: { message: "## Verification Summary\nAll 12 claims verified." } },
+          ],
+        },
+      }),
+    ].join("\n"), "utf8");
+
+    const subagents = await readClaudeTranscriptSubagents(transcript, true);
+    expect(subagents).toHaveLength(2);
+    expect(subagents[0]).toMatchObject({
+      agentId: "a111",
+      toolUseId: "toolu_sub_1",
+      agentType: "Explore",
+      description: "Scan repository layout",
+      state: "running",
+      toolCount: 1,
+      recentTools: ["Read claude-history.ts"],
+      latestText: "Checking desktop broker and history parser...",
+    });
+    expect(subagents[1]).toMatchObject({
+      agentId: "a222",
+      toolUseId: "toolu_sub_2",
+      agentType: "general-purpose",
+      description: "Verify citation claims",
+      state: "completed",
+      toolCount: 1,
+      recentTools: ["Bash pytest"],
+      reportText: "## Verification Summary\nAll 12 claims verified.",
+    });
+  });
+
+  it("extracts interactive wrap-up and question cards and tracks selected user answers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-interactive-"));
+    directories.push(root);
+    const transcript = join(root, "interactive.jsonl");
+    await writeFile(transcript, [
+      line({
+        type: "user",
+        uuid: "u-1",
+        parentUuid: null,
+        message: { role: "user", content: "审查第五章方案" },
+      }),
+      line({
+        type: "assistant",
+        uuid: "a-wrap-1",
+        parentUuid: "u-1",
+        message: {
+          role: "assistant",
+          content: [{
+            type: "tool_use",
+            id: "toolu_wrap_1",
+            name: "mcp__ccd_turn__wrap_up",
+            input: {
+              recap: "已完成第五章草案核查，尚未改动文件。",
+              ask: "是否按草案冻结判读规则？",
+              actions: [
+                { label: "按草案冻结", message: "确认按草案冻结判读规则并继续。" },
+                { label: "先改规则", message: "我想先调整几条规则。" },
+              ],
+            },
+          }],
+        },
+      }),
+      line({
+        type: "user",
+        uuid: "u-wrap-res-1",
+        parentUuid: "a-wrap-1",
+        toolUseResult: [{ type: "text", text: "Shown in the next-step box." }],
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_wrap_1", content: "Shown in the next-step box." }],
+        },
+      }),
+      line({
+        type: "assistant",
+        uuid: "a-closing-1",
+        parentUuid: "u-wrap-res-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "以上是第五章核查结论。" }],
+          stop_reason: "end_turn",
+        },
+      }),
+      line({
+        type: "user",
+        uuid: "u-2",
+        parentUuid: "a-closing-1",
+        message: { role: "user", content: "确认按草案冻结判读规则并继续。" },
+      }),
+      line({
+        type: "assistant",
+        uuid: "a-wrap-2",
+        parentUuid: "u-2",
+        message: {
+          role: "assistant",
+          content: [{
+            type: "tool_use",
+            id: "toolu_wrap_2",
+            name: "mcp__ccd_turn__wrap_up",
+            input: {
+              blocked: true,
+              recap: "规则已冻结，准备写入正式稿。",
+              ask: "是否立即写入正式稿并编译？",
+              actions: [
+                { label: "确认写入并编译", message: "请写入正式稿并运行编译检查。" },
+              ],
+            },
+          }],
+        },
+      }),
+      line({
+        type: "assistant",
+        uuid: "a-closing-2",
+        parentUuid: "a-wrap-2",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "对照表已就绪，请确认。" }],
+          stop_reason: "end_turn",
+        },
+      }),
+    ].join("\n"), "utf8");
+
+    const parsed = await parseClaudeTranscript(transcript);
+    expect(parsed.messages).toHaveLength(4);
+    expect(parsed.messages[1]).toMatchObject({
+      id: "a-closing-1",
+      role: "assistant",
+      text: "以上是第五章核查结论。",
+      interactivePrompt: {
+        kind: "wrap-up",
+        recap: "已完成第五章草案核查，尚未改动文件。",
+        ask: "是否按草案冻结判读规则？",
+        answered: true,
+        actions: [
+          { label: "按草案冻结", message: "确认按草案冻结判读规则并继续。", recommended: true, selected: true },
+          { label: "先改规则", message: "我想先调整几条规则。" },
+        ],
+      },
+    });
+    expect(parsed.messages[3]).toMatchObject({
+      id: "a-closing-2",
+      role: "assistant",
+      text: "对照表已就绪，请确认。",
+      interactivePrompt: {
+        kind: "wrap-up",
+        recap: "规则已冻结，准备写入正式稿。",
+        ask: "是否立即写入正式稿并编译？",
+        blocked: true,
+        actions: [
+          { label: "确认写入并编译", message: "请写入正式稿并运行编译检查。", recommended: true },
+        ],
+      },
+    });
+    expect(parsed.messages[3]?.interactivePrompt?.answered).toBeUndefined();
+  });
+
+  it("recognizes turn boundary on forked sessions after local /model, /compact, and attachment records", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-fork-boundary-"));
+    directories.push(root);
+    const transcript = join(root, "forked.jsonl");
+    await writeFile(transcript, [
+      line({
+        type: "user",
+        uuid: "u-1",
+        parentUuid: null,
+        message: { role: "user", content: "整理第四章叙事骨架" },
+      }),
+      line({
+        type: "assistant",
+        uuid: "a-1",
+        parentUuid: "u-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "第四章叙事骨架已完成。" }],
+          stop_reason: "end_turn",
+        },
+      }),
+      line({
+        type: "user",
+        uuid: "u-cmd-caveat",
+        parentUuid: "a-1",
+        isMeta: true,
+        message: { role: "user", content: "<local-command-caveat>Command run locally</local-command-caveat>" },
+      }),
+      line({
+        type: "user",
+        uuid: "u-cmd-model",
+        parentUuid: "u-cmd-caveat",
+        message: { role: "user", content: "<command-name>/model</command-name>\n<command-message>model</command-message>" },
+      }),
+      line({
+        type: "user",
+        uuid: "u-cmd-stdout",
+        parentUuid: "u-cmd-model",
+        message: { role: "user", content: "<local-command-stdout>Set model to `mythos-magpie`</local-command-stdout>" },
+      }),
+      line({
+        type: "system",
+        subtype: "compact_boundary",
+        uuid: "sys-compact",
+        parentUuid: null,
+        logicalParentUuid: "u-cmd-stdout",
+        content: "Conversation compacted",
+      }),
+      line({
+        type: "user",
+        uuid: "u-compact-summary",
+        parentUuid: "sys-compact",
+        isCompactSummary: true,
+        message: { role: "user", content: "This session is being continued from a previous conversation..." },
+      }),
+      line({
+        type: "user",
+        uuid: "u-compact-cmd",
+        parentUuid: "u-cmd-stdout",
+        message: { role: "user", content: "<command-name>/compact</command-name>" },
+      }),
+      line({
+        type: "user",
+        uuid: "u-compact-out",
+        parentUuid: "u-compact-cmd",
+        message: { role: "user", content: "<local-command-stdout>Compacted </local-command-stdout>" },
+      }),
+      line({
+        type: "attachment",
+        uuid: "att-fork-hook",
+        parentUuid: "u-compact-out",
+        attachment: {
+          type: "hook_additional_context",
+          content: ["## You are a session started from another session"],
+        },
+      }),
+    ].join("\n"), "utf8");
+
+    await expect(isClaudeTranscriptAtTurnBoundary(transcript)).resolves.toBe(true);
+    const parsed = await parseClaudeTranscript(transcript);
+    expect(parsed.messages.map((m) => m.id)).toEqual(["u-1", "a-1"]);
   });
 });

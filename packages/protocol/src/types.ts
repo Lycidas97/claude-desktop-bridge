@@ -634,6 +634,52 @@ export interface BridgePermissionPolicy {
   source: BridgePermissionPolicySource;
 }
 
+export interface BridgeSubagentSummary {
+  agentId: string;
+  toolUseId?: string;
+  agentType?: string;
+  description: string;
+  state: "running" | "completed" | "failed";
+  toolCount: number;
+  recentTools?: string[];
+  latestText?: string;
+  reportText?: string;
+  startedAt: number;
+  updatedAt: number;
+  durationMs?: number;
+}
+
+export interface BridgeInteractiveAction {
+  label: string;
+  message: string;
+  recommended?: boolean;
+  selected?: boolean;
+}
+
+export interface BridgeInteractiveQuestionOption {
+  label: string;
+  description?: string;
+  selected?: boolean;
+}
+
+export interface BridgeInteractiveQuestion {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: BridgeInteractiveQuestionOption[];
+  answer?: string;
+}
+
+export interface BridgeInteractivePrompt {
+  kind: "wrap-up" | "question";
+  recap?: string;
+  ask?: string;
+  blocked?: boolean;
+  answered?: boolean;
+  actions?: BridgeInteractiveAction[];
+  questions?: BridgeInteractiveQuestion[];
+}
+
 export interface BridgeHistoryItem {
   id: string;
   sessionId: string;
@@ -650,6 +696,14 @@ export interface BridgeHistoryItem {
    * aggregate edits Codex-style instead of rendering one noisy card each.
    */
   fileChanges?: BridgeFileChangeSummary[];
+  /**
+   * Structured progress and report summary for Claude subagents (Agent / Task / Workflow).
+   */
+  subagent?: BridgeSubagentSummary;
+  /**
+   * Structured interactive question or wrap-up confirmation card from the turn.
+   */
+  interactivePrompt?: BridgeInteractivePrompt;
 }
 
 export interface BridgeFileChangeSummary {
@@ -673,6 +727,7 @@ export interface ClaudeHistoryMessage {
   role: "user" | "assistant";
   text: string;
   createdAt: number;
+  interactivePrompt?: BridgeInteractivePrompt;
 }
 
 export interface BridgeDeviceInfo {

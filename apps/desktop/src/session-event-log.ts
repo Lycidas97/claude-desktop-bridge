@@ -9,7 +9,9 @@ import type {
   BridgeEventType,
   BridgeHistoryItem,
   BridgeHistoryPage,
+  BridgeInteractivePrompt,
   BridgeOrigin,
+  BridgeSubagentSummary,
 } from "@bridge/protocol";
 import { isClaudeTranscriptControlMessage } from "@bridge/protocol";
 
@@ -85,29 +87,54 @@ function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
   }
   if (event.type === "assistant.completed") {
     const text = textValue(event.data.text);
-    if (!text) return undefined;
-    return { ...base, id: event.itemId ?? event.eventId, role: "assistant", text };
+    const interactivePrompt = event.data.interactivePrompt && typeof event.data.interactivePrompt === "object"
+      ? event.data.interactivePrompt as BridgeInteractivePrompt
+      : undefined;
+    if (!text && !interactivePrompt) return undefined;
+    return {
+      ...base,
+      id: event.itemId ?? event.eventId,
+      role: "assistant",
+      text,
+      ...(interactivePrompt ? { interactivePrompt } : {}),
+    };
   }
   if (event.type === "session.observed") {
     const role = event.data.role;
     const text = textValue(event.data.text);
-    if ((role !== "user" && role !== "assistant") || !text) return undefined;
-    if (isClaudeTranscriptControlMessage(role, text)) return undefined;
-    return { ...base, id: event.itemId ?? event.eventId, role, text };
+    const interactivePrompt = event.data.interactivePrompt && typeof event.data.interactivePrompt === "object"
+      ? event.data.interactivePrompt as BridgeInteractivePrompt
+      : undefined;
+    if ((role !== "user" && role !== "assistant") || (!text && !interactivePrompt)) return undefined;
+    if (text && isClaudeTranscriptControlMessage(role, text)) return undefined;
+    return {
+      ...base,
+      id: event.itemId ?? event.eventId,
+      role,
+      text,
+      ...(interactivePrompt ? { interactivePrompt } : {}),
+    };
   }
-  if (event.type === "tool.started") {
+  if (event.type === "tool.started" || event.type === "tool.progress") {
     const toolName = textValue(event.data.toolName) || "Tool";
+    const subagent = event.data.subagent && typeof event.data.subagent === "object"
+      ? event.data.subagent as BridgeSubagentSummary
+      : undefined;
     return {
       ...base,
       id: event.itemId ?? event.eventId,
       role: "tool",
       toolName,
-      text: textValue(event.data.summary) || `${toolName} started`,
+      text: textValue(event.data.summary) || textValue(event.data.text) || `${toolName} started`,
       state: "running",
+      ...(subagent ? { subagent } : {}),
     };
   }
   if (event.type === "tool.completed") {
     const toolName = textValue(event.data.toolName) || "Tool";
+    const subagent = event.data.subagent && typeof event.data.subagent === "object"
+      ? event.data.subagent as BridgeSubagentSummary
+      : undefined;
     return {
       ...base,
       id: `${event.itemId ?? event.eventId}:completed`,
@@ -115,6 +142,7 @@ function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
       toolName,
       text: textValue(event.data.summary) || `${toolName} completed`,
       state: "completed",
+      ...(subagent ? { subagent } : {}),
     };
   }
   if (event.type === "turn.failed") {
@@ -156,9 +184,9 @@ export class SessionEventLog extends EventEmitter {
     compaction?: { bytesThreshold?: number; retainEvents?: number; retainBytes?: number },
   ) {
     super();
-    this.compactBytes = compaction?.bytesThreshold ?? 40 * 1024 * 1024;
-    this.retainEvents = compaction?.retainEvents ?? 30_000;
-    this.retainBytes = compaction?.retainBytes ?? 32 * 1024 * 1024;
+    this.compactBytes = compaction?.bytesThreshold ?? 2 * 1024 * 1024;
+    this.retainEvents = compaction?.retainEvents ?? 5_000;
+    this.retainBytes = compaction?.retainBytes ?? 1_536 * 1024;
   }
 
   async initialize(): Promise<void> {
@@ -226,7 +254,23 @@ export class SessionEventLog extends EventEmitter {
         this.itemKeys.add(key);
         if (DEDUP_INDEXED_TYPES.has(parsed.type)) this.latestItems.set(key, parsed);
       }
-      if (parsed.type === "session.desktop-registration" || parsed.type === "assistant.delta") continue;
+      if (
+        parsed.type === "session.desktop-registration" ||
+        parsed.type === "assistant.delta" ||
+        parsed.type === "evidence.started" ||
+        parsed.type === "evidence.updated"
+      ) continue;
+      if (parsed.type.startsWith("evidence.") && parsed.itemId) {
+        const previousIndex = retained.findIndex((candidate) => (
+          candidate.type.startsWith("evidence.") &&
+          candidate.sessionId === parsed.sessionId &&
+          candidate.itemId === parsed.itemId
+        ));
+        if (previousIndex !== -1) {
+          const [removed] = retained.splice(previousIndex, 1);
+          if (removed) retainedBytes -= JSON.stringify(removed).length + 1;
+        }
+      }
       retained.push(parsed);
       retainedBytes += line.length + 1;
     }
@@ -277,6 +321,21 @@ export class SessionEventLog extends EventEmitter {
       ...(draft.turnId ? { turnId: draft.turnId } : {}),
       ...(draft.itemId ? { itemId: draft.itemId } : {}),
     };
+    if ((event.type.startsWith("evidence.") || event.type === "tool.progress") && event.itemId) {
+      for (let index = this.events.length - 1; index >= 0; index -= 1) {
+        const candidate = this.events[index]!;
+        const sameFamily = event.type.startsWith("evidence.")
+          ? candidate.type.startsWith("evidence.")
+          : candidate.type === "tool.progress";
+        if (
+          sameFamily &&
+          candidate.sessionId === event.sessionId &&
+          candidate.itemId === event.itemId
+        ) {
+          this.events.splice(index, 1);
+        }
+      }
+    }
     this.events.push(event);
     if (event.itemId) {
       const key = `${event.sessionId ?? ""}\u001f${event.type}\u001f${event.itemId}`;
@@ -326,10 +385,33 @@ export class SessionEventLog extends EventEmitter {
 
   history(sessionId: string, cursor?: string, limit = 50): BridgeHistoryPage {
     const beforeSeq = cursor ? Number.parseInt(cursor, 10) : Number.POSITIVE_INFINITY;
-    const all = this.events
+    const rawItems = this.events
       .filter((event) => event.sessionId === sessionId && event.seq < beforeSeq)
       .map(historyItem)
       .filter((item): item is BridgeHistoryItem => item !== undefined);
+    const byId = new Map<string, BridgeHistoryItem>();
+    for (const item of rawItems) {
+      if (item.role === "tool" && item.id.endsWith(":completed")) {
+        const baseId = item.id.replace(/:completed$/u, "");
+        const started = byId.get(baseId);
+        if (started) {
+          const mergedToolName = started.toolName || item.toolName;
+          const mergedSubagent = item.subagent ?? started.subagent;
+          byId.set(baseId, {
+            ...started,
+            state: "completed",
+            ...(mergedToolName ? { toolName: mergedToolName } : {}),
+            ...(mergedSubagent ? { subagent: mergedSubagent } : {}),
+            text: started.text && !started.text.endsWith(" started") ? started.text : item.text,
+          });
+          continue;
+        }
+        byId.set(baseId, { ...item, id: baseId });
+        continue;
+      }
+      byId.set(item.id, item);
+    }
+    const all = [...byId.values()];
     const pageSize = Math.max(1, Math.min(limit, 10_000));
     const items = all.slice(-pageSize);
     const first = items[0];

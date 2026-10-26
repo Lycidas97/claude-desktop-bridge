@@ -56,7 +56,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
       if (target.kind === "image") {
         const bytes = await source.read(0, source.transfer.size);
         if (disposed) return;
-        objectUrl = URL.createObjectURL(new Blob([Uint8Array.from(bytes).buffer], { type: source.transfer.mimeType }));
+        objectUrl = URL.createObjectURL(new Blob([Uint8Array.from(bytes).buffer], { type: /\.svg$/iu.test(target.name) ? "image/svg+xml" : source.transfer.mimeType }));
         setImageUrl(objectUrl);
         setBusy(false);
         return;

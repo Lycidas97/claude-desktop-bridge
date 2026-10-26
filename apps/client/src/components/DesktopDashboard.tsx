@@ -51,6 +51,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ThemeControl } from "../hooks/useTheme.js";
 import type { SessionEvidenceState, SessionHistoryState } from "../hooks/useMobileBridge.js";
 import { downloadBridgeArtifact } from "../lib/artifact-download.js";
+import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
 import { useStreamEntrance } from "../lib/stream-entrance.js";
 import {
   collapseProjects,
@@ -63,6 +64,8 @@ import { BrandMark } from "./BrandMark.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
+import { MediaGallery } from "./MediaGallery.js";
+import { useMediaPreview } from "./MediaPreviewProvider.js";
 import { IconButton } from "./IconButton.js";
 import { MarkdownText } from "./MarkdownText.js";
 import { ThemeMenu } from "./ThemeMenu.js";
@@ -169,6 +172,7 @@ function DesktopSessions({
   onRemoveAnthropicApiKey(): Promise<void>;
   onRefreshSnapshot(): Promise<void>;
 }) {
+  const openMedia = useMediaPreview();
   const [selectedId, setSelectedId] = useState(snapshot.sessions[0]?.sessionId);
   const [history, setHistory] = useState<Record<string, SessionHistoryState>>({});
   const [evidence, setEvidence] = useState<Record<string, SessionEvidenceState>>({});
@@ -1174,14 +1178,27 @@ function DesktopSessions({
                 >
                   <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? selectedRuntimeName : entry.item.toolName ?? "Bridge"}</strong></div>
                   {entry.item.role === "assistant" || entry.item.role === "user" ? (
-                    <MarkdownText text={entry.item.text} />
+                    <MarkdownText text={entry.item.text} onFileClick={(filePath) => {
+                      const kind = mediaKind(filePath);
+                      if (kind) openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selected.sessionId, path: filePath });
+                      else void apiRequest({ method: "runtime.file.open", params: { sessionId: selected.sessionId, path: filePath } })
+                        .then(unwrap).catch((failure) => setSessionActionError(failure instanceof Error ? failure.message : String(failure)));
+                    }} />
                   ) : (
                     <div className="conversation-text">{entry.item.text}</div>
                   )}
                   {entry.item.attachments?.length ? (
                     <div className="conversation-attachments">
                       {entry.item.attachments.map((attachment) => attachment.data ? (
-                        <img key={attachment.id} src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} loading="lazy" />
+                        <button
+                          type="button"
+                          className="conversation-image-preview"
+                          key={attachment.id}
+                          aria-label={`查看 ${attachment.name}`}
+                          onClick={() => openMedia({ name: attachment.name, kind: "image", dataUrl: `data:${attachment.mimeType};base64,${attachment.data}` })}
+                        >
+                          <img src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} loading="lazy" />
+                        </button>
                       ) : (
                         <span className="attachment-chip" key={attachment.id}>{attachment.name}</span>
                       ))}
@@ -1220,9 +1237,14 @@ function DesktopSessions({
             </div>
             ) : (
               <div className="desktop-evidence-view">
+                <MediaGallery artifacts={mediaArtifacts(selectedEvidence?.items ?? [])} />
                 {fileChangesSummary && (
                   <FileChangesCard
                     summary={fileChangesSummary}
+                    onPreviewFile={(filePath) => {
+                      const kind = mediaKind(filePath);
+                      if (kind) openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selected.sessionId, path: filePath });
+                    }}
                     onOpenFile={(filePath) => void apiRequest({
                       method: "runtime.file.open",
                       params: { sessionId: selected.sessionId, path: filePath },

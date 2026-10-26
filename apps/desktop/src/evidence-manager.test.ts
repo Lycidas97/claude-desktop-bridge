@@ -159,6 +159,34 @@ describe("EvidenceManager", () => {
     await manager.close();
   });
 
+  it("reads session file ranges with owner checks and rejects unsafe paths", async () => {
+    const { directory, manager } = await managerFixture();
+    const bytes = Buffer.alloc(300 * 1024, 0x61);
+    await writeFile(join(directory, "report.pdf"), bytes);
+    await writeFile(join(directory, ".env"), "TEST_SECRET=fixture\n");
+    const outside = await mkdtemp(join(tmpdir(), "bridge-media-outside-"));
+    directories.push(outside);
+    await writeFile(join(outside, "outside.pdf"), bytes);
+    await symlink(join(outside, "outside.pdf"), join(directory, "escape.pdf"));
+    const large = await open(join(directory, "large.pdf"), "w");
+    await large.truncate(20 * 1024 * 1024 + 1);
+    await large.close();
+
+    const transfer = await manager.openFileTransfer(directory, "report.pdf", "phone-1");
+    expect(transfer).toMatchObject({ mimeType: "application/pdf", size: bytes.length, totalChunks: 2 });
+    const last = manager.readTransfer(transfer.transferId, 1, "phone-1");
+    const first = manager.readTransfer(transfer.transferId, 0, "phone-1");
+    expect(Buffer.concat([Buffer.from(first.data, "base64"), Buffer.from(last.data, "base64")])).toEqual(bytes);
+    expect(() => manager.readTransfer(transfer.transferId, 0, "phone-2")).toThrow("expired");
+    await expect(manager.openFileTransfer(directory, ".env", "phone-1")).rejects.toThrow();
+    await expect(manager.openFileTransfer(directory, join(outside, "outside.pdf"), "phone-1")).rejects.toThrow("项目");
+    await expect(manager.openFileTransfer(directory, "escape.pdf", "phone-1")).rejects.toThrow("项目");
+    await expect(manager.openFileTransfer(directory, "large.pdf", "phone-1")).rejects.toThrow("20 MiB");
+    expect(manager.closeTransfer(transfer.transferId, "phone-1")).toBe(true);
+    expect(() => manager.readTransfer(transfer.transferId, 0, "phone-1")).toThrow("expired");
+    await manager.close();
+  });
+
   it("transfers zero-byte files as one verifiable empty chunk", async () => {
     const { directory, manager } = await managerFixture();
     await writeFile(join(directory, "empty.txt"), "");

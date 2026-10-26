@@ -396,6 +396,24 @@ describe("Claude transcript history", () => {
     });
   });
 
+  it("discovers image and PDF outputs from SendUserFile arrays", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-media-evidence-"));
+    directories.push(root);
+    const transcript = join(root, "media.jsonl");
+    await writeFile(transcript, [
+      line({ type: "user", uuid: "user-media", message: { role: "user", content: "Show the report" } }),
+      line({ type: "assistant", uuid: "send-media", parentUuid: "user-media", message: { role: "assistant", content: [
+        { type: "tool_use", id: "send-file", name: "SendUserFile", input: { files: ["/work/report.pdf", "/work/figure.png"] } },
+      ] } }),
+      line({ type: "user", uuid: "sent-media", parentUuid: "send-media", toolUseResult: "Files sent", message: { role: "user", content: [
+        { type: "tool_result", tool_use_id: "send-file", content: "Files sent" },
+      ] } }),
+      line({ type: "assistant", uuid: "media-done", parentUuid: "sent-media", message: { role: "assistant", content: "Done", stop_reason: "end_turn" } }),
+    ].join("\n"));
+    const evidence = await parseClaudeTranscriptEvidence(transcript);
+    expect(evidence[0]?.paths).toEqual(["/work/report.pdf", "/work/figure.png"]);
+  });
+
   it("recovers completed tool evidence without exposing thinking or duplicating tool results", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-claude-evidence-"));
     directories.push(root);

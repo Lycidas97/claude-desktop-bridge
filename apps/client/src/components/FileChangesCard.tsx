@@ -1,5 +1,6 @@
-import { ChevronDown, ChevronUp, FilePenLine } from "lucide-react";
+import { ChevronDown, ChevronUp, Eye, FilePenLine } from "lucide-react";
 import { useState } from "react";
+import { mediaKind } from "../lib/media-preview.js";
 import type { FileChangesSummary } from "./MobileWorkspace.js";
 
 const COLLAPSED_ROWS = 5;
@@ -33,8 +34,12 @@ export function splitFilePath(path: string): { head: string; parent: string; bas
 export function FileChangesCard({
   summary,
   onOpenFile,
+  onPreviewFile,
+  online = true,
 }: {
   summary: FileChangesSummary;
+  online?: boolean;
+  onPreviewFile?(filePath: string): void;
   onOpenFile?(filePath: string): void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -68,18 +73,28 @@ export function FileChangesCard({
                 <b className="add">+{file.additions}</b>
                 <b className="del">−{file.deletions}</b>
               </span>
+              {onPreviewFile && file.kind !== "delete" && mediaKind(file.path) && (
+                <button type="button" className="file-change-preview-btn" disabled={!online} aria-label={`查看 ${parts.base}`} onClick={(event) => { event.stopPropagation(); onPreviewFile(file.path); }}><Eye size={14} /></button>
+              )}
             </>
           );
           return onOpenFile ? (
-            <button
-              type="button"
+            <div
+              role="button"
+              tabIndex={0}
               className="file-change-row is-openable"
               key={file.path}
               title={`在电脑上打开 ${file.path}`}
               onClick={() => onOpenFile(file.path)}
+              onKeyDown={(event) => {
+                if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+                  event.preventDefault();
+                  onOpenFile(file.path);
+                }
+              }}
             >
               {row}
-            </button>
+            </div>
           ) : (
             <div className="file-change-row" key={file.path} title={`${KIND_LABEL[file.kind]} ${file.path}`}>
               {row}

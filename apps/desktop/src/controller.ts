@@ -1460,9 +1460,23 @@ export class DesktopController extends EventEmitter {
       };
     }
     if (request.method === "artifact.transfer.open") {
+      const artifactId = stringParam(params, "artifactId", false);
+      if (artifactId) {
+        return {
+          transfer: await this.evidence.openTransfer(
+            artifactId,
+            sourceDeviceId ?? "desktop",
+          ),
+        };
+      }
+      const sessionId = stringParam(params, "sessionId")!;
+      const filePath = stringParam(params, "path")!;
+      const session = this.allSessions().find((candidate) => candidate.sessionId === sessionId);
+      if (!session) throw new Error("Session not found");
       return {
-        transfer: await this.evidence.openTransfer(
-          stringParam(params, "artifactId")!,
+        transfer: await this.evidence.openFileTransfer(
+          session.cwd,
+          filePath,
           sourceDeviceId ?? "desktop",
         ),
       };

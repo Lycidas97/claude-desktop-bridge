@@ -10,6 +10,7 @@ coverage/
 data/
 out/
 artifacts/
+output/
 desktop-qa.png
 apps/desktop/assets/Bridge.iconset/
 apps/desktop/.devdata/

@@ -72,14 +72,14 @@ async function sha256Hex(chunks: Uint8Array[]): Promise<string> {
   return [...digest].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-export async function downloadBridgeArtifact(
-  artifact: BridgeArtifactManifest,
+async function runArtifactTransfer(
+  openParams: Record<string, unknown>,
   request: RequestArtifact,
   onProgress: (progress: number) => void,
 ): Promise<void> {
   const opened = unwrap<{ transfer: BridgeArtifactTransferInfo }>(await request(
     "artifact.transfer.open",
-    { artifactId: artifact.id },
+    openParams,
     { wait: true, timeoutMs: 60_000 },
   ));
   const transfer = opened.transfer;
@@ -148,4 +148,21 @@ export async function downloadBridgeArtifact(
       }).catch(() => undefined);
     }
   }
+}
+
+export async function downloadBridgeArtifact(
+  artifact: BridgeArtifactManifest,
+  request: RequestArtifact,
+  onProgress: (progress: number) => void,
+): Promise<void> {
+  await runArtifactTransfer({ artifactId: artifact.id }, request, onProgress);
+}
+
+export async function downloadBridgeSessionFile(
+  sessionId: string,
+  filePath: string,
+  request: RequestArtifact,
+  onProgress: (progress: number) => void,
+): Promise<void> {
+  await runArtifactTransfer({ sessionId, path: filePath }, request, onProgress);
 }

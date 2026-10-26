@@ -8,6 +8,7 @@ import {
 import { DesktopDashboard } from "./components/DesktopDashboard.js";
 import { HostBrowser } from "./components/HostBrowser.js";
 import { MobileWorkspace } from "./components/MobileWorkspace.js";
+import { MediaPreviewProvider } from "./components/MediaPreviewProvider.js";
 import { PairingScreen } from "./components/PairingScreen.js";
 import { PairingSyncScreen } from "./components/PairingSyncScreen.js";
 
@@ -41,7 +42,11 @@ export function App() {
     pairingOpen,
   ]);
 
-  if (window.bridgeDesktop) return <DesktopDashboard themeControl={themeControl} />;
+  if (window.bridgeDesktop) return (
+    <MediaPreviewProvider request={(method, params) => window.bridgeDesktop!.request({ method, params })}>
+      <DesktopDashboard themeControl={themeControl} />
+    </MediaPreviewProvider>
+  );
   if (mobile.state.pairingSync) return <PairingSyncScreen sync={mobile.state.pairingSync} />;
   if (mobile.state.loading && mobile.state.hosts.length === 0 && !pairingOpen) {
     return <main className="mobile-loading"><span className="spinner" /><span>正在读取已配对电脑</span></main>;
@@ -72,62 +77,65 @@ export function App() {
     );
   }
   return (
-    <MobileWorkspace
-      key={mobile.state.activeHostId}
-      activeHostId={mobile.state.activeHostId}
-      desktopName={mobile.state.desktopName ?? "我的电脑"}
-      connection={mobile.state.connection}
-      desktopOnline={mobile.state.desktopOnline}
-      snapshot={mobile.state.snapshot}
-      permissions={mobile.state.permissions}
-      focusSessionId={mobile.state.focusSessionId}
-      histories={mobile.state.histories}
-      evidence={mobile.state.evidence}
-      artifactPreviews={mobile.state.artifactPreviews}
-      artifactTransfers={mobile.state.artifactTransfers}
-      events={mobile.state.events}
-      localTurns={mobile.state.localTurns}
-      connectionIssue={mobile.state.connectionIssue}
-      transportMetrics={mobile.state.transportMetrics}
-      pendingOutbound={mobile.state.pendingOutbound}
-      themeControl={themeControl}
-      onOpenSession={mobile.openSession}
-      onLoadOlderHistory={mobile.loadOlderHistory}
-      onLoadOlderEvidence={mobile.loadOlderEvidence}
-      onPreviewArtifact={mobile.previewArtifact}
-      onDownloadArtifact={mobile.downloadArtifact}
-      onSendTurn={mobile.sendTurn}
-      onInterruptTurn={mobile.interruptTurn}
-      onResolveUncertain={mobile.resolveUncertainDelivery}
-      onResolvePermission={mobile.resolvePermission}
-      onCreateSession={mobile.createSession}
-      onLoadSessionConfiguration={mobile.loadSessionConfiguration}
-      onConfigureSession={mobile.configureSession}
-      {...(mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1")
-        ? { onConfigurePermissionPolicy: mobile.configurePermissionPolicy }
-        : {})}
-      onPreviewProviderSwitch={mobile.previewProviderSwitch}
-      onCommitProviderSwitch={mobile.commitProviderSwitch}
-      onCancelProviderSwitch={mobile.cancelProviderSwitch}
-      onPreviewRuntimeHandoff={mobile.previewRuntimeHandoff}
-      onCommitRuntimeHandoff={mobile.commitRuntimeHandoff}
-      onConfirmRuntimeHandoff={mobile.confirmRuntimeHandoff}
-      onCancelRuntimeHandoff={mobile.cancelRuntimeHandoff}
-      onGetRuntimeHandoff={mobile.getRuntimeHandoff}
-      onPauseRuntimeGoal={mobile.pauseRuntimeGoal}
-      onResumeRuntimeGoal={mobile.resumeRuntimeGoal}
-      {...(mobile.state.snapshot?.host.capabilities.includes("session.visibility.v1")
-        ? {
-            onArchiveSession: mobile.archiveSession,
-            onDeleteSession: mobile.deleteSession,
-            onOpenRuntimeFile: mobile.openRuntimeFile,
-          }
-        : {})}
-      onRefreshProviders={mobile.refreshProviders}
-      onDesktopAppAction={mobile.controlDesktopApp}
-      onRefresh={mobile.refresh}
-      onBackToHosts={mobile.backToHosts}
-      onRetry={mobile.retryConnection}
-    />
+    <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia}>
+      <MobileWorkspace
+        key={mobile.state.activeHostId}
+        activeHostId={mobile.state.activeHostId}
+        desktopName={mobile.state.desktopName ?? "我的电脑"}
+        connection={mobile.state.connection}
+        desktopOnline={mobile.state.desktopOnline}
+        snapshot={mobile.state.snapshot}
+        permissions={mobile.state.permissions}
+        focusSessionId={mobile.state.focusSessionId}
+        histories={mobile.state.histories}
+        evidence={mobile.state.evidence}
+        artifactPreviews={mobile.state.artifactPreviews}
+        artifactTransfers={mobile.state.artifactTransfers}
+        events={mobile.state.events}
+        localTurns={mobile.state.localTurns}
+        connectionIssue={mobile.state.connectionIssue}
+        transportMetrics={mobile.state.transportMetrics}
+        pendingOutbound={mobile.state.pendingOutbound}
+        themeControl={themeControl}
+        onOpenSession={mobile.openSession}
+        onLoadOlderHistory={mobile.loadOlderHistory}
+        onLoadOlderEvidence={mobile.loadOlderEvidence}
+        onPreviewArtifact={mobile.previewArtifact}
+        onDownloadArtifact={mobile.downloadArtifact}
+        onDownloadSessionFile={mobile.downloadSessionFile}
+        onSendTurn={mobile.sendTurn}
+        onInterruptTurn={mobile.interruptTurn}
+        onResolveUncertain={mobile.resolveUncertainDelivery}
+        onResolvePermission={mobile.resolvePermission}
+        onCreateSession={mobile.createSession}
+        onLoadSessionConfiguration={mobile.loadSessionConfiguration}
+        onConfigureSession={mobile.configureSession}
+        {...(mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1")
+          ? { onConfigurePermissionPolicy: mobile.configurePermissionPolicy }
+          : {})}
+        onPreviewProviderSwitch={mobile.previewProviderSwitch}
+        onCommitProviderSwitch={mobile.commitProviderSwitch}
+        onCancelProviderSwitch={mobile.cancelProviderSwitch}
+        onPreviewRuntimeHandoff={mobile.previewRuntimeHandoff}
+        onCommitRuntimeHandoff={mobile.commitRuntimeHandoff}
+        onConfirmRuntimeHandoff={mobile.confirmRuntimeHandoff}
+        onCancelRuntimeHandoff={mobile.cancelRuntimeHandoff}
+        onGetRuntimeHandoff={mobile.getRuntimeHandoff}
+        onPauseRuntimeGoal={mobile.pauseRuntimeGoal}
+        onResumeRuntimeGoal={mobile.resumeRuntimeGoal}
+        {...(mobile.state.snapshot?.host.capabilities.includes("session.visibility.v1")
+          ? {
+              onArchiveSession: mobile.archiveSession,
+              onDeleteSession: mobile.deleteSession,
+              onOpenRuntimeFile: mobile.openRuntimeFile,
+            }
+          : {})}
+        onRefreshProviders={mobile.refreshProviders}
+        onDesktopAppAction={mobile.controlDesktopApp}
+        onRefresh={mobile.refresh}
+        onBackToHosts={mobile.backToHosts}
+        onRetry={mobile.retryConnection}
+      />
+    </MediaPreviewProvider>
   );
 }

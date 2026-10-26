@@ -1,0 +1,95 @@
+.evidence-inline-output { min-width: 0; }
+.evidence-inline-output > .evidence-inline-summary { width: 100%; }
+.media-gallery { min-width: 0; padding: 14px 0; }
+.media-gallery > header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.media-gallery > header strong { color: var(--text); font-size: 13px; }
+.media-gallery > header > span { color: var(--muted); font-size: 11px; }
+.media-gallery-files { display: grid; grid-template-columns: repeat(auto-fill, minmax(156px, 1fr)); gap: 10px; }
+.media-file { display: grid; grid-template-rows: 92px auto; min-width: 0; overflow: hidden; padding: 0; text-align: left; color: var(--text); border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); cursor: pointer; }
+.media-file:hover { border-color: var(--accent); }
+.media-file:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.media-file:disabled { opacity: .5; cursor: default; }
+.media-file-cover { display: flex; justify-content: center; align-items: center; gap: 10px; background: var(--surface-2); color: var(--muted); }
+.media-file.pdf .media-file-cover { color: var(--accent-ink); background: var(--accent-soft); }
+.media-file-cover > span { font-size: 13px; }
+.media-file-copy { display: grid; min-width: 0; gap: 8px; padding: 12px; }
+.media-file-copy > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.media-file-copy > small { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 11px; }
+.media-viewer { position: fixed; inset: 0; width: min(1120px, calc(100vw - 48px)); height: min(920px, calc(100dvh - 48px)); max-width: none; max-height: none; margin: auto; padding: 0; border: 1px solid var(--line-strong); border-radius: var(--r-panel); color: var(--text); background: var(--bg); box-shadow: var(--glass-shadow); }
+.media-viewer::backdrop { background: var(--scrim); backdrop-filter: blur(8px); }
+.media-viewer-shell { display: grid; height: 100%; min-width: 0; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.media-viewer-shell > header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; gap: 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.media-viewer-shell > header > div { display: flex; align-items: center; min-width: 0; gap: 10px; }
+.media-viewer-shell > header span { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.media-viewer h2 { margin: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-viewer-toolbar, .media-page-controls, .media-zoom-controls { display: flex; align-items: center; gap: 6px; }
+.media-viewer-toolbar { padding: 8px 12px; justify-content: space-between; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+.media-viewer-toolbar .icon-button { min-width: 36px; min-height: 36px; }
+.media-page-controls label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.media-page-controls input { width: 48px; padding: 6px 2px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); text-align: center; font: inherit; }
+.media-zoom-controls { margin-left: auto; }
+.media-zoom-controls > span { min-width: 38px; text-align: center; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.media-viewer-viewport { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; position: relative; padding: 16px; background: var(--surface-2); }
+.media-viewer-viewport canvas { display: block; margin: 0 auto; box-shadow: 0 2px 14px #0002; }
+.media-viewer-viewport img { display: block; height: auto; margin: 0 auto; object-fit: contain; }
+.media-viewer-status { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; color: var(--muted); background: var(--bg); font-size: 13px; z-index: 1; }
+.media-viewer-shell > footer { padding: 10px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.media-viewer-loading { position: fixed; z-index: 200; inset: 0; display: grid; place-items: center; background: var(--scrim); color: var(--text); }
+.conversation-image-preview { display: block; padding: 0; border: 0; background: none; cursor: zoom-in; }
+@media (max-width: 600px) {
+  .media-viewer { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
+  .media-viewer-shell > header { padding-top: max(12px, env(safe-area-inset-top)); }
+  .media-viewer-shell > footer { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .media-viewer-toolbar { gap: 4px; padding: 6px; }
+  .media-viewer-toolbar .icon-button { min-width: 32px; min-height: 36px; padding: 5px; }
+  .media-page-controls, .media-zoom-controls { gap: 1px; }
+  .media-page-controls input { width: 36px; }
+  .media-zoom-controls > span { min-width: 34px; }
+  .media-gallery-files { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.markdown-file-link,
+.markdown-inline-code.markdown-file-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1.5px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface-2));
+  color: var(--accent-ink);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  line-height: 1.45;
+  text-align: left;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  cursor: pointer;
+}
+
+.markdown-file-link:active,
+.markdown-inline-code.markdown-file-code:active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.markdown-file-icon {
+  flex: none;
+  opacity: 0.85;
+}
+
+
+.file-change-preview-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+.file-change-preview-btn:hover:not(:disabled) { color: var(--accent-ink); border-color: var(--accent); }

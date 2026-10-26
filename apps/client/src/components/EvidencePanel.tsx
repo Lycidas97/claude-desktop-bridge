@@ -29,6 +29,9 @@ import type { SessionEvidenceState } from "../hooks/useMobileBridge.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../lib/runtime-labels.js";
 import { IconButton } from "./IconButton.js";
+import { artifactMediaTarget, mediaArtifacts } from "../lib/media-preview.js";
+import { MediaGallery } from "./MediaGallery.js";
+import { useMediaPreview } from "./MediaPreviewProvider.js";
 
 function confidenceLabel(value: BridgeEvidenceBundle["confidence"]): string {
   if (value === "exact") return "精确";
@@ -382,7 +385,9 @@ export function EvidenceInlineSummary({
   entering?: boolean;
 }) {
   return (
-    <button type="button" className={`evidence-inline-summary ${evidence.confidence}${entering ? " is-entering" : ""}`} onClick={onOpen}>
+    <div className="evidence-inline-output">
+      <MediaGallery artifacts={mediaArtifacts([evidence])} />
+      <button type="button" className={`evidence-inline-summary ${evidence.confidence}${entering ? " is-entering" : ""}`} onClick={onOpen}>
       <span className="evidence-inline-icon">
         {evidence.state === "collecting"
           ? <LoaderCircle className="is-spinning" size={17} />
@@ -398,7 +403,8 @@ export function EvidenceInlineSummary({
         </small>
       </span>
       <b>{confidenceLabel(evidence.confidence)}</b>
-    </button>
+      </button>
+    </div>
   );
 }
 
@@ -422,6 +428,7 @@ export function EvidencePanel({
   onPreview(artifactId: string): Promise<BridgeArtifactPreview>;
   onDownload(artifact: BridgeArtifactManifest): Promise<void>;
 }) {
+  const openMedia = useMediaPreview();
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>();
   const [previewBusy, setPreviewBusy] = useState<string>();
   const [error, setError] = useState("");
@@ -461,6 +468,8 @@ export function EvidencePanel({
   }, [selectedArtifactId]);
 
   async function openPreview(artifact: BridgeArtifactManifest): Promise<void> {
+    const media = artifactMediaTarget(artifact);
+    if (media) { openMedia(media); return; }
     setError("");
     if (previews[artifact.id]) {
       setSelectedArtifactId(artifact.id);
@@ -581,8 +590,8 @@ export function EvidencePanel({
                     <div className="evidence-artifact-list">
                       {bundle.artifacts.map((artifact) => {
                         const cached = Boolean(previews[artifact.id]);
-                        const previewable = artifact.previewMode !== "none"
-                          && artifact.availability !== "blocked";
+                        const previewable = Boolean(artifactMediaTarget(artifact)) || (artifact.previewMode !== "none"
+                          && artifact.availability !== "blocked");
                         const progress = transfers[artifact.id];
                         return (
                           <article className={`evidence-artifact ${artifact.availability}`} key={artifact.id}>

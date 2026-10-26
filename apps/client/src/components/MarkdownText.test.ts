@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { parseInlineMarkdown, parseMarkdownBlocks } from "./MarkdownText.js";
 
 describe("parseInlineMarkdown", () => {
+  it("renders a local Markdown image as an on-demand file reference", () => {
+    expect(parseInlineMarkdown("![Figure](output/figure.png)")).toEqual([
+      { type: "file_link", path: "output/figure.png", children: [{ type: "text", text: "Figure" }] },
+    ]);
+  });
+
+  it("preserves media file links containing spaces and angle brackets", () => {
+    expect(parseInlineMarkdown("[报告](</work/final report.pdf>)")).toEqual([
+      { type: "file_link", path: "/work/final report.pdf", children: [{ type: "text", text: "报告" }] },
+    ]);
+  });
   it("parses bold, inline code, and nested inline code inside bold with CJK text", () => {
     const nodes = parseInlineMarkdown("按快捷键 **`Cmd + R`**（重载**渲染层**页面）");
     expect(nodes).toEqual([

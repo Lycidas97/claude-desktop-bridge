@@ -13,7 +13,7 @@
     "open:android": "cap open android",
     "open:ios": "cap open ios",
     "sync": "npm run prepare:web && cap sync",
-    "apk:debug": "npm run sync && cd android && ./gradlew --no-daemon assembleDebug",
+    "apk:debug": "npm run sync && cd android && ./gradlew --no-daemon assembleDebug && python3 -I ../../../scripts/verify-android-dex.py app/build/outputs/apk/debug/app-debug.apk",
     "build:ios:simulator": "npm run sync && xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug -derivedDataPath ios/DerivedData CODE_SIGNING_ALLOWED=NO build",
     "build:ios:device": "npm run sync && xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphoneos -configuration Debug -derivedDataPath ios/DerivedData-device CODE_SIGNING_ALLOWED=NO build",
     "typecheck": "tsc -p tsconfig.json --noEmit"

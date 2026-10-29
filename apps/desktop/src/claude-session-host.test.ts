@@ -208,6 +208,39 @@ describe("ClaudeSessionHost", () => {
     await host.close();
   });
 
+  it("starts and resumes the native query with the updated auto-compact window", async () => {
+    const queries: FakeQuery[] = [];
+    const options: Array<Parameters<typeof import("@anthropic-ai/claude-agent-sdk").query>[0]["options"]> = [];
+    const sessionId = randomUUID();
+    const host = new ClaudeSessionHost({
+      sessionId, cwd: "/tmp/bridge-project", executablePath: "/tmp/claude",
+      environment: {}, permissionBroker: new PermissionBroker(), resume: true,
+      queryFactory: ((params) => {
+        const fake = new FakeQuery();
+        queries.push(fake);
+        options.push(params.options);
+        return fake as unknown as Query;
+      }) as typeof import("@anthropic-ai/claude-agent-sdk").query,
+    });
+    try {
+      await host.setAutoCompactWindow(400_000);
+      await host.contextUsage();
+      expect(options[0]).toMatchObject({ settings: { autoCompactWindow: 400_000 } });
+      await host.setAutoCompactWindow(400_000);
+      expect(queries[0]?.closed).toBe(false);
+      await host.setAutoCompactWindow(200_000);
+      expect(queries[0]?.closed).toBe(true);
+      await host.contextUsage();
+      expect(options[1]).toMatchObject({ resume: sessionId, forkSession: false, settings: { autoCompactWindow: 200_000 } });
+      await host.setAutoCompactWindow(undefined);
+      expect(queries[1]?.closed).toBe(true);
+      await host.contextUsage();
+      expect(options[2]?.settings).toBeUndefined();
+    } finally {
+      await host.close();
+    }
+  });
+
   it("withdraws an unconsumed prompt when query startup fails", async () => {
     const fake = new FakeQuery();
     const sessionId = randomUUID();

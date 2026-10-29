@@ -142,6 +142,7 @@ export class ClaudeSessionHost extends EventEmitter {
   private currentTurnId: string | undefined;
   private modelValue: string | undefined;
   private effortValue: ClaudeSessionEffort | undefined;
+  private autoCompactWindow: number | undefined;
   private closed = false;
 
   constructor(private readonly options: ClaudeSessionHostOptions) {
@@ -198,6 +199,7 @@ export class ClaudeSessionHost extends EventEmitter {
         persistSession: this.options.persistSession ?? true,
         ...(this.modelValue ? { model: this.modelValue } : {}),
         ...(this.effortValue ? { effort: this.effortValue } : {}),
+        ...(this.autoCompactWindow ? { settings: { autoCompactWindow: this.autoCompactWindow } } : {}),
         ...(needsWindowsShell(this.options.executablePath)
           ? { spawnClaudeCodeProcess: spawnWindowsShim }
           : {}),
@@ -229,6 +231,14 @@ export class ClaudeSessionHost extends EventEmitter {
     const query = this.activeQuery();
     await query.applyFlagSettings({ effortLevel: effort ?? null });
     this.effortValue = effort;
+  }
+
+  async setAutoCompactWindow(maxTokens?: number): Promise<void> {
+    if (this.autoCompactWindow === maxTokens) return;
+    if (this.currentTurnId) throw new Error("Cannot change the auto-compact window during a turn");
+    // Headless CLI only applies this setting at query startup.
+    if (this.queryProcess) await this.retireQuery(undefined, this.queryProcess);
+    this.autoCompactWindow = maxTokens;
   }
 
   async supportedModels(): Promise<ModelInfo[]> {
@@ -511,7 +521,7 @@ export class ClaudeSessionHost extends EventEmitter {
     if (index >= 0) this.pendingTurns.splice(index, 1);
   }
 
-  private async retireQuery(turn: PendingTurn, queryProcess: Query): Promise<void> {
+  private async retireQuery(turn: PendingTurn | undefined, queryProcess: Query): Promise<void> {
     if (this.queryProcess !== queryProcess) return;
     const streamTask = this.streamTask;
     const input = this.input;
@@ -526,7 +536,7 @@ export class ClaudeSessionHost extends EventEmitter {
         this.streamTask = undefined;
         this.input = new AsyncInputQueue<SDKUserMessage>();
       }
-      this.removePendingTurn(turn);
+      if (turn) this.removePendingTurn(turn);
       this.retiring = false;
     }
   }

@@ -165,6 +165,7 @@ export interface SessionHostRuntime {
   ): ReturnType<ClaudeSessionHost["send"]>;
   setModel(model?: string): Promise<void>;
   setEffort(effort?: BridgeEffort): Promise<void>;
+  setAutoCompactWindow(maxTokens?: number): Promise<void>;
   supportedModels(): ReturnType<ClaudeSessionHost["supportedModels"]>;
   contextUsage(): ReturnType<ClaudeSessionHost["contextUsage"]>;
   interrupt(): Promise<void>;
@@ -290,7 +291,6 @@ interface EffectiveSessionProfile {
 }
 
 const EFFORT_LEVELS: BridgeEffort[] = ["low", "medium", "high", "xhigh", "max"];
-const DEFAULT_CONTEXT_TOKENS = 262_144;
 const LONG_CONTEXT_TOKENS = 1_000_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 8_000;
 const RUNTIME_RETRY_DELAY_MS = 2_000;
@@ -1971,7 +1971,7 @@ export class SessionBroker extends EventEmitter {
     }
     try {
       if (providerKind === "claude-3p") {
-        await this.assertBridgeHostCompatible(session, state.host);
+        await this.assertBridgeHostCompatible(session);
       }
     } catch (error) {
       const incompatibleHost = state.host;
@@ -2198,6 +2198,7 @@ export class SessionBroker extends EventEmitter {
     host: SessionHostRuntime,
     profile: Pick<EffectiveSessionProfile, "model" | "effort" | "ultracode">,
   ): Promise<void> {
+    await host.setAutoCompactWindow(this.modelContextLimit(profile.model, profile.ultracode));
     await host.setModel(this.modelForHost(profile));
     await host.setEffort(profile.effort);
   }
@@ -2242,6 +2243,7 @@ export class SessionBroker extends EventEmitter {
         displayName: model.displayName || this.modelDisplayName(model.value),
         ...(model.description ? { description: model.description } : {}),
         ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
+        ...("maxInputTokens" in model ? { maxInputTokens: model.maxInputTokens } : {}),
         ...(model.supportsEffort !== undefined ? { supportsEffort: model.supportsEffort } : {}),
         ...(model.supportedEffortLevels?.length
           ? { supportedEffortLevels: [...model.supportedEffortLevels] }
@@ -2307,6 +2309,7 @@ export class SessionBroker extends EventEmitter {
           value,
           displayName: `${model.displayName} · 1M`,
           ...(model.resolvedModel ? { resolvedModel: `${model.resolvedModel}[1m]` } : {}),
+          maxInputTokens: LONG_CONTEXT_TOKENS,
         });
       }
     }
@@ -2350,10 +2353,11 @@ export class SessionBroker extends EventEmitter {
     return `${normalized || value}${longContext ? " · 1M" : ""}`;
   }
 
-  private modelContextLimit(model: string | undefined, ultracode = false): number {
-    return ultracode || (model !== undefined && /\[1m\]|(?:^|[-_])1m(?:$|[-_])/iu.test(model))
-      ? LONG_CONTEXT_TOKENS
-      : DEFAULT_CONTEXT_TOKENS;
+  private modelContextLimit(model: string | undefined, ultracode = false): number | undefined {
+    if (ultracode || (model !== undefined && /\[1m\]|(?:^|[-_])1m(?:$|[-_])/iu.test(model))) {
+      return LONG_CONTEXT_TOKENS;
+    }
+    return this.findModelInfo(model, [...this.modelCache.values()])?.maxInputTokens;
   }
 
   private async estimatedContext(session: BridgeSessionInfo): Promise<BridgeSessionContextUsage | undefined> {
@@ -2365,6 +2369,7 @@ export class SessionBroker extends EventEmitter {
     if (!estimate) return undefined;
     const profile = this.effectiveProfile(session.sessionId, session.cwd);
     const maxTokens = this.modelContextLimit(profile.model, profile.ultracode);
+    if (!maxTokens) return undefined;
     return {
       totalTokens: estimate.totalTokens,
       maxTokens,
@@ -2382,7 +2387,7 @@ export class SessionBroker extends EventEmitter {
     );
     if (!estimate) return;
     const maxTokens = this.modelContextLimit(model);
-    if (estimate.totalTokens <= maxTokens) return;
+    if (!maxTokens || estimate.totalTokens <= maxTokens) return;
     throw new Error(
       `当前会话约 ${estimate.totalTokens.toLocaleString("zh-CN")} tokens，所选模型仅提供约 `
       + `${maxTokens.toLocaleString("zh-CN")} tokens 上下文。请先压缩或新建会话，或选择 1M 模型。`,
@@ -2406,10 +2411,7 @@ export class SessionBroker extends EventEmitter {
     return profile === "claude" ? "Claude 官方" : profile === "claude-3p" ? "Claude-3p" : "未知";
   }
 
-  private async assertBridgeHostCompatible(
-    session: BridgeSessionInfo,
-    host?: SessionHostRuntime,
-  ): Promise<void> {
+  private async assertBridgeHostCompatible(session: BridgeSessionInfo): Promise<void> {
     const transcript = await findClaudeTranscriptFile(
       this.options.paths.projects,
       session.sessionId,
@@ -2430,25 +2432,6 @@ export class SessionBroker extends EventEmitter {
         + "原会话未写入新消息；请在原 Claude Desktop 会话继续，或新建 Bridge 会话。",
       );
     }
-
-    const profile = this.effectiveProfile(session.sessionId, session.cwd);
-    const estimate = await readClaudeSessionContextEstimate(
-      this.options.paths.projects,
-      session.sessionId,
-      session.cwd,
-    );
-    const liveUsage = host
-      ? await host.contextUsage().catch(() => undefined)
-      : undefined;
-    const totalTokens = Math.max(estimate?.totalTokens ?? 0, liveUsage?.totalTokens ?? 0);
-    const maxTokens = liveUsage?.maxTokens ?? this.modelContextLimit(profile.model, profile.ultracode);
-    if (totalTokens <= maxTokens) return;
-    throw new Error(
-      `为保护原会话，Bridge 已在发送前阻止本次操作：当前会话约 `
-      + `${totalTokens.toLocaleString("zh-CN")} tokens，目标模型仅提供约 `
-      + `${maxTokens.toLocaleString("zh-CN")} tokens 上下文。原会话未写入新消息；`
-      + "请新建 Bridge 会话，或选择兼容的 1M 模型。",
-    );
   }
 
   private scheduleRelease(sessionId: string): void {

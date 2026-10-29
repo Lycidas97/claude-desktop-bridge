@@ -587,6 +587,8 @@ export interface BridgeModelInfo {
   provider?: string;
   description?: string;
   resolvedModel?: string;
+  /** Input capacity advertised by the model's gateway. */
+  maxInputTokens?: number;
   supportsEffort?: boolean;
   supportedEffortLevels?: string[];
   supportsFast?: boolean;

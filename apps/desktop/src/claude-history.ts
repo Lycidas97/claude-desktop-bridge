@@ -1136,6 +1136,8 @@ export async function readClaudeSessionContextEstimate(
   const path = await findClaudeTranscriptFile(projectsRoot, sessionId, cwd);
   if (!path) return undefined;
   let latest: ClaudeSessionContextEstimate | undefined;
+  const assistantGenerations = new Map<string, number>();
+  let generation = 0;
   try {
     const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
     for await (const line of lines) {
@@ -1145,7 +1147,22 @@ export async function readClaudeSessionContextEstimate(
       } catch {
         continue;
       }
-      if (!isRecord(value) || value.type !== "assistant" || !isRecord(value.message)) continue;
+      if (!isRecord(value)) continue;
+      if (value.type === "system" && value.subtype === "compact_boundary") {
+        const metadata = isRecord(value.compactMetadata) ? value.compactMetadata : value.compact_metadata;
+        const postTokens = isRecord(metadata) ? metadata.postTokens ?? metadata.post_tokens : undefined;
+        latest = typeof postTokens === "number" && Number.isFinite(postTokens) && postTokens >= 0
+          ? { totalTokens: postTokens, ...(latest?.model ? { model: latest.model } : {}) }
+          : undefined;
+        generation += 1;
+        continue;
+      }
+      if (value.type !== "assistant" || !isRecord(value.message)) continue;
+      // Resume can re-emit preserved messages with their pre-compact usage.
+      if (typeof value.uuid === "string") {
+        if ((assistantGenerations.get(value.uuid) ?? generation) < generation) continue;
+        assistantGenerations.set(value.uuid, generation);
+      }
       const usage = value.message.usage;
       if (!isRecord(usage)) continue;
       const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;

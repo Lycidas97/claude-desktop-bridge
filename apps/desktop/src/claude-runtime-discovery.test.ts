@@ -8,6 +8,7 @@ import {
   findClaudeExecutable,
   isSafeForBackgroundRuntimeScan,
   prepareClaudeRuntime,
+  parseClaudeGatewayModels,
   resolveClaudeGatewayConfig,
 } from "./claude-runtime-discovery.js";
 
@@ -143,6 +144,7 @@ describe("Claude runtime discovery privacy", () => {
       {
         value: "gateway-model-alpha",
         displayName: "Claude Opus 4.6 · Gateway",
+        maxInputTokens: 1_000_000,
         supportsEffort: true,
         supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
       },
@@ -150,15 +152,34 @@ describe("Claude runtime discovery privacy", () => {
         value: "gateway-model-alpha[1m]",
         displayName: "Claude Opus 4.6 · Gateway 1M",
         description: "1M context window",
+        maxInputTokens: 1_000_000,
         supportsEffort: true,
         supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
       },
       {
         value: "gateway-model-beta",
         displayName: "Claude Sonnet 4.6 · Gateway",
+        maxInputTokens: 200_000,
         supportsEffort: true,
         supportedEffortLevels: ["low", "medium", "high"],
       },
+    ]);
+  });
+
+  it("preserves gateway input capacity for custom models and generated 1M variants", () => {
+    expect(parseClaudeGatewayModels([
+      { id: "custom-codex", display_name: "GPT · Codex", max_input_tokens: 400_000 },
+      { id: "custom-context", context_window: 512_000 },
+      { id: "custom-length", context_length: 400_000 },
+      { id: "custom-long", max_input_tokens: 200_000, supports_1m: true },
+      { id: "unknown-model", max_input_tokens: -1 },
+    ])).toEqual([
+      { value: "custom-codex", displayName: "GPT · Codex", maxInputTokens: 400_000 },
+      { value: "custom-context", displayName: "custom-context", maxInputTokens: 512_000 },
+      { value: "custom-length", displayName: "custom-length", maxInputTokens: 400_000 },
+      { value: "custom-long", displayName: "custom-long", maxInputTokens: 200_000 },
+      { value: "custom-long[1m]", displayName: "custom-long 1M", description: "1M context window", maxInputTokens: 1_000_000 },
+      { value: "unknown-model", displayName: "unknown-model" },
     ]);
   });
 

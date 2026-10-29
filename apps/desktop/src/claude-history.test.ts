@@ -446,6 +446,60 @@ describe("Claude transcript history", () => {
     });
   });
 
+  it.each([false, true])("invalidates pre-compact usage until a new assistant reply (preserved segment: %s)", async (preserve) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-context-compact-"));
+    directories.push(root);
+    const transcript = join(root, "session-1.jsonl");
+    const assistant = {
+      type: "assistant", uuid: "before-compact", parentUuid: "user-1",
+      message: { role: "assistant", model: "custom-model", content: "done", usage: { input_tokens: 292_121 } },
+    };
+    await writeFile(transcript, [
+      line(assistant),
+      line({
+        type: "system", subtype: "compact_boundary", uuid: "boundary",
+        compactMetadata: {
+          trigger: "manual", preTokens: 292_121,
+          ...(preserve ? { preservedSegment: { headUuid: "user-1", tailUuid: "before-compact", anchorUuid: "summary" } } : {}),
+        },
+      }),
+      line({ type: "user", uuid: "summary", isCompactSummary: true, message: { role: "user", content: "Summary" } }),
+      ...(preserve ? [line(assistant)] : []),
+    ].join("\n") + "\n");
+    await expect(readClaudeSessionContextEstimate(root, "session-1"))
+      .resolves.toBeUndefined();
+    await appendFile(transcript, line({
+      type: "assistant", uuid: "after-compact",
+      message: { role: "assistant", model: "custom-model", content: "continued", usage: { input_tokens: 42_000 } },
+    }) + "\n");
+    await expect(readClaudeSessionContextEstimate(root, "session-1"))
+      .resolves.toEqual({ totalTokens: 42_000, model: "custom-model" });
+  });
+
+  it.each([false, true])("uses compact postTokens while ignoring preserved usage (wire format: %s)", async (wire) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-context-post-tokens-"));
+    directories.push(root);
+    const transcript = join(root, "session-1.jsonl");
+    const assistant = { type: "assistant", uuid: "preserved", message: { role: "assistant", model: "custom-model", usage: { input_tokens: 292_121 } } };
+    await writeFile(transcript, [
+      line(assistant),
+      line({
+        type: "system", subtype: "compact_boundary", uuid: "boundary",
+        ...(wire ? { compact_metadata: { trigger: "manual", pre_tokens: 292_121, post_tokens: 45_000 } }
+          : { compactMetadata: { trigger: "manual", preTokens: 292_121, postTokens: 45_000 } }),
+      }),
+      line(assistant),
+    ].join("\n") + "\n");
+    await expect(readClaudeSessionContextEstimate(root, "session-1"))
+      .resolves.toEqual({ totalTokens: 45_000, model: "custom-model" });
+    await appendFile(transcript, [
+      line({ type: "assistant", uuid: "new", message: { model: "custom-model", usage: { input_tokens: 46_000 } } }),
+      line({ type: "assistant", uuid: "new", message: { model: "custom-model", usage: { input_tokens: 47_000 } } }),
+    ].join("\n") + "\n");
+    await expect(readClaudeSessionContextEstimate(root, "session-1"))
+      .resolves.toEqual({ totalTokens: 47_000, model: "custom-model" });
+  });
+
   it("recovers completed tool evidence without exposing thinking or duplicating tool results", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-claude-evidence-"));
     directories.push(root);

@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { BridgeDesktopRegistrationInfo, BridgeEffort } from "@bridge/protocol";
+import type { BridgeDesktopRegistrationInfo, BridgeEffort, BridgeModelInfo } from "@bridge/protocol";
 import type { ModelInfo, SDKControlGetContextUsageResponse } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeSessionHostOptions, SessionHostEvent } from "./claude-session-host.js";
 import type { StoredDesktopRegistration } from "./claude-desktop-session-registrar.js";
@@ -65,6 +65,7 @@ class FakeHost implements SessionHostRuntime {
   interrupts = 0;
   contextTotalTokens = 120_000;
   contextMaxTokens: number | undefined;
+  autoCompactWindow: number | undefined;
 
   constructor(readonly options: ClaudeSessionHostOptions) {
     this.model = options.model;
@@ -81,12 +82,17 @@ class FakeHost implements SessionHostRuntime {
     this.effort = effort;
   }
 
-  async supportedModels(): Promise<ModelInfo[]> {
+  async setAutoCompactWindow(maxTokens?: number): Promise<void> {
+    this.autoCompactWindow = maxTokens;
+  }
+
+  async supportedModels(): Promise<Array<ModelInfo & BridgeModelInfo>> {
     return [
       {
         value: "claude-fable-5",
         displayName: "Fable 5",
         description: "Fast model",
+        maxInputTokens: 262_144,
         supportsEffort: true,
         supportedEffortLevels: ["low", "medium", "high", "xhigh"],
       },
@@ -788,7 +794,7 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
-  it("blocks an over-limit same-profile resume before creating the host", async () => {
+  it("lets the native runtime auto-compact an over-limit same-profile resume", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-context-preflight-"));
     directories.push(root);
     const cwd = join(root, "project");
@@ -837,16 +843,19 @@ describe("SessionBroker", () => {
       origin: "mobile",
     });
 
-    await waitFor(() => eventLog.replay().some((event) => event.type === "turn.failed"));
-    expect(eventLog.replay().find((event) => event.type === "turn.failed")?.data.error)
-      .toMatch(/300,000 tokens.*262,144 tokens/u);
-    expect(hosts).toHaveLength(0);
-    expect(eventLog.replay().some((event) => event.type === "user.message.accepted")).toBe(false);
-    await broker.close();
-    await eventLog.close();
+    try {
+      await waitFor(() => hosts[0]?.sends === 1, 1_000);
+      expect(hosts[0]?.options).toMatchObject({ resume: true, model: "claude-opus-5" });
+      expect(eventLog.replay().some((event) => event.type === "turn.failed")).toBe(false);
+      hosts[0]!.complete();
+      await waitFor(() => broker.session(sessionId)?.turnState === "idle");
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
   });
 
-  it("keeps a short same-profile session working and rechecks live context before the next send", async () => {
+  it("lets the native runtime compact between sends instead of blocking on old usage", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-context-recheck-"));
     directories.push(root);
     const cwd = join(root, "project");
@@ -907,15 +916,68 @@ describe("SessionBroker", () => {
       text: "再次继续",
       origin: "mobile",
     });
-    await waitFor(() => eventLog.replay().some((event) => (
-      event.type === "turn.failed" && event.data.requestId === "recheck-request"
-    )));
-    expect(hosts[0]?.sends).toBe(1);
-    expect(eventLog.replay().find((event) => (
-      event.type === "turn.failed" && event.data.requestId === "recheck-request"
-    ))?.data.error).toMatch(/300,000 tokens.*262,144 tokens/u);
-    await broker.close();
-    await eventLog.close();
+    try {
+      await waitFor(() => hosts[0]?.sends === 2, 1_000);
+      expect(eventLog.replay().some((event) => (
+        event.type === "turn.failed" && event.data.requestId === "recheck-request"
+      ))).toBe(false);
+      hosts[0]!.complete();
+      await waitFor(() => broker.session(sessionId)?.turnState === "idle");
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
+  });
+
+  it("uses advertised custom-model capacity for configuration and explicit model changes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-custom-context-"));
+    directories.push(root);
+    const sessionId = randomUUID();
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    await writeContextTranscript(projects, cwd, sessionId, 292_121);
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "runtime"), tasks: join(root, "tasks"), projects, desktopSessions: [] },
+      eventLog,
+      observer: new FakeObserver({ projects: [], sessions: [observed(sessionId, cwd, { hostModel: "custom-codex" })], observedAt: Date.now() }),
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/host-creds.json", environment: {} }),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      discoverGatewayModels: async () => [
+        { value: "custom-codex", displayName: "GPT · Codex", maxInputTokens: 400_000 },
+        { value: "small-model", displayName: "Smaller model", maxInputTokens: 200_000 },
+        { value: "unknown-model", displayName: "Unknown model" },
+      ],
+    });
+    try {
+      await broker.initialize();
+      await expect(broker.configuration(sessionId, false)).resolves.toMatchObject({
+        context: { totalTokens: 292_121, maxTokens: 400_000 },
+        availableModels: expect.arrayContaining([expect.objectContaining({ value: "custom-codex", maxInputTokens: 400_000 })]),
+      });
+      await broker.startTurn({ requestId: "custom-cap", idempotencyKey: "custom-cap", sessionId, text: "继续", origin: "mobile" });
+      await waitFor(() => hosts[0]?.sends === 1);
+      expect(hosts[0]?.autoCompactWindow).toBe(400_000);
+      hosts[0]!.complete();
+      await waitFor(() => broker.session(sessionId)?.turnState === "idle");
+      await expect(broker.configureSession({ sessionId, model: "custom-codex" }))
+        .resolves.toMatchObject({ model: "custom-codex" });
+      await expect(broker.configureSession({ sessionId, model: "small-model" }))
+        .rejects.toThrow(/292,121 tokens.*200,000 tokens/u);
+      await expect(broker.configureSession({ sessionId, model: "unknown-model" }))
+        .resolves.toMatchObject({ model: "unknown-model" });
+      expect(hosts[0]?.autoCompactWindow).toBeUndefined();
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
   });
 
   it("rechecks live writers before spawning when the observer cache is stale", async () => {

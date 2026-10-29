@@ -30,6 +30,7 @@ import {
   CircleStop,
   Download,
   Forward,
+  GitFork,
   Goal,
   ImagePlus,
   Laptop,
@@ -56,6 +57,7 @@ import {
   collapseProjects,
   expandAllProjects,
   expandProject,
+  groupProjectSessionFamilies,
   toggleCollapsedProject,
 } from "../lib/project-groups.js";
 import type { LocalBridgeRequest } from "../runtime/desktop.js";
@@ -194,6 +196,7 @@ function DesktopSessions({
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const [sessionActionError, setSessionActionError] = useState<string>();
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
+  const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
   const [projectId, setProjectId] = useState(snapshot.projects[0]?.projectId ?? "");
   const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
   const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
@@ -327,6 +330,41 @@ function DesktopSessions({
   useEffect(() => {
     if (selectedId && snapshot.sessions.some((session) => session.sessionId === selectedId)) return;
     setSelectedId(snapshot.sessions[0]?.sessionId);
+  }, [selectedId, snapshot.sessions]);
+
+  const autoExpandedForkKeysRef = useRef(new Set<string>());
+  useEffect(() => {
+    const parentsToExpand: string[] = [];
+    for (const session of snapshot.sessions) {
+      if (!session.parentSessionId) continue;
+      const isSelected = session.sessionId === selectedId;
+      const isActive = session.turnState === "running" || session.turnState === "waiting" || session.turnState === "queued";
+      const selectedKey = `selected:${session.sessionId}`;
+      if (isSelected) {
+        if (!autoExpandedForkKeysRef.current.has(selectedKey)) {
+          autoExpandedForkKeysRef.current.add(selectedKey);
+          parentsToExpand.push(session.parentSessionId);
+        }
+      } else {
+        autoExpandedForkKeysRef.current.delete(selectedKey);
+      }
+      const activeKey = `active:${session.sessionId}`;
+      if (isActive) {
+        if (!autoExpandedForkKeysRef.current.has(activeKey)) {
+          autoExpandedForkKeysRef.current.add(activeKey);
+          parentsToExpand.push(session.parentSessionId);
+        }
+      } else {
+        autoExpandedForkKeysRef.current.delete(activeKey);
+      }
+    }
+    if (parentsToExpand.length > 0) {
+      setExpandedForkParents((current) => {
+        const next = new Set(current);
+        for (const parentId of parentsToExpand) next.add(parentId);
+        return next.size === current.size ? current : next;
+      });
+    }
   }, [selectedId, snapshot.sessions]);
 
   const streamScrollState = useRef<{ sessionId: string | undefined; count: number }>({
@@ -778,6 +816,35 @@ function DesktopSessions({
     }
   }
 
+  async function forkSelected(): Promise<void> {
+    if (!selected || sessionActionBusy) return;
+    setSessionActionBusy(true);
+    setSessionActionError(undefined);
+    try {
+      const result = unwrap<{ session: BridgeSessionInfo }>(await apiRequest({
+        method: "session.fork",
+        params: { sessionId: selected.sessionId },
+      }));
+      const rootId = selected.parentSessionId ?? selected.sessionId;
+      setExpandedForkParents((current) => {
+        const next = new Set(current);
+        next.add(rootId);
+        next.add(selected.sessionId);
+        return next;
+      });
+      await onRefreshSnapshot();
+      setSelectedId(result.session.sessionId);
+    } catch (failure) {
+      setSessionActionError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setSessionActionBusy(false);
+    }
+  }
+
+  function toggleForkGroup(parentSessionId: string): void {
+    setExpandedForkParents((current) => toggleCollapsedProject(current, parentSessionId));
+  }
+
   async function deleteSelected(): Promise<void> {
     if (!selected || sessionActionBusy) return;
     setSessionActionBusy(true);
@@ -855,6 +922,7 @@ function DesktopSessions({
           {grouped.map(([groupProjectId, sessions]) => {
             const expanded = !collapsedProjectIds.has(groupProjectId);
             const sessionsId = `desktop-project-${encodeURIComponent(groupProjectId)}`;
+            const families = groupProjectSessionFamilies(sessions);
             return (
               <section className={expanded ? "expanded" : "collapsed"} key={groupProjectId}>
                 <button
@@ -866,22 +934,70 @@ function DesktopSessions({
                 >
                   {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                   <strong>{snapshot.projects.find((project) => project.projectId === groupProjectId)?.name ?? sessions[0]!.projectName}</strong>
-                  <span>{sessions.length}</span>
+                  <span>{families.length}</span>
                 </button>
                 {expanded && (
                   <div className="desktop-project-sessions" id={sessionsId}>
-                    {sessions.map((session) => (
-                      <button
-                        type="button"
-                        className={`desktop-session-row ${session.sessionId === selectedId ? "active" : ""}`}
-                        onClick={() => setSelectedId(session.sessionId)}
-                        key={session.sessionId}
-                      >
-                        <span className={`session-state-dot ${session.turnState}`} />
-                        <span><strong>{session.title}</strong><small>{desktopRuntimeName(desktopRuntimeId(session))} · {sessionState(session)}</small></span>
-                        {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
-                      </button>
-                    ))}
+                    {families.map(({ primary: session, forks }) => {
+                      const forksExpanded = expandedForkParents.has(session.sessionId);
+                      return (
+                        <div className="desktop-session-family" key={session.sessionId}>
+                          <button
+                            type="button"
+                            className={`desktop-session-row ${session.sessionId === selectedId ? "active" : ""}`}
+                            onClick={() => setSelectedId(session.sessionId)}
+                          >
+                            <span className={`session-state-dot ${session.turnState}`} />
+                            <span>
+                              <strong>
+                                {session.title}
+                                {session.parentSessionId && (
+                                  <em className="session-fork-badge">{session.forkLabel || "fork"}</em>
+                                )}
+                              </strong>
+                              <small>{desktopRuntimeName(desktopRuntimeId(session))} · {sessionState(session)}</small>
+                            </span>
+                            {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
+                          </button>
+                          {forks.length > 0 && (
+                            <div className={`desktop-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
+                              <button
+                                type="button"
+                                className="desktop-fork-toggle"
+                                aria-expanded={forksExpanded}
+                                onClick={() => toggleForkGroup(session.sessionId)}
+                              >
+                                <GitFork size={12} />
+                                <span>{forks.length} 个 Fork 分支</span>
+                                {forksExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                              </button>
+                              {forksExpanded && (
+                                <div className="desktop-fork-children">
+                                  {forks.map((fork) => (
+                                    <button
+                                      type="button"
+                                      className={`desktop-session-row is-fork-child ${fork.sessionId === selectedId ? "active" : ""}`}
+                                      onClick={() => setSelectedId(fork.sessionId)}
+                                      key={fork.sessionId}
+                                    >
+                                      <span className={`session-state-dot ${fork.turnState}`} />
+                                      <span>
+                                        <strong>
+                                          <em className="session-fork-badge">{fork.forkLabel || "fork"}</em>
+                                          {fork.title}
+                                        </strong>
+                                        <small>{sessionState(fork)}</small>
+                                      </span>
+                                      {fork.pendingCount > 0 && <b>{fork.pendingCount}</b>}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </section>
@@ -890,37 +1006,88 @@ function DesktopSessions({
           {grouped.length === 0 && (
             <div className="desktop-sidebar-empty">等待发现 Desktop 会话</div>
           )}
-          {visibilityAvailable && archivedSessions.length > 0 && (
-            <section className={archivedExpanded ? "expanded" : "collapsed"}>
-              <button
-                type="button"
-                className="desktop-project-toggle"
-                aria-expanded={archivedExpanded}
-                aria-controls="desktop-archived-sessions"
-                onClick={() => setArchivedExpanded((current) => !current)}
-              >
-                {archivedExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                <strong>已归档</strong>
-                <span>{archivedSessions.length}</span>
-              </button>
-              {archivedExpanded && (
-                <div className="desktop-project-sessions" id="desktop-archived-sessions">
-                  {archivedSessions.map((session) => (
-                    <button
-                      type="button"
-                      className={`desktop-session-row ${session.sessionId === selectedId ? "active" : ""}`}
-                      onClick={() => setSelectedId(session.sessionId)}
-                      key={session.sessionId}
-                    >
-                      <span className={`session-state-dot ${session.turnState}`} />
-                      <span><strong>{session.title}</strong><small>{desktopRuntimeName(desktopRuntimeId(session))} · {sessionState(session)}</small></span>
-                      {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
+          {visibilityAvailable && archivedSessions.length > 0 && (() => {
+            const archivedFamilies = groupProjectSessionFamilies(archivedSessions);
+            return (
+              <section className={archivedExpanded ? "expanded" : "collapsed"}>
+                <button
+                  type="button"
+                  className="desktop-project-toggle"
+                  aria-expanded={archivedExpanded}
+                  aria-controls="desktop-archived-sessions"
+                  onClick={() => setArchivedExpanded((current) => !current)}
+                >
+                  {archivedExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  <strong>已归档</strong>
+                  <span>{archivedFamilies.length}</span>
+                </button>
+                {archivedExpanded && (
+                  <div className="desktop-project-sessions" id="desktop-archived-sessions">
+                    {archivedFamilies.map(({ primary: session, forks }) => {
+                      const forksExpanded = expandedForkParents.has(session.sessionId);
+                      return (
+                        <div className="desktop-session-family" key={session.sessionId}>
+                          <button
+                            type="button"
+                            className={`desktop-session-row ${session.sessionId === selectedId ? "active" : ""}`}
+                            onClick={() => setSelectedId(session.sessionId)}
+                          >
+                            <span className={`session-state-dot ${session.turnState}`} />
+                            <span>
+                              <strong>
+                                {session.title}
+                                {session.parentSessionId && (
+                                  <em className="session-fork-badge">{session.forkLabel || "fork"}</em>
+                                )}
+                              </strong>
+                              <small>{desktopRuntimeName(desktopRuntimeId(session))} · {sessionState(session)}</small>
+                            </span>
+                            {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
+                          </button>
+                          {forks.length > 0 && (
+                            <div className={`desktop-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
+                              <button
+                                type="button"
+                                className="desktop-fork-toggle"
+                                aria-expanded={forksExpanded}
+                                onClick={() => toggleForkGroup(session.sessionId)}
+                              >
+                                <GitFork size={12} />
+                                <span>{forks.length} 个 Fork 分支</span>
+                                {forksExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                              </button>
+                              {forksExpanded && (
+                                <div className="desktop-fork-children">
+                                  {forks.map((fork) => (
+                                    <button
+                                      type="button"
+                                      className={`desktop-session-row is-fork-child ${fork.sessionId === selectedId ? "active" : ""}`}
+                                      onClick={() => setSelectedId(fork.sessionId)}
+                                      key={fork.sessionId}
+                                    >
+                                      <span className={`session-state-dot ${fork.turnState}`} />
+                                      <span>
+                                        <strong>
+                                          <em className="session-fork-badge">{fork.forkLabel || "fork"}</em>
+                                          {fork.title}
+                                        </strong>
+                                        <small>{sessionState(fork)}</small>
+                                      </span>
+                                      {fork.pendingCount > 0 && <b>{fork.pendingCount}</b>}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            );
+          })()}
         </div>
       </aside>
 
@@ -992,6 +1159,15 @@ function DesktopSessions({
                     onClick={() => void stopCurrentTask()}
                   >
                     {stopping ? <LoaderCircle className="is-spinning" size={17} /> : <CircleStop size={17} />}
+                  </IconButton>
+                )}
+                {selectedRuntime === "claude-desktop" && (
+                  <IconButton
+                    label="Fork 分支会话"
+                    disabled={sessionActionBusy}
+                    onClick={() => void forkSelected()}
+                  >
+                    <GitFork size={16} />
                   </IconButton>
                 )}
                 {visibilityAvailable && (
@@ -1093,6 +1269,40 @@ function DesktopSessions({
                 ))}
               </div>
             )}
+            {(() => {
+              const parentSession = selected.parentSessionId
+                ? snapshot.sessions.find((candidate) => candidate.sessionId === selected.parentSessionId)
+                : undefined;
+              const childForks = snapshot.sessions.filter((candidate) => (
+                candidate.parentSessionId === selected.sessionId && !candidate.archivedAt
+              ));
+              if (!parentSession && childForks.length === 0) return null;
+              return (
+                <div className="desktop-channel-banner relay-chain-bar fork-chain-bar">
+                  {parentSession && (
+                    <button
+                      type="button"
+                      className="relay-chain-link"
+                      onClick={() => setSelectedId(parentSession.sessionId)}
+                    >
+                      <GitFork size={14} />
+                      {`主会话：${parentSession.title}`}
+                    </button>
+                  )}
+                  {childForks.map((fork) => (
+                    <button
+                      type="button"
+                      className="relay-chain-link outbound"
+                      key={fork.sessionId}
+                      onClick={() => setSelectedId(fork.sessionId)}
+                    >
+                      <GitFork size={14} />
+                      {`${fork.forkLabel || "fork"} · ${fork.title}`}
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
             {stopError && (
               <div className="desktop-channel-banner danger">
                 <AlertTriangle size={18} />

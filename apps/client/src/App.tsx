@@ -121,6 +121,7 @@ export function App() {
         onResolveUncertain={mobile.resolveUncertainDelivery}
         onResolvePermission={mobile.resolvePermission}
         onCreateSession={mobile.createSession}
+        onForkSession={mobile.forkSession}
         onLoadSessionConfiguration={mobile.loadSessionConfiguration}
         onConfigureSession={mobile.configureSession}
         {...(mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1")

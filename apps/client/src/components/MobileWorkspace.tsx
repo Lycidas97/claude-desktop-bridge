@@ -37,6 +37,7 @@ import {
   CircleStop,
   FilePenLine,
   Forward,
+  GitFork,
   Goal,
   ImagePlus,
   LoaderCircle,
@@ -67,9 +68,11 @@ import {
   collapseProjects,
   expandAllProjects,
   expandProject,
-  previewProjectSessions,
+  groupProjectSessionFamilies,
+  previewProjectSessionFamilies,
   sortProjectSessionsByRecent,
   toggleCollapsedProject,
+  type SessionFamily,
 } from "../lib/project-groups.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeId, desktopRuntimeName, isNativeRuntimeId, runtimeProviderLabel } from "../lib/runtime-labels.js";
@@ -1271,6 +1274,7 @@ export function MobileWorkspace({
   onResolveUncertain,
   onResolvePermission,
   onCreateSession,
+  onForkSession,
   onLoadSessionConfiguration,
   onConfigureSession,
   onConfigurePermissionPolicy,
@@ -1328,6 +1332,10 @@ export function MobileWorkspace({
     cwd: string,
     title?: string,
     runtimeId?: BridgeDesktopRuntimeId,
+  ): Promise<BridgeSessionInfo | undefined>;
+  onForkSession?(
+    sessionId: string,
+    title?: string,
   ): Promise<BridgeSessionInfo | undefined>;
   onLoadSessionConfiguration(sessionId: string): Promise<BridgeSessionConfiguration>;
   onConfigureSession(
@@ -1402,6 +1410,7 @@ export function MobileWorkspace({
   const [sessionActionError, setSessionActionError] = useState<string>();
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
+  const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
   const [desktopControlsExpanded, setDesktopControlsExpanded] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [projectSearch, setProjectSearch] = useState("");
@@ -1470,7 +1479,7 @@ export function MobileWorkspace({
     Boolean(session.archivedAt) && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
   ))), [runtimeFilter, sessions]);
   const menuSession = menuSessionId ? sessions.find((session) => session.sessionId === menuSessionId) : undefined;
-  const canManageSessions = Boolean(onArchiveSession || onDeleteSession);
+  const canManageSessions = Boolean(onForkSession || onArchiveSession || onDeleteSession);
   const menuSessionBusy = Boolean(menuSession && (
     menuSession.turnState === "running"
     || menuSession.turnState === "queued"
@@ -1669,6 +1678,31 @@ export function MobileWorkspace({
     if (search.trim()) setCollapsedProjectIds(new Set());
   }, [search]);
 
+  const autoExpandedForkKeysRef = useRef(new Set<string>());
+  useEffect(() => {
+    const parentsToExpand: string[] = [];
+    for (const session of sessions) {
+      if (!session.parentSessionId) continue;
+      const isActive = session.turnState === "running" || session.turnState === "waiting" || session.turnState === "queued";
+      const activeKey = `active:${session.sessionId}`;
+      if (isActive) {
+        if (!autoExpandedForkKeysRef.current.has(activeKey)) {
+          autoExpandedForkKeysRef.current.add(activeKey);
+          parentsToExpand.push(session.parentSessionId);
+        }
+      } else {
+        autoExpandedForkKeysRef.current.delete(activeKey);
+      }
+    }
+    if (parentsToExpand.length > 0) {
+      setExpandedForkParents((current) => {
+        const next = new Set(current);
+        for (const parentId of parentsToExpand) next.add(parentId);
+        return next.size === current.size ? current : next;
+      });
+    }
+  }, [sessions]);
+
   useEffect(() => {
     if (
       !focusSessionId ||
@@ -1711,6 +1745,10 @@ export function MobileWorkspace({
 
   function toggleProject(projectId: string): void {
     setCollapsedProjectIds((current) => toggleCollapsedProject(current, projectId));
+  }
+
+  function toggleForkGroup(parentSessionId: string): void {
+    setExpandedForkParents((current) => toggleCollapsedProject(current, parentSessionId));
   }
 
   function openProjectGroup(projectId: string): void {
@@ -1841,6 +1879,34 @@ export function MobileWorkspace({
     }
   }
 
+  async function forkSessionById(sessionId: string): Promise<void> {
+    if (!onForkSession || sessionActionBusy) return;
+    setSessionActionBusy(true);
+    setSessionActionError(undefined);
+    try {
+      const target = sessions.find((candidate) => candidate.sessionId === sessionId);
+      const created = await onForkSession(sessionId);
+      if (created) {
+        const rootId = target?.parentSessionId ?? sessionId;
+        setExpandedForkParents((current) => {
+          const next = new Set(current);
+          next.add(rootId);
+          next.add(sessionId);
+          return next;
+        });
+        setCollapsedProjectIds((current) => expandProject(current, created.projectId));
+        setMenuSessionId(undefined);
+        await selectSession(created.sessionId);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Fork 分支创建失败";
+      if (menuSessionId) setSessionActionError(message);
+      else setStopError(message);
+    } finally {
+      setSessionActionBusy(false);
+    }
+  }
+
   async function addImages(files: FileList | null): Promise<void> {
     if (!files?.length) return;
     setImageError(undefined);
@@ -1943,6 +2009,15 @@ export function MobileWorkspace({
                 <span>{sessionView === "evidence" ? "返回对话" : `成果${(selectedEvidence?.items.length ?? 0) > 0 ? ` ${selectedEvidence!.items.length}` : ""}`}</span>
               </button>
             )}
+            {onForkSession && desktopRuntimeId(selectedSession) === "claude-desktop" && (
+              <IconButton
+                label="Fork 分支会话"
+                disabled={sessionActionBusy}
+                onClick={() => void forkSessionById(selectedSession.sessionId)}
+              >
+                {sessionActionBusy ? <LoaderCircle className="is-spinning" size={18} /> : <GitFork size={18} />}
+              </IconButton>
+            )}
             <IconButton
               label={syncFlash ? "已同步" : "同步会话"}
               disabled={refreshing}
@@ -2026,6 +2101,40 @@ export function MobileWorkspace({
             ))}
           </div>
         )}
+        {(() => {
+          const parentSession = selectedSession.parentSessionId
+            ? sessions.find((candidate) => candidate.sessionId === selectedSession.parentSessionId)
+            : undefined;
+          const childForks = sessions.filter((candidate) => (
+            candidate.parentSessionId === selectedSession.sessionId && !candidate.archivedAt
+          ));
+          if (!parentSession && childForks.length === 0) return null;
+          return (
+            <div className="relay-chain-bar fork-chain-bar">
+              {parentSession && (
+                <button
+                  type="button"
+                  className="relay-chain-link"
+                  onClick={() => void selectSession(parentSession.sessionId)}
+                >
+                  <GitFork size={14} />
+                  {`主会话：${parentSession.title}`}
+                </button>
+              )}
+              {childForks.map((fork) => (
+                <button
+                  type="button"
+                  className="relay-chain-link outbound"
+                  key={fork.sessionId}
+                  onClick={() => void selectSession(fork.sessionId)}
+                >
+                  <GitFork size={14} />
+                  {`${fork.forkLabel || "fork"} · ${fork.title}`}
+                </button>
+              ))}
+            </div>
+          );
+        })()}
         {stopError && (
           <div className="session-channel-warning danger">
             <AlertTriangle size={17} />
@@ -2440,13 +2549,117 @@ export function MobileWorkspace({
       ?? sessions.find((session) => session.projectId === activeProjectId)?.cwd
       ?? "";
 
+  const activeGroupFamilies = groupProjectSessionFamilies(activeGroupSessions);
   const hostStatusText = activeProjectId
-    ? `${activeGroupSessionsAll.length} 个会话 · ${desktopName}`
+    ? `${activeGroupFamilies.length} 个主会话 · ${desktopName}`
     : desktopOnline
       ? (pendingOutbound > 0 ? `在线 · ${pendingOutbound} 条待发` : "在线")
       : connection === "connecting" || connection === "reconnecting"
         ? "正在连接"
         : (pendingOutbound > 0 ? `离线 · ${pendingOutbound} 条待发` : "离线");
+
+  function renderMobileSessionFamily(
+    family: SessionFamily<BridgeSessionInfo>,
+    isArchivedList = false,
+  ) {
+    const { primary: session, forks } = family;
+    const badge = isArchivedList ? "已归档" : activeSessionBadgeLabel(session);
+    const forksExpanded = expandedForkParents.has(session.sessionId);
+    return (
+      <div className="mobile-session-family" key={session.sessionId}>
+        <div className="session-row-v2" data-session-id={session.sessionId}>
+          <button
+            type="button"
+            className="session-row-hit"
+            onClick={() => void selectSession(session.sessionId)}
+          >
+            <span className={`session-state-dot ${session.turnState}`} />
+            <span className="session-row-copy">
+              <strong>
+                {session.title}
+                {session.parentSessionId && (
+                  <em className="session-fork-badge">{session.forkLabel || "fork"}</em>
+                )}
+              </strong>
+              <small>
+                {populatedRuntimeCount > 1 ? `${desktopRuntimeName(desktopRuntimeId(session))} · ` : ""}
+                {relativeTime(session.lastActivityAt)}
+                {!isArchivedList && session.currentSummary ? ` · ${session.currentSummary}` : ""}
+              </small>
+            </span>
+            {badge && <span className={`session-row-status ${session.turnState}`}>{badge}</span>}
+          </button>
+          {canManageSessions && (
+            <IconButton
+              label="会话操作"
+              className="session-row-action"
+              onClick={() => {
+                setSessionActionError(undefined);
+                setMenuSessionId(session.sessionId);
+              }}
+            >
+              <MoreHorizontal size={18} />
+            </IconButton>
+          )}
+        </div>
+        {forks.length > 0 && (
+          <div className={`mobile-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
+            <button
+              type="button"
+              className="mobile-fork-toggle"
+              aria-expanded={forksExpanded}
+              onClick={() => toggleForkGroup(session.sessionId)}
+            >
+              <GitFork size={12} />
+              <span>{forks.length} 个 Fork 分支</span>
+              {forksExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+            </button>
+            {forksExpanded && (
+              <div className="mobile-fork-children">
+                {forks.map((fork) => {
+                  const forkBadge = isArchivedList ? "已归档" : activeSessionBadgeLabel(fork);
+                  return (
+                    <div className="session-row-v2 is-fork-child" data-session-id={fork.sessionId} key={fork.sessionId}>
+                      <button
+                        type="button"
+                        className="session-row-hit"
+                        onClick={() => void selectSession(fork.sessionId)}
+                      >
+                        <span className={`session-state-dot ${fork.turnState}`} />
+                        <span className="session-row-copy">
+                          <strong>
+                            <em className="session-fork-badge">{fork.forkLabel || "fork"}</em>
+                            {fork.title}
+                          </strong>
+                          <small>
+                            {relativeTime(fork.lastActivityAt)}
+                            {!isArchivedList && fork.currentSummary ? ` · ${fork.currentSummary}` : ""}
+                          </small>
+                        </span>
+                        {forkBadge && <span className={`session-row-status ${fork.turnState}`}>{forkBadge}</span>}
+                      </button>
+                      {canManageSessions && (
+                        <IconButton
+                          label="会话操作"
+                          className="session-row-action"
+                          onClick={() => {
+                            setSessionActionError(undefined);
+                            setMenuSessionId(fork.sessionId);
+                          }}
+                        >
+                          <MoreHorizontal size={18} />
+                        </IconButton>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <main className="mobile-workspace host-detail-workspace">
@@ -2512,48 +2725,14 @@ export function MobileWorkspace({
               ))}
             </nav>
           )}
-          {activeGroupSessions.length === 0 ? (
+          {activeGroupFamilies.length === 0 ? (
             <div className="session-catalog-loading">
               <strong>{projectSearch ? "没有匹配的会话" : "此分组暂无会话"}</strong>
               <span>{projectSearch ? "换一个关键词试试。" : "可点击右上角新建会话，或返回查看其它项目。"}</span>
             </div>
           ) : (
             <div className="session-rows project-detail-rows">
-              {activeGroupSessions.map((session) => {
-                const badge = isArchivedGroupPage ? "已归档" : activeSessionBadgeLabel(session);
-                return (
-                  <div className="session-row-v2" data-session-id={session.sessionId} key={session.sessionId}>
-                    <button
-                      type="button"
-                      className="session-row-hit"
-                      onClick={() => void selectSession(session.sessionId)}
-                    >
-                      <span className={`session-state-dot ${session.turnState}`} />
-                      <span className="session-row-copy">
-                        <strong>{session.title}</strong>
-                        <small>
-                          {populatedRuntimeCount > 1 ? `${desktopRuntimeName(desktopRuntimeId(session))} · ` : ""}
-                          {relativeTime(session.lastActivityAt)}
-                          {!isArchivedGroupPage && session.currentSummary ? ` · ${session.currentSummary}` : ""}
-                        </small>
-                      </span>
-                      {badge && <span className={`session-row-status ${session.turnState}`}>{badge}</span>}
-                    </button>
-                    {canManageSessions && (
-                      <IconButton
-                        label="会话操作"
-                        className="session-row-action"
-                        onClick={() => {
-                          setSessionActionError(undefined);
-                          setMenuSessionId(session.sessionId);
-                        }}
-                      >
-                        <MoreHorizontal size={18} />
-                      </IconButton>
-                    )}
-                  </div>
-                );
-              })}
+              {activeGroupFamilies.map((family) => renderMobileSessionFamily(family, isArchivedGroupPage))}
             </div>
           )}
         </section>
@@ -2633,7 +2812,7 @@ export function MobileWorkspace({
             const projectName = group.project?.name ?? group.sessions[0]!.projectName;
             const expanded = !collapsedProjectIds.has(projectId);
             const sessionsId = `mobile-project-${encodeURIComponent(projectId)}`;
-            const { preview, totalCount, hiddenCount } = previewProjectSessions(
+            const { preview, totalCount, hiddenCount } = previewProjectSessionFamilies(
               group.sessions,
               PROJECT_PREVIEW_SESSION_LIMIT,
             );
@@ -2670,41 +2849,7 @@ export function MobileWorkspace({
                 </div>
                 {expanded && (
                   <div className="session-rows" id={sessionsId}>
-                    {preview.map((session) => {
-                      const badge = activeSessionBadgeLabel(session);
-                      return (
-                        <div className="session-row-v2" data-session-id={session.sessionId} key={session.sessionId}>
-                          <button
-                            type="button"
-                            className="session-row-hit"
-                            onClick={() => void selectSession(session.sessionId)}
-                          >
-                            <span className={`session-state-dot ${session.turnState}`} />
-                            <span className="session-row-copy">
-                              <strong>{session.title}</strong>
-                              <small>
-                                {populatedRuntimeCount > 1 ? `${desktopRuntimeName(desktopRuntimeId(session))} · ` : ""}
-                                {relativeTime(session.lastActivityAt)}
-                                {session.currentSummary ? ` · ${session.currentSummary}` : ""}
-                              </small>
-                            </span>
-                            {badge && <span className={`session-row-status ${session.turnState}`}>{badge}</span>}
-                          </button>
-                          {canManageSessions && (
-                            <IconButton
-                              label="会话操作"
-                              className="session-row-action"
-                              onClick={() => {
-                                setSessionActionError(undefined);
-                                setMenuSessionId(session.sessionId);
-                              }}
-                            >
-                              <MoreHorizontal size={18} />
-                            </IconButton>
-                          )}
-                        </div>
-                      );
-                    })}
+                    {preview.map((family) => renderMobileSessionFamily(family, false))}
                     {hiddenCount > 0 && (
                       <button
                         type="button"
@@ -2721,7 +2866,7 @@ export function MobileWorkspace({
             );
           })}
           {canManageSessions && archivedSessions.length > 0 && (() => {
-            const archivedPreview = previewProjectSessions(archivedSessions, PROJECT_PREVIEW_SESSION_LIMIT);
+            const archivedPreview = previewProjectSessionFamilies(archivedSessions, PROJECT_PREVIEW_SESSION_LIMIT);
             return (
               <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
                 <div className="project-group-header">
@@ -2745,33 +2890,7 @@ export function MobileWorkspace({
                 </div>
                 {archivedExpanded && (
                   <div className="session-rows" id="mobile-archived-sessions">
-                    {archivedPreview.preview.map((session) => (
-                      <div className="session-row-v2" data-session-id={session.sessionId} key={session.sessionId}>
-                        <button
-                          type="button"
-                          className="session-row-hit"
-                          onClick={() => void selectSession(session.sessionId)}
-                        >
-                          <span className={`session-state-dot ${session.turnState}`} />
-                          <span className="session-row-copy">
-                            <strong>{session.title}</strong>
-                            <small>{relativeTime(session.lastActivityAt)}</small>
-                          </span>
-                        </button>
-                        {canManageSessions && (
-                          <IconButton
-                            label="会话操作"
-                            className="session-row-action"
-                            onClick={() => {
-                              setSessionActionError(undefined);
-                              setMenuSessionId(session.sessionId);
-                            }}
-                          >
-                            <MoreHorizontal size={18} />
-                          </IconButton>
-                        )}
-                      </div>
-                    ))}
+                    {archivedPreview.preview.map((family) => renderMobileSessionFamily(family, true))}
                     {archivedPreview.hiddenCount > 0 && (
                       <button
                         type="button"
@@ -2863,6 +2982,16 @@ export function MobileWorkspace({
               <IconButton label="关闭" disabled={sessionActionBusy} onClick={() => setMenuSessionId(undefined)}><X size={19} /></IconButton>
             </header>
             <div className="session-menu-actions">
+              {onForkSession && desktopRuntimeId(menuSession) === "claude-desktop" && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={sessionActionBusy}
+                  onClick={() => void forkSessionById(menuSession.sessionId)}
+                >
+                  <GitFork size={17} />Fork 分支会话
+                </button>
+              )}
               {onArchiveSession && (
                 menuSession.archivedAt ? (
                   <button

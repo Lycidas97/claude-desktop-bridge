@@ -7654,5 +7654,146 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+/* Fork session hierarchy & nested drawer (Desktop & Mobile) */
+.session-fork-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line));
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1.35;
+  vertical-align: middle;
+}
 
+.desktop-session-row strong .session-fork-badge,
+.session-row-copy strong .session-fork-badge {
+  margin-left: 6px;
+  margin-right: 0;
+}
 
+.desktop-session-row.is-fork-child strong .session-fork-badge,
+.session-row-v2.is-fork-child .session-row-copy strong .session-fork-badge {
+  margin-left: 0;
+  margin-right: 6px;
+}
+
+.desktop-session-family {
+  display: grid;
+  gap: 2px;
+}
+
+.desktop-fork-group {
+  margin-left: 16px;
+  padding-left: 8px;
+  border-left: 1.5px solid var(--line-strong);
+}
+
+.desktop-fork-toggle {
+  display: inline-flex;
+  width: 100%;
+  min-height: 26px;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.desktop-fork-toggle:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.desktop-fork-toggle > svg:last-child {
+  margin-left: auto;
+}
+
+.desktop-fork-children {
+  display: grid;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+.desktop-session-row.is-fork-child {
+  min-height: 40px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.mobile-session-family {
+  border-bottom: 1px solid var(--line);
+}
+
+.mobile-session-family:last-child {
+  border-bottom: 0;
+}
+
+.mobile-session-family > .session-row-v2 {
+  border-bottom: 0;
+}
+
+.mobile-fork-group {
+  padding: 0 10px 8px 22px;
+  background: color-mix(in srgb, var(--surface-2) 38%, var(--surface));
+}
+
+.mobile-fork-toggle {
+  display: inline-flex;
+  width: 100%;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mobile-fork-toggle:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.mobile-fork-toggle > svg:last-child {
+  margin-left: auto;
+}
+
+.mobile-fork-children {
+  display: grid;
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 38%, var(--line-strong));
+}
+
+.session-row-v2.is-fork-child {
+  min-height: 52px;
+  border-bottom: 1px dashed var(--line);
+  border-radius: 6px;
+}
+
+.session-row-v2.is-fork-child:last-child {
+  border-bottom: 0;
+}
+
+.session-row-v2.is-fork-child .session-row-hit {
+  min-height: 52px;
+  padding: 7px 4px 7px 8px;
+}

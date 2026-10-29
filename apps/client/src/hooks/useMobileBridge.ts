@@ -2650,6 +2650,32 @@ export function useMobileBridge() {
     return result.session;
   }, [sendRequest]);
 
+  const forkSession = useCallback(async (
+    sessionId: string,
+    title?: string,
+  ): Promise<BridgeSessionInfo | undefined> => {
+    const response = await sendRequest("session.fork", {
+      sessionId,
+      ...(title ? { title } : {}),
+    }, { wait: true, timeoutMs: 30_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "Fork 分支创建失败");
+    const result = response.result as { session?: BridgeSessionInfo };
+    if (result.session) {
+      const created = result.session;
+      setState((current) => current.snapshot ? {
+        ...current,
+        snapshot: {
+          ...current.snapshot,
+          sessions: [
+            created,
+            ...current.snapshot.sessions.filter((candidate) => candidate.sessionId !== created.sessionId),
+          ],
+        },
+      } : current);
+    }
+    return result.session;
+  }, [sendRequest]);
+
   const loadSessionConfiguration = useCallback(async (sessionId: string): Promise<BridgeSessionConfiguration> => {
     const response = await sendRequest("session.configuration", { sessionId }, {
       wait: true,
@@ -3082,6 +3108,7 @@ export function useMobileBridge() {
     resolveUncertainDelivery,
     resolvePermission,
     createSession,
+    forkSession,
     loadSessionConfiguration,
     configureSession,
     configurePermissionPolicy,

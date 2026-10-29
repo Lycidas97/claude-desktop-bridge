@@ -1412,7 +1412,7 @@ function DesktopSessions({
                   <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? selectedRuntimeName : entry.item.toolName ?? "Bridge"}</strong></div>
                   {entry.item.text && (
                     entry.item.role === "assistant" || entry.item.role === "user" ? (
-                      <MarkdownText text={entry.item.text} />
+                      <MarkdownText text={entry.item.text} collapsible={!entry.item.live} />
                     ) : (
                       <div className="conversation-text">{entry.item.text}</div>
                     )

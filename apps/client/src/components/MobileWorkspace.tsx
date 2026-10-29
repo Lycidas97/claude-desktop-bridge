@@ -273,6 +273,7 @@ export function SubagentCard({
   return (
     <article
       className={`conversation-subagent-card ${isRunning ? "is-running" : "is-completed"}${entering ? " is-entering" : ""}`}
+      data-stream-key={item.id}
     >
       <div className="subagent-card-header">
         <div className="subagent-card-title-row">
@@ -565,11 +566,17 @@ function eventText(event: BridgeEvent): string {
   return "";
 }
 
+function preserveFullText(text: string, previous?: string): string {
+  const marker = "\n\n[内容较长，已省略中间部分]\n\n";
+  return previous && text.includes(marker) && !previous.includes(marker) ? previous : text;
+}
+
 export function conversationItems(
   sessionId: string,
   history: SessionHistoryState | undefined,
   events: BridgeEvent[],
   localTurns: LocalTurn[],
+  paged = false,
 ): ConversationItem[] {
   const items = new Map<string, ConversationItem>();
   for (const item of history?.items ?? []) {
@@ -639,7 +646,7 @@ export function conversationItems(
           sessionId,
           ...(event.turnId ? { turnId: event.turnId } : {}),
           role,
-          text,
+          text: preserveFullText(text, prev?.text),
           createdAt: event.timestamp,
           origin: event.origin,
           ...(interactivePrompt
@@ -736,12 +743,12 @@ export function conversationItems(
                   ? { recentTools: prevSubagent.recentTools }
                   : {}),
               ...(incomingSubagent.latestText
-                ? { latestText: incomingSubagent.latestText }
+                ? { latestText: preserveFullText(incomingSubagent.latestText, prevSubagent.latestText) }
                 : prevSubagent.latestText
                   ? { latestText: prevSubagent.latestText }
                   : {}),
               ...(incomingSubagent.reportText
-                ? { reportText: incomingSubagent.reportText }
+                ? { reportText: preserveFullText(incomingSubagent.reportText, prevSubagent.reportText) }
                 : prevSubagent.reportText
                   ? { reportText: prevSubagent.reportText }
                   : {}),
@@ -824,6 +831,16 @@ export function conversationItems(
           : {}),
       },
     };
+  }
+  if (paged) {
+    if (!history || (history.status === "loading" && history.items.length === 0)) return [];
+    const first = history.items[0];
+    if (history.hasMore && first) {
+      return sorted.filter((item) => (
+        item.createdAt > first.createdAt ||
+        (item.createdAt === first.createdAt && item.id.localeCompare(first.id) >= 0)
+      ));
+    }
   }
   return sorted;
 }
@@ -1022,7 +1039,7 @@ export function permissionPresentation(permission: BridgePermissionInfo): Permis
       || (mutating ? "这项操作会修改电脑上的项目内容" : "当前任务需要确认后才能继续"),
     facts,
     ...(preview ? { preview } : {}),
-    raw: truncate(serialized, 4_000),
+    raw: serialized,
     mutating,
   };
 }
@@ -1418,15 +1435,15 @@ export function MobileWorkspace({
   const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
   const [quitDesktopTarget, setQuitDesktopTarget] = useState<BridgeDesktopRuntimeId>();
   const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
-  const endRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<HTMLElement>(null);
   const streamScrollState = useRef<{
-    sessionId: string | undefined;
-    count: number;
-    firstKey: string | undefined;
-    lastKey: string | undefined;
-    height: number;
-  }>({ sessionId: undefined, count: 0, firstKey: undefined, lastKey: undefined, height: 0 });
+    sessionId?: string | undefined;
+    firstKey?: string | undefined;
+    lastKey?: string | undefined;
+    anchorKey?: string | undefined;
+    anchorOffset: number;
+    pinnedToBottom: boolean;
+  }>({ anchorOffset: 0, pinnedToBottom: true });
   const fileRef = useRef<HTMLInputElement>(null);
   const handledFocusRef = useRef<string | undefined>(undefined);
   const restoredSessionRef = useRef(false);
@@ -1443,7 +1460,7 @@ export function MobileWorkspace({
   const selectedEvidence = selectedSessionId ? evidence[selectedSessionId] : undefined;
   const items = useMemo(
     () => selectedSessionId
-      ? conversationItems(selectedSessionId, selectedHistory, events, localTurns)
+      ? conversationItems(selectedSessionId, selectedHistory, events, localTurns, true)
       : [],
     [events, localTurns, selectedHistory, selectedSessionId],
   );
@@ -1602,77 +1619,44 @@ export function MobileWorkspace({
     selectedSessionId,
   ]);
 
+  function rememberStreamPosition(): void {
+    const stream = streamRef.current;
+    if (!stream) return;
+    const top = stream.getBoundingClientRect().top;
+    const anchor = [...stream.querySelectorAll<HTMLElement>(":scope > [data-stream-key]")]
+      .find((element) => element.getBoundingClientRect().bottom > top);
+    streamScrollState.current = {
+      ...streamScrollState.current,
+      anchorKey: anchor?.dataset.streamKey,
+      anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0,
+      pinnedToBottom: stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120,
+    };
+  }
+
   useLayoutEffect(() => {
     const stream = streamRef.current;
-    if (!stream || !selectedSessionId) return;
-    const firstKey = streamKeys[0];
-    const lastKey = streamKeys[streamKeys.length - 1];
+    if (!stream || !selectedSessionId) {
+      streamScrollState.current = { anchorOffset: 0, pinnedToBottom: true };
+      return;
+    }
     const previous = streamScrollState.current;
-    streamScrollState.current = {
-      sessionId: selectedSessionId,
-      count: streamKeys.length,
-      firstKey,
-      lastKey,
-      height: stream.scrollHeight,
-    };
-    const jump = () => endRef.current?.scrollIntoView({ block: "end" });
-    if (previous.sessionId !== selectedSessionId || previous.count === 0) {
-      jump();
-      return;
+    const firstKey = streamKeys[0];
+    const lastKey = streamKeys.at(-1);
+    if (previous.sessionId !== selectedSessionId || !previous.lastKey) {
+      stream.scrollTop = stream.scrollHeight;
+    } else if (firstKey !== previous.firstKey && previous.anchorKey) {
+      // Preserve a visible message's position when an older page is prepended.
+      const anchor = [...stream.querySelectorAll<HTMLElement>(":scope > [data-stream-key]")]
+        .find((element) => element.dataset.streamKey === previous.anchorKey);
+      if (anchor) {
+        stream.scrollTop += anchor.getBoundingClientRect().top - stream.getBoundingClientRect().top - previous.anchorOffset;
+      }
+    } else if (previous.pinnedToBottom) {
+      stream.scrollTop = stream.scrollHeight;
     }
-    const added = streamKeys.length - previous.count;
-    // Older history prepended above: keep the reading position anchored.
-    if (added > 0 && firstKey !== previous.firstKey && lastKey === previous.lastKey) {
-      stream.scrollTop += stream.scrollHeight - previous.height;
-      return;
-    }
-    // A bulk (re)load lands at the bottom instantly.
-    if (added > 6) {
-      jump();
-      return;
-    }
-    // Live appends and streaming text growth follow smoothly only while
-    // pinned to the bottom; reading higher up is never interrupted.
-    const pinnedToBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120;
-    if (!pinnedToBottom) return;
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    endRef.current?.scrollIntoView({ block: "end", behavior: reduced ? "auto" : "smooth" });
-  }, [streamKeys, selectedSessionId]);
-
-  const autoBackfillCountRef = useRef<{ sessionId?: string; count: number }>({ count: 0 });
-  useEffect(() => {
-    if (!selectedSessionId) {
-      autoBackfillCountRef.current = { count: 0 };
-      return;
-    }
-    if (autoBackfillCountRef.current.sessionId !== selectedSessionId) {
-      autoBackfillCountRef.current = { sessionId: selectedSessionId, count: 0 };
-    }
-    if (
-      connection !== "connected" ||
-      !selectedHistory ||
-      selectedHistory.status !== "ready" ||
-      !selectedHistory.hasMore ||
-      !selectedHistory.nextCursor ||
-      selectedHistory.items.length === 0
-    ) {
-      return;
-    }
-    if (autoBackfillCountRef.current.count >= 4) return;
-    const timer = setTimeout(() => {
-      autoBackfillCountRef.current.count += 1;
-      void onLoadOlderHistory(selectedSessionId);
-    }, 280);
-    return () => clearTimeout(timer);
-  }, [
-    connection,
-    onLoadOlderHistory,
-    selectedHistory?.hasMore,
-    selectedHistory?.items.length,
-    selectedHistory?.nextCursor,
-    selectedHistory?.status,
-    selectedSessionId,
-  ]);
+    streamScrollState.current = { ...previous, sessionId: selectedSessionId, firstKey, lastKey };
+    rememberStreamPosition();
+  }, [streamKeys, selectedSessionId, sessionView]);
 
   useEffect(() => {
     if (search.trim()) setCollapsedProjectIds(new Set());
@@ -2182,15 +2166,7 @@ export function MobileWorkspace({
           className="conversation-stream"
           aria-live="polite"
           ref={streamRef}
-          onScroll={(event) => {
-            if (
-              event.currentTarget.scrollTop < 180 &&
-              selectedHistory?.hasMore &&
-              selectedHistory.status === "ready"
-            ) {
-              void onLoadOlderHistory(selectedSession.sessionId);
-            }
-          }}
+          onScroll={rememberStreamPosition}
         >
           {selectedHistory?.hasMore && (
             <button
@@ -2238,7 +2214,7 @@ export function MobileWorkspace({
                 ? `${singleTool.toolName || "工具"}${singleTool.text && singleTool.text !== singleTool.toolName ? ` · ${singleTool.text}` : ""}`
                 : `${anyRunning ? "正在执行" : "已调用"} ${node.tools.length} 个工具 (${uniqueNames.join("、")})`;
               return (
-                <details className={`conversation-tool-group ${anyRunning ? "is-running" : ""}`} key={node.id}>
+                <details className={`conversation-tool-group ${anyRunning ? "is-running" : ""}`} data-stream-key={`tool-group:${node.tools.at(-1)!.id}`} key={node.id}>
                   <summary>
                     <Wrench size={13} aria-hidden="true" />
                     <span>{summaryText}</span>
@@ -2273,6 +2249,7 @@ export function MobileWorkspace({
             return (
               <article
                 className={`conversation-item ${item.role} ${item.live ? "live" : ""}${streamEntering(item.id) ? " is-entering" : ""}`}
+                data-stream-key={item.id}
                 key={item.id}
               >
                 {item.role === "system" && (
@@ -2283,7 +2260,7 @@ export function MobileWorkspace({
                 )}
                 {item.text && (
                   item.role === "assistant" || item.role === "user" ? (
-                    <MarkdownText text={item.text} />
+                    <MarkdownText text={item.text} collapsible={!item.live} />
                   ) : (
                     <div className="conversation-text">{item.text}</div>
                   )
@@ -2319,7 +2296,6 @@ export function MobileWorkspace({
               </article>
             );
           })}
-          <div ref={endRef} />
         </section>
         ) : (
           <section className="mobile-evidence-view">

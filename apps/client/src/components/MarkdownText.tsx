@@ -1,5 +1,5 @@
 import { Check, Copy } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 
 export type TableAlign = "left" | "center" | "right" | undefined;
 
@@ -840,10 +840,31 @@ function renderBlockNodes(blocks: MarkdownBlockNode[], keyPrefix = "blk"): React
 export function MarkdownText({
   text,
   className = "conversation-text markdown-body",
+  collapsible = true,
 }: {
   text: string;
   className?: string;
+  collapsible?: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const contentId = useId();
+  const long = collapsible && (text.length > 2_000 || text.split("\n").length > 30);
   const blocks = parseMarkdownBlocks(text);
-  return <div className={className}>{renderBlockNodes(blocks)}</div>;
+  if (!long) return <div className={className}>{renderBlockNodes(blocks)}</div>;
+  return (
+    <div className="expandable-message">
+      <div className={expanded ? undefined : "expandable-message-fold"} inert={!expanded}>
+        <div className={className} id={contentId}>{renderBlockNodes(blocks)}</div>
+      </div>
+      <button
+        type="button"
+        className="expandable-message-toggle"
+        aria-expanded={expanded}
+        aria-controls={contentId}
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? "收起" : "展开全文"}
+      </button>
+    </div>
+  );
 }

@@ -1,4 +1,5 @@
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Download, Eye } from "lucide-react";
+import { mediaKind } from "../lib/media-preview.js";
 import { useId, useState, type ReactNode } from "react";
 
 export type TableAlign = "left" | "center" | "right" | undefined;
@@ -10,6 +11,7 @@ export type MarkdownInlineNode =
   | { type: "em"; children: MarkdownInlineNode[] }
   | { type: "del"; children: MarkdownInlineNode[] }
   | { type: "link"; href: string; children: MarkdownInlineNode[] }
+  | { type: "file_link"; path: string; children: MarkdownInlineNode[] }
   | { type: "br" };
 
 export interface MarkdownListItem {
@@ -32,6 +34,7 @@ export type MarkdownBlockNode =
   | { type: "hr" };
 
 const SAFE_LINK_PROTOCOL = /^(https?:|mailto:)/i;
+const DOWNLOADABLE_FILE_EXT_RE = /\.(apk|pdf|zip|tar|gz|tgz|docx|pptx|xlsx|csv|tsv|json|jsonl|md|txt|log|png|jpg|jpeg|gif|webp|svg|html|py|ts|tsx|js|mjs|cjs|css|sh|zsh|sql|yaml|yml|toml|xml|tex|bib)$/i;
 
 function sanitizeHref(raw: string): string | undefined {
   const trimmed = raw.trim();
@@ -42,6 +45,18 @@ function sanitizeHref(raw: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+export function extractDownloadableFilePath(raw: string, allowSpaces = false): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 320 || /[\r\n]/u.test(trimmed) || (!allowSpaces && /\s/u.test(trimmed))) return undefined;
+  if (trimmed.startsWith("#") || trimmed.startsWith("-")) return undefined;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) return undefined;
+  if (/^[^/\\]+:[/\\]/.test(trimmed)) return undefined;
+  const withoutLine = trimmed.replace(/:\d+(?::\d+)?$/u, "");
+  if (!withoutLine || withoutLine === "." || withoutLine === "..") return undefined;
+  if (!DOWNLOADABLE_FILE_EXT_RE.test(withoutLine)) return undefined;
+  return withoutLine;
 }
 
 export function parseInlineMarkdown(input: string): MarkdownInlineNode[] {
@@ -98,16 +113,23 @@ export function parseInlineMarkdown(input: string): MarkdownInlineNode[] {
       continue;
     }
 
-    // 2. Markdown link [label](url)
-    if (ch === "[") {
-      const linkMatch = matchMarkdownLink(input, i);
+    // 2. Markdown links and image references open on demand.
+    if (ch === "[" || (ch === "!" && input[i + 1] === "[")) {
+      const linkMatch = matchMarkdownLink(input, ch === "!" ? i + 1 : i);
       if (linkMatch) {
         const safeHref = sanitizeHref(linkMatch.href);
+        const filePath = safeHref ? undefined : extractDownloadableFilePath(linkMatch.href, true);
         flushText();
         if (safeHref) {
           nodes.push({
             type: "link",
             href: safeHref,
+            children: parseInlineMarkdown(linkMatch.label),
+          });
+        } else if (filePath) {
+          nodes.push({
+            type: "file_link",
+            path: filePath,
             children: parseInlineMarkdown(linkMatch.label),
           });
         } else {
@@ -326,7 +348,9 @@ function matchMarkdownLink(
 
   const label = input.slice(startIndex + 1, labelEnd);
   const rawTarget = input.slice(labelEnd + 2, j).trim();
-  const href = rawTarget.split(/\s+/)[0] ?? "";
+  const href = rawTarget.startsWith("<") && rawTarget.includes(">")
+    ? rawTarget.slice(1, rawTarget.indexOf(">"))
+    : rawTarget.replace(/\s+["'][^"']*["']$/u, "");
   if (!href) return undefined;
 
   return {
@@ -650,7 +674,11 @@ function stripIndent(line: string, maxSpaces: number): string {
   return line.slice(count);
 }
 
-function renderInlineNodes(nodes: MarkdownInlineNode[], keyPrefix = "inl"): ReactNode[] {
+function renderInlineNodes(
+  nodes: MarkdownInlineNode[],
+  keyPrefix = "inl",
+  onFileClick?: (filePath: string) => void,
+): ReactNode[] {
   return nodes.map((node, index) => {
     const key = `${keyPrefix}-${index}`;
     switch (node.type) {
@@ -658,18 +686,34 @@ function renderInlineNodes(nodes: MarkdownInlineNode[], keyPrefix = "inl"): Reac
         return node.text;
       case "br":
         return <br key={key} />;
-      case "code":
+      case "code": {
+        const filePath = onFileClick ? extractDownloadableFilePath(node.code) : undefined;
+        if (filePath && onFileClick) {
+          return (
+            <button
+              type="button"
+              className="markdown-inline-code markdown-file-code"
+              key={key}
+              title={`${mediaKind(filePath) ? "查看" : "打开"} ${filePath}`}
+              onClick={() => onFileClick(filePath)}
+            >
+              <span>{node.code}</span>
+              {mediaKind(filePath) ? <Eye size={11} className="markdown-file-icon" aria-hidden="true" /> : <Download size={11} className="markdown-file-icon" aria-hidden="true" />}
+            </button>
+          );
+        }
         return (
           <code className="markdown-inline-code" key={key}>
             {node.code}
           </code>
         );
+      }
       case "strong":
-        return <strong key={key}>{renderInlineNodes(node.children, key)}</strong>;
+        return <strong key={key}>{renderInlineNodes(node.children, key, onFileClick)}</strong>;
       case "em":
-        return <em key={key}>{renderInlineNodes(node.children, key)}</em>;
+        return <em key={key}>{renderInlineNodes(node.children, key, onFileClick)}</em>;
       case "del":
-        return <del key={key}>{renderInlineNodes(node.children, key)}</del>;
+        return <del key={key}>{renderInlineNodes(node.children, key, onFileClick)}</del>;
       case "link":
         return (
           <a
@@ -679,9 +723,25 @@ function renderInlineNodes(nodes: MarkdownInlineNode[], keyPrefix = "inl"): Reac
             rel="noopener noreferrer"
             target="_blank"
           >
-            {renderInlineNodes(node.children, key)}
+            {renderInlineNodes(node.children, key, onFileClick)}
           </a>
         );
+      case "file_link":
+        if (onFileClick) {
+          return (
+            <button
+              type="button"
+              className="markdown-file-link"
+              key={key}
+              title={`${mediaKind(node.path) ? "查看" : "打开"} ${node.path}`}
+              onClick={() => onFileClick(node.path)}
+            >
+              <span>{renderInlineNodes(node.children, key)}</span>
+              {mediaKind(node.path) ? <Eye size={12} className="markdown-file-icon" aria-hidden="true" /> : <Download size={12} className="markdown-file-icon" aria-hidden="true" />}
+            </button>
+          );
+        }
+        return <span key={key}>{renderInlineNodes(node.children, key)}</span>;
     }
   });
 }
@@ -733,7 +793,11 @@ function CodeBlockView({ language, code }: { language: string; code: string }) {
   );
 }
 
-function renderBlockNodes(blocks: MarkdownBlockNode[], keyPrefix = "blk"): ReactNode[] {
+function renderBlockNodes(
+  blocks: MarkdownBlockNode[],
+  keyPrefix = "blk",
+  onFileClick?: (filePath: string) => void,
+): ReactNode[] {
   return blocks.map((block, index) => {
     const key = `${keyPrefix}-${index}`;
     switch (block.type) {
@@ -741,14 +805,14 @@ function renderBlockNodes(blocks: MarkdownBlockNode[], keyPrefix = "blk"): React
         const Tag = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
         return (
           <Tag className={`markdown-heading markdown-h${block.level}`} key={key}>
-            {renderInlineNodes(block.children, key)}
+            {renderInlineNodes(block.children, key, onFileClick)}
           </Tag>
         );
       }
       case "paragraph":
         return (
           <p className="markdown-paragraph" key={key}>
-            {renderInlineNodes(block.children, key)}
+            {renderInlineNodes(block.children, key, onFileClick)}
           </p>
         );
       case "code_block":
@@ -756,7 +820,7 @@ function renderBlockNodes(blocks: MarkdownBlockNode[], keyPrefix = "blk"): React
       case "blockquote":
         return (
           <blockquote className="markdown-blockquote" key={key}>
-            {renderBlockNodes(block.blocks, key)}
+            {renderBlockNodes(block.blocks, key, onFileClick)}
           </blockquote>
         );
       case "hr":
@@ -786,11 +850,11 @@ function renderBlockNodes(blocks: MarkdownBlockNode[], keyPrefix = "blk"): React
                         type="checkbox"
                       />
                       <div className="markdown-list-item-body">
-                        {renderBlockNodes(item.blocks, itemKey)}
+                        {renderBlockNodes(item.blocks, itemKey, onFileClick)}
                       </div>
                     </>
                   ) : (
-                    renderBlockNodes(item.blocks, itemKey)
+                    renderBlockNodes(item.blocks, itemKey, onFileClick)
                   )}
                 </li>
               );
@@ -809,7 +873,7 @@ function renderBlockNodes(blocks: MarkdownBlockNode[], keyPrefix = "blk"): React
                       key={`${key}-th-${colIdx}`}
                       style={block.aligns[colIdx] ? { textAlign: block.aligns[colIdx] } : undefined}
                     >
-                      {renderInlineNodes(headerCells, `${key}-th-${colIdx}`)}
+                      {renderInlineNodes(headerCells, `${key}-th-${colIdx}`, onFileClick)}
                     </th>
                   ))}
                 </tr>
@@ -824,7 +888,7 @@ function renderBlockNodes(blocks: MarkdownBlockNode[], keyPrefix = "blk"): React
                           block.aligns[colIdx] ? { textAlign: block.aligns[colIdx] } : undefined
                         }
                       >
-                        {renderInlineNodes(cellNodes, `${key}-td-${rowIdx}-${colIdx}`)}
+                        {renderInlineNodes(cellNodes, `${key}-td-${rowIdx}-${colIdx}`, onFileClick)}
                       </td>
                     ))}
                   </tr>
@@ -840,21 +904,23 @@ function renderBlockNodes(blocks: MarkdownBlockNode[], keyPrefix = "blk"): React
 export function MarkdownText({
   text,
   className = "conversation-text markdown-body",
+  onFileClick,
   collapsible = true,
 }: {
   text: string;
   className?: string;
+  onFileClick?: (filePath: string) => void;
   collapsible?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const contentId = useId();
   const long = collapsible && (text.length > 2_000 || text.split("\n").length > 30);
   const blocks = parseMarkdownBlocks(text);
-  if (!long) return <div className={className}>{renderBlockNodes(blocks)}</div>;
+  if (!long) return <div className={className}>{renderBlockNodes(blocks, "blk", onFileClick)}</div>;
   return (
     <div className="expandable-message">
       <div className={expanded ? undefined : "expandable-message-fold"} inert={!expanded}>
-        <div className={className} id={contentId}>{renderBlockNodes(blocks)}</div>
+        <div className={className} id={contentId}>{renderBlockNodes(blocks, "blk", onFileClick)}</div>
       </div>
       <button
         type="button"

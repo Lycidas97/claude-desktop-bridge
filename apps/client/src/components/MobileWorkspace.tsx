@@ -81,6 +81,9 @@ import { sessionActivity } from "../lib/session-activity.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
+import { MediaGallery } from "./MediaGallery.js";
+import { useMediaPreview } from "./MediaPreviewProvider.js";
+import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
 import { IconButton } from "./IconButton.js";
 import { MarkdownText } from "./MarkdownText.js";
 import { ThemeMenu } from "./ThemeMenu.js";
@@ -255,9 +258,11 @@ function groupTimelineTools(timeline: ConversationTimelineEntry[]): DisplayTimel
 export function SubagentCard({
   item,
   entering = false,
+  onFileClick,
 }: {
   item: ConversationItem;
   entering?: boolean;
+  onFileClick?: (filePath: string) => void;
 }) {
   const subagent = item.subagent;
   if (!subagent) return null;
@@ -339,7 +344,10 @@ export function SubagentCard({
                 <div className="subagent-section-label">
                   {subagent.reportText ? "子代理回报" : "当前输出"}
                 </div>
-                <MarkdownText text={subagent.reportText ?? subagent.latestText ?? ""} />
+                <MarkdownText
+                  text={subagent.reportText ?? subagent.latestText ?? ""}
+                  {...(onFileClick ? { onFileClick } : {})}
+                />
               </div>
             )}
           </div>
@@ -1286,6 +1294,7 @@ export function MobileWorkspace({
   onLoadOlderEvidence,
   onPreviewArtifact,
   onDownloadArtifact,
+  onDownloadSessionFile,
   onSendTurn,
   onInterruptTurn,
   onResolveUncertain,
@@ -1336,6 +1345,7 @@ export function MobileWorkspace({
   onLoadOlderEvidence(sessionId: string): Promise<void>;
   onPreviewArtifact(artifactId: string): Promise<BridgeArtifactPreview>;
   onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
+  onDownloadSessionFile?(sessionId: string, filePath: string): Promise<void>;
   onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
   onResolveUncertain(commandId: string, action: "confirm" | "retry"): Promise<void>;
@@ -1435,6 +1445,10 @@ export function MobileWorkspace({
   const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
   const [quitDesktopTarget, setQuitDesktopTarget] = useState<BridgeDesktopRuntimeId>();
   const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
+  const openMedia = useMediaPreview();
+  const [pendingFileDownload, setPendingFileDownload] = useState<string>();
+  const [fileDownloadBusy, setFileDownloadBusy] = useState(false);
+  const [fileDownloadError, setFileDownloadError] = useState<string>();
   const streamRef = useRef<HTMLElement>(null);
   const streamScrollState = useRef<{
     sessionId?: string | undefined;
@@ -1510,6 +1524,16 @@ export function MobileWorkspace({
     && groupedProjectIds.every((projectId) => collapsedProjectIds.has(projectId));
   const allProjectsExpanded = groupedProjectIds.length > 0
     && groupedProjectIds.every((projectId) => !collapsedProjectIds.has(projectId));
+
+  function openSessionFile(filePath: string): void {
+    const kind = mediaKind(filePath);
+    if (kind && selectedSessionId) {
+      openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selectedSessionId, path: filePath });
+      return;
+    }
+    setFileDownloadError(undefined);
+    setPendingFileDownload(filePath);
+  }
 
   async function runRefresh(sessionId?: string): Promise<void> {
     if (refreshing) return;
@@ -1589,6 +1613,10 @@ export function MobileWorkspace({
       setDeleteSessionConfirmOpen(false);
       return true;
     }
+    if (pendingFileDownload) {
+      if (!fileDownloadBusy) setPendingFileDownload(undefined);
+      return true;
+    }
     if (menuSessionId) {
       setMenuSessionId(undefined);
       return true;
@@ -1612,7 +1640,9 @@ export function MobileWorkspace({
     configurationOpen,
     createOpen,
     deleteSessionConfirmOpen,
+    fileDownloadBusy,
     menuSessionId,
+    pendingFileDownload,
     permissionOpen,
     providerOpen,
     quitDesktopTarget,
@@ -2125,6 +2155,13 @@ export function MobileWorkspace({
             <span><strong>任务停止失败</strong>{stopError}</span>
           </div>
         )}
+        {fileDownloadError && (
+          <div className="session-channel-warning danger">
+            <AlertTriangle size={17} />
+            <span><strong>文件下载失败</strong>{fileDownloadError}</span>
+            <button type="button" className="secondary-button goal-action" onClick={() => setFileDownloadError(undefined)}>关闭</button>
+          </div>
+        )}
         {providerSwitchingAvailable && selectedSession.routeState && selectedSession.routeState !== "ready" && (
           <button
             type="button"
@@ -2238,6 +2275,9 @@ export function MobileWorkspace({
                   item={item}
                   key={item.id}
                   entering={streamEntering(item.id)}
+                  {...(onDownloadSessionFile ? {
+                    onFileClick: openSessionFile,
+                  } : {})}
                 />
               );
             }
@@ -2260,7 +2300,13 @@ export function MobileWorkspace({
                 )}
                 {item.text && (
                   item.role === "assistant" || item.role === "user" ? (
-                    <MarkdownText text={item.text} collapsible={!item.live} />
+                    <MarkdownText
+                      text={item.text}
+                      collapsible={!item.live}
+                      {...(onDownloadSessionFile ? {
+                        onFileClick: openSessionFile,
+                      } : {})}
+                    />
                   ) : (
                     <div className="conversation-text">{item.text}</div>
                   )
@@ -2276,7 +2322,7 @@ export function MobileWorkspace({
                 {item.attachments?.length ? (
                   <div className="conversation-attachments">
                     {item.attachments.map((attachment) => attachment.data ? (
-                      <img key={attachment.id} src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} loading="lazy" />
+                      <button type="button" className="conversation-image-preview" key={attachment.id} aria-label={`查看 ${attachment.name}`} onClick={() => openMedia({ name: attachment.name, kind: "image", dataUrl: `data:${attachment.mimeType};base64,${attachment.data}` })}><img src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} loading="lazy" /></button>
                     ) : (
                       <span className="attachment-chip" key={attachment.id}>{attachment.name}</span>
                     ))}
@@ -2299,11 +2345,21 @@ export function MobileWorkspace({
         </section>
         ) : (
           <section className="mobile-evidence-view">
+            <MediaGallery artifacts={mediaArtifacts(selectedEvidence?.items ?? [])} online={connection === "connected" && desktopOnline} />
             {fileChangesSummary && (
               <FileChangesCard
                 summary={fileChangesSummary}
-                {...(onOpenRuntimeFile ? {
+                onPreviewFile={openSessionFile}
+                transfers={artifactTransfers}
+                online={connection === "connected" && desktopOnline}
+                {...(onOpenRuntimeFile && isNativeRuntimeId(selectedSession.runtimeId) ? {
                   onOpenFile: (filePath) => void onOpenRuntimeFile(selectedSession.sessionId, filePath),
+                } : {})}
+                {...(onDownloadSessionFile ? {
+                  onDownloadFile: (filePath) => {
+                    setFileDownloadError(undefined);
+                    setPendingFileDownload(filePath);
+                  },
                 } : {})}
               />
             )}
@@ -2476,6 +2532,37 @@ export function MobileWorkspace({
             </section>
           </div>
         )}
+        <ConfirmationDialog
+          open={Boolean(pendingFileDownload)}
+          title="确认下载远程文件到手机？"
+          description={pendingFileDownload
+            ? `即将从电脑工作区下载「${pendingFileDownload.split(/[\\/]/u).at(-1) || pendingFileDownload}」（${pendingFileDownload}）到手机端，是否继续？`
+            : ""}
+          confirmLabel="确认下载"
+          busy={fileDownloadBusy}
+          onCancel={() => {
+            if (!fileDownloadBusy) setPendingFileDownload(undefined);
+          }}
+          onConfirm={() => {
+            if (!pendingFileDownload || !onDownloadSessionFile || fileDownloadBusy) return;
+            const targetPath = pendingFileDownload;
+            setFileDownloadBusy(true);
+            setFileDownloadError(undefined);
+            void onDownloadSessionFile(selectedSession.sessionId, targetPath)
+              .then(() => {
+                setPendingFileDownload(undefined);
+              })
+              .catch((downloadError) => {
+                setPendingFileDownload(undefined);
+                setFileDownloadError(
+                  downloadError instanceof Error ? downloadError.message : "远程文件下载失败",
+                );
+              })
+              .finally(() => {
+                setFileDownloadBusy(false);
+              });
+          }}
+        />
       </main>
     );
   }

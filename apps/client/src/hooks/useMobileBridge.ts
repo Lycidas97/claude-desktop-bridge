@@ -17,6 +17,7 @@ import {
   type BridgeEvidenceBundle,
   type BridgeEvidencePage,
   type BridgeEvent,
+  type BridgeHistoryItem,
   type BridgeHistoryPage,
   type BridgeHostSnapshot,
   type BridgePayload,
@@ -48,7 +49,10 @@ import { App as CapacitorApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridgeVault, type StoredBridgeHost } from "../lib/vault.js";
-import { downloadBridgeArtifact } from "../lib/artifact-download.js";
+import {
+  downloadBridgeArtifact,
+  downloadBridgeSessionFile,
+} from "../lib/artifact-download.js";
 import { diagLog, setDiagBridgeStateSummary } from "../lib/diagnostics.js";
 import { isReplayableMobileEnvelope } from "../lib/outbox.js";
 import { nativePushRegistration, onNativePushWake } from "../lib/push-wake.js";
@@ -2497,6 +2501,34 @@ export function useMobileBridge() {
     }
   }, [sendRequest]);
 
+  const downloadSessionFile = useCallback(async (sessionId: string, filePath: string) => {
+    const transferKey = `file:${filePath}`;
+    setState((current) => ({
+      ...current,
+      artifactTransfers: { ...current.artifactTransfers, [transferKey]: 0 },
+    }));
+    try {
+      await downloadBridgeSessionFile(
+        sessionId,
+        filePath,
+        (method, params, options) => sendRequest(method, params, options),
+        (progress) => setState((current) => ({
+          ...current,
+          artifactTransfers: {
+            ...current.artifactTransfers,
+            [transferKey]: progress,
+          },
+        })),
+      );
+    } finally {
+      setState((current) => {
+        const artifactTransfers = { ...current.artifactTransfers };
+        delete artifactTransfers[transferKey];
+        return { ...current, artifactTransfers };
+      });
+    }
+  }, [sendRequest]);
+
   const loadOlderHistory = useCallback(async (sessionId: string) => {
     const current = stateRef.current.histories[sessionId];
     if (!current?.nextCursor || current.status === "loading") return;
@@ -3102,7 +3134,9 @@ export function useMobileBridge() {
     loadOlderHistory,
     loadOlderEvidence,
     previewArtifact,
+    requestMedia: sendRequest,
     downloadArtifact,
+    downloadSessionFile,
     sendTurn,
     interruptTurn,
     resolveUncertainDelivery,

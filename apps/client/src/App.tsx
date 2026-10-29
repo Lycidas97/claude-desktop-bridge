@@ -11,6 +11,7 @@ import { HostBrowser } from "./components/HostBrowser.js";
 import { MobileWorkspace } from "./components/MobileWorkspace.js";
 import { PairingScreen } from "./components/PairingScreen.js";
 import { PairingSyncScreen } from "./components/PairingSyncScreen.js";
+import { MediaPreviewProvider } from "./components/MediaPreviewProvider.js";
 
 export function App() {
   const themeControl = useTheme();
@@ -42,7 +43,11 @@ export function App() {
     pairingOpen,
   ]);
 
-  if (window.bridgeDesktop) return <DesktopDashboard themeControl={themeControl} />;
+  if (window.bridgeDesktop) return (
+    <MediaPreviewProvider request={(method, params) => window.bridgeDesktop!.request({ method, params })}>
+      <DesktopDashboard themeControl={themeControl} />
+    </MediaPreviewProvider>
+  );
   if (mobile.state.pairingSync) {
     return (
       <>
@@ -91,7 +96,7 @@ export function App() {
     );
   }
   return (
-    <>
+    <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia}>
       <MobileWorkspace
         key={mobile.state.activeHostId}
         activeHostId={mobile.state.activeHostId}
@@ -116,6 +121,7 @@ export function App() {
         onLoadOlderEvidence={mobile.loadOlderEvidence}
         onPreviewArtifact={mobile.previewArtifact}
         onDownloadArtifact={mobile.downloadArtifact}
+        onDownloadSessionFile={mobile.downloadSessionFile}
         onSendTurn={mobile.sendTurn}
         onInterruptTurn={mobile.interruptTurn}
         onResolveUncertain={mobile.resolveUncertainDelivery}
@@ -151,6 +157,6 @@ export function App() {
         onRetry={mobile.retryConnection}
       />
       <DiagnosticFloatingEntry />
-    </>
+    </MediaPreviewProvider>
   );
 }

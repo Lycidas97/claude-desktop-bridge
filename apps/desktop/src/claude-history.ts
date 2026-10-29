@@ -117,7 +117,7 @@ function evidencePaths(value: unknown): string[] {
           /(?:^|[\s"'=])((?:(?:[A-Za-z]:[\\/])|(?:\\\\)|(?:\.{0,2}[\\/])|\/)[^\s"'<>|;&]+)/gu,
         ) ?? [];
         for (const match of matches) paths.push(match.trim().replace(/^[\s"'=]+/u, ""));
-      } else if (/(^|_)(file_?path|path|notebook_?path|output_?path|destination|dest)$/iu.test(key)) {
+      } else if (/(^|_)(files|paths|file_?path|path|notebook_?path|output_?path|destination|dest)$/iu.test(key)) {
         paths.push(candidate);
       }
       return;

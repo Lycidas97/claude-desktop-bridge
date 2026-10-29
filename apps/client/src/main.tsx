@@ -8,6 +8,7 @@ import "@fontsource-variable/dm-sans";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "./styles.css";
+import "./media-preview.css";
 
 installDiagnostics();
 

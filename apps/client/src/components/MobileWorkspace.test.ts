@@ -401,6 +401,53 @@ describe("conversationTimeline", () => {
 });
 
 describe("conversationItems", () => {
+  it("keeps older cached events outside a manually paged history window", () => {
+    const events: BridgeEvent[] = Array.from({ length: 80 }, (_, index) => ({
+      eventId: `event-${index}`, sessionId: "session-1", itemId: `item-${index}`, seq: index,
+      timestamp: index, origin: "claude-desktop", type: "session.observed",
+      data: { role: index % 2 ? "assistant" : "user", text: `记录 ${index}` },
+    }));
+    const history = {
+      status: "ready" as const, hasMore: true, nextCursor: "older",
+      items: [{ id: "item-78", sessionId: "session-1", role: "user" as const, text: "记录 78", createdAt: 78, origin: "claude-desktop" as const }],
+    };
+    const windowed = conversationItems("session-1", history, events, [], true);
+    expect(windowed.map((item) => item.id)).toEqual(["item-78", "item-79"]);
+    const expanded = conversationItems("session-1", {
+      ...history,
+      items: [{ ...history.items[0]!, id: "item-76", createdAt: 76, text: "记录 76" }, ...history.items],
+    }, events, [], true);
+    expect(expanded.map((item) => item.id)).toEqual(["item-76", "item-77", "item-78", "item-79"]);
+  });
+
+  it("keeps refreshed full history when an older cached event contains a clipped version", () => {
+    const text = `开头\n${"完整中段".repeat(3_000)}\n结尾`;
+    const items = conversationItems("session-1", {
+      status: "ready",
+      hasMore: false,
+      items: [{ id: "answer", sessionId: "session-1", role: "assistant", text, createdAt: 1, origin: "claude-desktop" }],
+    }, [{
+      eventId: "cached-event", sessionId: "session-1", itemId: "answer", seq: 1,
+      timestamp: 1, origin: "claude-desktop", type: "session.observed",
+      data: { role: "assistant", text: "开头\n\n[内容较长，已省略中间部分]\n\n结尾" },
+    }], []);
+    expect(items[0]?.text).toBe(text);
+  });
+
+  it("keeps a full subagent report when cached progress contains the clipped report", () => {
+    const reportText = `开头\n${"回报证据".repeat(3_000)}\n结尾`;
+    const subagent = { agentId: "agent-1", state: "completed" as const, description: "检查", toolCount: 1, startedAt: 1, updatedAt: 2, reportText };
+    const items = conversationItems("session-1", {
+      status: "ready", hasMore: false,
+      items: [{ id: "agent-tool", sessionId: "session-1", role: "tool", text: "检查", createdAt: 1, origin: "claude-desktop", subagent }],
+    }, [{
+      eventId: "cached-agent", sessionId: "session-1", itemId: "agent-tool", seq: 1,
+      timestamp: 2, origin: "claude-desktop", type: "tool.completed",
+      data: { subagent: { ...subagent, reportText: "开头\n\n[内容较长，已省略中间部分]\n\n结尾" } },
+    }], []);
+    expect(items[0]?.subagent?.reportText).toBe(reportText);
+  });
+
   it("merges streamed assistant chunks from one turn even when their provider item ids differ", () => {
     const events: BridgeEvent[] = ["PO", "关键", "核查", "断", "几个"].map((text, index) => ({
       eventId: `delta-${index}`,
@@ -620,7 +667,7 @@ describe("conversationItems", () => {
 });
 
 describe("permissionPresentation", () => {
-  it("summarizes a large Write request without rendering the full content", () => {
+  it("summarizes a large Write request while retaining complete expandable parameters", () => {
     const content = "const value = 1;\n".repeat(2_000);
     const permission: BridgePermissionInfo = {
       requestId: "permission-1",
@@ -643,8 +690,7 @@ describe("permissionPresentation", () => {
       code: true,
     });
     expect(presentation.preview?.value.length).toBeLessThan(content.length);
-    expect(presentation.raw.length).toBeLessThan(content.length);
-    expect(presentation.raw).toContain("已省略");
+    expect(JSON.parse(presentation.raw)).toEqual(permission.input);
   });
 
   it("shows command and working directory for Bash approval", () => {

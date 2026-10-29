@@ -28,7 +28,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionEvidenceState } from "../hooks/useMobileBridge.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../lib/runtime-labels.js";
+import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
+import { artifactMediaTarget, mediaArtifacts } from "../lib/media-preview.js";
+import { MediaGallery } from "./MediaGallery.js";
+import { useMediaPreview } from "./MediaPreviewProvider.js";
 
 function confidenceLabel(value: BridgeEvidenceBundle["confidence"]): string {
   if (value === "exact") return "精确";
@@ -395,6 +399,8 @@ export function EvidenceInlineSummary({
   if (parts.length === 0) parts.push("本轮执行记录");
 
   return (
+    <div className="evidence-inline-output" data-stream-key={`evidence:${evidence.id}`}>
+      <MediaGallery artifacts={mediaArtifacts([evidence])} />
     <button type="button" className={`evidence-inline-summary ${evidence.confidence}${entering ? " is-entering" : ""}`} onClick={onOpen}>
       <span className="evidence-inline-icon">
         {evidence.state === "collecting"
@@ -408,6 +414,7 @@ export function EvidenceInlineSummary({
       </span>
       <b>查看</b>
     </button>
+    </div>
   );
 }
 
@@ -431,8 +438,10 @@ export function EvidencePanel({
   onPreview(artifactId: string): Promise<BridgeArtifactPreview>;
   onDownload(artifact: BridgeArtifactManifest): Promise<void>;
 }) {
+  const openMedia = useMediaPreview();
   const [selectedArtifactId, setSelectedArtifactId] = useState<string>();
   const [previewBusy, setPreviewBusy] = useState<string>();
+  const [pendingDownload, setPendingDownload] = useState<BridgeArtifactManifest>();
   const [error, setError] = useState("");
   const [selection, setSelection] = useState<TimelineSelection>();
   // The newest bundle starts open; a stable id keeps native <details> toggles
@@ -470,6 +479,8 @@ export function EvidencePanel({
   }, [selectedArtifactId]);
 
   async function openPreview(artifact: BridgeArtifactManifest): Promise<void> {
+    const media = artifactMediaTarget(artifact);
+    if (media) { openMedia(media); return; }
     setError("");
     if (previews[artifact.id]) {
       setSelectedArtifactId(artifact.id);
@@ -590,8 +601,8 @@ export function EvidencePanel({
                     <div className="evidence-artifact-list">
                       {bundle.artifacts.map((artifact) => {
                         const cached = Boolean(previews[artifact.id]);
-                        const previewable = artifact.previewMode !== "none"
-                          && artifact.availability !== "blocked";
+                        const previewable = Boolean(artifactMediaTarget(artifact)) || (artifact.previewMode !== "none"
+                          && artifact.availability !== "blocked");
                         const progress = transfers[artifact.id];
                         return (
                           <article className={`evidence-artifact ${artifact.availability}`} key={artifact.id}>
@@ -630,7 +641,7 @@ export function EvidencePanel({
                                 <IconButton
                                   label={`下载 ${artifact.name}`}
                                   disabled={!online || progress !== undefined}
-                                  onClick={() => void download(artifact)}
+                                  onClick={() => setPendingDownload(artifact)}
                                 >
                                   {progress !== undefined
                                     ? <LoaderCircle className="is-spinning" size={17} />
@@ -683,7 +694,7 @@ export function EvidencePanel({
             <footer>
               <span>{selectedPreview.truncated ? "预览已截断" : formatBytes(selectedArtifact.size)}</span>
               {selectedArtifact.downloadAllowed && (
-                <button type="button" className="secondary-button" disabled={!online} onClick={() => void download(selectedArtifact)}>
+                <button type="button" className="secondary-button" disabled={!online} onClick={() => setPendingDownload(selectedArtifact)}>
                   <Download size={16} />下载
                 </button>
               )}
@@ -691,6 +702,20 @@ export function EvidencePanel({
           </section>
         </div>
       )}
+      <ConfirmationDialog
+        open={Boolean(pendingDownload)}
+        title="确认下载文件到手机？"
+        description={pendingDownload
+          ? `即将从电脑下载「${pendingDownload.name}」（${pendingDownload.relativePath}${pendingDownload.size > 0 ? ` · ${formatBytes(pendingDownload.size)}` : ""}）到当前设备。`
+          : ""}
+        confirmLabel="确认下载"
+        onCancel={() => setPendingDownload(undefined)}
+        onConfirm={() => {
+          const target = pendingDownload;
+          setPendingDownload(undefined);
+          if (target) void download(target);
+        }}
+      />
     </section>
   );
 }

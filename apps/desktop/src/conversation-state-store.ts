@@ -42,6 +42,9 @@ export interface PersistedBridgeSession {
   title: string;
   createdAt: number;
   desktopSessionId?: string;
+  parentSessionId?: string;
+  parentDesktopSessionId?: string;
+  forkLabel?: string;
   desktopRegistration?: unknown;
   fallbackConfirmedAt?: number;
 }
@@ -51,6 +54,7 @@ export interface PersistedSessionConfiguration {
   model?: string;
   effort?: string;
   permissionMode?: "standard" | "full-access";
+  desktopBaseline?: { model?: string; effort?: string };
   updatedAt: number;
 }
 

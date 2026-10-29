@@ -86,6 +86,7 @@ export class BridgeSocket {
     resolve(indexes: number[] | undefined): void;
     timer: ReturnType<typeof setTimeout>;
   }>();
+  private chunkedSendTail: Promise<void> = Promise.resolve();
 
   constructor(options: BridgeSocketOptions) {
     this.crypto = options.crypto;
@@ -188,25 +189,35 @@ export class BridgeSocket {
       total,
       sha256: digest,
     };
-    const missing = manifest.temporary ? undefined : await this.queryMissingChunks(manifest);
-    const indexes = missing ?? Array.from({ length: total }, (_, index) => index);
-    let sentChunks = 0;
-    for (const index of indexes) {
-      if (index < 0 || index >= total) continue;
-      if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
-        throw new Error("Bridge disconnected while sending an attachment");
+    // On a slow link, interleaved large envelopes all finish late; sending them
+    // one after another lets the first reach the phone before its timeout.
+    const previous = this.chunkedSendTail;
+    let release!: () => void;
+    this.chunkedSendTail = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      const missing = manifest.temporary ? undefined : await this.queryMissingChunks(manifest);
+      const indexes = missing ?? Array.from({ length: total }, (_, index) => index);
+      let sentChunks = 0;
+      for (const index of indexes) {
+        if (index < 0 || index >= total) continue;
+        if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
+          throw new Error("Bridge disconnected while sending an attachment");
+        }
+        const start = index * ENVELOPE_CHUNK_BYTES;
+        const chunk: EncryptedEnvelopeChunk = {
+          ...manifest,
+          index,
+          data: toBase64Url(serialized.slice(start, start + ENVELOPE_CHUNK_BYTES)),
+        };
+        this.ws.send(JSON.stringify({ type: "envelope-chunk", chunk }));
+        sentChunks += 1;
+        if (sentChunks % 4 === 0 && sentChunks < indexes.length) {
+          await new Promise((resolve) => setTimeout(resolve, 6));
+        }
       }
-      const start = index * ENVELOPE_CHUNK_BYTES;
-      const chunk: EncryptedEnvelopeChunk = {
-        ...manifest,
-        index,
-        data: toBase64Url(serialized.slice(start, start + ENVELOPE_CHUNK_BYTES)),
-      };
-      this.ws.send(JSON.stringify({ type: "envelope-chunk", chunk }));
-      sentChunks += 1;
-      if (sentChunks % 4 === 0 && sentChunks < indexes.length) {
-        await new Promise((resolve) => setTimeout(resolve, 6));
-      }
+    } finally {
+      release();
     }
   }
 

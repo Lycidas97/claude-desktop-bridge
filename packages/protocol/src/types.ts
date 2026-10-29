@@ -95,6 +95,7 @@ export type BridgeDesktopRuntimeState = "ready" | "starting" | "unavailable" | "
 export type BridgeRuntimeCapability =
   | "session.list"
   | "session.create"
+  | "session.fork"
   | "session.history"
   | "session.configure"
   | "turn.start"
@@ -528,6 +529,10 @@ export interface BridgeSessionInfo {
   /** Never portable across Desktop runtimes; exposed only as an opaque reference. */
   nativeSessionId?: string;
   desktopSessionId?: string;
+  /** Parent session ID when this session was forked from another session. */
+  parentSessionId?: string;
+  /** Short fork handle (e.g. "fork", "fork-2") from Claude Desktop or Bridge. */
+  forkLabel?: string;
   projectId: string;
   projectName: string;
   cwd: string;
@@ -582,6 +587,8 @@ export interface BridgeModelInfo {
   provider?: string;
   description?: string;
   resolvedModel?: string;
+  /** Input capacity advertised by the model's gateway. */
+  maxInputTokens?: number;
   supportsEffort?: boolean;
   supportedEffortLevels?: string[];
   supportsFast?: boolean;
@@ -848,6 +855,7 @@ export type BridgeMethod =
   | "session.list"
   | "session.open"
   | "session.create"
+  | "session.fork"
   | "session.history"
   | "session.configuration"
   | "session.configure"

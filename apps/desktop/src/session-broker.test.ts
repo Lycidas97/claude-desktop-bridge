@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { BridgeDesktopRegistrationInfo, BridgeEffort } from "@bridge/protocol";
+import type { BridgeDesktopRegistrationInfo, BridgeEffort, BridgeModelInfo } from "@bridge/protocol";
 import type { ModelInfo, SDKControlGetContextUsageResponse } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeSessionHostOptions, SessionHostEvent } from "./claude-session-host.js";
 import type { StoredDesktopRegistration } from "./claude-desktop-session-registrar.js";
@@ -65,6 +65,7 @@ class FakeHost implements SessionHostRuntime {
   interrupts = 0;
   contextTotalTokens = 120_000;
   contextMaxTokens: number | undefined;
+  autoCompactWindow: number | undefined;
 
   constructor(readonly options: ClaudeSessionHostOptions) {
     this.model = options.model;
@@ -81,12 +82,17 @@ class FakeHost implements SessionHostRuntime {
     this.effort = effort;
   }
 
-  async supportedModels(): Promise<ModelInfo[]> {
+  async setAutoCompactWindow(maxTokens?: number): Promise<void> {
+    this.autoCompactWindow = maxTokens;
+  }
+
+  async supportedModels(): Promise<Array<ModelInfo & BridgeModelInfo>> {
     return [
       {
         value: "claude-fable-5",
         displayName: "Fable 5",
         description: "Fast model",
+        maxInputTokens: 262_144,
         supportsEffort: true,
         supportedEffortLevels: ["low", "medium", "high", "xhigh"],
       },
@@ -234,6 +240,9 @@ class FakeManagedTransport extends EventEmitter implements ManagedDesktopTranspo
   ready = true;
   sends: Array<Parameters<ManagedDesktopTransportRuntime["send"]>[0]> = [];
   interrupts = 0;
+  configuration: { model?: string; effort?: BridgeEffort } | undefined;
+  models: string[] = [];
+  efforts: Array<BridgeEffort | undefined> = [];
 
   updateCatalog(): void {}
 
@@ -253,8 +262,9 @@ class FakeManagedTransport extends EventEmitter implements ManagedDesktopTranspo
   async interrupt(): Promise<void> {
     this.interrupts += 1;
   }
-  async setModel(): Promise<void> {}
-  async setEffort(): Promise<void> {}
+  async setModel(_sessionId: string, model: string): Promise<void> { this.models.push(model); }
+  async setEffort(_sessionId: string, effort?: BridgeEffort): Promise<void> { this.efforts.push(effort); }
+  async getConfiguration() { return this.configuration; }
   async getContextUsage(): Promise<undefined> { return undefined; }
   clearIntent(): void {}
 
@@ -344,6 +354,58 @@ async function writeContextTranscript(
 }
 
 describe("SessionBroker", () => {
+  it("pages full transcript messages without letting old clipped events skip an oversized message", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-full-history-"));
+    directories.push(root);
+    const sessionId = randomUUID();
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    await mkdir(projects, { recursive: true });
+    const longText = `开头\n${"完整中段".repeat(30_000)}\n结尾`;
+    const rows = [
+      { id: "u1", role: "user", text: "较早的问题" },
+      { id: "a1", role: "assistant", text: longText },
+      { id: "u2", role: "user", text: "新的问题" },
+      { id: "a2", role: "assistant", text: "新的回答" },
+    ];
+    const at = Date.UTC(2026, 9, 29);
+    await writeFile(join(projects, `${sessionId}.jsonl`), rows.map((row, index) => JSON.stringify({
+      uuid: row.id, parentUuid: rows[index - 1]?.id ?? null, type: row.role, sessionId, cwd,
+      timestamp: new Date(at + index * 1_000).toISOString(),
+      message: { role: row.role, content: row.text },
+    })).join("\n"));
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    for (const [index, row] of rows.entries()) {
+      await eventLog.append({
+        origin: "claude-desktop", type: "session.observed", sessionId, itemId: row.id,
+        timestamp: at + index * 1_000,
+        data: { role: row.role, text: row.id === "a1" ? "开头\n\n[内容较长，已省略中间部分]\n\n结尾" : row.text },
+      });
+    }
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects, desktopSessions: [] },
+      eventLog,
+      observer: new FakeObserver({ projects: [], sessions: [observed(sessionId, cwd)], observedAt: Date.now() }),
+      sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"),
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+    });
+    await broker.initialize();
+    try {
+      const first = await broker.history(sessionId);
+      expect(first.items.map((item) => item.id)).toEqual(["u2", "a2"]);
+      expect(first.hasMore).toBe(true);
+      const second = await broker.history(sessionId, first.nextCursor);
+      expect(second.items.map((item) => item.id)).toEqual(["a1"]);
+      expect(second.items[0]?.text).toBe(longText);
+      const third = await broker.history(sessionId, second.nextCursor);
+      expect(third.items.map((item) => item.id)).toEqual(["u1"]);
+      expect(third.hasMore).toBe(false);
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
+  });
+
   it("creates metadata only for a discovered project without probing its protected path", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-project-"));
     directories.push(root);
@@ -784,7 +846,7 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
-  it("blocks an over-limit same-profile resume before creating the host", async () => {
+  it("lets the native runtime auto-compact an over-limit same-profile resume", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-context-preflight-"));
     directories.push(root);
     const cwd = join(root, "project");
@@ -833,16 +895,19 @@ describe("SessionBroker", () => {
       origin: "mobile",
     });
 
-    await waitFor(() => eventLog.replay().some((event) => event.type === "turn.failed"));
-    expect(eventLog.replay().find((event) => event.type === "turn.failed")?.data.error)
-      .toMatch(/300,000 tokens.*262,144 tokens/u);
-    expect(hosts).toHaveLength(0);
-    expect(eventLog.replay().some((event) => event.type === "user.message.accepted")).toBe(false);
-    await broker.close();
-    await eventLog.close();
+    try {
+      await waitFor(() => hosts[0]?.sends === 1, 1_000);
+      expect(hosts[0]?.options).toMatchObject({ resume: true, model: "claude-opus-5" });
+      expect(eventLog.replay().some((event) => event.type === "turn.failed")).toBe(false);
+      hosts[0]!.complete();
+      await waitFor(() => broker.session(sessionId)?.turnState === "idle");
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
   });
 
-  it("keeps a short same-profile session working and rechecks live context before the next send", async () => {
+  it("lets the native runtime compact between sends instead of blocking on old usage", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-context-recheck-"));
     directories.push(root);
     const cwd = join(root, "project");
@@ -903,15 +968,68 @@ describe("SessionBroker", () => {
       text: "再次继续",
       origin: "mobile",
     });
-    await waitFor(() => eventLog.replay().some((event) => (
-      event.type === "turn.failed" && event.data.requestId === "recheck-request"
-    )));
-    expect(hosts[0]?.sends).toBe(1);
-    expect(eventLog.replay().find((event) => (
-      event.type === "turn.failed" && event.data.requestId === "recheck-request"
-    ))?.data.error).toMatch(/300,000 tokens.*262,144 tokens/u);
-    await broker.close();
-    await eventLog.close();
+    try {
+      await waitFor(() => hosts[0]?.sends === 2, 1_000);
+      expect(eventLog.replay().some((event) => (
+        event.type === "turn.failed" && event.data.requestId === "recheck-request"
+      ))).toBe(false);
+      hosts[0]!.complete();
+      await waitFor(() => broker.session(sessionId)?.turnState === "idle");
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
+  });
+
+  it("uses advertised custom-model capacity for configuration and explicit model changes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-custom-context-"));
+    directories.push(root);
+    const sessionId = randomUUID();
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    await writeContextTranscript(projects, cwd, sessionId, 292_121);
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "runtime"), tasks: join(root, "tasks"), projects, desktopSessions: [] },
+      eventLog,
+      observer: new FakeObserver({ projects: [], sessions: [observed(sessionId, cwd, { hostModel: "custom-codex" })], observedAt: Date.now() }),
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/host-creds.json", environment: {} }),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      discoverGatewayModels: async () => [
+        { value: "custom-codex", displayName: "GPT · Codex", maxInputTokens: 400_000 },
+        { value: "small-model", displayName: "Smaller model", maxInputTokens: 200_000 },
+        { value: "unknown-model", displayName: "Unknown model" },
+      ],
+    });
+    try {
+      await broker.initialize();
+      await expect(broker.configuration(sessionId, false)).resolves.toMatchObject({
+        context: { totalTokens: 292_121, maxTokens: 400_000 },
+        availableModels: expect.arrayContaining([expect.objectContaining({ value: "custom-codex", maxInputTokens: 400_000 })]),
+      });
+      await broker.startTurn({ requestId: "custom-cap", idempotencyKey: "custom-cap", sessionId, text: "继续", origin: "mobile" });
+      await waitFor(() => hosts[0]?.sends === 1);
+      expect(hosts[0]?.autoCompactWindow).toBe(400_000);
+      hosts[0]!.complete();
+      await waitFor(() => broker.session(sessionId)?.turnState === "idle");
+      await expect(broker.configureSession({ sessionId, model: "custom-codex" }))
+        .resolves.toMatchObject({ model: "custom-codex" });
+      await expect(broker.configureSession({ sessionId, model: "small-model" }))
+        .rejects.toThrow(/292,121 tokens.*200,000 tokens/u);
+      await expect(broker.configureSession({ sessionId, model: "unknown-model" }))
+        .resolves.toMatchObject({ model: "unknown-model" });
+      expect(hosts[0]?.autoCompactWindow).toBeUndefined();
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
   });
 
   it("rechecks live writers before spawning when the observer cache is stale", async () => {
@@ -1292,6 +1410,7 @@ describe("SessionBroker", () => {
     const hosts: FakeHost[] = [];
     const managedDesktop = new FakeManagedDesktop();
     const managedTransport = new FakeManagedTransport();
+    managedTransport.configuration = { model: "desktop-live", effort: "xhigh" };
     const eventLog = new SessionEventLog(join(root, "events.jsonl"));
     const broker = new SessionBroker({
       paths: {
@@ -1318,6 +1437,8 @@ describe("SessionBroker", () => {
       }),
     });
     await broker.initialize();
+    await expect(broker.configuration(sessionId, false)).resolves.toMatchObject({ model: "desktop-live", effort: "xhigh" });
+    managedTransport.configuration = { model: "desktop-latest", effort: "medium" };
     const receipt = await broker.startTurn({
       requestId: "request-managed",
       idempotencyKey: "command-managed",
@@ -1332,7 +1453,11 @@ describe("SessionBroker", () => {
       text: "Run in Claude Desktop",
       messageId: receipt.commandId,
       mode: "start",
+      model: "desktop-latest",
+      effort: "medium",
     });
+    expect(managedTransport.models).toEqual(["desktop-latest"]);
+    expect(managedTransport.efforts).toEqual(["medium"]);
     const turnId = managedTransport.sends[0]?.turnId;
     if (!turnId) throw new Error("Managed turn did not receive an id");
     managedTransport.emitHost({
@@ -1927,6 +2052,65 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
+  it("refreshes Desktop configuration and retires stale overrides while keeping fresh mobile choices", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-desktop-config-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    const desktopSessions = join(root, "Claude-3p", "claude-code-sessions");
+    await mkdir(desktopSessions, { recursive: true });
+    const desktopPath = join(desktopSessions, "session.json");
+    const desktop = {
+      sessionId: `desktop-${sessionId}`, cliSessionId: sessionId, cwd,
+      model: "desktop-current", effort: "xhigh",
+    };
+    await writeFile(desktopPath, JSON.stringify(desktop));
+    const sessionsPath = join(root, "sessions.json");
+    await writeFile(sessionsPath, JSON.stringify({
+      version: 2, sessions: [], configurations: [{
+        sessionId, model: "old-mobile", effort: "low", permissionMode: "full-access", updatedAt: 1,
+      }],
+    }));
+    const observer = new FakeObserver({ projects: [], sessions: [observed(sessionId, cwd)], observedAt: 1 });
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const options = {
+      paths: { sessions: join(root, "runtime"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [desktopSessions] },
+      eventLog, observer, sessionsPath, queuePath: join(root, "queue.json"),
+      discoverGatewayModels: async () => [{ value: "desktop-current", displayName: "Desktop current" }],
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+    };
+    const broker = new SessionBroker(options);
+    try {
+      await expect(broker.configuration(sessionId)).resolves.toMatchObject({
+        model: "desktop-current", effort: "xhigh", modelSource: "claude-desktop", effortSource: "claude-desktop",
+        permissionPolicy: { effectiveMode: "full-access" },
+      });
+      expect(broker.session(sessionId)).toMatchObject({ model: "desktop-current", effort: "xhigh" });
+      await expect(broker.configureSession({ sessionId, model: "new-mobile", effort: "medium" })).resolves.toMatchObject({
+        model: "new-mobile", effort: "medium", modelSource: "bridge", effortSource: "bridge",
+      });
+      await expect(broker.configuration(sessionId)).resolves.toMatchObject({ model: "new-mobile", effort: "medium" });
+      await broker.close();
+      const restarted = new SessionBroker(options);
+      try {
+        await expect(restarted.configuration(sessionId)).resolves.toMatchObject({ model: "new-mobile", effort: "medium" });
+        await writeFile(desktopPath, JSON.stringify({ ...desktop, model: "desktop-changed" }));
+        await expect(restarted.configuration(sessionId)).resolves.toMatchObject({
+          model: "desktop-changed", effort: "medium", modelSource: "claude-desktop", effortSource: "bridge",
+        });
+        await writeFile(desktopPath, JSON.stringify({ ...desktop, model: "desktop-changed", effort: "high" }));
+        await expect(restarted.configuration(sessionId)).resolves.toMatchObject({
+          model: "desktop-changed", effort: "high", modelSource: "claude-desktop", effortSource: "claude-desktop",
+        });
+        expect((await restarted.configuration(sessionId)).overrideModel).toBeUndefined();
+        expect((await restarted.configuration(sessionId)).overrideEffort).toBeUndefined();
+      } finally { await restarted.close(); }
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
+  });
+
   it("discovers provider models without attaching to the desktop session", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-discovery-"));
     directories.push(root);
@@ -2322,5 +2506,117 @@ describe("SessionBroker", () => {
 
     await restarted.close();
     await secondLog.close();
+  });
+
+  it("forks an existing session with copied transcript history and parent-child metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-fork-"));
+    directories.push(root);
+    const sessionId = randomUUID();
+    const cwd = join(root, "project");
+    const projectsRoot = join(root, "projects");
+    await mkdir(projectsRoot, { recursive: true });
+    await writeFile(join(projectsRoot, `${sessionId}.jsonl`), [
+      JSON.stringify({
+        uuid: "u-1",
+        type: "user",
+        sessionId,
+        cwd,
+        timestamp: "2026-10-25T08:00:00.000Z",
+        message: { role: "user", content: "原始问题" },
+      }),
+      JSON.stringify({
+        uuid: "a-1",
+        parentUuid: "u-1",
+        type: "assistant",
+        sessionId,
+        cwd,
+        timestamp: "2026-10-25T08:00:02.000Z",
+        message: {
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "原始回答" }],
+        },
+      }),
+    ].join("\n") + "\n");
+
+    const registeredInputs: unknown[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const parentObs = {
+      ...observed(sessionId, cwd),
+      title: "第四章叙事与分析设计讨论",
+      desktopSessionId: "local_parent_01",
+      hostModel: "claude-opus-5-5[1m]",
+      hostEffort: "xhigh" as const,
+    };
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: projectsRoot,
+        desktopSessions: [],
+      },
+      eventLog,
+      observer: new FakeObserver({
+        projects: [],
+        sessions: [parentObs],
+        observedAt: Date.now(),
+      }),
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      desktopRegistrar: {
+        async register(input) {
+          registeredInputs.push(input);
+          return {
+            state: "registered",
+            detail: "registered",
+            desktopSessionId: `local_${input.sessionId}`,
+            registeredAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+        },
+        publicInfo(value) {
+          return value;
+        },
+        changed(left, right) {
+          return JSON.stringify(left) !== JSON.stringify(right);
+        },
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+
+    const fork1 = await broker.forkSession(sessionId);
+    const fork2 = await broker.forkSession(sessionId);
+
+    expect(fork1).toMatchObject({
+      parentSessionId: sessionId,
+      forkLabel: "fork",
+      title: "第四章叙事与分析设计讨论 (fork)",
+      model: "claude-opus-5-5[1m]",
+      effort: "xhigh",
+    });
+    expect(fork2).toMatchObject({
+      parentSessionId: sessionId,
+      forkLabel: "fork-2",
+      title: "第四章叙事与分析设计讨论 (fork)",
+    });
+    expect(registeredInputs[0]).toMatchObject({
+      sessionId: fork1.sessionId,
+      parentDesktopSessionId: "local_parent_01",
+      forkLabel: "fork",
+    });
+
+    const history = await broker.history(fork1.sessionId);
+    expect(history.items.map((item) => ({ role: item.role, text: item.text }))).toEqual([
+      { role: "user", text: "原始问题" },
+      { role: "assistant", text: "原始回答" },
+    ]);
+
+    await broker.close();
+    await eventLog.close();
   });
 });

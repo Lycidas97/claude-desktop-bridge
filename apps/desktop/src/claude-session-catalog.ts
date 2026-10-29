@@ -5,7 +5,7 @@ import { basename, join, win32 as windowsPath } from "node:path";
 import { promisify } from "node:util";
 import type { BridgeProjectInfo, BridgeSessionInfo } from "@bridge/protocol";
 import {
-  listClaudeDesktopSessions,
+  listClaudeDesktopSessionState,
   type ClaudeDesktopProfile,
   type ClaudeSessionEffort,
 } from "./claude-desktop-sessions.js";
@@ -32,6 +32,7 @@ export interface ActiveClaudeProcess {
 }
 
 export interface ObservedClaudeSession extends BridgeSessionInfo {
+  desktopTitle?: string;
   transcriptPath?: string;
   transcriptMtimeMs: number;
   processAlive: boolean;
@@ -49,6 +50,7 @@ export interface ObservedClaudeSession extends BridgeSessionInfo {
 export interface ClaudeCatalogSnapshot {
   projects: BridgeProjectInfo[];
   sessions: ObservedClaudeSession[];
+  archivedSessionIds?: ReadonlySet<string>;
   observedAt: number;
 }
 
@@ -107,7 +109,8 @@ interface ProcessRow {
 function isStreamJsonProcess(command: string): boolean {
   return /--output-format(?:=|\s+)"?stream-json"?/iu.test(command) &&
     /--input-format(?:=|\s+)"?stream-json"?/iu.test(command) &&
-    !/[\\/]Contents[\\/]Helpers[\\/]disclaimer(?:\s|$)/iu.test(command);
+    !/[\\/]Contents[\\/]Helpers[\\/]disclaimer(?:\s|$)/iu.test(command) &&
+    !/magpie-claude-|claude-mcp-helper/iu.test(command);
 }
 
 function parseWindowsProcessRows(stdout: string): ProcessRow[] {
@@ -225,7 +228,9 @@ async function listActiveSessions(
       if (
         typeof value.sessionId !== "string" ||
         typeof value.cwd !== "string" ||
-        typeof value.startedAt !== "number"
+        typeof value.startedAt !== "number" ||
+        value.entrypoint === "sdk-cli" ||
+        /(?:^|[\\/])magpie-claude-work-\d+(?:[\\/]|$)/iu.test(value.cwd)
       ) return;
       const pid = typeof value.pid === "number" && Number.isInteger(value.pid) ? value.pid : undefined;
       const active: ActiveClaudeProcess = {
@@ -296,10 +301,11 @@ export async function scanClaudeCatalog(
   paths: ClaudeRuntimePaths,
   platform = process.platform,
 ): Promise<ClaudeCatalogSnapshot> {
-  const [desktopSessions, activeSessions] = await Promise.all([
-    listClaudeDesktopSessions(paths.desktopSessions),
+  const [desktopState, activeSessions] = await Promise.all([
+    listClaudeDesktopSessionState(paths.desktopSessions),
     listActiveSessions(paths.sessions, platform),
   ]);
+  const { sessions: desktopSessions, archivedCliSessionIds } = desktopState;
   const observedAt = Date.now();
   const seen = new Set<string>();
   const sessions: ObservedClaudeSession[] = [];
@@ -321,10 +327,13 @@ export async function scanClaudeCatalog(
     sessions.push({
       sessionId: desktopSession.cliSessionId,
       desktopSessionId: desktopSession.sessionId,
+      ...(desktopSession.parentSessionId ? { parentSessionId: desktopSession.parentSessionId } : {}),
+      ...(desktopSession.forkLabel ? { forkLabel: desktopSession.forkLabel } : {}),
       projectId: projectIdForCwd(cwd, platform),
       projectName,
       cwd,
       title: desktopSession.title || projectName,
+      ...(desktopSession.title ? { desktopTitle: desktopSession.title } : {}),
       source: "desktop",
       ownership: "DESKTOP_OBSERVED",
       transport: "bridge-host",
@@ -348,8 +357,12 @@ export async function scanClaudeCatalog(
     });
   }
   for (const [sessionId, activeProcesses] of activeSessions) {
-    if (seen.has(sessionId)) continue;
-    const active = activeProcesses.find((candidate) => candidate.cwd);
+    if (seen.has(sessionId) || archivedCliSessionIds.has(sessionId)) continue;
+    const active = activeProcesses.find((candidate) => (
+      candidate.cwd
+      && candidate.entrypoint !== "sdk-cli"
+      && !/(?:^|[\\/])magpie-claude-work-\d+(?:[\\/]|$)/iu.test(candidate.cwd)
+    ));
     if (!active?.cwd) continue;
     const processState = processSummary(activeProcesses);
     const projectName = basename(active.cwd) || active.cwd;
@@ -400,6 +413,7 @@ export async function scanClaudeCatalog(
   return {
     projects: [...grouped.values()].sort((left, right) => right.lastActivityAt - left.lastActivityAt),
     sessions,
+    archivedSessionIds: archivedCliSessionIds,
     observedAt,
   };
 }

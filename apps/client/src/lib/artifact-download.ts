@@ -72,22 +72,23 @@ async function sha256Hex(chunks: Uint8Array[]): Promise<string> {
   return [...digest].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-export async function downloadBridgeArtifact(
-  artifact: BridgeArtifactManifest,
+async function runArtifactTransfer(
+  openParams: Record<string, unknown>,
   request: RequestArtifact,
   onProgress: (progress: number) => void,
 ): Promise<void> {
   const opened = unwrap<{ transfer: BridgeArtifactTransferInfo }>(await request(
     "artifact.transfer.open",
-    { artifactId: artifact.id },
+    openParams,
     { wait: true, timeoutMs: 60_000 },
   ));
   const transfer = opened.transfer;
   const chunks: Uint8Array[] = [];
   const native = Capacitor.isNativePlatform();
   const filename = safeFilename(transfer.name);
-  const nativePath = `bridge-evidence/${transfer.transferId}-${filename}`;
+  const nativePath = `bridge-evidence/${transfer.transferId}/${filename}`;
   let nativeFileCreated = false;
+  let transferCompleted = false;
   try {
     for (let index = 0; index < transfer.totalChunks; index += 1) {
       const chunk = await readChunkWithResume(request, transfer, index);
@@ -116,11 +117,12 @@ export async function downloadBridgeArtifact(
       onProgress((index + 1) / transfer.totalChunks);
     }
     if (await sha256Hex(chunks) !== transfer.sha256) throw new Error("成果完整性校验失败");
+    transferCompleted = true;
     if (native) {
       const file = await Filesystem.getUri({ path: nativePath, directory: Directory.Cache });
       await Share.share({
         title: transfer.name,
-        dialogTitle: "保存或打开成果",
+        dialogTitle: "选择打开方式",
         files: [file.uri],
       });
       return;
@@ -141,11 +143,28 @@ export async function downloadBridgeArtifact(
       { transferId: transfer.transferId },
       { wait: true, timeoutMs: 20_000 },
     ).catch(() => undefined);
-    if (nativeFileCreated) {
+    if (nativeFileCreated && !transferCompleted) {
       await Filesystem.deleteFile({
         path: nativePath,
         directory: Directory.Cache,
       }).catch(() => undefined);
     }
   }
+}
+
+export async function downloadBridgeArtifact(
+  artifact: BridgeArtifactManifest,
+  request: RequestArtifact,
+  onProgress: (progress: number) => void,
+): Promise<void> {
+  await runArtifactTransfer({ artifactId: artifact.id }, request, onProgress);
+}
+
+export async function downloadBridgeSessionFile(
+  sessionId: string,
+  filePath: string,
+  request: RequestArtifact,
+  onProgress: (progress: number) => void,
+): Promise<void> {
+  await runArtifactTransfer({ sessionId, path: filePath }, request, onProgress);
 }

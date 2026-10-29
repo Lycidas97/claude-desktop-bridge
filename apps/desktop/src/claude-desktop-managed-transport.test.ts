@@ -58,6 +58,20 @@ function session(overrides: Partial<BridgeSessionInfo> = {}): BridgeSessionInfo 
 }
 
 describe("ClaudeDesktopManagedTransport", () => {
+  it("reads the mapped Desktop session configuration without modifying it", async () => {
+    const manager = new FakeManager();
+    const transport = new ClaudeDesktopManagedTransport({ manager, permissionBroker: new PermissionBroker() });
+    transport.updateCatalog({ projects: [], sessions: [{ ...session(), transcriptMtimeMs: 0, processAlive: true, desktopProcessAlive: true, bridgeProcessAlive: false, processOverlap: false, activeProcesses: [], activeTask: false }], observedAt: 1 });
+    manager.call = async (name, args = []) => {
+      manager.calls.push({ name, args });
+      return { sessionId: "desktop-1", cwd: "/tmp/project", isRunning: true, model: "desktop-current", effort: "xhigh" };
+    };
+    try {
+      await expect(transport.getConfiguration("cli-1")).resolves.toEqual({ model: "desktop-current", effort: "xhigh" });
+      expect(manager.calls).toEqual([{ name: "getSession", args: ["desktop-1"] }]);
+    } finally { transport.close(); }
+  });
+
   it("queues normal input, steers immediately, and forwards the shared ordered event stream once", async () => {
     const manager = new FakeManager();
     const permissions = new PermissionBroker();

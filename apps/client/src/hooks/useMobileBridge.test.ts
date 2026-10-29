@@ -2,6 +2,7 @@ import type { BridgeEvent, BridgeHostSnapshot, BridgeResponse, PairingBundle } f
 import { describe, expect, it } from "vitest";
 import {
   applyEventsToSnapshot,
+  applySessionToSnapshot,
   applyEventToTurns,
   applyEventToSnapshot,
   applyPermissionEvent,
@@ -375,6 +376,16 @@ describe("mergeBridgeEvents", () => {
       turnState: "running",
       activeTurnId: "turn-live",
     });
+  });
+
+  it("replaces stale model metadata with the session returned on open", () => {
+    const stale = { sessionId: "session-1", model: "old", modelDisplayName: "Old model", effort: "low" } as BridgeHostSnapshot["sessions"][number];
+    const other = { ...stale, sessionId: "session-2" };
+    const snapshot = { sessions: [stale, other] } as BridgeHostSnapshot;
+    const fresh = { ...stale, model: "desktop-current", modelDisplayName: "Desktop current", effort: "xhigh" as const };
+    expect(applySessionToSnapshot(snapshot, fresh)?.sessions).toEqual([fresh, other]);
+    expect(applySessionToSnapshot(snapshot, undefined)).toBe(snapshot);
+    expect(applySessionToSnapshot(undefined, fresh)).toBeUndefined();
   });
 
   it("removes a cancelled queued turn from the cached session count", () => {

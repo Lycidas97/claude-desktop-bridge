@@ -25,6 +25,12 @@ class CountingRelayStore extends MemoryRelayStore {
   }
 }
 
+class QueuedPongWebSocket extends WebSocket {
+  constructor(url: string) {
+    super(url, { autoPong: false });
+  }
+}
+
 afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.close();
   for (const relay of relays.splice(0)) await relay.close();
@@ -267,6 +273,57 @@ describe("relay v3", () => {
     expect(relay.metrics().envelopesStored).toBe(0);
   });
 
+  it("keeps a connection whose pong is queued behind its own upload", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      heartbeatIntervalMs: 100,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const host = await BridgeCrypto.createHost(relay.url, "Test Mac");
+    // On a slow uplink the pong waits behind queued image chunks, while the
+    // chunks themselves keep arriving at the relay.
+    const desktopSocket = new BridgeSocket({
+      crypto: host.crypto,
+      role: "desktop",
+      createRoom: true,
+      reconnect: false,
+      WebSocketImpl: QueuedPongWebSocket as unknown as typeof globalThis.WebSocket,
+    });
+    sockets.push(desktopSocket);
+    desktopSocket.connect();
+    await waitForState(desktopSocket);
+    const uploading = setInterval(() => desktopSocket.ping(), 40);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    clearInterval(uploading);
+
+    expect(desktopSocket.state).toBe("connected");
+  });
+
+  it("still terminates a connection that sends nothing and never answers pings", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      heartbeatIntervalMs: 100,
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const host = await BridgeCrypto.createHost(relay.url, "Test Mac");
+    const desktopSocket = new BridgeSocket({
+      crypto: host.crypto,
+      role: "desktop",
+      createRoom: true,
+      reconnect: false,
+      WebSocketImpl: QueuedPongWebSocket as unknown as typeof globalThis.WebSocket,
+    });
+    sockets.push(desktopSocket);
+    desktopSocket.connect();
+    await waitForState(desktopSocket);
+
+    await waitForState(desktopSocket, "closed", 1_000);
+  });
+
   it("replays an offline request until the exact host device acknowledges it", async () => {
     const relay = await startRelayServer({
       port: 0,
@@ -334,6 +391,55 @@ describe("relay v3", () => {
     });
 
     expect((await received).payload).toEqual(event);
+  });
+
+  it("sends concurrent large replies one after another instead of interleaving their chunks", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const pair = await connectedPair(relay.url);
+    const chunkOrder: string[] = [];
+    pair.mobileSocket.onFrame((frame) => {
+      if (frame.type === "envelope-chunk") chunkOrder.push(frame.chunk.transferId);
+    });
+    let delivered = 0;
+    const bothDelivered = new Promise<void>((resolve) => {
+      pair.mobileSocket.onMessage(() => {
+        delivered += 1;
+        if (delivered === 2) resolve();
+      });
+    });
+    const reply = (text: string): BridgePayload => ({
+      kind: "event",
+      event: {
+        eventId: crypto.randomUUID(),
+        sessionId: "session-1",
+        seq: 1,
+        timestamp: Date.now(),
+        origin: "claude-host",
+        type: "assistant.completed",
+        data: { text },
+      },
+    });
+    const options = {
+      toDeviceId: pair.device.pairing.deviceId,
+      crypto: pair.desktopDeviceCrypto,
+      ttlMs: 10 * 60 * 1_000,
+      temporary: true as const,
+    };
+
+    await Promise.all([
+      pair.desktopSocket.send(reply("a".repeat(600_000)), "mobile", options),
+      pair.desktopSocket.send(reply("b".repeat(600_000)), "mobile", options),
+    ]);
+    await bothDelivered;
+
+    const switches = chunkOrder.filter((transferId, index) => index > 0 && transferId !== chunkOrder[index - 1]);
+    expect(new Set(chunkOrder).size).toBe(2);
+    expect(switches).toHaveLength(1);
   });
 
   it("binds a pairing code to the first mobile installation", async () => {

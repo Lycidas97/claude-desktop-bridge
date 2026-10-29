@@ -149,4 +149,92 @@ describe("Claude session process catalog", () => {
     });
     expect(JSON.stringify(catalog.sessions[0])).not.toContain(desktopSessions);
   });
+
+  it("excludes archived Desktop sessions, archived-sessions.idx entries, and /btw side chats even if CLI session files remain", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-session-archived-catalog-"));
+    directories.push(root);
+    const sessions = join(root, "sessions");
+    const desktopSessions = join(root, "desktop-sessions");
+    const project = join(root, "project");
+    const activeParentId = "10000000-0000-4000-8000-000000000001";
+    const archivedFlagId = "10000000-0000-4000-8000-000000000002";
+    const archivedIdxId = "10000000-0000-4000-8000-000000000003";
+    const childOfArchivedId = "10000000-0000-4000-8000-000000000004";
+    const btwChildId = "10000000-0000-4000-8000-000000000005";
+    await Promise.all([mkdir(sessions, { recursive: true }), mkdir(desktopSessions, { recursive: true }), mkdir(project, { recursive: true })]);
+    await Promise.all([
+      writeFile(join(desktopSessions, "archived-sessions.idx"), JSON.stringify({
+        v: 1,
+        archived: [`local_${archivedIdxId}`],
+      })),
+      writeFile(join(desktopSessions, `local_${activeParentId}.json`), JSON.stringify({
+        sessionId: `local_${activeParentId}`,
+        cliSessionId: activeParentId,
+        cwd: project,
+        title: "Active Parent",
+        lastFocusedAt: 100,
+        isArchived: false,
+      })),
+      writeFile(join(desktopSessions, `local_${archivedFlagId}.json`), JSON.stringify({
+        sessionId: `local_${archivedFlagId}`,
+        cliSessionId: archivedFlagId,
+        cwd: project,
+        title: "Archived By Flag",
+        lastFocusedAt: 90,
+        isArchived: true,
+      })),
+      writeFile(join(desktopSessions, `local_${archivedIdxId}.json`), JSON.stringify({
+        sessionId: `local_${archivedIdxId}`,
+        cliSessionId: archivedIdxId,
+        cwd: project,
+        title: "Archived By Index",
+        lastFocusedAt: 80,
+        isArchived: false,
+      })),
+      writeFile(join(desktopSessions, `local_${childOfArchivedId}.json`), JSON.stringify({
+        sessionId: `local_${childOfArchivedId}`,
+        cliSessionId: childOfArchivedId,
+        cwd: project,
+        title: "Child Of Archived",
+        lastFocusedAt: 70,
+        isArchived: false,
+        forkedFromSessionId: `local_${archivedFlagId}`,
+      })),
+      writeFile(join(desktopSessions, `local_${btwChildId}.json`), JSON.stringify({
+        sessionId: `local_${btwChildId}`,
+        cliSessionId: btwChildId,
+        cwd: project,
+        title: "Side Question",
+        lastFocusedAt: 60,
+        isArchived: false,
+        spawnedFrom: {
+          sessionId: `local_${activeParentId}`,
+          btw: true,
+          sideSession: true,
+        },
+      })),
+      writeFile(join(sessions, "archived-process.json"), JSON.stringify({
+        pid: 999999,
+        sessionId: archivedFlagId,
+        cwd: project,
+        startedAt: 95,
+        entrypoint: "claude-desktop-3p",
+      })),
+    ]);
+    process.env.BRIDGE_DISABLE_PROCESS_SCAN = "1";
+
+    const catalog = await scanClaudeCatalog({
+      sessions,
+      tasks: join(root, "tasks"),
+      projects: join(root, "projects"),
+      desktopSessions: [desktopSessions],
+    });
+    expect(catalog.sessions.map((session) => session.sessionId)).toEqual([activeParentId]);
+    expect([...(catalog.archivedSessionIds ?? [])]).toEqual(expect.arrayContaining([
+      archivedFlagId,
+      archivedIdxId,
+      childOfArchivedId,
+      btwChildId,
+    ]));
+  });
 });

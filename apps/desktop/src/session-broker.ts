@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, normalize } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize } from "node:path";
 import type {
   BridgeAttachment,
   BridgeConfigurationSource,
@@ -35,6 +35,7 @@ import { ClaudeDesktopManager } from "./claude-desktop-manager.js";
 import { ClaudeSessionHost, type ClaudeSessionHostOptions, type SessionHostEvent } from "./claude-session-host.js";
 import {
   claudeDesktopProfileForPath,
+  listClaudeDesktopSessions,
   type ClaudeDesktopProfile,
 } from "./claude-desktop-sessions.js";
 import {
@@ -71,6 +72,9 @@ interface StoredBridgeSession {
   title: string;
   createdAt: number;
   desktopSessionId?: string;
+  parentSessionId?: string;
+  parentDesktopSessionId?: string;
+  forkLabel?: string;
   desktopRegistration?: StoredDesktopRegistration;
   fallbackConfirmedAt?: number;
 }
@@ -80,6 +84,7 @@ interface StoredSessionConfiguration {
   model?: string;
   effort?: BridgeEffort;
   permissionMode?: BridgePermissionMode;
+  desktopBaseline?: { model?: string; effort?: BridgeEffort };
   updatedAt: number;
 }
 
@@ -160,6 +165,7 @@ export interface SessionHostRuntime {
   ): ReturnType<ClaudeSessionHost["send"]>;
   setModel(model?: string): Promise<void>;
   setEffort(effort?: BridgeEffort): Promise<void>;
+  setAutoCompactWindow(maxTokens?: number): Promise<void>;
   supportedModels(): ReturnType<ClaudeSessionHost["supportedModels"]>;
   contextUsage(): ReturnType<ClaudeSessionHost["contextUsage"]>;
   interrupt(): Promise<void>;
@@ -183,6 +189,7 @@ export interface ManagedDesktopTransportRuntime {
   interrupt(sessionId: string): Promise<void>;
   setModel(sessionId: string, model: string): Promise<void>;
   setEffort(sessionId: string, effort?: BridgeEffort): Promise<void>;
+  getConfiguration(sessionId: string): Promise<{ model?: string; effort?: BridgeEffort } | undefined>;
   getContextUsage(sessionId: string): Promise<BridgeSessionContextUsage | undefined>;
   clearIntent(sessionId: string): void;
   onEvent(listener: (event: SessionHostEvent) => void): () => void;
@@ -284,7 +291,6 @@ interface EffectiveSessionProfile {
 }
 
 const EFFORT_LEVELS: BridgeEffort[] = ["low", "medium", "high", "xhigh", "max"];
-const DEFAULT_CONTEXT_TOKENS = 262_144;
 const LONG_CONTEXT_TOKENS = 1_000_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 8_000;
 const RUNTIME_RETRY_DELAY_MS = 2_000;
@@ -389,7 +395,7 @@ export class SessionBroker extends EventEmitter {
     this.permissionBroker = new PermissionBroker(
       (sessionId) => this.permissionPolicy(sessionId).effectiveMode,
     );
-    this.maxParallelTurns = options.maxParallelTurns ?? 2;
+    this.maxParallelTurns = options.maxParallelTurns ?? 8;
     this.hostFactory = options.hostFactory ?? ((hostOptions) => new ClaudeSessionHost(hostOptions));
     this.runtimeFactory = options.prepareRuntime ?? prepareClaudeRuntime;
     this.gatewayModelDiscoverer = options.discoverGatewayModels ?? discoverClaudeGatewayModels;
@@ -624,6 +630,7 @@ export class SessionBroker extends EventEmitter {
 
   listSessions(projectId?: string, search?: string): BridgeSessionInfo[] {
     const observed = new Map(this.catalog.sessions.map((session) => [session.sessionId, session]));
+    const archivedSessionIds = this.catalog.archivedSessionIds;
     const queued = new Map<string, QueuedTurn>();
     for (const turn of this.pending) {
       if (!queued.has(turn.sessionId)) queued.set(turn.sessionId, turn);
@@ -647,6 +654,7 @@ export class SessionBroker extends EventEmitter {
       if (associatedLane && associatedLane.conversationId !== sessionId) continue;
       const bridge = this.bridgeSessions.get(sessionId);
       const queuedTurn = queued.get(sessionId);
+      if (archivedSessionIds?.has(sessionId) && !queuedTurn) continue;
       if (!source && !bridge && !queuedTurn) continue;
       const recoveredQueue = !source && !bridge;
       const cwd = source?.cwd
@@ -687,16 +695,21 @@ export class SessionBroker extends EventEmitter {
         ? this.resolveModelDisplayName(this.modelForHost(profile))
         : undefined;
       const route = this.options.conversationState?.route(sessionId);
+      const parentSessionId = source?.parentSessionId ?? bridge?.parentSessionId;
+      const forkLabel = source?.forkLabel ?? bridge?.forkLabel;
       const item: BridgeSessionInfo = {
         sessionId,
         runtimeId: "claude-desktop",
         nativeSessionId: sessionId,
         ...(desktopSessionId ? { desktopSessionId } : {}),
+        ...(parentSessionId ? { parentSessionId } : {}),
+        ...(forkLabel ? { forkLabel } : {}),
         projectId: projectIdForCwd(cwd),
         projectName: basename(cwd) || cwd,
         cwd,
-        title: source?.title
+        title: source?.desktopTitle
           ?? bridge?.title
+          ?? source?.title
           ?? queuedTurn?.sessionTitle
           ?? `未完成任务：${compact(queuedTurn?.text ?? "", 72)}`,
         source: bridge || recoveredQueue ? "bridge" : "desktop",
@@ -789,8 +802,38 @@ export class SessionBroker extends EventEmitter {
     ));
   }
 
-  async configuration(sessionId: string, discoverModels = true): Promise<BridgeSessionConfiguration> {
+  async refreshDesktopConfiguration(sessionId: string): Promise<{ model?: string; effort?: BridgeEffort } | undefined> {
     await this.initialize();
+    const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId);
+    const desktop = this.managedTransport?.ready && this.managedTransport.desktopSessionId(sessionId)
+      ? await this.managedTransport.getConfiguration(sessionId)
+      : (await listClaudeDesktopSessions(this.options.paths.desktopSessions)).find((candidate) => (
+          candidate.cliSessionId === sessionId && (!observed?.desktopSessionId || candidate.sessionId === observed.desktopSessionId)
+        ));
+    if (!desktop) return;
+    if (observed) {
+      if (desktop.model) observed.hostModel = desktop.model;
+      else delete observed.hostModel;
+      if (desktop.effort) observed.hostEffort = desktop.effort;
+      else delete observed.hostEffort;
+    }
+    const stored = this.sessionConfigurations.get(sessionId);
+    if (stored && (!stored.desktopBaseline || stored.desktopBaseline.model !== desktop.model || stored.desktopBaseline.effort !== desktop.effort)) {
+      // Overrides are relative to the Desktop settings seen when the phone saved them.
+      const baseline = stored.desktopBaseline;
+      if (!baseline || baseline.model !== desktop.model) delete stored.model;
+      if (!baseline || baseline.effort !== desktop.effort) delete stored.effort;
+      stored.desktopBaseline = {
+        ...(desktop.model ? { model: desktop.model } : {}),
+        ...(desktop.effort ? { effort: desktop.effort } : {}),
+      };
+      await this.saveSessions();
+    }
+    return desktop;
+  }
+
+  async configuration(sessionId: string, discoverModels = true): Promise<BridgeSessionConfiguration> {
+    await this.refreshDesktopConfiguration(sessionId);
     const session = this.session(sessionId);
     if (!session) throw new Error("Session not found");
     const state = this.runtimeStates.get(sessionId);
@@ -909,6 +952,7 @@ export class SessionBroker extends EventEmitter {
       sessionId,
       ...(previous?.model ? { model: previous.model } : {}),
       ...(previous?.effort ? { effort: previous.effort } : {}),
+      ...(previous?.desktopBaseline ? { desktopBaseline: previous.desktopBaseline } : {}),
       ...(mode ? { permissionMode: mode } : {}),
       updatedAt: Date.now(),
     };
@@ -954,7 +998,7 @@ export class SessionBroker extends EventEmitter {
   }
 
   async configureSession(input: ConfigureSessionInput): Promise<BridgeSessionConfiguration> {
-    await this.initialize();
+    const desktop = await this.refreshDesktopConfiguration(input.sessionId);
     const session = this.session(input.sessionId);
     if (!session) throw new Error("Session not found");
     const route = this.options.conversationState?.route(input.sessionId);
@@ -981,6 +1025,10 @@ export class SessionBroker extends EventEmitter {
       ...(previous?.model ? { model: previous.model } : {}),
       ...(previous?.effort ? { effort: previous.effort } : {}),
       ...(previous?.permissionMode ? { permissionMode: previous.permissionMode } : {}),
+      ...(desktop ? { desktopBaseline: {
+        ...(desktop.model ? { model: desktop.model } : {}),
+        ...(desktop.effort ? { effort: desktop.effort } : {}),
+      } } : {}),
       updatedAt: Date.now(),
     };
     if (changesModel) {
@@ -1079,6 +1127,107 @@ export class SessionBroker extends EventEmitter {
       origin: "system",
       type: "session.created",
       data: { cwd: session.cwd, title: session.title },
+    });
+    await this.reconcileDesktopRegistration(session.sessionId, true);
+    this.emit("changed");
+    return this.session(session.sessionId)!;
+  }
+
+  async forkSession(sourceSessionId: string, title?: string): Promise<BridgeSessionInfo> {
+    await this.initialize();
+    const source = this.session(sourceSessionId);
+    if (!source) throw new Error("Session not found");
+    const route = this.options.conversationState?.route(sourceSessionId);
+    const activeLane = route?.lanes.find((lane) => lane.laneId === route.activeLaneId) ?? route?.lanes[0];
+    const nativeSessionId = activeLane?.nativeSessionId ?? sourceSessionId;
+    const sourceTranscript = await findClaudeTranscriptFile(
+      this.options.paths.projects,
+      nativeSessionId,
+      source.cwd,
+    );
+    if (!sourceTranscript) {
+      throw new Error("当前会话还没有可分支的对话记录，请先发送至少一条消息");
+    }
+    const rootSessionId = source.parentSessionId ?? source.sessionId;
+    const rootSource = (source.parentSessionId ? this.session(source.parentSessionId) : undefined) ?? source;
+    const existingForkLabels = new Set(
+      this.listSessions()
+        .filter((candidate) => candidate.parentSessionId === rootSessionId)
+        .map((candidate) => candidate.forkLabel)
+        .filter((label): label is string => Boolean(label)),
+    );
+    let forkIndex = existingForkLabels.size + 1;
+    let forkLabel = forkIndex === 1 && !existingForkLabels.has("fork") ? "fork" : `fork-${forkIndex}`;
+    while (existingForkLabels.has(forkLabel)) {
+      forkIndex += 1;
+      forkLabel = `fork-${forkIndex}`;
+    }
+    const baseTitle = rootSource.title.replace(/\s*\(fork(?:-\d+)?\)\s*$/iu, "").trim() || rootSource.projectName;
+    const forkTitle = compact(title?.trim() || `${baseTitle} (fork)`, 140);
+    const createdAt = Date.now();
+    const newSessionId = randomUUID();
+    const targetTranscript = join(dirname(sourceTranscript), `${newSessionId}.jsonl`);
+    const rawTranscript = await readFile(sourceTranscript, "utf8");
+    const customTitleRecord = JSON.stringify({
+      type: "custom-title",
+      customTitle: forkTitle,
+      sessionId: newSessionId,
+      uuid: randomUUID(),
+      timestamp: new Date(createdAt).toISOString(),
+    });
+    await writeFile(
+      targetTranscript,
+      `${rawTranscript.endsWith("\n") ? rawTranscript : `${rawTranscript}\n`}${customTitleRecord}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+
+    const parentDesktopSessionId = rootSource.desktopSessionId ?? `local_${rootSessionId}`;
+    const session: StoredBridgeSession = {
+      sessionId: newSessionId,
+      cwd: normalize(source.cwd),
+      title: forkTitle,
+      createdAt,
+      parentSessionId: rootSessionId,
+      parentDesktopSessionId,
+      forkLabel,
+    };
+    this.bridgeSessions.set(session.sessionId, session);
+    const sourceProfile = this.effectiveProfile(sourceSessionId, source.cwd);
+    if (sourceProfile.model || sourceProfile.effort) {
+      this.sessionConfigurations.set(session.sessionId, {
+        sessionId: session.sessionId,
+        ...(sourceProfile.model ? { model: sourceProfile.model } : {}),
+        ...(sourceProfile.effort ? { effort: sourceProfile.effort } : {}),
+        updatedAt: createdAt,
+      });
+    }
+    this.runtimeStates.set(session.sessionId, {
+      ownership: this.managedTransport?.ready ? "DESKTOP_MANAGED_IDLE" : "BRIDGE_IDLE",
+      turnState: "idle",
+      ...(this.managedTransport?.ready ? { managed: true } : {}),
+    });
+    this.options.conversationState?.ensureConversation({
+      conversationId: session.sessionId,
+      cwd: session.cwd,
+      title: session.title,
+      source: "bridge",
+      providerProfileId: CLAUDE_3P_PROFILE_ID,
+      providerKind: "claude-3p",
+      nativeSessionId: session.sessionId,
+      access: "read-write",
+      createdAt: session.createdAt,
+    });
+    await this.saveSessions();
+    await this.record({
+      sessionId: session.sessionId,
+      origin: "system",
+      type: "session.created",
+      data: {
+        cwd: session.cwd,
+        title: session.title,
+        parentSessionId: session.parentSessionId,
+        forkLabel: session.forkLabel,
+      },
     });
     await this.reconcileDesktopRegistration(session.sessionId, true);
     this.emit("changed");
@@ -1636,14 +1785,22 @@ export class SessionBroker extends EventEmitter {
           ...existing,
           toolName: existing.toolName || "Agent",
           text: subItem.text,
-          state: subItem.state,
+          ...(subItem.state ? { state: subItem.state } : {}),
           subagent: subItem.subagent,
         });
       }
     }
+    // Older event copies must not move the cursor past transcript messages
+    // that were left for the next page by the transcript's byte budget.
+    const transcriptBoundary = transcriptItems
+      .filter((item) => transcripts.some(({ transcript }) => transcript.nextCursor === item.id))
+      .sort(historyOrder).at(-1);
     const all = [...merged.values()]
       .sort(historyOrder)
-      .filter((item) => !before || item.createdAt < before.at || (item.createdAt === before.at && item.id < before.id));
+      .filter((item) => (
+        (!before || item.createdAt < before.at || (item.createdAt === before.at && item.id < before.id)) &&
+        (!transcriptBoundary || historyOrder(item, transcriptBoundary) >= 0)
+      ));
     let startIndex = all.length;
     let messageCount = 0;
     let totalBytes = 0;
@@ -1723,8 +1880,9 @@ export class SessionBroker extends EventEmitter {
     });
     this.emit("changed");
 
-    const profile = this.effectiveProfile(turn.sessionId, session.cwd);
     try {
+      await this.refreshDesktopConfiguration(turn.sessionId);
+      const profile = this.effectiveProfile(turn.sessionId, session.cwd);
       if (session.desktopSessionId || this.managedTransport.desktopSessionId(turn.sessionId)) {
         if (profile.model) await this.managedTransport.setModel(turn.sessionId, profile.model);
         await this.managedTransport.setEffort(turn.sessionId, profile.effort);
@@ -1821,7 +1979,7 @@ export class SessionBroker extends EventEmitter {
     }
     try {
       if (providerKind === "claude-3p") {
-        await this.assertBridgeHostCompatible(session, state.host);
+        await this.assertBridgeHostCompatible(session);
       }
     } catch (error) {
       const incompatibleHost = state.host;
@@ -1837,6 +1995,7 @@ export class SessionBroker extends EventEmitter {
     let accepted: ReturnType<SessionHostRuntime["send"]>;
     let evidenceId: string | undefined;
     try {
+      if (providerKind === "claude-3p") await this.refreshDesktopConfiguration(turn.sessionId);
       const host = await this.ensureHost(turn.sessionId, turn.laneId);
       const effective = this.effectiveProfile(turn.sessionId, session.cwd);
       await this.applyHostConfiguration(host, {
@@ -2047,6 +2206,7 @@ export class SessionBroker extends EventEmitter {
     host: SessionHostRuntime,
     profile: Pick<EffectiveSessionProfile, "model" | "effort" | "ultracode">,
   ): Promise<void> {
+    await host.setAutoCompactWindow(this.modelContextLimit(profile.model, profile.ultracode));
     await host.setModel(this.modelForHost(profile));
     await host.setEffort(profile.effort);
   }
@@ -2091,6 +2251,7 @@ export class SessionBroker extends EventEmitter {
         displayName: model.displayName || this.modelDisplayName(model.value),
         ...(model.description ? { description: model.description } : {}),
         ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
+        ...("maxInputTokens" in model ? { maxInputTokens: model.maxInputTokens } : {}),
         ...(model.supportsEffort !== undefined ? { supportsEffort: model.supportsEffort } : {}),
         ...(model.supportedEffortLevels?.length
           ? { supportedEffortLevels: [...model.supportedEffortLevels] }
@@ -2156,6 +2317,7 @@ export class SessionBroker extends EventEmitter {
           value,
           displayName: `${model.displayName} · 1M`,
           ...(model.resolvedModel ? { resolvedModel: `${model.resolvedModel}[1m]` } : {}),
+          maxInputTokens: LONG_CONTEXT_TOKENS,
         });
       }
     }
@@ -2199,10 +2361,11 @@ export class SessionBroker extends EventEmitter {
     return `${normalized || value}${longContext ? " · 1M" : ""}`;
   }
 
-  private modelContextLimit(model: string | undefined, ultracode = false): number {
-    return ultracode || (model !== undefined && /\[1m\]|(?:^|[-_])1m(?:$|[-_])/iu.test(model))
-      ? LONG_CONTEXT_TOKENS
-      : DEFAULT_CONTEXT_TOKENS;
+  private modelContextLimit(model: string | undefined, ultracode = false): number | undefined {
+    if (ultracode || (model !== undefined && /\[1m\]|(?:^|[-_])1m(?:$|[-_])/iu.test(model))) {
+      return LONG_CONTEXT_TOKENS;
+    }
+    return this.findModelInfo(model, [...this.modelCache.values()])?.maxInputTokens;
   }
 
   private async estimatedContext(session: BridgeSessionInfo): Promise<BridgeSessionContextUsage | undefined> {
@@ -2214,6 +2377,7 @@ export class SessionBroker extends EventEmitter {
     if (!estimate) return undefined;
     const profile = this.effectiveProfile(session.sessionId, session.cwd);
     const maxTokens = this.modelContextLimit(profile.model, profile.ultracode);
+    if (!maxTokens) return undefined;
     return {
       totalTokens: estimate.totalTokens,
       maxTokens,
@@ -2231,7 +2395,7 @@ export class SessionBroker extends EventEmitter {
     );
     if (!estimate) return;
     const maxTokens = this.modelContextLimit(model);
-    if (estimate.totalTokens <= maxTokens) return;
+    if (!maxTokens || estimate.totalTokens <= maxTokens) return;
     throw new Error(
       `当前会话约 ${estimate.totalTokens.toLocaleString("zh-CN")} tokens，所选模型仅提供约 `
       + `${maxTokens.toLocaleString("zh-CN")} tokens 上下文。请先压缩或新建会话，或选择 1M 模型。`,
@@ -2255,10 +2419,7 @@ export class SessionBroker extends EventEmitter {
     return profile === "claude" ? "Claude 官方" : profile === "claude-3p" ? "Claude-3p" : "未知";
   }
 
-  private async assertBridgeHostCompatible(
-    session: BridgeSessionInfo,
-    host?: SessionHostRuntime,
-  ): Promise<void> {
+  private async assertBridgeHostCompatible(session: BridgeSessionInfo): Promise<void> {
     const transcript = await findClaudeTranscriptFile(
       this.options.paths.projects,
       session.sessionId,
@@ -2279,25 +2440,6 @@ export class SessionBroker extends EventEmitter {
         + "原会话未写入新消息；请在原 Claude Desktop 会话继续，或新建 Bridge 会话。",
       );
     }
-
-    const profile = this.effectiveProfile(session.sessionId, session.cwd);
-    const estimate = await readClaudeSessionContextEstimate(
-      this.options.paths.projects,
-      session.sessionId,
-      session.cwd,
-    );
-    const liveUsage = host
-      ? await host.contextUsage().catch(() => undefined)
-      : undefined;
-    const totalTokens = Math.max(estimate?.totalTokens ?? 0, liveUsage?.totalTokens ?? 0);
-    const maxTokens = liveUsage?.maxTokens ?? this.modelContextLimit(profile.model, profile.ultracode);
-    if (totalTokens <= maxTokens) return;
-    throw new Error(
-      `为保护原会话，Bridge 已在发送前阻止本次操作：当前会话约 `
-      + `${totalTokens.toLocaleString("zh-CN")} tokens，目标模型仅提供约 `
-      + `${maxTokens.toLocaleString("zh-CN")} tokens 上下文。原会话未写入新消息；`
-      + "请新建 Bridge 会话，或选择兼容的 1M 模型。",
-    );
   }
 
   private scheduleRelease(sessionId: string): void {
@@ -2723,6 +2865,7 @@ export class SessionBroker extends EventEmitter {
     const bridge = this.bridgeSessions.get(sessionId);
     if (!registrar || !bridge || this.closed) return;
     if (!force && bridge.desktopRegistration?.state === "failed") return;
+    if (!force && this.runtimeStates.get(sessionId)?.active) return;
     const active = this.registrationTasks.get(sessionId);
     if (active) return active;
     const task = (async () => {
@@ -2736,6 +2879,8 @@ export class SessionBroker extends EventEmitter {
         lastActivityAt: Math.max(bridge.createdAt, observed?.lastActivityAt ?? 0),
         ...(profile.model ? { model: profile.model } : {}),
         ...(profile.effort ? { effort: profile.effort } : {}),
+        ...(bridge.parentDesktopSessionId ? { parentDesktopSessionId: bridge.parentDesktopSessionId } : {}),
+        ...(bridge.forkLabel ? { forkLabel: bridge.forkLabel } : {}),
       };
       let next: StoredDesktopRegistration;
       try {

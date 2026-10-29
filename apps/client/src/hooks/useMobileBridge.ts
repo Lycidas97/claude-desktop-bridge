@@ -17,6 +17,7 @@ import {
   type BridgeEvidenceBundle,
   type BridgeEvidencePage,
   type BridgeEvent,
+  type BridgeHistoryItem,
   type BridgeHistoryPage,
   type BridgeHostSnapshot,
   type BridgePayload,
@@ -48,7 +49,10 @@ import { App as CapacitorApp } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridgeVault, type StoredBridgeHost } from "../lib/vault.js";
-import { downloadBridgeArtifact } from "../lib/artifact-download.js";
+import {
+  downloadBridgeArtifact,
+  downloadBridgeSessionFile,
+} from "../lib/artifact-download.js";
 import { diagLog, setDiagBridgeStateSummary } from "../lib/diagnostics.js";
 import { isReplayableMobileEnvelope } from "../lib/outbox.js";
 import { nativePushRegistration, onNativePushWake } from "../lib/push-wake.js";
@@ -627,6 +631,17 @@ function sessionWithRoute(
     routeState: route.state,
     allowedActions: route.allowedActions,
     ...(route.pendingHandoff ? { pendingHandoff: route.pendingHandoff } : {}),
+  };
+}
+
+export function applySessionToSnapshot(
+  snapshot: BridgeHostSnapshot | undefined,
+  session: BridgeSessionInfo | undefined,
+): BridgeHostSnapshot | undefined {
+  if (!snapshot || !session) return snapshot;
+  return {
+    ...snapshot,
+    sessions: snapshot.sessions.map((candidate) => candidate.sessionId === session.sessionId ? session : candidate),
   };
 }
 
@@ -2312,6 +2327,7 @@ export function useMobileBridge() {
         if (!result.history) throw new Error("电脑未返回会话历史");
         setState((current) => ({
           ...current,
+          snapshot: applySessionToSnapshot(current.snapshot, result.session),
           histories: {
             ...current.histories,
             [sessionId]: {
@@ -2485,6 +2501,34 @@ export function useMobileBridge() {
     }
   }, [sendRequest]);
 
+  const downloadSessionFile = useCallback(async (sessionId: string, filePath: string) => {
+    const transferKey = `file:${filePath}`;
+    setState((current) => ({
+      ...current,
+      artifactTransfers: { ...current.artifactTransfers, [transferKey]: 0 },
+    }));
+    try {
+      await downloadBridgeSessionFile(
+        sessionId,
+        filePath,
+        (method, params, options) => sendRequest(method, params, options),
+        (progress) => setState((current) => ({
+          ...current,
+          artifactTransfers: {
+            ...current.artifactTransfers,
+            [transferKey]: progress,
+          },
+        })),
+      );
+    } finally {
+      setState((current) => {
+        const artifactTransfers = { ...current.artifactTransfers };
+        delete artifactTransfers[transferKey];
+        return { ...current, artifactTransfers };
+      });
+    }
+  }, [sendRequest]);
+
   const loadOlderHistory = useCallback(async (sessionId: string) => {
     const current = stateRef.current.histories[sessionId];
     if (!current?.nextCursor || current.status === "loading") return;
@@ -2638,14 +2682,43 @@ export function useMobileBridge() {
     return result.session;
   }, [sendRequest]);
 
+  const forkSession = useCallback(async (
+    sessionId: string,
+    title?: string,
+  ): Promise<BridgeSessionInfo | undefined> => {
+    const response = await sendRequest("session.fork", {
+      sessionId,
+      ...(title ? { title } : {}),
+    }, { wait: true, timeoutMs: 30_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "Fork 分支创建失败");
+    const result = response.result as { session?: BridgeSessionInfo };
+    if (result.session) {
+      const created = result.session;
+      setState((current) => current.snapshot ? {
+        ...current,
+        snapshot: {
+          ...current.snapshot,
+          sessions: [
+            created,
+            ...current.snapshot.sessions.filter((candidate) => candidate.sessionId !== created.sessionId),
+          ],
+        },
+      } : current);
+    }
+    return result.session;
+  }, [sendRequest]);
+
   const loadSessionConfiguration = useCallback(async (sessionId: string): Promise<BridgeSessionConfiguration> => {
     const response = await sendRequest("session.configuration", { sessionId }, {
       wait: true,
       timeoutMs: 45_000,
     });
     if (!response?.ok) throw new Error(response?.error?.message ?? "会话配置读取失败");
-    const result = response.result as { configuration?: BridgeSessionConfiguration };
+    const result = response.result as { configuration?: BridgeSessionConfiguration; session?: BridgeSessionInfo };
     if (!result.configuration) throw new Error("电脑未返回会话配置");
+    if (result.session) {
+      setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+    }
     return result.configuration;
   }, [sendRequest]);
 
@@ -2670,15 +2743,7 @@ export function useMobileBridge() {
     };
     if (!result.configuration) throw new Error("电脑未返回会话配置");
     if (result.session) {
-      setState((current) => current.snapshot ? {
-        ...current,
-        snapshot: {
-          ...current.snapshot,
-          sessions: current.snapshot.sessions.map((session) => (
-            session.sessionId === result.session!.sessionId ? result.session! : session
-          )),
-        },
-      } : current);
+      setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
     }
     return result.configuration;
   }, [sendRequest]);
@@ -3069,12 +3134,15 @@ export function useMobileBridge() {
     loadOlderHistory,
     loadOlderEvidence,
     previewArtifact,
+    requestMedia: sendRequest,
     downloadArtifact,
+    downloadSessionFile,
     sendTurn,
     interruptTurn,
     resolveUncertainDelivery,
     resolvePermission,
     createSession,
+    forkSession,
     loadSessionConfiguration,
     configureSession,
     configurePermissionPolicy,

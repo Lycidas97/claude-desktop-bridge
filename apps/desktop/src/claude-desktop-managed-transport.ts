@@ -298,6 +298,18 @@ export class ClaudeDesktopManagedTransport extends EventEmitter {
     await this.options.manager.call("setEffort", [desktopSessionId, effort ?? null]);
   }
 
+  async getConfiguration(sessionId: string): Promise<{ model?: string; effort?: BridgeEffort } | undefined> {
+    const desktopSessionId = this.bridgeToDesktop.get(sessionId);
+    if (!desktopSessionId) return undefined;
+    const session = managedSession(await this.options.manager.call("getSession", [desktopSessionId]));
+    if (!session) return undefined;
+    return {
+      ...(session.model ? { model: session.model } : {}),
+      ...(session.effort === "low" || session.effort === "medium" || session.effort === "high" || session.effort === "xhigh" || session.effort === "max"
+        ? { effort: session.effort } : {}),
+    };
+  }
+
   async getContextUsage(sessionId: string): Promise<BridgeSessionContextUsage | undefined> {
     const desktopSessionId = this.bridgeToDesktop.get(sessionId);
     if (!desktopSessionId) return undefined;

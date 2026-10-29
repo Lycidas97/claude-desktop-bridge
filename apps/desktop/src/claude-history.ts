@@ -15,9 +15,7 @@ import {
 const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const MAX_HISTORY_MESSAGES = 50;
 const MAX_HISTORY_TEXT_BYTES = 256 * 1024;
-const MAX_MESSAGE_TEXT_BYTES = 10 * 1024;
 const MAX_TOOL_RESULT_BYTES = 256 * 1024;
-const OMITTED_TEXT = "\n\n[内容较长，已省略中间部分]\n\n";
 
 interface TranscriptNode {
   index: number;
@@ -119,7 +117,7 @@ function evidencePaths(value: unknown): string[] {
           /(?:^|[\s"'=])((?:(?:[A-Za-z]:[\\/])|(?:\\\\)|(?:\.{0,2}[\\/])|\/)[^\s"'<>|;&]+)/gu,
         ) ?? [];
         for (const match of matches) paths.push(match.trim().replace(/^[\s"'=]+/u, ""));
-      } else if (/(^|_)(file_?path|path|notebook_?path|output_?path|destination|dest)$/iu.test(key)) {
+      } else if (/(^|_)(files|paths|file_?path|path|notebook_?path|output_?path|destination|dest)$/iu.test(key)) {
         paths.push(candidate);
       }
       return;
@@ -266,13 +264,25 @@ function resolveTranscriptParentUuid<T extends { uuid: string; parentUuid?: stri
   return undefined;
 }
 
+function isNonDagTranscriptRecord(value: Record<string, unknown>): boolean {
+  return (
+    value.type === "custom-title" ||
+    value.type === "agent-name" ||
+    value.type === "mode" ||
+    value.type === "atis-latch" ||
+    value.type === "last-prompt" ||
+    value.type === "cost-state" ||
+    value.type === "queue-operation"
+  );
+}
+
 function transcriptEvidenceNode(
   value: Record<string, unknown>,
   index: number,
   nodes: ReadonlyMap<string, TranscriptEvidenceNode>,
   lastMainUuid?: string,
 ): TranscriptEvidenceNode | undefined {
-  if (typeof value.uuid !== "string" || !value.uuid) return undefined;
+  if (typeof value.uuid !== "string" || !value.uuid || isNonDagTranscriptRecord(value)) return undefined;
   const existing = nodes.get(value.uuid);
   const parentUuid = existing?.parentUuid ?? resolveTranscriptParentUuid(value, nodes, lastMainUuid);
   const type = value.type === "user" || value.type === "assistant"
@@ -700,44 +710,6 @@ function applyWrapUpUserReply(
   return prompt;
 }
 
-function takePrefixByBytes(value: string, maxBytes: number): string {
-  let size = 0;
-  let result = "";
-  for (const character of value) {
-    const next = Buffer.byteLength(character);
-    if (size + next > maxBytes) break;
-    result += character;
-    size += next;
-  }
-  return result;
-}
-
-function takeSuffixByBytes(value: string, maxBytes: number): string {
-  let size = 0;
-  const characters = [...value];
-  let result = "";
-  for (let index = characters.length - 1; index >= 0; index -= 1) {
-    const character = characters[index]!;
-    const next = Buffer.byteLength(character);
-    if (size + next > maxBytes) break;
-    result = character + result;
-    size += next;
-  }
-  return result;
-}
-
-function clipText(value: string, maxBytes: number): { text: string; clipped: boolean } {
-  if (Buffer.byteLength(value) <= maxBytes) return { text: value, clipped: false };
-  const markerBytes = Buffer.byteLength(OMITTED_TEXT);
-  const available = Math.max(2, maxBytes - markerBytes);
-  const prefixBytes = Math.ceil(available * 0.6);
-  const suffixBytes = available - prefixBytes;
-  return {
-    text: `${takePrefixByBytes(value, prefixBytes).trimEnd()}${OMITTED_TEXT}${takeSuffixByBytes(value, suffixBytes).trimStart()}`,
-    clipped: true,
-  };
-}
-
 function trimHistory(
   messages: ClaudeHistoryMessage[],
   options: ClaudeHistoryReadOptions = {},
@@ -761,18 +733,16 @@ function trimHistory(
   let truncated = candidateMessages.length > maxMessages;
   for (let index = candidateMessages.length - 1; index >= 0 && selected.length < maxMessages; index -= 1) {
     const message = candidateMessages[index]!;
-    const clipped = clipText(message.text, MAX_MESSAGE_TEXT_BYTES);
     const interactiveBytes = message.interactivePrompt
       ? Buffer.byteLength(JSON.stringify(message.interactivePrompt))
       : 0;
-    const cost = Buffer.byteLength(clipped.text) + interactiveBytes + 180;
+    const cost = Buffer.byteLength(message.text) + interactiveBytes + 180;
     if (selected.length > 0 && bytes + cost > MAX_HISTORY_TEXT_BYTES) {
       truncated = true;
       break;
     }
-    selected.unshift({ ...message, text: clipped.text });
+    selected.unshift(message);
     bytes += cost;
-    truncated ||= clipped.clipped;
   }
   const hasMore = selected.length < candidateMessages.length;
   if (hasMore) truncated = true;
@@ -915,7 +885,7 @@ export async function parseClaudeTranscriptSnapshot(
       } catch {
         continue;
       }
-      if (!isRecord(value) || typeof value.uuid !== "string" || !value.uuid) continue;
+      if (!isRecord(value) || typeof value.uuid !== "string" || !value.uuid || isNonDagTranscriptRecord(value)) continue;
       const existing = nodes.get(value.uuid);
       const parentUuid = existing?.parentUuid ?? resolveTranscriptParentUuid(value, nodes, lastMainUuid);
       if (parentUuid) referencedParents.add(parentUuid);
@@ -958,7 +928,7 @@ export async function parseClaudeTranscriptSnapshot(
         userMessages.push({
           id: value.uuid,
           role: "user",
-          text: clipText(visible.text, MAX_MESSAGE_TEXT_BYTES).text,
+          text: visible.text,
           createdAt,
         });
         if (userMessages.length > userLimit) userMessages.shift();
@@ -1124,6 +1094,8 @@ export async function readClaudeSessionContextEstimate(
   const path = await findClaudeTranscriptFile(projectsRoot, sessionId, cwd);
   if (!path) return undefined;
   let latest: ClaudeSessionContextEstimate | undefined;
+  const assistantGenerations = new Map<string, number>();
+  let generation = 0;
   try {
     const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
     for await (const line of lines) {
@@ -1133,7 +1105,22 @@ export async function readClaudeSessionContextEstimate(
       } catch {
         continue;
       }
-      if (!isRecord(value) || value.type !== "assistant" || !isRecord(value.message)) continue;
+      if (!isRecord(value)) continue;
+      if (value.type === "system" && value.subtype === "compact_boundary") {
+        const metadata = isRecord(value.compactMetadata) ? value.compactMetadata : value.compact_metadata;
+        const postTokens = isRecord(metadata) ? metadata.postTokens ?? metadata.post_tokens : undefined;
+        latest = typeof postTokens === "number" && Number.isFinite(postTokens) && postTokens >= 0
+          ? { totalTokens: postTokens, ...(latest?.model ? { model: latest.model } : {}) }
+          : undefined;
+        generation += 1;
+        continue;
+      }
+      if (value.type !== "assistant" || !isRecord(value.message)) continue;
+      // Resume can re-emit preserved messages with their pre-compact usage.
+      if (typeof value.uuid === "string") {
+        if ((assistantGenerations.get(value.uuid) ?? generation) < generation) continue;
+        assistantGenerations.set(value.uuid, generation);
+      }
       const usage = value.message.usage;
       if (!isRecord(usage)) continue;
       const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
@@ -1244,8 +1231,6 @@ function formatSubagentToolStep(name: string, input: unknown): string {
   return name;
 }
 
-const MAX_SUBAGENT_REPORT_BYTES = 3_600;
-const MAX_SUBAGENT_LATEST_BYTES = 600;
 const subagentSummaryCache = new Map<string, {
   signature: string;
   summary: BridgeSubagentSummary;
@@ -1285,6 +1270,7 @@ async function parseSingleSubagentFile(
   const handbackReports: string[] = [];
   let startedAt = 0;
   let updatedAt = Math.round(fileStat.mtimeMs);
+  let lastStopReason: string | undefined;
 
   try {
     const lines = createInterface({
@@ -1306,6 +1292,7 @@ async function parseSingleSubagentFile(
         if (parsedAt > updatedAt) updatedAt = parsedAt;
       }
       if (value.type === "assistant" && isRecord(value.message) && Array.isArray(value.message.content)) {
+        lastStopReason = typeof value.message.stop_reason === "string" ? value.message.stop_reason : undefined;
         for (const block of value.message.content) {
           if (!isRecord(block)) continue;
           if (block.type === "tool_use" && typeof block.name === "string") {
@@ -1326,6 +1313,8 @@ async function parseSingleSubagentFile(
             latestText = block.text.trim();
           }
         }
+      } else if (value.type === "user") {
+        lastStopReason = undefined;
       }
     }
   } catch {
@@ -1333,8 +1322,8 @@ async function parseSingleSubagentFile(
   }
 
   const reportText = handbackReports.join("\n\n---\n\n");
-  const explicitlyFinished = meta.finished === true || handbackReports.length > 0;
-  const staleIdle = !processAlive && Date.now() - updatedAt > 180_000;
+  const explicitlyFinished = meta.finished === true || handbackReports.length > 0 || lastStopReason === "end_turn";
+  const staleIdle = Date.now() - updatedAt > (processAlive ? 180_000 : 30_000);
   const state: BridgeSubagentSummary["state"] = explicitlyFinished || staleIdle
     ? "completed"
     : "running";
@@ -1349,12 +1338,7 @@ async function parseSingleSubagentFile(
     : undefined;
   const effectiveStartedAt = startedAt || updatedAt || Date.now();
   const effectiveUpdatedAt = Math.max(effectiveStartedAt, updatedAt || Date.now());
-  const clippedReport = reportText
-    ? clipText(reportText, MAX_SUBAGENT_REPORT_BYTES).text
-    : (state === "completed" && latestText ? clipText(latestText, MAX_SUBAGENT_REPORT_BYTES).text : undefined);
-  const clippedLatest = latestText
-    ? clipText(latestText, MAX_SUBAGENT_LATEST_BYTES).text
-    : undefined;
+  const completedReport = reportText || (state === "completed" ? latestText : undefined);
 
   const summary: BridgeSubagentSummary = {
     agentId,
@@ -1364,8 +1348,8 @@ async function parseSingleSubagentFile(
     state,
     toolCount,
     ...(recentTools.length ? { recentTools } : {}),
-    ...(clippedLatest ? { latestText: clippedLatest } : {}),
-    ...(clippedReport ? { reportText: clippedReport } : {}),
+    ...(latestText ? { latestText } : {}),
+    ...(completedReport ? { reportText: completedReport } : {}),
     startedAt: effectiveStartedAt,
     updatedAt: effectiveUpdatedAt,
     durationMs: Math.max(0, effectiveUpdatedAt - effectiveStartedAt),
@@ -1484,7 +1468,7 @@ async function parseParentTranscriptSubagents(
     const report = call.agentId ? reportsByAgentId.get(call.agentId) : undefined;
     const reportText = report?.text ?? call.reportText;
     const updatedAt = Math.max(call.updatedAt, report?.at ?? 0);
-    const finished = Boolean(reportText) || (!processAlive && Date.now() - updatedAt > 180_000);
+    const finished = Boolean(reportText) || Date.now() - updatedAt > (processAlive ? 180_000 : 30_000);
     results.push({
       agentId,
       toolUseId: call.toolUseId,
@@ -1492,7 +1476,7 @@ async function parseParentTranscriptSubagents(
       description: call.description,
       state: finished ? "completed" : "running",
       toolCount: 0,
-      ...(reportText ? { reportText: clipText(reportText, MAX_SUBAGENT_REPORT_BYTES).text } : {}),
+      ...(reportText ? { reportText } : {}),
       startedAt: call.startedAt,
       updatedAt,
       durationMs: Math.max(0, updatedAt - call.startedAt),
@@ -1532,6 +1516,7 @@ export async function readClaudeTranscriptSubagents(
       ? {
           ...existing,
           ...fileItem,
+          state: existing.state === "completed" || fileItem.state === "completed" ? "completed" : "running",
           ...(fileItem.toolUseId ?? existing.toolUseId ? { toolUseId: fileItem.toolUseId ?? existing.toolUseId } : {}),
           ...(fileItem.reportText ? { reportText: fileItem.reportText } : existing.reportText ? { reportText: existing.reportText } : {}),
         }

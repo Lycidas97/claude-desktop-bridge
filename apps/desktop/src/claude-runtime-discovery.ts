@@ -256,6 +256,8 @@ interface GatewayModelPayload {
   display_name?: unknown;
   description?: unknown;
   max_input_tokens?: unknown;
+  context_window?: unknown;
+  context_length?: unknown;
   supports_1m?: unknown;
   reasoning?: unknown;
   reasoning_levels?: unknown;
@@ -360,6 +362,8 @@ export function parseClaudeGatewayModels(items: unknown[]): BridgeModelInfo[] {
     seen.add(id);
     const displayName = nonEmptyString(item.display_name) ?? id;
     const description = nonEmptyString(item.description);
+    const maxInputTokens = [item.max_input_tokens, item.context_window, item.context_length]
+      .find((value): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0);
     const rawLevels = Array.isArray(item.supported_reasoning_levels)
       ? item.supported_reasoning_levels
       : Array.isArray(item.reasoning_levels)
@@ -377,6 +381,7 @@ export function parseClaudeGatewayModels(items: unknown[]): BridgeModelInfo[] {
       value: id,
       displayName,
       ...(description ? { description } : {}),
+      ...(maxInputTokens ? { maxInputTokens } : {}),
       ...(supportsEffort !== undefined ? { supportsEffort } : {}),
       ...(supportedEffortLevels?.length ? { supportedEffortLevels } : {}),
     });
@@ -396,6 +401,7 @@ export function parseClaudeGatewayModels(items: unknown[]): BridgeModelInfo[] {
         value: longContextId,
         displayName: `${displayName} 1M`,
         description: description ? `${description} · 1M context window` : "1M context window",
+        maxInputTokens: GATEWAY_LONG_CONTEXT_TOKENS,
         ...(supportsEffort !== undefined ? { supportsEffort } : {}),
         ...(supportedEffortLevels?.length ? { supportedEffortLevels } : {}),
       });

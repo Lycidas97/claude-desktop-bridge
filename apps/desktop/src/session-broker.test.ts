@@ -354,6 +354,58 @@ async function writeContextTranscript(
 }
 
 describe("SessionBroker", () => {
+  it("pages full transcript messages without letting old clipped events skip an oversized message", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-full-history-"));
+    directories.push(root);
+    const sessionId = randomUUID();
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    await mkdir(projects, { recursive: true });
+    const longText = `开头\n${"完整中段".repeat(30_000)}\n结尾`;
+    const rows = [
+      { id: "u1", role: "user", text: "较早的问题" },
+      { id: "a1", role: "assistant", text: longText },
+      { id: "u2", role: "user", text: "新的问题" },
+      { id: "a2", role: "assistant", text: "新的回答" },
+    ];
+    const at = Date.UTC(2026, 9, 29);
+    await writeFile(join(projects, `${sessionId}.jsonl`), rows.map((row, index) => JSON.stringify({
+      uuid: row.id, parentUuid: rows[index - 1]?.id ?? null, type: row.role, sessionId, cwd,
+      timestamp: new Date(at + index * 1_000).toISOString(),
+      message: { role: row.role, content: row.text },
+    })).join("\n"));
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    for (const [index, row] of rows.entries()) {
+      await eventLog.append({
+        origin: "claude-desktop", type: "session.observed", sessionId, itemId: row.id,
+        timestamp: at + index * 1_000,
+        data: { role: row.role, text: row.id === "a1" ? "开头\n\n[内容较长，已省略中间部分]\n\n结尾" : row.text },
+      });
+    }
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects, desktopSessions: [] },
+      eventLog,
+      observer: new FakeObserver({ projects: [], sessions: [observed(sessionId, cwd)], observedAt: Date.now() }),
+      sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"),
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+    });
+    await broker.initialize();
+    try {
+      const first = await broker.history(sessionId);
+      expect(first.items.map((item) => item.id)).toEqual(["u2", "a2"]);
+      expect(first.hasMore).toBe(true);
+      const second = await broker.history(sessionId, first.nextCursor);
+      expect(second.items.map((item) => item.id)).toEqual(["a1"]);
+      expect(second.items[0]?.text).toBe(longText);
+      const third = await broker.history(sessionId, second.nextCursor);
+      expect(third.items.map((item) => item.id)).toEqual(["u1"]);
+      expect(third.hasMore).toBe(false);
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
+  });
+
   it("creates metadata only for a discovered project without probing its protected path", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-project-"));
     directories.push(root);

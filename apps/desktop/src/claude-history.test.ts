@@ -352,20 +352,63 @@ describe("Claude transcript history", () => {
     await expect(isClaudeTranscriptAtTurnBoundary(toolInterrupted)).resolves.toBe(true);
   });
 
-  it("caps large histories below the encrypted relay frame budget", async () => {
+  it("preserves long user and assistant messages, including their middle sections", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-claude-history-large-"));
     directories.push(root);
     const transcript = join(root, "large.jsonl");
+    const userText = `${"问".repeat(8_000)}\n用户原文中段\n${"题".repeat(8_000)}`;
+    const assistantText = `${"长".repeat(10_000)}\n回复原文中段\n${"文".repeat(10_000)}`;
     await writeFile(transcript, [
-      line({ type: "user", uuid: "user-large", parentUuid: null, message: { role: "user", content: "检查长回复" } }),
-      line({ type: "assistant", uuid: "assistant-large", parentUuid: "user-large", message: { role: "assistant", content: [{ type: "text", text: "长".repeat(20_000) }] } }),
+      line({ type: "user", uuid: "user-large", parentUuid: null, message: { role: "user", content: userText } }),
+      line({ type: "assistant", uuid: "assistant-large", parentUuid: "user-large", message: { role: "assistant", content: [{ type: "text", text: assistantText }] } }),
     ].join("\n"), "utf8");
 
     const result = await parseClaudeTranscript(transcript);
     expect(result.available).toBe(true);
-    expect(result.truncated).toBe(true);
-    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(60 * 1024);
-    expect(result.messages.at(-1)?.text).toContain("已省略中间部分");
+    expect(result.truncated).toBe(false);
+    expect(result.messages.map((message) => message.text)).toEqual([userText, assistantText]);
+    expect((await readClaudeTranscriptUserMessages(transcript))[0]?.text).toBe(userText);
+  });
+
+  it("pages a message larger than the history budget without dropping its text or older messages", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-history-oversize-"));
+    directories.push(root);
+    const transcript = join(root, "large.jsonl");
+    const text = `开始\n${"完整正文".repeat(30_000)}\n结束`;
+    await writeFile(transcript, [
+      line({ type: "user", uuid: "older-user", parentUuid: null, message: { role: "user", content: "上一轮问题" } }),
+      line({ type: "assistant", uuid: "older-assistant", parentUuid: "older-user", message: { role: "assistant", content: "上一轮回复" } }),
+      line({ type: "user", uuid: "long-user", parentUuid: "older-assistant", message: { role: "user", content: "这一轮问题" } }),
+      line({ type: "assistant", uuid: "long-assistant", parentUuid: "long-user", message: { role: "assistant", content: text } }),
+    ].join("\n"), "utf8");
+
+    const newest = await parseClaudeTranscript(transcript);
+    expect(newest.messages).toHaveLength(1);
+    expect(newest.messages[0]?.text).toBe(text);
+    expect(newest.nextCursor).toBe("long-assistant");
+    const older = await parseClaudeTranscript(transcript, { beforeCursor: newest.nextCursor! });
+    expect(older.messages.map((message) => message.id)).toEqual(["older-user", "older-assistant", "long-user"]);
+    expect(older.truncated).toBe(false);
+  });
+
+  it("preserves full long subagent reports from both parent and child transcripts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-subagent-long-"));
+    directories.push(root);
+    const transcript = join(root, "session.jsonl");
+    const report = `${"结论".repeat(5_000)}\n回报中间的完整证据\n${"依据".repeat(5_000)}`;
+    await writeFile(transcript, [
+      line({ type: "assistant", uuid: "call", message: { role: "assistant", content: [{ type: "tool_use", id: "agent-tool", name: "Agent", input: { description: "审查" } }] } }),
+      line({ type: "user", uuid: "result", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "agent-tool", content: report }] } }),
+    ].join("\n"), "utf8");
+    expect((await readClaudeTranscriptSubagents(transcript))[0]?.reportText).toBe(report);
+
+    const childDir = join(root, "session", "subagents");
+    await mkdir(childDir, { recursive: true });
+    await writeFile(join(childDir, "agent-child.meta.json"), JSON.stringify({ description: "审查", finished: true }));
+    await writeFile(join(childDir, "agent-child.jsonl"), line({ type: "assistant", uuid: "report", message: { role: "assistant", content: [{ type: "text", text: report }], stop_reason: "end_turn" } }));
+    const child = (await readClaudeTranscriptSubagents(transcript)).find((subagent) => subagent.agentId === "child");
+    expect(child?.reportText).toBe(report);
+    expect(child?.latestText).toBe(report);
   });
 
   it("pages backward by the visible message cursor", async () => {

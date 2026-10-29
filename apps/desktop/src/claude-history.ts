@@ -15,9 +15,7 @@ import {
 const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const MAX_HISTORY_MESSAGES = 50;
 const MAX_HISTORY_TEXT_BYTES = 256 * 1024;
-const MAX_MESSAGE_TEXT_BYTES = 10 * 1024;
 const MAX_TOOL_RESULT_BYTES = 256 * 1024;
-const OMITTED_TEXT = "\n\n[内容较长，已省略中间部分]\n\n";
 
 interface TranscriptNode {
   index: number;
@@ -712,44 +710,6 @@ function applyWrapUpUserReply(
   return prompt;
 }
 
-function takePrefixByBytes(value: string, maxBytes: number): string {
-  let size = 0;
-  let result = "";
-  for (const character of value) {
-    const next = Buffer.byteLength(character);
-    if (size + next > maxBytes) break;
-    result += character;
-    size += next;
-  }
-  return result;
-}
-
-function takeSuffixByBytes(value: string, maxBytes: number): string {
-  let size = 0;
-  const characters = [...value];
-  let result = "";
-  for (let index = characters.length - 1; index >= 0; index -= 1) {
-    const character = characters[index]!;
-    const next = Buffer.byteLength(character);
-    if (size + next > maxBytes) break;
-    result = character + result;
-    size += next;
-  }
-  return result;
-}
-
-function clipText(value: string, maxBytes: number): { text: string; clipped: boolean } {
-  if (Buffer.byteLength(value) <= maxBytes) return { text: value, clipped: false };
-  const markerBytes = Buffer.byteLength(OMITTED_TEXT);
-  const available = Math.max(2, maxBytes - markerBytes);
-  const prefixBytes = Math.ceil(available * 0.6);
-  const suffixBytes = available - prefixBytes;
-  return {
-    text: `${takePrefixByBytes(value, prefixBytes).trimEnd()}${OMITTED_TEXT}${takeSuffixByBytes(value, suffixBytes).trimStart()}`,
-    clipped: true,
-  };
-}
-
 function trimHistory(
   messages: ClaudeHistoryMessage[],
   options: ClaudeHistoryReadOptions = {},
@@ -773,18 +733,16 @@ function trimHistory(
   let truncated = candidateMessages.length > maxMessages;
   for (let index = candidateMessages.length - 1; index >= 0 && selected.length < maxMessages; index -= 1) {
     const message = candidateMessages[index]!;
-    const clipped = clipText(message.text, MAX_MESSAGE_TEXT_BYTES);
     const interactiveBytes = message.interactivePrompt
       ? Buffer.byteLength(JSON.stringify(message.interactivePrompt))
       : 0;
-    const cost = Buffer.byteLength(clipped.text) + interactiveBytes + 180;
+    const cost = Buffer.byteLength(message.text) + interactiveBytes + 180;
     if (selected.length > 0 && bytes + cost > MAX_HISTORY_TEXT_BYTES) {
       truncated = true;
       break;
     }
-    selected.unshift({ ...message, text: clipped.text });
+    selected.unshift(message);
     bytes += cost;
-    truncated ||= clipped.clipped;
   }
   const hasMore = selected.length < candidateMessages.length;
   if (hasMore) truncated = true;
@@ -970,7 +928,7 @@ export async function parseClaudeTranscriptSnapshot(
         userMessages.push({
           id: value.uuid,
           role: "user",
-          text: clipText(visible.text, MAX_MESSAGE_TEXT_BYTES).text,
+          text: visible.text,
           createdAt,
         });
         if (userMessages.length > userLimit) userMessages.shift();
@@ -1273,8 +1231,6 @@ function formatSubagentToolStep(name: string, input: unknown): string {
   return name;
 }
 
-const MAX_SUBAGENT_REPORT_BYTES = 3_600;
-const MAX_SUBAGENT_LATEST_BYTES = 600;
 const subagentSummaryCache = new Map<string, {
   signature: string;
   summary: BridgeSubagentSummary;
@@ -1314,6 +1270,7 @@ async function parseSingleSubagentFile(
   const handbackReports: string[] = [];
   let startedAt = 0;
   let updatedAt = Math.round(fileStat.mtimeMs);
+  let lastStopReason: string | undefined;
 
   try {
     const lines = createInterface({
@@ -1335,6 +1292,7 @@ async function parseSingleSubagentFile(
         if (parsedAt > updatedAt) updatedAt = parsedAt;
       }
       if (value.type === "assistant" && isRecord(value.message) && Array.isArray(value.message.content)) {
+        lastStopReason = typeof value.message.stop_reason === "string" ? value.message.stop_reason : undefined;
         for (const block of value.message.content) {
           if (!isRecord(block)) continue;
           if (block.type === "tool_use" && typeof block.name === "string") {
@@ -1355,6 +1313,8 @@ async function parseSingleSubagentFile(
             latestText = block.text.trim();
           }
         }
+      } else if (value.type === "user") {
+        lastStopReason = undefined;
       }
     }
   } catch {
@@ -1362,8 +1322,8 @@ async function parseSingleSubagentFile(
   }
 
   const reportText = handbackReports.join("\n\n---\n\n");
-  const explicitlyFinished = meta.finished === true || handbackReports.length > 0;
-  const staleIdle = !processAlive && Date.now() - updatedAt > 180_000;
+  const explicitlyFinished = meta.finished === true || handbackReports.length > 0 || lastStopReason === "end_turn";
+  const staleIdle = Date.now() - updatedAt > (processAlive ? 180_000 : 30_000);
   const state: BridgeSubagentSummary["state"] = explicitlyFinished || staleIdle
     ? "completed"
     : "running";
@@ -1378,12 +1338,7 @@ async function parseSingleSubagentFile(
     : undefined;
   const effectiveStartedAt = startedAt || updatedAt || Date.now();
   const effectiveUpdatedAt = Math.max(effectiveStartedAt, updatedAt || Date.now());
-  const clippedReport = reportText
-    ? clipText(reportText, MAX_SUBAGENT_REPORT_BYTES).text
-    : (state === "completed" && latestText ? clipText(latestText, MAX_SUBAGENT_REPORT_BYTES).text : undefined);
-  const clippedLatest = latestText
-    ? clipText(latestText, MAX_SUBAGENT_LATEST_BYTES).text
-    : undefined;
+  const completedReport = reportText || (state === "completed" ? latestText : undefined);
 
   const summary: BridgeSubagentSummary = {
     agentId,
@@ -1393,8 +1348,8 @@ async function parseSingleSubagentFile(
     state,
     toolCount,
     ...(recentTools.length ? { recentTools } : {}),
-    ...(clippedLatest ? { latestText: clippedLatest } : {}),
-    ...(clippedReport ? { reportText: clippedReport } : {}),
+    ...(latestText ? { latestText } : {}),
+    ...(completedReport ? { reportText: completedReport } : {}),
     startedAt: effectiveStartedAt,
     updatedAt: effectiveUpdatedAt,
     durationMs: Math.max(0, effectiveUpdatedAt - effectiveStartedAt),
@@ -1513,7 +1468,7 @@ async function parseParentTranscriptSubagents(
     const report = call.agentId ? reportsByAgentId.get(call.agentId) : undefined;
     const reportText = report?.text ?? call.reportText;
     const updatedAt = Math.max(call.updatedAt, report?.at ?? 0);
-    const finished = Boolean(reportText) || (!processAlive && Date.now() - updatedAt > 180_000);
+    const finished = Boolean(reportText) || Date.now() - updatedAt > (processAlive ? 180_000 : 30_000);
     results.push({
       agentId,
       toolUseId: call.toolUseId,
@@ -1521,7 +1476,7 @@ async function parseParentTranscriptSubagents(
       description: call.description,
       state: finished ? "completed" : "running",
       toolCount: 0,
-      ...(reportText ? { reportText: clipText(reportText, MAX_SUBAGENT_REPORT_BYTES).text } : {}),
+      ...(reportText ? { reportText } : {}),
       startedAt: call.startedAt,
       updatedAt,
       durationMs: Math.max(0, updatedAt - call.startedAt),
@@ -1561,6 +1516,7 @@ export async function readClaudeTranscriptSubagents(
       ? {
           ...existing,
           ...fileItem,
+          state: existing.state === "completed" || fileItem.state === "completed" ? "completed" : "running",
           ...(fileItem.toolUseId ?? existing.toolUseId ? { toolUseId: fileItem.toolUseId ?? existing.toolUseId } : {}),
           ...(fileItem.reportText ? { reportText: fileItem.reportText } : existing.reportText ? { reportText: existing.reportText } : {}),
         }

@@ -1785,14 +1785,22 @@ export class SessionBroker extends EventEmitter {
           ...existing,
           toolName: existing.toolName || "Agent",
           text: subItem.text,
-          state: subItem.state,
+          ...(subItem.state ? { state: subItem.state } : {}),
           subagent: subItem.subagent,
         });
       }
     }
+    // Older event copies must not move the cursor past transcript messages
+    // that were left for the next page by the transcript's byte budget.
+    const transcriptBoundary = transcriptItems
+      .filter((item) => transcripts.some(({ transcript }) => transcript.nextCursor === item.id))
+      .sort(historyOrder).at(-1);
     const all = [...merged.values()]
       .sort(historyOrder)
-      .filter((item) => !before || item.createdAt < before.at || (item.createdAt === before.at && item.id < before.id));
+      .filter((item) => (
+        (!before || item.createdAt < before.at || (item.createdAt === before.at && item.id < before.id)) &&
+        (!transcriptBoundary || historyOrder(item, transcriptBoundary) >= 0)
+      ));
     let startIndex = all.length;
     let messageCount = 0;
     let totalBytes = 0;

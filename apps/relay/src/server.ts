@@ -59,6 +59,7 @@ export interface RelayServerOptions {
   roomCreationsPerIpPerHour?: number;
   maxFramesPerMinute?: number;
   trustProxy?: boolean;
+  heartbeatIntervalMs?: number;
 }
 
 export interface RunningRelay {
@@ -364,6 +365,9 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
 
     ws.on("pong", () => { state.isAlive = true; });
     ws.on("message", (data, isBinary) => {
+      // A pong is queued behind the sender's own upload, so a slow link that
+      // is still delivering frames must not be mistaken for a dead peer.
+      state.isAlive = true;
       state.processing = state.processing.then(async () => {
         relayMetrics.framesReceived += 1;
         const raw = data.toString();
@@ -631,7 +635,7 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
       state.isAlive = false;
       ws.ping();
     }
-  }, 30_000);
+  }, options.heartbeatIntervalMs ?? 30_000);
 
   await new Promise<void>((resolve, reject) => {
     httpServer.once("error", reject);

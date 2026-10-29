@@ -3,7 +3,7 @@ import { BrowserWindow, nativeImage } from "electron";
 import type { EvidencePreviewRenderer } from "./evidence-manager.js";
 
 const MAX_PREVIEW_BYTES = 2 * 1024 * 1024;
-const MAX_IMAGE_EDGE = 2_048;
+const MAX_IMAGE_EDGE = 1_600;
 const ARTIFACT_SCHEME = "bridge-artifact";
 
 function delay(ms: number): Promise<void> {

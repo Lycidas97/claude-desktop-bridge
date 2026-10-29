@@ -434,14 +434,27 @@ export class DesktopConfigRepository {
       throw error;
     }
     const config = assertConfig(JSON.parse(raw));
+    const savedEndpoint = config.version === 2
+      ? undefined
+      : selectBridgeEndpoint(config.relayEndpoints, config.activeEndpoint);
+    // A generic build must not move a paired host away from its custom relay.
+    const defaults = config.version !== 2 && this.defaults.publicRelayUrl === UPSTREAM_DEFAULT_RELAY &&
+      savedEndpoint?.kind === "public-relay" && savedEndpoint.url !== UPSTREAM_DEFAULT_RELAY
+      ? {
+          ...this.defaults,
+          relayUrl: savedEndpoint.url,
+          publicRelayUrl: savedEndpoint.url,
+          serviceOrigin: config.serviceOrigin,
+        }
+      : this.defaults;
     const transport = config.version === 2
-      ? migrateV2(config, this.defaults)
+      ? migrateV2(config, defaults)
       : {
-          relayEndpoints: refreshV3Endpoints(config, this.defaults),
+          relayEndpoints: refreshV3Endpoints(config, defaults),
           activeEndpoint: config.activeEndpoint,
-          serviceOrigin: this.defaults.publicRelayUrl
-            ? this.defaults.serviceOrigin || config.serviceOrigin || ""
-            : config.serviceOrigin || this.defaults.serviceOrigin || "",
+          serviceOrigin: defaults.publicRelayUrl
+            ? defaults.serviceOrigin || config.serviceOrigin || ""
+            : config.serviceOrigin || defaults.serviceOrigin || "",
           // Preserve explicit ICE choices, but move the old packaged
           // Cloudflare-only default to the current self-hosted-first list.
           iceServers: preferredBridgeIceServers(
@@ -453,7 +466,7 @@ export class DesktopConfigRepository {
           ...(config.migratedAt !== undefined ? { migratedAt: config.migratedAt } : {}),
         };
     const active = (
-      this.defaults.publicRelayUrl
+      defaults.publicRelayUrl
         ? transport.relayEndpoints.find((endpoint) => endpoint.kind === "public-relay")
         : undefined
     ) ?? selectBridgeEndpoint(transport.relayEndpoints, transport.activeEndpoint);

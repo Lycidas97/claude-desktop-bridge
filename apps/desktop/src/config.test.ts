@@ -216,6 +216,35 @@ describe("desktop configuration", () => {
     expect((await localDefault.load())?.relayUrl).toBe("wss://relay.example/ws");
   });
 
+  it("preserves a paired custom public relay when an update ships the upstream default", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-custom-relay-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const custom = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      publicRelayUrl: "wss://relay.example/ws",
+      serviceOrigin: "https://relay.example",
+      desktopName: "Test PC",
+    });
+    const created = await custom.loadOrCreate();
+    created.devices.push({ deviceId: "phone-1", name: "Android", platform: "android", secret: "phone-secret", createdAt: 1_000, expiresAt: 2_000, pairedAt: 1_100 });
+    await custom.save(created);
+    const genericUpdate = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.alioxis.com/ws",
+      publicRelayUrl: "wss://relay.alioxis.com/ws",
+      serviceOrigin: "https://relay.alioxis.com",
+      desktopName: "Test PC",
+    });
+    await expect(genericUpdate.load()).resolves.toMatchObject({
+      relayUrl: "wss://relay.example/ws",
+      serviceOrigin: "https://relay.example",
+      roomId: created.roomId,
+      hostSecret: created.hostSecret,
+      devices: [expect.objectContaining({ deviceId: "phone-1", secret: "phone-secret" })],
+      relayEndpoints: [expect.objectContaining({ id: "public", url: "wss://relay.example/ws" })],
+    });
+  });
+
   it("migrates v2 to pairing schema v4 while preserving host identity and rotating credentials", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);
@@ -278,7 +307,7 @@ describe("desktop configuration", () => {
     expect(JSON.stringify(persisted)).not.toContain(loaded.evidenceKey);
   });
 
-  it("migrates an existing public relay to a lower-priority fallback", async () => {
+  it("migrates an existing public relay when the build explicitly supplies a new custom relay", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);
     const path = join(directory, "bridge-config.json");
@@ -291,8 +320,8 @@ describe("desktop configuration", () => {
 
     const publicBuild = new DesktopConfigRepository(path, protector, {
       relayUrl: "ws://192.168.1.32:8788/ws",
-      publicRelayUrl: "wss://relay.alioxis.com/ws",
-      serviceOrigin: "https://relay.alioxis.com",
+      publicRelayUrl: "wss://new-relay.example/ws",
+      serviceOrigin: "https://new-relay.example",
       iceServers: [...DEFAULT_BRIDGE_ICE_SERVERS],
       desktopName: "Test PC",
     });
@@ -301,15 +330,15 @@ describe("desktop configuration", () => {
     expect(loaded).toMatchObject({
       roomId: created.roomId,
       hostSecret: created.hostSecret,
-      relayUrl: "wss://relay.alioxis.com/ws",
-      serviceOrigin: "https://relay.alioxis.com",
+      relayUrl: "wss://new-relay.example/ws",
+      serviceOrigin: "https://new-relay.example",
       iceServers: DEFAULT_BRIDGE_ICE_SERVERS,
     });
     expect(loaded?.relayEndpoints).toEqual(expect.arrayContaining([
       {
         id: "public",
         kind: "public-relay",
-        url: "wss://relay.alioxis.com/ws",
+        url: "wss://new-relay.example/ws",
         priority: 10,
       },
       {
@@ -323,7 +352,7 @@ describe("desktop configuration", () => {
     await publicBuild.save(loaded!);
     expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
       activeEndpoint: "public",
-      serviceOrigin: "https://relay.alioxis.com",
+      serviceOrigin: "https://new-relay.example",
       relayEndpoints: expect.arrayContaining([
         expect.objectContaining({ id: "legacy-public-0", url: "wss://relay.alioxis.uk/ws" }),
       ]),

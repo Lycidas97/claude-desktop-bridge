@@ -54,6 +54,7 @@ export interface PersistedSessionConfiguration {
   model?: string;
   effort?: string;
   permissionMode?: "standard" | "full-access";
+  desktopBaseline?: { model?: string; effort?: string };
   updatedAt: number;
 }
 

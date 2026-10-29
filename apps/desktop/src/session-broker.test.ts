@@ -234,6 +234,9 @@ class FakeManagedTransport extends EventEmitter implements ManagedDesktopTranspo
   ready = true;
   sends: Array<Parameters<ManagedDesktopTransportRuntime["send"]>[0]> = [];
   interrupts = 0;
+  configuration: { model?: string; effort?: BridgeEffort } | undefined;
+  models: string[] = [];
+  efforts: Array<BridgeEffort | undefined> = [];
 
   updateCatalog(): void {}
 
@@ -253,8 +256,9 @@ class FakeManagedTransport extends EventEmitter implements ManagedDesktopTranspo
   async interrupt(): Promise<void> {
     this.interrupts += 1;
   }
-  async setModel(): Promise<void> {}
-  async setEffort(): Promise<void> {}
+  async setModel(_sessionId: string, model: string): Promise<void> { this.models.push(model); }
+  async setEffort(_sessionId: string, effort?: BridgeEffort): Promise<void> { this.efforts.push(effort); }
+  async getConfiguration() { return this.configuration; }
   async getContextUsage(): Promise<undefined> { return undefined; }
   clearIntent(): void {}
 
@@ -1292,6 +1296,7 @@ describe("SessionBroker", () => {
     const hosts: FakeHost[] = [];
     const managedDesktop = new FakeManagedDesktop();
     const managedTransport = new FakeManagedTransport();
+    managedTransport.configuration = { model: "desktop-live", effort: "xhigh" };
     const eventLog = new SessionEventLog(join(root, "events.jsonl"));
     const broker = new SessionBroker({
       paths: {
@@ -1318,6 +1323,8 @@ describe("SessionBroker", () => {
       }),
     });
     await broker.initialize();
+    await expect(broker.configuration(sessionId, false)).resolves.toMatchObject({ model: "desktop-live", effort: "xhigh" });
+    managedTransport.configuration = { model: "desktop-latest", effort: "medium" };
     const receipt = await broker.startTurn({
       requestId: "request-managed",
       idempotencyKey: "command-managed",
@@ -1332,7 +1339,11 @@ describe("SessionBroker", () => {
       text: "Run in Claude Desktop",
       messageId: receipt.commandId,
       mode: "start",
+      model: "desktop-latest",
+      effort: "medium",
     });
+    expect(managedTransport.models).toEqual(["desktop-latest"]);
+    expect(managedTransport.efforts).toEqual(["medium"]);
     const turnId = managedTransport.sends[0]?.turnId;
     if (!turnId) throw new Error("Managed turn did not receive an id");
     managedTransport.emitHost({
@@ -1925,6 +1936,65 @@ describe("SessionBroker", () => {
 
     await broker.close();
     await eventLog.close();
+  });
+
+  it("refreshes Desktop configuration and retires stale overrides while keeping fresh mobile choices", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-desktop-config-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    const desktopSessions = join(root, "Claude-3p", "claude-code-sessions");
+    await mkdir(desktopSessions, { recursive: true });
+    const desktopPath = join(desktopSessions, "session.json");
+    const desktop = {
+      sessionId: `desktop-${sessionId}`, cliSessionId: sessionId, cwd,
+      model: "desktop-current", effort: "xhigh",
+    };
+    await writeFile(desktopPath, JSON.stringify(desktop));
+    const sessionsPath = join(root, "sessions.json");
+    await writeFile(sessionsPath, JSON.stringify({
+      version: 2, sessions: [], configurations: [{
+        sessionId, model: "old-mobile", effort: "low", permissionMode: "full-access", updatedAt: 1,
+      }],
+    }));
+    const observer = new FakeObserver({ projects: [], sessions: [observed(sessionId, cwd)], observedAt: 1 });
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const options = {
+      paths: { sessions: join(root, "runtime"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [desktopSessions] },
+      eventLog, observer, sessionsPath, queuePath: join(root, "queue.json"),
+      discoverGatewayModels: async () => [{ value: "desktop-current", displayName: "Desktop current" }],
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+    };
+    const broker = new SessionBroker(options);
+    try {
+      await expect(broker.configuration(sessionId)).resolves.toMatchObject({
+        model: "desktop-current", effort: "xhigh", modelSource: "claude-desktop", effortSource: "claude-desktop",
+        permissionPolicy: { effectiveMode: "full-access" },
+      });
+      expect(broker.session(sessionId)).toMatchObject({ model: "desktop-current", effort: "xhigh" });
+      await expect(broker.configureSession({ sessionId, model: "new-mobile", effort: "medium" })).resolves.toMatchObject({
+        model: "new-mobile", effort: "medium", modelSource: "bridge", effortSource: "bridge",
+      });
+      await expect(broker.configuration(sessionId)).resolves.toMatchObject({ model: "new-mobile", effort: "medium" });
+      await broker.close();
+      const restarted = new SessionBroker(options);
+      try {
+        await expect(restarted.configuration(sessionId)).resolves.toMatchObject({ model: "new-mobile", effort: "medium" });
+        await writeFile(desktopPath, JSON.stringify({ ...desktop, model: "desktop-changed" }));
+        await expect(restarted.configuration(sessionId)).resolves.toMatchObject({
+          model: "desktop-changed", effort: "medium", modelSource: "claude-desktop", effortSource: "bridge",
+        });
+        await writeFile(desktopPath, JSON.stringify({ ...desktop, model: "desktop-changed", effort: "high" }));
+        await expect(restarted.configuration(sessionId)).resolves.toMatchObject({
+          model: "desktop-changed", effort: "high", modelSource: "claude-desktop", effortSource: "claude-desktop",
+        });
+        expect((await restarted.configuration(sessionId)).overrideModel).toBeUndefined();
+        expect((await restarted.configuration(sessionId)).overrideEffort).toBeUndefined();
+      } finally { await restarted.close(); }
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
   });
 
   it("discovers provider models without attaching to the desktop session", async () => {

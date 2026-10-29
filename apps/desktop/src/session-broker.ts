@@ -35,6 +35,7 @@ import { ClaudeDesktopManager } from "./claude-desktop-manager.js";
 import { ClaudeSessionHost, type ClaudeSessionHostOptions, type SessionHostEvent } from "./claude-session-host.js";
 import {
   claudeDesktopProfileForPath,
+  listClaudeDesktopSessions,
   type ClaudeDesktopProfile,
 } from "./claude-desktop-sessions.js";
 import {
@@ -83,6 +84,7 @@ interface StoredSessionConfiguration {
   model?: string;
   effort?: BridgeEffort;
   permissionMode?: BridgePermissionMode;
+  desktopBaseline?: { model?: string; effort?: BridgeEffort };
   updatedAt: number;
 }
 
@@ -186,6 +188,7 @@ export interface ManagedDesktopTransportRuntime {
   interrupt(sessionId: string): Promise<void>;
   setModel(sessionId: string, model: string): Promise<void>;
   setEffort(sessionId: string, effort?: BridgeEffort): Promise<void>;
+  getConfiguration(sessionId: string): Promise<{ model?: string; effort?: BridgeEffort } | undefined>;
   getContextUsage(sessionId: string): Promise<BridgeSessionContextUsage | undefined>;
   clearIntent(sessionId: string): void;
   onEvent(listener: (event: SessionHostEvent) => void): () => void;
@@ -799,8 +802,38 @@ export class SessionBroker extends EventEmitter {
     ));
   }
 
-  async configuration(sessionId: string, discoverModels = true): Promise<BridgeSessionConfiguration> {
+  async refreshDesktopConfiguration(sessionId: string): Promise<{ model?: string; effort?: BridgeEffort } | undefined> {
     await this.initialize();
+    const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId);
+    const desktop = this.managedTransport?.ready && this.managedTransport.desktopSessionId(sessionId)
+      ? await this.managedTransport.getConfiguration(sessionId)
+      : (await listClaudeDesktopSessions(this.options.paths.desktopSessions)).find((candidate) => (
+          candidate.cliSessionId === sessionId && (!observed?.desktopSessionId || candidate.sessionId === observed.desktopSessionId)
+        ));
+    if (!desktop) return;
+    if (observed) {
+      if (desktop.model) observed.hostModel = desktop.model;
+      else delete observed.hostModel;
+      if (desktop.effort) observed.hostEffort = desktop.effort;
+      else delete observed.hostEffort;
+    }
+    const stored = this.sessionConfigurations.get(sessionId);
+    if (stored && (!stored.desktopBaseline || stored.desktopBaseline.model !== desktop.model || stored.desktopBaseline.effort !== desktop.effort)) {
+      // Overrides are relative to the Desktop settings seen when the phone saved them.
+      const baseline = stored.desktopBaseline;
+      if (!baseline || baseline.model !== desktop.model) delete stored.model;
+      if (!baseline || baseline.effort !== desktop.effort) delete stored.effort;
+      stored.desktopBaseline = {
+        ...(desktop.model ? { model: desktop.model } : {}),
+        ...(desktop.effort ? { effort: desktop.effort } : {}),
+      };
+      await this.saveSessions();
+    }
+    return desktop;
+  }
+
+  async configuration(sessionId: string, discoverModels = true): Promise<BridgeSessionConfiguration> {
+    await this.refreshDesktopConfiguration(sessionId);
     const session = this.session(sessionId);
     if (!session) throw new Error("Session not found");
     const state = this.runtimeStates.get(sessionId);
@@ -919,6 +952,7 @@ export class SessionBroker extends EventEmitter {
       sessionId,
       ...(previous?.model ? { model: previous.model } : {}),
       ...(previous?.effort ? { effort: previous.effort } : {}),
+      ...(previous?.desktopBaseline ? { desktopBaseline: previous.desktopBaseline } : {}),
       ...(mode ? { permissionMode: mode } : {}),
       updatedAt: Date.now(),
     };
@@ -964,7 +998,7 @@ export class SessionBroker extends EventEmitter {
   }
 
   async configureSession(input: ConfigureSessionInput): Promise<BridgeSessionConfiguration> {
-    await this.initialize();
+    const desktop = await this.refreshDesktopConfiguration(input.sessionId);
     const session = this.session(input.sessionId);
     if (!session) throw new Error("Session not found");
     const route = this.options.conversationState?.route(input.sessionId);
@@ -991,6 +1025,10 @@ export class SessionBroker extends EventEmitter {
       ...(previous?.model ? { model: previous.model } : {}),
       ...(previous?.effort ? { effort: previous.effort } : {}),
       ...(previous?.permissionMode ? { permissionMode: previous.permissionMode } : {}),
+      ...(desktop ? { desktopBaseline: {
+        ...(desktop.model ? { model: desktop.model } : {}),
+        ...(desktop.effort ? { effort: desktop.effort } : {}),
+      } } : {}),
       updatedAt: Date.now(),
     };
     if (changesModel) {
@@ -1834,8 +1872,9 @@ export class SessionBroker extends EventEmitter {
     });
     this.emit("changed");
 
-    const profile = this.effectiveProfile(turn.sessionId, session.cwd);
     try {
+      await this.refreshDesktopConfiguration(turn.sessionId);
+      const profile = this.effectiveProfile(turn.sessionId, session.cwd);
       if (session.desktopSessionId || this.managedTransport.desktopSessionId(turn.sessionId)) {
         if (profile.model) await this.managedTransport.setModel(turn.sessionId, profile.model);
         await this.managedTransport.setEffort(turn.sessionId, profile.effort);
@@ -1948,6 +1987,7 @@ export class SessionBroker extends EventEmitter {
     let accepted: ReturnType<SessionHostRuntime["send"]>;
     let evidenceId: string | undefined;
     try {
+      if (providerKind === "claude-3p") await this.refreshDesktopConfiguration(turn.sessionId);
       const host = await this.ensureHost(turn.sessionId, turn.laneId);
       const effective = this.effectiveProfile(turn.sessionId, session.cwd);
       await this.applyHostConfiguration(host, {

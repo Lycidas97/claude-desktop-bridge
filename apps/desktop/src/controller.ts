@@ -1031,6 +1031,7 @@ export class DesktopController extends EventEmitter {
           latestSeq: this.eventLog.latestSeq(),
         };
       }
+      await this.broker.refreshDesktopConfiguration(sessionId);
       const session = this.broker.session(sessionId);
       if (!session) throw new Error("Session not found");
       return {
@@ -1090,6 +1091,7 @@ export class DesktopController extends EventEmitter {
       }
       return {
         configuration: await this.broker.configuration(sessionId),
+        session: this.broker.session(sessionId),
       };
     }
     if (request.method === "session.configure") {

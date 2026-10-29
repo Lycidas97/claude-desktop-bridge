@@ -630,6 +630,17 @@ function sessionWithRoute(
   };
 }
 
+export function applySessionToSnapshot(
+  snapshot: BridgeHostSnapshot | undefined,
+  session: BridgeSessionInfo | undefined,
+): BridgeHostSnapshot | undefined {
+  if (!snapshot || !session) return snapshot;
+  return {
+    ...snapshot,
+    sessions: snapshot.sessions.map((candidate) => candidate.sessionId === session.sessionId ? session : candidate),
+  };
+}
+
 export function applyEventToSnapshot(
   snapshot: BridgeHostSnapshot | undefined,
   event: BridgeEvent,
@@ -2312,6 +2323,7 @@ export function useMobileBridge() {
         if (!result.history) throw new Error("电脑未返回会话历史");
         setState((current) => ({
           ...current,
+          snapshot: applySessionToSnapshot(current.snapshot, result.session),
           histories: {
             ...current.histories,
             [sessionId]: {
@@ -2644,8 +2656,11 @@ export function useMobileBridge() {
       timeoutMs: 45_000,
     });
     if (!response?.ok) throw new Error(response?.error?.message ?? "会话配置读取失败");
-    const result = response.result as { configuration?: BridgeSessionConfiguration };
+    const result = response.result as { configuration?: BridgeSessionConfiguration; session?: BridgeSessionInfo };
     if (!result.configuration) throw new Error("电脑未返回会话配置");
+    if (result.session) {
+      setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+    }
     return result.configuration;
   }, [sendRequest]);
 
@@ -2670,15 +2685,7 @@ export function useMobileBridge() {
     };
     if (!result.configuration) throw new Error("电脑未返回会话配置");
     if (result.session) {
-      setState((current) => current.snapshot ? {
-        ...current,
-        snapshot: {
-          ...current.snapshot,
-          sessions: current.snapshot.sessions.map((session) => (
-            session.sessionId === result.session!.sessionId ? result.session! : session
-          )),
-        },
-      } : current);
+      setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
     }
     return result.configuration;
   }, [sendRequest]);

@@ -40,6 +40,7 @@ const session = { sessionId: "media-session", projectId: "media-project", projec
 const artifacts = [
   { id: "pdf", name: "Research report.pdf", relativePath: "output/Research report.pdf", kind: "pdf", mimeType: "application/pdf", previewMode: "none" },
   { id: "image", name: "Figure.png", relativePath: "output/Figure.png", kind: "image", mimeType: "image/png", previewMode: "image" },
+  { id: "svg", name: "Diagram.svg", relativePath: "output/Diagram.svg", kind: "binary", mimeType: "application/octet-stream", previewMode: "none" },
 ].map((file) => ({ ...file, evidenceId: "media-evidence", changeKind: "created", size: 1024, availability: "snapshot", downloadAllowed: true }));
 const evidence = { sessionId: session.sessionId, items: [{ id: "media-evidence", sessionId: session.sessionId, turnId: "media-turn", source: "claude-desktop", confidence: "exact", state: "ready", startedAt: now - 1000, completedAt: now, toolCount: 1, changeCount: 2, artifactCount: 2, tools: [], artifacts, warnings: [] }], hasMore: false };
 const history = { sessionId: session.sessionId, items: [{ id: "question", role: "user", text: "Show the report and image.", createdAt: now - 1000, turnId: "media-turn" }, { id: "answer", role: "assistant", text: "Created [Research report](<output/Research report.pdf>) and [Figure](output/Figure.png).", createdAt: now, turnId: "media-turn" }], hasMore: false };
@@ -49,8 +50,8 @@ const mobile = process.argv.includes("--mobile");
 const mobileModule = mobile ? await (await fetch("http://127.0.0.1:5188/src/components/MobileWorkspace.tsx")).text() : "";
 const providerModule = mobileModule.match(/from "([^"]*MediaPreviewProvider\.tsx[^"]*)"/u)?.[1];
 const browser = packaged
-  ? await _electron.launch({ executablePath: resolve(import.meta.dirname, "../node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), args: [resolve(output, "electron-media-main.cjs")] })
-  : await chromium.launch({ executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true });
+  ? await _electron.launch({ ...(process.env.BRIDGE_ELECTRON_PATH ? { executablePath: process.env.BRIDGE_ELECTRON_PATH } : {}), args: [resolve(output, "electron-media-main.cjs")] })
+  : await chromium.launch({ channel: "chrome", headless: true });
 const results = [];
 try {
   for (const viewport of [{ width: 1200, height: 850 }, { width: 375, height: 812 }]) {
@@ -66,7 +67,10 @@ try {
       window.fetch = (...args) => String(args[0]).endsWith("/health")
         ? Promise.resolve(new Response("ok")) : fetchOriginal(...args);
       let lease = 0;
+      const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500"><circle cx="400" cy="250" r="150" fill="#245778"/></svg>');
+      const transfers = new Map();
       window.__mediaRequests = [];
+      window.__expireMediaTransfers = () => transfers.clear();
       const response = (result) => ({ kind: "response", requestId: "qa", ok: true, result });
       window.bridgeDesktop = {
         getSnapshot: async () => snapshot,
@@ -77,9 +81,17 @@ try {
           if (method === "session.open") return response({ session: snapshot.sessions[0], history });
           if (method === "evidence.list") return response({ evidence });
           if (method === "artifact.preview") return response({ preview: { artifactId: "image", mode: "image", mimeType: "image/svg+xml", encoding: "base64", data: btoa('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500"><rect width="800" height="500" fill="#dce8ef"/><circle cx="400" cy="210" r="100" fill="#245778"/><text x="270" y="410" font-size="32">Research figure</text></svg>'), truncated: false, generatedAt: Date.now() } });
-          if (method === "artifact.transfer.open") return response({ transfer: { transferId: `qa-${++lease}`, artifactId: "pdf", name: "Research report.pdf", mimeType: "application/pdf", size: bytes.length, chunkBytes: 262144, totalChunks: Math.ceil(bytes.length / 262144), sha256: "qa", expiresAt: Date.now() + 600000 } });
+          if (method === "artifact.transfer.open") {
+            const isSvg = params.artifactId === "svg" || params.path?.endsWith(".svg");
+            const data = isSvg ? svg : bytes;
+            const transferId = `qa-${++lease}`;
+            transfers.set(transferId, data);
+            return response({ transfer: { transferId, artifactId: isSvg ? "svg" : "pdf", name: isSvg ? "Diagram.svg" : "Research report.pdf", mimeType: isSvg ? "application/octet-stream" : "application/pdf", size: data.length, chunkBytes: 262144, totalChunks: Math.ceil(data.length / 262144), sha256: "qa", expiresAt: Date.now() + 600000 } });
+          }
           if (method === "artifact.transfer.read") {
-            const chunk = bytes.slice(params.index * 262144, (params.index + 1) * 262144);
+            const data = transfers.get(params.transferId);
+            if (!data) return { kind: "response", requestId: "qa", ok: false, error: { message: "Artifact transfer expired" } };
+            const chunk = data.slice(params.index * 262144, (params.index + 1) * 262144);
             let binary = "";
             for (let index = 0; index < chunk.length; index += 8192) binary += String.fromCharCode(...chunk.subarray(index, index + 8192));
             return response({ chunk: { transferId: params.transferId, index: params.index, data: btoa(binary) } });
@@ -149,6 +161,11 @@ try {
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status"));
     await page.getByRole("button", { name: "旋转页面", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status"));
+    await page.evaluate(() => window.__expireMediaTransfers());
+    await page.getByRole("spinbutton", { name: "页码" }).fill("8");
+    await page.getByRole("alert").waitFor();
+    await page.getByRole("button", { name: "重新加载", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector('[aria-label="页码"]').value === "8" && document.querySelector("canvas")?.width > 0);
     if (mobile) {
       if (!await page.evaluate(() => window.__mobileBack())) throw new Error("Mobile back was not handled");
       await page.locator(".media-viewer").waitFor({ state: "detached" });
@@ -159,6 +176,10 @@ try {
     await page.locator(".media-viewer img").waitFor();
     await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth > 0);
     await page.screenshot({ path: `${output}/${packaged ? "electron-" : mobile ? "mobile-" : ""}media-image-${viewport.width}.png` });
+    await page.getByRole("button", { name: "关闭查看器" }).click();
+    await page.locator(".media-file.image").filter({ hasText: "Diagram.svg" }).first().click();
+    await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth > 0 || document.querySelector('.media-viewer [role="alert"]'));
+    if (await page.getByRole("alert").count()) throw new Error("SVG transfer preview failed to render");
     await page.getByRole("button", { name: "关闭查看器" }).click();
     await page.locator(".markdown-file-link").filter({ hasText: "Research report" }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector(".media-viewer canvas")?.width > 0);

@@ -618,6 +618,7 @@ export class DesktopController extends EventEmitter {
       capabilities: [
         "session.list",
         "session.create",
+        "session.fork",
         "session.history",
         "turn.start",
         "turn.steer",
@@ -1057,6 +1058,18 @@ export class DesktopController extends EventEmitter {
         ),
       };
     }
+    if (request.method === "session.fork") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.routesToExternalRuntime(sessionId)) {
+        throw new Error("当前仅 Claude 会话支持 Fork 分支。");
+      }
+      return {
+        session: await this.broker.forkSession(
+          sessionId,
+          stringParam(params, "title", false),
+        ),
+      };
+    }
     if (request.method === "session.history") {
       const sessionId = stringParam(params, "sessionId")!;
       if (this.routesToExternalRuntime(sessionId)) {
@@ -1134,16 +1147,25 @@ export class DesktopController extends EventEmitter {
     if (request.method === "session.archive") {
       const sessionId = stringParam(params, "sessionId")!;
       const archived = params.archived !== false;
-      const session = this.allSessions().find((candidate) => candidate.sessionId === sessionId);
+      const all = this.allSessions();
+      const session = all.find((candidate) => candidate.sessionId === sessionId);
       if (!session) throw new Error("Session not found");
       const archivedAt = archived ? Date.now() : undefined;
-      this.setSessionVisibility(sessionId, archived ? "archived" : null);
-      await this.eventLog.append({
+      const targetIds = [
         sessionId,
-        origin,
-        type: "session.archived",
-        data: { sessionId, archived: archivedAt !== undefined, ...(archivedAt ? { archivedAt } : {}) },
-      });
+        ...all
+          .filter((candidate) => candidate.parentSessionId === sessionId)
+          .map((candidate) => candidate.sessionId),
+      ];
+      for (const targetId of targetIds) {
+        this.setSessionVisibility(targetId, archived ? "archived" : null);
+        await this.eventLog.append({
+          sessionId: targetId,
+          origin,
+          type: "session.archived",
+          data: { sessionId: targetId, archived: archivedAt !== undefined, ...(archivedAt ? { archivedAt } : {}) },
+        });
+      }
       return {
         session: this.allSessions().find((candidate) => candidate.sessionId === sessionId),
       };

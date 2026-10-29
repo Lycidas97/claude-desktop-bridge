@@ -2323,4 +2323,116 @@ describe("SessionBroker", () => {
     await restarted.close();
     await secondLog.close();
   });
+
+  it("forks an existing session with copied transcript history and parent-child metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-fork-"));
+    directories.push(root);
+    const sessionId = randomUUID();
+    const cwd = join(root, "project");
+    const projectsRoot = join(root, "projects");
+    await mkdir(projectsRoot, { recursive: true });
+    await writeFile(join(projectsRoot, `${sessionId}.jsonl`), [
+      JSON.stringify({
+        uuid: "u-1",
+        type: "user",
+        sessionId,
+        cwd,
+        timestamp: "2026-10-25T08:00:00.000Z",
+        message: { role: "user", content: "原始问题" },
+      }),
+      JSON.stringify({
+        uuid: "a-1",
+        parentUuid: "u-1",
+        type: "assistant",
+        sessionId,
+        cwd,
+        timestamp: "2026-10-25T08:00:02.000Z",
+        message: {
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "原始回答" }],
+        },
+      }),
+    ].join("\n") + "\n");
+
+    const registeredInputs: unknown[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const parentObs = {
+      ...observed(sessionId, cwd),
+      title: "第四章叙事与分析设计讨论",
+      desktopSessionId: "local_parent_01",
+      hostModel: "claude-opus-5-5[1m]",
+      hostEffort: "xhigh" as const,
+    };
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: projectsRoot,
+        desktopSessions: [],
+      },
+      eventLog,
+      observer: new FakeObserver({
+        projects: [],
+        sessions: [parentObs],
+        observedAt: Date.now(),
+      }),
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      desktopRegistrar: {
+        async register(input) {
+          registeredInputs.push(input);
+          return {
+            state: "registered",
+            detail: "registered",
+            desktopSessionId: `local_${input.sessionId}`,
+            registeredAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+        },
+        publicInfo(value) {
+          return value;
+        },
+        changed(left, right) {
+          return JSON.stringify(left) !== JSON.stringify(right);
+        },
+      },
+      prepareRuntime: async () => ({
+        executablePath: "/fake/claude",
+        credentialPath: "/fake/host-creds.json",
+        environment: {},
+      }),
+    });
+    await broker.initialize();
+
+    const fork1 = await broker.forkSession(sessionId);
+    const fork2 = await broker.forkSession(sessionId);
+
+    expect(fork1).toMatchObject({
+      parentSessionId: sessionId,
+      forkLabel: "fork",
+      title: "第四章叙事与分析设计讨论 (fork)",
+      model: "claude-opus-5-5[1m]",
+      effort: "xhigh",
+    });
+    expect(fork2).toMatchObject({
+      parentSessionId: sessionId,
+      forkLabel: "fork-2",
+      title: "第四章叙事与分析设计讨论 (fork)",
+    });
+    expect(registeredInputs[0]).toMatchObject({
+      sessionId: fork1.sessionId,
+      parentDesktopSessionId: "local_parent_01",
+      forkLabel: "fork",
+    });
+
+    const history = await broker.history(fork1.sessionId);
+    expect(history.items.map((item) => ({ role: item.role, text: item.text }))).toEqual([
+      { role: "user", text: "原始问题" },
+      { role: "assistant", text: "原始回答" },
+    ]);
+
+    await broker.close();
+    await eventLog.close();
+  });
 });

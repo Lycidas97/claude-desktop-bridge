@@ -82,4 +82,53 @@ describe("Claude Desktop session catalog", () => {
     ]);
     expect(JSON.stringify(sessions)).not.toContain(root);
   });
+
+  it("resolves fork parent cliSessionId and forkLabel while respecting detached sessions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-desktop-forks-"));
+    directories.push(root);
+    await Promise.all([
+      writeFile(join(root, "local_parent.json"), JSON.stringify({
+        sessionId: "local_parent_desktop_id",
+        cliSessionId: "parent-cli-uuid",
+        cwd: "/work/thesis",
+        title: "第四章叙事与分析设计讨论",
+        lastFocusedAt: 100,
+      })),
+      writeFile(join(root, "local_fork1.json"), JSON.stringify({
+        sessionId: "local_fork1",
+        cliSessionId: "fork1-cli-uuid",
+        cwd: "/work/thesis",
+        title: "第四章叙事与分析设计讨论",
+        lastFocusedAt: 200,
+        forkedFromSessionId: "local_parent_desktop_id",
+        spawnedFrom: {
+          sessionId: "local_parent_desktop_id",
+          title: "第四章叙事与分析设计讨论 (fork)",
+          sideSession: true,
+          userFork: true,
+          name: "fork-2",
+        },
+      })),
+      writeFile(join(root, "local_detached.json"), JSON.stringify({
+        sessionId: "local_detached",
+        cliSessionId: "detached-cli-uuid",
+        cwd: "/work/thesis",
+        title: "独立出来的会话",
+        lastFocusedAt: 150,
+        forkedFromSessionId: "local_parent_desktop_id",
+        detached: true,
+      })),
+    ]);
+
+    const sessions = await listClaudeDesktopSessions([root]);
+    const forkSession = sessions.find((s) => s.cliSessionId === "fork1-cli-uuid");
+    const detachedSession = sessions.find((s) => s.cliSessionId === "detached-cli-uuid");
+    expect(forkSession).toMatchObject({
+      cliSessionId: "fork1-cli-uuid",
+      parentSessionId: "parent-cli-uuid",
+      forkLabel: "fork-2",
+      title: "第四章叙事与分析设计讨论 (fork)",
+    });
+    expect(detachedSession?.parentSessionId).toBeUndefined();
+  });
 });

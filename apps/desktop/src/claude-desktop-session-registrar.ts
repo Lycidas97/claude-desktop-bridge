@@ -71,6 +71,8 @@ export interface DesktopSessionRegistrationInput {
   lastActivityAt: number;
   model?: string;
   effort?: BridgeEffort;
+  parentDesktopSessionId?: string;
+  forkLabel?: string;
 }
 
 export interface DesktopSessionRegistrationResult extends StoredDesktopRegistration {}
@@ -299,6 +301,7 @@ export class ClaudeDesktopSessionRegistrar {
     const desktopSessionId = `local_${input.sessionId}`;
     const existing = await this.findByCliSessionId(target.accountDir, input.sessionId);
     if (existing) {
+      const hash = await this.ensureMetadataFields(existing.path, input, existing.hash);
       return {
         state: "registered",
         detail: "Claude Desktop 已登记这条 Bridge 会话。",
@@ -306,7 +309,7 @@ export class ClaudeDesktopSessionRegistrar {
         registeredAt: previous?.registeredAt ?? now,
         updatedAt: now,
         metadataPath: existing.path,
-        metadataSha256: existing.hash,
+        metadataSha256: hash,
         profileSessionsRoot: target.sessionsRoot,
       };
     }
@@ -320,6 +323,7 @@ export class ClaudeDesktopSessionRegistrar {
       throw new Error("Claude Desktop 已存在同名但指向其他 transcript 的会话元数据");
     }
     if (conflict) {
+      const hash = await this.ensureMetadataFields(metadataPath, input, conflict.hash);
       return {
         state: "registered",
         detail: "Claude Desktop 已登记这条 Bridge 会话。",
@@ -327,7 +331,7 @@ export class ClaudeDesktopSessionRegistrar {
         registeredAt: previous?.registeredAt ?? now,
         updatedAt: now,
         metadataPath,
-        metadataSha256: conflict.hash,
+        metadataSha256: hash,
         profileSessionsRoot: target.sessionsRoot,
       };
     }
@@ -341,6 +345,7 @@ export class ClaudeDesktopSessionRegistrar {
         metadataPath,
         target.sessionsRoot,
         now,
+        input,
       );
       if (liveAdopted) return liveAdopted;
     }
@@ -359,6 +364,18 @@ export class ClaudeDesktopSessionRegistrar {
       isArchived: false,
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.parentDesktopSessionId ? {
+        forkedFromSessionId: input.parentDesktopSessionId,
+        spawnedFrom: {
+          sessionId: input.parentDesktopSessionId,
+          taskId: `task_${input.sessionId.replace(/-/gu, "").slice(0, 8)}`,
+          title: input.title,
+          sideSession: true,
+          sharedFolder: true,
+          userFork: true,
+          name: input.forkLabel || "fork",
+        },
+      } : {}),
       remoteMcpServersConfig: [],
     };
     const contents = `${JSON.stringify(metadata, null, 2)}\n`;
@@ -385,17 +402,57 @@ export class ClaudeDesktopSessionRegistrar {
     if (!trimmed) return;
     try {
       const raw = await readFile(transcriptPath, "utf8");
-      if (raw.includes('"type":"custom-title"')) return;
+      if (raw.includes('"type":"custom-title"') && raw.includes(`"sessionId":"${sessionId}"`)) return;
       const record = JSON.stringify({
         type: "custom-title",
         customTitle: trimmed,
         sessionId,
         uuid: randomUUID(),
-        timestamp: new Date().toISOString(),
+        timestamp: new Date(this.now()).toISOString(),
       });
       await appendFile(transcriptPath, `${raw.endsWith("\n") ? "" : "\n"}${record}\n`, "utf8");
     } catch {
       // Best-effort title stamp; adoption still works without it.
+    }
+  }
+
+  private async ensureMetadataFields(
+    metadataPath: string,
+    input: DesktopSessionRegistrationInput,
+    fallbackHash: string,
+  ): Promise<string> {
+    try {
+      const raw = JSON.parse(await readFile(metadataPath, "utf8")) as Record<string, unknown>;
+      let mutated = false;
+      const trimmedTitle = input.title.trim();
+      if (trimmedTitle && (typeof raw.title !== "string" || !raw.title.trim())) {
+        raw.title = trimmedTitle;
+        raw.titleSource = "custom";
+        mutated = true;
+      }
+      if (input.parentDesktopSessionId && !raw.forkedFromSessionId) {
+        raw.forkedFromSessionId = input.parentDesktopSessionId;
+        raw.spawnedFrom = {
+          sessionId: input.parentDesktopSessionId,
+          taskId: `task_${input.sessionId.replace(/-/gu, "").slice(0, 8)}`,
+          title: trimmedTitle || input.title,
+          sideSession: true,
+          sharedFolder: true,
+          userFork: true,
+          name: input.forkLabel || "fork",
+        };
+        if (trimmedTitle) {
+          raw.title = trimmedTitle;
+          raw.titleSource = "custom";
+        }
+        mutated = true;
+      }
+      if (!mutated) return fallbackHash;
+      const updatedContents = `${JSON.stringify(raw, null, 2)}\n`;
+      await writeFile(metadataPath, updatedContents, { encoding: "utf8", mode: 0o600 });
+      return sha256(updatedContents);
+    } catch {
+      return fallbackHash;
     }
   }
 
@@ -405,6 +462,7 @@ export class ClaudeDesktopSessionRegistrar {
     metadataPath: string,
     sessionsRoot: string,
     now: number,
+    input: DesktopSessionRegistrationInput,
   ): Promise<DesktopSessionRegistrationResult | undefined> {
     try {
       await execFile("/usr/bin/open", ["-g", `claude://resume?session=${sessionId}`], {
@@ -421,6 +479,7 @@ export class ClaudeDesktopSessionRegistrar {
         adopted.sessionId === desktopSessionId &&
         adopted.cliSessionId === sessionId
       ) {
+        const hash = await this.ensureMetadataFields(metadataPath, input, adopted.hash);
         return {
           state: "registered",
           detail: "Claude Desktop 已实时同步这条 Bridge 会话。",
@@ -428,7 +487,7 @@ export class ClaudeDesktopSessionRegistrar {
           registeredAt: now,
           updatedAt: now,
           metadataPath,
-          metadataSha256: adopted.hash,
+          metadataSha256: hash,
           profileSessionsRoot: sessionsRoot,
         };
       }
@@ -489,6 +548,7 @@ export class ClaudeDesktopSessionRegistrar {
       current.sessionId !== previous.desktopSessionId ||
       current.cliSessionId !== input.sessionId
     ) return undefined;
+    const hash = await this.ensureMetadataFields(previous.metadataPath!, input, current.hash);
     const profiles = await this.profiles().catch(() => []);
     const active = profiles.find((profile) => (
       previous.profileSessionsRoot === join(profile.userDataDir, "claude-code-sessions")
@@ -500,7 +560,7 @@ export class ClaudeDesktopSessionRegistrar {
     const now = this.now();
     if (
       stillNeedsRestart &&
-      previous.metadataSha256 === current.hash
+      previous.metadataSha256 === hash
     ) return previous;
     const restored: DesktopSessionRegistrationResult = {
       ...previous,
@@ -509,7 +569,7 @@ export class ClaudeDesktopSessionRegistrar {
         ? "已写入 Claude Desktop 会话清单，重启后可见。"
         : "Claude Desktop 已登记这条 Bridge 会话。",
       updatedAt: now,
-      metadataSha256: current.hash,
+      metadataSha256: hash,
     };
     if (!stillNeedsRestart) delete restored.claudePidAtRegistration;
     // Nothing meaningful changed: keep the previous record. Minting a fresh
@@ -649,12 +709,19 @@ export class ClaudeDesktopSessionRegistrar {
     const handle = await open(transcriptReal, "r");
     const probe = Buffer.alloc(TRANSCRIPT_PROBE_BYTES);
     let bytesRead = 0;
+    let tailText = "";
     try {
       ({ bytesRead } = await handle.read(probe, 0, probe.byteLength, 0));
+      if (metadata.size > TRANSCRIPT_PROBE_BYTES) {
+        const tailBuffer = Buffer.alloc(Math.min(TRANSCRIPT_PROBE_BYTES, metadata.size));
+        const tailOffset = Math.max(0, metadata.size - tailBuffer.byteLength);
+        const tailRead = await handle.read(tailBuffer, 0, tailBuffer.byteLength, tailOffset);
+        tailText = tailBuffer.subarray(0, tailRead.bytesRead).toString("utf8");
+      }
     } finally {
       await handle.close();
     }
-    const text = probe.subarray(0, bytesRead).toString("utf8");
+    const text = `${probe.subarray(0, bytesRead).toString("utf8")}\n${tailText}`;
     let hasSessionId = false;
     let hasCwd = false;
     for (const line of text.split("\n")) {

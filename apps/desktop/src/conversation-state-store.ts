@@ -42,6 +42,9 @@ export interface PersistedBridgeSession {
   title: string;
   createdAt: number;
   desktopSessionId?: string;
+  parentSessionId?: string;
+  parentDesktopSessionId?: string;
+  forkLabel?: string;
   desktopRegistration?: unknown;
   fallbackConfirmedAt?: number;
 }

@@ -266,13 +266,25 @@ function resolveTranscriptParentUuid<T extends { uuid: string; parentUuid?: stri
   return undefined;
 }
 
+function isNonDagTranscriptRecord(value: Record<string, unknown>): boolean {
+  return (
+    value.type === "custom-title" ||
+    value.type === "agent-name" ||
+    value.type === "mode" ||
+    value.type === "atis-latch" ||
+    value.type === "last-prompt" ||
+    value.type === "cost-state" ||
+    value.type === "queue-operation"
+  );
+}
+
 function transcriptEvidenceNode(
   value: Record<string, unknown>,
   index: number,
   nodes: ReadonlyMap<string, TranscriptEvidenceNode>,
   lastMainUuid?: string,
 ): TranscriptEvidenceNode | undefined {
-  if (typeof value.uuid !== "string" || !value.uuid) return undefined;
+  if (typeof value.uuid !== "string" || !value.uuid || isNonDagTranscriptRecord(value)) return undefined;
   const existing = nodes.get(value.uuid);
   const parentUuid = existing?.parentUuid ?? resolveTranscriptParentUuid(value, nodes, lastMainUuid);
   const type = value.type === "user" || value.type === "assistant"
@@ -915,7 +927,7 @@ export async function parseClaudeTranscriptSnapshot(
       } catch {
         continue;
       }
-      if (!isRecord(value) || typeof value.uuid !== "string" || !value.uuid) continue;
+      if (!isRecord(value) || typeof value.uuid !== "string" || !value.uuid || isNonDagTranscriptRecord(value)) continue;
       const existing = nodes.get(value.uuid);
       const parentUuid = existing?.parentUuid ?? resolveTranscriptParentUuid(value, nodes, lastMainUuid);
       if (parentUuid) referencedParents.add(parentUuid);

@@ -7,7 +7,10 @@ import {
   type RelayEnvelopeItem,
   type ServerFrame,
 } from "@bridge/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { once } from "node:events";
+import { IncomingMessage } from "node:http";
+import { Socket } from "node:net";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { startRelayServer, type RunningRelay } from "./server.js";
 import { MemoryRelayStore } from "./store.js";
@@ -622,6 +625,63 @@ describe("relay v3", () => {
     // A remote attacker page is still rejected unless explicitly allowed.
     await expect(upgradeResult("https://evil.example")).resolves.toBe(403);
     await expect(upgradeResult("https://relay.alioxis.com")).resolves.toBe(200);
+  });
+
+  it.each([
+    { name: "HTTPS Origin", origin: "https://[", host: "localhost", url: "/ws", status: "403 Forbidden" },
+    { name: "HTTP Origin", origin: "http://[", host: "localhost", url: "/ws", status: "403 Forbidden" },
+    { name: "Host", origin: "https://relay.alioxis.com", host: "[", url: "/ws", status: "400 Bad Request" },
+    { name: "absolute URL", origin: "https://relay.alioxis.com", host: "localhost", url: "http://[", status: "400 Bad Request" },
+    { name: "relative URL", origin: "https://relay.alioxis.com", host: "localhost", url: "//[", status: "400 Bad Request" },
+  ])("rejects a malformed $name without interrupting later requests", async ({ origin, host, url, status }) => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+      allowedOrigins: ["https://relay.alioxis.com"],
+    });
+    relays.push(relay);
+    const socket = new Socket();
+    const write = vi.spyOn(socket, "write").mockReturnValue(true);
+    const request = new IncomingMessage(socket);
+    request.url = url;
+    request.headers = { host, origin };
+
+    expect(() => relay.httpServer.emit("upgrade", request, socket, Buffer.alloc(0))).not.toThrow();
+    expect(write).toHaveBeenCalledWith(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`);
+    expect(socket.destroyed).toBe(true);
+
+    const health = await fetch(relay.url.replace(/^ws:/u, "http:").replace(/\/ws$/u, "/health"));
+    expect(health.status).toBe(200);
+    expect(await health.json()).toMatchObject({ ok: true, version: PROTOCOL_VERSION });
+    const ws = new WebSocket(relay.url, { origin: "https://relay.alioxis.com" });
+    try {
+      await once(ws, "open");
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      ws.close();
+    }
+  });
+
+  it("does not swallow errors from handling a valid upgrade", async () => {
+    const relay = await startRelayServer({
+      port: 0,
+      store: new MemoryRelayStore(),
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    relays.push(relay);
+    const socket = new Socket();
+    const write = vi.spyOn(socket, "write").mockReturnValue(true);
+    const request = new IncomingMessage(socket);
+    request.url = "/ws";
+    request.headers = { host: "localhost" };
+    const error = new Error("handleUpgrade failed");
+    vi.spyOn(relay.wsServer, "handleUpgrade").mockImplementation(() => { throw error; });
+
+    expect(() => relay.httpServer.emit("upgrade", request, socket, Buffer.alloc(0))).toThrow(error);
+    expect(write).not.toHaveBeenCalled();
+    expect(socket.destroyed).toBe(false);
+    socket.destroy();
   });
 
   it("applies the per-connection frame budget without killing normal relay traffic", async () => {

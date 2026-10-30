@@ -97,7 +97,8 @@ function isLoopbackHost(hostname: string): boolean {
 function originAllowed(origin: string, allowedOrigins: Set<string>): boolean {
   if (!origin) return true;
   if (!isBrowserOrigin(origin)) return true;
-  const url = new URL(origin);
+  const url = URL.parse(origin);
+  if (!url) return false;
   // Native WebViews (Capacitor/Electron) commonly report http://localhost or
   // https://localhost as their page origin; loopback origins cannot be forged
   // by a remote attacker, so they are always allowed.
@@ -616,7 +617,12 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
 
   httpServer.on("upgrade", (request, socket, head) => {
     const hostHeader = request.headers.host ?? "localhost";
-    const url = new URL(request.url ?? "/", `http://${hostHeader}`);
+    const url = URL.parse(request.url ?? "/", `http://${hostHeader}`);
+    if (!url) {
+      socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     const origin = request.headers.origin;
     if (url.pathname !== "/ws" || (allowedOrigins.size > 0 && origin && !originAllowed(origin, allowedOrigins))) {
       socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");

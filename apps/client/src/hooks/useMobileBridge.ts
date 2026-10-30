@@ -54,6 +54,7 @@ import {
   downloadBridgeSessionFile,
 } from "../lib/artifact-download.js";
 import { diagLog, setDiagBridgeStateSummary } from "../lib/diagnostics.js";
+import { uploadSessionFile, type UploadFileHandler } from "../lib/file-upload.js";
 import { isReplayableMobileEnvelope } from "../lib/outbox.js";
 import { nativePushRegistration, onNativePushWake } from "../lib/push-wake.js";
 
@@ -3058,6 +3059,16 @@ export function useMobileBridge() {
     }));
   }, [sendRequest]);
 
+  const setRelayUrl = useCallback(async (url: string) => {
+    const roomId = stateRef.current.activeHostId;
+    if (!roomId) throw new Error("请先选择电脑");
+    const host = await bridgeVault.setRelayUrl(roomId, url);
+    if (!host) throw new Error("未找到已配对电脑");
+    cryptoByRoomRef.current.set(roomId, host.crypto);
+    setState((current) => ({ ...current, hosts: current.hosts.map((item) => item.roomId === roomId ? { ...item, relayUrl: host.relayUrl } : item) }));
+    await start(host.crypto);
+  }, [start]);
+
   const retryConnection = useCallback(async () => {
     const crypto = cryptoRef.current;
     if (crypto) await start(crypto);
@@ -3147,6 +3158,10 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "归档设置失败");
   }, [sendRequest]);
 
+  const uploadFile = useCallback<UploadFileHandler>((sessionId, file, onProgress, signal) => (
+    uploadSessionFile(sendRequest, sessionId, file, onProgress, signal)
+  ), [sendRequest]);
+
   const deleteSession = useCallback(async (sessionId: string) => {
     const response = await sendRequest("session.delete", {
       sessionId,
@@ -3158,12 +3173,14 @@ export function useMobileBridge() {
     state,
     pair,
     selectHost,
+    setRelayUrl,
     backToHosts,
     openSession,
     loadOlderHistory,
     loadOlderEvidence,
     previewArtifact,
     requestMedia: sendRequest,
+    uploadFile,
     downloadArtifact,
     downloadSessionFile,
     sendTurn,

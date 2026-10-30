@@ -80,6 +80,8 @@ import { sessionActivity } from "../lib/session-activity.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
+import { FileAttachmentPicker, useFileAttachments } from "./FileAttachmentPicker.js";
+import { appendUploadedFilePaths, type UploadFileHandler } from "../lib/file-upload.js";
 import { MediaGallery } from "./MediaGallery.js";
 import { useMediaPreview } from "./MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
@@ -1291,6 +1293,7 @@ export function MobileWorkspace({
   onPreviewArtifact,
   onDownloadArtifact,
   onDownloadSessionFile,
+  onUploadFile,
   onSendTurn,
   onInterruptTurn,
   onResolveUncertain,
@@ -1347,6 +1350,7 @@ export function MobileWorkspace({
   onPreviewArtifact(artifactId: string): Promise<BridgeArtifactPreview>;
   onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
   onDownloadSessionFile?(sessionId: string, filePath: string): Promise<void>;
+  onUploadFile?: UploadFileHandler;
   onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
   onResolveUncertain(commandId: string, action: "confirm" | "retry"): Promise<void>;
@@ -1466,6 +1470,7 @@ export function MobileWorkspace({
 
   const sessions = snapshot?.sessions ?? [];
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
+  const fileUploads = useFileAttachments(selectedSession?.sessionId, onUploadFile);
   const configurationSession = sessions.find((session) => session.sessionId === configurationSessionId);
   const actionSession = sessions.find((session) => session.sessionId === actionSessionId);
   const providers = snapshot?.providers ?? [];
@@ -1856,16 +1861,18 @@ export function MobileWorkspace({
     if (
       !selectedSession ||
       selectedSession.allowedActions?.canSend === false ||
-      sending ||
-      (!text.trim() && (!runtimeSupports(snapshot, selectedSession, "attachment.image") || attachments.length === 0))
+      sending || fileUploads.uploading ||
+      (!text.trim() && (!runtimeSupports(snapshot, selectedSession, "attachment.image") || attachments.length === 0) && fileUploads.files.length === 0)
     ) return;
     const nextText = text.trim();
     const nextAttachments = runtimeSupports(snapshot, selectedSession, "attachment.image") ? attachments : [];
+    const nextFiles = fileUploads.files;
     setText("");
     setAttachments([]);
     setSending(true);
     try {
-      await onSendTurn(selectedSession.sessionId, nextText, nextAttachments, steer);
+      await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, steer);
+      fileUploads.clear(nextFiles);
       setSteer(false);
     } catch {
       setText(nextText);
@@ -2558,6 +2565,7 @@ export function MobileWorkspace({
               {connectionIssue.message} 点击重试
             </button>
           )}
+          {onUploadFile && <FileAttachmentPicker state={fileUploads} disabled={selectedSession.allowedActions?.canSend === false || sending || connection !== "connected" || !desktopOnline} />}
           {attachments.length > 0 && (
             <div className="composer-attachments">
               {attachments.map((attachment) => (
@@ -2616,7 +2624,7 @@ export function MobileWorkspace({
               type="submit"
               className="send-button"
               aria-label="发送"
-              disabled={selectedSession.allowedActions?.canSend === false || sending || (!text.trim() && (!canAttachImages || attachments.length === 0))}
+              disabled={selectedSession.allowedActions?.canSend === false || sending || fileUploads.uploading || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)}
             >
               {sending ? <LoaderCircle className="is-spinning" size={19} /> : <Send size={19} />}
             </button>

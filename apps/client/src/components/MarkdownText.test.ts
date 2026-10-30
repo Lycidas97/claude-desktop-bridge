@@ -1,7 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { parseInlineMarkdown, parseMarkdownBlocks } from "./MarkdownText.js";
+import { extractDownloadableFilePath, parseInlineMarkdown, parseMarkdownBlocks } from "./MarkdownText.js";
+
+describe("extractDownloadableFilePath", () => {
+  it.each(["src/main.rs:12:3", "scripts/build.go", "Dockerfile", ".env.local", "README", "docs/notes.markdown"])("recognizes previewable path %s", (path) => {
+    expect(extractDownloadableFilePath(path)).toBe(path.replace(/:\d+(?::\d+)?$/u, ""));
+  });
+
+  it("keeps download-only paths and rejects URLs or unsupported suffixes", () => {
+    expect(extractDownloadableFilePath("build/app.apk")).toBe("build/app.apk");
+    expect(extractDownloadableFilePath("output/archive.zip")).toBe("output/archive.zip");
+    expect(extractDownloadableFilePath("https://example.com/guide.md")).toBeUndefined();
+    expect(extractDownloadableFilePath("javascript:main.py")).toBeUndefined();
+    expect(extractDownloadableFilePath("output/image.png.exe")).toBeUndefined();
+    expect(extractDownloadableFilePath("docs/my guide.markdown")).toBeUndefined();
+    expect(extractDownloadableFilePath("docs/my guide.markdown", true)).toBe("docs/my guide.markdown");
+  });
+});
 
 describe("parseInlineMarkdown", () => {
+  it("makes newly supported code and extensionless text files use file callbacks", () => {
+    expect(parseInlineMarkdown("[Rust](src/main.rs:12:3) and [Container](Dockerfile)")).toEqual([
+      { type: "file_link", path: "src/main.rs", children: [{ type: "text", text: "Rust" }] },
+      { type: "text", text: " and " },
+      { type: "file_link", path: "Dockerfile", children: [{ type: "text", text: "Container" }] },
+    ]);
+  });
   it("renders a local Markdown image as an on-demand file reference", () => {
     expect(parseInlineMarkdown("![Figure](output/figure.png)")).toEqual([
       { type: "file_link", path: "output/figure.png", children: [{ type: "text", text: "Figure" }] },

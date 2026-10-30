@@ -147,6 +147,7 @@ export function App() {
               onPreviewArtifact={mobile.previewArtifact}
               onDownloadArtifact={mobile.downloadArtifact}
               onDownloadSessionFile={mobile.downloadSessionFile}
+              onUploadFile={mobile.uploadFile}
               onSendTurn={mobile.sendTurn}
               onInterruptTurn={mobile.interruptTurn}
               onResolveUncertain={mobile.resolveUncertainDelivery}
@@ -208,6 +209,8 @@ export function App() {
           transportMetrics={mobile.state.transportMetrics}
           pendingOutbound={mobile.state.pendingOutbound}
           connectionIssue={mobile.state.connectionIssue}
+          relayUrl={mobile.state.hosts.find((host) => host.roomId === mobile.state.activeHostId)?.relayUrl ?? mobile.state.snapshot?.host.relayUrl ?? ""}
+          onSetRelayUrl={mobile.setRelayUrl}
           onRetry={mobile.retryConnection}
           onRefresh={mobile.refresh}
           onDesktopAppAction={mobile.controlDesktopApp}

@@ -3,6 +3,7 @@ export const PAIRING_SCHEMA_VERSION = 4 as const;
 export const ENVELOPE_CHUNK_BYTES = 64 * 1024;
 export const MAX_ENVELOPE_CHUNKS = 384;
 export const ARTIFACT_MAX_BYTES = 20 * 1024 * 1024;
+export const TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
 export const ARTIFACT_TRANSFER_CHUNK_BYTES = 256 * 1024;
 export const ARTIFACT_TRANSFER_TTL_MS = 10 * 60 * 1000;
 
@@ -173,6 +174,8 @@ export type BridgeCapability =
   | "evidence.v1"
   | "artifact.preview.v1"
   | "artifact.transfer.v1"
+  | "artifact.text-preview.v1"
+  | "workspace.upload.v1"
   | "provider.profile.v1"
   | "conversation.lanes.v1"
   | "conversation.handoff.v1"
@@ -483,6 +486,24 @@ export interface BridgeArtifactTransferChunk {
   transferId: string;
   index: number;
   data: string;
+}
+
+export interface BridgeFileUploadInfo {
+  uploadId: string;
+  name: string;
+  size: number;
+  chunkBytes: number;
+  totalChunks: number;
+  expiresAt: number;
+}
+
+export interface BridgeUploadedFile {
+  uploadId: string;
+  sessionId: string;
+  name: string;
+  path: string;
+  size: number;
+  sha256: string;
 }
 
 export type BridgeAttachmentMime = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
@@ -883,6 +904,10 @@ export type BridgeMethod =
   | "artifact.transfer.open"
   | "artifact.transfer.read"
   | "artifact.transfer.close"
+  | "file.upload.open"
+  | "file.upload.write"
+  | "file.upload.commit"
+  | "file.upload.cancel"
   | "provider.list"
   | "provider.refresh"
   | "conversation.route.get"

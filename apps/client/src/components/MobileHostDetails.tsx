@@ -13,6 +13,7 @@ import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../lib/runtime-labels.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
+import { RelaySettings } from "./RelaySettings.js";
 
 export interface MobileHostDetailsProps {
   activeHostId: string;
@@ -23,6 +24,8 @@ export interface MobileHostDetailsProps {
   transportMetrics?: BridgeTransportMetrics | undefined;
   pendingOutbound?: number | undefined;
   connectionIssue?: MobileConnectionIssue | undefined;
+  relayUrl?: string;
+  onSetRelayUrl?(url: string): Promise<void>;
   onRetry(): Promise<void>;
   onRefresh(): Promise<boolean>;
   onDesktopAppAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<BridgeDesktopAppStatus[]>;
@@ -40,6 +43,8 @@ export function MobileHostDetails({
   transportMetrics,
   pendingOutbound,
   connectionIssue,
+  relayUrl,
+  onSetRelayUrl,
   onRetry,
   onRefresh,
   onDesktopAppAction,
@@ -185,6 +190,7 @@ export function MobileHostDetails({
           </button>
         </div>
         {notice && <p className="detail-text" role="status">{notice}</p>}
+        {onSetRelayUrl && <RelaySettings relayUrl={relayUrl ?? ""} onSave={onSetRelayUrl} />}
         <button type="button" className="mobile-settings-row" onClick={() => setDiagDialogOpen(true)}>
           <Activity size={18} /><span>连接诊断与日志</span>
         </button>

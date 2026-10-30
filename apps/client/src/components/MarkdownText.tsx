@@ -55,7 +55,7 @@ export function extractDownloadableFilePath(raw: string, allowSpaces = false): s
   if (/^[^/\\]+:[/\\]/.test(trimmed)) return undefined;
   const withoutLine = trimmed.replace(/:\d+(?::\d+)?$/u, "");
   if (!withoutLine || withoutLine === "." || withoutLine === "..") return undefined;
-  if (!DOWNLOADABLE_FILE_EXT_RE.test(withoutLine)) return undefined;
+  if (!DOWNLOADABLE_FILE_EXT_RE.test(withoutLine) && !mediaKind(withoutLine)) return undefined;
   return withoutLine;
 }
 

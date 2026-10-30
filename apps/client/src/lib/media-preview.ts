@@ -1,3 +1,4 @@
+import { TEXT_PREVIEW_MAX_BYTES } from "@bridge/protocol";
 import type {
   BridgeArtifactManifest,
   BridgeArtifactTransferChunk,
@@ -15,7 +16,7 @@ export type MediaRequest = (
 
 export interface MediaTarget {
   name: string;
-  kind: "image" | "pdf";
+  kind: "image" | "pdf" | "text";
   artifactId?: string;
   sessionId?: string;
   path?: string;
@@ -23,9 +24,43 @@ export interface MediaTarget {
 }
 
 export function mediaKind(path: string): MediaTarget["kind"] | undefined {
-  if (/\.pdf$/iu.test(path)) return "pdf";
-  if (/\.(?:png|jpe?g|gif|webp|svg|avif|bmp)$/iu.test(path)) return "image";
+  const filePath = path.trim().replace(/:\d+(?::\d+)?$/u, "");
+  if (/\.pdf$/iu.test(filePath)) return "pdf";
+  if (/\.(?:png|jpe?g|gif|webp|svg|avif|bmp)$/iu.test(filePath)) return "image";
+  if (/\.(?:md|markdown|mdx|txt|text|log|csv|tsv|json|jsonl|ndjson|ts|tsx|mts|cts|js|jsx|mjs|cjs|py|pyi|sh|bash|zsh|fish|ya?ml|toml|ini|conf|cfg|xml|tex|bib|html?|xhtml|css|scss|sass|less|sql|r|rb|go|rs|java|kt|kts|c|h|cc|cpp|cxx|hpp|cs|swift|m|mm|php|vue|svelte|diff|patch|gitignore|gitattributes|editorconfig|dockerignore)$/iu.test(filePath)
+    || /(?:^|[/\\])(?:\.(?:gitignore|gitattributes|gitmodules|editorconfig|dockerignore|npmrc|nvmrc|prettierrc|eslintignore|eslintrc|bashrc|bash_profile|zshrc|zprofile|profile|env(?:\.[\w-]+)?)|Dockerfile(?:\.[\w-]+)?|Makefile|GNUmakefile|CMakeLists\.txt|LICENSE|LICENCE|NOTICE|README|CHANGELOG)$/iu.test(filePath)) return "text";
   return undefined;
+}
+
+export function textPreviewLanguage(path: string): string | undefined {
+  const name = path.trim().replace(/:\d+(?::\d+)?$/u, "").split(/[/\\]/u).at(-1)!.toLowerCase();
+  if (/^dockerfile(?:\.|$)/u.test(name)) return "dockerfile";
+  if (name === "makefile" || name === "gnumakefile") return "makefile";
+  const extension = name.split(".").at(-1)!;
+  return ({
+    md: "markdown", markdown: "markdown", mdx: "markdown",
+    ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
+    js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+    py: "python", pyi: "python", sh: "bash", bash: "bash", zsh: "bash",
+    bashrc: "bash", bash_profile: "bash", zshrc: "bash", zprofile: "bash", profile: "bash",
+    json: "json", jsonl: "json", ndjson: "json", yaml: "yaml", yml: "yaml",
+    toml: "ini", ini: "ini", xml: "xml", html: "xml", htm: "xml", xhtml: "xml", vue: "xml", svelte: "xml",
+    css: "css", scss: "scss", less: "less", sql: "sql", r: "r", rb: "ruby", go: "go", rs: "rust",
+    java: "java", kt: "kotlin", kts: "kotlin", c: "c", h: "c", cc: "cpp", cpp: "cpp", cxx: "cpp", hpp: "cpp",
+    cs: "csharp", swift: "swift", m: "objectivec", mm: "objectivec", php: "php", tex: "latex",
+    diff: "diff", patch: "diff",
+  } as Record<string, string>)[extension];
+}
+
+export async function readTextPreview(source: { transfer: Pick<BridgeArtifactTransferInfo, "size">; read(begin: number, end: number): Promise<Uint8Array> }): Promise<string> {
+  if (source.transfer.size > TEXT_PREVIEW_MAX_BYTES) throw new Error("文本预览仅支持 1 MiB 以内的文件，请下载查看全文");
+  const bytes = await source.read(0, source.transfer.size);
+  if (bytes.includes(0)) throw new Error("文件包含二进制内容，无法作为文本预览，请下载查看");
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("文件不是有效的 UTF-8 文本，无法预览，请下载查看");
+  }
 }
 
 export function artifactMediaTarget(artifact: BridgeArtifactManifest): MediaTarget | undefined {
@@ -33,7 +68,7 @@ export function artifactMediaTarget(artifact: BridgeArtifactManifest): MediaTarg
     ? artifact.kind : mediaKind(artifact.name);
   if (!kind || artifact.changeKind === "deleted" || artifact.availability === "blocked"
     || artifact.availability === "expired") return undefined;
-  return { name: artifact.name, kind, artifactId: artifact.id };
+  return { name: artifact.name, kind, artifactId: artifact.id, path: artifact.relativePath };
 }
 
 export function mediaArtifacts(bundles: BridgeEvidenceBundle[]): BridgeArtifactManifest[] {
@@ -45,7 +80,10 @@ export function mediaArtifacts(bundles: BridgeEvidenceBundle[]): BridgeArtifactM
       files.set(artifact.relativePath, artifact);
     }
   }
-  return [...files.values()].filter((artifact) => artifactMediaTarget(artifact));
+  return [...files.values()].filter((artifact) => {
+    const kind = artifactMediaTarget(artifact)?.kind;
+    return kind === "image" || kind === "pdf";
+  });
 }
 
 function unwrap<T>(response: BridgeResponse | undefined): T {
@@ -56,7 +94,10 @@ function unwrap<T>(response: BridgeResponse | undefined): T {
 export async function openMediaTransfer(target: MediaTarget, request: MediaRequest) {
   const { transfer } = unwrap<{ transfer: BridgeArtifactTransferInfo }>(await request(
     "artifact.transfer.open",
-    target.artifactId ? { artifactId: target.artifactId } : { sessionId: target.sessionId, path: target.path },
+    {
+      ...(target.artifactId ? { artifactId: target.artifactId } : { sessionId: target.sessionId, path: target.path?.trim().replace(/:\d+(?::\d+)?$/u, "") }),
+      ...(target.kind === "text" ? { purpose: "text-preview" } : {}),
+    },
     { wait: true, timeoutMs: 60_000 },
   ));
   const chunks = new Map<number, Promise<Uint8Array>>();

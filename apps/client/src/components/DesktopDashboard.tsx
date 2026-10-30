@@ -67,9 +67,12 @@ import { BrandMark } from "./BrandMark.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
+import { FileAttachmentPicker, useFileAttachments } from "./FileAttachmentPicker.js";
+import { appendUploadedFilePaths, uploadSessionFile } from "../lib/file-upload.js";
 import { MediaGallery } from "./MediaGallery.js";
 import { useMediaPreview } from "./MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
+import { RelaySettings } from "./RelaySettings.js";
 import { IconButton } from "./IconButton.js";
 import { MarkdownText } from "./MarkdownText.js";
 import { ThemeMenu } from "./ThemeMenu.js";
@@ -210,6 +213,8 @@ function DesktopSessions({
   const fileRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
   const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
+  const fileUploads = useFileAttachments(selected?.sessionId, (sessionId, file, onProgress, signal) =>
+    uploadSessionFile(async (method, params) => apiRequest({ method, params }), sessionId, file, onProgress, signal));
   const selectedRuntime = selected ? desktopRuntimeId(selected) : "claude-desktop";
   const selectedRuntimeName = desktopRuntimeName(selectedRuntime);
   const canAttachImages = selected
@@ -534,9 +539,11 @@ function DesktopSessions({
   }
 
   async function send(): Promise<void> {
-    if (!selected || sending || (!text.trim() && (!canAttachImages || attachments.length === 0))) return;
+    if (!selected || selected.allowedActions?.canSend === false || sending || fileUploads.uploading
+      || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)) return;
     const nextText = text.trim();
     const nextAttachments = canAttachImages ? attachments : [];
+    const nextFiles = fileUploads.files;
     setText("");
     setAttachments([]);
     setSending(true);
@@ -545,11 +552,12 @@ function DesktopSessions({
         method: steer ? "turn.steer" : "turn.start",
         params: {
           sessionId: selected.sessionId,
-          text: nextText,
+          text: appendUploadedFilePaths(nextText, nextFiles),
           attachments: nextAttachments,
         },
         idempotencyKey: crypto.randomUUID(),
       }));
+      fileUploads.clear(nextFiles);
       setSteer(false);
     } catch {
       setText(nextText);
@@ -1449,6 +1457,7 @@ function DesktopSessions({
                 </button>
               ) : (
               <>
+              <FileAttachmentPicker state={fileUploads} disabled={selected.allowedActions?.canSend === false || sending || snapshot.connection !== "connected"} />
               {attachments.length > 0 && (
                 <div className="composer-attachments">
                   {attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={12} /></button></span>)}
@@ -1479,7 +1488,7 @@ function DesktopSessions({
                   )}
                   rows={1}
                 />
-                <button type="submit" className="send-button" aria-label="发送" disabled={selected.allowedActions?.canSend === false || sending || (!text.trim() && (!canAttachImages || attachments.length === 0))}><Send size={18} /></button>
+                <button type="submit" className="send-button" aria-label="发送" disabled={selected.allowedActions?.canSend === false || sending || fileUploads.uploading || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)}><Send size={18} /></button>
               </form>
               </>
               )}
@@ -1655,11 +1664,13 @@ function DesktopDevices({
 
 function DesktopStatus({
   snapshot,
+  onSetRelayUrl,
   onLaunchChange,
   onDesktopAppAction,
   onExport,
 }: {
   snapshot: DesktopControlSnapshot;
+  onSetRelayUrl(url: string): Promise<void>;
   onLaunchChange(enabled: boolean): Promise<void>;
   onDesktopAppAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<void>;
   onExport(): Promise<void>;
@@ -1738,6 +1749,7 @@ function DesktopStatus({
         </section>
       </div>
       <section className="status-settings">
+        <RelaySettings relayUrl={snapshot.host.relayUrl} onSave={onSetRelayUrl} />
         {desktopApps.map((desktopApp) => (
           <div className="desktop-app-control" key={desktopApp.id}>
             <span>
@@ -1867,6 +1879,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
         {tab === "status" && (
           <DesktopStatus
             snapshot={snapshot}
+            onSetRelayUrl={async (url) => setSnapshot(await api.setRelayUrl(url))}
             onLaunchChange={async (enabled) => setSnapshot(await api.setLaunchAtLogin(enabled))}
             onDesktopAppAction={async (runtimeId, action) => setSnapshot(
               action === "launch"

@@ -24,6 +24,76 @@ afterEach(async () => {
 });
 
 describe("desktop configuration", () => {
+  it.each([
+    ["wss://manual.example:9443/custom/ws?region=west", "https://manual.example:9443"],
+    ["ws://192.168.99.99:8788/custom/ws?region=west", "http://192.168.99.99:8788"],
+  ])("preserves manual relay override %s across saves and packaged default changes", async (url, origin) => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-override-"));
+    try {
+      const path = join(directory, "bridge-config.json");
+      const original = new DesktopConfigRepository(path, protector, {
+        relayUrl: "wss://old.example/ws",
+        publicRelayUrl: "wss://old.example/ws",
+        desktopName: "Test PC",
+        iceServers: [{ urls: "stun:custom.example:3478" }],
+      });
+      const created = await original.loadOrCreate();
+      created.devices.push({
+        deviceId: "phone-override", name: "Phone", platform: "android", secret: "phone-secret",
+        createdAt: 1_000, expiresAt: 2_000, pairedAt: 1_100,
+      });
+      await original.save({ ...created, relayUrlOverride: `  ${url}  ` });
+      const persisted = JSON.parse(await readFile(path, "utf8"));
+      expect(persisted).toMatchObject({ version: 4, protocolVersion: 3, relayUrlOverride: url });
+      expect(persisted.relayEndpoints).toEqual([{
+        id: "manual", kind: url.startsWith("ws:") ? "lan-relay" : "public-relay", url, priority: 0,
+      }]);
+
+      const updated = new DesktopConfigRepository(path, protector, {
+        relayUrl: "ws://10.0.0.2:8788/ws",
+        publicRelayUrl: "wss://new.example/ws",
+        serviceOrigin: "https://new.example",
+        desktopName: "Test PC",
+      });
+      const loaded = await updated.load();
+      expect(loaded).toMatchObject({
+        relayUrlOverride: url, relayUrl: url, serviceOrigin: origin, activeEndpoint: "manual",
+        roomId: created.roomId, hostDeviceId: created.hostDeviceId,
+        hostSecret: created.hostSecret, evidenceKey: created.evidenceKey,
+        pairingEpoch: created.pairingEpoch, devices: created.devices, iceServers: created.iceServers,
+      });
+      expect(loaded?.relayEndpoints).toEqual(persisted.relayEndpoints);
+      await updated.save(loaded!);
+      expect(await updated.load()).toEqual(loaded);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("honors an additive manual override before refreshing old endpoint selections", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-override-"));
+    try {
+      const path = join(directory, "bridge-config.json");
+      const repository = new DesktopConfigRepository(path, protector, {
+        relayUrl: "wss://packaged.example/ws", publicRelayUrl: "wss://packaged.example/ws",
+        desktopName: "Test PC",
+      });
+      const created = await repository.loadOrCreate();
+      const stored = JSON.parse(await readFile(path, "utf8"));
+      stored.relayUrlOverride = "ws://192.168.99.99:8788/chosen?route=one";
+      await writeFile(path, JSON.stringify(stored));
+      const loaded = await repository.load();
+      expect(loaded).toMatchObject({
+        relayUrl: stored.relayUrlOverride, relayUrlOverride: stored.relayUrlOverride,
+        activeEndpoint: "manual", serviceOrigin: "http://192.168.99.99:8788",
+        roomId: created.roomId, hostSecret: created.hostSecret, evidenceKey: created.evidenceKey,
+      });
+      expect(loaded?.relayEndpoints).toHaveLength(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("heals fossil private-IPv4 LAN relay endpoints to the current address on load", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);

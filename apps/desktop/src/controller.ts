@@ -10,6 +10,9 @@ import {
   WebRtcTransport,
   bridgeIceServers,
   buildPairingUrl,
+  bridgeEndpoint,
+  normalizeRelayUrl,
+  relayServiceOrigin,
   cryptoWithRelayEndpoint,
   relayPathForUrl,
   type BridgeAttachment,
@@ -54,6 +57,7 @@ import type { HandoffService } from "./handoff-service.js";
 import { parseRuntimeSessionId, type RuntimeSessionBroker } from "./runtime-session-broker.js";
 import type { RuntimeHandoffService } from "./runtime-handoff-service.js";
 import type { ConversationStateStore, SessionVisibility } from "./conversation-state-store.js";
+import { FileUploadManager } from "./file-upload.js";
 
 export interface LocalBridgeRequest {
   method: BridgeRequest["method"];
@@ -249,6 +253,7 @@ export class DesktopController extends EventEmitter {
   private readonly deviceCryptos = new Map<string, BridgeCrypto>();
   private readonly onlineDevices = new Set<string>();
   private readonly responseCache = new Map<string, BridgeResponse>();
+  private readonly uploads = new FileUploadManager();
   private lastSeenAt = Date.now();
   private transportMetrics: BridgeTransportMetrics | undefined;
   private relayHealthy = false;
@@ -366,6 +371,8 @@ export class DesktopController extends EventEmitter {
           "evidence.v1",
           "artifact.preview.v1",
           "artifact.transfer.v1",
+          "artifact.text-preview.v1",
+          "workspace.upload.v1",
           "provider.profile.v1",
           "conversation.lanes.v1",
           "conversation.handoff.v1",
@@ -437,6 +444,24 @@ export class DesktopController extends EventEmitter {
     await this.repository.save(this.config);
     this.registerPendingDevices();
     return this.publish();
+  }
+
+  async setRelayUrl(value: string): Promise<DesktopControlSnapshot> {
+    if (!this.config || !this.hostCrypto) throw new Error("Desktop controller is not initialized");
+    const url = normalizeRelayUrl(value);
+    this.config.relayUrlOverride = url;
+    this.config.relayUrl = url;
+    this.config.serviceOrigin = relayServiceOrigin(url);
+    this.config.relayEndpoints = [bridgeEndpoint(url, 0, "manual")];
+    this.config.activeEndpoint = "manual";
+    this.hostCrypto = cryptoWithRelayEndpoint(this.hostCrypto, url);
+    for (const [deviceId, crypto] of this.deviceCryptos) {
+      this.deviceCryptos.set(deviceId, cryptoWithRelayEndpoint(crypto, url));
+    }
+    await this.repository.save(this.config);
+    this.onlineDevices.clear();
+    await this.reconnect();
+    return this.snapshot();
   }
 
   async setAnthropicApiKey(value: string): Promise<DesktopControlSnapshot> {
@@ -574,6 +599,7 @@ export class DesktopController extends EventEmitter {
   }
 
   async close(): Promise<void> {
+    this.uploads.close();
     this.socket?.close();
     await this.handoffs?.close();
     await this.runtimeHandoffs?.close();
@@ -715,7 +741,7 @@ export class DesktopController extends EventEmitter {
 
   private async connect(): Promise<void> {
     if (!this.config || !this.hostCrypto) return;
-    const localConnectUrl = relayPathForUrl(this.relayConnectUrl) === "lan-relay"
+    const localConnectUrl = !this.config.relayUrlOverride && relayPathForUrl(this.relayConnectUrl) === "lan-relay"
       ? this.relayConnectUrl
       : undefined;
     const candidateEndpoints = this.config.relayEndpoints
@@ -1513,18 +1539,43 @@ export class DesktopController extends EventEmitter {
       if (!evidence) throw new Error("Evidence not found");
       return { evidence };
     }
+    if (request.method.startsWith("file.upload.")) {
+      const owner = sourceDeviceId ?? "desktop";
+      if (request.method === "file.upload.open") {
+        const sessionId = stringParam(params, "sessionId")!;
+        const session = this.allSessions().find((candidate) => candidate.sessionId === sessionId);
+        if (!session) throw new Error("Session not found");
+        if (session.allowedActions?.canSend === false) throw new Error("当前会话不允许上传文件");
+        return { upload: await this.uploads.open({
+          owner,
+          sessionId,
+          cwd: session.cwd,
+          name: stringParam(params, "name")!,
+          size: integerParam(params, "size"),
+          sha256: stringParam(params, "sha256")!,
+        }) };
+      }
+      const uploadId = stringParam(params, "uploadId")!;
+      if (request.method === "file.upload.write") {
+        return { received: this.uploads.write(uploadId, integerParam(params, "index"), stringParam(params, "data", false) ?? "", owner) };
+      }
+      if (request.method === "file.upload.commit") return { file: await this.uploads.commit(uploadId, owner) };
+      return { cancelled: this.uploads.cancel(uploadId, owner) };
+    }
     if (request.method === "artifact.preview") {
       return {
         preview: await this.evidence.preview(stringParam(params, "artifactId")!),
       };
     }
     if (request.method === "artifact.transfer.open") {
+      const textPreview = params.purpose === "text-preview";
       const artifactId = stringParam(params, "artifactId", false);
       if (artifactId) {
         return {
           transfer: await this.evidence.openTransfer(
             artifactId,
             sourceDeviceId ?? "desktop",
+            textPreview,
           ),
         };
       }
@@ -1537,6 +1588,7 @@ export class DesktopController extends EventEmitter {
           session.cwd,
           filePath,
           sourceDeviceId ?? "desktop",
+          textPreview,
         ),
       };
     }

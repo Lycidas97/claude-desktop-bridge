@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld("bridgeDesktop", {
   revokeDevice: (deviceId: string) => (
     ipcRenderer.invoke("bridge:revoke-device", deviceId) as Promise<DesktopControlSnapshot>
   ),
+  setRelayUrl: (url: string) => (
+    ipcRenderer.invoke("bridge:set-relay-url", url) as Promise<DesktopControlSnapshot>
+  ),
   setLaunchAtLogin: (enabled: boolean) => (
     ipcRenderer.invoke("bridge:set-launch-at-login", enabled) as Promise<DesktopControlSnapshot>
   ),

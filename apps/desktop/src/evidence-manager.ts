@@ -3,6 +3,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   ARTIFACT_MAX_BYTES,
+  TEXT_PREVIEW_MAX_BYTES,
   ARTIFACT_TRANSFER_CHUNK_BYTES,
   ARTIFACT_TRANSFER_TTL_MS,
   type BridgeArtifactManifest,
@@ -725,7 +726,7 @@ export class EvidenceManager {
     };
   }
 
-  async openTransfer(artifactId: string, owner: string): Promise<BridgeArtifactTransferInfo> {
+  async openTransfer(artifactId: string, owner: string, textPreview = false): Promise<BridgeArtifactTransferInfo> {
     this.pruneTransfers();
     const previous = [...this.transfers.entries()].find(([, transfer]) => (
       transfer.owner === owner && transfer.info.artifactId === artifactId
@@ -743,7 +744,8 @@ export class EvidenceManager {
     if (!artifact.manifest.downloadAllowed) {
       throw new Error(artifact.manifest.blockedReason ?? "Artifact download is unavailable");
     }
-    const bytes = await this.ensureArtifactSnapshot(artifactId);
+    if (textPreview && artifact.manifest.size > TEXT_PREVIEW_MAX_BYTES) throw new Error("文本预览仅支持 1 MB 以内的文件，请下载查看全文");
+    const bytes = await this.ensureArtifactSnapshot(artifactId, textPreview ? TEXT_PREVIEW_MAX_BYTES : ARTIFACT_MAX_BYTES);
     if (bytes.byteLength > ARTIFACT_MAX_BYTES) throw new Error("Artifact exceeds the 20 MiB limit");
     const transferId = randomUUID();
     const info: BridgeArtifactTransferInfo = {
@@ -761,7 +763,7 @@ export class EvidenceManager {
     return info;
   }
 
-  async openFileTransfer(cwd: string, candidatePath: string, owner: string): Promise<BridgeArtifactTransferInfo> {
+  async openFileTransfer(cwd: string, candidatePath: string, owner: string, textPreview = false): Promise<BridgeArtifactTransferInfo> {
     this.pruneTransfers();
     const cleaned = candidatePath.trim().replace(/:\d+(?::\d+)?$/u, "");
     if (!cleaned) throw new Error("文件路径不能为空");
@@ -784,6 +786,7 @@ export class EvidenceManager {
     }
     const metadata = await stat(sourcePath);
     if (!metadata.isFile()) throw new Error("目标路径不是普通文件");
+    if (textPreview && metadata.size > TEXT_PREVIEW_MAX_BYTES) throw new Error("文本预览仅支持 1 MB 以内的文件，请下载查看全文");
     if (metadata.size > ARTIFACT_MAX_BYTES) throw new Error("文件超过 20 MiB 传输上限");
     const artifactKey = `file:${normalized.relativePath}`;
     const previous = [...this.transfers.entries()].find(([, transfer]) => (
@@ -843,9 +846,16 @@ export class EvidenceManager {
     ));
   }
 
-  private async ensureArtifactSnapshot(artifactId: string): Promise<Buffer> {
+  private async ensureArtifactSnapshot(artifactId: string, maxBytes = ARTIFACT_MAX_BYTES): Promise<Buffer> {
     const cached = await this.options.store.readArtifact(artifactId);
-    if (cached) return cached;
+    if (cached) {
+      if (cached.byteLength > maxBytes) {
+        throw new Error(maxBytes < ARTIFACT_MAX_BYTES
+          ? "文本预览仅支持 1 MB 以内的文件，请下载查看全文"
+          : "Artifact exceeds the 20 MiB limit");
+      }
+      return cached;
+    }
     const artifact = this.options.store.artifact(artifactId);
     if (!artifact) throw new Error("Artifact not found");
     if (artifact.manifest.blockedReason) throw new Error(artifact.manifest.blockedReason);
@@ -860,6 +870,7 @@ export class EvidenceManager {
     }
     const metadata = await stat(sourcePath);
     if (!metadata.isFile()) throw new Error("Artifact is not a regular file");
+    if (metadata.size > maxBytes && maxBytes < ARTIFACT_MAX_BYTES) throw new Error("文本预览仅支持 1 MB 以内的文件，请下载查看全文");
     if (metadata.size > ARTIFACT_MAX_BYTES) throw new Error("Artifact exceeds the 20 MiB limit");
     const bytes = await readFile(sourcePath);
     const digest = createHash("sha256").update(bytes).digest("hex");

@@ -19,6 +19,7 @@ export interface DesktopApi {
   createPairing(): Promise<DesktopControlSnapshot>;
   revokeDevice(deviceId: string): Promise<DesktopControlSnapshot>;
   setLaunchAtLogin(enabled: boolean): Promise<DesktopControlSnapshot>;
+  setRelayUrl(url: string): Promise<DesktopControlSnapshot>;
   setAnthropicApiKey(value: string): Promise<DesktopControlSnapshot>;
   removeAnthropicApiKey(): Promise<DesktopControlSnapshot>;
   launchClaudeDesktop(): Promise<DesktopControlSnapshot>;

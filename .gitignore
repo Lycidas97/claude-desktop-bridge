@@ -20,3 +20,4 @@ apps/mobile/ios/App/Pods/
 apps/mobile/ios/App/DerivedData/
 deploy/vps-minimal/
 output/
+.bridge-uploads/

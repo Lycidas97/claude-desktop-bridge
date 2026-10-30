@@ -5,7 +5,7 @@ import {
   type BridgeHostSnapshot,
 } from "@bridge/protocol";
 import { indexedDB } from "fake-indexeddb";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { BridgeVault } from "./vault.js";
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
@@ -59,6 +59,130 @@ beforeAll(() => {
   Object.defineProperty(globalThis, "indexedDB", {
     configurable: true,
     value: indexedDB,
+  });
+});
+
+describe("BridgeVault manual relay override", () => {
+  it.each([
+    ["wss://manual.example:9443/custom/ws?region=west", "https://manual.example:9443"],
+    ["ws://192.168.99.99:8788/custom/ws?region=west", "http://192.168.99.99:8788"],
+  ])("keeps override %s through reload, touch, automatic updates and changed defaults", async (url, origin) => {
+    const vault = new BridgeVault();
+    await vault.clear();
+    try {
+      const pairing = await BridgeCrypto.createDevicePairing({
+        hostId: "manual-host", roomId: "manual-room", pairingEpoch: 7,
+        relayUrl: "wss://old.example/ws", desktopName: "Studio Mac",
+        iceServers: [{ urls: "stun:custom.example:3478" }],
+      });
+      const crypto = await vault.importPairing(pairing.pairing);
+      const envelope = await crypto.encrypt({
+        kind: "request", requestId: "manual-request", idempotencyKey: "manual-key",
+        method: "snapshot.get", params: {},
+      }, "mobile", "desktop");
+      await vault.saveMessage(envelope);
+      await vault.addOutbox(envelope);
+      await vault.setDesktopRelay("manual-room", "wss://relay.alioxis.com/ws");
+      const before = (await vault.getHost("manual-room"))!;
+      const overridden = await vault.setRelayUrl("manual-room", `  ${url}  `);
+      expect(overridden).toMatchObject({
+        relayUrlOverride: url, relayUrl: url, serviceOrigin: origin, activeEndpoint: "manual",
+        updatedAt: before.updatedAt, pairingEpoch: 7,
+        iceServers: [{ urls: "stun:custom.example:3478" }],
+      });
+      expect(overridden.relayEndpoints).toEqual([{
+        id: "manual", kind: url.startsWith("ws:") ? "lan-relay" : "public-relay", url, priority: 0,
+      }]);
+      expect(overridden.desktopRelayUrl).toBeUndefined();
+      expect(overridden.crypto.identity).toEqual({ ...crypto.identity, relayUrl: url });
+      expect(await overridden.crypto.decrypt(envelope)).toMatchObject({ payload: { kind: "request" } });
+
+      const reloaded = new BridgeVault();
+      await reloaded.touchHost(crypto);
+      await reloaded.setDesktopRelay("manual-room", "wss://relay.alioxis.com/ws");
+      await reloaded.setActiveEndpoint("manual-room", "public");
+      expect(await reloaded.updateLanRelay("manual-room", "ws://10.0.0.20:8788/ws")).toBe(false);
+      const touched = (await reloaded.getHost("manual-room"))!;
+      expect(touched.relayUrlOverride).toBe(url);
+      expect(touched.crypto.identity).toEqual({ ...crypto.identity, relayUrl: url });
+      expect(touched.desktopRelayUrl).toBeUndefined();
+      expect(touched.relayEndpoints).toEqual(overridden.relayEndpoints);
+      expect(await reloaded.listMessages("manual-room")).toEqual([envelope]);
+      expect(await reloaded.listOutbox("manual-room")).toEqual([envelope]);
+
+      vi.stubEnv("VITE_BRIDGE_PUBLIC_RELAY_URL", "wss://new-packaged.example/ws");
+      vi.stubEnv("VITE_BRIDGE_SERVICE_ORIGIN", "https://new-packaged.example");
+      vi.resetModules();
+      const { BridgeVault: UpdatedVault } = await import("./vault.js");
+      const after = await new UpdatedVault().getHost("manual-room");
+      expect(after).toMatchObject({
+        relayUrlOverride: url, relayUrl: url, serviceOrigin: origin, activeEndpoint: "manual",
+        updatedAt: touched.updatedAt, relayEndpoints: overridden.relayEndpoints,
+        pairingEpoch: 7, iceServers: before.iceServers,
+      });
+      expect(after?.crypto.identity).toEqual(overridden.crypto.identity);
+      expect(after?.desktopRelayUrl).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+      await vault.clear();
+    }
+  });
+
+  it("preserves a stored override during the legacy instance and default migration", async () => {
+    const vault = new BridgeVault();
+    await vault.clear();
+    try {
+      const pairing = await BridgeCrypto.createDevicePairing({
+        hostId: "override-migration-host", roomId: "override-migration-room", pairingEpoch: 2,
+        relayUrl: "wss://old.example/ws", desktopName: "Studio Mac",
+        iceServers: [{ urls: "stun:custom.example:3478" }],
+      });
+      const crypto = await vault.importPairing(pairing.pairing);
+      const database = await requestResult(indexedDB.open("claude-bridge", 3));
+      const transaction = database.transaction("identity", "readwrite");
+      const store = transaction.objectStore("identity");
+      const stored = await requestResult(store.get("host:override-migration-host"));
+      delete stored.identity.instanceId;
+      store.put({ ...stored, relayUrlOverride: "wss://manual.example/chosen?x=1", updatedAt: 1_000 });
+      await transactionDone(transaction);
+      database.close();
+      const host = (await vault.getHost("override-migration-room"))!;
+      expect(host).toMatchObject({
+        relayUrlOverride: "wss://manual.example/chosen?x=1", relayUrl: "wss://manual.example/chosen?x=1",
+        serviceOrigin: "https://manual.example", updatedAt: 1_000, pairingEpoch: 2,
+      });
+      expect(host.crypto.identity.authToken).toBe(crypto.identity.authToken);
+      expect(host.crypto.identity.deviceId).toBe(crypto.identity.deviceId);
+      const instanceId = host.crypto.identity.instanceId;
+      await vault.touchHost(host.crypto);
+      expect((await new BridgeVault().getHost(host.roomId))?.crypto.identity.instanceId).toBe(instanceId);
+      expect((await vault.getHost(host.roomId))?.relayUrlOverride).toBe(host.relayUrlOverride);
+    } finally {
+      await vault.clear();
+    }
+  });
+
+  it("rejects invalid manual relay URLs without changing the pairing", async () => {
+    const vault = new BridgeVault();
+    await vault.clear();
+    try {
+      const pairing = await BridgeCrypto.createDevicePairing({
+        hostId: "invalid-override-host", roomId: "invalid-override-room", pairingEpoch: 1,
+        relayUrl: "wss://old.example/ws", desktopName: "Studio Mac",
+      });
+      await vault.importPairing(pairing.pairing);
+      const before = (await vault.getHost("invalid-override-room"))!;
+      for (const url of ["", "https://relay.example/ws", "socks5://localhost:1080", "wss://", "wss://user:secret@relay.example/ws", "wss://relay.example/ws#fragment"]) {
+        await expect(vault.setRelayUrl(before.roomId, url)).rejects.toThrow();
+      }
+      const after = (await vault.getHost(before.roomId))!;
+      expect(after.crypto.identity).toEqual(before.crypto.identity);
+      expect(after.updatedAt).toBe(before.updatedAt);
+      expect(after.relayUrlOverride).toBeUndefined();
+    } finally {
+      await vault.clear();
+    }
   });
 });
 

@@ -31,6 +31,20 @@ export function relayPathForUrl(value: string): Extract<BridgeEndpointKind, "pub
   }
 }
 
+export function normalizeRelayUrl(value: string): string {
+  const url = new URL(value.trim());
+  if ((url.protocol !== "ws:" && url.protocol !== "wss:") || url.username || url.password || url.hash) {
+    throw new Error("中继地址须为 ws:// 或 wss://，不能包含用户名、密码或片段");
+  }
+  return url.toString();
+}
+
+export function relayServiceOrigin(relayUrl: string): string {
+  const url = new URL(relayUrl);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  return url.origin;
+}
+
 export function bridgeEndpoint(
   url: string,
   priority: number,

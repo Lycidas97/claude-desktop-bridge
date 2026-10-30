@@ -10,6 +10,8 @@ import {
   isBridgeEndpoint,
   normalizeBridgeIceServers,
   normalizeBridgeEndpoints,
+  normalizeRelayUrl,
+  relayServiceOrigin,
   preferredBridgeIceServers,
   relayPathForUrl,
   selectBridgeEndpoint,
@@ -124,6 +126,7 @@ interface DesktopConfigFileV4 extends Omit<DesktopConfigFileV3, "version" | "pro
   protectedEvidenceKey?: string;
   defaultPermissionMode?: BridgePermissionMode;
   runtimePermissionModes?: RuntimePermissionModes;
+  relayUrlOverride?: string;
 }
 
 type DesktopConfigFile = DesktopConfigFileV2 | DesktopConfigFileV3 | DesktopConfigFileV4;
@@ -162,6 +165,7 @@ export interface LoadedDesktopConfig {
   managedDesktopEnabled: boolean;
   defaultPermissionMode: BridgePermissionMode;
   runtimePermissionModes: RuntimePermissionModes;
+  relayUrlOverride?: string;
   devices: LoadedDeviceConfig[];
 }
 
@@ -209,6 +213,7 @@ function assertConfig(value: unknown): DesktopConfigFile {
     managedDesktopEnabled?: unknown;
     defaultPermissionMode?: unknown;
     runtimePermissionModes?: unknown;
+    relayUrlOverride?: unknown;
     devices?: unknown;
   };
   if (
@@ -434,6 +439,9 @@ export class DesktopConfigRepository {
       throw error;
     }
     const config = assertConfig(JSON.parse(raw));
+    const relayUrlOverride = config.version === 4 && config.relayUrlOverride
+      ? normalizeRelayUrl(config.relayUrlOverride)
+      : undefined;
     const savedEndpoint = config.version === 2
       ? undefined
       : selectBridgeEndpoint(config.relayEndpoints, config.activeEndpoint);
@@ -447,7 +455,15 @@ export class DesktopConfigRepository {
           serviceOrigin: config.serviceOrigin,
         }
       : this.defaults;
-    const transport = config.version === 2
+    const transport = relayUrlOverride
+      ? {
+          relayEndpoints: [bridgeEndpoint(relayUrlOverride, 0, "manual")],
+          activeEndpoint: "manual",
+          serviceOrigin: relayServiceOrigin(relayUrlOverride),
+          iceServers: normalizeBridgeIceServers(config.version !== 2 ? config.iceServers : undefined),
+          ...(config.version !== 2 && config.migratedAt !== undefined ? { migratedAt: config.migratedAt } : {}),
+        }
+      : config.version === 2
       ? migrateV2(config, defaults)
       : {
           relayEndpoints: refreshV3Endpoints(config, defaults),
@@ -509,6 +525,7 @@ export class DesktopConfigRepository {
       iceServers: transport.iceServers,
       ...(transport.migratedAt !== undefined ? { migratedAt: transport.migratedAt } : {}),
       relayUrl: active.url,
+      ...(relayUrlOverride ? { relayUrlOverride } : {}),
       desktopName: config.desktopName,
       hostDeviceId: config.hostDeviceId,
       hostSecret: this.protector.unprotect(config.protectedHostSecret),
@@ -575,7 +592,10 @@ export class DesktopConfigRepository {
   }
 
   async save(config: LoadedDesktopConfig): Promise<void> {
-    const endpoints = normalizeBridgeEndpoints(config.relayEndpoints);
+    const relayUrlOverride = config.relayUrlOverride ? normalizeRelayUrl(config.relayUrlOverride) : undefined;
+    const endpoints = relayUrlOverride
+      ? [bridgeEndpoint(relayUrlOverride, 0, "manual")]
+      : normalizeBridgeEndpoints(config.relayEndpoints);
     const active = selectBridgeEndpoint(endpoints, config.activeEndpoint);
     if (!active) throw new Error("No active relay endpoint is configured");
     const stored: DesktopConfigFileV4 = {
@@ -583,7 +603,8 @@ export class DesktopConfigRepository {
       protocolVersion: PROTOCOL_VERSION,
       pairingEpoch: config.pairingEpoch,
       roomId: config.roomId,
-      serviceOrigin: config.serviceOrigin,
+      serviceOrigin: relayUrlOverride ? relayServiceOrigin(relayUrlOverride) : config.serviceOrigin,
+      ...(relayUrlOverride ? { relayUrlOverride } : {}),
       relayEndpoints: endpoints,
       activeEndpoint: active.id,
       iceServers: normalizeBridgeIceServers(config.iceServers),

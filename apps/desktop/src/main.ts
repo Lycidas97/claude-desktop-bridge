@@ -344,6 +344,7 @@ async function desktopMain(): Promise<void> {
   handle("bridge:create-pairing", () => controller.createPairing());
   handle("bridge:revoke-device", (deviceId: string) => controller.revokeDevice(deviceId));
   handle("bridge:set-launch-at-login", (enabled: boolean) => controller.setLaunchAtLogin(Boolean(enabled)));
+  handle("bridge:set-relay-url", (url: string) => controller.setRelayUrl(url));
   handle("bridge:set-anthropic-api-key", (value: string) => controller.setAnthropicApiKey(value));
   handle("bridge:remove-anthropic-api-key", () => controller.removeAnthropicApiKey());
   handle("bridge:launch-claude-desktop", () => controller.launchClaudeDesktop());

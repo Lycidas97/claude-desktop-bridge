@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import {
+  mkdir,
   mkdtemp,
   open,
   rm,
@@ -7,14 +9,16 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EvidenceManager } from "./evidence-manager.js";
 import { EvidenceStore } from "./evidence-store.js";
+import { FileUploadManager } from "./file-upload.js";
 import { SessionEventLog } from "./session-event-log.js";
 
 const directories: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(directories.splice(0).map((directory) => (
     rm(directory, { recursive: true, force: true })
   )));
@@ -32,7 +36,7 @@ async function managerFixture() {
   await eventLog.initialize();
   const manager = new EvidenceManager({ store, eventLog });
   await manager.initialize();
-  return { directory, manager, eventLog };
+  return { directory, manager, eventLog, store };
 }
 
 describe("EvidenceManager", () => {
@@ -184,6 +188,152 @@ describe("EvidenceManager", () => {
 
     expect(transfer).toMatchObject({ size: 0, totalChunks: 1 });
     expect(chunk.data).toBe("");
+    await manager.close();
+  });
+
+  it("enforces the 1 MiB text-preview limit before and after an artifact download is cached", async () => {
+    const { directory, manager, store } = await managerFixture();
+    const bytes = Buffer.alloc(1024 * 1024 + 1, 0x61);
+    await writeFile(join(directory, "large.txt"), bytes);
+    const evidence = await manager.upsertDesktopEvidence({
+      id: "preview-limit",
+      sessionId: "session-1",
+      cwd: directory,
+      startedAt: 1_000,
+      completedAt: 2_000,
+      tools: [],
+      paths: ["large.txt"],
+    });
+    const artifact = evidence.artifacts[0]!;
+    expect(artifact.size).toBe(0);
+    await expect(manager.openTransfer(artifact.id, "phone-1", true)).rejects.toThrow("1 MB");
+    const download = await manager.openTransfer(artifact.id, "phone-1");
+    expect(download.size).toBe(bytes.length);
+    await expect(manager.openTransfer(artifact.id, "phone-1", true)).rejects.toThrow("1 MB");
+
+    // A cached body must also enforce the limit when its manifest has an old size.
+    const record = store.artifact(artifact.id)!;
+    await store.replaceArtifacts(evidence.id, [{
+      manifest: { ...record.manifest, size: 0 },
+      rootPath: directory,
+      snapshot: bytes,
+    }]);
+    await expect(manager.openTransfer(artifact.id, "phone-2", true)).rejects.toThrow("1 MB");
+    await manager.close();
+  });
+
+  it("accepts exactly 1 MiB for text previews and rejects larger direct-file previews after downloading", async () => {
+    const { directory, manager } = await managerFixture();
+    const bytes = Buffer.alloc(1024 * 1024, 0x61);
+    await writeFile(join(directory, "boundary.txt"), bytes);
+    const evidence = await manager.upsertDesktopEvidence({
+      id: "preview-boundary",
+      sessionId: "session-1",
+      cwd: directory,
+      startedAt: 1_000,
+      completedAt: 2_000,
+      tools: [],
+      paths: ["boundary.txt"],
+    });
+    expect(await manager.openTransfer(evidence.artifacts[0]!.id, "phone-1", true)).toMatchObject({ size: bytes.length });
+    const direct = await manager.openFileTransfer(directory, "boundary.txt", "phone-1", true);
+    expect(direct).toMatchObject({ size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+    await writeFile(join(directory, "boundary.txt"), Buffer.alloc(bytes.length + 1, 0x62));
+    const download = await manager.openFileTransfer(directory, "boundary.txt", "phone-1");
+    expect(download.size).toBe(bytes.length + 1);
+    await expect(manager.openFileTransfer(directory, "boundary.txt", "phone-1", true)).rejects.toThrow("1 MB");
+    expect(manager.readTransfer(download.transferId, 0, "phone-1").data).not.toBe("");
+    await manager.close();
+  });
+
+  it("transfers arbitrary direct-file bytes with hashes, owner checks, and an empty-file chunk", async () => {
+    const { directory, manager } = await managerFixture();
+    const bytes = Buffer.alloc(300 * 1024, 0xff);
+    await writeFile(join(directory, "binary.bin"), bytes);
+    const transfer = await manager.openFileTransfer(directory, "binary.bin", "phone-1");
+    expect(transfer).toMatchObject({
+      name: "binary.bin",
+      size: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      totalChunks: 2,
+    });
+    const second = manager.readTransfer(transfer.transferId, 1, "phone-1");
+    const first = manager.readTransfer(transfer.transferId, 0, "phone-1");
+    expect(Buffer.concat([Buffer.from(first.data, "base64"), Buffer.from(second.data, "base64")])).toEqual(bytes);
+    expect(() => manager.readTransfer(transfer.transferId, 0, "phone-2")).toThrow("expired");
+    for (const index of [-1, 0.5, 2]) {
+      expect(() => manager.readTransfer(transfer.transferId, index, "phone-1")).toThrow("index");
+    }
+    expect(manager.closeTransfer(transfer.transferId, "phone-2")).toBe(false);
+    expect(manager.closeTransfer(transfer.transferId, "phone-1")).toBe(true);
+    await writeFile(join(directory, "empty.bin"), "");
+    const empty = await manager.openFileTransfer(directory, "empty.bin", "phone-1");
+    expect(empty).toMatchObject({ size: 0, totalChunks: 1, sha256: createHash("sha256").update("").digest("hex") });
+    expect(manager.readTransfer(empty.transferId, 0, "phone-1").data).toBe("");
+    await manager.close();
+  });
+
+  it("confines direct-file paths and enforces the 20 MiB download limit", async () => {
+    const { directory, manager } = await managerFixture();
+    const outside = await mkdtemp(join(tmpdir(), "bridge-file-outside-"));
+    directories.push(outside);
+    await writeFile(join(outside, "outside.txt"), "outside");
+    await symlink(join(outside, "outside.txt"), join(directory, "linked.txt"));
+    await writeFile(join(directory, ".env"), "SECRET=hidden");
+    await mkdir(join(directory, "folder"));
+    const large = await open(join(directory, "large.bin"), "w");
+    await large.truncate(20 * 1024 * 1024 + 1);
+    await large.close();
+    await expect(manager.openFileTransfer(directory, "", "phone-1")).rejects.toThrow("不能为空");
+    await expect(manager.openFileTransfer(directory, "missing.txt", "phone-1")).rejects.toThrow("不存在");
+    await expect(manager.openFileTransfer(directory, join(outside, "outside.txt"), "phone-1")).rejects.toThrow("项目目录");
+    await expect(manager.openFileTransfer(directory, "linked.txt", "phone-1")).rejects.toThrow("项目目录");
+    await expect(manager.openFileTransfer(directory, ".env", "phone-1")).rejects.toThrow();
+    await expect(manager.openFileTransfer(directory, "folder", "phone-1")).rejects.toThrow("普通文件");
+    await expect(manager.openFileTransfer(directory, "large.bin", "phone-1")).rejects.toThrow("20 MiB");
+    const boundary = await open(join(directory, "large.bin"), "w");
+    await boundary.truncate(20 * 1024 * 1024);
+    await boundary.close();
+    expect(await manager.openFileTransfer(directory, "large.bin", "phone-1")).toMatchObject({ size: 20 * 1024 * 1024 });
+    await manager.close();
+  });
+
+  it("previews uploaded text through its .bridge-uploads relative path", async () => {
+    const { directory, manager } = await managerFixture();
+    const uploads = new FileUploadManager();
+    const text = "uploaded notes\n测试文本\n";
+    const info = await uploads.open({
+      owner: "phone-1",
+      sessionId: "session-1",
+      cwd: directory,
+      name: "notes.txt",
+      size: Buffer.byteLength(text),
+      sha256: createHash("sha256").update(text).digest("hex"),
+    });
+    uploads.write(info.uploadId, 0, Buffer.from(text).toString("base64"), "phone-1");
+    const receipt = await uploads.commit(info.uploadId, "phone-1");
+    const transfer = await manager.openFileTransfer(directory, receipt.path, "phone-1", true);
+
+    expect(transfer).toMatchObject({ name: "notes.txt", mimeType: "text/plain", size: receipt.size, sha256: receipt.sha256 });
+    expect(Buffer.from(manager.readTransfer(transfer.transferId, 0, "phone-1").data, "base64").toString("utf8")).toBe(text);
+    uploads.close();
+    await manager.close();
+  });
+
+  it("reports the hard download limit correctly for an oversized cached snapshot", async () => {
+    const { directory, manager, store } = await managerFixture();
+    await writeFile(join(directory, "cached.txt"), "small");
+    const evidence = await manager.upsertDesktopEvidence({
+      id: "cached-hard-limit",
+      sessionId: "session-1",
+      cwd: directory,
+      startedAt: 1_000,
+      completedAt: 2_000,
+      tools: [],
+      paths: ["cached.txt"],
+    });
+    vi.spyOn(store, "readArtifact").mockResolvedValue(Buffer.alloc(20 * 1024 * 1024 + 1));
+    await expect(manager.openTransfer(evidence.artifacts[0]!.id, "phone-1")).rejects.toThrow("20 MiB");
     await manager.close();
   });
 

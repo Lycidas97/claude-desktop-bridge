@@ -6,6 +6,8 @@ import {
   cryptoWithRelayEndpoint,
   normalizeBridgeIceServers,
   normalizeBridgeEndpoints,
+  normalizeRelayUrl,
+  relayServiceOrigin,
   parseBridgeIceServers,
   preferredBridgeIceServers,
   randomId,
@@ -35,6 +37,7 @@ interface StoredCrypto {
    * independent room queues, so an envelope stored anywhere else would
    * never reach the desktop. */
   desktopRelayUrl?: string;
+  relayUrlOverride?: string;
   iceServers?: BridgeIceServer[];
   migratedAt?: number;
   updatedAt?: number;
@@ -55,6 +58,7 @@ export interface StoredBridgeHost {
   relayEndpoints: BridgeEndpoint[];
   activeEndpoint: string;
   desktopRelayUrl?: string;
+  relayUrlOverride?: string;
   iceServers: BridgeIceServer[];
   migratedAt?: number;
   updatedAt: number;
@@ -128,6 +132,16 @@ function transportForStored(stored: StoredCrypto): {
   relayUrl: string;
   iceServers: BridgeIceServer[];
 } {
+  if (stored.relayUrlOverride) {
+    const url = normalizeRelayUrl(stored.relayUrlOverride);
+    return {
+      serviceOrigin: relayServiceOrigin(url),
+      relayEndpoints: [bridgeEndpoint(url, 0, "manual")],
+      activeEndpoint: "manual",
+      relayUrl: url,
+      iceServers: preferredBridgeIceServers(stored.iceServers, PACKAGED_ICE_SERVERS),
+    };
+  }
   const legacyRelayUrl = isDisallowedUpstreamRelay(stored.identity.relayUrl)
     ? PACKAGED_PUBLIC_RELAY
     : stored.identity.relayUrl;
@@ -336,9 +350,11 @@ export class BridgeVault {
       const updatedAt = stored.updatedAt ?? 0;
       if (existing && existing.updatedAt > updatedAt) continue;
       const transport = transportForStored(normalizedStored);
-      const sanitizedDesktopRelayUrl = isDisallowedUpstreamRelay(normalizedStored.desktopRelayUrl)
-        ? PACKAGED_PUBLIC_RELAY
-        : normalizedStored.desktopRelayUrl;
+      const sanitizedDesktopRelayUrl = normalizedStored.relayUrlOverride
+        ? undefined
+        : isDisallowedUpstreamRelay(normalizedStored.desktopRelayUrl)
+          ? PACKAGED_PUBLIC_RELAY
+          : normalizedStored.desktopRelayUrl;
       const relayMigrationNeeded = (
         normalizedStored.identity.relayUrl !== transport.relayUrl ||
         normalizedStored.serviceOrigin !== transport.serviceOrigin ||
@@ -379,6 +395,7 @@ export class BridgeVault {
           ? { desktopRelayUrl: sanitizedDesktopRelayUrl }
           : {}),
         iceServers: transport.iceServers,
+        ...(normalizedStored.relayUrlOverride ? { relayUrlOverride: normalizedStored.relayUrlOverride } : {}),
         ...(normalizedStored.migratedAt !== undefined ? { migratedAt: normalizedStored.migratedAt } : {}),
         updatedAt,
         needsRepair: (
@@ -407,6 +424,7 @@ export class BridgeVault {
       encryptionKey: crypto.encryptionKey,
     });
     store.put({
+      ...(current ?? {}),
       key: hostKey(crypto.identity.hostId ?? crypto.identity.roomId),
       identity: { ...crypto.identity, relayUrl: transport.relayUrl },
       encryptionKey: crypto.encryptionKey,
@@ -425,6 +443,30 @@ export class BridgeVault {
     return (await this.listHosts()).find((host) => host.roomId === roomId);
   }
 
+  async setRelayUrl(roomId: string, value: string): Promise<StoredBridgeHost> {
+    const url = normalizeRelayUrl(value);
+    const database = await this.open();
+    const transaction = database.transaction("identity", "readwrite");
+    const store = transaction.objectStore("identity");
+    const records = await requestResult(store.getAll()) as unknown[];
+    const record = records.filter(isStoredCrypto).find((candidate) => candidate.identity.roomId === roomId);
+    if (record) {
+      const { desktopRelayUrl: _previousRelay, ...stored } = record;
+      store.put({
+        ...stored,
+        relayUrlOverride: url,
+        identity: { ...stored.identity, relayUrl: url },
+        serviceOrigin: relayServiceOrigin(url),
+        relayEndpoints: [bridgeEndpoint(url, 0, "manual")],
+        activeEndpoint: "manual",
+      } satisfies StoredCrypto);
+    }
+    await transactionDone(transaction);
+    const host = await this.getHost(roomId);
+    if (!host) throw new Error("未找到已配对电脑");
+    return host;
+  }
+
   async setActiveEndpoint(roomId: string, endpointId: string): Promise<StoredBridgeHost | undefined> {
     const database = await this.open();
     const transaction = database.transaction("identity", "readwrite");
@@ -436,6 +478,10 @@ export class BridgeVault {
     if (!record) {
       await transactionDone(transaction);
       return undefined;
+    }
+    if (record.relayUrlOverride) {
+      await transactionDone(transaction);
+      return this.getHost(roomId);
     }
     const transport = transportForStored(record);
     const selected = selectBridgeEndpoint(transport.relayEndpoints, endpointId);
@@ -476,7 +522,7 @@ export class BridgeVault {
       await transactionDone(transaction);
       return;
     }
-    if (record.desktopRelayUrl !== url) {
+    if (!record.relayUrlOverride && record.desktopRelayUrl !== url) {
       store.put({
         ...record,
         key: hostKey(record.identity.hostId ?? record.identity.roomId),
@@ -505,6 +551,10 @@ export class BridgeVault {
       .filter(isStoredCrypto)
       .find((candidate) => candidate.identity.roomId === roomId);
     if (!record) {
+      await transactionDone(transaction);
+      return false;
+    }
+    if (record.relayUrlOverride) {
       await transactionDone(transaction);
       return false;
     }

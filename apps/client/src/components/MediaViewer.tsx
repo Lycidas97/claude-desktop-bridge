@@ -2,15 +2,19 @@ import { AlertTriangle, ChevronLeft, ChevronRight, LoaderCircle, Maximize, Rotat
 import { useEffect, useRef, useState } from "react";
 import type { BridgeArtifactPreview } from "@bridge/protocol";
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from "pdfjs-dist";
-import { openMediaTransfer, type MediaRequest, type MediaTarget } from "../lib/media-preview.js";
+import { openMediaTransfer, readTextPreview, textPreviewLanguage, type MediaRequest, type MediaTarget } from "../lib/media-preview.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { IconButton } from "./IconButton.js";
+import { TextPreview } from "./TextPreview.js";
 
 export default function MediaViewer({ target, request, onClose }: { target: MediaTarget; request: MediaRequest; onClose(): void }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [imageUrl, setImageUrl] = useState(target.dataUrl);
+  const [text, setText] = useState<string>();
+  const [showSource, setShowSource] = useState(false);
+  const markdown = target.kind === "text" && textPreviewLanguage(target.name) === "markdown";
   const [pdf, setPdf] = useState<PDFDocumentProxy>();
   const [pageNumber, setPageNumber] = useState(1);
   const [zoom, setZoom] = useState(1);
@@ -53,6 +57,11 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
       transfer = await openMediaTransfer(target, requestRef.current);
       if (disposed) { await transfer.close(); transfer = undefined; return; }
       const source = transfer;
+      if (target.kind === "text") {
+        const content = await readTextPreview(source);
+        if (!disposed) { setText(content); setBusy(false); }
+        return;
+      }
       if (target.kind === "image") {
         const bytes = await source.read(0, source.transfer.size);
         if (disposed) return;
@@ -137,29 +146,35 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
     <dialog ref={dialogRef} className="media-viewer" aria-labelledby="media-viewer-title" onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="media-viewer-shell">
         <header>
-          <div><span>{target.kind === "pdf" ? "PDF" : "图片"}</span><h2 id="media-viewer-title">{target.name}</h2></div>
+          <div><span>{target.kind === "pdf" ? "PDF" : target.kind === "text" ? (markdown ? "Markdown" : "文本") : "图片"}</span><h2 id="media-viewer-title">{target.name}</h2></div>
           <IconButton label="关闭查看器" onClick={onClose}><X size={21} /></IconButton>
         </header>
         <div className="media-viewer-toolbar">
+          {target.kind === "text" && (markdown ? <div className="text-preview-tabs" role="tablist" aria-label="Markdown 显示方式">
+            <button id="text-preview-rendered-tab" type="button" role="tab" aria-selected={!showSource} aria-controls="text-preview-content" tabIndex={showSource ? -1 : 0} onClick={() => setShowSource(false)} onKeyDown={(event) => { if (event.key === "ArrowRight" || event.key === "End") { setShowSource(true); document.getElementById("text-preview-source-tab")?.focus(); event.preventDefault(); } }}>预览</button>
+            <button id="text-preview-source-tab" type="button" role="tab" aria-selected={showSource} aria-controls="text-preview-content" tabIndex={showSource ? 0 : -1} onClick={() => setShowSource(true)} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "Home") { setShowSource(false); document.getElementById("text-preview-rendered-tab")?.focus(); event.preventDefault(); } }}>源码</button>
+          </div> : <span className="text-preview-format">{textPreviewLanguage(target.name) ?? "纯文本"}</span>)}
           {target.kind === "pdf" && <div className="media-page-controls">
             <IconButton label="上一页" disabled={!pdf || pageNumber === 1 || busy} onClick={() => changePage(pageNumber - 1)}><ChevronLeft size={19} /></IconButton>
             <label><input aria-label="页码" type="number" min={1} max={pdf?.numPages ?? 1} value={pageNumber} onChange={(event) => changePage(Number(event.target.value) || 1)} /><span>/ {pdf?.numPages ?? "…"}</span></label>
             <IconButton label="下一页" disabled={!pdf || pageNumber === pdf.numPages || busy} onClick={() => changePage(pageNumber + 1)}><ChevronRight size={19} /></IconButton>
           </div>}
-          <div className="media-zoom-controls">
+          {target.kind !== "text" && <div className="media-zoom-controls">
             <IconButton label="缩小" disabled={zoom <= 0.5} onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))}><ZoomOut size={18} /></IconButton>
             <span>{Math.round(zoom * 100)}%</span>
             <IconButton label="放大" disabled={zoom >= 3} onClick={() => setZoom((value) => Math.min(3, value + 0.25))}><ZoomIn size={18} /></IconButton>
             <IconButton label="适合窗口" onClick={() => { setZoom(1); setRotation(0); }}><Maximize size={17} /></IconButton>
             {target.kind === "pdf" && <IconButton label="旋转页面" onClick={() => setRotation((value) => (value + 90) % 360)}><RotateCw size={17} /></IconButton>}
-          </div>
+          </div>}
         </div>
         <div ref={viewportRef} className={`media-viewer-viewport ${target.kind}`}>
           {busy && <div className="media-viewer-status" role="status"><LoaderCircle className="is-spinning" size={22} /><span>{pdf ? `正在显示第 ${pageNumber} 页…` : "正在加载预览…"}</span></div>}
           {error && <div className="media-viewer-status" role="alert"><AlertTriangle size={22} /><span>{error}</span><button className="secondary-button" onClick={() => { setPdf(undefined); setAttempt((value) => value + 1); }}>重新加载</button></div>}
-          {target.kind === "pdf" ? <canvas ref={canvasRef} aria-label={`${target.name} 第 ${pageNumber} 页`} style={{ visibility: busy || error ? "hidden" : "visible" }} /> : imageUrl && <img src={imageUrl} alt={target.name} style={{ width: zoom === 1 ? "auto" : `${zoom * 100}%`, maxWidth: zoom === 1 ? "100%" : "none", maxHeight: zoom === 1 ? "100%" : "none" }} onError={() => { setError("图片无法显示，请重新加载"); setBusy(false); }} />}
+          {target.kind === "text" ? (!busy && !error && text !== undefined && <div id="text-preview-content" role={markdown ? "tabpanel" : undefined} aria-labelledby={markdown ? (showSource ? "text-preview-source-tab" : "text-preview-rendered-tab") : undefined} tabIndex={0}>
+            <TextPreview text={text} name={target.name} source={showSource} />
+          </div>) : target.kind === "pdf" ? <canvas ref={canvasRef} aria-label={`${target.name} 第 ${pageNumber} 页`} style={{ visibility: busy || error ? "hidden" : "visible" }} /> : imageUrl && <img src={imageUrl} alt={target.name} style={{ width: zoom === 1 ? "auto" : `${zoom * 100}%`, maxWidth: zoom === 1 ? "100%" : "none", maxHeight: zoom === 1 ? "100%" : "none" }} onError={() => { setError("图片无法显示，请重新加载"); setBusy(false); }} />}
         </div>
-        <footer>{target.kind === "pdf" ? "按需读取页面内容" : "滚动查看图片 · 使用上方按钮缩放"}</footer>
+        <footer>{target.kind === "text" ? (text === "" && !busy && !error ? "空文件 · UTF-8" : "全文预览 · UTF-8 · 最大 1 MiB") : target.kind === "pdf" ? "按需读取页面内容" : "滚动查看图片 · 使用上方按钮缩放"}</footer>
       </div>
     </dialog>
   );

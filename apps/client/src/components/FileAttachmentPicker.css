@@ -1,0 +1,88 @@
+.file-attachment-picker {
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.file-upload-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.file-upload-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--card-fill);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.file-upload-trigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.file-upload-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-upload-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card-fill);
+  color: var(--text);
+}
+
+.file-upload-entry.is-error {
+  color: var(--danger);
+}
+
+.file-upload-details {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 3px;
+}
+
+.file-upload-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.file-upload-status {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.is-error .file-upload-status {
+  color: inherit;
+}
+
+.file-upload-details progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--accent);
+}
+
+.file-upload-entry .icon-button {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+}

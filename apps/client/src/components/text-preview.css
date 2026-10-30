@@ -1,0 +1,16 @@
+.text-preview-tabs { display: flex; gap: 4px; }
+.text-preview-tabs button { min-height: 36px; padding: 6px 14px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.text-preview-tabs button[aria-selected="true"] { border-color: var(--line); background: var(--surface); color: var(--text); }
+.text-preview-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.text-preview-format { padding: 8px 4px; color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+.media-viewer-viewport.text { background: var(--bg); }
+.text-preview-markdown { max-width: 880px; margin: 0 auto; padding: 8px; }
+.text-preview-source { width: max-content; min-width: 100%; margin: 0; color: var(--text); font-family: var(--font-mono); font-size: 12px; line-height: 1.7; white-space: pre; tab-size: 4; }
+.text-preview-source code { font: inherit; }
+.text-preview-source .hljs-comment, .text-preview-source .hljs-quote { color: var(--muted); font-style: italic; }
+.text-preview-source .hljs-keyword, .text-preview-source .hljs-selector-tag, .text-preview-source .hljs-doctag, .text-preview-source .hljs-meta { color: var(--accent-ink); }
+.text-preview-source .hljs-string, .text-preview-source .hljs-regexp, .text-preview-source .hljs-addition { color: var(--success-ink); }
+.text-preview-source .hljs-number, .text-preview-source .hljs-literal, .text-preview-source .hljs-attr, .text-preview-source .hljs-attribute, .text-preview-source .hljs-deletion { color: var(--danger-ink); }
+.text-preview-source .hljs-title, .text-preview-source .hljs-built_in, .text-preview-source .hljs-type, .text-preview-source .hljs-tag, .text-preview-source .hljs-name, .text-preview-source .hljs-symbol { color: var(--accent-ink); }
+.text-preview-source .hljs-section, .text-preview-source .hljs-strong { font-weight: 650; }
+.text-preview-source .hljs-emphasis { font-style: italic; }

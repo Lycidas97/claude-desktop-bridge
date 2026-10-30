@@ -45,6 +45,10 @@ const mainBanner = {
 await rm(resolve(dist, "native"), { recursive: true, force: true });
 await rm(resolve(dist, "node_modules"), { recursive: true, force: true });
 await mkdir(dist, { recursive: true });
+await mkdir(resolve(dist, "assets"), { recursive: true });
+await Promise.all(["trayTemplate.svg", "trayTemplate.png", "trayTemplate@2x.png"].map((name) => (
+  cp(resolve(root, "assets", name), resolve(dist, "assets", name))
+)));
 const nodeDataChannelSource = resolve(root, "../../node_modules/node-datachannel");
 const nodeDataChannelTarget = resolve(dist, "node_modules/node-datachannel");
 await mkdir(resolve(nodeDataChannelTarget, "build"), { recursive: true });

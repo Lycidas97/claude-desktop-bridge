@@ -403,8 +403,11 @@ async function desktopMain(): Promise<void> {
   if (process.env.BRIDGE_DEV_SERVER_URL) await mainWindow.loadURL(process.env.BRIDGE_DEV_SERVER_URL);
   else await mainWindow.loadFile(join(__dirname, "renderer", "index.html"));
 
-  const trayIconPath = join(__dirname, "renderer", "icon-192.png");
-  tray = new Tray(nativeImage.createFromPath(trayIconPath).resize({ width: 18, height: 18 }));
+  const trayIcon = process.platform === "darwin"
+    ? nativeImage.createFromPath(join(__dirname, "assets", "trayTemplate.png"))
+    : nativeImage.createFromPath(join(__dirname, "renderer", "icon-192.png")).resize({ width: 18, height: 18 });
+  if (process.platform === "darwin") trayIcon.setTemplateImage(true);
+  tray = new Tray(trayIcon);
   tray.setToolTip("Bridge");
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "打开 Bridge", click: showWindow },

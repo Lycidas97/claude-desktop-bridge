@@ -1,14 +1,15 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
   open,
-  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ARTIFACT_TRANSFER_TTL_MS, type BridgeArtifactTransferInfo } from "@bridge/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EvidenceManager } from "./evidence-manager.js";
 import { EvidenceStore } from "./evidence-store.js";
@@ -17,11 +18,22 @@ import { SessionEventLog } from "./session-event-log.js";
 
 const directories: string[] = [];
 
-afterEach(async () => {
+afterEach(() => {
   vi.restoreAllMocks();
-  await Promise.all(directories.splice(0).map((directory) => (
-    rm(directory, { recursive: true, force: true })
-  )));
+  const fixtures = directories.splice(0);
+  if (fixtures.length === 0) return;
+  const recycle = process.platform === "darwin"
+    ? "/usr/bin/trash"
+    : process.platform === "linux" ? "trash-put" : undefined;
+  if (!recycle) {
+    console.warn("No recycle command configured; keeping test fixtures:", fixtures);
+    return;
+  }
+  try {
+    execFileSync(recycle, fixtures);
+  } catch (error) {
+    console.warn("Could not recycle test fixtures; keeping remaining files:", fixtures, error);
+  }
 });
 
 async function managerFixture() {
@@ -87,7 +99,6 @@ describe("EvidenceManager", () => {
     expect(external).toMatchObject({ availability: "blocked", downloadAllowed: false });
     expect(external?.relativePath).not.toContain(directory);
     await manager.close();
-    await rm(outside, { force: true });
   });
 
   it("previews text and supports owner-bound out-of-order 256 KiB transfer chunks", async () => {
@@ -127,6 +138,172 @@ describe("EvidenceManager", () => {
       .toThrow("expired");
     expect(manager.closeTransfer(transfer.transferId, "phone-1")).toBe(true);
     await manager.close();
+  });
+
+  it.each([false, true])("keeps overlapping artifact transfers readable (first text preview: %s)", async (textPreview) => {
+    const { directory, manager } = await managerFixture();
+    try {
+      const bytes = Buffer.concat([Buffer.alloc(256 * 1024, 0x61), Buffer.alloc(44 * 1024, 0x62)]);
+      await writeFile(join(directory, "shared.txt"), bytes);
+      const evidence = await manager.upsertDesktopEvidence({
+        id: "overlapping-artifact",
+        sessionId: "session-1",
+        cwd: directory,
+        startedAt: 1_000,
+        completedAt: 2_000,
+        tools: [],
+        paths: ["shared.txt"],
+      });
+      const first = await manager.openTransfer(evidence.artifacts[0]!.id, "phone-1", textPreview);
+      const second = await manager.openTransfer(evidence.artifacts[0]!.id, "phone-1", !textPreview);
+
+      expect(second.transferId).not.toBe(first.transferId);
+      expect(second.artifactId).toBe(first.artifactId);
+      for (const index of [1, 0]) {
+        for (const transfer of [first, second]) {
+          expect(Buffer.from(manager.readTransfer(transfer.transferId, index, "phone-1").data, "base64"))
+            .toEqual(bytes.subarray(index * transfer.chunkBytes, (index + 1) * transfer.chunkBytes));
+        }
+      }
+      expect(manager.closeTransfer(first.transferId, "phone-2")).toBe(false);
+      expect(manager.closeTransfer(first.transferId, "phone-1")).toBe(true);
+      expect(() => manager.readTransfer(first.transferId, 0, "phone-1")).toThrow("expired");
+      expect(Buffer.from(manager.readTransfer(second.transferId, 0, "phone-1").data, "base64"))
+        .toEqual(bytes.subarray(0, second.chunkBytes));
+    } finally {
+      await manager.close();
+    }
+  });
+
+  it.each([false, true])("keeps overlapping direct-file transfers readable (first text preview: %s)", async (textPreview) => {
+    const { directory, manager } = await managerFixture();
+    try {
+      const bytes = Buffer.concat([Buffer.alloc(256 * 1024, 0x61), Buffer.alloc(44 * 1024, 0x62)]);
+      await writeFile(join(directory, "shared.txt"), bytes);
+      const first = await manager.openFileTransfer(directory, "shared.txt", "phone-1", textPreview);
+      const second = await manager.openFileTransfer(directory, "./shared.txt", "phone-1", !textPreview);
+
+      expect(second.transferId).not.toBe(first.transferId);
+      expect(second.artifactId).toBe(first.artifactId);
+      for (const index of [1, 0]) {
+        for (const transfer of [first, second]) {
+          expect(Buffer.from(manager.readTransfer(transfer.transferId, index, "phone-1").data, "base64"))
+            .toEqual(bytes.subarray(index * transfer.chunkBytes, (index + 1) * transfer.chunkBytes));
+        }
+      }
+      expect(manager.closeTransfer(first.transferId, "phone-2")).toBe(false);
+      expect(manager.closeTransfer(first.transferId, "phone-1")).toBe(true);
+      expect(() => manager.readTransfer(first.transferId, 0, "phone-1")).toThrow("expired");
+      expect(Buffer.from(manager.readTransfer(second.transferId, 0, "phone-1").data, "base64"))
+        .toEqual(bytes.subarray(0, second.chunkBytes));
+    } finally {
+      await manager.close();
+    }
+  });
+
+  it("distinguishes equal relative file paths in different working directories", async () => {
+    const { directory, manager } = await managerFixture();
+    try {
+      await mkdir(join(directory, "project-a"));
+      await mkdir(join(directory, "project-b"));
+      await writeFile(join(directory, "project-a", "report.txt"), "project A\n");
+      await writeFile(join(directory, "project-b", "report.txt"), "project B\n");
+      const first = await manager.openFileTransfer(join(directory, "project-a"), "report.txt", "phone-1");
+      const second = await manager.openFileTransfer(join(directory, "project-b"), "report.txt", "phone-1");
+
+      expect.soft(second.artifactId).not.toBe(first.artifactId);
+      expect(Buffer.from(manager.readTransfer(first.transferId, 0, "phone-1").data, "base64").toString())
+        .toBe("project A\n");
+      expect(Buffer.from(manager.readTransfer(second.transferId, 0, "phone-1").data, "base64").toString())
+        .toBe("project B\n");
+      expect(manager.closeTransfer(first.transferId, "phone-1")).toBe(true);
+      expect(Buffer.from(manager.readTransfer(second.transferId, 0, "phone-1").data, "base64").toString())
+        .toBe("project B\n");
+    } finally {
+      await manager.close();
+    }
+  });
+
+  it.each(["artifact", "file"] as const)("enforces owner and global limits without invalidating active %s transfers", async (source) => {
+    const { directory, manager } = await managerFixture();
+    try {
+      await writeFile(join(directory, "shared.txt"), "shared bytes");
+      const evidence = await manager.upsertDesktopEvidence({
+        id: "transfer-limits",
+        sessionId: "session-1",
+        cwd: directory,
+        startedAt: 1_000,
+        completedAt: 2_000,
+        tools: [],
+        paths: ["shared.txt"],
+      });
+      const transfers: { owner: string; info: BridgeArtifactTransferInfo }[] = [];
+      for (let ownerIndex = 0; ownerIndex < 4; ownerIndex += 1) {
+        const owner = `phone-${ownerIndex}`;
+        for (let index = 0; index < 4; index += 1) {
+          transfers.push({
+            owner,
+            info: source === "artifact"
+              ? await manager.openTransfer(evidence.artifacts[0]!.id, owner)
+              : await manager.openFileTransfer(directory, "shared.txt", owner),
+          });
+        }
+        await expect(source === "artifact"
+          ? manager.openTransfer(evidence.artifacts[0]!.id, owner)
+          : manager.openFileTransfer(directory, "shared.txt", owner)).rejects.toThrow(/Too many|过多/u);
+      }
+      await expect(source === "artifact"
+        ? manager.openTransfer(evidence.artifacts[0]!.id, "phone-extra")
+        : manager.openFileTransfer(directory, "shared.txt", "phone-extra")).rejects.toThrow(/Too many|过多/u);
+      for (const { owner, info } of transfers) {
+        expect(Buffer.from(manager.readTransfer(info.transferId, 0, owner).data, "base64").toString())
+          .toBe("shared bytes");
+      }
+      expect(manager.closeTransfer(transfers[0]!.info.transferId, "phone-0")).toBe(true);
+      const replacement = source === "artifact"
+        ? await manager.openTransfer(evidence.artifacts[0]!.id, "phone-0")
+        : await manager.openFileTransfer(directory, "shared.txt", "phone-0");
+      expect(Buffer.from(manager.readTransfer(replacement.transferId, 0, "phone-0").data, "base64").toString())
+        .toBe("shared bytes");
+    } finally {
+      await manager.close();
+    }
+  });
+
+  it.each(["artifact", "file"] as const)("expires overlapping %s transfers at their own ten-minute deadlines", async (source) => {
+    const { directory, manager } = await managerFixture();
+    try {
+      await writeFile(join(directory, "shared.txt"), "shared bytes");
+      const evidence = await manager.upsertDesktopEvidence({
+        id: "transfer-expiry",
+        sessionId: "session-1",
+        cwd: directory,
+        startedAt: 1_000,
+        completedAt: 2_000,
+        tools: [],
+        paths: ["shared.txt"],
+      });
+      const clock = vi.spyOn(Date, "now").mockReturnValue(2_000_000_000_000);
+      const first = source === "artifact"
+        ? await manager.openTransfer(evidence.artifacts[0]!.id, "phone-1")
+        : await manager.openFileTransfer(directory, "shared.txt", "phone-1");
+      expect(first.expiresAt).toBe(Date.now() + 10 * 60 * 1000);
+      clock.mockReturnValue(Date.now() + 100);
+      const second = source === "artifact"
+        ? await manager.openTransfer(evidence.artifacts[0]!.id, "phone-1")
+        : await manager.openFileTransfer(directory, "shared.txt", "phone-1");
+      expect(second.expiresAt - first.expiresAt).toBe(100);
+      clock.mockReturnValue(first.expiresAt - 1);
+      expect(manager.readTransfer(first.transferId, 0, "phone-1").data).toBe(Buffer.from("shared bytes").toString("base64"));
+      clock.mockReturnValue(first.expiresAt);
+      expect(() => manager.readTransfer(first.transferId, 0, "phone-1")).toThrow("expired");
+      expect(manager.readTransfer(second.transferId, 0, "phone-1").data).toBe(Buffer.from("shared bytes").toString("base64"));
+      clock.mockReturnValue(second.expiresAt);
+      expect(() => manager.readTransfer(second.transferId, 0, "phone-1")).toThrow("expired");
+      expect(ARTIFACT_TRANSFER_TTL_MS).toBe(10 * 60 * 1000);
+    } finally {
+      await manager.close();
+    }
   });
 
   it("rejects symlink escapes and files above the 20 MiB hard limit", async () => {

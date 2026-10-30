@@ -728,10 +728,6 @@ export class EvidenceManager {
 
   async openTransfer(artifactId: string, owner: string, textPreview = false): Promise<BridgeArtifactTransferInfo> {
     this.pruneTransfers();
-    const previous = [...this.transfers.entries()].find(([, transfer]) => (
-      transfer.owner === owner && transfer.info.artifactId === artifactId
-    ));
-    if (previous) this.transfers.delete(previous[0]);
     if (
       this.transfers.size >= MAX_ACTIVE_TRANSFERS ||
       [...this.transfers.values()].filter((transfer) => transfer.owner === owner).length
@@ -788,11 +784,7 @@ export class EvidenceManager {
     if (!metadata.isFile()) throw new Error("目标路径不是普通文件");
     if (textPreview && metadata.size > TEXT_PREVIEW_MAX_BYTES) throw new Error("文本预览仅支持 1 MB 以内的文件，请下载查看全文");
     if (metadata.size > ARTIFACT_MAX_BYTES) throw new Error("文件超过 20 MiB 传输上限");
-    const artifactKey = `file:${normalized.relativePath}`;
-    const previous = [...this.transfers.entries()].find(([, transfer]) => (
-      transfer.owner === owner && transfer.info.artifactId === artifactKey
-    ));
-    if (previous) this.transfers.delete(previous[0]);
+    const artifactKey = `file:${stableId(sourcePath)}`;
     if (
       this.transfers.size >= MAX_ACTIVE_TRANSFERS ||
       [...this.transfers.values()].filter((transfer) => transfer.owner === owner).length

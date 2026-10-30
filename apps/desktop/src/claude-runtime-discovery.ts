@@ -186,6 +186,7 @@ export function buildClaudeRuntimeEnvironment(
 export interface ClaudeRuntime {
   environment: NodeJS.ProcessEnv;
   executablePath?: string;
+  /** Source file: a Host credential file or the active fixed gateway profile. */
   credentialPath?: string;
   version?: string;
 }
@@ -194,19 +195,59 @@ export async function prepareClaudeRuntime(
   environment: NodeJS.ProcessEnv = process.env,
   previous?: ClaudeRuntime,
   platform: NodeJS.Platform = process.platform,
+  home = homedir(),
 ): Promise<ClaudeRuntime> {
   const prepared = buildClaudeRuntimeEnvironment(environment);
-  const credentialPath = await findClaudeHostCredentials(prepared, homedir(), undefined, platform);
-  if (credentialPath) applyClaudeHostCredentials(prepared, credentialPath);
+  let credentialPath = await findClaudeHostCredentials(prepared, home, undefined, platform);
+  if (credentialPath) {
+    applyClaudeHostCredentials(prepared, credentialPath);
+  } else {
+    // Desktop passes fixed gateway keys directly; recent versions no longer
+    // materialize host-creds files for this credential source.
+    for (const root of credentialRoots(home, prepared, platform)) {
+      let entry: ConfigLibraryEntryFile;
+      let path: string;
+      try {
+        const library = join(root, "configLibrary");
+        const meta = JSON.parse(await readFile(join(library, "_meta.json"), "utf8")) as ConfigLibraryMetaFile;
+        const appliedId = nonEmptyString(meta?.appliedId);
+        if (!appliedId || !/^[a-z0-9._-]+$/iu.test(appliedId)) continue;
+        path = join(library, `${appliedId}.json`);
+        if (!await protectedCredential(path, platform)) continue;
+        entry = JSON.parse(await readFile(path, "utf8")) as ConfigLibraryEntryFile;
+      } catch {
+        // A profile may have no saved gateway configuration.
+        continue;
+      }
+      const baseUrl = nonEmptyString(entry?.inferenceGatewayBaseUrl);
+      const key = nonEmptyString(entry?.inferenceGatewayApiKey);
+      const scheme = entry?.inferenceGatewayAuthScheme;
+      if (
+        entry?.inferenceProvider !== "gateway" || !baseUrl || !key ||
+        (scheme !== "bearer" && scheme !== "x-api-key")
+      ) continue;
+      const url = URL.parse(baseUrl);
+      if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) continue;
+      credentialPath = path;
+      prepared.ANTHROPIC_BASE_URL = baseUrl;
+      prepared.ANTHROPIC_AUTH_TOKEN = scheme === "bearer" ? key : "";
+      prepared.ANTHROPIC_API_KEY = scheme === "x-api-key" ? key : "";
+      prepared.CLAUDE_CODE_HOST_AUTH_ENV_VAR = scheme === "bearer" ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY";
+      prepared.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = "1";
+      delete prepared.CLAUDE_CODE_HOST_CREDS_FILE;
+      delete prepared.CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH;
+      break;
+    }
+  }
   const previousExecutable = previous?.executablePath && await isExecutable(previous.executablePath, platform)
     ? previous.executablePath
     : undefined;
-  const executablePath = previousExecutable ?? await findClaudeExecutable(prepared, homedir(), platform);
+  const executablePath = previousExecutable ?? await findClaudeExecutable(prepared, home, platform);
   let version = executablePath === previous?.executablePath ? previous?.version : undefined;
   if (executablePath && !version) {
     try {
       const result = await execFileAsync(executablePath, ["--version"], {
-        cwd: homedir(),
+        cwd: home,
         env: prepared,
         ...(platform === "win32" && /\.(?:cmd|bat)$/iu.test(executablePath) ? { shell: true } : {}),
         timeout: 8_000,

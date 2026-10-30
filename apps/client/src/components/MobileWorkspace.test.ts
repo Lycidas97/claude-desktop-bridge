@@ -6,9 +6,13 @@ import type {
   BridgePermissionInfo,
   BridgeSessionInfo,
 } from "@bridge/protocol";
-import { describe, expect, it } from "vitest";
+import { type ComponentProps, createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
 import {
+  MobileWorkspace,
   aggregateFileChanges,
+  canConfigureSession,
   canStopBridgeTask,
   conversationItems,
   conversationTimeline,
@@ -22,6 +26,90 @@ import {
   supportsRuntimeHandoff,
   usesOfficialComposer,
 } from "./MobileWorkspace.js";
+
+describe("mobile workspace directory", () => {
+  const session: BridgeSessionInfo = {
+    sessionId: "session-1",
+    projectId: "project-1",
+    projectName: "Project",
+    cwd: "/tmp/project",
+    title: "Visible session",
+    source: "desktop",
+    ownership: "DESKTOP_OBSERVED",
+    transport: "bridge-host",
+    turnState: "idle",
+    lastActivityAt: 1,
+    pendingCount: 0,
+  };
+  const snapshot: BridgeHostSnapshot = {
+    host: { hostId: "host-1", pairingEpoch: 1, name: "My computer", relayUrl: "", online: true, lastSeenAt: 1, version: "1.0.2", capabilities: [] },
+    projects: [{ projectId: "project-1", name: "Project", cwd: "/tmp/project", sessionCount: 2, runningCount: 0, pendingCount: 0, lastActivityAt: 1 }],
+    sessions: [session, { ...session, sessionId: "archive-1", title: "Archived session", archivedAt: 2 }],
+    devices: [],
+    runtime: {
+      state: "ready", detail: "Ready", activeTurns: 0, maxParallelTurns: 1,
+      desktopIntegration: { state: "not-managed", detail: "Unavailable", enabled: false, canRestart: false },
+    },
+    permissions: [],
+    latestSeq: 0,
+  };
+
+  function workspaceProps(): ComponentProps<typeof MobileWorkspace> {
+    return {
+      activeHostId: "host-1", desktopName: "My computer", connection: "connected", desktopOnline: true,
+      snapshot, permissions: [], histories: {}, evidence: {}, artifactPreviews: {}, artifactTransfers: {}, events: [], localTurns: [], pendingOutbound: 0,
+      themeControl: { theme: "dark", family: "apple", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
+      onOpenSession: vi.fn(), onLoadOlderHistory: vi.fn(), onLoadOlderEvidence: vi.fn(), onPreviewArtifact: vi.fn(), onDownloadArtifact: vi.fn(),
+      onSendTurn: vi.fn(), onInterruptTurn: vi.fn(), onResolveUncertain: vi.fn(), onResolvePermission: vi.fn(), onCreateSession: vi.fn(),
+      onLoadSessionConfiguration: vi.fn(), onConfigureSession: vi.fn(), onPreviewProviderSwitch: vi.fn(), onCommitProviderSwitch: vi.fn(), onCancelProviderSwitch: vi.fn(),
+      onRefreshProviders: vi.fn(), onPreviewRuntimeHandoff: vi.fn(), onCommitRuntimeHandoff: vi.fn(), onConfirmRuntimeHandoff: vi.fn(), onCancelRuntimeHandoff: vi.fn(), onGetRuntimeHandoff: vi.fn(),
+      onPauseRuntimeGoal: vi.fn(), onResumeRuntimeGoal: vi.fn(), onDesktopAppAction: vi.fn(), onRefresh: vi.fn(), onBackToHosts: vi.fn(), onRetry: vi.fn(),
+    };
+  }
+
+  it("opens on the directory with an archive page entry and closed action menus", () => {
+    const props = workspaceProps();
+    const html = renderToStaticMarkup(createElement(MobileWorkspace, props));
+    expect(html).toContain('<h1>会话</h1>');
+    expect(html).toContain('aria-label="当前电脑：My computer，查看电脑"');
+    expect(html).toContain('aria-label="目录更多"');
+    expect(html).toContain("Visible session");
+    expect(html).toContain("已归档会话");
+    expect(html).not.toContain("Archived session");
+    expect(html).not.toContain("desktop-agents-drawer");
+    expect(html).not.toContain('aria-label="强制同步"');
+    expect(html).not.toContain('role="dialog"');
+    expect(props.onOpenSession).not.toHaveBeenCalled();
+  });
+
+  it("does not render hidden workspace content or consume navigation callbacks", () => {
+    const props = workspaceProps();
+    expect(renderToStaticMarkup(createElement(MobileWorkspace, {
+      ...props, visible: false, focusRequest: { sessionId: session.sessionId, key: 1 }, onFocusHandled: vi.fn(),
+    }))).toBe("");
+    expect(props.onOpenSession).not.toHaveBeenCalled();
+  });
+
+  it("shows the direct Fork group without flattening nested branches", () => {
+    const props = workspaceProps();
+    const html = renderToStaticMarkup(createElement(MobileWorkspace, {
+      ...props,
+      snapshot: {
+        ...snapshot,
+        sessions: [session, { ...session, sessionId: "fork-1", title: "Fork", parentSessionId: session.sessionId }, { ...session, sessionId: "fork-2", title: "Nested Fork", parentSessionId: "fork-1" }],
+      },
+    }));
+    expect(html).toContain("1 个 Fork 分支");
+    expect(html).not.toContain("Nested Fork");
+  });
+
+  it("offers configuration according to session runtime capabilities", () => {
+    expect(canConfigureSession(session)).toBe(true);
+    expect(canConfigureSession({ ...session, allowedActions: { canConfigure: false } as NonNullable<BridgeSessionInfo["allowedActions"]> })).toBe(false);
+    expect(canConfigureSession({ ...session, runtimeId: "codex-desktop" })).toBe(false);
+    expect(canConfigureSession({ ...session, runtimeId: "codex-desktop", allowedActions: { canConfigure: true } as NonNullable<BridgeSessionInfo["allowedActions"]> })).toBe(true);
+  });
+});
 
 describe("restorableSessionId", () => {
   const sessions = [{ sessionId: "session-1" }] as BridgeSessionInfo[];

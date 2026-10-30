@@ -177,7 +177,7 @@ export interface TranscriptObserverRuntime {
   readonly catalog: ClaudeCatalogSnapshot;
   isDesktopBusy(sessionId: string, now?: number): boolean;
   externalWriteVersion(sessionId: string): number;
-  canStartBridgeHost(sessionId: string): Promise<boolean>;
+  canStartBridgeHost(sessionId: string, reusingIdleHost?: boolean): Promise<boolean>;
   onCatalog(listener: (catalog: ClaudeCatalogSnapshot) => void): () => void;
 }
 
@@ -1148,11 +1148,10 @@ export class SessionBroker extends EventEmitter {
     if (!sourceTranscript) {
       throw new Error("当前会话还没有可分支的对话记录，请先发送至少一条消息");
     }
-    const rootSessionId = source.parentSessionId ?? source.sessionId;
-    const rootSource = (source.parentSessionId ? this.session(source.parentSessionId) : undefined) ?? source;
+    const parentSessionId = source.sessionId;
     const existingForkLabels = new Set(
       this.listSessions()
-        .filter((candidate) => candidate.parentSessionId === rootSessionId)
+        .filter((candidate) => candidate.parentSessionId === parentSessionId)
         .map((candidate) => candidate.forkLabel)
         .filter((label): label is string => Boolean(label)),
     );
@@ -1162,7 +1161,7 @@ export class SessionBroker extends EventEmitter {
       forkIndex += 1;
       forkLabel = `fork-${forkIndex}`;
     }
-    const baseTitle = rootSource.title.replace(/\s*\(fork(?:-\d+)?\)\s*$/iu, "").trim() || rootSource.projectName;
+    const baseTitle = source.title.replace(/\s*\(fork(?:-\d+)?\)\s*$/iu, "").trim() || source.projectName;
     const forkTitle = compact(title?.trim() || `${baseTitle} (fork)`, 140);
     const createdAt = Date.now();
     const newSessionId = randomUUID();
@@ -1181,13 +1180,13 @@ export class SessionBroker extends EventEmitter {
       { encoding: "utf8", mode: 0o600 },
     );
 
-    const parentDesktopSessionId = rootSource.desktopSessionId ?? `local_${rootSessionId}`;
+    const parentDesktopSessionId = source.desktopSessionId ?? `local_${parentSessionId}`;
     const session: StoredBridgeSession = {
       sessionId: newSessionId,
       cwd: normalize(source.cwd),
       title: forkTitle,
       createdAt,
-      parentSessionId: rootSessionId,
+      parentSessionId,
       parentDesktopSessionId,
       forkLabel,
     };
@@ -1943,7 +1942,10 @@ export class SessionBroker extends EventEmitter {
     const externalWriteVersion = this.options.observer.externalWriteVersion(turn.sessionId);
     if (
       providerKind === "claude-3p" &&
-      !await this.options.observer.canStartBridgeHost(turn.sessionId)
+      !await this.options.observer.canStartBridgeHost(
+        turn.sessionId,
+        Boolean(state.host && state.hostLaneId === turn.laneId),
+      )
     ) {
       state.ownership = "DESKTOP_OBSERVED";
       state.turnState = "queued";
@@ -3046,7 +3048,10 @@ export class SessionBroker extends EventEmitter {
       }
       if (
         providerKind === "claude-3p" &&
-        !await this.options.observer.canStartBridgeHost(turn.sessionId)
+        !await this.options.observer.canStartBridgeHost(
+          turn.sessionId,
+          Boolean(state?.host && state.hostLaneId === turn.laneId),
+        )
       ) {
         const waiting = state ?? {
           ownership: "DESKTOP_OBSERVED" as const,

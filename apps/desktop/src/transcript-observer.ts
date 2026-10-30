@@ -92,13 +92,15 @@ export class TranscriptObserver extends EventEmitter {
     return this.externalWriteVersions.get(sessionId) ?? 0;
   }
 
-  async canStartBridgeHost(sessionId: string): Promise<boolean> {
+  async canStartBridgeHost(sessionId: string, reusingIdleHost = false): Promise<boolean> {
     const session = this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
     if (session?.transcriptPath && !this.knownUserMessages.has(sessionId)) {
       await this.primeTranscript(session);
     }
     if (!session?.desktopProcessAlive) return true;
-    if (this.isDesktopBusy(sessionId) || !session.transcriptPath) return false;
+    // A completed Bridge turn already owns its idle host; old task/subagent
+    // activity must not block its queue. Fresh Desktop input still takes priority.
+    if ((!reusingIdleHost && this.isDesktopBusy(sessionId)) || !session.transcriptPath) return false;
     return isClaudeTranscriptAtTurnBoundary(session.transcriptPath);
   }
 

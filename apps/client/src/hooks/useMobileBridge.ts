@@ -2748,6 +2748,35 @@ export function useMobileBridge() {
     return result.configuration;
   }, [sendRequest]);
 
+  const configureHostPermission = useCallback(async (
+    runtimeId: BridgeDesktopRuntimeId,
+    mode: BridgePermissionMode,
+    sessionId?: string,
+  ): Promise<void> => {
+    if (runtimeId !== "claude-desktop" && (!sessionId
+      || !stateRef.current.snapshot?.sessions.some((session) => session.sessionId === sessionId
+        && session.runtimeId === runtimeId && sessionId.startsWith(`${runtimeId}:`)))) {
+      throw new Error("请先选择该应用的有效会话，再设置默认授权");
+    }
+    const response = await sendRequest("permission.policy.configure", {
+      scope: "host",
+      mode,
+      ...(runtimeId !== "claude-desktop" ? { sessionId } : {}),
+    }, { wait: true, timeoutMs: 45_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "默认授权保存失败");
+    const result = response.result as { defaultPermissionMode?: BridgePermissionMode };
+    if (runtimeId === "claude-desktop" && result.defaultPermissionMode) {
+      setState((current) => current.snapshot ? {
+        ...current,
+        snapshot: {
+          ...current.snapshot,
+          host: { ...current.snapshot.host, defaultPermissionMode: result.defaultPermissionMode! },
+        },
+      } : current);
+    }
+    await resumeEvents();
+  }, [resumeEvents, sendRequest]);
+
   const configurePermissionPolicy = useCallback(async (
     sessionId: string,
     scope: "host" | "session",
@@ -3145,6 +3174,7 @@ export function useMobileBridge() {
     forkSession,
     loadSessionConfiguration,
     configureSession,
+    configureHostPermission,
     configurePermissionPolicy,
     previewProviderSwitch,
     commitProviderSwitch,

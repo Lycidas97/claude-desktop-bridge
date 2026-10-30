@@ -1,11 +1,10 @@
 import { ChevronRight, Laptop, ScanLine, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { PairedHost } from "../hooks/useMobileBridge.js";
 import type { ThemeControl } from "../hooks/useTheme.js";
-import { BrandMark } from "./BrandMark.js";
+import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
-import { ThemeMenu } from "./ThemeMenu.js";
 
 function statusLabel(host: PairedHost): string {
   if (host.needsRepair) return "需重配";
@@ -28,7 +27,8 @@ function lastSeenLabel(host: PairedHost): string {
 export function HostBrowser({
   hosts,
   error,
-  themeControl,
+  activeHostId,
+  onDetails,
   onSelect,
   onRemove,
   onAdd,
@@ -36,7 +36,9 @@ export function HostBrowser({
 }: {
   hosts: PairedHost[];
   error?: string | undefined;
-  themeControl: ThemeControl;
+  themeControl?: ThemeControl;
+  activeHostId?: string | undefined;
+  onDetails?(hostId: string): void;
   onSelect(roomId: string, focusSessionId?: string): Promise<void>;
   onRemove(roomId: string): Promise<void>;
   onAdd(): void;
@@ -46,16 +48,28 @@ export function HostBrowser({
   const [removeCandidate, setRemoveCandidate] = useState<PairedHost>();
   const [removing, setRemoving] = useState(false);
 
-  async function openHost(roomId: string): Promise<void> {
+  useEffect(() => {
+    if (!removeCandidate) return;
+    return registerMobileBackHandler(() => {
+      if (!removing) setRemoveCandidate(undefined);
+      return true;
+    }, 200);
+  }, [removeCandidate, removing]);
+
+  async function openHost(host: PairedHost, focusSessionId?: string): Promise<void> {
     if (openingHostId) return;
-    setOpeningHostId(roomId);
+    if (host.needsRepair) {
+      onRepair();
+      return;
+    }
+    if (!focusSessionId && host.roomId === activeHostId && onDetails) {
+      onDetails(host.roomId);
+      return;
+    }
+    setOpeningHostId(host.roomId);
     try {
-      const host = hosts.find((candidate) => candidate.roomId === roomId);
-      if (host?.needsRepair) {
-        onRepair();
-        return;
-      }
-      await onSelect(roomId, host?.attentionSessionId);
+      if (focusSessionId) await onSelect(host.roomId, focusSessionId);
+      else await onSelect(host.roomId);
     } finally {
       setOpeningHostId(undefined);
     }
@@ -74,43 +88,56 @@ export function HostBrowser({
 
   return (
     <main className="mobile-workspace host-list-workspace">
-      <header className="mobile-topbar">
-        <BrandMark compact />
-        <div className="mobile-device">
-          <strong>我的电脑</strong>
-          <span>{hosts.length} 台主机已配对</span>
+      <header className="mobile-page-header">
+        <div>
+          <h1>电脑</h1>
+          <p className="detail-text">{hosts.length} 台电脑已配对</p>
         </div>
-        <ThemeMenu control={themeControl} iconSize={18} />
       </header>
 
       <section className="host-browser" aria-label="已配对的电脑">
         <div className="host-rows">
           {hosts.map((host) => (
-            <div className="host-row-shell" key={host.roomId}>
+            <div className={`host-row-shell ${onDetails && host.roomId === activeHostId ? "host-row-shell--details" : "host-row-shell--removable"}`} key={host.roomId}>
               <button
                 type="button"
                 className="host-row"
-                onClick={() => void openHost(host.roomId)}
+                onClick={() => void openHost(host)}
                 disabled={Boolean(openingHostId) || removing}
               >
                 <span className="host-row-icon"><Laptop size={19} /></span>
                 <span className="host-row-copy">
                   <strong>{host.desktopName}</strong>
-                  <small>{openingHostId === host.roomId ? "正在连接" : lastSeenLabel(host)}</small>
+                  <small>
+                    {host.roomId === activeHostId && <span className="host-current-label">当前电脑 · </span>}
+                    {openingHostId === host.roomId ? "正在连接" : host.needsRepair ? lastSeenLabel(host) : host.roomId !== activeHostId ? "切换到此电脑" : lastSeenLabel(host)}
+                  </small>
                 </span>
                 <span className={`host-row-state ${host.needsRepair || host.status === "attention" ? "warning" : host.status}`}>
                   <i />{statusLabel(host)}
                 </span>
                 <ChevronRight size={18} aria-hidden="true" />
               </button>
-              <IconButton
-                className="host-remove-button"
-                label={`删除 ${host.desktopName}`}
-                onClick={() => setRemoveCandidate(host)}
-                disabled={Boolean(openingHostId) || removing}
-              >
-                <Trash2 size={17} />
-              </IconButton>
+              {(!onDetails || host.roomId !== activeHostId) && (
+                <IconButton
+                  className="host-remove-button"
+                  label={`删除 ${host.desktopName}`}
+                  onClick={() => setRemoveCandidate(host)}
+                  disabled={Boolean(openingHostId) || removing}
+                >
+                  <Trash2 size={17} />
+                </IconButton>
+              )}
+              {host.attentionSessionId && !host.needsRepair && (
+                <button
+                  type="button"
+                  className="host-attention-button"
+                  disabled={Boolean(openingHostId) || removing}
+                  onClick={() => void openHost(host, host.attentionSessionId)}
+                >
+                  查看待处理<ChevronRight size={15} aria-hidden="true" />
+                </button>
+              )}
             </div>
           ))}
         </div>

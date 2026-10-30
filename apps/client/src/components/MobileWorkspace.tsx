@@ -42,9 +42,7 @@ import {
   ImagePlus,
   LoaderCircle,
   MoreHorizontal,
-  Play,
   Plus,
-  Power,
   RefreshCw,
   Search,
   Send,
@@ -55,7 +53,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   LocalTurn,
   MobileConnectionIssue,
@@ -68,6 +66,7 @@ import {
   collapseProjects,
   expandAllProjects,
   expandProject,
+  getSessionAncestorIds,
   groupProjectSessionFamilies,
   previewProjectSessionFamilies,
   sortProjectSessionsByRecent,
@@ -86,7 +85,6 @@ import { useMediaPreview } from "./MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
 import { IconButton } from "./IconButton.js";
 import { MarkdownText } from "./MarkdownText.js";
-import { ThemeMenu } from "./ThemeMenu.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
@@ -106,27 +104,6 @@ interface ConversationItem extends BridgeHistoryItem {
   commandId?: string;
   error?: string;
   live?: boolean;
-}
-
-function lastSessionKey(hostId: string): string {
-  return `bridge.mobile.last-session.v1:${hostId}`;
-}
-
-function readLastSession(hostId: string): string | undefined {
-  try {
-    return localStorage.getItem(lastSessionKey(hostId)) ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function writeLastSession(hostId: string, sessionId?: string): void {
-  try {
-    if (sessionId) localStorage.setItem(lastSessionKey(hostId), sessionId);
-    else localStorage.removeItem(lastSessionKey(hostId));
-  } catch {
-    // Session restoration is optional when browser storage is unavailable.
-  }
 }
 
 export function restorableSessionId(
@@ -507,6 +484,12 @@ function runtimeSupports(
 ): boolean {
   const runtime = snapshot?.runtimes?.find((candidate) => candidate.id === desktopRuntimeId(session));
   return runtime?.capabilities.includes(capability) ?? desktopRuntimeId(session) === "claude-desktop";
+}
+
+export function canConfigureSession(session: BridgeSessionInfo): boolean {
+  return session.allowedActions?.canConfigure === true
+    || (desktopRuntimeId(session) === "claude-desktop"
+      && session.allowedActions?.canConfigure !== false);
 }
 
 export function canStopBridgeTask(session: BridgeSessionInfo): boolean {
@@ -1159,6 +1142,14 @@ function ToolPermissionPrompt({
   const [error, setError] = useState<string>();
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
 
+  useEffect(() => {
+    if (!confirmFullAccess) return;
+    return registerMobileBackHandler(() => {
+      if (!busy) setConfirmFullAccess(false);
+      return true;
+    }, 150);
+  }, [confirmFullAccess, busy]);
+
   async function decide(decision: "allow-once" | "allow-always" | "deny"): Promise<void> {
     if (busy) return;
     setBusy(true);
@@ -1228,15 +1219,15 @@ function ToolPermissionPrompt({
         )}
         {onEnableFullAccess && (
           <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess(true)}>
-            <ShieldCheck size={15} />完全授权
+            <ShieldCheck size={15} />电脑默认完全授权
           </button>
         )}
       </div>
     </section>
     <ConfirmationDialog
       open={confirmFullAccess}
-      title="整台电脑启用完全授权"
-      description="Bridge 将自动批准命令和文件修改，并立即处理当前积压；模型提出的提问仍需你回答。"
+      title="更改当前电脑的默认授权模式"
+      description={`这会将当前电脑上 ${desktopRuntimeName(permission.sessionId.includes(":") ? permission.sessionId.split(":")[0] as BridgeDesktopRuntimeId : "claude-desktop")} 的默认授权设为完全授权，自动批准使用此默认值的会话命令和文件修改，并处理积压授权；模型的提问仍需回答。`}
       confirmLabel="启用完全授权"
       busy={busy}
       onCancel={() => setConfirmFullAccess(false)}
@@ -1279,6 +1270,11 @@ export function MobileWorkspace({
   snapshot,
   permissions,
   focusSessionId,
+  visible = true,
+  onConversationChange,
+  focusRequest,
+  onFocusHandled,
+  directoryRequest,
   histories,
   evidence,
   artifactPreviews,
@@ -1330,6 +1326,11 @@ export function MobileWorkspace({
   snapshot: BridgeHostSnapshot | undefined;
   permissions: BridgePermissionInfo[];
   focusSessionId?: string | undefined;
+  visible?: boolean;
+  onConversationChange?(open: boolean): void;
+  focusRequest?: { sessionId: string; key: number };
+  onFocusHandled?(): void;
+  directoryRequest?: number;
   histories: Record<string, SessionHistoryState>;
   evidence: Record<string, SessionEvidenceState>;
   artifactPreviews: Record<string, BridgeArtifactPreview>;
@@ -1422,7 +1423,8 @@ export function MobileWorkspace({
   const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
   const [createTitle, setCreateTitle] = useState("");
   const [createBusy, setCreateBusy] = useState(false);
-  const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [configurationSessionId, setConfigurationSessionId] = useState<string>();
+  const [actionSessionId, setActionSessionId] = useState<string>();
   const [providerOpen, setProviderOpen] = useState(false);
   const [relayOpen, setRelayOpen] = useState(false);
   const [imageError, setImageError] = useState<string>();
@@ -1435,20 +1437,18 @@ export function MobileWorkspace({
   const [deleteSessionConfirmOpen, setDeleteSessionConfirmOpen] = useState(false);
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const [sessionActionError, setSessionActionError] = useState<string>();
-  const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [directoryMenuOpen, setDirectoryMenuOpen] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
-  const [desktopControlsExpanded, setDesktopControlsExpanded] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [projectSearch, setProjectSearch] = useState("");
-  const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
-  const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
-  const [quitDesktopTarget, setQuitDesktopTarget] = useState<BridgeDesktopRuntimeId>();
   const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
   const openMedia = useMediaPreview();
   const [pendingFileDownload, setPendingFileDownload] = useState<string>();
   const [fileDownloadBusy, setFileDownloadBusy] = useState(false);
   const [fileDownloadError, setFileDownloadError] = useState<string>();
+  const directoryRef = useRef<HTMLElement>(null);
+  const directoryScrollPositions = useRef(new Map<string, number>());
   const streamRef = useRef<HTMLElement>(null);
   const streamScrollState = useRef<{
     sessionId?: string | undefined;
@@ -1460,11 +1460,14 @@ export function MobileWorkspace({
   }>({ anchorOffset: 0, pinnedToBottom: true });
   const fileRef = useRef<HTMLInputElement>(null);
   const handledFocusRef = useRef<string | undefined>(undefined);
-  const restoredSessionRef = useRef(false);
+  const handledFocusRequestRef = useRef<number | undefined>(undefined);
+  const handledDirectoryRequestRef = useRef<number | undefined>(undefined);
   const announcedPermissionsRef = useRef(new Set<string>());
 
   const sessions = snapshot?.sessions ?? [];
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
+  const configurationSession = sessions.find((session) => session.sessionId === configurationSessionId);
+  const actionSession = sessions.find((session) => session.sessionId === actionSessionId);
   const providers = snapshot?.providers ?? [];
   const providerSwitchingAvailable = Boolean(
     selectedSession && desktopRuntimeId(selectedSession) === "claude-desktop" && supportsProviderSwitching(snapshot),
@@ -1510,7 +1513,9 @@ export function MobileWorkspace({
     Boolean(session.archivedAt) && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
   ))), [runtimeFilter, sessions]);
   const menuSession = menuSessionId ? sessions.find((session) => session.sessionId === menuSessionId) : undefined;
-  const canManageSessions = Boolean(onForkSession || onArchiveSession || onDeleteSession);
+  const menuSupportsFork = Boolean(menuSession && onForkSession && desktopRuntimeId(menuSession) === "claude-desktop");
+  const menuSupportsProviderSwitch = Boolean(menuSession && desktopRuntimeId(menuSession) === "claude-desktop" && supportsProviderSwitching(snapshot));
+  const menuSupportsRuntimeHandoff = Boolean(menuSession && runtimeHandoffAvailable && menuSession.allowedActions?.canRelay !== false);
   const menuSessionBusy = Boolean(menuSession && (
     menuSession.turnState === "running"
     || menuSession.turnState === "queued"
@@ -1552,27 +1557,18 @@ export function MobileWorkspace({
   }, [syncFlash]);
 
   useEffect(() => {
-    if (!snapshot || restoredSessionRef.current) return;
-    restoredSessionRef.current = true;
-    const storedSessionId = readLastSession(activeHostId);
-    if (!storedSessionId) return;
-    const sessionId = restorableSessionId(storedSessionId, sessions);
-    if (!sessionId) {
-      writeLastSession(activeHostId);
-      return;
-    }
-    void selectSession(sessionId);
-  }, [activeHostId, snapshot]);
-
-  useEffect(() => {
     if (!snapshot || !selectedSessionId) return;
     if (restorableSessionId(selectedSessionId, sessions)) return;
     setSelectedSessionId(undefined);
-    writeLastSession(activeHostId);
   }, [activeHostId, selectedSessionId, sessions, snapshot]);
+
+  useEffect(() => {
+    onConversationChange?.(Boolean(selectedSession));
+  }, [onConversationChange, Boolean(selectedSession)]);
 
   const autoRetriedSessionRef = useRef<string | undefined>(undefined);
   useEffect(() => {
+    if (!visible) return;
     if (connection !== "connected" || !selectedSessionId) {
       autoRetriedSessionRef.current = undefined;
       return;
@@ -1586,68 +1582,84 @@ export function MobileWorkspace({
       autoRetriedSessionRef.current = retryKey;
       void onOpenSession(selectedSessionId);
     }
-  }, [connection, onOpenSession, selectedHistory, selectedSessionId]);
+  }, [connection, onOpenSession, selectedHistory, selectedSessionId, visible]);
 
-  useEffect(() => registerMobileBackHandler(() => {
-    if (providerOpen) {
-      setProviderOpen(false);
-      return true;
-    }
-    if (relayOpen) {
-      setRelayOpen(false);
-      return true;
-    }
-    if (permissionOpen) {
-      setPermissionOpen(false);
-      return true;
-    }
-    if (configurationOpen) {
-      setConfigurationOpen(false);
-      return true;
-    }
-    if (createOpen) {
-      setCreateOpen(false);
-      return true;
-    }
-    if (deleteSessionConfirmOpen) {
-      setDeleteSessionConfirmOpen(false);
-      return true;
-    }
-    if (pendingFileDownload) {
-      if (!fileDownloadBusy) setPendingFileDownload(undefined);
-      return true;
-    }
-    if (menuSessionId) {
-      setMenuSessionId(undefined);
-      return true;
-    }
-    if (quitDesktopTarget) {
-      setQuitDesktopTarget(undefined);
-      return true;
-    }
-    if (selectedSessionId) {
-      setSelectedSessionId(undefined);
-      return true;
-    }
-    if (activeProjectId) {
-      setActiveProjectId(undefined);
-      setProjectSearch("");
-      return true;
-    }
-    return false;
-  }, 100), [
+  useEffect(() => {
+    if (!visible) return;
+    return registerMobileBackHandler(() => {
+      if (providerOpen) {
+        setProviderOpen(false);
+        return true;
+      }
+      if (relayOpen) {
+        setRelayOpen(false);
+        return true;
+      }
+      if (permissionOpen) {
+        setPermissionOpen(false);
+        return true;
+      }
+      if (configurationSessionId) {
+        setConfigurationSessionId(undefined);
+        return true;
+      }
+      if (createOpen) {
+        setCreateOpen(false);
+        return true;
+      }
+      if (deleteSessionConfirmOpen) {
+        setDeleteSessionConfirmOpen(false);
+        return true;
+      }
+      if (pendingFileDownload) {
+        if (!fileDownloadBusy) setPendingFileDownload(undefined);
+        return true;
+      }
+      if (menuSessionId) {
+        setMenuSessionId(undefined);
+        return true;
+      }
+      if (directoryMenuOpen) {
+        setDirectoryMenuOpen(false);
+        return true;
+      }
+      if (selectedSessionId && sessionView === "evidence") {
+        setSessionView("conversation");
+        return true;
+      }
+      if (selectedSessionId) {
+        setSelectedSessionId(undefined);
+        return true;
+      }
+      if (activeProjectId) {
+        setActiveProjectId(undefined);
+        setProjectSearch("");
+        return true;
+      }
+      return false;
+    }, 100);
+  }, [
     activeProjectId,
-    configurationOpen,
+    configurationSessionId,
     createOpen,
     deleteSessionConfirmOpen,
+    directoryMenuOpen,
     fileDownloadBusy,
     menuSessionId,
     pendingFileDownload,
     permissionOpen,
     providerOpen,
-    quitDesktopTarget,
+    relayOpen,
     selectedSessionId,
+    sessionView,
+    visible,
   ]);
+
+  useLayoutEffect(() => {
+    if (visible && !selectedSession && directoryRef.current) {
+      directoryRef.current.scrollTop = directoryScrollPositions.current.get(activeProjectId ?? "") ?? 0;
+    }
+  }, [activeProjectId, Boolean(selectedSession), visible]);
 
   function rememberStreamPosition(): void {
     const stream = streamRef.current;
@@ -1697,12 +1709,22 @@ export function MobileWorkspace({
     const parentsToExpand: string[] = [];
     for (const session of sessions) {
       if (!session.parentSessionId) continue;
+      const isSelected = session.sessionId === selectedSessionId;
+      const selectedKey = `selected:${session.sessionId}`;
+      if (isSelected) {
+        if (!autoExpandedForkKeysRef.current.has(selectedKey)) {
+          autoExpandedForkKeysRef.current.add(selectedKey);
+          parentsToExpand.push(...getSessionAncestorIds(sessions, session.sessionId));
+        }
+      } else {
+        autoExpandedForkKeysRef.current.delete(selectedKey);
+      }
       const isActive = session.turnState === "running" || session.turnState === "waiting" || session.turnState === "queued";
       const activeKey = `active:${session.sessionId}`;
       if (isActive) {
         if (!autoExpandedForkKeysRef.current.has(activeKey)) {
           autoExpandedForkKeysRef.current.add(activeKey);
-          parentsToExpand.push(session.parentSessionId);
+          parentsToExpand.push(...getSessionAncestorIds(sessions, session.sessionId));
         }
       } else {
         autoExpandedForkKeysRef.current.delete(activeKey);
@@ -1715,20 +1737,55 @@ export function MobileWorkspace({
         return next.size === current.size ? current : next;
       });
     }
-  }, [sessions]);
+  }, [selectedSessionId, sessions]);
+
+  useEffect(() => {
+    if (!visible || directoryRequest === undefined || handledDirectoryRequestRef.current === directoryRequest) return;
+    handledDirectoryRequestRef.current = directoryRequest;
+    setSelectedSessionId(undefined);
+    setActiveProjectId(undefined);
+    setProjectSearch("");
+    setSessionView("conversation");
+    setConfigurationSessionId(undefined);
+    setMenuSessionId(undefined);
+    setDirectoryMenuOpen(false);
+    setProviderOpen(false);
+    setRelayOpen(false);
+    setPermissionOpen(false);
+    setCreateOpen(false);
+    setDeleteSessionConfirmOpen(false);
+    setPendingFileDownload(undefined);
+  }, [directoryRequest, visible]);
 
   useEffect(() => {
     if (
+      !visible ||
+      !focusRequest ||
+      handledFocusRequestRef.current === focusRequest.key ||
+      !sessions.some((session) => session.sessionId === focusRequest.sessionId)
+    ) return;
+    handledFocusRequestRef.current = focusRequest.key;
+    if (focusSessionId === focusRequest.sessionId) handledFocusRef.current = focusSessionId;
+    void selectSession(focusRequest.sessionId);
+    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusRequest.sessionId));
+    onFocusHandled?.();
+  }, [focusRequest, focusSessionId, onFocusHandled, permissions, sessions, visible]);
+
+  useEffect(() => {
+    if (
+      !visible ||
+      focusRequest ||
       !focusSessionId ||
       handledFocusRef.current === focusSessionId ||
       !sessions.some((session) => session.sessionId === focusSessionId)
     ) return;
     handledFocusRef.current = focusSessionId;
-    void selectSession(focusSessionId).then(() => setPermissionOpen(true));
-  }, [focusSessionId, sessions]);
+    void selectSession(focusSessionId);
+    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusSessionId));
+  }, [focusRequest, focusSessionId, permissions, sessions, visible]);
 
   useEffect(() => {
-    if (!selectedSessionId) return;
+    if (!visible || !selectedSessionId) return;
     const next = permissions.find((permission) => (
       permission.sessionId === selectedSessionId &&
       !announcedPermissionsRef.current.has(permission.requestId)
@@ -1736,24 +1793,24 @@ export function MobileWorkspace({
     if (!next) return;
     announcedPermissionsRef.current.add(next.requestId);
     setPermissionOpen(true);
-  }, [permissions, selectedSessionId]);
+  }, [permissions, selectedSessionId, visible]);
 
   useEffect(() => {
     if (
+      visible &&
       permissionOpen &&
       selectedSessionId &&
       !permissions.some((permission) => permission.sessionId === selectedSessionId)
     ) {
       setPermissionOpen(false);
     }
-  }, [permissionOpen, permissions, selectedSessionId]);
+  }, [permissionOpen, permissions, selectedSessionId, visible]);
 
   async function selectSession(sessionId: string): Promise<void> {
-    setConfigurationOpen(false);
+    setConfigurationSessionId(undefined);
     setSessionView("conversation");
     setStopError(undefined);
     setSelectedSessionId(sessionId);
-    writeLastSession(activeHostId, sessionId);
     await onOpenSession(sessionId);
   }
 
@@ -1793,23 +1850,6 @@ export function MobileWorkspace({
       ?? "",
     );
     setCreateOpen(true);
-  }
-
-  async function runDesktopAppAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<void> {
-    if (desktopAction) return;
-    if (action === "quit") setQuitDesktopTarget(undefined);
-    setDesktopAction({ runtimeId, action });
-    setDesktopActionError(undefined);
-    try {
-      await onDesktopAppAction(runtimeId, action);
-    } catch (error) {
-      setDesktopActionError({
-        runtimeId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setDesktopAction(undefined);
-    }
   }
 
   async function sendMessage(): Promise<void> {
@@ -1898,16 +1938,13 @@ export function MobileWorkspace({
     setSessionActionBusy(true);
     setSessionActionError(undefined);
     try {
-      const target = sessions.find((candidate) => candidate.sessionId === sessionId);
       const created = await onForkSession(sessionId);
       if (created) {
-        const rootId = target?.parentSessionId ?? sessionId;
-        setExpandedForkParents((current) => {
-          const next = new Set(current);
-          next.add(rootId);
-          next.add(sessionId);
-          return next;
-        });
+        setExpandedForkParents((current) => new Set([
+          ...current,
+          ...getSessionAncestorIds(sessions, sessionId),
+          sessionId,
+        ]));
         setCollapsedProjectIds((current) => expandProject(current, created.projectId));
         setMenuSessionId(undefined);
         await selectSession(created.sessionId);
@@ -1960,12 +1997,164 @@ export function MobileWorkspace({
     }
   }
 
+  const sessionOverlays = (
+    <>
+      {menuSession && (
+        <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !sessionActionBusy) setMenuSessionId(undefined);
+        }}>
+          <section className="permission-sheet session-menu-sheet" role="dialog" aria-modal="true" aria-labelledby="session-menu-title">
+            <header>
+              <div>
+                <span>会话操作</span>
+                <h2 id="session-menu-title">{menuSession.title}</h2>
+              </div>
+              <IconButton label="关闭" disabled={sessionActionBusy} onClick={() => setMenuSessionId(undefined)}><X size={19} /></IconButton>
+            </header>
+            <div className="session-menu-actions">
+              {canConfigureSession(menuSession) && <p className="mobile-menu-group-title">会话设置</p>}
+              {canConfigureSession(menuSession) && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={sessionActionBusy}
+                  onClick={() => {
+                    setConfigurationSessionId(menuSession.sessionId);
+                    setMenuSessionId(undefined);
+                  }}
+                >
+                  <Settings2 size={17} />模型与会话设置
+                </button>
+              )}
+              {(menuSupportsFork || menuSupportsProviderSwitch || menuSupportsRuntimeHandoff) && <p className="mobile-menu-group-title">分支与接力</p>}
+              {menuSupportsFork && (
+                <button type="button" className="secondary-button" disabled={sessionActionBusy} onClick={() => void forkSessionById(menuSession.sessionId)}>
+                  <GitFork size={17} />Fork 分支会话
+                </button>
+              )}
+              {menuSupportsProviderSwitch && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={sessionActionBusy}
+                  onClick={() => {
+                    setActionSessionId(menuSession.sessionId);
+                    setProviderOpen(true);
+                    setMenuSessionId(undefined);
+                  }}
+                >
+                  <ArrowRightLeft size={17} />切换执行来源 · {providerName(menuSession.activeProviderProfileId, providers)}
+                </button>
+              )}
+              {menuSupportsRuntimeHandoff && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={sessionActionBusy}
+                  onClick={() => {
+                    setActionSessionId(menuSession.sessionId);
+                    setRelayOpen(true);
+                    setMenuSessionId(undefined);
+                  }}
+                >
+                  <Forward size={17} />交给其他桌面应用
+                </button>
+              )}
+              <p className="mobile-menu-group-title">管理</p>
+              <button type="button" className="secondary-button" disabled={sessionActionBusy || refreshing} onClick={() => void runRefresh(menuSession.sessionId)}>
+                {refreshing ? <LoaderCircle className="is-spinning" size={17} /> : syncFlash ? <Check size={17} /> : <RefreshCw size={17} />}
+                {refreshing ? "正在同步" : syncFlash ? "已同步" : "同步会话"}
+              </button>
+              {onArchiveSession && (
+                <button type="button" className="secondary-button" disabled={sessionActionBusy} onClick={() => void archiveSessionById(menuSession.sessionId, !menuSession.archivedAt)}>
+                  {menuSession.archivedAt ? <ArchiveRestore size={17} /> : <Archive size={17} />}
+                  {menuSession.archivedAt ? "恢复会话" : "归档会话"}
+                </button>
+              )}
+              {onDeleteSession && (
+                <>
+                  <p className="mobile-menu-group-title">危险操作</p>
+                  <button type="button" className="secondary-button danger-text" disabled={sessionActionBusy || menuSessionBusy || Boolean(menuSession.pendingRuntimeHandoff)} onClick={() => setDeleteSessionConfirmOpen(true)}>
+                    <Trash2 size={17} />删除会话
+                  </button>
+                </>
+              )}
+            </div>
+            {(menuSessionBusy || menuSession.pendingRuntimeHandoff) && onDeleteSession && (
+              <p className="session-menu-hint">任务或接力进行中，先停止再删除。</p>
+            )}
+            {sessionActionBusy && <p className="session-menu-hint" role="status"><LoaderCircle className="is-spinning" size={15} />正在处理…</p>}
+            {sessionActionError && <p className="session-menu-hint danger-text" role="alert">{sessionActionError}</p>}
+          </section>
+        </div>
+      )}
+      <ConfirmationDialog
+        open={deleteSessionConfirmOpen && Boolean(menuSession)}
+        title="删除会话"
+        description={`从 Bridge 列表中删除「${menuSession?.title ?? ""}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
+        confirmLabel="删除会话"
+        danger
+        busy={sessionActionBusy}
+        onCancel={() => setDeleteSessionConfirmOpen(false)}
+        onConfirm={() => menuSession && void deleteSessionById(menuSession.sessionId)}
+      />
+      {configurationSession && canConfigureSession(configurationSession) && (
+        <SessionConfigurationDialog
+          key={configurationSession.sessionId}
+          session={configurationSession}
+          permissionScope="session"
+          onLoad={() => onLoadSessionConfiguration(configurationSession.sessionId)}
+          onSave={(change) => onConfigureSession(configurationSession.sessionId, change)}
+          {...(onConfigurePermissionPolicy ? {
+            onConfigurePermission: (scope: "host" | "session", mode: BridgePermissionMode | null) => (
+              onConfigurePermissionPolicy(configurationSession.sessionId, scope, mode)
+            ),
+          } : {})}
+          onClose={() => setConfigurationSessionId(undefined)}
+        />
+      )}
+      {providerOpen && actionSession && desktopRuntimeId(actionSession) === "claude-desktop" && supportsProviderSwitching(snapshot) && (
+        <ProviderSwitchDialog
+          key={actionSession.sessionId}
+          session={actionSession}
+          profiles={providers}
+          onPreview={(targetProviderProfileId, model) => onPreviewProviderSwitch(actionSession.sessionId, targetProviderProfileId, model)}
+          onCommit={onCommitProviderSwitch}
+          onCancel={onCancelProviderSwitch}
+          onRefresh={async () => {
+            await onRefreshProviders();
+            await onRefresh();
+          }}
+          onChanged={() => void onRefresh()}
+          onClose={() => setProviderOpen(false)}
+        />
+      )}
+      {relayOpen && actionSession && runtimeHandoffAvailable && (
+        <RuntimeHandoffDialog
+          key={actionSession.sessionId}
+          session={actionSession}
+          runtimes={snapshot?.runtimes ?? []}
+          onPreview={(targetRuntimeId) => onPreviewRuntimeHandoff(actionSession.sessionId, targetRuntimeId)}
+          onCommit={onCommitRuntimeHandoff}
+          onConfirm={onConfirmRuntimeHandoff}
+          onCancel={onCancelRuntimeHandoff}
+          onGet={onGetRuntimeHandoff}
+          onOpenSession={(sessionId) => {
+            setRelayOpen(false);
+            void selectSession(sessionId);
+          }}
+          onClose={() => setRelayOpen(false)}
+        />
+      )}
+    </>
+  );
+
+  if (!visible) return null;
+
   if (selectedSession) {
     const runtimeName = desktopRuntimeName(desktopRuntimeId(selectedSession));
     const canAttachImages = runtimeSupports(snapshot, selectedSession, "attachment.image");
-    const canConfigure = selectedSession.allowedActions?.canConfigure === true
-      || (desktopRuntimeId(selectedSession) === "claude-desktop"
-        && selectedSession.allowedActions?.canConfigure !== false);
+    const canConfigure = canConfigureSession(selectedSession);
     const officialActive = usesOfficialComposer(selectedSession, providers);
     const bridgeRunning = selectedSession.turnState === "running"
       && (
@@ -1983,72 +2172,29 @@ export function MobileWorkspace({
       ? sessions.find((session) => session.sessionId === otherPermission.sessionId)
       : undefined;
     const evidenceCount = (selectedEvidence?.items.length ?? 0) + (fileChangesSummary ? 1 : 0);
-    const hasEvidenceOrInEvidenceView = evidenceCount > 0 || sessionView === "evidence";
     const displayNodes = groupTimelineTools(timeline);
     return (
       <main className="mobile-workspace conversation-workspace">
         <header className="mobile-topbar conversation-topbar">
-          <IconButton label="返回会话列表" onClick={() => setSelectedSessionId(undefined)}><ArrowLeft size={21} /></IconButton>
-          <button
-            type="button"
-            className="mobile-device mobile-device-button"
-            disabled={!canConfigure}
-            onClick={() => {
-              if (canConfigure) setConfigurationOpen(true);
-            }}
-          >
+          <IconButton label={sessionView === "evidence" ? "返回对话" : "返回会话列表"} onClick={() => {
+            if (sessionView === "evidence") setSessionView("conversation");
+            else setSelectedSessionId(undefined);
+          }}><ArrowLeft size={21} /></IconButton>
+          <div className="mobile-device">
             <strong>{selectedSession.title}</strong>
             <span className={`session-presence ${selectedSession.turnState}`}>
               <i />{conciseSessionSubtitle(selectedSession)}
             </span>
-          </button>
-          <div className="conversation-topbar-actions">
-            {canStop && (
-              <button
-                type="button"
-                className="session-provider-trigger is-stop"
-                disabled={stopping}
-                onClick={() => stopTarget && void stopTask(stopTarget.sessionId)}
-              >
-                {stopping ? <LoaderCircle className="is-spinning" size={13} /> : <CircleStop size={13} />}
-                <span>{stopping ? "停止中" : stoppingBlocker ? "停止阻塞" : "停止"}</span>
-              </button>
-            )}
-            {hasEvidenceOrInEvidenceView && (
-              <button
-                type="button"
-                className={`session-provider-trigger ${sessionView === "evidence" ? "is-active" : ""}`}
-                onClick={() => setSessionView((current) => current === "evidence" ? "conversation" : "evidence")}
-              >
-                <span>{sessionView === "evidence" ? "返回对话" : `成果${(selectedEvidence?.items.length ?? 0) > 0 ? ` ${selectedEvidence!.items.length}` : ""}`}</span>
-              </button>
-            )}
-            {onForkSession && desktopRuntimeId(selectedSession) === "claude-desktop" && (
-              <IconButton
-                label="Fork 分支会话"
-                disabled={sessionActionBusy}
-                onClick={() => void forkSessionById(selectedSession.sessionId)}
-              >
-                {sessionActionBusy ? <LoaderCircle className="is-spinning" size={18} /> : <GitFork size={18} />}
-              </IconButton>
-            )}
-            <IconButton
-              label={syncFlash ? "已同步" : "同步会话"}
-              disabled={refreshing}
-              onClick={() => void runRefresh(selectedSession.sessionId)}
-            >
-              {refreshing ? <LoaderCircle className="is-spinning" size={18} /> : syncFlash ? <Check size={18} /> : <RefreshCw size={18} />}
-            </IconButton>
-            {canConfigure && (
-              <IconButton
-                label="模型与权限设置"
-                onClick={() => setConfigurationOpen(true)}
-              >
-                <Settings2 size={18} />
-              </IconButton>
-            )}
           </div>
+          <IconButton label="会话操作" onClick={() => {
+            setSessionActionError(undefined);
+            setMenuSessionId(selectedSession.sessionId);
+          }}><MoreHorizontal size={20} /></IconButton>
         </header>
+        <nav className="mobile-conversation-tabs" aria-label="会话视图">
+          <button type="button" className={sessionView === "conversation" ? "active" : ""} aria-pressed={sessionView === "conversation"} onClick={() => setSessionView("conversation")}>对话</button>
+          <button type="button" className={sessionView === "evidence" ? "active" : ""} aria-pressed={sessionView === "evidence"} onClick={() => setSessionView("evidence")}>成果{evidenceCount > 0 ? ` ${evidenceCount}` : ""}</button>
+        </nav>
 
         {selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
           <div className="session-channel-warning">
@@ -2166,7 +2312,10 @@ export function MobileWorkspace({
           <button
             type="button"
             className="session-channel-warning provider-route-banner"
-            onClick={() => setProviderOpen(true)}
+            onClick={() => {
+              setActionSessionId(selectedSession.sessionId);
+              setProviderOpen(true);
+            }}
           >
             <ArrowRightLeft size={17} />
             <span>
@@ -2380,6 +2529,19 @@ export function MobileWorkspace({
         <>
         <SessionActivityIndicator activity={activity} />
         <section className="mobile-composer">
+          <div className="mobile-directory-tools">
+            {canConfigure && (
+              <button type="button" className="mobile-session-settings-trigger" onClick={() => setConfigurationSessionId(selectedSession.sessionId)}>
+                <Settings2 size={14} /><span>{conciseModelName(selectedSession)} · 会话设置</span>
+              </button>
+            )}
+            {canStop && (
+              <button type="button" className="session-provider-trigger is-stop" disabled={stopping} onClick={() => stopTarget && void stopTask(stopTarget.sessionId)}>
+                {stopping ? <LoaderCircle className="is-spinning" size={14} /> : <CircleStop size={14} />}
+                <span>{stopping ? "停止中" : stoppingBlocker ? "停止阻塞任务" : "停止任务"}</span>
+              </button>
+            )}
+          </div>
           {officialActive ? (
             <button
               type="button"
@@ -2464,49 +2626,6 @@ export function MobileWorkspace({
         </section>
         </>
         )}
-        {providerOpen && providerSwitchingAvailable && (
-          <ProviderSwitchDialog
-            session={selectedSession}
-            profiles={providers}
-            onPreview={(targetProviderProfileId, model) => (
-              onPreviewProviderSwitch(selectedSession.sessionId, targetProviderProfileId, model)
-            )}
-            onCommit={onCommitProviderSwitch}
-            onCancel={onCancelProviderSwitch}
-            onRefresh={async () => {
-              await onRefreshProviders();
-              await onRefresh();
-            }}
-            onChanged={() => void onRefresh()}
-            onClose={() => setProviderOpen(false)}
-          />
-        )}
-        {relayOpen && runtimeHandoffAvailable && (
-          <RuntimeHandoffDialog
-            session={selectedSession}
-            runtimes={snapshot?.runtimes ?? []}
-            onPreview={(targetRuntimeId) => onPreviewRuntimeHandoff(selectedSession.sessionId, targetRuntimeId)}
-            onCommit={onCommitRuntimeHandoff}
-            onConfirm={onConfirmRuntimeHandoff}
-            onCancel={onCancelRuntimeHandoff}
-            onGet={onGetRuntimeHandoff}
-            onOpenSession={(sessionId) => void selectSession(sessionId)}
-            onClose={() => setRelayOpen(false)}
-          />
-        )}
-        {configurationOpen && canConfigure && (
-          <SessionConfigurationDialog
-            session={selectedSession}
-            onLoad={() => onLoadSessionConfiguration(selectedSession.sessionId)}
-            onSave={(change) => onConfigureSession(selectedSession.sessionId, change)}
-            {...(onConfigurePermissionPolicy ? {
-              onConfigurePermission: (scope: "host" | "session", mode: BridgePermissionMode | null) => (
-                onConfigurePermissionPolicy(selectedSession.sessionId, scope, mode)
-              ),
-            } : {})}
-            onClose={() => setConfigurationOpen(false)}
-          />
-        )}
         {permissionOpen && activePermission && (
           <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
             if (event.target === event.currentTarget) setPermissionOpen(false);
@@ -2563,19 +2682,11 @@ export function MobileWorkspace({
               });
           }}
         />
+        {sessionOverlays}
       </main>
     );
   }
 
-  const desktopApps = snapshot?.desktopApps ?? [{
-    id: "claude-desktop" as const,
-    name: "Claude Desktop",
-    state: snapshot?.claudeDesktop?.state ?? "unavailable",
-    detail: snapshot?.claudeDesktop?.detail ?? "正在读取电脑端运行状态。",
-    canLaunch: snapshot?.claudeDesktop?.canLaunch ?? false,
-    canQuit: snapshot?.claudeDesktop?.canQuit ?? false,
-  }];
-  const runningDesktopApps = desktopApps.filter((app) => app.state === "running");
   const populatedRuntimeCount = new Set(sessions.map((session) => desktopRuntimeId(session))).size;
   const showRuntimeFilter = populatedRuntimeCount > 1 && (snapshot?.runtimes?.length ?? 0) > 1;
   const isArchivedGroupPage = activeProjectId === "__archived__";
@@ -2613,24 +2724,23 @@ export function MobileWorkspace({
       ?? "";
 
   const activeGroupFamilies = groupProjectSessionFamilies(activeGroupSessions);
-  const hostStatusText = activeProjectId
-    ? `${activeGroupFamilies.length} 个主会话 · ${desktopName}`
-    : desktopOnline
-      ? (pendingOutbound > 0 ? `在线 · ${pendingOutbound} 条待发` : "在线")
-      : connection === "connecting" || connection === "reconnecting"
-        ? "正在连接"
-        : (pendingOutbound > 0 ? `离线 · ${pendingOutbound} 条待发` : "离线");
+  const hostStatusText = desktopOnline
+    ? (pendingOutbound > 0 ? `在线 · ${pendingOutbound} 条待发` : mobileConnectionLabel(connection, desktopOnline, transportMetrics, snapshot?.host.version))
+    : connection === "connecting" || connection === "reconnecting"
+      ? "正在连接"
+      : (pendingOutbound > 0 ? `离线 · ${pendingOutbound} 条待发` : "离线");
 
   function renderMobileSessionFamily(
     family: SessionFamily<BridgeSessionInfo>,
     isArchivedList = false,
-  ) {
+    isForkChild = false,
+  ): ReactNode {
     const { primary: session, forks } = family;
     const badge = isArchivedList ? "已归档" : activeSessionBadgeLabel(session);
     const forksExpanded = expandedForkParents.has(session.sessionId);
     return (
       <div className="mobile-session-family" key={session.sessionId}>
-        <div className="session-row-v2" data-session-id={session.sessionId}>
+        <div className={`session-row-v2 ${isForkChild ? "is-fork-child" : ""}`} data-session-id={session.sessionId}>
           <button
             type="button"
             className="session-row-hit"
@@ -2639,21 +2749,21 @@ export function MobileWorkspace({
             <span className={`session-state-dot ${session.turnState}`} />
             <span className="session-row-copy">
               <strong>
+                {isForkChild && <em className="session-fork-badge">{session.forkLabel || "fork"}</em>}
                 {session.title}
-                {session.parentSessionId && (
+                {!isForkChild && session.parentSessionId && (
                   <em className="session-fork-badge">{session.forkLabel || "fork"}</em>
                 )}
               </strong>
               <small>
-                {populatedRuntimeCount > 1 ? `${desktopRuntimeName(desktopRuntimeId(session))} · ` : ""}
+                {!isForkChild && populatedRuntimeCount > 1 ? `${desktopRuntimeName(desktopRuntimeId(session))} · ` : ""}
                 {relativeTime(session.lastActivityAt)}
                 {!isArchivedList && session.currentSummary ? ` · ${session.currentSummary}` : ""}
               </small>
             </span>
             {badge && <span className={`session-row-status ${session.turnState}`}>{badge}</span>}
           </button>
-          {canManageSessions && (
-            <IconButton
+          <IconButton
               label="会话操作"
               className="session-row-action"
               onClick={() => {
@@ -2662,8 +2772,7 @@ export function MobileWorkspace({
               }}
             >
               <MoreHorizontal size={18} />
-            </IconButton>
-          )}
+          </IconButton>
         </div>
         {forks.length > 0 && (
           <div className={`mobile-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
@@ -2679,43 +2788,7 @@ export function MobileWorkspace({
             </button>
             {forksExpanded && (
               <div className="mobile-fork-children">
-                {forks.map((fork) => {
-                  const forkBadge = isArchivedList ? "已归档" : activeSessionBadgeLabel(fork);
-                  return (
-                    <div className="session-row-v2 is-fork-child" data-session-id={fork.sessionId} key={fork.sessionId}>
-                      <button
-                        type="button"
-                        className="session-row-hit"
-                        onClick={() => void selectSession(fork.sessionId)}
-                      >
-                        <span className={`session-state-dot ${fork.turnState}`} />
-                        <span className="session-row-copy">
-                          <strong>
-                            <em className="session-fork-badge">{fork.forkLabel || "fork"}</em>
-                            {fork.title}
-                          </strong>
-                          <small>
-                            {relativeTime(fork.lastActivityAt)}
-                            {!isArchivedList && fork.currentSummary ? ` · ${fork.currentSummary}` : ""}
-                          </small>
-                        </span>
-                        {forkBadge && <span className={`session-row-status ${fork.turnState}`}>{forkBadge}</span>}
-                      </button>
-                      {canManageSessions && (
-                        <IconButton
-                          label="会话操作"
-                          className="session-row-action"
-                          onClick={() => {
-                            setSessionActionError(undefined);
-                            setMenuSessionId(fork.sessionId);
-                          }}
-                        >
-                          <MoreHorizontal size={18} />
-                        </IconButton>
-                      )}
-                    </div>
-                  );
-                })}
+                {forks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
               </div>
             )}
           </div>
@@ -2726,31 +2799,21 @@ export function MobileWorkspace({
 
   return (
     <main className="mobile-workspace host-detail-workspace">
-      <header className="mobile-topbar">
-        {activeProjectId ? (
-          <IconButton label="返回分组界面" onClick={closeProjectGroup}><ArrowLeft size={21} /></IconButton>
-        ) : (
-          <IconButton label="返回主机列表" onClick={onBackToHosts}><ArrowLeft size={21} /></IconButton>
-        )}
-        <div className="mobile-device">
-          <strong>{activeProjectId ? activeGroupName : desktopName}</strong>
-          <span className={desktopOnline ? "online" : ""}>
-            <i />
-            {hostStatusText}
-          </span>
+      <header className={`mobile-topbar mobile-directory-topbar${activeProjectId ? " has-back" : ""}`}>
+        {activeProjectId && <IconButton label="返回会话目录" onClick={closeProjectGroup}><ArrowLeft size={21} /></IconButton>}
+        <div className="mobile-directory-title">
+          <h1>{activeProjectId ? activeGroupName : "会话"}</h1>
+          <button type="button" className="mobile-device" onClick={onBackToHosts} aria-label={`当前电脑：${desktopName}，查看电脑`}>
+            <span className={desktopOnline ? "online" : ""}><i />{desktopName} · {hostStatusText}<ChevronDown size={12} /></span>
+          </button>
         </div>
-        <IconButton
-          label="强制同步"
-          disabled={refreshing}
-          onClick={() => void runRefresh(selectedSessionId)}
-        >
-          {refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
-        </IconButton>
-        <ThemeMenu control={themeControl} iconSize={19} />
+        <div className="mobile-directory-tools">
+          <IconButton label="目录更多" onClick={() => setDirectoryMenuOpen(true)}><MoreHorizontal size={20} /></IconButton>
+        </div>
       </header>
 
       {activeProjectId ? (
-        <section className="host-detail project-detail-view">
+        <section className="host-detail project-detail-view" ref={directoryRef} onScroll={(event) => directoryScrollPositions.current.set(activeProjectId, event.currentTarget.scrollTop)}>
           <div className="catalog-toolbar">
             <label className="session-search">
               <Search size={16} />
@@ -2800,7 +2863,7 @@ export function MobileWorkspace({
           )}
         </section>
       ) : (
-      <section className="host-detail">
+      <section className="host-detail" ref={directoryRef} onScroll={(event) => directoryScrollPositions.current.set("", event.currentTarget.scrollTop)}>
         <div className="catalog-toolbar">
           <label className="session-search">
             <Search size={16} />
@@ -2928,183 +2991,43 @@ export function MobileWorkspace({
               </section>
             );
           })}
-          {canManageSessions && archivedSessions.length > 0 && (() => {
-            const archivedPreview = previewProjectSessionFamilies(archivedSessions, PROJECT_PREVIEW_SESSION_LIMIT);
-            return (
-              <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
-                <div className="project-group-header">
-                  <button
-                    type="button"
-                    className="project-group-open"
-                    aria-expanded={archivedExpanded}
-                    aria-controls="mobile-archived-sessions"
-                    onClick={() => setArchivedExpanded((current) => !current)}
-                  >
-                    <span className="project-group-toggle-copy">
-                      <span>
-                        <strong>已归档</strong>
-                        <b className="project-count-pill">{archivedPreview.totalCount}</b>
-                      </span>
-                    </span>
-                    <span className="project-group-chevron">
-                      {archivedExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                    </span>
-                  </button>
-                </div>
-                {archivedExpanded && (
-                  <div className="session-rows" id="mobile-archived-sessions">
-                    {archivedPreview.preview.map((family) => renderMobileSessionFamily(family, true))}
-                    {archivedPreview.hiddenCount > 0 && (
-                      <button
-                        type="button"
-                        className="project-group-more-button"
-                        onClick={() => openProjectGroup("__archived__")}
-                      >
-                        <span>查看全部 {archivedPreview.totalCount} 个归档会话</span>
-                        <ChevronRight size={15} />
-                      </button>
-                    )}
-                  </div>
-                )}
-              </section>
-            );
-          })()}
+          {archivedSessions.length > 0 && (
+            <section className="project-group archived-group">
+              <button type="button" className="project-group-open" onClick={() => openProjectGroup("__archived__")}>
+                <span className="project-group-toggle-copy"><span><Archive size={16} /><strong>已归档会话</strong><b className="project-count-pill">{archivedSessions.length}</b></span></span>
+                <ChevronRight size={16} />
+              </button>
+            </section>
+          )}
         </div>
 
-        <section className={`desktop-agents-drawer ${desktopControlsExpanded ? "expanded" : "collapsed"}`}>
-          <button
-            type="button"
-            className="desktop-agents-toggle"
-            aria-expanded={desktopControlsExpanded}
-            onClick={() => setDesktopControlsExpanded((current) => !current)}
-          >
-            <span className="desktop-agents-summary">
-              <i className={runningDesktopApps.length > 0 ? "running" : ""} aria-hidden="true" />
-              <strong>桌面应用控制</strong>
-              <small>
-                {runningDesktopApps.length > 0
-                  ? `${runningDesktopApps.map((app) => app.name.replace(/\s*Desktop$/u, "")).join(" · ")} 运行中`
-                  : "启动或退出电脑端应用"}
-              </small>
-            </span>
-            <span className="desktop-agents-toggle-meta">
-              {desktopControlsExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-            </span>
-          </button>
-          {desktopControlsExpanded && (
-            <div className="desktop-agents-list">
-              {desktopApps.map((desktopApp) => (
-                <section className={`mobile-desktop-control ${desktopApp.state}`} key={desktopApp.id}>
-                  <div className="mobile-desktop-control-copy">
-                    <i aria-hidden="true" />
-                    <span>
-                      <strong>{desktopApp.name}</strong>
-                      <small className={desktopActionError?.runtimeId === desktopApp.id ? "desktop-app-error" : undefined}>
-                        {desktopActionError?.runtimeId === desktopApp.id ? desktopActionError.message : desktopApp.detail}
-                      </small>
-                    </span>
-                  </div>
-                  <div className="mobile-desktop-control-actions">
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={Boolean(desktopAction) || !desktopOnline || !desktopApp.canLaunch}
-                      onClick={() => void runDesktopAppAction(desktopApp.id, "launch")}
-                    >
-                      <Play size={15} />
-                      {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "launch" ? "启动中" : "启动"}
-                    </button>
-                    <button
-                      type="button"
-                      className="danger-button"
-                      disabled={Boolean(desktopAction) || !desktopOnline || !desktopApp.canQuit}
-                      onClick={() => setQuitDesktopTarget(desktopApp.id)}
-                    >
-                      <Power size={15} />
-                      {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "quit" ? "退出中" : "退出"}
-                    </button>
-                  </div>
-                </section>
-              ))}
-            </div>
-          )}
-        </section>
       </section>
       )}
 
-      {menuSession && canManageSessions && (
+      {sessionOverlays}
+      {directoryMenuOpen && (
         <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget && !sessionActionBusy) setMenuSessionId(undefined);
+          if (event.target === event.currentTarget) setDirectoryMenuOpen(false);
         }}>
-          <section className="permission-sheet session-menu-sheet" role="dialog" aria-modal="true" aria-labelledby="session-menu-title">
+          <section className="permission-sheet session-menu-sheet" role="dialog" aria-modal="true" aria-labelledby="directory-menu-title">
             <header>
-              <div>
-                <span>会话操作</span>
-                <h2 id="session-menu-title">{menuSession.title}</h2>
-              </div>
-              <IconButton label="关闭" disabled={sessionActionBusy} onClick={() => setMenuSessionId(undefined)}><X size={19} /></IconButton>
+              <div><span>{desktopName}</span><h2 id="directory-menu-title">会话目录</h2></div>
+              <IconButton label="关闭" onClick={() => setDirectoryMenuOpen(false)}><X size={19} /></IconButton>
             </header>
             <div className="session-menu-actions">
-              {onForkSession && desktopRuntimeId(menuSession) === "claude-desktop" && (
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={sessionActionBusy}
-                  onClick={() => void forkSessionById(menuSession.sessionId)}
-                >
-                  <GitFork size={17} />Fork 分支会话
-                </button>
-              )}
-              {onArchiveSession && (
-                menuSession.archivedAt ? (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={sessionActionBusy}
-                    onClick={() => void archiveSessionById(menuSession.sessionId, false)}
-                  >
-                    <ArchiveRestore size={17} />取消归档
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={sessionActionBusy}
-                    onClick={() => void archiveSessionById(menuSession.sessionId, true)}
-                  >
-                    <Archive size={17} />归档会话
-                  </button>
-                )
-              )}
-              {onDeleteSession && (
-                <button
-                  type="button"
-                  className="secondary-button danger-text"
-                  disabled={sessionActionBusy || menuSessionBusy || Boolean(menuSession.pendingRuntimeHandoff)}
-                  onClick={() => setDeleteSessionConfirmOpen(true)}
-                >
-                  <Trash2 size={17} />删除会话
-                </button>
-              )}
+              <p className="mobile-menu-group-title">同步</p>
+              <button type="button" className="secondary-button" disabled={refreshing} onClick={() => void runRefresh()}>
+                {refreshing ? <LoaderCircle className="is-spinning" size={17} /> : syncFlash ? <Check size={17} /> : <RefreshCw size={17} />}
+                {refreshing ? "正在同步" : syncFlash ? "已同步" : "同步当前电脑"}
+              </button>
+              <button type="button" className="secondary-button" onClick={() => {
+                setDirectoryMenuOpen(false);
+                openProjectGroup("__archived__");
+              }}><Archive size={17} />已归档会话 · {archivedSessions.length}</button>
             </div>
-            {(menuSessionBusy || menuSession.pendingRuntimeHandoff) && onDeleteSession && (
-              <p className="session-menu-hint">任务或接力进行中，先停止再删除。</p>
-            )}
-            {sessionActionError && <p className="session-menu-hint danger-text">{sessionActionError}</p>}
           </section>
         </div>
       )}
-      <ConfirmationDialog
-        open={deleteSessionConfirmOpen && Boolean(menuSession)}
-        title="删除会话"
-        description={`从 Bridge 列表中删除「${menuSession?.title ?? ""}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
-        confirmLabel="删除会话"
-        danger
-        busy={sessionActionBusy}
-        onCancel={() => setDeleteSessionConfirmOpen(false)}
-        onConfirm={() => menuSession && void deleteSessionById(menuSession.sessionId)}
-      />
-
       {createOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
           if (event.target === event.currentTarget) setCreateOpen(false);
@@ -3158,18 +3081,6 @@ export function MobileWorkspace({
           </section>
         </div>
       )}
-      <ConfirmationDialog
-        open={Boolean(quitDesktopTarget)}
-        title={`退出电脑上的 ${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""}？`}
-        description={`${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""} 窗口会关闭，Bridge 主机仍保持在线，可继续管理已接管的远程会话。`}
-        confirmLabel={`退出 ${quitDesktopTarget ? desktopRuntimeName(quitDesktopTarget) : ""}`}
-        busy={desktopAction?.action === "quit"}
-        danger
-        onCancel={() => setQuitDesktopTarget(undefined)}
-        onConfirm={() => {
-          if (quitDesktopTarget) void runDesktopAppAction(quitDesktopTarget, "quit");
-        }}
-      />
     </main>
   );
 }

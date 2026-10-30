@@ -229,11 +229,11 @@ describe("Claude session process catalog", () => {
       projects: join(root, "projects"),
       desktopSessions: [desktopSessions],
     });
-    expect(catalog.sessions.map((session) => session.sessionId)).toEqual([activeParentId]);
+    expect(catalog.sessions.map((session) => session.sessionId)).toEqual([activeParentId, childOfArchivedId]);
+    expect(catalog.archivedSessionIds?.has(childOfArchivedId)).toBe(false);
     expect([...(catalog.archivedSessionIds ?? [])]).toEqual(expect.arrayContaining([
       archivedFlagId,
       archivedIdxId,
-      childOfArchivedId,
       btwChildId,
     ]));
   });

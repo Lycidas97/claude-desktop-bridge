@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findClaudeDesktopSessionId, listClaudeDesktopSessions } from "./claude-desktop-sessions.js";
+import { findClaudeDesktopSessionId, listClaudeDesktopSessions, listClaudeDesktopSessionState } from "./claude-desktop-sessions.js";
 
 const directories: string[] = [];
 
@@ -81,6 +81,39 @@ describe("Claude Desktop session catalog", () => {
       }),
     ]);
     expect(JSON.stringify(sessions)).not.toContain(root);
+  });
+
+  it.each(["flag", "index"])("keeps active nested forks visible when their intermediate parent is archived by %s", async (archiveSource) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-desktop-nested-forks-"));
+    directories.push(root);
+    const records = [
+      { sessionId: "local_root", cliSessionId: "root-cli", title: "第四章" },
+      { sessionId: "local_archived", cliSessionId: "archived-cli", isArchived: true, forkedFromSessionId: "local_root" },
+      { sessionId: "local_archived2", cliSessionId: "archived2-cli", isArchived: true, forkedFromSessionId: "local_archived" },
+      { sessionId: "local_gemini", cliSessionId: "gemini-cli", title: "Gemini 绘图", forkedFromSessionId: "local_archived2", spawnedFrom: { name: "fork-2" } },
+      { sessionId: "local_leaf", cliSessionId: "leaf-cli", forkedFromSessionId: "local_gemini" },
+      { sessionId: "local_orphan", cliSessionId: "orphan-cli", forkedFromSessionId: "local_archived_orphan" },
+      { sessionId: "local_archived_orphan", cliSessionId: "archived-orphan-cli", isArchived: true },
+    ];
+    if (archiveSource === "index") {
+      await writeFile(join(root, "archived-sessions.idx"), JSON.stringify({ archived: records.filter((record) => record.isArchived).map((record) => record.sessionId) }));
+    }
+    await Promise.all(records.map((record) => writeFile(join(root, `${record.sessionId}.json`), JSON.stringify({
+      cwd: "/work/thesis",
+      ...record,
+      ...(archiveSource === "index" ? { isArchived: false } : {}),
+    }))));
+
+    const state = await listClaudeDesktopSessionState([root]);
+    expect(state.sessions.find((session) => session.cliSessionId === "gemini-cli")).toMatchObject({
+      title: "Gemini 绘图",
+      parentSessionId: "root-cli",
+      forkLabel: "fork-2",
+    });
+    expect(state.sessions.find((session) => session.cliSessionId === "leaf-cli")?.parentSessionId).toBe("gemini-cli");
+    expect(state.sessions.find((session) => session.cliSessionId === "orphan-cli")?.parentSessionId).toBe("archived-orphan-cli");
+    expect(state.archivedCliSessionIds.has("gemini-cli")).toBe(false);
+    expect(state.archivedCliSessionIds.has("archived-cli")).toBe(true);
   });
 
   it("resolves fork parent cliSessionId and forkLabel while respecting detached sessions", async () => {

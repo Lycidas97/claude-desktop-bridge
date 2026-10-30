@@ -5,9 +5,11 @@ import type {
 } from "@bridge/protocol";
 import { LoaderCircle, Settings2, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
+import { desktopRuntimeName, isNativeRuntimeId } from "../lib/runtime-labels.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
+import { PermissionModeControls } from "./HostPermissionSettings.js";
 import { IconButton } from "./IconButton.js";
-import { desktopRuntimeName, isNativeRuntimeId } from "./MobileWorkspace.js";
 
 const EFFORT_LABELS: Record<string, string> = {
   none: "关闭",
@@ -43,9 +45,11 @@ export function SessionConfigurationDialog({
   onLoad,
   onSave,
   onConfigurePermission,
+  permissionScope: fixedPermissionScope,
   onClose,
 }: {
   session: BridgeSessionInfo;
+  permissionScope?: "host" | "session";
   onLoad(): Promise<BridgeSessionConfiguration>;
   onSave(change: SessionConfigurationChange): Promise<BridgeSessionConfiguration>;
   onConfigurePermission?(
@@ -61,14 +65,19 @@ export function SessionConfigurationDialog({
   const [fast, setFast] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [permissionScope, setPermissionScope] = useState<"host" | "session">("host");
-  const [permissionMode, setPermissionMode] = useState<BridgePermissionMode | "inherit">("standard");
+  const [permissionScope, setPermissionScope] = useState<"host" | "session">(fixedPermissionScope ?? "host");
+  const [permissionMode, setPermissionMode] = useState<BridgePermissionMode | "inherit">(
+    fixedPermissionScope === "session" ? "inherit" : "standard",
+  );
   const [savingPermission, setSavingPermission] = useState(false);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
     let active = true;
+    setLoading(true);
+    setPermissionScope(fixedPermissionScope ?? "host");
+    setConfirmFullAccess(false);
     void onLoad()
       .then((next) => {
         if (!active) return;
@@ -77,8 +86,9 @@ export function SessionConfigurationDialog({
         setModel(next.model ?? next.availableModels[0]?.value ?? "");
         setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
         setFast(next.fast ?? false);
-        setPermissionScope("host");
-        setPermissionMode(next.permissionPolicy?.hostMode ?? "standard");
+        setPermissionMode(fixedPermissionScope === "session"
+          ? next.permissionPolicy?.sessionMode ?? "inherit"
+          : next.permissionPolicy?.hostMode ?? "standard");
         setError(undefined);
       })
       .catch((reason: unknown) => {
@@ -90,7 +100,15 @@ export function SessionConfigurationDialog({
     return () => {
       active = false;
     };
-  }, [session.sessionId]);
+  }, [session.sessionId, fixedPermissionScope]);
+
+  useEffect(() => {
+    if (!fixedPermissionScope || !confirmFullAccess) return;
+    return registerMobileBackHandler(() => {
+      if (!savingPermission) setConfirmFullAccess(false);
+      return true;
+    }, 150);
+  }, [fixedPermissionScope, confirmFullAccess, savingPermission]);
 
   const modelOptions = useMemo(() => {
     const all = configuration?.availableModels ?? [];
@@ -298,42 +316,29 @@ export function SessionConfigurationDialog({
             {onConfigurePermission && configuration?.permissionPolicy && (
               <fieldset className="session-permission-field">
                 <legend><ShieldCheck size={15} />授权模式</legend>
-                <div className="permission-scope-segments" role="group" aria-label="授权范围">
-                  <button
-                    type="button"
-                    className={permissionScope === "host" ? "active" : ""}
-                    aria-pressed={permissionScope === "host"}
-                    onClick={() => choosePermissionScope("host")}
-                  >整台电脑</button>
-                  <button
-                    type="button"
-                    className={permissionScope === "session" ? "active" : ""}
-                    aria-pressed={permissionScope === "session"}
-                    onClick={() => choosePermissionScope("session")}
-                  >当前会话</button>
-                </div>
-                <div className={`permission-mode-segments ${permissionScope}`} role="group" aria-label="授权等级">
-                  {permissionScope === "session" && (
+                {!fixedPermissionScope && (
+                  <div className="permission-scope-segments" role="group" aria-label="授权范围">
                     <button
                       type="button"
-                      className={permissionMode === "inherit" ? "active" : ""}
-                      aria-pressed={permissionMode === "inherit"}
-                      onClick={() => setPermissionMode("inherit")}
-                    >跟随电脑</button>
-                  )}
-                  <button
-                    type="button"
-                    className={permissionMode === "standard" ? "active" : ""}
-                    aria-pressed={permissionMode === "standard"}
-                    onClick={() => setPermissionMode("standard")}
-                  >标准授权</button>
-                  <button
-                    type="button"
-                    className={permissionMode === "full-access" ? "active" : ""}
-                    aria-pressed={permissionMode === "full-access"}
-                    onClick={() => setPermissionMode("full-access")}
-                  >完全授权</button>
-                </div>
+                      className={permissionScope === "host" ? "active" : ""}
+                      aria-pressed={permissionScope === "host"}
+                      onClick={() => choosePermissionScope("host")}
+                    >整台电脑</button>
+                    <button
+                      type="button"
+                      className={permissionScope === "session" ? "active" : ""}
+                      aria-pressed={permissionScope === "session"}
+                      onClick={() => choosePermissionScope("session")}
+                    >当前会话</button>
+                  </div>
+                )}
+                {fixedPermissionScope === "session" && <p>仅设置当前会话；跟随电脑时使用 {runtimeName} 的默认授权。</p>}
+                <PermissionModeControls
+                  scope={permissionScope}
+                  value={permissionMode}
+                  onChange={setPermissionMode}
+                  onInherit={() => setPermissionMode("inherit")}
+                />
                 <div className="session-permission-status">
                   当前生效：{configuration.permissionPolicy.effectiveMode === "full-access" ? "完全授权" : "标准授权"}
                   {configuration.permissionPolicy.source === "session" ? " · 会话覆盖" : " · 电脑默认"}

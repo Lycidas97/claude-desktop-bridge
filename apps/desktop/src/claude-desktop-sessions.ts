@@ -113,6 +113,7 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
 
   const parsedFiles: Array<{ value: DesktopSessionFile; root: string }> = [];
   const desktopToCli = new Map<string, string>();
+  const desktopParents = new Map<string, string>();
   for (const { file, root } of files) {
     let value: DesktopSessionFile;
     try {
@@ -124,6 +125,15 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
       desktopToCli.set(value.sessionId, value.cliSessionId);
       if (value.isArchived === true) {
         archivedDesktopIds.add(value.sessionId);
+      }
+      if (value.detached !== true && value.lineageDetached !== true) {
+        const spawnedFrom = typeof value.spawnedFrom === "object" && value.spawnedFrom !== null && !Array.isArray(value.spawnedFrom)
+          ? value.spawnedFrom as Record<string, unknown>
+          : undefined;
+        const parent = typeof value.forkedFromSessionId === "string" && value.forkedFromSessionId.trim()
+          ? value.forkedFromSessionId.trim()
+          : typeof spawnedFrom?.sessionId === "string" ? spawnedFrom.sessionId.trim() : "";
+        if (parent) desktopParents.set(value.sessionId, parent);
       }
     }
     parsedFiles.push({ value, root });
@@ -143,19 +153,17 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
       : undefined;
     const isDetached = value.detached === true || value.lineageDetached === true;
     const isBtwChild = spawnedFrom?.btw === true && !isDetached;
-    const rawParentDesktopId = isDetached
-      ? undefined
-      : typeof value.forkedFromSessionId === "string" && value.forkedFromSessionId.trim()
-        ? value.forkedFromSessionId.trim()
-        : typeof spawnedFrom?.sessionId === "string" && spawnedFrom.sessionId.trim()
-          ? spawnedFrom.sessionId.trim()
-          : undefined;
-    const isParentArchived = Boolean(rawParentDesktopId && archivedDesktopIds.has(rawParentDesktopId));
+    let rawParentDesktopId = desktopParents.get(value.sessionId);
+    // Keep active descendants, attaching them to the nearest visible ancestor.
+    for (let hop = 0; rawParentDesktopId && archivedDesktopIds.has(rawParentDesktopId) && hop < desktopParents.size; hop += 1) {
+      const ancestor = desktopParents.get(rawParentDesktopId);
+      if (!ancestor) break;
+      rawParentDesktopId = ancestor;
+    }
     if (
       value.isArchived === true ||
       archivedDesktopIds.has(value.sessionId) ||
-      isBtwChild ||
-      isParentArchived
+      isBtwChild
     ) {
       archivedCliSessionIds.add(value.cliSessionId);
       continue;

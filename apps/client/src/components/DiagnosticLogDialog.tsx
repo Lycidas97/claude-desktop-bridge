@@ -10,6 +10,7 @@ import {
   setDiagEnabled,
   useDiagnosticLogs,
 } from "../lib/diagnostics.js";
+import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 
 function copyTextFallback(text: string): boolean {
   try {
@@ -38,6 +39,24 @@ export function DiagnosticFloatingEntry() {
   const [statusNotice, setStatusNotice] = useState<string>("");
   const [probing, setProbing] = useState(false);
   const [repairing, setRepairing] = useState(false);
+  const [repairConfirmOpen, setRepairConfirmOpen] = useState(false);
+
+  useEffect(() => {
+    if (!dialogOpen) return;
+    return registerMobileBackHandler(() => {
+      setRepairConfirmOpen(false);
+      setDiagDialogOpen(false);
+      return true;
+    }, 400);
+  }, [dialogOpen]);
+
+  useEffect(() => {
+    if (!dialogOpen || !repairConfirmOpen) return;
+    return registerMobileBackHandler(() => {
+      if (!repairing) setRepairConfirmOpen(false);
+      return true;
+    }, 450);
+  }, [dialogOpen, repairConfirmOpen, repairing]);
 
   const errorCount = entries.filter((e) => e.level === "error").length;
   const conn = String(bridgeState.connection ?? "idle");
@@ -136,6 +155,7 @@ export function DiagnosticFloatingEntry() {
       }, 400);
     } catch (error) {
       setStatusNotice(`修复失败: ${error instanceof Error ? error.message : String(error)}`);
+      setRepairConfirmOpen(false);
       setRepairing(false);
     }
   }
@@ -238,7 +258,10 @@ export function DiagnosticFloatingEntry() {
               </div>
               <button
                 type="button"
-                onClick={() => setDiagDialogOpen(false)}
+                onClick={() => {
+                  setRepairConfirmOpen(false);
+                  setDiagDialogOpen(false);
+                }}
                 style={{
                   padding: "5px 10px",
                   borderRadius: "8px",
@@ -328,22 +351,6 @@ export function DiagnosticFloatingEntry() {
               </button>
               <button
                 type="button"
-                onClick={() => void handleRepair()}
-                disabled={repairing}
-                style={{
-                  padding: "7px 12px",
-                  borderRadius: "8px",
-                  border: "1px solid rgba(245, 158, 11, 0.45)",
-                  background: "#b45309",
-                  color: "#fff",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                }}
-              >
-                {repairing ? "修复中..." : "清理缓存并重连"}
-              </button>
-              <button
-                type="button"
                 onClick={() => clearDiagEntries()}
                 style={{
                   padding: "7px 10px",
@@ -357,6 +364,21 @@ export function DiagnosticFloatingEntry() {
                 清空
               </button>
             </div>
+
+            <details style={{ padding: "10px 12px", borderBottom: "1px solid rgba(148, 163, 184, 0.16)", fontSize: "12px" }}>
+              <summary style={{ cursor: "pointer", color: "#fbbf24" }}>高级修复</summary>
+              <p style={{ color: "#cbd5e1", lineHeight: 1.6 }}>
+                此操作影响手机保存的所有电脑：清空全部缓存消息和待发送消息，重置所有电脑的中继连接路由，并重新加载应用。
+              </p>
+              <button
+                type="button"
+                onClick={() => setRepairConfirmOpen(true)}
+                disabled={repairing}
+                style={{ padding: "7px 12px", borderRadius: "8px", border: "1px solid rgba(245, 158, 11, 0.45)", background: "#b45309", color: "#fff", fontSize: "12px", fontWeight: 600 }}
+              >
+                {repairing ? "修复中..." : "清理所有电脑缓存并重连…"}
+              </button>
+            </details>
 
             {statusNotice && (
               <div
@@ -394,6 +416,26 @@ export function DiagnosticFloatingEntry() {
               }}
             />
           </div>
+          {repairConfirmOpen && (
+            <div
+              role="presentation"
+              style={{ position: "absolute", inset: 0, zIndex: 1, display: "grid", placeItems: "center", padding: "24px", background: "rgba(2, 6, 23, 0.88)" }}
+              onMouseDown={(event) => {
+                if (event.currentTarget === event.target && !repairing) setRepairConfirmOpen(false);
+              }}
+            >
+              <section role="alertdialog" aria-modal="true" aria-labelledby="diag-repair-title" aria-describedby="diag-repair-description" style={{ width: "min(100%, 390px)", padding: "22px", border: "1px solid rgba(245, 158, 11, 0.45)", borderRadius: "14px", background: "#0f172a" }}>
+                <h2 id="diag-repair-title" style={{ margin: "0 0 12px", fontSize: "17px" }}>清理所有电脑的手机缓存？</h2>
+                <p id="diag-repair-description" style={{ color: "#cbd5e1", fontSize: "13px", lineHeight: 1.65 }}>
+                  这会清空手机上所有已配对电脑的缓存消息和待发送消息，并重置它们的中继连接路由。待发送消息无法恢复；完成后应用会重新加载。
+                </p>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "18px" }}>
+                  <button type="button" disabled={repairing} onClick={() => setRepairConfirmOpen(false)} style={{ padding: "8px 12px", borderRadius: "8px", border: "1px solid rgba(148, 163, 184, 0.3)", background: "#1e293b", color: "#f8fafc" }}>取消</button>
+                  <button type="button" disabled={repairing} onClick={() => void handleRepair()} style={{ padding: "8px 12px", borderRadius: "8px", border: "none", background: "#b45309", color: "#fff" }}>{repairing ? "修复中…" : "确认清理并重连"}</button>
+                </div>
+              </section>
+            </div>
+          )}
         </div>
       )}
     </>

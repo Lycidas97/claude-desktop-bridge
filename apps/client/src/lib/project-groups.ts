@@ -54,8 +54,22 @@ export function previewProjectSessions<T extends { lastActivityAt: number }>(
 
 export interface SessionFamily<T> {
   primary: T;
-  forks: T[];
+  forks: SessionFamily<T>[];
   lastActivityAt: number;
+}
+
+export function getSessionAncestorIds<T extends {
+  sessionId: string;
+  parentSessionId?: string;
+}>(sessions: readonly T[], sessionId: string): string[] {
+  const byId = new Map(sessions.map((session) => [session.sessionId, session]));
+  const ancestors = new Set<string>();
+  let parentId = byId.get(sessionId)?.parentSessionId;
+  while (parentId && byId.has(parentId) && parentId !== sessionId && !ancestors.has(parentId)) {
+    ancestors.add(parentId);
+    parentId = byId.get(parentId)?.parentSessionId;
+  }
+  return [...ancestors];
 }
 
 export function groupProjectSessionFamilies<T extends {
@@ -63,39 +77,29 @@ export function groupProjectSessionFamilies<T extends {
   parentSessionId?: string;
   lastActivityAt: number;
 }>(sessions: readonly T[]): SessionFamily<T>[] {
-  const byId = new Map(sessions.map((session) => [session.sessionId, session]));
-  const findRootId = (sessionId: string): string => {
-    let current = sessionId;
-    const seen = new Set<string>([current]);
-    while (true) {
-      const parentId = byId.get(current)?.parentSessionId;
-      if (!parentId || !byId.has(parentId) || seen.has(parentId)) return current;
-      seen.add(parentId);
-      current = parentId;
-    }
-  };
-  const forksByRoot = new Map<string, T[]>();
-  const primaries: T[] = [];
-  for (const session of sessions) {
-    const rootId = findRootId(session.sessionId);
-    if (rootId === session.sessionId) {
-      primaries.push(session);
-    } else {
-      const list = forksByRoot.get(rootId) ?? [];
-      list.push(session);
-      forksByRoot.set(rootId, list);
-    }
+  const byId = new Map<string, SessionFamily<T>>(sessions.map((primary) => [
+    primary.sessionId,
+    { primary, forks: [], lastActivityAt: primary.lastActivityAt },
+  ]));
+  const roots: SessionFamily<T>[] = [];
+  for (const family of byId.values()) {
+    const parent = family.primary.parentSessionId
+      ? byId.get(family.primary.parentSessionId)
+      : undefined;
+    if (parent) parent.forks.push(family);
+    else roots.push(family);
   }
-  return primaries
-    .map((primary) => {
-      const forks = sortProjectSessionsByRecent(forksByRoot.get(primary.sessionId) ?? []);
-      const lastActivityAt = Math.max(
-        primary.lastActivityAt,
-        ...forks.map((fork) => fork.lastActivityAt),
+  function sortFamilies(families: SessionFamily<T>[]): SessionFamily<T>[] {
+    for (const family of families) {
+      sortFamilies(family.forks);
+      family.lastActivityAt = Math.max(
+        family.primary.lastActivityAt,
+        ...family.forks.map((fork) => fork.lastActivityAt),
       );
-      return { primary, forks, lastActivityAt };
-    })
-    .sort((left, right) => right.lastActivityAt - left.lastActivityAt);
+    }
+    return families.sort((left, right) => right.lastActivityAt - left.lastActivityAt);
+  }
+  return sortFamilies(roots);
 }
 
 export function previewProjectSessionFamilies<T extends {

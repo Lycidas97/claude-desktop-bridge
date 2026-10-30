@@ -41,8 +41,8 @@ class FakeObserver extends EventEmitter implements TranscriptObserverRuntime {
     return this.writeVersion;
   }
 
-  async canStartBridgeHost(): Promise<boolean> {
-    return this.bridgeCanStart ?? !this.busy;
+  async canStartBridgeHost(_sessionId: string, reusingIdleHost = false): Promise<boolean> {
+    return reusingIdleHost || (this.bridgeCanStart ?? !this.busy);
   }
 
   onCatalog(listener: (catalog: ClaudeCatalogSnapshot) => void): () => void {
@@ -1819,6 +1819,55 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
+  it("continues queued turns on its retained host when Desktop's activity gate stays busy", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-queue-resume-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    await mkdir(cwd, { recursive: true });
+    const sessionId = randomUUID();
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [observed(sessionId, cwd, { desktopProcessAlive: true })],
+      observedAt: Date.now(),
+    });
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "runtime-sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      scanSessionProcesses: async () => [],
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/host-creds.json", environment: {} }),
+    });
+    try {
+      await broker.initialize();
+      await broker.startTurn({ requestId: "first", idempotencyKey: "first", sessionId, text: "First turn", origin: "mobile" });
+      await waitFor(() => hosts[0]?.sends === 1);
+      observer.bridgeCanStart = false;
+      await broker.startTurn({ requestId: "follow-up", idempotencyKey: "follow-up", sessionId, text: "Queued while first runs", origin: "mobile" });
+      hosts[0]!.complete();
+      await waitFor(() => hosts[0]?.sends === 2, 1_000);
+      expect(hosts).toHaveLength(1);
+      expect(broker.session(sessionId)?.pendingCount).toBe(0);
+      expect(hosts[0]!.closed).toBe(false);
+      const duplicate = await broker.startTurn({ requestId: "retry", idempotencyKey: "follow-up", sessionId, text: "Queued while first runs", origin: "mobile" });
+      expect(duplicate.state).toBe("running");
+      expect(hosts[0]!.sends).toBe(2);
+      hosts[0]!.complete();
+      await waitFor(() => broker.session(sessionId)?.turnState === "idle");
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
+  });
+
   it("runs at most two turns and leaves the third durably queued", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-"));
     directories.push(root);
@@ -2608,6 +2657,17 @@ describe("SessionBroker", () => {
       sessionId: fork1.sessionId,
       parentDesktopSessionId: "local_parent_01",
       forkLabel: "fork",
+    });
+
+    const nested = await broker.forkSession(fork1.sessionId, "Gemini 绘图");
+    expect(nested).toMatchObject({
+      parentSessionId: fork1.sessionId,
+      title: "Gemini 绘图",
+      forkLabel: "fork",
+    });
+    expect(registeredInputs.at(-1)).toMatchObject({
+      sessionId: nested.sessionId,
+      parentDesktopSessionId: `local_${fork1.sessionId}`,
     });
 
     const history = await broker.history(fork1.sessionId);

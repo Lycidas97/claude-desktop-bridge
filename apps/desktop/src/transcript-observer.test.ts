@@ -178,6 +178,44 @@ describe("TranscriptObserver", () => {
     await eventLog.close();
   });
 
+  it("reuses an idle Bridge host despite old subagent activity while still checking fresh Desktop input", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-observer-reuse-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    const sessionId = "session-reuse";
+    const transcript = join(paths.projects, `${sessionId}.jsonl`);
+    const subagents = join(paths.projects, sessionId, "subagents");
+    await Promise.all([mkdir(paths.sessions, { recursive: true }), mkdir(subagents, { recursive: true })]);
+    await writeFile(join(paths.sessions, `${process.pid}.json`), JSON.stringify({
+      pid: process.pid, sessionId, cwd: root, startedAt: Date.now(), entrypoint: "claude-desktop-3p",
+    }));
+    await writeFile(transcript, [
+      JSON.stringify({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "First turn" } }),
+      JSON.stringify({ type: "assistant", uuid: "assistant-1", parentUuid: "user-1", message: { role: "assistant", content: "Done", stop_reason: "end_turn" } }),
+      "",
+    ].join("\n"));
+    await writeFile(join(subagents, "agent-old.meta.json"), JSON.stringify({ description: "Previous child", finished: false }));
+    await writeFile(join(subagents, "agent-old.jsonl"), `${JSON.stringify({
+      type: "assistant", uuid: "child-tool", timestamp: new Date().toISOString(),
+      message: { role: "assistant", content: [{ type: "tool_use", id: "old-tool", name: "Read", input: {} }] },
+    })}\n`);
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 60_000, catalogIntervalMs: 60_000 });
+    try {
+      await observer.start();
+      expect(observer.catalog.sessions.find((session) => session.sessionId === sessionId), "catalog contains viewer").toBeDefined();
+      expect(observer.isDesktopBusy(sessionId), "old subagent marks viewer busy").toBe(true);
+      await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
+      await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(true);
+      await appendFile(transcript, `${JSON.stringify({ type: "user", uuid: "native-next", parentUuid: "assistant-1", message: { role: "user", content: "New Desktop input" } })}\n`);
+      expect(observer.externalWriteVersion(sessionId)).toBe(0);
+      await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
+    } finally {
+      await observer.close();
+      await eventLog.close();
+    }
+  });
+
   it("keeps a Desktop tool turn running until the transcript reaches an end-turn boundary", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-observer-running-turn-"));
     directories.push(root);

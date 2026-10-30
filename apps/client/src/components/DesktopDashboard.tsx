@@ -48,7 +48,7 @@ import {
   X,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ThemeControl } from "../hooks/useTheme.js";
 import type { SessionEvidenceState, SessionHistoryState } from "../hooks/useMobileBridge.js";
 import { downloadBridgeArtifact } from "../lib/artifact-download.js";
@@ -57,8 +57,10 @@ import {
   collapseProjects,
   expandAllProjects,
   expandProject,
+  getSessionAncestorIds,
   groupProjectSessionFamilies,
   toggleCollapsedProject,
+  type SessionFamily,
 } from "../lib/project-groups.js";
 import type { LocalBridgeRequest } from "../runtime/desktop.js";
 import { BrandMark } from "./BrandMark.js";
@@ -347,7 +349,7 @@ function DesktopSessions({
       if (isSelected) {
         if (!autoExpandedForkKeysRef.current.has(selectedKey)) {
           autoExpandedForkKeysRef.current.add(selectedKey);
-          parentsToExpand.push(session.parentSessionId);
+          parentsToExpand.push(...getSessionAncestorIds(snapshot.sessions, session.sessionId));
         }
       } else {
         autoExpandedForkKeysRef.current.delete(selectedKey);
@@ -356,7 +358,7 @@ function DesktopSessions({
       if (isActive) {
         if (!autoExpandedForkKeysRef.current.has(activeKey)) {
           autoExpandedForkKeysRef.current.add(activeKey);
-          parentsToExpand.push(session.parentSessionId);
+          parentsToExpand.push(...getSessionAncestorIds(snapshot.sessions, session.sessionId));
         }
       } else {
         autoExpandedForkKeysRef.current.delete(activeKey);
@@ -829,13 +831,11 @@ function DesktopSessions({
         method: "session.fork",
         params: { sessionId: selected.sessionId },
       }));
-      const rootId = selected.parentSessionId ?? selected.sessionId;
-      setExpandedForkParents((current) => {
-        const next = new Set(current);
-        next.add(rootId);
-        next.add(selected.sessionId);
-        return next;
-      });
+      setExpandedForkParents((current) => new Set([
+        ...current,
+        ...getSessionAncestorIds(snapshot.sessions, selected.sessionId),
+        selected.sessionId,
+      ]));
       await onRefreshSnapshot();
       setSelectedId(result.session.sessionId);
     } catch (failure) {
@@ -864,6 +864,57 @@ function DesktopSessions({
     } finally {
       setSessionActionBusy(false);
     }
+  }
+
+  function renderDesktopSessionFamily(
+    { primary: session, forks }: SessionFamily<BridgeSessionInfo>,
+    isForkChild = false,
+  ): ReactNode {
+    const forksExpanded = expandedForkParents.has(session.sessionId);
+    return (
+      <div className="desktop-session-family" key={session.sessionId}>
+        <button
+          type="button"
+          className={`desktop-session-row ${isForkChild ? "is-fork-child" : ""} ${session.sessionId === selectedId ? "active" : ""}`}
+          onClick={() => setSelectedId(session.sessionId)}
+        >
+          <span className={`session-state-dot ${session.turnState}`} />
+          <span>
+            <strong>
+              {isForkChild && <em className="session-fork-badge">{session.forkLabel || "fork"}</em>}
+              {session.title}
+              {!isForkChild && session.parentSessionId && (
+                <em className="session-fork-badge">{session.forkLabel || "fork"}</em>
+              )}
+            </strong>
+            <small>
+              {!isForkChild && `${desktopRuntimeName(desktopRuntimeId(session))} · `}
+              {sessionState(session)}
+            </small>
+          </span>
+          {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
+        </button>
+        {forks.length > 0 && (
+          <div className={`desktop-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
+            <button
+              type="button"
+              className="desktop-fork-toggle"
+              aria-expanded={forksExpanded}
+              onClick={() => toggleForkGroup(session.sessionId)}
+            >
+              <GitFork size={12} />
+              <span>{forks.length} 个 Fork 分支</span>
+              {forksExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+            {forksExpanded && (
+              <div className="desktop-fork-children">
+                {forks.map((fork) => renderDesktopSessionFamily(fork, true))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -942,66 +993,7 @@ function DesktopSessions({
                 </button>
                 {expanded && (
                   <div className="desktop-project-sessions" id={sessionsId}>
-                    {families.map(({ primary: session, forks }) => {
-                      const forksExpanded = expandedForkParents.has(session.sessionId);
-                      return (
-                        <div className="desktop-session-family" key={session.sessionId}>
-                          <button
-                            type="button"
-                            className={`desktop-session-row ${session.sessionId === selectedId ? "active" : ""}`}
-                            onClick={() => setSelectedId(session.sessionId)}
-                          >
-                            <span className={`session-state-dot ${session.turnState}`} />
-                            <span>
-                              <strong>
-                                {session.title}
-                                {session.parentSessionId && (
-                                  <em className="session-fork-badge">{session.forkLabel || "fork"}</em>
-                                )}
-                              </strong>
-                              <small>{desktopRuntimeName(desktopRuntimeId(session))} · {sessionState(session)}</small>
-                            </span>
-                            {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
-                          </button>
-                          {forks.length > 0 && (
-                            <div className={`desktop-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
-                              <button
-                                type="button"
-                                className="desktop-fork-toggle"
-                                aria-expanded={forksExpanded}
-                                onClick={() => toggleForkGroup(session.sessionId)}
-                              >
-                                <GitFork size={12} />
-                                <span>{forks.length} 个 Fork 分支</span>
-                                {forksExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                              </button>
-                              {forksExpanded && (
-                                <div className="desktop-fork-children">
-                                  {forks.map((fork) => (
-                                    <button
-                                      type="button"
-                                      className={`desktop-session-row is-fork-child ${fork.sessionId === selectedId ? "active" : ""}`}
-                                      onClick={() => setSelectedId(fork.sessionId)}
-                                      key={fork.sessionId}
-                                    >
-                                      <span className={`session-state-dot ${fork.turnState}`} />
-                                      <span>
-                                        <strong>
-                                          <em className="session-fork-badge">{fork.forkLabel || "fork"}</em>
-                                          {fork.title}
-                                        </strong>
-                                        <small>{sessionState(fork)}</small>
-                                      </span>
-                                      {fork.pendingCount > 0 && <b>{fork.pendingCount}</b>}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                    {families.map((family) => renderDesktopSessionFamily(family))}
                   </div>
                 )}
               </section>
@@ -1027,66 +1019,7 @@ function DesktopSessions({
                 </button>
                 {archivedExpanded && (
                   <div className="desktop-project-sessions" id="desktop-archived-sessions">
-                    {archivedFamilies.map(({ primary: session, forks }) => {
-                      const forksExpanded = expandedForkParents.has(session.sessionId);
-                      return (
-                        <div className="desktop-session-family" key={session.sessionId}>
-                          <button
-                            type="button"
-                            className={`desktop-session-row ${session.sessionId === selectedId ? "active" : ""}`}
-                            onClick={() => setSelectedId(session.sessionId)}
-                          >
-                            <span className={`session-state-dot ${session.turnState}`} />
-                            <span>
-                              <strong>
-                                {session.title}
-                                {session.parentSessionId && (
-                                  <em className="session-fork-badge">{session.forkLabel || "fork"}</em>
-                                )}
-                              </strong>
-                              <small>{desktopRuntimeName(desktopRuntimeId(session))} · {sessionState(session)}</small>
-                            </span>
-                            {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
-                          </button>
-                          {forks.length > 0 && (
-                            <div className={`desktop-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
-                              <button
-                                type="button"
-                                className="desktop-fork-toggle"
-                                aria-expanded={forksExpanded}
-                                onClick={() => toggleForkGroup(session.sessionId)}
-                              >
-                                <GitFork size={12} />
-                                <span>{forks.length} 个 Fork 分支</span>
-                                {forksExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                              </button>
-                              {forksExpanded && (
-                                <div className="desktop-fork-children">
-                                  {forks.map((fork) => (
-                                    <button
-                                      type="button"
-                                      className={`desktop-session-row is-fork-child ${fork.sessionId === selectedId ? "active" : ""}`}
-                                      onClick={() => setSelectedId(fork.sessionId)}
-                                      key={fork.sessionId}
-                                    >
-                                      <span className={`session-state-dot ${fork.turnState}`} />
-                                      <span>
-                                        <strong>
-                                          <em className="session-fork-badge">{fork.forkLabel || "fork"}</em>
-                                          {fork.title}
-                                        </strong>
-                                        <small>{sessionState(fork)}</small>
-                                      </span>
-                                      {fork.pendingCount > 0 && <b>{fork.pendingCount}</b>}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                    {archivedFamilies.map((family) => renderDesktopSessionFamily(family))}
                   </div>
                 )}
               </section>

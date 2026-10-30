@@ -1,6 +1,7 @@
 import { Camera, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Html5Qrcode } from "html5-qrcode";
+import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import {
   QR_SCANNER_CAMERA_CONSTRAINTS,
   QR_SCANNER_FPS,
@@ -36,6 +37,11 @@ export function WebQrScannerDialog({
   const readerRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [ready, setReady] = useState(false);
+
+  useEffect(() => registerMobileBackHandler(() => {
+    onCancel();
+    return true;
+  }, 200), [onCancel]);
 
   useEffect(() => {
     let active = true;

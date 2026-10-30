@@ -14,11 +14,11 @@ Updated **2026-10-30**. The base project version remains **1.0.2**; the progress
 
 | Location | Status |
 | --- | --- |
-| [`main`](https://github.com/Lycidas97/claude-desktop-bridge/tree/main) | Includes the features described below: model/context, history, connection stability, nested forks, mobile navigation, queue fixes, relay settings, image/PDF and text previews, file transfers, Agent visibility settings and the menu-bar icon fix. |
-| [`fix/bridge-session-media-and-connectivity`](https://github.com/Lycidas97/claude-desktop-bridge/tree/fix/bridge-session-media-and-connectivity) | These features and fixes are merged into `main`; the branch is retained for history. |
+| [`main`](https://github.com/Lycidas97/claude-desktop-bridge/tree/main) | The shared maintenance branch contains the features below, malformed relay request handling, mobile host-switch synchronization fixes and fixed gateway credential support for current Claude Desktop versions. |
+| Historical branches | Merged feature and integration branches have been removed; their commits remain in `main`. Older `codex/*` branches with unique commits are retained. |
 | macOS menu bar | Uses a transparent white bridge icon with standard/Retina assets and system appearance adaptation. The icon source is committed. |
 
-**Build from `main` and update both desktop and Android clients to use the features described here.** This fork has no independent GitHub Release yet. Upstream installers do not contain all fork changes. Local delivery labels such as `v25` and `v26` identify builds, not project versions.
+**Build from `main` and update both desktop and Android clients to use the features described here.** This fork has no independent GitHub Release yet. Upstream installers do not contain all fork changes. Local delivery labels such as `v25`, `v26` and `v27` identify builds, not project versions.
 
 ## Improvements in this fork
 
@@ -98,7 +98,7 @@ cd claude-desktop-bridge
 ```
 
 ```bash
-git switch fix/bridge-session-media-and-connectivity
+git switch main
 ```
 
 ```bash
@@ -128,7 +128,9 @@ macOS ad-hoc packages are for local verification. See [Release documentation](do
 - Relay settings, text previews and uploads: **35 protocol tests passed**; **280 desktop tests passed, 3 skipped**; **155 client tests passed, 4 pre-existing failures**. Existing failures concern pairing migration under custom packaged relay defaults; this is not an all-green suite result.
 - Agent visibility: **37 focused tests**, client typecheck and build passed. Browser checks covered Claude-only defaults, toggles, hiding unready Agents, persistence after reload and a 375px layout. These subsets overlap the earlier counts and must not be added together.
 - A multi-chunk upload was tested over the real encrypted relay, with hash-verified readback from both the desktop filesystem and the text-preview channel.
-- Android v26 passed v1/v2/v3 signature checks, alignment, all **10 DEX** checks, packaged asset verification and a hash check after downloading the uploaded APK. This build has not yet completed physical Android runtime acceptance.
+- Android v27 passed v1/v2/v3 signature checks, alignment, all **10 DEX** checks, verification of 238 Web assets and a hash check after downloading the uploaded APK. This build has not yet completed physical Android runtime acceptance.
+- Both P1 fixes are deployed: malformed relay URLs/Origins return 400/403 without stopping the service, and mobile host switches discard asynchronous synchronization results from old connections. Pre-commit checks passed **37 client tests**, **25 relay tests**, **25 desktop credential/Host tests** and all three typechecks.
+- Current Claude Desktop fixed gateway credentials can be passed directly to Agent SDK subprocesses without a Host credential file. A real request completed through the installed Bridge app, with pairing retained, an empty queue and no Claude Desktop restart.
 - Current validation focuses on macOS, Android builds and browser flows. Windows, Linux and iOS retain source and upstream build entry points; the latest fork features have not been revalidated on physical devices across those platforms.
 - The menu-bar icon passed transparent-white asset, 1×/2× loading and app-signature checks. Capturing the system menu bar was blocked by macOS Screen Recording permissions.
 - Before merging, client and desktop typechecks passed, along with **18 desktop preview/build-environment tests** and **69 client Agent/media/session/permission tests**. These counts describe the merge verification subset, not a rerun of the full suite.

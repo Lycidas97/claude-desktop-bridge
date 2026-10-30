@@ -14,11 +14,11 @@
 
 | 位置 | 当前状态 |
 | --- | --- |
-| [`main`](https://github.com/Lycidas97/claude-desktop-bridge/tree/main) | 已合入下列功能：模型与上下文、历史、连接稳定性、多层 Fork、手机导航、队列续接、中继配置、图片/PDF 与文本预览、文件传输、Agent 显示设置及菜单栏图标修复。 |
-| [`fix/bridge-session-media-and-connectivity`](https://github.com/Lycidas97/claude-desktop-bridge/tree/fix/bridge-session-media-and-connectivity) | 本轮功能与修复已合入 `main`，保留分支供历史追溯。 |
+| [`main`](https://github.com/Lycidas97/claude-desktop-bridge/tree/main) | 统一维护分支，包含下列功能与修复，以及中继非法请求处理、手机切换主机同步修复和新版 Claude Desktop 固定网关凭据兼容。 |
+| 历史分支 | 已合入的功能和集成分支已清理，提交历史保留在 `main`；尚有独有提交的旧 `codex/*` 分支继续保留。 |
 | macOS 菜单栏 | 已使用透明底白色桥接图标，带普通屏/Retina 资源，支持系统随菜单栏外观适配；图标源码已提交。 |
 
-**体验下列功能时，可直接使用 `main` 的源码，并同时更新电脑端与 Android 端。** fork 目前没有独立的 GitHub Release；上游安装包不包含本 fork 的全部改动。本地交付使用的 `v25`、`v26` 是构建标识，不是项目版本号。
+**体验下列功能时，可直接使用 `main` 的源码，并同时更新电脑端与 Android 端。** fork 目前没有独立的 GitHub Release；上游安装包不包含本 fork 的全部改动。本地交付使用的 `v25`、`v26`、`v27` 是构建标识，不是项目版本号。
 
 ## 本 fork 的主要改进
 
@@ -98,7 +98,7 @@ cd claude-desktop-bridge
 ```
 
 ```bash
-git switch fix/bridge-session-media-and-connectivity
+git switch main
 ```
 
 ```bash
@@ -128,7 +128,9 @@ macOS ad-hoc 包用于本机验证；稳定签名与其他平台构建参见 [�
 - 中继设置、文本预览和上传改动：协议测试 **35 项通过**；桌面测试 **280 项通过、3 项跳过**；客户端 **155 项通过、4 项既有失败**。既有失败位于自定义打包中继默认值下的配对迁移测试，未作为全绿结果报告。
 - Agent 显示设置：**37 项相关测试**、客户端类型检查和构建通过；浏览器验证默认仅 Claude、勾选、未就绪隐藏、重载保存与 375px 布局。这些子集与前面的测试计数不可直接相加。
 - 已通过真实加密中继上传多分块文件，并从电脑文件系统及文本预览通道回读核对哈希。
-- Android v26 验证了 v1/v2/v3 签名、对齐、全部 **10 个 DEX**、包内资源及上传后回下载哈希；该构建尚未完成 Android 实机运行验收。
+- Android v27 验证了 v1/v2/v3 签名、对齐、全部 **10 个 DEX**、238 个 Web 资源及上传后回下载哈希；该构建尚未完成 Android 实机运行验收。
+- 两项 P1 修复已部署：中继收到非法 URL/Origin 后返回 400/403 并继续服务；手机切换主机后丢弃旧连接的异步同步结果。提交前复测客户端 **37 项**、中继 **25 项**、桌面凭据与 Host **25 项**通过，三端类型检查通过。
+- 新版 Claude Desktop 的固定网关凭据可直接供 Agent SDK 子进程使用，无需生成 Host 凭据文件。安装后的 Bridge 真实请求已完成，配对保留、队列为空，Claude Desktop 未重启。
 - 本轮主要验证平台为 macOS + Android 构建及浏览器。Windows、Linux、iOS 保留源码与上游构建入口，未对本 fork 最新功能重新完成各平台实机验收。
 - 菜单栏图标已验证透明白色资源、1×/2×加载与应用签名；系统菜单栏截图受 macOS 录屏权限限制。
 - 合并前验证：客户端与桌面类型检查通过；桌面文件预览与构建环境测试 **18 项通过**，客户端 Agent、媒体预览、会话与授权测试 **69 项通过**。这些计数是本次合并验证的子集，不代表重跑了全部测试。

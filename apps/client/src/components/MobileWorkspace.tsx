@@ -1418,10 +1418,19 @@ export function MobileWorkspace({
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
   const [search, setSearch] = useState("");
-  const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<BridgeAttachment[]>([]);
-  const [sending, setSending] = useState(false);
-  const [steer, setSteer] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, {
+    text: string;
+    attachments: BridgeAttachment[];
+    sending: boolean;
+    steer: boolean;
+    imageError?: string | undefined;
+  }>>({});
+  const draftKey = JSON.stringify([activeHostId, selectedSessionId]);
+  const draft = drafts[draftKey] ?? { text: "", attachments: [], sending: false, steer: false };
+  const { text, attachments, sending, steer, imageError } = draft;
+  function updateDraft(change: (current: typeof draft) => typeof draft): void {
+    setDrafts((current) => ({ ...current, [draftKey]: change(current[draftKey] ?? draft) }));
+  }
   const [createOpen, setCreateOpen] = useState(false);
   const [createProjectId, setCreateProjectId] = useState("");
   const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
@@ -1431,7 +1440,6 @@ export function MobileWorkspace({
   const [actionSessionId, setActionSessionId] = useState<string>();
   const [providerOpen, setProviderOpen] = useState(false);
   const [relayOpen, setRelayOpen] = useState(false);
-  const [imageError, setImageError] = useState<string>();
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
   const [stopError, setStopError] = useState<string>();
   const [permissionOpen, setPermissionOpen] = useState(false);
@@ -1870,18 +1878,19 @@ export function MobileWorkspace({
     const nextText = text.trim();
     const nextAttachments = runtimeSupports(snapshot, selectedSession, "attachment.image") ? attachments : [];
     const nextFiles = fileUploads.files;
-    setText("");
-    setAttachments([]);
-    setSending(true);
+    updateDraft((current) => ({ ...current, text: "", attachments: [], sending: true }));
     try {
       await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, steer);
       fileUploads.clear(nextFiles);
-      setSteer(false);
+      updateDraft((current) => ({ ...current, steer: false }));
     } catch {
-      setText(nextText);
-      setAttachments(nextAttachments);
+      updateDraft((current) => ({
+        ...current,
+        text: [nextText, current.text].filter(Boolean).join("\n"),
+        attachments: [...nextAttachments, ...current.attachments],
+      }));
     } finally {
-      setSending(false);
+      updateDraft((current) => ({ ...current, sending: false }));
     }
   }
 
@@ -1892,12 +1901,12 @@ export function MobileWorkspace({
       sending ||
       !promptText.trim()
     ) return;
-    setSending(true);
+    updateDraft((current) => ({ ...current, sending: true }));
     try {
       await onSendTurn(selectedSession.sessionId, promptText.trim(), [], steer);
-      setSteer(false);
+      updateDraft((current) => ({ ...current, steer: false }));
     } finally {
-      setSending(false);
+      updateDraft((current) => ({ ...current, sending: false }));
     }
   }
 
@@ -1970,16 +1979,16 @@ export function MobileWorkspace({
 
   async function addImages(files: FileList | null): Promise<void> {
     if (!files?.length) return;
-    setImageError(undefined);
+    updateDraft((current) => ({ ...current, imageError: undefined }));
     try {
       const candidates = [...files];
       if (candidates.some((file) => file.size > 4 * 1024 * 1024)) throw new Error("单张图片不能超过 4 MB");
       const total = candidates.reduce((sum, file) => sum + file.size, attachments.reduce((sum, item) => sum + item.size, 0));
       if (total > 6 * 1024 * 1024) throw new Error("图片总大小不能超过 6 MB");
       const next = await Promise.all(candidates.map(fileToAttachment));
-      setAttachments((current) => [...current, ...next].slice(0, 4));
+      updateDraft((current) => ({ ...current, attachments: [...current.attachments, ...next].slice(0, 4) }));
     } catch (error) {
-      setImageError(error instanceof Error ? error.message : "图片读取失败");
+      updateDraft((current) => ({ ...current, imageError: error instanceof Error ? error.message : "图片读取失败" }));
     } finally {
       if (fileRef.current) fileRef.current.value = "";
     }
@@ -2574,7 +2583,7 @@ export function MobileWorkspace({
               {attachments.map((attachment) => (
                 <span key={attachment.id}>
                   {attachment.name}
-                  <button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}>
+                  <button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => updateDraft((current) => ({ ...current, attachments: current.attachments.filter((item) => item.id !== attachment.id) }))}>
                     <X size={13} />
                   </button>
                 </span>
@@ -2584,8 +2593,8 @@ export function MobileWorkspace({
           {imageError && <div className="composer-error">{imageError}</div>}
           {bridgeRunning && selectedSession.allowedActions?.canSteer !== false && (
             <div className="composer-mode" role="group" aria-label="发送方式">
-              <button type="button" className={!steer ? "active" : ""} onClick={() => setSteer(false)}>排到下一轮</button>
-              <button type="button" className={steer ? "active" : ""} onClick={() => setSteer(true)}>立即调整</button>
+              <button type="button" className={!steer ? "active" : ""} onClick={() => updateDraft((current) => ({ ...current, steer: false }))}>排到下一轮</button>
+              <button type="button" className={steer ? "active" : ""} onClick={() => updateDraft((current) => ({ ...current, steer: true }))}>立即调整</button>
             </div>
           )}
           <form
@@ -2611,7 +2620,7 @@ export function MobileWorkspace({
             )}
             <textarea
               value={text}
-              onChange={(event) => setText(event.target.value)}
+              onChange={({ target: { value } }) => updateDraft((current) => ({ ...current, text: value }))}
               disabled={selectedSession.allowedActions?.canSend === false}
               placeholder={desktopOnline
                 ? selectedSession.allowedActions?.reason ?? (

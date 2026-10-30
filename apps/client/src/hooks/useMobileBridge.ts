@@ -1270,6 +1270,9 @@ export function useMobileBridge() {
   }, []);
 
   const resumeEvents = useCallback(async (bootstrap = false, fromSeq?: number) => {
+    const crypto = cryptoRef.current;
+    const socket = socketRef.current;
+    const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
     try {
       const events: BridgeEvent[] = [];
       let cursor = fromSeq ?? stateRef.current.latestSeq;
@@ -1279,6 +1282,7 @@ export function useMobileBridge() {
           limit: 250,
           ...(bootstrap && cursor === 0 ? { bootstrap: true } : {}),
         }, { wait: true, timeoutMs: 8_000 });
+        if (!isCurrent()) return;
         if (!response?.ok) break;
         const result = response.result as {
           events?: unknown;
@@ -1298,6 +1302,7 @@ export function useMobileBridge() {
         if (result.hasMore !== true || cursor >= latestSeq) break;
       }
       setState((current) => {
+        if (!isCurrent()) return current;
         let turns = current.localTurns;
         let evidence = current.evidence;
         for (const event of events) {
@@ -1339,14 +1344,17 @@ export function useMobileBridge() {
   }, [sendRequest]);
 
   const refreshSessionList = useCallback(async (): Promise<boolean> => {
+    const crypto = cryptoRef.current;
+    const socket = socketRef.current;
+    const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
     const response = await sendRequest("session.list", {}, {
       wait: true,
       timeoutMs: 20_000,
     });
-    if (!response?.ok) return false;
+    if (!isCurrent() || !response?.ok) return false;
     const result = response.result as { sessions?: BridgeSessionInfo[] };
     if (!result.sessions) return false;
-    setState((current) => current.snapshot ? {
+    setState((current) => isCurrent() && current.snapshot ? {
       ...current,
       snapshot: { ...current.snapshot, sessions: result.sessions! },
     } : current);
@@ -1354,15 +1362,18 @@ export function useMobileBridge() {
   }, [sendRequest]);
 
   const refreshSnapshot = useCallback(async (): Promise<boolean> => {
+    const crypto = cryptoRef.current;
+    const socket = socketRef.current;
+    if (!crypto) throw new Error("电脑当前离线");
+    const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
     const response = await sendRequest("snapshot.get", {}, {
       wait: true,
       timeoutMs: 20_000,
     });
+    if (!isCurrent()) return false;
     if (!response?.ok) throw new Error(response?.error?.message ?? "电脑端快照刷新失败");
     const result = response.result as { snapshot?: BridgeHostSnapshot } | undefined;
     if (!result?.snapshot) throw new Error("电脑端未返回最新会话快照");
-    const crypto = cryptoRef.current;
-    if (!crypto) throw new Error("电脑当前离线");
     const roomId = crypto.identity.roomId;
     const initial = rebaseSnapshot(result.snapshot, stateRef.current.events);
     const cacheCrypto = crypto.withSenderDevice(crypto.identity.hostId ?? crypto.identity.deviceId);
@@ -1374,9 +1385,12 @@ export function useMobileBridge() {
       LOCAL_EVIDENCE_CACHE_TTL_MS,
       crypto.identity.deviceId,
     );
+    if (!isCurrent()) return false;
     await bridgeVault.saveMessage(cachedEnvelope);
+    if (!isCurrent()) return false;
     applyLanRelayAdvertisement(roomId, result.snapshot);
     setState((current) => {
+      if (!isCurrent()) return current;
       const rebased = rebaseSnapshot(result.snapshot!, current.events);
       return {
         ...current,
@@ -2287,11 +2301,15 @@ export function useMobileBridge() {
     }));
   }, []);
 
-  const openingSessionsRef = useRef(new Map<string, Promise<void>>());
+  const openingSessionsRef = useRef(new Map<string, { socket: BridgeTransport | undefined; task: Promise<void> }>());
 
   const openSession = useCallback(async (sessionId: string) => {
-    const inflight = openingSessionsRef.current.get(sessionId);
-    if (inflight) return inflight;
+    const crypto = cryptoRef.current;
+    const socket = socketRef.current;
+    const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
+    const key = `${crypto?.identity.roomId}:${sessionId}`;
+    const inflight = openingSessionsRef.current.get(key);
+    if (inflight && inflight.socket === socket) return inflight.task;
     const task = (async () => {
       setState((current) => ({
         ...current,
@@ -2323,10 +2341,11 @@ export function useMobileBridge() {
           wait: true,
           timeoutMs: 25_000,
         });
+        if (!isCurrent()) return;
         if (!response?.ok) throw new Error(response?.error?.message ?? "会话打开失败");
         const result = response.result as { history?: BridgeHistoryPage; session?: BridgeSessionInfo };
         if (!result.history) throw new Error("电脑未返回会话历史");
-        setState((current) => ({
+        setState((current) => isCurrent() ? {
           ...current,
           snapshot: applySessionToSnapshot(current.snapshot, result.session),
           histories: {
@@ -2338,15 +2357,16 @@ export function useMobileBridge() {
               ...(result.history!.nextCursor ? { nextCursor: result.history!.nextCursor } : {}),
             },
           },
-        }));
+        } : current);
         void sendRequest("evidence.list", { sessionId, limit: 12 }, {
           wait: true,
           timeoutMs: 30_000,
         }).then((evidenceResponse) => {
+          if (!isCurrent()) return;
           const evidenceResult = evidenceResponse?.ok
             ? evidenceResponse.result as { evidence?: BridgeEvidencePage }
             : undefined;
-          setState((current) => ({
+          setState((current) => isCurrent() ? {
             ...current,
             evidence: {
               ...current.evidence,
@@ -2366,9 +2386,9 @@ export function useMobileBridge() {
                 hasMore: false,
               },
             },
-          }));
+          } : current);
         }).catch(() => {
-          setState((current) => ({
+          setState((current) => isCurrent() ? {
             ...current,
             evidence: {
               ...current.evidence,
@@ -2378,10 +2398,10 @@ export function useMobileBridge() {
                 hasMore: current.evidence[sessionId]?.hasMore ?? false,
               },
             },
-          }));
+          } : current);
         });
       } catch (error) {
-        setState((current) => ({
+        setState((current) => isCurrent() ? {
           ...current,
           histories: {
             ...current.histories,
@@ -2401,12 +2421,12 @@ export function useMobileBridge() {
             },
           },
           error: error instanceof Error ? error.message : "会话打开失败",
-        }));
+        } : current);
       }
     })().finally(() => {
-      openingSessionsRef.current.delete(sessionId);
+      if (openingSessionsRef.current.get(key)?.task === task) openingSessionsRef.current.delete(key);
     });
-    openingSessionsRef.current.set(sessionId, task);
+    openingSessionsRef.current.set(key, { socket, task });
     return task;
   }, [sendRequest]);
 
@@ -2922,6 +2942,9 @@ export function useMobileBridge() {
   const controlClaudeDesktop = useCallback(async (
     action: "status" | "launch" | "quit",
   ): Promise<ClaudeDesktopAppStatus> => {
+    const crypto = cryptoRef.current;
+    const socket = socketRef.current;
+    const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
     const method: BridgeRequest["method"] = `claude.desktop.${action}`;
     const response = await sendRequest(method, {}, {
       wait: true,
@@ -2935,10 +2958,10 @@ export function useMobileBridge() {
     const result = response.result as { claudeDesktop?: ClaudeDesktopAppStatus } | undefined;
     if (!result?.claudeDesktop) throw new Error("电脑未返回 Claude Desktop 状态");
     const claudeDesktop = result.claudeDesktop;
-    setState((current) => ({
+    setState((current) => isCurrent() ? {
       ...current,
       snapshot: snapshotWithClaudeDesktop(current.snapshot, claudeDesktop),
-    }));
+    } : current);
     return claudeDesktop;
   }, [sendRequest]);
 
@@ -2985,13 +3008,18 @@ export function useMobileBridge() {
   }, [sendRequest]);
 
   const refresh = useCallback(async (sessionId?: string): Promise<boolean> => {
+    const crypto = cryptoRef.current;
+    const socket = socketRef.current;
+    const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
     try {
       // Ask the desktop to re-discover native sessions first; otherwise a
       // manual sync can only echo the desktop's cached snapshot and sessions
       // created on the computer never reach the phone. Tolerate failure so
       // older desktops still serve their cached state below.
       await sendRequest("runtime.refresh", {}, { wait: true, timeoutMs: 45_000 }).catch(() => undefined);
+      if (!isCurrent()) return false;
       await resumeEvents();
+      if (!isCurrent()) return false;
       let snapshotSynced = false;
       let snapshotError: unknown;
       try {
@@ -2999,20 +3027,23 @@ export function useMobileBridge() {
       } catch (error) {
         snapshotError = error;
       }
+      if (!isCurrent()) return false;
       if (!snapshotSynced) {
         const sessionListSynced = await refreshSessionList().catch(() => false);
+        if (!isCurrent()) return false;
         await controlClaudeDesktop("status").catch(() => undefined);
+        if (!isCurrent()) return false;
         if (!sessionListSynced) {
           throw snapshotError instanceof Error ? snapshotError : new Error("电脑端同步失败");
         }
       }
       if (sessionId) await openSession(sessionId);
-      return true;
+      return isCurrent();
     } catch (error) {
-      setState((current) => ({
+      setState((current) => isCurrent() ? {
         ...current,
         error: error instanceof Error ? error.message : "电脑端同步失败",
-      }));
+      } : current);
       return false;
     }
   }, [controlClaudeDesktop, openSession, refreshSessionList, refreshSnapshot, resumeEvents, sendRequest]);

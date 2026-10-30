@@ -1447,6 +1447,9 @@ export function MobileWorkspace({
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [projectSearch, setProjectSearch] = useState("");
   const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
+  useEffect(() => {
+    if (runtimeFilter !== "all" && !snapshot?.runtimes?.some((runtime) => runtime.id === runtimeFilter)) setRuntimeFilter("all");
+  }, [runtimeFilter, snapshot?.runtimes]);
   const openMedia = useMediaPreview();
   const [pendingFileDownload, setPendingFileDownload] = useState<string>();
   const [fileDownloadBusy, setFileDownloadBusy] = useState(false);

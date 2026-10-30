@@ -8088,6 +8088,9 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 .mobile-settings-row.danger,
 .mobile-settings-row.is-danger { color: var(--danger-ink); }
 .mobile-settings-value { color: var(--muted); font-size: 12px; }
+.agent-settings input[type="checkbox"] { width: 20px; height: 20px; flex: none; accent-color: var(--accent); }
+.agent-settings label.mobile-settings-row { cursor: pointer; }
+.agent-settings label:has(input:disabled) { cursor: default; }
 .mobile-empty-directory { padding: 60px 12px; text-align: center; }
 .mobile-empty-directory h2 { font-size: 20px; }
 .mobile-empty-directory p { margin: 12px 0 24px; color: var(--muted); font-size: 14px; }

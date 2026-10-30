@@ -107,6 +107,9 @@ import {
   type SessionConfigurationChange,
 } from "./SessionConfigurationDialog.js";
 
+import { visibleAgentSnapshot, type AgentVisibilityControl } from "../hooks/useAgentVisibility.js";
+import { AgentSettings } from "./AgentSettings.js";
+
 type DesktopTab = "sessions" | "devices" | "status";
 
 function unwrap<T>(response: BridgeResponse): T {
@@ -209,6 +212,9 @@ function DesktopSessions({
   const [projectId, setProjectId] = useState(snapshot.projects[0]?.projectId ?? "");
   const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
   const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
+  useEffect(() => {
+    if (runtimeFilter !== "all" && !snapshot.runtimes?.some((runtime) => runtime.id === runtimeFilter)) setRuntimeFilter("all");
+  }, [runtimeFilter, snapshot.runtimes]);
   const [title, setTitle] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
@@ -967,12 +973,12 @@ function DesktopSessions({
         </div>
         {(snapshot.runtimes?.length ?? 0) > 0 && (
           <nav className="runtime-filter desktop-runtime-filter" aria-label="Desktop 运行时筛选">
-            <button type="button" className={runtimeFilter === "all" ? "active" : ""} onClick={() => setRuntimeFilter("all")}>全部</button>
+            {snapshot.runtimes!.length > 1 && <button type="button" className={runtimeFilter === "all" ? "active" : ""} onClick={() => setRuntimeFilter("all")}>全部</button>}
             {snapshot.runtimes!.map((runtime) => (
               <button
                 type="button"
                 key={runtime.id}
-                className={runtimeFilter === runtime.id ? "active" : ""}
+                className={runtimeFilter === runtime.id || snapshot.runtimes!.length === 1 ? "active" : ""}
                 disabled={runtime.state !== "ready" && runtime.sessionCount === 0}
                 onClick={() => setRuntimeFilter(runtime.id)}
               >
@@ -1663,13 +1669,15 @@ function DesktopDevices({
 }
 
 function DesktopStatus({
-  snapshot,
+  snapshot: rawSnapshot,
+  agentVisibility,
   onSetRelayUrl,
   onLaunchChange,
   onDesktopAppAction,
   onExport,
 }: {
   snapshot: DesktopControlSnapshot;
+  agentVisibility: AgentVisibilityControl;
   onSetRelayUrl(url: string): Promise<void>;
   onLaunchChange(enabled: boolean): Promise<void>;
   onDesktopAppAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<void>;
@@ -1677,6 +1685,7 @@ function DesktopStatus({
 }) {
   const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
   const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
+  const snapshot = visibleAgentSnapshot(rawSnapshot, agentVisibility.enabled);
   const takeoverReady = snapshot.runtime.state === "ready" || snapshot.runtime.state === "working";
   const takeoverTitle = takeoverReady
     ? snapshot.runtime.state === "working" ? "正在接管" : "自动接管已就绪"
@@ -1748,6 +1757,7 @@ function DesktopStatus({
           <small>首次有效答复生效</small>
         </section>
       </div>
+      <AgentSettings control={agentVisibility} snapshot={rawSnapshot} />
       <section className="status-settings">
         <RelaySettings relayUrl={snapshot.host.relayUrl} onSave={onSetRelayUrl} />
         {desktopApps.map((desktopApp) => (
@@ -1792,11 +1802,12 @@ function DesktopStatus({
   );
 }
 
-export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl }) {
+export function DesktopDashboard({ themeControl, agentVisibility }: { themeControl: ThemeControl; agentVisibility: AgentVisibilityControl }) {
   const api = window.bridgeDesktop;
   const [snapshot, setSnapshot] = useState<DesktopControlSnapshot>();
   const [events, setEvents] = useState<BridgeEvent[]>([]);
   const [tab, setTab] = useState<DesktopTab>("sessions");
+  const visibleSnapshot = useMemo(() => snapshot ? visibleAgentSnapshot(snapshot, agentVisibility.enabled) : undefined, [snapshot, agentVisibility.enabled]);
 
   useEffect(() => {
     if (!api) return;
@@ -1845,7 +1856,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
       <section className="desktop-content-v2">
         {tab === "sessions" && (
           <DesktopSessions
-            snapshot={snapshot}
+            snapshot={visibleSnapshot!}
             events={events}
             apiRequest={request}
             onClaudeDesktopLaunch={async () => {
@@ -1879,6 +1890,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
         {tab === "status" && (
           <DesktopStatus
             snapshot={snapshot}
+            agentVisibility={agentVisibility}
             onSetRelayUrl={async (url) => setSnapshot(await api.setRelayUrl(url))}
             onLaunchChange={async (enabled) => setSnapshot(await api.setLaunchAtLogin(enabled))}
             onDesktopAppAction={async (runtimeId, action) => setSnapshot(

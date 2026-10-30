@@ -1,8 +1,11 @@
 import { Activity, ChevronRight, Moon, Palette, Sun } from "lucide-react";
 import type { ThemeControl } from "../hooks/useTheme.js";
 import { setDiagDialogOpen } from "../lib/diagnostics.js";
+import type { BridgeHostSnapshot } from "@bridge/protocol";
+import type { AgentVisibilityControl } from "../hooks/useAgentVisibility.js";
+import { AgentSettings } from "./AgentSettings.js";
 
-export function MobileSettings({ themeControl }: { themeControl: ThemeControl }) {
+export function MobileSettings({ themeControl, agentVisibility, snapshot }: { themeControl: ThemeControl; agentVisibility: AgentVisibilityControl; snapshot?: BridgeHostSnapshot }) {
   return (
     <main className="mobile-workspace mobile-settings-page">
       <header className="mobile-page-header"><h1>设置</h1></header>
@@ -28,6 +31,7 @@ export function MobileSettings({ themeControl }: { themeControl: ThemeControl })
             </div>
           </div>
         </section>
+        <AgentSettings control={agentVisibility} {...(snapshot ? { snapshot } : {})} />
         <section className="mobile-settings-group" aria-labelledby="mobile-support-title">
           <h2 id="mobile-support-title">诊断与支持</h2>
           <button type="button" className="mobile-settings-row" onClick={() => setDiagDialogOpen(true)}>

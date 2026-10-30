@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useAgentVisibility, visibleAgentSnapshot } from "./hooks/useAgentVisibility.js";
 import { useTheme } from "./hooks/useTheme.js";
 import { useMobileBridge } from "./hooks/useMobileBridge.js";
 import {
@@ -20,6 +21,10 @@ import { HostPermissionSettings } from "./components/HostPermissionSettings.js";
 export function App() {
   const themeControl = useTheme();
   const mobile = useMobileBridge();
+  const agentVisibility = useAgentVisibility();
+  const snapshot = useMemo(() => mobile.state.snapshot
+    ? visibleAgentSnapshot(mobile.state.snapshot, agentVisibility.enabled)
+    : undefined, [mobile.state.snapshot, agentVisibility.enabled]);
   const [pairingOpen, setPairingOpen] = useState(false);
   const [tab, setTab] = useState<MobileTab>("sessions");
   const [computerDetailsOpen, setComputerDetailsOpen] = useState(false);
@@ -68,7 +73,7 @@ export function App() {
 
   if (window.bridgeDesktop) return (
     <MediaPreviewProvider request={(method, params) => window.bridgeDesktop!.request({ method, params })}>
-      <DesktopDashboard themeControl={themeControl} />
+      <DesktopDashboard themeControl={themeControl} agentVisibility={agentVisibility} />
     </MediaPreviewProvider>
   );
   if (mobile.state.pairingSync) {
@@ -128,8 +133,8 @@ export function App() {
               desktopName={mobile.state.desktopName ?? "我的电脑"}
               connection={mobile.state.connection}
               desktopOnline={mobile.state.desktopOnline}
-              snapshot={mobile.state.snapshot}
-              permissions={mobile.state.permissions}
+              snapshot={snapshot}
+              permissions={mobile.state.permissions.filter((permission) => snapshot?.sessions.some((session) => session.sessionId === permission.sessionId))}
               focusSessionId={mobile.state.focusSessionId}
               histories={mobile.state.histories}
               evidence={mobile.state.evidence}
@@ -205,7 +210,7 @@ export function App() {
           desktopName={mobile.state.desktopName ?? "我的电脑"}
           connection={mobile.state.connection}
           desktopOnline={mobile.state.desktopOnline}
-          snapshot={mobile.state.snapshot}
+          snapshot={snapshot}
           transportMetrics={mobile.state.transportMetrics}
           pendingOutbound={mobile.state.pendingOutbound}
           connectionIssue={mobile.state.connectionIssue}
@@ -221,7 +226,7 @@ export function App() {
           onBack={() => setComputerDetailsOpen(false)}
           permissionSettings={mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1") ? (
             <HostPermissionSettings
-              snapshot={mobile.state.snapshot}
+              {...(snapshot ? { snapshot } : {})}
               onLoadSessionConfiguration={mobile.loadSessionConfiguration}
               onConfigureHostPermission={mobile.configureHostPermission}
             />
@@ -241,7 +246,7 @@ export function App() {
           onRepair={() => setPairingOpen(true)}
         />
       ))}
-      {tab === "settings" && <MobileSettings themeControl={themeControl} />}
+      {tab === "settings" && <MobileSettings themeControl={themeControl} agentVisibility={agentVisibility} {...(mobile.state.snapshot ? { snapshot: mobile.state.snapshot } : {})} />}
       <DiagnosticFloatingEntry />
     </MobileAppShell>
   );

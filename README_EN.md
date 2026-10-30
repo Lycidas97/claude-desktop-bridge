@@ -14,11 +14,11 @@ Updated **2026-10-30**. The base project version remains **1.0.2**; the progress
 
 | Location | Status |
 | --- | --- |
-| [`main`](https://github.com/Lycidas97/claude-desktop-bridge/tree/main) | Includes earlier model/context, history, connection, fork, image/PDF preview and file-download improvements. |
-| [`fix/bridge-session-media-and-connectivity`](https://github.com/Lycidas97/claude-desktop-bridge/tree/fix/bridge-session-media-and-connectivity) | Also contains nested-fork improvements, mobile navigation and queue fixes, relay settings, text previews, ordinary file uploads and Agent visibility settings. Latest feature commit: [`61bcf26`](https://github.com/Lycidas97/claude-desktop-bridge/commit/61bcf26e504235a012546ec8ef8f35449b535b09). These changes are not yet merged into `main`. |
-| Local desktop build | Uses a transparent white menu-bar icon with standard/Retina assets. The icon source is still uncommitted and is not included in either remote branch above. |
+| [`main`](https://github.com/Lycidas97/claude-desktop-bridge/tree/main) | Includes the features described below: model/context, history, connection stability, nested forks, mobile navigation, queue fixes, relay settings, image/PDF and text previews, file transfers, Agent visibility settings and the menu-bar icon fix. |
+| [`fix/bridge-session-media-and-connectivity`](https://github.com/Lycidas97/claude-desktop-bridge/tree/fix/bridge-session-media-and-connectivity) | These features and fixes are merged into `main`; the branch is retained for history. |
+| macOS menu bar | Uses a transparent white bridge icon with standard/Retina assets and system appearance adaptation. The icon source is committed. |
 
-**Build the feature branch and update both desktop and Android clients to use the latest features described here.** This fork has no independent GitHub Release yet. Upstream installers do not contain all fork changes. Local delivery labels such as `v25` and `v26` identify builds, not project versions.
+**Build from `main` and update both desktop and Android clients to use the features described here.** This fork has no independent GitHub Release yet. Upstream installers do not contain all fork changes. Local delivery labels such as `v25` and `v26` identify builds, not project versions.
 
 ## Improvements in this fork
 
@@ -130,7 +130,8 @@ macOS ad-hoc packages are for local verification. See [Release documentation](do
 - A multi-chunk upload was tested over the real encrypted relay, with hash-verified readback from both the desktop filesystem and the text-preview channel.
 - Android v26 passed v1/v2/v3 signature checks, alignment, all **10 DEX** checks, packaged asset verification and a hash check after downloading the uploaded APK. This build has not yet completed physical Android runtime acceptance.
 - Current validation focuses on macOS, Android builds and browser flows. Windows, Linux and iOS retain source and upstream build entry points; the latest fork features have not been revalidated on physical devices across those platforms.
-- The local menu-bar icon passed transparent-white asset, 1×/2× loading and app-signature checks. Capturing the system menu bar was blocked by macOS Screen Recording permissions.
+- The menu-bar icon passed transparent-white asset, 1×/2× loading and app-signature checks. Capturing the system menu bar was blocked by macOS Screen Recording permissions.
+- Before merging, client and desktop typechecks passed, along with **18 desktop preview/build-environment tests** and **69 client Agent/media/session/permission tests**. These counts describe the merge verification subset, not a rerun of the full suite.
 
 Common checks:
 

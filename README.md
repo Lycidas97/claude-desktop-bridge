@@ -14,11 +14,11 @@
 
 | 位置 | 当前状态 |
 | --- | --- |
-| [`main`](https://github.com/Lycidas97/claude-desktop-bridge/tree/main) | 已包含前期合入的模型与上下文、历史、连接稳定性、Fork、图片/PDF 预览及文件下载改进。 |
-| [`fix/bridge-session-media-and-connectivity`](https://github.com/Lycidas97/claude-desktop-bridge/tree/fix/bridge-session-media-and-connectivity) | 另有多层 Fork 完善、手机导航与队列续接修复、中继配置、文本预览、普通文件上传和 Agent 显示设置。最新功能提交为 [`61bcf26`](https://github.com/Lycidas97/claude-desktop-bridge/commit/61bcf26e504235a012546ec8ef8f35449b535b09)，尚未合入 `main`。 |
-| 本地桌面构建 | macOS 菜单栏已改为透明底白色桥接图标，带普通屏/Retina 资源；图标源码尚未提交，不包含在上述远端分支中。 |
+| [`main`](https://github.com/Lycidas97/claude-desktop-bridge/tree/main) | 已合入下列功能：模型与上下文、历史、连接稳定性、多层 Fork、手机导航、队列续接、中继配置、图片/PDF 与文本预览、文件传输、Agent 显示设置及菜单栏图标修复。 |
+| [`fix/bridge-session-media-and-connectivity`](https://github.com/Lycidas97/claude-desktop-bridge/tree/fix/bridge-session-media-and-connectivity) | 本轮功能与修复已合入 `main`，保留分支供历史追溯。 |
+| macOS 菜单栏 | 已使用透明底白色桥接图标，带普通屏/Retina 资源，支持系统随菜单栏外观适配；图标源码已提交。 |
 
-**体验下列最新功能时，请使用功能分支的源码，并同时更新电脑端与 Android 端。** fork 目前没有独立的 GitHub Release；上游安装包不包含本 fork 的全部改动。本地交付使用的 `v25`、`v26` 是构建标识，不是项目版本号。
+**体验下列功能时，可直接使用 `main` 的源码，并同时更新电脑端与 Android 端。** fork 目前没有独立的 GitHub Release；上游安装包不包含本 fork 的全部改动。本地交付使用的 `v25`、`v26` 是构建标识，不是项目版本号。
 
 ## 本 fork 的主要改进
 
@@ -130,7 +130,8 @@ macOS ad-hoc 包用于本机验证；稳定签名与其他平台构建参见 [�
 - 已通过真实加密中继上传多分块文件，并从电脑文件系统及文本预览通道回读核对哈希。
 - Android v26 验证了 v1/v2/v3 签名、对齐、全部 **10 个 DEX**、包内资源及上传后回下载哈希；该构建尚未完成 Android 实机运行验收。
 - 本轮主要验证平台为 macOS + Android 构建及浏览器。Windows、Linux、iOS 保留源码与上游构建入口，未对本 fork 最新功能重新完成各平台实机验收。
-- 本地菜单栏图标已验证透明白色资源、1×/2×加载与应用签名；系统菜单栏截图受 macOS 录屏权限限制。
+- 菜单栏图标已验证透明白色资源、1×/2×加载与应用签名；系统菜单栏截图受 macOS 录屏权限限制。
+- 合并前验证：客户端与桌面类型检查通过；桌面文件预览与构建环境测试 **18 项通过**，客户端 Agent、媒体预览、会话与授权测试 **69 项通过**。这些计数是本次合并验证的子集，不代表重跑了全部测试。
 
 常用检查入口：
 

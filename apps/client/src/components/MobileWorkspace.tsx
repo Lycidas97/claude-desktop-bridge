@@ -39,7 +39,6 @@ import {
   Forward,
   GitFork,
   Goal,
-  ImagePlus,
   LoaderCircle,
   MoreHorizontal,
   Plus,
@@ -80,7 +79,7 @@ import { sessionActivity } from "../lib/session-activity.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
-import { FileAttachmentPicker, useFileAttachments } from "./FileAttachmentPicker.js";
+import { ComposerAttachmentMenu, FileAttachmentPicker, useFileAttachments } from "./FileAttachmentPicker.js";
 import { appendUploadedFilePaths, type UploadFileHandler } from "../lib/file-upload.js";
 import { MediaGallery } from "./MediaGallery.js";
 import { useMediaPreview } from "./MediaPreviewProvider.js";
@@ -2687,7 +2686,7 @@ export function MobileWorkspace({
             </div>
           )}
           <form
-            className={canAttachImages ? "composer-form composer-form--with-attachment" : "composer-form"}
+            className={(canAttachImages || Boolean(onUploadFile)) ? "composer-form composer-form--with-attachment" : "composer-form"}
             onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}
           >
             <input
@@ -2698,14 +2697,16 @@ export function MobileWorkspace({
               hidden
               onChange={(event) => void addImages(event.target.files)}
             />
-            {canAttachImages && (
-              <IconButton
-                label="添加图片"
-                disabled={selectedSession.allowedActions?.canSend === false}
-                onClick={() => fileRef.current?.click()}
-              >
-                <ImagePlus size={20} />
-              </IconButton>
+            {(canAttachImages || Boolean(onUploadFile)) && (
+              <ComposerAttachmentMenu
+                canAttachImages={canAttachImages}
+                imageDisabled={selectedSession.allowedActions?.canSend === false}
+                onPickImages={() => fileRef.current?.click()}
+                {...(onUploadFile ? {
+                  fileUploads,
+                  fileDisabled: selectedSession.allowedActions?.canSend === false || sending || connection !== "connected" || !desktopOnline,
+                } : {})}
+              />
             )}
             <textarea
               ref={composerRef}

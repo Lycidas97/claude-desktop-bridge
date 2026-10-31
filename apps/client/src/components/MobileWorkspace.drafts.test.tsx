@@ -2,6 +2,7 @@ import type { BridgeSessionInfo } from "@bridge/protocol";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MobileWorkspace } from "./MobileWorkspace.js";
+import { ComposerAttachmentMenu } from "./FileAttachmentPicker.js";
 import { MessageCopyButton } from "./MessageCopyButton.js";
 
 const hooks = vi.hoisted(() => ({
@@ -219,5 +220,22 @@ describe("mobile conversation draft ownership", () => {
     text("computer 2 draft");
     props = { ...props, activeHostId: "computer-1" }; draw();
     expect(input().props.value).toBe("computer 1 draft");
+  });
+
+  it("merges image and file attachment actions into a single + menu in the composer", () => {
+    const onUploadFile = vi.fn().mockResolvedValue({
+      uploadId: "up-1",
+      name: "report.txt",
+      path: ".bridge-uploads/up-1/report.txt",
+      size: 12,
+      sha256: "abc",
+    });
+    props = { ...props, onUploadFile };
+    draw();
+    const attachMenus = elements(tree).filter((element) => element.type === ComposerAttachmentMenu);
+    expect(attachMenus).toHaveLength(1);
+    expect(attachMenus[0]!.props.canAttachImages).toBe(true);
+    expect(attachMenus[0]!.props.fileUploads).toBeDefined();
+    expect(typeof attachMenus[0]!.props.onPickImages).toBe("function");
   });
 });

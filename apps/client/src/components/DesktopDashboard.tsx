@@ -32,7 +32,6 @@ import {
   Forward,
   GitFork,
   Goal,
-  ImagePlus,
   Laptop,
   LoaderCircle,
   MessageSquare,
@@ -67,7 +66,7 @@ import { BrandMark } from "./BrandMark.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
-import { FileAttachmentPicker, useFileAttachments } from "./FileAttachmentPicker.js";
+import { ComposerAttachmentMenu, FileAttachmentPicker, useFileAttachments } from "./FileAttachmentPicker.js";
 import { appendUploadedFilePaths, uploadSessionFile } from "../lib/file-upload.js";
 import { MediaGallery } from "./MediaGallery.js";
 import { useMediaPreview } from "./MediaPreviewProvider.js";
@@ -1476,13 +1475,17 @@ function DesktopSessions({
                 </div>
               )}
               <form
-                className={canAttachImages ? "composer-form composer-form--with-attachment" : "composer-form"}
+                className="composer-form composer-form--with-attachment"
                 onSubmit={(event) => { event.preventDefault(); void send(); }}
               >
                 <input ref={fileRef} type="file" hidden multiple accept="image/jpeg,image/png,image/gif,image/webp" onChange={(event) => void addImages(event.target.files)} />
-                {canAttachImages && (
-                  <IconButton label="添加图片" disabled={selected.allowedActions?.canSend === false} onClick={() => fileRef.current?.click()}><ImagePlus size={19} /></IconButton>
-                )}
+                <ComposerAttachmentMenu
+                  canAttachImages={canAttachImages}
+                  imageDisabled={selected.allowedActions?.canSend === false}
+                  onPickImages={() => fileRef.current?.click()}
+                  fileUploads={fileUploads}
+                  fileDisabled={selected.allowedActions?.canSend === false || sending || snapshot.connection !== "connected"}
+                />
                 <textarea
                   value={text}
                   onChange={(event) => setText(event.target.value)}

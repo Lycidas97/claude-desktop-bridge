@@ -4736,6 +4736,35 @@ button:disabled {
   margin-top: -4px;
 }
 
+.conversation-message-actions {
+  display: flex;
+  margin-top: 4px;
+}
+
+.conversation-item.user .conversation-message-actions {
+  justify-content: flex-end;
+}
+
+.message-copy-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.message-copy-button:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
 .conversation-item.tool {
   display: grid;
   width: min(92%, 650px);
@@ -5597,6 +5626,13 @@ button:disabled {
   color: var(--text);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.mobile-composer textarea {
+  max-height: 128px;
+  overflow-y: auto;
+  font-size: 16px;
+  line-height: 22px;
 }
 
 .mobile-composer textarea:focus,

@@ -87,6 +87,7 @@ import { useMediaPreview } from "./MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
 import { IconButton } from "./IconButton.js";
 import { MarkdownText } from "./MarkdownText.js";
+import { MessageCopyButton } from "./MessageCopyButton.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
@@ -1474,6 +1475,7 @@ export function MobileWorkspace({
     pinnedToBottom: boolean;
   }>({ anchorOffset: 0, pinnedToBottom: true });
   const fileRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const handledFocusRef = useRef<string | undefined>(undefined);
   const handledFocusRequestRef = useRef<number | undefined>(undefined);
   const handledDirectoryRequestRef = useRef<number | undefined>(undefined);
@@ -1676,6 +1678,18 @@ export function MobileWorkspace({
       directoryRef.current.scrollTop = directoryScrollPositions.current.get(activeProjectId ?? "") ?? 0;
     }
   }, [activeProjectId, Boolean(selectedSession), visible]);
+
+  useLayoutEffect(() => {
+    const textarea = composerRef.current;
+    if (!textarea) return;
+    const resize = () => {
+      textarea.style.height = "auto";
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, [draftKey, text, sessionView, visible]);
 
   function rememberStreamPosition(): void {
     const stream = streamRef.current;
@@ -2496,6 +2510,11 @@ export function MobileWorkspace({
                     ))}
                   </div>
                 ) : null}
+                {(item.role === "assistant" || item.role === "user") && item.text.trim() && (
+                  <div className="conversation-message-actions">
+                    <MessageCopyButton text={item.text} label={item.role === "assistant" ? "复制这条回复" : "复制这条消息"} />
+                  </div>
+                )}
                 {showDelivery && <div className={`delivery-state ${item.delivery}`}>{deliveryLabel(item.delivery!)}</div>}
                 {item.delivery === "failed" && item.error && (
                   <div className="delivery-error-detail">{item.error}</div>
@@ -2619,6 +2638,7 @@ export function MobileWorkspace({
               </IconButton>
             )}
             <textarea
+              ref={composerRef}
               value={text}
               onChange={({ target: { value } }) => updateDraft((current) => ({ ...current, text: value }))}
               disabled={selectedSession.allowedActions?.canSend === false}

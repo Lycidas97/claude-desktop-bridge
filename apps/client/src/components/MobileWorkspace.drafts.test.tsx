@@ -2,6 +2,7 @@ import type { BridgeSessionInfo } from "@bridge/protocol";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MobileWorkspace } from "./MobileWorkspace.js";
+import { MessageCopyButton } from "./MessageCopyButton.js";
 
 const hooks = vi.hoisted(() => ({
   slots: [] as any[], index: 0, dirty: false,
@@ -127,6 +128,19 @@ beforeEach(() => {
 afterEach(() => { hooks.effects.forEach((e) => e.cleanup?.()); vi.unstubAllGlobals(); });
 
 describe("mobile conversation draft ownership", () => {
+  it("provides copy actions with each message's full source text", () => {
+    const fullReply = "# 回复\n" + "折叠内容\n".repeat(1000) + "结尾标记";
+    props = { ...props, histories: { A: { status: "ready", hasMore: false, items: [
+      { id: "question", sessionId: "A", role: "user", text: "我的问题", createdAt: 1, origin: "mobile" },
+      { id: "reply", sessionId: "A", role: "assistant", text: fullReply, createdAt: 2, origin: "claude-host" },
+      { id: "notice", sessionId: "A", role: "system", text: "系统状态", createdAt: 3, origin: "system" },
+    ] } } };
+    draw();
+    const copies = elements(tree).filter((element) => element.type === MessageCopyButton);
+    expect(copies.map((element) => element.props.text)).toEqual(["我的问题", fullReply]);
+    expect(copies.map((element) => element.props.label)).toEqual(["复制这条消息", "复制这条回复"]);
+  });
+
   it("keeps each conversation's text and images when navigating between sessions", async () => {
     text("draft for A");
     selectImage(); hooks.readers[0].finish(); await settle();

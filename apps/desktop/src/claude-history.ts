@@ -440,22 +440,28 @@ export class ClaudeTranscriptEvidenceCursor {
       this.lastMainUuid = undefined;
     }
     if (metadata.size > this.offset) {
-      const chunks: Buffer[] = [];
+      const fragments: Buffer[] = this.pending.byteLength ? [this.pending] : [];
       for await (const chunk of createReadStream(path, {
         start: this.offset,
         end: metadata.size - 1,
       })) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        let start = 0;
+        for (let newline = bytes.indexOf(0x0a); newline >= 0; newline = bytes.indexOf(0x0a, start)) {
+          const line = bytes.subarray(start, newline);
+          if (fragments.length) {
+            fragments.push(line);
+            this.acceptLine(Buffer.concat(fragments).toString("utf8"));
+            fragments.length = 0;
+          } else {
+            this.acceptLine(line.toString("utf8"));
+          }
+          start = newline + 1;
+        }
+        if (start < bytes.byteLength) fragments.push(bytes.subarray(start));
       }
       this.offset = metadata.size;
-      const bytes = Buffer.concat([this.pending, ...chunks]);
-      let start = 0;
-      for (let cursor = 0; cursor < bytes.byteLength; cursor += 1) {
-        if (bytes[cursor] !== 0x0a) continue;
-        this.acceptLine(bytes.subarray(start, cursor).toString("utf8"));
-        start = cursor + 1;
-      }
-      this.pending = bytes.subarray(start);
+      this.pending = Buffer.concat(fragments);
       if (this.pending.byteLength > 0) {
         const tail = this.pending.toString("utf8");
         try {

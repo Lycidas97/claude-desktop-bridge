@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BridgeDesktopRegistrationInfo, BridgeEffort, BridgeModelInfo } from "@bridge/protocol";
 import type { ModelInfo, SDKControlGetContextUsageResponse } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeSessionHostOptions, SessionHostEvent } from "./claude-session-host.js";
@@ -19,9 +19,15 @@ import {
 } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
+
 const directories: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   const fixtures = directories.splice(0);
   if (fixtures.length === 0) return;
   const recycle = process.platform === "darwin" ? "/usr/bin/trash" : process.platform === "linux" ? "trash-put" : undefined;
@@ -832,6 +838,10 @@ describe("SessionBroker", () => {
         hosts.push(host);
         return host;
       },
+      discoverGatewayModels: async () => [
+        { value: "claude-opus-5", displayName: "Opus 5", maxInputTokens: 262_144 },
+        { value: "claude-opus-5[1m]", displayName: "Opus 5 1M", maxInputTokens: 1_000_000 },
+      ],
       prepareRuntime: async () => ({
         executablePath: "/fake/claude",
         credentialPath: join(root, "Application Support", "Claude-3p", "host-creds-test.json"),
@@ -839,6 +849,11 @@ describe("SessionBroker", () => {
       }),
     });
     await broker.initialize();
+    // Resetting to the inherited 1M profile must use the same capacity as sending a turn.
+    await expect(broker.configureSession({ sessionId, model: null })).resolves.toMatchObject({
+      model: "claude-opus-5[1m]",
+      modelSource: "claude-desktop",
+    });
     await broker.startTurn({
       requestId: "ultracode-request",
       idempotencyKey: "ultracode-command",
@@ -2269,6 +2284,64 @@ describe("SessionBroker", () => {
     }
   });
 
+  it("refreshes inherited Desktop settings even when they equal the Bridge override", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-inherited-config-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    const desktopSessions = join(root, "desktop");
+    await mkdir(desktopSessions, { recursive: true });
+    const metadata = join(desktopSessions, `local_${sessionId}.json`);
+    await writeFile(metadata, JSON.stringify({ sessionId: `local_${sessionId}`, cliSessionId: sessionId, cwd, model: "desktop-old", effort: "high" }));
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "runtime"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [desktopSessions] },
+      observer: new FakeObserver({ projects: [], sessions: [observed(sessionId, cwd, { desktopSessionId: `local_${sessionId}`, hostModel: "desktop-old" })], observedAt: 1 }),
+      eventLog, sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"),
+      discoverGatewayModels: async () => [{ value: "mobile-model", displayName: "Mobile model" }],
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+    });
+    try {
+      await broker.initialize();
+      await broker.configureSession({ sessionId, model: "mobile-model", effort: "low" });
+      await writeFile(metadata, JSON.stringify({ sessionId: `local_${sessionId}`, cliSessionId: sessionId, cwd, model: "mobile-model", effort: "low" }));
+      await expect(broker.configuration(sessionId, false)).resolves.toMatchObject({
+        model: "mobile-model", inheritedModel: "mobile-model", inheritedEffort: "low", modelSource: "bridge",
+      });
+      await expect(broker.configureSession({ sessionId, model: null, effort: null })).resolves.toMatchObject({
+        model: "mobile-model", effort: "low", modelSource: "claude-desktop", effortSource: "claude-desktop",
+      });
+    } finally { await broker.close(); await eventLog.close(); }
+  });
+
+  it("keeps selected 1M model capabilities when deriving the long-context catalog entry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-derived-model-"));
+    directories.push(root);
+    const sessionId = randomUUID();
+    const cwd = join(root, "project");
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "runtime"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] },
+      observer: new FakeObserver({ projects: [], sessions: [observed(sessionId, cwd, { hostModel: "claude-sonnet-4-6[1m]" })], observedAt: 1 }),
+      eventLog, sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"),
+      discoverGatewayModels: async () => [
+        { value: "claude-sonnet-4-6", displayName: "Sonnet 4.6", supportsEffort: true, supportedEffortLevels: ["low", "high"], maxInputTokens: 200_000 },
+        { value: "claude-fable-5[1m]", displayName: "Fable 5 1M" },
+      ],
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+    });
+    try {
+      await broker.initialize();
+      await expect(broker.configuration(sessionId, false)).resolves.toMatchObject({
+        availableEffortLevels: ["low", "high"],
+        availableModels: expect.arrayContaining([expect.objectContaining({
+          value: "claude-sonnet-4-6[1m]", maxInputTokens: 1_000_000,
+          supportsEffort: true, supportedEffortLevels: ["low", "high"],
+        })]),
+      });
+    } finally { await broker.close(); await eventLog.close(); }
+  });
+
   it("discovers provider models without attaching to the desktop session", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-discovery-"));
     directories.push(root);
@@ -2739,7 +2812,7 @@ describe("SessionBroker", () => {
     await secondLog.close();
   });
 
-  it("forks an existing session with copied transcript history and parent-child metadata", async () => {
+  it.each(["\n", ""])("forks an existing session with copied transcript history and trailing %j", async (ending) => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-fork-"));
     directories.push(root);
     const sessionId = randomUUID();
@@ -2768,7 +2841,7 @@ describe("SessionBroker", () => {
           content: [{ type: "text", text: "原始回答" }],
         },
       }),
-    ].join("\n") + "\n");
+    ].join("\n") + ending);
 
     const registeredInputs: unknown[] = [];
     const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
@@ -2820,8 +2893,11 @@ describe("SessionBroker", () => {
     });
     await broker.initialize();
 
+    const fullReads = vi.mocked(readFile).mockClear();
     const fork1 = await broker.forkSession(sessionId);
     const fork2 = await broker.forkSession(sessionId);
+    expect(fullReads.mock.calls.filter(([path]) => String(path).endsWith(".jsonl"))).toEqual([]);
+    expect((await stat(join(projectsRoot, `${fork1.sessionId}.jsonl`))).mode & 0o777).toBe(0o600);
 
     expect(fork1).toMatchObject({
       parentSessionId: sessionId,

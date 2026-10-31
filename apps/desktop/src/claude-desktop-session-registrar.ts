@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
+import { createReadStream } from "node:fs";
 import {
   appendFile,
   chmod,
@@ -403,8 +404,20 @@ export class ClaudeDesktopSessionRegistrar {
     const trimmed = title.trim();
     if (!trimmed) return;
     try {
-      const raw = await readFile(transcriptPath, "utf8");
-      if (raw.includes('"type":"custom-title"') && raw.includes(`"sessionId":"${sessionId}"`)) return;
+      const titleMarker = '"type":"custom-title"';
+      const sessionMarker = `"sessionId":"${sessionId}"`;
+      let hasTitle = false;
+      let hasSession = false;
+      let tail = "";
+      let endsWithNewline = false;
+      for await (const chunk of createReadStream(transcriptPath, { encoding: "utf8" })) {
+        const text = tail + chunk;
+        hasTitle ||= text.includes(titleMarker);
+        hasSession ||= text.includes(sessionMarker);
+        if (hasTitle && hasSession) return;
+        tail = text.slice(1 - Math.max(titleMarker.length, sessionMarker.length));
+        endsWithNewline = text.endsWith("\n");
+      }
       const record = JSON.stringify({
         type: "custom-title",
         customTitle: trimmed,
@@ -412,7 +425,7 @@ export class ClaudeDesktopSessionRegistrar {
         uuid: randomUUID(),
         timestamp: new Date(this.now()).toISOString(),
       });
-      await appendFile(transcriptPath, `${raw.endsWith("\n") ? "" : "\n"}${record}\n`, "utf8");
+      await appendFile(transcriptPath, `${endsWithNewline ? "" : "\n"}${record}\n`, "utf8");
     } catch {
       // Best-effort title stamp; adoption still works without it.
     }

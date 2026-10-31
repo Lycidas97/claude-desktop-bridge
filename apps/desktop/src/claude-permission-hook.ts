@@ -69,6 +69,8 @@ async function watchTranscriptResolution(
   let byteOffset = 0;
   let sawPostRequestBoundary = false;
   let scanning = false;
+  let pending: Buffer[] = [];
+  let skippingInitialLine = false;
 
   const inspectPostBoundaryLine = (line: string): void => {
     if (!line.trim()) return;
@@ -137,14 +139,24 @@ async function watchTranscriptResolution(
         }
         const slice = buffer.subarray(0, bytesRead);
         const lastNewline = slice.lastIndexOf(0x0a);
-        const completeSlice = lastNewline >= 0 ? slice.subarray(0, lastNewline) : slice;
-        byteOffset = lastNewline >= 0 ? startOffset + lastNewline + 1 : startOffset + bytesRead;
-        let text = completeSlice.toString("utf8");
+        byteOffset = startOffset + bytesRead;
+        let text = lastNewline >= 0 ? slice.subarray(0, lastNewline).toString("utf8") : "";
         if (startOffset > 0) {
           const firstNewline = text.indexOf("\n");
           text = firstNewline >= 0 ? text.slice(firstNewline + 1) : "";
         }
         const lines = text.split("\n").filter((line) => line.trim().length > 0);
+        skippingInitialLine = startOffset > 0 && lastNewline < 0;
+        if (!skippingInitialLine && lastNewline + 1 < bytesRead) {
+          const tail = slice.subarray(lastNewline + 1);
+          const tailText = tail.toString("utf8");
+          try {
+            JSON.parse(tailText);
+            lines.push(tailText);
+          } catch {
+            pending.push(Buffer.from(tail));
+          }
+        }
         let inspectFrom = lines.length;
         for (let index = lines.length - 1; index >= 0; index -= 1) {
           try {
@@ -192,18 +204,32 @@ async function watchTranscriptResolution(
       const { bytesRead } = await handle.read(buffer, 0, length, byteOffset);
       if (bytesRead <= 0) return sawPostRequestBoundary;
       const slice = buffer.subarray(0, bytesRead);
-      const lastNewline = slice.lastIndexOf(0x0a);
-      if (lastNewline < 0) {
-        if (byteOffset + bytesRead >= stats.size) {
-          inspectPostBoundaryLine(slice.toString("utf8"));
-          byteOffset += bytesRead;
+      byteOffset += bytesRead;
+      let start = 0;
+      for (let newline = slice.indexOf(0x0a); newline >= 0; newline = slice.indexOf(0x0a, start)) {
+        if (!skippingInitialLine) {
+          const line = slice.subarray(start, newline);
+          if (pending.length) {
+            pending.push(line);
+            inspectPostBoundaryLine(Buffer.concat(pending).toString("utf8"));
+          } else {
+            inspectPostBoundaryLine(line.toString("utf8"));
+          }
         }
-        return sawPostRequestBoundary;
+        pending.length = 0;
+        skippingInitialLine = false;
+        start = newline + 1;
       }
-      const chunk = slice.subarray(0, lastNewline).toString("utf8");
-      byteOffset += lastNewline + 1;
-      for (const line of chunk.split("\n")) {
-        inspectPostBoundaryLine(line);
+      if (!skippingInitialLine && start < bytesRead) pending.push(Buffer.from(slice.subarray(start)));
+      if (byteOffset >= stats.size && pending.length) {
+        const tail = Buffer.concat(pending).toString("utf8");
+        try {
+          JSON.parse(tail);
+          inspectPostBoundaryLine(tail);
+          pending = [];
+        } catch {
+          // Retain an incomplete final record until a later append completes it.
+        }
       }
       return sawPostRequestBoundary;
     } catch {

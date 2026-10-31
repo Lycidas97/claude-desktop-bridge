@@ -1,17 +1,18 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
 import {
   access,
   mkdir,
   mkdtemp,
   readFile,
   realpath,
-  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeDesktopSessionRegistrar,
   parseClaudeDesktopProfiles,
@@ -19,15 +20,16 @@ import {
 } from "./claude-desktop-session-registrar.js";
 import type { ClaudeRuntimePaths } from "./platform.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
+
 const directories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(
-    directories.splice(0).map((directory) => rm(directory, {
-      recursive: true,
-      force: true,
-    })),
-  );
+afterEach(() => {
+  vi.clearAllMocks();
+  if (directories.length) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", directories.splice(0));
 });
 
 async function fixture(): Promise<{
@@ -215,6 +217,48 @@ describe("ClaudeDesktopSessionRegistrar", () => {
     expect(registrar.changed(registered, revisited)).toBe(false);
     expect(await registrar.removeOwned(sessionId, registered)).toBe(true);
     await expect(access(metadataPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([false, true])("checks transcript titles without reading the entire file (existing title: %s)", async (existingTitle) => {
+    const { paths, profileRoot, root } = await fixture();
+    const sessionId = randomUUID();
+    const transcriptPath = await transcript(paths, sessionId, root);
+    const original = await readFile(transcriptPath, "utf8");
+    const padding = `${JSON.stringify({ type: "progress", text: "x".repeat(1_000) })}\n`.repeat(2_000);
+    // Split the marker across a stream chunk and keep it outside either validation probe.
+    const titleOffset = 1024 * 1024 + 64 * 1024 - 8;
+    const prefix = original + "\n".repeat(titleOffset - Buffer.byteLength(original));
+    const before = existingTitle
+      ? `${prefix}${JSON.stringify({ type: "custom-title", customTitle: "Keep this title", sessionId })}\n${padding}`
+      : `${original}${padding.trimEnd()}`;
+    await writeFile(transcriptPath, before);
+    vi.mocked(fs.readFile).mockClear();
+    const registrar = new ClaudeDesktopSessionRegistrar({
+      paths,
+      platform: "darwin",
+      listProfiles: async () => [{ pid: 20, userDataDir: join(profileRoot, "..") }],
+      findTranscript: async () => transcriptPath,
+      now: () => 100,
+    });
+
+    expect((await registrar.register({
+      sessionId,
+      cwd: root,
+      title: "  Bridge task  ",
+      createdAt: 1,
+      lastActivityAt: 2,
+    })).state).toBe("restart-required");
+    const fullTranscriptReads = vi.mocked(fs.readFile).mock.calls.filter(([path]) => path === transcriptPath);
+    const after = await readFile(transcriptPath, "utf8");
+    if (existingTitle) {
+      expect(after).toBe(before);
+    } else {
+      expect(after.slice(0, before.length + 1)).toBe(`${before}\n`);
+      expect(JSON.parse(after.slice(before.length + 1))).toMatchObject({
+        type: "custom-title", customTitle: "Bridge task", sessionId,
+      });
+    }
+    expect(fullTranscriptReads).toHaveLength(0);
   });
 
   it("fails closed when the active profile has multiple account directories", async () => {

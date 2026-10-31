@@ -297,6 +297,82 @@ describe("ClaudeSessionHost", () => {
     await host.close();
   });
 
+  it("matches tool results to their tool use IDs instead of the parent agent", async () => {
+    const fake = new FakeQuery();
+    const sessionId = randomUUID();
+    const host = new ClaudeSessionHost({
+      sessionId,
+      cwd: "/tmp/bridge-project",
+      executablePath: "/tmp/claude",
+      environment: { PATH: "/usr/bin" },
+      permissionBroker: new PermissionBroker(),
+      resume: true,
+      queryFactory: (() => fake as unknown as Query) as typeof import("@anthropic-ai/claude-agent-sdk").query,
+    });
+    const events: SessionHostEvent[] = [];
+    host.onEvent((event) => events.push(event));
+    const turn = host.send("run two tools", "mobile");
+    fake.push({
+      type: "user",
+      uuid: randomUUID(),
+      session_id: sessionId,
+      parent_tool_use_id: "parent-agent",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "bash-tool", content: "command output" },
+          { type: "tool_result", tool_use_id: "read-tool", content: "file content" },
+        ],
+      },
+      tool_use_result: { stdout: "command output" },
+    });
+    try {
+      await waitForEvent(events, "tool.completed");
+      expect(events.filter((event) => event.type === "tool.completed")).toEqual([
+        expect.objectContaining({ itemId: "bash-tool", turnId: turn.turnId, output: "command output" }),
+        expect.objectContaining({ itemId: "read-tool", turnId: turn.turnId, output: "file content" }),
+      ]);
+    } finally {
+      await host.close();
+    }
+  });
+
+  it("preserves structured output for a single tool result", async () => {
+    const fake = new FakeQuery();
+    const sessionId = randomUUID();
+    const host = new ClaudeSessionHost({
+      sessionId,
+      cwd: "/tmp/bridge-project",
+      executablePath: "/tmp/claude",
+      environment: { PATH: "/usr/bin" },
+      permissionBroker: new PermissionBroker(),
+      resume: true,
+      queryFactory: (() => fake as unknown as Query) as typeof import("@anthropic-ai/claude-agent-sdk").query,
+    });
+    const events: SessionHostEvent[] = [];
+    host.onEvent((event) => events.push(event));
+    host.send("run tool", "mobile");
+    fake.push({
+      type: "user",
+      uuid: randomUUID(),
+      session_id: sessionId,
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "bash-tool", content: "output" }],
+      },
+      tool_use_result: { stdout: "output", exitCode: 0 },
+    });
+    try {
+      await expect(waitForEvent(events, "tool.completed")).resolves.toMatchObject({
+        itemId: "bash-tool",
+        output: { stdout: "output", exitCode: 0 },
+      });
+    } finally {
+      await host.close();
+    }
+  });
+
   it("reports provider API errors as failed turns", async () => {
     const fake = new FakeQuery();
     const sessionId = randomUUID();

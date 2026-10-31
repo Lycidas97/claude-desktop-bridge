@@ -343,6 +343,18 @@ export function SubagentCard({
   );
 }
 
+export function matchingQuestionPermission(
+  prompt: BridgeInteractivePrompt,
+  permissions: BridgePermissionInfo[],
+): BridgePermissionInfo | undefined {
+  const questions = prompt.questions;
+  if (prompt.kind !== "question" || !questions?.length) return undefined;
+  return permissions.find((permission) => permission.toolName === "AskUserQuestion"
+    && Array.isArray(permission.input.questions)
+    && permission.input.questions.length === questions.length
+    && permission.input.questions.every((question, index) => question.question === questions[index]!.question));
+}
+
 export function InteractivePromptCard({
   prompt,
   canSend = true,
@@ -2550,7 +2562,7 @@ export function MobileWorkspace({
                     busy={sending}
                     onSelectOption={(replyText) => {
                       if (item.interactivePrompt?.kind === "question") {
-                        const pendingQuestion = sessionPermissions.find((permission) => permission.toolName === "AskUserQuestion");
+                        const pendingQuestion = matchingQuestionPermission(item.interactivePrompt, sessionPermissions);
                         if (pendingQuestion) {
                           const questions = item.interactivePrompt.questions ?? [];
                           if (questions.length === 1 && !questions[0]?.multiSelect) {
@@ -2665,7 +2677,7 @@ export function MobileWorkspace({
               {connectionIssue.message} 点击重试
             </button>
           )}
-          {onUploadFile && <FileAttachmentPicker state={fileUploads} disabled={selectedSession.allowedActions?.canSend === false || sending || connection !== "connected" || !desktopOnline} />}
+          {onUploadFile && <FileAttachmentPicker state={fileUploads} />}
           {attachments.length > 0 && (
             <div className="composer-attachments">
               {attachments.map((attachment) => (
@@ -2751,6 +2763,7 @@ export function MobileWorkspace({
               </header>
               {sessionPermissions.length > 1 && <div className="permission-queue-count">还有 {sessionPermissions.length} 项待处理，提交后自动显示下一项。</div>}
               <PermissionPrompt
+                key={activePermission.requestId}
                 permission={activePermission}
                 onResolve={onResolvePermission}
                 {...(onConfigurePermissionPolicy ? {

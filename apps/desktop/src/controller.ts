@@ -1758,13 +1758,10 @@ export class DesktopController extends EventEmitter {
   private async publish(): Promise<DesktopControlSnapshot> {
     const snapshot = await this.snapshot();
     this.emit("snapshot", snapshot);
-    // Session-set changes (new/removed sessions) have no event-level delta
-    // on mobile — applyEventToSnapshot only updates existing sessions — so
-    // push a full resync whenever the id set changes. Without this a
-    // relay-created session stays invisible on phones until a manual
-    // reconnect or refresh.
+    // Session metadata and Desktop registration can change without a
+    // mobile event delta, so include them when deciding to push a snapshot.
     const sessionKey = snapshot.sessions
-      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}`)
+      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}`)
       .sort()
       .join("\n");
     const previousKey = this.lastPublishedSessionKey;

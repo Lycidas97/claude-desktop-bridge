@@ -1,8 +1,9 @@
-import type { BridgeSessionInfo } from "@bridge/protocol";
+import type { BridgePermissionInfo, BridgeSessionInfo } from "@bridge/protocol";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MobileWorkspace } from "./MobileWorkspace.js";
-import { ComposerAttachmentMenu } from "./FileAttachmentPicker.js";
+import { InteractivePromptCard, MobileWorkspace, PermissionPrompt } from "./MobileWorkspace.js";
+import { ComposerAttachmentMenu, FileAttachmentPicker } from "./FileAttachmentPicker.js";
+import { IconButton } from "./IconButton.js";
 import { MessageCopyButton } from "./MessageCopyButton.js";
 
 const hooks = vi.hoisted(() => ({
@@ -16,11 +17,12 @@ vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useState(initial: any) {
     const index = hooks.index++;
-    if (!(index in hooks.slots)) hooks.slots[index] = typeof initial === "function" ? initial() : initial;
-    return [hooks.slots[index], (value: any) => {
-      const next = typeof value === "function" ? value(hooks.slots[index]) : value;
-      if (!Object.is(next, hooks.slots[index])) hooks.dirty = true;
-      hooks.slots[index] = next;
+    const slots = hooks.slots;
+    if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
+    return [slots[index], (value: any) => {
+      const next = typeof value === "function" ? value(slots[index]) : value;
+      if (!Object.is(next, slots[index])) hooks.dirty = true;
+      slots[index] = next;
     }];
   },
   useRef(initial: unknown) {
@@ -220,6 +222,98 @@ describe("mobile conversation draft ownership", () => {
     text("computer 2 draft");
     props = { ...props, activeHostId: "computer-1" }; draw();
     expect(input().props.value).toBe("computer 1 draft");
+  });
+
+  it.each([
+    { connection: "closed" as const, desktopOnline: true },
+    { connection: "connected" as const, desktopOnline: false },
+  ])("allows local upload cancellation and uploaded-file removal offline (%j)", async (offline) => {
+    const completed = { uploadId: "uploaded", name: "done.txt", path: ".bridge-uploads/done.txt", size: 8, sha256: "abc" };
+    const pending = deferred();
+    let signal: AbortSignal | undefined;
+    props = { ...props, onUploadFile: vi.fn()
+      .mockResolvedValueOnce(completed)
+      .mockImplementationOnce((_sessionId, _file, _progress, nextSignal) => {
+        signal = nextSignal;
+        return pending.promise;
+      }) };
+    draw();
+    let picker = elements(tree).find((element) => element.type === FileAttachmentPicker)!;
+    await picker.props.state.add([{ name: "done.txt", size: 8 }]); draw();
+    picker = elements(tree).find((element) => element.type === FileAttachmentPicker)!;
+    const adding = picker.props.state.add([{ name: "pending.txt", size: 8 }]); draw();
+    props = { ...props, ...offline }; draw();
+    expect(elements(tree).find((element) => element.type === ComposerAttachmentMenu)!.props.fileDisabled).toBe(true);
+    expect(sendButton().props.disabled).toBe(true);
+    for (const name of ["pending.txt", "done.txt"]) {
+      picker = elements(tree).find((element) => element.type === FileAttachmentPicker)!;
+      const removal = elements(FileAttachmentPicker(picker.props as ComponentProps<typeof FileAttachmentPicker>))
+        .find((element) => element.type === IconButton && element.props.label === `移除 ${name}`)!;
+      expect(removal.props.disabled).not.toBe(true);
+      removal.props.onClick(); draw();
+    }
+    expect(signal?.aborted).toBe(true);
+    expect(elements(tree).find((element) => element.type === FileAttachmentPicker)!.props.state.entries).toEqual([]);
+    pending.resolve(); await adding; await settle();
+    expect(elements(tree).find((element) => element.type === FileAttachmentPicker)!.props.state.entries).toEqual([]);
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
+  it("resets answers and submission state when the next permission replaces the current one", async () => {
+    const first: BridgePermissionInfo = {
+      requestId: "first", sessionId: "A", toolUseId: "tool-first", toolName: "AskUserQuestion",
+      input: { questions: [{ question: "Which branch?", options: [{ label: "Main" }, { label: "Feature" }] }] },
+      createdAt: 1, canAllowAlways: false,
+    };
+    props = { ...props, permissions: [first] }; draw();
+    // Reconcile the public prompt by React's type/key identity, keeping its hook
+    // slots separate from the workspace just as the renderer does.
+    const workspaceSlots = hooks.slots;
+    let promptSlots: any[] = [];
+    let identity: unknown;
+    let questionTree: ReactElement;
+    const drawPrompt = () => {
+      const prompt = elements(tree).find((element) => element.type === PermissionPrompt)!;
+      if (identity !== prompt.key) promptSlots = [];
+      identity = prompt.key;
+      const child = PermissionPrompt(prompt.props as ComponentProps<typeof PermissionPrompt>);
+      hooks.slots = promptSlots; hooks.index = 0;
+      questionTree = (child.type as (props: unknown) => ReactElement)(child.props);
+      hooks.slots = workspaceSlots;
+      return questionTree;
+    };
+    drawPrompt();
+    elements(questionTree!).find((element) => element.type === "input")!.props.onChange();
+    drawPrompt();
+    expect(elements(questionTree!).find((element) => element.props.className === "primary-button")!.props.disabled).toBe(false);
+    const submitting = deferred();
+    vi.mocked(props.onResolvePermission).mockReturnValueOnce(submitting.promise);
+    elements(questionTree!).find((element) => element.props.className === "primary-button")!.props.onClick();
+    props = { ...props, permissions: [{ ...first, requestId: "second", toolUseId: "tool-second" }] }; draw();
+    drawPrompt();
+    expect(elements(questionTree!).filter((element) => element.type === "input").map((element) => element.props.checked)).toEqual([false, false]);
+    expect(elements(questionTree!).find((element) => element.props.className === "secondary-button")!.props.disabled).toBe(false);
+    expect(elements(questionTree!).find((element) => element.props.className === "primary-button")!.props.disabled).toBe(true);
+    submitting.reject(new Error("Previous answer failed")); await settle(); drawPrompt();
+    expect(elements(questionTree!).some((element) => element.props.role === "alert")).toBe(false);
+  });
+
+  it("resolves the matching pending question when another question is first in the queue", () => {
+    const question = { question: "Which branch?", options: [{ label: "Main" }, { label: "Feature" }] };
+    const permission: BridgePermissionInfo = {
+      requestId: "matching", sessionId: "A", toolUseId: "matching-tool", toolName: "AskUserQuestion",
+      input: { questions: [question] }, createdAt: 2, canAllowAlways: false,
+    };
+    props = { ...props, permissions: [
+      { ...permission, requestId: "other", input: { questions: [{ ...question, question: "Which color?" }] } },
+      permission,
+    ], histories: { A: { status: "ready", hasMore: false, items: [
+      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-host", interactivePrompt: { kind: "question", questions: [question] } },
+    ] } } };
+    draw();
+    elements(tree).find((element) => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
+    expect(props.onResolvePermission).toHaveBeenCalledWith("matching", "allow-once", undefined, { ...permission.input, answers: { "Which branch?": "Main" } });
+    expect(props.onSendTurn).not.toHaveBeenCalled();
   });
 
   it("merges image and file attachment actions into a single + menu in the composer", () => {

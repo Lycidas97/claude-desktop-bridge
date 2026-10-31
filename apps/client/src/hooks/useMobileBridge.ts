@@ -129,6 +129,7 @@ export interface LocalTurn {
   createdAt: number;
   delivery: BridgeDeliveryState;
   commandId?: string;
+  turnId?: string;
   error?: string;
 }
 
@@ -392,12 +393,23 @@ export function applyEventToTurns(turns: LocalTurn[], event: BridgeEvent): Local
     if (
       (requestId && turn.requestId !== requestId) ||
       (!requestId && commandId && turn.commandId !== commandId) ||
-      (!requestId && !commandId && turn.sessionId !== event.sessionId)
+      // Native runtimes omit command IDs on terminal events; only finish accepted turns.
+      (!requestId && !commandId && (
+        turn.sessionId !== event.sessionId ||
+        (event.type !== "turn.completed" && event.type !== "turn.failed" && event.type !== "turn.interrupted") ||
+        (turn.delivery !== "session-received" && turn.delivery !== "running") ||
+        (turn.turnId && event.turnId && turn.turnId !== event.turnId)
+      ))
     ) return turn;
     if (event.type === "turn.queued") {
       return { ...turn, delivery: "host-received", ...(commandId ? { commandId } : {}) };
     }
-    if (event.type === "user.message.accepted") return { ...turn, delivery: "session-received" };
+    if (event.type === "user.message.accepted") return {
+      ...turn,
+      delivery: "session-received",
+      ...(commandId ? { commandId } : {}),
+      ...(event.turnId ? { turnId: event.turnId } : {}),
+    };
     if (event.type === "message.delivery" && typeof event.data.delivery === "string") {
       const delivery = event.data.delivery as BridgeDeliveryState;
       if (
@@ -421,7 +433,12 @@ export function applyEventToTurns(turns: LocalTurn[], event: BridgeEvent): Local
         };
       }
     }
-    if (event.type === "turn.started") return { ...turn, delivery: "running" };
+    if (event.type === "turn.started") return {
+      ...turn,
+      delivery: "running",
+      ...(commandId ? { commandId } : {}),
+      ...(event.turnId ? { turnId: event.turnId } : {}),
+    };
     if (event.type === "turn.completed") return { ...turn, delivery: "completed" };
     if (event.type === "turn.failed") {
       return {
@@ -712,39 +729,45 @@ function applyEventToSession(
     if (route?.conversationId === session.sessionId) return sessionWithRoute(session, route);
   }
   if (event.type === "session.configuration") {
+    // Configuration events contain effective settings and omit unset fields.
     const next: BridgeSessionInfo = { ...session };
     if (typeof event.data.model === "string" && event.data.model) next.model = event.data.model;
-    else if (event.data.model === null) delete next.model;
+    else delete next.model;
     if (typeof event.data.modelDisplayName === "string" && event.data.modelDisplayName) {
       next.modelDisplayName = event.data.modelDisplayName;
-    } else if ("model" in event.data) {
+    } else {
       delete next.modelDisplayName;
     }
     if (typeof event.data.effort === "string" && event.data.effort) {
       next.effort = event.data.effort as NonNullable<BridgeSessionInfo["effort"]>;
-    } else if (event.data.effort === null) {
+    } else {
       delete next.effort;
     }
     if (typeof event.data.reasoningEffort === "string" && event.data.reasoningEffort) {
       next.reasoningEffort = event.data.reasoningEffort;
-    } else if (event.data.reasoningEffort === null) {
+    } else {
       delete next.reasoningEffort;
     }
     if (typeof event.data.provider === "string" && event.data.provider) {
       next.provider = event.data.provider;
-    } else if (event.data.provider === null) {
+    } else {
       delete next.provider;
     }
     if (typeof event.data.fast === "boolean") {
       next.fast = event.data.fast;
-    } else if (event.data.fast === null) {
+    } else {
       delete next.fast;
     }
     if (event.data.appliesAfterTurn === true) next.configurationPending = true;
     else if (event.data.appliesAfterTurn === false) delete next.configurationPending;
     return next;
   }
-  if (hasPendingPermission) return { ...session, turnState: "waiting" };
+  if (
+    hasPendingPermission &&
+    event.type !== "turn.completed" &&
+    event.type !== "turn.failed" &&
+    event.type !== "turn.interrupted"
+  ) return { ...session, turnState: "waiting" };
   if (event.type === "session.ownership" && typeof event.data.ownership === "string") {
     return {
       ...session,
@@ -823,7 +846,7 @@ function applyEventToSession(
       ownership: session.transport === "claude-desktop-managed"
         ? "DESKTOP_MANAGED_IDLE"
         : "BRIDGE_IDLE",
-      turnState: pendingCount > 0 ? "queued" : "idle",
+      turnState: hasPendingPermission ? "waiting" : pendingCount > 0 ? "queued" : "idle",
       pendingCount,
     };
   }

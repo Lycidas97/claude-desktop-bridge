@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeTranscriptEvidenceCursor,
   findClaudeTranscriptFile,
@@ -649,6 +649,65 @@ describe("Claude transcript history", () => {
       "./dist/report.html",
     ]));
     expect(JSON.stringify(evidence)).not.toContain("hidden chain of thought");
+  });
+
+  it("streams evidence records without concatenating the whole unread transcript", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-evidence-stream-"));
+    directories.push(root);
+    const transcript = join(root, "stream.jsonl");
+    await writeFile(transcript, `${line({ type: "progress", text: "x".repeat(1_000) })}\n`.repeat(2_000));
+    const concat = Buffer.concat;
+    let largestConcat = 0;
+    const spy = vi.spyOn(Buffer, "concat").mockImplementation((buffers, length) => {
+      largestConcat = Math.max(largestConcat, buffers.reduce((size, buffer) => size + buffer.byteLength, 0));
+      return concat(buffers, length);
+    });
+    try {
+      await new ClaudeTranscriptEvidenceCursor().read(transcript);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(largestConcat).toBeLessThanOrEqual(128 * 1024);
+  });
+
+  it.each(["", '{"type":'])("does not retain consumed evidence bytes behind a small tail: %j", async (tail) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-evidence-tail-"));
+    directories.push(root);
+    const transcript = join(root, "tail.jsonl");
+    await writeFile(transcript, `${`${line({ type: "progress", text: "x".repeat(1_000) })}\n`.repeat(2_000)}${tail}`);
+    const cursor = new ClaudeTranscriptEvidenceCursor();
+    await cursor.read(transcript);
+    const pending = (cursor as unknown as { pending: Buffer }).pending;
+    expect(pending.toString()).toBe(tail);
+    expect(pending.buffer.byteLength).toBeLessThanOrEqual(128 * 1024);
+  });
+
+  it("preserves evidence larger than a stream chunk across UTF-8 splits and an unterminated append", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-evidence-large-record-"));
+    directories.push(root);
+    const transcript = join(root, "large.jsonl");
+    const command = `${"检查".repeat(30_000)} done`;
+    const output = "结果".repeat(30_000);
+    const result = line({
+      type: "user", uuid: "result", parentUuid: "tool", toolUseResult: output,
+      message: { content: [{ type: "tool_result", tool_use_id: "call", content: output }] },
+    });
+    await writeFile(transcript, [
+      line({ type: "user", uuid: "user", message: { content: "Run" } }),
+      line({ type: "assistant", uuid: "tool", parentUuid: "user", message: {
+        content: [{ type: "tool_use", id: "call", name: "Bash", input: { command } }],
+      } }),
+      result.slice(0, 30),
+    ].join("\n"));
+    const cursor = new ClaudeTranscriptEvidenceCursor();
+    expect(await cursor.read(transcript)).toEqual([]);
+    await appendFile(transcript, result.slice(30));
+    const evidence = await cursor.read(transcript);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]?.tools[0]).toMatchObject({
+      input: { command }, output: { byteLength: Buffer.byteLength(output) },
+    });
+    expect((cursor as unknown as { pending: Buffer }).pending.byteLength).toBe(0);
   });
 
   it("incrementally survives duplicate scans, half-written records, truncation and rotation", async () => {

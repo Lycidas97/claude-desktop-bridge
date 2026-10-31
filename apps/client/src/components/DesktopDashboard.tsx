@@ -85,6 +85,7 @@ import {
   goalStatusLabel,
   InteractivePromptCard,
   isNativeRuntimeId,
+  matchingQuestionPermission,
   PermissionPrompt,
   runtimeProviderLabel,
   sessionProfile,
@@ -1376,7 +1377,27 @@ function DesktopSessions({
                       prompt={entry.item.interactivePrompt}
                       canSend={selected.allowedActions?.canSend !== false && !officialActive}
                       busy={sending}
-                      onSelectOption={(replyText) => void sendQuickReply(replyText)}
+                      onSelectOption={(replyText) => {
+                        if (entry.item.interactivePrompt?.kind === "question") {
+                          const pendingQuestion = matchingQuestionPermission(
+                            entry.item.interactivePrompt,
+                            snapshot.permissions.filter((permission) => permission.sessionId === selected.sessionId),
+                          );
+                          if (pendingQuestion) {
+                            const questions = entry.item.interactivePrompt.questions ?? [];
+                            if (questions.length === 1 && !questions[0]?.multiSelect) {
+                              void resolvePermission(
+                                pendingQuestion.requestId,
+                                "allow-once",
+                                undefined,
+                                { ...pendingQuestion.input, answers: { [questions[0]!.question]: replyText } },
+                              );
+                            }
+                            return;
+                          }
+                        }
+                        void sendQuickReply(replyText);
+                      }}
                     />
                   )}
                   {entry.item.attachments?.length ? (
@@ -1462,7 +1483,7 @@ function DesktopSessions({
                 </button>
               ) : (
               <>
-              <FileAttachmentPicker state={fileUploads} disabled={selected.allowedActions?.canSend === false || sending || snapshot.connection !== "connected"} />
+              <FileAttachmentPicker state={fileUploads} />
               {attachments.length > 0 && (
                 <div className="composer-attachments">
                   {attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={12} /></button></span>)}

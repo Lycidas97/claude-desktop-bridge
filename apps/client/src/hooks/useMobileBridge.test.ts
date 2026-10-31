@@ -134,6 +134,145 @@ describe("mergeBridgeEvents", () => {
       .toEqual(["completed", "host-received"]);
   });
 
+  it.each([
+    "turn.queued",
+    "user.message.accepted",
+    "message.delivery",
+    "turn.started",
+    "turn.completed",
+    "turn.failed",
+    "turn.interrupted",
+  ] as const)("does not apply an uncorrelated %s to unsent, queued, or finished local turns", (type) => {
+    const turns: LocalTurn[] = ([
+      "local-saved", "relay-received", "host-received", "completed", "failed", "cancelled", "uncertain",
+    ] as const).map((delivery) => ({
+      requestId: `request-${delivery}`,
+      idempotencyKey: `key-${delivery}`,
+      sessionId: "session-1",
+      text: delivery,
+      attachments: [],
+      createdAt: 1,
+      delivery,
+    }));
+    const desktopEvent: BridgeEvent = {
+      eventId: `desktop-${type}`,
+      seq: 2,
+      timestamp: 2,
+      origin: "codex-host",
+      type,
+      sessionId: "session-1",
+      turnId: "desktop-turn",
+      data: { delivery: "running", error: "Desktop turn failed" },
+    };
+
+    const updated = applyEventToTurns(turns, desktopEvent);
+    expect(updated).toEqual(turns);
+    updated.forEach((turn, index) => expect(turn).toBe(turns[index]));
+  });
+
+  it.each(["turn.queued", "user.message.accepted", "message.delivery", "turn.started"] as const)(
+    "does not advance an accepted local turn from an uncorrelated %s", (type) => {
+      const turn: LocalTurn = {
+        requestId: "request-1", idempotencyKey: "key-1", sessionId: "session-1",
+        text: "Accepted task", attachments: [], createdAt: 1, delivery: "session-received",
+      };
+      expect(applyEventToTurns([turn], {
+        eventId: type, seq: 2, timestamp: 2, origin: "codex-host", type,
+        sessionId: "session-1", data: { delivery: "running" },
+      })).toEqual([turn]);
+    },
+  );
+
+  it("retains accepted command and turn correlation for subsequent native lifecycle events", () => {
+    const turn: LocalTurn = {
+      requestId: "request-1",
+      idempotencyKey: "key-1",
+      sessionId: "session-1",
+      text: "Native task",
+      attachments: [],
+      createdAt: 1,
+      delivery: "host-received",
+    };
+    const accepted: BridgeEvent = {
+      eventId: "accepted-1",
+      seq: 2,
+      timestamp: 2,
+      origin: "codex-host",
+      type: "user.message.accepted",
+      sessionId: "session-1",
+      turnId: "native-turn-1",
+      data: { requestId: "request-1", commandId: "command-1" },
+    };
+    const received = applyEventToTurns([turn], accepted);
+    expect(received[0]).toMatchObject({
+      delivery: "session-received", commandId: "command-1", turnId: "native-turn-1",
+    });
+    const running = applyEventToTurns(received, {
+      ...accepted,
+      eventId: "started-1",
+      seq: 3,
+      type: "turn.started",
+      data: { commandId: "command-1" },
+    });
+    expect(running[0]?.delivery).toBe("running");
+    expect(applyEventToTurns(running, {
+      ...accepted,
+      eventId: "completed-1",
+      seq: 4,
+      type: "turn.completed",
+      data: {},
+    })[0]?.delivery).toBe("completed");
+  });
+
+  it.each([
+    ["turn.completed", "completed"],
+    ["turn.failed", "failed"],
+    ["turn.interrupted", "cancelled"],
+  ] as const)("applies an uncorrelated %s only to accepted turns in the same native turn", (type, delivery) => {
+    const turns = (["session-received", "running"] as const).flatMap((state) => [
+      {
+        requestId: `request-${state}`,
+        idempotencyKey: `key-${state}`,
+        sessionId: "session-1",
+        text: "Native task",
+        attachments: [],
+        createdAt: 1,
+        delivery: state,
+        commandId: `command-${state}`,
+        turnId: "native-turn-1",
+      },
+      {
+        requestId: `other-${state}`,
+        idempotencyKey: `other-key-${state}`,
+        sessionId: "session-1",
+        text: "Another native turn",
+        attachments: [],
+        createdAt: 1,
+        delivery: state,
+        commandId: `other-command-${state}`,
+        turnId: "native-turn-2",
+      },
+    ]);
+    const terminal: BridgeEvent = {
+      eventId: `native-${type}`,
+      seq: 5,
+      timestamp: 5,
+      origin: "codex-host",
+      type,
+      sessionId: "session-1",
+      turnId: "native-turn-1",
+      data: { error: "Native failure" },
+    };
+    const updated = applyEventToTurns(turns, terminal);
+    expect(updated.map((turn) => turn.delivery)).toEqual([delivery, "session-received", delivery, "running"]);
+    expect(applyEventToTurns(turns, { ...terminal, sessionId: "other-session" })).toEqual(turns);
+    // Runtime interrupt acknowledgements may omit turnId as well as command/request IDs.
+    const { turnId: _turnId, ...withoutTurnId } = terminal;
+    expect(applyEventToTurns([turns[0]!], withoutTurnId)[0]?.delivery).toBe(delivery);
+    const { turnId: _storedTurnId, ...legacyTurn } = turns[0]!;
+    expect(applyEventToTurns([legacyTurn], terminal)[0]?.delivery).toBe(delivery);
+  });
+
   it("restores one completion when reconnect replay contains a duplicate event", () => {
     const turn: LocalTurn = {
       requestId: "request-1",
@@ -307,6 +446,77 @@ describe("mergeBridgeEvents", () => {
     });
   });
 
+  it.each([
+    ["turn.completed", "bridge-host", "permission"],
+    ["turn.failed", "bridge-host", "permission"],
+    ["turn.interrupted", "bridge-host", "permission"],
+    ["turn.completed", "claude-desktop-managed", "question"],
+    ["turn.failed", "claude-desktop-managed", "question"],
+    ["turn.interrupted", "claude-desktop-managed", "question"],
+  ] as const)("keeps %s terminal on %s after a pending %s resolves", (type, transport, kind) => {
+    const snapshot = {
+      sessions: [{
+        sessionId: "session-1",
+        transport,
+        ownership: transport === "bridge-host" ? "BRIDGE_RUNNING" : "DESKTOP_MANAGED_RUNNING",
+        turnState: "running",
+        activeTurnId: "turn-1",
+        currentSummary: "Still working",
+        pendingCount: 1,
+      }],
+      permissions: [],
+      latestSeq: 1,
+    } as unknown as BridgeHostSnapshot;
+    const requested: BridgeEvent = {
+      eventId: "requested",
+      seq: 2,
+      timestamp: 2,
+      origin: "claude-host",
+      type: kind === "permission" ? "permission.requested" : "question.requested",
+      sessionId: "session-1",
+      data: { requestId: "permission-1", toolUseId: "tool-1", toolName: "Write", input: {} },
+    };
+    const terminal: BridgeEvent = {
+      ...requested,
+      eventId: "terminal",
+      seq: 3,
+      timestamp: 3,
+      type,
+      turnId: "turn-1",
+      data: {},
+    };
+    const resolved: BridgeEvent = {
+      ...requested,
+      eventId: "resolved",
+      seq: 4,
+      timestamp: 4,
+      type: kind === "permission" ? "permission.resolved" : "question.resolved",
+      data: { requestId: "permission-1" },
+    };
+    const permissions = applyPermissionEvent([], requested);
+    const waiting = applyEventToSnapshot(snapshot, requested, permissions);
+    const ended = applyEventToSnapshot(waiting, terminal, permissions);
+    const finished = applyEventToSnapshot(ended, resolved, applyPermissionEvent(permissions, resolved));
+    const batch = applyEventsToSnapshot(snapshot, [requested, terminal, resolved], []);
+    expect([
+      finished?.sessions[0]?.turnState,
+      batch.snapshot?.sessions[0]?.turnState,
+    ]).toEqual(["queued", "queued"]);
+    expect(ended?.sessions[0]).toMatchObject({
+      ownership: transport === "bridge-host" ? "BRIDGE_IDLE" : "DESKTOP_MANAGED_IDLE",
+      turnState: "waiting",
+      pendingCount: 1,
+    });
+    expect(ended?.sessions[0]).not.toHaveProperty("activeTurnId");
+    expect(ended?.sessions[0]).not.toHaveProperty("currentSummary");
+    expect(batch.snapshot?.sessions).toEqual(finished?.sessions);
+    expect(batch.permissions).toEqual([]);
+    const idle = applyEventsToSnapshot({
+      ...snapshot, sessions: [{ ...snapshot.sessions[0]!, pendingCount: 0 }],
+    }, [requested, terminal, resolved], []);
+    expect(idle.snapshot?.sessions[0]?.turnState).toBe("idle");
+  });
+
   it("applies native runtime session updates as soon as they arrive", () => {
     const snapshot: BridgeHostSnapshot = {
       host: {
@@ -407,6 +617,62 @@ describe("mergeBridgeEvents", () => {
       modelDisplayName: "Mobile Selected",
       effort: "medium",
     });
+  });
+
+  it.each([
+    { appliesAfterTurn: false },
+    { model: "new-model", appliesAfterTurn: true },
+    { effort: "high", appliesAfterTurn: false },
+    { model: null, effort: null, appliesAfterTurn: false },
+    { runtimeId: "codex-desktop", model: "native-model", provider: "native-provider", reasoningEffort: "xhigh", fast: false, appliesAfterTurn: false },
+  ])("replaces omitted legacy model metadata from a complete configuration event: %j", (data) => {
+    const session = {
+      sessionId: "session-1", title: "Keep this session", model: "old", modelDisplayName: "Old model", effort: "low", configurationPending: true,
+    } as BridgeHostSnapshot["sessions"][number];
+    const snapshot = { sessions: [session], permissions: [] } as unknown as BridgeHostSnapshot;
+    const configured: BridgeEvent = {
+      eventId: "configuration-reset",
+      seq: 2,
+      timestamp: 2,
+      origin: "system",
+      type: "session.configuration",
+      sessionId: "session-1",
+      data,
+    };
+    const updated = applyEventToSnapshot(snapshot, configured, [])?.sessions[0];
+    expect(updated).toMatchObject({ sessionId: "session-1", title: "Keep this session" });
+    if (typeof data.model === "string") expect(updated?.model).toBe(data.model);
+    else expect(updated).not.toHaveProperty("model");
+    expect(updated).not.toHaveProperty("modelDisplayName");
+    if (typeof data.effort === "string") expect(updated?.effort).toBe(data.effort);
+    else expect(updated).not.toHaveProperty("effort");
+    if (data.appliesAfterTurn) expect(updated?.configurationPending).toBe(true);
+    else expect(updated).not.toHaveProperty("configurationPending");
+    if ("runtimeId" in data) expect(updated).toMatchObject({
+      provider: "native-provider", reasoningEffort: "xhigh", fast: false,
+    });
+    expect(applyEventsToSnapshot(snapshot, [configured], []).snapshot?.sessions[0]).toEqual(updated);
+  });
+
+  it.each([
+    { runtimeId: "codex-desktop", model: "native-model", appliesAfterTurn: false },
+    { runtimeId: "hermes-desktop", model: "native-model", provider: null, reasoningEffort: null, fast: null, appliesAfterTurn: false },
+  ])("clears removed native settings from a complete configuration event: %j", (data) => {
+    const snapshot = {
+      sessions: [{
+        sessionId: "session-1", provider: "old-provider", reasoningEffort: "high", fast: true,
+      }], permissions: [],
+    } as unknown as BridgeHostSnapshot;
+    const configured: BridgeEvent = {
+      eventId: "native-configuration-reset", seq: 2, timestamp: 2, origin: "codex-host",
+      type: "session.configuration", sessionId: "session-1", data,
+    };
+    const updated = applyEventToSnapshot(snapshot, configured, [])?.sessions[0];
+    expect([updated?.provider, updated?.reasoningEffort, updated?.fast]).toEqual([undefined, undefined, undefined]);
+    expect(updated).not.toHaveProperty("provider");
+    expect(updated).not.toHaveProperty("reasoningEffort");
+    expect(updated).not.toHaveProperty("fast");
+    expect(applyEventsToSnapshot(snapshot, [configured], []).snapshot?.sessions[0]).toEqual(updated);
   });
 
   it("removes a cancelled queued turn from the cached session count", () => {

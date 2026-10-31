@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, normalize } from "node:path";
 import type {
   BridgeAttachment,
@@ -844,31 +844,12 @@ export class SessionBroker extends EventEmitter {
           && (!observed?.desktopSessionId || candidate.sessionId === observed.desktopSessionId)
         ));
     if (!desktop) return;
-    const stored = this.sessionConfigurations.get(sessionId);
-    if (observed) {
-      if (desktop.model && (!stored?.model || desktop.model !== stored.model || !observed.hostModel)) {
-        observed.hostModel = desktop.model;
-      } else if (!desktop.model) {
-        delete observed.hostModel;
-      }
-      if (desktop.effort && (!stored?.effort || desktop.effort !== stored.effort || !observed.hostEffort)) {
-        observed.hostEffort = desktop.effort;
-      } else if (!desktop.effort) {
-        delete observed.hostEffort;
-      }
-    }
-    const bridge = this.bridgeSessions.get(sessionId);
-    if (bridge) {
-      if (desktop.model && (!stored?.model || desktop.model !== stored.model || !bridge.hostModel)) {
-        bridge.hostModel = desktop.model;
-      } else if (!desktop.model) {
-        delete bridge.hostModel;
-      }
-      if (desktop.effort && (!stored?.effort || desktop.effort !== stored.effort || !bridge.hostEffort)) {
-        bridge.hostEffort = desktop.effort;
-      } else if (!desktop.effort) {
-        delete bridge.hostEffort;
-      }
+    for (const session of [observed, this.bridgeSessions.get(sessionId)]) {
+      if (!session) continue;
+      if (desktop.model) session.hostModel = desktop.model;
+      else delete session.hostModel;
+      if (desktop.effort) session.hostEffort = desktop.effort;
+      else delete session.hostEffort;
     }
     return desktop;
   }
@@ -1095,7 +1076,7 @@ export class SessionBroker extends EventEmitter {
     if (profile.effort && modelInfo?.supportsEffort === false) {
       throw new Error(`${modelInfo.displayName} 不支持 effort 调节`);
     }
-    if (changesModel && profile.model) await this.assertContextFits(session, profile.model);
+    if (changesModel && profile.model) await this.assertContextFits(session, profile.model, profile.ultracode);
 
     const state = this.runtimeStates.get(input.sessionId);
     const managed = Boolean(
@@ -1218,7 +1199,6 @@ export class SessionBroker extends EventEmitter {
     const createdAt = Date.now();
     const newSessionId = randomUUID();
     const targetTranscript = join(dirname(sourceTranscript), `${newSessionId}.jsonl`);
-    const rawTranscript = await readFile(sourceTranscript, "utf8");
     const customTitleRecord = JSON.stringify({
       type: "custom-title",
       customTitle: forkTitle,
@@ -1226,11 +1206,17 @@ export class SessionBroker extends EventEmitter {
       uuid: randomUUID(),
       timestamp: new Date(createdAt).toISOString(),
     });
-    await writeFile(
-      targetTranscript,
-      `${rawTranscript.endsWith("\n") ? rawTranscript : `${rawTranscript}\n`}${customTitleRecord}\n`,
-      { encoding: "utf8", mode: 0o600 },
-    );
+    await copyFile(sourceTranscript, targetTranscript);
+    const target = await open(targetTranscript, "a+");
+    try {
+      await target.chmod(0o600);
+      const { size } = await target.stat();
+      const lastByte = Buffer.alloc(1);
+      if (size > 0) await target.read(lastByte, 0, 1, size - 1);
+      await target.appendFile(`${size > 0 && lastByte[0] !== 0x0a ? "\n" : ""}${customTitleRecord}\n`, "utf8");
+    } finally {
+      await target.close();
+    }
 
     const parentDesktopSessionId = source.desktopSessionId ?? `local_${parentSessionId}`;
     const session: StoredBridgeSession = {
@@ -2367,14 +2353,7 @@ export class SessionBroker extends EventEmitter {
 
   private availableModels(selected?: string): BridgeModelInfo[] {
     const models = new Map(this.modelCache);
-    const matchedSelected = this.findModelInfo(selected, [...models.values()]);
-    if (selected && !matchedSelected && !parseMagpieSyntheticModelId(selected)) {
-      models.set(selected, {
-        value: selected,
-        displayName: this.modelDisplayName(selected),
-      });
-    }
-    const longContextAvailable = [...models.keys()].some((value) => /\[1m\]/iu.test(value));
+    const longContextAvailable = [...models.keys(), selected ?? ""].some((value) => /\[1m\]/iu.test(value));
     if (longContextAvailable) {
       for (const model of [...models.values()]) {
         if (
@@ -2391,6 +2370,13 @@ export class SessionBroker extends EventEmitter {
           maxInputTokens: LONG_CONTEXT_TOKENS,
         });
       }
+    }
+    const matchedSelected = this.findModelInfo(selected, [...models.values()]);
+    if (selected && !matchedSelected && !parseMagpieSyntheticModelId(selected)) {
+      models.set(selected, {
+        value: selected,
+        displayName: this.modelDisplayName(selected),
+      });
     }
     const selectedValue = matchedSelected?.value ?? selected;
     return [...models.values()].sort((left, right) => (
@@ -2486,14 +2472,14 @@ export class SessionBroker extends EventEmitter {
     };
   }
 
-  private async assertContextFits(session: BridgeSessionInfo, model: string): Promise<void> {
+  private async assertContextFits(session: BridgeSessionInfo, model: string, ultracode = false): Promise<void> {
     const estimate = await readClaudeSessionContextEstimate(
       this.options.paths.projects,
       session.sessionId,
       session.cwd,
     );
     if (!estimate) return;
-    const maxTokens = this.modelContextLimit(model);
+    const maxTokens = this.modelContextLimit(model, ultracode);
     if (!maxTokens || estimate.totalTokens <= maxTokens) return;
     throw new Error(
       `当前会话约 ${estimate.totalTokens.toLocaleString("zh-CN")} tokens，所选模型仅提供约 `

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import * as fs from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,10 +9,16 @@ import { ClaudePermissionHook } from "./claude-permission-hook.js";
 import { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
+
 const directories: string[] = [];
 const servers: ClaudePermissionHook[] = [];
 afterEach(async () => {
   for (const server of servers.splice(0)) await server.close();
+  vi.clearAllMocks();
   if (directories.length) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", directories.splice(0));
 });
 
@@ -169,6 +176,71 @@ describe("native Claude permission hook", () => {
     })}\n`, "utf8");
     await vi.waitFor(() => expect(broker.list()).toEqual([]));
     expect(await (await response).json()).toEqual({});
+  });
+
+  it.each(["initial", "delta"])("keeps a half-written JSON record at %s EOF until its append completes", async (phase) => {
+    const { broker, post, settingsPath } = await fixture();
+    const transcriptPath = join(settingsPath, "..", "native-session.jsonl");
+    const tool = JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "partial-tool", name: "Bash", input: input.tool_input }] },
+    });
+    const result = JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "partial-tool", content: "Denied" }] },
+    });
+    const split = Math.floor((phase === "initial" ? tool : result).length / 2);
+    await writeFile(transcriptPath, phase === "initial" ? tool.slice(0, split) : `${tool}\n`);
+    const response = post({ ...input, transcript_path: transcriptPath });
+    await vi.waitFor(() => expect(broker.list()).toHaveLength(1));
+    await vi.waitFor(async () => {
+      expect(vi.mocked(fs.open).mock.results.length).toBeGreaterThan(0);
+      expect((await vi.mocked(fs.open).mock.results.at(-1)!.value).fd).toBe(-1);
+    });
+    if (phase === "delta") {
+      const scans = vi.mocked(fs.open).mock.calls.length;
+      await appendFile(transcriptPath, result.slice(0, split));
+      await vi.waitFor(async () => {
+        expect(vi.mocked(fs.open).mock.calls.length).toBeGreaterThan(scans);
+        expect((await vi.mocked(fs.open).mock.results.at(-1)!.value).fd).toBe(-1);
+      });
+    }
+    expect(broker.list()).toHaveLength(1);
+    await appendFile(transcriptPath, phase === "initial" ? `${tool.slice(split)}\n${result}\n` : `${result.slice(split)}\n`);
+    await vi.waitFor(() => expect(broker.list()).toEqual([]));
+    expect(await (await response).json()).toEqual({});
+  });
+
+  it.each(["\n", ""])("resolves a tool result larger than the delta window with trailing %j", async (ending) => {
+    const { broker, post, settingsPath } = await fixture();
+    const transcriptPath = join(settingsPath, "..", "native-session.jsonl");
+    await writeFile(transcriptPath, `${JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "large-tool", name: "Bash", input: input.tool_input }] },
+    })}\n`);
+    const response = post({ ...input, transcript_path: transcriptPath });
+    await vi.waitFor(() => expect(broker.list()).toHaveLength(1));
+    await vi.waitFor(async () => {
+      expect(vi.mocked(fs.open).mock.results.length).toBeGreaterThan(0);
+      expect((await vi.mocked(fs.open).mock.results.at(-1)!.value).fd).toBe(-1);
+    });
+    await appendFile(transcriptPath, `${JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "large-tool", content: "x".repeat(2 * 1024 * 1024 + 128) }] },
+    })}${ending}`);
+    await vi.waitFor(() => expect(broker.list()).toEqual([]));
+    expect(await (await response).json()).toEqual({});
+  });
+
+  it("accepts a complete initial tool result without a final newline", async () => {
+    const { broker, post, settingsPath } = await fixture();
+    const transcriptPath = join(settingsPath, "..", "native-session.jsonl");
+    await writeFile(transcriptPath, [
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "final-tool", name: "Bash", input: input.tool_input }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "final-tool", content: "Denied" }] } },
+    ].map((record) => JSON.stringify(record)).join("\n"));
+    expect(await (await post({ ...input, transcript_path: transcriptPath })).json()).toEqual({});
+    expect(broker.list()).toEqual([]);
   });
 
   it("does not cancel a different tool request or another session", async () => {

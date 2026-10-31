@@ -1,5 +1,17 @@
 ## 1.0.3
 
+- Post-release reliability fixes:
+  - Stream large transcript evidence, title scans and Fork copies without loading
+    the entire file into memory; preserve incomplete permission records across polls.
+  - Clear finished turn and configuration state correctly on mobile, including
+    terminal events received while a permission request is pending.
+  - Refresh inherited Desktop settings without discarding explicit overrides,
+    preserve 1M model metadata, and publish Desktop registration changes.
+  - Keep attachment cancellation available offline and route question shortcuts
+    to the matching permission request on mobile and desktop.
+  - Match SDK tool results by their tool-use IDs so completed tools appear once
+    with the correct name and state in the evidence timeline.
+
 - Queue and turn lifecycle reliability:
   - Settle already-delivered `bridge-host` turns on ownership conflict or Bridge
     restart recovery instead of re-queueing and re-sending messages that have

@@ -62,9 +62,8 @@ export function useFileAttachments(sessionId: string | undefined, onUploadFile: 
   };
 }
 
-export function FileAttachmentPicker({ state, disabled = false }: {
+export function FileAttachmentPicker({ state }: {
   state: ReturnType<typeof useFileAttachments>;
-  disabled?: boolean;
 }) {
   if (state.entries.length === 0) return null;
   return (
@@ -84,7 +83,6 @@ export function FileAttachmentPicker({ state, disabled = false }: {
             <IconButton
               label={`移除 ${entry.name}`}
               title={entry.result ? "从消息移除，已上传文件仍保留在会话目录" : "取消上传并移除"}
-              disabled={disabled}
               onClick={() => state.remove(entry.id)}
             ><X size={14} /></IconButton>
           </li>

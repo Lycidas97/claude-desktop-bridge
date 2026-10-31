@@ -430,16 +430,19 @@ export class ClaudeSessionHost extends EventEmitter {
       }
       return;
     }
-    if (message.type === "user" && message.tool_use_result !== undefined) {
+    if (message.type === "user" && Array.isArray(message.message.content)) {
       if (!turnId || drainingInterruptedTurn) return;
-      this.emitEvent({
-        type: "tool.completed",
-        sessionId: this.sessionIdValue,
-        turnId,
-        itemId: message.parent_tool_use_id ?? message.uuid ?? randomUUID(),
-        output: message.tool_use_result,
-        at: Date.now(),
-      });
+      const results = message.message.content.filter((block) => block.type === "tool_result");
+      for (const result of results) {
+        this.emitEvent({
+          type: "tool.completed",
+          sessionId: this.sessionIdValue,
+          turnId,
+          itemId: result.tool_use_id,
+          output: results.length === 1 ? message.tool_use_result ?? result.content : result.content,
+          at: Date.now(),
+        });
+      }
       return;
     }
     if (message.type === "tool_progress") {

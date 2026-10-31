@@ -295,6 +295,7 @@ interface ConfigLibraryEntryFile {
 interface GatewayModelPayload {
   id?: unknown;
   display_name?: unknown;
+  magpie_label?: unknown;
   description?: unknown;
   max_input_tokens?: unknown;
   context_window?: unknown;
@@ -303,6 +304,31 @@ interface GatewayModelPayload {
   reasoning?: unknown;
   reasoning_levels?: unknown;
   supported_reasoning_levels?: unknown;
+}
+
+const MAGPIE_SYNTHETIC_MODEL_RE = /^(?:(?:mythos|claude)-magpie-|anthropic\/magpie-|magpie-)(\d{10})(?:\.anthropic\.([^[\]\s]+))?(\[1m\])?$/iu;
+
+export function magpieModelIdHash(modelId: string): string {
+  const baseId = modelId.trim().replace(/\[1m\]$/iu, "");
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of Buffer.from(baseId, "utf8")) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return String(hash % 10_000_000_000n).padStart(10, "0");
+}
+
+export function parseMagpieSyntheticModelId(
+  modelId: string | undefined,
+): { hash: string; anthropicModel?: string; longContext: boolean } | undefined {
+  if (!modelId) return undefined;
+  const match = MAGPIE_SYNTHETIC_MODEL_RE.exec(modelId.trim());
+  if (!match) return undefined;
+  return {
+    hash: match[1]!,
+    ...(match[2] ? { anthropicModel: match[2] } : {}),
+    longContext: Boolean(match[3]),
+  };
 }
 
 interface GatewayModelsResponsePayload {
@@ -388,10 +414,16 @@ export async function resolveClaudeGatewayConfig(
 
 export function parseClaudeGatewayModels(items: unknown[]): BridgeModelInfo[] {
   const existingIds = new Set<string>();
+  const displayNameCounts = new Map<string, number>();
   for (const raw of items) {
     if (!raw || typeof raw !== "object") continue;
-    const id = nonEmptyString((raw as GatewayModelPayload).id);
+    const item = raw as GatewayModelPayload;
+    const id = nonEmptyString(item.id);
     if (id) existingIds.add(id.toLocaleLowerCase());
+    const rawDisplay = nonEmptyString(item.display_name);
+    if (rawDisplay) {
+      displayNameCounts.set(rawDisplay, (displayNameCounts.get(rawDisplay) ?? 0) + 1);
+    }
   }
   const results: BridgeModelInfo[] = [];
   const seen = new Set<string>();
@@ -401,8 +433,13 @@ export function parseClaudeGatewayModels(items: unknown[]): BridgeModelInfo[] {
     const id = nonEmptyString(item.id);
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    const displayName = nonEmptyString(item.display_name) ?? id;
-    const description = nonEmptyString(item.description);
+    const rawDisplay = nonEmptyString(item.display_name);
+    const magpieLabel = nonEmptyString(item.magpie_label);
+    const displayName = rawDisplay && (displayNameCounts.get(rawDisplay) ?? 0) > 1 && magpieLabel
+      ? magpieLabel
+      : rawDisplay ?? id;
+    const description = nonEmptyString(item.description)
+      ?? (magpieLabel && magpieLabel !== displayName ? magpieLabel : undefined);
     const maxInputTokens = [item.max_input_tokens, item.context_window, item.context_length]
       .find((value): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0);
     const rawLevels = Array.isArray(item.supported_reasoning_levels)
@@ -410,9 +447,17 @@ export function parseClaudeGatewayModels(items: unknown[]): BridgeModelInfo[] {
       : Array.isArray(item.reasoning_levels)
         ? item.reasoning_levels
         : undefined;
-    const supportedEffortLevels = rawLevels?.filter((level): level is BridgeEffort => (
-      typeof level === "string" && GATEWAY_EFFORT_LEVELS.has(level as BridgeEffort)
-    ));
+    const supportedEffortLevels = rawLevels
+      ?.map((level) => (
+        typeof level === "string"
+          ? level
+          : level && typeof level === "object"
+            ? (level as { effort?: unknown }).effort
+            : undefined
+      ))
+      .filter((level): level is BridgeEffort => (
+        typeof level === "string" && GATEWAY_EFFORT_LEVELS.has(level as BridgeEffort)
+      ));
     const supportsEffort = typeof item.reasoning === "boolean"
       ? item.reasoning
       : supportedEffortLevels && supportedEffortLevels.length > 0

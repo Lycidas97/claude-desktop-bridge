@@ -1764,7 +1764,7 @@ export class DesktopController extends EventEmitter {
     // relay-created session stays invisible on phones until a manual
     // reconnect or refresh.
     const sessionKey = snapshot.sessions
-      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}`)
+      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}`)
       .sort()
       .join("\n");
     const previousKey = this.lastPublishedSessionKey;

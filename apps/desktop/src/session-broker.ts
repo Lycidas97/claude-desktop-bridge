@@ -53,6 +53,8 @@ import { PermissionBroker, type PermissionDecision } from "./permission-broker.j
 import type { ClaudeRuntimePaths } from "./platform.js";
 import {
   discoverClaudeGatewayModels,
+  magpieModelIdHash,
+  parseMagpieSyntheticModelId,
   prepareClaudeRuntime,
 } from "./claude-runtime-discovery.js";
 import type { BridgeEventDraft, SessionEventLog } from "./session-event-log.js";
@@ -561,13 +563,15 @@ export class SessionBroker extends EventEmitter {
         previous?.credentialPath !== next.credentialPath ||
         previous?.environment?.ANTHROPIC_BASE_URL !== next.environment?.ANTHROPIC_BASE_URL
       );
+      const gatewayDiscoveredBefore = this.gatewayModelsDiscovered;
       if (credentialChanged || !this.gatewayModelsDiscovered) {
         await this.refreshGatewayModels(next);
       }
       const changed = (
         previous?.executablePath !== next.executablePath ||
         previous?.credentialPath !== next.credentialPath ||
-        previous?.version !== next.version
+        previous?.version !== next.version ||
+        gatewayDiscoveredBefore !== this.gatewayModelsDiscovered
       );
       if (next.executablePath && next.credentialPath) this.clearRuntimeRetry();
       else this.scheduleRuntimeRetry();
@@ -717,8 +721,9 @@ export class SessionBroker extends EventEmitter {
         : state?.turnState
           ?? (source && this.options.observer.isDesktopBusy(sessionId) ? "running" : "idle");
       const profile = this.effectiveProfile(sessionId, cwd);
-      const modelDisplayName = this.gatewayModelsDiscovered
-        ? this.resolveModelDisplayName(this.modelForHost(profile))
+      const hostModel = this.modelForHost(profile);
+      const modelDisplayName = this.gatewayModelsDiscovered || Boolean(parseMagpieSyntheticModelId(hostModel))
+        ? this.resolveModelDisplayName(hostModel)
         : undefined;
       const route = this.options.conversationState?.route(sessionId);
       const parentSessionId = source?.parentSessionId ?? bridge?.parentSessionId;
@@ -933,13 +938,16 @@ export class SessionBroker extends EventEmitter {
 
     const profile = this.effectiveProfile(sessionId, session.cwd);
     const stored = this.sessionConfigurations.get(sessionId);
-    const availableModels = this.availableModels(profile.model);
-    const selectedModel = this.findModelInfo(profile.model, availableModels);
+    const hostModel = this.modelForHost(profile);
+    const availableModels = this.availableModels(hostModel ?? profile.model);
+    const selectedModel = this.findModelInfo(hostModel ?? profile.model, availableModels);
+    const effectiveModel = selectedModel?.value ?? profile.model;
+    const inheritedModel = this.findModelInfo(profile.inheritedModel, availableModels)?.value ?? profile.inheritedModel;
     return {
       sessionId,
-      ...(profile.model ? { model: profile.model } : {}),
+      ...(effectiveModel ? { model: effectiveModel } : {}),
       ...(profile.effort ? { effort: profile.effort } : {}),
-      ...(profile.inheritedModel ? { inheritedModel: profile.inheritedModel } : {}),
+      ...(inheritedModel ? { inheritedModel } : {}),
       ...(profile.inheritedEffort ? { inheritedEffort: profile.inheritedEffort } : {}),
       ...(stored?.model ? { overrideModel: stored.model } : {}),
       ...(stored?.effort ? { overrideEffort: stored.effort } : {}),
@@ -1115,8 +1123,9 @@ export class SessionBroker extends EventEmitter {
     if (this.bridgeSessions.has(input.sessionId)) {
       void this.reconcileDesktopRegistration(input.sessionId, true);
     }
-    const modelDisplayName = this.gatewayModelsDiscovered
-      ? this.resolveModelDisplayName(this.modelForHost(profile))
+    const hostModel = this.modelForHost(profile);
+    const modelDisplayName = this.gatewayModelsDiscovered || Boolean(parseMagpieSyntheticModelId(hostModel))
+      ? this.resolveModelDisplayName(hostModel)
       : undefined;
     await this.record({
       sessionId: input.sessionId,
@@ -2279,7 +2288,7 @@ export class SessionBroker extends EventEmitter {
   private rememberCatalogModels(): void {
     if (this.modelCatalogComplete) return;
     for (const session of this.catalog.sessions) {
-      if (!session.hostModel) continue;
+      if (!session.hostModel || parseMagpieSyntheticModelId(session.hostModel)) continue;
       this.modelCache.set(session.hostModel, {
         value: session.hostModel,
         displayName: this.modelDisplayName(session.hostModel),
@@ -2304,9 +2313,12 @@ export class SessionBroker extends EventEmitter {
     if (models.length > 0) this.modelCache.clear();
     for (const model of models) {
       if (!model.value) continue;
+      const displayName = model.displayName && !parseMagpieSyntheticModelId(model.displayName)
+        ? model.displayName
+        : this.resolveModelDisplayName(model.displayName) ?? this.formatStandardModelDisplayName(model.value);
       this.modelCache.set(model.value, {
         value: model.value,
-        displayName: model.displayName || this.modelDisplayName(model.value),
+        displayName,
         ...(model.description ? { description: model.description } : {}),
         ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
         ...("maxInputTokens" in model ? { maxInputTokens: model.maxInputTokens } : {}),
@@ -2355,7 +2367,8 @@ export class SessionBroker extends EventEmitter {
 
   private availableModels(selected?: string): BridgeModelInfo[] {
     const models = new Map(this.modelCache);
-    if (selected && !models.has(selected)) {
+    const matchedSelected = this.findModelInfo(selected, [...models.values()]);
+    if (selected && !matchedSelected && !parseMagpieSyntheticModelId(selected)) {
       models.set(selected, {
         value: selected,
         displayName: this.modelDisplayName(selected),
@@ -2379,35 +2392,57 @@ export class SessionBroker extends EventEmitter {
         });
       }
     }
+    const selectedValue = matchedSelected?.value ?? selected;
     return [...models.values()].sort((left, right) => (
-      Number(right.value === selected) - Number(left.value === selected)
+      Number(right.value === selectedValue) - Number(left.value === selectedValue)
       || (this.gatewayModelsDiscovered ? 0 : left.displayName.localeCompare(right.displayName, "zh-CN"))
     ));
   }
 
   private findModelInfo(model: string | undefined, models: BridgeModelInfo[]): BridgeModelInfo | undefined {
     if (!model) return undefined;
-    return models.find((candidate) => candidate.value === model)
+    const direct = models.find((candidate) => candidate.value === model)
       ?? models.find((candidate) => candidate.resolvedModel === model);
+    if (direct) return direct;
+    const magpie = parseMagpieSyntheticModelId(model);
+    if (!magpie) return undefined;
+    const matchingHash = models.filter((candidate) => {
+      const candidateSyn = parseMagpieSyntheticModelId(candidate.value)
+        ?? parseMagpieSyntheticModelId(candidate.resolvedModel);
+      if (candidateSyn) return candidateSyn.hash === magpie.hash;
+      return magpieModelIdHash(candidate.value) === magpie.hash;
+    });
+    return matchingHash.find((candidate) => /\[1m\]/iu.test(candidate.value) === magpie.longContext)
+      ?? matchingHash[0];
   }
 
   private resolveModelDisplayName(value: string | undefined): string | undefined {
     if (!value) return undefined;
     const cached = this.findModelInfo(value, [...this.modelCache.values()]);
-    if (cached?.displayName) return cached.displayName;
+    if (cached?.displayName && !parseMagpieSyntheticModelId(cached.displayName)) {
+      if (/\[1m\]/iu.test(value) && !/\b1m\b/iu.test(cached.displayName)) {
+        return `${cached.displayName}${this.gatewayModelsDiscovered ? " 1M" : " · 1M"}`;
+      }
+      return cached.displayName;
+    }
     if (/\[1m\]/iu.test(value)) {
       const baseValue = value.replace(/\[1m\]/giu, "");
       const baseCached = this.findModelInfo(baseValue, [...this.modelCache.values()]);
-      if (baseCached?.displayName) {
+      if (baseCached?.displayName && !parseMagpieSyntheticModelId(baseCached.displayName)) {
         return `${baseCached.displayName}${this.gatewayModelsDiscovered ? " 1M" : " · 1M"}`;
       }
+    }
+    const magpie = parseMagpieSyntheticModelId(value);
+    if (magpie?.anthropicModel) {
+      return this.formatStandardModelDisplayName(`${magpie.anthropicModel}${magpie.longContext ? "[1m]" : ""}`);
+    }
+    if (magpie) {
+      return magpie.longContext ? "默认模型 · 1M" : "默认模型";
     }
     return undefined;
   }
 
-  private modelDisplayName(value: string): string {
-    const resolved = this.resolveModelDisplayName(value);
-    if (resolved) return resolved;
+  private formatStandardModelDisplayName(value: string): string {
     const longContext = /\[1m\]/iu.test(value);
     const normalized = value
       .replace(/\[1m\]/giu, "")
@@ -2417,6 +2452,12 @@ export class SessionBroker extends EventEmitter {
       .map((part) => part.length <= 2 ? part.toLocaleUpperCase() : `${part[0]!.toLocaleUpperCase()}${part.slice(1)}`)
       .join(" ");
     return `${normalized || value}${longContext ? " · 1M" : ""}`;
+  }
+
+  private modelDisplayName(value: string): string {
+    const resolved = this.resolveModelDisplayName(value);
+    if (resolved) return resolved;
+    return this.formatStandardModelDisplayName(value);
   }
 
   private modelContextLimit(model: string | undefined, ultracode = false): number | undefined {

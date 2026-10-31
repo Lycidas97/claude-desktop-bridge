@@ -148,12 +148,24 @@ function mobileConnectionLabel(
   return "局域网连接";
 }
 
+function formatSessionModelLabel(session: BridgeSessionInfo): string {
+  if (session.modelDisplayName) return session.modelDisplayName;
+  const raw = session.model?.trim();
+  if (!raw) return "默认模型";
+  const magpieAnthropic = /^magpie-\d+\.anthropic\.(.+)$/iu.exec(raw);
+  const candidate = magpieAnthropic ? magpieAnthropic[1]! : raw;
+  if (/^(?:(?:mythos|claude)-magpie-|anthropic\/magpie-|magpie-)\d+(?:\[1m\])?$/iu.test(candidate)) {
+    return /\[1m\]/iu.test(candidate) ? "默认模型 1M" : "默认模型";
+  }
+  return candidate
+    .replace(/^claude-/iu, "")
+    .replace(/\[1m\]/giu, " 1M")
+    .replaceAll("-", " ")
+    .trim() || "默认模型";
+}
+
 export function sessionProfile(session: BridgeSessionInfo): string {
-  const model = session.modelDisplayName
-    ?? session.model
-      ?.replace(/^claude-/iu, "")
-      .replace(/\[1m\]/giu, " 1M")
-      .replaceAll("-", " ");
+  const model = formatSessionModelLabel(session);
   const native = isNativeRuntimeId(session.runtimeId);
   return [
     native && session.provider ? session.provider : undefined,
@@ -194,12 +206,7 @@ function activeSessionBadgeLabel(session: BridgeSessionInfo): string | undefined
 }
 
 function conciseModelName(session: BridgeSessionInfo): string {
-  const raw = session.modelDisplayName
-    ?? session.model
-      ?.replace(/^claude-/iu, "")
-      .replace(/\[1m\]/giu, " 1M")
-      .replaceAll("-", " ");
-  return raw || "默认模型";
+  return formatSessionModelLabel(session);
 }
 
 function conciseSessionSubtitle(session: BridgeSessionInfo): string {

@@ -144,6 +144,14 @@ describe("sessionProfile", () => {
       ...baseSession,
       modelDisplayName: "Claude Opus 4.6 · Gateway 1M",
     })).toBe("Claude Opus 4.6 · Gateway 1M · HIGH");
+    expect(sessionProfile({
+      ...baseSession,
+      model: "mythos-magpie-1052229916[1m]",
+    })).toBe("默认模型 1M · HIGH");
+    expect(sessionProfile({
+      ...baseSession,
+      model: "magpie-2213244526.anthropic.claude-opus-5-5[1m]",
+    })).toBe("opus 5 5 1M · HIGH");
   });
 });
 

@@ -2427,6 +2427,79 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
+  it("maps synthetic mythos-magpie and magpie.anthropic model IDs to gateway models without exposing raw hashes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-magpie-models-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const sessionId = randomUUID();
+    await mkdir(cwd, { recursive: true });
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [{
+        ...observed(sessionId, cwd),
+        hostModel: "mythos-magpie-1052229916",
+        hostEffort: "xhigh",
+        hostUltracode: true,
+      }],
+      observedAt: Date.now(),
+    });
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: {
+        sessions: join(root, "runtime-sessions"),
+        tasks: join(root, "tasks"),
+        projects: join(root, "projects"),
+        desktopSessions: [],
+      },
+      eventLog,
+      observer,
+      sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"),
+      hostFactory: (options) => new FakeHost(options),
+      prepareRuntime: async () => ({
+        executablePath: "/usr/local/bin/claude",
+        credentialPath: join(root, "host-creds.json"),
+        environment: { ANTHROPIC_BASE_URL: "http://127.0.0.1:3425" },
+      }),
+      discoverGatewayModels: async () => [
+        {
+          value: "antigravity/gemini-4-argon",
+          displayName: "Gemini 4 Argon",
+          description: "Gemini 4 Argon · Antigravity",
+          maxInputTokens: 1_000_000,
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        },
+        {
+          value: "antigravity/gemini-4-argon[1m]",
+          displayName: "Gemini 4 Argon 1M",
+          description: "Gemini 4 Argon · Antigravity · 1M context window",
+          maxInputTokens: 1_000_000,
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        },
+      ],
+    });
+    await broker.initialize();
+
+    expect(broker.session(sessionId)).toMatchObject({
+      model: "mythos-magpie-1052229916",
+      modelDisplayName: "Gemini 4 Argon 1M",
+      effort: "xhigh",
+    });
+
+    const config = await broker.configuration(sessionId);
+    expect(config.model).toBe("antigravity/gemini-4-argon[1m]");
+    expect(config.availableModels.map((candidate) => candidate.value)).toEqual([
+      "antigravity/gemini-4-argon[1m]",
+      "antigravity/gemini-4-argon",
+    ]);
+    expect(config.availableModels.some((candidate) => /magpie/iu.test(candidate.displayName))).toBe(false);
+
+    await broker.close();
+    await eventLog.close();
+  });
+
   it("preserves complete Agent SDK tool results in the turn evidence lifecycle", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-evidence-"));
     directories.push(root);

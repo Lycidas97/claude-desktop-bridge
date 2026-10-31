@@ -8,6 +8,8 @@ import {
   findClaudeHostCredentials,
   findClaudeExecutable,
   isSafeForBackgroundRuntimeScan,
+  magpieModelIdHash,
+  parseMagpieSyntheticModelId,
   prepareClaudeRuntime,
   parseClaudeGatewayModels,
   resolveClaudeGatewayConfig,
@@ -281,5 +283,60 @@ describe("Claude runtime discovery privacy", () => {
       authToken: "configlib-token",
       authScheme: "bearer",
     });
+  });
+
+  it("computes Magpie 10-digit FNV-1a model hashes and disambiguates duplicate gateway display names", () => {
+    expect(magpieModelIdHash("antigravity/gemini-4-argon")).toBe("1052229916");
+    expect(magpieModelIdHash("claude/claude-opus-5-5")).toBe("2213244526");
+    expect(parseMagpieSyntheticModelId("mythos-magpie-1052229916[1m]")).toEqual({
+      hash: "1052229916",
+      longContext: true,
+    });
+    expect(parseMagpieSyntheticModelId("magpie-2213244526.anthropic.claude-opus-5-5[1m]")).toEqual({
+      hash: "2213244526",
+      anthropicModel: "claude-opus-5-5",
+      longContext: true,
+    });
+
+    expect(parseClaudeGatewayModels([
+      {
+        id: "auto/claude-opus-5-5",
+        display_name: "Claude Opus 5.5",
+        magpie_label: "Claude Opus 5.5 · routing group",
+        supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }],
+      },
+      {
+        id: "claude/claude-opus-5-5",
+        display_name: "Claude Opus 5.5",
+        magpie_label: "Claude Opus 5.5 · Claude Code",
+        supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }, { effort: "max" }],
+      },
+      {
+        id: "antigravity/gemini-4-argon",
+        display_name: "Gemini 4 Argon",
+        magpie_label: "Gemini 4 Argon · Antigravity",
+        supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }],
+      },
+    ])).toEqual([
+      {
+        value: "auto/claude-opus-5-5",
+        displayName: "Claude Opus 5.5 · routing group",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high"],
+      },
+      {
+        value: "claude/claude-opus-5-5",
+        displayName: "Claude Opus 5.5 · Claude Code",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "high", "max"],
+      },
+      {
+        value: "antigravity/gemini-4-argon",
+        displayName: "Gemini 4 Argon",
+        description: "Gemini 4 Argon · Antigravity",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high"],
+      },
+    ]);
   });
 });

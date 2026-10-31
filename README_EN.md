@@ -10,7 +10,7 @@ This independently maintained fork currently focuses on **macOS + Android + Clau
 
 ## Development status
 
-Updated **2026-10-30**. The base project version remains **1.0.2**; the progress below does not announce a new formal release.
+Updated **2026-10-31**. Current version: **1.0.3**.
 
 | Location | Status |
 | --- | --- |

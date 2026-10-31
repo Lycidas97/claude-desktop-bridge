@@ -17,6 +17,7 @@ import {
 } from "@bridge/protocol";
 import { AsyncInputQueue } from "./async-input-queue.js";
 import type { ClaudeSessionEffort } from "./claude-desktop-sessions.js";
+import { BRIDGE_PERMISSION_HOST_ENV } from "./claude-permission-hook.js";
 import type { PermissionBroker } from "./permission-broker.js";
 
 export type SessionHostOrigin = "desktop" | "mobile" | "system";
@@ -189,7 +190,10 @@ export class ClaudeSessionHost extends EventEmitter {
       prompt: this.input,
       options: {
         cwd: this.options.cwd,
-        env: this.options.environment,
+        env: {
+          ...this.options.environment,
+          [BRIDGE_PERMISSION_HOST_ENV]: "sdk",
+        },
         pathToClaudeCodeExecutable: this.options.executablePath,
         includePartialMessages: true,
         includeHookEvents: true,

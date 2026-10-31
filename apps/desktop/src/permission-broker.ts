@@ -69,6 +69,7 @@ export class PermissionBroker extends EventEmitter {
       title?: string;
       displayName?: string;
       description?: string;
+      manualOnly?: boolean;
     },
   ): Promise<PermissionResult> {
     const request: PendingPermission = {
@@ -83,7 +84,7 @@ export class PermissionBroker extends EventEmitter {
       ...(options.displayName ? { displayName: options.displayName } : {}),
       ...(options.description ? { description: options.description } : {}),
     };
-    if (this.canApproveAutomatically(request)) {
+    if (!options.manualOnly && this.canApproveAutomatically(request)) {
       return this.approveAutomatically(request);
     }
     return new Promise<PermissionResult>((resolve) => {

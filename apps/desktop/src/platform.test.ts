@@ -1,9 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { App } from "electron";
 import { join } from "node:path";
 import {
   claudeRuntimePaths,
   connectorPaths,
   firstNonEmpty,
+  isLaunchAtLoginEnabled,
+  setLaunchAtLogin,
   supportsClaudeDesktop,
 } from "./platform.js";
 
@@ -18,6 +21,24 @@ describe("desktop URL configuration", () => {
     expect(firstNonEmpty(["  wss://relay.example/ws  ", "ws://fallback/ws"])).toBe(
       "wss://relay.example/ws",
     );
+  });
+});
+
+describe("launch at login", () => {
+  it.each([true, false])("registers the macOS app with enabled=%s without deprecated hidden flags", async (enabled) => {
+    const setLoginItemSettings = vi.fn();
+    await setLaunchAtLogin({ setLoginItemSettings } as unknown as App, enabled, "darwin");
+    expect(setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: enabled });
+  });
+
+  it("uses the same executable and hidden argument for Windows registration and lookup", async () => {
+    const setLoginItemSettings = vi.fn();
+    const getLoginItemSettings = vi.fn(() => ({ openAtLogin: true }));
+    const app = { setLoginItemSettings, getLoginItemSettings } as unknown as App;
+    await setLaunchAtLogin(app, true, "win32");
+    expect(setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true, path: process.execPath, args: ["--hidden"] });
+    await expect(isLaunchAtLoginEnabled(app, "win32")).resolves.toBe(true);
+    expect(getLoginItemSettings).toHaveBeenCalledWith({ path: process.execPath, args: ["--hidden"] });
   });
 });
 

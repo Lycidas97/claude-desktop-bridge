@@ -33,6 +33,7 @@ export interface ActiveClaudeProcess {
 
 export interface ObservedClaudeSession extends BridgeSessionInfo {
   desktopTitle?: string;
+  priorSessionIds?: string[];
   transcriptPath?: string;
   transcriptMtimeMs: number;
   processAlive: boolean;
@@ -316,7 +317,9 @@ export async function scanClaudeCatalog(
     const active = activeProcesses.find((candidate) => candidate.cwd);
     const processState = processSummary(activeProcesses);
     const cwd = active?.cwd ?? desktopSession.cwd;
-    const projectName = basename(cwd) || cwd;
+    const defaultProjectName = basename(cwd) || cwd;
+    const projectId = desktopSession.groupId ?? projectIdForCwd(cwd, platform);
+    const projectName = desktopSession.groupName ?? defaultProjectName;
     const transcriptPath = await findClaudeTranscriptFile(paths.projects, desktopSession.cliSessionId, cwd);
     const transcriptMtimeMs = transcriptPath
       ? await stat(transcriptPath).then((metadata) => metadata.mtimeMs, () => 0)
@@ -327,12 +330,13 @@ export async function scanClaudeCatalog(
     sessions.push({
       sessionId: desktopSession.cliSessionId,
       desktopSessionId: desktopSession.sessionId,
+      ...(desktopSession.priorCliSessionIds?.length ? { priorSessionIds: desktopSession.priorCliSessionIds } : {}),
       ...(desktopSession.parentSessionId ? { parentSessionId: desktopSession.parentSessionId } : {}),
       ...(desktopSession.forkLabel ? { forkLabel: desktopSession.forkLabel } : {}),
-      projectId: projectIdForCwd(cwd, platform),
+      projectId,
       projectName,
       cwd,
-      title: desktopSession.title || projectName,
+      title: desktopSession.title || defaultProjectName,
       ...(desktopSession.title ? { desktopTitle: desktopSession.title } : {}),
       source: "desktop",
       ownership: "DESKTOP_OBSERVED",

@@ -232,6 +232,8 @@ export class SessionEventLog extends EventEmitter {
    */
   private async loadWithCompaction(fileBytes: number): Promise<void> {
     const retained: BridgeEvent[] = [];
+    const acceptedTurns = new Map<string, BridgeEvent>();
+    const settledReceipts = new Map<string, [BridgeEvent, BridgeEvent]>();
     let retainedBytes = 0;
     let scanned = 0;
     const reader = createInterface({
@@ -249,6 +251,18 @@ export class SessionEventLog extends EventEmitter {
       if (!isEvent(parsed)) continue;
       scanned += 1;
       this.nextSeq = Math.max(this.nextSeq, parsed.seq + 1);
+      if (parsed.sessionId && parsed.turnId) {
+        const turnKey = `${parsed.sessionId}\u001f${parsed.turnId}`;
+        if (parsed.type === "user.message.accepted" && parsed.itemId) acceptedTurns.set(turnKey, parsed);
+        else if (
+          parsed.type === "turn.completed" || parsed.type === "turn.failed" || parsed.type === "turn.interrupted" ||
+          (parsed.type === "runtime.error" && parsed.data.delivery === "failed")
+        ) {
+          const accepted = acceptedTurns.get(turnKey);
+          if (accepted) settledReceipts.set(parsed.sessionId, [accepted, parsed]);
+          acceptedTurns.delete(turnKey);
+        }
+      }
       if (parsed.itemId) {
         const key = `${parsed.sessionId ?? ""}\u001f${parsed.type}\u001f${parsed.itemId}`;
         this.itemKeys.add(key);
@@ -281,6 +295,17 @@ export class SessionEventLog extends EventEmitter {
       const removed = events.shift()!;
       bytes -= JSON.stringify(removed).length + 1;
     }
+    // Keep one exact settled input per session so an empty SDK result remains
+    // an ownership boundary even after its turn falls outside the replay tail.
+    const retainedSeqs = new Set(events.map((event) => event.seq));
+    for (const receipt of settledReceipts.values()) {
+      for (const event of receipt) {
+        if (!retainedSeqs.has(event.seq)) {
+          events.push(event);
+          retainedSeqs.add(event.seq);
+        }
+      }
+    }
     events.sort((left, right) => left.seq - right.seq);
     const temporary = `${this.path}.compact-${process.pid}`;
     await mkdir(dirname(this.path), { recursive: true });
@@ -306,6 +331,22 @@ export class SessionEventLog extends EventEmitter {
 
   latestItem(sessionId: string, type: BridgeEventType, itemId: string): BridgeEvent | undefined {
     return this.latestItems.get(`${sessionId}\u001f${type}\u001f${itemId}`);
+  }
+
+  isUserMessageSettled(sessionId: string, messageId: string): boolean {
+    const accepted = this.latestItem(sessionId, "user.message.accepted", messageId);
+    if (!accepted?.turnId) return false;
+    return this.events.some((event) => (
+      event.sessionId === sessionId &&
+      event.turnId === accepted.turnId &&
+      event.seq > accepted.seq &&
+      (
+        event.type === "turn.completed" ||
+        event.type === "turn.failed" ||
+        event.type === "turn.interrupted" ||
+        (event.type === "runtime.error" && event.data.delivery === "failed")
+      )
+    ));
   }
 
   async append(draft: BridgeEventDraft): Promise<BridgeEvent> {

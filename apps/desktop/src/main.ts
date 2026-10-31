@@ -25,6 +25,7 @@ import {
   safeStorageSecretProtector,
 } from "./config.js";
 import { removeLegacyConnector } from "./connector.js";
+import { ClaudePermissionHook } from "./claude-permission-hook.js";
 import { DesktopController, type LocalBridgeRequest } from "./controller.js";
 import {
   claudeRuntimePaths,
@@ -124,7 +125,8 @@ async function desktopMain(): Promise<void> {
 
   const userDataPath = app.getPath("userData");
   await archiveLegacyQueue(userDataPath);
-  await removeLegacyConnector(connectorPaths()).catch(() => undefined);
+  const connectors = connectorPaths();
+  await removeLegacyConnector(connectors).catch(() => undefined);
 
   const identityProtector = fileSecretProtector();
   const evidenceProtector = fileSecretProtector();
@@ -202,6 +204,11 @@ async function desktopMain(): Promise<void> {
     runtimePool,
     evidence,
     desktopRegistrar,
+  });
+  const permissionHook = new ClaudePermissionHook({
+    settingsPath: connectors.claudeSettings,
+    broker: broker.permissionBroker,
+    sessionId: (nativeSessionId) => broker.resolveNativePermissionSessionId(nativeSessionId),
   });
   runtimeStatus = () => broker.runtimeStatus();
   const runtimeRegistry = new RuntimeAdapterRegistry([
@@ -376,7 +383,9 @@ async function desktopMain(): Promise<void> {
     height: 780,
     minWidth: 860,
     minHeight: 620,
-    show: !process.argv.includes("--hidden"),
+    show: !process.argv.includes("--hidden") && !(
+      process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin
+    ),
     backgroundColor: "#f5f6f7",
     title: "Bridge",
     webPreferences: {
@@ -409,14 +418,28 @@ async function desktopMain(): Promise<void> {
   if (process.platform === "darwin") trayIcon.setTemplateImage(true);
   tray = new Tray(trayIcon);
   tray.setToolTip("Bridge");
-  tray.setContextMenu(Menu.buildFromTemplate([
+  const trayMenu = Menu.buildFromTemplate([
     { label: "打开 Bridge", click: showWindow },
+    {
+      id: "launch-at-login",
+      label: "开机自动运行",
+      type: "checkbox",
+      checked: pairingConfig.launchAtLogin,
+      click: (item) => {
+        void controller.setLaunchAtLogin(item.checked).catch((error: unknown) => {
+          item.checked = !item.checked;
+          dialog.showErrorBox("开机自动运行设置失败", error instanceof Error ? error.message : String(error));
+        });
+      },
+    },
     { type: "separator" },
     { label: "退出", click: () => { quitting = true; app.quit(); } },
-  ]));
+  ]);
+  tray.setContextMenu(trayMenu);
   tray.on("click", showWindow);
 
   controller.on("snapshot", (snapshot) => {
+    trayMenu.getMenuItemById("launch-at-login")!.checked = snapshot.launchAtLogin;
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
       mainWindow.webContents.send("bridge:snapshot", snapshot);
     }
@@ -425,6 +448,11 @@ async function desktopMain(): Promise<void> {
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
       mainWindow.webContents.send("bridge:event", event);
     }
+  });
+  await permissionHook.start().catch((error: unknown) => {
+    process.stderr.write(
+      `Bridge Claude permission hook failed to start: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
   });
   await controller.initialize();
   await conversationState.recordSuccessfulStartup();
@@ -444,6 +472,7 @@ async function desktopMain(): Promise<void> {
     cleanupStarted = true;
     quitting = true;
     void (async () => {
+      await permissionHook.close().catch(() => undefined);
       await controller.close().catch(() => undefined);
       await broker.close().catch(() => undefined);
       await observer.close().catch(() => undefined);
@@ -453,6 +482,10 @@ async function desktopMain(): Promise<void> {
       cleanupDesktopPeerConnection();
       app.quit();
     })();
+  });
+  process.once("SIGTERM", () => {
+    quitting = true;
+    app.quit();
   });
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") mainWindow?.hide();

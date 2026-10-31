@@ -635,6 +635,9 @@ export function conversationItems(
       ) {
         const itemId = event.itemId ?? event.eventId;
         const prev = items.get(itemId);
+        const mergedPrompt = interactivePrompt
+          ? (prev?.interactivePrompt?.answered && !interactivePrompt.answered ? prev.interactivePrompt : interactivePrompt)
+          : prev?.interactivePrompt;
         items.set(itemId, {
           id: itemId,
           sessionId,
@@ -643,11 +646,7 @@ export function conversationItems(
           text: preserveFullText(text, prev?.text),
           createdAt: event.timestamp,
           origin: event.origin,
-          ...(interactivePrompt
-            ? { interactivePrompt }
-            : prev?.interactivePrompt
-              ? { interactivePrompt: prev.interactivePrompt }
-              : {}),
+          ...(mergedPrompt ? { interactivePrompt: mergedPrompt } : {}),
         });
       }
     }
@@ -800,31 +799,55 @@ export function conversationItems(
   }
   for (const item of deltaByStream.values()) items.set(item.id, item);
   for (const item of toolByItem.values()) items.set(item.id, item);
-  const sorted = [...items.values()].sort(
+  const sorted = [...items.values()].flatMap((item) => {
+    if (item.role !== "user") return [item];
+    const text = item.text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gu, "");
+    if (text === item.text) return [item];
+    return text.trim() || item.attachments?.length ? [{ ...item, text: text.trim() }] : [];
+  }).sort(
     (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
   );
+  const questionResolvedAt = sessionEvents
+    .filter((event) => event.type === "question.resolved")
+    .map((event) => event.timestamp);
   for (let i = 0; i < sorted.length; i += 1) {
     const current = sorted[i]!;
     if (!current.interactivePrompt || current.interactivePrompt.answered) continue;
     const nextUser = sorted.slice(i + 1).find((candidate) => candidate.role === "user" && candidate.text.trim());
-    if (!nextUser) continue;
-    const reply = nextUser.text.trim();
-    sorted[i] = {
-      ...current,
-      interactivePrompt: {
-        ...current.interactivePrompt,
-        answered: true,
-        ...(current.interactivePrompt.actions
-          ? {
-              actions: current.interactivePrompt.actions.map((action) => (
-                action.message.trim() === reply || action.label.trim() === reply
-                  ? { ...action, selected: true }
-                  : action
-              )),
-            }
-          : {}),
-      },
-    };
+    if (nextUser) {
+      const reply = nextUser.text.trim();
+      sorted[i] = {
+        ...current,
+        interactivePrompt: {
+          ...current.interactivePrompt,
+          answered: true,
+          ...(current.interactivePrompt.actions
+            ? {
+                actions: current.interactivePrompt.actions.map((action) => (
+                  action.message.trim() === reply || action.label.trim() === reply
+                    ? { ...action, selected: true }
+                    : action
+                )),
+              }
+            : {}),
+        },
+      };
+      continue;
+    }
+    if (
+      current.interactivePrompt.kind === "question" && (
+        questionResolvedAt.some((resolvedAt) => resolvedAt >= current.createdAt) ||
+        sorted.slice(i + 1).some((candidate) => candidate.role === "assistant")
+      )
+    ) {
+      sorted[i] = {
+        ...current,
+        interactivePrompt: {
+          ...current.interactivePrompt,
+          answered: true,
+        },
+      };
+    }
   }
   if (paged) {
     if (!history || (history.status === "loading" && history.items.length === 0)) return [];
@@ -1453,6 +1476,7 @@ export function MobileWorkspace({
   const [directoryMenuOpen, setDirectoryMenuOpen] = useState(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
+  const [forkChainOpen, setForkChainOpen] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [projectSearch, setProjectSearch] = useState("");
   const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
@@ -1838,6 +1862,7 @@ export function MobileWorkspace({
 
   async function selectSession(sessionId: string): Promise<void> {
     setConfigurationSessionId(undefined);
+    setForkChainOpen(false);
     setSessionView("conversation");
     setStopError(undefined);
     setSelectedSessionId(sessionId);
@@ -2206,12 +2231,22 @@ export function MobileWorkspace({
       : undefined;
     const evidenceCount = (selectedEvidence?.items.length ?? 0) + (fileChangesSummary ? 1 : 0);
     const displayNodes = groupTimelineTools(timeline);
+    const parentSession = selectedSession.parentSessionId
+      ? sessions.find((candidate) => candidate.sessionId === selectedSession.parentSessionId)
+      : undefined;
+    const childForks = sessions.filter((candidate) => (
+      candidate.parentSessionId === selectedSession.sessionId && !candidate.archivedAt
+    ));
+    const relatedForkCount = (parentSession ? 1 : 0) + childForks.length;
     return (
       <main className="mobile-workspace conversation-workspace">
         <header className="mobile-topbar conversation-topbar">
           <IconButton label={sessionView === "evidence" ? "返回对话" : "返回会话列表"} onClick={() => {
             if (sessionView === "evidence") setSessionView("conversation");
-            else setSelectedSessionId(undefined);
+            else {
+              setForkChainOpen(false);
+              setSelectedSessionId(undefined);
+            }
           }}><ArrowLeft size={21} /></IconButton>
           <div className="mobile-device">
             <strong>{selectedSession.title}</strong>
@@ -2227,6 +2262,18 @@ export function MobileWorkspace({
         <nav className="mobile-conversation-tabs" aria-label="会话视图">
           <button type="button" className={sessionView === "conversation" ? "active" : ""} aria-pressed={sessionView === "conversation"} onClick={() => setSessionView("conversation")}>对话</button>
           <button type="button" className={sessionView === "evidence" ? "active" : ""} aria-pressed={sessionView === "evidence"} onClick={() => setSessionView("evidence")}>成果{evidenceCount > 0 ? ` ${evidenceCount}` : ""}</button>
+          {relatedForkCount > 0 && (
+            <button
+              type="button"
+              className={`mobile-fork-chain-trigger${forkChainOpen ? " is-open" : ""}`}
+              aria-expanded={forkChainOpen}
+              onClick={() => setForkChainOpen((current) => !current)}
+            >
+              <GitFork size={13} />
+              <span>{childForks.length > 0 ? `分支 ${childForks.length}` : "主会话"}</span>
+              <ChevronDown size={13} className="mobile-fork-chain-chevron" />
+            </button>
+          )}
         </nav>
 
         {selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
@@ -2294,40 +2341,37 @@ export function MobileWorkspace({
             ))}
           </div>
         )}
-        {(() => {
-          const parentSession = selectedSession.parentSessionId
-            ? sessions.find((candidate) => candidate.sessionId === selectedSession.parentSessionId)
-            : undefined;
-          const childForks = sessions.filter((candidate) => (
-            candidate.parentSessionId === selectedSession.sessionId && !candidate.archivedAt
-          ));
-          if (!parentSession && childForks.length === 0) return null;
-          return (
-            <div className="relay-chain-bar fork-chain-bar">
-              {parentSession && (
-                <button
-                  type="button"
-                  className="relay-chain-link"
-                  onClick={() => void selectSession(parentSession.sessionId)}
-                >
-                  <GitFork size={14} />
-                  {`主会话：${parentSession.title}`}
-                </button>
-              )}
-              {childForks.map((fork) => (
-                <button
-                  type="button"
-                  className="relay-chain-link outbound"
-                  key={fork.sessionId}
-                  onClick={() => void selectSession(fork.sessionId)}
-                >
-                  <GitFork size={14} />
-                  {`${fork.forkLabel || "fork"} · ${fork.title}`}
-                </button>
-              ))}
-            </div>
-          );
-        })()}
+        {forkChainOpen && relatedForkCount > 0 && (
+          <div className="relay-chain-bar fork-chain-bar">
+            {parentSession && (
+              <button
+                type="button"
+                className="relay-chain-link"
+                onClick={() => {
+                  setForkChainOpen(false);
+                  void selectSession(parentSession.sessionId);
+                }}
+              >
+                <GitFork size={14} />
+                {`主会话：${parentSession.title}`}
+              </button>
+            )}
+            {childForks.map((fork) => (
+              <button
+                type="button"
+                className="relay-chain-link outbound"
+                key={fork.sessionId}
+                onClick={() => {
+                  setForkChainOpen(false);
+                  void selectSession(fork.sessionId);
+                }}
+              >
+                <GitFork size={14} />
+                {`${fork.forkLabel || "fork"} · ${fork.title}`}
+              </button>
+            ))}
+          </div>
+        )}
         {stopError && (
           <div className="session-channel-warning danger">
             <AlertTriangle size={17} />
@@ -2498,7 +2542,26 @@ export function MobileWorkspace({
                     prompt={item.interactivePrompt}
                     canSend={selectedSession.allowedActions?.canSend !== false && !officialActive}
                     busy={sending}
-                    onSelectOption={(replyText) => void sendQuickReply(replyText)}
+                    onSelectOption={(replyText) => {
+                      if (item.interactivePrompt?.kind === "question") {
+                        const pendingQuestion = sessionPermissions.find((permission) => permission.toolName === "AskUserQuestion");
+                        if (pendingQuestion) {
+                          const questions = item.interactivePrompt.questions ?? [];
+                          if (questions.length === 1 && !questions[0]?.multiSelect) {
+                            void onResolvePermission(
+                              pendingQuestion.requestId,
+                              "allow-once",
+                              undefined,
+                              { ...pendingQuestion.input, answers: { [questions[0]!.question]: replyText } },
+                            );
+                            return;
+                          }
+                          setPermissionOpen(true);
+                          return;
+                        }
+                      }
+                      void sendQuickReply(replyText);
+                    }}
                   />
                 )}
                 {item.attachments?.length ? (

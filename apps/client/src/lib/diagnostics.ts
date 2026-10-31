@@ -12,7 +12,7 @@ export interface DiagnosticLogEntry {
 
 const MAX_LOG_ENTRIES = 400;
 const DIAG_ENABLED_STORAGE_KEY = "bridge.mobile.diag.enabled.v1";
-export const BUILD_DIAG_TAG = "v1.0.2";
+export const BUILD_DIAG_TAG = "v1.0.3";
 const DEFAULT_DIAG_RELAY_URL = String(
   import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? "wss://relay.alioxis.com/ws",
 ).trim();

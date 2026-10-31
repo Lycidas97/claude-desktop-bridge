@@ -640,9 +640,12 @@ export function applySessionToSnapshot(
   session: BridgeSessionInfo | undefined,
 ): BridgeHostSnapshot | undefined {
   if (!snapshot || !session) return snapshot;
+  const exists = snapshot.sessions.some((candidate) => candidate.sessionId === session.sessionId);
   return {
     ...snapshot,
-    sessions: snapshot.sessions.map((candidate) => candidate.sessionId === session.sessionId ? session : candidate),
+    sessions: exists
+      ? snapshot.sessions.map((candidate) => candidate.sessionId === session.sessionId ? session : candidate)
+      : [session, ...snapshot.sessions],
   };
 }
 
@@ -707,6 +710,39 @@ function applyEventToSession(
   if (event.type === "conversation.route.changed") {
     const route = event.data.route as BridgeConversationRoute | undefined;
     if (route?.conversationId === session.sessionId) return sessionWithRoute(session, route);
+  }
+  if (event.type === "session.configuration") {
+    const next: BridgeSessionInfo = { ...session };
+    if (typeof event.data.model === "string" && event.data.model) next.model = event.data.model;
+    else if (event.data.model === null) delete next.model;
+    if (typeof event.data.modelDisplayName === "string" && event.data.modelDisplayName) {
+      next.modelDisplayName = event.data.modelDisplayName;
+    } else if ("model" in event.data) {
+      delete next.modelDisplayName;
+    }
+    if (typeof event.data.effort === "string" && event.data.effort) {
+      next.effort = event.data.effort as NonNullable<BridgeSessionInfo["effort"]>;
+    } else if (event.data.effort === null) {
+      delete next.effort;
+    }
+    if (typeof event.data.reasoningEffort === "string" && event.data.reasoningEffort) {
+      next.reasoningEffort = event.data.reasoningEffort;
+    } else if (event.data.reasoningEffort === null) {
+      delete next.reasoningEffort;
+    }
+    if (typeof event.data.provider === "string" && event.data.provider) {
+      next.provider = event.data.provider;
+    } else if (event.data.provider === null) {
+      delete next.provider;
+    }
+    if (typeof event.data.fast === "boolean") {
+      next.fast = event.data.fast;
+    } else if (event.data.fast === null) {
+      delete next.fast;
+    }
+    if (event.data.appliesAfterTurn === true) next.configurationPending = true;
+    else if (event.data.appliesAfterTurn === false) delete next.configurationPending;
+    return next;
   }
   if (hasPendingPermission) return { ...session, turnState: "waiting" };
   if (event.type === "session.ownership" && typeof event.data.ownership === "string") {
@@ -2700,6 +2736,9 @@ export function useMobileBridge() {
     }, { wait: true });
     if (!response?.ok) throw new Error(response?.error?.message ?? "新建会话失败");
     const result = response.result as { session?: BridgeSessionInfo };
+    if (result.session) {
+      setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+    }
     return result.session;
   }, [sendRequest]);
 

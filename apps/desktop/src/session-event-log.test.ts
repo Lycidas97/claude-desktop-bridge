@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,8 +7,19 @@ import { SessionEventLog } from "./session-event-log.js";
 
 const directories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+afterEach(() => {
+  const fixtures = directories.splice(0);
+  if (fixtures.length === 0) return;
+  const recycle = process.platform === "darwin" ? "/usr/bin/trash" : process.platform === "linux" ? "trash-put" : undefined;
+  if (!recycle) {
+    console.warn("No recycle command configured; keeping test fixtures:", fixtures);
+    return;
+  }
+  try {
+    execFileSync(recycle, fixtures);
+  } catch (error) {
+    console.warn("Could not recycle test fixtures; keeping remaining files:", fixtures, error);
+  }
 });
 
 describe("SessionEventLog", () => {
@@ -64,6 +76,43 @@ describe("SessionEventLog", () => {
       { role: "user", text: "Continue" },
     ]);
     await reopened.close();
+  });
+
+  it("matches terminal receipts to accepted message IDs across reopening and compaction", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-events-settled-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const first = new SessionEventLog(path);
+    await first.append({ sessionId: "session-1", turnId: "turn-1", itemId: "user-1", type: "user.message.accepted", origin: "mobile" });
+    expect(first.isUserMessageSettled("session-1", "user-1")).toBe(false);
+    await first.append({ sessionId: "session-1", turnId: "other-turn", type: "turn.completed", origin: "claude-host" });
+    await first.append({ sessionId: "other-session", turnId: "turn-1", type: "turn.completed", origin: "claude-host" });
+    await first.append({ sessionId: "session-1", turnId: "turn-1", type: "runtime.error", origin: "claude-host", data: { retrying: true, delivery: "host-received" } });
+    expect(first.isUserMessageSettled("session-1", "user-1")).toBe(false);
+    await first.append({ sessionId: "session-1", turnId: "turn-1", type: "turn.completed", origin: "claude-host", data: { result: "" } });
+    await first.append({ sessionId: "session-1", turnId: "turn-2", itemId: "user-2", type: "user.message.accepted", origin: "mobile" });
+    expect(first.isUserMessageSettled("session-1", "user-1")).toBe(true);
+    expect(first.isUserMessageSettled("session-1", "user-2")).toBe(false);
+    for (let index = 0; index < 5; index += 1) {
+      await first.append({ sessionId: "another-session", type: "session.observed", origin: "claude-desktop", itemId: `noise-${index}`, data: { role: "assistant", text: "Other work" } });
+    }
+    await first.close();
+    const reopened = new SessionEventLog(path, 80, { bytesThreshold: 1, retainEvents: 2 });
+    try {
+      await reopened.initialize();
+      expect(reopened.isUserMessageSettled("session-1", "user-1")).toBe(true);
+      expect(reopened.isUserMessageSettled("session-1", "user-2")).toBe(false);
+    } finally {
+      await reopened.close();
+    }
+    const twiceReopened = new SessionEventLog(path);
+    try {
+      await twiceReopened.initialize();
+      expect(twiceReopened.isUserMessageSettled("session-1", "user-1")).toBe(true);
+      expect(twiceReopened.isUserMessageSettled("session-1", "user-2")).toBe(false);
+    } finally {
+      await twiceReopened.close();
+    }
   });
 
   it("compacts an oversized log, dropping registration churn and stream deltas", async () => {

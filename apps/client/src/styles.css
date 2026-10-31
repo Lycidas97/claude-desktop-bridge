@@ -8188,6 +8188,25 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 .mobile-conversation-tabs button.active,
 .mobile-conversation-tabs button.is-active,
 .mobile-conversation-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.mobile-conversation-tabs .mobile-fork-chain-trigger {
+  margin-left: auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+.mobile-conversation-tabs .mobile-fork-chain-trigger > svg:first-child { color: var(--accent); }
+.mobile-conversation-tabs .mobile-fork-chain-trigger.is-open { color: var(--text); border-color: var(--accent); }
+.mobile-conversation-tabs .mobile-fork-chain-chevron { transition: transform 150ms var(--ease-out); }
+.mobile-conversation-tabs .mobile-fork-chain-trigger.is-open .mobile-fork-chain-chevron { transform: rotate(180deg); }
 .mobile-session-settings-trigger { display: inline-flex; max-width: 100%; min-height: 36px; align-items: center; gap: 6px; padding: 5px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
 .mobile-session-settings-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-menu-group-title { margin: 12px 0 4px; padding: 0 4px; color: var(--muted); font-size: 11px; font-weight: 600; }

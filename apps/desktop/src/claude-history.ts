@@ -25,6 +25,7 @@ interface TranscriptNode {
   stopReason?: string;
   interruptedBoundary?: boolean;
   nonTurnUser?: boolean;
+  toolResult?: boolean;
   role?: ClaudeHistoryMessage["role"];
   text?: string;
   interactivePrompt?: BridgeInteractivePrompt;
@@ -644,27 +645,33 @@ function extractToolResultAnswers(value: Record<string, unknown>): Record<string
   if (!isRecord(direct) || !isRecord(direct.answers)) return undefined;
   const answers: Record<string, string> = {};
   for (const [k, v] of Object.entries(direct.answers)) {
-    if (typeof v === "string" && v.trim()) answers[k] = v.trim();
+    if (typeof v === "string" && v.trim()) {
+      answers[k] = v.trim();
+    } else if (Array.isArray(v)) {
+      const joined = v.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()).join(", ");
+      if (joined) answers[k] = joined;
+    }
   }
   return Object.keys(answers).length > 0 ? answers : undefined;
 }
 
 function applyQuestionAnswers(
   prompt: BridgeInteractivePrompt,
-  answers: Record<string, string>,
+  answers?: Record<string, string>,
 ): BridgeInteractivePrompt {
   if (prompt.kind !== "question" || !prompt.questions) return prompt;
   return {
     ...prompt,
     answered: true,
     questions: prompt.questions.map((q) => {
-      const answer = answers[q.question];
+      const answer = answers?.[q.question];
       if (!answer) return q;
+      const selectedSet = new Set(answer.split(", ").map((part) => part.trim()).filter(Boolean));
       return {
         ...q,
         answer,
         options: q.options.map((opt) => (
-          opt.label === answer ? { ...opt, selected: true } : opt
+          opt.label === answer || selectedSet.has(opt.label) ? { ...opt, selected: true } : opt
         )),
       };
     }),
@@ -811,6 +818,7 @@ export interface ClaudeTranscriptSnapshot extends ClaudeHistoryReadResult {
   nextCursor?: string;
   userMessages: ClaudeHistoryMessage[];
   atTurnBoundary?: boolean;
+  pendingUserMessageId?: string;
 }
 
 function transcriptTurnBoundary<T extends TranscriptTurnNode>(
@@ -848,6 +856,7 @@ const transcriptSnapshotCache = new Map<string, {
   allMessages: ClaudeHistoryMessage[];
   userMessages: ClaudeHistoryMessage[];
   atTurnBoundary?: boolean;
+  pendingUserMessageId?: string;
 }>();
 
 export async function parseClaudeTranscriptSnapshot(
@@ -867,6 +876,7 @@ export async function parseClaudeTranscriptSnapshot(
       ...trimHistory(cached.allMessages, options),
       userMessages: cached.userMessages,
       ...(cached.atTurnBoundary !== undefined ? { atTurnBoundary: cached.atTurnBoundary } : {}),
+      ...(cached.pendingUserMessageId ? { pendingUserMessageId: cached.pendingUserMessageId } : {}),
     };
   }
 
@@ -912,6 +922,10 @@ export async function parseClaudeTranscriptSnapshot(
         ...(existing?.nonTurnUser || (value.type === "user" && isNonTurnUserRecord(value, rawText))
           ? { nonTurnUser: true }
           : {}),
+        ...(existing?.toolResult || (value.type === "user" && (
+          value.toolUseResult !== undefined || value.tool_use_result !== undefined ||
+          (Array.isArray(message?.content) && message.content.some((block) => isRecord(block) && block.type === "tool_result"))
+        )) ? { toolResult: true } : {}),
         ...(message && typeof message.stop_reason === "string"
           ? { stopReason: message.stop_reason }
           : existing?.stopReason
@@ -943,6 +957,22 @@ export async function parseClaudeTranscriptSnapshot(
     .sort((left, right) => right.index - left.index)[0];
   if (!terminal) return { available: true, messages: [], truncated: false, userMessages };
   const atTurnBoundary = transcriptTurnBoundary(nodes, terminal);
+  let pendingUserMessageId: string | undefined;
+  if (!atTurnBoundary) {
+    let boundaryNode: TranscriptNode | undefined = terminal;
+    const boundarySeen = new Set<string>();
+    // Tool results are user records too; match an interrupted tool chain to
+    // the actual input that started it, never to a later input or notification.
+    while (boundaryNode && !boundarySeen.has(boundaryNode.uuid)) {
+      boundarySeen.add(boundaryNode.uuid);
+      if (boundaryNode.interruptedBoundary) break;
+      if (boundaryNode.type === "user" && !boundaryNode.nonTurnUser && !boundaryNode.toolResult) {
+        pendingUserMessageId = boundaryNode.uuid;
+        break;
+      }
+      boundaryNode = boundaryNode.parentUuid ? nodes.get(boundaryNode.parentUuid) : undefined;
+    }
+  }
 
   const chain: TranscriptNode[] = [];
   const seen = new Set<string>();
@@ -959,21 +989,39 @@ export async function parseClaudeTranscriptSnapshot(
   for (const node of chain) {
     if (node.interactivePrompt) {
       const previous = messages.at(-1);
-      if (previous?.role === "assistant") {
+      if (node.interactivePrompt.kind === "question") {
+        if (node.text) {
+          pendingInteractive = { node, prompt: node.interactivePrompt };
+        } else if (previous?.role === "assistant" && !previous.interactivePrompt) {
+          previous.interactivePrompt = node.interactivePrompt;
+        } else {
+          messages.push({
+            id: node.uuid,
+            role: "assistant",
+            text: "",
+            createdAt: node.createdAt,
+            interactivePrompt: node.interactivePrompt,
+          });
+        }
+      } else if (previous?.role === "assistant") {
         previous.interactivePrompt = node.interactivePrompt;
       } else {
         pendingInteractive = { node, prompt: node.interactivePrompt };
       }
     }
-    if (node.toolResultAnswers) {
-      if (pendingInteractive) {
+    if (node.toolResult || node.toolResultAnswers) {
+      if (pendingInteractive && (node.toolResultAnswers || pendingInteractive.prompt.kind === "question")) {
         pendingInteractive = {
           node: pendingInteractive.node,
           prompt: applyQuestionAnswers(pendingInteractive.prompt, node.toolResultAnswers),
         };
       } else {
         const previous = messages.at(-1);
-        if (previous?.role === "assistant" && previous.interactivePrompt) {
+        if (
+          previous?.role === "assistant" &&
+          previous.interactivePrompt &&
+          (node.toolResultAnswers || previous.interactivePrompt.kind === "question")
+        ) {
           previous.interactivePrompt = applyQuestionAnswers(previous.interactivePrompt, node.toolResultAnswers);
         }
       }
@@ -981,7 +1029,7 @@ export async function parseClaudeTranscriptSnapshot(
     if (!node.role || !node.text) continue;
     const previous = messages.at(-1);
     if (node.role === "assistant") {
-      if (previous?.role === "assistant") {
+      if (previous?.role === "assistant" && previous.interactivePrompt?.kind !== "question") {
         previous.text = `${previous.text}\n\n${node.text}`;
         if (pendingInteractive) {
           previous.interactivePrompt = pendingInteractive.prompt;
@@ -1036,12 +1084,14 @@ export async function parseClaudeTranscriptSnapshot(
     allMessages: messages,
     userMessages,
     ...(atTurnBoundary !== undefined ? { atTurnBoundary } : {}),
+    ...(pendingUserMessageId ? { pendingUserMessageId } : {}),
   });
   return {
     available: true,
     ...trimHistory(messages, options),
     userMessages,
     atTurnBoundary,
+    ...(pendingUserMessageId ? { pendingUserMessageId } : {}),
   };
 }
 
@@ -1058,6 +1108,7 @@ export async function parseClaudeTranscript(
   const {
     userMessages: _userMessages,
     atTurnBoundary: _atTurnBoundary,
+    pendingUserMessageId: _pendingUserMessageId,
     ...result
   } = await parseClaudeTranscriptSnapshot(path, options);
   return result;

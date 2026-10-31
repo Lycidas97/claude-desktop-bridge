@@ -71,6 +71,8 @@ export interface DesktopSessionRegistrationInput {
   lastActivityAt: number;
   model?: string;
   effort?: BridgeEffort;
+  overrideModel?: string;
+  overrideEffort?: BridgeEffort;
   parentDesktopSessionId?: string;
   forkLabel?: string;
 }
@@ -445,6 +447,20 @@ export class ClaudeDesktopSessionRegistrar {
           raw.title = trimmedTitle;
           raw.titleSource = "custom";
         }
+        mutated = true;
+      }
+      const targetModel = input.overrideModel ?? (
+        typeof raw.model !== "string" || !raw.model.trim() ? input.model : undefined
+      );
+      if (targetModel && raw.model !== targetModel) {
+        raw.model = targetModel;
+        mutated = true;
+      }
+      const targetEffort = input.overrideEffort ?? (
+        typeof raw.effort !== "string" || !raw.effort.trim() ? input.effort : undefined
+      );
+      if (targetEffort && raw.effort !== targetEffort) {
+        raw.effort = targetEffort;
         mutated = true;
       }
       if (!mutated) return fallbackHash;

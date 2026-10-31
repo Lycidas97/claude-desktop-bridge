@@ -1,4 +1,5 @@
-import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { appendFile, mkdir, mkdtemp, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,8 +9,19 @@ import { TranscriptObserver } from "./transcript-observer.js";
 
 const directories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+afterEach(() => {
+  const fixtures = directories.splice(0);
+  if (fixtures.length === 0) return;
+  const recycle = process.platform === "darwin" ? "/usr/bin/trash" : process.platform === "linux" ? "trash-put" : undefined;
+  if (!recycle) {
+    console.warn("No recycle command configured; keeping test fixtures:", fixtures);
+    return;
+  }
+  try {
+    execFileSync(recycle, fixtures);
+  } catch (error) {
+    console.warn("Could not recycle test fixtures; keeping remaining files:", fixtures, error);
+  }
 });
 
 async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
@@ -215,6 +227,56 @@ describe("TranscriptObserver", () => {
       await eventLog.close();
     }
   });
+
+  it.each(["turn.completed", "turn.failed", "turn.interrupted"] as const)(
+    "accepts a matched %s when the transcript has no final assistant message",
+    async (terminal) => {
+      const root = await mkdtemp(join(tmpdir(), "bridge-observer-settled-turn-"));
+      directories.push(root);
+      const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+      const sessionId = "session-empty-result";
+      const transcript = join(paths.projects, `${sessionId}.jsonl`);
+      const subagents = join(paths.projects, sessionId, "subagents");
+      await Promise.all([mkdir(paths.sessions, { recursive: true }), mkdir(subagents, { recursive: true })]);
+      await writeFile(join(paths.sessions, `${process.pid}.json`), JSON.stringify({
+        pid: process.pid, sessionId, cwd: root, startedAt: Date.now(), entrypoint: "claude-desktop-3p",
+      }));
+      await writeFile(transcript, [
+        JSON.stringify({ type: "user", uuid: "bridge-user", parentUuid: null, message: { role: "user", content: "Continue" } }),
+        JSON.stringify({ type: "attachment", uuid: "context", parentUuid: "bridge-user", attachment: { type: "mcp_instructions_delta" } }),
+        "",
+      ].join("\n"));
+      await writeFile(join(subagents, "agent-old.meta.json"), JSON.stringify({ description: "Previous child", finished: false }));
+      await writeFile(join(subagents, "agent-old.jsonl"), `${JSON.stringify({
+        type: "assistant", uuid: "child-tool", timestamp: new Date().toISOString(),
+        message: { role: "assistant", content: [{ type: "tool_use", id: "old-tool", name: "Read", input: {} }] },
+      })}\n`);
+      const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+      const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 60_000, catalogIntervalMs: 60_000 });
+      try {
+        await eventLog.append({ sessionId, turnId: "bridge-turn", itemId: "bridge-user", origin: "mobile", type: "user.message.accepted", data: { text: "Continue" } });
+        await observer.start();
+        await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
+        await eventLog.append({ sessionId, turnId: "another-turn", origin: "claude-host", type: terminal, data: { result: "" } });
+        await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
+        await eventLog.append({ sessionId, turnId: "bridge-turn", origin: "claude-host", type: terminal, data: { result: "" } });
+        expect(observer.isDesktopBusy(sessionId)).toBe(false);
+        await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(true);
+        await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(true);
+
+        await appendFile(transcript, `${JSON.stringify({ type: "user", uuid: "notification", parentUuid: "context", message: { role: "user", content: "<task-notification>Child finished</task-notification>" } })}\n`);
+        await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
+        await appendFile(transcript, `${JSON.stringify({ type: "assistant", uuid: "followup-tool", parentUuid: "notification", message: { role: "assistant", content: [{ type: "tool_use", id: "followup", name: "Read", input: {} }], stop_reason: "tool_use" } })}\n`);
+        await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
+        await appendFile(transcript, `${JSON.stringify({ type: "user", uuid: "desktop-next", parentUuid: "followup-tool", message: { role: "user", content: "New Desktop input" } })}\n`);
+        await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
+        await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
+      } finally {
+        await observer.close();
+        await eventLog.close();
+      }
+    },
+  );
 
   it("keeps a Desktop tool turn running until the transcript reaches an end-turn boundary", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-observer-running-turn-"));

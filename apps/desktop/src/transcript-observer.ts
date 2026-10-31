@@ -1,11 +1,11 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { ClaudeHistoryMessage } from "@bridge/protocol";
 import {
   ClaudeTranscriptEvidenceCursor,
   getClaudeSubagentsMtimeMs,
-  isClaudeTranscriptAtTurnBoundary,
   parseClaudeTranscriptSnapshot,
   readClaudeTranscriptSubagents,
 } from "./claude-history.js";
@@ -43,6 +43,7 @@ export class TranscriptObserver extends EventEmitter {
   private readonly lastChangedAt = new Map<string, number>();
   private readonly lastMtime = new Map<string, number>();
   private readonly transcriptTurnBoundaries = new Map<string, boolean>();
+  private readonly transcriptPendingUserMessages = new Map<string, string>();
   private readonly externalWriteVersions = new Map<string, number>();
   private readonly knownEvidence = new Map<string, string>();
   private readonly knownSubagents = new Map<string, Map<string, string>>();
@@ -55,6 +56,7 @@ export class TranscriptObserver extends EventEmitter {
   }>();
   private readonly evidenceBackfill = new Set<string>();
   private nextCatalogAt = 0;
+  private lastDesktopConfigMtimeMs = 0;
 
   constructor(private readonly options: TranscriptObserverOptions) {
     super();
@@ -80,6 +82,11 @@ export class TranscriptObserver extends EventEmitter {
   isDesktopBusy(sessionId: string, now = Date.now()): boolean {
     const session = this.catalogValue.sessions.find((candidate) => candidate.sessionId === sessionId);
     if (!session) return false;
+    const lastUserMessage = this.transcriptPendingUserMessages.get(sessionId);
+    if (lastUserMessage && this.options.eventLog.isUserMessageSettled(
+      this.sessionAliases.get(sessionId) ?? sessionId,
+      lastUserMessage,
+    )) return false;
     if (session.activeTask || this.runningSubagentSessions.has(sessionId)) return true;
     if (!session.processAlive) return false;
     const atTurnBoundary = this.transcriptTurnBoundaries.get(sessionId);
@@ -98,10 +105,20 @@ export class TranscriptObserver extends EventEmitter {
       await this.primeTranscript(session);
     }
     if (!session?.desktopProcessAlive) return true;
+    if (!session.transcriptPath) return false;
+    const snapshot = await parseClaudeTranscriptSnapshot(session.transcriptPath, { limit: 1 });
+    this.updateTurnBoundary(sessionId, snapshot);
+    const lastUserMessage = snapshot.pendingUserMessageId;
+    // The SDK can finish without writing an assistant record (including an empty result).
+    // Only a terminal receipt for this exact user message can supersede the transcript gate.
+    if (lastUserMessage && this.options.eventLog.isUserMessageSettled(
+      this.sessionAliases.get(sessionId) ?? sessionId,
+      lastUserMessage,
+    )) return true;
     // A completed Bridge turn already owns its idle host; old task/subagent
     // activity must not block its queue. Fresh Desktop input still takes priority.
-    if ((!reusingIdleHost && this.isDesktopBusy(sessionId)) || !session.transcriptPath) return false;
-    return isClaudeTranscriptAtTurnBoundary(session.transcriptPath);
+    if (!reusingIdleHost && this.isDesktopBusy(sessionId)) return false;
+    return snapshot.available && snapshot.atTurnBoundary === true;
   }
 
   session(sessionId: string): ObservedClaudeSession | undefined {
@@ -124,7 +141,10 @@ export class TranscriptObserver extends EventEmitter {
     try {
       const now = Date.now();
       let changed = false;
-      if (!this.catalogValue.observedAt || now >= this.nextCatalogAt) {
+      const desktopConfigMtimeMs = await this.readDesktopConfigMtimeMs();
+      const desktopConfigChanged = desktopConfigMtimeMs !== this.lastDesktopConfigMtimeMs;
+      this.lastDesktopConfigMtimeMs = desktopConfigMtimeMs;
+      if (!this.catalogValue.observedAt || now >= this.nextCatalogAt || desktopConfigChanged) {
         const catalog = await scanClaudeCatalog(this.options.paths, this.options.platform);
         const initialCandidates = new Set(
           catalog.sessions
@@ -168,6 +188,16 @@ export class TranscriptObserver extends EventEmitter {
     }
   }
 
+  private async readDesktopConfigMtimeMs(): Promise<number> {
+    const mtimes = await Promise.all(
+      this.options.paths.desktopSessions.flatMap((root) => [
+        stat(join(dirname(root), "claude_desktop_config.json")).then((metadata) => metadata.mtimeMs, () => 0),
+        stat(join(root, "claude_desktop_config.json")).then((metadata) => metadata.mtimeMs, () => 0),
+      ]),
+    );
+    return Math.max(0, ...mtimes);
+  }
+
   private async pollRecentTranscripts(now: number): Promise<boolean> {
     const candidates = this.catalogValue.sessions.filter((session, index) => (
       Boolean(session.transcriptPath) &&
@@ -201,7 +231,7 @@ export class TranscriptObserver extends EventEmitter {
   private async observeTranscript(session: ObservedClaudeSession): Promise<void> {
     if (!session.transcriptPath) return;
     const result = await parseClaudeTranscriptSnapshot(session.transcriptPath, { limit: 50 });
-    this.updateTurnBoundary(session.sessionId, result.atTurnBoundary);
+    this.updateTurnBoundary(session.sessionId, result);
     const known = this.knownMessages.get(session.sessionId) ?? new Map<string, string>();
     const knownUsers = this.knownUserMessages.get(session.sessionId) ?? new Map<string, string>();
     // A competing Desktop input can land on a non-terminal branch while Bridge keeps writing.
@@ -245,7 +275,7 @@ export class TranscriptObserver extends EventEmitter {
   private async primeTranscript(session: ObservedClaudeSession): Promise<void> {
     if (!session.transcriptPath) return;
     const result = await parseClaudeTranscriptSnapshot(session.transcriptPath, { limit: 50 });
-    this.updateTurnBoundary(session.sessionId, result.atTurnBoundary);
+    this.updateTurnBoundary(session.sessionId, result);
     this.knownMessages.set(
       session.sessionId,
       new Map(result.messages.map((message) => [
@@ -303,12 +333,15 @@ export class TranscriptObserver extends EventEmitter {
     this.knownSubagents.set(session.sessionId, known);
   }
 
-  private updateTurnBoundary(sessionId: string, atTurnBoundary: boolean | undefined): void {
-    if (atTurnBoundary === undefined) {
-      this.transcriptTurnBoundaries.delete(sessionId);
-      return;
-    }
-    this.transcriptTurnBoundaries.set(sessionId, atTurnBoundary);
+  private updateTurnBoundary(
+    sessionId: string,
+    snapshot: Awaited<ReturnType<typeof parseClaudeTranscriptSnapshot>>,
+  ): void {
+    const lastUserMessage = snapshot.pendingUserMessageId;
+    if (lastUserMessage) this.transcriptPendingUserMessages.set(sessionId, lastUserMessage);
+    else this.transcriptPendingUserMessages.delete(sessionId);
+    if (snapshot.atTurnBoundary === undefined) this.transcriptTurnBoundaries.delete(sessionId);
+    else this.transcriptTurnBoundaries.set(sessionId, snapshot.atTurnBoundary);
   }
 
   private async observeEvidence(session: ObservedClaudeSession): Promise<void> {

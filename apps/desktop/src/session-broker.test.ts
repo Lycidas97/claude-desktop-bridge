@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,8 +21,19 @@ import { SessionEventLog } from "./session-event-log.js";
 
 const directories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+afterEach(() => {
+  const fixtures = directories.splice(0);
+  if (fixtures.length === 0) return;
+  const recycle = process.platform === "darwin" ? "/usr/bin/trash" : process.platform === "linux" ? "trash-put" : undefined;
+  if (!recycle) {
+    console.warn("No recycle command configured; keeping test fixtures:", fixtures);
+    return;
+  }
+  try {
+    execFileSync(recycle, fixtures);
+  } catch (error) {
+    console.warn("Could not recycle test fixtures; keeping remaining files:", fixtures, error);
+  }
 });
 
 class FakeObserver extends EventEmitter implements TranscriptObserverRuntime {
@@ -2101,58 +2113,155 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
-  it("refreshes Desktop configuration and retires stale overrides while keeping fresh mobile choices", async () => {
+  it("preserves per-session mobile configurations across Desktop registration, default changes, and cliSessionId rotation", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-desktop-config-"));
     directories.push(root);
     const cwd = join(root, "project");
-    const sessionId = randomUUID();
+    const sessionA = randomUUID();
+    const sessionB = randomUUID();
     const desktopSessions = join(root, "Claude-3p", "claude-code-sessions");
     await mkdir(desktopSessions, { recursive: true });
-    const desktopPath = join(desktopSessions, "session.json");
-    const desktop = {
-      sessionId: `desktop-${sessionId}`, cliSessionId: sessionId, cwd,
-      model: "desktop-current", effort: "xhigh",
-    };
-    await writeFile(desktopPath, JSON.stringify(desktop));
-    const sessionsPath = join(root, "sessions.json");
-    await writeFile(sessionsPath, JSON.stringify({
-      version: 2, sessions: [], configurations: [{
-        sessionId, model: "old-mobile", effort: "low", permissionMode: "full-access", updatedAt: 1,
-      }],
+    const desktopPathA = join(desktopSessions, `local_${sessionA}.json`);
+    const desktopPathB = join(desktopSessions, `local_${sessionB}.json`);
+    await writeFile(desktopPathA, JSON.stringify({
+      sessionId: `local_${sessionA}`, cliSessionId: sessionA, cwd,
+      model: "desktop-default", effort: "xhigh",
     }));
-    const observer = new FakeObserver({ projects: [], sessions: [observed(sessionId, cwd)], observedAt: 1 });
+    const sessionsPath = join(root, "sessions.json");
+    const observer = new FakeObserver({
+      projects: [],
+      sessions: [
+        observed(sessionA, cwd, { desktopSessionId: `local_${sessionA}`, hostModel: "desktop-default", hostEffort: "xhigh" }),
+      ],
+      observedAt: 1,
+    });
     const eventLog = new SessionEventLog(join(root, "events.jsonl"));
     const options = {
       paths: { sessions: join(root, "runtime"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [desktopSessions] },
       eventLog, observer, sessionsPath, queuePath: join(root, "queue.json"),
-      discoverGatewayModels: async () => [{ value: "desktop-current", displayName: "Desktop current" }],
+      discoverGatewayModels: async () => [
+        { value: "desktop-default", displayName: "Desktop default" },
+        { value: "mobile-model-a", displayName: "Mobile Model A" },
+        { value: "mobile-model-b", displayName: "Mobile Model B" },
+      ],
       prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
     };
     const broker = new SessionBroker(options);
     try {
-      await expect(broker.configuration(sessionId)).resolves.toMatchObject({
-        model: "desktop-current", effort: "xhigh", modelSource: "claude-desktop", effortSource: "claude-desktop",
-        permissionPolicy: { effectiveMode: "full-access" },
+      await broker.initialize();
+      const createdB = await broker.createSession(cwd, "Session B");
+      expect(createdB.sessionId).toBeDefined();
+
+      // Configure Session B before local_<id>.json exists in Claude Desktop, and Session A while local_<id>.json exists.
+      await expect(broker.configureSession({
+        sessionId: createdB.sessionId,
+        model: "mobile-model-b",
+        effort: "low",
+      })).resolves.toMatchObject({
+        model: "mobile-model-b",
+        effort: "low",
+        modelSource: "bridge",
+        effortSource: "bridge",
       });
-      expect(broker.session(sessionId)).toMatchObject({ model: "desktop-current", effort: "xhigh" });
-      await expect(broker.configureSession({ sessionId, model: "new-mobile", effort: "medium" })).resolves.toMatchObject({
-        model: "new-mobile", effort: "medium", modelSource: "bridge", effortSource: "bridge",
+      await expect(broker.configureSession({
+        sessionId: sessionA,
+        model: "mobile-model-a",
+        effort: "medium",
+      })).resolves.toMatchObject({
+        model: "mobile-model-a",
+        effort: "medium",
+        modelSource: "bridge",
+        effortSource: "bridge",
       });
-      await expect(broker.configuration(sessionId)).resolves.toMatchObject({ model: "new-mobile", effort: "medium" });
+
+      // Claude Desktop later adopts Session B with Desktop's default model and changes Session A's Desktop metadata.
+      await writeFile(join(desktopSessions, `local_${createdB.sessionId}.json`), JSON.stringify({
+        sessionId: `local_${createdB.sessionId}`,
+        cliSessionId: createdB.sessionId,
+        cwd,
+        model: "desktop-default",
+      }));
+      await writeFile(desktopPathA, JSON.stringify({
+        sessionId: `local_${sessionA}`,
+        cliSessionId: sessionA,
+        cwd,
+        model: "desktop-changed",
+        effort: "high",
+      }));
+
+      // Reopening both sessions and restarting Bridge must keep each session's independent mobile configuration.
+      await expect(broker.configuration(createdB.sessionId)).resolves.toMatchObject({
+        model: "mobile-model-b",
+        effort: "low",
+        inheritedModel: "desktop-default",
+        modelSource: "bridge",
+        effortSource: "bridge",
+      });
+      await expect(broker.configuration(sessionA)).resolves.toMatchObject({
+        model: "mobile-model-a",
+        effort: "medium",
+        inheritedModel: "desktop-changed",
+        inheritedEffort: "high",
+        modelSource: "bridge",
+        effortSource: "bridge",
+      });
+
       await broker.close();
       const restarted = new SessionBroker(options);
       try {
-        await expect(restarted.configuration(sessionId)).resolves.toMatchObject({ model: "new-mobile", effort: "medium" });
-        await writeFile(desktopPath, JSON.stringify({ ...desktop, model: "desktop-changed" }));
-        await expect(restarted.configuration(sessionId)).resolves.toMatchObject({
-          model: "desktop-changed", effort: "medium", modelSource: "claude-desktop", effortSource: "bridge",
+        await restarted.initialize();
+        await expect(restarted.configuration(createdB.sessionId)).resolves.toMatchObject({
+          model: "mobile-model-b",
+          effort: "low",
+          modelSource: "bridge",
+          effortSource: "bridge",
         });
-        await writeFile(desktopPath, JSON.stringify({ ...desktop, model: "desktop-changed", effort: "high" }));
-        await expect(restarted.configuration(sessionId)).resolves.toMatchObject({
-          model: "desktop-changed", effort: "high", modelSource: "claude-desktop", effortSource: "claude-desktop",
+        await expect(restarted.configuration(sessionA)).resolves.toMatchObject({
+          model: "mobile-model-a",
+          effort: "medium",
+          modelSource: "bridge",
+          effortSource: "bridge",
         });
-        expect((await restarted.configuration(sessionId)).overrideModel).toBeUndefined();
-        expect((await restarted.configuration(sessionId)).overrideEffort).toBeUndefined();
+
+        // Rotating cliSessionId in Claude Desktop (with priorCliSessionIds) carries over Session B's configuration.
+        const rotatedB = randomUUID();
+        await writeFile(desktopPathB, JSON.stringify({
+          sessionId: `local_${createdB.sessionId}`,
+          cliSessionId: rotatedB,
+          priorCliSessionIds: [createdB.sessionId],
+          cwd,
+          model: "desktop-default",
+          effort: "xhigh",
+        }));
+        observer.catalog.sessions = [
+          observed(sessionA, cwd, { desktopSessionId: `local_${sessionA}`, hostModel: "desktop-changed", hostEffort: "high" }),
+          observed(rotatedB, cwd, {
+            desktopSessionId: `local_${createdB.sessionId}`,
+            priorSessionIds: [createdB.sessionId],
+            hostModel: "desktop-default",
+            hostEffort: "xhigh",
+          }),
+        ];
+        observer.publish();
+        await expect(restarted.configuration(rotatedB)).resolves.toMatchObject({
+          model: "mobile-model-b",
+          effort: "low",
+          modelSource: "bridge",
+          effortSource: "bridge",
+        });
+        expect(restarted.listSessions().some((candidate) => candidate.sessionId === createdB.sessionId)).toBe(false);
+
+        // Explicit reset ("跟随 Claude Desktop") clears the mobile override and follows Desktop.
+        await expect(restarted.configureSession({
+          sessionId: sessionA,
+          model: null,
+          effort: null,
+        })).resolves.toMatchObject({
+          model: "desktop-changed",
+          effort: "high",
+          modelSource: "claude-desktop",
+          effortSource: "claude-desktop",
+        });
       } finally { await restarted.close(); }
     } finally {
       await broker.close();

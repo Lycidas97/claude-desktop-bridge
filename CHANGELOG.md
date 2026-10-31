@@ -1,3 +1,33 @@
+## 1.0.3
+
+- Queue and turn lifecycle reliability:
+  - Settle already-delivered `bridge-host` turns on ownership conflict or Bridge
+    restart recovery instead of re-queueing and re-sending messages that have
+    already landed in the session transcript.
+  - Dispatch queued turns reliably after manual stop/interrupt and after empty
+    SDK results or idle host release, with exact terminal receipt tracking in
+    `SessionEventLog`.
+- Bidirectional permission and `AskUserQuestion` synchronization:
+  - Forward native Claude Code `PermissionRequest` hooks to Bridge mobile and
+    desktop clients without re-triggering `ask` rule denials when `updatedInput`
+    is unchanged.
+  - Automatically dismiss pending mobile permission and question cards when
+    answered, denied, or cancelled in Claude Desktop via `PostToolUse` and
+    bounded tail-offset transcript watching (preventing large-transcript memory
+    spikes).
+  - Keep inline `AskUserQuestion` cards stable by node UUID and mark them
+    answered across history and live event streams.
+- Session configuration and sidebar group synchronization:
+  - Persist per-session model and effort overrides across restarts and CLI
+    session ID rotations (`priorCliSessionIds`), sync overrides back to Claude
+    Desktop `local_<id>.json` metadata, and broadcast `session.configuration`
+    updates to connected clients.
+  - Sync custom Claude Desktop sidebar groups (`dframe-group-scopes` /
+    `dframe-code-sections` in `claude_desktop_config.json`) to the mobile
+    session list and push snapshot updates when group assignments change.
+- Clean up `<system-reminder>` blocks from displayed user messages and refine
+  mobile evidence/media gallery previews and macOS login-item launch support.
+
 ## 1.0.2
 
 - Stop the Hermes history-sync power burn: a resumed stored session now keeps

@@ -378,14 +378,35 @@ describe("mergeBridgeEvents", () => {
     });
   });
 
-  it("replaces stale model metadata with the session returned on open", () => {
+  it("replaces stale model metadata with the session returned on open and applies session.configuration events", () => {
     const stale = { sessionId: "session-1", model: "old", modelDisplayName: "Old model", effort: "low" } as BridgeHostSnapshot["sessions"][number];
     const other = { ...stale, sessionId: "session-2" };
-    const snapshot = { sessions: [stale, other] } as BridgeHostSnapshot;
+    const snapshot = { sessions: [stale, other], permissions: [] } as unknown as BridgeHostSnapshot;
     const fresh = { ...stale, model: "desktop-current", modelDisplayName: "Desktop current", effort: "xhigh" as const };
     expect(applySessionToSnapshot(snapshot, fresh)?.sessions).toEqual([fresh, other]);
     expect(applySessionToSnapshot(snapshot, undefined)).toBe(snapshot);
     expect(applySessionToSnapshot(undefined, fresh)).toBeUndefined();
+
+    const configuredEvent: BridgeEvent = {
+      eventId: "cfg-1",
+      seq: 3,
+      timestamp: 3,
+      origin: "system",
+      type: "session.configuration",
+      sessionId: "session-1",
+      data: {
+        model: "mobile-selected",
+        modelDisplayName: "Mobile Selected",
+        effort: "medium",
+        appliesAfterTurn: false,
+      },
+    };
+    expect(applyEventToSnapshot(snapshot, configuredEvent, [])?.sessions[0]).toMatchObject({
+      sessionId: "session-1",
+      model: "mobile-selected",
+      modelDisplayName: "Mobile Selected",
+      effort: "medium",
+    });
   });
 
   it("removes a cancelled queued turn from the cached session count", () => {

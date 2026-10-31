@@ -1,4 +1,5 @@
-import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { appendFile, mkdir, mkdtemp, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -16,8 +17,19 @@ import {
 
 const directories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+afterEach(() => {
+  const fixtures = directories.splice(0);
+  if (fixtures.length === 0) return;
+  const recycle = process.platform === "darwin" ? "/usr/bin/trash" : process.platform === "linux" ? "trash-put" : undefined;
+  if (!recycle) {
+    console.warn("No recycle command configured; keeping test fixtures:", fixtures);
+    return;
+  }
+  try {
+    execFileSync(recycle, fixtures);
+  } catch (error) {
+    console.warn("Could not recycle test fixtures; keeping remaining files:", fixtures, error);
+  }
 });
 
 function line(value: Record<string, unknown>): string {
@@ -921,6 +933,116 @@ describe("Claude transcript history", () => {
       },
     });
     expect(parsed.messages[3]?.interactivePrompt?.answered).toBeUndefined();
+  });
+
+  it("keeps AskUserQuestion on its own stable uuid and marks it answered when Desktop replies and assistant continues", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-claude-question-id-"));
+    directories.push(root);
+    const transcript = join(root, "question.jsonl");
+    const questionText = "需要同时把 B 端的 IPv6 转发和 nftables 转发规则一起开启吗？";
+    const chosen = "一并开启 IPv6 转发与规则(Recommended)";
+    await writeFile(transcript, [
+      line({
+        type: "user",
+        uuid: "u-start",
+        parentUuid: null,
+        message: { role: "user", content: "是" },
+      }),
+      line({
+        type: "assistant",
+        uuid: "a-question-1",
+        parentUuid: "u-start",
+        message: {
+          role: "assistant",
+          content: [{
+            type: "tool_use",
+            id: "call_q_1",
+            name: "AskUserQuestion",
+            input: {
+              questions: [{
+                question: questionText,
+                header: "IPv6 转发",
+                multiSelect: false,
+                options: [
+                  { label: chosen, description: "开启转发" },
+                  { label: "暂不开启", description: "跳过" },
+                ],
+              }],
+            },
+          }],
+          stop_reason: "tool_use",
+        },
+      }),
+    ].join("\n") + "\n", "utf8");
+
+    const beforeAnswer = await parseClaudeTranscript(transcript);
+    expect(beforeAnswer.messages).toHaveLength(2);
+    expect(beforeAnswer.messages[1]).toMatchObject({
+      id: "a-question-1",
+      role: "assistant",
+      text: "",
+      interactivePrompt: {
+        kind: "question",
+        ask: questionText,
+      },
+    });
+    expect(beforeAnswer.messages[1]?.interactivePrompt?.answered).toBeUndefined();
+
+    await appendFile(transcript, [
+      line({
+        type: "user",
+        uuid: "u-answer-1",
+        parentUuid: "a-question-1",
+        toolUseResult: {
+          questions: [{ question: questionText }],
+          answers: { [questionText]: chosen },
+        },
+        message: {
+          role: "user",
+          content: [{
+            type: "tool_result",
+            tool_use_id: "call_q_1",
+            content: `User has answered your questions: "${questionText}"="${chosen}".`,
+          }],
+        },
+      }),
+      line({
+        type: "assistant",
+        uuid: "a-followup-1",
+        parentUuid: "u-answer-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "先用 curl 测试一下，再把 IPv6 转发一并开启。" }],
+          stop_reason: "end_turn",
+        },
+      }),
+    ].join("\n") + "\n", "utf8");
+
+    const afterAnswer = await parseClaudeTranscript(transcript);
+    expect(afterAnswer.messages.map((m) => m.id)).toEqual(["u-start", "a-question-1", "a-followup-1"]);
+    expect(afterAnswer.messages[1]).toMatchObject({
+      id: "a-question-1",
+      role: "assistant",
+      text: "",
+      interactivePrompt: {
+        kind: "question",
+        answered: true,
+        questions: [{
+          question: questionText,
+          answer: chosen,
+          options: [
+            { label: chosen, selected: true },
+            { label: "暂不开启" },
+          ],
+        }],
+      },
+    });
+    expect(afterAnswer.messages[2]).toMatchObject({
+      id: "a-followup-1",
+      role: "assistant",
+      text: "先用 curl 测试一下，再把 IPv6 转发一并开启。",
+    });
+    expect(afterAnswer.messages[2]?.interactivePrompt).toBeUndefined();
   });
 
   it("recognizes turn boundary on forked sessions after local /model, /compact, and attachment records", async () => {

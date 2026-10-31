@@ -5,6 +5,7 @@ import type { BridgeEffort } from "@bridge/protocol";
 interface DesktopSessionFile {
   sessionId?: unknown;
   cliSessionId?: unknown;
+  priorCliSessionIds?: unknown;
   cwd?: unknown;
   lastFocusedAt?: unknown;
   createdAt?: unknown;
@@ -30,6 +31,7 @@ export type ClaudeDesktopProfile = "claude" | "claude-3p" | "unknown";
 export interface ClaudeDesktopSession {
   sessionId: string;
   cliSessionId: string;
+  priorCliSessionIds?: string[];
   cwd: string;
   lastFocusedAt: number;
   createdAt: number;
@@ -41,6 +43,8 @@ export interface ClaudeDesktopSession {
   ultracode?: boolean;
   parentSessionId?: string;
   forkLabel?: string;
+  groupId?: string;
+  groupName?: string;
 }
 
 export interface ClaudeDesktopSessionState {
@@ -71,6 +75,95 @@ function parseUltracode(value: unknown): boolean | undefined {
   return typeof ultracode === "boolean" ? ultracode : undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeDesktopAssignmentKey(key: string): string {
+  return key.startsWith("code:") ? key.slice("code:".length).trim() : key.trim();
+}
+
+async function readDesktopSessionGroups(roots: string[]): Promise<Map<string, { id: string; name: string }>> {
+  const configPaths = new Set<string>();
+  for (const root of roots) {
+    configPaths.add(join(dirname(root), "claude_desktop_config.json"));
+    configPaths.add(join(root, "claude_desktop_config.json"));
+  }
+  const groupNames = new Map<string, string>();
+  const rawAssignments = new Map<string, string>();
+  await Promise.all([...configPaths].map(async (configPath) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(configPath, "utf8")) as unknown;
+    } catch {
+      return;
+    }
+    if (!isRecord(parsed) || !isRecord(parsed.preferences) || !isRecord(parsed.preferences.epitaxyPrefs)) {
+      return;
+    }
+    const epitaxyPrefs = parsed.preferences.epitaxyPrefs;
+    if (isRecord(epitaxyPrefs["dframe-group-scopes"])) {
+      for (const scope of Object.values(epitaxyPrefs["dframe-group-scopes"])) {
+        if (!isRecord(scope)) continue;
+        if (Array.isArray(scope.groups)) {
+          for (const group of scope.groups) {
+            if (
+              isRecord(group) &&
+              typeof group.id === "string" &&
+              typeof group.name === "string" &&
+              group.id.trim() &&
+              group.name.trim()
+            ) {
+              groupNames.set(group.id.trim(), group.name.trim());
+            }
+          }
+        }
+        if (isRecord(scope.assignments)) {
+          for (const [sessionKey, groupId] of Object.entries(scope.assignments)) {
+            const normalizedKey = normalizeDesktopAssignmentKey(sessionKey);
+            if (normalizedKey && typeof groupId === "string" && groupId.trim()) {
+              rawAssignments.set(normalizedKey, groupId.trim());
+            }
+          }
+        }
+      }
+    }
+    if (isRecord(epitaxyPrefs["dframe-code-sections"])) {
+      for (const scope of Object.values(epitaxyPrefs["dframe-code-sections"])) {
+        if (!isRecord(scope) || !Array.isArray(scope.sections)) continue;
+        for (const section of scope.sections) {
+          if (
+            !isRecord(section) ||
+            section.kind !== "manual" ||
+            section.shown === false ||
+            typeof section.id !== "string" ||
+            typeof section.name !== "string" ||
+            !section.id.trim() ||
+            !section.name.trim()
+          ) continue;
+          const sectionId = section.id.trim();
+          groupNames.set(sectionId, section.name.trim());
+          if (Array.isArray(section.members)) {
+            for (const member of section.members) {
+              if (typeof member !== "string") continue;
+              const normalizedKey = normalizeDesktopAssignmentKey(member);
+              if (normalizedKey && !rawAssignments.has(normalizedKey)) {
+                rawAssignments.set(normalizedKey, sectionId);
+              }
+            }
+          }
+        }
+      }
+    }
+  }));
+  const resolved = new Map<string, { id: string; name: string }>();
+  for (const [desktopSessionId, groupId] of rawAssignments) {
+    const name = groupNames.get(groupId);
+    if (name) resolved.set(desktopSessionId, { id: groupId, name });
+  }
+  return resolved;
+}
+
 async function collectJsonFiles(root: string, depth = 3): Promise<string[]> {
   if (depth < 0) return [];
   let entries;
@@ -93,9 +186,12 @@ async function collectJsonFiles(root: string, depth = 3): Promise<string[]> {
 }
 
 export async function listClaudeDesktopSessionState(roots: string[]): Promise<ClaudeDesktopSessionState> {
-  const files = (await Promise.all(roots.map(async (root) => (
-    (await collectJsonFiles(root)).map((file) => ({ file, root }))
-  )))).flat();
+  const [files, desktopGroups] = await Promise.all([
+    Promise.all(roots.map(async (root) => (
+      (await collectJsonFiles(root)).map((file) => ({ file, root }))
+    ))).then((nested) => nested.flat()),
+    readDesktopSessionGroups(roots),
+  ]);
   const dirs = new Set(files.map(({ file }) => dirname(file)));
   const archivedDesktopIds = new Set<string>();
   await Promise.all([...dirs].map(async (dir) => {
@@ -166,8 +262,20 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
       isBtwChild
     ) {
       archivedCliSessionIds.add(value.cliSessionId);
+      if (Array.isArray(value.priorCliSessionIds)) {
+        for (const priorId of value.priorCliSessionIds) {
+          if (typeof priorId === "string" && priorId.trim()) archivedCliSessionIds.add(priorId.trim());
+        }
+      }
       continue;
     }
+    const priorCliSessionIds = Array.isArray(value.priorCliSessionIds)
+      ? value.priorCliSessionIds
+          .filter((priorId): priorId is string => typeof priorId === "string" && Boolean(priorId.trim()))
+          .map((priorId) => priorId.trim())
+          .filter((priorId) => priorId !== value.cliSessionId)
+      : [];
+    for (const priorId of priorCliSessionIds) archivedCliSessionIds.add(priorId);
     activeCliSessionIds.add(value.cliSessionId);
     const lastFocusedAt = typeof value.lastFocusedAt === "number" ? value.lastFocusedAt : 0;
     const createdAt = typeof value.createdAt === "number" ? value.createdAt : lastFocusedAt;
@@ -188,9 +296,18 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
     const title = parentSessionId && spawnedTitle && (!rawTitle || spawnedTitle === `${rawTitle} (fork)`)
       ? spawnedTitle
       : rawTitle;
+    let group = desktopGroups.get(value.sessionId);
+    for (
+      let hop = 0, cursor = desktopParents.get(value.sessionId);
+      cursor && !group && hop < desktopParents.size;
+      hop += 1, cursor = desktopParents.get(cursor)
+    ) {
+      group = desktopGroups.get(cursor);
+    }
     sessions.push({
       sessionId: value.sessionId,
       cliSessionId: value.cliSessionId,
+      ...(priorCliSessionIds.length ? { priorCliSessionIds } : {}),
       cwd: value.cwd,
       lastFocusedAt,
       createdAt,
@@ -202,6 +319,7 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
       ...(ultracode !== undefined ? { ultracode } : {}),
       ...(parentSessionId && parentSessionId !== value.cliSessionId ? { parentSessionId } : {}),
       ...(forkLabel && parentSessionId !== value.cliSessionId ? { forkLabel } : {}),
+      ...(group ? { groupId: group.id, groupName: group.name } : {}),
     });
   }
   for (const activeId of activeCliSessionIds) {

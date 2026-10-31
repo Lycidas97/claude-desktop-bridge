@@ -164,4 +164,75 @@ describe("Claude Desktop session catalog", () => {
     });
     expect(detachedSession?.parentSessionId).toBeUndefined();
   });
+
+  it("maps custom sidebar groups from claude_desktop_config.json onto sessions and their forks", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-desktop-groups-"));
+    directories.push(root);
+    const sessionsRoot = join(root, "Claude-3p", "claude-code-sessions");
+    await mkdir(sessionsRoot, { recursive: true });
+    await Promise.all([
+      writeFile(join(root, "Claude-3p", "claude_desktop_config.json"), JSON.stringify({
+        preferences: {
+          epitaxyPrefs: {
+            "dframe-group-scopes": {
+              "account/workspace": {
+                groups: [
+                  { id: "cg-server", name: "服务器管理" },
+                  { id: "cg-repro", name: "reproAPA" },
+                ],
+                assignments: {
+                  "code:local_server_1": "cg-server",
+                  "code:local_repro_1": "cg-repro",
+                },
+              },
+            },
+          },
+        },
+      })),
+      writeFile(join(sessionsRoot, "local_server_1.json"), JSON.stringify({
+        sessionId: "local_server_1",
+        cliSessionId: "cli-server-1",
+        cwd: "/work/misc",
+        title: "244配置",
+        lastFocusedAt: 300,
+      })),
+      writeFile(join(sessionsRoot, "local_server_fork.json"), JSON.stringify({
+        sessionId: "local_server_fork",
+        cliSessionId: "cli-server-fork",
+        cwd: "/work/misc",
+        title: "244配置 (fork)",
+        forkedFromSessionId: "local_server_1",
+        lastFocusedAt: 250,
+      })),
+      writeFile(join(sessionsRoot, "local_repro_1.json"), JSON.stringify({
+        sessionId: "local_repro_1",
+        cliSessionId: "cli-repro-1",
+        cwd: "/work/thesis",
+        title: "polyApipe 审稿材料整理",
+        lastFocusedAt: 200,
+      })),
+      writeFile(join(sessionsRoot, "local_ungrouped.json"), JSON.stringify({
+        sessionId: "local_ungrouped",
+        cliSessionId: "cli-ungrouped",
+        cwd: "/work/thesis",
+        title: "普通会话",
+        lastFocusedAt: 100,
+      })),
+    ]);
+
+    const sessions = await listClaudeDesktopSessions([sessionsRoot]);
+    expect(sessions.find((s) => s.cliSessionId === "cli-server-1")).toMatchObject({
+      groupId: "cg-server",
+      groupName: "服务器管理",
+    });
+    expect(sessions.find((s) => s.cliSessionId === "cli-server-fork")).toMatchObject({
+      groupId: "cg-server",
+      groupName: "服务器管理",
+    });
+    expect(sessions.find((s) => s.cliSessionId === "cli-repro-1")).toMatchObject({
+      groupId: "cg-repro",
+      groupName: "reproAPA",
+    });
+    expect(sessions.find((s) => s.cliSessionId === "cli-ungrouped")?.groupId).toBeUndefined();
+  });
 });

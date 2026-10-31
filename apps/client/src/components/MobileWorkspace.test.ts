@@ -489,6 +489,36 @@ describe("conversationTimeline", () => {
 });
 
 describe("conversationItems", () => {
+  it("hides injected system reminders from cached history, live events, and pending user messages", () => {
+    const reminder = "<system-reminder>\nThis conversation is now continuing in the Claude desktop app.\n</system-reminder>";
+    const raw = `${reminder}\n\n真正的用户输入\n\n${reminder}`;
+    const history = {
+      status: "ready" as const, hasMore: false,
+      items: [
+        { id: "history-user", sessionId: "session-1", role: "user" as const, text: raw, createdAt: 1, origin: "claude-desktop" as const },
+        { id: "reminder-only", sessionId: "session-1", role: "user" as const, text: reminder, createdAt: 2, origin: "claude-desktop" as const },
+        { id: "assistant-example", sessionId: "session-1", role: "assistant" as const, text: reminder, createdAt: 3, origin: "claude-desktop" as const },
+      ],
+    };
+    const events: BridgeEvent[] = [
+      { eventId: "observed", itemId: "live-user", sessionId: "session-1", seq: 1, timestamp: 4, origin: "claude-desktop", type: "session.observed", data: { role: "user", text: raw } },
+      { eventId: "accepted", itemId: "accepted-user", sessionId: "session-1", seq: 2, timestamp: 5, origin: "mobile", type: "user.message.accepted", data: { text: raw } },
+      { eventId: "injected", itemId: "live-reminder-only", sessionId: "session-1", seq: 3, timestamp: 6, origin: "claude-desktop", type: "session.observed", data: { role: "user", text: reminder } },
+      { eventId: "image", itemId: "image-user", sessionId: "session-1", seq: 4, timestamp: 7, origin: "mobile", type: "user.message.accepted", data: { text: reminder, attachments: [{ id: "image", name: "photo.png", mimeType: "image/png", size: 10 }] } },
+    ];
+    const localTurns = [{ requestId: "pending", idempotencyKey: "pending-key", sessionId: "session-1", text: raw, createdAt: 8, delivery: "local-saved" as const, attachments: [] }];
+    const items = conversationItems("session-1", history, events, localTurns);
+    expect(items.map((item) => [item.id, item.text])).toEqual([
+      ["history-user", "真正的用户输入"], ["assistant-example", reminder],
+      ["live-user", "真正的用户输入"], ["accepted-user", "真正的用户输入"],
+      ["image-user", ""], ["local:pending", "真正的用户输入"],
+    ]);
+    expect(items.find((item) => item.id === "image-user")?.attachments).toHaveLength(1);
+    expect(history.items[0]?.text).toBe(raw);
+    expect(events[0]?.data.text).toBe(raw);
+    expect(localTurns[0]?.text).toBe(raw);
+  });
+
   it("keeps older cached events outside a manually paged history window", () => {
     const events: BridgeEvent[] = Array.from({ length: 80 }, (_, index) => ({
       eventId: `event-${index}`, sessionId: "session-1", itemId: `item-${index}`, seq: index,
@@ -751,6 +781,53 @@ describe("conversationItems", () => {
         reportText: "All claims verified.",
       },
     });
+  });
+
+  it("marks an AskUserQuestion interactivePrompt answered when question.resolved or subsequent assistant activity arrives", () => {
+    const events: BridgeEvent[] = [
+      {
+        eventId: "obs-q-1",
+        seq: 1,
+        timestamp: 100,
+        origin: "claude-desktop",
+        type: "session.observed",
+        sessionId: "session-1",
+        itemId: "a-question-1",
+        data: {
+          role: "assistant",
+          text: "",
+          interactivePrompt: {
+            kind: "question",
+            ask: "需要同时把 B 端的 IPv6 转发和 nftables 转发规则一起开启吗？",
+            questions: [{
+              question: "需要同时把 B 端的 IPv6 转发和 nftables 转发规则一起开启吗？",
+              options: [
+                { label: "一并开启 IPv6 转发与规则(Recommended)" },
+                { label: "暂不开启" },
+              ],
+            }],
+          },
+        },
+      },
+      {
+        eventId: "q-resolved-1",
+        seq: 2,
+        timestamp: 150,
+        origin: "system",
+        type: "question.resolved",
+        sessionId: "session-1",
+        itemId: "req-1",
+        data: {
+          requestId: "req-1",
+          toolName: "AskUserQuestion",
+          decision: "deny",
+          automatic: true,
+        },
+      },
+    ];
+
+    const items = conversationItems("session-1", undefined, events, []);
+    expect(items[0]?.interactivePrompt?.answered).toBe(true);
   });
 });
 

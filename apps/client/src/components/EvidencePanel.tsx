@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
+  ChevronUp,
   Code2,
   Download,
   Eye,
@@ -376,6 +377,131 @@ function EvidenceToolRow({ tool }: { tool: BridgeToolEvidence }) {
   );
 }
 
+const COLLAPSED_ARTIFACT_LIMIT = 8;
+const ARTIFACT_PAGE_STEP = 30;
+
+function EvidenceArtifactSection({
+  artifacts,
+  previews,
+  transfers,
+  online,
+  previewBusy,
+  onOpenPreview,
+  onRequestDownload,
+}: {
+  artifacts: BridgeArtifactManifest[];
+  previews: Record<string, BridgeArtifactPreview>;
+  transfers: Record<string, number>;
+  online: boolean;
+  previewBusy: string | undefined;
+  onOpenPreview(artifact: BridgeArtifactManifest): void;
+  onRequestDownload(artifact: BridgeArtifactManifest): void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(COLLAPSED_ARTIFACT_LIMIT);
+  const shown = artifacts.slice(0, visibleCount);
+  const hiddenCount = Math.max(0, artifacts.length - shown.length);
+  return (
+    <section className="evidence-section">
+      <header>
+        <FileDiff size={16} />
+        <strong>文件与产物 ({artifacts.length})</strong>
+        {artifacts.length > 1 && (
+          <button
+            type="button"
+            className="media-gallery-toggle"
+            aria-expanded={!collapsed}
+            onClick={() => setCollapsed((current) => !current)}
+          >
+            {collapsed ? <>展开 <ChevronDown size={13} /></> : <>收起 <ChevronUp size={13} /></>}
+          </button>
+        )}
+      </header>
+      {!collapsed && (
+        <>
+          <div className="evidence-artifact-list">
+            {shown.map((artifact) => {
+              const cached = Boolean(previews[artifact.id]);
+              const previewable = Boolean(artifactMediaTarget(artifact)) || (artifact.previewMode !== "none"
+                && artifact.availability !== "blocked");
+              const progress = transfers[artifact.id];
+              return (
+                <article className={`evidence-artifact ${artifact.availability}`} key={artifact.id}>
+                  <span className="evidence-artifact-icon">{artifactIcon(artifact)}</span>
+                  <span className="evidence-artifact-copy">
+                    <strong>{artifact.name}</strong>
+                    <small title={artifact.relativePath}>
+                      {changeLabel(artifact.changeKind)} · {
+                        artifact.changeKind === "observed" &&
+                        artifact.availability === "current-file" &&
+                        artifact.size === 0
+                          ? "打开时校验"
+                          : formatBytes(artifact.size)
+                      } · {artifact.relativePath}
+                    </small>
+                    {artifact.blockedReason && <i>{artifact.blockedReason}</i>}
+                    {progress !== undefined && (
+                      <span className="evidence-transfer-progress">
+                        <i style={{ width: `${Math.round(progress * 100)}%` }} />
+                      </span>
+                    )}
+                  </span>
+                  <span className="evidence-artifact-actions">
+                    {previewable && (
+                      <IconButton
+                        label={cached ? `打开 ${artifact.name} 的缓存预览` : `预览 ${artifact.name}`}
+                        disabled={Boolean(previewBusy) || (!online && !cached)}
+                        onClick={() => onOpenPreview(artifact)}
+                      >
+                        {previewBusy === artifact.id
+                          ? <LoaderCircle className="is-spinning" size={17} />
+                          : <Eye size={17} />}
+                      </IconButton>
+                    )}
+                    {artifact.downloadAllowed && (
+                      <IconButton
+                        label={`下载 ${artifact.name}`}
+                        disabled={!online || progress !== undefined}
+                        onClick={() => onRequestDownload(artifact)}
+                      >
+                        {progress !== undefined
+                          ? <LoaderCircle className="is-spinning" size={17} />
+                          : <Download size={17} />}
+                      </IconButton>
+                    )}
+                  </span>
+                </article>
+              );
+            })}
+          </div>
+          {(hiddenCount > 0 || visibleCount > COLLAPSED_ARTIFACT_LIMIT) && (
+            <div className="media-gallery-actions">
+              {hiddenCount > 0 && (
+                <button
+                  type="button"
+                  className="file-changes-more"
+                  onClick={() => setVisibleCount((current) => Math.min(artifacts.length, current + ARTIFACT_PAGE_STEP))}
+                >
+                  再显示 {Math.min(hiddenCount, ARTIFACT_PAGE_STEP)} 个（剩余 {hiddenCount} 个） <ChevronDown size={14} />
+                </button>
+              )}
+              {visibleCount > COLLAPSED_ARTIFACT_LIMIT && (
+                <button
+                  type="button"
+                  className="file-changes-more"
+                  onClick={() => setVisibleCount(COLLAPSED_ARTIFACT_LIMIT)}
+                >
+                  收起至前 {COLLAPSED_ARTIFACT_LIMIT} 个 <ChevronUp size={14} />
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 export function EvidenceInlineSummary({
   evidence,
   onOpen,
@@ -596,64 +722,15 @@ export function EvidencePanel({
                   </section>
                 )}
                 {bundle.artifacts.length > 0 && (
-                  <section className="evidence-section">
-                    <header><FileDiff size={16} /><strong>文件与产物</strong></header>
-                    <div className="evidence-artifact-list">
-                      {bundle.artifacts.map((artifact) => {
-                        const cached = Boolean(previews[artifact.id]);
-                        const previewable = Boolean(artifactMediaTarget(artifact)) || (artifact.previewMode !== "none"
-                          && artifact.availability !== "blocked");
-                        const progress = transfers[artifact.id];
-                        return (
-                          <article className={`evidence-artifact ${artifact.availability}`} key={artifact.id}>
-                            <span className="evidence-artifact-icon">{artifactIcon(artifact)}</span>
-                            <span className="evidence-artifact-copy">
-                              <strong>{artifact.name}</strong>
-                              <small title={artifact.relativePath}>
-                                {changeLabel(artifact.changeKind)} · {
-                                  artifact.changeKind === "observed" &&
-                                  artifact.availability === "current-file" &&
-                                  artifact.size === 0
-                                    ? "打开时校验"
-                                    : formatBytes(artifact.size)
-                                } · {artifact.relativePath}
-                              </small>
-                              {artifact.blockedReason && <i>{artifact.blockedReason}</i>}
-                              {progress !== undefined && (
-                                <span className="evidence-transfer-progress">
-                                  <i style={{ width: `${Math.round(progress * 100)}%` }} />
-                                </span>
-                              )}
-                            </span>
-                            <span className="evidence-artifact-actions">
-                              {previewable && (
-                                <IconButton
-                                  label={cached ? `打开 ${artifact.name} 的缓存预览` : `预览 ${artifact.name}`}
-                                  disabled={Boolean(previewBusy) || (!online && !cached)}
-                                  onClick={() => void openPreview(artifact)}
-                                >
-                                  {previewBusy === artifact.id
-                                    ? <LoaderCircle className="is-spinning" size={17} />
-                                    : <Eye size={17} />}
-                                </IconButton>
-                              )}
-                              {artifact.downloadAllowed && (
-                                <IconButton
-                                  label={`下载 ${artifact.name}`}
-                                  disabled={!online || progress !== undefined}
-                                  onClick={() => setPendingDownload(artifact)}
-                                >
-                                  {progress !== undefined
-                                    ? <LoaderCircle className="is-spinning" size={17} />
-                                    : <Download size={17} />}
-                                </IconButton>
-                              )}
-                            </span>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  </section>
+                  <EvidenceArtifactSection
+                    artifacts={bundle.artifacts}
+                    previews={previews}
+                    transfers={transfers}
+                    online={online}
+                    previewBusy={previewBusy}
+                    onOpenPreview={(artifact) => void openPreview(artifact)}
+                    onRequestDownload={(artifact) => setPendingDownload(artifact)}
+                  />
                 )}
                 {bundle.tools.length === 0 && bundle.artifacts.length === 0 && (
                   <div className="evidence-bundle-empty">本轮没有可恢复的工具或文件成果</div>

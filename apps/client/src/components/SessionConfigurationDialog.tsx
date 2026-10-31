@@ -168,6 +168,7 @@ export function SessionConfigurationDialog({
       setModel(next.model ?? next.availableModels[0]?.value ?? "");
       setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
       setFast(next.fast ?? false);
+      if (change.model !== null) onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "会话配置保存失败");
     } finally {

@@ -1763,7 +1763,10 @@ export class DesktopController extends EventEmitter {
     // push a full resync whenever the id set changes. Without this a
     // relay-created session stays invisible on phones until a manual
     // reconnect or refresh.
-    const sessionKey = snapshot.sessions.map((session) => session.sessionId).sort().join("\n");
+    const sessionKey = snapshot.sessions
+      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}`)
+      .sort()
+      .join("\n");
     const previousKey = this.lastPublishedSessionKey;
     this.lastPublishedSessionKey = sessionKey;
     if (previousKey !== sessionKey) {

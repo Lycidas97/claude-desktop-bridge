@@ -131,7 +131,8 @@ describe("mobile conversation draft ownership", () => {
   it("provides copy actions with each message's full source text", () => {
     const fullReply = "# 回复\n" + "折叠内容\n".repeat(1000) + "结尾标记";
     props = { ...props, histories: { A: { status: "ready", hasMore: false, items: [
-      { id: "question", sessionId: "A", role: "user", text: "我的问题", createdAt: 1, origin: "mobile" },
+      { id: "question", sessionId: "A", role: "user", text: "<system-reminder>自动附带的上下文</system-reminder>\n\n我的问题", createdAt: 1, origin: "mobile" },
+      { id: "reminder-only", sessionId: "A", role: "user", text: "<system-reminder>内部提示</system-reminder>", createdAt: 1, origin: "claude-desktop" },
       { id: "reply", sessionId: "A", role: "assistant", text: fullReply, createdAt: 2, origin: "claude-host" },
       { id: "notice", sessionId: "A", role: "system", text: "系统状态", createdAt: 3, origin: "system" },
     ] } } };

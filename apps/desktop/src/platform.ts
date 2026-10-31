@@ -143,9 +143,12 @@ export function claudeRuntimePaths(
   };
 }
 
-export async function setLaunchAtLogin(app: App, enabled: boolean): Promise<void> {
-  if (process.platform === "darwin" || process.platform === "win32") {
-    app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: true });
+export async function setLaunchAtLogin(app: App, enabled: boolean, platform = process.platform): Promise<void> {
+  if (platform === "darwin" || platform === "win32") {
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      ...(platform === "win32" ? { path: process.execPath, args: ["--hidden"] } : {}),
+    });
     return;
   }
   const autostartDir = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "autostart");
@@ -166,8 +169,10 @@ export async function setLaunchAtLogin(app: App, enabled: boolean): Promise<void
   ].join("\n"), "utf8");
 }
 
-export async function isLaunchAtLoginEnabled(app: App): Promise<boolean> {
-  if (process.platform === "darwin" || process.platform === "win32") return app.getLoginItemSettings().openAtLogin;
+export async function isLaunchAtLoginEnabled(app: App, platform = process.platform): Promise<boolean> {
+  if (platform === "darwin" || platform === "win32") return app.getLoginItemSettings(
+    platform === "win32" ? { path: process.execPath, args: ["--hidden"] } : undefined,
+  ).openAtLogin;
   const desktopFile = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "autostart", "claude-bridge.desktop");
   return access(desktopFile).then(() => true, () => false);
 }

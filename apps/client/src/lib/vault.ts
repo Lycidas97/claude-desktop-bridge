@@ -46,6 +46,7 @@ interface StoredCrypto {
 interface StoredMessage {
   id: string;
   envelope: EncryptedEnvelope;
+  seq?: number;
 }
 
 export interface StoredBridgeHost {
@@ -591,11 +592,19 @@ export class BridgeVault {
     return changed;
   }
 
-  async saveMessage(envelope: EncryptedEnvelope): Promise<void> {
+  async saveMessage(envelope: EncryptedEnvelope, coalesce?: { key: string; seq: number }): Promise<void> {
     const database = await this.open();
     const transaction = database.transaction("messages", "readwrite");
     const store = transaction.objectStore("messages");
-    store.put({ id: envelope.id, envelope } satisfies StoredMessage);
+    const id = coalesce?.key ?? envelope.id;
+    if (coalesce) {
+      const current = await requestResult(store.get(id)) as StoredMessage | undefined;
+      if (current?.seq !== undefined && current.seq >= coalesce.seq) {
+        await transactionDone(transaction);
+        return;
+      }
+    }
+    store.put({ id, envelope, ...(coalesce ? { seq: coalesce.seq } : {}) } satisfies StoredMessage);
     const excess = await requestResult(store.count()) - MESSAGE_LIMIT;
     if (excess > 0) {
       let remaining = excess;

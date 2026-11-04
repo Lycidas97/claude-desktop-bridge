@@ -2081,7 +2081,13 @@ export function useMobileBridge() {
                 message.header.to === "mobile" ? crypto.identity.deviceId : undefined,
               )
             : encrypted;
-          await bridgeVault.saveMessage(cachedEnvelope);
+          // Keep the latest progress per task/session without evicting the offline catalog.
+          await bridgeVault.saveMessage(cachedEnvelope,
+            event?.itemId && (event.type === "tool.progress" ||
+              (event.type === "runtime.updated" && event.itemId === "session:subagent-activity"))
+              ? { key: JSON.stringify(["progress", cachedEnvelope.roomId, event.sessionId, event.type, event.itemId]), seq: event.seq }
+              : undefined,
+          );
         })().catch(() => undefined);
       }
     });

@@ -9,6 +9,7 @@ const harness = vi.hoisted(() => ({
   respond: undefined as unknown as (request: BridgeRequest) => Promise<Record<string, unknown>>,
   cacheEncrypt: vi.fn(),
   saveMessage: vi.fn(),
+  listMessages: vi.fn(),
   addOutbox: vi.fn(),
   receive: undefined as unknown as (message: DecryptedEnvelope, encrypted: EncryptedEnvelope) => void,
 }));
@@ -54,7 +55,7 @@ vi.mock("../lib/vault.js", () => ({
   bridgeVault: {
     saveMessage: harness.saveMessage, addOutbox: harness.addOutbox, updateLanRelay: vi.fn(), setDesktopRelay: vi.fn().mockResolvedValue(undefined),
     getHost: vi.fn().mockResolvedValue({ relayEndpoints: [] }),
-    listMessages: vi.fn().mockResolvedValue([]), listOutbox: vi.fn().mockResolvedValue([]),
+    listMessages: harness.listMessages, listOutbox: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -118,6 +119,7 @@ beforeEach(() => {
   harness.state = { activeHostId: "A", desktopName: "A", snapshot: snapshot("A") };
   harness.cacheEncrypt.mockReset().mockResolvedValue({ id: "cached-A" });
   harness.saveMessage.mockReset().mockResolvedValue(undefined);
+  harness.listMessages.mockReset().mockResolvedValue([]);
   harness.addOutbox.mockReset().mockResolvedValue(undefined);
   harness.respond = async (request) => {
     if (request.method === "events.resume") return { events: [], latestSeq: 0 };
@@ -287,6 +289,83 @@ describe("queue event synchronization", () => {
     });
     expect(harness.state.snapshot.latestSeq).toBe(14);
     expect(harness.state.events).toHaveLength(4);
+    bridge.backToHosts();
+    vi.clearAllTimers();
+  });
+});
+
+describe("subagent progress cache retention", () => {
+  it("keeps the offline catalog after 200 progress patches and persists count changes and completion", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const { indexedDB, IDBKeyRange } = await import("fake-indexeddb");
+    vi.stubGlobal("indexedDB", indexedDB);
+    vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+    const { BridgeVault } = await vi.importActual<typeof import("../lib/vault.js")>("../lib/vault.js");
+    const vault = new BridgeVault();
+    harness.saveMessage.mockImplementation((envelope, cacheKey) => vault.saveMessage(envelope, cacheKey));
+    harness.listMessages.mockImplementation((roomId, limit) => vault.listMessages(roomId, limit));
+    const bridge = useMobileBridge();
+    const messages = new Map<string, DecryptedEnvelope>();
+    harness.refs[1]!.current.decrypt = async (envelope: EncryptedEnvelope) => messages.get(envelope.id)!;
+    await bridge.retryConnection();
+    const initial = snapshot("A");
+    initial.sessions = [{
+      sessionId: "session-1", projectId: "project", projectName: "Project", cwd: "/tmp/project", title: "Session",
+      source: "desktop", transport: "bridge-host", ownership: "DESKTOP_OBSERVED", turnState: "running",
+      activeTurnId: "main-turn", pendingCount: 2, lastActivityAt: 1,
+      runningSubagents: { count: 2, lastUpdatedAt: 1 }, subagentStopScope: "process",
+    }];
+    const receive = (payload: DecryptedEnvelope["payload"]) => {
+      const id = `cached-progress-${messages.size}`;
+      const message = { header: { sentAt: Date.now(), from: "desktop", to: "mobile" }, payload } as DecryptedEnvelope;
+      messages.set(id, message);
+      harness.receive(message, { id, roomId: "A", sentAt: messages.size } as EncryptedEnvelope);
+    };
+    receive({ kind: "snapshot", snapshot: initial });
+    for (let seq = 1; seq <= 200; seq++) {
+      receive({ kind: "event", event: {
+        eventId: `tool-progress-${seq}`, seq: seq * 2 - 1, timestamp: seq, sessionId: "session-1", itemId: "agent-1",
+        origin: "claude-desktop", type: "tool.progress", data: { toolName: "Agent", summary: `Working ${seq}` },
+      } });
+      receive({ kind: "event", event: {
+        eventId: `progress-${seq}`, seq: seq * 2, timestamp: seq, sessionId: "session-1", itemId: "session:subagent-activity", origin: "system", type: "runtime.updated",
+        data: { session: { sessionId: "session-1", runningSubagents: { count: 2, lastUpdatedAt: seq }, lastActivityAt: seq } },
+
+      } });
+    }
+    await Promise.all(harness.saveMessage.mock.results.map(result => result.value));
+    receive({ kind: "event", event: {
+      eventId: "delayed-progress", seq: 398, timestamp: 199, sessionId: "session-1", itemId: "session:subagent-activity", origin: "system", type: "runtime.updated",
+      data: { session: { sessionId: "session-1", runningSubagents: { count: 2, lastUpdatedAt: 199 }, lastActivityAt: 199 } },
+    } });
+    await Promise.all(harness.saveMessage.mock.results.map(result => result.value));
+    expect(harness.state.snapshot.sessions[0]).toMatchObject({
+      activeTurnId: "main-turn", turnState: "running", pendingCount: 2, runningSubagents: { count: 2, lastUpdatedAt: 200 }, lastActivityAt: 200,
+    });
+    const cached = await vault.listMessages("A", 120);
+    expect(cached).toHaveLength(3);
+    expect(cached.some(envelope => envelope.id === "cached-progress-0")).toBe(true);
+    await bridge.retryConnection();
+    expect(harness.state.snapshot.sessions[0]).toMatchObject({ sessionId: "session-1", runningSubagents: { count: 2, lastUpdatedAt: 200 }, lastActivityAt: 200 });
+
+    const countChanged = structuredClone(initial);
+    countChanged.latestSeq = 401;
+    countChanged.sessions[0]!.runningSubagents = { count: 3, lastUpdatedAt: 201 };
+    receive({ kind: "snapshot", snapshot: countChanged });
+    await Promise.all(harness.saveMessage.mock.results.map(result => result.value));
+    await bridge.retryConnection();
+    expect(harness.state.snapshot.sessions[0].runningSubagents).toEqual({ count: 3, lastUpdatedAt: 201 });
+
+    const completed = structuredClone(countChanged);
+    completed.latestSeq = 402;
+    delete completed.sessions[0]!.runningSubagents;
+    delete completed.sessions[0]!.subagentStopScope;
+    receive({ kind: "snapshot", snapshot: completed });
+    await Promise.all(harness.saveMessage.mock.results.map(result => result.value));
+    await bridge.retryConnection();
+    expect(harness.state.snapshot.sessions[0]).not.toHaveProperty("runningSubagents");
+    expect(harness.state.snapshot.sessions[0].turnState).toBe("running");
     bridge.backToHosts();
     vi.clearAllTimers();
   });

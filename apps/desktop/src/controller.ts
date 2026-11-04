@@ -264,6 +264,7 @@ export class DesktopController extends EventEmitter {
   private transportMetrics: BridgeTransportMetrics | undefined;
   private relayHealthy = false;
   private lastPublishedSessionKey = "";
+  private lastPublishedSubagentActivity = new Map<string, number>();
   private lastDiscoveryRefreshAt = 0;
   private readonly sessionVisibility = new Map<string, { visibility: SessionVisibility; updatedAt: number }>();
   private readonly desktopArchiveRequests = new Map<string, DesktopArchiveRequest>();
@@ -332,7 +333,7 @@ export class DesktopController extends EventEmitter {
       }
       const persistOffline = event.type === "permission.requested" || event.type === "question.requested";
       void this.broadcast({ kind: "event", event }, !persistOffline);
-      this.queuePublish();
+      if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") this.queuePublish();
     });
     this.broker.on("changed", () => {
       void this.publish();
@@ -1872,16 +1873,32 @@ export class DesktopController extends EventEmitter {
   private async publish(): Promise<DesktopControlSnapshot> {
     const snapshot = await this.snapshot();
     this.emit("snapshot", snapshot);
-    // Metadata, execution stage, task capabilities, and Desktop-owned turns can
-    // change without a mobile event delta, so include them when deciding to push a snapshot.
+    // Counts, capabilities and lifecycle changes still need a complete snapshot.
+    // Subagent timestamps travel as small session patches through the event log.
     const sessionKey = snapshot.sessions
-      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${JSON.stringify(session.runningSubagents ?? null)}\t${session.subagentStopScope ?? ""}\t${session.executionStage ?? ""}\t${session.ownership === "DESKTOP_OBSERVED" ? session.turnState : ""}\t${session.mainTurnStopScope ?? ""}`)
+      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${session.runningSubagents?.count ?? ""}\t${session.subagentStopScope ?? ""}\t${session.executionStage ?? ""}\t${session.ownership === "DESKTOP_OBSERVED" ? session.turnState : ""}\t${session.mainTurnStopScope ?? ""}`)
       .sort()
       .join("\n");
     const previousKey = this.lastPublishedSessionKey;
+    const previousActivity = this.lastPublishedSubagentActivity;
     this.lastPublishedSessionKey = sessionKey;
+    this.lastPublishedSubagentActivity = new Map(snapshot.sessions.flatMap((session) => (
+      session.runningSubagents ? [[session.sessionId, session.runningSubagents.lastUpdatedAt] as const] : []
+    )));
     if (previousKey !== sessionKey) {
       await this.broadcast({ kind: "snapshot", snapshot }, true);
+    } else {
+      // Start all appends before waiting for disk so later snapshots cover their sequences.
+      await Promise.all(snapshot.sessions.map((session) => {
+        if (!session.runningSubagents || previousActivity.get(session.sessionId) === session.runningSubagents.lastUpdatedAt) return;
+        return this.eventLog.append({
+          sessionId: session.sessionId,
+          itemId: "session:subagent-activity",
+          origin: "system",
+          type: "runtime.updated",
+          data: { session: { sessionId: session.sessionId, runningSubagents: session.runningSubagents, lastActivityAt: session.lastActivityAt } },
+        });
+      }));
     }
     return snapshot;
   }

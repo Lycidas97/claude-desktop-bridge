@@ -78,6 +78,58 @@ describe("SessionEventLog", () => {
     await reopened.close();
   });
 
+  it("keeps the latest activity aggregate without displacing conversation events during compaction", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-progress-compaction-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const compaction = { bytesThreshold: 1, retainEvents: 3, retainBytes: 100_000 };
+    const log = new SessionEventLog(path, 1, compaction);
+    try {
+      await log.append({ sessionId: "session-1", origin: "claude-host", type: "assistant.completed", data: { text: "Done" } });
+      for (let timestamp = 1; timestamp <= 20; timestamp++) {
+        await log.append({ sessionId: "session-1", itemId: "session:subagent-activity", origin: "system", type: "runtime.updated",
+          data: { session: { sessionId: "session-1", lastActivityAt: timestamp, runningSubagents: { count: 1, lastUpdatedAt: timestamp } } },
+        });
+      }
+      expect(log.replay()).toHaveLength(2);
+      expect(log.replay()[1]).toMatchObject({ seq: 21, data: { session: { lastActivityAt: 20 } } });
+    } finally {
+      await log.close();
+    }
+    const reopened = new SessionEventLog(path, 1, compaction);
+    try {
+      await reopened.initialize();
+      expect(reopened.replay().map(event => event.type)).toEqual(["assistant.completed", "runtime.updated"]);
+      expect(reopened.replay()[1]).toMatchObject({ seq: 21, data: { session: { lastActivityAt: 20 } } });
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  it("coalesces activity per session while preserving cursor replay across compaction", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-progress-siblings-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const compaction = { bytesThreshold: 1, retainEvents: 3, retainBytes: 100_000 };
+    const log = new SessionEventLog(path, 1, compaction);
+    try {
+      for (const [sessionId, lastActivityAt] of [["A", 10], ["B", 20], ["A", 30]] as const) {
+        await log.append({ sessionId, itemId: "session:subagent-activity", origin: "system", type: "runtime.updated", data: { session: { sessionId, lastActivityAt } } });
+      }
+      expect(log.replay(1).map(event => [event.sessionId, event.seq])).toEqual([["B", 2], ["A", 3]]);
+    } finally {
+      await log.close();
+    }
+    const reopened = new SessionEventLog(path, 1, compaction);
+    try {
+      await reopened.initialize();
+      expect(reopened.replay(1).map(event => [event.sessionId, event.seq, (event.data.session as { lastActivityAt: number }).lastActivityAt])).toEqual([["B", 2, 20], ["A", 3, 30]]);
+      expect(reopened.replay(3)).toEqual([]);
+    } finally {
+      await reopened.close();
+    }
+  });
+
   it.each(["tool.progress", "tool.completed"] as const)("does not claim a turn state for unknown subagents in %s history", async (type) => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-events-unknown-task-"));
     directories.push(directory);

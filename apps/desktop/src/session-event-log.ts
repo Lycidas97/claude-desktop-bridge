@@ -389,9 +389,10 @@ export class SessionEventLog extends EventEmitter {
         event.type === "evidence.started" ||
         event.type === "evidence.updated"
       ) continue;
-      if ((event.type.startsWith("evidence.") || event.type === "tool.progress") && event.itemId) {
+      if ((event.type.startsWith("evidence.") || event.type === "tool.progress" ||
+        (event.type === "runtime.updated" && event.itemId === "session:subagent-activity")) && event.itemId) {
         const previousIndex = retained.findIndex((candidate) => (
-          (event.type === "tool.progress" ? candidate.type === "tool.progress" : candidate.type.startsWith("evidence.")) &&
+          (event.type.startsWith("evidence.") ? candidate.type.startsWith("evidence.") : candidate.type === event.type) &&
           candidate.sessionId === event.sessionId &&
           candidate.itemId === event.itemId
         ));
@@ -506,12 +507,13 @@ export class SessionEventLog extends EventEmitter {
       ...(draft.turnId ? { turnId: draft.turnId } : {}),
       ...(draft.itemId ? { itemId: draft.itemId } : {}),
     };
-    if ((event.type.startsWith("evidence.") || event.type === "tool.progress") && event.itemId) {
+    if ((event.type.startsWith("evidence.") || event.type === "tool.progress" ||
+      (event.type === "runtime.updated" && event.itemId === "session:subagent-activity")) && event.itemId) {
       for (let index = this.events.length - 1; index >= 0; index -= 1) {
         const candidate = this.events[index]!;
         const sameFamily = event.type.startsWith("evidence.")
           ? candidate.type.startsWith("evidence.")
-          : candidate.type === "tool.progress";
+          : candidate.type === event.type;
         if (
           sameFamily &&
           candidate.sessionId === event.sessionId &&

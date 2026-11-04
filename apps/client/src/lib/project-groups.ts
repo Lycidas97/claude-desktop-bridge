@@ -28,10 +28,33 @@ export function expandAllProjects(): Set<string> {
   return new Set();
 }
 
+/** Activity timestamp used to order sessions and their fork families. */
+export type SessionRecency<T> = (session: T) => number;
+
+const lastActivity = (session: { lastActivityAt: number }) => session.lastActivityAt;
+
 export function sortProjectSessionsByRecent<T extends { lastActivityAt: number }>(
   sessions: readonly T[],
+  recency: SessionRecency<T> = lastActivity,
 ): T[] {
-  return [...sessions].sort((left, right) => right.lastActivityAt - left.lastActivityAt);
+  return [...sessions].sort((left, right) => recency(right) - recency(left));
+}
+
+/**
+ * The user's project order: projects they placed keep their places, and projects they
+ * have not placed yet (new ones) lead in their given order so they are not missed.
+ */
+export function orderProjects(projectIds: readonly string[], placed: readonly string[]): string[] {
+  return [
+    ...projectIds.filter((projectId) => !placed.includes(projectId)),
+    ...placed.filter((projectId) => projectIds.includes(projectId)),
+  ];
+}
+
+export function moveProject(order: readonly string[], projectId: string, index: number): string[] {
+  const next = order.filter((candidate) => candidate !== projectId);
+  next.splice(index, 0, projectId);
+  return next;
 }
 
 export function previewProjectSessions<T extends { lastActivityAt: number }>(
@@ -76,10 +99,10 @@ export function groupProjectSessionFamilies<T extends {
   sessionId: string;
   parentSessionId?: string;
   lastActivityAt: number;
-}>(sessions: readonly T[]): SessionFamily<T>[] {
+}>(sessions: readonly T[], recency: SessionRecency<T> = lastActivity): SessionFamily<T>[] {
   const byId = new Map<string, SessionFamily<T>>(sessions.map((primary) => [
     primary.sessionId,
-    { primary, forks: [], lastActivityAt: primary.lastActivityAt },
+    { primary, forks: [], lastActivityAt: recency(primary) },
   ]));
   const roots: SessionFamily<T>[] = [];
   for (const family of byId.values()) {
@@ -93,7 +116,7 @@ export function groupProjectSessionFamilies<T extends {
     for (const family of families) {
       sortFamilies(family.forks);
       family.lastActivityAt = Math.max(
-        family.primary.lastActivityAt,
+        recency(family.primary),
         ...family.forks.map((fork) => fork.lastActivityAt),
       );
     }
@@ -109,12 +132,13 @@ export function previewProjectSessionFamilies<T extends {
 }>(
   sessions: readonly T[],
   limit = PROJECT_PREVIEW_SESSION_LIMIT,
+  recency: SessionRecency<T> = lastActivity,
 ): {
   preview: SessionFamily<T>[];
   totalCount: number;
   hiddenCount: number;
 } {
-  const families = groupProjectSessionFamilies(sessions);
+  const families = groupProjectSessionFamilies(sessions, recency);
   const safeLimit = Math.max(0, limit);
   const preview = families.slice(0, safeLimit);
   return {

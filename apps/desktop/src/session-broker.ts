@@ -2,14 +2,12 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { copyFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, normalize } from "node:path";
+import { CLAUDE_INTERRUPTED_USER_MESSAGE } from "@bridge/protocol";
 import type {
   BridgeAttachment,
   BridgeConfigurationSource,
-  BridgeDesktopRegistrationInfo,
   BridgeEffort,
-  BridgeHistoryItem,
   BridgeHistoryPage,
-  BridgeModelInfo,
   BridgeOwnershipState,
   BridgePermissionMode,
   BridgePermissionPolicy,
@@ -23,28 +21,24 @@ import type {
 } from "@bridge/protocol";
 import type {
   ClaudeDesktopSessionRegistrar,
-  DesktopSessionRegistrationInput,
   StoredDesktopRegistration,
 } from "./claude-desktop-session-registrar.js";
-import {
-  ClaudeDesktopManagedTransport,
-  ManagedDeliveryUncertainError,
-  type ManagedDeliveryUncertain,
-} from "./claude-desktop-managed-transport.js";
-import { ClaudeDesktopManager } from "./claude-desktop-manager.js";
-import { ClaudeSessionHost, type ClaudeSessionHostOptions, type SessionHostEvent } from "./claude-session-host.js";
+import { ClaudeSessionHost, type ClaudeSessionHostOptions, type SessionHostEvent, type SessionHostBackgroundTask } from "./claude-session-host.js";
 import {
   claudeDesktopProfileForPath,
   listClaudeDesktopSessions,
   type ClaudeDesktopProfile,
 } from "./claude-desktop-sessions.js";
+import { signalProcess } from "./claude-desktop-lifecycle.js";
 import {
   findClaudeTranscriptFile,
+  parseClaudeTranscriptSnapshot,
   readClaudeSessionContextEstimate,
-  readClaudeSessionHistory,
   readClaudeSessionSubagents,
 } from "./claude-history.js";
 import {
+  isClaudeSessionProcess,
+  oldestLiveProcessStart,
   projectIdForCwd,
   scanClaudeSessionProcesses,
   type ClaudeCatalogSnapshot,
@@ -53,11 +47,17 @@ import { PermissionBroker, type PermissionDecision } from "./permission-broker.j
 import type { ClaudeRuntimePaths } from "./platform.js";
 import {
   discoverClaudeGatewayModels,
-  magpieModelIdHash,
   parseMagpieSyntheticModelId,
   prepareClaudeRuntime,
+  resolveClaudeGatewayConfig,
+  type ClaudeGatewayConfig,
 } from "./claude-runtime-discovery.js";
 import type { BridgeEventDraft, SessionEventLog } from "./session-event-log.js";
+import { readCommandEvidence, type CommandEvidence } from "./command-evidence.js";
+import { SessionTaskState } from "./session-task-state.js";
+import { readSessionHistory } from "./session-history.js";
+import { SessionDesktopRegistration } from "./session-desktop-registration.js";
+import { SessionModelCatalog } from "./session-model-catalog.js";
 import {
   ANTHROPIC_API_PROFILE_ID,
   CLAUDE_3P_PROFILE_ID,
@@ -117,6 +117,7 @@ export interface QueuedTurn {
   turnId?: string;
   messageId?: string;
   evidenceId?: string;
+  submissionStartedAt?: number;
   sessionAcceptedAt?: number;
   uncertainResolved?: "confirmed";
   sessionCwd?: string;
@@ -155,14 +156,18 @@ interface SessionRuntimeState {
   turnState: BridgeTurnState;
   host?: SessionHostRuntime;
   hostLaneId?: string;
+  hostGeneration?: string;
   active?: QueuedTurn;
   externalWriteVersion?: number;
   configurationPending?: boolean;
-  managed?: boolean;
   releaseTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface SessionHostRuntime {
+  readonly runningBackgroundTasks?: readonly SessionHostBackgroundTask[];
+  readonly backgroundTasksKnown?: boolean;
+  readonly hasPendingInput?: boolean;
+  readonly initialized?: boolean;
   start(): void;
   send(
     input: Parameters<ClaudeSessionHost["send"]>[0],
@@ -174,6 +179,7 @@ export interface SessionHostRuntime {
   supportedModels(): ReturnType<ClaudeSessionHost["supportedModels"]>;
   contextUsage(): ReturnType<ClaudeSessionHost["contextUsage"]>;
   interrupt(): Promise<void>;
+  stopTask(taskId: string): Promise<void>;
   close(): Promise<void>;
   onEvent(listener: (event: SessionHostEvent) => void): () => void;
 }
@@ -181,35 +187,13 @@ export interface SessionHostRuntime {
 export interface TranscriptObserverRuntime {
   readonly catalog: ClaudeCatalogSnapshot;
   isDesktopBusy(sessionId: string, now?: number): boolean;
+  isMainTurnBusy(sessionId: string, now?: number): boolean;
+  runningSubagents(sessionId: string): { count: number; lastUpdatedAt: number } | undefined;
   externalWriteVersion(sessionId: string): number;
   canStartBridgeHost(sessionId: string, reusingIdleHost?: boolean): Promise<boolean>;
   onCatalog(listener: (catalog: ClaudeCatalogSnapshot) => void): () => void;
-}
-
-export interface ManagedDesktopTransportRuntime {
-  readonly ready: boolean;
-  updateCatalog(catalog: ClaudeCatalogSnapshot): void;
-  desktopSessionId(sessionId: string): string | undefined;
-  send(input: Parameters<ClaudeDesktopManagedTransport["send"]>[0]): ReturnType<ClaudeDesktopManagedTransport["send"]>;
-  interrupt(sessionId: string): Promise<void>;
-  setModel(sessionId: string, model: string): Promise<void>;
-  setEffort(sessionId: string, effort?: BridgeEffort): Promise<void>;
-  getConfiguration(sessionId: string): Promise<{ model?: string; effort?: BridgeEffort } | undefined>;
-  getContextUsage(sessionId: string): Promise<BridgeSessionContextUsage | undefined>;
-  clearIntent(sessionId: string): void;
-  onEvent(listener: (event: SessionHostEvent) => void): () => void;
-  onDeliveryUncertain(listener: (event: ManagedDeliveryUncertain) => void): () => void;
-  close(): void;
-}
-
-export interface ManagedDesktopRuntime {
-  readonly ready: boolean;
-  readonly enabled: boolean;
-  status(): BridgeRuntimeStatus["desktopIntegration"];
-  applyToRuntimeStatus(status: Omit<BridgeRuntimeStatus, "desktopIntegration">): BridgeRuntimeStatus;
-  stopClaudeForFallback(): Promise<void>;
-  on(event: "status", listener: () => void): unknown;
-  off(event: "status", listener: () => void): unknown;
+  setSessionAlias?(nativeSessionId: string, logicalSessionId: string): void;
+  setHostTaskAuthority?(sessionId: string, active: boolean): void;
 }
 
 export interface SessionBrokerOptions {
@@ -226,8 +210,6 @@ export interface SessionBrokerOptions {
   discoverGatewayModels?: typeof discoverClaudeGatewayModels;
   scanSessionProcesses?: typeof scanClaudeSessionProcesses;
   runtimeRetryDelayMs?: number;
-  managedDesktop?: ManagedDesktopRuntime;
-  managedTransport?: ManagedDesktopTransportRuntime;
   desktopRegistrar?: Pick<
     ClaudeDesktopSessionRegistrar,
     "register" | "publicInfo" | "changed"
@@ -296,7 +278,6 @@ interface EffectiveSessionProfile {
 }
 
 const EFFORT_LEVELS: BridgeEffort[] = ["low", "medium", "high", "xhigh", "max"];
-const LONG_CONTEXT_TOKENS = 1_000_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 8_000;
 const RUNTIME_RETRY_DELAY_MS = 2_000;
 const SESSION_RELEASE_DELAY_MS = 15_000;
@@ -327,43 +308,6 @@ async function transcriptCwd(path: string): Promise<string | undefined> {
   return undefined;
 }
 
-async function transcriptTailContains(path: string, needle: string): Promise<boolean> {
-  const handle = await open(path, "r").catch(() => undefined);
-  if (!handle) return false;
-  try {
-    const stats = await handle.stat();
-    const startOffset = Math.max(0, stats.size - 512 * 1024);
-    const length = stats.size - startOffset;
-    if (length <= 0) return false;
-    const buffer = Buffer.allocUnsafe(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, startOffset);
-    return bytesRead > 0 && buffer.subarray(0, bytesRead).toString("utf8").includes(needle);
-  } catch {
-    return false;
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
-}
-
-function encodeCursor(item: BridgeHistoryItem): string {
-  return Buffer.from(JSON.stringify({ at: item.createdAt, id: item.id }), "utf8").toString("base64url");
-}
-
-function decodeCursor(value: string | undefined): { at: number; id: string } | undefined {
-  if (!value) return undefined;
-  try {
-    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as { at?: unknown; id?: unknown };
-    if (typeof parsed.at === "number" && typeof parsed.id === "string") return { at: parsed.at, id: parsed.id };
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
-
-function historyOrder(left: BridgeHistoryItem, right: BridgeHistoryItem): number {
-  return left.createdAt - right.createdAt || left.id.localeCompare(right.id);
-}
-
 export class SessionBroker extends EventEmitter {
   readonly permissionBroker: PermissionBroker;
   private readonly maxParallelTurns: number;
@@ -371,22 +315,20 @@ export class SessionBroker extends EventEmitter {
   private readonly runtimeFactory: typeof prepareClaudeRuntime;
   private readonly gatewayModelDiscoverer: typeof discoverClaudeGatewayModels;
   private readonly sessionProcessScanner: typeof scanClaudeSessionProcesses;
-  private readonly managedTransport: ManagedDesktopTransportRuntime | undefined;
   private readonly runtimeStates = new Map<string, SessionRuntimeState>();
+  private readonly taskState = new SessionTaskState();
   private readonly bridgeSessions = new Map<string, StoredBridgeSession>();
   private readonly sessionConfigurations = new Map<string, StoredSessionConfiguration>();
-  private readonly modelCache = new Map<string, BridgeModelInfo>();
+  private readonly modelCatalog = new SessionModelCatalog();
   private readonly hostStarts = new Map<string, Promise<SessionHostRuntime>>();
   private readonly conflictTasks = new Map<string, Promise<void>>();
-  private readonly registrationTasks = new Map<string, Promise<void>>();
+  private readonly forcedStops = new Set<Promise<void>>();
+  private readonly desktopRegistration: SessionDesktopRegistration;
   private readonly pending: QueuedTurn[] = [];
   private readonly completedKeys = new Set<string>();
   private readonly terminalTurns = new Map<string, TerminalTurnReceipt>();
   private catalog: ClaudeCatalogSnapshot = { projects: [], sessions: [], observedAt: 0 };
   private runtime: Awaited<ReturnType<typeof prepareClaudeRuntime>> | undefined;
-  private gatewayModelsDiscovered = false;
-  private modelCatalogComplete = false;
-  private modelCatalogDiscoveryAttempted = false;
   private defaultPermissionMode: BridgePermissionMode = "standard";
   private activeTurns = 0;
   private initialized = false;
@@ -397,21 +339,10 @@ export class SessionBroker extends EventEmitter {
   private writeQueue: Promise<void> = Promise.resolve();
   private eventQueue: Promise<void> = Promise.resolve();
   private pumpQueue: Promise<void> = Promise.resolve();
+  private readonly dispatching = new Map<string, Promise<void>>();
   private readonly toolNames = new Map<string, string>();
   private readonly forceStoppedTurnIds = new Set<string>();
   private evidenceFailureReported = false;
-  private readonly managedStatusListener = () => {
-    const status = this.options.managedDesktop?.status();
-    if (status) {
-      void this.record({
-        origin: "system",
-        type: "runtime.compatibility",
-        data: status,
-      });
-    }
-    this.emit("changed");
-    void this.pump();
-  };
 
   constructor(private readonly options: SessionBrokerOptions) {
     super();
@@ -423,13 +354,21 @@ export class SessionBroker extends EventEmitter {
     this.runtimeFactory = options.prepareRuntime ?? prepareClaudeRuntime;
     this.gatewayModelDiscoverer = options.discoverGatewayModels ?? discoverClaudeGatewayModels;
     this.sessionProcessScanner = options.scanSessionProcesses ?? scanClaudeSessionProcesses;
-    this.managedTransport = options.managedTransport
-      ?? (options.managedDesktop instanceof ClaudeDesktopManager
-        ? new ClaudeDesktopManagedTransport({
-            manager: options.managedDesktop,
-            permissionBroker: this.permissionBroker,
-          })
-        : undefined);
+    this.desktopRegistration = new SessionDesktopRegistration({
+      registrar: options.desktopRegistrar,
+      context: (sessionId) => {
+        const session = this.bridgeSessions.get(sessionId);
+        if (!session || this.closed) return undefined;
+        const overrides = this.sessionConfigurations.get(sessionId);
+        return {
+          session, activeTurn: Boolean(this.runtimeStates.get(sessionId)?.active),
+          profile: this.effectiveProfile(sessionId, session.cwd, overrides), overrides,
+          lastActivityAt: this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId)?.lastActivityAt,
+        };
+      },
+      persist: () => this.saveSessions(), record: (event) => this.record(event),
+      changed: () => { this.emit("changed"); },
+    });
   }
 
   private async evidenceCall<T>(action: () => Promise<T>): Promise<T | undefined> {
@@ -462,32 +401,19 @@ export class SessionBroker extends EventEmitter {
     }
     this.catalog = this.options.observer.catalog;
     this.reconcileRotatedCatalogSessions();
-    this.managedTransport?.updateCatalog(this.catalog);
     this.refreshRecoveryBlocks();
-    this.rememberCatalogModels();
+    this.modelCatalog.rememberCatalogModels(this.catalog.sessions);
     this.options.observer.onCatalog((catalog) => {
       if (this.closed) return;
       this.catalog = catalog;
       this.reconcileRotatedCatalogSessions();
-      this.managedTransport?.updateCatalog(catalog);
       this.refreshRecoveryBlocks();
-      this.rememberCatalogModels();
+      this.modelCatalog.rememberCatalogModels(this.catalog.sessions);
       this.refreshObservedOwnership();
       this.emit("changed");
       this.reconcileDesktopRegistrations();
       void this.pump();
     });
-    this.managedTransport?.onEvent((event) => {
-      this.eventQueue = this.eventQueue
-        .catch(() => undefined)
-        .then(() => this.handleHostEvent(event, "claude-desktop"));
-    });
-    this.managedTransport?.onDeliveryUncertain((event) => {
-      this.eventQueue = this.eventQueue
-        .catch(() => undefined)
-        .then(() => this.handleManagedUncertain(event));
-    });
-    this.options.managedDesktop?.on("status", this.managedStatusListener);
     this.permissionBroker.on("requested", (request) => {
       const type = request.toolName === "AskUserQuestion" ? "question.requested" : "permission.requested";
       const state = this.runtimeStates.get(request.sessionId);
@@ -563,15 +489,15 @@ export class SessionBroker extends EventEmitter {
         previous?.credentialPath !== next.credentialPath ||
         previous?.environment?.ANTHROPIC_BASE_URL !== next.environment?.ANTHROPIC_BASE_URL
       );
-      const gatewayDiscoveredBefore = this.gatewayModelsDiscovered;
-      if (credentialChanged || !this.gatewayModelsDiscovered) {
+      const gatewayDiscoveredBefore = this.modelCatalog.gatewayModelsDiscovered;
+      if (credentialChanged || !this.modelCatalog.gatewayModelsDiscovered) {
         await this.refreshGatewayModels(next);
       }
       const changed = (
         previous?.executablePath !== next.executablePath ||
         previous?.credentialPath !== next.credentialPath ||
         previous?.version !== next.version ||
-        gatewayDiscoveredBefore !== this.gatewayModelsDiscovered
+        gatewayDiscoveredBefore !== this.modelCatalog.gatewayModelsDiscovered
       );
       if (next.executablePath && next.credentialPath) this.clearRuntimeRetry();
       else this.scheduleRuntimeRetry();
@@ -587,13 +513,18 @@ export class SessionBroker extends EventEmitter {
     return refresh;
   }
 
+  /** The gateway Claude-3p sessions run through, as this runtime was prepared. */
+  gatewayConfig(): Promise<ClaudeGatewayConfig | undefined> {
+    return resolveClaudeGatewayConfig(this.runtime);
+  }
+
   runtimeStatus(): BridgeRuntimeStatus {
-    const withDesktop = (status: Omit<BridgeRuntimeStatus, "desktopIntegration">): BridgeRuntimeStatus => (
-      this.options.managedDesktop?.applyToRuntimeStatus(status) ?? {
+    const withDesktop =(status: Omit<BridgeRuntimeStatus, "desktopIntegration">): BridgeRuntimeStatus => (
+      {
         ...status,
         desktopIntegration: {
           state: "not-managed",
-          detail: "实验性 Claude Desktop 同步控制尚未启用。",
+          detail: "Bridge 后台通过 Agent SDK 执行；Desktop 会话仅同步观察。",
           enabled: false,
           canRestart: process.platform === "darwin" || process.platform === "win32",
         },
@@ -620,9 +551,7 @@ export class SessionBroker extends EventEmitter {
       state: this.activeTurns > 0 ? "working" : "ready",
       detail: this.activeTurns > 0
         ? `${this.activeTurns} 个会话正在处理。`
-        : this.managedTransport?.ready
-          ? "Claude Desktop 同步通道已就绪。"
-          : "Bridge Agent SDK 会话通道已就绪。",
+        : "Bridge Agent SDK 会话通道已就绪。",
       ...(this.runtime.version ? { version: this.runtime.version } : {}),
       credentialSource: "third-party-host",
       activeTurns: this.activeTurns,
@@ -658,6 +587,7 @@ export class SessionBroker extends EventEmitter {
 
   listSessions(projectId?: string, search?: string): BridgeSessionInfo[] {
     const observed = new Map(this.catalog.sessions.map((session) => [session.sessionId, session]));
+    const archived = new Map((this.catalog.archivedSessions ?? []).map((session) => [session.sessionId, session]));
     const archivedSessionIds = this.catalog.archivedSessionIds;
     const queued = new Map<string, QueuedTurn>();
     for (const turn of this.pending) {
@@ -665,13 +595,15 @@ export class SessionBroker extends EventEmitter {
     }
     const ids = new Set([
       ...observed.keys(),
+      ...archived.keys(),
       ...this.bridgeSessions.keys(),
       ...this.runtimeStates.keys(),
       ...queued.keys(),
     ]);
     const sessions: BridgeSessionInfo[] = [];
     for (const sessionId of ids) {
-      const source = observed.get(sessionId);
+      const archivedSource = observed.has(sessionId) || queued.has(sessionId) ? undefined : archived.get(sessionId);
+      const source = observed.get(sessionId) ?? archivedSource;
       const associatedLane = source && this.options.conversationState
         ? this.options.conversationState.findLanesByNativeSessionId(sessionId).find((lane) => (
             (source.sourceProfile === "claude" && lane.providerKind === "claude-official") ||
@@ -682,7 +614,7 @@ export class SessionBroker extends EventEmitter {
       if (associatedLane && associatedLane.conversationId !== sessionId) continue;
       const bridge = this.bridgeSessions.get(sessionId);
       const queuedTurn = queued.get(sessionId);
-      if (archivedSessionIds?.has(sessionId) && !queuedTurn) continue;
+      if (archivedSessionIds?.has(sessionId) && !archivedSource && !queuedTurn) continue;
       if (!source && !bridge && !queuedTurn) continue;
       const recoveredQueue = !source && !bridge;
       const cwd = source?.cwd
@@ -690,47 +622,42 @@ export class SessionBroker extends EventEmitter {
         ?? queuedTurn?.sessionCwd
         ?? this.options.paths.projects;
       const state = this.runtimeStates.get(sessionId);
-      const pendingCount = this.pending.filter((turn) => (
+      const pendingCommandIds = this.pending.filter((turn) => (
         turn.sessionId === sessionId && (turn.state === "queued" || turn.state === "uncertain")
-      )).length;
-      const desktopSessionId = source?.desktopSessionId
-        ?? bridge?.desktopSessionId
-        ?? queuedTurn?.desktopSessionId
-        ?? this.managedTransport?.desktopSessionId(sessionId);
-      const managed = Boolean(
-        this.managedTransport?.ready &&
-        (desktopSessionId || state?.managed || bridge),
-      );
+      )).map((turn) => turn.commandId);
+      const pendingCount = pendingCommandIds.length;
+      const desktopSessionId = source?.desktopSessionId ?? bridge?.desktopSessionId ?? queuedTurn?.desktopSessionId;
       const ownership = this.hasConfirmedOwnershipConflict(sessionId, state)
         ? "OWNERSHIP_CONFLICT"
         : state?.ownership
-          ?? (recoveredQueue
-            ? queuedTurn?.transport === "claude-desktop-managed"
-              ? "DESKTOP_MANAGED_IDLE"
-              : "BRIDGE_IDLE"
-            : undefined)
-          ?? (managed
-            ? this.options.observer.isDesktopBusy(sessionId)
-              ? "DESKTOP_MANAGED_RUNNING"
-              : "DESKTOP_MANAGED_IDLE"
-            : source
-              ? "DESKTOP_OBSERVED"
-              : "BRIDGE_IDLE");
+          ?? (source ? "DESKTOP_OBSERVED" : "BRIDGE_IDLE");
       const turnState = this.permissionBroker.list(sessionId).length > 0
         ? "waiting"
         : state?.turnState
-          ?? (source && this.options.observer.isDesktopBusy(sessionId) ? "running" : "idle");
+          ?? (source && this.options.observer.isMainTurnBusy(sessionId) ? "running" : "idle");
       const profile = this.effectiveProfile(sessionId, cwd);
       const hostModel = this.modelForHost(profile);
-      const modelDisplayName = this.gatewayModelsDiscovered || Boolean(parseMagpieSyntheticModelId(hostModel))
-        ? this.resolveModelDisplayName(hostModel)
+      const modelDisplayName = this.modelCatalog.gatewayModelsDiscovered || Boolean(parseMagpieSyntheticModelId(hostModel))
+        ? this.modelCatalog.resolveModelDisplayName(hostModel)
         : undefined;
       const route = this.options.conversationState?.route(sessionId);
       const parentSessionId = source?.parentSessionId ?? bridge?.parentSessionId;
       const parentObserved = parentSessionId ? observed.get(parentSessionId) : undefined;
       const forkLabel = source?.forkLabel ?? bridge?.forkLabel;
+      const runningSubagents = this.taskState.hasAuthority(sessionId)
+        ? this.taskState.runningSubagents(sessionId)
+        : this.options.observer.runningSubagents(sessionId);
       const item: BridgeSessionInfo = {
         sessionId,
+        ...(runningSubagents ? {
+          runningSubagents,
+          ...(state?.host
+            ? { subagentStopScope: "task" as const }
+            : source?.processAlive ? { subagentStopScope: "process" as const } : {}),
+        } : {}),
+        ...(turnState === "running" && !state?.host && source?.desktopProcessAlive
+          ? { mainTurnStopScope: "process" as const }
+          : {}),
         runtimeId: "claude-desktop",
         nativeSessionId: sessionId,
         ...(desktopSessionId ? { desktopSessionId } : {}),
@@ -745,19 +672,20 @@ export class SessionBroker extends EventEmitter {
           ?? queuedTurn?.sessionTitle
           ?? `未完成任务：${compact(queuedTurn?.text ?? "", 72)}`,
         source: bridge || recoveredQueue ? "bridge" : "desktop",
-        transport: recoveredQueue
-          ? queuedTurn?.transport ?? "bridge-host"
-          : managed
-            ? "claude-desktop-managed"
-            : "bridge-host",
+        transport: "bridge-host",
         ownership,
         turnState: pendingCount > 0 && turnState === "idle" ? "queued" : turnState,
+        ...(state?.active ? {
+          executionStage: state.active.sessionAcceptedAt !== undefined ? "running" as const
+            : state.host?.initialized === false ? "starting" as const : "submitted" as const,
+        } : this.dispatching.has(sessionId) ? { executionStage: "starting" as const } : {}),
         lastActivityAt: Math.max(
           source?.lastActivityAt ?? 0,
           bridge?.createdAt ?? 0,
           queuedTurn?.requestedAt ?? 0,
         ),
         pendingCount,
+        pendingCommandIds,
         ...(state?.active?.turnId ? { activeTurnId: state.active.turnId } : {}),
         ...(state?.active?.text
           ? { currentSummary: compact(state.active.text) }
@@ -779,6 +707,7 @@ export class SessionBroker extends EventEmitter {
           allowedActions: route.allowedActions,
           ...(route.pendingHandoff ? { pendingHandoff: route.pendingHandoff } : {}),
         } : {}),
+        ...(archivedSource?.archivedAt ? { archivedAt: archivedSource.archivedAt } : {}),
       };
       if (projectId && item.projectId !== projectId) continue;
       if (search) {
@@ -798,6 +727,15 @@ export class SessionBroker extends EventEmitter {
 
   session(sessionId: string): BridgeSessionInfo | undefined {
     return this.listSessions().find((candidate) => candidate.sessionId === sessionId);
+  }
+
+  /** Claude Desktop's own record for a session, when Desktop lists it. */
+  desktopArchiveRecord(sessionId: string): { desktopSessionId: string; metadataPath: string; archived: boolean } | undefined {
+    const metadataPath = this.catalog.desktopMetadataPaths?.get(sessionId);
+    const active = this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId);
+    const record = active ?? this.catalog.archivedSessions?.find((candidate) => candidate.sessionId === sessionId);
+    if (!metadataPath || !record?.desktopSessionId) return undefined;
+    return { desktopSessionId: record.desktopSessionId, metadataPath, archived: !active };
   }
 
   conversationRoute(sessionId: string): BridgeConversationRoute {
@@ -837,9 +775,7 @@ export class SessionBroker extends EventEmitter {
   async refreshDesktopConfiguration(sessionId: string): Promise<{ model?: string; effort?: BridgeEffort } | undefined> {
     await this.initialize();
     const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId);
-    const desktop = this.managedTransport?.ready && this.managedTransport.desktopSessionId(sessionId)
-      ? await this.managedTransport.getConfiguration(sessionId)
-      : (await listClaudeDesktopSessions(this.options.paths.desktopSessions)).find((candidate) => (
+    const desktop = (await listClaudeDesktopSessions(this.options.paths.desktopSessions)).find((candidate) => (
           (candidate.cliSessionId === sessionId || candidate.priorCliSessionIds?.includes(sessionId))
           && (!observed?.desktopSessionId || candidate.sessionId === observed.desktopSessionId)
         ));
@@ -860,14 +796,10 @@ export class SessionBroker extends EventEmitter {
     if (!session) throw new Error("Session not found");
     const state = this.runtimeStates.get(sessionId);
     let host = state?.host;
-    let modelsComplete = this.modelCatalogComplete;
+    let modelsComplete = this.modelCatalog.modelCatalogComplete;
     let context: BridgeSessionContextUsage | undefined;
-    const managed = Boolean(
-      this.managedTransport?.ready &&
-      (session.desktopSessionId || this.managedTransport.desktopSessionId(sessionId)),
-    );
 
-    if (discoverModels && !this.gatewayModelsDiscovered) {
+    if (discoverModels && !this.modelCatalog.gatewayModelsDiscovered) {
       if (await this.refreshGatewayModels()) {
         modelsComplete = true;
       }
@@ -875,30 +807,30 @@ export class SessionBroker extends EventEmitter {
     if (
       discoverModels &&
       !host &&
-      !this.modelCatalogComplete &&
-      !this.modelCatalogDiscoveryAttempted
+      !this.modelCatalog.modelCatalogComplete &&
+      !this.modelCatalog.modelCatalogDiscoveryAttempted
     ) {
-      this.modelCatalogDiscoveryAttempted = true;
+      this.modelCatalog.modelCatalogDiscoveryAttempted = true;
       const models = await this.discoverModelsWithoutAttaching(session).catch(() => undefined);
       if (models?.length) {
         modelsComplete = true;
-        this.modelCatalogComplete = true;
-        this.rememberModels(models);
+        this.modelCatalog.modelCatalogComplete = true;
+        this.modelCatalog.rememberModels(models);
       }
     }
     if (host && discoverModels) {
       const [modelsResult, contextResult] = await Promise.allSettled([
-        this.gatewayModelsDiscovered ? Promise.resolve([]) : host.supportedModels(),
+        this.modelCatalog.gatewayModelsDiscovered ? Promise.resolve([]) : host.supportedModels(),
         host.contextUsage(),
       ]);
       if (
-        !this.gatewayModelsDiscovered &&
+        !this.modelCatalog.gatewayModelsDiscovered &&
         modelsResult.status === "fulfilled" &&
         modelsResult.value.length > 0
       ) {
         modelsComplete = true;
-        this.modelCatalogComplete = true;
-        this.rememberModels(modelsResult.value);
+        this.modelCatalog.modelCatalogComplete = true;
+        this.modelCatalog.rememberModels(modelsResult.value);
       }
       if (contextResult.status === "fulfilled") {
         const usage = contextResult.value;
@@ -912,18 +844,15 @@ export class SessionBroker extends EventEmitter {
       }
       this.scheduleRelease(sessionId);
     }
-    if (managed) {
-      context = await this.managedTransport?.getContextUsage(sessionId).catch(() => undefined);
-    }
     context ??= await this.estimatedContext(session);
 
     const profile = this.effectiveProfile(sessionId, session.cwd);
     const stored = this.sessionConfigurations.get(sessionId);
     const hostModel = this.modelForHost(profile);
-    const availableModels = this.availableModels(hostModel ?? profile.model);
-    const selectedModel = this.findModelInfo(hostModel ?? profile.model, availableModels);
+    const availableModels = this.modelCatalog.availableModels(hostModel ?? profile.model);
+    const selectedModel = this.modelCatalog.findModelInfo(hostModel ?? profile.model, availableModels);
     const effectiveModel = selectedModel?.value ?? profile.model;
-    const inheritedModel = this.findModelInfo(profile.inheritedModel, availableModels)?.value ?? profile.inheritedModel;
+    const inheritedModel = this.modelCatalog.findModelInfo(profile.inheritedModel, availableModels)?.value ?? profile.inheritedModel;
     return {
       sessionId,
       ...(effectiveModel ? { model: effectiveModel } : {}),
@@ -1065,7 +994,7 @@ export class SessionBroker extends EventEmitter {
       else delete proposed.effort;
     }
     const profile = this.effectiveProfile(input.sessionId, session.cwd, proposed);
-    const modelInfo = this.findModelInfo(profile.model, this.availableModels(profile.model));
+    const modelInfo = this.modelCatalog.findModelInfo(profile.model, this.modelCatalog.availableModels(profile.model));
     if (
       profile.effort &&
       modelInfo?.supportedEffortLevels?.length &&
@@ -1079,19 +1008,7 @@ export class SessionBroker extends EventEmitter {
     if (changesModel && profile.model) await this.assertContextFits(session, profile.model, profile.ultracode);
 
     const state = this.runtimeStates.get(input.sessionId);
-    const managed = Boolean(
-      this.managedTransport?.ready &&
-      (session.desktopSessionId || this.managedTransport.desktopSessionId(input.sessionId)),
-    );
-    if (managed) {
-      if (changesModel && profile.model) {
-        await this.managedTransport!.setModel(input.sessionId, profile.model);
-      }
-      if (changesEffort) {
-        await this.managedTransport!.setEffort(input.sessionId, profile.effort);
-      }
-      if (state) delete state.configurationPending;
-    } else if (state?.host && !state.active) {
+    if (state?.host && !state.active) {
       await this.applyHostConfiguration(state.host, profile);
       delete state.configurationPending;
     } else if (state?.active) {
@@ -1105,8 +1022,8 @@ export class SessionBroker extends EventEmitter {
       void this.reconcileDesktopRegistration(input.sessionId, true);
     }
     const hostModel = this.modelForHost(profile);
-    const modelDisplayName = this.gatewayModelsDiscovered || Boolean(parseMagpieSyntheticModelId(hostModel))
-      ? this.resolveModelDisplayName(hostModel)
+    const modelDisplayName = this.modelCatalog.gatewayModelsDiscovered || Boolean(parseMagpieSyntheticModelId(hostModel))
+      ? this.modelCatalog.resolveModelDisplayName(hostModel)
       : undefined;
     await this.record({
       sessionId: input.sessionId,
@@ -1139,9 +1056,8 @@ export class SessionBroker extends EventEmitter {
     };
     this.bridgeSessions.set(session.sessionId, session);
     this.runtimeStates.set(session.sessionId, {
-      ownership: this.managedTransport?.ready ? "DESKTOP_MANAGED_IDLE" : "BRIDGE_IDLE",
+      ownership: "BRIDGE_IDLE",
       turnState: "idle",
-      ...(this.managedTransport?.ready ? { managed: true } : {}),
     });
     this.options.conversationState?.ensureConversation({
       conversationId: session.sessionId,
@@ -1207,13 +1123,27 @@ export class SessionBroker extends EventEmitter {
       timestamp: new Date(createdAt).toISOString(),
     });
     await copyFile(sourceTranscript, targetTranscript);
+    // A copied in-flight turn has no writer that can finish it in the new session.
+    const forkSnapshot = await parseClaudeTranscriptSnapshot(targetTranscript, { limit: 1 });
+    if (!forkSnapshot.available) throw new Error("无法读取分支对话记录");
+    const interruptedRecord = forkSnapshot.atTurnBoundary === false && forkSnapshot.terminalUuid
+      ? `${JSON.stringify({
+          type: "user",
+          uuid: randomUUID(),
+          parentUuid: forkSnapshot.terminalUuid,
+          sessionId: newSessionId,
+          cwd: source.cwd,
+          timestamp: new Date(createdAt).toISOString(),
+          message: { role: "user", content: CLAUDE_INTERRUPTED_USER_MESSAGE },
+        })}\n`
+      : "";
     const target = await open(targetTranscript, "a+");
     try {
       await target.chmod(0o600);
       const { size } = await target.stat();
       const lastByte = Buffer.alloc(1);
       if (size > 0) await target.read(lastByte, 0, 1, size - 1);
-      await target.appendFile(`${size > 0 && lastByte[0] !== 0x0a ? "\n" : ""}${customTitleRecord}\n`, "utf8");
+      await target.appendFile(`${size > 0 && lastByte[0] !== 0x0a ? "\n" : ""}${interruptedRecord}${customTitleRecord}\n`, "utf8");
     } finally {
       await target.close();
     }
@@ -1239,9 +1169,8 @@ export class SessionBroker extends EventEmitter {
       });
     }
     this.runtimeStates.set(session.sessionId, {
-      ownership: this.managedTransport?.ready ? "DESKTOP_MANAGED_IDLE" : "BRIDGE_IDLE",
+      ownership: "BRIDGE_IDLE",
       turnState: "idle",
-      ...(this.managedTransport?.ready ? { managed: true } : {}),
     });
     this.options.conversationState?.ensureConversation({
       conversationId: session.sessionId,
@@ -1412,41 +1341,132 @@ export class SessionBroker extends EventEmitter {
   }
 
   async steerTurn(input: StartTurnInput): Promise<QueuedTurn | TurnReceipt> {
-    const state = this.runtimeStates.get(input.sessionId);
-    if (state?.active && state.host) await state.host.interrupt();
     const turn = await this.startTurn({ ...input, priority: 100, mode: "steer" });
-    if (
-      "attempts" in turn &&
-      turn.state === "queued" &&
-      this.managedTransport?.ready &&
-      state?.active &&
-      state.managed
-    ) {
-      await this.acquireManaged(turn, true);
+    return turn.state === "queued" ? this.steerQueuedTurn(input.sessionId, turn.commandId) : turn;
+  }
+
+  async steerQueuedTurn(sessionId: string, commandId: string): Promise<TurnReceipt> {
+    await this.initialize();
+    const turn = this.pending.find((candidate) => candidate.sessionId === sessionId && candidate.commandId === commandId);
+    if (!turn) {
+      const receipt = [...this.terminalTurns.values()].find((candidate) => candidate.sessionId === sessionId && candidate.commandId === commandId);
+      if (receipt) return receipt;
+      throw new Error("未找到这条排队消息，请同步状态后重试");
     }
+    if (turn.state === "uncertain" || turn.recoveryBlocked) throw new Error("这条消息的投递状态尚未确认，请先同步状态");
+    if (turn.state !== "queued") return turn;
+    if (this.dispatching.has(sessionId)) throw new Error("消息正在启动，请同步状态后重试");
+    if (this.options.conversationState && !this.conversationRoute(sessionId).allowedActions.canSteer) {
+      throw new Error("当前会话不支持立即调整");
+    }
+    const state = this.runtimeStates.get(sessionId);
+    const active = state?.active;
+    const host = state?.host;
+    if ((active && !host) || (!active && this.options.observer.isMainTurnBusy(sessionId))) {
+      throw new Error("当前任务不由 Bridge 托管，暂时无法立即调整");
+    }
+    if (host && state?.hostLaneId && state.hostLaneId !== turn.laneId) throw new Error("这条消息使用其他提供方通道，不能直接调整当前任务");
+    turn.mode = "steer";
+    turn.priority = 100;
+    this.sortPending();
+    if (active && host) {
+      // Reserve this original command before persistence so repeated requests cannot submit it twice.
+      turn.state = "running";
+      turn.transport = "bridge-host";
+      turn.turnId = randomUUID();
+      turn.messageId = randomUUID();
+      turn.submissionStartedAt = Date.now();
+      try {
+        await this.saveQueue();
+        if (this.closed || !this.pending.includes(turn) || turn.state !== "running") return turn;
+        if (this.runtimeStates.get(sessionId)?.host !== host) throw new Error("会话通道已变化，请同步状态后重试");
+        host.send({ text: turn.text, attachments: turn.attachments, turnId: turn.turnId, messageId: turn.messageId, priority: "now" }, turn.origin);
+      } catch (error) {
+        if (this.pending.includes(turn)) {
+          turn.state = "queued";
+          delete turn.turnId;
+          delete turn.messageId;
+          delete turn.submissionStartedAt;
+          if (state?.active === turn) {
+            const next = this.pending.filter(candidate => candidate.sessionId === sessionId && candidate.state === "running")
+              .sort((left, right) => (right.sessionAcceptedAt ?? 0) - (left.sessionAcceptedAt ?? 0))[0];
+            if (next) state.active = next;
+            else delete state.active;
+            if (state.ownership !== "RELEASING") {
+              state.ownership = next ? "BRIDGE_RUNNING" : "BRIDGE_IDLE";
+              state.turnState = next ? next.sessionAcceptedAt ? "running" : "queued" : "idle";
+              if (!next) this.activeTurns = Math.max(0, this.activeTurns - 1);
+            }
+          }
+          await this.saveQueue();
+        }
+        this.emit("changed");
+        throw error;
+      }
+    } else {
+      await this.saveQueue();
+    }
+    this.emit("changed");
+    void this.pump();
     return turn;
+  }
+
+  async stopSubagent(sessionId: string, agentId: string): Promise<void> {
+    const state = this.runtimeStates.get(sessionId);
+    if (state?.host && this.taskState.isRunning(sessionId, agentId)) {
+      await state.host.stopTask(this.taskState.task(sessionId, agentId)!.taskId);
+      return;
+    } else {
+      // Bridge has no channel into a process Claude Desktop owns, so the only
+      // stop it can offer is ending that process, which needs an idle main turn.
+      if (this.options.observer.isMainTurnBusy(sessionId)) {
+        throw new Error("主对话还在运行，这个会话无法单独停止子代理。请先停止主对话。");
+      }
+      const session = this.session(sessionId);
+      if (!session) throw new Error("Session not found");
+      const processes = await scanClaudeSessionProcesses(this.options.paths, sessionId);
+      const subagent = (await readClaudeSessionSubagents(
+        this.options.paths.projects,
+        sessionId,
+        session.cwd,
+        oldestLiveProcessStart(processes),
+      )).find((candidate) => candidate.agentId === agentId);
+      if (subagent?.state !== "running") throw new Error("这个子代理已经结束");
+      const owner = processes
+        .filter((candidate) => candidate.processAlive && candidate.startedAt <= subagent.startedAt)
+        .sort((left, right) => right.startedAt - left.startedAt)[0];
+      // A registration file can outlive its process and name a pid the system has since reused.
+      if (owner?.pid === undefined || !await isClaudeSessionProcess(owner.pid)) {
+        throw new Error("找不到运行这个子代理的 Claude 进程");
+      }
+      signalProcess(owner.pid);
+    }
+  }
+
+  // Bridge has no channel into a process Claude Desktop owns, so stopping its main
+  // turn ends that process. SIGINT makes the CLI abort the request and record the
+  // interruption; SIGTERM would leave the transcript on an unfinished turn.
+  private async interruptDesktopTurn(sessionId: string): Promise<boolean> {
+    if (!this.options.observer.isMainTurnBusy(sessionId)) return false;
+    const owner = (await this.sessionProcessScanner(this.options.paths, sessionId))
+      .filter((candidate) => candidate.processAlive && candidate.entrypoint.startsWith("claude-desktop"))
+      .sort((left, right) => right.startedAt - left.startedAt)[0];
+    // A registration file can outlive its process and name a pid the system has since reused.
+    if (owner?.pid === undefined || !await isClaudeSessionProcess(owner.pid)) return false;
+    process.kill(owner.pid, "SIGINT");
+    return true;
   }
 
   async interruptTurn(sessionId: string, commandId?: string, force = false): Promise<boolean> {
     const state = this.runtimeStates.get(sessionId);
     const active = state?.active;
     const activeMatches = Boolean(active && (!commandId || active.commandId === commandId));
-    if (state?.managed && active && activeMatches) {
+    if (active && activeMatches && state.host) {
       this.permissionBroker.cancelSession(sessionId, "turn-interrupted");
-      if (force) {
-        if (this.managedTransport?.ready) {
-          void this.managedTransport.interrupt(sessionId).catch(() => undefined);
-        }
-        this.managedTransport?.clearIntent(sessionId);
+      if (this.dispatching.has(sessionId) && !active.sessionAcceptedAt) {
         await this.forceCancelActive(sessionId, active);
         return true;
       }
-      if (!this.managedTransport?.ready) return false;
-      await this.managedTransport.interrupt(sessionId);
-      return true;
-    }
-    if (active && activeMatches && state.host) {
-      this.permissionBroker.cancelSession(sessionId, "turn-interrupted");
       if (force) {
         await this.forceCancelActive(sessionId, active);
         return true;
@@ -1463,7 +1483,7 @@ export class SessionBroker extends EventEmitter {
       (turn.state === "queued" || (force && turn.state === "uncertain")) &&
       (!commandId || turn.commandId === commandId)
     ));
-    if (index < 0) return false;
+    if (index < 0) return commandId || state?.host ? false : this.interruptDesktopTurn(sessionId);
     const [cancelled] = this.pending.splice(index, 1);
     this.rememberTerminal(cancelled!, "cancelled");
     this.clearTakeoverRetry(sessionId);
@@ -1474,7 +1494,7 @@ export class SessionBroker extends EventEmitter {
       state.ownership = "DESKTOP_OBSERVED";
       state.turnState = remainingForSession
         ? "queued"
-        : this.options.observer.isDesktopBusy(sessionId)
+        : this.options.observer.isMainTurnBusy(sessionId)
           ? "running"
           : "idle";
     }
@@ -1493,10 +1513,10 @@ export class SessionBroker extends EventEmitter {
         wasQueued: true,
       },
     });
-    if (this.options.evidence) {
+    if (this.options.evidence && cancelled!.turnId) {
       void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
         sessionId,
-        ...(cancelled!.turnId ? { turnId: cancelled!.turnId } : {}),
+        turnId: cancelled!.turnId!,
         failed: true,
         error: "任务已停止",
       }));
@@ -1506,68 +1526,66 @@ export class SessionBroker extends EventEmitter {
     return true;
   }
 
-  private async forceCancelActive(sessionId: string, turn: QueuedTurn): Promise<void> {
+  private forceCancelActive(sessionId: string, turn: QueuedTurn): Promise<void> {
     const state = this.runtimeStates.get(sessionId);
-    if (!state?.active || state.active.commandId !== turn.commandId) return;
-    this.permissionBroker.cancelSession(sessionId, "turn-interrupted");
-    this.clearTakeoverRetry(sessionId);
-    if (turn.turnId) {
-      this.forceStoppedTurnIds.add(turn.turnId);
-      while (this.forceStoppedTurnIds.size > 2_000) {
-        const oldest = this.forceStoppedTurnIds.values().next().value;
-        if (typeof oldest !== "string") break;
-        this.forceStoppedTurnIds.delete(oldest);
+    if (!state?.active || state.active.commandId !== turn.commandId) return Promise.resolve();
+    const stopping = (async () => {
+      this.permissionBroker.cancelSession(sessionId, "turn-interrupted");
+      this.clearTakeoverRetry(sessionId);
+      if (turn.turnId) {
+        this.forceStoppedTurnIds.add(turn.turnId);
+        while (this.forceStoppedTurnIds.size > 2_000) {
+          const oldest = this.forceStoppedTurnIds.values().next().value;
+          if (typeof oldest !== "string") break;
+          this.forceStoppedTurnIds.delete(oldest);
+        }
       }
-    }
-    const host = state.host;
-    delete state.host;
-    delete state.hostLaneId;
-    delete state.active;
-    if (state.releaseTimer) {
-      clearTimeout(state.releaseTimer);
-      delete state.releaseTimer;
-    }
-    const index = this.pending.findIndex((candidate) => candidate.commandId === turn.commandId);
-    if (index >= 0) this.pending.splice(index, 1);
-    this.activeTurns = Math.max(0, this.activeTurns - 1);
-    this.rememberTerminal(turn, "cancelled");
-    const managedReady = Boolean(state.managed && this.managedTransport?.ready);
-    const desktopBusy = !managedReady && this.options.observer.isDesktopBusy(sessionId);
-    state.turnState = desktopBusy ? "running" : "idle";
-    state.ownership = managedReady
-      ? "DESKTOP_MANAGED_IDLE"
-      : this.catalog.sessions.some((session) => session.sessionId === sessionId)
-        ? "DESKTOP_OBSERVED"
-        : "BRIDGE_IDLE";
-    if (!managedReady) delete state.managed;
-    await host?.close().catch(() => undefined);
-    this.managedTransport?.clearIntent(sessionId);
-    await this.saveQueue();
-    await this.options.eventLog.flushDeltas(sessionId);
-    await this.record({
-      sessionId,
-      ...(turn.turnId ? { turnId: turn.turnId } : {}),
-      itemId: turn.commandId,
-      origin: "system",
-      type: "turn.interrupted",
-      data: {
-        commandId: turn.commandId,
-        requestId: turn.requestId,
-        idempotencyKey: turn.idempotencyKey,
-        delivery: "cancelled",
-        forced: true,
-      },
-    });
-    if (this.options.evidence) {
-      void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
+      const host = state.host;
+      delete state.active;
+      if (state.releaseTimer) {
+        clearTimeout(state.releaseTimer);
+        delete state.releaseTimer;
+      }
+      const index = this.pending.findIndex((candidate) => candidate.commandId === turn.commandId);
+      if (index >= 0) this.pending.splice(index, 1);
+      this.rememberTerminal(turn, "cancelled");
+      state.ownership = "RELEASING";
+      await host?.close();
+      delete state.host;
+      delete state.hostLaneId;
+      this.activeTurns = Math.max(0, this.activeTurns - 1);
+      state.turnState = this.options.observer.isMainTurnBusy(sessionId) ? "running" : "idle";
+      await this.saveQueue();
+      await this.options.eventLog.flushDeltas(sessionId);
+      await this.record({
         sessionId,
         ...(turn.turnId ? { turnId: turn.turnId } : {}),
-        failed: true,
-        error: "任务已强制停止",
-      }));
-    }
-    this.emit("changed");
-    await this.pump();
+        itemId: turn.commandId,
+        origin: "system",
+        type: "turn.interrupted",
+        data: {
+          commandId: turn.commandId,
+          requestId: turn.requestId,
+          idempotencyKey: turn.idempotencyKey,
+          delivery: "cancelled",
+          forced: true,
+        },
+      });
+      if (this.options.evidence) {
+        await this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
+          sessionId,
+          ...(turn.turnId ? { turnId: turn.turnId } : {}),
+          failed: true,
+          error: "任务已强制停止",
+        }));
+      }
+      state.ownership = this.catalog.sessions.some((session) => session.sessionId === sessionId)
+        ? "DESKTOP_OBSERVED" : "BRIDGE_IDLE";
+      this.emit("changed");
+      await this.pump();
+    })().finally(() => this.forcedStops.delete(stopping));
+    this.forcedStops.add(stopping);
+    return stopping;
   }
 
   async confirmFallback(sessionId: string): Promise<BridgeSessionInfo> {
@@ -1591,7 +1609,6 @@ export class SessionBroker extends EventEmitter {
       turnState: "queued" as const,
     };
     state.ownership = "BRIDGE_IDLE";
-    delete state.managed;
     this.runtimeStates.set(sessionId, state);
     await this.saveSessions();
     await this.record({
@@ -1609,29 +1626,6 @@ export class SessionBroker extends EventEmitter {
     return this.session(sessionId)!;
   }
 
-  async activateManagedTransport(): Promise<void> {
-    if (!this.managedTransport?.ready) throw new Error("Claude Desktop 同步通道尚未就绪");
-    let changed = false;
-    for (const session of this.bridgeSessions.values()) {
-      if (!session.fallbackConfirmedAt) continue;
-      delete session.fallbackConfirmedAt;
-      changed = true;
-    }
-    if (changed) await this.saveSessions();
-    this.managedTransport.updateCatalog(this.catalog);
-    this.refreshObservedOwnership();
-    await this.record({
-      origin: "desktop",
-      type: "session.transport",
-      data: {
-        transport: "claude-desktop-managed",
-        activatedLocally: true,
-      },
-    });
-    this.emit("changed");
-    void this.pump();
-  }
-
   async resolveUncertainDelivery(commandId: string, action: "confirm" | "retry"): Promise<TurnReceipt> {
     const turn = this.pending.find((candidate) => candidate.commandId === commandId);
     if (!turn || turn.state !== "uncertain") throw new Error("Uncertain delivery was not found");
@@ -1640,14 +1634,10 @@ export class SessionBroker extends EventEmitter {
     }
     const state = this.runtimeStates.get(turn.sessionId);
     if (action === "confirm") {
-      turn.uncertainResolved = "confirmed";
-      turn.sessionAcceptedAt = Date.now();
-      if (state) {
-        state.active = turn;
-        state.managed = true;
-        state.ownership = "DESKTOP_MANAGED_RUNNING";
-        state.turnState = "running";
-      }
+      this.pending.splice(this.pending.indexOf(turn), 1);
+      this.rememberTerminal(turn, "cancelled");
+      if (state) { state.turnState = "idle"; state.ownership = "DESKTOP_OBSERVED"; }
+      // Manual receipt confirmation prevents replay; it is not a completion result.
       await this.record({
         sessionId: turn.sessionId,
         ...(turn.turnId ? { turnId: turn.turnId } : {}),
@@ -1663,19 +1653,16 @@ export class SessionBroker extends EventEmitter {
         },
       });
     } else {
-      if (!this.managedTransport?.ready) throw new Error("请先恢复 Claude Desktop 同步通道，再检查并重发");
+      if (this.options.observer.isMainTurnBusy(turn.sessionId)) throw new Error("原会话仍在执行，请先确认原任务状态");
       turn.state = "queued";
+      turn.transport = "bridge-host";
       turn.attempts = 0;
       delete turn.turnId;
       delete turn.sessionAcceptedAt;
       delete turn.uncertainResolved;
-      this.managedTransport.clearIntent(turn.sessionId);
-      if (state?.active?.commandId === turn.commandId) {
-        delete state.active;
-        state.turnState = "queued";
-        state.ownership = "DESKTOP_MANAGED_IDLE";
-        this.activeTurns = Math.max(0, this.activeTurns - 1);
-      }
+      delete turn.messageId;
+      delete turn.submissionStartedAt;
+      if (state) { state.turnState = "queued"; state.ownership = "BRIDGE_IDLE"; }
       await this.record({
         sessionId: turn.sessionId,
         itemId: turn.commandId,
@@ -1692,7 +1679,7 @@ export class SessionBroker extends EventEmitter {
     }
     await this.saveQueue();
     this.emit("changed");
-    return turn;
+    return action === "confirm" ? this.terminalTurns.get(turn.idempotencyKey)! : turn;
   }
 
   resolvePermission(
@@ -1719,157 +1706,11 @@ export class SessionBroker extends EventEmitter {
   async history(sessionId: string, cursor?: string, limit = 50): Promise<BridgeHistoryPage> {
     const session = this.session(sessionId);
     if (!session) throw new Error("Session not found");
-    const before = decodeCursor(cursor);
-    const pageSize = Math.max(1, Math.min(limit, 100));
-    const route = this.options.conversationState?.route(sessionId);
-    const transcriptSources = route
-      ? route.lanes.flatMap((lane) => lane.nativeSessionId ? [lane] : [])
-      : [{
-          laneId: legacyClaudeLaneId(sessionId),
-          conversationId: sessionId,
-          providerProfileId: CLAUDE_3P_PROFILE_ID,
-          providerKind: "claude-3p" as const,
-          status: "active" as const,
-          access: "read-write" as const,
-          nativeSessionId: sessionId,
-          createdAt: session.lastActivityAt,
-          updatedAt: session.lastActivityAt,
-        }];
-    const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId);
-    const runtimeState = this.runtimeStates.get(sessionId);
-    const processAlive = Boolean(
-      observed?.processAlive ||
-      observed?.activeTask ||
-      runtimeState?.active ||
-      this.options.observer.isDesktopBusy(sessionId),
-    );
-    const transcripts = await Promise.all(transcriptSources.map(async (lane) => {
-      const [transcript, subagents] = await Promise.all([
-        readClaudeSessionHistory(
-          this.options.paths.projects,
-          lane.nativeSessionId!,
-          session.cwd,
-          {
-            limit: Math.min(10_000, pageSize * 3),
-            ...(before ? { before: { createdAt: before.at, id: before.id } } : {}),
-          },
-        ),
-        readClaudeSessionSubagents(
-          this.options.paths.projects,
-          lane.nativeSessionId!,
-          session.cwd,
-          processAlive,
-        ),
-      ]);
-      return { lane, transcript, subagents };
-    }));
-    const transcriptItems: BridgeHistoryItem[] = transcripts.flatMap(({ lane, transcript }) => (
-      transcript.messages.map((message) => ({
-        id: message.id,
-        sessionId,
-        role: message.role,
-        text: message.text,
-        createdAt: message.createdAt,
-        origin: lane.providerKind === "claude-official"
-          ? "claude-desktop" as const
-          : "claude-host" as const,
-        ...(message.interactivePrompt ? { interactivePrompt: message.interactivePrompt } : {}),
-      }))
-    ));
-    const subagentItems: BridgeHistoryItem[] = transcripts.flatMap(({ lane, subagents }) => (
-      subagents.map((subagent) => ({
-        id: subagent.toolUseId ?? `subagent:${subagent.agentId}`,
-        sessionId,
-        role: "tool" as const,
-        toolName: "Agent",
-        text: `${subagent.description} (${subagent.toolCount} 步)`,
-        state: subagent.state,
-        subagent,
-        createdAt: subagent.startedAt,
-        origin: lane.providerKind === "claude-official"
-          ? "claude-desktop" as const
-          : "claude-host" as const,
-      }))
-    ));
-    const eventSessionIds = new Set([
-      sessionId,
-      ...transcriptSources.map((lane) => lane.nativeSessionId!).filter(Boolean),
-    ]);
-    const eventItems = [...eventSessionIds].flatMap((eventSessionId) => (
-      this.options.eventLog.history(eventSessionId, undefined, 10_000).items
-        .map((item) => ({ ...item, sessionId }))
-    ))
-      .filter((item) => (
-        !before ||
-        item.createdAt < before.at ||
-        (item.createdAt === before.at && item.id < before.id)
-      ));
-    const merged = new Map<string, BridgeHistoryItem>();
-    for (const item of transcriptItems) merged.set(item.id, item);
-    for (const item of eventItems) {
-      const existing = merged.get(item.id);
-      if (!existing || item.origin !== "claude-desktop") {
-        merged.set(item.id, {
-          ...item,
-          ...(existing?.interactivePrompt ?? item.interactivePrompt
-            ? { interactivePrompt: existing?.interactivePrompt ?? item.interactivePrompt }
-            : {}),
-        });
-      }
-    }
-    for (const subItem of subagentItems) {
-      if (
-        before &&
-        !(subItem.createdAt < before.at || (subItem.createdAt === before.at && subItem.id < before.id))
-      ) continue;
-      const existing = merged.get(subItem.id);
-      if (!existing) {
-        merged.set(subItem.id, subItem);
-      } else if (subItem.subagent) {
-        merged.set(subItem.id, {
-          ...existing,
-          toolName: existing.toolName || "Agent",
-          text: subItem.text,
-          ...(subItem.state ? { state: subItem.state } : {}),
-          subagent: subItem.subagent,
-        });
-      }
-    }
-    // Older event copies must not move the cursor past transcript messages
-    // that were left for the next page by the transcript's byte budget.
-    const transcriptBoundary = transcriptItems
-      .filter((item) => transcripts.some(({ transcript }) => transcript.nextCursor === item.id))
-      .sort(historyOrder).at(-1);
-    const all = [...merged.values()]
-      .sort(historyOrder)
-      .filter((item) => (
-        (!before || item.createdAt < before.at || (item.createdAt === before.at && item.id < before.id)) &&
-        (!transcriptBoundary || historyOrder(item, transcriptBoundary) >= 0)
-      ));
-    let startIndex = all.length;
-    let messageCount = 0;
-    let totalBytes = 0;
-    const maxPageBytes = before ? 96_000 : 56_000;
-    while (startIndex > 0 && messageCount < pageSize) {
-      const candidate = all[startIndex - 1]!;
-      const itemBytes = Buffer.byteLength(JSON.stringify(candidate), "utf8");
-      if (totalBytes + itemBytes > maxPageBytes && startIndex < all.length) {
-        break;
-      }
-      startIndex -= 1;
-      totalBytes += itemBytes;
-      if (candidate.role !== "tool") {
-        messageCount += 1;
-      }
-    }
-    const items = all.slice(startIndex);
-    const hasMore = transcripts.some(({ transcript }) => Boolean(transcript.nextCursor)) || startIndex > 0;
-    return {
-      sessionId,
-      items,
-      hasMore,
-      ...(hasMore && items[0] ? { nextCursor: encodeCursor(items[0]) } : {}),
-    };
+    return readSessionHistory({
+      paths: this.options.paths, eventLog: this.options.eventLog, taskState: this.taskState,
+      session, route: this.options.conversationState?.route(sessionId),
+      activeTurn: Boolean(this.runtimeStates.get(sessionId)?.active), observedSessions: this.catalog.sessions,
+    }, cursor, limit);
   }
 
   async close(): Promise<void> {
@@ -1878,92 +1719,19 @@ export class SessionBroker extends EventEmitter {
     this.clearRuntimeRetry();
     for (const timer of this.takeoverRetryTimers.values()) clearTimeout(timer);
     this.takeoverRetryTimers.clear();
+    await this.pumpQueue;
+    await Promise.allSettled(this.dispatching.values());
+    await Promise.allSettled(this.conflictTasks.values());
+    await Promise.allSettled(this.forcedStops);
     for (const state of this.runtimeStates.values()) {
       if (state.releaseTimer) clearTimeout(state.releaseTimer);
       await state.host?.close();
     }
-    this.options.managedDesktop?.off("status", this.managedStatusListener);
-    this.managedTransport?.close();
     await this.eventQueue.catch(() => undefined);
-    await Promise.allSettled(this.registrationTasks.values());
+    await this.desktopRegistration.close();
     await this.pumpQueue.catch(() => undefined);
     await this.saveQueue();
     await this.writeQueue.catch(() => undefined);
-  }
-
-  private async acquireManaged(turn: QueuedTurn, allowConcurrentSteer = false): Promise<void> {
-    const session = this.session(turn.sessionId);
-    if (!session || !this.managedTransport?.ready) return;
-    const state = this.runtimeStates.get(turn.sessionId) ?? {
-      ownership: "DESKTOP_MANAGED_IDLE" as const,
-      turnState: "idle" as const,
-      managed: true,
-    };
-    this.runtimeStates.set(turn.sessionId, state);
-    const isSteer = turn.mode === "steer";
-    if (state.active && !(isSteer && allowConcurrentSteer)) return;
-
-    turn.state = "running";
-    turn.transport = "claude-desktop-managed";
-    turn.turnId ??= randomUUID();
-    turn.attempts += 1;
-    state.managed = true;
-    state.ownership = "DESKTOP_MANAGED_RUNNING";
-    state.turnState = "running";
-    if (!isSteer || !state.active) {
-      state.active = turn;
-      this.activeTurns += 1;
-    }
-    await this.saveQueue();
-    await this.recordOwnership(turn.sessionId, state.ownership);
-    await this.record({
-      sessionId: turn.sessionId,
-      turnId: turn.turnId,
-      itemId: turn.commandId,
-      origin: "system",
-      type: "session.transport",
-      data: { transport: "claude-desktop-managed" },
-    });
-    this.emit("changed");
-
-    try {
-      await this.refreshDesktopConfiguration(turn.sessionId);
-      const profile = this.effectiveProfile(turn.sessionId, session.cwd);
-      if (session.desktopSessionId || this.managedTransport.desktopSessionId(turn.sessionId)) {
-        if (profile.model) await this.managedTransport.setModel(turn.sessionId, profile.model);
-        await this.managedTransport.setEffort(turn.sessionId, profile.effort);
-      }
-      const accepted = await this.managedTransport.send({
-        session,
-        text: turn.text,
-        attachments: turn.attachments,
-        origin: turn.origin,
-        mode: isSteer ? "steer" : "start",
-        ...(profile.model ? { model: profile.model } : {}),
-        ...(profile.effort ? { effort: profile.effort } : {}),
-        messageId: turn.commandId,
-        turnId: turn.turnId,
-      });
-      const stored = this.bridgeSessions.get(turn.sessionId);
-      if (stored) {
-        stored.desktopSessionId = accepted.desktopSessionId;
-        delete stored.fallbackConfirmedAt;
-        await this.saveSessions();
-      }
-    } catch (error) {
-      if (error instanceof ManagedDeliveryUncertainError) {
-        await this.handleManagedUncertain(error.intent);
-        return;
-      }
-      if (state.active?.commandId === turn.commandId) {
-        delete state.active;
-        this.activeTurns = Math.max(0, this.activeTurns - 1);
-      }
-      state.turnState = "queued";
-      state.ownership = "DESKTOP_OBSERVED";
-      await this.failQueuedTurn(turn, error instanceof Error ? error.message : String(error));
-      await this.recordOwnership(turn.sessionId, state.ownership);
-    }
   }
 
   private async acquire(turn: QueuedTurn): Promise<void> {
@@ -2000,6 +1768,8 @@ export class SessionBroker extends EventEmitter {
       this.scheduleTakeoverRetry(turn.sessionId);
       return;
     }
+    if (!this.canDispatch(turn)) return;
+    this.clearTakeoverRetry(turn.sessionId);
     if (!state.host && providerKind === "claude-3p") state.externalWriteVersion = externalWriteVersion;
     if (state.releaseTimer) {
       clearTimeout(state.releaseTimer);
@@ -2045,6 +1815,7 @@ export class SessionBroker extends EventEmitter {
     let evidenceId: string | undefined;
     try {
       if (providerKind === "claude-3p") await this.refreshDesktopConfiguration(turn.sessionId);
+      if (!this.canDispatch(turn)) return;
       const host = await this.ensureHost(turn.sessionId, turn.laneId);
       const effective = this.effectiveProfile(turn.sessionId, session.cwd);
       await this.applyHostConfiguration(host, {
@@ -2062,11 +1833,26 @@ export class SessionBroker extends EventEmitter {
           startedAt: Date.now(),
         }));
       }
+      if (!this.canDispatch(turn)) {
+        this.scheduleRelease(turn.sessionId);
+        return;
+      }
       turn.state = "running";
       turn.transport = "bridge-host";
+      turn.turnId = randomUUID();
+      turn.messageId = randomUUID();
+      turn.submissionStartedAt = Date.now();
+      state.active = turn;
+      state.ownership = "BRIDGE_RUNNING";
+      state.turnState = "queued";
+      this.activeTurns += 1;
+      await this.saveQueue();
+      if (this.closed || state.active !== turn || !this.pending.includes(turn)) return;
       accepted = host.send({
         text: turn.text,
         attachments: turn.attachments,
+        turnId: turn.turnId,
+        messageId: turn.messageId,
       }, turn.origin);
     } catch (error) {
       if (evidenceId) {
@@ -2081,6 +1867,11 @@ export class SessionBroker extends EventEmitter {
       delete state.hostLaneId;
       state.ownership = "DESKTOP_OBSERVED";
       state.turnState = "queued";
+      if (state.active === turn) { delete state.active; this.activeTurns -= 1; }
+      delete turn.submissionStartedAt;
+      delete turn.turnId;
+      delete turn.messageId;
+      turn.state = "queued";
       turn.attempts += 1;
       await this.saveQueue();
       await this.record({
@@ -2106,10 +1897,6 @@ export class SessionBroker extends EventEmitter {
       turn.evidenceId = evidenceId;
       await this.evidenceCall(() => this.options.evidence!.attachTurn(evidenceId, accepted.turnId));
     }
-    state.active = turn;
-    state.ownership = "BRIDGE_RUNNING";
-    state.turnState = "running";
-    this.activeTurns += 1;
     await this.saveQueue();
     this.emit("changed");
   }
@@ -2191,10 +1978,25 @@ export class SessionBroker extends EventEmitter {
         ...(hostModel ? { model: hostModel } : {}),
         ...(profile.effort ? { effort: profile.effort } : {}),
       });
+      let generation = randomUUID();
+      this.taskState.restore(sessionId, this.options.eventLog.latestTaskEvents(sessionId));
+      this.taskState.beginGeneration(sessionId, generation);
+      this.options.observer.setSessionAlias?.(plan.nativeSessionId, sessionId);
+      state.hostGeneration = generation;
       host.onEvent((event) => {
+        // A Host can start another query. Capture its generation before queueing,
+        // then advance broker authority in event order after the old query drains.
+        if (event.type === "runtime.started") generation = randomUUID();
+        const eventGeneration = generation;
         this.eventQueue = this.eventQueue
           .catch(() => undefined)
-          .then(() => this.handleHostEvent(event));
+          .then(() => {
+            if (event.type === "runtime.started") {
+              if (state.host !== host) return;
+              state.hostGeneration = eventGeneration;
+            }
+            return this.handleHostEvent(event, eventGeneration);
+          });
       });
       state.host = host;
       state.hostLaneId = laneId;
@@ -2259,7 +2061,7 @@ export class SessionBroker extends EventEmitter {
     host: SessionHostRuntime,
     profile: Pick<EffectiveSessionProfile, "model" | "effort" | "ultracode">,
   ): Promise<void> {
-    await host.setAutoCompactWindow(this.modelContextLimit(profile.model, profile.ultracode));
+    await host.setAutoCompactWindow(this.modelCatalog.modelContextLimit(profile.model, profile.ultracode));
     await host.setModel(this.modelForHost(profile));
     await host.setEffort(profile.effort);
   }
@@ -2271,49 +2073,15 @@ export class SessionBroker extends EventEmitter {
     return `${profile.model}[1m]`;
   }
 
-  private rememberCatalogModels(): void {
-    if (this.modelCatalogComplete) return;
-    for (const session of this.catalog.sessions) {
-      if (!session.hostModel || parseMagpieSyntheticModelId(session.hostModel)) continue;
-      this.modelCache.set(session.hostModel, {
-        value: session.hostModel,
-        displayName: this.modelDisplayName(session.hostModel),
-      });
-    }
-  }
-
   private async refreshGatewayModels(
     runtime = this.runtime,
   ): Promise<boolean> {
     const models = await this.gatewayModelDiscoverer(runtime).catch(() => []);
     if (!models.length) return false;
-    this.gatewayModelsDiscovered = true;
-    this.modelCatalogComplete = true;
-    this.rememberModels(models);
+    this.modelCatalog.gatewayModelsDiscovered = true;
+    this.modelCatalog.modelCatalogComplete = true;
+    this.modelCatalog.rememberModels(models);
     return true;
-  }
-
-  private rememberModels(
-    models: Array<BridgeModelInfo | Awaited<ReturnType<SessionHostRuntime["supportedModels"]>>[number]>,
-  ): void {
-    if (models.length > 0) this.modelCache.clear();
-    for (const model of models) {
-      if (!model.value) continue;
-      const displayName = model.displayName && !parseMagpieSyntheticModelId(model.displayName)
-        ? model.displayName
-        : this.resolveModelDisplayName(model.displayName) ?? this.formatStandardModelDisplayName(model.value);
-      this.modelCache.set(model.value, {
-        value: model.value,
-        displayName,
-        ...(model.description ? { description: model.description } : {}),
-        ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
-        ...("maxInputTokens" in model ? { maxInputTokens: model.maxInputTokens } : {}),
-        ...(model.supportsEffort !== undefined ? { supportsEffort: model.supportsEffort } : {}),
-        ...(model.supportedEffortLevels?.length
-          ? { supportedEffortLevels: [...model.supportedEffortLevels] }
-          : {}),
-      });
-    }
   }
 
   private async discoverModelsWithoutAttaching(
@@ -2351,108 +2119,6 @@ export class SessionBroker extends EventEmitter {
     }
   }
 
-  private availableModels(selected?: string): BridgeModelInfo[] {
-    const models = new Map(this.modelCache);
-    const longContextAvailable = [...models.keys(), selected ?? ""].some((value) => /\[1m\]/iu.test(value));
-    if (longContextAvailable) {
-      for (const model of [...models.values()]) {
-        if (
-          /\[1m\]/iu.test(model.value) ||
-          !/^claude-(?:fable|sonnet|opus)-/iu.test(model.value)
-        ) continue;
-        const value = `${model.value}[1m]`;
-        if (models.has(value)) continue;
-        models.set(value, {
-          ...model,
-          value,
-          displayName: `${model.displayName} · 1M`,
-          ...(model.resolvedModel ? { resolvedModel: `${model.resolvedModel}[1m]` } : {}),
-          maxInputTokens: LONG_CONTEXT_TOKENS,
-        });
-      }
-    }
-    const matchedSelected = this.findModelInfo(selected, [...models.values()]);
-    if (selected && !matchedSelected && !parseMagpieSyntheticModelId(selected)) {
-      models.set(selected, {
-        value: selected,
-        displayName: this.modelDisplayName(selected),
-      });
-    }
-    const selectedValue = matchedSelected?.value ?? selected;
-    return [...models.values()].sort((left, right) => (
-      Number(right.value === selectedValue) - Number(left.value === selectedValue)
-      || (this.gatewayModelsDiscovered ? 0 : left.displayName.localeCompare(right.displayName, "zh-CN"))
-    ));
-  }
-
-  private findModelInfo(model: string | undefined, models: BridgeModelInfo[]): BridgeModelInfo | undefined {
-    if (!model) return undefined;
-    const direct = models.find((candidate) => candidate.value === model)
-      ?? models.find((candidate) => candidate.resolvedModel === model);
-    if (direct) return direct;
-    const magpie = parseMagpieSyntheticModelId(model);
-    if (!magpie) return undefined;
-    const matchingHash = models.filter((candidate) => {
-      const candidateSyn = parseMagpieSyntheticModelId(candidate.value)
-        ?? parseMagpieSyntheticModelId(candidate.resolvedModel);
-      if (candidateSyn) return candidateSyn.hash === magpie.hash;
-      return magpieModelIdHash(candidate.value) === magpie.hash;
-    });
-    return matchingHash.find((candidate) => /\[1m\]/iu.test(candidate.value) === magpie.longContext)
-      ?? matchingHash[0];
-  }
-
-  private resolveModelDisplayName(value: string | undefined): string | undefined {
-    if (!value) return undefined;
-    const cached = this.findModelInfo(value, [...this.modelCache.values()]);
-    if (cached?.displayName && !parseMagpieSyntheticModelId(cached.displayName)) {
-      if (/\[1m\]/iu.test(value) && !/\b1m\b/iu.test(cached.displayName)) {
-        return `${cached.displayName}${this.gatewayModelsDiscovered ? " 1M" : " · 1M"}`;
-      }
-      return cached.displayName;
-    }
-    if (/\[1m\]/iu.test(value)) {
-      const baseValue = value.replace(/\[1m\]/giu, "");
-      const baseCached = this.findModelInfo(baseValue, [...this.modelCache.values()]);
-      if (baseCached?.displayName && !parseMagpieSyntheticModelId(baseCached.displayName)) {
-        return `${baseCached.displayName}${this.gatewayModelsDiscovered ? " 1M" : " · 1M"}`;
-      }
-    }
-    const magpie = parseMagpieSyntheticModelId(value);
-    if (magpie?.anthropicModel) {
-      return this.formatStandardModelDisplayName(`${magpie.anthropicModel}${magpie.longContext ? "[1m]" : ""}`);
-    }
-    if (magpie) {
-      return magpie.longContext ? "默认模型 · 1M" : "默认模型";
-    }
-    return undefined;
-  }
-
-  private formatStandardModelDisplayName(value: string): string {
-    const longContext = /\[1m\]/iu.test(value);
-    const normalized = value
-      .replace(/\[1m\]/giu, "")
-      .replace(/^claude-/iu, "")
-      .split("-")
-      .filter(Boolean)
-      .map((part) => part.length <= 2 ? part.toLocaleUpperCase() : `${part[0]!.toLocaleUpperCase()}${part.slice(1)}`)
-      .join(" ");
-    return `${normalized || value}${longContext ? " · 1M" : ""}`;
-  }
-
-  private modelDisplayName(value: string): string {
-    const resolved = this.resolveModelDisplayName(value);
-    if (resolved) return resolved;
-    return this.formatStandardModelDisplayName(value);
-  }
-
-  private modelContextLimit(model: string | undefined, ultracode = false): number | undefined {
-    if (ultracode || (model !== undefined && /\[1m\]|(?:^|[-_])1m(?:$|[-_])/iu.test(model))) {
-      return LONG_CONTEXT_TOKENS;
-    }
-    return this.findModelInfo(model, [...this.modelCache.values()])?.maxInputTokens;
-  }
-
   private async estimatedContext(session: BridgeSessionInfo): Promise<BridgeSessionContextUsage | undefined> {
     const estimate = await readClaudeSessionContextEstimate(
       this.options.paths.projects,
@@ -2461,7 +2127,7 @@ export class SessionBroker extends EventEmitter {
     );
     if (!estimate) return undefined;
     const profile = this.effectiveProfile(session.sessionId, session.cwd);
-    const maxTokens = this.modelContextLimit(profile.model, profile.ultracode);
+    const maxTokens = this.modelCatalog.modelContextLimit(profile.model, profile.ultracode);
     if (!maxTokens) return undefined;
     return {
       totalTokens: estimate.totalTokens,
@@ -2479,7 +2145,7 @@ export class SessionBroker extends EventEmitter {
       session.cwd,
     );
     if (!estimate) return;
-    const maxTokens = this.modelContextLimit(model, ultracode);
+    const maxTokens = this.modelCatalog.modelContextLimit(model, ultracode);
     if (!maxTokens || estimate.totalTokens <= maxTokens) return;
     throw new Error(
       `当前会话约 ${estimate.totalTokens.toLocaleString("zh-CN")} tokens，所选模型仅提供约 `
@@ -2527,12 +2193,28 @@ export class SessionBroker extends EventEmitter {
     }
   }
 
+  private async recordTask(sessionId: string, generation: string, task: SessionHostBackgroundTask, subagent: BridgeSubagentSummary): Promise<void> {
+    await this.record({
+      sessionId, itemId: subagent.toolUseId ?? `subagent:${subagent.agentId}`, timestamp: subagent.updatedAt,
+      origin: "claude-host", type: subagent.state === "running" || subagent.state === "unknown" ? "tool.progress" : "tool.completed",
+      data: { toolName: "Agent", summary: subagent.description, task, subagent, generation },
+    });
+  }
+
+  private hostHasBackgroundWork(sessionId: string): boolean {
+    const host = this.runtimeStates.get(sessionId)?.host;
+    return Boolean(host?.hasPendingInput || host?.runningBackgroundTasks?.length ||
+      this.permissionBroker.list(sessionId).length ||
+      (this.taskState.hasAuthority(sessionId) ? this.taskState.runningSubagents(sessionId)
+        : this.options.observer.runningSubagents(sessionId)));
+  }
+
   private scheduleRelease(sessionId: string): void {
     const state = this.runtimeStates.get(sessionId);
     if (
       !state?.host ||
       state.active ||
-      state.releaseTimer ||
+      state.releaseTimer || this.hostHasBackgroundWork(sessionId) ||
       this.pending.some((turn) => turn.sessionId === sessionId)
     ) return;
     state.releaseTimer = setTimeout(() => {
@@ -2540,52 +2222,13 @@ export class SessionBroker extends EventEmitter {
     }, SESSION_RELEASE_DELAY_MS);
   }
 
-  private async handleManagedUncertain(event: ManagedDeliveryUncertain): Promise<void> {
-    const state = this.runtimeStates.get(event.sessionId) ?? {
-      ownership: "DESKTOP_MANAGED_RUNNING" as const,
-      turnState: "waiting" as const,
-      managed: true,
-    };
-    this.runtimeStates.set(event.sessionId, state);
-    const turn = this.pending.find((candidate) => (
-      candidate.sessionId === event.sessionId &&
-      (candidate.turnId === event.turnId || candidate.commandId === event.messageId)
-    )) ?? state.active;
-    if (!turn) return;
-    const alreadyUncertain = turn.state === "uncertain";
-    turn.state = "uncertain";
-    state.managed = true;
-    state.ownership = "DESKTOP_MANAGED_RUNNING";
-    state.turnState = "waiting";
-    if (!state.active && turn.mode !== "steer") {
-      state.active = turn;
-      this.activeTurns += 1;
-    }
-    await this.saveQueue();
-    if (!alreadyUncertain) {
-      await this.record({
-        sessionId: event.sessionId,
-        turnId: event.turnId,
-        itemId: turn.commandId,
-        timestamp: event.at,
-        origin: "system",
-        type: "message.delivery",
-        data: {
-          commandId: turn.commandId,
-          requestId: turn.requestId,
-          idempotencyKey: turn.idempotencyKey,
-          delivery: "uncertain",
-          error: event.error,
-        },
-      });
-    }
-    this.emit("changed");
-  }
-
   private async handleHostEvent(
     event: SessionHostEvent,
-    eventOrigin: "claude-host" | "claude-desktop" = "claude-host",
+    generation?: string,
   ): Promise<void> {
+    const eventOrigin = "claude-host";
+    const runtime = this.runtimeStates.get(event.sessionId);
+    if (generation && runtime?.hostGeneration !== generation) return;
     if (
       "turnId" in event &&
       typeof event.turnId === "string" &&
@@ -2600,7 +2243,9 @@ export class SessionBroker extends EventEmitter {
             turn.state === "running" &&
             (!("turnId" in event) || !event.turnId || turn.turnId === event.turnId)
           ))
-    ) ?? state?.active;
+    );
+    if ((event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.interrupted") &&
+      (!active || (event.turnId !== undefined && active.turnId !== event.turnId))) return;
     if (event.type === "assistant.delta") {
       // SDK stream event UUIDs identify chunks, not the assistant response stream.
       const itemId = event.turnId ? `assistant:${event.turnId}` : event.itemId;
@@ -2614,8 +2259,46 @@ export class SessionBroker extends EventEmitter {
       }, event.text);
       return;
     }
-    if (event.type === "runtime.started" || event.type === "runtime.stopped") return;
+    if (event.type === "runtime.started") {
+      if (generation) this.taskState.beginGeneration(event.sessionId, generation);
+      return;
+    }
+    if (event.type === "runtime.ready") {
+      this.emit("changed");
+      return;
+    }
+    if (event.type === "runtime.stopped") {
+      if (generation) {
+        for (const summary of this.taskState.endGeneration(event.sessionId, generation, event.at)) {
+          await this.recordTask(event.sessionId, generation, this.taskState.task(event.sessionId, summary.toolUseId ?? summary.agentId)!, summary);
+        }
+        this.options.observer.setHostTaskAuthority?.(event.sessionId, false);
+      }
+      this.emit("changed");
+      return;
+    }
+    if (event.type === "background.tasks" || event.type === "task.started" || event.type === "task.progress" || event.type === "task.notification") {
+      if (!generation) return;
+      this.options.observer.setHostTaskAuthority?.(event.sessionId, true);
+      const summaries = event.type === "background.tasks"
+        ? this.taskState.replace(event.sessionId, generation, event.tasks, event.at)
+        : [this.taskState.update(event.sessionId, generation, event)].filter((item): item is BridgeSubagentSummary => Boolean(item));
+      for (const summary of summaries) {
+        await this.recordTask(event.sessionId, generation, this.taskState.task(event.sessionId, summary.toolUseId ?? summary.agentId)!, summary);
+      }
+      if (this.taskState.runningSubagents(event.sessionId)) {
+        if (state?.releaseTimer) { clearTimeout(state.releaseTimer); delete state.releaseTimer; }
+      } else this.scheduleRelease(event.sessionId);
+      this.emit("changed");
+      return;
+    }
+    if (event.type === "user.submitted") {
+      await this.record({sessionId:event.sessionId,turnId:event.turnId,itemId:event.messageId,timestamp:event.at,origin:eventOrigin,
+        type:"message.delivery",data:{delivery:"submitted",messageId:event.messageId,...(active ? {commandId:active.commandId,requestId:active.requestId} : {})}});
+      return;
+    }
     if (event.type === "turn.started") {
+      if (active && state) { state.active = active; state.turnState = "running"; }
       await this.record({
         sessionId: event.sessionId,
         turnId: event.turnId,
@@ -2638,6 +2321,7 @@ export class SessionBroker extends EventEmitter {
       if (active) {
         active.messageId ??= event.messageId;
         active.sessionAcceptedAt = event.at;
+        if (state) state.turnState = "running";
         await this.saveQueue();
       }
       await this.record({
@@ -2658,13 +2342,6 @@ export class SessionBroker extends EventEmitter {
           } : {}),
         },
       });
-      if (active?.mode === "steer") {
-        const index = this.pending.findIndex((candidate) => candidate.commandId === active.commandId);
-        if (index >= 0) this.pending.splice(index, 1);
-        this.rememberTerminal(active, "completed");
-        await this.saveQueue();
-        this.emit("changed");
-      }
       return;
     }
     if (event.type === "assistant.completed") {
@@ -2735,6 +2412,7 @@ export class SessionBroker extends EventEmitter {
           at: event.at,
         }));
       }
+      if (this.taskState.task(event.sessionId, event.itemId)) return;
       const outputText = this.extractToolOutputText(event.output);
       if (
         (toolName === "Agent" || toolName === "Task") &&
@@ -2823,34 +2501,30 @@ export class SessionBroker extends EventEmitter {
           completedAt: event.at,
         }));
       }
-      await this.finishTurn(event.sessionId, "completed");
+      await this.finishTurn(event.sessionId, "completed", active);
       return;
     }
-    if (event.type === "turn.failed" || event.type === "runtime.error") {
+    if (event.type === "runtime.error") {
+      // Query failures emit an explicit turn.failed for each unfinished input.
+      // This process diagnostic can arrive after the next command has started.
+      await this.record({
+        sessionId: event.sessionId, timestamp: event.at, origin: eventOrigin,
+        type: "runtime.error", data: { error: event.error, ...(generation ? { generation } : {}) },
+      });
+      return;
+    }
+    if (event.type === "turn.failed") {
       await this.options.eventLog.flushDeltas(event.sessionId);
-      const failedTurnId = "turnId" in event && typeof event.turnId === "string"
-        ? event.turnId
-        : undefined;
-      const shouldRetry = event.type === "runtime.error"
-        && Boolean(state?.active)
-        && state?.active?.mode !== "handoff"
-        && (
-          state?.active?.transport === "bridge-host"
-            ? !(await this.isBridgeTurnDelivered(state.active))
-            : !state?.active?.sessionAcceptedAt
-        )
-        && this.transientRuntimeError(event.error)
-        && (state?.active?.attempts ?? 0) < 5;
       await this.record({
         sessionId: event.sessionId,
-        ...("turnId" in event && event.turnId ? { turnId: event.turnId } : {}),
+        ...(event.turnId ? { turnId: event.turnId } : {}),
         timestamp: event.at,
         origin: eventOrigin,
-        type: event.type === "turn.failed" ? "turn.failed" : "runtime.error",
+        type: "turn.failed",
         data: {
           error: event.error,
-          retrying: shouldRetry,
-          delivery: shouldRetry ? "host-received" : "failed",
+          retrying: false,
+          delivery: "failed",
           ...(active ? {
             commandId: active.commandId,
             requestId: active.requestId,
@@ -2858,29 +2532,16 @@ export class SessionBroker extends EventEmitter {
           } : {}),
         },
       });
-      if (shouldRetry) {
-        if (this.options.evidence) {
-          void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
-            sessionId: event.sessionId,
-            ...(failedTurnId ? { turnId: failedTurnId } : {}),
-            failed: true,
-            error: event.error,
-            completedAt: event.at,
-          }));
-        }
-        await this.requeueActive(event.sessionId);
-      } else if (state?.active) {
-        if (this.options.evidence) {
-          void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
-            sessionId: event.sessionId,
-            ...(failedTurnId ? { turnId: failedTurnId } : {}),
-            failed: true,
-            error: event.error,
-            completedAt: event.at,
-          }));
-        }
-        await this.finishTurn(event.sessionId, "failed");
+      if (this.options.evidence) {
+        void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
+          sessionId: event.sessionId,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          failed: true,
+          error: event.error,
+          completedAt: event.at,
+        }));
       }
+      await this.finishTurn(event.sessionId, "failed", active);
       return;
     }
     if (event.type === "turn.interrupted") {
@@ -2909,32 +2570,33 @@ export class SessionBroker extends EventEmitter {
           completedAt: event.at,
         }));
       }
-      await this.finishTurn(event.sessionId, "interrupted");
+      await this.finishTurn(event.sessionId, "interrupted", active);
     }
   }
 
-  private async finishTurn(sessionId: string, terminal: "completed" | "failed" | "interrupted"): Promise<void> {
+  private async finishTurn(sessionId: string, terminal: "completed" | "failed" | "interrupted", turn = this.runtimeStates.get(sessionId)?.active): Promise<void> {
     const state = this.runtimeStates.get(sessionId);
-    const turn = state?.active;
     if (!state || !turn) return;
-    this.permissionBroker.cancelSession(
-      sessionId,
-      terminal === "interrupted" ? "turn-interrupted" : "turn-finished",
-    );
-    state.turnState = terminal;
-    state.ownership = state.managed ? "DESKTOP_MANAGED_IDLE" : "BRIDGE_IDLE";
-    delete state.active;
-    this.activeTurns = Math.max(0, this.activeTurns - 1);
+    const occupied = Boolean(state.active);
     const index = this.pending.findIndex((candidate) => candidate.commandId === turn.commandId);
     if (index >= 0) this.pending.splice(index, 1);
     this.rememberTerminal(turn, terminal === "interrupted" ? "cancelled" : terminal);
-    await this.saveQueue();
-    state.turnState = "idle";
-    if (!state.managed) {
-      state.releaseTimer = setTimeout(() => {
-        void this.releaseSession(sessionId);
-      }, SESSION_RELEASE_DELAY_MS);
+    if (state.active === turn) {
+      const next = this.pending.filter(candidate => candidate.sessionId === sessionId && candidate.state === "running")
+        .sort((left, right) => (right.sessionAcceptedAt ?? 0) - (left.sessionAcceptedAt ?? 0))[0];
+      if (next) state.active = next;
+      else delete state.active;
     }
+    if (state.ownership !== "RELEASING") {
+      state.ownership = state.active ? "BRIDGE_RUNNING" : "BRIDGE_IDLE";
+      state.turnState = state.active ? state.active.sessionAcceptedAt ? "running" : "queued" : "idle";
+      if (occupied && !state.active) this.activeTurns = Math.max(0, this.activeTurns - 1);
+      if (!state.active && !this.taskState.runningSubagents(sessionId) && !state.host?.runningBackgroundTasks?.length) {
+        this.permissionBroker.cancelSession(sessionId, terminal === "interrupted" ? "turn-interrupted" : "turn-finished");
+      }
+    }
+    await this.saveQueue();
+    this.scheduleRelease(sessionId);
     this.emit("changed");
     void this.reconcileDesktopRegistration(sessionId);
     await this.pump();
@@ -2947,167 +2609,35 @@ export class SessionBroker extends EventEmitter {
     }
   }
 
-  private async reconcileDesktopRegistration(
-    sessionId: string,
-    force = false,
-  ): Promise<void> {
-    const registrar = this.options.desktopRegistrar;
-    const bridge = this.bridgeSessions.get(sessionId);
-    if (!registrar || !bridge || this.closed) return;
-    if (!force && bridge.desktopRegistration?.state === "failed") return;
-    if (!force && this.runtimeStates.get(sessionId)?.active) return;
-    const active = this.registrationTasks.get(sessionId);
-    if (active) return active;
-    const task = (async () => {
-      const storedConfig = this.sessionConfigurations.get(sessionId);
-      const profile = this.effectiveProfile(sessionId, bridge.cwd, storedConfig);
-      const observed = this.catalog.sessions.find((session) => session.sessionId === sessionId);
-      const input: DesktopSessionRegistrationInput = {
-        sessionId,
-        cwd: bridge.cwd,
-        title: bridge.title,
-        createdAt: bridge.createdAt,
-        lastActivityAt: Math.max(bridge.createdAt, observed?.lastActivityAt ?? 0),
-        ...(profile.model ? { model: profile.model } : {}),
-        ...(profile.effort ? { effort: profile.effort } : {}),
-        ...(storedConfig?.model ? { overrideModel: storedConfig.model } : {}),
-        ...(storedConfig?.effort ? { overrideEffort: storedConfig.effort } : {}),
-        ...(bridge.parentDesktopSessionId ? { parentDesktopSessionId: bridge.parentDesktopSessionId } : {}),
-        ...(bridge.forkLabel ? { forkLabel: bridge.forkLabel } : {}),
-      };
-      let next: StoredDesktopRegistration;
-      try {
-        next = await registrar.register(input, bridge.desktopRegistration);
-      } catch {
-        const previous = bridge.desktopRegistration;
-        next = {
-          ...(previous?.metadataPath ? { metadataPath: previous.metadataPath } : {}),
-          ...(previous?.metadataSha256 ? { metadataSha256: previous.metadataSha256 } : {}),
-          ...(previous?.profileSessionsRoot
-            ? { profileSessionsRoot: previous.profileSessionsRoot }
-            : {}),
-          ...(previous?.desktopSessionId
-            ? { desktopSessionId: previous.desktopSessionId }
-            : {}),
-          ...(previous?.registeredAt ? { registeredAt: previous.registeredAt } : {}),
-          ...(previous?.claudePidAtRegistration
-            ? { claudePidAtRegistration: previous.claudePidAtRegistration }
-            : {}),
-          state: "failed",
-          detail: "Claude Desktop 会话登记失败，Bridge 会话仍可正常使用。",
-          updatedAt: Date.now(),
-        };
-      }
-      if (!registrar.changed(bridge.desktopRegistration, next)) return;
-      bridge.desktopRegistration = next;
-      if (next.state === "registered" && next.desktopSessionId) {
-        bridge.desktopSessionId = next.desktopSessionId;
-      }
-      await this.saveSessions();
-      const info: BridgeDesktopRegistrationInfo = registrar.publicInfo(next);
-      await this.record({
-        sessionId,
-        origin: "system",
-        type: "session.desktop-registration",
-        data: { ...info },
-      });
-      this.emit("changed");
-    })().finally(() => {
-      if (this.registrationTasks.get(sessionId) === task) {
-        this.registrationTasks.delete(sessionId);
-      }
-    });
-    this.registrationTasks.set(sessionId, task);
-    return task;
+  private reconcileDesktopRegistration(sessionId: string, force = false): Promise<void> {
+    return this.desktopRegistration.reconcile(sessionId, force);
   }
 
-  private transientRuntimeError(error: string): boolean {
-    return /(already.{0,24}(active|running|use)|session.{0,24}(lock|busy|active)|locked|resource busy|in use)/iu.test(error);
-  }
-
-  private isTurnSettledInEventLog(sessionId: string, turnId: string): boolean {
-    return this.options.eventLog.replay(0, 2_000, sessionId).some((event) => (
-      event.turnId === turnId && (
-        event.type === "turn.completed" ||
-        event.type === "turn.failed" ||
-        event.type === "turn.interrupted" ||
-        (event.type === "runtime.error" && event.data.delivery === "failed")
-      )
-    ));
-  }
-
-  private async isBridgeTurnDelivered(turn: QueuedTurn): Promise<boolean> {
-    await this.options.eventLog.flushDeltas(turn.sessionId);
-    const events = this.options.eventLog.replay(0, 2_000, turn.sessionId);
-    const acceptedEvent = events.find((event) => (
-      event.type === "user.message.accepted" && (
-        (turn.turnId !== undefined && event.turnId === turn.turnId) ||
-        event.data.commandId === turn.commandId
-      )
-    ));
-    const messageId = turn.messageId ?? acceptedEvent?.itemId;
-    if (messageId && this.options.eventLog.hasItem(turn.sessionId, "session.observed", messageId)) {
-      return true;
-    }
-    if (
-      turn.turnId &&
-      events.some((event) => (
-        event.turnId === turn.turnId && (
-          event.type === "assistant.delta" ||
-          event.type === "assistant.completed" ||
-          event.type === "tool.started" ||
-          event.type === "tool.progress" ||
-          event.type === "tool.completed" ||
-          event.type === "turn.completed"
-        )
-      ))
-    ) {
-      return true;
-    }
-    if (!messageId) return false;
-    const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === turn.sessionId);
-    const transcriptPath = observed?.transcriptPath ?? await findClaudeTranscriptFile(
-      this.options.paths.projects,
-      turn.sessionId,
-      turn.sessionCwd,
+  private commandEvidence(turn: QueuedTurn): Promise<CommandEvidence> {
+    return readCommandEvidence(
+      this.options.eventLog, this.options.paths, turn,
+      this.options.conversationState?.lane(turn.laneId)?.nativeSessionId ?? undefined,
     );
-    if (!transcriptPath) return false;
-    return transcriptTailContains(transcriptPath, messageId);
   }
 
-  private async requeueActive(sessionId: string): Promise<void> {
-    const state = this.runtimeStates.get(sessionId);
-    const turn = state?.active;
-    if (!state || !turn) return;
-    const host = state.host;
-    delete state.active;
-    delete state.host;
-    delete state.hostLaneId;
-    turn.state = "queued";
-    delete turn.turnId;
-    delete turn.messageId;
-    delete turn.sessionAcceptedAt;
-    state.ownership = "DESKTOP_OBSERVED";
-    state.turnState = "queued";
-    this.activeTurns = Math.max(0, this.activeTurns - 1);
-    await host?.close().catch(() => undefined);
-    await this.saveQueue();
-    await this.recordOwnership(sessionId, state.ownership);
+  private async settleInterruptedCommand(turn: QueuedTurn, evidence: CommandEvidence): Promise<void> {
+    const terminal = evidence.terminal ?? "cancelled";
+    this.rememberTerminal(turn, terminal);
+    if (this.options.eventLog.turnEvidence(turn).terminal) return;
     await this.record({
-      sessionId,
+      sessionId: turn.sessionId,
+      ...(turn.turnId ? { turnId: turn.turnId } : {}),
       itemId: turn.commandId,
       origin: "system",
-      type: "turn.queued",
+      type: terminal === "completed" ? "turn.completed" : terminal === "failed" ? "turn.failed" : "turn.interrupted",
       data: {
+        delivery: terminal,
         commandId: turn.commandId,
         requestId: turn.requestId,
-        delivery: "host-received",
-        retrying: true,
-        attempt: turn.attempts,
+        idempotencyKey: turn.idempotencyKey,
+        reason: "execution-ended-without-result",
       },
     });
-    this.emit("changed");
-    setTimeout(() => void this.pump(), 3_000);
   }
 
   private async failQueuedTurn(turn: QueuedTurn, error: string): Promise<void> {
@@ -3125,6 +2655,7 @@ export class SessionBroker extends EventEmitter {
         requestId: turn.requestId,
         error,
         delivery: "failed",
+        wasQueued: true,
       },
     });
     this.emit("changed");
@@ -3132,7 +2663,8 @@ export class SessionBroker extends EventEmitter {
 
   private async releaseSession(sessionId: string): Promise<void> {
     const state = this.runtimeStates.get(sessionId);
-    if (!state?.host || state.active || this.pending.some((turn) => turn.sessionId === sessionId)) return;
+    if (state?.releaseTimer) { clearTimeout(state.releaseTimer); delete state.releaseTimer; }
+    if (!state?.host || state.active || state.ownership === "RELEASING" || this.hostHasBackgroundWork(sessionId) || this.pending.some((turn) => turn.sessionId === sessionId)) return;
     state.ownership = "RELEASING";
     await this.recordOwnership(sessionId, state.ownership);
     await state.host.close();
@@ -3144,6 +2676,7 @@ export class SessionBroker extends EventEmitter {
       : "BRIDGE_IDLE";
     await this.recordOwnership(sessionId, state.ownership);
     this.emit("changed");
+    await this.pump();
   }
 
   private pump(): Promise<void> {
@@ -3151,68 +2684,54 @@ export class SessionBroker extends EventEmitter {
       .catch(() => undefined)
       .then(() => this.pumpOnce());
     this.pumpQueue = next;
-    return next;
+    return next.then(async () => { await Promise.all(this.dispatching.values()); });
   }
 
   private async pumpOnce(): Promise<void> {
     if (this.closed || !this.initialized) return;
-    if (!this.managedTransport?.ready && !this.runtime?.executablePath) {
+    if (!this.runtime?.executablePath) {
       await this.refreshRuntime();
+      if (!this.runtime?.executablePath) { this.scheduleRuntimeRetry(); return; }
     }
     this.sortPending();
     for (const turn of this.pending) {
-      if (this.activeTurns >= this.maxParallelTurns) break;
-      if (turn.state !== "queued") continue;
-      if (turn.recoveryBlocked) continue;
+      const starting = [...this.dispatching.keys()].filter((id) => !this.runtimeStates.get(id)?.active).length;
+      if (this.activeTurns + starting >= this.maxParallelTurns) break;
+      if (turn.state !== "queued" || turn.recoveryBlocked || this.dispatching.has(turn.sessionId)) continue;
+      const providerKind = this.options.conversationState?.lane(turn.laneId)?.providerKind ?? "claude-3p";
+      if (providerKind === "claude-3p" && !this.runtime.credentialPath) {
+        this.scheduleRuntimeRetry();
+        continue;
+      }
       const state = this.runtimeStates.get(turn.sessionId);
       // Conflict containment owns the session until the old host is closed and the turn is persisted.
       const conflictSettling = this.conflictTasks.has(turn.sessionId) || (
         state?.ownership === "OWNERSHIP_CONFLICT" &&
         this.takeoverRetryTimers.has(turn.sessionId)
       );
-      if (state?.active || conflictSettling) continue;
-      const lane = this.options.conversationState?.lane(turn.laneId);
-      const providerKind = lane?.providerKind ?? "claude-3p";
-      const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === turn.sessionId);
-      if (providerKind === "claude-3p" && this.hasConfirmedOwnershipConflict(turn.sessionId, state)) {
-        await this.containOwnershipConflict(turn.sessionId, observed?.activeProcesses ?? []);
-        continue;
-      }
-      const fallbackConfirmed = Boolean(this.bridgeSessions.get(turn.sessionId)?.fallbackConfirmedAt);
-      if (
-        turn.mode !== "handoff" &&
-        providerKind === "claude-3p" &&
-        this.managedTransport?.ready &&
-        !fallbackConfirmed
-      ) {
-        await this.acquireManaged(turn);
-        continue;
-      }
-      if (
-        providerKind === "claude-3p" &&
-        !await this.options.observer.canStartBridgeHost(
-          turn.sessionId,
-          Boolean(state?.host && state.hostLaneId === turn.laneId),
-        )
-      ) {
-        const waiting = state ?? {
-          ownership: "DESKTOP_OBSERVED" as const,
-          turnState: "queued" as const,
-        };
-        waiting.ownership = "DESKTOP_OBSERVED";
-        waiting.turnState = "queued";
-        this.runtimeStates.set(turn.sessionId, waiting);
-        this.scheduleTakeoverRetry(turn.sessionId);
-        continue;
-      }
-      this.clearTakeoverRetry(turn.sessionId);
-      if (
-        !this.runtime?.executablePath ||
-        (providerKind === "claude-3p" && !this.runtime.credentialPath)
-      ) continue;
-      await this.acquire(turn);
+      if (state?.active || state?.ownership === "RELEASING" || conflictSettling) continue;
+      if (this.takeoverRetryTimers.has(turn.sessionId)) continue;
+      const task = this.dispatchTurn(turn).catch(async (error: unknown) => {
+        if (this.closed || !this.pending.includes(turn)) return;
+        await this.failQueuedTurn(turn, error instanceof Error ? error.message : String(error));
+      }).finally(() => {
+        this.dispatching.delete(turn.sessionId);
+        if (!this.closed && this.pending.some((candidate) => candidate.sessionId !== turn.sessionId &&
+          candidate.state === "queued" && !this.takeoverRetryTimers.has(candidate.sessionId))) void this.pump();
+      });
+      this.dispatching.set(turn.sessionId, task);
     }
     this.emit("changed");
+  }
+
+  private async dispatchTurn(turn: QueuedTurn): Promise<void> {
+    if (!this.canDispatch(turn)) return;
+    await this.acquire(turn);
+  }
+
+  private canDispatch(turn: QueuedTurn): boolean {
+    return !this.closed && turn.state === "queued" && this.pending.includes(turn)
+      && this.runtimeStates.get(turn.sessionId)?.ownership !== "RELEASING";
   }
 
   private scheduleRuntimeRetry(): void {
@@ -3267,15 +2786,8 @@ export class SessionBroker extends EventEmitter {
       }
       if (!state) continue;
       if (!state.host && !state.active) {
-        const fallbackConfirmed = Boolean(this.bridgeSessions.get(observed.sessionId)?.fallbackConfirmedAt);
-        const managed = Boolean(this.managedTransport?.ready && !fallbackConfirmed);
-        state.managed = managed;
-        state.ownership = managed
-          ? this.options.observer.isDesktopBusy(observed.sessionId)
-            ? "DESKTOP_MANAGED_RUNNING"
-            : "DESKTOP_MANAGED_IDLE"
-          : "DESKTOP_OBSERVED";
-        state.turnState = this.options.observer.isDesktopBusy(observed.sessionId) ? "running" : "idle";
+        state.ownership = "DESKTOP_OBSERVED";
+        state.turnState = this.options.observer.isMainTurnBusy(observed.sessionId) ? "running" : "idle";
       }
     }
   }
@@ -3323,34 +2835,20 @@ export class SessionBroker extends EventEmitter {
       this.permissionBroker.cancelSession(sessionId);
       delete state.active;
       this.activeTurns = Math.max(0, this.activeTurns - 1);
-      if (await this.isBridgeTurnDelivered(active)) {
+      const evidence = await this.commandEvidence(active);
+      if (active.submissionStartedAt || active.sessionAcceptedAt || evidence.submitted || evidence.accepted || evidence.terminal) {
         const index = this.pending.findIndex((candidate) => candidate.commandId === active.commandId);
         if (index >= 0) this.pending.splice(index, 1);
-        this.rememberTerminal(active, "completed");
+        await host?.close();
+        await this.settleInterruptedCommand(active, evidence);
         state.turnState = this.pending.some((turn) => turn.sessionId === sessionId && turn.state === "queued")
-          ? "queued"
-          : "waiting";
+          ? "queued" : "waiting";
         await this.saveQueue();
-        await host?.close().catch(() => undefined);
-        if (active.turnId && !this.isTurnSettledInEventLog(sessionId, active.turnId)) {
-          await this.record({
-            sessionId,
-            turnId: active.turnId,
-            origin: "system",
-            type: "turn.completed",
-            data: {
-              result: "",
-              delivery: "completed",
-              commandId: active.commandId,
-              requestId: active.requestId,
-              idempotencyKey: active.idempotencyKey,
-            },
-          });
-        }
         if (this.options.evidence) {
           void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
             sessionId,
             ...(active.turnId ? { turnId: active.turnId } : {}),
+            failed: evidence.terminal !== "completed",
             completedAt: Date.now(),
           }));
         }
@@ -3413,6 +2911,19 @@ export class SessionBroker extends EventEmitter {
   }
 
   private async record(draft: BridgeEventDraft): Promise<void> {
+    if (draft.sessionId && [
+      "turn.queued", "turn.started", "turn.completed", "turn.failed", "turn.interrupted",
+    ].includes(draft.type)) {
+      const pendingCommandIds = this.pending.filter((turn) => (
+        turn.sessionId === draft.sessionId &&
+        (turn.state === "queued" || turn.state === "uncertain") &&
+        (draft.type === "turn.queued" || turn.commandId !== draft.data?.commandId)
+      )).map((turn) => turn.commandId);
+      draft = {
+        ...draft,
+        data: { ...draft.data, pendingCount: pendingCommandIds.length, pendingCommandIds },
+      };
+    }
     await this.options.eventLog.append(draft);
   }
 
@@ -3683,30 +3194,14 @@ export class SessionBroker extends EventEmitter {
     }
     let settledDelivered = false;
     for (const turn of pending) {
-      if (
-        turn.state === "running" &&
-        turn.transport === "bridge-host" &&
-        turn.mode !== "handoff" &&
-        (turn.sessionAcceptedAt !== undefined || await this.isBridgeTurnDelivered(turn))
-      ) {
-        this.rememberTerminal(turn, "completed");
-        settledDelivered = true;
-        if (turn.turnId && !this.isTurnSettledInEventLog(turn.sessionId, turn.turnId)) {
-          await this.record({
-            sessionId: turn.sessionId,
-            turnId: turn.turnId,
-            origin: "system",
-            type: "turn.completed",
-            data: {
-              result: "",
-              delivery: "completed",
-              commandId: turn.commandId,
-              requestId: turn.requestId,
-              idempotencyKey: turn.idempotencyKey,
-            },
-          });
+      if (turn.state === "running" && turn.transport === "bridge-host") {
+        const evidence = await this.commandEvidence(turn);
+        if (turn.submissionStartedAt !== undefined || turn.sessionAcceptedAt !== undefined ||
+          evidence.submitted || evidence.accepted || evidence.terminal) {
+          await this.settleInterruptedCommand(turn, evidence);
+          settledDelivered = true;
+          continue;
         }
-        continue;
       }
       const state = turn.mode === "handoff" || turn.state === "uncertain" || (
         turn.state === "running" && turn.transport === "claude-desktop-managed"
@@ -3735,15 +3230,8 @@ export class SessionBroker extends EventEmitter {
         }
       }
       this.pending.push(restored);
-      if (state === "uncertain" && restored.mode !== "steer" && restored.mode !== "handoff") {
-        this.runtimeStates.set(restored.sessionId, {
-          ownership: "DESKTOP_MANAGED_RUNNING",
-          turnState: "waiting",
-          active: restored,
-          managed: true,
-        });
-        this.activeTurns += 1;
-      }
+      // Legacy managed/handoff receipts have no live host. Keep them reviewable,
+      // without consuming runtime slots or automatically replaying their input.
     }
     this.sortPending();
     if (settledDelivered) await this.saveQueue();

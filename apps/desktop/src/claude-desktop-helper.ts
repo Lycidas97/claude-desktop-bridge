@@ -19,6 +19,7 @@ const ALLOWED_CALLS = new Set([
   "getTranscriptTail",
   "sendMessage",
   "interrupt",
+  "stopTask",
   "setModel",
   "setEffort",
   "getContextUsage",

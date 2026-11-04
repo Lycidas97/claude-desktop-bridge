@@ -13,7 +13,7 @@ for (let attempt = 0; attempt < 4; attempt += 1) {
   const state = await page.evaluate(() => {
     const text = (selector) => document.querySelector(selector)?.textContent?.trim() ?? null;
     return {
-      topbar: text(".mobile-device"),
+      topbar: text(".m-host-chip"),
       band: text(".mobile-transport-band"),
       heading: text("h1"),
     };

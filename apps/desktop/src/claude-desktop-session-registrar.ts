@@ -62,6 +62,8 @@ export interface StoredDesktopRegistration extends BridgeDesktopRegistrationInfo
   metadataSha256?: string;
   profileSessionsRoot?: string;
   claudePidAtRegistration?: number;
+  /** This registration tracks the Desktop reload needed for disk-only fork metadata. */
+  forkMetadataVersion?: 1;
 }
 
 export interface DesktopSessionRegistrationInput {
@@ -304,10 +306,13 @@ export class ClaudeDesktopSessionRegistrar {
     const desktopSessionId = `local_${input.sessionId}`;
     const existing = await this.findByCliSessionId(target.accountDir, input.sessionId);
     if (existing) {
-      const hash = await this.ensureMetadataFields(existing.path, input, existing.hash);
+      const { hash } = await this.ensureMetadataFields(existing.path, input, existing.hash);
       return {
-        state: "registered",
-        detail: "Claude Desktop 已登记这条 Bridge 会话。",
+        state: input.parentDesktopSessionId ? "restart-required" : "registered",
+        detail: input.parentDesktopSessionId
+          ? "已保存 Fork 关系，Claude Desktop 下次启动后会按分支识别；Bridge 中可继续使用。"
+          : "Claude Desktop 已登记这条 Bridge 会话。",
+        ...(input.parentDesktopSessionId ? { forkMetadataVersion: 1 as const, claudePidAtRegistration: target.pid } : {}),
         desktopSessionId: existing.sessionId,
         registeredAt: previous?.registeredAt ?? now,
         updatedAt: now,
@@ -326,10 +331,13 @@ export class ClaudeDesktopSessionRegistrar {
       throw new Error("Claude Desktop 已存在同名但指向其他 transcript 的会话元数据");
     }
     if (conflict) {
-      const hash = await this.ensureMetadataFields(metadataPath, input, conflict.hash);
+      const { hash } = await this.ensureMetadataFields(metadataPath, input, conflict.hash);
       return {
-        state: "registered",
-        detail: "Claude Desktop 已登记这条 Bridge 会话。",
+        state: input.parentDesktopSessionId ? "restart-required" : "registered",
+        detail: input.parentDesktopSessionId
+          ? "已保存 Fork 关系，Claude Desktop 下次启动后会按分支识别；Bridge 中可继续使用。"
+          : "Claude Desktop 已登记这条 Bridge 会话。",
+        ...(input.parentDesktopSessionId ? { forkMetadataVersion: 1 as const, claudePidAtRegistration: target.pid } : {}),
         desktopSessionId,
         registeredAt: previous?.registeredAt ?? now,
         updatedAt: now,
@@ -341,7 +349,9 @@ export class ClaudeDesktopSessionRegistrar {
 
     const transcriptMetadata = await stat(transcriptPath);
     await this.ensureTranscriptCustomTitle(transcriptPath, input.sessionId, input.title);
-    if (platform === "darwin" && !this.options.listProfiles) {
+    // resume imports a plain session into Desktop's live registry; it cannot load fork lineage.
+    // Stage forks intact for Desktop's session-record loader instead of patching after import.
+    if (platform === "darwin" && !this.options.listProfiles && !input.parentDesktopSessionId) {
       const liveAdopted = await this.tryLiveAdoptViaDeepLink(
         input.sessionId,
         desktopSessionId,
@@ -385,7 +395,10 @@ export class ClaudeDesktopSessionRegistrar {
     await this.writeNewMetadata(target.accountDir, metadataPath, contents);
     return {
       state: "restart-required",
-      detail: "已写入 Claude Desktop 会话清单，重启后可见。",
+      detail: input.parentDesktopSessionId
+        ? "已保存 Fork 关系，Claude Desktop 下次启动后会按分支识别；Bridge 中可继续使用。"
+        : "已写入 Claude Desktop 会话清单，重启后可见。",
+      ...(input.parentDesktopSessionId ? { forkMetadataVersion: 1 as const } : {}),
       desktopSessionId,
       registeredAt: now,
       updatedAt: now,
@@ -435,18 +448,24 @@ export class ClaudeDesktopSessionRegistrar {
     metadataPath: string,
     input: DesktopSessionRegistrationInput,
     fallbackHash: string,
-  ): Promise<string> {
-    try {
-      const raw = JSON.parse(await readFile(metadataPath, "utf8")) as Record<string, unknown>;
-      let mutated = false;
-      const trimmedTitle = input.title.trim();
-      if (trimmedTitle && (typeof raw.title !== "string" || !raw.title.trim())) {
-        raw.title = trimmedTitle;
-        raw.titleSource = "custom";
+  ): Promise<{ hash: string; forkChanged: boolean }> {
+    const raw = JSON.parse(await readFile(metadataPath, "utf8")) as Record<string, unknown>;
+    let mutated = false;
+    let forkChanged = false;
+    const trimmedTitle = input.title.trim();
+    if (trimmedTitle && (typeof raw.title !== "string" || !raw.title.trim())) {
+      raw.title = trimmedTitle;
+      raw.titleSource = "custom";
+      mutated = true;
+    }
+    if (input.parentDesktopSessionId) {
+      if (!raw.forkedFromSessionId) {
+        raw.forkedFromSessionId = input.parentDesktopSessionId;
+        forkChanged = true;
         mutated = true;
       }
-      if (input.parentDesktopSessionId && !raw.forkedFromSessionId) {
-        raw.forkedFromSessionId = input.parentDesktopSessionId;
+      if (!raw.spawnedFrom) {
+        forkChanged = true;
         raw.spawnedFrom = {
           sessionId: input.parentDesktopSessionId,
           taskId: `task_${input.sessionId.replace(/-/gu, "").slice(0, 8)}`,
@@ -456,33 +475,27 @@ export class ClaudeDesktopSessionRegistrar {
           userFork: true,
           name: input.forkLabel || "fork",
         };
-        if (trimmedTitle) {
-          raw.title = trimmedTitle;
-          raw.titleSource = "custom";
-        }
         mutated = true;
       }
-      const targetModel = input.overrideModel ?? (
-        typeof raw.model !== "string" || !raw.model.trim() ? input.model : undefined
-      );
-      if (targetModel && raw.model !== targetModel) {
-        raw.model = targetModel;
-        mutated = true;
-      }
-      const targetEffort = input.overrideEffort ?? (
-        typeof raw.effort !== "string" || !raw.effort.trim() ? input.effort : undefined
-      );
-      if (targetEffort && raw.effort !== targetEffort) {
-        raw.effort = targetEffort;
-        mutated = true;
-      }
-      if (!mutated) return fallbackHash;
-      const updatedContents = `${JSON.stringify(raw, null, 2)}\n`;
-      await writeFile(metadataPath, updatedContents, { encoding: "utf8", mode: 0o600 });
-      return sha256(updatedContents);
-    } catch {
-      return fallbackHash;
     }
+    const targetModel = input.overrideModel ?? (
+      typeof raw.model !== "string" || !raw.model.trim() ? input.model : undefined
+    );
+    if (targetModel && raw.model !== targetModel) {
+      raw.model = targetModel;
+      mutated = true;
+    }
+    const targetEffort = input.overrideEffort ?? (
+      typeof raw.effort !== "string" || !raw.effort.trim() ? input.effort : undefined
+    );
+    if (targetEffort && raw.effort !== targetEffort) {
+      raw.effort = targetEffort;
+      mutated = true;
+    }
+    if (!mutated) return { hash: fallbackHash, forkChanged };
+    const updatedContents = `${JSON.stringify(raw, null, 2)}\n`;
+    await writeFile(metadataPath, updatedContents, { encoding: "utf8", mode: 0o600 });
+    return { hash: sha256(updatedContents), forkChanged };
   }
 
   private async tryLiveAdoptViaDeepLink(
@@ -508,7 +521,7 @@ export class ClaudeDesktopSessionRegistrar {
         adopted.sessionId === desktopSessionId &&
         adopted.cliSessionId === sessionId
       ) {
-        const hash = await this.ensureMetadataFields(metadataPath, input, adopted.hash);
+        const { hash } = await this.ensureMetadataFields(metadataPath, input, adopted.hash);
         return {
           state: "registered",
           detail: "Claude Desktop 已实时同步这条 Bridge 会话。",
@@ -577,14 +590,18 @@ export class ClaudeDesktopSessionRegistrar {
       current.sessionId !== previous.desktopSessionId ||
       current.cliSessionId !== input.sessionId
     ) return undefined;
-    const hash = await this.ensureMetadataFields(previous.metadataPath!, input, current.hash);
+    const { hash, forkChanged } = await this.ensureMetadataFields(previous.metadataPath!, input, current.hash);
     const profiles = await this.profiles().catch(() => []);
     const active = profiles.find((profile) => (
       previous.profileSessionsRoot === join(profile.userDataDir, "claude-code-sessions")
     ));
-    const stillNeedsRestart = !current.adoptedFromOtherSurface && previous.state === "restart-required" && (
-      !active ||
-      active.pid === previous.claudePidAtRegistration
+    // Old releases patched an already-adopted session and reported live success.
+    // Those registrations need one real reload even if the disk fields are complete.
+    const forkNeedsReload = Boolean(input.parentDesktopSessionId && (forkChanged || previous.forkMetadataVersion !== 1));
+    const stillNeedsRestart = forkNeedsReload || (
+      (input.parentDesktopSessionId || !current.adoptedFromOtherSurface) && previous.state === "restart-required" && (
+        !active || active.pid === previous.claudePidAtRegistration
+      )
     );
     const now = this.now();
     if (
@@ -595,11 +612,18 @@ export class ClaudeDesktopSessionRegistrar {
       ...previous,
       state: stillNeedsRestart ? "restart-required" : "registered",
       detail: stillNeedsRestart
-        ? "已写入 Claude Desktop 会话清单，重启后可见。"
+        ? input.parentDesktopSessionId
+          ? "已保存 Fork 关系，Claude Desktop 下次启动后会按分支识别；Bridge 中可继续使用。"
+          : "已写入 Claude Desktop 会话清单，重启后可见。"
         : "Claude Desktop 已登记这条 Bridge 会话。",
       updatedAt: now,
       metadataSha256: hash,
+      ...(input.parentDesktopSessionId ? { forkMetadataVersion: 1 } : {}),
     };
+    if (forkNeedsReload) {
+      if (active) restored.claudePidAtRegistration = active.pid;
+      else delete restored.claudePidAtRegistration;
+    }
     if (!stillNeedsRestart) delete restored.claudePidAtRegistration;
     // Nothing meaningful changed: keep the previous record. Minting a fresh
     // updatedAt here on every reconcile used to make registrationChanged()
@@ -612,7 +636,8 @@ export class ClaudeDesktopSessionRegistrar {
       previous.metadataPath === restored.metadataPath &&
       previous.metadataSha256 === restored.metadataSha256 &&
       previous.profileSessionsRoot === restored.profileSessionsRoot &&
-      previous.claudePidAtRegistration === restored.claudePidAtRegistration
+      previous.claudePidAtRegistration === restored.claudePidAtRegistration &&
+      previous.forkMetadataVersion === restored.forkMetadataVersion
     ) return previous;
     return restored;
   }

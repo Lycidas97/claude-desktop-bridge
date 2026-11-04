@@ -286,6 +286,12 @@ export class ClaudeDesktopManagedTransport extends EventEmitter {
     await this.options.manager.call("interrupt", [desktopSessionId]);
   }
 
+  async stopTask(sessionId: string, taskId: string): Promise<void> {
+    const desktopSessionId = this.bridgeToDesktop.get(sessionId);
+    if (!desktopSessionId) throw new Error("Claude Desktop session mapping is unavailable");
+    await this.options.manager.call("stopTask", [desktopSessionId, taskId]);
+  }
+
   async setModel(sessionId: string, model: string): Promise<void> {
     const desktopSessionId = this.bridgeToDesktop.get(sessionId);
     if (!desktopSessionId) throw new Error("Claude Desktop session mapping is unavailable");

@@ -310,6 +310,8 @@ describe("native Claude permission hook", () => {
           observedAt: Date.now(),
         },
         isDesktopBusy: () => true,
+        isMainTurnBusy: () => true,
+        runningSubagents: () => undefined,
         externalWriteVersion: () => 0,
         canStartBridgeHost: async () => false,
         onCatalog: () => () => undefined,

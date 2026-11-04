@@ -15,8 +15,12 @@ import { PairingSyncScreen } from "./components/PairingSyncScreen.js";
 import { MediaPreviewProvider } from "./components/MediaPreviewProvider.js";
 import { MobileAppShell, type MobileTab } from "./components/MobileAppShell.js";
 import { MobileHostDetails } from "./components/MobileHostDetails.js";
+import { MobilePageHeader } from "./components/MobilePageHeader.js";
+import { MobileQuotaPage } from "./components/MobileQuotaPage.js";
 import { MobileSettings } from "./components/MobileSettings.js";
 import { HostPermissionSettings } from "./components/HostPermissionSettings.js";
+import { MAGPIE_QUOTA_METHOD, type QuotaLoader, type QuotaSnapshot } from "../../../plugins/magpie-quota/contract.js";
+import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
 
 export function App() {
   const themeControl = useTheme();
@@ -27,26 +31,33 @@ export function App() {
     : undefined, [mobile.state.snapshot, agentVisibility.enabled]);
   const [pairingOpen, setPairingOpen] = useState(false);
   const [tab, setTab] = useState<MobileTab>("sessions");
-  const [computerDetailsOpen, setComputerDetailsOpen] = useState(false);
-  const [conversation, setConversation] = useState<{ hostId: string | undefined; open: boolean }>({ hostId: undefined, open: false });
+  const [computerDetailsHostId, setComputerDetailsHostId] = useState<string>();
+  const [quotaOpen, setQuotaOpen] = useState(false);
   const [focusRequest, setFocusRequest] = useState<{ sessionId: string; key: number }>();
   const [directoryRequest, setDirectoryRequest] = useState(0);
-  const handleConversationChange = useCallback((open: boolean) => {
-    setConversation({ hostId: mobile.state.activeHostId, open });
-  }, [mobile.state.activeHostId]);
   const handleFocusHandled = useCallback(() => setFocusRequest(undefined), []);
+  // requestMedia is the hook's plain request function; its identity never changes.
+  const request = mobile.requestMedia;
+  const loadMagpieQuota = useCallback<QuotaLoader>(async (options) => {
+    // The desktop gives its gateway 15 s; wait past that.
+    const response = await request(MAGPIE_QUOTA_METHOD, { refresh: options?.refresh ?? false }, {
+      wait: true, allowOffline: false, timeoutMs: 30_000,
+    });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "Magpie 额度读取失败");
+    return response.result as QuotaSnapshot;
+  }, [request]);
+  // A computer without the plugin answers its method with an error, so ask only one that declares it.
+  const quotaDeclared = Boolean(mobile.state.snapshot?.host.capabilities.includes("plugin.magpie-quota.v1"));
+  const quotaEnabled = mobile.state.connection === "connected" && mobile.state.desktopOnline && quotaDeclared;
+  const closeQuota = useCallback(() => setQuotaOpen(false), []);
 
   async function openComputer(hostId: string, sessionId?: string): Promise<void> {
     if (hostId !== mobile.state.activeHostId) await mobile.selectHost(hostId);
     if (sessionId) setFocusRequest({ sessionId, key: Date.now() });
     else setDirectoryRequest(Date.now());
-    setComputerDetailsOpen(false);
+    setComputerDetailsHostId(undefined);
     setTab("sessions");
   }
-
-  useEffect(() => {
-    setComputerDetailsOpen(false);
-  }, [mobile.state.activeHostId]);
 
   useEffect(() => installMobileBackNavigation(), []);
 
@@ -59,7 +70,8 @@ export function App() {
       return true;
     }
     if (tab !== "sessions") {
-      setComputerDetailsOpen(false);
+      setComputerDetailsHostId(undefined);
+      setQuotaOpen(false);
       setTab("sessions");
       return true;
     }
@@ -113,18 +125,19 @@ export function App() {
   return (
     <MobileAppShell
       tab={tab}
-      fullscreen={tab === "sessions" && conversation.hostId === mobile.state.activeHostId && conversation.open}
       onTabChange={(next) => {
-        setComputerDetailsOpen(false);
+        setComputerDetailsHostId(undefined);
+        setQuotaOpen(false);
         setTab(next);
       }}
     >
+      {/* One quota snapshot per computer, shared by the session form and the settings dashboard. */}
+      <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled}>
       {mobile.state.activeHostId ? (
         <div className="mobile-tab-page" hidden={tab !== "sessions"}>
           <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia}>
             <MobileWorkspace
               visible={tab === "sessions"}
-              onConversationChange={handleConversationChange}
               {...(focusRequest ? { focusRequest } : {})}
               onFocusHandled={handleFocusHandled}
               directoryRequest={directoryRequest}
@@ -149,12 +162,19 @@ export function App() {
               onOpenSession={mobile.openSession}
               onLoadOlderHistory={mobile.loadOlderHistory}
               onLoadOlderEvidence={mobile.loadOlderEvidence}
+              onLoadEvidenceDetails={mobile.loadEvidenceDetails}
               onPreviewArtifact={mobile.previewArtifact}
               onDownloadArtifact={mobile.downloadArtifact}
               onDownloadSessionFile={mobile.downloadSessionFile}
               onUploadFile={mobile.uploadFile}
               onSendTurn={mobile.sendTurn}
               onInterruptTurn={mobile.interruptTurn}
+              {...(mobile.state.snapshot?.host.capabilities.includes("turn.queue.steer.v1")
+                ? { onSteerQueuedTurn: mobile.steerQueuedTurn }
+                : {})}
+              {...(mobile.state.snapshot?.host.capabilities.includes("subagent.stop.v1")
+                ? { onStopSubagent: mobile.stopSubagent }
+                : {})}
               onResolveUncertain={mobile.resolveUncertainDelivery}
               onResolvePermission={mobile.resolvePermission}
               onCreateSession={mobile.createSession}
@@ -185,7 +205,7 @@ export function App() {
               onDesktopAppAction={mobile.controlDesktopApp}
               onRefresh={mobile.refresh}
               onBackToHosts={() => {
-                setComputerDetailsOpen(false);
+                setComputerDetailsHostId(undefined);
                 setTab("computers");
               }}
               onRetry={mobile.retryConnection}
@@ -194,7 +214,7 @@ export function App() {
         </div>
       ) : tab === "sessions" ? (
         <main className="mobile-settings-page">
-          <header className="mobile-page-header"><h1>会话</h1></header>
+          <MobilePageHeader title="会话" />
           <section className="mobile-settings-content">
             <div className="mobile-empty-directory">
               <h2>选择一台电脑开始</h2>
@@ -204,7 +224,7 @@ export function App() {
           </section>
         </main>
       ) : null}
-      {tab === "computers" && (computerDetailsOpen && mobile.state.activeHostId ? (
+      {tab === "computers" && (computerDetailsHostId && computerDetailsHostId === mobile.state.activeHostId ? (
         <MobileHostDetails
           activeHostId={mobile.state.activeHostId}
           desktopName={mobile.state.desktopName ?? "我的电脑"}
@@ -221,9 +241,9 @@ export function App() {
           onDesktopAppAction={mobile.controlDesktopApp}
           onRemove={async () => {
             await mobile.forgetHost(mobile.state.activeHostId!);
-            setComputerDetailsOpen(false);
+            setComputerDetailsHostId(undefined);
           }}
-          onBack={() => setComputerDetailsOpen(false)}
+          onBack={() => setComputerDetailsHostId(undefined)}
           permissionSettings={mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1") ? (
             <HostPermissionSettings
               {...(snapshot ? { snapshot } : {})}
@@ -239,14 +259,25 @@ export function App() {
           error={mobile.state.error}
           onSelect={openComputer}
           onDetails={(hostId) => {
-            if (hostId === mobile.state.activeHostId) setComputerDetailsOpen(true);
+            setComputerDetailsHostId(hostId);
+            if (hostId !== mobile.state.activeHostId) void mobile.selectHost(hostId);
           }}
           onRemove={mobile.forgetHost}
           onAdd={() => setPairingOpen(true)}
           onRepair={() => setPairingOpen(true)}
         />
       ))}
-      {tab === "settings" && <MobileSettings themeControl={themeControl} agentVisibility={agentVisibility} {...(mobile.state.snapshot ? { snapshot: mobile.state.snapshot } : {})} />}
+      {tab === "settings" && (quotaOpen && quotaDeclared ? (
+        <MobileQuotaPage desktopName={mobile.state.desktopName ?? "我的电脑"} onBack={closeQuota} />
+      ) : (
+        <MobileSettings
+          themeControl={themeControl}
+          agentVisibility={agentVisibility}
+          {...(mobile.state.snapshot ? { snapshot: mobile.state.snapshot } : {})}
+          {...(quotaDeclared ? { quota: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setQuotaOpen(true) } } : {})}
+        />
+      ))}
+      </MagpieQuotaProvider>
       <DiagnosticFloatingEntry />
     </MobileAppShell>
   );

@@ -155,7 +155,7 @@ async function launchApplication(
   throw new Error(`未找到 ${definition.displayName} 应用。`);
 }
 
-function signalProcess(
+export function signalProcess(
   pid: number,
   platform = process.platform,
   _environment: NodeJS.ProcessEnv = process.env,

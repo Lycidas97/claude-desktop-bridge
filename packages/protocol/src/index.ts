@@ -1,5 +1,6 @@
 export * from "./crypto.js";
 export * from "./encoding.js";
+export * from "./evidence.js";
 export * from "./endpoints.js";
 export * from "./ice.js";
 export * from "./relay-transport.js";

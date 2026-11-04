@@ -4,7 +4,7 @@ import type {
   BridgePermissionMode,
   BridgeSessionConfiguration,
 } from "@bridge/protocol";
-import { LoaderCircle, ShieldCheck } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../lib/runtime-labels.js";
@@ -144,33 +144,42 @@ export function HostPermissionSettings({
     }
   }
 
+  const runtimeIds = snapshot ? RUNTIME_IDS.filter((id) => id === "claude-desktop"
+    || snapshot.runtimes?.some((runtime) => runtime.id === id)
+    || snapshot.desktopApps?.some((app) => app.id === id)
+    || snapshot.sessions.some((session) => session.runtimeId === id)) : [];
+
   return (
-    <section className="mobile-settings-group host-permission-settings" aria-label="电脑默认授权">
-      <header className="mobile-settings-row">
-        <h3><ShieldCheck size={16} />电脑默认授权</h3>
-      </header>
-      <p className="mobile-settings-row">每个应用单独设置默认授权。会话内的授权设置会覆盖所属应用的默认值。</p>
+    <section className="mobile-settings-group host-permission-settings" aria-labelledby="host-permission-title">
+      <h2 id="host-permission-title">电脑默认授权</h2>
       {!snapshot ? (
         <p className="mobile-settings-row">连接电脑后可设置默认授权。</p>
       ) : !supported ? (
         <p className="mobile-settings-row">这台电脑暂不支持默认授权设置，请更新电脑端 Bridge。</p>
       ) : (
         <>
-          <div className="mobile-settings-row permission-scope-segments" role="group" aria-label="默认授权所属应用">
-            {RUNTIME_IDS.filter((id) => id === "claude-desktop" || snapshot.runtimes?.some((runtime) => runtime.id === id)
-              || snapshot.desktopApps?.some((app) => app.id === id)
-              || snapshot.sessions.some((session) => session.runtimeId === id)).map((id) => (
-              <button
-                key={id}
-                type="button"
-                className={runtimeId === id ? "active" : ""}
-                aria-pressed={runtimeId === id}
-                disabled={saving}
-                onClick={() => setRuntimeId(id)}
-              >{desktopRuntimeName(id)}</button>
-            ))}
+          {runtimeIds.length > 1 && (
+            <div className="mobile-settings-row">
+              <div className="permission-scope-segments" role="group" aria-label="默认授权所属应用">
+                {runtimeIds.map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={runtimeId === id ? "active" : ""}
+                    aria-pressed={runtimeId === id}
+                    disabled={saving}
+                    onClick={() => setRuntimeId(id)}
+                  >{desktopRuntimeName(id)}</button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="mobile-settings-row">
+            <span>
+              <strong>{runtimeName} 默认授权</strong>
+              <small>仅影响这台电脑上的 {runtimeName} 会话，其他应用的默认授权保持各自设置。</small>
+            </span>
           </div>
-          <div className="mobile-settings-row"><strong>{runtimeName} 默认授权</strong></div>
           {runtimeId !== "claude-desktop" && !sessionId ? (
             <p className="mobile-settings-row">需要先在这台电脑上创建或同步一个 {runtimeName} 会话，才能读取和修改该应用的默认授权。</p>
           ) : loading ? (
@@ -180,9 +189,8 @@ export function HostPermissionSettings({
               <PermissionModeControls scope="host" value={mode} disabled={saving || savedMode === undefined} onChange={setMode} />
             </div>
           )}
-          <p className="mobile-settings-row">仅影响这台电脑上的 {runtimeName} 会话，其他应用的默认授权保持各自设置。</p>
           {savedMode !== undefined && (
-            <div className="mobile-settings-row">
+            <div className="mobile-settings-row mobile-settings-actions">
               <button
                 type="button"
                 className="secondary-button"
@@ -197,9 +205,10 @@ export function HostPermissionSettings({
               </button>
             </div>
           )}
-          {error && <p className="mobile-settings-row session-configuration-error" role="alert">{error}</p>}
         </>
       )}
+      <p>每个应用单独设置默认授权。会话内的授权设置会覆盖所属应用的默认值。</p>
+      {error && <p className="inline-error" role="alert">{error}</p>}
       <ConfirmationDialog
         open={confirmFullAccess}
         title={`为 ${runtimeName} 启用完全授权`}

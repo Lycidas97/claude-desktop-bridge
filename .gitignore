@@ -4,6 +4,7 @@ coverage/
 .DS_Store
 .codegraph/
 *.log
+*.orig
 .env
 .env.*
 !.env.example

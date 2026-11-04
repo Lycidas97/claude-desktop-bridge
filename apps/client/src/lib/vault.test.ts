@@ -4,7 +4,7 @@ import {
   bridgeEndpoint,
   type BridgeHostSnapshot,
 } from "@bridge/protocol";
-import { indexedDB } from "fake-indexeddb";
+import { indexedDB, IDBKeyRange } from "fake-indexeddb";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { BridgeVault } from "./vault.js";
 
@@ -27,7 +27,7 @@ async function seedLegacyIdentity(
   crypto: BridgeCrypto,
   snapshot: BridgeHostSnapshot,
 ): Promise<void> {
-  const request = indexedDB.open("claude-bridge", 3);
+  const request = indexedDB.open("claude-bridge");
   request.addEventListener("upgradeneeded", () => {
     const database = request.result;
     database.createObjectStore("identity", { keyPath: "key" });
@@ -56,6 +56,7 @@ async function seedLegacyIdentity(
 }
 
 beforeAll(() => {
+  vi.stubGlobal("IDBKeyRange", IDBKeyRange);
   Object.defineProperty(globalThis, "indexedDB", {
     configurable: true,
     value: indexedDB,
@@ -139,7 +140,7 @@ describe("BridgeVault manual relay override", () => {
         iceServers: [{ urls: "stun:custom.example:3478" }],
       });
       const crypto = await vault.importPairing(pairing.pairing);
-      const database = await requestResult(indexedDB.open("claude-bridge", 3));
+      const database = await requestResult(indexedDB.open("claude-bridge"));
       const transaction = database.transaction("identity", "readwrite");
       const store = transaction.objectStore("identity");
       const stored = await requestResult(store.get("host:override-migration-host"));

@@ -20,7 +20,7 @@ import {
 } from "@bridge/protocol";
 
 const DATABASE_NAME = "claude-bridge";
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 const LEGACY_IDENTITY_KEY = "current";
 const HOST_KEY_PREFIX = "host:";
 const MESSAGE_LIMIT = 150;
@@ -212,7 +212,11 @@ export class BridgeVault {
       request.addEventListener("upgradeneeded", () => {
         const database = request.result;
         if (!database.objectStoreNames.contains("identity")) database.createObjectStore("identity", { keyPath: "key" });
-        if (!database.objectStoreNames.contains("messages")) database.createObjectStore("messages", { keyPath: "id" });
+        const messages = database.objectStoreNames.contains("messages")
+          ? request.transaction!.objectStore("messages")
+          : database.createObjectStore("messages", { keyPath: "id" });
+        if (!messages.indexNames.contains("sentAt")) messages.createIndex("sentAt", "envelope.sentAt");
+        if (!messages.indexNames.contains("roomSentAt")) messages.createIndex("roomSentAt", ["envelope.roomId", "envelope.sentAt"]);
         if (!database.objectStoreNames.contains("outbox")) database.createObjectStore("outbox", { keyPath: "id" });
       });
       request.addEventListener("success", () => resolve(request.result));
@@ -592,22 +596,35 @@ export class BridgeVault {
     const transaction = database.transaction("messages", "readwrite");
     const store = transaction.objectStore("messages");
     store.put({ id: envelope.id, envelope } satisfies StoredMessage);
-    const all = await requestResult(store.getAll()) as StoredMessage[];
-    if (all.length > MESSAGE_LIMIT) {
-      all.sort((a, b) => a.envelope.sentAt - b.envelope.sentAt);
-      for (const message of all.slice(0, all.length - MESSAGE_LIMIT)) store.delete(message.id);
+    const excess = await requestResult(store.count()) - MESSAGE_LIMIT;
+    if (excess > 0) {
+      let remaining = excess;
+      const cursor = store.index("sentAt").openKeyCursor();
+      cursor.onsuccess = () => {
+        if (!cursor.result || remaining-- <= 0) return;
+        store.delete(cursor.result.primaryKey);
+        cursor.result.continue();
+      };
     }
     await transactionDone(transaction);
   }
 
-  async listMessages(roomId?: string): Promise<EncryptedEnvelope[]> {
+  async listMessages(roomId?: string, limit = MESSAGE_LIMIT): Promise<EncryptedEnvelope[]> {
     const database = await this.open();
-    const transaction = database.transaction("messages", "readonly");
-    const all = await requestResult(transaction.objectStore("messages").getAll()) as StoredMessage[];
-    return all
-      .map((entry) => entry.envelope)
-      .filter((envelope) => !roomId || envelope.roomId === roomId)
-      .sort((a, b) => a.sentAt - b.sentAt);
+    const store = database.transaction("messages", "readonly").objectStore("messages");
+    const request = roomId
+      ? store.index("roomSentAt").openCursor(IDBKeyRange.bound([roomId, 0], [roomId, Number.MAX_SAFE_INTEGER]), "prev")
+      : store.index("sentAt").openCursor(null, "prev");
+    return new Promise((resolve, reject) => {
+      const messages: EncryptedEnvelope[] = [];
+      request.onsuccess = () => {
+        if (!request.result || messages.length >= limit) { resolve(messages.reverse()); return; }
+        messages.push((request.result.value as StoredMessage).envelope);
+        if (messages.length >= limit) resolve(messages.reverse());
+        else request.result.continue();
+      };
+      request.onerror = () => reject(request.error);
+    });
   }
 
   async addOutbox(envelope: EncryptedEnvelope): Promise<void> {

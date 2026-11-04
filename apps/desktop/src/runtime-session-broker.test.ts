@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,10 +20,19 @@ import { RuntimeSessionBroker, runtimeSessionId } from "./runtime-session-broker
 
 const directories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) => (
-    rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-  )));
+afterEach(() => {
+  const fixtures = directories.splice(0);
+  if (!fixtures.length) return;
+  const recycle = process.platform === "darwin" ? "/usr/bin/trash" : process.platform === "linux" ? "trash-put" : undefined;
+  if (!recycle) {
+    console.warn("No recycle command configured; keeping test fixtures:", fixtures);
+    return;
+  }
+  try {
+    execFileSync(recycle, fixtures);
+  } catch (error) {
+    console.warn("Could not recycle test fixtures; keeping remaining files:", fixtures, error);
+  }
 });
 
 async function waitFor(check: () => boolean, label = "condition"): Promise<void> {
@@ -236,6 +246,41 @@ class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
 }
 
 describe("RuntimeSessionBroker", () => {
+  it("does not rebroadcast unchanged native messages and tools after receipt-only compaction", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-compact-dedup-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const sessionId = runtimeSessionId("codex-desktop", "native-dedup");
+    const first = new SessionEventLog(path);
+    await first.append({ sessionId, itemId: "message-1", type: "session.observed", origin: "codex-desktop", data: { role: "assistant", text: "Unchanged answer" } });
+    await first.append({ sessionId, itemId: "tool-1", type: "tool.completed", origin: "codex-desktop", data: { toolName: "Read", summary: "Unchanged tool result" } });
+    await first.close();
+    const compacted = new SessionEventLog(path, 80, { bytesThreshold: 1, retainEvents: 0 });
+    await compacted.initialize();
+    await compacted.close();
+    const eventLog = new SessionEventLog(path);
+    await eventLog.initialize();
+    const adapter = new FakeRuntimeAdapter("codex-desktop", "native-dedup");
+    adapter.setHistory("native-dedup", [
+      { id: "message-1", role: "assistant", text: "Unchanged answer", createdAt: 1 },
+      { id: "tool-1", role: "tool", toolName: "Read", state: "completed", text: "Unchanged tool result", createdAt: 2 },
+    ]);
+    const broker = new RuntimeSessionBroker(new RuntimeAdapterRegistry([adapter]), eventLog, undefined, { liveSyncIntervalMs: 60_000 });
+    try {
+      await broker.initialize();
+      adapter.updateSession("native-dedup", { turnState: "running" });
+      await waitFor(() => broker.session(sessionId)?.turnState === "running");
+      const before = eventLog.latestSeq();
+      await broker.syncLiveHistories();
+      expect(eventLog.replay(before).filter((event) => event.type === "session.observed" || event.type === "tool.completed")).toEqual([]);
+      adapter.setHistory("native-dedup", [{ id: "message-1", role: "assistant", text: "Updated answer", createdAt: 1 }]);
+      await broker.syncLiveHistories();
+      expect(eventLog.replay(before).filter((event) => event.type === "session.observed")).toMatchObject([{ data: { text: "Updated answer" } }]);
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
+  });
   it("keeps identical native session IDs isolated by Desktop runtime", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-broker-"));
     directories.push(directory);

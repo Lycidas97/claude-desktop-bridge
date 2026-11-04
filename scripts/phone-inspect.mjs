@@ -17,7 +17,7 @@ const report = await page.evaluate(async () => {
     url: location.href,
     theme: document.documentElement.dataset.theme,
     family: document.documentElement.dataset.themeFamily,
-    topbar: text(".mobile-device"),
+    topbar: text(".m-host-chip"),
     transportBand: text(".mobile-transport-band"),
     heading: text("h1"),
   };

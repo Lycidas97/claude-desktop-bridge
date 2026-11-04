@@ -9,6 +9,9 @@ import {
   normalizeBridgeEndpoints,
   preferredBridgeIceServers,
   randomId,
+  evidenceSummary,
+  summarizeEvidenceEvent,
+  type BridgeEvidenceDetailPage,
   type BridgeAttachment,
   type BridgeDeliveryState,
   type BridgeDesktopAppStatus,
@@ -130,6 +133,8 @@ export interface LocalTurn {
   delivery: BridgeDeliveryState;
   commandId?: string;
   turnId?: string;
+  messageId?: string;
+  lastEventSeq?: number;
   error?: string;
 }
 
@@ -401,14 +406,23 @@ export function applyEventToTurns(turns: LocalTurn[], event: BridgeEvent): Local
         (turn.turnId && event.turnId && turn.turnId !== event.turnId)
       ))
     ) return turn;
+    const messageId = event.type === "user.message.accepted" ? event.itemId
+      : event.type === "message.delivery" && event.data.delivery === "submitted"
+        ? typeof event.data.messageId === "string" ? event.data.messageId : event.itemId
+        : undefined;
+    if (event.seq <= (turn.lastEventSeq ?? -1)) {
+      return !turn.messageId && messageId ? { ...turn, messageId } : turn;
+    }
     if (event.type === "turn.queued") {
-      return { ...turn, delivery: "host-received", ...(commandId ? { commandId } : {}) };
+      return { ...turn, lastEventSeq: event.seq, delivery: "host-received", ...(commandId ? { commandId } : {}) };
     }
     if (event.type === "user.message.accepted") return {
       ...turn,
+      lastEventSeq: event.seq,
       delivery: "session-received",
       ...(commandId ? { commandId } : {}),
       ...(event.turnId ? { turnId: event.turnId } : {}),
+      ...(messageId ? { messageId } : {}),
     };
     if (event.type === "message.delivery" && typeof event.data.delivery === "string") {
       const delivery = event.data.delivery as BridgeDeliveryState;
@@ -417,6 +431,7 @@ export function applyEventToTurns(turns: LocalTurn[], event: BridgeEvent): Local
           "local-saved",
           "relay-received",
           "host-received",
+          "submitted",
           "session-received",
           "running",
           "completed",
@@ -427,7 +442,9 @@ export function applyEventToTurns(turns: LocalTurn[], event: BridgeEvent): Local
       ) {
         return {
           ...turn,
+          lastEventSeq: event.seq,
           delivery,
+          ...(messageId ? { messageId } : {}),
           ...(typeof event.data.error === "string" ? { error: event.data.error } : {}),
           ...(commandId ? { commandId } : {}),
         };
@@ -435,26 +452,33 @@ export function applyEventToTurns(turns: LocalTurn[], event: BridgeEvent): Local
     }
     if (event.type === "turn.started") return {
       ...turn,
+      lastEventSeq: event.seq,
       delivery: "running",
       ...(commandId ? { commandId } : {}),
       ...(event.turnId ? { turnId: event.turnId } : {}),
     };
-    if (event.type === "turn.completed") return { ...turn, delivery: "completed" };
+    if (event.type === "turn.completed") return { ...turn, lastEventSeq: event.seq, delivery: "completed" };
     if (event.type === "turn.failed") {
       return {
         ...turn,
+        lastEventSeq: event.seq,
         delivery: "failed",
         error: typeof event.data.error === "string" ? event.data.error : "Claude 处理失败",
       };
     }
-    if (event.type === "turn.interrupted") return { ...turn, delivery: "cancelled" };
+    if (event.type === "turn.interrupted") return { ...turn, lastEventSeq: event.seq, delivery: "cancelled" };
     return turn;
   });
 }
 
 export function mergeBridgeEvents(current: BridgeEvent[], incoming: BridgeEvent[]): BridgeEvent[] {
-  const merged = new Map(current.map((event) => [event.eventId, event]));
-  for (const event of incoming) merged.set(event.eventId, event);
+  const merged = new Map<string, BridgeEvent>();
+  for (const record of [...current, ...incoming]) {
+    const event = summarizeEvidenceEvent(record);
+    const bundle = evidenceFromEvent(event);
+    const key = bundle ? `evidence:${bundle.sessionId}:${bundle.id}` : event.eventId;
+    if ((merged.get(key)?.seq ?? -1) <= event.seq) merged.set(key, event);
+  }
   return [...merged.values()]
     .sort((left, right) => left.seq - right.seq)
     .slice(-2_000);
@@ -471,7 +495,7 @@ function evidenceFromEvent(event: BridgeEvent): BridgeEvidenceBundle | undefined
     !Array.isArray(evidence.tools) ||
     !Array.isArray(evidence.artifacts)
   ) return undefined;
-  return evidence as BridgeEvidenceBundle;
+  return evidenceSummary(evidence as BridgeEvidenceBundle);
 }
 
 function previewFromResponse(response: BridgeResponse): BridgeArtifactPreview | undefined {
@@ -528,7 +552,7 @@ function mergeEvidence(
   incoming: BridgeEvidenceBundle[],
 ): BridgeEvidenceBundle[] {
   const merged = new Map(current.map((item) => [item.id, item]));
-  for (const item of incoming) merged.set(item.id, item);
+  for (const item of incoming) merged.set(item.id, evidenceSummary(item));
   return [...merged.values()].sort((left, right) => (
     right.startedAt - left.startedAt || right.id.localeCompare(left.id)
   ));
@@ -597,7 +621,7 @@ function snapshotWithPermissions(
       if (session.turnState !== "waiting") return session;
       return {
         ...session,
-        turnState: session.ownership === "BRIDGE_RUNNING"
+        turnState: session.ownership === "BRIDGE_RUNNING" || session.ownership === "DESKTOP_MANAGED_RUNNING"
           ? "running"
           : session.pendingCount > 0
             ? "queued"
@@ -671,8 +695,8 @@ export function applyEventToSnapshot(
   event: BridgeEvent,
   permissions: BridgePermissionInfo[],
 ): BridgeHostSnapshot | undefined {
-  const current = snapshotWithPermissions(snapshot, permissions);
-  if (!current) return current;
+  if (!snapshot || event.seq <= snapshot.latestSeq) return snapshot;
+  const current = snapshotWithPermissions({ ...snapshot, latestSeq: event.seq }, permissions)!;
   if (event.type === "provider.updated") {
     const profile = event.data.profile as BridgeProviderProfile | undefined;
     if (!profile || typeof profile.id !== "string") return current;
@@ -763,11 +787,67 @@ function applyEventToSession(
     return next;
   }
   if (
-    hasPendingPermission &&
-    event.type !== "turn.completed" &&
-    event.type !== "turn.failed" &&
-    event.type !== "turn.interrupted"
-  ) return { ...session, turnState: "waiting" };
+    event.type === "turn.queued" || event.type === "turn.started" ||
+    event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.interrupted"
+  ) {
+    const commandId = typeof event.data.commandId === "string" ? event.data.commandId : undefined;
+    const pendingCommandIds = new Set(session.pendingCommandIds ?? []);
+    const wasQueued = event.data.wasQueued === true || (
+      commandId !== undefined && pendingCommandIds.has(commandId) &&
+      (!event.turnId || event.turnId !== session.activeTurnId)
+    );
+    let pendingCount = session.pendingCount;
+    if (event.type === "turn.queued") {
+      if (commandId && !pendingCommandIds.has(commandId)) {
+        pendingCommandIds.add(commandId);
+        pendingCount += 1;
+      } else if (!commandId) {
+        pendingCount = Math.max(1, pendingCount);
+      }
+    } else if (event.type === "turn.started" || wasQueued) {
+      // Older snapshots can count queued commands without naming them.
+      if ((commandId && pendingCommandIds.has(commandId)) || pendingCount > pendingCommandIds.size) {
+        pendingCount = Math.max(0, pendingCount - 1);
+      }
+      if (commandId) pendingCommandIds.delete(commandId);
+    }
+    const queued = {
+      pendingCommandIds: Array.isArray(event.data.pendingCommandIds)
+        ? event.data.pendingCommandIds as string[]
+        : [...pendingCommandIds],
+      pendingCount: typeof event.data.pendingCount === "number" ? event.data.pendingCount : pendingCount,
+    };
+    if (event.type === "turn.queued" || (wasQueued && event.type !== "turn.started")) {
+      return {
+        ...session,
+        ...queued,
+        turnState: hasPendingPermission || session.turnState === "waiting" ? "waiting"
+          : session.turnState === "running" ? "running"
+            : queued.pendingCount > 0 ? "queued" : "idle",
+      };
+    }
+    if (event.type === "turn.started") {
+      return {
+        ...session,
+        ...queued,
+        ownership: session.transport === "claude-desktop-managed" ? "DESKTOP_MANAGED_RUNNING" : "BRIDGE_RUNNING",
+        turnState: hasPendingPermission ? "waiting" : "running",
+        executionStage: "running",
+        ...(event.turnId ? { activeTurnId: event.turnId } : {}),
+      };
+    }
+    if (event.turnId && session.activeTurnId && event.turnId !== session.activeTurnId) {
+      return { ...session, ...queued };
+    }
+    const { activeTurnId: _activeTurnId, currentSummary: _currentSummary, executionStage: _executionStage, ...rest } = session;
+    return {
+      ...rest,
+      ...queued,
+      ownership: session.transport === "claude-desktop-managed" ? "DESKTOP_MANAGED_IDLE" : "BRIDGE_IDLE",
+      turnState: hasPendingPermission ? "waiting" : queued.pendingCount > 0 ? "queued" : "idle",
+    };
+  }
+  if (hasPendingPermission) return { ...session, turnState: "waiting" };
   if (event.type === "session.ownership" && typeof event.data.ownership === "string") {
     return {
       ...session,
@@ -810,46 +890,6 @@ function applyEventToSession(
     const { pendingRuntimeHandoff: _pending, ...rest } = session;
     return rest;
   }
-  if (event.type === "turn.queued") {
-    return {
-      ...session,
-      turnState: "queued",
-      pendingCount: Math.max(1, session.pendingCount),
-    };
-  }
-  if (event.type === "turn.started") {
-    return {
-      ...session,
-      ownership: session.transport === "claude-desktop-managed"
-        ? "DESKTOP_MANAGED_RUNNING"
-        : "BRIDGE_RUNNING",
-      turnState: "running",
-      pendingCount: Math.max(0, session.pendingCount - 1),
-      ...(event.turnId ? { activeTurnId: event.turnId } : {}),
-    };
-  }
-  if (
-    event.type === "turn.completed" ||
-    event.type === "turn.failed" ||
-    event.type === "turn.interrupted"
-  ) {
-    const pendingCount = event.type === "turn.interrupted" && event.data.wasQueued === true
-      ? Math.max(0, session.pendingCount - 1)
-      : session.pendingCount;
-    const {
-      activeTurnId: _activeTurnId,
-      currentSummary: _currentSummary,
-      ...rest
-    } = session;
-    return {
-      ...rest,
-      ownership: session.transport === "claude-desktop-managed"
-        ? "DESKTOP_MANAGED_IDLE"
-        : "BRIDGE_IDLE",
-      turnState: hasPendingPermission ? "waiting" : pendingCount > 0 ? "queued" : "idle",
-      pendingCount,
-    };
-  }
   return session;
 }
 
@@ -871,7 +911,10 @@ export function applyEventsToSnapshot(
   let providers = current.providers ?? [];
   let providersDirty = false;
   let sessionsDirty = false;
+  let latestSeq = current.latestSeq;
   for (const event of events) {
+    if (event.seq <= latestSeq) continue;
+    latestSeq = event.seq;
     currentPermissions = applyPermissionEvent(currentPermissions, event);
     if (event.type === "provider.updated") {
       const profile = event.data.profile as BridgeProviderProfile | undefined;
@@ -904,6 +947,7 @@ export function applyEventsToSnapshot(
   }
   current = {
     ...current,
+    latestSeq,
     ...(sessionsDirty ? { sessions: [...byId.values()] } : {}),
     ...(providersDirty ? { providers } : {}),
   };
@@ -926,7 +970,7 @@ async function readStoredHostState(
   latestSeq: number;
 }> {
   const t0 = Date.now();
-  const allEnvelopes = storedEnvelopes ?? await bridgeVault.listMessages(crypto.identity.roomId).catch((err) => {
+  const allEnvelopes = storedEnvelopes ?? await bridgeVault.listMessages(crypto.identity.roomId, 120).catch((err) => {
     diagLog("error", "vault", "listMessages 异常", String(err));
     return [];
   });
@@ -1142,12 +1186,13 @@ export function useMobileBridge() {
     if (payload.kind === "snapshot") {
       const rebased = rebaseSnapshot(payload.snapshot, stateRef.current.events);
       const { snapshot, permissions } = rebased;
+      // Receiving it already marked the desktop online. Its host.online can be stale: a restarting
+      // desktop builds the snapshot before its relay state reads "connected" and sends it after.
       setState((current) => ({
         ...current,
         snapshot,
         permissions,
         desktopName: snapshot.host.name,
-        desktopOnline: snapshot.host.online,
         latestSeq: rebased.latestSeq,
       }));
       updateHostCache(crypto.identity.roomId, snapshot, permissions);
@@ -1156,7 +1201,9 @@ export function useMobileBridge() {
     }
     if (payload.kind === "event") {
       setState((current) => {
-        const permissions = applyPermissionEvent(current.permissions, payload.event);
+        const permissions = payload.event.seq <= (current.snapshot?.latestSeq ?? 0)
+          ? current.permissions
+          : applyPermissionEvent(current.permissions, payload.event);
         const snapshot = applyEventToSnapshot(current.snapshot, payload.event, permissions);
         const evidenceItem = evidenceFromEvent(payload.event);
         const evidence = evidenceItem ? {
@@ -1323,6 +1370,10 @@ export function useMobileBridge() {
       const pending = pendingResponsesRef.current.get(request.requestId);
       if (pending) clearTimeout(pending.timer);
       pendingResponsesRef.current.delete(request.requestId);
+      if (persistOutbox && !options.wait) {
+        diagLog("warn", "bridge", "发送失败，消息保留在待发箱等待重试", String(error));
+        return undefined;
+      }
       throw error;
     }
     return responsePromise;
@@ -1335,7 +1386,7 @@ export function useMobileBridge() {
     try {
       const events: BridgeEvent[] = [];
       let cursor = fromSeq ?? stateRef.current.latestSeq;
-      for (let page = 0; page < 20; page += 1) {
+      for (;;) {
         const response = await sendRequest("events.resume", {
           afterSeq: cursor,
           limit: 250,
@@ -1456,7 +1507,7 @@ export function useMobileBridge() {
         snapshot: rebased.snapshot,
         permissions: rebased.permissions,
         desktopName: rebased.snapshot.host.name,
-        desktopOnline: rebased.snapshot.host.online,
+        // The answer itself shows the desktop online; its host.online can be stale (see handlePayload).
         latestSeq: rebased.latestSeq,
         error: undefined,
         hosts: current.hosts.map((host) => host.roomId === roomId
@@ -2015,7 +2066,14 @@ export function useMobileBridge() {
         void (async () => {
           const cachedEnvelope = shouldExtendLocalEvidenceCache(message.payload)
             ? await crypto.encrypt(
-                message.payload,
+                message.payload.kind === "event"
+                  ? { ...message.payload, event: summarizeEvidenceEvent(message.payload.event) }
+                  : message.payload.kind === "response" && evidencePageFromResponse(message.payload)
+                    ? { ...message.payload, result: { ...(message.payload.result as Record<string, unknown>), evidence: {
+                        ...evidencePageFromResponse(message.payload)!,
+                        items: evidencePageFromResponse(message.payload)!.items.map(evidenceSummary),
+                      } } }
+                    : message.payload,
                 message.header.from,
                 message.header.to,
                 Date.now(),
@@ -2533,6 +2591,26 @@ export function useMobileBridge() {
     }
   }, [sendRequest]);
 
+  const loadEvidenceDetails = useCallback(async (
+    evidenceId: string, kind: "tools" | "artifacts", cursor?: string,
+  ): Promise<BridgeEvidenceDetailPage> => {
+    const crypto = cryptoRef.current;
+    const paged = stateRef.current.snapshot?.host.capabilities?.includes("evidence.details.v1");
+    const response = await sendRequest(paged ? "evidence.details" : "evidence.get", {
+      evidenceId, ...(paged ? { kind, cursor, limit: 30 } : {}),
+    }, { wait: true, timeoutMs: 30_000, allowOffline: false });
+    if (cryptoRef.current !== crypto) throw new Error("连接已切换，请重新打开成果");
+    if (!response?.ok) throw new Error(response?.error?.message ?? "读取成果详情失败");
+    if (paged) return (response.result as { page: BridgeEvidenceDetailPage }).page;
+    const bundle = (response.result as { evidence: BridgeEvidenceBundle }).evidence;
+    const offset = cursor ? Number(cursor) : 0;
+    const hasMore = offset + 30 < bundle[kind].length;
+    const next = { evidenceId, hasMore, ...(hasMore ? { nextCursor: String(offset + 30) } : {}) };
+    return kind === "tools"
+      ? { ...next, kind, items: bundle.tools.slice(offset, offset + 30) }
+      : { ...next, kind, items: bundle.artifacts.slice(offset, offset + 30) };
+  }, [sendRequest]);
+
   const previewArtifact = useCallback(async (
     artifactId: string,
   ): Promise<BridgeArtifactPreview> => {
@@ -2688,6 +2766,20 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "任务停止失败");
     const result = response.result as { interrupted?: boolean } | undefined;
     if (result?.interrupted !== true) throw new Error("当前没有可停止的 Bridge 任务");
+    await resumeEvents();
+  }, [resumeEvents, sendRequest]);
+
+  const steerQueuedTurn = useCallback(async (sessionId: string, commandId: string) => {
+    const response = await sendRequest("turn.queue.steer", { sessionId, commandId }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "立即调整失败");
+    const result = response.result as { state: string };
+    await resumeEvents();
+    if (result.state === "uncertain") throw new Error("消息投递状态尚未确认，请同步状态后重试");
+  }, [resumeEvents, sendRequest]);
+
+  const stopSubagent = useCallback(async (sessionId: string, agentId: string) => {
+    const response = await sendRequest("subagent.stop", { sessionId, agentId }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "子代理停止失败");
     await resumeEvents();
   }, [resumeEvents, sendRequest]);
 
@@ -3271,6 +3363,7 @@ export function useMobileBridge() {
     openSession,
     loadOlderHistory,
     loadOlderEvidence,
+    loadEvidenceDetails,
     previewArtifact,
     requestMedia: sendRequest,
     uploadFile,
@@ -3278,6 +3371,8 @@ export function useMobileBridge() {
     downloadSessionFile,
     sendTurn,
     interruptTurn,
+    steerQueuedTurn,
+    stopSubagent,
     resolveUncertainDelivery,
     resolvePermission,
     createSession,

@@ -9,6 +9,7 @@ import {
   type BridgeInteractivePrompt,
   type BridgeInteractiveQuestion,
   type BridgeSubagentSummary,
+  type BridgeTaskPlan,
   type ClaudeHistoryMessage,
 } from "@bridge/protocol";
 
@@ -29,6 +30,7 @@ interface TranscriptNode {
   role?: ClaudeHistoryMessage["role"];
   text?: string;
   interactivePrompt?: BridgeInteractivePrompt;
+  planUpdates?: Array<{ id: string; input: Record<string, unknown>; wrapUp: boolean }>;
   toolResultAnswers?: Record<string, string>;
   createdAt: number;
 }
@@ -81,6 +83,7 @@ export interface ClaudeHistoryReadResult {
 export interface ClaudeHistoryReadOptions {
   beforeCursor?: string;
   before?: { createdAt: number; id: string };
+  chronological?: boolean;
   limit?: number;
 }
 
@@ -203,7 +206,7 @@ function toolResults(value: Record<string, unknown>): Array<{ id?: string; outpu
   return results;
 }
 
-function resolveTranscriptParentUuid<T extends { uuid: string; parentUuid?: string }>(
+export function resolveTranscriptParentUuid<T extends { uuid: string; parentUuid?: string }>(
   value: Record<string, unknown>,
   nodes: ReadonlyMap<string, T>,
   lastMainUuid?: string,
@@ -265,7 +268,7 @@ function resolveTranscriptParentUuid<T extends { uuid: string; parentUuid?: stri
   return undefined;
 }
 
-function isNonDagTranscriptRecord(value: Record<string, unknown>): boolean {
+export function isNonDagTranscriptRecord(value: Record<string, unknown>): boolean {
   return (
     value.type === "custom-title" ||
     value.type === "agent-name" ||
@@ -510,7 +513,7 @@ function isLocalCommandRecord(text: string): boolean {
   return /^<(?:local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message)\b/u.test(trimmed);
 }
 
-function isNonTurnUserRecord(value: Record<string, unknown>, rawText: string): boolean {
+export function isNonTurnUserRecord(value: Record<string, unknown>, rawText: string): boolean {
   return (
     value.isMeta === true ||
     value.isCompactSummary === true ||
@@ -727,6 +730,11 @@ function trimHistory(
   messages: ClaudeHistoryMessage[],
   options: ClaudeHistoryReadOptions = {},
 ): { messages: ClaudeHistoryMessage[]; truncated: boolean; nextCursor?: string } {
+  // Composed history uses timestamp + code-unit ID cursors across sources.
+  // Apply that order before slicing so equal timestamps cannot strand a message.
+  if (options.chronological) {
+    messages = [...messages].sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  }
   let candidateMessages = messages;
   if (options.before) {
     const beforeIndex = messages.findIndex((message) => message.id === options.before!.id);
@@ -749,7 +757,8 @@ function trimHistory(
     const interactiveBytes = message.interactivePrompt
       ? Buffer.byteLength(JSON.stringify(message.interactivePrompt))
       : 0;
-    const cost = Buffer.byteLength(message.text) + interactiveBytes + 180;
+    const planBytes = message.taskPlan ? Buffer.byteLength(JSON.stringify(message.taskPlan)) : 0;
+    const cost = Buffer.byteLength(message.text) + interactiveBytes + planBytes + 180;
     if (selected.length > 0 && bytes + cost > MAX_HISTORY_TEXT_BYTES) {
       truncated = true;
       break;
@@ -825,6 +834,7 @@ export interface ClaudeTranscriptSnapshot extends ClaudeHistoryReadResult {
   userMessages: ClaudeHistoryMessage[];
   atTurnBoundary?: boolean;
   pendingUserMessageId?: string;
+  terminalUuid?: string;
 }
 
 function transcriptTurnBoundary<T extends TranscriptTurnNode>(
@@ -863,6 +873,7 @@ const transcriptSnapshotCache = new Map<string, {
   userMessages: ClaudeHistoryMessage[];
   atTurnBoundary?: boolean;
   pendingUserMessageId?: string;
+  terminalUuid?: string;
 }>();
 
 export async function parseClaudeTranscriptSnapshot(
@@ -881,6 +892,7 @@ export async function parseClaudeTranscriptSnapshot(
       available: true,
       ...trimHistory(cached.allMessages, options),
       userMessages: cached.userMessages,
+      ...(cached.terminalUuid ? { terminalUuid: cached.terminalUuid } : {}),
       ...(cached.atTurnBoundary !== undefined ? { atTurnBoundary: cached.atTurnBoundary } : {}),
       ...(cached.pendingUserMessageId ? { pendingUserMessageId: cached.pendingUserMessageId } : {}),
     };
@@ -916,6 +928,13 @@ export async function parseClaudeTranscriptSnapshot(
       const role = visible?.role ?? existing?.role;
       const text = visible?.text ?? existing?.text;
       const interactivePrompt = extractInteractivePrompt(value) ?? existing?.interactivePrompt;
+      const planUpdates = value.type === "assistant" && Array.isArray(message?.content)
+        ? message.content.flatMap((block) => {
+            if (!isRecord(block) || block.type !== "tool_use" || typeof block.id !== "string" || !isRecord(block.input) ||
+              (block.name !== "mcp__ccd_turn__update_plan" && block.name !== "mcp__ccd_turn__wrap_up")) return [];
+            return [{ id: block.id, input: block.input, wrapUp: block.name === "mcp__ccd_turn__wrap_up" }];
+          })
+        : [];
       const toolResultAnswers = extractToolResultAnswers(value) ?? existing?.toolResultAnswers;
       nodes.set(value.uuid, {
         index: existing?.index ?? index,
@@ -940,6 +959,7 @@ export async function parseClaudeTranscriptSnapshot(
         ...(role ? { role } : {}),
         ...(text ? { text } : {}),
         ...(interactivePrompt ? { interactivePrompt } : {}),
+        ...(planUpdates.length ? { planUpdates } : existing?.planUpdates ? { planUpdates: existing.planUpdates } : {}),
         ...(toolResultAnswers ? { toolResultAnswers } : {}),
         createdAt,
       });
@@ -992,7 +1012,60 @@ export async function parseClaudeTranscriptSnapshot(
 
   const messages: ClaudeHistoryMessage[] = [];
   let pendingInteractive: { node: TranscriptNode; prompt: BridgeInteractivePrompt } | undefined;
+  let planMessage: ClaudeHistoryMessage | undefined;
   for (const node of chain) {
+    for (const update of node.planUpdates ?? []) {
+      if (update.wrapUp) {
+        if (planMessage?.taskPlan) {
+          planMessage.taskPlan = {
+            ...planMessage.taskPlan,
+            items: planMessage.taskPlan.items.map((item) => ({ ...item, status: "completed" })),
+            updatedAt: Math.max(node.createdAt, planMessage.taskPlan.updatedAt + 1),
+          };
+          planMessage = undefined;
+        }
+        continue;
+      }
+      const input = update.input;
+      if ("items" in input) {
+        if (!Array.isArray(input.items) || input.items.length === 0 || !input.items.every((item) =>
+          isRecord(item) && typeof item.content === "string" && item.content.trim() &&
+          typeof item.status === "string" && ["pending", "in_progress", "completed"].includes(item.status))) continue;
+        const items = input.items.map((item) => ({ content: item.content.trim() as string, status: item.status as BridgeTaskPlan["items"][number]["status"] }));
+        if (!planMessage || input.scope === "new_task" || input.scope === "first_task") {
+          planMessage = {
+            id: `plan:${update.id}`,
+            role: "assistant",
+            text: "",
+            createdAt: node.createdAt,
+            taskPlan: { id: update.id, items, updatedAt: node.createdAt },
+          };
+          messages.push(planMessage);
+        } else {
+          planMessage.taskPlan = { id: planMessage.taskPlan!.id, items, updatedAt: Math.max(node.createdAt, planMessage.taskPlan!.updatedAt + 1) };
+        }
+        continue;
+      }
+      if (!planMessage?.taskPlan) continue;
+      const previousPlan = planMessage.taskPlan;
+      const items = previousPlan.items.map((item) => ({ ...item }));
+      if (input.advance === true) {
+        const current = items.find((item) => item.status === "in_progress");
+        if (current) current.status = "completed";
+        const next = items.find((item) => item.status === "pending");
+        if (next) next.status = "in_progress";
+      }
+      for (const index of Array.isArray(input.done) ? input.done : []) {
+        if (typeof index === "number" && Number.isInteger(index) && items[index - 1]) items[index - 1]!.status = "completed";
+      }
+      if (typeof input.start === "number" && Number.isInteger(input.start) && items[input.start - 1]) {
+        for (const item of items) if (item.status === "in_progress") item.status = "pending";
+        items[input.start - 1]!.status = "in_progress";
+      }
+      if (items.some((item, index) => item.status !== previousPlan.items[index]!.status)) {
+        planMessage.taskPlan = { ...previousPlan, items, updatedAt: Math.max(node.createdAt, previousPlan.updatedAt + 1) };
+      }
+    }
     if (node.interactivePrompt) {
       const previous = messages.at(-1);
       if (node.interactivePrompt.kind === "question") {
@@ -1035,7 +1108,7 @@ export async function parseClaudeTranscriptSnapshot(
     if (!node.role || !node.text) continue;
     const previous = messages.at(-1);
     if (node.role === "assistant") {
-      if (previous?.role === "assistant" && previous.interactivePrompt?.kind !== "question") {
+      if (previous?.role === "assistant" && !previous.taskPlan && previous.interactivePrompt?.kind !== "question") {
         previous.text = `${previous.text}\n\n${node.text}`;
         if (pendingInteractive) {
           previous.interactivePrompt = pendingInteractive.prompt;
@@ -1089,6 +1162,7 @@ export async function parseClaudeTranscriptSnapshot(
     signature: cacheSignature,
     allMessages: messages,
     userMessages,
+    terminalUuid: terminal.uuid,
     ...(atTurnBoundary !== undefined ? { atTurnBoundary } : {}),
     ...(pendingUserMessageId ? { pendingUserMessageId } : {}),
   });
@@ -1097,6 +1171,7 @@ export async function parseClaudeTranscriptSnapshot(
     ...trimHistory(messages, options),
     userMessages,
     atTurnBoundary,
+    terminalUuid: terminal.uuid,
     ...(pendingUserMessageId ? { pendingUserMessageId } : {}),
   };
 }
@@ -1115,6 +1190,7 @@ export async function parseClaudeTranscript(
     userMessages: _userMessages,
     atTurnBoundary: _atTurnBoundary,
     pendingUserMessageId: _pendingUserMessageId,
+    terminalUuid: _terminalUuid,
     ...result
   } = await parseClaudeTranscriptSnapshot(path, options);
   return result;
@@ -1219,6 +1295,7 @@ export async function readClaudeSessionHistoryPage(
       createdAt: message.createdAt,
       origin: "claude-desktop",
       ...(message.interactivePrompt ? { interactivePrompt: message.interactivePrompt } : {}),
+      ...(message.taskPlan ? { taskPlan: message.taskPlan } : {}),
     })),
     hasMore: Boolean(result.nextCursor),
     ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
@@ -1288,6 +1365,12 @@ function formatSubagentToolStep(name: string, input: unknown): string {
   return name;
 }
 
+// Subagents live inside the process that launched them, so one begun before
+// every live process started (or with none alive) can no longer be running.
+function subagentProcessLive(startedAt: number, liveSince: number | undefined): boolean {
+  return liveSince !== undefined && startedAt >= liveSince;
+}
+
 const subagentSummaryCache = new Map<string, {
   signature: string;
   summary: BridgeSubagentSummary;
@@ -1295,7 +1378,7 @@ const subagentSummaryCache = new Map<string, {
 
 async function parseSingleSubagentFile(
   jsonlPath: string,
-  processAlive: boolean,
+  liveSince: number | undefined,
 ): Promise<BridgeSubagentSummary | undefined> {
   const metaPath = jsonlPath.replace(/\.jsonl$/u, ".meta.json");
   const [fileStat, metaStat] = await Promise.all([
@@ -1303,7 +1386,7 @@ async function parseSingleSubagentFile(
     stat(metaPath).catch(() => undefined),
   ]);
   if (!fileStat) return undefined;
-  const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}:${metaStat?.mtimeMs ?? 0}:${processAlive ? 1 : 0}`;
+  const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}:${metaStat?.mtimeMs ?? 0}:${liveSince ?? "none"}`;
   const cached = subagentSummaryCache.get(jsonlPath);
   if (cached && cached.signature === cacheSignature) {
     return cached.summary;
@@ -1326,8 +1409,9 @@ async function parseSingleSubagentFile(
   let latestText = "";
   const handbackReports: string[] = [];
   let startedAt = 0;
-  let updatedAt = Math.round(fileStat.mtimeMs);
+  let updatedAt = 0;
   let lastStopReason: string | undefined;
+  const structuredOutputIds = new Set<string>();
 
   try {
     const lines = createInterface({
@@ -1353,6 +1437,7 @@ async function parseSingleSubagentFile(
         for (const block of value.message.content) {
           if (!isRecord(block)) continue;
           if (block.type === "tool_use" && typeof block.name === "string") {
+            if (block.name === "StructuredOutput" && typeof block.id === "string") structuredOutputIds.add(block.id);
             if (block.name === "SubagentHandback") {
               if (
                 isRecord(block.input) &&
@@ -1371,7 +1456,15 @@ async function parseSingleSubagentFile(
           }
         }
       } else if (value.type === "user") {
-        lastStopReason = undefined;
+        // Workflow agents end by returning accepted structured output, with no finished flag or notification.
+        const content = isRecord(value.message) && Array.isArray(value.message.content) ? value.message.content : undefined;
+        const output = content?.find((block) => isRecord(block) && block.type === "tool_result"
+          && typeof block.tool_use_id === "string" && structuredOutputIds.has(block.tool_use_id));
+        if (isRecord(output)) lastStopReason = output.is_error === true ? undefined : "structured_output";
+        // Other results from the same tool batch do not start a new turn.
+        else if (!content?.length || content.some((block) => !isRecord(block) || block.type !== "tool_result")) {
+          lastStopReason = undefined;
+        }
       }
     }
   } catch {
@@ -1379,11 +1472,8 @@ async function parseSingleSubagentFile(
   }
 
   const reportText = handbackReports.join("\n\n---\n\n");
-  const explicitlyFinished = meta.finished === true || handbackReports.length > 0 || lastStopReason === "end_turn";
-  const staleIdle = Date.now() - updatedAt > (processAlive ? 180_000 : 30_000);
-  const state: BridgeSubagentSummary["state"] = explicitlyFinished || staleIdle
-    ? "completed"
-    : "running";
+  const explicitlyFinished = meta.finished === true || handbackReports.length > 0
+    || lastStopReason === "end_turn" || lastStopReason === "structured_output";
   const description = typeof meta.description === "string" && meta.description.trim()
     ? meta.description.trim()
     : `子代理 ${agentId.slice(0, 7)}`;
@@ -1394,7 +1484,12 @@ async function parseSingleSubagentFile(
     ? meta.agentType
     : undefined;
   const effectiveStartedAt = startedAt || updatedAt || Date.now();
-  const effectiveUpdatedAt = Math.max(effectiveStartedAt, updatedAt || Date.now());
+  const effectiveUpdatedAt = Math.max(effectiveStartedAt, updatedAt || Math.round(fileStat.mtimeMs));
+  const state: BridgeSubagentSummary["state"] = explicitlyFinished
+    ? "completed"
+    : subagentProcessLive(effectiveStartedAt, liveSince)
+      ? "running"
+      : "stopped";
   const completedReport = reportText || (state === "completed" ? latestText : undefined);
 
   const summary: BridgeSubagentSummary = {
@@ -1422,19 +1517,20 @@ async function parseSingleSubagentFile(
 const parentSubagentCache = new Map<string, {
   signature: string;
   summaries: BridgeSubagentSummary[];
+  compactedAt: number;
+  taskStates: Map<string, { state: BridgeSubagentSummary["state"]; at: number }>;
 }>();
 
 async function parseParentTranscriptSubagents(
   transcriptPath: string,
-  processAlive: boolean,
-): Promise<BridgeSubagentSummary[]> {
+): Promise<{ summaries: BridgeSubagentSummary[]; compactedAt: number; taskStates: Map<string, { state: BridgeSubagentSummary["state"]; at: number }> }> {
   const fileStat = await stat(transcriptPath).catch(() => undefined);
-  if (!fileStat) return [];
-  const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}:${processAlive ? 1 : 0}`;
+  if (!fileStat) return { summaries: [], compactedAt: 0, taskStates: new Map() };
+  const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}`;
   const cached = parentSubagentCache.get(transcriptPath);
-  if (cached && cached.signature === cacheSignature) {
-    return cached.summaries;
-  }
+  if (cached && cached.signature === cacheSignature) return cached;
+  let compactedAt = 0;
+  const taskStates = new Map<string, { state: BridgeSubagentSummary["state"]; at: number }>();
 
   const callsByToolId = new Map<string, {
     toolUseId: string;
@@ -1447,6 +1543,8 @@ async function parseParentTranscriptSubagents(
   }>();
   const toolIdByAgentId = new Map<string, string>();
   const reportsByAgentId = new Map<string, { text: string; at: number }>();
+  const endedByAgentId = new Map<string, BridgeSubagentSummary["state"]>();
+  const stopRequests = new Map<string, string>();
 
   try {
     const lines = createInterface({
@@ -1461,12 +1559,32 @@ async function parseParentTranscriptSubagents(
       } catch {
         continue;
       }
-      if (!isRecord(value) || !isRecord(value.message)) continue;
+      if (!isRecord(value)) continue;
       const parsedAt = typeof value.timestamp === "string" ? Date.parse(value.timestamp) : Number.NaN;
       const ts = Number.isFinite(parsedAt) && parsedAt > 0 ? parsedAt : Date.now();
+      if (value.type === "system" && value.subtype === "compact_boundary") {
+        compactedAt = Math.max(compactedAt, ts);
+        taskStates.clear();
+      }
+      if (value.type === "attachment" && isRecord(value.attachment)) {
+        const task = value.attachment;
+        if (task.type === "task_status" && task.taskType === "local_agent" && typeof task.taskId === "string"
+          && (task.status === "running" || task.status === "pending" || task.status === "paused"
+            || task.status === "completed" || task.status === "failed" || task.status === "stopped")) {
+          taskStates.set(task.taskId, {
+            state: task.status === "pending" || task.status === "paused" ? "running" : task.status,
+            at: ts,
+          });
+        }
+      }
+      if (!isRecord(value.message)) continue;
       if (value.type === "assistant" && Array.isArray(value.message.content)) {
         for (const block of value.message.content) {
           if (!isRecord(block) || block.type !== "tool_use" || typeof block.id !== "string") continue;
+          if (block.name === "TaskStop" && isRecord(block.input) && typeof block.input.task_id === "string") {
+            stopRequests.set(block.id, block.input.task_id);
+            continue;
+          }
           if (block.name !== "Agent" && block.name !== "Task") continue;
           if (callsByToolId.has(block.id)) continue;
           const input = isRecord(block.input) ? block.input : {};
@@ -1490,6 +1608,12 @@ async function parseParentTranscriptSubagents(
         if (Array.isArray(value.message.content)) {
           for (const block of value.message.content) {
             if (!isRecord(block) || block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+            const stoppedId = stopRequests.get(block.tool_use_id);
+            const result = value.toolUseResult;
+            if (stoppedId && block.is_error !== true && isRecord(result) && result.task_id === stoppedId
+              && typeof result.message === "string" && result.message.startsWith("Successfully stopped task:")) {
+              taskStates.set(stoppedId, { state: "stopped", at: ts });
+            }
             const call = callsByToolId.get(block.tool_use_id);
             if (!call) continue;
             const txt = textFromContent(block.content);
@@ -1497,6 +1621,8 @@ async function parseParentTranscriptSubagents(
             if (match?.[1]) {
               call.agentId = match[1];
               toolIdByAgentId.set(match[1], call.toolUseId);
+              // A resumed agent is live again until its next notification.
+              endedByAgentId.delete(match[1]);
             } else if (txt && !/Async agent launched/iu.test(txt)) {
               call.reportText = txt;
               call.updatedAt = Math.max(call.updatedAt, ts);
@@ -1504,6 +1630,15 @@ async function parseParentTranscriptSubagents(
           }
         }
         const rawText = textFromContent(value.message.content);
+        if (rawText.trimStart().startsWith("<task-notification>")) {
+          const status = /<status>(\w+)<\/status>/u.exec(rawText)?.[1];
+          if (status) {
+            // One notification can end several tasks.
+            for (const match of rawText.matchAll(/<task-id>([^<]+)<\/task-id>/gu)) {
+              endedByAgentId.set(match[1]!, status === "completed" ? "completed" : status === "failed" ? "failed" : "stopped");
+            }
+          }
+        }
         const agentMsgMatch = rawText.match(/<agent-message\s+from="([^"]+)"[^>]*>([\s\S]*?)<\/agent-message>/u);
         if (agentMsgMatch?.[1] && agentMsgMatch[2]) {
           let body = agentMsgMatch[2].trim();
@@ -1516,7 +1651,7 @@ async function parseParentTranscriptSubagents(
       }
     }
   } catch {
-    return [];
+    return { summaries: [], compactedAt: 0, taskStates: new Map() };
   }
 
   const results: BridgeSubagentSummary[] = [];
@@ -1525,13 +1660,12 @@ async function parseParentTranscriptSubagents(
     const report = call.agentId ? reportsByAgentId.get(call.agentId) : undefined;
     const reportText = report?.text ?? call.reportText;
     const updatedAt = Math.max(call.updatedAt, report?.at ?? 0);
-    const finished = Boolean(reportText) || Date.now() - updatedAt > (processAlive ? 180_000 : 30_000);
     results.push({
       agentId,
       toolUseId: call.toolUseId,
       ...(call.agentType ? { agentType: call.agentType } : {}),
       description: call.description,
-      state: finished ? "completed" : "running",
+      state: endedByAgentId.get(agentId) ?? (reportText ? "completed" : "running"),
       toolCount: 0,
       ...(reportText ? { reportText } : {}),
       startedAt: call.startedAt,
@@ -1543,24 +1677,30 @@ async function parseParentTranscriptSubagents(
     const oldestKey = parentSubagentCache.keys().next().value;
     if (typeof oldestKey === "string") parentSubagentCache.delete(oldestKey);
   }
-  parentSubagentCache.set(transcriptPath, { signature: cacheSignature, summaries: results });
-  return results;
+  const result = { summaries: results, compactedAt, taskStates };
+  parentSubagentCache.set(transcriptPath, { signature: cacheSignature, ...result });
+  return result;
 }
 
+/**
+ * @param liveSince Start of the oldest live process for this session; undefined when none is alive.
+ */
 export async function readClaudeTranscriptSubagents(
   transcriptPath: string,
-  processAlive = false,
+  liveSince?: number,
 ): Promise<BridgeSubagentSummary[]> {
   const subagentsDir = subagentsDirectoryForTranscript(transcriptPath);
-  const [files, parentCalls] = await Promise.all([
+  const [files, parent] = await Promise.all([
     collectSubagentJsonlFiles(subagentsDir),
-    parseParentTranscriptSubagents(transcriptPath, processAlive),
+    parseParentTranscriptSubagents(transcriptPath),
   ]);
+  const parentCalls = parent.summaries;
   const parsedFiles = files.length > 0
-    ? (await Promise.all(files.map((file) => parseSingleSubagentFile(file, processAlive))))
+    ? (await Promise.all(files.map((file) => parseSingleSubagentFile(file, liveSince))))
         .filter((item): item is BridgeSubagentSummary => item !== undefined)
     : [];
   const byKey = new Map<string, BridgeSubagentSummary>();
+  const withChildFile = new Set<string>();
   for (const call of parentCalls) {
     byKey.set(call.toolUseId ?? call.agentId, call);
   }
@@ -1569,17 +1709,33 @@ export async function readClaudeTranscriptSubagents(
       ?? parentCalls.find((c) => c.agentId === fileItem.agentId)?.toolUseId
       ?? fileItem.agentId;
     const existing = byKey.get(key);
+    withChildFile.add(key);
     byKey.set(key, existing
       ? {
           ...existing,
           ...fileItem,
-          state: existing.state === "completed" || fileItem.state === "completed" ? "completed" : "running",
+          state: fileItem.state === "completed" || existing.state === "running" ? fileItem.state : existing.state,
           ...(fileItem.toolUseId ?? existing.toolUseId ? { toolUseId: fileItem.toolUseId ?? existing.toolUseId } : {}),
           ...(fileItem.reportText ? { reportText: fileItem.reportText } : existing.reportText ? { reportText: existing.reportText } : {}),
         }
       : fileItem);
   }
-  return [...byKey.values()]
+  return [...byKey.entries()]
+    .map(([key, subagent]) => {
+      const task = parent.taskStates.get(subagent.agentId);
+      if (task && subagent.state === "running" && task.at >= subagent.startedAt) {
+        if (task.state !== "running") return { ...subagent, state: task.state, updatedAt: Math.max(subagent.updatedAt, task.at) };
+        if (subagentProcessLive(subagent.startedAt, liveSince)) return subagent;
+      }
+      if (subagent.state === "running" && !withChildFile.has(key) && !subagentProcessLive(subagent.startedAt, liveSince)) {
+        return { ...subagent, state: "stopped" as const };
+      }
+      // Compaction carries the current task list. Missing historical tasks have no confirmed live owner.
+      if (subagent.state === "running" && subagent.startedAt < parent.compactedAt && subagent.updatedAt < parent.compactedAt) {
+        return { ...subagent, state: "unknown" as const, updatedAt: Math.max(subagent.updatedAt, parent.compactedAt) };
+      }
+      return subagent;
+    })
     .sort((left, right) => left.startedAt - right.startedAt || left.agentId.localeCompare(right.agentId));
 }
 
@@ -1587,9 +1743,9 @@ export async function readClaudeSessionSubagents(
   projectsRoot: string,
   sessionId: string,
   cwd?: string,
-  processAlive = false,
+  liveSince?: number,
 ): Promise<BridgeSubagentSummary[]> {
   const path = await findClaudeTranscriptFile(projectsRoot, sessionId, cwd);
   if (!path) return [];
-  return readClaudeTranscriptSubagents(path, processAlive);
+  return readClaudeTranscriptSubagents(path, liveSince);
 }

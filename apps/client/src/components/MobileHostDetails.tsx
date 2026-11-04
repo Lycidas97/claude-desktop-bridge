@@ -5,14 +5,14 @@ import type {
   BridgeTransportMetrics,
   SocketState,
 } from "@bridge/protocol";
-import { Activity, ArrowLeft, LoaderCircle, Play, Power, RefreshCw, Trash2 } from "lucide-react";
+import { Activity, LoaderCircle, Play, Power, RefreshCw, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import type { MobileConnectionIssue } from "../hooks/useMobileBridge.js";
 import { setDiagDialogOpen } from "../lib/diagnostics.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../lib/runtime-labels.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
-import { IconButton } from "./IconButton.js";
+import { MobilePageHeader } from "./MobilePageHeader.js";
 import { RelaySettings } from "./RelaySettings.js";
 
 export interface MobileHostDetailsProps {
@@ -140,13 +140,13 @@ export function MobileHostDetails({
 
   return (
     <main className="mobile-workspace mobile-settings-page mobile-host-details" data-host-id={activeHostId}>
-      <header className="mobile-page-header">
-        <IconButton label="返回电脑列表" disabled={removing} onClick={onBack}><ArrowLeft size={21} /></IconButton>
-        <div>
-          <h1>{desktopName}</h1>
-          <p className="detail-text">当前电脑</p>
-        </div>
-      </header>
+      <MobilePageHeader
+        title={desktopName}
+        subtitle="连接与电脑设置"
+        onBack={onBack}
+        backLabel="返回电脑列表"
+        backDisabled={removing}
+      />
 
       <div className="mobile-settings-content">
       <section className="mobile-settings-group" aria-labelledby="host-connection-title">

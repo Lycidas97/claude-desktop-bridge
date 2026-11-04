@@ -1,15 +1,32 @@
-import { Activity, ChevronRight, Moon, Palette, Sun } from "lucide-react";
+import { Activity, ChevronRight, Gauge, Moon, Sun } from "lucide-react";
 import type { ThemeControl } from "../hooks/useTheme.js";
 import { setDiagDialogOpen } from "../lib/diagnostics.js";
 import type { BridgeHostSnapshot } from "@bridge/protocol";
 import type { AgentVisibilityControl } from "../hooks/useAgentVisibility.js";
 import { AgentSettings } from "./AgentSettings.js";
+import { MobilePageHeader } from "./MobilePageHeader.js";
 
-export function MobileSettings({ themeControl, agentVisibility, snapshot }: { themeControl: ThemeControl; agentVisibility: AgentVisibilityControl; snapshot?: BridgeHostSnapshot }) {
+export function MobileSettings({ themeControl, agentVisibility, snapshot, quota }: {
+  themeControl: ThemeControl;
+  agentVisibility: AgentVisibilityControl;
+  snapshot?: BridgeHostSnapshot;
+  /** Present when the active computer declares the Magpie quota plugin. */
+  quota?: { desktopName: string; onOpen(): void };
+}) {
   return (
     <main className="mobile-workspace mobile-settings-page">
-      <header className="mobile-page-header"><h1>设置</h1></header>
+      <MobilePageHeader title="设置" />
       <div className="mobile-settings-content">
+        {quota && (
+          <section className="mobile-settings-group" aria-labelledby="mobile-quota-title">
+            <h2 id="mobile-quota-title">额度</h2>
+            <button type="button" className="mobile-settings-row" onClick={quota.onOpen}>
+              <Gauge size={18} aria-hidden="true" />
+              <div><strong>Magpie 额度</strong><small>{quota.desktopName} · 各账号剩余额度与重置时间</small></div>
+              <ChevronRight size={18} aria-hidden="true" />
+            </button>
+          </section>
+        )}
         <section className="mobile-settings-group" aria-labelledby="mobile-appearance-title">
           <h2 id="mobile-appearance-title">外观</h2>
           <div className="mobile-settings-row">
@@ -24,7 +41,7 @@ export function MobileSettings({ themeControl, agentVisibility, snapshot }: { th
             </div>
           </div>
           <div className="mobile-settings-row">
-            <Palette size={18} aria-hidden="true" /><span>风格</span>
+            <span>风格</span>
             <div className="segmented" role="group" aria-label="主题风格">
               <button type="button" className={themeControl.family === "sunstone" ? "active" : ""} aria-pressed={themeControl.family === "sunstone"} onClick={() => themeControl.setFamily("sunstone")}>Sunstone</button>
               <button type="button" className={themeControl.family === "apple" ? "active" : ""} aria-pressed={themeControl.family === "apple"} onClick={() => themeControl.setFamily("apple")}>Apple</button>

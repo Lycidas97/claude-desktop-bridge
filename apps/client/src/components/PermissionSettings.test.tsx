@@ -5,6 +5,7 @@ import { dispatchMobileBack, registerMobileBackHandler } from "../lib/mobile-bac
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { HostPermissionSettings, PermissionModeControls } from "./HostPermissionSettings.js";
 import { SessionConfigurationDialog } from "./SessionConfigurationDialog.js";
+import { MagpieModelQuota } from "../../../../plugins/magpie-quota/client.js";
 
 // These components have no DOM test dependency; drive their hooks and public
 // controls directly, including effect completion and back-handler cleanup.
@@ -14,10 +15,13 @@ const hooks = vi.hoisted(() => ({
   effects: [] as Array<{ deps: unknown[] | undefined; cleanup: (() => void) | undefined }>,
   effectIndex: 0,
   pending: [] as Array<() => void>,
+  // What useContext reads: the Magpie quota provider's value, or none as on the desktop dashboard.
+  context: undefined as unknown,
 }));
 
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
+  useContext: () => hooks.context,
   useState(initial: unknown) {
     const index = hooks.stateIndex++;
     if (!(index in hooks.states)) hooks.states[index] = typeof initial === "function" ? initial() : initial;
@@ -83,6 +87,7 @@ beforeEach(() => {
   hooks.states = [];
   hooks.effects = [];
   hooks.pending = [];
+  hooks.context = undefined;
 });
 afterEach(() => hooks.effects.forEach((effect) => effect.cleanup?.()));
 
@@ -111,6 +116,92 @@ function snapshot(): BridgeHostSnapshot {
     runtimes: [{ id: "codex-desktop" }, { id: "hermes-desktop" }, { id: "dsh-desktop" }],
   } as BridgeHostSnapshot;
 }
+
+describe("session effort", () => {
+  it("shows and saves the nearest level the model supports instead of an unsupported current effort", async () => {
+    const gemini = {
+      ...configuration,
+      model: "gemini[1m]",
+      effort: "xhigh" as const,
+      availableModels: [
+        { value: "gemini[1m]", displayName: "Gemini", supportedEffortLevels: ["low", "medium", "high"] },
+        { value: "claude", displayName: "Claude", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+      ],
+      availableEffortLevels: ["low", "medium", "high"] as const,
+    } as BridgeSessionConfiguration;
+    const props = {
+      session, onLoad: vi.fn().mockResolvedValue(gemini), onSave: vi.fn().mockResolvedValue(gemini),
+      onConfigurePermission: vi.fn(), onClose: vi.fn(),
+    };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw();
+    await settle();
+    let tree = draw();
+    expect(button(tree, "高").props["aria-pressed"]).toBe(true);
+    expect(button(tree, "极高")).toBeUndefined();
+    expect(textContent(tree)).toContain("这个模型不支持「极高」");
+    button(tree, "保存配置").props.onClick();
+    await settle();
+    expect(props.onSave).toHaveBeenCalledWith({ model: "gemini[1m]", effort: "high" });
+
+    elements(tree).find((element) => element.type === "select" && element.props.value === "gemini[1m]")!
+      .props.onChange({ target: { value: "claude" } });
+    tree = draw();
+    expect(button(tree, "极高").props["aria-pressed"], "a model that supports it gets it back").toBe(true);
+  });
+});
+
+describe("Magpie quota in the session form", () => {
+  const gatewayModels = {
+    ...configuration,
+    model: "claude/claude-opus-5-5",
+    availableModels: [
+      { value: "claude/claude-opus-5-5", displayName: "Claude Opus 5.5" },
+      { value: "deepseek/deepseek-flash", displayName: "DeepSeek Flash" },
+    ],
+  } as BridgeSessionConfiguration;
+  function quota() {
+    return {
+      snapshot: { status: "available", fetchedAt: 1, accounts: [{ provider: "claude", windows: [{ name: "5 hours", remaining: 40 }] }] },
+      loading: false, error: undefined, enabled: true, refresh: vi.fn(), request: vi.fn(() => () => undefined),
+    };
+  }
+  async function open(dialogSession: BridgeSessionInfo) {
+    const props = { session: dialogSession, onLoad: vi.fn().mockResolvedValue(gatewayModels), onSave: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw();
+    await settle();
+    const tree = draw();
+    return {
+      options: elements(tree).filter((element) => element.type === "option").map((element) => textContent(element.props.children)),
+      detail: elements(tree).find((element) => element.type === MagpieModelQuota),
+    };
+  }
+
+  it("labels models with quota and shows the selected model's accounts", async () => {
+    const state = quota();
+    hooks.context = state;
+    const { options, detail } = await open(session);
+    expect(options).toEqual(["Claude Opus 5.5 · 单账号最高可用 40%", "DeepSeek Flash"]);
+    expect(detail?.props.model).toMatchObject({ value: "claude/claude-opus-5-5" });
+    expect(state.request).toHaveBeenCalled();
+  });
+
+  it("adds nothing to native runtimes, which do not route through Magpie", async () => {
+    const state = quota();
+    hooks.context = state;
+    const { options, detail } = await open({ ...session, runtimeId: "codex-desktop" } as BridgeSessionInfo);
+    expect(options).toEqual(["Claude Opus 5.5", "DeepSeek Flash"]);
+    expect(detail).toBeUndefined();
+    expect(state.request).not.toHaveBeenCalled();
+  });
+
+  it("works unchanged where no quota provider is mounted", async () => {
+    const { options, detail } = await open(session);
+    expect(options).toEqual(["Claude Opus 5.5", "DeepSeek Flash"]);
+    expect(detail).toBeUndefined();
+  });
+});
 
 describe("session authorization scope", () => {
   it("keeps mobile scope on the session through loading, inherit, and save", async () => {

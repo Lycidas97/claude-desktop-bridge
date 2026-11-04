@@ -166,6 +166,15 @@ export interface StoredSessionVisibility {
   updatedAt: number;
 }
 
+/** An archive change made in Bridge that Claude Desktop has not loaded yet. */
+export interface DesktopArchiveRequest {
+  sessionId: string;
+  desktopSessionId: string;
+  metadataPath: string;
+  archived: boolean;
+  requestedAt: number;
+}
+
 function defaultProviderProfiles(): BridgeProviderProfile[] {
   const officialReady = supportsClaudeDesktop();
   return [
@@ -524,6 +533,14 @@ export class ConversationStateStore {
         session_id TEXT PRIMARY KEY,
         visibility TEXT NOT NULL,
         updated_at INTEGER NOT NULL
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS desktop_archive_requests (
+        session_id TEXT PRIMARY KEY,
+        desktop_session_id TEXT NOT NULL,
+        metadata_path TEXT NOT NULL,
+        archived INTEGER NOT NULL,
+        requested_at INTEGER NOT NULL
       ) STRICT;
     `);
     database.prepare(`
@@ -1134,6 +1151,32 @@ export class ConversationStateStore {
       });
     }
     return entries;
+  }
+
+  setDesktopArchiveRequest(request: DesktopArchiveRequest): void {
+    this.db.prepare(`
+      INSERT INTO desktop_archive_requests(session_id, desktop_session_id, metadata_path, archived, requested_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        desktop_session_id = excluded.desktop_session_id,
+        metadata_path = excluded.metadata_path,
+        archived = excluded.archived,
+        requested_at = excluded.requested_at
+    `).run(request.sessionId, request.desktopSessionId, request.metadataPath, request.archived ? 1 : 0, request.requestedAt);
+  }
+
+  deleteDesktopArchiveRequest(sessionId: string): void {
+    this.db.prepare("DELETE FROM desktop_archive_requests WHERE session_id = ?").run(sessionId);
+  }
+
+  listDesktopArchiveRequests(): DesktopArchiveRequest[] {
+    return (this.db.prepare("SELECT * FROM desktop_archive_requests ORDER BY requested_at ASC").all() as SqlRow[]).map((row) => ({
+      sessionId: String(row.session_id),
+      desktopSessionId: String(row.desktop_session_id),
+      metadataPath: String(row.metadata_path),
+      archived: Number(row.archived) === 1,
+      requestedAt: Number(row.requested_at),
+    }));
   }
 
   loadBrokerState(): ConversationBrokerState {

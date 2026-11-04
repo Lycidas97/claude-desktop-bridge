@@ -1,0 +1,13 @@
+{
+  "name": "@bridge/plugin-magpie-quota",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "react": "^19.1.1"
+  }
+}

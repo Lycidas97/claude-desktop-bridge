@@ -1,0 +1,137 @@
+/* Follows the host's mobile settings groups (docs/MOBILE-NAVIGATION.md): group title
+   above, rows in one card, notes below. Sizes use the --m-* scale and colors the theme
+   tokens; fallbacks are the host's light-theme values. */
+.magpie-quota-board { display: grid; gap: 24px; min-width: 0; color: var(--text, #231d16); }
+.magpie-quota-head { display: grid; gap: 8px; min-width: 0; }
+
+.magpie-quota-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--card-border, rgba(62, 47, 33, 0.09));
+  border-radius: var(--m-r-group, 14px);
+  background: var(--card-fill, #fff);
+}
+.magpie-quota-status > div { flex: 1; min-width: 0; }
+.magpie-quota-status strong { display: block; font-size: var(--m-fs-body, 15px); font-weight: 600; }
+.magpie-quota-status small { display: block; margin-top: 3px; color: var(--muted, #6d6053); font-size: var(--m-fs-footnote, 12px); }
+.magpie-quota-status > button {
+  flex: none;
+  min-width: 88px;
+  min-height: var(--m-touch, 44px);
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--m-r-control, 10px);
+  background: var(--accent-soft, #f6e7de);
+  color: var(--accent-ink, #a84d2e);
+  font: inherit;
+  font-size: var(--m-fs-callout, 14px);
+  font-weight: 600;
+  cursor: pointer;
+}
+.magpie-quota-status > button:disabled { cursor: default; opacity: .55; }
+
+.magpie-quota-note {
+  margin: 0 4px;
+  color: var(--muted, #6d6053);
+  font-size: var(--m-fs-footnote, 12px);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.magpie-quota-note[role="alert"],
+.magpie-quota-account p[role="alert"] { color: var(--danger-ink, #a93226); }
+
+.magpie-quota-jump {
+  display: flex;
+  gap: 8px;
+  margin: -8px calc(-1 * var(--m-gutter, 16px));
+  padding: 0 var(--m-gutter, 16px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.magpie-quota-jump::-webkit-scrollbar { display: none; }
+.magpie-quota-jump > button {
+  flex: none;
+  min-height: var(--m-touch, 44px);
+  padding: 0 14px;
+  border: 1px solid var(--card-border, rgba(62, 47, 33, 0.09));
+  border-radius: 999px;
+  background: var(--card-fill, #fff);
+  color: inherit;
+  font: inherit;
+  font-size: var(--m-fs-subhead, 13px);
+  cursor: pointer;
+}
+.magpie-quota-jump > button span { margin-left: 6px; color: var(--muted, #6d6053); font-variant-numeric: tabular-nums; }
+
+.magpie-quota-provider { min-width: 0; scroll-margin-top: 12px; }
+.magpie-quota-provider > h2 {
+  margin: 0 0 8px;
+  padding-left: 4px;
+  color: var(--muted, #6d6053);
+  font-size: var(--m-fs-subhead, 13px);
+  font-weight: 600;
+}
+.magpie-quota-provider > h2 span { margin-left: 8px; font-weight: 400; }
+
+.magpie-quota-accounts {
+  overflow: hidden;
+  border: 1px solid var(--card-border, rgba(62, 47, 33, 0.09));
+  border-radius: var(--m-r-group, 14px);
+  background: var(--card-fill, #fff);
+}
+.magpie-quota-account { min-width: 0; padding: 14px 16px; overflow-wrap: anywhere; }
+.magpie-quota-account + .magpie-quota-account { border-top: 1px solid var(--line, rgba(62, 47, 33, 0.12)); }
+.magpie-quota-account header { display: grid; gap: 2px; }
+.magpie-quota-account header strong { font-size: var(--m-fs-callout, 14px); font-weight: 600; }
+.magpie-quota-account header span,
+.magpie-quota-account small { color: var(--muted, #6d6053); font-size: var(--m-fs-footnote, 12px); }
+.magpie-quota-account > p { margin: 8px 0 0; font-size: var(--m-fs-footnote, 12px); line-height: 1.5; }
+.magpie-quota-account > .magpie-quota-kept { color: var(--warm-ink, #8a5f14); }
+.magpie-quota-account > small { display: block; margin-top: 12px; }
+
+.magpie-quota-account ul { display: grid; gap: 14px; margin: 12px 0 0; padding: 0; list-style: none; }
+.magpie-quota-account li > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.magpie-quota-account li > div > span { min-width: 0; font-size: var(--m-fs-subhead, 13px); }
+.magpie-quota-account li > div > strong {
+  flex: none;
+  font-size: var(--m-fs-callout, 14px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.magpie-quota-account li small { display: block; margin-top: 5px; }
+.magpie-quota-bar {
+  display: block;
+  height: 6px;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line, rgba(62, 47, 33, 0.12));
+}
+.magpie-quota-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--success, #788c5d); }
+.magpie-quota-account li[data-level="low"] .magpie-quota-bar > span { background: var(--warm, #b07a24); }
+.magpie-quota-account li[data-level="low"] strong { color: var(--warm-ink, #8a5f14); }
+.magpie-quota-account li[data-level="empty"] strong { color: var(--danger-ink, #a93226); }
+.magpie-quota-account li[data-level="stale"] .magpie-quota-bar > span { background: var(--faint, #8d8071); }
+.magpie-quota-account li[data-level="stale"] strong { color: var(--muted, #6d6053); }
+
+/* Selected-model detail inside the host's session form. */
+.magpie-quota-model {
+  min-width: 0;
+  margin-top: 10px;
+  border: 1px solid var(--card-border, rgba(62, 47, 33, 0.09));
+  border-radius: var(--m-r-control, 10px);
+  background: var(--card-fill, #fff);
+  color: var(--text, #231d16);
+  font-size: var(--m-fs-subhead, 13px);
+}
+.magpie-quota-model > summary { min-height: var(--m-touch, 44px); box-sizing: border-box; padding: 12px; cursor: pointer; }
+.magpie-quota-model > p { margin: 0; padding: 0 12px 12px; color: var(--muted, #6d6053); }
+.magpie-quota-model .magpie-quota-accounts {
+  border: 0;
+  border-top: 1px solid var(--line, rgba(62, 47, 33, 0.12));
+  border-radius: 0;
+  background: none;
+}
+.magpie-quota-model .magpie-quota-account { padding: 12px; }

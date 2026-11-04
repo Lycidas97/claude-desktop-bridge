@@ -612,12 +612,10 @@ export class RuntimeSessionBroker extends EventEmitter {
         continue;
       }
       const type: BridgeEventType = item.state === "running" ? "tool.started" : "tool.completed";
-      const existing = this.eventLog.latestItem(sessionId, type, item.id);
-      if (
-        existing &&
-        existing.data.summary === item.text &&
-        existing.data.toolName === (item.toolName ?? "Tool")
-      ) {
+      if (this.eventLog.itemMatches(sessionId, type, item.id, {
+        summary: item.text,
+        toolName: item.toolName ?? "Tool",
+      })) {
         known.set(item.id, signature);
         continue;
       }
@@ -681,11 +679,9 @@ export class RuntimeSessionBroker extends EventEmitter {
   }
 
   private hasRecordedMessage(sessionId: string, item: RuntimeAdapterHistoryItem): boolean {
-    const observed = this.eventLog.latestItem(sessionId, "session.observed", item.id);
-    if (observed?.data.text === item.text) return true;
+    if (this.eventLog.itemMatches(sessionId, "session.observed", item.id, { text: item.text })) return true;
     const type = item.role === "user" ? "user.message.accepted" : "assistant.completed";
-    const recorded = this.eventLog.latestItem(sessionId, type, item.id);
-    if (recorded?.data.text === item.text) return true;
+    if (this.eventLog.itemMatches(sessionId, type, item.id, { text: item.text })) return true;
     return this.eventLog.replay(Math.max(0, this.eventLog.latestSeq() - 1_000), 1_000, sessionId)
       .some((event) => (
         (event.type === "session.observed" || event.type === type) &&

@@ -51,6 +51,10 @@ export interface ObservedClaudeSession extends BridgeSessionInfo {
 export interface ClaudeCatalogSnapshot {
   projects: BridgeProjectInfo[];
   sessions: ObservedClaudeSession[];
+  /** Listed for the archive view only; never observed, tailed or owned. */
+  archivedSessions?: ObservedClaudeSession[];
+  /** Desktop record files by CLI session id, kept out of the public session objects. */
+  desktopMetadataPaths?: ReadonlyMap<string, string>;
   archivedSessionIds?: ReadonlySet<string>;
   observedAt: number;
 }
@@ -147,7 +151,7 @@ export function parseWindowsClaudeProcessSessions(stdout: string): Map<string, A
     const values = result.get(sessionId) ?? [];
     values.push({
       pid,
-      startedAt: Date.now(),
+      startedAt: 0,
       processAlive: true,
       entrypoint: entrypointFromAncestors(pid, processes, "win32"),
       source: "process",
@@ -155,6 +159,28 @@ export function parseWindowsClaudeProcessSessions(stdout: string): Map<string, A
     result.set(sessionId, values);
   }
   return result;
+}
+
+/** Whether a pid is a Claude session process right now, not just what a registration file names. */
+export async function isClaudeSessionProcess(pid: number, platform = process.platform): Promise<boolean> {
+  try {
+    if (platform === "win32") {
+      const { stdout } = await execFile("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        WINDOWS_PROCESS_QUERY,
+      ], { encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+      const row = parseWindowsProcessRows(stdout).find((candidate) => candidate.pid === pid);
+      return Boolean(row && isStreamJsonProcess(row.command));
+    }
+    const { stdout } = await execFile("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+    return isStreamJsonProcess(stdout);
+  } catch {
+    return false; // ps exits non-zero when the pid no longer exists.
+  }
 }
 
 async function listProcessSessions(platform = process.platform): Promise<Map<string, ActiveClaudeProcess[]>> {
@@ -202,7 +228,7 @@ async function listProcessSessions(platform = process.platform): Promise<Map<str
     const values = result.get(sessionId) ?? [];
     values.push({
       pid,
-      startedAt: Date.now(),
+      startedAt: 0,
       processAlive: true,
       entrypoint: entrypointFromAncestors(pid, processes, platform),
       source: "process",
@@ -244,9 +270,10 @@ async function listActiveSessions(
         source: "registration",
       };
       const existing = result.get(value.sessionId) ?? [];
-      if (!existing.some((candidate) => candidate.pid !== undefined && candidate.pid === active.pid)) {
-        existing.push(active);
-      }
+      const scanned = existing.find((candidate) => candidate.pid !== undefined && candidate.pid === active.pid);
+      // A process scan can't tell when the process started; its registration can.
+      if (scanned) scanned.startedAt = active.startedAt;
+      else existing.push(active);
       result.set(value.sessionId, existing);
     } catch {
       // Session discovery is best effort; malformed files are ignored.
@@ -261,6 +288,12 @@ export async function scanClaudeSessionProcesses(
   platform = process.platform,
 ): Promise<ActiveClaudeProcess[]> {
   return (await listActiveSessions(paths.sessions, platform)).get(sessionId) ?? [];
+}
+
+/** Start of the oldest live process (0 when unknown); undefined when none is alive. */
+export function oldestLiveProcessStart(processes: ActiveClaudeProcess[]): number | undefined {
+  const live = processes.filter((candidate) => candidate.processAlive);
+  return live.length ? Math.min(...live.map((candidate) => candidate.startedAt)) : undefined;
 }
 
 function processSummary(processes: ActiveClaudeProcess[]): {
@@ -306,7 +339,7 @@ export async function scanClaudeCatalog(
     listClaudeDesktopSessionState(paths.desktopSessions),
     listActiveSessions(paths.sessions, platform),
   ]);
-  const { sessions: desktopSessions, archivedCliSessionIds } = desktopState;
+  const { sessions: desktopSessions, archivedSessions: archivedDesktopSessions, metadataPaths, archivedCliSessionIds } = desktopState;
   const observedAt = Date.now();
   const seen = new Set<string>();
   const sessions: ObservedClaudeSession[] = [];
@@ -344,7 +377,6 @@ export async function scanClaudeCatalog(
       turnState: activeTask ? "running" : "idle",
       lastActivityAt: Math.max(
         desktopSession.lastActivityAt,
-        desktopSession.lastFocusedAt,
         desktopSession.createdAt,
         transcriptMtimeMs,
       ),
@@ -360,6 +392,34 @@ export async function scanClaudeCatalog(
       ...(transcriptPath ? { transcriptPath } : {}),
     });
   }
+  const archivedSessions = archivedDesktopSessions.map((desktopSession): ObservedClaudeSession => ({
+    sessionId: desktopSession.cliSessionId,
+    desktopSessionId: desktopSession.sessionId,
+    ...(desktopSession.parentSessionId ? { parentSessionId: desktopSession.parentSessionId } : {}),
+    ...(desktopSession.forkLabel ? { forkLabel: desktopSession.forkLabel } : {}),
+    projectId: desktopSession.groupId ?? projectIdForCwd(desktopSession.cwd, platform),
+    projectName: desktopSession.groupName ?? (basename(desktopSession.cwd) || desktopSession.cwd),
+    cwd: desktopSession.cwd,
+    title: desktopSession.title || basename(desktopSession.cwd) || desktopSession.cwd,
+    ...(desktopSession.title ? { desktopTitle: desktopSession.title } : {}),
+    source: "desktop",
+    ownership: "DESKTOP_OBSERVED",
+    transport: "bridge-host",
+    turnState: "idle",
+    lastActivityAt: Math.max(desktopSession.lastActivityAt, desktopSession.createdAt),
+    pendingCount: 0,
+    archivedAt: desktopSession.archivedAt,
+    transcriptMtimeMs: 0,
+    processAlive: false,
+    desktopProcessAlive: false,
+    bridgeProcessAlive: false,
+    processOverlap: false,
+    activeProcesses: [],
+    activeTask: false,
+    ...(desktopSession.model ? { hostModel: desktopSession.model } : {}),
+    ...(desktopSession.effort ? { hostEffort: desktopSession.effort } : {}),
+    ...(desktopSession.profile !== "unknown" ? { sourceProfile: desktopSession.profile } : {}),
+  }));
   for (const [sessionId, activeProcesses] of activeSessions) {
     if (seen.has(sessionId) || archivedCliSessionIds.has(sessionId)) continue;
     const active = activeProcesses.find((candidate) => (
@@ -417,6 +477,8 @@ export async function scanClaudeCatalog(
   return {
     projects: [...grouped.values()].sort((left, right) => right.lastActivityAt - left.lastActivityAt),
     sessions,
+    archivedSessions,
+    desktopMetadataPaths: metadataPaths,
     archivedSessionIds: archivedCliSessionIds,
     observedAt,
   };

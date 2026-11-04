@@ -1,0 +1,957 @@
+/* Bridge mobile design system.
+   One header (MobilePageHeader), one overlay (MobileSheet) and one list
+   grammar (inset groups of 56px rows). Sizes come from the --m-* scale;
+   colors always come from the theme tokens in styles.css so both theme
+   families keep working. docs/MOBILE-NAVIGATION.md explains the rules. */
+
+:root {
+  --m-gutter: 16px;
+  --m-fs-large-title: 26px;
+  --m-fs-title: 17px;
+  --m-fs-body: 15px;
+  --m-fs-callout: 14px;
+  --m-fs-subhead: 13px;
+  --m-fs-footnote: 12px;
+  --m-fs-caption: 11px;
+  --m-touch: 44px;
+  --m-row: 56px;
+  --m-r-control: 10px;
+  --m-r-group: 14px;
+  --m-r-sheet: 20px;
+  --m-sheet-fill: var(--bg);
+}
+
+[data-theme="dark"] {
+  --m-sheet-fill: color-mix(in srgb, var(--bg) 90%, #fff);
+}
+
+/* ---- App shell ---- */
+
+.mobile-app-shell {
+  display: flex;
+  width: 100%;
+  max-width: 760px;
+  height: 100dvh;
+  margin: 0 auto;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.mobile-app-content,
+.mobile-tab-page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.mobile-tab-page[hidden] { display: none; }
+.mobile-app-shell .mobile-workspace { height: 100%; }
+.mobile-app-shell button:focus-visible,
+.m-sheet button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.mobile-app-shell .icon-button,
+.m-sheet .icon-button { min-width: var(--m-touch); min-height: var(--m-touch); }
+
+/* Navigation menu: opened from the leading button of every root header. */
+
+.m-nav-backdrop {
+  position: fixed;
+  z-index: 95;
+  inset: 0;
+  background: color-mix(in srgb, var(--scrim) 45%, transparent);
+  animation: m-fade var(--t-enter) var(--ease-out);
+}
+
+.m-nav-menu {
+  position: absolute;
+  display: grid;
+  width: min(240px, calc(100vw - 16px));
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--m-r-group);
+  background: var(--m-sheet-fill);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.22);
+  transform-origin: top left;
+  animation: m-menu-open var(--t-enter) var(--ease-out);
+}
+
+.m-nav-menu > button {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--m-r-control);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--m-fs-body);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.m-nav-menu > button > span { flex: 1; }
+.m-nav-menu > button > svg { color: var(--muted); }
+.m-nav-menu > button:active { background: var(--surface-2); }
+.m-nav-menu > button.is-active { background: var(--accent-soft); color: var(--accent-ink); }
+.m-nav-menu > button.is-active > svg { color: inherit; }
+[data-theme-family="apple"][data-theme="light"] .m-nav-menu > button.is-active { color: #005bbb; }
+.m-nav-menu button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+@keyframes m-menu-open { from { opacity: 0; transform: scale(0.96) translateY(-4px); } }
+
+/* ---- Page header: menu and large title on roots, back and compact title when pushed ---- */
+
+.m-header {
+  display: flex;
+  flex: none;
+  min-height: 60px;
+  align-items: center;
+  gap: 4px;
+  padding: max(8px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right)) 8px max(var(--m-gutter), env(safe-area-inset-left));
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.m-header.is-pushed,
+.m-header.has-menu { padding-left: max(4px, env(safe-area-inset-left)); }
+
+.m-header-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.m-header h1 {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--m-fs-large-title);
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.4px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-header.is-pushed h1 {
+  font-size: var(--m-fs-title);
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+
+.m-header.is-title-hidden h1 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+}
+
+.m-header.is-title-hidden .m-header-subtitle { font-size: var(--m-fs-body); }
+.m-header.is-title-hidden .m-host-chip { color: var(--text); font-weight: 600; }
+
+.m-header-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-header-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.m-header .icon-button {
+  width: var(--m-touch);
+  height: var(--m-touch);
+  color: var(--text);
+}
+
+.m-header .icon-button:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.m-host-chip,
+.m-presence {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  vertical-align: top;
+}
+
+.m-host-chip {
+  margin: -8px 0;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.m-host-chip > span,
+.m-presence > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-host-chip > svg { flex: none; color: var(--faint); }
+
+.m-status-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.m-status-dot.is-online,
+.m-status-dot.running { background: var(--accent); }
+.m-status-dot.running { box-shadow: 0 0 0 3px var(--accent-soft); }
+.m-status-dot.queued,
+.m-status-dot.waiting { background: var(--warm); }
+.m-status-dot.failed { background: var(--danger); }
+
+/* ---- Bottom sheet: actions, forms and prompts ---- */
+
+.m-sheet-backdrop {
+  position: fixed;
+  z-index: 95;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: var(--scrim);
+  animation: m-fade var(--t-enter) var(--ease-out);
+}
+
+.m-sheet {
+  display: flex;
+  width: min(100%, 560px);
+  max-height: min(88dvh, 760px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: var(--m-r-sheet) var(--m-r-sheet) 0 0;
+  background: var(--m-sheet-fill);
+  color: var(--text);
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.22);
+  animation: m-sheet-rise var(--t-enter) var(--ease-out);
+}
+
+.m-sheet-header {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px max(6px, env(safe-area-inset-right)) 10px max(20px, env(safe-area-inset-left));
+}
+
+.m-sheet-header > div {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 3px;
+  padding-top: 9px;
+}
+
+.m-sheet-header span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-sheet-header h2 {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--m-fs-title);
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.m-sheet-header .icon-button { color: var(--muted); }
+
+.m-sheet-body {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  align-content: start;
+  gap: 14px;
+  padding: 4px max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.m-sheet:has(.m-sheet-footer) .m-sheet-body { padding-bottom: 16px; }
+
+.m-sheet-footer {
+  display: flex;
+  flex: none;
+  gap: 10px;
+  padding: 12px max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  border-top: 1px solid var(--line);
+}
+
+.m-sheet-footer > button {
+  flex: 1;
+  min-height: 48px;
+  border-radius: var(--m-r-control);
+  font-size: var(--m-fs-body);
+}
+
+@media (min-width: 640px) {
+  .m-sheet-backdrop { align-items: center; padding: 24px; }
+  .m-sheet { border-bottom: 1px solid var(--line); border-radius: var(--m-r-sheet); }
+}
+
+@keyframes m-fade { from { opacity: 0; } }
+@keyframes m-sheet-rise { from { opacity: 0; transform: translateY(24px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .m-sheet,
+  .m-sheet-backdrop { animation: none; }
+}
+
+/* Inset group: rows share one rounded card and are split by hairlines. */
+.m-group {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--card-border);
+  border-radius: var(--m-r-group);
+  background: var(--card-fill);
+}
+
+.m-sheet-action {
+  display: flex;
+  width: 100%;
+  min-height: var(--m-row);
+  align-items: center;
+  gap: 14px;
+  padding: 9px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t-fast) ease;
+}
+
+.m-sheet-action:last-child { border-bottom: 0; }
+.m-sheet-action:active:not(:disabled) { background: var(--surface-2); }
+.m-sheet-action:disabled { cursor: default; }
+.m-sheet-action:disabled .m-sheet-action-icon,
+.m-sheet-action:disabled strong { opacity: 0.42; }
+
+.m-sheet-action-icon {
+  display: grid;
+  flex: none;
+  width: 22px;
+  place-items: center;
+  color: var(--muted);
+}
+
+.m-sheet-action-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.m-sheet-action-copy strong {
+  font-size: var(--m-fs-body);
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.m-sheet-action-copy small {
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.m-sheet-action.is-danger strong,
+.m-sheet-action.is-danger .m-sheet-action-icon { color: var(--danger-ink); }
+
+.m-sheet-note {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  line-height: 1.5;
+}
+
+.m-sheet-note.is-error { color: var(--danger-ink); }
+
+/* Under the directory search: the project order is fixed, and where to change it. */
+.mobile-app-shell .project-order-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 0 0 4px;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+}
+.mobile-app-shell .project-order-bar button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--m-r-control);
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mobile-app-shell .project-order-bar button:active { background: var(--surface-2); }
+
+/* Project order: one row per project, its name and three move buttons. */
+.project-order-row {
+  display: flex;
+  min-height: var(--m-row);
+  align-items: center;
+  gap: 2px;
+  padding: 6px 6px 6px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.project-order-row:last-child { border-bottom: 0; }
+.project-order-row > span { display: grid; flex: 1; min-width: 0; gap: 2px; }
+.project-order-row strong {
+  overflow: hidden;
+  font-size: var(--m-fs-body);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-order-row small { color: var(--muted); font-size: var(--m-fs-footnote); }
+.project-order-row .icon-button { flex: none; color: var(--muted); }
+.project-order-row .icon-button:disabled { opacity: 0.32; }
+
+.m-field {
+  display: grid;
+  gap: 7px;
+}
+
+.m-field > span {
+  padding-left: 4px;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  font-weight: 600;
+}
+
+.m-field input,
+.m-field select {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--m-r-control);
+  background: var(--card-fill);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+}
+
+.m-field input:focus,
+.m-field select:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Permission and question prompts inside the sheet. */
+.m-sheet .permission-prompt {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.m-sheet .permission-queue-count {
+  margin: 0;
+  border-radius: var(--m-r-control);
+  font-size: var(--m-fs-footnote);
+}
+
+.m-sheet .permission-title strong,
+.m-sheet .question-prompt legend { font-size: var(--m-fs-body); }
+.m-sheet .permission-title span { font-size: var(--m-fs-footnote); }
+.m-sheet .permission-prompt pre { border-radius: var(--m-r-control); font-size: var(--m-fs-footnote); }
+.m-sheet .permission-error { border-radius: var(--m-r-control); font-size: var(--m-fs-footnote); }
+
+.m-sheet .question-option {
+  padding: 12px;
+  border-radius: var(--m-r-control);
+}
+
+.m-sheet .question-option strong { font-size: var(--m-fs-callout); }
+.m-sheet .question-option small { font-size: var(--m-fs-footnote); }
+
+.m-sheet .permission-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.m-sheet .permission-actions > button {
+  min-height: 48px;
+  padding: 0 12px;
+  border-radius: var(--m-r-control);
+  font-size: var(--m-fs-callout);
+}
+
+.m-sheet .permission-actions > button:last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+/* Older form sheets (session settings, provider switch, relay) and alerts
+   take the same opaque surface and corner radius on phones. */
+@media (max-width: 720px) {
+  .session-configuration-dialog,
+  .provider-switch-dialog {
+    border-radius: var(--m-r-sheet) var(--m-r-sheet) 0 0;
+    background: var(--m-sheet-fill);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .confirm-dialog {
+    border-radius: var(--m-r-sheet);
+    background: var(--m-sheet-fill);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .confirm-dialog p { font-size: var(--m-fs-callout); }
+
+  .confirm-actions > button {
+    flex: 1;
+    min-height: 46px;
+    border-radius: var(--m-r-control);
+  }
+}
+
+/* ---- Grouped settings pages ---- */
+
+.mobile-settings-page {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.mobile-settings-content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 28px;
+  padding: 20px max(var(--m-gutter), env(safe-area-inset-right)) 32px max(var(--m-gutter), env(safe-area-inset-left));
+  overflow-y: auto;
+}
+
+.mobile-settings-group { min-width: 0; }
+
+.mobile-settings-group > h2,
+.mobile-settings-group > header h2 {
+  margin: 0 0 8px;
+  padding-left: 4px;
+  color: var(--muted);
+  font-size: var(--m-fs-subhead);
+  font-weight: 600;
+}
+
+.mobile-settings-group > p:not(.mobile-settings-row, .inline-error),
+.detail-text {
+  margin: 8px 4px;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* Consecutive rows form one card whatever element each row is. */
+.mobile-settings-row {
+  display: flex;
+  width: 100%;
+  min-height: var(--m-row);
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--card-border);
+  border-top: 0;
+  border-bottom-color: var(--line);
+  background: var(--card-fill);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--m-fs-body);
+  text-align: left;
+}
+
+.mobile-settings-row:first-child,
+:not(.mobile-settings-row) + .mobile-settings-row {
+  border-top: 1px solid var(--card-border);
+  border-radius: var(--m-r-group) var(--m-r-group) 0 0;
+}
+
+.mobile-settings-row:not(:has(+ .mobile-settings-row)) {
+  border-bottom-color: var(--card-border);
+  border-bottom-left-radius: var(--m-r-group);
+  border-bottom-right-radius: var(--m-r-group);
+}
+
+button.mobile-settings-row,
+label.mobile-settings-row { cursor: pointer; }
+button.mobile-settings-row:active { background: var(--surface-2); }
+.mobile-settings-row > div,
+.mobile-settings-row > span:not(.mobile-settings-value) { flex: 1; min-width: 0; }
+.mobile-settings-row strong { display: block; font-size: var(--m-fs-body); font-weight: 500; }
+.mobile-settings-row small { display: block; margin-top: 3px; color: var(--muted); font-size: var(--m-fs-footnote); line-height: 1.5; }
+.mobile-settings-row > svg:first-child { flex: none; color: var(--muted); }
+.mobile-settings-row > svg:last-child { flex: none; color: var(--faint); }
+.mobile-settings-row .segmented { flex: 1; }
+.mobile-settings-row .segmented button { min-height: var(--m-touch); }
+.mobile-settings-row.danger,
+.mobile-settings-row.is-danger,
+.mobile-settings-row.danger > svg:first-child { color: var(--danger-ink); }
+.mobile-settings-group > .inline-error { margin: 8px 0; }
+.mobile-settings-value { color: var(--muted); font-size: var(--m-fs-callout); }
+.mobile-settings-actions { flex-wrap: wrap; }
+.mobile-settings-actions > button { flex: 1; min-height: var(--m-touch); border-radius: var(--m-r-control); }
+.agent-settings input[type="checkbox"] { width: 20px; height: 20px; flex: none; accent-color: var(--accent); }
+.agent-settings label:has(input:disabled) { cursor: default; }
+
+.mobile-empty-directory { padding: 60px 12px; text-align: center; }
+.mobile-empty-directory h2 { font-size: 20px; }
+.mobile-empty-directory p { margin: 12px 0 24px; color: var(--muted); font-size: var(--m-fs-callout); }
+
+.mobile-app-shell .mobile-desktop-control {
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: 10px;
+  padding: 14px 16px;
+  border-color: var(--card-border);
+  border-radius: var(--m-r-group);
+  background: var(--card-fill);
+}
+
+.mobile-app-shell .mobile-desktop-control:last-child { margin-bottom: 0; }
+
+.mobile-app-shell .mobile-desktop-control-copy strong { font-size: var(--m-fs-body); }
+.mobile-app-shell .mobile-desktop-control-copy small { font-size: var(--m-fs-footnote); }
+
+.mobile-app-shell .mobile-desktop-control-actions > button {
+  flex: 1;
+  min-height: var(--m-touch);
+  padding: 0 14px;
+  border-radius: var(--m-r-control);
+  font-size: var(--m-fs-subhead);
+}
+
+.mobile-app-shell .relay-settings { padding: 20px 0; }
+.mobile-app-shell .relay-settings strong { padding-left: 4px; color: var(--muted); font-size: var(--m-fs-subhead); font-weight: 600; }
+.mobile-app-shell .relay-settings input { min-height: 48px; border-radius: var(--m-r-control); font-size: 16px; }
+.mobile-app-shell .relay-settings button { justify-self: stretch; min-height: var(--m-touch); border-radius: var(--m-r-control); }
+
+.mobile-app-shell .session-permission-field > p { margin: 0 0 12px; color: var(--muted); font-size: var(--m-fs-footnote); font-weight: 400; line-height: 1.6; }
+.host-permission-settings p.mobile-settings-row { color: var(--muted); font-size: var(--m-fs-footnote); line-height: 1.6; }
+/* Same look as the appearance segmented control; one equal column per app. */
+.host-permission-settings .permission-scope-segments,
+.host-permission-settings .permission-mode-segments {
+  padding: 2px;
+  border-color: var(--card-border);
+  border-radius: calc(var(--r-btn) + 3px);
+}
+.host-permission-settings .permission-scope-segments {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+}
+.host-permission-settings .permission-scope-segments button,
+.host-permission-settings .permission-mode-segments button {
+  min-height: var(--m-touch);
+  border-radius: var(--r-btn);
+  font-size: var(--m-fs-subhead);
+  font-weight: 560;
+}
+
+.mobile-app-shell .subagent-stop-button { min-height: var(--m-touch); padding: 0 14px; border-radius: var(--m-r-control); font-size: var(--m-fs-subhead); }
+.mobile-app-shell .subagent-control-note { font-size: var(--m-fs-footnote); }
+
+/* ---- Computers ---- */
+
+.mobile-app-shell .host-list-workspace { background: var(--bg); }
+
+.mobile-app-shell .host-browser {
+  padding: 20px max(var(--m-gutter), env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(var(--m-gutter), env(safe-area-inset-left));
+}
+
+.mobile-app-shell .host-rows {
+  border-color: var(--card-border);
+  border-radius: var(--m-r-group);
+  background: var(--card-fill);
+}
+
+.mobile-app-shell .host-row-shell { grid-template-columns: minmax(0, 1fr) 52px; }
+
+.mobile-app-shell .host-row {
+  min-height: 72px;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 12px 4px 12px 14px;
+}
+
+.mobile-app-shell .host-row:hover { background: transparent; }
+.mobile-app-shell .host-row:active:not(:disabled) { background: var(--surface-2); }
+.mobile-app-shell .host-row-icon { width: 40px; height: 40px; border-radius: var(--m-r-control); }
+.mobile-app-shell .host-row-copy strong { font-size: var(--m-fs-body); font-weight: 600; }
+.mobile-app-shell .host-row-copy small,
+.mobile-app-shell .host-row-state { font-size: var(--m-fs-footnote); }
+/* Same dot palette as .m-status-dot: online accent, busy ringed, attention warm. */
+.mobile-app-shell .host-row-state.standby i,
+.mobile-app-shell .host-row-state.running i { background: var(--accent); }
+.mobile-app-shell .host-row-state.running i { box-shadow: 0 0 0 3px var(--accent-soft); }
+.host-row-action { align-self: center; justify-self: center; color: var(--muted); }
+
+.host-attention-button {
+  display: flex;
+  grid-column: 1 / -1;
+  min-height: var(--m-touch);
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 14px 12px 66px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--m-r-control);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: var(--m-fs-subhead);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.host-browser-hint {
+  margin: 12px 4px 0;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  line-height: 1.6;
+}
+
+/* ---- Session directory ---- */
+
+.mobile-app-shell .host-detail {
+  padding: 14px max(var(--m-gutter), env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(var(--m-gutter), env(safe-area-inset-left));
+  background: var(--bg);
+}
+
+.mobile-app-shell .session-search {
+  height: var(--m-touch);
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 0 14px;
+  border-color: var(--card-border);
+  border-radius: var(--m-r-control);
+  background: var(--card-fill);
+}
+
+.mobile-app-shell .session-search input { font-size: 16px; }
+.mobile-app-shell .session-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+.mobile-app-shell .runtime-filter { gap: 8px; margin: -2px 0 14px; }
+
+.mobile-app-shell .runtime-filter button {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: var(--r-pill);
+  font-size: var(--m-fs-subhead);
+  font-weight: 600;
+}
+
+.mobile-app-shell .host-connection-issue {
+  padding: 12px 14px;
+  border-radius: var(--m-r-control);
+  font-size: var(--m-fs-subhead);
+}
+
+.mobile-app-shell .project-groups { gap: 12px; }
+
+.mobile-app-shell .project-group {
+  border-color: var(--card-border);
+  border-radius: var(--m-r-group);
+  background: var(--card-fill);
+  box-shadow: none;
+}
+
+.mobile-app-shell .project-group-header { background: transparent; }
+.mobile-app-shell .project-group-open { min-height: 52px; padding: 10px 12px 10px 16px; }
+.mobile-app-shell .project-group-open:hover { background: transparent; }
+.mobile-app-shell .project-group-open:active { background: var(--surface-2); }
+.mobile-app-shell .project-group-toggle-copy strong { font-size: var(--m-fs-body); font-weight: 600; }
+.mobile-app-shell .project-group-toggle-copy > span > svg { flex: none; color: var(--muted); }
+
+.mobile-app-shell .project-count-pill {
+  padding: 1px 8px;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  font-weight: 600;
+}
+
+.mobile-app-shell .project-group-more-button {
+  min-height: var(--m-touch);
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  font-size: var(--m-fs-subhead);
+}
+
+.mobile-app-shell .session-row-v2,
+.mobile-app-shell .session-row-hit { min-height: 60px; }
+.mobile-app-shell .session-row-v2:hover { background: transparent; }
+.mobile-app-shell .session-row-hit:active { background: var(--surface-2); }
+
+.mobile-app-shell .session-row-hit {
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 10px 4px 10px 16px;
+}
+
+.mobile-app-shell .session-row-copy { gap: 3px; }
+.mobile-app-shell .session-row-copy strong { font-size: var(--m-fs-body); font-weight: 500; }
+.mobile-app-shell .session-row-copy small { font-size: var(--m-fs-footnote); }
+.mobile-app-shell .session-row-status { padding: 2px 8px; font-size: var(--m-fs-caption); }
+.mobile-app-shell .session-row-status.running,
+.mobile-app-shell .session-row-status.waiting,
+.mobile-app-shell .session-row-status.queued { color: var(--text); }
+.mobile-app-shell .session-row-action { width: var(--m-touch); height: var(--m-touch); margin-right: 4px; color: var(--muted); }
+
+.mobile-app-shell .mobile-fork-group { padding: 0 4px 6px 16px; background: transparent; }
+.mobile-app-shell .mobile-fork-toggle { min-height: 40px; padding: 6px 8px; border: 0; background: transparent; font-size: var(--m-fs-footnote); }
+.mobile-app-shell .mobile-fork-children { margin-top: 0; padding-left: 4px; border-left-width: 1px; }
+.mobile-app-shell .session-row-v2.is-fork-child { border: 0; }
+.mobile-app-shell .mobile-session-family .mobile-session-family { border-bottom: 0; }
+.mobile-app-shell .session-row-v2.is-fork-child .session-row-hit { padding-left: 6px; }
+
+.mobile-app-shell .permission-dock-slot.has-attention { padding: 8px var(--m-gutter); }
+
+.mobile-app-shell .permission-dock,
+.mobile-app-shell .host-permission-alert {
+  min-height: var(--m-row);
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: var(--m-r-group);
+}
+
+.mobile-app-shell .host-permission-alert { margin-bottom: 14px; }
+.mobile-app-shell .permission-dock-icon { border-radius: var(--m-r-control); }
+.mobile-app-shell .permission-dock strong,
+.mobile-app-shell .host-permission-alert strong { font-size: var(--m-fs-callout); }
+.mobile-app-shell .permission-dock small,
+.mobile-app-shell .host-permission-alert small { font-size: var(--m-fs-footnote); }
+.mobile-app-shell .permission-dock b,
+.mobile-app-shell .host-permission-alert b { font-size: var(--m-fs-subhead); }
+
+/* ---- Conversation ---- */
+
+.mobile-app-shell .message-queue-status { align-items: flex-start; }
+.mobile-app-shell .message-queue-status > span { flex: 1; min-width: 0; }
+.mobile-app-shell .message-queue-status > svg { margin-top: 3px; }
+.mobile-app-shell .message-queue-status > button { flex: 0 0 auto; min-height: 36px; }
+.mobile-app-shell .delivery-state { font-size: var(--m-fs-footnote); }
+
+/* A sent message: the bubble wraps only its text, in the composer's shape and the sent
+   message's accent colors; delivery status and copy share one row under it. */
+.mobile-app-shell .conversation-item.user {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-end;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.mobile-app-shell .conversation-bubble {
+  min-width: 0;
+  max-width: min(85%, 560px);
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+  border-radius: var(--r-hero);
+  background: var(--accent-soft);
+}
+.mobile-app-shell .conversation-item.user .conversation-message-actions {
+  align-items: center;
+  gap: 4px;
+  /* The copy button keeps its 44px touch area; its padding lines the label up with the bubble's edge. */
+  margin: -4px -8px -8px 0;
+}
+.mobile-app-shell .conversation-message-actions .delivery-state { margin: 0; }
+
+
+.mobile-app-shell .session-channel-warning {
+  padding: 10px var(--m-gutter);
+  font-size: var(--m-fs-subhead);
+  line-height: 1.5;
+}
+
+.mobile-app-shell .session-channel-warning .goal-action {
+  min-height: 36px;
+  border-radius: var(--m-r-control);
+  font-size: var(--m-fs-footnote);
+}
+
+.mobile-app-shell .relay-chain-bar { padding: 8px var(--m-gutter); }
+.mobile-app-shell .relay-chain-link { min-height: 32px; padding: 0 12px; font-size: var(--m-fs-footnote); }
+
+.mobile-composer .send-button.is-stop,
+.mobile-composer .send-button.is-stop:hover:not(:disabled) {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.mobile-app-shell .composer-mode { margin: 0 0 8px; }
+.mobile-app-shell .composer-mode button { min-height: 32px; padding: 0 14px; font-size: var(--m-fs-footnote); }
+.mobile-app-shell .composer-connection { margin-bottom: 8px; padding: 8px 12px; border-radius: var(--m-r-control); font-size: var(--m-fs-footnote); }
+.mobile-app-shell .composer-error { font-size: var(--m-fs-footnote); }
+.mobile-app-shell .composer-attach-option { min-height: 52px; padding: 8px 12px; }
+.mobile-app-shell .composer-attach-option-text strong { font-size: var(--m-fs-body); font-weight: 500; }
+.mobile-app-shell .composer-attach-option-text small { font-size: var(--m-fs-footnote); }
+
+@media (max-width: 390px) {
+  .mobile-app-shell .host-row { grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; }
+  .mobile-app-shell .host-row-icon { width: 34px; height: 34px; }
+  .host-attention-button { margin-left: 58px; }
+  .mobile-app-shell .mobile-fork-group { padding-left: 8px; }
+}

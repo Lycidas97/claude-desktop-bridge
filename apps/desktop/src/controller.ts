@@ -15,6 +15,8 @@ import {
   relayServiceOrigin,
   cryptoWithRelayEndpoint,
   relayPathForUrl,
+  evidenceSummary,
+  summarizeEvidenceEvent,
   type BridgeAttachment,
   type BridgeDesktopAppStatus,
   type BridgeDesktopRuntime,
@@ -56,8 +58,11 @@ import type { ProviderRegistry } from "./provider-registry.js";
 import type { HandoffService } from "./handoff-service.js";
 import { parseRuntimeSessionId, type RuntimeSessionBroker } from "./runtime-session-broker.js";
 import type { RuntimeHandoffService } from "./runtime-handoff-service.js";
-import type { ConversationStateStore, SessionVisibility } from "./conversation-state-store.js";
+import type { ConversationStateStore, DesktopArchiveRequest, SessionVisibility } from "./conversation-state-store.js";
+import { writeDesktopArchiveState } from "./claude-desktop-archive.js";
 import { FileUploadManager } from "./file-upload.js";
+import { MAGPIE_QUOTA_METHOD } from "../../../plugins/magpie-quota/contract.js";
+import { createMagpieQuotaPlugin } from "../../../plugins/magpie-quota/desktop.js";
 
 export interface LocalBridgeRequest {
   method: BridgeRequest["method"];
@@ -254,12 +259,15 @@ export class DesktopController extends EventEmitter {
   private readonly onlineDevices = new Set<string>();
   private readonly responseCache = new Map<string, BridgeResponse>();
   private readonly uploads = new FileUploadManager();
+  private readonly magpieQuota = createMagpieQuotaPlugin({ getGateway: () => this.broker.gatewayConfig() });
   private lastSeenAt = Date.now();
   private transportMetrics: BridgeTransportMetrics | undefined;
   private relayHealthy = false;
   private lastPublishedSessionKey = "";
   private lastDiscoveryRefreshAt = 0;
   private readonly sessionVisibility = new Map<string, { visibility: SessionVisibility; updatedAt: number }>();
+  private readonly desktopArchiveRequests = new Map<string, DesktopArchiveRequest>();
+  private desktopArchiveSync: Promise<void> | undefined;
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
@@ -288,6 +296,9 @@ export class DesktopController extends EventEmitter {
       for (const row of this.conversationState.listSessionVisibility()) {
         this.sessionVisibility.set(row.sessionId, { visibility: row.visibility, updatedAt: row.updatedAt });
       }
+      for (const request of this.conversationState.listDesktopArchiveRequests()) {
+        this.desktopArchiveRequests.set(request.sessionId, request);
+      }
     }
     this.config.managedDesktopEnabled = false;
     this.config.launchAtLogin = await isLaunchAtLoginEnabled(this.app);
@@ -309,7 +320,8 @@ export class DesktopController extends EventEmitter {
       });
       this.deviceCryptos.set(device.deviceId, crypto);
     }
-    this.eventLog.on("event", (event: BridgeEvent) => {
+    this.eventLog.on("event", (record: BridgeEvent) => {
+      const event = summarizeEvidenceEvent(record);
       this.emit("event", event);
       if (
         event.type === "session.desktop-registration" ||
@@ -322,7 +334,10 @@ export class DesktopController extends EventEmitter {
       void this.broadcast({ kind: "event", event }, !persistOffline);
       this.queuePublish();
     });
-    this.broker.on("changed", () => void this.publish());
+    this.broker.on("changed", () => {
+      void this.publish();
+      this.syncDesktopArchives();
+    });
     await this.broker.initialize();
     if (this.runtimeSessions) {
       this.runtimeSessions.on("changed", () => void this.publish());
@@ -369,6 +384,7 @@ export class DesktopController extends EventEmitter {
         version: this.app.getVersion(),
         capabilities: [
           "evidence.v1",
+          "evidence.details.v1",
           "artifact.preview.v1",
           "artifact.transfer.v1",
           "artifact.text-preview.v1",
@@ -379,6 +395,9 @@ export class DesktopController extends EventEmitter {
           "permission.policy.v1",
           "runtime.adapter.v1",
           "session.visibility.v1",
+          "subagent.stop.v1",
+          "turn.queue.steer.v1",
+          "plugin.magpie-quota.v1",
           ...(this.runtimeHandoffs ? ["runtime.handoff.v1" as const] : []),
         ],
         defaultPermissionMode: this.config.defaultPermissionMode,
@@ -672,6 +691,11 @@ export class DesktopController extends EventEmitter {
     return sessions
       .filter((session) => this.sessionVisibility.get(session.sessionId)?.visibility !== "deleted")
       .map((session) => {
+        const request = this.desktopArchiveRequests.get(session.sessionId);
+        if (request) {
+          const { archivedAt: _desktopArchivedAt, ...rest } = session;
+          return { ...rest, ...(request.archived ? { archivedAt: request.requestedAt } : {}), desktopArchivePending: true };
+        }
         const entry = this.sessionVisibility.get(session.sessionId);
         return entry?.visibility === "archived" ? { ...session, archivedAt: entry.updatedAt } : session;
       });
@@ -737,6 +761,57 @@ export class DesktopController extends EventEmitter {
       this.sessionVisibility.delete(sessionId);
     }
     this.conversationState?.setSessionVisibility(sessionId, visibility);
+  }
+
+  private requestDesktopArchive(
+    sessionId: string,
+    record: { desktopSessionId: string; metadataPath: string; archived: boolean },
+    archived: boolean,
+    requestedAt: number,
+  ): void {
+    if (record.archived === archived) {
+      this.clearDesktopArchiveRequest(sessionId);
+      return;
+    }
+    const request = { sessionId, desktopSessionId: record.desktopSessionId, metadataPath: record.metadataPath, archived, requestedAt };
+    this.desktopArchiveRequests.set(sessionId, request);
+    this.conversationState?.setDesktopArchiveRequest(request);
+  }
+
+  private clearDesktopArchiveRequest(sessionId: string): void {
+    this.desktopArchiveRequests.delete(sessionId);
+    this.conversationState?.deleteDesktopArchiveRequest(sessionId);
+  }
+
+  private syncDesktopArchives(): void {
+    if (this.desktopArchiveSync) return;
+    this.desktopArchiveSync = this.applyDesktopArchives()
+      .catch((error: unknown) => {
+        process.stderr.write(`Bridge could not sync Claude Desktop archive state: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+      })
+      .finally(() => { this.desktopArchiveSync = undefined; });
+  }
+
+  /** Desktop keeps archive state in memory, so Bridge changes are written while Desktop is not running. */
+  private async applyDesktopArchives(): Promise<void> {
+    // Earlier Bridge releases only hid archived or deleted Desktop sessions inside Bridge.
+    for (const [sessionId, entry] of [...this.sessionVisibility]) {
+      const record = this.broker.desktopArchiveRecord(sessionId);
+      if (!record) continue;
+      if (!record.archived && !this.desktopArchiveRequests.has(sessionId)) {
+        this.requestDesktopArchive(sessionId, record, true, entry.updatedAt);
+      }
+      if (entry.visibility === "archived") this.setSessionVisibility(sessionId, null);
+    }
+    // Done once Desktop's own record shows the change, from Bridge's write or from the person in Desktop.
+    for (const request of [...this.desktopArchiveRequests.values()]) {
+      const record = this.broker.desktopArchiveRecord(request.sessionId);
+      if (!record || record.archived === request.archived) this.clearDesktopArchiveRequest(request.sessionId);
+    }
+    if (!this.desktopArchiveRequests.size || (await this.claudeDesktop.status(true)).state !== "stopped") return;
+    for (const request of [...this.desktopArchiveRequests.values()]) {
+      if (!await writeDesktopArchiveState(request)) this.clearDesktopArchiveRequest(request.sessionId);
+    }
   }
 
   private async connect(): Promise<void> {
@@ -1178,15 +1253,23 @@ export class DesktopController extends EventEmitter {
       const all = this.allSessions();
       const session = all.find((candidate) => candidate.sessionId === sessionId);
       if (!session) throw new Error("Session not found");
-      const archivedAt = archived ? Date.now() : undefined;
+      const changedAt = Date.now();
+      const archivedAt = archived ? changedAt : undefined;
+      // Restoring stays on the chosen session so children archived on their own stay archived.
       const targetIds = [
         sessionId,
-        ...all
-          .filter((candidate) => candidate.parentSessionId === sessionId)
+        ...(archived ? all : [])
+          .filter((candidate) => candidate.parentSessionId === sessionId && !candidate.archivedAt)
           .map((candidate) => candidate.sessionId),
       ];
       for (const targetId of targetIds) {
-        this.setSessionVisibility(targetId, archived ? "archived" : null);
+        const record = this.broker.desktopArchiveRecord(targetId);
+        if (record) {
+          this.setSessionVisibility(targetId, null);
+          this.requestDesktopArchive(targetId, record, archived, changedAt);
+        } else {
+          this.setSessionVisibility(targetId, archived ? "archived" : null);
+        }
         await this.eventLog.append({
           sessionId: targetId,
           origin,
@@ -1194,6 +1277,7 @@ export class DesktopController extends EventEmitter {
           data: { sessionId: targetId, archived: archivedAt !== undefined, ...(archivedAt ? { archivedAt } : {}) },
         });
       }
+      this.syncDesktopArchives();
       return {
         session: this.allSessions().find((candidate) => candidate.sessionId === sessionId),
       };
@@ -1218,6 +1302,12 @@ export class DesktopController extends EventEmitter {
       // refresh, so deletion persists as a visibility marker rather than a
       // destructive delete in the native app.
       this.setSessionVisibility(sessionId, "deleted");
+      // Desktop keeps its record, so a Bridge deletion archives the session there.
+      const record = this.broker.desktopArchiveRecord(sessionId);
+      if (record) {
+        this.requestDesktopArchive(sessionId, record, true, Date.now());
+        this.syncDesktopArchives();
+      }
       await this.eventLog.append({
         sessionId,
         origin,
@@ -1260,6 +1350,12 @@ export class DesktopController extends EventEmitter {
         stringParam(params, "commandId")!,
         action,
       );
+      return { commandId: turn.commandId, state: turn.state };
+    }
+    if (request.method === "turn.queue.steer") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.routesToExternalRuntime(sessionId)) throw new Error("这个会话不支持调整已排队消息");
+      const turn = await this.broker.steerQueuedTurn(sessionId, stringParam(params, "commandId")!);
       return { commandId: turn.commandId, state: turn.state };
     }
     if (request.method === "turn.start" || request.method === "turn.steer") {
@@ -1308,6 +1404,12 @@ export class DesktopController extends EventEmitter {
           params.force === true,
         ),
       };
+    }
+    if (request.method === "subagent.stop") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.routesToExternalRuntime(sessionId)) throw new Error("这个会话不支持单独停止子代理");
+      await this.broker.stopSubagent(sessionId, stringParam(params, "agentId")!);
+      return { stopped: true };
     }
     if (request.method === "permission.resolve") {
       const decision = stringParam(params, "decision")!;
@@ -1487,7 +1589,8 @@ export class DesktopController extends EventEmitter {
       let bytes = 0;
       let truncatedByBytes = false;
       const maxPageBytes = 40 * 1024;
-      for (const event of rawEvents) {
+      for (const record of rawEvents) {
+        const event = summarizeEvidenceEvent(record);
         if (
           event.type === "session.desktop-registration" ||
           event.type === "evidence.started" ||
@@ -1496,7 +1599,7 @@ export class DesktopController extends EventEmitter {
           scannedSeq = event.seq;
           continue;
         }
-        const serializedLength = JSON.stringify(event).length;
+        const serializedLength = Buffer.byteLength(JSON.stringify(event), "utf8");
         if (events.length > 0 && bytes + serializedLength > maxPageBytes) {
           truncatedByBytes = true;
           break;
@@ -1537,7 +1640,17 @@ export class DesktopController extends EventEmitter {
     if (request.method === "evidence.get") {
       const evidence = this.evidence.get(stringParam(params, "evidenceId")!);
       if (!evidence) throw new Error("Evidence not found");
-      return { evidence };
+      return { evidence: evidenceSummary(evidence) };
+    }
+    if (request.method === "evidence.details") {
+      const kind = stringParam(params, "kind");
+      if (kind !== "tools" && kind !== "artifacts") throw new Error("Unknown evidence detail kind");
+      const page = this.evidence.details(
+        stringParam(params, "evidenceId")!, kind,
+        stringParam(params, "cursor", false), numberParam(params, "limit", 30),
+      );
+      if (!page) throw new Error("Evidence not found");
+      return { page };
     }
     if (request.method.startsWith("file.upload.")) {
       const owner = sourceDeviceId ?? "desktop";
@@ -1614,6 +1727,7 @@ export class DesktopController extends EventEmitter {
       if (origin === "mobile" && sourceDeviceId !== deviceId) throw new Error("A phone can only revoke itself");
       return { scheduled: true, deviceId };
     }
+    if (request.method === MAGPIE_QUOTA_METHOD) return this.magpieQuota.handle(request);
     throw new Error("Unsupported request method");
   }
 
@@ -1758,10 +1872,10 @@ export class DesktopController extends EventEmitter {
   private async publish(): Promise<DesktopControlSnapshot> {
     const snapshot = await this.snapshot();
     this.emit("snapshot", snapshot);
-    // Session metadata and Desktop registration can change without a
-    // mobile event delta, so include them when deciding to push a snapshot.
+    // Metadata, execution stage, task capabilities, and Desktop-owned turns can
+    // change without a mobile event delta, so include them when deciding to push a snapshot.
     const sessionKey = snapshot.sessions
-      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}`)
+      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${JSON.stringify(session.runningSubagents ?? null)}\t${session.subagentStopScope ?? ""}\t${session.executionStage ?? ""}\t${session.ownership === "DESKTOP_OBSERVED" ? session.turnState : ""}\t${session.mainTurnStopScope ?? ""}`)
       .sort()
       .join("\n");
     const previousKey = this.lastPublishedSessionKey;

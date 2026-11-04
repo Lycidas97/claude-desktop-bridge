@@ -5,6 +5,8 @@ import type {
 } from "@bridge/protocol";
 import { LoaderCircle, Settings2, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { MagpieModelQuota, useOptionalMagpieQuota } from "../../../../plugins/magpie-quota/client.js";
+import { modelQuotaLabel } from "../../../../plugins/magpie-quota/presentation.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeName, isNativeRuntimeId } from "../lib/runtime-labels.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
@@ -24,6 +26,15 @@ const EFFORT_LABELS: Record<string, string> = {
 
 function effortLabel(value: string): string {
   return EFFORT_LABELS[value] ?? value;
+}
+
+const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
+/** The configured level if the model offers it, else the strongest offered level not above it. */
+function supportedEffort(effort: string, levels: readonly string[]): string {
+  if (levels.includes(effort)) return effort;
+  const rank = EFFORT_ORDER.indexOf(effort);
+  return levels.filter((level) => EFFORT_ORDER.indexOf(level) <= rank).at(-1) ?? levels[0] ?? effort;
 }
 
 function formatTokens(value: number): string {
@@ -72,6 +83,10 @@ export function SessionConfigurationDialog({
   const [savingPermission, setSavingPermission] = useState(false);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
   const [error, setError] = useState<string>();
+  const nativeRuntime = isNativeRuntimeId(session.runtimeId);
+  // Native runtimes don't route through Magpie; the desktop dashboard mounts no quota provider.
+  const quotaState = useOptionalMagpieQuota(!nativeRuntime);
+  const quota = nativeRuntime ? undefined : quotaState;
 
   useEffect(() => {
     let active = true;
@@ -125,7 +140,8 @@ export function SessionConfigurationDialog({
     : configuration?.availableReasoningEfforts?.length
       ? configuration.availableReasoningEfforts
       : configuration?.availableEffortLevels ?? ["low", "medium", "high", "xhigh", "max"];
-  const nativeRuntime = isNativeRuntimeId(session.runtimeId);
+  // Keep the session's own effort so a model that supports it gets it back; show and save what this one allows.
+  const shownEffort = supportedEffort(effort, effortLevels);
   const runtimeName = desktopRuntimeName(session.runtimeId);
   const fastSupported = Boolean(configuration?.supportsFastMode && selectedModel?.supportsFast !== false);
 
@@ -133,11 +149,6 @@ export function SessionConfigurationDialog({
     setModel(value);
     const nextModel = modelOptions.find((candidate) => candidate.value === value);
     if (nextModel?.provider) setProvider(nextModel.provider);
-    if (nextModel?.supportsEffort === false) {
-      setEffort("");
-    } else if (nextModel?.supportedEffortLevels?.length && !nextModel.supportedEffortLevels.includes(effort)) {
-      setEffort(nextModel.supportedEffortLevels[0]!);
-    }
     if (nextModel?.supportsFast === false) setFast(false);
   }
 
@@ -149,11 +160,6 @@ export function SessionConfigurationDialog({
     const nextModel = nextModels[0];
     if (!nextModel) return;
     setModel(nextModel.value);
-    if (nextModel.supportsEffort === false) {
-      setEffort("");
-    } else if (nextModel.supportedEffortLevels?.length && !nextModel.supportedEffortLevels.includes(effort)) {
-      setEffort(nextModel.supportedEffortLevels[0]!);
-    }
     if (nextModel.supportsFast === false) setFast(false);
   }
 
@@ -276,11 +282,14 @@ export function SessionConfigurationDialog({
               <span>模型</span>
               <select value={model} disabled={!modelOptions.length} onChange={(event) => chooseModel(event.target.value)}>
                 {modelOptions.map((candidate) => (
-                  <option value={candidate.value} key={`${candidate.provider ?? ""}:${candidate.value}`}>{candidate.displayName}</option>
+                  <option value={candidate.value} key={`${candidate.provider ?? ""}:${candidate.value}`}>
+                    {[candidate.displayName, quota?.snapshot && modelQuotaLabel(quota.snapshot, candidate)].filter(Boolean).join(" · ")}
+                  </option>
                 ))}
               </select>
               <small>{selectedModel?.description || (!configuration?.modelsComplete ? "仅显示当前主机已发现的模型" : model)}</small>
             </label>
+            {quota && selectedModel && <MagpieModelQuota model={selectedModel} />}
 
             {effortLevels.length > 0 && selectedModel?.supportsEffort !== false && (
               <fieldset className="session-effort-field">
@@ -289,8 +298,8 @@ export function SessionConfigurationDialog({
                   {effortLevels.map((level) => (
                     <button
                       type="button"
-                      className={effort === level ? "active" : ""}
-                      aria-pressed={effort === level}
+                      className={shownEffort === level ? "active" : ""}
+                      aria-pressed={shownEffort === level}
                       onClick={() => setEffort(level)}
                       key={level}
                     >
@@ -298,6 +307,9 @@ export function SessionConfigurationDialog({
                     </button>
                   ))}
                 </div>
+                {effort && effort !== shownEffort && (
+                  <small>当前设置为「{effortLabel(effort)}」，这个模型不支持「{effortLabel(effort)}」，保存后改为「{effortLabel(shownEffort)}」。</small>
+                )}
               </fieldset>
             )}
 
@@ -374,11 +386,11 @@ export function SessionConfigurationDialog({
                   ...(nativeRuntime
                     ? {
                         provider: provider || null,
-                        ...(selectedModel?.supportsEffort === false ? { reasoningEffort: null } : { reasoningEffort: effort }),
+                        ...(selectedModel?.supportsEffort === false ? { reasoningEffort: null } : { reasoningEffort: shownEffort }),
                         ...(configuration?.supportsFastMode ? { fast: fastSupported ? fast : false } : {}),
                       }
                     : {
-                        effort: selectedModel?.supportsEffort === false ? null : effort,
+                        effort: selectedModel?.supportsEffort === false ? null : shownEffort,
                       }),
                 })}
               >

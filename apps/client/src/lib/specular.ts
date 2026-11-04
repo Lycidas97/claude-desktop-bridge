@@ -11,7 +11,6 @@ const SPECULAR_SELECTOR = [
   ".create-session-dialog",
   ".provider-switch-dialog",
   ".session-configuration-dialog",
-  ".permission-sheet",
   ".pairing-panel",
 ].join(", ");
 

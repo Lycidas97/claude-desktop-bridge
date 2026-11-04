@@ -1,11 +1,13 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionEventLog } from "./session-event-log.js";
 import type { ObservedDesktopEvidence } from "./evidence-manager.js";
 import { TranscriptObserver } from "./transcript-observer.js";
+import { parseClaudeTranscriptSnapshot } from "./claude-history.js";
+import type { ObservedClaudeSession } from "./claude-session-catalog.js";
 
 const directories: string[] = [];
 
@@ -33,6 +35,125 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 }
 
 describe("TranscriptObserver", () => {
+  it("deduplicates compacted text and prompts across restart while detecting later edits", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-observer-compact-dedup-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    await mkdir(join(paths.projects, "project"), { recursive: true });
+    const sessionId = "compact-dedup-session";
+    const transcript = join(paths.projects, "project", `${sessionId}.jsonl`);
+    const rows = [
+      { uuid: "user-1", type: "user", timestamp: new Date().toISOString(), cwd: root, message: { role: "user", content: "Question" } },
+      { uuid: "assistant-1", parentUuid: "user-1", type: "assistant", timestamp: new Date().toISOString(), cwd: root, message: { role: "assistant", content: [
+        { type: "text", text: "Choose an option" },
+        { type: "tool_use", id: "question-tool", name: "AskUserQuestion", input: { questions: [{ question: "Which?", options: [{ label: "A", description: "First" }] }] } },
+      ] } },
+    ];
+    await writeFile(transcript, rows.map((row) => JSON.stringify(row)).join("\n"));
+    const first = new SessionEventLog(join(root, "events.jsonl"));
+    for (const message of (await parseClaudeTranscriptSnapshot(transcript)).messages) {
+      await first.append({ sessionId, itemId: message.id, type: "session.observed", origin: "claude-desktop", data: { role: message.role, text: message.text, ...(message.interactivePrompt ? { interactivePrompt: message.interactivePrompt } : {}) } });
+    }
+    expect(first.latestItem(sessionId, "session.observed", "assistant-1")?.data.interactivePrompt).toBeDefined();
+    await first.close();
+    const compacted = new SessionEventLog(first.path, 80, { bytesThreshold: 1, retainEvents: 0 });
+    await compacted.initialize();
+    await compacted.close();
+    const log = new SessionEventLog(first.path);
+    await log.initialize();
+    const before = log.latestSeq();
+    const observer = new TranscriptObserver({ paths, eventLog: log, pollIntervalMs: 60_000, catalogIntervalMs: 60_000 });
+    try {
+      const session = { sessionId, cwd: root, transcriptPath: transcript, activeProcesses: [] } as unknown as ObservedClaudeSession;
+      await (observer as unknown as { observeTranscript(session: ObservedClaudeSession): Promise<void> }).observeTranscript(session);
+      expect(log.replay(before).filter((event) => event.type === "session.observed")).toEqual([]);
+      expect(observer.externalWriteVersion(sessionId)).toBe(0);
+      rows[0]!.message.content = "Edited question";
+      await writeFile(transcript, rows.map((row) => JSON.stringify(row)).join("\n"));
+    } finally {
+      await observer.close();
+    }
+    const restarted = new TranscriptObserver({ paths, eventLog: log, pollIntervalMs: 60_000, catalogIntervalMs: 60_000 });
+    try {
+      // Exercise persisted dedup on a fresh observer before its in-memory prime cache.
+      const session = { sessionId, cwd: root, transcriptPath: transcript, activeProcesses: [] } as unknown as ObservedClaudeSession;
+      await (restarted as unknown as { observeTranscript(session: ObservedClaudeSession): Promise<void> }).observeTranscript(session);
+      expect(log.replay(before).filter((event) => event.type === "session.observed")).toMatchObject([{ itemId: "user-1", data: { text: "Edited question" } }]);
+      expect(log.replay(before).filter((event) => event.itemId === "assistant-1")).toEqual([]);
+      expect(restarted.externalWriteVersion(sessionId)).toBe(0);
+    } finally {
+      await restarted.close();
+      await log.close();
+    }
+  });
+  it.each([
+    { alias: false, compact: false },
+    { alias: true, compact: false },
+    { alias: false, compact: true },
+    { alias: true, compact: true },
+  ])("recognizes submitted input before its SDK acceptance (alias=$alias, compact=$compact)", async ({ alias, compact }) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-observer-submitted-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    await mkdir(paths.projects, { recursive: true });
+    const nativeId = "native-session";
+    const sessionId = alias ? "logical-session" : nativeId;
+    const transcript = join(paths.projects, `${nativeId}.jsonl`);
+    await writeFile(transcript, `${JSON.stringify({ type: "assistant", uuid: "initial-answer", message: { role: "assistant", content: "Done", stop_reason: "end_turn" } })}\n`);
+    const logPath = join(root, "events.jsonl");
+    let eventLog = new SessionEventLog(logPath);
+    await eventLog.append({
+      sessionId, turnId: "bridge-turn", itemId: "bridge-user", origin: "claude-host", type: "message.delivery",
+      data: { delivery: "submitted", messageId: "bridge-user", commandId: "bridge-command", requestId: "bridge-request" },
+    });
+    if (compact) {
+      await eventLog.close();
+      const compacted = new SessionEventLog(logPath, 80, { bytesThreshold: 1, retainEvents: 0 });
+      await compacted.initialize();
+      await compacted.close();
+      eventLog = new SessionEventLog(logPath);
+      await eventLog.initialize();
+    }
+    const observer = new TranscriptObserver({ paths, eventLog, pollIntervalMs: 60_000, catalogIntervalMs: 60_000 });
+    if (alias) observer.setSessionAlias(nativeId, sessionId);
+    const session = { sessionId: nativeId, cwd: root, transcriptPath: transcript, activeProcesses: [] } as unknown as ObservedClaudeSession;
+    const observe = () => (observer as unknown as { observeTranscript(session: ObservedClaudeSession): Promise<void> }).observeTranscript(session);
+    try {
+      await observe();
+      // The transcript is written before the SDK echoes the accepted input.
+      await appendFile(transcript, `${JSON.stringify({ type: "user", uuid: "bridge-user", parentUuid: "initial-answer", message: { role: "user", content: "Continue" } })}\n`);
+      await observe();
+      expect(eventLog.hasItem(sessionId, "user.message.accepted", "bridge-user")).toBe(false);
+      expect(eventLog.latestItem(sessionId, "session.observed", "bridge-user")?.data.text).toBe("Continue");
+      expect(observer.externalWriteVersion(sessionId)).toBe(0);
+      expect(observer.externalWriteVersion(nativeId)).toBe(0);
+      await eventLog.append({
+        sessionId, turnId: "second-turn", itemId: "second-user", origin: "claude-host", type: "message.delivery",
+        data: { delivery: "submitted", messageId: "second-user", commandId: "second-command", requestId: "second-request" },
+      });
+      await appendFile(transcript, `${JSON.stringify({ type: "user", uuid: "second-user", parentUuid: "bridge-user", message: { role: "user", content: "Continue" } })}\n`);
+      await observe();
+      expect(observer.externalWriteVersion(sessionId)).toBe(0);
+      expect(eventLog.turnEvidence({ sessionId, messageId: "second-user" })).toMatchObject({ submitted: true, accepted: true });
+      expect(eventLog.hasItem(sessionId, "user.message.accepted", "second-user")).toBe(false);
+      await observe();
+      expect(observer.externalWriteVersion(sessionId)).toBe(0);
+
+      // Equal text with a different UUID is still a real external input.
+      await appendFile(transcript, `${JSON.stringify({ type: "user", uuid: "desktop-user", parentUuid: "bridge-user", message: { role: "user", content: "Continue" } })}\n`);
+      await observe();
+      expect(observer.externalWriteVersion(sessionId)).toBe(1);
+      await observe();
+      expect(observer.externalWriteVersion(sessionId)).toBe(1);
+      await eventLog.append({ sessionId, turnId: "bridge-turn", itemId: "bridge-user", origin: "mobile", type: "user.message.accepted", data: { text: "Continue" } });
+      await observe();
+      expect(observer.externalWriteVersion(sessionId)).toBe(1);
+    } finally {
+      await observer.close();
+      await eventLog.close();
+    }
+  });
+
   it("treats a focused Desktop session as a viewer until it writes a real user message", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-observer-viewer-"));
     directories.push(root);
@@ -108,6 +229,7 @@ describe("TranscriptObserver", () => {
     expect(observer.isDesktopBusy(sessionId)).toBe(false);
     expect(observer.externalWriteVersion(sessionId)).toBe(0);
 
+    const previousActivityAt = observer.catalog.sessions.find((session) => session.sessionId === sessionId)!.lastActivityAt;
     const focusedAt = Date.now();
     await writeFile(desktopSessionPath, JSON.stringify({
       sessionId: "desktop-viewer",
@@ -118,9 +240,8 @@ describe("TranscriptObserver", () => {
       lastActivityAt: oldTimestamp,
       title: "Viewer",
     }));
-    await waitFor(() => (
-      observer.catalog.sessions.find((session) => session.sessionId === sessionId)?.lastActivityAt === focusedAt
-    ));
+    await waitFor(() => observer.catalog.observedAt > focusedAt);
+    expect(observer.catalog.sessions.find((session) => session.sessionId === sessionId)?.lastActivityAt).toBe(previousActivityAt);
     expect(observer.isDesktopBusy(sessionId)).toBe(false);
     expect(observer.externalWriteVersion(sessionId)).toBe(0);
 
@@ -190,7 +311,55 @@ describe("TranscriptObserver", () => {
     await eventLog.close();
   });
 
-  it("reuses an idle Bridge host despite old subagent activity while still checking fresh Desktop input", async () => {
+  it("uses the logical alias for ownership, evidence, settlement and external write versions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-observer-alias-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    const nativeId = "native-session";
+    const sessionId = "logical-session";
+    const transcript = join(paths.projects, `${nativeId}.jsonl`);
+    await Promise.all([mkdir(paths.sessions, { recursive: true }), mkdir(paths.projects, { recursive: true })]);
+    await writeFile(join(paths.sessions, `${process.pid}.json`), JSON.stringify({
+      pid: process.pid, sessionId: nativeId, cwd: root, startedAt: Date.now() - 1_000, entrypoint: "claude-desktop-3p",
+    }));
+    await writeFile(transcript, [
+      JSON.stringify({ type: "user", uuid: "first-user", parentUuid: null, message: { role: "user", content: "First" } }),
+      JSON.stringify({ type: "assistant", uuid: "first-tool", parentUuid: "first-user", message: { role: "assistant", content: [{ type: "tool_use", id: "owned-tool", name: "Read", input: { file_path: "owned.txt" } }] } }),
+      JSON.stringify({ type: "user", uuid: "first-result", parentUuid: "first-tool", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "owned-tool", content: "ok" }] } }),
+      JSON.stringify({ type: "assistant", uuid: "first-answer", parentUuid: "first-result", message: { role: "assistant", content: "Done", stop_reason: "end_turn" } }), "",
+    ].join("\n"));
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const recovered: ObservedDesktopEvidence[] = [];
+    const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 20, catalogIntervalMs: 60_000, evidence: { async upsertDesktopEvidence(input) { recovered.push(input); } } });
+    observer.setSessionAlias(nativeId, sessionId);
+    try {
+      await eventLog.append({ sessionId, itemId: "owned-tool", origin: "claude-host", type: "tool.started", data: { toolName: "Read" } });
+      await observer.start();
+      await eventLog.append({ sessionId, turnId: "bridge-turn", itemId: "bridge-user", origin: "mobile", type: "user.message.accepted", data: { text: "Bridge" } });
+      await appendFile(transcript, [
+        JSON.stringify({ type: "user", uuid: "bridge-user", parentUuid: "first-answer", message: { role: "user", content: "Bridge" } }),
+        JSON.stringify({ type: "user", uuid: "desktop-user", parentUuid: "bridge-user", message: { role: "user", content: "Desktop" } }), "",
+      ].join("\n"));
+      await waitFor(() => Boolean(eventLog.latestItem(sessionId, "session.observed", "desktop-user")));
+      expect(observer.externalWriteVersion(nativeId)).toBe(1);
+      expect(observer.externalWriteVersion(sessionId)).toBe(1);
+      expect(recovered).toEqual([]);
+      expect(eventLog.latestItem(sessionId, "session.observed", "bridge-user")).toBeUndefined();
+      expect(observer.isMainTurnBusy(sessionId)).toBe(true);
+      await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
+      await eventLog.append({ sessionId, turnId: "desktop-turn", itemId: "desktop-user", origin: "mobile", type: "user.message.accepted", data: { text: "Desktop" } });
+      await eventLog.append({ sessionId, turnId: "desktop-turn", origin: "claude-host", type: "turn.completed", data: {} });
+      expect(observer.isMainTurnBusy(nativeId)).toBe(false);
+      expect(observer.isMainTurnBusy(sessionId)).toBe(false);
+      await expect(observer.canStartBridgeHost(nativeId)).resolves.toBe(true);
+      await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(true);
+    } finally {
+      await observer.close();
+      await eventLog.close();
+    }
+  });
+
+  it("allows a new or reused Bridge host at a main-turn boundary despite subagent activity", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-observer-reuse-"));
     directories.push(root);
     const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
@@ -216,13 +385,158 @@ describe("TranscriptObserver", () => {
     try {
       await observer.start();
       expect(observer.catalog.sessions.find((session) => session.sessionId === sessionId), "catalog contains viewer").toBeDefined();
-      expect(observer.isDesktopBusy(sessionId), "old subagent marks viewer busy").toBe(true);
-      await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
+      expect(observer.isDesktopBusy(sessionId), "subagent activity remains visible").toBe(true);
+      expect(observer.isMainTurnBusy(sessionId)).toBe(false);
+      expect(observer.runningSubagents(sessionId)?.count).toBe(1);
+      await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(true);
       await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(true);
       await appendFile(transcript, `${JSON.stringify({ type: "user", uuid: "native-next", parentUuid: "assistant-1", message: { role: "user", content: "New Desktop input" } })}\n`);
       expect(observer.externalWriteVersion(sessionId)).toBe(0);
+      await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
       await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
     } finally {
+      await observer.close();
+      await eventLog.close();
+    }
+  });
+
+  it("keeps a hung subagent running until it is stopped, without blaming the main conversation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-observer-stalled-subagent-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    const sessionId = "session-stalled-subagent";
+    const transcript = join(paths.projects, `${sessionId}.jsonl`);
+    const subagents = join(paths.projects, sessionId, "subagents");
+    const timestamp = new Date().toISOString();
+    await Promise.all([mkdir(paths.sessions, { recursive: true }), mkdir(subagents, { recursive: true })]);
+    await writeFile(join(paths.sessions, `${process.pid}.json`), JSON.stringify({
+      pid: process.pid, sessionId, cwd: root, startedAt: Date.now() - 1_000, entrypoint: "claude-desktop-3p",
+    }));
+    await writeFile(transcript, [
+      JSON.stringify({ type: "user", uuid: "user-1", parentUuid: null, timestamp, message: { role: "user", content: "Check this" } }),
+      JSON.stringify({ type: "assistant", uuid: "launch", parentUuid: "user-1", timestamp, message: { role: "assistant", content: [{ type: "tool_use", id: "agent-call", name: "Agent", input: { description: "Stalled child" } }], stop_reason: "tool_use" } }),
+      JSON.stringify({ type: "user", uuid: "launched", parentUuid: "launch", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "agent-call", content: "Async agent launched successfully.\nagentId: stalled" }] } }),
+      JSON.stringify({ type: "assistant", uuid: "answer", parentUuid: "launched", timestamp, message: { role: "assistant", content: "Done", stop_reason: "end_turn" } }),
+      "",
+    ].join("\n"));
+    await writeFile(join(subagents, "agent-stalled.meta.json"), JSON.stringify({ description: "Stalled child", toolUseId: "agent-call" }));
+    await writeFile(join(subagents, "agent-stalled.jsonl"), `${JSON.stringify({
+      type: "assistant", uuid: "child-tool", timestamp,
+      message: { role: "assistant", content: [{ type: "tool_use", id: "child-read", name: "Read", input: {} }] },
+    })}\n`);
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 20, catalogIntervalMs: 60_000 });
+    try {
+      await observer.start();
+      const realNow = Date.now.bind(Date);
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 7 * 3_600_000);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        expect(observer.isDesktopBusy(sessionId), "a hung subagent is still unfinished").toBe(true);
+        expect(observer.isMainTurnBusy(sessionId), "the main conversation already ended").toBe(false);
+        expect(observer.runningSubagents(sessionId)?.count).toBe(1);
+        expect(eventLog.latestItem(sessionId, "tool.completed", "agent-call")).toBeUndefined();
+      } finally {
+        clock.mockRestore();
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(eventLog.latestItem(sessionId, "tool.completed", "agent-call"), "a stop request is not terminal evidence").toBeUndefined();
+      expect(observer.runningSubagents(sessionId)?.count).toBe(1);
+      await appendFile(transcript, `${JSON.stringify({
+        type: "user", uuid: "stopped-notification", parentUuid: "answer", timestamp: new Date().toISOString(),
+        message: { role: "user", content: "<task-notification><task-id>stalled</task-id><status>stopped</status></task-notification>" },
+      })}\n`);
+      await waitFor(() => Boolean(eventLog.latestItem(sessionId, "tool.completed", "agent-call")));
+      expect((eventLog.latestItem(sessionId, "tool.completed", "agent-call")?.data.subagent as { state?: string }).state).toBe("stopped");
+      await waitFor(() => observer.isMainTurnBusy(sessionId));
+      expect(observer.isMainTurnBusy(sessionId), "the notification starts a main-turn follow-up").toBe(true);
+      expect(observer.runningSubagents(sessionId)).toBeUndefined();
+    } finally {
+      await observer.close();
+      await eventLog.close();
+    }
+  });
+
+  it("removes compacted historical children from the live count and publishes their uncertain state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-observer-compact-tasks-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    const sessionId = "session-compacted-child";
+    const transcript = join(paths.projects, `${sessionId}.jsonl`);
+    const children = join(paths.projects, sessionId, "subagents");
+    const startedAt = Date.now() - 20_000;
+    await Promise.all([mkdir(paths.sessions, { recursive: true }), mkdir(children, { recursive: true })]);
+    await writeFile(join(paths.sessions, `${process.pid}.json`), JSON.stringify({
+      pid: process.pid, sessionId, cwd: root, startedAt: startedAt - 1_000, entrypoint: "claude-desktop-3p",
+    }));
+    await writeFile(transcript, `${JSON.stringify({ type: "user", uuid: "user", timestamp: new Date(startedAt).toISOString(), message: { role: "user", content: "Review" } })}\n`);
+    await writeFile(join(children, "agent-old.meta.json"), JSON.stringify({ description: "Old child", toolUseId: "old-call" }));
+    await writeFile(join(children, "agent-old.jsonl"), `${JSON.stringify({
+      type: "assistant", timestamp: new Date(startedAt).toISOString(), message: { role: "assistant", content: [{ type: "tool_use", name: "Read", input: {} }] },
+    })}\n`);
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 20, catalogIntervalMs: 60_000 });
+    try {
+      await observer.start();
+      expect(observer.runningSubagents(sessionId)?.count).toBe(1);
+      await appendFile(transcript, `${JSON.stringify({ type: "system", subtype: "compact_boundary", timestamp: new Date(startedAt + 10_000).toISOString() })}\n`);
+      await waitFor(() => !observer.runningSubagents(sessionId));
+      const updated = eventLog.latestItem(sessionId, "tool.completed", "old-call");
+      expect(updated?.data.subagent).toMatchObject({ state: "unknown", updatedAt: startedAt + 10_000 });
+      expect(observer.runningSubagents(sessionId)).toBeUndefined();
+    } finally {
+      await observer.close();
+      await eventLog.close();
+    }
+  });
+
+  it.each([false, true])("ends an external subagent after process exit, deferring publication while SDK owns it (%s)", async (hostAuthority) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-observer-dead-subagent-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    const sessionId = "session-dead-subagent";
+    const transcript = join(paths.projects, `${sessionId}.jsonl`);
+    const subagents = join(paths.projects, sessionId, "subagents");
+    await Promise.all([mkdir(paths.sessions, { recursive: true }), mkdir(subagents, { recursive: true })]);
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    await writeFile(join(paths.sessions, `${child.pid}.json`), JSON.stringify({
+      pid: child.pid, sessionId, cwd: root, startedAt: Date.now() - 1_000, entrypoint: "claude-desktop-3p",
+    }));
+    await writeFile(transcript, [
+      JSON.stringify({ type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "Check this" } }),
+      JSON.stringify({ type: "assistant", uuid: "answer", parentUuid: "user-1", message: { role: "assistant", content: "Done", stop_reason: "end_turn" } }),
+      "",
+    ].join("\n"));
+    await writeFile(join(subagents, "agent-orphan.meta.json"), JSON.stringify({ description: "Orphan", toolUseId: "agent-call" }));
+    await writeFile(join(subagents, "agent-orphan.jsonl"), `${JSON.stringify({
+      type: "assistant", uuid: "child-tool", timestamp: new Date().toISOString(),
+      message: { role: "assistant", content: [{ type: "tool_use", id: "child-read", name: "Read", input: {} }] },
+    })}\n`);
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 20, catalogIntervalMs: 40 });
+    try {
+      await observer.start();
+      expect(observer.runningSubagents(sessionId)?.count).toBe(1);
+      if (hostAuthority) {
+        observer.setSessionAlias(sessionId, "logical-dead-session");
+        observer.setHostTaskAuthority("logical-dead-session", true);
+      }
+      child.kill("SIGTERM");
+      await exited;
+      if (hostAuthority) {
+        await waitFor(() => !observer.catalog.sessions.find((session) => session.sessionId === sessionId)?.processAlive);
+        expect(eventLog.latestItem("logical-dead-session", "tool.completed", "agent-call"), "SDK task state owns publication").toBeUndefined();
+        observer.setHostTaskAuthority("logical-dead-session", false);
+        await waitFor(() => Boolean(eventLog.latestItem("logical-dead-session", "tool.completed", "agent-call")));
+        expect((eventLog.latestItem("logical-dead-session", "tool.completed", "agent-call")?.data.subagent as { state?: string }).state).toBe("stopped");
+        return;
+      }
+      await waitFor(() => Boolean(eventLog.latestItem(sessionId, "tool.completed", "agent-call")));
+      expect((eventLog.latestItem(sessionId, "tool.completed", "agent-call")?.data.subagent as { state?: string }).state).toBe("stopped");
+    } finally {
+      child.kill("SIGTERM");
       await observer.close();
       await eventLog.close();
     }

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,12 +12,11 @@ import type { StoredDesktopRegistration } from "./claude-desktop-session-registr
 import type { ClaudeCatalogSnapshot, ObservedClaudeSession } from "./claude-session-catalog.js";
 import {
   SessionBroker,
-  type ManagedDesktopRuntime,
-  type ManagedDesktopTransportRuntime,
   type SessionHostRuntime,
   type TranscriptObserverRuntime,
 } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
+import { TranscriptObserver } from "./transcript-observer.js";
 
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
@@ -53,6 +52,20 @@ class FakeObserver extends EventEmitter implements TranscriptObserverRuntime {
 
   isDesktopBusy(): boolean {
     return this.busy;
+  }
+
+  isMainTurnBusy(): boolean {
+    return this.busy;
+  }
+
+  runningSubagents(): undefined {
+    return undefined;
+  }
+
+  markSubagentStopped(): void {}
+
+  applySubagentStops<T>(subagents: T): T {
+    return subagents;
   }
 
   externalWriteVersion(): number {
@@ -163,6 +176,8 @@ class FakeHost implements SessionHostRuntime {
     return { turnId, messageId };
   }
 
+  async stopTask(): Promise<void> {}
+
   async interrupt(): Promise<void> {
     this.interrupts += 1;
     if (!this.current) return;
@@ -227,81 +242,6 @@ class FakeHost implements SessionHostRuntime {
 
   private emit(event: SessionHostEvent): void {
     this.events.emit("event", event);
-  }
-}
-
-class FakeManagedDesktop extends EventEmitter implements ManagedDesktopRuntime {
-  ready = true;
-  enabled = true;
-  stopped = false;
-
-  status() {
-    return {
-      state: this.ready ? "ready" as const : "disconnected" as const,
-      detail: this.ready ? "Ready" : "Disconnected",
-      enabled: this.enabled,
-      canRestart: true,
-    };
-  }
-
-  applyToRuntimeStatus(status: Parameters<ManagedDesktopRuntime["applyToRuntimeStatus"]>[0]) {
-    return { ...status, desktopIntegration: this.status() };
-  }
-
-  async stopClaudeForFallback(): Promise<void> {
-    this.stopped = true;
-    this.ready = false;
-  }
-}
-
-class FakeManagedTransport extends EventEmitter implements ManagedDesktopTransportRuntime {
-  ready = true;
-  sends: Array<Parameters<ManagedDesktopTransportRuntime["send"]>[0]> = [];
-  interrupts = 0;
-  configuration: { model?: string; effort?: BridgeEffort } | undefined;
-  models: string[] = [];
-  efforts: Array<BridgeEffort | undefined> = [];
-
-  updateCatalog(): void {}
-
-  desktopSessionId(sessionId: string): string {
-    return `desktop-${sessionId}`;
-  }
-
-  async send(input: Parameters<ManagedDesktopTransportRuntime["send"]>[0]) {
-    this.sends.push(input);
-    return {
-      messageId: input.messageId ?? randomUUID(),
-      turnId: input.turnId ?? randomUUID(),
-      desktopSessionId: input.session.desktopSessionId ?? `desktop-${input.session.sessionId}`,
-    };
-  }
-
-  async interrupt(): Promise<void> {
-    this.interrupts += 1;
-  }
-  async setModel(_sessionId: string, model: string): Promise<void> { this.models.push(model); }
-  async setEffort(_sessionId: string, effort?: BridgeEffort): Promise<void> { this.efforts.push(effort); }
-  async getConfiguration() { return this.configuration; }
-  async getContextUsage(): Promise<undefined> { return undefined; }
-  clearIntent(): void {}
-
-  onEvent(listener: (event: SessionHostEvent) => void): () => void {
-    this.on("host-event", listener);
-    return () => this.off("host-event", listener);
-  }
-
-  onDeliveryUncertain(listener: Parameters<ManagedDesktopTransportRuntime["onDeliveryUncertain"]>[0]): () => void {
-    this.on("uncertain", listener);
-    return () => this.off("uncertain", listener);
-  }
-
-  close(): void {
-    this.removeAllListeners();
-  }
-
-  emitHost(event: SessionHostEvent): void {
-    this.emit("host-event", event);
   }
 }
 
@@ -628,9 +568,6 @@ describe("SessionBroker", () => {
     const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
     const sessionsPath = join(root, "sessions.json");
     const queuePath = join(root, "queue.json");
-    const managedDesktop = new FakeManagedDesktop();
-    managedDesktop.enabled = false;
-    managedDesktop.ready = false;
     const runtimePaths = {
       sessions: join(root, "runtime-sessions"),
       tasks: join(root, "tasks"),
@@ -643,7 +580,6 @@ describe("SessionBroker", () => {
       observer,
       sessionsPath,
       queuePath,
-      managedDesktop,
       hostFactory: (options) => {
         const host = new FakeHost(options);
         hosts.push(host);
@@ -670,7 +606,6 @@ describe("SessionBroker", () => {
     observer.busy = false;
     observer.publish();
     await waitFor(() => hosts[0]?.sends === 1);
-    expect(managedDesktop.stopped).toBe(false);
     expect(hosts[0]!.options.resume).toBe(true);
     expect(hosts[0]!.options.model).toBe("claude-fable-5[1m]");
     expect(hosts[0]!.options.effort).toBe("high");
@@ -1246,9 +1181,6 @@ describe("SessionBroker", () => {
       observedAt: Date.now(),
     });
     const hosts: FakeHost[] = [];
-    const managedDesktop = new FakeManagedDesktop();
-    managedDesktop.enabled = false;
-    managedDesktop.ready = false;
     const eventLog = new SessionEventLog(join(root, "events.jsonl"));
     const broker = new SessionBroker({
       paths: {
@@ -1261,7 +1193,6 @@ describe("SessionBroker", () => {
       observer,
       sessionsPath: join(root, "sessions.json"),
       queuePath: join(root, "queue.json"),
-      managedDesktop,
       hostFactory: (options) => {
         const host = new FakeHost(options);
         hosts.push(host);
@@ -1283,7 +1214,6 @@ describe("SessionBroker", () => {
     });
 
     await waitFor(() => hosts[0]?.sends === 1);
-    expect(managedDesktop.stopped).toBe(false);
     expect(hosts[0]!.options).toMatchObject({ sessionId, resume: true });
     expect(broker.session(sessionId)).toMatchObject({
       ownership: "BRIDGE_RUNNING",
@@ -1295,7 +1225,74 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
-  it("requeues a Bridge turn without cancelling it when Desktop creates a competing writer", async () => {
+  it("keeps a submitted host alive when its transcript precedes SDK acceptance, but stops for a distinct external input", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-self-input-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "runtime-sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    await mkdir(paths.projects, { recursive: true });
+    const sessionId = randomUUID();
+    const transcriptPath = join(paths.projects, `${sessionId}.jsonl`);
+    await writeFile(transcriptPath, `${JSON.stringify({ type: "assistant", uuid: "initial-answer", message: { role: "assistant", content: "Done", stop_reason: "end_turn" } })}\n`);
+    const desktopSession = observed(sessionId, root, { transcriptPath });
+    const observer = new FakeObserver({ sessions: [desktopSession], projects: [], observedAt: Date.now() });
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const transcriptObserver = new TranscriptObserver({ paths, eventLog });
+    vi.spyOn(observer, "externalWriteVersion").mockImplementation(() => transcriptObserver.externalWriteVersion(sessionId));
+    const observe = async () => {
+      await (transcriptObserver as unknown as { observeTranscript(session: ObservedClaudeSession): Promise<void> }).observeTranscript(desktopSession);
+      observer.publish();
+    };
+    const hosts: FakeHost[] = [];
+    const broker = new SessionBroker({
+      paths, eventLog, observer, sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"),
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        vi.spyOn(host, "send").mockImplementation(() => {
+          host.sends += 1;
+          const current = { turnId: randomUUID(), messageId: randomUUID() };
+          host.current = current;
+          host.events.emit("event", { type: "user.submitted", sessionId, ...current, at: Date.now() });
+          return current;
+        });
+        hosts.push(host);
+        return host;
+      },
+    });
+    try {
+      await broker.initialize();
+      await observe();
+      await broker.startTurn({ sessionId, requestId: "request", idempotencyKey: "command", text: "Continue", origin: "mobile" });
+      await waitFor(() => Boolean(eventLog.latestItem(sessionId, "message.delivery", hosts[0]?.current?.messageId ?? "")));
+      const messageId = hosts[0]!.current!.messageId;
+      await appendFile(transcriptPath, `${JSON.stringify({ type: "user", uuid: messageId, parentUuid: "initial-answer", message: { role: "user", content: "Continue" } })}\n`);
+      await observe();
+      const conflictTasks = (broker as unknown as { conflictTasks: Map<string, Promise<void>> }).conflictTasks;
+      await Promise.all(conflictTasks.values());
+      expect(eventLog.hasItem(sessionId, "user.message.accepted", messageId)).toBe(false);
+      expect(hosts[0]!.closed).toBe(false);
+      expect(hosts[0]!.sends).toBe(1);
+      expect(eventLog.replay().some(event => event.type === "session.ownership-conflict")).toBe(false);
+      expect(eventLog.replay().some(event => event.type === "turn.interrupted")).toBe(false);
+
+      await appendFile(transcriptPath, `${JSON.stringify({ type: "user", uuid: "external-user", parentUuid: messageId, message: { role: "user", content: "Continue" } })}\n`);
+      await observe();
+      await Promise.all(conflictTasks.values());
+      expect(hosts[0]!.closed).toBe(true);
+      expect(eventLog.replay().filter(event => event.type === "session.ownership-conflict")).toHaveLength(1);
+      expect(eventLog.replay().filter(event => event.type === "turn.interrupted")).toHaveLength(1);
+      const replayed = await broker.startTurn({ sessionId, requestId: "retry", idempotencyKey: "command", text: "Continue", origin: "mobile" });
+      expect(replayed.state).toBe("cancelled");
+      expect(hosts).toHaveLength(1);
+      expect(hosts[0]!.sends).toBe(1);
+    } finally {
+      await broker.close();
+      await transcriptObserver.close();
+      await eventLog.close();
+    }
+  });
+
+  it("contains a competing writer without resending an already submitted command", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-conflict-"));
     directories.push(root);
     const cwd = join(root, "project");
@@ -1382,30 +1379,25 @@ describe("SessionBroker", () => {
         hosts[0]?.closed === true &&
         hosts.length === 1 &&
         session?.ownership === "OWNERSHIP_CONFLICT" &&
-        session.turnState === "queued" &&
-        session.pendingCount === 1
+        session.turnState === "waiting" &&
+        session.pendingCount === 0
       );
     });
+    await Promise.all((broker as unknown as { conflictTasks: Map<string, Promise<void>> }).conflictTasks.values());
     expect(hosts[0]?.interrupts).toBe(0);
     expect(hosts).toHaveLength(1);
     expect(broker.session(sessionId)).toMatchObject({
       ownership: "OWNERSHIP_CONFLICT",
-      turnState: "queued",
-      pendingCount: 1,
+      turnState: "waiting",
+      pendingCount: 0,
     });
     expect(eventLog.replay().filter((event) => (
       event.sessionId === sessionId && event.type === "turn.interrupted"
-    ))).toHaveLength(0);
+    ))).toHaveLength(1);
     expect(eventLog.replay().filter((event) => (
       event.sessionId === sessionId && event.type === "session.ownership-conflict"
     ))).toHaveLength(1);
-    expect([...eventLog.replay()].reverse().find((event) => (
-      event.sessionId === sessionId && event.type === "turn.queued"
-    ))?.data).toMatchObject({
-      commandId: expect.any(String),
-      retrying: true,
-      reason: "ownership-conflict",
-    });
+    expect(eventLog.replay().some((event) => event.type === "turn.queued" && event.data.retrying)).toBe(false);
 
     desktopSession.desktopProcessAlive = false;
     desktopSession.bridgeProcessAlive = false;
@@ -1413,176 +1405,11 @@ describe("SessionBroker", () => {
     desktopSession.processOverlap = false;
     desktopSession.activeProcesses = [];
     observer.publish();
-    await waitFor(() => hosts[1]?.sends === 1);
-    expect(hosts[1]?.options.sessionId).toBe(sessionId);
+    await (broker as unknown as {pump():Promise<void>}).pump();
+    expect(hosts).toHaveLength(1);
+    const duplicate = await broker.startTurn({sessionId,requestId:"duplicate",idempotencyKey:"command-conflict",text:"Keep this command queued",origin:"mobile"});
+    expect(duplicate.state).toBe("cancelled");
 
-    await broker.close();
-    await eventLog.close();
-  });
-
-  it("uses the managed Desktop transport as the only writer and preserves its event order", async () => {
-    const root = await mkdtemp(join(tmpdir(), "bridge-broker-managed-"));
-    directories.push(root);
-    const cwd = join(root, "project");
-    const sessionId = randomUUID();
-    await mkdir(cwd, { recursive: true });
-    const desktopSession = observed(sessionId, cwd);
-    desktopSession.desktopProcessAlive = true;
-    desktopSession.processAlive = true;
-    const observer = new FakeObserver({
-      projects: [],
-      sessions: [desktopSession],
-      observedAt: Date.now(),
-    });
-    const hosts: FakeHost[] = [];
-    const managedDesktop = new FakeManagedDesktop();
-    const managedTransport = new FakeManagedTransport();
-    managedTransport.configuration = { model: "desktop-live", effort: "xhigh" };
-    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
-    const broker = new SessionBroker({
-      paths: {
-        sessions: join(root, "runtime-sessions"),
-        tasks: join(root, "tasks"),
-        projects: join(root, "projects"),
-        desktopSessions: [],
-      },
-      eventLog,
-      observer,
-      sessionsPath: join(root, "sessions.json"),
-      queuePath: join(root, "queue.json"),
-      managedDesktop,
-      managedTransport,
-      hostFactory: (options) => {
-        const host = new FakeHost(options);
-        hosts.push(host);
-        return host;
-      },
-      prepareRuntime: async () => ({
-        executablePath: "/fake/claude",
-        credentialPath: "/fake/host-creds.json",
-        environment: {},
-      }),
-    });
-    await broker.initialize();
-    await expect(broker.configuration(sessionId, false)).resolves.toMatchObject({ model: "desktop-live", effort: "xhigh" });
-    managedTransport.configuration = { model: "desktop-latest", effort: "medium" };
-    const receipt = await broker.startTurn({
-      requestId: "request-managed",
-      idempotencyKey: "command-managed",
-      sessionId,
-      text: "Run in Claude Desktop",
-      origin: "mobile",
-    });
-    await waitFor(() => managedTransport.sends.length === 1);
-    expect(hosts).toHaveLength(0);
-    expect(managedTransport.sends[0]).toMatchObject({
-      session: { sessionId },
-      text: "Run in Claude Desktop",
-      messageId: receipt.commandId,
-      mode: "start",
-      model: "desktop-latest",
-      effort: "medium",
-    });
-    expect(managedTransport.models).toEqual(["desktop-latest"]);
-    expect(managedTransport.efforts).toEqual(["medium"]);
-    const turnId = managedTransport.sends[0]?.turnId;
-    if (!turnId) throw new Error("Managed turn did not receive an id");
-    managedTransport.emitHost({
-      type: "turn.started",
-      sessionId,
-      turnId,
-      at: 10,
-    });
-    managedTransport.emitHost({
-      type: "user.accepted",
-      sessionId,
-      turnId,
-      messageId: receipt.commandId,
-      text: "Run in Claude Desktop",
-      attachments: [],
-      origin: "mobile",
-      at: 11,
-    });
-    desktopSession.bridgeProcessAlive = true;
-    desktopSession.processOverlap = true;
-    desktopSession.activeProcesses = [
-      {
-        pid: 201,
-        startedAt: Date.now(),
-        processAlive: true,
-        entrypoint: "claude-desktop-3p",
-        source: "process",
-      },
-      {
-        pid: 202,
-        startedAt: Date.now(),
-        processAlive: true,
-        entrypoint: "claude-bridge",
-        source: "process",
-      },
-    ];
-    observer.publish();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(eventLog.replay().some((event) => (
-      event.sessionId === sessionId && event.type === "session.ownership-conflict"
-    ))).toBe(false);
-    expect(managedTransport.interrupts).toBe(0);
-    desktopSession.bridgeProcessAlive = false;
-    desktopSession.processOverlap = false;
-    desktopSession.activeProcesses = [];
-    observer.publish();
-    managedTransport.emitHost({
-      type: "assistant.delta",
-      sessionId,
-      turnId,
-      itemId: "provider-stream-1",
-      text: "PO",
-      at: 11.5,
-    });
-    managedTransport.emitHost({
-      type: "assistant.delta",
-      sessionId,
-      turnId,
-      itemId: "provider-stream-2",
-      text: "关键",
-      at: 11.6,
-    });
-    managedTransport.emitHost({
-      type: "assistant.completed",
-      sessionId,
-      turnId,
-      itemId: "assistant-1",
-      text: "Done",
-      at: 12,
-    });
-    managedTransport.emitHost({
-      type: "turn.completed",
-      sessionId,
-      turnId,
-      result: "Done",
-      at: 13,
-    });
-    await waitFor(() => broker.session(sessionId)?.turnState === "idle");
-    expect(broker.session(sessionId)).toMatchObject({
-      transport: "claude-desktop-managed",
-      ownership: "DESKTOP_MANAGED_IDLE",
-    });
-    expect(eventLog.replay().filter((event) => event.sessionId === sessionId).map((event) => event.type))
-      .toEqual(expect.arrayContaining([
-        "session.transport",
-        "turn.started",
-        "user.message.accepted",
-        "assistant.completed",
-        "turn.completed",
-      ]));
-    expect(eventLog.replay().filter((event) => (
-      event.sessionId === sessionId && event.type === "assistant.delta"
-    ))).toEqual([
-      expect.objectContaining({
-        itemId: `assistant:${turnId}`,
-        data: { text: "PO关键" },
-      }),
-    ]);
     await broker.close();
     await eventLog.close();
   });
@@ -1757,7 +1584,7 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
-  it("force-stops an unavailable managed turn so later sessions can run", async () => {
+  it("keeps legacy managed receipts uncertain without holding execution slots", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-uncertain-stop-"));
     directories.push(root);
     const staleSessionId = randomUUID();
@@ -1795,8 +1622,6 @@ describe("SessionBroker", () => {
       ],
       observedAt: Date.now(),
     });
-    const managedTransport = new FakeManagedTransport();
-    managedTransport.ready = false;
     const hosts: FakeHost[] = [];
     const eventLog = new SessionEventLog(join(root, "events.jsonl"));
     const broker = new SessionBroker({
@@ -1811,7 +1636,6 @@ describe("SessionBroker", () => {
       sessionsPath: join(root, "sessions.json"),
       queuePath,
       maxParallelTurns: 1,
-      managedTransport,
       hostFactory: (options) => {
         const host = new FakeHost(options);
         hosts.push(host);
@@ -1832,7 +1656,8 @@ describe("SessionBroker", () => {
       origin: "desktop",
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(hosts).toHaveLength(0);
+    await waitFor(() => hosts[0]?.sends === 1);
+    expect(broker.session(staleSessionId)?.pendingCount).toBe(1);
 
     await expect(broker.interruptTurn(staleSessionId, undefined, true)).resolves.toBe(true);
     await waitFor(() => hosts[0]?.sends === 1);

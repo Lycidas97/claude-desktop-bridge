@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { BridgeEffort } from "@bridge/protocol";
 
@@ -47,8 +47,16 @@ export interface ClaudeDesktopSession {
   groupName?: string;
 }
 
+export interface ClaudeDesktopArchivedSession extends ClaudeDesktopSession {
+  /** Desktop saves the record when it archives a session, so the file time is the archive time. */
+  archivedAt: number;
+}
+
 export interface ClaudeDesktopSessionState {
   sessions: ClaudeDesktopSession[];
+  archivedSessions: ClaudeDesktopArchivedSession[];
+  /** Record files by CLI session id; kept apart so session objects carry no local paths. */
+  metadataPaths: Map<string, string>;
   archivedCliSessionIds: Set<string>;
 }
 
@@ -207,7 +215,7 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
     }
   }));
 
-  const parsedFiles: Array<{ value: DesktopSessionFile; root: string }> = [];
+  const parsedFiles: Array<{ value: DesktopSessionFile; root: string; file: string }> = [];
   const desktopToCli = new Map<string, string>();
   const desktopParents = new Map<string, string>();
   for (const { file, root } of files) {
@@ -232,13 +240,15 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
         if (parent) desktopParents.set(value.sessionId, parent);
       }
     }
-    parsedFiles.push({ value, root });
+    parsedFiles.push({ value, root, file });
   }
 
   const sessions: ClaudeDesktopSession[] = [];
+  const archivedSessions: ClaudeDesktopArchivedSession[] = [];
+  const metadataPaths = new Map<string, string>();
   const archivedCliSessionIds = new Set<string>();
   const activeCliSessionIds = new Set<string>();
-  for (const { value, root } of parsedFiles) {
+  for (const { value, root, file } of parsedFiles) {
     if (
       typeof value.sessionId !== "string" ||
       typeof value.cliSessionId !== "string" ||
@@ -256,19 +266,7 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
       if (!ancestor) break;
       rawParentDesktopId = ancestor;
     }
-    if (
-      value.isArchived === true ||
-      archivedDesktopIds.has(value.sessionId) ||
-      isBtwChild
-    ) {
-      archivedCliSessionIds.add(value.cliSessionId);
-      if (Array.isArray(value.priorCliSessionIds)) {
-        for (const priorId of value.priorCliSessionIds) {
-          if (typeof priorId === "string" && priorId.trim()) archivedCliSessionIds.add(priorId.trim());
-        }
-      }
-      continue;
-    }
+    const archived = value.isArchived === true || archivedDesktopIds.has(value.sessionId);
     const priorCliSessionIds = Array.isArray(value.priorCliSessionIds)
       ? value.priorCliSessionIds
           .filter((priorId): priorId is string => typeof priorId === "string" && Boolean(priorId.trim()))
@@ -276,10 +274,16 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
           .filter((priorId) => priorId !== value.cliSessionId)
       : [];
     for (const priorId of priorCliSessionIds) archivedCliSessionIds.add(priorId);
-    activeCliSessionIds.add(value.cliSessionId);
+    if (archived || isBtwChild) {
+      archivedCliSessionIds.add(value.cliSessionId);
+      // Side chats stay hidden; archived sessions are listed as archived.
+      if (isBtwChild) continue;
+    } else {
+      activeCliSessionIds.add(value.cliSessionId);
+    }
     const lastFocusedAt = typeof value.lastFocusedAt === "number" ? value.lastFocusedAt : 0;
-    const createdAt = typeof value.createdAt === "number" ? value.createdAt : lastFocusedAt;
-    const lastActivityAt = typeof value.lastActivityAt === "number" ? value.lastActivityAt : lastFocusedAt;
+    const createdAt = typeof value.createdAt === "number" ? value.createdAt : 0;
+    const lastActivityAt = typeof value.lastActivityAt === "number" ? value.lastActivityAt : createdAt;
     const effort = parseEffort(value.effort);
     const ultracode = parseUltracode(value.sessionSettings);
     const parentSessionId = rawParentDesktopId
@@ -304,7 +308,7 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
     ) {
       group = desktopGroups.get(cursor);
     }
-    sessions.push({
+    const session: ClaudeDesktopSession = {
       sessionId: value.sessionId,
       cliSessionId: value.cliSessionId,
       ...(priorCliSessionIds.length ? { priorCliSessionIds } : {}),
@@ -320,7 +324,10 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
       ...(parentSessionId && parentSessionId !== value.cliSessionId ? { parentSessionId } : {}),
       ...(forkLabel && parentSessionId !== value.cliSessionId ? { forkLabel } : {}),
       ...(group ? { groupId: group.id, groupName: group.name } : {}),
-    });
+    };
+    metadataPaths.set(value.cliSessionId, file);
+    if (archived) archivedSessions.push({ ...session, archivedAt: (await stat(file)).mtimeMs });
+    else sessions.push(session);
   }
   for (const activeId of activeCliSessionIds) {
     archivedCliSessionIds.delete(activeId);
@@ -330,6 +337,8 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
       Math.max(right.lastFocusedAt, right.lastActivityAt)
       - Math.max(left.lastFocusedAt, left.lastActivityAt)
     )),
+    archivedSessions: archivedSessions.filter((session) => !activeCliSessionIds.has(session.cliSessionId)),
+    metadataPaths,
     archivedCliSessionIds,
   };
 }

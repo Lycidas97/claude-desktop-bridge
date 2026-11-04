@@ -1,3 +1,39 @@
+## 1.1.0
+
+- Persistent desktop runtime:
+  - Run mobile connections, permissions, queues and CLI sessions in a detached
+    background service. Closing or reopening the desktop window preserves work.
+  - Reconnect the UI to the existing service and replay missed events; distinguish
+    closing the window from explicitly stopping the background service.
+- Reliable messaging and native Send now:
+  - Keep the original queued command and attachments when promoting a message to
+    an active SDK query with native priority, without interrupting the main turn.
+  - Attribute results and tool output to their input UUIDs, including late and
+    out-of-order receipts. Preserve terminal state during older event replay.
+  - Recognize submitted Bridge messages before SDK acceptance arrives, preventing
+    false ownership conflicts and duplicate mobile message bubbles.
+  - Keep durable sends in their original outbox after transport failure, retain
+    message identity beyond the event window, and finish byte-limited replay.
+- Desktop session and task synchronization:
+  - Synchronize archive actions and native Fork metadata with Claude Desktop;
+    allow a running-session fork to continue independently of its parent.
+  - Display native task-plan cards with live progress, history and reconnect
+    recovery; retain newer plan state when older observations arrive.
+  - Track subagent completion, stopped tasks and structured terminal results;
+    collapse cards beyond the first three in each consecutive subagent group.
+  - Use actual update times for session timestamps and ordering; opening or
+    focusing a session no longer changes its displayed activity time.
+- Mobile navigation and presentation:
+  - Consolidate navigation into the header menu, retain per-session drafts, and
+    keep the composer and confirmed stop actions accessible on small screens.
+  - Add reusable sheets and page headers, clearer settings, updated app/tray
+    icons, and an optional Magpie quota dashboard with explicit refresh.
+- Large-session performance:
+  - Stream transcript/title/Fork processing, page evidence tools and artifacts
+    on demand, and bound IndexedDB reads with indexed cursors.
+  - Preserve media lazy loading and compact reconnect summaries instead of
+    transferring complete evidence bundles with every event.
+
 ## 1.0.3
 
 - Post-release reliability fixes:

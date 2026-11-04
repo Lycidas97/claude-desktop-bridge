@@ -22,9 +22,32 @@ import type { PermissionBroker } from "./permission-broker.js";
 
 export type SessionHostOrigin = "desktop" | "mobile" | "system";
 
+export interface SessionHostBackgroundTask {
+  taskId: string;
+  toolUseId?: string;
+  description: string;
+  state: "pending" | "running" | "paused" | "completed" | "failed" | "stopped";
+  startedAt: number;
+  updatedAt: number;
+  completedAt?: number;
+  taskType?: string;
+  subagentType?: string;
+  summary?: string;
+  outputFile?: string;
+  error?: string;
+  lastToolName?: string;
+  isBackgrounded?: boolean;
+  skipTranscript?: boolean;
+  usage?: { totalTokens: number; toolUses: number; durationMs: number };
+}
+
 export type SessionHostEvent =
   | { type: "runtime.started"; sessionId: string; cwd: string; at: number }
+  | { type: "runtime.ready"; sessionId: string; at: number }
   | { type: "runtime.stopped"; sessionId: string; at: number }
+  | { type: "user.submitted"; sessionId: string; turnId: string; messageId: string; at: number }
+  | { type: "background.tasks"; sessionId: string; tasks: SessionHostBackgroundTask[]; at: number }
+  | ({ type: "task.started" | "task.progress" | "task.notification"; sessionId: string; turnId?: string; at: number } & SessionHostBackgroundTask)
   | { type: "turn.started"; sessionId: string; turnId: string; at: number }
   | {
       type: "user.accepted";
@@ -64,6 +87,9 @@ export interface ClaudeSessionHostOptions {
 export interface SessionHostInput {
   text: string;
   attachments?: BridgeAttachment[];
+  messageId?: string;
+  turnId?: string;
+  priority?: SDKUserMessage["priority"];
 }
 
 function needsWindowsShell(executablePath: string): boolean {
@@ -128,6 +154,10 @@ interface PendingTurn {
   userMessage: SDKUserMessage;
   interrupted: boolean;
   submitted: boolean;
+  accepted: boolean;
+  text: string;
+  attachments: Array<Omit<BridgeAttachment, "data">>;
+  origin: SessionHostOrigin;
 }
 
 export class ClaudeSessionHost extends EventEmitter {
@@ -141,10 +171,17 @@ export class ClaudeSessionHost extends EventEmitter {
   private sessionIdValue: string;
   private readonly eventSessionId: string;
   private currentTurnId: string | undefined;
+  private nativeSteering = false;
+  private readonly toolTurns = new Map<string, string>();
+  private readonly foregroundTasks = new Set<string>();
   private modelValue: string | undefined;
   private effortValue: ClaudeSessionEffort | undefined;
   private autoCompactWindow: number | undefined;
   private closed = false;
+  private initializedValue = false;
+  private readonly tasks = new Map<string, SessionHostBackgroundTask>();
+  private backgroundTaskIds = new Set<string>();
+  private hasBackgroundSnapshot = false;
 
   constructor(private readonly options: ClaudeSessionHostOptions) {
     super();
@@ -160,11 +197,27 @@ export class ClaudeSessionHost extends EventEmitter {
   }
 
   get running(): boolean {
-    return Boolean(this.streamTask) && !this.closed;
+    return Boolean(this.streamTask);
   }
 
   get busy(): boolean {
     return this.currentTurnId !== undefined;
+  }
+
+  get initialized(): boolean {
+    return this.initializedValue;
+  }
+
+  get hasPendingInput(): boolean {
+    return this.pendingTurns.some((turn) => !turn.interrupted && !turn.accepted);
+  }
+
+  get backgroundTasksKnown(): boolean {
+    return this.hasBackgroundSnapshot || this.tasks.size > 0;
+  }
+
+  get runningBackgroundTasks(): SessionHostBackgroundTask[] {
+    return [...this.backgroundTaskIds].map((taskId) => ({ ...this.tasks.get(taskId)! }));
   }
 
   onEvent(listener: (event: SessionHostEvent) => void): () => void {
@@ -173,6 +226,7 @@ export class ClaudeSessionHost extends EventEmitter {
   }
 
   start(): void {
+    if (this.closed) throw new Error("Session host is closed");
     if (this.retiring) throw new Error("Session host is retiring its previous writer");
     if (this.streamTask) return;
     const canUseTool: CanUseTool = async (toolName, input, context) => (
@@ -197,6 +251,7 @@ export class ClaudeSessionHost extends EventEmitter {
         pathToClaudeCodeExecutable: this.options.executablePath,
         includePartialMessages: true,
         includeHookEvents: true,
+        extraArgs: { "replay-user-messages": null },
         settingSources: this.options.settingSources ?? ["user", "project", "local"],
         permissionMode: "default",
         canUseTool,
@@ -259,10 +314,10 @@ export class ClaudeSessionHost extends EventEmitter {
     const attachments = normalizedInput.attachments ?? [];
     if (!normalized && attachments.length === 0) throw new Error("Message cannot be empty");
     if (this.closed) throw new Error("Session host is closed");
-    if (this.currentTurnId) throw new Error("Session already has a running turn");
-    const messageId = randomUUID();
-    const turnId = randomUUID();
-    this.currentTurnId = turnId;
+    if (this.currentTurnId && normalizedInput.priority !== "now") throw new Error("Session already has a running turn");
+    const messageId = normalizedInput.messageId ?? randomUUID();
+    const turnId = normalizedInput.turnId ?? randomUUID();
+    this.currentTurnId ??= turnId;
     const content: Array<Record<string, unknown>> = [];
     if (normalized) content.push({ type: "text", text: normalized });
     for (const attachment of attachments) {
@@ -280,8 +335,9 @@ export class ClaudeSessionHost extends EventEmitter {
       message: { role: "user", content } as unknown as SDKUserMessage["message"],
       parent_tool_use_id: null,
       origin: { kind: "human" },
-      uuid: messageId,
+      uuid: messageId as NonNullable<SDKUserMessage["uuid"]>,
       session_id: this.sessionIdValue,
+      ...(normalizedInput.priority ? { priority: normalizedInput.priority } : {}),
     };
     const pendingTurn: PendingTurn = {
       turnId,
@@ -289,29 +345,35 @@ export class ClaudeSessionHost extends EventEmitter {
       userMessage,
       interrupted: false,
       submitted: false,
+      accepted: false,
+      text: normalized,
+      attachments: attachments.map(({ data: _data, ...attachment }) => attachment),
+      origin,
     };
     this.pendingTurns.push(pendingTurn);
     try {
-      if (this.pendingTurns[0] === pendingTurn) this.submitTurn(pendingTurn);
+      if (normalizedInput.priority === "now" || this.pendingTurns[0] === pendingTurn) this.submitTurn(pendingTurn);
+      if (normalizedInput.priority === "now") {
+        this.nativeSteering = true;
+        for (const toolUseId of this.foregroundTasks) {
+          void this.queryProcess!.backgroundTasks(toolUseId).catch((error: unknown) => {
+            process.stderr.write(`Bridge could not background tool ${toolUseId}: ${error instanceof Error ? error.message : String(error)}\n`);
+          });
+        }
+      }
     } catch (error) {
       this.input.removePending(userMessage);
-      this.currentTurnId = undefined;
+      if (this.currentTurnId === turnId) this.currentTurnId = undefined;
       const pendingIndex = this.pendingTurns.indexOf(pendingTurn);
       if (pendingIndex >= 0) this.pendingTurns.splice(pendingIndex, 1);
       throw error;
     }
-    this.emitEvent({ type: "turn.started", sessionId: this.sessionIdValue, turnId, at: Date.now() });
-    this.emitEvent({
-      type: "user.accepted",
-      sessionId: this.sessionIdValue,
-      turnId,
-      messageId,
-      text: normalized,
-      attachments: attachments.map(({ data: _data, ...attachment }) => attachment),
-      origin,
-      at: Date.now(),
-    });
     return { messageId, turnId };
+  }
+
+  async stopTask(taskId: string): Promise<void> {
+    if (!this.queryProcess) throw new Error("这个会话的 Claude 进程已退出");
+    await this.queryProcess.stopTask(taskId);
   }
 
   async interrupt(): Promise<void> {
@@ -329,11 +391,12 @@ export class ClaudeSessionHost extends EventEmitter {
     const queryProcess = this.queryProcess;
     try {
       const receipt = await queryProcess.interrupt();
-      if (receipt?.still_queued.includes(pendingTurn.messageId)) {
+      const stillQueued = receipt?.still_queued.filter(id => this.pendingTurns.some(turn => turn.messageId === id)) ?? [];
+      if (stillQueued.length > 0) {
         const cancellable = queryProcess as Query & {
           cancelAsyncMessage?(messageId: string): Promise<boolean>;
         };
-        await cancellable.cancelAsyncMessage?.(pendingTurn.messageId).catch(() => false);
+        for (const id of stillQueued) await cancellable.cancelAsyncMessage?.(id).catch(() => false);
         await this.retireQuery(pendingTurn, queryProcess);
       }
     } catch (error) {
@@ -347,27 +410,69 @@ export class ClaudeSessionHost extends EventEmitter {
   }
 
   async close(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed) return this.streamTask;
     this.closed = true;
     this.input.close();
-    this.pendingTurns.length = 0;
     this.options.permissionBroker.cancelSession(this.eventSessionId);
     this.queryProcess?.close();
-    await this.streamTask?.catch(() => undefined);
-    this.emitEvent({ type: "runtime.stopped", sessionId: this.sessionIdValue, at: Date.now() });
+    await this.streamTask;
   }
 
   private async consume(queryProcess: Query): Promise<void> {
+    let failure: string | undefined;
     try {
+      await queryProcess.initializationResult();
+      if (!this.closed && !this.retiring) {
+        this.initializedValue = true;
+        this.emitEvent({ type: "runtime.ready", sessionId: this.sessionIdValue, at: Date.now() });
+      }
       for await (const message of queryProcess) this.handleMessage(message);
     } catch (error) {
-      if (!this.closed && this.queryProcess === queryProcess) {
-        this.emitEvent({
-          type: "runtime.error",
-          sessionId: this.sessionIdValue,
-          error: error instanceof Error ? error.message : String(error),
-          at: Date.now(),
-        });
+      failure = error instanceof Error ? error.message : String(error);
+    } finally {
+      // initialize can reject before iteration enters the SDK's cleanup-owning generator.
+      await queryProcess[Symbol.asyncDispose]();
+      if (this.queryProcess === queryProcess) {
+        const unfinishedTurns = this.pendingTurns.splice(0);
+        const endedTasks = this.runningBackgroundTasks;
+        const intentional = this.closed || this.retiring;
+        const at = Date.now();
+        this.queryProcess = undefined;
+        this.streamTask = undefined;
+        this.initializedValue = false;
+        this.input.close();
+        this.input = new AsyncInputQueue<SDKUserMessage>();
+        this.currentTurnId = undefined;
+        this.nativeSteering = false;
+        this.toolTurns.clear();
+        this.foregroundTasks.clear();
+        this.tasks.clear();
+        this.backgroundTaskIds.clear();
+        this.hasBackgroundSnapshot = false;
+        for (const turn of unfinishedTurns) {
+          if (turn.interrupted) continue;
+          if (intentional) this.emitInterrupted(turn.turnId);
+          else this.emitEvent({
+            type: "turn.failed", sessionId: this.sessionIdValue, turnId: turn.turnId,
+            error: failure ?? "Claude session ended before returning a turn result", at,
+          });
+        }
+        for (const task of endedTasks) {
+          if (task.state === "completed" || task.state === "failed" || task.state === "stopped") continue;
+          this.emitEvent({
+            ...task, type: "task.notification", sessionId: this.sessionIdValue,
+            state: intentional ? "stopped" : "failed", completedAt: at, updatedAt: at,
+            ...(intentional ? {} : { error: failure ?? "Claude session ended while the task was running" }), at,
+          });
+        }
+        this.emitEvent({ type: "background.tasks", sessionId: this.sessionIdValue, tasks: [], at });
+        if (!intentional && (failure !== undefined || unfinishedTurns.some((turn) => !turn.interrupted) || endedTasks.length > 0)) {
+          this.emitEvent({
+            type: "runtime.error", sessionId: this.sessionIdValue,
+            error: failure ?? "Claude session ended before returning a turn result", at,
+          });
+        }
+        this.emitEvent({ type: "runtime.stopped", sessionId: this.sessionIdValue, at });
       }
     }
   }
@@ -380,20 +485,116 @@ export class ClaudeSessionHost extends EventEmitter {
     return this.queryProcess;
   }
 
+  private referencedTurns(message: SDKMessage): PendingTurn[] {
+    const value = message as SDKMessage & { user_message_uuid?: unknown; user_message_uuids?: unknown };
+    const ids = new Set([
+      ...(Array.isArray(value.user_message_uuids) ? value.user_message_uuids.filter((id): id is string => typeof id === "string") : []),
+      ...(typeof value.user_message_uuid === "string" ? [value.user_message_uuid] : []),
+    ]);
+    return this.pendingTurns.filter(turn => turn.submitted && ids.has(turn.messageId));
+  }
+
   private handleMessage(message: SDKMessage): void {
     if ("session_id" in message && typeof message.session_id === "string") {
       this.sessionIdValue = message.session_id;
     }
-    const streamTurn = this.pendingTurns[0];
-    const turnId = streamTurn?.turnId;
-    const drainingInterruptedTurn = streamTurn?.interrupted === true;
+    if (message.type === "system" && message.subtype === "background_tasks_changed") {
+      const at = Date.now();
+      this.hasBackgroundSnapshot = true;
+      this.backgroundTaskIds = new Set(message.tasks.map((task) => task.task_id));
+      for (const task of message.tasks) {
+        const previous = this.tasks.get(task.task_id);
+        const continuing = previous && previous.completedAt === undefined ? previous : undefined;
+        this.tasks.set(task.task_id, {
+          ...continuing, taskId: task.task_id, taskType: task.task_type,
+          description: task.description, state: "running", isBackgrounded: true,
+          startedAt: continuing?.startedAt ?? at, updatedAt: at,
+        });
+      }
+      this.emitEvent({ type: "background.tasks", sessionId: this.sessionIdValue, tasks: this.runningBackgroundTasks, at });
+      return;
+    }
+    if (message.type === "system" && (
+      message.subtype === "task_started" || message.subtype === "task_progress" ||
+      message.subtype === "task_notification" || message.subtype === "task_updated"
+    )) {
+      const at = Date.now();
+      const wasBackgroundMember = this.backgroundTaskIds.has(message.task_id);
+      const previous = message.subtype === "task_started" && this.tasks.get(message.task_id)?.completedAt !== undefined
+        ? undefined : this.tasks.get(message.task_id);
+      const task: SessionHostBackgroundTask = {
+        taskId: message.task_id, description: "", state: "running", startedAt: at,
+        ...previous, updatedAt: at,
+      };
+      let type: "task.started" | "task.progress" | "task.notification";
+      if (message.subtype === "task_updated") {
+        type = "task.progress";
+        if (message.patch.description !== undefined) task.description = message.patch.description;
+        if (message.patch.status !== undefined) task.state = message.patch.status === "killed" ? "stopped" : message.patch.status;
+        if (message.patch.end_time !== undefined) task.completedAt = message.patch.end_time;
+        if (message.patch.error !== undefined) task.error = message.patch.error;
+        if (message.patch.is_backgrounded !== undefined) task.isBackgrounded = message.patch.is_backgrounded;
+      } else {
+        if (message.tool_use_id !== undefined) task.toolUseId = message.tool_use_id;
+        if ("skip_transcript" in message && message.skip_transcript !== undefined) task.skipTranscript = message.skip_transcript;
+        if (message.subtype === "task_notification") {
+          type = "task.notification";
+          task.state = message.status;
+          task.completedAt = at;
+          task.summary = message.summary;
+          task.outputFile = message.output_file;
+        } else {
+          type = message.subtype === "task_started" ? "task.started" : "task.progress";
+          task.description = message.description;
+          if (message.subagent_type !== undefined) task.subagentType = message.subagent_type;
+          if (message.subtype === "task_started") {
+            if (message.task_type !== undefined) task.taskType = message.task_type;
+          } else {
+            if (message.summary !== undefined) task.summary = message.summary;
+            if (message.last_tool_name !== undefined) task.lastToolName = message.last_tool_name;
+          }
+        }
+        if ("usage" in message && message.usage) task.usage = {
+          totalTokens: message.usage.total_tokens, toolUses: message.usage.tool_uses, durationMs: message.usage.duration_ms,
+        };
+      }
+      const terminal = task.state === "completed" || task.state === "failed" || task.state === "stopped";
+      if (terminal) {
+        task.completedAt ??= at;
+        type = "task.notification";
+      }
+      this.tasks.set(task.taskId, task);
+      // Older CLIs only emit task edges. Once a full set arrives it alone owns membership.
+      if (!this.hasBackgroundSnapshot) {
+        if (terminal || task.isBackgrounded === false) this.backgroundTaskIds.delete(task.taskId);
+        else this.backgroundTaskIds.add(task.taskId);
+      }
+      this.emitEvent({ ...task, type, sessionId: this.sessionIdValue, at });
+      if (wasBackgroundMember !== this.backgroundTaskIds.has(task.taskId)) {
+        this.emitEvent({ type: "background.tasks", sessionId: this.sessionIdValue, tasks: this.runningBackgroundTasks, at });
+      }
+      return;
+    }
+    if (message.type === "user" && message.uuid && message.parent_tool_use_id === null && !message.isSynthetic &&
+      (!message.origin || message.origin.kind === "human")) {
+      const acknowledged = this.pendingTurns.find((turn) => turn.messageId === message.uuid && turn.submitted);
+      if (acknowledged) this.acceptTurn(acknowledged);
+    }
+    const referenced = this.referencedTurns(message);
+    const stampedTurn = referenced.at(-1);
+    if (stampedTurn && (message.type === "assistant" || message.type === "stream_event")) this.currentTurnId = stampedTurn.turnId;
+    const streamTurn = stampedTurn ?? this.pendingTurns.find(turn => turn.turnId === this.currentTurnId) ?? this.pendingTurns[0];
+    const backgroundOutput = (message.type === "tool_progress" && message.task_id !== undefined) ||
+      ("parent_tool_use_id" in message && message.parent_tool_use_id !== null);
+    const turnId = backgroundOutput ? undefined : streamTurn?.turnId;
+    const drainingInterruptedTurn = !backgroundOutput && streamTurn?.interrupted === true;
     const partial = partialText(message);
     if (partial) {
-      if (!turnId || drainingInterruptedTurn) return;
+      if ((!turnId && !backgroundOutput) || drainingInterruptedTurn) return;
       this.emitEvent({
         type: "assistant.delta",
         sessionId: this.sessionIdValue,
-        turnId,
+        ...(turnId ? { turnId } : {}),
         itemId: partial.itemId,
         text: partial.text,
         at: Date.now(),
@@ -401,7 +602,7 @@ export class ClaudeSessionHost extends EventEmitter {
       return;
     }
     if (message.type === "assistant") {
-      if (!turnId || drainingInterruptedTurn) return;
+      if ((!turnId && !backgroundOutput) || drainingInterruptedTurn) return;
       const text = textBlocks(message.message.content).join("\n\n").trim();
       if (
         text &&
@@ -411,17 +612,19 @@ export class ClaudeSessionHost extends EventEmitter {
         this.emitEvent({
           type: "assistant.completed",
           sessionId: this.sessionIdValue,
-          turnId,
+          ...(turnId ? { turnId } : {}),
           itemId: message.uuid,
           text,
           at: Date.now(),
         });
       }
       for (const tool of toolBlocks(message.message.content)) {
+        if (turnId) this.toolTurns.set(tool.id, turnId);
+        if (!backgroundOutput && (tool.name === "Bash" || tool.name === "Agent" || tool.name === "Task")) this.foregroundTasks.add(tool.id);
         this.emitEvent({
           type: "tool.started",
           sessionId: this.sessionIdValue,
-          turnId,
+          ...(turnId ? { turnId } : {}),
           itemId: tool.id,
           toolName: tool.name,
           input: tool.input,
@@ -431,13 +634,15 @@ export class ClaudeSessionHost extends EventEmitter {
       return;
     }
     if (message.type === "user" && Array.isArray(message.message.content)) {
-      if (!turnId || drainingInterruptedTurn) return;
+      if ((!turnId && !backgroundOutput) || drainingInterruptedTurn) return;
       const results = message.message.content.filter((block) => block.type === "tool_result");
       for (const result of results) {
+        this.foregroundTasks.delete(result.tool_use_id);
+        const toolTurnId = backgroundOutput ? undefined : this.toolTurns.get(result.tool_use_id) ?? turnId;
         this.emitEvent({
           type: "tool.completed",
           sessionId: this.sessionIdValue,
-          turnId,
+          ...(toolTurnId ? { turnId: toolTurnId } : {}),
           itemId: result.tool_use_id,
           output: results.length === 1 ? message.tool_use_result ?? result.content : result.content,
           at: Date.now(),
@@ -446,11 +651,12 @@ export class ClaudeSessionHost extends EventEmitter {
       return;
     }
     if (message.type === "tool_progress") {
-      if (!turnId || drainingInterruptedTurn) return;
+      const toolTurnId = backgroundOutput ? undefined : this.toolTurns.get(message.tool_use_id) ?? turnId;
+      if ((!toolTurnId && !backgroundOutput) || drainingInterruptedTurn) return;
       this.emitEvent({
         type: "tool.progress",
         sessionId: this.sessionIdValue,
-        turnId,
+        ...(toolTurnId ? { turnId: toolTurnId } : {}),
         itemId: message.tool_use_id,
         text: `${message.tool_name} ${Math.round(message.elapsed_time_seconds)}s`,
         at: Date.now(),
@@ -458,39 +664,42 @@ export class ClaudeSessionHost extends EventEmitter {
       return;
     }
     if (message.type === "result") {
-      const settledTurn = this.pendingTurns.shift();
-      if (!settledTurn) return;
-      if (settledTurn.interrupted) {
-        this.submitDeferredTurn();
-        return;
+      if (message.origin && message.origin.kind !== "human") return;
+      // Native steering can finish inputs out of submission order or combine several into one result.
+      // Legacy unstamped results are usable only before this query has submitted native steers.
+      const stamped = "user_message_uuid" in message || "user_message_uuids" in message;
+      const settled = stamped ? referenced : !this.nativeSteering && this.pendingTurns[0] ? [this.pendingTurns[0]] : [];
+      for (const turn of settled) {
+        if (!turn.interrupted) this.acceptTurn(turn, !this.pendingTurns.some(other => other !== turn && other.accepted));
+        this.removePendingTurn(turn);
+        if (this.currentTurnId === turn.turnId) this.currentTurnId = this.pendingTurns.find(other => !other.interrupted)?.turnId;
+        if (turn.interrupted) continue;
+        if (message.terminal_reason === "aborted_streaming" || message.terminal_reason === "aborted_tools") {
+          this.emitInterrupted(turn.turnId);
+        } else if (message.subtype === "success" && !message.is_error && !/^API Error:/iu.test(message.result.trim())) {
+          this.emitEvent({ type: "turn.completed", sessionId: this.sessionIdValue, turnId: turn.turnId, result: message.result, at: Date.now() });
+        } else {
+          this.emitEvent({
+            type: "turn.failed", sessionId: this.sessionIdValue, turnId: turn.turnId,
+            error: message.subtype === "success" ? message.result : message.errors.join("\n") || message.subtype,
+            at: Date.now(),
+          });
+        }
       }
-      const settledTurnId = settledTurn.turnId;
-      if (
-        message.subtype === "success" &&
-        !message.is_error &&
-        !/^API Error:/iu.test(message.result.trim())
-      ) {
-        this.emitEvent({
-          type: "turn.completed",
-          sessionId: this.sessionIdValue,
-          turnId: settledTurnId,
-          result: message.result,
-          at: Date.now(),
-        });
-      } else {
-        this.emitEvent({
-          type: "turn.failed",
-          sessionId: this.sessionIdValue,
-          turnId: settledTurnId,
-          error: message.subtype === "success"
-            ? message.result
-            : message.errors.join("\n") || message.subtype,
-          at: Date.now(),
-        });
-      }
-      if (this.currentTurnId === settledTurnId) this.currentTurnId = undefined;
       this.submitDeferredTurn();
     }
+  }
+
+  private acceptTurn(turn: PendingTurn, started = true): void {
+    if (turn.accepted || turn.interrupted) return;
+    turn.accepted = true;
+    if (started) this.currentTurnId = turn.turnId;
+    this.emitEvent({
+      type: "user.accepted", sessionId: this.sessionIdValue, turnId: turn.turnId,
+      messageId: turn.messageId, text: turn.text, attachments: turn.attachments,
+      origin: turn.origin, at: Date.now(),
+    });
+    if (started) this.emitEvent({ type: "turn.started", sessionId: this.sessionIdValue, turnId: turn.turnId, at: Date.now() });
   }
 
   private submitTurn(turn: PendingTurn): void {
@@ -499,6 +708,10 @@ export class ClaudeSessionHost extends EventEmitter {
     try {
       this.start();
       turn.submitted = true;
+      this.emitEvent({
+        type: "user.submitted", sessionId: this.sessionIdValue,
+        turnId: turn.turnId, messageId: turn.messageId, at: Date.now(),
+      });
     } catch (error) {
       this.input.removePending(turn.userMessage);
       throw error;

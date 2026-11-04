@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -12,6 +12,7 @@ import type {
   BridgeInteractivePrompt,
   BridgeOrigin,
   BridgeSubagentSummary,
+  BridgeTaskPlan,
 } from "@bridge/protocol";
 import { isClaudeTranscriptControlMessage } from "@bridge/protocol";
 
@@ -23,6 +24,42 @@ export interface BridgeEventDraft {
   origin: BridgeOrigin;
   type: BridgeEventType;
   data?: Record<string, unknown>;
+}
+
+export interface CommandEvidence {
+  submitted?: true;
+  accepted?: true;
+  terminal?: "completed" | "failed" | "cancelled";
+  messageId?: string;
+}
+
+export interface CommandEvidenceQuery {
+  sessionId: string;
+  turnId?: string;
+  commandId?: string;
+  messageId?: string;
+}
+
+interface TurnReceipt extends CommandEvidenceQuery, CommandEvidence {
+  terminalSeq?: number;
+}
+
+interface ReceiptIndex {
+  kind: "bridge.receipt-index";
+  version: 1;
+  lastSeq: number;
+  turns: TurnReceipt[];
+  items: BridgeEvent[];
+}
+
+const RECEIPT_ITEM_TYPES = new Set<BridgeEventType>([
+  "session.observed", "user.message.accepted", "assistant.completed",
+  "tool.started", "tool.progress", "tool.completed",
+]);
+const DEDUP_FIELDS = ["text", "interactivePrompt", "taskPlan", "summary"] as const;
+
+function dedupDigest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value) ?? "undefined").digest("base64url");
 }
 
 interface PendingDelta {
@@ -48,20 +85,6 @@ function isEvent(value: unknown): value is BridgeEvent {
 function textValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
-
-/**
- * Event types whose latest-per-item payload must survive log compaction:
- * the transcript observer consults them for edit detection and dedup after
- * a restart (only the newest ~50 transcript messages per session, but the
- * lookup spans every message id it has ever seen).
- */
-const DEDUP_INDEXED_TYPES = new Set<BridgeEventType>([
-  "session.observed",
-  "user.message.accepted",
-  "assistant.completed",
-  "tool.started",
-  "tool.completed",
-]);
 
 function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
   if (!event.sessionId) return undefined;
@@ -90,13 +113,17 @@ function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
     const interactivePrompt = event.data.interactivePrompt && typeof event.data.interactivePrompt === "object"
       ? event.data.interactivePrompt as BridgeInteractivePrompt
       : undefined;
-    if (!text && !interactivePrompt) return undefined;
+    const taskPlan = event.data.taskPlan && typeof event.data.taskPlan === "object"
+      ? event.data.taskPlan as BridgeTaskPlan
+      : undefined;
+    if (!text && !interactivePrompt && !taskPlan) return undefined;
     return {
       ...base,
       id: event.itemId ?? event.eventId,
       role: "assistant",
       text,
       ...(interactivePrompt ? { interactivePrompt } : {}),
+      ...(taskPlan ? { taskPlan } : {}),
     };
   }
   if (event.type === "session.observed") {
@@ -105,7 +132,10 @@ function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
     const interactivePrompt = event.data.interactivePrompt && typeof event.data.interactivePrompt === "object"
       ? event.data.interactivePrompt as BridgeInteractivePrompt
       : undefined;
-    if ((role !== "user" && role !== "assistant") || (!text && !interactivePrompt)) return undefined;
+    const taskPlan = event.data.taskPlan && typeof event.data.taskPlan === "object"
+      ? event.data.taskPlan as BridgeTaskPlan
+      : undefined;
+    if ((role !== "user" && role !== "assistant") || (!text && !interactivePrompt && !taskPlan)) return undefined;
     if (text && isClaudeTranscriptControlMessage(role, text)) return undefined;
     return {
       ...base,
@@ -113,6 +143,7 @@ function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
       role,
       text,
       ...(interactivePrompt ? { interactivePrompt } : {}),
+      ...(taskPlan ? { taskPlan } : {}),
     };
   }
   if (event.type === "tool.started" || event.type === "tool.progress") {
@@ -126,7 +157,7 @@ function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
       role: "tool",
       toolName,
       text: textValue(event.data.summary) || textValue(event.data.text) || `${toolName} started`,
-      state: "running",
+      ...(subagent?.state === "unknown" ? {} : { state: "running" as const }),
       ...(subagent ? { subagent } : {}),
     };
   }
@@ -141,7 +172,7 @@ function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
       role: "tool",
       toolName,
       text: textValue(event.data.summary) || `${toolName} completed`,
-      state: "completed",
+      ...(subagent?.state === "unknown" ? {} : { state: "completed" as const }),
       ...(subagent ? { subagent } : {}),
     };
   }
@@ -170,6 +201,8 @@ export class SessionEventLog extends EventEmitter {
   private readonly events: BridgeEvent[] = [];
   private readonly itemKeys = new Set<string>();
   private readonly latestItems = new Map<string, BridgeEvent>();
+  private readonly itemReceipts = new Map<string, BridgeEvent>();
+  private readonly turnReceipts = new Map<string, TurnReceipt>();
   private readonly pendingDeltas = new Map<string, PendingDelta>();
   private writeQueue: Promise<void> = Promise.resolve();
   private nextSeq = 1;
@@ -205,35 +238,134 @@ export class SessionEventLog extends EventEmitter {
     }
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(line) as unknown;
-        if (!isEvent(parsed)) continue;
-        this.events.push(parsed);
-        this.nextSeq = Math.max(this.nextSeq, parsed.seq + 1);
-        if (parsed.itemId) {
-          const key = `${parsed.sessionId ?? ""}\u001f${parsed.type}\u001f${parsed.itemId}`;
-          this.itemKeys.add(key);
-          this.latestItems.set(key, parsed);
-        }
+        parsed = JSON.parse(line);
       } catch {
         // A partial trailing line can be left by a hard power loss and is ignored.
+        continue;
       }
+      const event = this.loadRecord(parsed);
+      if (event) this.events.push(event);
     }
     this.events.sort((left, right) => left.seq - right.seq);
   }
 
-  /**
-   * Streamed load for oversized logs: scans line by line without holding the
-   * whole file in memory, drops event types that have no replay or history
-   * value (desktop-registration churn, superseded stream deltas), keeps only
-   * a bounded tail, and rewrites the file atomically. The dedup index
-   * (itemKeys + latestItems for history-bearing types) is preserved across
-   * the full scan so transcript-observer dedup survives compaction.
-   */
+  private loadRecord(value: unknown, compact = false): BridgeEvent | undefined {
+    if (isEvent(value)) {
+      this.nextSeq = Math.max(this.nextSeq, value.seq + 1);
+      this.indexEvent(value, compact);
+      return value;
+    }
+    if (!value || typeof value !== "object") return undefined;
+    const index = value as Partial<ReceiptIndex>;
+    if (
+      index.kind !== "bridge.receipt-index" || index.version !== 1 ||
+      typeof index.lastSeq !== "number" || !Array.isArray(index.turns) || !Array.isArray(index.items)
+    ) return undefined;
+    this.nextSeq = Math.max(this.nextSeq, index.lastSeq + 1);
+    for (const receipt of index.turns) {
+      if (!receipt || typeof receipt.sessionId !== "string") continue;
+      if (receipt.turnId) this.turnReceipts.set(`${receipt.sessionId}\u001fturn:${receipt.turnId}`, receipt);
+      if (receipt.commandId) this.turnReceipts.set(`${receipt.sessionId}\u001fcommand:${receipt.commandId}`, receipt);
+      if (receipt.messageId) this.turnReceipts.set(`${receipt.sessionId}\u001fmessage:${receipt.messageId}`, receipt);
+    }
+    for (const item of index.items) {
+      if (isEvent(item) && RECEIPT_ITEM_TYPES.has(item.type)) this.indexEvent(item, true, true);
+    }
+    return undefined;
+  }
+
+  private indexEvent(event: BridgeEvent, compact = false, fromReceipt = false): void {
+    if (event.itemId) {
+      const key = `${event.sessionId ?? ""}\u001f${event.type}\u001f${event.itemId}`;
+      if (!compact || RECEIPT_ITEM_TYPES.has(event.type)) this.itemKeys.add(key);
+      if (RECEIPT_ITEM_TYPES.has(event.type)) {
+        // Generic tool heartbeats update progress without replacing the task's SDK facts.
+        if (event.type === "tool.progress" && !event.data.task && !event.data.subagent) {
+          const previous = this.itemReceipts.get(key);
+          const completed = this.itemReceipts.get(`${event.sessionId ?? ""}\u001ftool.completed\u001f${event.itemId}`);
+          if (previous && (!completed || previous.seq > completed.seq)) {
+            for (const name of ["task", "subagent", "generation"] as const) {
+              if (previous.data[name] !== undefined) event.data[name] = previous.data[name];
+            }
+          }
+        }
+        const data: Record<string, unknown> = {};
+        for (const name of ["role", "toolName", "task", "generation"] as const) {
+          if (event.data[name] !== undefined) data[name] = event.data[name];
+        }
+        if (event.data.subagent && typeof event.data.subagent === "object") {
+          const { latestText: _latestText, reportText: _reportText, ...subagent } = event.data.subagent as BridgeSubagentSummary;
+          data.subagent = subagent;
+        }
+        // Fields used for edit detection persist as fixed-size digests, not transcript payloads.
+        if (fromReceipt) {
+          if (event.data.dedup) data.dedup = event.data.dedup;
+        } else {
+          data.dedup = Object.fromEntries(DEDUP_FIELDS.map((name) => [name, dedupDigest(event.data[name])]));
+        }
+        const item = { ...event, data };
+        this.itemReceipts.set(key, item);
+        this.latestItems.set(key, compact ? item : event);
+      } else if (!compact) {
+        this.latestItems.set(key, event);
+      }
+    }
+    if (!event.sessionId) return;
+    const submitted = event.type === "turn.started" ||
+      (event.type === "message.delivery" && event.data.delivery === "submitted");
+    const accepted = event.type === "user.message.accepted" || event.type === "assistant.delta" ||
+      event.type === "assistant.completed" || event.type === "tool.started" ||
+      event.type === "tool.progress" || event.type === "tool.completed" || event.type === "turn.completed";
+    const terminal = event.type === "turn.completed" ? "completed"
+      : event.type === "turn.interrupted" ? "cancelled"
+        : event.type === "turn.failed" || (event.type === "runtime.error" && event.data.delivery === "failed") ? "failed"
+          : undefined;
+    if (!submitted && !accepted && !terminal) return;
+    const commandId = typeof event.data.commandId === "string" ? event.data.commandId : undefined;
+    const messageId = event.type === "user.message.accepted" || (event.type === "message.delivery" && submitted)
+      ? textValue(event.data.messageId) || event.itemId
+      : undefined;
+    const keys = [
+      ...(event.turnId ? [`${event.sessionId}\u001fturn:${event.turnId}`] : []),
+      ...(commandId ? [`${event.sessionId}\u001fcommand:${commandId}`] : []),
+      ...(messageId ? [`${event.sessionId}\u001fmessage:${messageId}`] : []),
+    ];
+    if (!keys.length) return;
+    const existing = [...new Set(keys.map((key) => this.turnReceipts.get(key)).filter((receipt): receipt is TurnReceipt => (
+      receipt !== undefined && (!event.turnId || !receipt.turnId || receipt.turnId === event.turnId)
+    )))];
+    const receipt: TurnReceipt = existing[0] ?? { sessionId: event.sessionId };
+    for (const other of existing.slice(1)) {
+      if (other.submitted) receipt.submitted = true;
+      if (other.accepted) receipt.accepted = true;
+      if (other.messageId) receipt.messageId ??= other.messageId;
+      if (other.commandId) receipt.commandId ??= other.commandId;
+      if (other.turnId) receipt.turnId ??= other.turnId;
+      if (other.terminal && other.terminalSeq !== undefined && other.terminalSeq > (receipt.terminalSeq ?? 0)) {
+        receipt.terminal = other.terminal;
+        receipt.terminalSeq = other.terminalSeq;
+      }
+      for (const [key, value] of this.turnReceipts) {
+        if (value === other) this.turnReceipts.set(key, receipt);
+      }
+    }
+    if (event.turnId) receipt.turnId = event.turnId;
+    if (commandId) receipt.commandId = commandId;
+    if (messageId) receipt.messageId = messageId;
+    if (submitted || accepted) receipt.submitted = true;
+    if (accepted) receipt.accepted = true;
+    if (terminal && event.seq >= (receipt.terminalSeq ?? 0)) {
+      receipt.terminal = terminal;
+      receipt.terminalSeq = event.seq;
+    }
+    for (const key of keys) this.turnReceipts.set(key, receipt);
+  }
+
+  /** Compact UI history independently of durable command and task receipts. */
   private async loadWithCompaction(fileBytes: number): Promise<void> {
     const retained: BridgeEvent[] = [];
-    const acceptedTurns = new Map<string, BridgeEvent>();
-    const settledReceipts = new Map<string, [BridgeEvent, BridgeEvent]>();
     let retainedBytes = 0;
     let scanned = 0;
     const reader = createInterface({
@@ -248,72 +380,54 @@ export class SessionEventLog extends EventEmitter {
       } catch {
         continue;
       }
-      if (!isEvent(parsed)) continue;
+      const event = this.loadRecord(parsed, true);
+      if (!event) continue;
       scanned += 1;
-      this.nextSeq = Math.max(this.nextSeq, parsed.seq + 1);
-      if (parsed.sessionId && parsed.turnId) {
-        const turnKey = `${parsed.sessionId}\u001f${parsed.turnId}`;
-        if (parsed.type === "user.message.accepted" && parsed.itemId) acceptedTurns.set(turnKey, parsed);
-        else if (
-          parsed.type === "turn.completed" || parsed.type === "turn.failed" || parsed.type === "turn.interrupted" ||
-          (parsed.type === "runtime.error" && parsed.data.delivery === "failed")
-        ) {
-          const accepted = acceptedTurns.get(turnKey);
-          if (accepted) settledReceipts.set(parsed.sessionId, [accepted, parsed]);
-          acceptedTurns.delete(turnKey);
-        }
-      }
-      if (parsed.itemId) {
-        const key = `${parsed.sessionId ?? ""}\u001f${parsed.type}\u001f${parsed.itemId}`;
-        this.itemKeys.add(key);
-        if (DEDUP_INDEXED_TYPES.has(parsed.type)) this.latestItems.set(key, parsed);
-      }
       if (
-        parsed.type === "session.desktop-registration" ||
-        parsed.type === "assistant.delta" ||
-        parsed.type === "evidence.started" ||
-        parsed.type === "evidence.updated"
+        event.type === "session.desktop-registration" ||
+        event.type === "assistant.delta" ||
+        event.type === "evidence.started" ||
+        event.type === "evidence.updated"
       ) continue;
-      if (parsed.type.startsWith("evidence.") && parsed.itemId) {
+      if ((event.type.startsWith("evidence.") || event.type === "tool.progress") && event.itemId) {
         const previousIndex = retained.findIndex((candidate) => (
-          candidate.type.startsWith("evidence.") &&
-          candidate.sessionId === parsed.sessionId &&
-          candidate.itemId === parsed.itemId
+          (event.type === "tool.progress" ? candidate.type === "tool.progress" : candidate.type.startsWith("evidence.")) &&
+          candidate.sessionId === event.sessionId &&
+          candidate.itemId === event.itemId
         ));
         if (previousIndex !== -1) {
           const [removed] = retained.splice(previousIndex, 1);
-          if (removed) retainedBytes -= JSON.stringify(removed).length + 1;
+          if (removed) retainedBytes -= Buffer.byteLength(JSON.stringify(removed)) + 1;
         }
       }
-      retained.push(parsed);
-      retainedBytes += line.length + 1;
-    }
-    const overflow = retained.length - this.retainEvents;
-    const events = overflow > 0 ? retained.slice(overflow) : retained;
-    let bytes = retainedBytes;
-    while (events.length && bytes > this.retainBytes) {
-      const removed = events.shift()!;
-      bytes -= JSON.stringify(removed).length + 1;
-    }
-    // Keep one exact settled input per session so an empty SDK result remains
-    // an ownership boundary even after its turn falls outside the replay tail.
-    const retainedSeqs = new Set(events.map((event) => event.seq));
-    for (const receipt of settledReceipts.values()) {
-      for (const event of receipt) {
-        if (!retainedSeqs.has(event.seq)) {
-          events.push(event);
-          retainedSeqs.add(event.seq);
-        }
+      retained.push(event);
+      retainedBytes += Buffer.byteLength(JSON.stringify(event)) + 1;
+      while (retained.length > this.retainEvents || retainedBytes > this.retainBytes) {
+        const removed = retained.shift();
+        if (!removed) break;
+        retainedBytes -= Buffer.byteLength(JSON.stringify(removed)) + 1;
       }
     }
-    events.sort((left, right) => left.seq - right.seq);
+    const events = retained.sort((left, right) => left.seq - right.seq);
+    const index: ReceiptIndex = {
+      kind: "bridge.receipt-index",
+      version: 1,
+      lastSeq: this.latestSeq(),
+      turns: [...new Set(this.turnReceipts.values())],
+      items: [...this.itemReceipts.values()],
+    };
     const temporary = `${this.path}.compact-${process.pid}`;
     await mkdir(dirname(this.path), { recursive: true });
-    await writeFile(temporary, events.map((event) => `${JSON.stringify(event)}\n`).join(""), {
+    await writeFile(temporary, `${JSON.stringify(index)}\n${events.map((event) => `${JSON.stringify(event)}\n`).join("")}`, {
       encoding: "utf8",
       mode: 0o600,
     });
     await rename(temporary, this.path);
+    this.latestItems.clear();
+    for (const [key, item] of this.itemReceipts) this.latestItems.set(key, item);
+    for (const event of events) {
+      if (event.itemId) this.latestItems.set(`${event.sessionId ?? ""}\u001f${event.type}\u001f${event.itemId}`, event);
+    }
     this.events.push(...events);
     console.warn(
       `[bridge] event log compacted: ${scanned} events / ${Math.round(fileBytes / 1_048_576)} MB`
@@ -333,20 +447,50 @@ export class SessionEventLog extends EventEmitter {
     return this.latestItems.get(`${sessionId}\u001f${type}\u001f${itemId}`);
   }
 
-  isUserMessageSettled(sessionId: string, messageId: string): boolean {
-    const accepted = this.latestItem(sessionId, "user.message.accepted", messageId);
-    if (!accepted?.turnId) return false;
-    return this.events.some((event) => (
-      event.sessionId === sessionId &&
-      event.turnId === accepted.turnId &&
-      event.seq > accepted.seq &&
-      (
-        event.type === "turn.completed" ||
-        event.type === "turn.failed" ||
-        event.type === "turn.interrupted" ||
-        (event.type === "runtime.error" && event.data.delivery === "failed")
-      )
+  itemMatches(sessionId: string, type: BridgeEventType, itemId: string, data: Record<string, unknown>): boolean {
+    const item = this.latestItem(sessionId, type, itemId);
+    if (!item) return false;
+    const digests = item.data.dedup as Record<string, string> | undefined;
+    return Object.entries(data).every(([name, value]) => (
+      digests?.[name] !== undefined
+        ? digests[name] === dedupDigest(value)
+        : JSON.stringify(item.data[name]) === JSON.stringify(value)
     ));
+  }
+
+  turnEvidence(turn: CommandEvidenceQuery): CommandEvidence {
+    const receipt = [
+      turn.turnId ? this.turnReceipts.get(`${turn.sessionId}\u001fturn:${turn.turnId}`) : undefined,
+      turn.commandId ? this.turnReceipts.get(`${turn.sessionId}\u001fcommand:${turn.commandId}`) : undefined,
+      turn.messageId ? this.turnReceipts.get(`${turn.sessionId}\u001fmessage:${turn.messageId}`) : undefined,
+    ].find((candidate) => candidate &&
+      (!turn.turnId || !candidate.turnId || candidate.turnId === turn.turnId) &&
+      (!turn.commandId || !candidate.commandId || candidate.commandId === turn.commandId) &&
+      (!turn.messageId || !candidate.messageId || candidate.messageId === turn.messageId));
+    const messageId = turn.messageId ?? receipt?.messageId;
+    const observed = messageId ? this.latestItem(turn.sessionId, "session.observed", messageId) : undefined;
+    const accepted = receipt?.accepted || observed?.data.role === "user";
+    return {
+      ...(receipt?.submitted || accepted ? { submitted: true } : {}),
+      ...(accepted ? { accepted: true } : {}),
+      ...(receipt?.terminal ? { terminal: receipt.terminal } : {}),
+      ...(messageId ? { messageId } : {}),
+    };
+  }
+
+  latestTaskEvents(sessionId: string): BridgeEvent[] {
+    const tasks = new Map<string, BridgeEvent>();
+    for (const event of this.latestItems.values()) {
+      if (event.sessionId !== sessionId || !event.itemId ||
+        (event.type !== "tool.progress" && event.type !== "tool.completed") ||
+        (!event.data.task && !event.data.subagent)) continue;
+      if (event.seq > (tasks.get(event.itemId)?.seq ?? 0)) tasks.set(event.itemId, event);
+    }
+    return [...tasks.values()].sort((left, right) => left.seq - right.seq);
+  }
+
+  isUserMessageSettled(sessionId: string, messageId: string): boolean {
+    return Boolean(this.turnEvidence({ sessionId, messageId }).terminal);
   }
 
   async append(draft: BridgeEventDraft): Promise<BridgeEvent> {
@@ -357,7 +501,7 @@ export class SessionEventLog extends EventEmitter {
       timestamp: draft.timestamp ?? Date.now(),
       origin: draft.origin,
       type: draft.type,
-      data: draft.data ?? {},
+      data: { ...draft.data },
       ...(draft.sessionId ? { sessionId: draft.sessionId } : {}),
       ...(draft.turnId ? { turnId: draft.turnId } : {}),
       ...(draft.itemId ? { itemId: draft.itemId } : {}),
@@ -378,11 +522,7 @@ export class SessionEventLog extends EventEmitter {
       }
     }
     this.events.push(event);
-    if (event.itemId) {
-      const key = `${event.sessionId ?? ""}\u001f${event.type}\u001f${event.itemId}`;
-      this.itemKeys.add(key);
-      this.latestItems.set(key, event);
-    }
+    this.indexEvent(event);
     const line = `${JSON.stringify(event)}\n`;
     this.writeQueue = this.writeQueue.catch(() => undefined).then(async () => {
       await mkdir(dirname(this.path), { recursive: true });
@@ -438,9 +578,10 @@ export class SessionEventLog extends EventEmitter {
         if (started) {
           const mergedToolName = started.toolName || item.toolName;
           const mergedSubagent = item.subagent ?? started.subagent;
+          const { state: _startedState, ...startedItem } = started;
           byId.set(baseId, {
-            ...started,
-            state: "completed",
+            ...startedItem,
+            ...(mergedSubagent?.state === "unknown" ? {} : { state: "completed" as const }),
             ...(mergedToolName ? { toolName: mergedToolName } : {}),
             ...(mergedSubagent ? { subagent: mergedSubagent } : {}),
             text: started.text && !started.text.endsWith(" started") ? started.text : item.text,

@@ -2,6 +2,7 @@ import type {
   BridgeArtifactManifest,
   BridgeArtifactPreview,
   BridgeEvidenceBundle,
+  BridgeEvidenceDetailPage,
   BridgeTokenUsage,
   BridgeToolEvidence,
 } from "@bridge/protocol";
@@ -388,8 +389,10 @@ function EvidenceArtifactSection({
   previewBusy,
   onOpenPreview,
   onRequestDownload,
+  paged = false,
 }: {
   artifacts: BridgeArtifactManifest[];
+  paged?: boolean;
   previews: Record<string, BridgeArtifactPreview>;
   transfers: Record<string, number>;
   online: boolean;
@@ -399,13 +402,13 @@ function EvidenceArtifactSection({
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [visibleCount, setVisibleCount] = useState(COLLAPSED_ARTIFACT_LIMIT);
-  const shown = artifacts.slice(0, visibleCount);
+  const shown = paged ? artifacts : artifacts.slice(0, visibleCount);
   const hiddenCount = Math.max(0, artifacts.length - shown.length);
   return (
     <section className="evidence-section">
       <header>
         <FileDiff size={16} />
-        <strong>文件与产物 ({artifacts.length})</strong>
+        <strong>{paged ? "文件与产物" : `文件与产物 (${artifacts.length})`}</strong>
         {artifacts.length > 1 && (
           <button
             type="button"
@@ -474,7 +477,7 @@ function EvidenceArtifactSection({
               );
             })}
           </div>
-          {(hiddenCount > 0 || visibleCount > COLLAPSED_ARTIFACT_LIMIT) && (
+          {!paged && (hiddenCount > 0 || visibleCount > COLLAPSED_ARTIFACT_LIMIT) && (
             <div className="media-gallery-actions">
               {hiddenCount > 0 && (
                 <button
@@ -498,6 +501,109 @@ function EvidenceArtifactSection({
           )}
         </>
       )}
+    </section>
+  );
+}
+
+type EvidenceDetailsLoader = (
+  evidenceId: string, kind: "tools" | "artifacts", cursor?: string,
+) => Promise<BridgeEvidenceDetailPage>;
+
+/** Mounted only while its bundle is open; stores one detail page per kind. */
+function EvidenceDetailSection({
+  evidenceId, kind, total, online, onLoadDetails,
+  previews, transfers, previewBusy, onOpenPreview, onRequestDownload,
+}: {
+  evidenceId: string;
+  kind: "tools" | "artifacts";
+  total: number;
+  online: boolean;
+  onLoadDetails: EvidenceDetailsLoader;
+  previews: Record<string, BridgeArtifactPreview>;
+  transfers: Record<string, number>;
+  previewBusy: string | undefined;
+  onOpenPreview(artifact: BridgeArtifactManifest): void;
+  onRequestDownload(artifact: BridgeArtifactManifest): void;
+}) {
+  const [page, setPage] = useState<BridgeEvidenceDetailPage>();
+  const [pageIndex, setPageIndex] = useState(0);
+  // Retain only cursor strings for back navigation, never earlier page items.
+  const [cursors, setCursors] = useState<Array<string | undefined>>([undefined]);
+  const [loading, setLoading] = useState(false);
+  const [failure, setFailure] = useState<{ message: string; index: number; cursors: Array<string | undefined> }>();
+  const label = kind === "tools" ? "工具与命令" : "文件与产物";
+
+  async function load(index: number, nextCursors = cursors): Promise<void> {
+    setLoading(true);
+    setFailure(undefined);
+    try {
+      setPage(await onLoadDetails(evidenceId, kind, nextCursors[index]));
+      setPageIndex(index);
+      setCursors(nextCursors);
+    } catch (error) {
+      setFailure({ message: error instanceof Error ? error.message : "成果详情加载失败", index, cursors: nextCursors });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (online && !page && !failure) void load(0);
+    // Summary updates and changing callback identities must not move the reader.
+    // Reconnection only starts an initial load if this section opened offline.
+  }, [evidenceId, kind, online]);
+
+  return (
+    <section className="evidence-section" aria-label={label} aria-busy={loading}>
+      {kind === "tools" && <header><Wrench size={16} /><strong>{label}</strong></header>}
+      {kind === "artifacts" && !page && <header><FileDiff size={16} /><strong>{label}</strong></header>}
+      {page?.kind === "tools" && (
+        <div className="evidence-tool-list">
+          {page.items.map((tool) => <EvidenceToolRow tool={tool} key={tool.id} />)}
+        </div>
+      )}
+      {page?.kind === "artifacts" && (
+        <EvidenceArtifactSection
+          artifacts={page.items}
+          paged
+          previews={previews}
+          transfers={transfers}
+          online={online}
+          previewBusy={previewBusy}
+          onOpenPreview={onOpenPreview}
+          onRequestDownload={onRequestDownload}
+        />
+      )}
+      {page?.items.length === 0 && <div className="evidence-bundle-empty">本页没有{label}</div>}
+      {!page && !online && <div className="evidence-offline">连接主机后可加载{label}</div>}
+      {failure && <div className="evidence-error" role="alert"><AlertTriangle size={16} />{failure.message}</div>}
+      <div className="media-gallery-actions">
+        <span>{page ? `共 ${total} 项 · 第 ${pageIndex + 1} 页` : `共 ${total} 项`}</span>
+        {loading && <span><LoaderCircle className="is-spinning" size={14} />正在加载</span>}
+        <button
+          type="button" className="file-changes-more" aria-label={`${label}上一页`}
+          disabled={!online || loading || !page || pageIndex === 0}
+          onClick={() => void load(pageIndex - 1)}
+        >上一页</button>
+        <button
+          type="button" className="file-changes-more" aria-label={`${label}下一页`}
+          disabled={!online || loading || !page?.hasMore}
+          onClick={() => void load(pageIndex + 1, [...cursors.slice(0, pageIndex + 1), page!.nextCursor])}
+        >下一页</button>
+        {failure ? (
+          <button
+            type="button" className="file-changes-more" aria-label={`重试${label}`}
+            disabled={!online || loading}
+            onClick={() => void load(failure.index, failure.cursors)}
+          >重试</button>
+        ) : (
+          <button
+            type="button" className="file-changes-more" aria-label={`刷新${label}`}
+            disabled={!online || loading}
+            onClick={() => void load(pageIndex)}
+          >刷新</button>
+        )}
+      </div>
     </section>
   );
 }
@@ -551,6 +657,7 @@ export function EvidencePanel({
   online,
   suppressEmpty = false,
   onLoadMore,
+  onLoadDetails,
   onPreview,
   onDownload,
 }: {
@@ -561,24 +668,20 @@ export function EvidencePanel({
   /** The aggregated file-changes card already covers the empty state. */
   suppressEmpty?: boolean;
   onLoadMore(): Promise<void>;
+  onLoadDetails?: EvidenceDetailsLoader;
   onPreview(artifactId: string): Promise<BridgeArtifactPreview>;
   onDownload(artifact: BridgeArtifactManifest): Promise<void>;
 }) {
   const openMedia = useMediaPreview();
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string>();
+  const [selectedArtifact, setSelectedArtifact] = useState<BridgeArtifactManifest>();
   const [previewBusy, setPreviewBusy] = useState<string>();
   const [pendingDownload, setPendingDownload] = useState<BridgeArtifactManifest>();
   const [error, setError] = useState("");
   const [selection, setSelection] = useState<TimelineSelection>();
-  // The newest bundle starts open; a stable id keeps native <details> toggles
-  // untouched by later re-renders (selection changes must not close them).
+  // Full legacy bundles keep their initial open state; summaries wait for a click.
   const initialOpenId = useRef<string | null>(null);
-  const artifacts = useMemo(
-    () => state?.items.flatMap((bundle) => bundle.artifacts) ?? [],
-    [state?.items],
-  );
-  const selectedArtifact = artifacts.find((artifact) => artifact.id === selectedArtifactId);
-  const selectedPreview = selectedArtifactId ? previews[selectedArtifactId] : undefined;
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const selectedPreview = selectedArtifact ? previews[selectedArtifact.id] : undefined;
 
   const items = state?.items ?? [];
   if (initialOpenId.current === null && items.length > 0) {
@@ -593,29 +696,25 @@ export function EvidencePanel({
   }, [items, selection]);
 
   useEffect(() => {
-    if (selectedArtifactId && !selectedArtifact) setSelectedArtifactId(undefined);
-  }, [selectedArtifact, selectedArtifactId]);
-
-  useEffect(() => {
-    if (!selectedArtifactId) return undefined;
+    if (!selectedArtifact) return undefined;
     return registerMobileBackHandler(() => {
-      setSelectedArtifactId(undefined);
+      setSelectedArtifact(undefined);
       return true;
     }, 200);
-  }, [selectedArtifactId]);
+  }, [selectedArtifact]);
 
   async function openPreview(artifact: BridgeArtifactManifest): Promise<void> {
     const media = artifactMediaTarget(artifact);
     if (media) { openMedia(media); return; }
     setError("");
     if (previews[artifact.id]) {
-      setSelectedArtifactId(artifact.id);
+      setSelectedArtifact(artifact);
       return;
     }
     setPreviewBusy(artifact.id);
     try {
       await onPreview(artifact.id);
-      setSelectedArtifactId(artifact.id);
+      setSelectedArtifact(artifact);
     } catch (previewError) {
       setError(previewError instanceof Error ? previewError.message : "成果预览失败");
     } finally {
@@ -667,8 +766,17 @@ export function EvidencePanel({
           // full history is loaded (prefix pages would renumber everything).
           const turnNumber = state.hasMore ? undefined : items.length - items.indexOf(bundle);
           const duration = bundle.completedAt !== undefined ? bundle.completedAt - bundle.startedAt : undefined;
+          const open = expanded[bundle.id] ?? (!bundle.detailsAvailable && bundle.id === initialOpenId.current);
           return (
-            <details className={`evidence-bundle ${bundle.confidence}`} open={bundle.id === initialOpenId.current} key={bundle.id}>
+            <details
+              className={`evidence-bundle ${bundle.confidence}`}
+              open={open}
+              key={bundle.id}
+              onToggle={(event) => {
+                const next = event.currentTarget.open;
+                setExpanded((current) => current[bundle.id] === next ? current : { ...current, [bundle.id]: next });
+              }}
+            >
               <summary>
                 <span className="evidence-state-icon">
                   {bundle.state === "collecting"
@@ -701,7 +809,7 @@ export function EvidencePanel({
                 <span className={`evidence-confidence ${bundle.confidence}`}>{confidenceLabel(bundle.confidence)}</span>
                 <ChevronDown className="evidence-chevron" size={17} />
               </summary>
-              <div className="evidence-bundle-body">
+              {open && <div className="evidence-bundle-body">
                 {bundle.warnings.length > 0 && (
                   <div className="evidence-warnings">
                     {bundle.warnings.map((warning) => <span key={warning}><AlertTriangle size={14} />{warning}</span>)}
@@ -713,6 +821,25 @@ export function EvidencePanel({
                     <strong>{usageLabel(bundle.usage)}</strong>
                   </div>
                 )}
+                {bundle.detailsAvailable ? (onLoadDetails ? (
+                  <>
+                    {(["tools", "artifacts"] as const).map((kind) => (
+                      <EvidenceDetailSection
+                        key={`${bundle.id}:${kind}`}
+                        evidenceId={bundle.id}
+                        kind={kind}
+                        total={kind === "tools" ? bundle.toolCount : bundle.artifactCount}
+                        online={online}
+                        onLoadDetails={onLoadDetails}
+                        previews={previews}
+                        transfers={transfers}
+                        previewBusy={previewBusy}
+                        onOpenPreview={(artifact) => void openPreview(artifact)}
+                        onRequestDownload={setPendingDownload}
+                      />
+                    ))}
+                  </>
+                ) : <div className="evidence-bundle-empty">当前连接暂不支持读取成果详情</div>) : <>
                 {bundle.tools.length > 0 && (
                   <section className="evidence-section">
                     <header><Wrench size={16} /><strong>工具与命令</strong></header>
@@ -735,7 +862,8 @@ export function EvidencePanel({
                 {bundle.tools.length === 0 && bundle.artifacts.length === 0 && (
                   <div className="evidence-bundle-empty">本轮没有可恢复的工具或文件成果</div>
                 )}
-              </div>
+                </>}
+              </div>}
             </details>
           );
         })}
@@ -748,7 +876,7 @@ export function EvidencePanel({
       )}
       {selectedArtifact && selectedPreview && (
         <div className="artifact-preview-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setSelectedArtifactId(undefined);
+          if (event.target === event.currentTarget) setSelectedArtifact(undefined);
         }}>
           <section className="artifact-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="artifact-preview-title">
             <header>
@@ -756,7 +884,7 @@ export function EvidencePanel({
                 <span>{selectedArtifact.relativePath}</span>
                 <h2 id="artifact-preview-title">{selectedArtifact.name}</h2>
               </div>
-              <IconButton label="关闭预览" onClick={() => setSelectedArtifactId(undefined)}><X size={19} /></IconButton>
+              <IconButton label="关闭预览" onClick={() => setSelectedArtifact(undefined)}><X size={19} /></IconButton>
             </header>
             <div className={`artifact-preview-content ${selectedPreview.mode}`}>
               {selectedPreview.encoding === "base64" ? (

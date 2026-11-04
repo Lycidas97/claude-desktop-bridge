@@ -5,6 +5,7 @@ import type {
   BridgeDeliveryState,
   BridgeDesktopRuntimeId,
   BridgeEvidenceBundle,
+  BridgeEvidenceDetailPage,
   BridgeEvent,
   BridgeFileChangeSummary,
   BridgeHistoryItem,
@@ -18,6 +19,7 @@ import type {
   BridgeSessionConfiguration,
   BridgeSessionInfo,
   BridgeSubagentSummary,
+  BridgeTaskPlan,
   BridgeTransportMetrics,
   BridgeDesktopAppStatus,
   SocketState,
@@ -27,8 +29,11 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
-  ArrowLeft,
+  ArrowDown,
   ArrowRightLeft,
+  ArrowUp,
+  ArrowUpDown,
+  ArrowUpToLine,
   Check,
   ChevronDown,
   ChevronRight,
@@ -40,19 +45,22 @@ import {
   GitFork,
   Goal,
   LoaderCircle,
+  MessageSquare,
   MoreHorizontal,
+  PackageCheck,
   Plus,
   RefreshCw,
   Search,
   Send,
   Settings2,
   ShieldCheck,
+  Square,
   Terminal,
   Trash2,
   Wrench,
   X,
 } from "lucide-react";
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   LocalTurn,
   MobileConnectionIssue,
@@ -67,6 +75,8 @@ import {
   expandProject,
   getSessionAncestorIds,
   groupProjectSessionFamilies,
+  moveProject,
+  orderProjects,
   previewProjectSessionFamilies,
   sortProjectSessionsByRecent,
   toggleCollapsedProject,
@@ -75,7 +85,7 @@ import {
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeId, desktopRuntimeName, isNativeRuntimeId, runtimeProviderLabel } from "../lib/runtime-labels.js";
 import { useStreamEntrance } from "../lib/stream-entrance.js";
-import { sessionActivity } from "../lib/session-activity.js";
+import { backgroundSubagentBadge, formatElapsed, sessionActivity, sessionQueueLabel, subagentStalledSeconds } from "../lib/session-activity.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
@@ -87,6 +97,8 @@ import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
 import { IconButton } from "./IconButton.js";
 import { MarkdownText } from "./MarkdownText.js";
 import { MessageCopyButton } from "./MessageCopyButton.js";
+import { MobilePageHeader } from "./MobilePageHeader.js";
+import { MobileSheet, SheetAction } from "./MobileSheet.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
@@ -99,6 +111,7 @@ import {
 } from "./ProviderSwitchDialog.js";
 import { RuntimeHandoffDialog } from "./RuntimeHandoffDialog.js";
 import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
+import { TaskPlanCard } from "./TaskPlanCard.js";
 
 interface ConversationItem extends BridgeHistoryItem {
   delivery?: BridgeDeliveryState;
@@ -178,15 +191,13 @@ export function ownershipLabel(session: BridgeSessionInfo): string {
   const bridgeCreated = session.source === "bridge";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
   if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
+  if (session.turnState === "running" && session.executionStage === "starting") return "正在启动";
+  if (session.turnState === "running" && session.executionStage === "submitted") return "已提交，等待执行";
   if (session.ownership === "DESKTOP_OBSERVED" && session.turnState === "running") {
     return "桌面运行中";
   }
   if (session.turnState === "running") return bridgeCreated ? "Bridge 运行中" : "运行中";
-  if (session.turnState === "queued") {
-    return bridgeCreated
-      ? `Bridge · ${session.pendingCount} 条排队`
-      : `${session.pendingCount} 条排队`;
-  }
+  if (session.turnState === "queued") return `${sessionQueueLabel(session)} · ${session.pendingCount} 条`;
   if (session.turnState === "waiting") return "需处理";
   if (bridgeCreated) return "Bridge 待机";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
@@ -198,8 +209,12 @@ export function ownershipLabel(session: BridgeSessionInfo): string {
 function activeSessionBadgeLabel(session: BridgeSessionInfo): string | undefined {
   if (session.ownership === "OWNERSHIP_CONFLICT") return "冲突";
   if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "待接管";
-  if (session.turnState === "running") return "运行中";
-  if (session.turnState === "queued") return `${Math.max(1, session.pendingCount)} 排队`;
+  if (session.turnState === "running") {
+    if (session.executionStage === "starting") return "正在启动";
+    if (session.executionStage === "submitted") return "已提交，等待执行";
+    return "运行中";
+  }
+  if (session.turnState === "queued") return sessionQueueLabel(session);
   if (session.turnState === "waiting") return "待处理";
   return undefined;
 }
@@ -218,11 +233,18 @@ function conciseSessionSubtitle(session: BridgeSessionInfo): string {
 
 type DisplayTimelineNode =
   | ConversationTimelineEntry
-  | { kind: "tool-group"; id: string; tools: ConversationItem[] };
+  | { kind: "tool-group"; id: string; tools: ConversationItem[] }
+  | { kind: "subagent-group"; id: string; agents: ConversationItem[] };
 
 function groupTimelineTools(timeline: ConversationTimelineEntry[]): DisplayTimelineNode[] {
   const result: DisplayTimelineNode[] = [];
   for (const entry of timeline) {
+    if (entry.kind === "message" && entry.item.subagent) {
+      const previous = result.at(-1);
+      if (previous?.kind === "subagent-group") previous.agents.push(entry.item);
+      else result.push({ kind: "subagent-group", id: `subagent-group:${entry.item.id}`, agents: [entry.item] });
+      continue;
+    }
     if (entry.kind === "message" && entry.item.role === "tool" && !entry.item.subagent) {
       const prev = result.at(-1);
       if (prev && prev.kind === "tool-group") {
@@ -241,18 +263,35 @@ function groupTimelineTools(timeline: ConversationTimelineEntry[]): DisplayTimel
   return result;
 }
 
+const SUBAGENT_STATE_LABELS: Record<BridgeSubagentSummary["state"], string> = {
+  running: "运行中",
+  completed: "已完成",
+  failed: "失败",
+  stopped: "已停止",
+  unknown: "状态未知",
+};
+
 export function SubagentCard({
   item,
   entering = false,
+  stopping = false,
+  stopBlockedReason,
+  onStop,
   onFileClick,
 }: {
   item: ConversationItem;
   entering?: boolean;
+  stopping?: boolean;
+  /** Shown instead of the stop button when only ending the whole process could stop it. */
+  stopBlockedReason?: string;
+  onStop?: () => void;
   onFileClick?: (filePath: string) => void;
 }) {
   const subagent = item.subagent;
   if (!subagent) return null;
   const isRunning = subagent.state === "running";
+  const isUnknown = subagent.state === "unknown";
+  const stalledSeconds = isRunning ? subagentStalledSeconds(subagent.updatedAt) : undefined;
   const agentBadge = subagent.agentType && subagent.agentType !== "general-purpose"
     ? `Subagent · ${subagent.agentType}`
     : "Subagent";
@@ -263,13 +302,15 @@ export function SubagentCard({
   const hasDetails = Boolean(subagent.reportText || subagent.latestText || recentTools.length > 0);
   return (
     <article
-      className={`conversation-subagent-card ${isRunning ? "is-running" : "is-completed"}${entering ? " is-entering" : ""}`}
+      className={`conversation-subagent-card ${isRunning ? "is-running" : isUnknown ? "is-unknown" : `is-completed is-${subagent.state}`}${entering ? " is-entering" : ""}`}
       data-stream-key={item.id}
     >
       <div className="subagent-card-header">
         <div className="subagent-card-title-row">
-          <span className={`subagent-status-badge ${isRunning ? "running" : "completed"}`}>
-            {isRunning ? <LoaderCircle className="is-spinning" size={13} /> : <Check size={13} />}
+          <span className={`subagent-status-badge ${isRunning ? "running" : isUnknown ? "unknown" : "completed"}`}>
+            {isRunning
+              ? <LoaderCircle className="is-spinning" size={13} />
+              : isUnknown ? <MoreHorizontal size={13} /> : subagent.state === "completed" ? <Check size={13} /> : <X size={13} />}
             <span>{agentBadge}</span>
           </span>
           <strong className="subagent-description">{subagent.description}</strong>
@@ -277,8 +318,8 @@ export function SubagentCard({
         <div className="subagent-card-meta">
           {subagent.toolCount > 0 && <span>{subagent.toolCount} 步</span>}
           {durationLabel && <span>{durationLabel}</span>}
-          <span className={`subagent-state-label ${isRunning ? "running" : "completed"}`}>
-            {isRunning ? "运行中" : "已完成"}
+          <span className={`subagent-state-label ${isRunning ? "running" : isUnknown ? "unknown" : "completed"}`}>
+            {SUBAGENT_STATE_LABELS[subagent.state]}
           </span>
         </div>
       </div>
@@ -296,6 +337,21 @@ export function SubagentCard({
                 </span>
               ))}
             </div>
+          )}
+        </div>
+      )}
+
+      {isRunning && (stalledSeconds !== undefined || onStop || stopBlockedReason) && (
+        <div className="subagent-card-controls">
+          <span className="subagent-control-note">
+            {stopBlockedReason
+              ?? (stalledSeconds !== undefined ? `已有 ${formatElapsed(stalledSeconds)}没有新进展，可能已卡住` : "")}
+          </span>
+          {onStop && !stopBlockedReason && (
+            <button type="button" className="secondary-button subagent-stop-button" disabled={stopping} onClick={onStop}>
+              {stopping ? <LoaderCircle className="is-spinning" size={14} /> : <CircleStop size={14} />}
+              {stopping ? "停止中" : "停止"}
+            </button>
           )}
         </div>
       )}
@@ -561,12 +617,13 @@ export function stoppableBridgeTask(
 
 function deliveryLabel(state: BridgeDeliveryState): string {
   if (state === "local-saved") return "已保存到手机";
-  if (state === "relay-received") return "Relay 已接收";
+  if (state === "relay-received") return "已送达中继，等待电脑接收";
   if (state === "host-received") return "主机已接收";
+  if (state === "submitted") return "已提交，等待执行";
   if (state === "session-received") return "会话已接收";
   if (state === "running") return "正在处理中";
   if (state === "completed") return "已完成";
-  if (state === "failed") return "发送失败";
+  if (state === "failed") return "处理失败";
   if (state === "uncertain") return "发送结果待确认";
   return "已取消";
 }
@@ -591,32 +648,80 @@ export function conversationItems(
   paged = false,
 ): ConversationItem[] {
   const items = new Map<string, ConversationItem>();
-  for (const item of history?.items ?? []) {
+  const sessionHistory = history?.items.filter((item) => item.sessionId === sessionId) ?? [];
+  const sessionEvents = events.filter((event) => event.sessionId === sessionId);
+  const subagentItemIds = new Map<string, string>();
+  const subagentInvocations = new Map<string, Map<number, string>>();
+  for (const subagent of [
+    ...(sessionHistory).flatMap((item) => item.subagent ? [item.subagent] : []),
+    ...sessionEvents.flatMap((event) => event.data.subagent ? [event.data.subagent as BridgeSubagentSummary] : []),
+  ]) {
+    if (!subagent.toolUseId) continue;
+    const invocations = subagentInvocations.get(subagent.agentId) ?? new Map<number, string>();
+    invocations.set(subagent.startedAt, subagent.toolUseId);
+    subagentInvocations.set(subagent.agentId, invocations);
+  }
+  for (const item of sessionHistory) {
+    if (item.subagent) subagentItemIds.set(item.subagent.agentId, item.subagent.toolUseId
+      ?? subagentItemIds.get(item.subagent.agentId) ?? item.id.replace(/^tool:/u, "").replace(/:completed$/u, ""));
+  }
+  for (const event of sessionEvents) {
+    const subagent = event.data.subagent as BridgeSubagentSummary | undefined;
+    if (subagent) subagentItemIds.set(subagent.agentId, subagent.toolUseId
+      ?? subagentItemIds.get(subagent.agentId) ?? event.itemId ?? `subagent:${subagent.agentId}`);
+  }
+  const hiddenTaskItems = new Set(sessionEvents.flatMap((event) => {
+    const task = event.data.task as { skipTranscript?: boolean; taskId?: string; toolUseId?: string } | undefined;
+    if (!task?.skipTranscript) return [];
+    const subagent = event.data.subagent as BridgeSubagentSummary | undefined;
+    return [task.toolUseId ?? (task.taskId ? subagentItemIds.get(task.taskId) : undefined)
+      ?? (subagent ? subagentItemIds.get(subagent.agentId) : undefined) ?? event.itemId ?? event.eventId];
+  }));
+  for (const item of sessionHistory) {
     if (
       (item.role === "user" || item.role === "assistant") &&
       isClaudeTranscriptControlMessage(item.role, item.text)
     ) continue;
-    const normalizedId = item.role === "tool" && !item.id.startsWith("tool:")
-      ? `tool:${item.id.replace(/:completed$/u, "")}`
-      : item.id;
-    items.set(normalizedId, normalizedId === item.id ? item : { ...item, id: normalizedId });
+    const normalizedId = item.subagent
+      ? `tool:${item.subagent.toolUseId ?? subagentInvocations.get(item.subagent.agentId)?.get(item.subagent.startedAt) ?? subagentItemIds.get(item.subagent.agentId)}`
+      : item.role === "tool" && !item.id.startsWith("tool:")
+        ? `tool:${item.id.replace(/:completed$/u, "")}`
+        : item.id;
+    if (item.role === "tool" && hiddenTaskItems.has(normalizedId.replace(/^tool:/u, ""))) continue;
+    const previous = items.get(normalizedId);
+    const taskPlan = previous?.taskPlan && (!item.taskPlan || previous.taskPlan.updatedAt >= item.taskPlan.updatedAt)
+      ? previous.taskPlan
+      : item.taskPlan;
+    if (previous?.subagent && item.subagent && previous.subagent.updatedAt > item.subagent.updatedAt) continue;
+    items.set(normalizedId, {
+      ...item,
+      id: normalizedId,
+      ...(taskPlan ? { taskPlan } : {}),
+    });
   }
-  const sessionEvents = events.filter((event) => event.sessionId === sessionId);
   const acceptedRequests = new Set(
     sessionEvents
       .filter((event) => event.type === "user.message.accepted" && typeof event.data.requestId === "string")
       .map((event) => event.data.requestId as string),
   );
+  const messageIdsByRequest = new Map(sessionEvents.flatMap((event) => {
+    if (event.type !== "message.delivery" || event.data.delivery !== "submitted" || typeof event.data.requestId !== "string") return [];
+    const messageId = typeof event.data.messageId === "string" ? event.data.messageId : event.itemId;
+    return messageId ? [[event.data.requestId, messageId] as const] : [];
+  }));
   for (const turn of localTurns.filter((candidate) => candidate.sessionId === sessionId)) {
     if (acceptedRequests.has(turn.requestId)) continue;
-    items.set(`local:${turn.requestId}`, {
-      id: `local:${turn.requestId}`,
+    // Submission links the transcript UUID before SDK acceptance arrives.
+    const id = turn.messageId ?? messageIdsByRequest.get(turn.requestId) ?? `local:${turn.requestId}`;
+    items.set(id, {
+      id,
       sessionId,
       role: "user",
       text: turn.text,
       createdAt: turn.createdAt,
       origin: "mobile",
       attachments: turn.attachments,
+      ...items.get(id),
       delivery: turn.delivery,
       requestId: turn.requestId,
       ...(turn.error ? { error: turn.error } : {}),
@@ -632,7 +737,7 @@ export function conversationItems(
       .filter((event) => (
         event.turnId && (
           event.type === "assistant.completed" ||
-          (event.type === "session.observed" && event.data.role === "assistant")
+          (event.type === "session.observed" && event.data.role === "assistant" && !event.data.taskPlan)
         )
       ))
       .map((event) => event.turnId!),
@@ -646,9 +751,10 @@ export function conversationItems(
       const interactivePrompt = event.data.interactivePrompt && typeof event.data.interactivePrompt === "object"
         ? event.data.interactivePrompt as BridgeInteractivePrompt
         : undefined;
+      const taskPlan = event.data.taskPlan as BridgeTaskPlan | undefined;
       if (
         (role === "user" || role === "assistant") &&
-        (text || interactivePrompt) &&
+        (text || interactivePrompt || taskPlan) &&
         (!text || !isClaudeTranscriptControlMessage(role, text))
       ) {
         const itemId = event.itemId ?? event.eventId;
@@ -656,15 +762,20 @@ export function conversationItems(
         const mergedPrompt = interactivePrompt
           ? (prev?.interactivePrompt?.answered && !interactivePrompt.answered ? prev.interactivePrompt : interactivePrompt)
           : prev?.interactivePrompt;
+        const mergedTaskPlan = prev?.taskPlan && (!taskPlan || prev.taskPlan.updatedAt >= taskPlan.updatedAt)
+          ? prev.taskPlan
+          : taskPlan;
         items.set(itemId, {
+          ...prev,
           id: itemId,
           sessionId,
           ...(event.turnId ? { turnId: event.turnId } : {}),
           role,
           text: preserveFullText(text, prev?.text),
-          createdAt: event.timestamp,
+          createdAt: mergedTaskPlan ? prev?.createdAt ?? event.timestamp : event.timestamp,
           origin: event.origin,
           ...(mergedPrompt ? { interactivePrompt: mergedPrompt } : {}),
+          ...(mergedTaskPlan ? { taskPlan: mergedTaskPlan } : {}),
         });
       }
     }
@@ -673,8 +784,10 @@ export function conversationItems(
       const attachments = Array.isArray(event.data.attachments)
         ? event.data.attachments as ConversationItem["attachments"]
         : undefined;
-      items.set(event.itemId ?? event.eventId, {
-        id: event.itemId ?? event.eventId,
+      const itemId = event.itemId ?? event.eventId;
+      items.set(itemId, {
+        ...items.get(itemId),
+        id: itemId,
         sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
         role: "user",
@@ -684,6 +797,7 @@ export function conversationItems(
         delivery: "session-received",
         ...(attachments?.length ? { attachments } : {}),
         ...(typeof event.data.requestId === "string" ? { requestId: event.data.requestId } : {}),
+        ...(typeof event.data.commandId === "string" ? { commandId: event.data.commandId } : {}),
       });
     }
     if (event.type === "assistant.delta" && !(event.turnId && finalizedAssistantTurns.has(event.turnId))) {
@@ -726,7 +840,13 @@ export function conversationItems(
       });
     }
     if (event.type === "tool.started" || event.type === "tool.progress" || event.type === "tool.completed") {
-      const id = event.itemId ?? event.eventId;
+      const incomingSubagent = event.data.subagent && typeof event.data.subagent === "object"
+        ? event.data.subagent as BridgeSubagentSummary
+        : undefined;
+      const id = incomingSubagent
+        ? incomingSubagent.toolUseId ?? subagentInvocations.get(incomingSubagent.agentId)?.get(incomingSubagent.startedAt) ?? subagentItemIds.get(incomingSubagent.agentId)!
+        : event.itemId ?? event.eventId;
+      if (hiddenTaskItems.has(id)) continue;
       const existing = toolByItem.get(id) ?? items.get(`tool:${id}`);
       const toolName = typeof event.data.toolName === "string" && event.data.toolName
         ? event.data.toolName
@@ -735,14 +855,11 @@ export function conversationItems(
       const fileChanges = Array.isArray(event.data.fileChanges)
         ? event.data.fileChanges as BridgeFileChangeSummary[]
         : existing?.fileChanges;
-      const incomingSubagent = event.data.subagent && typeof event.data.subagent === "object"
-        ? event.data.subagent as BridgeSubagentSummary
-        : undefined;
       const prevSubagent = existing?.subagent;
       const subagent = incomingSubagent && prevSubagent
-        ? (
-            incomingSubagent.state === "completed" ||
-            (prevSubagent.state !== "completed" && incomingSubagent.updatedAt >= prevSubagent.updatedAt)
+        ? incomingSubagent.updatedAt > prevSubagent.updatedAt || (
+            incomingSubagent.updatedAt === prevSubagent.updatedAt
+            && !(prevSubagent.state === "unknown" && incomingSubagent.state === "running")
           )
           ? {
               ...prevSubagent,
@@ -775,7 +892,11 @@ export function conversationItems(
         text,
         createdAt: existing?.createdAt ?? event.timestamp,
         origin: "claude-host",
-        state: subagent?.state ?? (event.type === "tool.completed" ? "completed" : "running"),
+        ...(subagent?.state === "unknown" ? {} : {
+          state: subagent?.state === "stopped"
+            ? "interrupted" as const
+            : subagent?.state ?? (event.type === "tool.completed" ? "completed" as const : "running" as const),
+        }),
         ...(fileChanges?.length ? { fileChanges } : {}),
         ...(subagent ? { subagent } : {}),
       });
@@ -817,6 +938,30 @@ export function conversationItems(
   }
   for (const item of deltaByStream.values()) items.set(item.id, item);
   for (const item of toolByItem.values()) items.set(item.id, item);
+  // Acceptance replaces the local bubble; carry its subsequent receipt onto the canonical message.
+  const localByRequest = new Map(localTurns.filter((turn) => turn.sessionId === sessionId).map((turn) => [turn.requestId, turn]));
+  const terminalByCommand = new Map<string, BridgeEvent>();
+  const terminalByTurn = new Map<string, BridgeEvent>();
+  for (const event of sessionEvents) {
+    if (event.type !== "turn.completed" && event.type !== "turn.failed" && event.type !== "turn.interrupted") continue;
+    if (typeof event.data.commandId === "string") terminalByCommand.set(event.data.commandId, event);
+    if (event.turnId) terminalByTurn.set(event.turnId, event);
+  }
+  for (const item of items.values()) {
+    if (item.role !== "user") continue;
+    const local = item.requestId ? localByRequest.get(item.requestId) : undefined;
+    const commandId = item.commandId ?? local?.commandId;
+    const terminal = (commandId ? terminalByCommand.get(commandId) : undefined)
+      ?? (item.turnId ? terminalByTurn.get(item.turnId) : undefined);
+    if (!local && !terminal) continue;
+    const delivery = terminal ? terminal.type === "turn.completed" ? "completed"
+      : terminal.type === "turn.failed" ? "failed" : "cancelled" : local!.delivery;
+    items.set(item.id, {
+      ...item, delivery,
+      ...(commandId ? { commandId } : {}),
+      ...(typeof terminal?.data.error === "string" ? { error: terminal.data.error } : local?.error ? { error: local.error } : {}),
+    });
+  }
   const sorted = [...items.values()].flatMap((item) => {
     if (item.role !== "user") return [item];
     const text = item.text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gu, "");
@@ -869,7 +1014,7 @@ export function conversationItems(
   }
   if (paged) {
     if (!history || (history.status === "loading" && history.items.length === 0)) return [];
-    const first = history.items[0];
+    const first = sessionHistory[0];
     if (history.hasMore && first) {
       return sorted.filter((item) => (
         item.createdAt > first.createdAt ||
@@ -1315,7 +1460,6 @@ export function MobileWorkspace({
   permissions,
   focusSessionId,
   visible = true,
-  onConversationChange,
   focusRequest,
   onFocusHandled,
   directoryRequest,
@@ -1332,12 +1476,15 @@ export function MobileWorkspace({
   onOpenSession,
   onLoadOlderHistory,
   onLoadOlderEvidence,
+  onLoadEvidenceDetails,
   onPreviewArtifact,
   onDownloadArtifact,
   onDownloadSessionFile,
   onUploadFile,
   onSendTurn,
   onInterruptTurn,
+  onSteerQueuedTurn,
+  onStopSubagent,
   onResolveUncertain,
   onResolvePermission,
   onCreateSession,
@@ -1372,7 +1519,6 @@ export function MobileWorkspace({
   permissions: BridgePermissionInfo[];
   focusSessionId?: string | undefined;
   visible?: boolean;
-  onConversationChange?(open: boolean): void;
   focusRequest?: { sessionId: string; key: number };
   onFocusHandled?(): void;
   directoryRequest?: number;
@@ -1389,12 +1535,15 @@ export function MobileWorkspace({
   onOpenSession(sessionId: string): Promise<void>;
   onLoadOlderHistory(sessionId: string): Promise<void>;
   onLoadOlderEvidence(sessionId: string): Promise<void>;
+  onLoadEvidenceDetails?(evidenceId: string, kind: "tools" | "artifacts", cursor?: string): Promise<BridgeEvidenceDetailPage>;
   onPreviewArtifact(artifactId: string): Promise<BridgeArtifactPreview>;
   onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
   onDownloadSessionFile?(sessionId: string, filePath: string): Promise<void>;
   onUploadFile?: UploadFileHandler;
   onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
+  onSteerQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
+  onStopSubagent?(sessionId: string, agentId: string): Promise<void>;
   onResolveUncertain(commandId: string, action: "confirm" | "retry"): Promise<void>;
   onResolvePermission(
     requestId: string,
@@ -1457,6 +1606,7 @@ export function MobileWorkspace({
   onBackToHosts(): void;
   onRetry(): Promise<void>;
 }) {
+  const [queuedSteers, setQueuedSteers] = useState<Record<string, { state: "pending" | "requested" | "error"; error?: string }>>({});
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
   const [search, setSearch] = useState("");
@@ -1484,6 +1634,13 @@ export function MobileWorkspace({
   const [relayOpen, setRelayOpen] = useState(false);
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
   const [stopError, setStopError] = useState<string>();
+  const [stopSubagentTarget, setStopSubagentTarget] = useState<{
+    sessionId: string;
+    agentId: string;
+    description: string;
+    scope: "task" | "process";
+  }>();
+  const [subagentStopBusy, setSubagentStopBusy] = useState(false);
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [syncFlash, setSyncFlash] = useState(false);
@@ -1492,9 +1649,16 @@ export function MobileWorkspace({
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const [sessionActionError, setSessionActionError] = useState<string>();
   const [directoryMenuOpen, setDirectoryMenuOpen] = useState(false);
+  const [projectOrderOpen, setProjectOrderOpen] = useState(false);
+  // Keep the user's project order on this phone per computer.
+  const projectOrderKey = `bridge-project-order:${activeHostId}`;
+  const [placedProjects, setPlacedProjects] = useState<string[]>(() => (
+    JSON.parse(localStorage.getItem(projectOrderKey) ?? "[]") as string[]
+  ));
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
   const [forkChainOpen, setForkChainOpen] = useState(false);
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [projectSearch, setProjectSearch] = useState("");
   const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
@@ -1551,6 +1715,20 @@ export function MobileWorkspace({
   )), [timeline]);
   const streamEntering = useStreamEntrance(selectedSessionId, streamKeys);
   const activity = useMemo(() => sessionActivity(selectedSession, items), [selectedSession, items]);
+  const projectsByActivity = useMemo(() => {
+    const latest = new Map<string, number>();
+    for (const session of sessions) {
+      if (!session.archivedAt) latest.set(session.projectId, Math.max(latest.get(session.projectId) ?? 0, session.lastActivityAt));
+    }
+    return [...latest.keys()].sort((left, right) => latest.get(right)! - latest.get(left)!);
+  }, [sessions]);
+  // Projects keep a fixed order: the user's, with projects not seen before leading.
+  const projectOrder = useMemo(() => orderProjects(projectsByActivity, placedProjects), [placedProjects, projectsByActivity]);
+  // Pin projects the moment they are first seen, so activity never moves them afterwards.
+  useEffect(() => {
+    const unplaced = projectOrder.filter((projectId) => !placedProjects.includes(projectId));
+    if (unplaced.length) placeProjects([...unplaced, ...placedProjects]);
+  }, [placedProjects, projectOrder]);
   const grouped = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const filtered = sessions.filter((session) => (
@@ -1564,11 +1742,11 @@ export function MobileWorkspace({
       list.push(session);
       groups.set(session.projectId, list);
     }
-    return [...groups.entries()].map(([projectId, projectSessions]) => ({
+    return projectOrder.filter((projectId) => groups.has(projectId)).map((projectId) => ({
       project: snapshot?.projects.find((project) => project.projectId === projectId),
-      sessions: sortProjectSessionsByRecent(projectSessions),
+      sessions: sortProjectSessionsByRecent(groups.get(projectId)!),
     }));
-  }, [runtimeFilter, search, sessions, snapshot?.projects]);
+  }, [projectOrder, runtimeFilter, search, sessions, snapshot?.projects]);
   const archivedSessions = useMemo(() => sortProjectSessionsByRecent(sessions.filter((session) => (
     Boolean(session.archivedAt) && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
   ))), [runtimeFilter, sessions]);
@@ -1622,10 +1800,6 @@ export function MobileWorkspace({
     setSelectedSessionId(undefined);
   }, [activeHostId, selectedSessionId, sessions, snapshot]);
 
-  useEffect(() => {
-    onConversationChange?.(Boolean(selectedSession));
-  }, [onConversationChange, Boolean(selectedSession)]);
-
   const autoRetriedSessionRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!visible) return;
@@ -1675,8 +1849,16 @@ export function MobileWorkspace({
         if (!fileDownloadBusy) setPendingFileDownload(undefined);
         return true;
       }
+      if (stopSubagentTarget) {
+        if (!subagentStopBusy) setStopSubagentTarget(undefined);
+        return true;
+      }
       if (menuSessionId) {
         setMenuSessionId(undefined);
+        return true;
+      }
+      if (projectOrderOpen) {
+        setProjectOrderOpen(false);
         return true;
       }
       if (directoryMenuOpen) {
@@ -1704,9 +1886,12 @@ export function MobileWorkspace({
     createOpen,
     deleteSessionConfirmOpen,
     directoryMenuOpen,
+    projectOrderOpen,
     fileDownloadBusy,
     menuSessionId,
     pendingFileDownload,
+    stopSubagentTarget,
+    subagentStopBusy,
     permissionOpen,
     providerOpen,
     relayOpen,
@@ -1887,6 +2072,11 @@ export function MobileWorkspace({
     await onOpenSession(sessionId);
   }
 
+  function placeProjects(order: string[]): void {
+    localStorage.setItem(projectOrderKey, JSON.stringify(order));
+    setPlacedProjects(order);
+  }
+
   function toggleProject(projectId: string): void {
     setCollapsedProjectIds((current) => toggleCollapsedProject(current, projectId));
   }
@@ -1977,6 +2167,20 @@ export function MobileWorkspace({
       setStopError(error instanceof Error ? error.message : "任务停止失败");
     } finally {
       setStoppingSessionId(undefined);
+    }
+  }
+
+  async function stopSubagent(): Promise<void> {
+    if (!stopSubagentTarget || subagentStopBusy) return;
+    setSubagentStopBusy(true);
+    setStopError(undefined);
+    try {
+      await onStopSubagent?.(stopSubagentTarget.sessionId, stopSubagentTarget.agentId);
+    } catch (error) {
+      setStopError(error instanceof Error ? error.message : "子代理停止失败");
+    } finally {
+      setSubagentStopBusy(false);
+      setStopSubagentTarget(undefined);
     }
   }
 
@@ -2073,96 +2277,136 @@ export function MobileWorkspace({
     }
   }
 
+  const evidenceCount = (selectedEvidence?.items.length ?? 0) + (fileChangesSummary ? 1 : 0);
+  const parentSession = selectedSession?.parentSessionId
+    ? sessions.find((candidate) => candidate.sessionId === selectedSession.parentSessionId)
+    : undefined;
+  const childForks = selectedSession ? sessions.filter((candidate) => (
+    candidate.parentSessionId === selectedSession.sessionId && !candidate.archivedAt
+  )) : [];
+  const relatedForkCount = (parentSession ? 1 : 0) + childForks.length;
+
   const sessionOverlays = (
     <>
       {menuSession && (
-        <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget && !sessionActionBusy) setMenuSessionId(undefined);
-        }}>
-          <section className="permission-sheet session-menu-sheet" role="dialog" aria-modal="true" aria-labelledby="session-menu-title">
-            <header>
-              <div>
-                <span>会话操作</span>
-                <h2 id="session-menu-title">{menuSession.title}</h2>
-              </div>
-              <IconButton label="关闭" disabled={sessionActionBusy} onClick={() => setMenuSessionId(undefined)}><X size={19} /></IconButton>
-            </header>
-            <div className="session-menu-actions">
-              {canConfigureSession(menuSession) && <p className="mobile-menu-group-title">会话设置</p>}
-              {canConfigureSession(menuSession) && (
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={sessionActionBusy}
+        <MobileSheet
+          eyebrow={`${menuSession.projectName} · ${desktopRuntimeName(desktopRuntimeId(menuSession))}`}
+          title={menuSession.title}
+          busy={sessionActionBusy}
+          onClose={() => setMenuSessionId(undefined)}
+        >
+          {menuSession === selectedSession && (
+            <div className="m-group">
+              <SheetAction
+                icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
+                label={sessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
+                detail={sessionView === "evidence" ? "回到对话记录" : "文件变更、产物与图片"}
+                onClick={() => {
+                  setSessionView(sessionView === "evidence" ? "conversation" : "evidence");
+                  setMenuSessionId(undefined);
+                }}
+              />
+              {relatedForkCount > 0 && (
+                <SheetAction
+                  icon={<GitFork size={19} />}
+                  label={childForks.length > 0 ? `分支 ${childForks.length}` : "主会话"}
+                  detail={childForks.length > 0 ? "查看由此会话 fork 出的分支" : `来自：${parentSession?.title ?? ""}`}
                   onClick={() => {
-                    setConfigurationSessionId(menuSession.sessionId);
+                    setForkChainOpen(true);
                     setMenuSessionId(undefined);
                   }}
-                >
-                  <Settings2 size={17} />模型与会话设置
-                </button>
+                />
               )}
-              {(menuSupportsFork || menuSupportsProviderSwitch || menuSupportsRuntimeHandoff) && <p className="mobile-menu-group-title">分支与接力</p>}
+            </div>
+          )}
+          <div className="m-group">
+            {canConfigureSession(menuSession) && (
+              <SheetAction
+                icon={<Settings2 size={19} />}
+                label="模型与会话设置"
+                detail={conciseModelName(menuSession)}
+                disabled={sessionActionBusy}
+                onClick={() => {
+                  setConfigurationSessionId(menuSession.sessionId);
+                  setMenuSessionId(undefined);
+                }}
+              />
+            )}
+            <SheetAction
+              icon={refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
+              label={refreshing ? "正在同步" : syncFlash ? "已同步" : "同步此会话"}
+              detail="重新读取电脑端的最新记录"
+              disabled={sessionActionBusy || refreshing}
+              onClick={() => void runRefresh(menuSession.sessionId)}
+            />
+          </div>
+          {(menuSupportsFork || menuSupportsProviderSwitch || menuSupportsRuntimeHandoff) && (
+            <div className="m-group">
               {menuSupportsFork && (
-                <button type="button" className="secondary-button" disabled={sessionActionBusy} onClick={() => void forkSessionById(menuSession.sessionId)}>
-                  <GitFork size={17} />Fork 分支会话
-                </button>
+                <SheetAction
+                  icon={<GitFork size={19} />}
+                  label="Fork 分支"
+                  detail="复制完整对话为独立会话，原会话不变"
+                  disabled={sessionActionBusy}
+                  onClick={() => void forkSessionById(menuSession.sessionId)}
+                />
               )}
               {menuSupportsProviderSwitch && (
-                <button
-                  type="button"
-                  className="secondary-button"
+                <SheetAction
+                  icon={<ArrowRightLeft size={19} />}
+                  label="切换执行来源"
+                  detail={`当前：${providerName(menuSession.activeProviderProfileId, providers)}`}
                   disabled={sessionActionBusy}
                   onClick={() => {
                     setActionSessionId(menuSession.sessionId);
                     setProviderOpen(true);
                     setMenuSessionId(undefined);
                   }}
-                >
-                  <ArrowRightLeft size={17} />切换执行来源 · {providerName(menuSession.activeProviderProfileId, providers)}
-                </button>
+                />
               )}
               {menuSupportsRuntimeHandoff && (
-                <button
-                  type="button"
-                  className="secondary-button"
+                <SheetAction
+                  icon={<Forward size={19} />}
+                  label="交给其他桌面应用"
+                  detail="由另一个 Desktop 接着完成"
                   disabled={sessionActionBusy}
                   onClick={() => {
                     setActionSessionId(menuSession.sessionId);
                     setRelayOpen(true);
                     setMenuSessionId(undefined);
                   }}
-                >
-                  <Forward size={17} />交给其他桌面应用
-                </button>
-              )}
-              <p className="mobile-menu-group-title">管理</p>
-              <button type="button" className="secondary-button" disabled={sessionActionBusy || refreshing} onClick={() => void runRefresh(menuSession.sessionId)}>
-                {refreshing ? <LoaderCircle className="is-spinning" size={17} /> : syncFlash ? <Check size={17} /> : <RefreshCw size={17} />}
-                {refreshing ? "正在同步" : syncFlash ? "已同步" : "同步会话"}
-              </button>
-              {onArchiveSession && (
-                <button type="button" className="secondary-button" disabled={sessionActionBusy} onClick={() => void archiveSessionById(menuSession.sessionId, !menuSession.archivedAt)}>
-                  {menuSession.archivedAt ? <ArchiveRestore size={17} /> : <Archive size={17} />}
-                  {menuSession.archivedAt ? "恢复会话" : "归档会话"}
-                </button>
-              )}
-              {onDeleteSession && (
-                <>
-                  <p className="mobile-menu-group-title">危险操作</p>
-                  <button type="button" className="secondary-button danger-text" disabled={sessionActionBusy || menuSessionBusy || Boolean(menuSession.pendingRuntimeHandoff)} onClick={() => setDeleteSessionConfirmOpen(true)}>
-                    <Trash2 size={17} />删除会话
-                  </button>
-                </>
+                />
               )}
             </div>
-            {(menuSessionBusy || menuSession.pendingRuntimeHandoff) && onDeleteSession && (
-              <p className="session-menu-hint">任务或接力进行中，先停止再删除。</p>
-            )}
-            {sessionActionBusy && <p className="session-menu-hint" role="status"><LoaderCircle className="is-spinning" size={15} />正在处理…</p>}
-            {sessionActionError && <p className="session-menu-hint danger-text" role="alert">{sessionActionError}</p>}
-          </section>
-        </div>
+          )}
+          {(onArchiveSession || onDeleteSession) && (
+            <div className="m-group">
+              {onArchiveSession && (
+                <SheetAction
+                  icon={menuSession.archivedAt ? <ArchiveRestore size={19} /> : <Archive size={19} />}
+                  label={menuSession.archivedAt ? "恢复会话" : "归档会话"}
+                  detail={menuSession.archivedAt ? "放回所属项目" : "从列表收起，历史保留"}
+                  disabled={sessionActionBusy}
+                  onClick={() => void archiveSessionById(menuSession.sessionId, !menuSession.archivedAt)}
+                />
+              )}
+              {onDeleteSession && (
+                <SheetAction
+                  icon={<Trash2 size={19} />}
+                  label="删除会话"
+                  detail={menuSessionBusy || menuSession.pendingRuntimeHandoff
+                    ? "任务或接力进行中，先停止再删除"
+                    : "仅从 Bridge 移除，Desktop 原会话保留"}
+                  danger
+                  disabled={sessionActionBusy || menuSessionBusy || Boolean(menuSession.pendingRuntimeHandoff)}
+                  onClick={() => setDeleteSessionConfirmOpen(true)}
+                />
+              )}
+            </div>
+          )}
+          {sessionActionBusy && <p className="m-sheet-note" role="status"><LoaderCircle className="is-spinning" size={15} />正在处理…</p>}
+          {sessionActionError && <p className="m-sheet-note is-error" role="alert">{sessionActionError}</p>}
+        </MobileSheet>
       )}
       <ConfirmationDialog
         open={deleteSessionConfirmOpen && Boolean(menuSession)}
@@ -2237,64 +2481,93 @@ export function MobileWorkspace({
         selectedSession.ownership === "BRIDGE_RUNNING" ||
         selectedSession.ownership === "DESKTOP_MANAGED_RUNNING"
       );
-    const stopTarget = stoppableBridgeTask(sessions, selectedSession.sessionId);
-    const canStop = Boolean(stopTarget);
+    const selectedBusy = selectedSession.pendingCount > 0
+      || selectedSession.turnState === "running"
+      || selectedSession.turnState === "queued"
+      || selectedSession.turnState === "waiting";
+    const processStop = selectedBusy && selectedSession.mainTurnStopScope === "process";
+    const stopTarget = processStop
+      ? selectedSession
+      : selectedBusy ? stoppableBridgeTask(sessions, selectedSession.sessionId) : undefined;
     const stopping = stoppingSessionId === stopTarget?.sessionId;
-    const stoppingBlocker = Boolean(stopTarget && stopTarget.sessionId !== selectedSession.sessionId);
+    const hasDraft = Boolean(text.trim()) || (canAttachImages && attachments.length > 0) || fileUploads.files.length > 0;
     const sessionPermissions = permissions.filter((permission) => permission.sessionId === selectedSession.sessionId);
     const activePermission = sessionPermissions[0];
     const otherPermission = permissions.find((permission) => permission.sessionId !== selectedSession.sessionId);
     const otherPermissionSession = otherPermission
       ? sessions.find((session) => session.sessionId === otherPermission.sessionId)
       : undefined;
-    const evidenceCount = (selectedEvidence?.items.length ?? 0) + (fileChangesSummary ? 1 : 0);
     const displayNodes = groupTimelineTools(timeline);
-    const parentSession = selectedSession.parentSessionId
-      ? sessions.find((candidate) => candidate.sessionId === selectedSession.parentSessionId)
-      : undefined;
-    const childForks = sessions.filter((candidate) => (
-      candidate.parentSessionId === selectedSession.sessionId && !candidate.archivedAt
-    ));
-    const relatedForkCount = (parentSession ? 1 : 0) + childForks.length;
+    const renderSubagent = (item: ConversationItem) => (
+      <SubagentCard
+        item={item}
+        key={item.id}
+        entering={streamEntering(item.id)}
+        stopping={subagentStopBusy && stopSubagentTarget?.agentId === item.subagent!.agentId}
+        {...(selectedSession.subagentStopScope === "process" && selectedSession.turnState === "running"
+          ? { stopBlockedReason: "主对话运行中，需要先停止主对话" }
+          : {})}
+        {...(onStopSubagent && selectedSession.subagentStopScope ? {
+          onStop: () => setStopSubagentTarget({
+            sessionId: selectedSession.sessionId,
+            agentId: item.subagent!.agentId,
+            description: item.subagent!.description,
+            scope: selectedSession.subagentStopScope!,
+          }),
+        } : {})}
+        {...(onDownloadSessionFile ? { onFileClick: openSessionFile } : {})}
+      />
+    );
     return (
       <main className="mobile-workspace conversation-workspace">
-        <header className="mobile-topbar conversation-topbar">
-          <IconButton label={sessionView === "evidence" ? "返回对话" : "返回会话列表"} onClick={() => {
+        <MobilePageHeader
+          title={selectedSession.title}
+          subtitle={canConfigure ? (
+            <button
+              type="button"
+              className="m-host-chip"
+              aria-label="模型与会话设置"
+              onClick={() => setConfigurationSessionId(selectedSession.sessionId)}
+            >
+              <i className={`m-status-dot ${selectedSession.turnState}`} />
+              <span>{conciseSessionSubtitle(selectedSession)}</span>
+              <ChevronDown size={14} />
+            </button>
+          ) : (
+            <span className="m-presence">
+              <i className={`m-status-dot ${selectedSession.turnState}`} />
+              <span>{conciseSessionSubtitle(selectedSession)}</span>
+            </span>
+          )}
+          backLabel={sessionView === "evidence" ? "返回对话" : "返回会话列表"}
+          onBack={() => {
             if (sessionView === "evidence") setSessionView("conversation");
             else {
               setForkChainOpen(false);
               setSelectedSessionId(undefined);
             }
-          }}><ArrowLeft size={21} /></IconButton>
-          <div className="mobile-device">
-            <strong>{selectedSession.title}</strong>
-            <span className={`session-presence ${selectedSession.turnState}`}>
-              <i />{conciseSessionSubtitle(selectedSession)}
-            </span>
-          </div>
-          <IconButton label="会话操作" onClick={() => {
-            setSessionActionError(undefined);
-            setMenuSessionId(selectedSession.sessionId);
-          }}><MoreHorizontal size={20} /></IconButton>
-        </header>
-        <nav className="mobile-conversation-tabs" aria-label="会话视图">
-          <button type="button" className={sessionView === "conversation" ? "active" : ""} aria-pressed={sessionView === "conversation"} onClick={() => setSessionView("conversation")}>对话</button>
-          <button type="button" className={sessionView === "evidence" ? "active" : ""} aria-pressed={sessionView === "evidence"} onClick={() => setSessionView("evidence")}>成果{evidenceCount > 0 ? ` ${evidenceCount}` : ""}</button>
-          {relatedForkCount > 0 && (
-            <button
-              type="button"
-              className={`mobile-fork-chain-trigger${forkChainOpen ? " is-open" : ""}`}
-              aria-expanded={forkChainOpen}
-              onClick={() => setForkChainOpen((current) => !current)}
-            >
-              <GitFork size={13} />
-              <span>{childForks.length > 0 ? `分支 ${childForks.length}` : "主会话"}</span>
-              <ChevronDown size={13} className="mobile-fork-chain-chevron" />
-            </button>
+          }}
+          actions={(
+            <IconButton label="会话操作" onClick={() => {
+              setSessionActionError(undefined);
+              setMenuSessionId(selectedSession.sessionId);
+            }}><MoreHorizontal size={22} /></IconButton>
           )}
-        </nav>
-
-        {selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
+        />
+        {selectedSession.pendingCount > 0 && (
+          <div className="session-channel-warning message-queue-status" role="status" aria-label="消息排队状态">
+            <LoaderCircle size={17} />
+            <span>
+              <strong>{connection === "connected" && desktopOnline ? sessionQueueLabel(selectedSession) : "连接已断开，等待同步状态"}</strong>
+              {connection === "connected" && desktopOnline
+                ? `${selectedSession.pendingCount} 条消息已到电脑，轮到后会自动执行，无需重复发送。`
+                : `上次同步时有 ${selectedSession.pendingCount} 条消息排队，当前进度尚未确认。`}
+            </span>
+            <button type="button" className="secondary-button" disabled={refreshing || connection !== "connected" || !desktopOnline}
+              onClick={() => runRefresh(selectedSession.sessionId)}>{refreshing ? "同步中" : "同步状态"}</button>
+          </div>
+        )}
+        {selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && selectedSession.pendingCount === 0 && (
           <div className="session-channel-warning">
             <AlertTriangle size={17} />
             <span><strong>正在等待同会话接管</strong>电脑端当前任务结束后会自动发送，无需额外操作。</span>
@@ -2388,8 +2661,46 @@ export function MobileWorkspace({
                 {`${fork.forkLabel || "fork"} · ${fork.title}`}
               </button>
             ))}
+            <button type="button" className="relay-chain-link" aria-label="收起分支" onClick={() => setForkChainOpen(false)}>
+              <X size={14} />
+            </button>
           </div>
         )}
+        <ConfirmationDialog
+          open={stopConfirmOpen && Boolean(stopTarget)}
+          title={processStop
+            ? "结束这个会话的 Claude 进程？"
+            : stopTarget && stopTarget.sessionId !== selectedSession.sessionId ? "停止阻塞任务？" : "停止当前任务？"}
+          description={processStop
+            ? "这个会话由 Claude Desktop 运行，Bridge 无法只中断当前回复。确认后会结束它在电脑上的 Claude 进程，运行中的子代理和后台任务都会停止。已产生的对话记录会保留。"
+            : `${stopTarget && stopTarget.sessionId !== selectedSession.sessionId ? `这个会话正在等待「${stopTarget.title}」。` : ""}${
+                stopTarget?.turnState === "running" || stopTarget?.turnState === "waiting"
+                  ? "正在生成的回复会中断，已产生的对话记录会保留。"
+                  : "排在最前面的一条指令会被取消。"
+              }`}
+          confirmLabel={processStop ? "结束进程" : "停止"}
+          danger
+          busy={stopping}
+          onCancel={() => setStopConfirmOpen(false)}
+          onConfirm={() => {
+            setStopConfirmOpen(false);
+            if (stopTarget) void stopTask(stopTarget.sessionId);
+          }}
+        />
+        <ConfirmationDialog
+          open={Boolean(stopSubagentTarget)}
+          title={stopSubagentTarget?.scope === "process" ? "结束这个会话的 Claude 进程？" : "停止这个子代理？"}
+          description={stopSubagentTarget?.scope === "process"
+            ? `这台电脑没有开启 Claude Desktop 托管，无法单独停止「${stopSubagentTarget.description}」。确认后会结束这个会话在电脑上的 Claude 进程，这个会话的所有后台任务都会停止。对话记录会保留。`
+            : `「${stopSubagentTarget?.description ?? ""}」会被停止，还没交回的结果不会再有。主对话不受影响。`}
+          confirmLabel={stopSubagentTarget?.scope === "process" ? "结束进程" : "停止子代理"}
+          danger
+          busy={subagentStopBusy}
+          onCancel={() => {
+            if (!subagentStopBusy) setStopSubagentTarget(undefined);
+          }}
+          onConfirm={() => void stopSubagent()}
+        />
         {stopError && (
           <div className="session-channel-warning danger">
             <AlertTriangle size={17} />
@@ -2512,36 +2823,38 @@ export function MobileWorkspace({
                 </details>
               );
             }
-            const item = node.item;
-            if (item.subagent) {
+            if (node.kind === "subagent-group") {
+              const hiddenAgents = node.agents.slice(3);
+              const running = hiddenAgents.filter(item => item.subagent!.state === "running").length;
               return (
-                <SubagentCard
-                  item={item}
-                  key={item.id}
-                  entering={streamEntering(item.id)}
-                  {...(onDownloadSessionFile ? {
-                    onFileClick: openSessionFile,
-                  } : {})}
-                />
+                <Fragment key={`${selectedSession.sessionId}:${node.id}`}>
+                  {node.agents.slice(0, 3).map(renderSubagent)}
+                  {hiddenAgents.length > 0 && (
+                    <details className="subagent-overflow" data-stream-key={`${node.id}:overflow`} key={`${node.id}:overflow`}>
+                      <summary>
+                        <span className="subagent-overflow-expand">展开其余 {hiddenAgents.length} 个子代理</span>
+                        <span className="subagent-overflow-collapse">收起其余 {hiddenAgents.length} 个子代理</span>
+                        {running > 0 && <small>{running} 个运行中</small>}
+                        <ChevronDown size={16} className="subagent-overflow-chevron" aria-hidden="true" />
+                      </summary>
+                      <div className="subagent-overflow-body">{hiddenAgents.map(renderSubagent)}</div>
+                    </details>
+                  )}
+                </Fragment>
               );
             }
-            const showDelivery = Boolean(
-              item.delivery
-              && item.delivery !== "session-received"
-              && item.delivery !== "completed",
-            );
-            return (
-              <article
-                className={`conversation-item ${item.role} ${item.live ? "live" : ""}${streamEntering(item.id) ? " is-entering" : ""}`}
-                data-stream-key={item.id}
-                key={item.id}
-              >
-                {item.role === "system" && (
-                  <div className="conversation-item-meta">
-                    <strong>Bridge</strong>
-                    <time>{formatTime(item.createdAt)}</time>
-                  </div>
-                )}
+            const item = node.item;
+            const showDelivery = Boolean(item.delivery);
+            const messageQueued = item.delivery === "host-received"
+              && item.commandId && selectedSession.pendingCommandIds?.includes(item.commandId);
+            const queueActionKey = JSON.stringify([activeHostId, selectedSession.sessionId, item.commandId]);
+            const queueAction = queuedSteers[queueActionKey];
+            const canSteerQueued = item.role === "user" && messageQueued && onSteerQueuedTurn
+              && bridgeRunning && !officialActive && desktopRuntimeId(selectedSession) === "claude-desktop"
+              && selectedSession.allowedActions?.canSteer !== false;
+            const copyable = (item.role === "assistant" || item.role === "user") && Boolean(item.text.trim());
+            const content = (
+              <>
                 {item.text && (
                   item.role === "assistant" || item.role === "user" ? (
                     <MarkdownText
@@ -2555,6 +2868,7 @@ export function MobileWorkspace({
                     <div className="conversation-text">{item.text}</div>
                   )
                 )}
+                {item.taskPlan && <TaskPlanCard key={`${item.sessionId}:${item.taskPlan.id}`} plan={item.taskPlan} />}
                 {item.interactivePrompt && (
                   <InteractivePromptCard
                     prompt={item.interactivePrompt}
@@ -2591,12 +2905,45 @@ export function MobileWorkspace({
                     ))}
                   </div>
                 ) : null}
-                {(item.role === "assistant" || item.role === "user") && item.text.trim() && (
-                  <div className="conversation-message-actions">
-                    <MessageCopyButton text={item.text} label={item.role === "assistant" ? "复制这条回复" : "复制这条消息"} />
+              </>
+            );
+            return (
+              <article
+                className={`conversation-item ${item.role} ${item.live ? "live" : ""}${streamEntering(item.id) ? " is-entering" : ""}`}
+                data-stream-key={item.id}
+                key={item.id}
+              >
+                {item.role === "system" && (
+                  <div className="conversation-item-meta">
+                    <strong>Bridge</strong>
+                    <time>{formatTime(item.createdAt)}</time>
                   </div>
                 )}
-                {showDelivery && <div className={`delivery-state ${item.delivery}`}>{deliveryLabel(item.delivery!)}</div>}
+                {/* A sent message's bubble holds only what was sent; status and copy sit under it. */}
+                {item.role === "user" ? <div className="conversation-bubble">{content}</div> : content}
+                {(copyable || showDelivery) && (
+                  <div className="conversation-message-actions">
+                    {showDelivery && <span className={`delivery-state ${item.delivery}`} role="status">{messageQueued ? `已排队 · ${sessionQueueLabel(selectedSession)}` : deliveryLabel(item.delivery!)}</span>}
+                    {canSteerQueued && (
+                      <button type="button" className="message-copy-button queued-steer-button"
+                        disabled={connection !== "connected" || !desktopOnline || queueAction?.state === "pending" || queueAction?.state === "requested"}
+                        title={connection !== "connected" || !desktopOnline ? "电脑离线，连接后再调整" : "让当前任务优先处理这条消息"}
+                        onClick={async () => {
+                          setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "pending" } }));
+                          try {
+                            await onSteerQueuedTurn!(selectedSession.sessionId, item.commandId!);
+                            setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "requested" } }));
+                          } catch (error) {
+                            setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "error", error: error instanceof Error ? error.message : "立即调整失败" } }));
+                          }
+                        }}>
+                        {queueAction?.state === "pending" ? "调整中…" : queueAction?.state === "requested" ? "已调整" : "立即调整"}
+                      </button>
+                    )}
+                    {copyable && <MessageCopyButton text={item.text} label={item.role === "assistant" ? "复制这条回复" : "复制这条消息"} />}
+                  </div>
+                )}
+                {queueAction?.error && <div className="delivery-error-detail" role="alert">{queueAction.error}</div>}
                 {item.delivery === "failed" && item.error && (
                   <div className="delivery-error-detail">{item.error}</div>
                 )}
@@ -2638,6 +2985,7 @@ export function MobileWorkspace({
               online={connection === "connected" && desktopOnline}
               suppressEmpty={Boolean(fileChangesSummary)}
               onLoadMore={() => onLoadOlderEvidence(selectedSession.sessionId)}
+              {...(onLoadEvidenceDetails ? { onLoadDetails: onLoadEvidenceDetails } : {})}
               onPreview={onPreviewArtifact}
               onDownload={onDownloadArtifact}
             />
@@ -2648,19 +2996,6 @@ export function MobileWorkspace({
         <>
         <SessionActivityIndicator activity={activity} />
         <section className="mobile-composer">
-          <div className="mobile-directory-tools">
-            {canConfigure && (
-              <button type="button" className="mobile-session-settings-trigger" onClick={() => setConfigurationSessionId(selectedSession.sessionId)}>
-                <Settings2 size={14} /><span>{conciseModelName(selectedSession)} · 会话设置</span>
-              </button>
-            )}
-            {canStop && (
-              <button type="button" className="session-provider-trigger is-stop" disabled={stopping} onClick={() => stopTarget && void stopTask(stopTarget.sessionId)}>
-                {stopping ? <LoaderCircle className="is-spinning" size={14} /> : <CircleStop size={14} />}
-                <span>{stopping ? "停止中" : stoppingBlocker ? "停止阻塞任务" : "停止任务"}</span>
-              </button>
-            )}
-          </div>
           {officialActive ? (
             <button
               type="button"
@@ -2735,14 +3070,26 @@ export function MobileWorkspace({
               rows={1}
               aria-label={`给 ${runtimeName} 发指令`}
             />
-            <button
-              type="submit"
-              className="send-button"
-              aria-label="发送"
-              disabled={selectedSession.allowedActions?.canSend === false || sending || fileUploads.uploading || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)}
-            >
-              {sending ? <LoaderCircle className="is-spinning" size={19} /> : <Send size={19} />}
-            </button>
+            {stopTarget && !hasDraft && !sending ? (
+              <button
+                type="button"
+                className="send-button is-stop"
+                aria-label={stopTarget.sessionId === selectedSession.sessionId ? "停止任务" : "停止阻塞任务"}
+                disabled={stopping}
+                onClick={() => setStopConfirmOpen(true)}
+              >
+                {stopping ? <LoaderCircle className="is-spinning" size={19} /> : <Square size={15} fill="currentColor" />}
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="send-button"
+                aria-label="发送"
+                disabled={selectedSession.allowedActions?.canSend === false || sending || fileUploads.uploading || !hasDraft}
+              >
+                {sending ? <LoaderCircle className="is-spinning" size={19} /> : <Send size={19} />}
+              </button>
+            )}
           </form>
           </>
           )}
@@ -2750,30 +3097,24 @@ export function MobileWorkspace({
         </>
         )}
         {permissionOpen && activePermission && (
-          <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setPermissionOpen(false);
-          }}>
-            <section className="permission-sheet" role="dialog" aria-modal="true" aria-labelledby="permission-sheet-title">
-              <header>
-                <div>
-                  <span>需要处理</span>
-                  <h2 id="permission-sheet-title">{runtimeName} 等待授权</h2>
-                </div>
-                <IconButton label="暂时关闭" onClick={() => setPermissionOpen(false)}><X size={19} /></IconButton>
-              </header>
-              {sessionPermissions.length > 1 && <div className="permission-queue-count">还有 {sessionPermissions.length} 项待处理，提交后自动显示下一项。</div>}
-              <PermissionPrompt
-                key={activePermission.requestId}
-                permission={activePermission}
-                onResolve={onResolvePermission}
-                {...(onConfigurePermissionPolicy ? {
-                  onEnableFullAccess: (sessionId: string) => (
-                    onConfigurePermissionPolicy(sessionId, "host", "full-access").then(() => undefined)
-                  ),
-                } : {})}
-              />
-            </section>
-          </div>
+          <MobileSheet
+            eyebrow="需要处理"
+            title={`${runtimeName} 等待授权`}
+            closeLabel="暂时关闭"
+            onClose={() => setPermissionOpen(false)}
+          >
+            {sessionPermissions.length > 1 && <div className="permission-queue-count">还有 {sessionPermissions.length} 项待处理，提交后自动显示下一项。</div>}
+            <PermissionPrompt
+              key={activePermission.requestId}
+              permission={activePermission}
+              onResolve={onResolvePermission}
+              {...(onConfigurePermissionPolicy ? {
+                onEnableFullAccess: (sessionId: string) => (
+                  onConfigurePermissionPolicy(sessionId, "host", "full-access").then(() => undefined)
+                ),
+              } : {})}
+            />
+          </MobileSheet>
         )}
         <ConfirmationDialog
           open={Boolean(pendingFileDownload)}
@@ -2860,7 +3201,9 @@ export function MobileWorkspace({
     isForkChild = false,
   ): ReactNode {
     const { primary: session, forks } = family;
-    const badge = isArchivedList ? "已归档" : activeSessionBadgeLabel(session);
+    const turnBadge = isArchivedList ? "已归档" : activeSessionBadgeLabel(session);
+    const subagentBadge = isArchivedList || turnBadge ? undefined : backgroundSubagentBadge(session);
+    const badge = turnBadge ?? subagentBadge?.label;
     const forksExpanded = expandedForkParents.has(session.sessionId);
     return (
       <div className="mobile-session-family" key={session.sessionId}>
@@ -2885,7 +3228,11 @@ export function MobileWorkspace({
                 {!isArchivedList && session.currentSummary ? ` · ${session.currentSummary}` : ""}
               </small>
             </span>
-            {badge && <span className={`session-row-status ${session.turnState}`}>{badge}</span>}
+            {badge && (
+              <span className={`session-row-status ${subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState}`}>
+                {badge}
+              </span>
+            )}
           </button>
           <IconButton
               label="会话操作"
@@ -2921,64 +3268,67 @@ export function MobileWorkspace({
     );
   }
 
+  const runtimeFilterNav = showRuntimeFilter && (
+    <nav className="runtime-filter" aria-label="Desktop 运行时筛选">
+      <button type="button" className={runtimeFilter === "all" ? "active" : ""} onClick={() => setRuntimeFilter("all")}>全部</button>
+      {snapshot!.runtimes!.map((runtime) => (
+        <button
+          type="button"
+          key={runtime.id}
+          className={runtimeFilter === runtime.id ? "active" : ""}
+          disabled={runtime.state !== "ready" && runtime.sessionCount === 0}
+          onClick={() => setRuntimeFilter(runtime.id)}
+        >
+          {desktopRuntimeName(runtime.id)}
+        </button>
+      ))}
+    </nav>
+  );
+
   return (
     <main className="mobile-workspace host-detail-workspace">
-      <header className={`mobile-topbar mobile-directory-topbar${activeProjectId ? " has-back" : ""}`}>
-        {activeProjectId && <IconButton label="返回会话目录" onClick={closeProjectGroup}><ArrowLeft size={21} /></IconButton>}
-        <div className="mobile-directory-title">
-          <h1>{activeProjectId ? activeGroupName : "会话"}</h1>
-          <button type="button" className="mobile-device" onClick={onBackToHosts} aria-label={`当前电脑：${desktopName}，查看电脑`}>
-            <span className={desktopOnline ? "online" : ""}><i />{desktopName} · {hostStatusText}<ChevronDown size={12} /></span>
+      <MobilePageHeader
+        title={activeProjectId ? activeGroupName : "会话"}
+        titleHidden={!activeProjectId}
+        subtitle={activeProjectId ? activeGroupCwd : (
+          <button type="button" className="m-host-chip" onClick={onBackToHosts} aria-label={`当前电脑：${desktopName}，查看电脑`}>
+            <i className={`m-status-dot${desktopOnline ? " is-online" : ""}`} />
+            <span>{desktopName} · {hostStatusText}</span>
+            <ChevronRight size={14} />
           </button>
-        </div>
-        <div className="mobile-directory-tools">
-          <IconButton label="目录更多" onClick={() => setDirectoryMenuOpen(true)}><MoreHorizontal size={20} /></IconButton>
-        </div>
-      </header>
-
-      {activeProjectId ? (
-        <section className="host-detail project-detail-view" ref={directoryRef} onScroll={(event) => directoryScrollPositions.current.set(activeProjectId, event.currentTarget.scrollTop)}>
-          <div className="catalog-toolbar">
-            <label className="session-search">
-              <Search size={16} />
-              <input
-                value={projectSearch}
-                onChange={(event) => setProjectSearch(event.target.value)}
-                placeholder={`搜索「${activeGroupName}」`}
-              />
-            </label>
+        )}
+        {...(activeProjectId ? { onBack: closeProjectGroup, backLabel: "返回会话目录" } : {})}
+        actions={(
+          <>
             {!isArchivedGroupPage && (
-              <button
-                type="button"
-                className="primary-button catalog-create-btn"
+              <IconButton
+                label="新建会话"
                 disabled={!snapshot?.projects.length}
                 onClick={() => openCreateDialogForProject(activeProjectId)}
               >
-                <Plus size={16} />新建
-              </button>
+                <Plus size={22} />
+              </IconButton>
             )}
-          </div>
-          {activeGroupCwd && <div className="project-detail-cwd">{activeGroupCwd}</div>}
-          {showRuntimeFilter && (
-            <nav className="runtime-filter" aria-label="Desktop 运行时筛选">
-              <button type="button" className={runtimeFilter === "all" ? "active" : ""} onClick={() => setRuntimeFilter("all")}>全部</button>
-              {snapshot!.runtimes!.map((runtime) => (
-                <button
-                  type="button"
-                  key={runtime.id}
-                  className={runtimeFilter === runtime.id ? "active" : ""}
-                  disabled={runtime.state !== "ready" && runtime.sessionCount === 0}
-                  onClick={() => setRuntimeFilter(runtime.id)}
-                >
-                  {desktopRuntimeName(runtime.id)}
-                </button>
-              ))}
-            </nav>
-          )}
+            <IconButton label="目录选项" onClick={() => setDirectoryMenuOpen(true)}><MoreHorizontal size={22} /></IconButton>
+          </>
+        )}
+      />
+
+      {activeProjectId ? (
+        <section className="host-detail project-detail-view" ref={directoryRef} onScroll={(event) => directoryScrollPositions.current.set(activeProjectId, event.currentTarget.scrollTop)}>
+          <label className="session-search">
+            <Search size={17} />
+            <input
+              value={projectSearch}
+              onChange={(event) => setProjectSearch(event.target.value)}
+              placeholder={`搜索「${activeGroupName}」`}
+            />
+          </label>
+          {runtimeFilterNav}
           {activeGroupFamilies.length === 0 ? (
             <div className="session-catalog-loading">
-              <strong>{projectSearch ? "没有匹配的会话" : "此分组暂无会话"}</strong>
-              <span>{projectSearch ? "换一个关键词试试。" : "可点击右上角新建会话，或返回查看其它项目。"}</span>
+              <strong>{projectSearch ? "没有匹配的会话" : isArchivedGroupPage ? "暂无已归档会话" : "此分组暂无会话"}</strong>
+              <span>{projectSearch ? "换一个关键词试试。" : isArchivedGroupPage ? "归档后的会话会显示在这里，可返回会话目录继续查看。" : "可点击右上角新建会话，或返回查看其它项目。"}</span>
             </div>
           ) : (
             <div className="session-rows project-detail-rows">
@@ -2988,45 +3338,16 @@ export function MobileWorkspace({
         </section>
       ) : (
       <section className="host-detail" ref={directoryRef} onScroll={(event) => directoryScrollPositions.current.set("", event.currentTarget.scrollTop)}>
-        <div className="catalog-toolbar">
-          <label className="session-search">
-            <Search size={16} />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或会话" />
-          </label>
-          {groupedProjectIds.length > 1 && (
-            <IconButton
-              label={allProjectsCollapsed ? "全部展开" : "全部折叠"}
-              onClick={() => setCollapsedProjectIds(
-                allProjectsCollapsed ? expandAllProjects() : collapseProjects(groupedProjectIds),
-              )}
-            >
-              {allProjectsCollapsed ? <ChevronsDown size={17} /> : <ChevronsUp size={17} />}
-            </IconButton>
-          )}
-          <button
-            type="button"
-            className="primary-button catalog-create-btn"
-            disabled={!snapshot?.projects.length}
-            onClick={() => openCreateDialogForProject()}
-          >
-            <Plus size={16} />新建
-          </button>
-        </div>
-        {showRuntimeFilter && (
-          <nav className="runtime-filter" aria-label="Desktop 运行时筛选">
-            <button type="button" className={runtimeFilter === "all" ? "active" : ""} onClick={() => setRuntimeFilter("all")}>全部</button>
-            {snapshot!.runtimes!.map((runtime) => (
-              <button
-                type="button"
-                key={runtime.id}
-                className={runtimeFilter === runtime.id ? "active" : ""}
-                disabled={runtime.state !== "ready" && runtime.sessionCount === 0}
-                onClick={() => setRuntimeFilter(runtime.id)}
-              >
-                {desktopRuntimeName(runtime.id)}
-              </button>
-            ))}
-          </nav>
+        <label className="session-search">
+          <Search size={17} />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或会话" />
+        </label>
+        {runtimeFilterNav}
+        {!search && projectOrder.length > 1 && (
+          <div className="project-order-bar">
+            <span>项目顺序已固定</span>
+            <button type="button" onClick={() => setProjectOrderOpen(true)}><ArrowUpDown size={15} />调整顺序</button>
+          </div>
         )}
         {permissions[0] && (
           <button type="button" className="host-permission-alert" onClick={() => void selectSession(permissions[0]!.sessionId)}>
@@ -3086,16 +3407,6 @@ export function MobileWorkspace({
                       {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                     </span>
                   </button>
-                  {totalCount > PROJECT_PREVIEW_SESSION_LIMIT && (
-                    <button
-                      type="button"
-                      className="project-group-collapse-btn project-group-all-btn"
-                      aria-label={`查看 ${projectName} 全部 ${totalCount} 个会话`}
-                      onClick={() => openProjectGroup(projectId)}
-                    >
-                      全部
-                    </button>
-                  )}
                 </div>
                 {expanded && (
                   <div className="session-rows" id={sessionsId}>
@@ -3130,39 +3441,87 @@ export function MobileWorkspace({
 
       {sessionOverlays}
       {directoryMenuOpen && (
-        <div className="permission-sheet-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setDirectoryMenuOpen(false);
-        }}>
-          <section className="permission-sheet session-menu-sheet" role="dialog" aria-modal="true" aria-labelledby="directory-menu-title">
-            <header>
-              <div><span>{desktopName}</span><h2 id="directory-menu-title">会话目录</h2></div>
-              <IconButton label="关闭" onClick={() => setDirectoryMenuOpen(false)}><X size={19} /></IconButton>
-            </header>
-            <div className="session-menu-actions">
-              <p className="mobile-menu-group-title">同步</p>
-              <button type="button" className="secondary-button" disabled={refreshing} onClick={() => void runRefresh()}>
-                {refreshing ? <LoaderCircle className="is-spinning" size={17} /> : syncFlash ? <Check size={17} /> : <RefreshCw size={17} />}
-                {refreshing ? "正在同步" : syncFlash ? "已同步" : "同步当前电脑"}
-              </button>
-              <button type="button" className="secondary-button" onClick={() => {
-                setDirectoryMenuOpen(false);
-                openProjectGroup("__archived__");
-              }}><Archive size={17} />已归档会话 · {archivedSessions.length}</button>
-            </div>
-          </section>
-        </div>
+        <MobileSheet eyebrow={desktopName} title={activeProjectId ? activeGroupName : "会话目录"} onClose={() => setDirectoryMenuOpen(false)}>
+          <div className="m-group">
+            <SheetAction
+              icon={refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
+              label={refreshing ? "正在同步" : syncFlash ? "已同步" : "同步当前电脑"}
+              detail="重新读取项目、会话与运行状态"
+              disabled={refreshing}
+              onClick={() => void runRefresh()}
+            />
+            {!activeProjectId && projectOrder.length > 1 && (
+              <SheetAction
+                icon={<ArrowUpDown size={19} />}
+                label="调整项目顺序"
+                detail="项目顺序固定，可置顶或上下移动"
+                onClick={() => {
+                  setDirectoryMenuOpen(false);
+                  setProjectOrderOpen(true);
+                }}
+              />
+            )}
+            {!activeProjectId && groupedProjectIds.length > 1 && (
+              <SheetAction
+                icon={allProjectsCollapsed ? <ChevronsDown size={19} /> : <ChevronsUp size={19} />}
+                label={allProjectsCollapsed ? "展开全部项目" : "折叠全部项目"}
+                onClick={() => {
+                  setCollapsedProjectIds(allProjectsCollapsed ? expandAllProjects() : collapseProjects(groupedProjectIds));
+                  setDirectoryMenuOpen(false);
+                }}
+              />
+            )}
+          </div>
+        </MobileSheet>
+      )}
+      {projectOrderOpen && (
+        <MobileSheet
+          eyebrow={desktopName}
+          title="项目顺序"
+          onClose={() => setProjectOrderOpen(false)}
+          footer={(
+            <>
+              <button type="button" className="secondary-button" disabled={projectOrder.join() === projectsByActivity.join()} onClick={() => placeProjects(projectsByActivity)}>按最近活动重排</button>
+              <button type="button" className="primary-button" onClick={() => setProjectOrderOpen(false)}>完成</button>
+            </>
+          )}
+        >
+          <p className="m-sheet-note">项目按这里的顺序固定显示，点开或收到回复都不会移动项目；新出现的项目排在最前。项目内的会话按最近回复或打开的先后排列。</p>
+          <div className="m-group project-order-list">
+            {projectOrder.map((projectId, index) => {
+              const projectSessions = sessions.filter((session) => session.projectId === projectId && !session.archivedAt);
+              const name = snapshot?.projects.find((project) => project.projectId === projectId)?.name ?? projectSessions[0]!.projectName;
+              const last = index === projectOrder.length - 1;
+              return (
+                <div className="project-order-row" key={projectId}>
+                  <span><strong>{name}</strong><small>{projectSessions.length} 个会话</small></span>
+                  <IconButton label={`置顶「${name}」`} disabled={index === 0} onClick={() => placeProjects(moveProject(projectOrder, projectId, 0))}><ArrowUpToLine size={18} /></IconButton>
+                  <IconButton label={`上移「${name}」`} disabled={index === 0} onClick={() => placeProjects(moveProject(projectOrder, projectId, index - 1))}><ArrowUp size={18} /></IconButton>
+                  <IconButton label={`下移「${name}」`} disabled={last} onClick={() => placeProjects(moveProject(projectOrder, projectId, index + 1))}><ArrowDown size={18} /></IconButton>
+                </div>
+              );
+            })}
+          </div>
+        </MobileSheet>
       )}
       {createOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setCreateOpen(false);
-        }}>
-          <section className="create-session-dialog" role="dialog" aria-modal="true" aria-labelledby="create-session-title">
-            <header>
-              <h2 id="create-session-title">新建会话</h2>
-              <IconButton label="关闭" onClick={() => setCreateOpen(false)}><X size={19} /></IconButton>
-            </header>
-            <label>
-              <span>Desktop 运行时</span>
+        <MobileSheet
+          eyebrow={desktopName}
+          title="新建会话"
+          busy={createBusy}
+          onClose={() => setCreateOpen(false)}
+          footer={(
+            <>
+              <button type="button" className="secondary-button" disabled={createBusy} onClick={() => setCreateOpen(false)}>取消</button>
+              <button type="button" className="primary-button" disabled={!createProjectId || createBusy} onClick={() => void createSession()}>
+                {createBusy && <LoaderCircle className="is-spinning" size={16} />}创建会话
+              </button>
+            </>
+          )}
+        >
+          {(snapshot?.runtimes?.length ?? 0) > 1 && (
+            <label className="m-field">
+              <span>Desktop 应用</span>
               <select
                 value={createRuntimeId}
                 onChange={(event) => {
@@ -3175,7 +3534,7 @@ export function MobileWorkspace({
                   );
                 }}
               >
-                {snapshot?.runtimes?.map((runtime) => (
+                {snapshot!.runtimes!.map((runtime) => (
                   <option
                     value={runtime.id}
                     key={runtime.id}
@@ -3186,24 +3545,18 @@ export function MobileWorkspace({
                 ))}
               </select>
             </label>
-            <label>
-              <span>项目</span>
-              <select value={createProjectId} onChange={(event) => setCreateProjectId(event.target.value)}>
-                {snapshot?.projects.map((project) => <option value={project.projectId} key={project.projectId}>{project.name}</option>)}
-              </select>
-            </label>
-            <label>
-              <span>会话名称</span>
-              <input value={createTitle} onChange={(event) => setCreateTitle(event.target.value)} placeholder="可留空" />
-            </label>
-            <div className="dialog-actions">
-              <button type="button" className="secondary-button" onClick={() => setCreateOpen(false)}>取消</button>
-              <button type="button" className="primary-button" disabled={!createProjectId || createBusy} onClick={() => void createSession()}>
-                {createBusy && <LoaderCircle className="is-spinning" size={16} />}创建会话
-              </button>
-            </div>
-          </section>
-        </div>
+          )}
+          <label className="m-field">
+            <span>项目</span>
+            <select value={createProjectId} onChange={(event) => setCreateProjectId(event.target.value)}>
+              {snapshot?.projects.map((project) => <option value={project.projectId} key={project.projectId}>{project.name}</option>)}
+            </select>
+          </label>
+          <label className="m-field">
+            <span>会话名称</span>
+            <input value={createTitle} onChange={(event) => setCreateTitle(event.target.value)} placeholder="可留空" />
+          </label>
+        </MobileSheet>
       )}
     </main>
   );

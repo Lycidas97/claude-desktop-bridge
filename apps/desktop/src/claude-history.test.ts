@@ -845,7 +845,7 @@ describe("Claude transcript history", () => {
       }),
     ].join("\n"), "utf8");
 
-    const subagents = await readClaudeTranscriptSubagents(transcript, true);
+    const subagents = await readClaudeTranscriptSubagents(transcript, 0);
     expect(subagents).toHaveLength(2);
     expect(subagents[0]).toMatchObject({
       agentId: "a111",
@@ -866,6 +866,169 @@ describe("Claude transcript history", () => {
       toolCount: 1,
       recentTools: ["Bash pytest"],
       reportText: "## Verification Summary\nAll 12 claims verified.",
+    });
+  });
+
+  describe("subagent state comes from direct signals", () => {
+    async function fixture(options: { childMeta?: Record<string, unknown>; notification?: string; startedAt?: number } = {}) {
+      const root = await mkdtemp(join(tmpdir(), "bridge-claude-subagent-signals-"));
+      directories.push(root);
+      const transcript = join(root, "session.jsonl");
+      const timestamp = new Date(options.startedAt ?? 10_000).toISOString();
+      await writeFile(transcript, [
+        line({ type: "assistant", uuid: "launch", timestamp, message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_child", name: "Agent", input: { description: "Child" } }] } }),
+        line({ type: "user", uuid: "launched", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_child", content: "Async agent launched successfully.\nagentId: child" }] } }),
+        ...(options.notification ? [line({ type: "user", uuid: "note", timestamp, message: { role: "user", content: options.notification } })] : []),
+        "",
+      ].join("\n"), "utf8");
+      if (options.childMeta) {
+        const subagentsDir = join(root, "session", "subagents");
+        await mkdir(subagentsDir, { recursive: true });
+        await writeFile(join(subagentsDir, "agent-child.meta.json"), JSON.stringify({ description: "Child", toolUseId: "toolu_child", ...options.childMeta }), "utf8");
+        await writeFile(join(subagentsDir, "agent-child.jsonl"), line({
+          type: "assistant",
+          uuid: "child-tool",
+          timestamp,
+          message: { role: "assistant", content: [{ type: "tool_use", id: "child-read", name: "Read", input: {} }] },
+        }), "utf8");
+      }
+      return transcript;
+    }
+    const state = async (transcript: string, liveSince?: number) => (await readClaudeTranscriptSubagents(transcript, liveSince))[0]?.state;
+
+    it.each([
+      { name: "a child transcript", childMeta: {} },
+      { name: "only a parent tool call", childMeta: undefined },
+    ])("keeps a silent subagent with $name running however long it has been quiet", async ({ childMeta }) => {
+      const transcript = await fixture(childMeta ? { childMeta } : {});
+      expect(await state(transcript, 0)).toBe("running");
+      const realNow = Date.now.bind(Date);
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 7 * 3_600_000);
+      try {
+        expect(await state(transcript, 0)).toBe("running");
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("does not revive old child files absent from the compacted task list", async () => {
+      const transcript = await fixture({ childMeta: {} });
+      await appendFile(transcript, "\n" + [
+        line({ type: "system", subtype: "compact_boundary", timestamp: new Date(20_000).toISOString() }),
+        line({ type: "attachment", timestamp: new Date(19_999).toISOString(), attachment: {
+          type: "task_status", taskId: "shell-only", taskType: "local_bash", status: "running",
+        } }),
+      ].join("\n"));
+      expect(await state(transcript, 0)).toBe("unknown");
+    });
+
+    it.each(["running", "completed", "failed", "stopped"] as const)("honors a compacted agent task listed as %s", async (status) => {
+      const transcript = await fixture({ childMeta: {} });
+      await appendFile(transcript, "\n" + [
+        line({ type: "system", subtype: "compact_boundary", timestamp: new Date(20_000).toISOString() }),
+        line({ type: "attachment", timestamp: new Date(19_999).toISOString(), attachment: {
+          type: "task_status", taskId: "child", taskType: "local_agent", status,
+        } }),
+      ].join("\n"));
+      expect(await state(transcript, 0)).toBe(status);
+    });
+
+    it("keeps new child activity after compaction live without reviving its old parent", async () => {
+      const transcript = await fixture({ childMeta: {} });
+      await appendFile(transcript, "\n" + line({ type: "system", subtype: "compact_boundary", timestamp: new Date(20_000).toISOString() }));
+      expect(await state(transcript, 0)).toBe("unknown");
+      await appendFile(join(transcript.replace(/\.jsonl$/u, ""), "subagents", "agent-child.jsonl"), "\n" + line({
+        type: "assistant", timestamp: new Date(30_000).toISOString(),
+        message: { role: "assistant", content: [{ type: "tool_use", id: "next-read", name: "Read", input: {} }] },
+      }));
+      expect(await state(transcript, 0)).toBe("running");
+    });
+
+    it("does not let a copied child file mtime confirm live activity after compaction", async () => {
+      const transcript = await fixture({ childMeta: {} });
+      await appendFile(transcript, "\n" + line({ type: "system", subtype: "compact_boundary", timestamp: new Date(20_000).toISOString() }));
+      // The fixture's filesystem mtime is current, but its actual records precede the boundary.
+      expect(await state(transcript, 0)).toBe("unknown");
+    });
+
+    it.each([false, true])("only ends a child after its TaskStop succeeds (failed=%s)", async (failed) => {
+      const transcript = await fixture({ childMeta: {} });
+      await appendFile(transcript, "\n" + [
+        line({ type: "assistant", uuid: "stop-call", timestamp: new Date(20_000).toISOString(), message: {
+          role: "assistant", content: [{ type: "tool_use", id: "stop-tool", name: "TaskStop", input: { task_id: "child" } }],
+        } }),
+        line({ type: "user", uuid: "stop-result", timestamp: new Date(20_001).toISOString(),
+          toolUseResult: { message: failed ? "Task not found" : "Successfully stopped task: child (Child)", task_id: "child", task_type: "local_agent" },
+          message: { role: "user", content: [{ type: "tool_result", tool_use_id: "stop-tool", is_error: failed, content: "TaskStop result" }] },
+        }),
+      ].join("\n"));
+      expect(await state(transcript, 0)).toBe(failed ? "running" : "stopped");
+    });
+
+    it("lets a stopped agent become live again after an explicit resume", async () => {
+      const transcript = await fixture({ childMeta: {} });
+      await appendFile(transcript, "\n" + [
+        line({ type: "assistant", timestamp: new Date(20_000).toISOString(), message: { role: "assistant", content: [{ type: "tool_use", id: "stop", name: "TaskStop", input: { task_id: "child" } }] } }),
+        line({ type: "user", timestamp: new Date(20_001).toISOString(), toolUseResult: { task_id: "child", message: "Successfully stopped task: child" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "stop", content: "stopped" }] } }),
+        line({ type: "assistant", timestamp: new Date(30_000).toISOString(), message: { role: "assistant", content: [{ type: "tool_use", id: "resume", name: "Agent", input: { resume: "child", description: "Continue child" } }] } }),
+        line({ type: "user", timestamp: new Date(30_001).toISOString(), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "resume", content: "Async agent launched successfully.\nagentId: child" }] } }),
+      ].join("\n"));
+      await appendFile(join(transcript.replace(/\.jsonl$/u, ""), "subagents", "agent-child.jsonl"), "\n" + line({
+        type: "assistant", timestamp: new Date(30_002).toISOString(), message: { role: "assistant", content: [{ type: "tool_use", name: "Read", input: {} }] },
+      }));
+      expect((await readClaudeTranscriptSubagents(transcript, 0)).filter((agent) => agent.state === "running")).not.toHaveLength(0);
+    });
+
+    it("ends a subagent when its metadata records it finished", async () => {
+      expect(await state(await fixture({ childMeta: { finished: true } }), 0)).toBe("completed");
+    });
+
+    it.each([false, true])("ends a workflow subagent once its structured output is accepted (rejected=%s)", async (rejected) => {
+      // Workflow agents write no finished flag and send no notification; returning structured output ends them.
+      const transcript = await fixture({ childMeta: {} });
+      await appendFile(join(transcript.replace(/\.jsonl$/u, ""), "subagents", "agent-child.jsonl"), "\n" + [
+        line({ type: "assistant", timestamp: new Date(20_000).toISOString(), message: {
+          role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "output", name: "StructuredOutput", input: { verdict: "ok" } }],
+        } }),
+        line({ type: "user", timestamp: new Date(20_001).toISOString(), message: { role: "user", content: [{
+          type: "tool_result", tool_use_id: "output", is_error: rejected,
+          content: rejected ? "Output does not match required schema" : "Structured output provided successfully",
+        }] } }),
+        line({ type: "attachment", timestamp: new Date(20_002).toISOString(), attachment: { type: "queued_command" } }),
+      ].join("\n"));
+      expect(await state(transcript, 0)).toBe(rejected ? "running" : "completed");
+    });
+
+    it("reads every task named by a stop notification", async () => {
+      const transcript = await fixture({
+        childMeta: {},
+        notification: "<task-notification>\n<task-id>other</task-id>\n<task-id>child</task-id>\n<status>stopped</status>\n<summary>2 tasks</summary>\n</task-notification>",
+      });
+      expect(await state(transcript, 0)).toBe("stopped");
+    });
+
+    it("reports a failed task as failed", async () => {
+      const transcript = await fixture({
+        notification: "<task-notification>\n<task-id>child</task-id>\n<status>failed</status>\n</task-notification>",
+      });
+      expect(await state(transcript, 0)).toBe("failed");
+    });
+
+    it("treats user text quoting a notification as ordinary text", async () => {
+      const transcript = await fixture({
+        notification: "why did this say <task-notification><task-id>child</task-id><status>stopped</status></task-notification>?",
+      });
+      expect(await state(transcript, 0)).toBe("running");
+    });
+
+    it.each([
+      { name: "a child transcript", childMeta: {} },
+      { name: "only a parent tool call", childMeta: undefined },
+    ])("marks a subagent with $name stopped once its process is gone", async ({ childMeta }) => {
+      const transcript = await fixture({ ...(childMeta ? { childMeta } : {}), startedAt: 10_000 });
+      expect(await state(transcript), "no live process").toBe("stopped");
+      expect(await state(transcript, 20_000), "every live process started later").toBe("stopped");
+      expect(await state(transcript, 5_000), "a live process predates it").toBe("running");
     });
   });
 

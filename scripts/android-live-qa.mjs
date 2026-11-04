@@ -81,7 +81,7 @@ try {
     await sleep(500);
     try {
       result = await android.evaluate(`({
-        status: document.querySelector('.mobile-device span')?.textContent ?? '',
+        status: document.querySelector('.m-host-chip span')?.textContent ?? '',
         sessions: document.querySelectorAll('.session-row-v2').length,
         hasExpectedSession: ${JSON.stringify(expectedSession ?? "")}
           ? (document.body.textContent?.includes(${JSON.stringify(expectedSession ?? "")}) ?? false)

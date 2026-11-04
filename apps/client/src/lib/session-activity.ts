@@ -21,13 +21,26 @@ export interface SessionActivity {
  * undefined when the session is idle (or only waiting on input) and the
  * indicator should disappear entirely.
  */
+export function sessionQueueLabel(
+  session: Pick<BridgeSessionInfo, "ownership" | "turnState">,
+): string {
+  if (session.ownership === "OWNERSHIP_CONFLICT") return "等待写入冲突解除";
+  if (session.ownership === "DESKTOP_OBSERVED" || session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待电脑端空闲";
+  if (session.turnState === "running" || session.turnState === "waiting") return "等待前一条消息完成";
+  return "消息排队中";
+}
+
 export function sessionActivity(
-  session: Pick<BridgeSessionInfo, "turnState"> | undefined,
+  session: Pick<BridgeSessionInfo, "turnState" | "executionStage"> & Partial<Pick<BridgeSessionInfo, "ownership" | "pendingCount">> | undefined,
   items: readonly SessionActivityItem[],
 ): SessionActivity | undefined {
   if (!session) return undefined;
   const lastUser = [...items].reverse().find((item) => item.role === "user");
   const since = lastUser?.createdAt;
+  if (session.turnState === "queued" || (session.pendingCount ?? 0) > 0) return {
+    kind: "queued",
+    label: session.ownership ? sessionQueueLabel({ ...session, ownership: session.ownership }) : "排队等待中",
+  };
   const runningSubagents = items.filter(
     (item) => item.role === "tool" && item.subagent?.state === "running",
   );
@@ -38,8 +51,9 @@ export function sessionActivity(
       : `${runningSubagents.length} 个子代理运行中 · ${latest.description}`;
     return { kind: "running", label, ...(since ?? latest.startedAt ? { since: since ?? latest.startedAt } : {}) };
   }
-  if (session.turnState === "queued") return { kind: "queued", label: "排队等待中" };
   if (session.turnState !== "running") return undefined;
+  if (session.executionStage === "starting") return { kind: "queued", label: "正在启动" };
+  if (session.executionStage === "submitted") return { kind: "queued", label: "已提交，等待执行" };
   const last = items[items.length - 1];
   if (last?.role === "tool" && last.state === "running") {
     return { kind: "running", label: `正在运行 · ${last.toolName ?? "工具"}`, ...(since ? { since } : {}) };
@@ -48,6 +62,24 @@ export function sessionActivity(
     return { kind: "generating", label: "正在生成回复", ...(since ? { since } : {}) };
   }
   return { kind: "thinking", label: "思考中", ...(since ? { since } : {}) };
+}
+
+/** Past this a running subagent may be hung. This only informs the user; it never changes state. */
+const SUBAGENT_STALL_MS = 10 * 60_000;
+
+/** Seconds without new output, once that is long enough to mention. */
+export function subagentStalledSeconds(lastUpdatedAt: number, now = Date.now()): number | undefined {
+  return now - lastUpdatedAt > SUBAGENT_STALL_MS ? (now - lastUpdatedAt) / 1_000 : undefined;
+}
+
+export function backgroundSubagentBadge(
+  session: Pick<BridgeSessionInfo, "runningSubagents">,
+  now = Date.now(),
+): { label: string; stalled: boolean } | undefined {
+  if (!session.runningSubagents) return undefined;
+  return subagentStalledSeconds(session.runningSubagents.lastUpdatedAt, now) === undefined
+    ? { label: "后台子代理", stalled: false }
+    : { label: "子代理无进展", stalled: true };
 }
 
 export function formatElapsed(totalSeconds: number): string {

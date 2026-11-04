@@ -163,6 +163,7 @@ export type BridgeDeliveryState =
   | "local-saved"
   | "relay-received"
   | "host-received"
+  | "submitted"
   | "session-received"
   | "running"
   | "completed"
@@ -172,6 +173,7 @@ export type BridgeDeliveryState =
 
 export type BridgeCapability =
   | "evidence.v1"
+  | "evidence.details.v1"
   | "artifact.preview.v1"
   | "artifact.transfer.v1"
   | "artifact.text-preview.v1"
@@ -182,7 +184,10 @@ export type BridgeCapability =
   | "permission.policy.v1"
   | "runtime.adapter.v1"
   | "runtime.handoff.v1"
-  | "session.visibility.v1";
+  | "session.visibility.v1"
+  | "subagent.stop.v1"
+  | "turn.queue.steer.v1"
+  | "plugin.magpie-quota.v1";
 
 /**
  * Cross-Desktop serial relay (0.7). A handoff moves a task to a brand-new
@@ -451,7 +456,18 @@ export interface BridgeEvidenceBundle {
   tools: BridgeToolEvidence[];
   artifacts: BridgeArtifactManifest[];
   warnings: string[];
+  /** Summary only; fetch tools and artifacts through evidence.details. */
+  detailsAvailable?: boolean;
 }
+
+export type BridgeEvidenceDetailPage = {
+  evidenceId: string;
+  nextCursor?: string;
+  hasMore: boolean;
+} & (
+  | { kind: "tools"; items: BridgeToolEvidence[] }
+  | { kind: "artifacts"; items: BridgeArtifactManifest[] }
+);
 
 export interface BridgeEvidencePage {
   sessionId: string;
@@ -545,6 +561,14 @@ export interface BridgeDesktopRegistrationInfo {
 
 export interface BridgeSessionInfo {
   sessionId: string;
+  /** Host startup and submission precede the runtime's execution acknowledgment. */
+  executionStage?: "starting" | "submitted" | "running";
+  /** Subagents not yet ended. They outlive the main conversation, which turnState describes. */
+  runningSubagents?: { count: number; lastUpdatedAt: number };
+  /** What subagent.stop can reach: that one task, or only the session's whole Claude process. */
+  subagentStopScope?: "task" | "process";
+  /** Set when the running main turn can only be stopped by ending the Desktop process that runs it. */
+  mainTurnStopScope?: "process";
   /** The native Desktop that owns this session. Defaults to Claude for old hosts. */
   runtimeId?: BridgeDesktopRuntimeId;
   /** Never portable across Desktop runtimes; exposed only as an opaque reference. */
@@ -564,6 +588,8 @@ export interface BridgeSessionInfo {
   turnState: BridgeTurnState;
   lastActivityAt: number;
   pendingCount: number;
+  /** Queued command identities, when provided by the host. */
+  pendingCommandIds?: string[];
   activeTurnId?: string;
   currentSummary?: string;
   /** Native runtime provider for Codex/Hermes; never a Bridge provider profile. */
@@ -599,6 +625,11 @@ export interface BridgeSessionInfo {
    * deleted sessions carry a host-side tombstone and never appear at all.
    */
   archivedAt?: number;
+  /**
+   * Bridge changed this session's archive state and Claude Desktop shows the
+   * change after its next restart.
+   */
+  desktopArchivePending?: boolean;
 }
 
 export interface BridgeModelInfo {
@@ -667,7 +698,7 @@ export interface BridgeSubagentSummary {
   toolUseId?: string;
   agentType?: string;
   description: string;
-  state: "running" | "completed" | "failed";
+  state: "running" | "completed" | "failed" | "stopped" | "unknown";
   toolCount: number;
   recentTools?: string[];
   latestText?: string;
@@ -708,6 +739,16 @@ export interface BridgeInteractivePrompt {
   questions?: BridgeInteractiveQuestion[];
 }
 
+export interface BridgeTaskPlan {
+  id: string;
+  items: Array<{
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+  }>;
+  /** Ordered update time, including operations sharing a transcript timestamp. */
+  updatedAt: number;
+}
+
 export interface BridgeHistoryItem {
   id: string;
   sessionId: string;
@@ -732,6 +773,7 @@ export interface BridgeHistoryItem {
    * Structured interactive question or wrap-up confirmation card from the turn.
    */
   interactivePrompt?: BridgeInteractivePrompt;
+  taskPlan?: BridgeTaskPlan;
 }
 
 export interface BridgeFileChangeSummary {
@@ -756,6 +798,7 @@ export interface ClaudeHistoryMessage {
   text: string;
   createdAt: number;
   interactivePrompt?: BridgeInteractivePrompt;
+  taskPlan?: BridgeTaskPlan;
 }
 
 export interface BridgeDeviceInfo {
@@ -894,12 +937,15 @@ export type BridgeMethod =
   | "desktop.app.quit"
   | "turn.start"
   | "turn.steer"
+  | "turn.queue.steer"
   | "turn.interrupt"
+  | "subagent.stop"
   | "permission.resolve"
   | "permission.policy.configure"
   | "events.resume"
   | "evidence.list"
   | "evidence.get"
+  | "evidence.details"
   | "artifact.preview"
   | "artifact.transfer.open"
   | "artifact.transfer.read"
@@ -923,7 +969,9 @@ export type BridgeMethod =
   | "runtime.handoff.confirm"
   | "runtime.goal.pause"
   | "runtime.goal.resume"
-  | "device.revoke";
+  | "device.revoke"
+  // Compile-time plugins/magpie-quota; its payload types stay in the plugin.
+  | "plugin.magpie-quota.list";
 
 export interface BridgeRequest {
   kind: "request";

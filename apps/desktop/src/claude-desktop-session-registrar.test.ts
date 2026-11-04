@@ -22,7 +22,10 @@ import type { ClaudeRuntimePaths } from "./platform.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, readFile: vi.fn(actual.readFile) };
+  return {
+    ...actual, readFile: vi.fn(actual.readFile),
+    unlink: async (path: string) => { execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [path]); },
+  };
 });
 
 const directories: string[] = [];

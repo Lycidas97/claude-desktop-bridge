@@ -41,12 +41,15 @@ const METHODS = new Set([
   "desktop.app.quit",
   "turn.start",
   "turn.steer",
+  "turn.queue.steer",
   "turn.interrupt",
+  "subagent.stop",
   "permission.resolve",
   "permission.policy.configure",
   "events.resume",
   "evidence.list",
   "evidence.get",
+  "evidence.details",
   "artifact.preview",
   "artifact.transfer.open",
   "artifact.transfer.read",
@@ -71,6 +74,7 @@ const METHODS = new Set([
   "runtime.goal.pause",
   "runtime.goal.resume",
   "device.revoke",
+  "plugin.magpie-quota.list",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {

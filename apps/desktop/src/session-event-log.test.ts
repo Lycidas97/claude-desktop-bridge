@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -78,6 +78,24 @@ describe("SessionEventLog", () => {
     await reopened.close();
   });
 
+  it.each(["tool.progress", "tool.completed"] as const)("does not claim a turn state for unknown subagents in %s history", async (type) => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-events-unknown-task-"));
+    directories.push(directory);
+    const log = new SessionEventLog(join(directory, "events.jsonl"));
+    try {
+      await log.append({ sessionId: "session-1", itemId: "task-1", origin: "claude-host", type: "tool.started", data: { toolName: "Agent" } });
+      await log.append({ sessionId: "session-1", itemId: "task-1", origin: "claude-host", type, data: {
+        toolName: "Agent", subagent: { agentId: "task-1", description: "Inspect", state: "unknown", toolCount: 0, startedAt: 100, updatedAt: 200 },
+      } });
+      const items = log.history("session-1").items;
+      expect(items).toHaveLength(1);
+      expect(items[0]?.subagent?.state).toBe("unknown");
+      expect(items[0]?.state).toBeUndefined();
+    } finally {
+      await log.close();
+    }
+  });
+
   it("matches terminal receipts to accepted message IDs across reopening and compaction", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-events-settled-"));
     directories.push(directory);
@@ -113,6 +131,161 @@ describe("SessionEventLog", () => {
     } finally {
       await twiceReopened.close();
     }
+  });
+
+  it("finds execution evidence beyond the UI replay limit without treating queueing as submission", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-event-evidence-"));
+    directories.push(directory);
+    const log = new SessionEventLog(join(directory, "events.jsonl"));
+    for (let index = 0; index < 1_005; index += 1) {
+      await log.append({ sessionId: "session-1", origin: "system", type: "session.desktop-registration" });
+    }
+    await log.append({ sessionId: "session-1", itemId: "command-1", origin: "mobile", type: "turn.queued", data: { commandId: "command-1", delivery: "host-received" } });
+    expect(log.turnEvidence({ sessionId: "session-1", commandId: "command-1" })).toEqual({});
+    await log.append({ sessionId: "session-1", turnId: "turn-1", itemId: "user-1", origin: "claude-host", type: "message.delivery", data: { commandId: "command-1", delivery: "submitted" } });
+    expect(log.turnEvidence({ sessionId: "session-1", commandId: "command-1" })).toEqual({ submitted: true, messageId: "user-1" });
+    await log.append({ sessionId: "session-1", turnId: "turn-1", itemId: "user-1", origin: "mobile", type: "user.message.accepted", data: { commandId: "command-1", text: "payload" } });
+    await log.append({ sessionId: "session-1", turnId: "turn-1", origin: "claude-host", type: "turn.failed" });
+    expect(log.replay(0, 2_000)).toHaveLength(1_000);
+    expect(log.turnEvidence({ sessionId: "session-1", commandId: "command-1" })).toEqual({ submitted: true, accepted: true, terminal: "failed", messageId: "user-1" });
+    expect(log.turnEvidence({ sessionId: "other", turnId: "turn-1" })).toEqual({});
+    await log.close();
+  });
+
+  it("preserves all compact receipts, user mappings, and task progress through two compactions and reloads", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-event-receipts-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const first = new SessionEventLog(path);
+    for (const [index, type] of ["turn.completed", "turn.failed", "turn.interrupted", "runtime.error"].entries()) {
+      await first.append({ sessionId: "session-1", turnId: `turn-${index}`, itemId: `user-${index}`, type: "user.message.accepted", origin: "mobile", data: { commandId: `command-${index}`, text: "OMIT_FULL_INPUT_PAYLOAD" } });
+      await first.append({ sessionId: "session-1", turnId: `turn-${index}`, type: type as "turn.completed" | "turn.failed" | "turn.interrupted" | "runtime.error", origin: "claude-host", data: { delivery: type === "runtime.error" ? "failed" : undefined, result: "OMIT_FULL_RESULT_PAYLOAD" } });
+    }
+    await first.append({ sessionId: "session-1", turnId: "unconfirmed", itemId: "unconfirmed-user", type: "message.delivery", origin: "claude-host", data: { commandId: "unconfirmed-command", delivery: "submitted" } });
+    await first.append({ sessionId: "session-1", turnId: "pending", itemId: "pending-user", type: "message.delivery", origin: "claude-host", data: { commandId: "pending-command", delivery: "submitted" } });
+    await first.append({ sessionId: "session-1", turnId: "pending", itemId: "task-1", type: "tool.progress", origin: "claude-host", data: { toolName: "Agent", generation: "generation-1", task: { taskId: "task-1", toolUseId: "task-1", state: "running" }, text: "OMIT_FULL_PROGRESS_PAYLOAD", subagent: { agentId: "agent-1", description: "Background task", state: "running", toolCount: 3, startedAt: 1, updatedAt: 2, latestText: "OMIT_FULL_REPORT_PAYLOAD" } } });
+    for (let index = 0; index < 8; index += 1) {
+      await first.append({ sessionId: "other", type: "session.observed", origin: "claude-desktop", itemId: `noise-${index}`, data: { role: "assistant", text: "Unrelated" } });
+    }
+    // The highest sequence is itself discarded by compaction.
+    await first.append({ sessionId: "other", type: "assistant.delta", origin: "claude-host", data: { text: "OMIT_FINAL_DELTA" } });
+    const lastSeq = first.latestSeq();
+    await first.close();
+    for (const compact of [true, false, true, false]) {
+      const reopened = new SessionEventLog(path, 80, compact ? { bytesThreshold: 1, retainEvents: 2 } : undefined);
+      await reopened.initialize();
+      for (const [index, terminal] of ["completed", "failed", "cancelled", "failed"].entries()) {
+        expect(reopened.turnEvidence({ sessionId: "session-1", commandId: `command-${index}` })).toEqual({ accepted: true, submitted: true, terminal, messageId: `user-${index}` });
+        expect(reopened.isUserMessageSettled("session-1", `user-${index}`)).toBe(true);
+        expect(reopened.hasItem("session-1", "user.message.accepted", `user-${index}`)).toBe(true);
+      }
+      expect(reopened.turnEvidence({ sessionId: "session-1", commandId: "unconfirmed-command" })).toEqual({ submitted: true, messageId: "unconfirmed-user" });
+      expect(reopened.turnEvidence({ sessionId: "session-1", turnId: "pending" })).toEqual({ submitted: true, accepted: true, messageId: "pending-user" });
+      expect(reopened.isUserMessageSettled("session-1", "pending-user")).toBe(false);
+      expect(reopened.hasItem("session-1", "tool.progress", "task-1")).toBe(true);
+      expect(reopened.latestItem("session-1", "tool.progress", "task-1")).toMatchObject({ data: { toolName: "Agent", subagent: { agentId: "agent-1", state: "running", toolCount: 3 } } });
+      expect(reopened.latestTaskEvents("session-1")).toMatchObject([{ itemId: "task-1", type: "tool.progress", data: { generation: "generation-1", task: { taskId: "task-1", state: "running" } } }]);
+      expect(reopened.latestSeq()).toBe(lastSeq);
+      expect(reopened.replay()).toHaveLength(2);
+      await reopened.close();
+      expect(await readFile(path, "utf8")).not.toContain("OMIT_");
+    }
+  });
+
+  it("keeps explicit attempts separate and restores the latest task state by sequence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-event-attempts-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const first = new SessionEventLog(path);
+    await first.append({ sessionId: "session-1", turnId: "old-turn", itemId: "old-user", type: "user.message.accepted", origin: "mobile", data: { commandId: "command-1" } });
+    await first.append({ sessionId: "session-1", turnId: "old-turn", type: "turn.failed", origin: "claude-host", data: { commandId: "command-1" } });
+    expect(first.turnEvidence({ sessionId: "session-1", turnId: "new-turn", commandId: "command-1", messageId: "new-user" })).toEqual({ messageId: "new-user" });
+    await first.append({ sessionId: "session-1", turnId: "new-turn", itemId: "new-user", type: "message.delivery", origin: "claude-host", data: { commandId: "command-1", delivery: "submitted" } });
+    await first.append({ sessionId: "session-1", itemId: "task-1", type: "tool.completed", origin: "claude-host", data: { task: { taskId: "task-1", state: "completed" }, generation: "old" } });
+    await first.append({ sessionId: "session-1", itemId: "task-1", type: "tool.progress", origin: "claude-host", data: { task: { taskId: "task-1", state: "running" }, generation: "new" } });
+    await first.append({ sessionId: "session-1", itemId: "task-2", type: "tool.progress", origin: "claude-host", data: { subagent: { agentId: "agent-2", state: "running" } } });
+    await first.append({ sessionId: "session-1", itemId: "task-2", type: "tool.completed", origin: "claude-host", data: { subagent: { agentId: "agent-2", state: "completed" } } });
+    await first.close();
+    for (const compact of [true, false]) {
+      const log = new SessionEventLog(path, 80, compact ? { bytesThreshold: 1, retainEvents: 0 } : undefined);
+      await log.initialize();
+      expect(log.turnEvidence({ sessionId: "session-1", commandId: "command-1" })).toEqual({ submitted: true, messageId: "new-user" });
+      expect(log.turnEvidence({ sessionId: "session-1", turnId: "old-turn" })).toMatchObject({ terminal: "failed", messageId: "old-user" });
+      expect(log.latestTaskEvents("session-1")).toMatchObject([
+        { itemId: "task-1", type: "tool.progress", data: { generation: "new", task: { state: "running" } } },
+        { itemId: "task-2", type: "tool.completed", data: { subagent: { state: "completed" } } },
+      ]);
+      await log.close();
+    }
+  });
+
+  it("keeps canonical task facts when generic progress for the same item arrives later", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-event-task-heartbeat-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const first = new SessionEventLog(path);
+    await first.append({ sessionId: "session-1", itemId: "task-1", type: "tool.progress", origin: "claude-host", data: { task: { taskId: "task-1", state: "running" }, subagent: { agentId: "task-1", state: "running" }, generation: "host-1" } });
+    await first.append({ sessionId: "session-1", itemId: "task-1", type: "tool.progress", origin: "claude-host", data: { toolName: "Agent", text: "Still running" } });
+    expect(first.latestTaskEvents("session-1")).toMatchObject([{ data: { task: { taskId: "task-1", state: "running" }, generation: "host-1" } }]);
+    expect(first.history("session-1").items).toMatchObject([{ subagent: { agentId: "task-1", state: "running" } }]);
+    await first.append({ sessionId: "session-1", itemId: "task-2", type: "tool.progress", origin: "claude-host", data: { task: { taskId: "task-2", state: "running" }, generation: "host-1" } });
+    await first.append({ sessionId: "session-1", itemId: "task-2", type: "tool.completed", origin: "claude-host", data: { task: { taskId: "task-2", state: "completed" }, generation: "host-1" } });
+    await first.append({ sessionId: "session-1", itemId: "task-2", type: "tool.progress", origin: "claude-host", data: { text: "Late heartbeat" } });
+    expect(first.latestTaskEvents("session-1").find((event) => event.itemId === "task-2")?.type).toBe("tool.completed");
+    await first.close();
+    for (const compact of [false, true, false]) {
+      const log = new SessionEventLog(path, 80, compact ? { bytesThreshold: 1, retainEvents: 0 } : undefined);
+      await log.initialize();
+      expect(log.latestTaskEvents("session-1")).toMatchObject([
+        { data: { task: { taskId: "task-1", state: "running" }, subagent: { agentId: "task-1" }, generation: "host-1" } },
+        { type: "tool.completed", data: { task: { taskId: "task-2", state: "completed" } } },
+      ]);
+      await log.close();
+    }
+  });
+
+  it("matches compact dedup digests across reload without storing full payloads", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-event-dedup-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const first = new SessionEventLog(path);
+    const data = { text: "OMIT_LONG_TEXT".repeat(10_000), interactivePrompt: { kind: "question", ask: "OMIT_LONG_PROMPT".repeat(10_000) } };
+    await first.append({ sessionId: "session-1", itemId: "message-1", type: "session.observed", origin: "claude-desktop", data: { role: "assistant", ...data } });
+    await first.append({ sessionId: "session-1", itemId: "empty", type: "session.observed", origin: "claude-desktop", data: { text: "", interactivePrompt: undefined } });
+    await first.append({ sessionId: "session-1", itemId: "missing", type: "session.observed", origin: "claude-desktop" });
+    await first.close();
+    for (const compact of [true, false, true, false]) {
+      const log = new SessionEventLog(path, 80, compact ? { bytesThreshold: 1, retainEvents: 0 } : undefined);
+      await log.initialize();
+      expect(log.itemMatches("session-1", "session.observed", "message-1", data)).toBe(true);
+      expect(log.itemMatches("session-1", "session.observed", "message-1", { text: data.text })).toBe(true);
+      expect(log.itemMatches("session-1", "session.observed", "message-1", { ...data, interactivePrompt: { kind: "question", ask: "Changed" } })).toBe(false);
+      expect(log.itemMatches("session-1", "session.observed", "empty", { text: "", interactivePrompt: undefined })).toBe(true);
+      expect(log.itemMatches("session-1", "session.observed", "missing", { text: undefined, interactivePrompt: undefined })).toBe(true);
+      expect(log.itemMatches("session-1", "session.observed", "missing", { text: "" })).toBe(false);
+      expect(log.itemMatches("session-1", "session.observed", "absent", { text: undefined })).toBe(false);
+      await log.close();
+      expect(await readFile(path, "utf8")).not.toContain("OMIT_");
+    }
+  });
+
+  it("retains only dedup and task item receipts while preserving command evidence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-event-receipt-types-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const first = new SessionEventLog(path);
+    for (const type of ["assistant.delta", "permission.requested", "evidence.updated", "evidence.ready", "message.delivery", "turn.queued"] as const) {
+      await first.append({ sessionId: "session-1", turnId: "turn-1", itemId: `disposable-${type}`, type, origin: "system", data: { commandId: "command-1", delivery: "submitted" } });
+    }
+    await first.append({ sessionId: "session-1", turnId: "turn-1", type: "turn.completed", origin: "claude-host", data: { commandId: "command-1" } });
+    await first.close();
+    const log = new SessionEventLog(path, 80, { bytesThreshold: 1, retainEvents: 0 });
+    await log.initialize();
+    expect(log.turnEvidence({ sessionId: "session-1", commandId: "command-1" })).toMatchObject({ submitted: true, terminal: "completed" });
+    const index = JSON.parse((await readFile(path, "utf8")).split("\n")[0]!);
+    expect(index.items).toEqual([]);
+    expect(index.turns).toHaveLength(1);
+    await log.close();
   });
 
   it("compacts an oversized log, dropping registration churn and stream deltas", async () => {

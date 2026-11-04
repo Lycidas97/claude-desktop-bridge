@@ -3,6 +3,7 @@ import type {
   BridgeArtifactManifest,
   BridgeArtifactPreview,
   BridgeEvidenceBundle,
+  BridgeEvidenceDetailPage,
   BridgeEvidencePage,
   BridgeEvent,
   BridgeHistoryPage,
@@ -47,6 +48,7 @@ import {
   X,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
+import { evidenceSummary, summarizeEvidenceEvent } from "@bridge/protocol";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ThemeControl } from "../hooks/useTheme.js";
 import type { SessionEvidenceState, SessionHistoryState } from "../hooks/useMobileBridge.js";
@@ -140,6 +142,8 @@ function sessionState(session: BridgeSessionInfo): string {
   const bridgeCreated = session.source === "bridge";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
   if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
+  if (session.turnState === "running" && session.executionStage === "starting") return "正在启动";
+  if (session.turnState === "running" && session.executionStage === "submitted") return "已提交，等待执行";
   if (session.ownership === "DESKTOP_OBSERVED" && session.turnState === "running") {
     return "桌面运行中";
   }
@@ -325,7 +329,7 @@ function DesktopSessions({
         !Array.isArray(item.tools) ||
         !Array.isArray(item.artifacts)
       ) return [];
-      return [item as BridgeEvidenceBundle];
+      return [evidenceSummary(item as BridgeEvidenceBundle)];
     });
     if (incoming.length === 0) return;
     setEvidence((current) => {
@@ -452,7 +456,7 @@ function DesktopSessions({
         const merged = new Map(
           (current[sessionId]?.items ?? []).map((item) => [item.id, item]),
         );
-        for (const item of evidenceResult?.evidence.items ?? []) merged.set(item.id, item);
+        for (const item of evidenceResult?.evidence.items ?? []) merged.set(item.id, evidenceSummary(item));
         return {
           ...current,
           [sessionId]: {
@@ -495,7 +499,7 @@ function DesktopSessions({
         params: { sessionId: selectedId, cursor: current.nextCursor, limit: 30 },
       }));
       const merged = new Map(current.items.map((item) => [item.id, item]));
-      for (const item of result.evidence.items) merged.set(item.id, item);
+      for (const item of result.evidence.items) merged.set(item.id, evidenceSummary(item));
       setEvidence((value) => ({
         ...value,
         [selectedId]: {
@@ -511,6 +515,26 @@ function DesktopSessions({
         [selectedId]: { ...current, status: "error" },
       }));
     }
+  }
+
+  async function loadEvidenceDetails(
+    evidenceId: string, kind: "tools" | "artifacts", cursor?: string,
+  ): Promise<BridgeEvidenceDetailPage> {
+    if (snapshot.host.capabilities.includes("evidence.details.v1")) {
+      return unwrap<{ page: BridgeEvidenceDetailPage }>(await apiRequest({
+        method: "evidence.details",
+        params: { evidenceId, kind, ...(cursor ? { cursor } : {}), limit: 30 },
+      })).page;
+    }
+    const bundle = unwrap<{ evidence: BridgeEvidenceBundle }>(await apiRequest({
+      method: "evidence.get", params: { evidenceId },
+    })).evidence;
+    const offset = cursor ? Number(cursor) : 0;
+    const hasMore = offset + 30 < bundle[kind].length;
+    const next = { evidenceId, hasMore, ...(hasMore ? { nextCursor: String(offset + 30) } : {}) };
+    return kind === "tools"
+      ? { ...next, kind, items: bundle.tools.slice(offset, offset + 30) }
+      : { ...next, kind, items: bundle.artifacts.slice(offset, offset + 30) };
   }
 
   async function previewArtifact(artifactId: string): Promise<BridgeArtifactPreview> {
@@ -1463,6 +1487,7 @@ function DesktopSessions({
                   online
                   suppressEmpty={Boolean(fileChangesSummary)}
                   onLoadMore={loadOlderEvidence}
+                  onLoadDetails={loadEvidenceDetails}
                   onPreview={previewArtifact}
                   onDownload={downloadArtifact}
                 />
@@ -1838,7 +1863,7 @@ export function DesktopDashboard({ themeControl, agentVisibility }: { themeContr
     void api.getSnapshot().then(setSnapshot);
     const stopSnapshots = api.onSnapshot(setSnapshot);
     const stopEvents = api.onEvent((event) => {
-      setEvents((current) => [...current.filter((candidate) => candidate.eventId !== event.eventId), event]
+      setEvents((current) => [...current.filter((candidate) => candidate.eventId !== event.eventId), summarizeEvidenceEvent(event)]
         .sort((left, right) => left.seq - right.seq)
         .slice(-2_000));
     });

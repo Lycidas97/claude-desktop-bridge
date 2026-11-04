@@ -3,6 +3,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   ARTIFACT_MAX_BYTES,
+  evidenceSummary,
   TEXT_PREVIEW_MAX_BYTES,
   ARTIFACT_TRANSFER_CHUNK_BYTES,
   ARTIFACT_TRANSFER_TTL_MS,
@@ -668,6 +669,10 @@ export class EvidenceManager {
     return this.options.store.get(evidenceId);
   }
 
+  details(evidenceId: string, kind: "tools" | "artifacts", cursor?: string, limit?: number) {
+    return this.options.store.details(evidenceId, kind, cursor, limit);
+  }
+
   async preview(artifactId: string): Promise<BridgeArtifactPreview> {
     const artifact = this.options.store.artifact(artifactId);
     if (!artifact) throw new Error("Artifact not found");
@@ -884,7 +889,7 @@ export class EvidenceManager {
       timestamp: type === "evidence.started" ? bundle.startedAt : Date.now(),
       origin: bundle.source === "bridge-host" ? "claude-host" : "claude-desktop",
       type,
-      data: { evidence: bundle },
+      data: { evidence: evidenceSummary(bundle) },
     });
   }
 

@@ -7,10 +7,13 @@ import {
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type {
-  BridgeArtifactManifest,
-  BridgeEvidenceBundle,
-  BridgeEvidencePage,
+import {
+  evidenceSummary,
+  type BridgeArtifactManifest,
+  type BridgeEvidenceBundle,
+  type BridgeEvidenceDetailPage,
+  type BridgeEvidencePage,
+  type BridgeToolEvidence,
 } from "@bridge/protocol";
 
 const STORE_VERSION = 1;
@@ -50,7 +53,7 @@ export interface EvidenceStoreOptions {
   maxBytes?: number;
 }
 
-function bundleFromRow(row: SqlRow): BridgeEvidenceBundle {
+function bundleFromRow(row: SqlRow, includeTools = true): BridgeEvidenceBundle {
   return {
     id: String(row.id),
     sessionId: String(row.session_id),
@@ -73,7 +76,7 @@ function bundleFromRow(row: SqlRow): BridgeEvidenceBundle {
     toolCount: Number(row.tool_count),
     changeCount: Number(row.change_count),
     artifactCount: Number(row.artifact_count),
-    tools: JSON.parse(String(row.tools_json)) as BridgeEvidenceBundle["tools"],
+    tools: includeTools ? JSON.parse(String(row.tools_json)) as BridgeEvidenceBundle["tools"] : [],
     artifacts: [],
     warnings: JSON.parse(String(row.warnings_json)) as string[],
   };
@@ -329,20 +332,23 @@ export class EvidenceStore {
   list(sessionId: string, cursor?: string, limit = 30): BridgeEvidencePage {
     const boundedLimit = Math.max(1, Math.min(limit, 100));
     const before = decodeCursor(cursor);
+    const headers = `id, session_id, turn_id, lane_id, provider_profile_id, runtime_id,
+      source, confidence, state, started_at, completed_at, usage_json,
+      tool_count, change_count, artifact_count, warnings_json`;
     const rows = before
       ? this.db.prepare(`
-          SELECT * FROM evidence_bundles
+          SELECT ${headers} FROM evidence_bundles
           WHERE session_id = ? AND (started_at < ? OR (started_at = ? AND id < ?))
           ORDER BY started_at DESC, id DESC
           LIMIT ?
         `).all(sessionId, before.at, before.at, before.id, boundedLimit + 1) as SqlRow[]
       : this.db.prepare(`
-          SELECT * FROM evidence_bundles
+          SELECT ${headers} FROM evidence_bundles
           WHERE session_id = ?
           ORDER BY started_at DESC, id DESC
           LIMIT ?
         `).all(sessionId, boundedLimit + 1) as SqlRow[];
-    const allItems = rows.slice(0, boundedLimit).map((row) => this.bundleWithArtifacts(bundleFromRow(row)));
+    const allItems = rows.slice(0, boundedLimit).map((row) => evidenceSummary(bundleFromRow(row, false)));
     const items: BridgeEvidenceBundle[] = [];
     let totalBytes = 0;
     const maxPageBytes = 64_000;
@@ -366,6 +372,60 @@ export class EvidenceStore {
       "SELECT * FROM evidence_bundles WHERE id = ?",
     ).get(evidenceId) as SqlRow | undefined;
     return row ? this.bundleWithArtifacts(bundleFromRow(row)) : undefined;
+  }
+
+  details(
+    evidenceId: string,
+    kind: "tools" | "artifacts",
+    cursor?: string,
+    limit = 30,
+  ): BridgeEvidenceDetailPage | undefined {
+    if (!this.db.prepare("SELECT 1 FROM evidence_bundles WHERE id = ?").get(evidenceId)) {
+      return undefined;
+    }
+    const boundedLimit = Math.max(1, Math.min(limit, 100));
+    const rows = kind === "tools"
+      ? this.db.prepare(`
+          SELECT tool.key AS cursor, tool.value AS item_json
+          FROM evidence_bundles AS bundle, json_each(bundle.tools_json) AS tool
+          WHERE bundle.id = ? AND tool.key > ?
+          ORDER BY tool.key
+          LIMIT ?
+        `).all(evidenceId, cursor === undefined ? -1 : Number(cursor), boundedLimit + 1) as SqlRow[]
+      : this.db.prepare(`
+          SELECT id AS cursor, manifest_json AS item_json FROM evidence_artifacts
+          WHERE evidence_id = ? AND id > ?
+          ORDER BY id
+          LIMIT ?
+        `).all(evidenceId, cursor ?? "", boundedLimit + 1) as SqlRow[];
+    const items: Array<BridgeToolEvidence | BridgeArtifactManifest> = [];
+    let itemBytes = 0;
+    for (const row of rows.slice(0, boundedLimit)) {
+      const item = JSON.parse(String(row.item_json)) as BridgeToolEvidence | BridgeArtifactManifest;
+      const nextBytes = itemBytes + Buffer.byteLength(JSON.stringify(item), "utf8")
+        + (items.length > 0 ? 1 : 0);
+      const hasMore = rows.length > items.length + 1;
+      const envelopeBytes = Buffer.byteLength(JSON.stringify({
+        evidenceId,
+        kind,
+        items: [],
+        hasMore,
+        ...(hasMore ? { nextCursor: String(row.cursor) } : {}),
+      }), "utf8");
+      // Always return one item so an oversized record cannot stall the cursor or disappear.
+      if (items.length > 0 && envelopeBytes + nextBytes > 40 * 1024) break;
+      items.push(item);
+      itemBytes = nextBytes;
+    }
+    const hasMore = rows.length > items.length;
+    const page = {
+      evidenceId,
+      hasMore,
+      ...(hasMore ? { nextCursor: String(rows[items.length - 1]!.cursor) } : {}),
+    };
+    return kind === "tools"
+      ? { ...page, kind, items: items as BridgeToolEvidence[] }
+      : { ...page, kind, items: items as BridgeArtifactManifest[] };
   }
 
   artifact(artifactId: string): EvidenceArtifactRecord | undefined {

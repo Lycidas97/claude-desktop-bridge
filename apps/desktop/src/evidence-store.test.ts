@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BridgeArtifactManifest, BridgeEvidenceBundle } from "@bridge/protocol";
@@ -8,10 +9,10 @@ import { EvidenceStore } from "./evidence-store.js";
 
 const directories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) => (
-    rm(directory, { recursive: true, force: true })
-  )));
+afterEach(() => {
+  if (directories.length) {
+    execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", directories.splice(0));
+  }
 });
 
 function bundle(id = "evidence-1"): BridgeEvidenceBundle {
@@ -75,8 +76,12 @@ describe("EvidenceStore", () => {
     expect(store.list("session-1").items[0]).toMatchObject({
       id: "evidence-1",
       artifactCount: 1,
-      artifacts: [{ id: "artifact-1", availability: "snapshot" }],
+      tools: [],
+      artifacts: [],
     });
+    expect(store.details("evidence-1", "artifacts")?.items).toMatchObject([
+      { id: "artifact-1", availability: "snapshot" },
+    ]);
     await store.close();
   });
 

@@ -28,6 +28,20 @@ class Observer extends EventEmitter implements TranscriptObserverRuntime {
     return false;
   }
 
+  isMainTurnBusy(): boolean {
+    return false;
+  }
+
+  runningSubagents(): undefined {
+    return undefined;
+  }
+
+  markSubagentStopped(): void {}
+
+  applySubagentStops<T>(subagents: T): T {
+    return subagents;
+  }
+
   externalWriteVersion(): number {
     return 0;
   }

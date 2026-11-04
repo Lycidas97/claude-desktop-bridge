@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatElapsed, sessionActivity } from "./session-activity.js";
+import { backgroundSubagentBadge, formatElapsed, sessionActivity, subagentStalledSeconds } from "./session-activity.js";
 
 describe("sessionActivity", () => {
   it("disappears when the session is idle or waiting", () => {
@@ -8,8 +8,31 @@ describe("sessionActivity", () => {
     expect(sessionActivity(undefined, [])).toBeUndefined();
   });
 
+  it("keeps the queue reason visible ahead of background subagents", () => {
+    expect(sessionActivity({ turnState: "queued", ownership: "DESKTOP_OBSERVED", pendingCount: 1 }, [{
+      role: "tool", createdAt: 1, subagent: { agentId: "old", state: "running", description: "后台任务", toolCount: 1, startedAt: 1, updatedAt: 2 },
+    }])).toEqual({ kind: "queued", label: "等待电脑端空闲" });
+    expect(sessionActivity({ turnState: "running", ownership: "BRIDGE_RUNNING", pendingCount: 1 }, []))
+      .toEqual({ kind: "queued", label: "等待前一条消息完成" });
+  });
+
   it("reports queued sessions without a timer", () => {
     expect(sessionActivity({ turnState: "queued" }, [])).toEqual({ kind: "queued", label: "排队等待中" });
+  });
+
+  it.each([
+    ["starting", "正在启动"],
+    ["submitted", "已提交，等待执行"],
+  ] as const)("shows %s before actual execution instead of stale tool activity or thinking", (executionStage, label) => {
+    expect(sessionActivity({ turnState: "running", executionStage }, [{ role: "user", createdAt: 100 }]))
+      .toEqual({ kind: "queued", label });
+    expect(sessionActivity({ turnState: "running", executionStage }, [{ role: "tool", toolName: "Read", state: "running", createdAt: 50 }]))
+      .toEqual({ kind: "queued", label });
+  });
+
+  it("shows actual execution after the running acknowledgment", () => {
+    expect(sessionActivity({ turnState: "running", executionStage: "running" }, [{ role: "user", createdAt: 100 }]))
+      .toEqual({ kind: "thinking", label: "思考中", since: 100 });
   });
 
   it("names the in-flight tool while one is running", () => {
@@ -80,5 +103,24 @@ describe("formatElapsed", () => {
     expect(formatElapsed(75)).toBe("1 分 15 秒");
     expect(formatElapsed(3600)).toBe("1 小时 0 分");
     expect(formatElapsed(3725)).toBe("1 小时 2 分");
+  });
+});
+
+describe("background subagent badge", () => {
+  const now = 1_000_000_000;
+
+  it("stays hidden with no running subagents", () => {
+    expect(backgroundSubagentBadge({}, now)).toBeUndefined();
+  });
+
+  it("only mentions a stall after ten quiet minutes", () => {
+    const session = (quietMs: number) => ({ runningSubagents: { count: 1, lastUpdatedAt: now - quietMs } });
+    expect(backgroundSubagentBadge(session(10 * 60_000), now)).toEqual({ label: "后台子代理", stalled: false });
+    expect(backgroundSubagentBadge(session(10 * 60_000 + 1), now)).toEqual({ label: "子代理无进展", stalled: true });
+  });
+
+  it("reports how long a subagent has been quiet", () => {
+    expect(subagentStalledSeconds(now - 60_000, now)).toBeUndefined();
+    expect(subagentStalledSeconds(now - 7 * 3_600_000, now)).toBe(7 * 3_600);
   });
 });

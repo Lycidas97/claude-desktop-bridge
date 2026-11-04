@@ -5,12 +5,15 @@ import type {
   BridgeHostSnapshot,
   BridgePermissionInfo,
   BridgeSessionInfo,
+  BridgeTaskPlan,
 } from "@bridge/protocol";
 import { type ComponentProps, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { applyEventToTurns, mergeBridgeEvents, type LocalTurn } from "../hooks/useMobileBridge.js";
 import {
   MobileWorkspace,
+  SubagentCard,
   aggregateFileChanges,
   canConfigureSession,
   canStopBridgeTask,
@@ -28,6 +31,16 @@ import {
 } from "./MobileWorkspace.js";
 
 describe("mobile workspace directory", () => {
+  // Node's global localStorage has no storage file here; the workspace keeps project order in it.
+  beforeEach(() => {
+    const stored = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => stored.set(key, value),
+      removeItem: (key: string) => stored.delete(key),
+    });
+  });
+
   const session: BridgeSessionInfo = {
     sessionId: "session-1",
     projectId: "project-1",
@@ -71,8 +84,10 @@ describe("mobile workspace directory", () => {
     const props = workspaceProps();
     const html = renderToStaticMarkup(createElement(MobileWorkspace, props));
     expect(html).toContain('<h1>会话</h1>');
+    expect(html).toContain('class="m-header is-title-hidden"');
     expect(html).toContain('aria-label="当前电脑：My computer，查看电脑"');
-    expect(html).toContain('aria-label="目录更多"');
+    expect(html).toContain('aria-label="新建会话"');
+    expect(html).toContain('aria-label="目录选项"');
     expect(html).toContain("Visible session");
     expect(html).toContain("已归档会话");
     expect(html).not.toContain("Archived session");
@@ -80,6 +95,50 @@ describe("mobile workspace directory", () => {
     expect(html).not.toContain('aria-label="强制同步"');
     expect(html).not.toContain('role="dialog"');
     expect(props.onOpenSession).not.toHaveBeenCalled();
+  });
+
+  it("orders and timestamps sessions by their last update, ignoring saved phone-open times", () => {
+    const hour = 3_600_000;
+    localStorage.setItem("bridge-session-opened:host-1", JSON.stringify({ "opened-old": Date.now() }));
+    const html = renderToStaticMarkup(createElement(MobileWorkspace, {
+      ...workspaceProps(),
+      snapshot: { ...snapshot, sessions: [
+        { ...session, sessionId: "replied", title: "Replied three hours ago", lastActivityAt: Date.now() - 3 * hour },
+        { ...session, sessionId: "opened-old", title: "Opened here just now", lastActivityAt: Date.now() - 21 * hour },
+      ] },
+    }));
+    expect(html.indexOf("Replied three hours ago")).toBeLessThan(html.indexOf("Opened here just now"));
+    expect(html).toMatch(/Opened here just now<\/strong><small>21 小时前/u);
+    expect(html).toMatch(/Replied three hours ago<\/strong><small>3 小时前/u);
+  });
+
+  it("keeps the project order set on this phone and leads with projects not placed yet", () => {
+    localStorage.setItem("bridge-project-order:host-1", JSON.stringify(["project-2", "project-1"]));
+    const html = renderToStaticMarkup(createElement(MobileWorkspace, {
+      ...workspaceProps(),
+      snapshot: { ...snapshot, projects: [
+        { ...snapshot.projects[0]!, projectId: "project-1", name: "First" },
+        { ...snapshot.projects[0]!, projectId: "project-2", name: "Second" },
+        { ...snapshot.projects[0]!, projectId: "project-3", name: "Newcomer" },
+      ], sessions: [
+        { ...session, sessionId: "one", projectId: "project-1", projectName: "First", lastActivityAt: 3 },
+        { ...session, sessionId: "two", projectId: "project-2", projectName: "Second", lastActivityAt: 1 },
+        { ...session, sessionId: "new", projectId: "project-3", projectName: "Newcomer", lastActivityAt: 2 },
+      ] },
+    }));
+    const order = ["Newcomer", "Second", "First"].map((name) => html.indexOf(`<strong>${name}</strong>`));
+    expect(order.every((position) => position >= 0)).toBe(true);
+    expect([...order].sort((left, right) => left - right)).toEqual(order);
+    expect(html).toMatch(/class="project-order-bar"><span>项目顺序已固定<\/span><button[^>]*>.*调整顺序<\/button>/u);
+  });
+
+  it.each([["starting", "正在启动"], ["submitted", "已提交，等待执行"]] as const)("labels %s sessions before execution in the directory", (executionStage, label) => {
+    const html = renderToStaticMarkup(createElement(MobileWorkspace, {
+      ...workspaceProps(), snapshot: { ...snapshot, sessions: [{ ...session, source: "bridge", ownership: "BRIDGE_RUNNING", turnState: "running", executionStage }] },
+    }));
+    expect(html).toContain(label);
+    expect(html).not.toContain(">运行中<");
+    expect(ownershipLabel({ ...session, turnState: "running", executionStage })).toBe(label);
   });
 
   it("does not render hidden workspace content or consume navigation callbacks", () => {
@@ -108,6 +167,150 @@ describe("mobile workspace directory", () => {
     expect(canConfigureSession({ ...session, allowedActions: { canConfigure: false } as NonNullable<BridgeSessionInfo["allowedActions"]> })).toBe(false);
     expect(canConfigureSession({ ...session, runtimeId: "codex-desktop" })).toBe(false);
     expect(canConfigureSession({ ...session, runtimeId: "codex-desktop", allowedActions: { canConfigure: true } as NonNullable<BridgeSessionInfo["allowedActions"]> })).toBe(true);
+  });
+});
+
+describe("mobile message delivery receipts", () => {
+  const accepted: BridgeEvent = {
+    eventId: "accepted", seq: 2, timestamp: 200, sessionId: "session-1", turnId: "turn-1", itemId: "message-1",
+    origin: "mobile", type: "user.message.accepted", data: { requestId: "request-1", commandId: "command-1", text: "检查部署" },
+  };
+
+  it.each([
+    ["turn.completed", "completed"],
+    ["turn.failed", "failed"],
+    ["turn.interrupted", "cancelled"],
+  ] as const)("retains %s on the accepted message after removing its local placeholder", (type, delivery) => {
+    const events: BridgeEvent[] = [accepted, { ...accepted, eventId: "terminal", seq: 3, timestamp: 300, type,
+      data: { commandId: "command-1", error: "模型服务不可用" } }];
+    const items = conversationItems("session-1", undefined, events, [{
+      requestId: "request-1", idempotencyKey: "key-1", commandId: "command-1", turnId: "turn-1", sessionId: "session-1",
+      text: "检查部署", attachments: [], createdAt: 100, delivery,
+    }]);
+    const users = items.filter((item) => item.role === "user");
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ id: "message-1", commandId: "command-1", delivery });
+    if (delivery === "failed") expect(users[0]?.error).toBe("模型服务不可用");
+  });
+
+  it("restores terminal status from replay even without a local message cache", () => {
+    const completed: BridgeEvent = { ...accepted, eventId: "done", type: "turn.completed", seq: 3, data: { commandId: "command-1" } };
+    const items = conversationItems("session-1", undefined, [accepted, completed], []);
+    expect(items[0]).toMatchObject({ delivery: "completed", commandId: "command-1" });
+  });
+
+  it("keeps the receipt when transcript synchronization updates the same user message", () => {
+    const completed: BridgeEvent = { ...accepted, eventId: "done", type: "turn.completed", seq: 3, data: { commandId: "command-1" } };
+    const observed: BridgeEvent = { eventId: "observed", seq: 4, timestamp: 250, sessionId: "session-1", itemId: "message-1", origin: "claude-desktop", type: "session.observed", data: { role: "user", text: "检查部署" } };
+    expect(conversationItems("session-1", undefined, [accepted, completed, observed], [])[0])
+      .toMatchObject({ id: "message-1", delivery: "completed", commandId: "command-1" });
+  });
+
+  it("does not apply another turn's terminal receipt to an accepted message", () => {
+    const other: BridgeEvent = { ...accepted, eventId: "other", type: "turn.completed", turnId: "turn-2", data: { commandId: "command-2" } };
+    expect(conversationItems("session-1", undefined, [accepted, other], [])[0]?.delivery).toBe("session-received");
+  });
+});
+
+describe("submitted mobile message identity", () => {
+  const local: LocalTurn = {
+    requestId: "request-1", idempotencyKey: "key-1", commandId: "command-1", sessionId: "session-1",
+    text: "检查部署", attachments: [], createdAt: 100, delivery: "submitted",
+  };
+  const queued: BridgeEvent = {
+    eventId: "queued", seq: 1, timestamp: 110, sessionId: "session-1", turnId: "turn-1", origin: "mobile", type: "turn.queued",
+    data: { requestId: "request-1", commandId: "command-1", text: local.text },
+  };
+  const submitted: BridgeEvent = {
+    ...queued, eventId: "submitted", seq: 2, timestamp: 120, itemId: "message-1", origin: "claude-host", type: "message.delivery",
+    data: { requestId: "request-1", commandId: "command-1", messageId: "message-1", delivery: "submitted" },
+  };
+  const observed: BridgeEvent = {
+    eventId: "observed", seq: 3, timestamp: 130, sessionId: "session-1", itemId: "message-1", origin: "claude-desktop",
+    type: "session.observed", data: { role: "user", text: local.text },
+  };
+  const interrupted: BridgeEvent = {
+    ...queued, eventId: "interrupted", seq: 4, timestamp: 140, origin: "system", type: "turn.interrupted",
+    data: { requestId: "request-1", commandId: "command-1" },
+  };
+  const accepted: BridgeEvent = {
+    ...submitted, eventId: "late-accepted", seq: 5, timestamp: 150, type: "user.message.accepted",
+    data: { text: local.text },
+  };
+
+  it.each(["observed", "interrupted", "late-accepted"] as const)("shows one user bubble at %s using the submitted request/message link", (phase) => {
+    const events = [queued, submitted, observed, ...(phase === "observed" ? [] : [interrupted]), ...(phase === "late-accepted" ? [accepted] : [])];
+    const delivery = phase === "observed" ? "submitted" : "cancelled";
+    const items = conversationItems("session-1", undefined, events, [{ ...local, delivery }]);
+    expect(items.filter((item) => item.role === "user")).toEqual([
+      expect.objectContaining({ id: "message-1", text: local.text, requestId: "request-1", commandId: "command-1", delivery }),
+    ]);
+    if (phase !== "observed") expect(items.filter((item) => item.role === "system")).toHaveLength(1);
+  });
+
+  it.each(["submitted", "session-received", "completed"] as const)("keeps one %s message after the 2,000-event window rolls over", delivery => {
+    const receipts = [submitted,
+      ...(delivery === "submitted" ? [] : [{ ...accepted, data: { ...accepted.data, requestId: "request-1", commandId: "command-1" } }]),
+      ...(delivery !== "completed" ? [] : [{ ...interrupted, eventId: "completed", seq: 6, type: "turn.completed" as const }]),
+    ];
+    const savedTurns = receipts.reduce<LocalTurn[]>((turns, event) => applyEventToTurns(turns, event), [local]);
+    const recent = mergeBridgeEvents(receipts, Array.from({ length: 2_001 }, (_, index): BridgeEvent => ({
+      eventId: `later-${index}`, seq: 100 + index, timestamp: 100 + index,
+      sessionId: "another-session", origin: "claude-host", type: "assistant.delta", data: { text: "Progress" },
+    })));
+    expect(recent).toHaveLength(2_000);
+    expect(recent.some(event => event.data.requestId === "request-1")).toBe(false);
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [{
+      id: "message-1", sessionId: "session-1", role: "user", text: local.text, createdAt: 130, origin: "claude-desktop",
+    }] }, recent, savedTurns);
+    expect(items.filter(item => item.role === "user")).toEqual([
+      expect.objectContaining({ id: "message-1", requestId: "request-1", commandId: "command-1", delivery }),
+    ]);
+  });
+
+  it.each([[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]].map(order => ({ order })))("learns message identity without regressing completion for arrival order $order", ({ order }) => {
+    const receipts: BridgeEvent[] = [submitted,
+      { ...accepted, data: { requestId: "request-1", commandId: "command-1", text: local.text } },
+      { ...interrupted, eventId: "completed", seq: 6, type: "turn.completed" },
+    ];
+    const saved = order.reduce<LocalTurn[]>((turns, index) => applyEventToTurns(turns, receipts[index]!), [local]);
+    expect(saved[0]).toMatchObject({ delivery: "completed", messageId: "message-1" });
+    expect(conversationItems("session-1", { status: "ready", hasMore: false, items: [{
+      id: "message-1", sessionId: "session-1", role: "user", text: local.text, createdAt: 130, origin: "claude-desktop",
+    }] }, [], saved).filter(item => item.role === "user")).toHaveLength(1);
+  });
+
+  it("merges a submitted local message with its cached transcript row", () => {
+    const historyItem: BridgeHistoryItem = {
+      id: "message-1", sessionId: "session-1", role: "user", text: local.text, createdAt: 130, origin: "claude-desktop",
+      attachments: [{ id: "image-1", name: "photo.png", mimeType: "image/png", size: 10 }],
+    };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [historyItem] }, [queued, submitted], [local]);
+    expect(items).toEqual([expect.objectContaining({ ...historyItem, requestId: "request-1", commandId: "command-1", delivery: "submitted" })]);
+  });
+
+  it.each(["host-received", "session-received"] as const)("does not treat a %s command receipt as the transcript UUID", (delivery) => {
+    const receipt: BridgeEvent = {
+      ...submitted, eventId: "manual-receipt", seq: 4, timestamp: 140, itemId: "command-1",
+      data: { requestId: "request-1", commandId: "command-1", delivery },
+    };
+    const items = conversationItems("session-1", undefined, [queued, submitted, observed, receipt], [local]);
+    expect(items.filter(item => item.role === "user")).toEqual([
+      expect.objectContaining({ id: "message-1", requestId: "request-1", commandId: "command-1", text: local.text }),
+    ]);
+  });
+
+  it("keeps different submitted requests distinct even with equal text and turn IDs", () => {
+    const other: LocalTurn = { ...local, requestId: "request-2", idempotencyKey: "key-2", commandId: "command-2", createdAt: 200 };
+    const items = conversationItems("session-1", undefined, [
+      queued, submitted, observed,
+      { ...queued, eventId: "queued-2", seq: 4, timestamp: 210, data: { requestId: "request-2", commandId: "command-2", text: other.text } },
+      { ...submitted, eventId: "submitted-2", seq: 5, timestamp: 220, itemId: "message-2", data: { requestId: "request-2", commandId: "command-2", messageId: "message-2", delivery: "submitted" } },
+      { ...observed, eventId: "observed-2", seq: 6, timestamp: 230, itemId: "message-2" },
+    ], [local, other]);
+    expect(items.filter((item) => item.role === "user").map((item) => [item.id, item.requestId, item.text, item.delivery])).toEqual([
+      ["message-1", "request-1", local.text, "submitted"], ["message-2", "request-2", other.text, "submitted"],
+    ]);
   });
 });
 
@@ -496,6 +699,73 @@ describe("conversationTimeline", () => {
   });
 });
 
+describe("task plan conversation items", () => {
+  const plan: BridgeTaskPlan = { id: "plan:task-1", updatedAt: 100, items: [
+    { content: "Inspect client", status: "in_progress" }, { content: "Verify client", status: "pending" },
+  ] };
+  const item: BridgeHistoryItem = { id: plan.id, sessionId: "session-1", role: "assistant", text: "", createdAt: 100, origin: "claude-desktop", taskPlan: plan };
+  const event: BridgeEvent = { eventId: "plan-event", seq: 1, timestamp: 100, sessionId: "session-1", itemId: item.id,
+    origin: "claude-desktop", type: "session.observed", data: { role: "assistant", text: "", taskPlan: plan } };
+
+  it.each(["history", "live"])("preserves a plan-only %s item in the timeline", (source) => {
+    const items = conversationItems("session-1", source === "history" ? { status: "ready", hasMore: false, items: [item] } : undefined,
+      source === "live" ? [event] : [], []);
+    expect(items).toEqual([item]);
+    expect(conversationTimeline(items, [])).toEqual([{ kind: "message", item }]);
+  });
+
+  it("updates one card in place despite duplicate events and out-of-order replay", () => {
+    const updated: BridgeTaskPlan = { ...plan, updatedAt: 200, items: plan.items.map((task) => ({ ...task, status: "completed" })) };
+    const revision = { ...event, eventId: "revision", seq: 2, timestamp: 200, data: { ...event.data, taskPlan: updated } };
+    const items = conversationItems("session-1", undefined, [event, revision, revision, { ...event, timestamp: 300 }], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: item.id, text: "", createdAt: 100, taskPlan: updated });
+  });
+
+  it("keeps newer reconnect history over stale replay even when the event arrived later", () => {
+    const updated: BridgeTaskPlan = { ...plan, updatedAt: 400, items: [{ content: "Finished", status: "completed" }] };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [{ ...item, taskPlan: updated }] },
+      [{ ...event, timestamp: 500 }], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ createdAt: 100, taskPlan: updated });
+  });
+
+  it("chooses the newest revision among duplicate history records", () => {
+    const updated = { ...plan, updatedAt: 200 };
+    for (const records of [[item, { ...item, taskPlan: updated }], [{ ...item, taskPlan: updated }, item]]) {
+      expect(conversationItems("session-1", { status: "ready", hasMore: false, items: records }, [], [])).toEqual([{ ...item, taskPlan: updated }]);
+    }
+  });
+
+  it("keeps updated question state when a duplicate history row has the same plan version", () => {
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [
+      { ...item, interactivePrompt: { kind: "wrap-up", ask: "Install?" } },
+      { ...item, interactivePrompt: { kind: "wrap-up", ask: "Install?", answered: true } },
+    ] }, [], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.interactivePrompt?.answered).toBe(true);
+    expect(items[0]!.taskPlan).toEqual(plan);
+  });
+
+  it("filters history and events by session even when their item IDs collide", () => {
+    const foreign = { ...plan, updatedAt: 999, items: [{ content: "Other session", status: "completed" as const }] };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [item, { ...item, sessionId: "session-2", taskPlan: foreign }] },
+      [{ ...event, sessionId: "session-2", data: { ...event.data, taskPlan: foreign } }], []);
+    expect(items).toEqual([item]);
+    expect(conversationItems("session-3", { status: "ready", hasMore: false, items: [item] }, [event], [])).toEqual([]);
+  });
+
+  it("keeps a plan observation beside the active assistant stream", () => {
+    const items = conversationItems("session-1", undefined, [
+      { ...event, eventId: "delta", itemId: "stream", turnId: "turn-1", type: "assistant.delta", data: { text: "Working" } },
+      { ...event, turnId: "turn-1" },
+    ], []);
+    expect(items).toHaveLength(2);
+    expect(items.find((candidate) => candidate.live)?.text).toBe("Working");
+    expect(items.find((candidate) => candidate.taskPlan)?.id).toBe(item.id);
+  });
+});
+
 describe("conversationItems", () => {
   it("hides injected system reminders from cached history, live events, and pending user messages", () => {
     const reminder = "<system-reminder>\nThis conversation is now continuing in the Claude desktop app.\n</system-reminder>";
@@ -717,6 +987,104 @@ describe("conversationItems", () => {
     ];
 
     expect(conversationItems("session-1", undefined, events, [])).toEqual([]);
+  });
+
+  it.each([
+    { previous: "stopped", previousAt: 200, incoming: "running", incomingAt: 300, expected: "running" },
+    { previous: "running", previousAt: 300, incoming: "stopped", incomingAt: 200, expected: "running" },
+    { previous: "stopped", previousAt: 300, incoming: "running", incomingAt: 300, expected: "running" },
+    { previous: "running", previousAt: 200, incoming: "unknown", incomingAt: 300, expected: "unknown" },
+    { previous: "unknown", previousAt: 300, incoming: "running", incomingAt: 400, expected: "running" },
+    { previous: "unknown", previousAt: 300, incoming: "running", incomingAt: 300, expected: "unknown" },
+    { previous: "unknown", previousAt: 300, incoming: "completed", incomingAt: 400, expected: "completed" },
+  ] as const)("uses observation time for $previous → $incoming subagent state", ({ previous, previousAt, incoming, incomingAt, expected }) => {
+    const subagent = { agentId: "resumed-agent", toolUseId: "agent-call", description: "Check", state: previous, toolCount: 2, startedAt: 100, updatedAt: previousAt };
+    const history: NonNullable<Parameters<typeof conversationItems>[1]> = {
+      status: "ready", hasMore: false,
+      items: [{ id: "agent-call", sessionId: "session-1", role: "tool", text: "Check", createdAt: 100, origin: "claude-host", subagent }],
+    };
+    const events: BridgeEvent[] = [{
+      eventId: "task-observation", seq: 10, timestamp: incomingAt, sessionId: "session-1", itemId: "agent-call", origin: "claude-host",
+      type: incoming === "running" ? "tool.progress" : "tool.completed",
+      data: { subagent: { ...subagent, state: incoming, updatedAt: incomingAt } },
+    }];
+    const items = conversationItems("session-1", history, events, []);
+    expect(items).toHaveLength(1);
+    expect(items[0]?.subagent?.state).toBe(expected);
+    expect(items[0]?.state).toBe(expected === "unknown" ? undefined : expected);
+  });
+
+  it("keeps reused agent IDs distinct when tool-use IDs identify different invocations", () => {
+    const subagent = { agentId: "task-1", description: "Check", state: "running" as const, toolCount: 0, startedAt: 300, updatedAt: 350 };
+    const items = conversationItems("session-1", {
+      status: "ready", hasMore: false,
+      items: [{ id: "tool-1", sessionId: "session-1", role: "tool", origin: "claude-host", createdAt: 100, text: "Old", subagent: { ...subagent, toolUseId: "tool-1", state: "completed", startedAt: 100, updatedAt: 200, reportText: "Old report" } }],
+    }, [
+      { eventId: "next-id-only", seq: 2, timestamp: 300, sessionId: "session-1", itemId: "subagent:task-1", origin: "claude-host", type: "tool.progress", data: { subagent } },
+      { eventId: "next-tool", seq: 3, timestamp: 350, sessionId: "session-1", itemId: "tool-2", origin: "claude-host", type: "tool.progress", data: { subagent: { ...subagent, toolUseId: "tool-2" } } },
+    ], []);
+    expect(items).toHaveLength(2);
+    expect(items[0]?.subagent).toMatchObject({ toolUseId: "tool-1", state: "completed", reportText: "Old report" });
+    expect(items[1]?.subagent).toMatchObject({ toolUseId: "tool-2", state: "running" });
+    expect(items[1]?.subagent).not.toHaveProperty("reportText");
+  });
+
+  it("associates historical task-only progress with its invocation when the agent ID is later reused", () => {
+    const subagent = { agentId: "reused", description: "Check", state: "running" as const, toolCount: 1, startedAt: 100, updatedAt: 150 };
+    const items = conversationItems("session-1", undefined, [
+      { eventId: "old-progress", seq: 1, timestamp: 150, sessionId: "session-1", itemId: "subagent:reused", origin: "claude-host", type: "tool.progress", data: { subagent: { ...subagent, latestText: "Old progress" } } },
+      { eventId: "old-completed", seq: 2, timestamp: 200, sessionId: "session-1", itemId: "tool-1", origin: "claude-host", type: "tool.completed", data: { subagent: { ...subagent, toolUseId: "tool-1", state: "completed", updatedAt: 200 } } },
+      { eventId: "new-running", seq: 3, timestamp: 350, sessionId: "session-1", itemId: "tool-2", origin: "claude-host", type: "tool.progress", data: { subagent: { ...subagent, toolUseId: "tool-2", startedAt: 300, updatedAt: 350 } } },
+    ], []);
+    expect(items).toHaveLength(2);
+    expect(items.find((item) => item.id === "tool:tool-1")?.subagent?.latestText).toBe("Old progress");
+    expect(items.find((item) => item.id === "tool:tool-2")?.subagent).not.toHaveProperty("latestText");
+  });
+
+  it("hides skip-transcript task events and cached copies by invocation identity", () => {
+    const subagent = { agentId: "ambient", toolUseId: "ambient-tool", description: "Ambient", state: "running" as const, toolCount: 0, startedAt: 100, updatedAt: 200 };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false,
+      items: [{ id: "ambient-tool", sessionId: "session-1", role: "tool", origin: "claude-host", createdAt: 100, text: "Ambient", subagent }],
+    }, [{ eventId: "ambient-event", seq: 1, timestamp: 200, sessionId: "session-1", itemId: "ambient-tool", origin: "claude-host", type: "tool.progress", data: { subagent, task: { taskId: "ambient", toolUseId: "ambient-tool", skipTranscript: true } } }], []);
+    expect(items).toEqual([]);
+  });
+
+  it.each([false, true])("deduplicates task-only progress and later tool-use identity with canonical history (%s)", (withHistory) => {
+    const subagent = { agentId: "task-1", description: "Check", state: "running" as const, toolCount: 2, startedAt: 100, updatedAt: 200 };
+    const events: BridgeEvent[] = [
+      { eventId: "early-progress", seq: 1, timestamp: 100, sessionId: "session-1", itemId: "subagent:task-1", origin: "claude-host", type: "tool.progress", data: { subagent } },
+      { eventId: "task-started", seq: 2, timestamp: 200, sessionId: "session-1", itemId: "tool-1", origin: "claude-host", type: "tool.progress", data: { subagent: { ...subagent, toolUseId: "tool-1", updatedAt: 300 } } },
+      { eventId: "late-task-only", seq: 3, timestamp: 400, sessionId: "session-1", itemId: "subagent:task-1", origin: "claude-host", type: "tool.progress", data: { subagent: { ...subagent, updatedAt: 400, toolCount: 3 } } },
+    ];
+    const items = conversationItems("session-1", withHistory ? {
+      status: "ready", hasMore: false,
+      items: [{ id: "tool-1", sessionId: "session-1", role: "tool", origin: "claude-host", createdAt: 100, text: "Check", subagent: { ...subagent, toolUseId: "tool-1", updatedAt: 350 } }],
+    } : undefined, events, []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: "tool:tool-1", subagent: { agentId: "task-1", toolUseId: "tool-1", updatedAt: 400, toolCount: 3 } });
+  });
+
+  it("merges different agent aliases with the same tool-use identity", () => {
+    const subagent = { agentId: "native-task", toolUseId: "tool-1", description: "Check", state: "running" as const, toolCount: 1, startedAt: 100, updatedAt: 200 };
+    const items = conversationItems("session-1", {
+      status: "ready", hasMore: false,
+      items: [{ id: "subagent:native-task", sessionId: "session-1", role: "tool", origin: "claude-desktop", createdAt: 100, text: "Check", subagent }],
+    }, [{ eventId: "sdk-task", seq: 1, timestamp: 300, sessionId: "session-1", itemId: "subagent:sdk-task", origin: "claude-host", type: "tool.progress", data: { subagent: { ...subagent, agentId: "sdk-task", updatedAt: 300 } } }], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]?.subagent).toMatchObject({ agentId: "sdk-task", toolUseId: "tool-1", updatedAt: 300 });
+  });
+
+  it("shows unknown task state without terminal styling or a stop action", () => {
+    const html = renderToStaticMarkup(createElement(SubagentCard, {
+      item: { id: "task", sessionId: "session-1", role: "tool", origin: "claude-host", createdAt: 100, text: "Check",
+        subagent: { agentId: "task", description: "Check", state: "unknown", startedAt: 100, updatedAt: 300, toolCount: 1 } },
+      onStop: vi.fn(),
+    }));
+    expect(html).toContain("状态未知");
+    expect(html).not.toContain("subagent-stop-button");
+    expect(html).not.toContain("is-completed");
+    expect(html).not.toContain("lucide-x");
+    expect(html).not.toContain("lucide-check");
   });
 
   it("merges subagent progress and completion reports across history and live events", () => {

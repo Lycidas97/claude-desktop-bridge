@@ -5,6 +5,8 @@ import {
   expandProject,
   getSessionAncestorIds,
   groupProjectSessionFamilies,
+  moveProject,
+  orderProjects,
   previewProjectSessionFamilies,
   previewProjectSessions,
   sortProjectSessionsByRecent,
@@ -184,3 +186,43 @@ describe("project group collapse state", () => {
   });
 });
 
+describe("project order the user sets", () => {
+  it("keeps placed projects in place and leads with projects not placed yet", () => {
+    expect(orderProjects(["new", "b", "a", "c"], ["a", "b", "c"])).toEqual(["new", "a", "b", "c"]);
+  });
+
+  it("drops placed projects that no longer have visible sessions", () => {
+    expect(orderProjects(["c", "a"], ["a", "gone", "c"])).toEqual(["a", "c"]);
+  });
+
+  it("follows the given order until anything is placed", () => {
+    expect(orderProjects(["b", "a"], [])).toEqual(["b", "a"]);
+  });
+
+  it("moves a project to the top, up or down", () => {
+    const order = ["a", "b", "c", "d"];
+    expect(moveProject(order, "c", 0)).toEqual(["c", "a", "b", "d"]);
+    expect(moveProject(order, "c", 1)).toEqual(["a", "c", "b", "d"]);
+    expect(moveProject(order, "b", 2)).toEqual(["a", "c", "b", "d"]);
+    expect(order).toEqual(["a", "b", "c", "d"]);
+  });
+});
+
+describe("session order inside a project", () => {
+  it("supports an explicit recency selector for sessions and fork families", () => {
+    const sessions = [
+      { sessionId: "replied", lastActivityAt: 500 },
+      { sessionId: "opened-on-phone", lastActivityAt: 100 },
+      { sessionId: "fork-opened", parentSessionId: "replied", lastActivityAt: 50 },
+    ];
+    const opened: Record<string, number> = { "opened-on-phone": 900, "fork-opened": 700 };
+    const recency = (session: { sessionId: string; lastActivityAt: number }) => Math.max(session.lastActivityAt, opened[session.sessionId] ?? 0);
+    expect(sortProjectSessionsByRecent(sessions, recency).map((session) => session.sessionId))
+      .toEqual(["opened-on-phone", "fork-opened", "replied"]);
+    const families = groupProjectSessionFamilies(sessions, recency);
+    expect(families.map((family) => [family.primary.sessionId, family.lastActivityAt])).toEqual([
+      ["opened-on-phone", 900], ["replied", 700],
+    ]);
+    expect(previewProjectSessionFamilies(sessions, 1, recency).preview[0]!.primary.sessionId).toBe("opened-on-phone");
+  });
+});

@@ -23,6 +23,10 @@ describe("isBridgePayload", () => {
     }
   });
 
+  it("accepts a queued-command steering request without another message payload", () => {
+    expect(isBridgePayload({ kind: "request", requestId: "promote", idempotencyKey: "promote", method: "turn.queue.steer", params: { sessionId: "session", commandId: "queued" } })).toBe(true);
+  });
+
   it("still rejects unknown methods", () => {
     expect(isBridgePayload({
       kind: "request",

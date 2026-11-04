@@ -5,16 +5,17 @@ import { access, appendFile, mkdir, mkdtemp, readFile, stat, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BridgeDesktopRegistrationInfo, BridgeEffort, BridgeModelInfo } from "@bridge/protocol";
+import type { BridgeDesktopRegistrationInfo, BridgeEffort, BridgeModelInfo, DesktopControlSnapshot } from "@bridge/protocol";
 import type { ModelInfo, SDKControlGetContextUsageResponse } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeSessionHostOptions, SessionHostEvent } from "./claude-session-host.js";
-import type { StoredDesktopRegistration } from "./claude-desktop-session-registrar.js";
+import type { DesktopSessionRegistrationInput, StoredDesktopRegistration } from "./claude-desktop-session-registrar.js";
 import type { ClaudeCatalogSnapshot, ObservedClaudeSession } from "./claude-session-catalog.js";
 import {
   SessionBroker,
   type SessionHostRuntime,
   type TranscriptObserverRuntime,
 } from "./session-broker.js";
+import { DesktopController } from "./controller.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
 
@@ -510,6 +511,42 @@ describe("SessionBroker", () => {
 
     await broker.close();
     await eventLog.close();
+  });
+
+  it("updates native registration when phone session settings or host permissions change", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-native-settings-"));
+    directories.push(root);
+    const cwd = join(root, "project");
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const register = vi.fn(async (_input: DesktopSessionRegistrationInput): Promise<StoredDesktopRegistration> => ({ state: "registered", detail: "Registered", updatedAt: Date.now() }));
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "runtime-sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] },
+      eventLog, observer: new FakeObserver({ projects: [], sessions: [observed(randomUUID(), cwd)], observedAt: Date.now() }),
+      sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"),
+      desktopRegistrar: { register, changed: () => true, publicInfo: value => value },
+      discoverGatewayModels: async () => [{ value: "codex/gpt-6.1-sol", displayName: "Selected model" }],
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+    });
+    await broker.initialize();
+    try {
+      broker.setDefaultPermissionMode("full-access");
+      const session = await broker.createSession(cwd, "Created on phone");
+      expect(register).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: session.sessionId, permissionMode: "full-access" }), undefined);
+      await broker.configureSession({ sessionId: session.sessionId, model: "codex/gpt-6.1-sol", effort: "high" });
+      await broker.registerDesktopSession(session.sessionId);
+      expect(register).toHaveBeenLastCalledWith(expect.objectContaining({ overrideModel: "codex/gpt-6.1-sol", overrideEffort: "high", permissionMode: "full-access" }), expect.any(Object));
+      register.mockClear();
+      await broker.configurePermissionPolicy(session.sessionId, "standard");
+      expect(register).toHaveBeenLastCalledWith(expect.objectContaining({ permissionMode: "standard" }), expect.any(Object));
+      await broker.configurePermissionPolicy(session.sessionId, null);
+      expect(register).toHaveBeenLastCalledWith(expect.objectContaining({ permissionMode: "full-access" }), expect.any(Object));
+      register.mockClear();
+      broker.setDefaultPermissionMode("standard");
+      await waitFor(() => register.mock.calls.some(([input]) => input.permissionMode === "standard"));
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
   });
 
   it("detects a Claude Host credential created after Bridge startup", async () => {
@@ -1106,6 +1143,7 @@ describe("SessionBroker", () => {
     observer.busy = false;
     observer.bridgeCanStart = false;
     const hosts: FakeHost[] = [];
+    const acquiringStages: Array<string | undefined> = [];
     const eventLog = new SessionEventLog(join(root, "events.jsonl"));
     const broker = new SessionBroker({
       paths: {
@@ -1119,6 +1157,7 @@ describe("SessionBroker", () => {
       sessionsPath: join(root, "sessions.json"),
       queuePath: join(root, "queue.json"),
       hostFactory: (options) => {
+        acquiringStages.push(broker.session(sessionId)?.executionStage);
         const host = new FakeHost(options);
         hosts.push(host);
         return host;
@@ -1130,6 +1169,11 @@ describe("SessionBroker", () => {
       }),
     });
     await broker.initialize();
+    const waitingStages: Array<string | undefined> = [];
+    broker.on("changed", () => {
+      const session = broker.session(sessionId);
+      if (session?.ownership === "DESKTOP_OBSERVED" && session.turnState === "queued") waitingStages.push(session.executionStage);
+    });
     await broker.startTurn({
       requestId: "request-writer",
       idempotencyKey: "command-writer",
@@ -1147,17 +1191,127 @@ describe("SessionBroker", () => {
       turnState: "queued",
       pendingCount: 1,
     });
+    expect(waitingStages.length).toBeGreaterThan(0);
+    expect(waitingStages).not.toContain("starting");
 
     observer.bridgeCanStart = true;
     observer.publish();
     await waitFor(() => hosts[0]?.sends === 1);
     expect(desktopSession.desktopProcessAlive).toBe(true);
+    expect(acquiringStages).toEqual(["starting"]);
     expect(broker.session(sessionId)).toMatchObject({
       ownership: "BRIDGE_RUNNING",
       turnState: "running",
+      executionStage: "running",
     });
     await broker.close();
     await eventLog.close();
+  });
+
+  it("does not rebroadcast a 144-session catalog on repeated Desktop takeover attempts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-busy-catalog-"));
+    directories.push(root);
+    const sessions = Array.from({ length: 144 }, (_, index) => observed(randomUUID(), join(root, `project-${index}`)));
+    const sessionId = sessions[0]!.sessionId;
+    const observer = new FakeObserver({ projects: [], sessions, observedAt: Date.now() });
+    observer.bridgeCanStart = false;
+    const canStart = vi.spyOn(observer, "canStartBridgeHost");
+    const hosts: FakeHost[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "runtime-sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] },
+      eventLog, observer, sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"),
+      scanSessionProcesses: async () => [],
+      hostFactory: (options) => {
+        const host = new FakeHost(options);
+        hosts.push(host);
+        return host;
+      },
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+    });
+    const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
+      lastPublishedSessionKey: "", lastPublishedSubagentActivity: new Map<string, number>(),
+      snapshot: async () => ({ sessions: broker.listSessions(), latestSeq: eventLog.latestSeq() }) as DesktopControlSnapshot,
+      broadcast: vi.fn(async () => undefined),
+    });
+    const publications: Array<Promise<unknown>> = [];
+    broker.on("changed", () => { publications.push(controller.publish()); });
+    await broker.initialize();
+    try {
+      await broker.startTurn({ requestId: "busy", idempotencyKey: "busy", sessionId, text: "Wait for Desktop", origin: "mobile" });
+      await waitFor(() => canStart.mock.calls.length > 0);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await Promise.all(publications.splice(0));
+      controller.broadcast.mockClear();
+      await waitFor(() => canStart.mock.calls.length >= 4, 8_000);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await Promise.all(publications.splice(0));
+      expect(controller.broadcast).not.toHaveBeenCalled();
+      expect(broker.listSessions()).toHaveLength(144);
+      expect(broker.session(sessionId)).toMatchObject({ turnState: "queued", pendingCount: 1 });
+      expect(hosts).toHaveLength(0);
+      observer.bridgeCanStart = true;
+      observer.publish();
+      await waitFor(() => hosts[0]?.sends === 1);
+      await Promise.all(publications.splice(0));
+      expect(controller.broadcast).toHaveBeenCalledWith({
+        kind: "snapshot", snapshot: expect.objectContaining({ sessions: expect.arrayContaining([
+          expect.objectContaining({ sessionId, executionStage: "running" }),
+        ]) }),
+      }, true);
+      expect(hosts).toHaveLength(1);
+      expect(broker.session(sessionId)?.pendingCount).toBe(0);
+    } finally {
+      await broker.close();
+      await Promise.all(publications);
+      await eventLog.close();
+    }
+  }, 15_000);
+
+  it.each([false, true])("keeps the host initialization stage until the session accepts the turn (initialized=%s)", async (initialized) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-stage-"));
+    directories.push(root);
+    const sessionId = randomUUID();
+    const cwd = join(root, "project");
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    let host: (FakeHost & { initialized: boolean }) | undefined;
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "runtime-sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] },
+      eventLog,
+      observer: new FakeObserver({ projects: [], sessions: [observed(sessionId, cwd)], observedAt: Date.now() }),
+      sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"),
+      scanSessionProcesses: async () => [],
+      hostFactory: (options) => {
+        host = Object.assign(new FakeHost(options), { initialized });
+        vi.spyOn(host, "send").mockImplementation(() => {
+          host!.sends += 1;
+          const receipt = { turnId: randomUUID(), messageId: randomUUID() };
+          host!.current = receipt;
+          return receipt;
+        });
+        return host;
+      },
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+    });
+    await broker.initialize();
+    try {
+      await broker.startTurn({ requestId: "stage", idempotencyKey: "stage", sessionId, text: "Continue", origin: "mobile" });
+      await waitFor(() => host?.sends === 1);
+      expect(broker.session(sessionId)?.executionStage).toBe(initialized ? "submitted" : "starting");
+      host!.initialized = true;
+      expect(broker.session(sessionId)?.executionStage).toBe("submitted");
+      host!.events.emit("event", {
+        type: "turn.started", sessionId, turnId: host!.current!.turnId, at: Date.now(),
+      } satisfies SessionHostEvent);
+      host!.events.emit("event", {
+        type: "user.accepted", sessionId, ...host!.current!, text: "Continue", attachments: [], origin: "mobile", at: Date.now(),
+      } satisfies SessionHostEvent);
+      await waitFor(() => broker.session(sessionId)?.executionStage === "running");
+      expect(host!.sends).toBe(1);
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
   });
 
   it("resumes beside a completed persistent Desktop viewer without quitting Claude Desktop", async () => {

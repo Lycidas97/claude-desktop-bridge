@@ -21,8 +21,11 @@
   并限制导航和 IPC 来源。
 - Bridge 不申请辅助功能权限，不发送键鼠事件，不附着、注入或自动操作 Claude、Codex、Hermes
   的原生窗口，也不读写剪贴板。
-- “完全授权”只在电脑端 `PermissionBroker` 自动批准工具请求，不启用 Agent SDK
+- Bridge 托管任务的“完全授权”由电脑端 `PermissionBroker` 自动批准工具请求，不启用 Agent SDK
   `bypassPermissions`；Claude 提问和受管策略的明确禁止仍不能被自动批准。
+- 手机创建的 Claude Desktop 会话将所选授权保存到原生会话记录：标准授权对应 `default`，
+  完全授权对应 `bypassPermissions`。运行中的 Desktop 需要重新加载后才读取这些设置，
+  Bridge 会保留待重启状态；不会自动重启 Desktop，也不改变其应用或受管策略。
 - 第三方 Claude Host 凭据不写入 Bridge 配置，不经 Relay，不出现在诊断或日志中。
 - Anthropic Console API Key 只接受 Desktop 本地 IPC；保存前必须由 Electron
   `safeStorage` 加密，磁盘格式固定带 `os:` 标记，系统安全存储不可用时拒绝保存，

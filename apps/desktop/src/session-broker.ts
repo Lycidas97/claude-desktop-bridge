@@ -363,6 +363,7 @@ export class SessionBroker extends EventEmitter {
         return {
           session, activeTurn: Boolean(this.runtimeStates.get(sessionId)?.active),
           profile: this.effectiveProfile(sessionId, session.cwd, overrides), overrides,
+          permissionMode: this.permissionPolicy(sessionId).effectiveMode,
           lastActivityAt: this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId)?.lastActivityAt,
         };
       },
@@ -678,7 +679,8 @@ export class SessionBroker extends EventEmitter {
         ...(state?.active ? {
           executionStage: state.active.sessionAcceptedAt !== undefined ? "running" as const
             : state.host?.initialized === false ? "starting" as const : "submitted" as const,
-        } : this.dispatching.has(sessionId) ? { executionStage: "starting" as const } : {}),
+        } : this.dispatching.has(sessionId) && state?.ownership === "ACQUIRING"
+          ? { executionStage: "starting" as const } : {}),
         lastActivityAt: Math.max(
           source?.lastActivityAt ?? 0,
           bridge?.createdAt ?? 0,
@@ -888,6 +890,7 @@ export class SessionBroker extends EventEmitter {
     if (mode !== "standard" && mode !== "full-access") throw new Error("Invalid permission mode");
     this.defaultPermissionMode = mode;
     const resolved = this.permissionBroker.applyPolicy();
+    this.reconcileDesktopRegistrations();
     this.emit("changed");
     return resolved;
   }
@@ -917,6 +920,7 @@ export class SessionBroker extends EventEmitter {
     }
     await this.saveSessions();
     const resolvedPending = this.permissionBroker.applyPolicy(sessionId);
+    if (this.bridgeSessions.has(sessionId)) await this.reconcileDesktopRegistration(sessionId, true);
     this.emit("changed");
     return {
       configuration: await this.configuration(sessionId, false),

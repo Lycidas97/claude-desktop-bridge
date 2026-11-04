@@ -1,4 +1,4 @@
-import type { BridgeEffort } from "@bridge/protocol";
+import type { BridgeEffort, BridgePermissionMode } from "@bridge/protocol";
 import type {
   ClaudeDesktopSessionRegistrar,
   DesktopSessionRegistrationInput,
@@ -24,6 +24,7 @@ export interface SessionDesktopRegistrationOptions {
     activeTurn: boolean;
     profile: { model?: string; effort?: BridgeEffort };
     overrides?: { model?: string; effort?: BridgeEffort } | undefined;
+    permissionMode?: BridgePermissionMode;
     lastActivityAt?: number | undefined;
   } | undefined;
   persist(): Promise<void>;
@@ -33,7 +34,7 @@ export interface SessionDesktopRegistrationOptions {
 
 /** Own registration jobs and persistence; the caller supplies session/profile selection. */
 export class SessionDesktopRegistration {
-  private readonly jobs = new Map<string, Promise<void>>();
+  private readonly jobs = new Map<string, { input: DesktopSessionRegistrationInput; task: Promise<void> }>();
   private closed = false;
 
   constructor(private readonly options: SessionDesktopRegistrationOptions) {}
@@ -45,22 +46,27 @@ export class SessionDesktopRegistration {
     if (!context) return;
     const { session, profile, overrides } = context;
     if (!force && (session.desktopRegistration?.state === "failed" || context.activeTurn)) return;
+    const input: DesktopSessionRegistrationInput = {
+      sessionId,
+      cwd: session.cwd,
+      title: session.title,
+      createdAt: session.createdAt,
+      lastActivityAt: Math.max(session.createdAt, context.lastActivityAt ?? 0),
+      ...(profile.model ? { model: profile.model } : {}),
+      ...(profile.effort ? { effort: profile.effort } : {}),
+      ...(overrides?.model ? { overrideModel: overrides.model } : {}),
+      ...(overrides?.effort ? { overrideEffort: overrides.effort } : {}),
+      ...(context.permissionMode ? { permissionMode: context.permissionMode } : {}),
+      ...(session.parentDesktopSessionId ? { parentDesktopSessionId: session.parentDesktopSessionId } : {}),
+      ...(session.forkLabel ? { forkLabel: session.forkLabel } : {}),
+    };
     const active = this.jobs.get(sessionId);
-    if (active) return active;
+    if (active) {
+      await active.task;
+      if (force && JSON.stringify(active.input) !== JSON.stringify(input)) return this.reconcile(sessionId, true);
+      return;
+    }
     const task = (async () => {
-      const input: DesktopSessionRegistrationInput = {
-        sessionId,
-        cwd: session.cwd,
-        title: session.title,
-        createdAt: session.createdAt,
-        lastActivityAt: Math.max(session.createdAt, context.lastActivityAt ?? 0),
-        ...(profile.model ? { model: profile.model } : {}),
-        ...(profile.effort ? { effort: profile.effort } : {}),
-        ...(overrides?.model ? { overrideModel: overrides.model } : {}),
-        ...(overrides?.effort ? { overrideEffort: overrides.effort } : {}),
-        ...(session.parentDesktopSessionId ? { parentDesktopSessionId: session.parentDesktopSessionId } : {}),
-        ...(session.forkLabel ? { forkLabel: session.forkLabel } : {}),
-      };
       let next: StoredDesktopRegistration;
       try {
         next = await registrar.register(input, session.desktopRegistration);
@@ -73,6 +79,7 @@ export class SessionDesktopRegistration {
           ...(previous?.desktopSessionId ? { desktopSessionId: previous.desktopSessionId } : {}),
           ...(previous?.registeredAt ? { registeredAt: previous.registeredAt } : {}),
           ...(previous?.claudePidAtRegistration ? { claudePidAtRegistration: previous.claudePidAtRegistration } : {}),
+          ...(previous?.settingsReloadRequired ? { settingsReloadRequired: true } : {}),
           state: "failed",
           detail: "Claude Desktop 会话登记失败，Bridge 会话仍可正常使用。",
           updatedAt: Date.now(),
@@ -90,14 +97,14 @@ export class SessionDesktopRegistration {
       });
       this.options.changed();
     })().finally(() => {
-      if (this.jobs.get(sessionId) === task) this.jobs.delete(sessionId);
+      if (this.jobs.get(sessionId)?.task === task) this.jobs.delete(sessionId);
     });
-    this.jobs.set(sessionId, task);
+    this.jobs.set(sessionId, { input, task });
     return task;
   }
 
   async close(): Promise<void> {
     this.closed = true;
-    await Promise.allSettled(this.jobs.values());
+    await Promise.allSettled([...this.jobs.values()].map((job) => job.task));
   }
 }

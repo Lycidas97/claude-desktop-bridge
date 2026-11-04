@@ -35,7 +35,7 @@ afterEach(() => {
   if (directories.length) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", directories.splice(0));
 });
 
-async function fixture(): Promise<{
+async function fixture(profileName = "Claude-active"): Promise<{
   root: string;
   paths: ClaudeRuntimePaths;
   profileRoot: string;
@@ -44,7 +44,7 @@ async function fixture(): Promise<{
   const root = await mkdtemp(join(tmpdir(), "bridge-desktop-register-"));
   directories.push(root);
   const projects = join(root, ".claude", "projects");
-  const profileRoot = join(root, "Claude-active", "claude-code-sessions");
+  const profileRoot = join(root, profileName, "claude-code-sessions");
   const accountDir = join(profileRoot, randomUUID(), randomUUID());
   await mkdir(accountDir, { recursive: true });
   await mkdir(projects, { recursive: true });
@@ -220,6 +220,161 @@ describe("ClaudeDesktopSessionRegistrar", () => {
     expect(registrar.changed(registered, revisited)).toBe(false);
     expect(await registrar.removeOwned(sessionId, registered)).toBe(true);
     await expect(access(metadataPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([
+    ["codex/gpt-6.1-sol", "mythos-magpie-9189869295"],
+    ["antigravity/gemini-4-argon[1m]", "mythos-magpie-1052229916[1m]"],
+    ["claude/claude-opus-5-5[1m]", "magpie-2213244526.anthropic.claude-opus-5-5[1m]"],
+    ["auto/claude-opus-5-5", "mythos-magpie-1855947975"],
+    ["claude-opus-5-5", "claude-opus-5-5"],
+    ["mythos-magpie-1052229916[1m]", "mythos-magpie-1052229916[1m]"],
+    ["anthropic/magpie-2213244526.anthropic.claude-opus-5-5[1m]", "anthropic/magpie-2213244526.anthropic.claude-opus-5-5[1m]"],
+  ])("registers gateway model %s using its native picker value", async (model, nativeModel) => {
+    const { paths, profileRoot, accountDir, root } = await fixture("Claude-3p");
+    const sessionId = randomUUID();
+    const transcriptPath = await transcript(paths, sessionId, root);
+    const registrar = new ClaudeDesktopSessionRegistrar({ paths, platform: "darwin", listProfiles: async () => [{ pid: 20, userDataDir: join(profileRoot, "..") }], findTranscript: async () => transcriptPath });
+    const input = { sessionId, cwd: root, title: "Configured on phone", createdAt: 1, lastActivityAt: 2, model, effort: "high" as const, permissionMode: "full-access" as const };
+    await registrar.register(input);
+    expect(JSON.parse(await readFile(join(accountDir, `local_${sessionId}.json`), "utf8"))).toMatchObject({ model: nativeModel, effort: "high", permissionMode: "bypassPermissions" });
+  });
+
+  it("preserves official model values and standard permission mode", async () => {
+    const { paths, profileRoot, accountDir, root } = await fixture("Claude");
+    const sessionId = randomUUID();
+    const transcriptPath = await transcript(paths, sessionId, root);
+    const registrar = new ClaudeDesktopSessionRegistrar({ paths, platform: "darwin", listProfiles: async () => [{ pid: 20, userDataDir: join(profileRoot, "..") }], findTranscript: async () => transcriptPath });
+    const input = { sessionId, cwd: root, title: "Standard session", createdAt: 1, lastActivityAt: 2, model: "custom/vendor-model", permissionMode: "standard" as const };
+    await registrar.register(input);
+    expect(JSON.parse(await readFile(join(accountDir, `local_${sessionId}.json`), "utf8"))).toMatchObject({ model: "custom/vendor-model", permissionMode: "default" });
+  });
+
+  it("keeps changed settings pending until an adopted Desktop session reloads", async () => {
+    const { paths, profileRoot, accountDir, root } = await fixture("Claude-3p");
+    const sessionId = randomUUID();
+    const transcriptPath = await transcript(paths, sessionId, root);
+    const metadataPath = join(accountDir, `local_${sessionId}.json`);
+    await writeFile(metadataPath, JSON.stringify({ sessionId: `local_${sessionId}`, cliSessionId: sessionId, cwd: root, title: "Adopted", model: "desktop-default", effort: "medium", permissionMode: "default", adoptedFromOtherSurface: true, remoteMcpServersConfig: [] }));
+    let pid = 20;
+    const registrar = new ClaudeDesktopSessionRegistrar({ paths, platform: "darwin", listProfiles: async () => [{ pid, userDataDir: join(profileRoot, "..") }], findTranscript: async () => transcriptPath, now: () => 100 });
+    const input = { sessionId, cwd: root, title: "Adopted", createdAt: 1, lastActivityAt: 2 };
+    const original = await registrar.register(input);
+    expect(original.state).toBe("registered");
+    const configured = { ...input, model: "codex/gpt-6.1-sol", overrideModel: "codex/gpt-6.1-sol", effort: "high" as const, overrideEffort: "high" as const, permissionMode: "full-access" as const };
+    const pending = await registrar.register(configured, original);
+    expect(pending).toMatchObject({ state: "restart-required", settingsReloadRequired: true, claudePidAtRegistration: 20 });
+    expect(JSON.parse(await readFile(metadataPath, "utf8"))).toMatchObject({ model: "mythos-magpie-9189869295", effort: "high", permissionMode: "bypassPermissions", adoptedFromOtherSurface: true, remoteMcpServersConfig: [] });
+    expect(await registrar.register(configured, pending)).toEqual(pending);
+    // Desktop may save its still-loaded values before it exits.
+    const stale = JSON.parse(await readFile(metadataPath, "utf8"));
+    await writeFile(metadataPath, JSON.stringify({ ...stale, model: "desktop-default", effort: "medium", permissionMode: "default" }, null, 2) + "\n");
+    expect(await registrar.register(configured, pending)).toEqual(pending);
+    pid = 21;
+    const reloaded = await registrar.register(configured, pending);
+    expect(reloaded.state).toBe("registered");
+    expect(reloaded).not.toHaveProperty("settingsReloadRequired");
+    expect(reloaded).not.toHaveProperty("claudePidAtRegistration");
+    expect(await registrar.register(configured, reloaded)).toEqual(reloaded);
+  });
+
+  it("requires a reload when restoring a registered permission value to the same saved hash", async () => {
+    const { paths, profileRoot, accountDir, root } = await fixture("Claude-3p");
+    const sessionId = randomUUID();
+    const transcriptPath = await transcript(paths, sessionId, root);
+    const metadataPath = join(accountDir, `local_${sessionId}.json`);
+    const metadata = { sessionId: `local_${sessionId}`, cliSessionId: sessionId, cwd: root, title: "Adopted", permissionMode: "default", adoptedFromOtherSurface: true };
+    await writeFile(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
+    const registrar = new ClaudeDesktopSessionRegistrar({ paths, platform: "darwin", listProfiles: async () => [{ pid: 20, userDataDir: join(profileRoot, "..") }], findTranscript: async () => transcriptPath });
+    const input = { sessionId, cwd: root, title: "Adopted", createdAt: 1, lastActivityAt: 2, permissionMode: "standard" as const };
+    const registered = await registrar.register(input);
+    expect(registered.state).toBe("registered");
+
+    // Desktop switches to full access and persists its live value.
+    await writeFile(metadataPath, JSON.stringify({ ...metadata, permissionMode: "bypassPermissions" }, null, 2) + "\n");
+    const restored = await registrar.register(input, registered);
+    expect(JSON.parse(await readFile(metadataPath, "utf8")).permissionMode).toBe("default");
+    expect(restored).toMatchObject({ state: "restart-required", settingsReloadRequired: true, claudePidAtRegistration: 20 });
+  });
+
+  it("keeps settings pending when a new Desktop process loads stale metadata", async () => {
+    const { paths, profileRoot, accountDir, root } = await fixture("Claude-3p");
+    const sessionId = randomUUID();
+    const transcriptPath = await transcript(paths, sessionId, root);
+    const metadataPath = join(accountDir, `local_${sessionId}.json`);
+    await writeFile(metadataPath, JSON.stringify({ sessionId: `local_${sessionId}`, cliSessionId: sessionId, cwd: root, title: "Adopted", model: "desktop-default", permissionMode: "default", adoptedFromOtherSurface: true }));
+    let pid = 20;
+    const registrar = new ClaudeDesktopSessionRegistrar({ paths, platform: "darwin", listProfiles: async () => [{ pid, userDataDir: join(profileRoot, "..") }], findTranscript: async () => transcriptPath });
+    const input = { sessionId, cwd: root, title: "Adopted", createdAt: 1, lastActivityAt: 2 };
+    const registered = await registrar.register(input);
+    const configured = { ...input, overrideModel: "codex/gpt-6.1-sol", permissionMode: "full-access" as const };
+    const pending = await registrar.register(configured, registered);
+    expect(pending).toMatchObject({ state: "restart-required", claudePidAtRegistration: 20 });
+    const desired = JSON.parse(await readFile(metadataPath, "utf8"));
+
+    // The old process saves stale values on exit; its replacement loads them.
+    await writeFile(metadataPath, JSON.stringify({ ...desired, model: "desktop-default", permissionMode: "default" }, null, 2) + "\n");
+    pid = 21;
+    const reapplied = await registrar.register(configured, pending);
+    expect(reapplied.state).toBe("restart-required");
+    expect(JSON.parse(await readFile(metadataPath, "utf8"))).toMatchObject({ model: "mythos-magpie-9189869295", permissionMode: "bypassPermissions" });
+    expect((await registrar.register(configured, reapplied)).state).toBe("restart-required");
+    expect(reapplied.claudePidAtRegistration).toBe(21);
+  });
+
+  it("keeps an adopted session with a distinct native ID pending until reload", async () => {
+    const { paths, profileRoot, accountDir, root } = await fixture("Claude-3p");
+    const sessionId = randomUUID();
+    const desktopSessionId = `local_${randomUUID()}`;
+    const transcriptPath = await transcript(paths, sessionId, root);
+    const metadataPath = join(accountDir, `${desktopSessionId}.json`);
+    await writeFile(metadataPath, JSON.stringify({ sessionId: desktopSessionId, cliSessionId: sessionId, cwd: root, title: "Native session", permissionMode: "default", adoptedFromOtherSurface: true }));
+    let pid = 20;
+    const registrar = new ClaudeDesktopSessionRegistrar({ paths, platform: "darwin", listProfiles: async () => [{ pid, userDataDir: join(profileRoot, "..") }], findTranscript: async () => transcriptPath });
+    const input = { sessionId, cwd: root, title: "Native session", createdAt: 1, lastActivityAt: 2, permissionMode: "standard" as const };
+    const registered = await registrar.register(input);
+    expect(registered).toMatchObject({ state: "registered", desktopSessionId });
+    const configured = { ...input, permissionMode: "full-access" as const };
+    const pending = await registrar.register(configured, registered);
+    expect(pending).toMatchObject({ state: "restart-required", settingsReloadRequired: true, claudePidAtRegistration: 20 });
+    expect(JSON.parse(await readFile(metadataPath, "utf8")).permissionMode).toBe("bypassPermissions");
+    const sameProcess = await registrar.register(configured, pending);
+    expect(sameProcess).toEqual(pending);
+    pid = 21;
+    expect((await registrar.register(configured, sameProcess)).state).toBe("registered");
+  });
+
+  it.each([false, true])("loads settings written while Desktop is stopped without another restart (fork: %s)", async (fork) => {
+    const { paths, profileRoot, accountDir, root } = await fixture("Claude");
+    const sessionId = randomUUID();
+    const transcriptPath = await transcript(paths, sessionId, root);
+    const metadataPath = join(accountDir, `local_${sessionId}.json`);
+    let pid: number | undefined = 20;
+    const registrar = new ClaudeDesktopSessionRegistrar({ paths, platform: "darwin", listProfiles: async () => pid === undefined ? [] : [{ pid, userDataDir: join(profileRoot, "..") }], findTranscript: async () => transcriptPath });
+    const input = { sessionId, cwd: root, title: "Lifecycle", createdAt: 1, lastActivityAt: 2, model: "claude/claude-opus-5-5[1m]", effort: "medium" as const, permissionMode: "standard" as const, ...(fork ? { parentDesktopSessionId: `local_${randomUUID()}`, forkLabel: "review" } : {}) };
+    const initial = await registrar.register(input);
+    pid = 21;
+    const registered = await registrar.register(input, initial);
+    expect(registered.state).toBe("registered");
+    const fullAccess = { ...input, overrideEffort: "high" as const, permissionMode: "full-access" as const };
+    const pending = await registrar.register(fullAccess, registered);
+    expect(pending).toMatchObject({ state: "restart-required", settingsReloadRequired: true, claudePidAtRegistration: 21 });
+    pid = undefined;
+    const stopped = await registrar.register(fullAccess, pending);
+    expect(stopped).toEqual(pending);
+    const standard = { ...fullAccess, overrideEffort: "max" as const, permissionMode: "standard" as const };
+    const savedWhileStopped = await registrar.register(standard, stopped);
+    expect(savedWhileStopped).toMatchObject({ state: "restart-required", settingsReloadRequired: true });
+    expect(savedWhileStopped).not.toHaveProperty("claudePidAtRegistration");
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    expect(metadata).toMatchObject({ model: "claude/claude-opus-5-5[1m]", effort: "max", permissionMode: "default" });
+    if (fork) expect(metadata).toMatchObject({ forkedFromSessionId: input.parentDesktopSessionId, spawnedFrom: { sessionId: input.parentDesktopSessionId, name: "review", userFork: true } });
+    pid = 22;
+    const reloaded = await registrar.register(standard, savedWhileStopped);
+    expect(reloaded.state).toBe("registered");
+    expect(reloaded).not.toHaveProperty("settingsReloadRequired");
+    expect(reloaded).not.toHaveProperty("claudePidAtRegistration");
+    expect(await registrar.register(standard, reloaded)).toEqual(reloaded);
   });
 
   it.each([false, true])("checks transcript titles without reading the entire file (existing title: %s)", async (existingTitle) => {

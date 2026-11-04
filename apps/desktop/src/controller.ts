@@ -873,13 +873,14 @@ export class DesktopController extends EventEmitter {
       } else if (connection === "closed" || connection === "reconnecting") {
         this.relayHealthy = false;
       }
-      void this.publish();
+      this.queuePublish();
     });
     socket.onMetrics((metrics) => {
       this.transportMetrics = metrics;
-      void this.publish();
+      this.queuePublish();
     });
     socket.onFrame((frame) => {
+      if (frame.type !== "ready" && (frame.type !== "presence" || frame.role !== "mobile")) return;
       if (frame.type === "ready") {
         this.onlineDevices.clear();
         for (const device of frame.onlineDevices) {
@@ -898,7 +899,7 @@ export class DesktopController extends EventEmitter {
         if (frame.online) {
           if (!this.acceptsDevice(frame.deviceId)) {
             this.rejectUnknownDevice(frame.deviceId);
-            void this.publish();
+            this.queuePublish();
             return;
           }
           this.onlineDevices.add(frame.deviceId);
@@ -909,7 +910,7 @@ export class DesktopController extends EventEmitter {
           if (this.isPairedDevice(frame.deviceId)) void this.rememberDevice(frame.deviceId);
         }
       }
-      void this.publish();
+      this.queuePublish();
     });
     socket.onMessage((message, encrypted) => {
       void this.receiveMessage(message, encrypted);

@@ -1,3 +1,24 @@
+## 1.1.2
+
+- Keep Desktop takeover attempts queued until a host actually begins acquiring,
+  avoiding repeated full session catalogs while Desktop is busy.
+- Ignore delivery control frames when publishing local snapshots and coalesce
+  transport state and metrics updates without changing message delivery.
+- Preserve phone permission settings in native Desktop session records and map
+  gateway model IDs to the native Claude-3p picker, including 1M variants.
+- Apply settings changes that arrive during an existing registration and retain
+  the newest values when several updates are saved together.
+- Keep native settings pending until Desktop reloads them, including stale values
+  saved on exit and adopted sessions with a distinct native session ID. Running
+  Desktop sessions still require a Desktop restart to load disk-only changes.
+
+## 1.1.1
+
+- Send sequenced subagent activity patches instead of a full catalog for every
+  timestamp update, while preserving completion and parent-session activity.
+- Coalesce progress in offline storage and reject older cached sequence numbers
+  so reconnecting cannot restore stale activity or revive finished subagents.
+
 ## 1.1.0
 
 - Persistent desktop runtime:

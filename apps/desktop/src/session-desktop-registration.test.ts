@@ -35,6 +35,17 @@ describe("SessionDesktopRegistration", () => {
     await registration.close();
   });
 
+  it("passes the effective permission policy into native registration", async () => {
+    const { context, register, registration } = fixture();
+    Object.assign(context, { permissionMode: "full-access" });
+    await registration.reconcile("session-1");
+    expect(register).toHaveBeenLastCalledWith(expect.objectContaining({ permissionMode: "full-access" }), undefined);
+    Object.assign(context, { permissionMode: "standard" });
+    await registration.reconcile("session-1");
+    expect(register).toHaveBeenLastCalledWith(expect.objectContaining({ permissionMode: "standard" }), expect.any(Object));
+    await registration.close();
+  });
+
   it("skips busy and previously failed sessions unless forced and preserves metadata on registrar failure", async () => {
     const previous: StoredDesktopRegistration = { state: "failed", detail: "Previous failure", updatedAt: 1, metadataPath: "/metadata", metadataSha256: "sha", profileSessionsRoot: "/profile", desktopSessionId: "local_existing", registeredAt: 2, claudePidAtRegistration: 3 };
     const { context, session, register, registration } = fixture(previous);
@@ -73,6 +84,52 @@ describe("SessionDesktopRegistration", () => {
     finish({ state: "registered", detail: "Registered", updatedAt: 40 });
     await Promise.all([third, closing]);
     expect(options.persist).toHaveBeenCalledTimes(3);
+  });
+
+  it("applies a forced settings change that arrives during registration", async () => {
+    const { context, register, registration } = fixture();
+    Object.assign(context, { permissionMode: "standard" });
+    let finish!: (result: StoredDesktopRegistration) => void;
+    register.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const first = registration.reconcile("session-1");
+    Object.assign(context, { permissionMode: "full-access" });
+    context.profile.model = "latest-model";
+    context.overrides.model = "latest-model";
+    const changed = registration.reconcile("session-1", true);
+    finish({ state: "registered", detail: "Initial settings", updatedAt: 30 });
+    await Promise.all([first, changed]);
+    expect(register).toHaveBeenCalledTimes(2);
+    expect(register).toHaveBeenLastCalledWith(expect.objectContaining({ model: "latest-model", overrideModel: "latest-model", permissionMode: "full-access" }), expect.any(Object));
+    await registration.close();
+  });
+
+  it("uses the newest settings when several forced changes share an in-flight registration", async () => {
+    const { context, register, registration } = fixture();
+    let finish!: (result: StoredDesktopRegistration) => void;
+    register.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const first = registration.reconcile("session-1");
+    context.overrides.model = "intermediate-model";
+    const intermediate = registration.reconcile("session-1", true);
+    context.overrides.model = "newest-model";
+    const newest = registration.reconcile("session-1", true);
+    finish({ state: "registered", detail: "Initial", updatedAt: 30 });
+    await Promise.all([first, intermediate, newest]);
+    expect(register).toHaveBeenCalledTimes(2);
+    expect(register).toHaveBeenLastCalledWith(expect.objectContaining({ overrideModel: "newest-model" }), expect.any(Object));
+    await registration.close();
+  });
+
+  it("does not start a waiting settings update after close begins", async () => {
+    const { context, register, registration } = fixture();
+    let finish!: (result: StoredDesktopRegistration) => void;
+    register.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const first = registration.reconcile("session-1");
+    context.overrides.model = "after-initial";
+    const changed = registration.reconcile("session-1", true);
+    const closing = registration.close();
+    finish({ state: "registered", detail: "Initial", updatedAt: 30 });
+    await Promise.all([first, changed, closing]);
+    expect(register).toHaveBeenCalledOnce();
   });
 
   it("ignores absent sessions and absent registrars", async () => {

@@ -12,6 +12,8 @@ import type {
   BridgePermissionMode,
   BridgePermissionPolicy,
   BridgeProjectInfo,
+  BridgeModelInfo,
+  BridgeRuntimeDetection,
   BridgeRuntimeStatus,
   BridgeSessionConfiguration,
   BridgeSessionContextUsage,
@@ -26,6 +28,7 @@ import type {
 import { ClaudeSessionHost, type ClaudeSessionHostOptions, type SessionHostEvent, type SessionHostBackgroundTask } from "./claude-session-host.js";
 import {
   claudeDesktopProfileForPath,
+  claudeDesktopSessionGroupScope,
   listClaudeDesktopSessions,
   type ClaudeDesktopProfile,
 } from "./claude-desktop-sessions.js";
@@ -41,6 +44,8 @@ import {
   oldestLiveProcessStart,
   projectIdForCwd,
   scanClaudeSessionProcesses,
+  scanClaudeProcesses,
+  type ActiveClaudeProcess,
   type ClaudeCatalogSnapshot,
 } from "./claude-session-catalog.js";
 import { PermissionBroker, type PermissionDecision } from "./permission-broker.js";
@@ -58,6 +63,8 @@ import { SessionTaskState } from "./session-task-state.js";
 import { readSessionHistory } from "./session-history.js";
 import { SessionDesktopRegistration } from "./session-desktop-registration.js";
 import { SessionModelCatalog } from "./session-model-catalog.js";
+import { accessibleDirectory } from "./working-directory.js";
+import { InboxSendError, type ClaudeDesktopInbox, type DesktopInboxReceipt } from "./claude-desktop-inbox.js";
 import {
   ANTHROPIC_API_PROFILE_ID,
   CLAUDE_3P_PROFILE_ID,
@@ -71,6 +78,10 @@ import type { ProviderRuntimePool } from "./provider-runtime-pool.js";
 interface StoredBridgeSession {
   sessionId: string;
   cwd: string;
+  projectId?: string;
+  projectName?: string;
+  groupSessionsRoot?: string;
+  groupScope?: string;
   title: string;
   createdAt: number;
   desktopSessionId?: string;
@@ -113,7 +124,8 @@ export interface QueuedTurn {
   attempts: number;
   state: "queued" | "running" | "uncertain";
   mode?: "start" | "steer" | "handoff";
-  transport?: "claude-desktop-managed" | "bridge-host";
+  transport?: "claude-desktop-managed" | "bridge-host" | "desktop-inbox";
+  inboxHeld?: boolean;
   turnId?: string;
   messageId?: string;
   evidenceId?: string;
@@ -160,8 +172,12 @@ interface SessionRuntimeState {
   active?: QueuedTurn;
   externalWriteVersion?: number;
   configurationPending?: boolean;
+  desktopExitRequired?: boolean;
+  desktopTakeoverRequested?: boolean;
   releaseTimer?: ReturnType<typeof setTimeout>;
 }
+
+class DesktopExecutorAliveError extends Error {}
 
 export interface SessionHostRuntime {
   readonly runningBackgroundTasks?: readonly SessionHostBackgroundTask[];
@@ -188,6 +204,8 @@ export interface TranscriptObserverRuntime {
   readonly catalog: ClaudeCatalogSnapshot;
   isDesktopBusy(sessionId: string, now?: number): boolean;
   isMainTurnBusy(sessionId: string, now?: number): boolean;
+  isWaitingForUserInput?(sessionId: string): boolean;
+  hasPendingBackgroundShellTasks?(sessionId: string): boolean;
   runningSubagents(sessionId: string): { count: number; lastUpdatedAt: number } | undefined;
   externalWriteVersion(sessionId: string): number;
   canStartBridgeHost(sessionId: string, reusingIdleHost?: boolean): Promise<boolean>;
@@ -209,6 +227,8 @@ export interface SessionBrokerOptions {
   prepareRuntime?: typeof prepareClaudeRuntime;
   discoverGatewayModels?: typeof discoverClaudeGatewayModels;
   scanSessionProcesses?: typeof scanClaudeSessionProcesses;
+  scanProcesses?: typeof scanClaudeProcesses;
+  desktopInbox?: Pick<ClaudeDesktopInbox, "send" | "onReceipt" | "forget">;
   runtimeRetryDelayMs?: number;
   desktopRegistrar?: Pick<
     ClaudeDesktopSessionRegistrar,
@@ -320,6 +340,7 @@ export class SessionBroker extends EventEmitter {
   private readonly bridgeSessions = new Map<string, StoredBridgeSession>();
   private readonly sessionConfigurations = new Map<string, StoredSessionConfiguration>();
   private readonly modelCatalog = new SessionModelCatalog();
+  private detection: BridgeRuntimeDetection | undefined;
   private readonly hostStarts = new Map<string, Promise<SessionHostRuntime>>();
   private readonly conflictTasks = new Map<string, Promise<void>>();
   private readonly forcedStops = new Set<Promise<void>>();
@@ -401,16 +422,31 @@ export class SessionBroker extends EventEmitter {
       ]);
     }
     this.catalog = this.options.observer.catalog;
+    this.options.desktopInbox?.onReceipt(receipt => {
+      if (this.closed) return;
+      this.eventQueue = this.eventQueue.then(() => this.handleDesktopInboxReceipt(receipt));
+    });
+    await this.reconcileDesktopHandoffs();
     this.reconcileRotatedCatalogSessions();
+    this.reconcileDesktopGroups();
     this.refreshRecoveryBlocks();
     this.modelCatalog.rememberCatalogModels(this.catalog.sessions);
     this.options.observer.onCatalog((catalog) => {
       if (this.closed) return;
       this.catalog = catalog;
       this.reconcileRotatedCatalogSessions();
+      this.reconcileDesktopGroups();
       this.refreshRecoveryBlocks();
       this.modelCatalog.rememberCatalogModels(this.catalog.sessions);
       this.refreshObservedOwnership();
+      if (this.pending.some(turn => turn.transport === "desktop-inbox") || this.options.eventLog.latestDesktopHandoffs().some(marker =>
+        marker.data.state === "bridge" && marker.sessionId && !this.runtimeStates.get(marker.sessionId)?.host)) {
+        this.eventQueue = this.eventQueue.catch(() => undefined).then(async () => {
+          await this.reconcileDesktopHandoffs(new Map(catalog.sessions.map(session => [session.sessionId, session.activeProcesses])));
+          await this.reconcileDesktopInboxTurns();
+          this.emit("changed");
+        });
+      }
       this.emit("changed");
       this.reconcileDesktopRegistrations();
       void this.pump();
@@ -474,6 +510,7 @@ export class SessionBroker extends EventEmitter {
       this.emit("changed");
     });
     await this.refreshRuntime();
+    await this.reconcileDesktopInboxTurns();
     this.reconcileDesktopRegistrations();
     await this.pump();
   }
@@ -482,31 +519,15 @@ export class SessionBroker extends EventEmitter {
     if (this.closed) return false;
     if (this.runtimeRefresh) return this.runtimeRefresh;
     const refresh = (async () => {
-      const previous = this.runtime;
-      const next = await this.runtimeFactory(process.env, previous);
+      const next = await this.runtimeFactory(process.env, this.runtime);
       if (this.closed) return false;
       this.runtime = next;
-      const credentialChanged = (
-        previous?.credentialPath !== next.credentialPath ||
-        previous?.environment?.ANTHROPIC_BASE_URL !== next.environment?.ANTHROPIC_BASE_URL
-      );
-      const gatewayDiscoveredBefore = this.modelCatalog.gatewayModelsDiscovered;
-      if (credentialChanged || !this.modelCatalog.gatewayModelsDiscovered) {
-        await this.refreshGatewayModels(next);
-      }
-      const changed = (
-        previous?.executablePath !== next.executablePath ||
-        previous?.credentialPath !== next.credentialPath ||
-        previous?.version !== next.version ||
-        gatewayDiscoveredBefore !== this.modelCatalog.gatewayModelsDiscovered
-      );
+      await this.refreshGatewayModels(next, true);
       if (next.executablePath && next.credentialPath) this.clearRuntimeRetry();
       else this.scheduleRuntimeRetry();
-      if (changed) {
-        this.emit("changed");
-        void this.pump();
-      }
-      return changed;
+      this.emit("changed");
+      if (next.executablePath) void this.pump();
+      return true;
     })().finally(() => {
       if (this.runtimeRefresh === refresh) this.runtimeRefresh = undefined;
     });
@@ -523,6 +544,7 @@ export class SessionBroker extends EventEmitter {
     const withDesktop =(status: Omit<BridgeRuntimeStatus, "desktopIntegration">): BridgeRuntimeStatus => (
       {
         ...status,
+        ...(this.detection ? { detection: this.detection } : {}),
         desktopIntegration: {
           state: "not-managed",
           detail: "Bridge 后台通过 Agent SDK 执行；Desktop 会话仅同步观察。",
@@ -560,6 +582,10 @@ export class SessionBroker extends EventEmitter {
     });
   }
 
+  availableModels(): BridgeModelInfo[] {
+    return this.modelCatalog.availableModels();
+  }
+
   listProjects(): BridgeProjectInfo[] {
     const sessions = this.listSessions();
     const grouped = new Map<string, BridgeProjectInfo>();
@@ -573,6 +599,7 @@ export class SessionBroker extends EventEmitter {
       } else {
         grouped.set(session.projectId, {
           projectId: session.projectId,
+          kind: session.projectId === projectIdForCwd(session.cwd) ? "directory" : "desktop-group",
           name: session.projectName,
           cwd: session.cwd,
           sessionCount: 1,
@@ -623,11 +650,12 @@ export class SessionBroker extends EventEmitter {
         ?? queuedTurn?.sessionCwd
         ?? this.options.paths.projects;
       const state = this.runtimeStates.get(sessionId);
+      const desktopHandoff = this.desktopHandoff(sessionId, observed, queuedTurn);
       const pendingCommandIds = this.pending.filter((turn) => (
         turn.sessionId === sessionId && (turn.state === "queued" || turn.state === "uncertain")
       )).map((turn) => turn.commandId);
       const pendingCount = pendingCommandIds.length;
-      const desktopSessionId = source?.desktopSessionId ?? bridge?.desktopSessionId ?? queuedTurn?.desktopSessionId;
+      const desktopSessionId = source?.desktopSessionId ?? bridge?.desktopRegistration?.desktopSessionId ?? bridge?.desktopSessionId ?? queuedTurn?.desktopSessionId;
       const ownership = this.hasConfirmedOwnershipConflict(sessionId, state)
         ? "OWNERSHIP_CONFLICT"
         : state?.ownership
@@ -644,6 +672,11 @@ export class SessionBroker extends EventEmitter {
       const route = this.options.conversationState?.route(sessionId);
       const parentSessionId = source?.parentSessionId ?? bridge?.parentSessionId;
       const parentObserved = parentSessionId ? observed.get(parentSessionId) : undefined;
+      // Process observations and a Desktop record awaiting its first assignment have only cwd identity.
+      const project = bridge?.projectId && (
+        !source?.desktopSessionId ||
+        (bridge.desktopRegistration?.groupAssignment !== "observed" && source.projectId === projectIdForCwd(cwd))
+      ) ? bridge : source ?? parentObserved;
       const forkLabel = source?.forkLabel ?? bridge?.forkLabel;
       const runningSubagents = this.taskState.hasAuthority(sessionId)
         ? this.taskState.runningSubagents(sessionId)
@@ -664,10 +697,11 @@ export class SessionBroker extends EventEmitter {
         ...(desktopSessionId ? { desktopSessionId } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(forkLabel ? { forkLabel } : {}),
-        projectId: source?.projectId ?? parentObserved?.projectId ?? projectIdForCwd(cwd),
-        projectName: source?.projectName ?? parentObserved?.projectName ?? (basename(cwd) || cwd),
+        projectId: project?.projectId ?? projectIdForCwd(cwd),
+        projectName: project?.projectName ?? (basename(cwd) || cwd),
         cwd,
-        title: source?.desktopTitle
+        title: this.options.conversationState?.sessionTitle(sessionId)
+          ?? source?.desktopTitle
           ?? bridge?.title
           ?? source?.title
           ?? queuedTurn?.sessionTitle
@@ -675,6 +709,7 @@ export class SessionBroker extends EventEmitter {
         source: bridge || recoveredQueue ? "bridge" : "desktop",
         transport: "bridge-host",
         ownership,
+        ...(desktopHandoff ? { desktopHandoff } : {}),
         turnState: pendingCount > 0 && turnState === "idle" ? "queued" : turnState,
         ...(state?.active ? {
           executionStage: state.active.sessionAcceptedAt !== undefined ? "running" as const
@@ -822,7 +857,7 @@ export class SessionBroker extends EventEmitter {
     }
     if (host && discoverModels) {
       const [modelsResult, contextResult] = await Promise.allSettled([
-        this.modelCatalog.gatewayModelsDiscovered ? Promise.resolve([]) : host.supportedModels(),
+        this.detection?.gatewayState === "configured" || this.modelCatalog.gatewayModelsDiscovered ? Promise.resolve([]) : host.supportedModels(),
         host.contextUsage(),
       ]);
       if (
@@ -1044,17 +1079,41 @@ export class SessionBroker extends EventEmitter {
     return this.configuration(input.sessionId, false);
   }
 
-  async createSession(cwd: string, title?: string): Promise<BridgeSessionInfo> {
-    if (!isAbsolute(cwd)) throw new Error("Project path must be absolute");
-    const normalizedCwd = normalize(cwd);
-    const knownProject = this.catalog.sessions.some((session) => normalize(session.cwd) === normalizedCwd)
-      || [...this.bridgeSessions.values()].some((session) => normalize(session.cwd) === normalizedCwd);
-    if (!knownProject) {
-      throw new Error("Project path must be selected from a discovered Claude project");
+  async createSession(cwd: string, title?: string, projectId?: string): Promise<BridgeSessionInfo> {
+    const normalizedCwd = await accessibleDirectory(cwd);
+    const selected = projectId === undefined ? undefined : this.listProjects().find(project => project.projectId === projectId);
+    if (projectId !== undefined && !selected) throw new Error("Selected project was not discovered");
+    if (selected?.kind === "directory" && normalize(selected.cwd) !== normalizedCwd) {
+      throw new Error("Directory project does not match the working directory; select a native Desktop group instead");
+    }
+    const project = selected?.kind === "desktop-group" ? selected : undefined;
+    let groupSessionsRoot: string | undefined;
+    let groupScope: string | undefined;
+    if (project) {
+      const sources = this.catalog.sessions.filter(session => session.projectId === project.projectId);
+      const sourceRoots = new Set([
+        ...sources.flatMap(source => {
+          const metadataPath = this.catalog.desktopMetadataPaths?.get(source.sessionId);
+          return metadataPath ? [dirname(dirname(dirname(metadataPath)))] : [];
+        }),
+        ...[...this.bridgeSessions.values()].flatMap(session => session.projectId === project.projectId && session.groupSessionsRoot ? [session.groupSessionsRoot] : []),
+      ]);
+      if (sourceRoots.size !== 1) throw new Error("无法唯一定位所选分组的 Desktop profile");
+      groupSessionsRoot = [...sourceRoots][0]!;
+      if (!this.options.paths.desktopSessions.includes(groupSessionsRoot)) throw new Error("Selected project profile is unavailable");
+      const groupProfile = claudeDesktopProfileForPath(groupSessionsRoot);
+      if (sources.some(source => source.sourceProfile && source.sourceProfile !== "unknown" && source.sourceProfile !== groupProfile)
+        || (this.runtimeProfile() !== "unknown" && groupProfile !== this.runtimeProfile())) {
+        throw new Error("Selected project profile does not match the current runtime profile");
+      }
+      groupScope = claudeDesktopSessionGroupScope(groupSessionsRoot, project.projectId);
     }
     const session: StoredBridgeSession = {
       sessionId: randomUUID(),
       cwd: normalizedCwd,
+      ...(project ? { projectId: project.projectId, projectName: project.name } : {}),
+      ...(groupSessionsRoot ? { groupSessionsRoot } : {}),
+      ...(groupScope ? { groupScope } : {}),
       title: compact(title?.trim() || basename(normalizedCwd) || normalizedCwd, 140),
       createdAt: Date.now(),
     };
@@ -1153,9 +1212,14 @@ export class SessionBroker extends EventEmitter {
     }
 
     const parentDesktopSessionId = source.desktopSessionId ?? `local_${parentSessionId}`;
+    const parent = this.bridgeSessions.get(sourceSessionId);
     const session: StoredBridgeSession = {
       sessionId: newSessionId,
       cwd: normalize(source.cwd),
+      projectId: source.projectId,
+      projectName: source.projectName,
+      ...(parent?.groupSessionsRoot ? { groupSessionsRoot: parent.groupSessionsRoot } : {}),
+      ...(parent?.groupScope ? { groupScope: parent.groupScope } : {}),
       title: forkTitle,
       createdAt,
       parentSessionId,
@@ -1465,6 +1529,9 @@ export class SessionBroker extends EventEmitter {
     const state = this.runtimeStates.get(sessionId);
     const active = state?.active;
     const activeMatches = Boolean(active && (!commandId || active.commandId === commandId));
+    const inboxTurn = this.pending.find(turn => turn.sessionId === sessionId && turn.transport === "desktop-inbox" &&
+      turn.submissionStartedAt !== undefined && (!commandId || turn.commandId === commandId));
+    if (inboxTurn) throw new Error("消息已开始交给 Desktop，无法在 Bridge 撤回；请在原会话处理。");
     if (active && activeMatches && state.host) {
       this.permissionBroker.cancelSession(sessionId, "turn-interrupted");
       if (this.dispatching.has(sessionId) && !active.sessionAcceptedAt) {
@@ -1554,9 +1621,7 @@ export class SessionBroker extends EventEmitter {
       if (index >= 0) this.pending.splice(index, 1);
       this.rememberTerminal(turn, "cancelled");
       state.ownership = "RELEASING";
-      await host?.close();
-      delete state.host;
-      delete state.hostLaneId;
+      if (host) await this.closeHost(sessionId, host, state.hostLaneId);
       this.activeTurns = Math.max(0, this.activeTurns - 1);
       state.turnState = this.options.observer.isMainTurnBusy(sessionId) ? "running" : "idle";
       await this.saveQueue();
@@ -1635,6 +1700,9 @@ export class SessionBroker extends EventEmitter {
     if (!turn || turn.state !== "uncertain") throw new Error("Uncertain delivery was not found");
     if (turn.mode === "handoff") {
       throw new Error("接力首条消息结果不确定时禁止确认或重发；请取消后重新预览接力");
+    }
+    if (turn.transport === "desktop-inbox" && action === "retry") {
+      throw new Error("Desktop 投递结果尚未确认，不能重发；请先在原会话确认接收状态。");
     }
     const state = this.runtimeStates.get(turn.sessionId);
     if (action === "confirm") {
@@ -1727,15 +1795,133 @@ export class SessionBroker extends EventEmitter {
     await Promise.allSettled(this.dispatching.values());
     await Promise.allSettled(this.conflictTasks.values());
     await Promise.allSettled(this.forcedStops);
-    for (const state of this.runtimeStates.values()) {
+    for (const [sessionId, state] of this.runtimeStates) {
       if (state.releaseTimer) clearTimeout(state.releaseTimer);
-      await state.host?.close();
+      if (state.host) {
+        await this.closeHost(sessionId, state.host, state.hostLaneId);
+      }
     }
     await this.eventQueue.catch(() => undefined);
     await this.desktopRegistration.close();
     await this.pumpQueue.catch(() => undefined);
     await this.saveQueue();
     await this.writeQueue.catch(() => undefined);
+  }
+
+  private async sendToDesktopInbox(turn: QueuedTurn, nativeSessionId: string, writers?: ActiveClaudeProcess[]): Promise<boolean> {
+    const inbox = this.options.desktopInbox;
+    const state = this.runtimeStates.get(turn.sessionId)!;
+    if (!inbox || process.platform !== "darwin" || state.host || turn.attachments.length || turn.mode === "handoff" ||
+      this.options.observer.isMainTurnBusy(nativeSessionId) || this.options.observer.isWaitingForUserInput?.(nativeSessionId)) return false;
+    const live = (writers ?? await this.sessionProcessScanner(this.options.paths, nativeSessionId)).filter(writer => writer.processAlive);
+    const owner = live[0];
+    if (live.length !== 1 || !owner?.entrypoint.startsWith("claude-desktop") || owner.pid === undefined ||
+      owner.peerProtocol !== 1 || !owner.messagingSocketPath || this.desktopRequiresReload(turn.sessionId, nativeSessionId, [owner])) return false;
+    if (!this.canDispatch(turn)) return true;
+    this.clearTakeoverRetry(turn.sessionId);
+    delete state.desktopExitRequired;
+    turn.transport = "desktop-inbox";
+    turn.state = "running";
+    turn.messageId = randomUUID();
+    turn.turnId = randomUUID();
+    turn.submissionStartedAt = Date.now();
+    state.active = turn;
+    state.ownership = "DESKTOP_OBSERVED";
+    state.turnState = "queued";
+    this.activeTurns += 1;
+    await this.saveQueue();
+    if (this.closed || state.active !== turn || !this.pending.includes(turn)) return true;
+    await this.record({ sessionId: turn.sessionId, turnId: turn.turnId, itemId: turn.messageId, origin: "system", type: "message.delivery",
+      data: { commandId: turn.commandId, requestId: turn.requestId, messageId: turn.messageId, delivery: "submitted" } });
+    try {
+      await inbox.send({ socketPath: owner.messagingSocketPath, sessionId: nativeSessionId, pid: owner.pid }, { messageId: turn.messageId, text: turn.text });
+    } catch (error) {
+      if (!(error instanceof InboxSendError)) throw error;
+      if (!this.pending.includes(turn)) return true;
+      if (state.active === turn) { delete state.active; this.activeTurns = Math.max(0, this.activeTurns - 1); }
+      if (error.submitted) {
+        turn.state = "uncertain";
+        await this.record({ sessionId: turn.sessionId, turnId: turn.turnId, itemId: turn.messageId, origin: "system", type: "message.delivery",
+          data: { commandId: turn.commandId, requestId: turn.requestId, delivery: "uncertain", error: "消息已开始交给 Desktop，接收结果尚未确认。" } });
+      } else {
+        inbox.forget(turn.messageId);
+        turn.state = "queued";
+        delete turn.submissionStartedAt;
+        delete turn.messageId;
+        delete turn.turnId;
+        this.scheduleTakeoverRetry(turn.sessionId);
+      }
+      state.turnState = "queued";
+      await this.saveQueue();
+    }
+    this.emit("changed");
+    return true;
+  }
+
+  private async reconcileDesktopInboxTurns(): Promise<void> {
+    for (const turn of [...this.pending]) {
+      if (turn.transport !== "desktop-inbox" || !turn.messageId || !turn.turnId) continue;
+      const nativeSessionId = this.options.conversationState?.lane(turn.laneId)?.nativeSessionId ?? turn.sessionId;
+      const observed = this.catalog.sessions.find(session => session.sessionId === nativeSessionId);
+      const transcriptPath = observed?.transcriptPath ?? await findClaudeTranscriptFile(this.options.paths.projects, nativeSessionId, turn.sessionCwd);
+      if (!transcriptPath) continue;
+      const receipt = (await parseClaudeTranscriptSnapshot(transcriptPath)).peerInputs?.find(input => input.messageId === turn.messageId);
+      if (!receipt) {
+        if (turn.state === "running" && !observed?.desktopProcessAlive) {
+          const state = this.runtimeStates.get(turn.sessionId);
+          if (state?.active === turn) { delete state.active; this.activeTurns = Math.max(0, this.activeTurns - 1); state.turnState = "queued"; }
+          turn.state = "uncertain";
+          await this.saveQueue();
+          await this.record({ sessionId: turn.sessionId, itemId: turn.commandId, origin: "system", type: "message.delivery",
+            data: { commandId: turn.commandId, requestId: turn.requestId, delivery: "uncertain", error: "原 Desktop 已退出，消息接收结果尚未确认。" } });
+        }
+        continue;
+      }
+      const state = this.runtimeStates.get(turn.sessionId) ?? { ownership: "DESKTOP_OBSERVED" as const, turnState: "idle" as const };
+      this.runtimeStates.set(turn.sessionId, state);
+      if (!state.active) { state.active = turn; this.activeTurns += 1; }
+      state.ownership = "DESKTOP_OBSERVED";
+      state.turnState = "running";
+      turn.state = "running";
+      delete turn.inboxHeld;
+      if (!turn.sessionAcceptedAt) {
+        turn.sessionAcceptedAt = Date.now();
+        await this.saveQueue();
+        if (!this.options.eventLog.hasItem(turn.sessionId, "user.message.accepted", turn.messageId)) {
+          await this.record({ sessionId: turn.sessionId, turnId: turn.turnId, itemId: turn.messageId, origin: turn.origin, type: "user.message.accepted",
+            data: { text: turn.text, attachments: turn.attachments, commandId: turn.commandId, requestId: turn.requestId, idempotencyKey: turn.idempotencyKey, delivery: "session-received" } });
+        }
+      }
+      if (receipt.completed || receipt.interrupted) {
+        await this.record({ sessionId: turn.sessionId, turnId: turn.turnId, itemId: turn.commandId, origin: "claude-desktop",
+          type: receipt.interrupted ? "turn.interrupted" : "turn.completed",
+          data: { commandId: turn.commandId, requestId: turn.requestId, idempotencyKey: turn.idempotencyKey, delivery: receipt.interrupted ? "cancelled" : "completed" } });
+        this.options.desktopInbox?.forget(turn.messageId);
+        await this.finishTurn(turn.sessionId, receipt.interrupted ? "interrupted" : "completed", turn);
+      }
+    }
+  }
+
+  private async handleDesktopInboxReceipt(receipt: DesktopInboxReceipt): Promise<void> {
+    const turn = this.pending.find(candidate => candidate.transport === "desktop-inbox" && candidate.messageId === receipt.messageId);
+    if (!turn) return;
+    if (receipt.status === "held") {
+      turn.inboxHeld = true;
+      const state = this.runtimeStates.get(turn.sessionId);
+      if (state) state.turnState = "waiting";
+      await this.saveQueue();
+    } else if (receipt.status === "delivered") {
+      delete turn.inboxHeld;
+      const state = this.runtimeStates.get(turn.sessionId);
+      if (state && !turn.sessionAcceptedAt) state.turnState = "queued";
+      await this.saveQueue();
+    } else {
+      this.options.desktopInbox?.forget(receipt.messageId);
+      await this.record({ sessionId: turn.sessionId, ...(turn.turnId ? { turnId: turn.turnId } : {}), itemId: turn.commandId, origin: "system", type: "turn.failed",
+        data: { commandId: turn.commandId, requestId: turn.requestId, idempotencyKey: turn.idempotencyKey, delivery: "failed", error: "Desktop 未接收这条消息（" + receipt.status + "）。" } });
+      await this.finishTurn(turn.sessionId, "failed", turn);
+    }
+    this.emit("changed");
   }
 
   private async acquire(turn: QueuedTurn): Promise<void> {
@@ -1748,7 +1934,9 @@ export class SessionBroker extends EventEmitter {
       return;
     }
     if (providerKind === "claude-3p" && !this.runtime.credentialPath) return;
-    const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === turn.sessionId);
+    const nativeSessionId = this.options.runtimePool ? lane?.nativeSessionId ?? turn.sessionId : turn.sessionId;
+    if (providerKind === "claude-3p") this.options.observer.setSessionAlias?.(nativeSessionId, turn.sessionId);
+    const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === nativeSessionId);
     const state = this.runtimeStates.get(turn.sessionId) ?? {
       ownership: "DESKTOP_OBSERVED" as const,
       turnState: "idle" as const,
@@ -1762,14 +1950,17 @@ export class SessionBroker extends EventEmitter {
     if (
       providerKind === "claude-3p" &&
       !await this.options.observer.canStartBridgeHost(
-        turn.sessionId,
+        nativeSessionId,
         Boolean(state.host && state.hostLaneId === turn.laneId),
       )
     ) {
+      if (await this.sendToDesktopInbox(turn, nativeSessionId)) return;
+      state.desktopExitRequired = true;
       state.ownership = "DESKTOP_OBSERVED";
       state.turnState = "queued";
       await this.recordOwnership(turn.sessionId, state.ownership);
       this.scheduleTakeoverRetry(turn.sessionId);
+      this.emit("changed");
       return;
     }
     if (!this.canDispatch(turn)) return;
@@ -1780,19 +1971,21 @@ export class SessionBroker extends EventEmitter {
       delete state.releaseTimer;
     }
     const liveWriters = providerKind === "claude-3p"
-      ? (await this.sessionProcessScanner(this.options.paths, turn.sessionId))
+      ? (await this.sessionProcessScanner(this.options.paths, nativeSessionId))
           .filter((candidate) => candidate.processAlive)
       : [];
     const desktopWriter = liveWriters.some((candidate) => candidate.entrypoint.startsWith("claude-desktop"));
     const foreignBridgeWriter = (
       !state.host &&
-      liveWriters.some((candidate) => candidate.entrypoint === "claude-bridge")
+      liveWriters.some(candidate => !candidate.entrypoint.startsWith("claude-desktop"))
     );
     if (foreignBridgeWriter) {
       await this.containOwnershipConflict(turn.sessionId, liveWriters);
       return;
     }
-    if (desktopWriter && !observed?.desktopProcessAlive) {
+    if (desktopWriter || (providerKind === "claude-3p" && observed?.desktopProcessAlive)) {
+      if (await this.sendToDesktopInbox(turn, nativeSessionId, liveWriters)) return;
+      state.desktopExitRequired = true;
       state.ownership = "DESKTOP_OBSERVED";
       state.turnState = "queued";
       await this.recordOwnership(turn.sessionId, state.ownership);
@@ -1800,15 +1993,14 @@ export class SessionBroker extends EventEmitter {
       this.emit("changed");
       return;
     }
+    delete state.desktopExitRequired;
+    delete state.desktopTakeoverRequested;
     try {
       if (providerKind === "claude-3p") {
         await this.assertBridgeHostCompatible(session);
       }
     } catch (error) {
-      const incompatibleHost = state.host;
-      delete state.host;
-      delete state.hostLaneId;
-      await incompatibleHost?.close().catch(() => undefined);
+      if (state.host) await this.closeHost(turn.sessionId, state.host, state.hostLaneId);
       state.ownership = observed ? "DESKTOP_OBSERVED" : "BRIDGE_IDLE";
       state.turnState = "idle";
       await this.failQueuedTurn(turn, error instanceof Error ? error.message : String(error));
@@ -1841,6 +2033,12 @@ export class SessionBroker extends EventEmitter {
         this.scheduleRelease(turn.sessionId);
         return;
       }
+      if (providerKind === "claude-3p" && (
+        !await this.options.observer.canStartBridgeHost(nativeSessionId, true) ||
+        (await this.sessionProcessScanner(this.options.paths, nativeSessionId)).some((candidate) =>
+          candidate.processAlive && candidate.entrypoint.startsWith("claude-desktop"))
+      )) throw new DesktopExecutorAliveError("Desktop 执行器尚未退出");
+      if (!this.canDispatch(turn) || state.host !== host) return;
       turn.state = "running";
       turn.transport = "bridge-host";
       turn.turnId = randomUUID();
@@ -1859,6 +2057,30 @@ export class SessionBroker extends EventEmitter {
         messageId: turn.messageId,
       }, turn.origin);
     } catch (error) {
+      if (error instanceof DesktopExecutorAliveError) {
+        if (this.closed || !this.pending.includes(turn)) return;
+        if (evidenceId) await this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
+          sessionId: turn.sessionId, failed: true, error: "Desktop 执行器尚未退出，手机消息仍在排队",
+        }));
+        if (state.active === turn) { delete state.active; this.activeTurns -= 1; }
+        turn.state = "queued";
+        delete turn.submissionStartedAt;
+        delete turn.turnId;
+        delete turn.messageId;
+        await this.saveQueue();
+        if (state.host && !this.hostHasBackgroundWork(turn.sessionId)) {
+          await this.closeHost(turn.sessionId, state.host, state.hostLaneId);
+        }
+        if (this.closed || !this.pending.includes(turn)) { this.emit("changed"); return; }
+        state.desktopExitRequired = true;
+        state.ownership = "DESKTOP_OBSERVED";
+        state.turnState = "queued";
+        await this.saveQueue();
+        await this.recordOwnership(turn.sessionId, state.ownership);
+        this.scheduleTakeoverRetry(turn.sessionId);
+        this.emit("changed");
+        return;
+      }
       if (evidenceId) {
         void this.evidenceCall(() => this.options.evidence!.finalizeBridgeTurn({
           sessionId: turn.sessionId,
@@ -1866,9 +2088,7 @@ export class SessionBroker extends EventEmitter {
           error: error instanceof Error ? error.message : String(error),
         }));
       }
-      await state.host?.close().catch(() => undefined);
-      delete state.host;
-      delete state.hostLaneId;
+      if (state.host) await this.closeHost(turn.sessionId, state.host, state.hostLaneId);
       state.ownership = "DESKTOP_OBSERVED";
       state.turnState = "queued";
       if (state.active === turn) { delete state.active; this.activeTurns -= 1; }
@@ -1909,11 +2129,7 @@ export class SessionBroker extends EventEmitter {
     const state = this.runtimeStates.get(sessionId);
     const existing = state?.host;
     if (existing && state.hostLaneId === laneId) return existing;
-    if (existing) {
-      await existing.close().catch(() => undefined);
-      delete state.host;
-      delete state.hostLaneId;
-    }
+    if (existing) await this.closeHost(sessionId, existing, state.hostLaneId);
     const starting = this.hostStarts.get(laneId);
     if (starting) return starting;
     const promise = this.createHost(sessionId, laneId);
@@ -2006,13 +2222,12 @@ export class SessionBroker extends EventEmitter {
       state.hostLaneId = laneId;
       state.ownership = "BRIDGE_IDLE";
       state.turnState = "idle";
+      if (providerKind === "claude-3p") await this.recordDesktopHandoff(sessionId, plan.nativeSessionId, "bridge");
       await this.recordOwnership(sessionId, state.ownership);
       this.emit("changed");
       return host;
     } catch (error) {
-      await state.host?.close().catch(() => undefined);
-      delete state.host;
-      delete state.hostLaneId;
+      if (state.host) await this.closeHost(sessionId, state.host, state.hostLaneId);
       state.ownership = this.catalog.sessions.some((candidate) => candidate.sessionId === sessionId)
         ? "DESKTOP_OBSERVED"
         : "BRIDGE_IDLE";
@@ -2079,8 +2294,35 @@ export class SessionBroker extends EventEmitter {
 
   private async refreshGatewayModels(
     runtime = this.runtime,
+    reset = false,
   ): Promise<boolean> {
-    const models = await this.gatewayModelDiscoverer(runtime).catch(() => []);
+    const gateway = await resolveClaudeGatewayConfig(runtime);
+    const refreshedAt = Date.now();
+    if (reset) {
+      this.modelCatalog.clear();
+      // A configured gateway owns its model list; historical session names do not establish its current catalog.
+      this.modelCatalog.modelCatalogComplete = Boolean(gateway);
+    }
+    this.detection = {
+      ...(runtime?.executablePath ? { cliPath: runtime.executablePath } : {}),
+      configSource: runtime?.configSource ?? {
+        type: runtime?.credentialPath ? (dirname(runtime.credentialPath).endsWith("configLibrary") ? "fixed-gateway" : "host-credentials")
+          : runtime?.environment?.ANTHROPIC_BASE_URL ? "environment" : "none",
+        profile: runtime?.credentialPath ? claudeDesktopProfileForPath(runtime.credentialPath) : "unknown",
+        ...(runtime?.credentialPath ? { path: runtime.credentialPath } : {}),
+      },
+      gatewayState: gateway ? "configured" : "unavailable",
+      modelDiscovery: { state: "unavailable", count: 0, refreshedAt },
+      refreshedAt,
+    };
+    let models: BridgeModelInfo[];
+    try {
+      models = await this.gatewayModelDiscoverer(runtime);
+    } catch {
+      this.detection.modelDiscovery = { state: "error", count: 0, refreshedAt, error: "Gateway model discovery failed; refresh to retry." };
+      return false;
+    }
+    this.detection.modelDiscovery = { state: gateway || models.length ? "ready" : "unavailable", count: models.length, refreshedAt };
     if (!models.length) return false;
     this.modelCatalog.gatewayModelsDiscovered = true;
     this.modelCatalog.modelCatalogComplete = true;
@@ -2160,7 +2402,8 @@ export class SessionBroker extends EventEmitter {
   private sessionSourceProfile(sessionId: string): ClaudeDesktopProfile {
     const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === sessionId);
     if (observed?.sourceProfile) return observed.sourceProfile;
-    const registrationRoot = this.bridgeSessions.get(sessionId)?.desktopRegistration?.profileSessionsRoot;
+    const bridge = this.bridgeSessions.get(sessionId);
+    const registrationRoot = bridge?.desktopRegistration?.profileSessionsRoot ?? bridge?.groupSessionsRoot;
     return registrationRoot ? claudeDesktopProfileForPath(registrationRoot) : "unknown";
   }
 
@@ -2180,7 +2423,7 @@ export class SessionBroker extends EventEmitter {
       session.sessionId,
       session.cwd,
     );
-    if (!transcript) return;
+    if (!transcript && !this.bridgeSessions.get(session.sessionId)?.groupSessionsRoot) return;
 
     const sourceProfile = this.sessionSourceProfile(session.sessionId);
     const targetProfile = this.runtimeProfile();
@@ -2592,10 +2835,10 @@ export class SessionBroker extends EventEmitter {
       else delete state.active;
     }
     if (state.ownership !== "RELEASING") {
-      state.ownership = state.active ? "BRIDGE_RUNNING" : "BRIDGE_IDLE";
+      state.ownership = turn.transport === "desktop-inbox" && !state.host ? "DESKTOP_OBSERVED" : state.active ? "BRIDGE_RUNNING" : "BRIDGE_IDLE";
       state.turnState = state.active ? state.active.sessionAcceptedAt ? "running" : "queued" : "idle";
       if (occupied && !state.active) this.activeTurns = Math.max(0, this.activeTurns - 1);
-      if (!state.active && !this.taskState.runningSubagents(sessionId) && !state.host?.runningBackgroundTasks?.length) {
+      if (turn.transport !== "desktop-inbox" && !state.active && !this.taskState.runningSubagents(sessionId) && !state.host?.runningBackgroundTasks?.length) {
         this.permissionBroker.cancelSession(sessionId, terminal === "interrupted" ? "turn-interrupted" : "turn-finished");
       }
     }
@@ -2613,7 +2856,17 @@ export class SessionBroker extends EventEmitter {
     }
   }
 
-  private reconcileDesktopRegistration(sessionId: string, force = false): Promise<void> {
+  private async reconcileDesktopRegistration(sessionId: string, force = false): Promise<void> {
+    const session = this.bridgeSessions.get(sessionId);
+    if (session?.parentSessionId) {
+      const parent = this.bridgeSessions.get(session.parentSessionId);
+      const parentDesktopSessionId = this.catalog.sessions.find(candidate => candidate.sessionId === session.parentSessionId)?.desktopSessionId
+        ?? parent?.desktopRegistration?.desktopSessionId ?? parent?.desktopSessionId;
+      if (parentDesktopSessionId && session.parentDesktopSessionId !== parentDesktopSessionId) {
+        session.parentDesktopSessionId = parentDesktopSessionId;
+        await this.saveSessions();
+      }
+    }
     return this.desktopRegistration.reconcile(sessionId, force);
   }
 
@@ -2665,19 +2918,200 @@ export class SessionBroker extends EventEmitter {
     this.emit("changed");
   }
 
+  private async reconcileDesktopHandoffs(processes?: ReadonlyMap<string, ActiveClaudeProcess[]>): Promise<void> {
+    const markers = this.options.eventLog.latestDesktopHandoffs().filter(marker =>
+      marker.data.state === "bridge" && marker.sessionId && marker.itemId && !this.runtimeStates.get(marker.sessionId)?.host);
+    if (!markers.length) return;
+    const writers = processes ?? (this.options.scanProcesses
+      ? await this.options.scanProcesses(this.options.paths)
+      : this.options.scanSessionProcesses
+        ? new Map(await Promise.all(markers.map(async marker => [marker.itemId!, await this.sessionProcessScanner(this.options.paths, marker.itemId!)] as const)))
+        : await scanClaudeProcesses(this.options.paths));
+    for (const marker of markers) {
+      if (this.runtimeStates.get(marker.sessionId!)?.host ||
+        this.options.eventLog.latestItem(marker.sessionId!, "session.desktop-handoff", marker.itemId!)?.seq !== marker.seq) continue;
+      const live = writers.get(marker.itemId!) ?? [];
+      if (!live.some(writer => writer.processAlive && !writer.entrypoint.startsWith("claude-desktop"))) {
+        await this.recordDesktopHandoff(marker.sessionId!, marker.itemId!, "released", live);
+      }
+    }
+  }
+
+  private async closeHost(sessionId: string, host: SessionHostRuntime, laneId?: string): Promise<void> {
+    const lane = laneId ? this.options.conversationState?.lane(laneId) : undefined;
+    await host.close();
+    if (!lane || lane.providerKind === "claude-3p") {
+      await this.recordDesktopHandoff(sessionId, lane?.nativeSessionId ?? sessionId, "released");
+    }
+    const state = this.runtimeStates.get(sessionId);
+    if (state?.host === host) {
+      delete state.host;
+      delete state.hostLaneId;
+    }
+  }
+
+  private executionLane(sessionId: string, queuedTurn?: QueuedTurn) {
+    const laneId = this.runtimeStates.get(sessionId)?.hostLaneId ?? queuedTurn?.laneId;
+    return this.options.runtimePool
+      ? laneId ? this.options.conversationState?.lane(laneId) : this.options.conversationState?.activeLane(sessionId)
+      : undefined;
+  }
+
+  private desktopRequiresReload(sessionId: string, nativeSessionId: string, processes: readonly ActiveClaudeProcess[] = []): boolean {
+    const marker = this.options.eventLog.latestItem(sessionId, "session.desktop-handoff", nativeSessionId);
+    if (!marker) return false;
+    const desktopProcesses = processes.filter(candidate => candidate.processAlive && candidate.entrypoint.startsWith("claude-desktop"));
+    const previous = marker.data.desktopProcesses as Array<Pick<ActiveClaudeProcess, "pid" | "startedAt" | "registeredAt">> | undefined;
+    return !(marker.data.state === "released" && (!desktopProcesses.length || desktopProcesses.every(candidate => previous
+      ? !previous.some(old => old.pid === candidate.pid && old.startedAt === candidate.startedAt && old.registeredAt === candidate.registeredAt)
+      : candidate.startedAt > marker.timestamp || (candidate.registeredAt ?? 0) > marker.timestamp)));
+  }
+
+  private desktopHandoff(
+    sessionId: string,
+    observedSessions: ReadonlyMap<string, ClaudeCatalogSnapshot["sessions"][number]>,
+    queuedTurn?: QueuedTurn,
+  ): BridgeSessionInfo["desktopHandoff"] {
+    const lane = this.executionLane(sessionId, queuedTurn);
+    if (lane && lane.providerKind !== "claude-3p") return undefined;
+    const nativeSessionId = lane?.nativeSessionId ?? sessionId;
+    const observed = observedSessions.get(nativeSessionId);
+    const state = this.runtimeStates.get(sessionId);
+    const queued = Boolean(queuedTurn);
+    const canReturn = Boolean(state?.host && !state.active && state.ownership !== "RELEASING" &&
+      !this.dispatching.has(sessionId) && !queued && !this.hostHasBackgroundWork(sessionId));
+    if (state?.active?.transport === "desktop-inbox") {
+      return state.active.sessionAcceptedAt ? undefined : { state: "desktop-inbox", canReturn: false, inputStatus: state.active.inboxHeld ? "held" : "submitted" };
+    }
+    if (queuedTurn?.transport === "desktop-inbox" && queuedTurn.state === "uncertain") return undefined;
+    if (queuedTurn?.state === "queued" && this.options.desktopInbox && process.platform === "darwin" &&
+      !state?.host && !queuedTurn.attachments.length && queuedTurn.mode !== "handoff") {
+      const live = observed?.activeProcesses.filter(process => process.processAlive) ?? [];
+      const owner = live[0];
+      if (live.length === 1 && owner?.entrypoint.startsWith("claude-desktop") && owner.pid !== undefined &&
+        owner.peerProtocol === 1 && owner.messagingSocketPath && !this.desktopRequiresReload(sessionId, nativeSessionId, live)) {
+        return { state: "desktop-inbox", canReturn: false, inputStatus: "queued" };
+      }
+    }
+    if ((queued || state?.host) && (observed?.desktopProcessAlive || state?.desktopExitRequired)) {
+      return { state: "close-desktop", canReturn, canTakeover: process.platform === "darwin" && queued &&
+        !state?.host && !state?.active && !state?.desktopTakeoverRequested &&
+        !this.options.observer.runningSubagents(nativeSessionId)?.count &&
+        !this.options.observer.hasPendingBackgroundShellTasks?.(nativeSessionId) &&
+        (!this.options.observer.isMainTurnBusy(nativeSessionId) || Boolean(this.options.observer.isWaitingForUserInput?.(nativeSessionId))) };
+    }
+    if (state?.host || observed?.bridgeProcessAlive) return { state: "bridge", canReturn };
+    return this.desktopRequiresReload(sessionId, nativeSessionId, observed?.activeProcesses)
+      ? { state: "reopen-desktop", canReturn: false } : undefined;
+  }
+
+  private async recordDesktopHandoff(
+    sessionId: string, nativeSessionId: string, state: "bridge" | "released", processes?: readonly ActiveClaudeProcess[],
+  ): Promise<void> {
+    const desktopProcesses = state === "released"
+      ? [...(processes ?? this.catalog.sessions.find(session => session.sessionId === nativeSessionId)?.activeProcesses ?? []),
+          ...(processes ? [] : await this.sessionProcessScanner(this.options.paths, nativeSessionId))]
+          .filter(candidate => candidate.processAlive && candidate.entrypoint.startsWith("claude-desktop"))
+          .map(({ pid, startedAt, registeredAt }) => ({ pid, startedAt, registeredAt }))
+      : undefined;
+    await this.record({ sessionId, itemId: nativeSessionId, origin: "system", type: "session.desktop-handoff", data: {
+      state, ...(desktopProcesses ? { desktopProcesses } : {}),
+    } });
+  }
+
+  async takeoverDesktop(sessionId: string): Promise<BridgeSessionInfo> {
+    if (process.platform !== "darwin") throw new Error("当前平台暂不支持单会话 Desktop 接管");
+    const session = this.session(sessionId);
+    if (!session) throw new Error("Session not found");
+    const lane = this.executionLane(sessionId, this.pending.find(turn => turn.sessionId === sessionId && turn.state === "queued"));
+    if (lane && lane.providerKind !== "claude-3p") throw new Error("该会话不支持 Claude Desktop 接管");
+    const nativeSessionId = lane?.nativeSessionId ?? sessionId;
+    const state = this.runtimeStates.get(sessionId);
+    if (state?.desktopTakeoverRequested) return session;
+    if (state?.host || state?.active) throw new Error("Bridge 已在运行此会话，不能结束 Desktop 执行器");
+    const runtime: SessionRuntimeState = state ?? { ownership: "DESKTOP_OBSERVED", turnState: "queued" };
+    runtime.desktopTakeoverRequested = true;
+    this.runtimeStates.set(sessionId, runtime);
+    this.emit("changed");
+    try {
+      const observed = this.catalog.sessions.find(candidate => candidate.sessionId === nativeSessionId);
+      if (!observed?.transcriptPath) throw new Error("无法确认 Desktop 会话状态，消息保持排队");
+      const transcript = await parseClaudeTranscriptSnapshot(observed.transcriptPath);
+      if (!transcript.available || (!transcript.atTurnBoundary && !transcript.waitingForUserInput)) {
+        throw new Error("Desktop 主任务仍在运行；仅空闲或等待回答时可以接管");
+      }
+      const writers = await this.sessionProcessScanner(this.options.paths, nativeSessionId);
+      const subagents = await readClaudeSessionSubagents(
+        this.options.paths.projects, nativeSessionId, session.cwd, oldestLiveProcessStart(writers),
+      );
+      if (subagents.some(agent => agent.state === "running") || this.options.observer.runningSubagents(nativeSessionId)?.count) {
+        throw new Error("Desktop 后台任务仍在运行，暂时不能接管");
+      }
+      // Only a fresh process scan proves both the native session id and Desktop ancestry.
+      const owners = writers.filter(candidate => candidate.processAlive && candidate.source === "process" &&
+        candidate.entrypoint.startsWith("claude-desktop") && candidate.pid !== undefined);
+      if (!this.pending.some(turn => turn.sessionId === sessionId && turn.state === "queued")) {
+        throw new Error("没有等待接管的排队消息");
+      }
+      if (!owners.length) {
+        if (writers.some(candidate => candidate.processAlive)) throw new Error("无法确认目标 Desktop 执行器，消息保持排队");
+        this.clearTakeoverRetry(sessionId);
+        void this.pump();
+        return this.session(sessionId)!;
+      }
+      if (owners.length !== 1) throw new Error("检测到多个 Desktop 执行器，暂时不能接管");
+      const latestTranscript = await parseClaudeTranscriptSnapshot(observed.transcriptPath);
+      if (!latestTranscript.available || (!latestTranscript.atTurnBoundary && !latestTranscript.waitingForUserInput)) {
+        throw new Error("Desktop 主任务仍在运行；仅空闲或等待回答时可以接管");
+      }
+      if (latestTranscript.pendingBackgroundShellTaskIds?.length) {
+        throw new Error("Desktop 后台任务仍在运行，暂时不能接管");
+      }
+      if (!this.pending.some(turn => turn.sessionId === sessionId && turn.state === "queued")) {
+        throw new Error("没有等待接管的排队消息");
+      }
+      process.kill(owners[0]!.pid!, "SIGINT");
+      const deadline = Date.now() + 5_000;
+      let exited = false;
+      while (Date.now() < deadline) {
+        try {
+          process.kill(owners[0]!.pid!, 0);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          exited = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (!exited) throw new Error("目标 Desktop 执行器尚未退出，消息仍在排队；未启动第二个执行器");
+    } finally {
+      delete runtime.desktopTakeoverRequested;
+      this.emit("changed");
+    }
+    this.clearTakeoverRetry(sessionId);
+    void this.pump();
+    return this.session(sessionId)!;
+  }
+
+  async returnToDesktop(sessionId: string): Promise<BridgeSessionInfo> {
+    const session = this.session(sessionId);
+    if (!session) throw new Error("Session not found");
+    const state = this.runtimeStates.get(sessionId);
+    if (!state?.host) return session;
+    if (!session.desktopHandoff?.canReturn) throw new Error("请等待主轮、排队消息和后台任务完成后再交还 Desktop");
+    await this.releaseSession(sessionId);
+    return this.session(sessionId)!;
+  }
+
   private async releaseSession(sessionId: string): Promise<void> {
     const state = this.runtimeStates.get(sessionId);
     if (state?.releaseTimer) { clearTimeout(state.releaseTimer); delete state.releaseTimer; }
     if (!state?.host || state.active || state.ownership === "RELEASING" || this.hostHasBackgroundWork(sessionId) || this.pending.some((turn) => turn.sessionId === sessionId)) return;
     state.ownership = "RELEASING";
     await this.recordOwnership(sessionId, state.ownership);
-    await state.host.close();
-    delete state.host;
-    delete state.hostLaneId;
+    await this.closeHost(sessionId, state.host, state.hostLaneId);
     delete state.releaseTimer;
-    state.ownership = this.catalog.sessions.some((session) => session.sessionId === sessionId)
-      ? "DESKTOP_OBSERVED"
-      : "BRIDGE_IDLE";
+    state.ownership = "BRIDGE_IDLE";
     await this.recordOwnership(sessionId, state.ownership);
     this.emit("changed");
     await this.pump();
@@ -2782,16 +3216,22 @@ export class SessionBroker extends EventEmitter {
   }
 
   private refreshObservedOwnership(): void {
-    for (const observed of this.catalog.sessions) {
-      const state = this.runtimeStates.get(observed.sessionId);
-      if (this.hasConfirmedOwnershipConflict(observed.sessionId, state)) {
-        void this.containOwnershipConflict(observed.sessionId, observed.activeProcesses);
+    const observedSessions = new Map(this.catalog.sessions.map((session) => [session.sessionId, session]));
+    const queued = new Map<string, QueuedTurn>();
+    for (const turn of this.pending) if (!queued.has(turn.sessionId)) queued.set(turn.sessionId, turn);
+    for (const [sessionId, state] of this.runtimeStates) {
+      const lane = this.executionLane(sessionId, queued.get(sessionId));
+      const nativeSessionId = lane?.nativeSessionId ?? sessionId;
+      const observed = observedSessions.get(nativeSessionId);
+      if (!observed) continue;
+      if (this.hasConfirmedOwnershipConflict(sessionId, state)) {
+        void this.containOwnershipConflict(sessionId, observed.activeProcesses);
         continue;
       }
-      if (!state) continue;
       if (!state.host && !state.active) {
-        state.ownership = "DESKTOP_OBSERVED";
-        state.turnState = this.options.observer.isMainTurnBusy(observed.sessionId) ? "running" : "idle";
+        const handoff = this.desktopHandoff(sessionId, observedSessions, queued.get(sessionId));
+        state.ownership = handoff && handoff.state !== "close-desktop" ? "BRIDGE_IDLE" : "DESKTOP_OBSERVED";
+        state.turnState = this.options.observer.isMainTurnBusy(nativeSessionId) ? "running" : "idle";
       }
     }
   }
@@ -2821,6 +3261,7 @@ export class SessionBroker extends EventEmitter {
     };
     const wasConflict = existingState?.ownership === "OWNERSHIP_CONFLICT";
     const host = state.host;
+    const hostLaneId = state.hostLaneId;
     const active = state.active;
     if (state.releaseTimer) {
       clearTimeout(state.releaseTimer);
@@ -2843,7 +3284,7 @@ export class SessionBroker extends EventEmitter {
       if (active.submissionStartedAt || active.sessionAcceptedAt || evidence.submitted || evidence.accepted || evidence.terminal) {
         const index = this.pending.findIndex((candidate) => candidate.commandId === active.commandId);
         if (index >= 0) this.pending.splice(index, 1);
-        await host?.close();
+        if (host) await this.closeHost(sessionId, host, hostLaneId);
         await this.settleInterruptedCommand(active, evidence);
         state.turnState = this.pending.some((turn) => turn.sessionId === sessionId && turn.state === "queued")
           ? "queued" : "waiting";
@@ -2862,7 +3303,7 @@ export class SessionBroker extends EventEmitter {
         delete active.messageId;
         delete active.sessionAcceptedAt;
         await this.saveQueue();
-        await host?.close().catch(() => undefined);
+        if (host) await this.closeHost(sessionId, host, hostLaneId);
         await this.record({
           sessionId,
           itemId: active.commandId,
@@ -2880,7 +3321,7 @@ export class SessionBroker extends EventEmitter {
         });
       }
     } else {
-      await host?.close().catch(() => undefined);
+      if (host) await this.closeHost(sessionId, host, hostLaneId);
     }
 
     if (!wasConflict) {
@@ -3078,6 +3519,25 @@ export class SessionBroker extends EventEmitter {
     }
   }
 
+  private reconcileDesktopGroups(): void {
+    let changed = false;
+    for (const source of this.catalog.sessions) {
+      const bridge = this.bridgeSessions.get(source.sessionId);
+      if (!source.desktopSessionId || !bridge?.projectId || !bridge.desktopRegistration?.groupAssignment) continue;
+      if (bridge.desktopRegistration.groupAssignment === "saved") {
+        if (source.projectId === projectIdForCwd(source.cwd)) continue;
+        bridge.desktopRegistration.groupAssignment = "observed";
+        changed = true;
+      }
+      if (bridge.projectId !== source.projectId || bridge.projectName !== source.projectName) {
+        bridge.projectId = source.projectId;
+        bridge.projectName = source.projectName;
+        changed = true;
+      }
+    }
+    if (changed) void this.saveSessions();
+  }
+
   private reconcileRotatedCatalogSessions(): void {
     let changed = false;
     for (const observed of this.catalog.sessions) {
@@ -3208,7 +3668,7 @@ export class SessionBroker extends EventEmitter {
         }
       }
       const state = turn.mode === "handoff" || turn.state === "uncertain" || (
-        turn.state === "running" && turn.transport === "claude-desktop-managed"
+        turn.state === "running" && (turn.transport === "claude-desktop-managed" || turn.transport === "desktop-inbox")
       )
         ? "uncertain"
         : "queued";

@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { appendFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { CLAUDE_INTERRUPTED_USER_MESSAGE } from "@bridge/protocol";
 import { parseClaudeTranscriptSnapshot } from "./claude-history.js";
 import { SessionBroker, type SessionHostRuntime } from "./session-broker.js";
@@ -27,7 +27,7 @@ afterEach(() => {
   }
 });
 
-it.each(["prompt", "tool-call", "tool-result"])("dispatches a fork copied during %s and still waits for fresh Desktop input", async (tail) => {
+it.each(["prompt", "tool-call", "tool-result"])("dispatches a fork copied during %s only after its Desktop executor exits", async (tail) => {
   const root = await mkdtemp(join(tmpdir(), "bridge-running-fork-"));
   directories.push(root);
   const sessionId = randomUUID();
@@ -86,12 +86,34 @@ it.each(["prompt", "tool-call", "tool-result"])("dispatches a fork copied during
     expect(await parseClaudeTranscriptSnapshot(forkPath, { limit: 1 })).toMatchObject({ atTurnBoundary: true, terminalUuid: firstSnapshot.terminalUuid });
     await (observer as unknown as { poll(): Promise<void> }).poll();
     expect(await observer.canStartBridgeHost(sessionId)).toBe(false);
-    expect(await observer.canStartBridgeHost(fork.sessionId)).toBe(true);
+    expect(observer.isMainTurnBusy(fork.sessionId)).toBe(false);
+    expect(await observer.canStartBridgeHost(fork.sessionId)).toBe(false);
     const command = await broker.startTurn({ sessionId: fork.sessionId, requestId: "fork-request", idempotencyKey: "fork-key", text: "Continue in fork", origin: "mobile" });
     await (broker as unknown as { pump(): Promise<void> }).pump();
-    expect({ sends, pendingCount: broker.session(fork.sessionId)?.pendingCount }).toEqual({ sends: 1, pendingCount: 0 });
+    expect({ sends, pendingCount: broker.session(fork.sessionId)?.pendingCount }).toEqual({ sends: 0, pendingCount: 1 });
+    expect(broker.session(fork.sessionId)?.pendingCommandIds).toEqual([command.commandId]);
+    expect(broker.session(fork.sessionId)?.desktopHandoff).toEqual({ state: "close-desktop", canReturn: false, canTakeover: process.platform === "darwin" });
+
+    // Model the user closing only the fork's Desktop executor; keep its catalog identity.
+    const forkRegistration = join(paths.sessions, `${fork.sessionId}.json`);
+    await writeFile(forkRegistration, JSON.stringify({
+      pid: 999_999_999, sessionId: fork.sessionId, cwd: root, startedAt: Date.now(), entrypoint: "claude-desktop-3p",
+    }));
+    await (observer as unknown as { poll(): Promise<void> }).poll();
+    expect(await observer.canStartBridgeHost(sessionId)).toBe(false);
+    expect(await observer.canStartBridgeHost(fork.sessionId)).toBe(true);
+    await vi.waitFor(() => {
+      expect({ sends, pendingCount: broker.session(fork.sessionId)?.pendingCount }).toEqual({ sends: 1, pendingCount: 0 });
+    }, { timeout: 3_000 });
     expect(broker.session(fork.sessionId)?.pendingCommandIds).toEqual([]);
+    expect(eventLog.latestItem(fork.sessionId, "session.desktop-handoff", fork.sessionId)?.data.state).toBe("bridge");
+
+    await writeFile(forkRegistration, JSON.stringify({
+      pid: process.pid, sessionId: fork.sessionId, cwd: root, startedAt: Date.now(), entrypoint: "claude-desktop-3p",
+    }));
     await appendFile(forkPath, `${JSON.stringify({ type: "user", uuid: "fresh-desktop", parentUuid: firstSnapshot.terminalUuid, sessionId: fork.sessionId, message: { role: "user", content: "Fresh Desktop work" } })}\n`);
+    await (observer as unknown as { poll(): Promise<void> }).poll();
+    expect(observer.externalWriteVersion(fork.sessionId)).toBe(1);
     expect(await observer.canStartBridgeHost(fork.sessionId, true)).toBe(false);
     // This assertion concerns the sent command, not an inherited parent task.
     expect(command.commandId).toBeTruthy();

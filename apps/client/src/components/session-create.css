@@ -1,0 +1,153 @@
+.create-session-dialog.session-create-dialog {
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.session-create-dialog form,
+.session-create-folder {
+  display: grid;
+  min-width: 0;
+  gap: 18px;
+}
+
+.session-create-folder {
+  gap: 8px;
+}
+
+.session-create-folder > .secondary-button {
+  justify-self: start;
+}
+
+.session-create-dialog form input,
+.session-create-dialog form select {
+  min-width: 0;
+  font: inherit;
+}
+
+.session-create-folder-row {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+}
+
+.session-create-dialog .session-create-folder-row > input {
+  flex: 1;
+  width: 0;
+}
+
+.session-create-folder-row > button {
+  flex: none;
+}
+
+.session-create-parent {
+  justify-self: start;
+}
+
+.session-create-host,
+.session-create-status,
+.session-create-error {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.session-create-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-create-error {
+  color: var(--danger-ink);
+}
+
+.session-create-directories {
+  display: grid;
+  max-height: 240px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.session-create-directories button {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.session-create-directories button:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.session-create-directories svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.session-create-directories span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.session-create-dialog button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.session-create-empty {
+  padding: 10px 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.session-create-recent h3 {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+@media (max-width: 639px) {
+  .modal-backdrop.session-create-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+
+  .create-session-dialog.session-create-dialog {
+    width: 100%;
+    max-height: 92dvh;
+    padding: 20px max(16px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    border-bottom: 0;
+    border-radius: var(--r-panel) var(--r-panel) 0 0;
+  }
+
+  .session-create-dialog form input,
+  .session-create-dialog form select {
+    height: 46px;
+    font-size: 16px;
+  }
+
+  .session-create-dialog .dialog-actions > button {
+    flex: 1;
+    min-height: 48px;
+  }
+
+  .session-create-dialog .icon-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

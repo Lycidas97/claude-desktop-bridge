@@ -44,6 +44,8 @@ export class TranscriptObserver extends EventEmitter {
   private readonly lastChangedAt = new Map<string, number>();
   private readonly lastMtime = new Map<string, number>();
   private readonly transcriptTurnBoundaries = new Map<string, boolean>();
+  private readonly waitingForUserInput = new Set<string>();
+  private readonly pendingBackgroundShellTasks = new Set<string>();
   private readonly transcriptPendingUserMessages = new Map<string, string>();
   private readonly externalWriteVersions = new Map<string, number>();
   private readonly knownEvidence = new Map<string, string>();
@@ -92,12 +94,20 @@ export class TranscriptObserver extends EventEmitter {
     const session = this.session(sessionId);
     if (!session || this.isPendingTurnSettled(session.sessionId)) return false;
     sessionId = session.sessionId;
-    if (session.activeTask) return true;
     if (!session.processAlive) return false;
     const atTurnBoundary = this.transcriptTurnBoundaries.get(sessionId);
     if (atTurnBoundary !== undefined) return !atTurnBoundary;
+    if (session.activeTask) return true;
     const changedAt = this.lastChangedAt.get(sessionId) ?? session.transcriptMtimeMs;
     return now - changedAt < this.idleGraceMs;
+  }
+
+  isWaitingForUserInput(sessionId: string): boolean {
+    return this.waitingForUserInput.has(this.session(sessionId)?.sessionId ?? sessionId);
+  }
+
+  hasPendingBackgroundShellTasks(sessionId: string): boolean {
+    return this.pendingBackgroundShellTasks.has(this.session(sessionId)?.sessionId ?? sessionId);
   }
 
   private isPendingTurnSettled(sessionId: string): boolean {
@@ -117,27 +127,14 @@ export class TranscriptObserver extends EventEmitter {
     return this.externalWriteVersions.get(this.sessionAliases.get(sessionId) ?? sessionId) ?? 0;
   }
 
-  async canStartBridgeHost(sessionId: string, reusingIdleHost = false): Promise<boolean> {
+  async canStartBridgeHost(sessionId: string, _reusingIdleHost = false): Promise<boolean> {
     const session = this.session(sessionId);
     sessionId = session?.sessionId ?? sessionId;
     if (session?.transcriptPath && !this.knownUserMessages.has(sessionId)) {
       await this.primeTranscript(session);
     }
-    if (!session?.desktopProcessAlive) return true;
-    if (!session.transcriptPath) return false;
-    const snapshot = await parseClaudeTranscriptSnapshot(session.transcriptPath, { limit: 1 });
-    this.updateTurnBoundary(sessionId, snapshot);
-    const lastUserMessage = snapshot.pendingUserMessageId;
-    // The SDK can finish without writing an assistant record (including an empty result).
-    // Only a terminal receipt for this exact user message can supersede the transcript gate.
-    if (lastUserMessage && this.options.eventLog.isUserMessageSettled(
-      this.sessionAliases.get(sessionId) ?? sessionId,
-      lastUserMessage,
-    )) return true;
-    // Subagents run beyond main-turn boundaries and must not block the next input.
-    // A new host still respects an active Desktop main turn; idle hosts use the fresh transcript below.
-    if (!reusingIdleHost && this.isMainTurnBusy(sessionId)) return false;
-    return snapshot.available && snapshot.atTurnBoundary === true;
+    // An idle Desktop executor still retains its loaded conversation head.
+    return !session?.desktopProcessAlive;
   }
 
   session(sessionId: string): ObservedClaudeSession | undefined {
@@ -398,6 +395,10 @@ export class TranscriptObserver extends EventEmitter {
     sessionId: string,
     snapshot: Awaited<ReturnType<typeof parseClaudeTranscriptSnapshot>>,
   ): void {
+    if (snapshot.waitingForUserInput) this.waitingForUserInput.add(sessionId);
+    else this.waitingForUserInput.delete(sessionId);
+    if (snapshot.pendingBackgroundShellTaskIds?.length) this.pendingBackgroundShellTasks.add(sessionId);
+    else this.pendingBackgroundShellTasks.delete(sessionId);
     const lastUserMessage = snapshot.pendingUserMessageId;
     if (lastUserMessage) this.transcriptPendingUserMessages.set(sessionId, lastUserMessage);
     else this.transcriptPendingUserMessages.delete(sessionId);

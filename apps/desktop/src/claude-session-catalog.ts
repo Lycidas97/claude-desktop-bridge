@@ -19,15 +19,21 @@ interface ActiveSessionFile {
   startedAt?: unknown;
   entrypoint?: unknown;
   peerProtocol?: unknown;
+  messagingSocketPath?: string;
 }
 
 export interface ActiveClaudeProcess {
   pid?: number;
   cwd?: string;
   startedAt: number;
+  /** Start timestamp resolution; absent when the start time is unknown. */
+  startedAtResolutionMs?: number;
+  /** Registration timestamp matched to this PID, native session and OS lifetime. */
+  registeredAt?: number;
   processAlive: boolean;
   entrypoint: string;
-  peerProtocol?: string;
+  peerProtocol?: string | number;
+  messagingSocketPath?: string;
   source: "registration" | "process";
 }
 
@@ -67,7 +73,7 @@ export function projectIdForCwd(cwd: string, platform = process.platform): strin
 const execFile = promisify(execFileCallback);
 const WINDOWS_PROCESS_QUERY = [
   "Get-CimInstance Win32_Process |",
-  "Select-Object ProcessId,ParentProcessId,Name,CommandLine |",
+  "Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{Name='CreationDate';Expression={if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString('o')}}} |",
   "ConvertTo-Json -Compress",
 ].join(" ");
 
@@ -109,6 +115,7 @@ interface ProcessRow {
   pid: number;
   ppid: number;
   command: string;
+  startedAt: number;
 }
 
 function isStreamJsonProcess(command: string): boolean {
@@ -134,31 +141,48 @@ function parseWindowsProcessRows(stdout: string): ProcessRow[] {
     if (!Number.isInteger(pid) || !Number.isInteger(ppid) || pid <= 0 || ppid < 0) return [];
     const name = typeof record.Name === "string" ? record.Name : "";
     const commandLine = typeof record.CommandLine === "string" ? record.CommandLine : "";
-    return [{ pid, ppid, command: `${name}${commandLine ? ` ${commandLine}` : ""}` }];
+    const startedAt = typeof record.CreationDate === "string" ? Date.parse(record.CreationDate) : NaN;
+    return [{ pid, ppid, command: `${name}${commandLine ? ` ${commandLine}` : ""}`, startedAt: Number.isFinite(startedAt) ? startedAt : 0 }];
   });
 }
 
-export function parseWindowsClaudeProcessSessions(stdout: string): Map<string, ActiveClaudeProcess[]> {
-  const rows = parseWindowsProcessRows(stdout);
-  const processes = new Map(rows.map((row) => [row.pid, row]));
-  const result = new Map<string, ActiveClaudeProcess[]>();
+interface ProcessScan {
+  sessions: Map<string, ActiveClaudeProcess[]>;
+  forks: Map<number, { parentSessionId: string; process: ActiveClaudeProcess }>;
+}
+
+function indexClaudeProcesses(processes: Map<number, ProcessRow>, platform: NodeJS.Platform): ProcessScan {
+  const sessions = new Map<string, ActiveClaudeProcess[]>();
+  const forks = new Map<number, { parentSessionId: string; process: ActiveClaudeProcess }>();
   for (const [pid, processInfo] of processes) {
     const command = processInfo.command;
     if (!isStreamJsonProcess(command)) continue;
-    const sessionMatch = /--(?:resume|session-id)(?:=|\s+)"?([0-9a-f-]{36})"?(?:\s|$)/iu.exec(command);
-    if (!sessionMatch) continue;
-    const sessionId = sessionMatch[1]!;
-    const values = result.get(sessionId) ?? [];
-    values.push({
+    const explicit = /--session-id(?:=|\s+)"?([0-9a-f-]{36})"?(?:\s|$)/iu.exec(command);
+    const resumed = /--resume(?:=|\s+)"?([0-9a-f-]{36})"?(?:\s|$)/iu.exec(command);
+    const sessionId = (explicit ?? resumed)?.[1];
+    if (!sessionId) continue;
+    const process: ActiveClaudeProcess = {
       pid,
-      startedAt: 0,
+      startedAt: processInfo.startedAt,
+      ...(processInfo.startedAt ? { startedAtResolutionMs: platform === "win32" ? 1 : 1_000 } : {}),
       processAlive: true,
-      entrypoint: entrypointFromAncestors(pid, processes, "win32"),
+      entrypoint: entrypointFromAncestors(pid, processes, platform),
       source: "process",
-    });
-    result.set(sessionId, values);
+    };
+    if (!explicit && /(?:^|\s)--fork-session(?:\s|$)/u.test(command)) {
+      // --resume names the history source; the new writer ID comes from its registration.
+      forks.set(pid, { parentSessionId: sessionId, process });
+      continue;
+    }
+    const values = sessions.get(sessionId) ?? [];
+    values.push(process);
+    sessions.set(sessionId, values);
   }
-  return result;
+  return { sessions, forks };
+}
+
+export function parseWindowsClaudeProcessSessions(stdout: string): Map<string, ActiveClaudeProcess[]> {
+  return indexClaudeProcesses(new Map(parseWindowsProcessRows(stdout).map((row) => [row.pid, row])), "win32").sessions;
 }
 
 /** Whether a pid is a Claude session process right now, not just what a registration file names. */
@@ -183,9 +207,9 @@ export async function isClaudeSessionProcess(pid: number, platform = process.pla
   }
 }
 
-async function listProcessSessions(platform = process.platform): Promise<Map<string, ActiveClaudeProcess[]>> {
+async function listProcessSessions(platform = process.platform): Promise<ProcessScan | undefined> {
   if ((platform !== "darwin" && platform !== "win32") || process.env.BRIDGE_DISABLE_PROCESS_SCAN === "1") {
-    return new Map();
+    return undefined;
   }
   let stdout: string;
   try {
@@ -203,39 +227,24 @@ async function listProcessSessions(platform = process.platform): Promise<Map<str
         maxBuffer: 16 * 1024 * 1024,
       }));
     } else {
-      ({ stdout } = await execFile("/bin/ps", ["-axo", "pid=,ppid=,command="], {
+      ({ stdout } = await execFile("/bin/ps", ["-axo", "pid=,ppid=,lstart=,command="], {
         encoding: "utf8",
+        env: { ...process.env, LC_ALL: "C" },
         maxBuffer: 8 * 1024 * 1024,
       }));
     }
   } catch {
-    return new Map();
+    return undefined;
   }
-  if (platform === "win32") return parseWindowsClaudeProcessSessions(stdout);
-  const processes = new Map<number, { ppid: number; command: string }>();
+  if (platform === "win32") return indexClaudeProcesses(new Map(parseWindowsProcessRows(stdout).map((row) => [row.pid, row])), platform);
+  const processes = new Map<number, ProcessRow>();
   for (const line of stdout.split("\n")) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/u.exec(line);
+    const match = /^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/u.exec(line);
     if (!match) continue;
-    processes.set(Number(match[1]), { ppid: Number(match[2]), command: match[3]! });
+    const startedAt = Date.parse(match[3]!);
+    processes.set(Number(match[1]), { pid: Number(match[1]), ppid: Number(match[2]), command: match[4]!, startedAt: Number.isFinite(startedAt) ? startedAt : 0 });
   }
-  const result = new Map<string, ActiveClaudeProcess[]>();
-  for (const [pid, processInfo] of processes) {
-    const command = processInfo.command;
-    if (!isStreamJsonProcess(command)) continue;
-    const sessionMatch = /--(?:resume|session-id)(?:=|\s+)([0-9a-f-]{36})(?:\s|$)/iu.exec(command);
-    if (!sessionMatch) continue;
-    const sessionId = sessionMatch[1]!;
-    const values = result.get(sessionId) ?? [];
-    values.push({
-      pid,
-      startedAt: 0,
-      processAlive: true,
-      entrypoint: entrypointFromAncestors(pid, processes, platform),
-      source: "process",
-    });
-    result.set(sessionId, values);
-  }
-  return result;
+  return indexClaudeProcesses(processes, platform);
 }
 
 async function listActiveSessions(
@@ -248,7 +257,9 @@ async function listActiveSessions(
   } catch {
     names = [];
   }
-  const result = await listProcessSessions(platform);
+  const scan = await listProcessSessions(platform);
+  const scannedAt = Date.now();
+  const result = scan?.sessions ?? new Map<string, ActiveClaudeProcess[]>();
   await Promise.all(names.filter((name) => name.endsWith(".json")).map(async (name) => {
     try {
       const value = JSON.parse(await readFile(join(path, name), "utf8")) as ActiveSessionFile;
@@ -264,16 +275,26 @@ async function listActiveSessions(
         ...(pid !== undefined ? { pid } : {}),
         cwd: value.cwd,
         startedAt: value.startedAt,
-        processAlive: pid !== undefined && processExists(pid),
+        ...(value.startedAt > 0 ? { startedAtResolutionMs: 1 } : {}),
+        processAlive: !scan && pid !== undefined && processExists(pid),
         entrypoint: typeof value.entrypoint === "string" ? value.entrypoint : "unknown",
-        ...(typeof value.peerProtocol === "string" ? { peerProtocol: value.peerProtocol } : {}),
+        ...(typeof value.peerProtocol === "string" || typeof value.peerProtocol === "number" ? { peerProtocol: value.peerProtocol } : {}),
+        ...(typeof value.messagingSocketPath === "string" ? { messagingSocketPath: value.messagingSocketPath } : {}),
         source: "registration",
       };
       const existing = result.get(value.sessionId) ?? [];
-      const scanned = existing.find((candidate) => candidate.pid !== undefined && candidate.pid === active.pid);
-      // A process scan can't tell when the process started; its registration can.
-      if (scanned) scanned.startedAt = active.startedAt;
-      else existing.push(active);
+      const fork = pid !== undefined ? scan?.forks.get(pid) : undefined;
+      const scanned = existing.find((candidate) => candidate.pid !== undefined && candidate.pid === active.pid)
+        ?? (fork && fork.parentSessionId !== value.sessionId ? fork.process : undefined);
+      // Fork IDs come from the child registration after verifying its OS PID and lifetime.
+      if (scanned && scanned.startedAt > 0 && active.startedAt >= scanned.startedAt && active.startedAt <= scannedAt) {
+        if (!existing.includes(scanned)) existing.push(scanned);
+        scanned.cwd = value.cwd;
+        scanned.registeredAt = active.startedAt;
+        if (scanned.entrypoint === "unknown") scanned.entrypoint = active.entrypoint;
+        if (active.peerProtocol !== undefined) scanned.peerProtocol = active.peerProtocol;
+        if (active.messagingSocketPath !== undefined) scanned.messagingSocketPath = active.messagingSocketPath;
+      } else existing.push(active);
       result.set(value.sessionId, existing);
     } catch {
       // Session discovery is best effort; malformed files are ignored.
@@ -282,12 +303,19 @@ async function listActiveSessions(
   return result;
 }
 
+export async function scanClaudeProcesses(
+  paths: ClaudeRuntimePaths,
+  platform = process.platform,
+): Promise<Map<string, ActiveClaudeProcess[]>> {
+  return listActiveSessions(paths.sessions, platform);
+}
+
 export async function scanClaudeSessionProcesses(
   paths: ClaudeRuntimePaths,
   sessionId: string,
   platform = process.platform,
 ): Promise<ActiveClaudeProcess[]> {
-  return (await listActiveSessions(paths.sessions, platform)).get(sessionId) ?? [];
+  return (await scanClaudeProcesses(paths, platform)).get(sessionId) ?? [];
 }
 
 /** Start of the oldest live process (0 when unknown); undefined when none is alive. */

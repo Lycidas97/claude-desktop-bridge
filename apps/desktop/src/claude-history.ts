@@ -26,10 +26,14 @@ interface TranscriptNode {
   stopReason?: string;
   interruptedBoundary?: boolean;
   nonTurnUser?: boolean;
+  peerInput?: boolean;
   toolResult?: boolean;
   role?: ClaudeHistoryMessage["role"];
   text?: string;
   interactivePrompt?: BridgeInteractivePrompt;
+  tools?: Array<{ id: string; name: string; stopTaskId?: string }>;
+  results?: Array<{ id: string; backgroundTaskId?: string; stoppedTaskId?: string }>;
+  backgroundShellUpdates?: Array<{ taskId: string; pending: boolean }>;
   planUpdates?: Array<{ id: string; input: Record<string, unknown>; wrapUp: boolean }>;
   toolResultAnswers?: Record<string, string>;
   createdAt: number;
@@ -833,7 +837,12 @@ export interface ClaudeTranscriptSnapshot extends ClaudeHistoryReadResult {
   nextCursor?: string;
   userMessages: ClaudeHistoryMessage[];
   atTurnBoundary?: boolean;
+  waitingForUserInput?: boolean;
+  /** Background Bash tasks on the selected branch with no recorded terminal signal; not proof of process liveness. */
+  pendingBackgroundShellTaskIds?: string[];
   pendingUserMessageId?: string;
+  /** Peer text inputs on the selected parent chain, with explicit terminal evidence only. */
+  peerInputs?: Array<{ messageId: string; completed: boolean; interrupted?: boolean }>;
   terminalUuid?: string;
 }
 
@@ -872,7 +881,10 @@ const transcriptSnapshotCache = new Map<string, {
   allMessages: ClaudeHistoryMessage[];
   userMessages: ClaudeHistoryMessage[];
   atTurnBoundary?: boolean;
+  waitingForUserInput?: boolean;
+  pendingBackgroundShellTaskIds: string[];
   pendingUserMessageId?: string;
+  peerInputs: NonNullable<ClaudeTranscriptSnapshot["peerInputs"]>;
   terminalUuid?: string;
 }>();
 
@@ -894,6 +906,9 @@ export async function parseClaudeTranscriptSnapshot(
       userMessages: cached.userMessages,
       ...(cached.terminalUuid ? { terminalUuid: cached.terminalUuid } : {}),
       ...(cached.atTurnBoundary !== undefined ? { atTurnBoundary: cached.atTurnBoundary } : {}),
+      ...(cached.waitingForUserInput ? { waitingForUserInput: true } : {}),
+      pendingBackgroundShellTaskIds: cached.pendingBackgroundShellTaskIds,
+      peerInputs: cached.peerInputs,
       ...(cached.pendingUserMessageId ? { pendingUserMessageId: cached.pendingUserMessageId } : {}),
     };
   }
@@ -913,7 +928,24 @@ export async function parseClaudeTranscriptSnapshot(
       } catch {
         continue;
       }
-      if (!isRecord(value) || typeof value.uuid !== "string" || !value.uuid || isNonDagTranscriptRecord(value)) continue;
+      if (!isRecord(value) || isNonDagTranscriptRecord(value)) continue;
+      const backgroundShellUpdates: NonNullable<TranscriptNode["backgroundShellUpdates"]> = [];
+      if (value.isSidechain !== true && value.type === "attachment" && isRecord(value.attachment)) {
+        const task = value.attachment;
+        if (task.type === "task_status" && task.taskType === "local_bash" && typeof task.taskId === "string" && typeof task.status === "string") {
+          if (["running", "pending", "paused"].includes(task.status)) {
+            backgroundShellUpdates.push({ taskId: task.taskId, pending: true });
+          } else if (["completed", "failed", "stopped", "killed"].includes(task.status)) {
+            backgroundShellUpdates.push({ taskId: task.taskId, pending: false });
+          }
+        }
+      }
+      if (typeof value.uuid !== "string" || !value.uuid) {
+        // Compacted task attachments may lack a UUID; keep them with their DAG anchor.
+        const anchor = lastMainUuid ? nodes.get(lastMainUuid) : undefined;
+        if (anchor && backgroundShellUpdates.length) (anchor.backgroundShellUpdates ??= []).push(...backgroundShellUpdates);
+        continue;
+      }
       const existing = nodes.get(value.uuid);
       const parentUuid = existing?.parentUuid ?? resolveTranscriptParentUuid(value, nodes, lastMainUuid);
       if (parentUuid) referencedParents.add(parentUuid);
@@ -928,6 +960,35 @@ export async function parseClaudeTranscriptSnapshot(
       const role = visible?.role ?? existing?.role;
       const text = visible?.text ?? existing?.text;
       const interactivePrompt = extractInteractivePrompt(value) ?? existing?.interactivePrompt;
+      const tools = value.type === "assistant" ? toolUses(message?.content).map((tool) => ({
+        id: tool.id,
+        name: tool.name,
+        ...(tool.name === "TaskStop" && isRecord(tool.input) && typeof tool.input.task_id === "string"
+          ? { stopTaskId: tool.input.task_id } : {}),
+      })) : [];
+      const directResult = isRecord(value.toolUseResult) ? value.toolUseResult
+        : isRecord(value.tool_use_result) ? value.tool_use_result : undefined;
+      const results = value.type === "user" && Array.isArray(message?.content)
+        ? message.content.flatMap((block) => {
+            if (!isRecord(block) || block.type !== "tool_result" || typeof block.tool_use_id !== "string") return [];
+            return [{
+              id: block.tool_use_id,
+              ...(typeof directResult?.backgroundTaskId === "string" && block.is_error !== true
+                ? { backgroundTaskId: directResult.backgroundTaskId } : {}),
+              ...(typeof directResult?.task_id === "string" && block.is_error !== true &&
+                typeof directResult.message === "string" && directResult.message.startsWith("Successfully stopped task:")
+                ? { stoppedTaskId: directResult.task_id } : {}),
+            }];
+          })
+        : [];
+      if (value.type === "user" && rawText.trimStart().startsWith("<task-notification>")) {
+        const status = /<status>(\w+)<\/status>/u.exec(rawText)?.[1];
+        if (status && ["completed", "failed", "stopped"].includes(status)) {
+          for (const match of rawText.matchAll(/<task-id>([^<]+)<\/task-id>/gu)) {
+            backgroundShellUpdates.push({ taskId: match[1]!, pending: false });
+          }
+        }
+      }
       const planUpdates = value.type === "assistant" && Array.isArray(message?.content)
         ? message.content.flatMap((block) => {
             if (!isRecord(block) || block.type !== "tool_use" || typeof block.id !== "string" || !isRecord(block.input) ||
@@ -936,6 +997,17 @@ export async function parseClaudeTranscriptSnapshot(
           })
         : [];
       const toolResultAnswers = extractToolResultAnswers(value) ?? existing?.toolResultAnswers;
+      const toolResult = existing?.toolResult || (value.type === "user" && (
+        value.toolUseResult !== undefined || value.tool_use_result !== undefined ||
+        (Array.isArray(message?.content) && message.content.some((block) => isRecord(block) && block.type === "tool_result"))
+      ));
+      const peerInput = existing?.peerInput || (value.type === "user" && message?.role === "user" &&
+        isRecord(value.origin) && value.origin.kind === "peer" && !toolResult &&
+        value.isCompactSummary !== true && !isLocalCommandRecord(rawText) &&
+        !isClaudeTranscriptControlMessage("user", rawText) &&
+        (typeof message.content === "string" ? Boolean(message.content.trim()) :
+          Array.isArray(message.content) && message.content.some((block) =>
+            isRecord(block) && block.type === "text" && typeof block.text === "string" && block.text.trim())));
       nodes.set(value.uuid, {
         index: existing?.index ?? index,
         uuid: value.uuid,
@@ -944,13 +1016,11 @@ export async function parseClaudeTranscriptSnapshot(
         ...(existing?.interruptedBoundary || (value.type === "user" && isClaudeTranscriptControlMessage("user", rawText))
           ? { interruptedBoundary: true }
           : {}),
-        ...(existing?.nonTurnUser || (value.type === "user" && isNonTurnUserRecord(value, rawText))
+        ...(!peerInput && (existing?.nonTurnUser || (value.type === "user" && isNonTurnUserRecord(value, rawText)))
           ? { nonTurnUser: true }
           : {}),
-        ...(existing?.toolResult || (value.type === "user" && (
-          value.toolUseResult !== undefined || value.tool_use_result !== undefined ||
-          (Array.isArray(message?.content) && message.content.some((block) => isRecord(block) && block.type === "tool_result"))
-        )) ? { toolResult: true } : {}),
+        ...(peerInput ? { peerInput: true } : {}),
+        ...(toolResult ? { toolResult: true } : {}),
         ...(message && typeof message.stop_reason === "string"
           ? { stopReason: message.stop_reason }
           : existing?.stopReason
@@ -959,6 +1029,10 @@ export async function parseClaudeTranscriptSnapshot(
         ...(role ? { role } : {}),
         ...(text ? { text } : {}),
         ...(interactivePrompt ? { interactivePrompt } : {}),
+        ...(tools.length ? { tools } : existing?.tools ? { tools: existing.tools } : {}),
+        ...(results.length ? { results } : existing?.results ? { results: existing.results } : {}),
+        ...(backgroundShellUpdates.length ? { backgroundShellUpdates }
+          : existing?.backgroundShellUpdates ? { backgroundShellUpdates: existing.backgroundShellUpdates } : {}),
         ...(planUpdates.length ? { planUpdates } : existing?.planUpdates ? { planUpdates: existing.planUpdates } : {}),
         ...(toolResultAnswers ? { toolResultAnswers } : {}),
         createdAt,
@@ -1009,6 +1083,44 @@ export async function parseClaudeTranscriptSnapshot(
     current = current.parentUuid ? nodes.get(current.parentUuid) : undefined;
   }
   chain.reverse();
+
+  const pendingTools = new Map<string, NonNullable<TranscriptNode["tools"]>[number]>();
+  const backgroundShellTasks = new Set<string>();
+  const peerInputs: NonNullable<ClaudeTranscriptSnapshot["peerInputs"]> = [];
+  let currentPeerInput: typeof peerInputs[number] | undefined;
+  let lastAssistantStopReason: string | undefined;
+  for (const node of chain) {
+    if (node.type === "user" && (node.interruptedBoundary || (!node.nonTurnUser && !node.toolResult))) {
+      pendingTools.clear();
+      lastAssistantStopReason = undefined;
+      if (node.interruptedBoundary && currentPeerInput) currentPeerInput.interrupted = true;
+      currentPeerInput = node.peerInput ? { messageId: node.uuid, completed: false } : undefined;
+      if (currentPeerInput) peerInputs.push(currentPeerInput);
+    }
+    if (node.type === "assistant") {
+      lastAssistantStopReason = node.stopReason;
+      if (currentPeerInput && ["end_turn", "max_tokens", "stop_sequence", "refusal", "model_context_window_exceeded"].includes(node.stopReason ?? "")) {
+        currentPeerInput.completed = true;
+        currentPeerInput = undefined;
+      }
+      for (const tool of node.tools ?? []) pendingTools.set(tool.id, tool);
+    }
+    for (const result of node.results ?? []) {
+      const tool = pendingTools.get(result.id);
+      if (tool?.name === "Bash" && result.backgroundTaskId) backgroundShellTasks.add(result.backgroundTaskId);
+      if (tool?.name === "TaskStop" && result.stoppedTaskId && result.stoppedTaskId === tool.stopTaskId) {
+        backgroundShellTasks.delete(result.stoppedTaskId);
+      }
+      pendingTools.delete(result.id);
+    }
+    for (const update of node.backgroundShellUpdates ?? []) {
+      if (update.pending) backgroundShellTasks.add(update.taskId);
+      else backgroundShellTasks.delete(update.taskId);
+    }
+  }
+  const waitingForUserInput = lastAssistantStopReason === "tool_use" && pendingTools.size > 0
+    && [...pendingTools.values()].every((tool) => tool.name === "AskUserQuestion");
+  const pendingBackgroundShellTaskIds = [...backgroundShellTasks];
 
   const messages: ClaudeHistoryMessage[] = [];
   let pendingInteractive: { node: TranscriptNode; prompt: BridgeInteractivePrompt } | undefined;
@@ -1163,6 +1275,9 @@ export async function parseClaudeTranscriptSnapshot(
     allMessages: messages,
     userMessages,
     terminalUuid: terminal.uuid,
+    ...(waitingForUserInput ? { waitingForUserInput: true } : {}),
+    pendingBackgroundShellTaskIds,
+    peerInputs,
     ...(atTurnBoundary !== undefined ? { atTurnBoundary } : {}),
     ...(pendingUserMessageId ? { pendingUserMessageId } : {}),
   });
@@ -1171,6 +1286,9 @@ export async function parseClaudeTranscriptSnapshot(
     ...trimHistory(messages, options),
     userMessages,
     atTurnBoundary,
+    ...(waitingForUserInput ? { waitingForUserInput: true } : {}),
+    pendingBackgroundShellTaskIds,
+    peerInputs,
     terminalUuid: terminal.uuid,
     ...(pendingUserMessageId ? { pendingUserMessageId } : {}),
   };
@@ -1189,7 +1307,9 @@ export async function parseClaudeTranscript(
   const {
     userMessages: _userMessages,
     atTurnBoundary: _atTurnBoundary,
+    pendingBackgroundShellTaskIds: _pendingBackgroundShellTaskIds,
     pendingUserMessageId: _pendingUserMessageId,
+    peerInputs: _peerInputs,
     terminalUuid: _terminalUuid,
     ...result
   } = await parseClaudeTranscriptSnapshot(path, options);

@@ -59,6 +59,23 @@ async function fixture(fetchImpl: typeof fetch, platform: NodeJS.Platform = "dar
 }
 
 describe("ProviderRegistry", () => {
+  it("projects Claude-3p models from the live session catalog getter", async () => {
+    const f = await fixture(vi.fn() as unknown as typeof fetch);
+    let models = [{ value: "current-model", displayName: "Current model", maxInputTokens: 200_000 }];
+    const registry = new ProviderRegistry({
+      state: f.state, apiKeyPath: f.apiKeyPath, safeStorage: storage(),
+      claude3pStatus: () => ({ state: "ready", detail: "Local ready", activeTurns: 0, maxParallelTurns: 2,
+        desktopIntegration: { state: "not-managed", detail: "None", enabled: false, canRestart: false } }),
+      claude3pModels: () => models,
+    });
+    try {
+      await registry.refresh("provider:claude-3p:default");
+      expect(registry.get("provider:claude-3p:default")?.models).toMatchObject([{ id: "current-model", displayName: "Current model", maxInputTokens: 200_000 }]);
+      models = [];
+      expect(registry.list().find(profile => profile.kind === "claude-3p")?.models).toEqual([]);
+    } finally { f.state.close(); }
+  });
+
   it("keeps the official Deep Link provider available on Windows", async () => {
     const { state, registry } = await fixture(vi.fn() as unknown as typeof fetch, "win32");
     await registry.initialize();

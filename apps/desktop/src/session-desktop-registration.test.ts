@@ -2,6 +2,7 @@ import type { BridgeDesktopRegistrationInfo } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { DesktopSessionRegistrationInput, StoredDesktopRegistration } from "./claude-desktop-session-registrar.js";
 import { SessionDesktopRegistration, type SessionDesktopRegistrationOptions } from "./session-desktop-registration.js";
+import { projectIdForCwd } from "./claude-session-catalog.js";
 
 function fixture(previous?: StoredDesktopRegistration) {
   const session = { sessionId: "session-1", cwd: "/project", title: "Session title", createdAt: 10, parentDesktopSessionId: "local_parent", forkLabel: "Fork", ...(previous ? { desktopRegistration: previous } : {}) };
@@ -19,6 +20,15 @@ function fixture(previous?: StoredDesktopRegistration) {
 }
 
 describe("SessionDesktopRegistration", () => {
+  it.each(["cg-server", projectIdForCwd("/project")])("passes native groups without treating cwd identity as a group (%s)", async projectId => {
+    const { session, register, registration } = fixture();
+    Object.assign(session, { projectId });
+    await registration.reconcile("session-1");
+    if (projectId === "cg-server") expect(register.mock.calls[0]?.[0].groupId).toBe(projectId);
+    else expect(register.mock.calls[0]?.[0]).not.toHaveProperty("groupId");
+    await registration.close();
+  });
+
   it("projects profile overrides and fork metadata, then persists and publishes only public changes", async () => {
     const { session, register, options, registration } = fixture();
     await registration.reconcile("session-1");
@@ -35,6 +45,14 @@ describe("SessionDesktopRegistration", () => {
     await registration.close();
   });
 
+  it.each(["registered", "restart-required"] as const)("retains the actual native identity while Desktop reload is pending (%s)", async state => {
+    const { session, register, registration } = fixture();
+    register.mockResolvedValue({ state, detail: "Native record exists", desktopSessionId: "local_actual_native_record", updatedAt: 30 });
+    await registration.reconcile("session-1");
+    expect(session).toMatchObject({ desktopSessionId: "local_actual_native_record", desktopRegistration: { state } });
+    await registration.close();
+  });
+
   it("passes the effective permission policy into native registration", async () => {
     const { context, register, registration } = fixture();
     Object.assign(context, { permissionMode: "full-access" });
@@ -47,7 +65,7 @@ describe("SessionDesktopRegistration", () => {
   });
 
   it("skips busy and previously failed sessions unless forced and preserves metadata on registrar failure", async () => {
-    const previous: StoredDesktopRegistration = { state: "failed", detail: "Previous failure", updatedAt: 1, metadataPath: "/metadata", metadataSha256: "sha", profileSessionsRoot: "/profile", desktopSessionId: "local_existing", registeredAt: 2, claudePidAtRegistration: 3 };
+    const previous: StoredDesktopRegistration = { state: "failed", detail: "Previous failure", updatedAt: 1, metadataPath: "/metadata", metadataSha256: "sha", profileSessionsRoot: "/profile", desktopSessionId: "local_existing", registeredAt: 2, claudePidAtRegistration: 3, groupAssignment: "observed" };
     const { context, session, register, registration } = fixture(previous);
     await registration.reconcile("session-1");
     expect(register).not.toHaveBeenCalled();
@@ -59,6 +77,31 @@ describe("SessionDesktopRegistration", () => {
     await registration.reconcile("session-1", true);
     expect(register).toHaveBeenCalledOnce();
     expect(session.desktopRegistration).toMatchObject({ ...previous, state: "failed", detail: "Claude Desktop 会话登记失败，Bridge 会话仍可正常使用。", updatedAt: expect.any(Number) });
+    await registration.close();
+  });
+
+  it("persists a partial registration failure and retains its native state through a failed retry", async () => {
+    const { session, register, options, registration } = fixture({ state: "waiting-transcript", detail: "Waiting", updatedAt: 1 });
+    const failed: StoredDesktopRegistration = {
+      state: "failed", detail: "Claude Desktop 会话已登记，但保存分组失败，请重试。", updatedAt: 30,
+      desktopSessionId: "local_actual_native_record", profileSessionsRoot: "/profile", metadataPath: "/metadata", metadataSha256: "sha",
+      registeredAt: 20, claudePidAtRegistration: 3, forkMetadataVersion: 1, nativeRegistrationState: "restart-required",
+    };
+    register.mockResolvedValueOnce(failed);
+    await registration.reconcile("session-1");
+    expect(session).toMatchObject({ desktopSessionId: failed.desktopSessionId, desktopRegistration: failed });
+    expect(options.persist).toHaveBeenCalledOnce();
+    expect(options.record).toHaveBeenLastCalledWith(expect.objectContaining({ data: { state: "failed", detail: failed.detail, updatedAt: 30, desktopSessionId: failed.desktopSessionId } }));
+    await registration.reconcile("session-1");
+    expect(register).toHaveBeenCalledOnce();
+    register.mockRejectedValueOnce(new Error("registrar unavailable during retry"));
+    await registration.reconcile("session-1", true);
+    expect(session.desktopRegistration).toMatchObject({ ...failed, detail: "Claude Desktop 会话登记失败，Bridge 会话仍可正常使用。", updatedAt: expect.any(Number) });
+    expect(session).toMatchObject({ desktopSessionId: failed.desktopSessionId });
+    const retryPrevious = session.desktopRegistration;
+    await registration.reconcile("session-1", true);
+    expect(register).toHaveBeenLastCalledWith(expect.any(Object), retryPrevious);
+    expect(session.desktopRegistration?.state).toBe("registered");
     await registration.close();
   });
 

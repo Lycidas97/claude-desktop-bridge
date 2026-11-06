@@ -26,13 +26,20 @@ npm run dev:desktop
 
 ```bash
 npm run typecheck
-npm test
+npm test                # five sequential suites; artifacts/tests
+npm run test:infra      # runner and recycle-bin contract fixtures
+npm run test:browser    # local browser fixture; optional CHROME_PATH
 npm run verify          # typecheck + tests + full build
 npm run probe:relay     # relay contract probe
 npm run test:visual     # browser visual QA
 npm run audit:runtime   # production dependency audit
 npm run build:android:debug
 ```
+
+`npm test`, `npm run verify`, and `npm run test:browser` use Trash-only Node cleanup.
+Linux needs `trash-put` from `trash-cli`; macOS uses `/usr/bin/trash`, and Windows uses
+PowerShell with the system Recycle Bin. Run `npm ci` without the cleanup preload.
+See [Testing](docs/testing.md) for suite boundaries, browser setup, and report paths.
 
 ## What to include in a PR
 

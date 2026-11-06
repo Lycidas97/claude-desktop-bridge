@@ -22,6 +22,7 @@ import {
   type BridgeDesktopRuntime,
   type BridgeDesktopRuntimeId,
   type BridgeDeviceInfo,
+  type BridgeDirectoryListing,
   type BridgeEndpoint,
   type BridgeEffort,
   type BridgeEvent,
@@ -41,8 +42,10 @@ import {
   type SocketState,
 } from "@bridge/protocol";
 import { shell } from "electron";
-import { realpath } from "node:fs/promises";
-import { isAbsolute, resolve, sep } from "node:path";
+import { readdir, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
+import { accessibleDirectory } from "./working-directory.js";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { App } from "electron";
 import {
   DesktopConfigRepository,
@@ -95,6 +98,7 @@ function runtimeIdParam(
   key: string,
   required = false,
 ): BridgeDesktopRuntimeId | undefined {
+  if (params[key] !== undefined && (typeof params[key] !== "string" || !params[key].trim())) throw new Error("Unknown Desktop runtime");
   const value = stringParam(params, key, required);
   if (!value) return undefined;
   if (
@@ -394,9 +398,11 @@ export class DesktopController extends EventEmitter {
           "conversation.lanes.v1",
           "conversation.handoff.v1",
           "permission.policy.v1",
+          "permission.runtime-defaults.v1",
+          "directory.browse.v1",
           "runtime.adapter.v1",
           "session.visibility.v1",
-          "subagent.stop.v1",
+          ...(this.conversationState ? ["session.rename.v1" as const] : []),          "subagent.stop.v1",
           "turn.queue.steer.v1",
           "plugin.magpie-quota.v1",
           ...(this.runtimeHandoffs ? ["runtime.handoff.v1" as const] : []),
@@ -647,6 +653,7 @@ export class DesktopController extends EventEmitter {
   async refreshRuntime(): Promise<void> {
     await this.broker.refreshRuntime();
     await this.runtimeSessions?.refresh();
+    await this.providers?.refresh("provider:claude-3p:default");
     await this.publish();
   }
 
@@ -674,6 +681,7 @@ export class DesktopController extends EventEmitter {
         "attachment.image",
       ],
       sessionIsolation: "independent",
+      defaultPermissionMode: this.config?.defaultPermissionMode ?? "standard",
       sessionCount: this.broker.listSessions().length,
       updatedAt: Date.now(),
       ...(claude.version ? { appVersion: claude.version } : {}),
@@ -1018,18 +1026,36 @@ export class DesktopController extends EventEmitter {
       const runtimeId = runtimeIdParam(params, "runtimeId");
       if (!runtimeId || runtimeId === "claude-desktop") await this.broker.refreshRuntime();
       if (!runtimeId || runtimeId !== "claude-desktop") await this.runtimeSessions?.refresh(runtimeId);
-      return { runtimes: this.desktopRuntimes() };
+      if (!runtimeId || runtimeId === "claude-desktop") await this.providers?.refresh("provider:claude-3p:default");
+      await this.publish();
+      return { runtime: this.broker.runtimeStatus(), runtimes: this.desktopRuntimes(), providers: this.providers?.list() ?? [] };
     }
     if (request.method === "project.list") return { projects: this.allProjects() };
+    if (request.method === "directory.list") {
+      if (params.path !== undefined && (typeof params.path !== "string" || !params.path.trim())) throw new Error("path must be a non-empty string");
+      const path = await accessibleDirectory(typeof params.path === "string" ? params.path : homedir());
+      const listing: BridgeDirectoryListing = {
+        path,
+        ...(dirname(path) !== path ? { parentPath: dirname(path) } : {}),
+        directories: (await readdir(path, { withFileTypes: true }))
+          .filter(entry => entry.isDirectory())
+          .map(entry => ({ name: entry.name, path: join(path, entry.name) }))
+          .sort((left, right) => left.name.localeCompare(right.name)),
+        recentPaths: [...new Set([...this.allSessions(), ...this.allProjects()].map(item => item.cwd).filter(isAbsolute))],
+      };
+      return { listing };
+    }
     if (request.method === "provider.list") {
       if (!this.providers) throw new Error("Provider registry is unavailable");
       return { providers: this.providers.list() };
     }
     if (request.method === "provider.refresh") {
       if (!this.providers) throw new Error("Provider registry is unavailable");
-      return {
-        providers: await this.providers.refresh(stringParam(params, "profileId", false)),
-      };
+      const profileId = stringParam(params, "profileId", false);
+      if (!profileId || profileId === "provider:claude-3p:default") await this.broker.refreshRuntime();
+      const providers = await this.providers.refresh(profileId);
+      await this.publish();
+      return { providers, runtime: this.broker.runtimeStatus(), runtimes: this.desktopRuntimes() };
     }
     if (request.method === "conversation.route.get") {
       const sessionId = stringParam(params, "sessionId")!;
@@ -1143,8 +1169,23 @@ export class DesktopController extends EventEmitter {
         latestSeq: this.eventLog.latestSeq(),
       };
     }
+    if (request.method === "session.rename") {
+      const sessionId = stringParam(params, "sessionId")!;
+      const title = stringParam(params, "title")!.trim();
+      if (!this.conversationState) throw new Error("Session rename is unavailable");
+      const session = this.allSessions().find((candidate) => candidate.sessionId === sessionId);
+      if (!session) throw new Error("Session not found");
+      if (session.title === title) return { session };
+      this.conversationState.setSessionTitle(sessionId, title);
+      const snapshot = await this.publish();
+      return { session: snapshot.sessions.find((candidate) => candidate.sessionId === sessionId) };
+    }
     if (request.method === "session.create") {
       const runtimeId = runtimeIdParam(params, "runtimeId") ?? "claude-desktop";
+      const projectId = params.projectId;
+      if (projectId !== undefined && (typeof projectId !== "string" || !projectId.trim())) {
+        throw new Error("projectId must be a non-empty string");
+      }
       if (runtimeId !== "claude-desktop") {
         if (!this.runtimeSessions) throw new Error("External Desktop runtimes are unavailable");
         return {
@@ -1152,6 +1193,7 @@ export class DesktopController extends EventEmitter {
             runtimeId,
             stringParam(params, "cwd")!,
             stringParam(params, "title", false),
+            typeof projectId === "string" ? projectId.trim() : undefined,
           ),
         };
       }
@@ -1159,6 +1201,7 @@ export class DesktopController extends EventEmitter {
         session: await this.broker.createSession(
           stringParam(params, "cwd")!,
           stringParam(params, "title", false),
+          typeof projectId === "string" ? projectId.trim() : undefined,
         ),
       };
     }
@@ -1318,6 +1361,16 @@ export class DesktopController extends EventEmitter {
       });
       return { deleted: true, sessionId };
     }
+    if (request.method === "session.takeover_desktop") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.routesToExternalRuntime(sessionId)) throw new Error("该会话不支持 Claude Desktop 交接");
+      return { session: await this.broker.takeoverDesktop(sessionId) };
+    }
+    if (request.method === "session.return_to_desktop") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.routesToExternalRuntime(sessionId)) throw new Error("该会话不支持 Claude Desktop 交接");
+      return { session: await this.broker.returnToDesktop(sessionId) };
+    }
     if (request.method === "session.fallback.confirm") {
       const sessionId = stringParam(params, "sessionId")!;
       if (this.routesToExternalRuntime(sessionId)) {
@@ -1457,6 +1510,11 @@ export class DesktopController extends EventEmitter {
       if (scope !== "host" && scope !== "session") throw new Error("Invalid permission policy scope");
       const mode = permissionModeParam(params, "mode");
       const sessionId = stringParam(params, "sessionId", false);
+      const explicitRuntimeId = runtimeIdParam(params, "runtimeId");
+      const sessionRuntimeId = sessionId ? parseRuntimeSessionId(sessionId)?.runtimeId ?? "claude-desktop" : undefined;
+      if (explicitRuntimeId && sessionRuntimeId && explicitRuntimeId !== sessionRuntimeId) {
+        throw new Error("Permission runtimeId does not match the session runtime");
+      }
       const actor = origin === "mobile"
         ? {
             deviceId: sourceDeviceId ?? "mobile",
@@ -1469,8 +1527,8 @@ export class DesktopController extends EventEmitter {
       if (scope === "host") {
         if (!mode) throw new Error("Host permission mode is required");
         if (!this.config) throw new Error("Desktop controller is not initialized");
-        const runtimeId = sessionId ? parseRuntimeSessionId(sessionId)?.runtimeId : undefined;
-        if (runtimeId) {
+        const runtimeId = explicitRuntimeId ?? sessionRuntimeId ?? "claude-desktop";
+        if (runtimeId !== "claude-desktop") {
           // Per-runtime host default: a Codex full-access toggle must not
           // auto-approve Hermes or Claude sessions on this machine.
           if (!this.runtimeSessions) throw new Error("External Desktop runtimes are unavailable");
@@ -1497,9 +1555,11 @@ export class DesktopController extends EventEmitter {
           const configuration = sessionId && this.runtimeSessions.session(sessionId)
             ? await this.runtimeSessions.configuration(sessionId)
             : undefined;
+          await this.publish();
           return {
             resolvedPending,
             runtimeId,
+            defaultPermissionMode: mode,
             runtimePermissionMode: mode,
             ...(configuration ? { configuration } : {}),
           };
@@ -1523,7 +1583,9 @@ export class DesktopController extends EventEmitter {
         const configuration = sessionId && this.broker.session(sessionId)
           ? await this.broker.configuration(sessionId, false)
           : undefined;
+        await this.publish();
         return {
+          runtimeId,
           defaultPermissionMode: mode,
           resolvedPending,
           ...(configuration ? { configuration } : {}),
@@ -1876,8 +1938,13 @@ export class DesktopController extends EventEmitter {
     this.emit("snapshot", snapshot);
     // Counts, capabilities and lifecycle changes still need a complete snapshot.
     // Subagent timestamps travel as small session patches through the event log.
-    const sessionKey = snapshot.sessions
-      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${session.runningSubagents?.count ?? ""}\t${session.subagentStopScope ?? ""}\t${session.executionStage ?? ""}\t${session.ownership === "DESKTOP_OBSERVED" ? session.turnState : ""}\t${session.mainTurnStopScope ?? ""}`)
+    const sessionKey = JSON.stringify({
+      defaultPermissionMode: snapshot.host?.defaultPermissionMode,
+      runtimeDefaults: snapshot.runtimes?.map(runtime => [runtime.id, runtime.defaultPermissionMode]),
+      detection: snapshot.runtime?.detection,
+      providers: snapshot.providers,
+    }) + "\n" + snapshot.sessions
+      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${JSON.stringify(session.desktopHandoff ?? null)}\t${session.runningSubagents?.count ?? ""}\t${session.subagentStopScope ?? ""}\t${session.executionStage ?? ""}\t${session.ownership === "DESKTOP_OBSERVED" ? session.turnState : ""}\t${session.mainTurnStopScope ?? ""}`)
       .sort()
       .join("\n");
     const previousKey = this.lastPublishedSessionKey;

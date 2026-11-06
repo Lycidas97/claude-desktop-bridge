@@ -16,6 +16,7 @@ export interface LocalBridgeRequest {
 
 export interface DesktopApi {
   getSnapshot(): Promise<DesktopControlSnapshot>;
+  chooseDirectory?(initialPath?: string): Promise<string | undefined>;
   createPairing(): Promise<DesktopControlSnapshot>;
   revokeDevice(deviceId: string): Promise<DesktopControlSnapshot>;
   setLaunchAtLogin(enabled: boolean): Promise<DesktopControlSnapshot>;

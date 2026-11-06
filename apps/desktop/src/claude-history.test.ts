@@ -9,6 +9,7 @@ import {
   isClaudeTranscriptAtTurnBoundary,
   parseClaudeTranscript,
   parseClaudeTranscriptEvidence,
+  parseClaudeTranscriptSnapshot,
   readClaudeSessionContextEstimate,
   readClaudeSessionHistory,
   readClaudeTranscriptSubagents,
@@ -1265,6 +1266,270 @@ describe("Claude transcript history", () => {
       text: "先用 curl 测试一下，再把 IPv6 转发一并开启。",
     });
     expect(afterAnswer.messages[2]?.interactivePrompt).toBeUndefined();
+  });
+
+  describe("peer inbox transcript receipts", () => {
+    async function fixture(records: Record<string, unknown>[]) {
+      const root = await mkdtemp(join(tmpdir(), "bridge-claude-peer-parser-"));
+      directories.push(root);
+      const transcript = join(root, "session.jsonl");
+      await writeFile(transcript, records.map(line).join("\n") + "\n", "utf8");
+      return transcript;
+    }
+
+    const start = { type: "user", uuid: "start", parentUuid: null, message: { role: "user", content: "Desktop input" } };
+    const previous = { type: "assistant", uuid: "previous-head", parentUuid: "start", message: { role: "assistant", content: "Ready", stop_reason: "end_turn" } };
+    const peer = { type: "user", uuid: "bridge-msg", parentUuid: "previous-head", isMeta: true,
+      origin: { kind: "peer", from: "uds:/tmp/bridge-reply.sock", msg_id: "bridge-msg" },
+      message: { role: "user", content: "phone text" } };
+
+    it.each([false, true])("makes a meta peer input busy through attachment=%s and keeps it hidden", async (attachment) => {
+      const transcript = await fixture([
+        start, previous, peer,
+        ...(attachment ? [{ type: "attachment", uuid: "tail", parentUuid: "bridge-msg", attachment: { type: "hook_additional_context" } }] : []),
+      ]);
+      const snapshot = await parseClaudeTranscriptSnapshot(transcript);
+      expect(snapshot).toMatchObject({
+        atTurnBoundary: false, pendingUserMessageId: "bridge-msg",
+        peerInputs: [{ messageId: "bridge-msg", completed: false }],
+      });
+      expect(snapshot.messages.map((message) => message.id)).toEqual(["start", "previous-head"]);
+      expect(snapshot.userMessages.map((message) => message.id)).toEqual(["start"]);
+      expect(await parseClaudeTranscriptSnapshot(transcript)).toEqual(snapshot);
+    });
+
+    it.each(["end_turn", "max_tokens", "stop_sequence", "refusal", "model_context_window_exceeded"])("completes the current peer input only on explicit %s", async (stopReason) => {
+      const transcript = await fixture([
+        start, previous, peer,
+        { type: "assistant", uuid: "done", parentUuid: "bridge-msg", message: { role: "assistant", content: "Finished", stop_reason: stopReason } },
+        { type: "attachment", uuid: "tail", parentUuid: "done", attachment: { type: "hook_additional_context" } },
+      ]);
+      const snapshot = await parseClaudeTranscriptSnapshot(transcript);
+      expect(snapshot).toMatchObject({ atTurnBoundary: true, peerInputs: [{ messageId: "bridge-msg", completed: true }] });
+      expect(snapshot.pendingUserMessageId).toBeUndefined();
+      expect(await parseClaudeTranscriptSnapshot(transcript)).toEqual(snapshot);
+      expect(await parseClaudeTranscript(transcript)).not.toHaveProperty("peerInputs");
+    });
+
+    it.each([null, "tool_use", "pause_turn"])("keeps a peer receipt incomplete on assistant stop_reason=%s", async (stopReason) => {
+      const transcript = await fixture([
+        start, previous, peer,
+        { type: "assistant", uuid: "working", parentUuid: "bridge-msg", message: { role: "assistant", content: "Working", stop_reason: stopReason } },
+        { type: "user", uuid: "tool-result", parentUuid: "working", isMeta: true, origin: { kind: "peer" },
+          message: { role: "user", content: [{ type: "text", text: "Result note" }, { type: "tool_result", tool_use_id: "tool", content: "Result" }] } },
+      ]);
+      expect(await parseClaudeTranscriptSnapshot(transcript)).toMatchObject({
+        atTurnBoundary: false, pendingUserMessageId: "bridge-msg", peerInputs: [{ messageId: "bridge-msg", completed: false }],
+      });
+    });
+
+    it("keeps only peer inputs and terminal evidence from the selected parent chain", async () => {
+      const transcript = await fixture([
+        start, previous, peer,
+        { type: "assistant", uuid: "old-done", parentUuid: "bridge-msg", message: { role: "assistant", content: "Old branch", stop_reason: "end_turn" } },
+        { ...peer, uuid: "selected-peer", origin: { kind: "peer", msg_id: "selected-peer" } },
+        { type: "attachment", uuid: "selected-tail", parentUuid: "selected-peer", attachment: { type: "hook_additional_context" } },
+      ]);
+      expect(await parseClaudeTranscriptSnapshot(transcript)).toMatchObject({
+        atTurnBoundary: false, pendingUserMessageId: "selected-peer", peerInputs: [{ messageId: "selected-peer", completed: false }],
+      });
+      await appendFile(transcript, line({ type: "assistant", uuid: "selected-done", parentUuid: "selected-tail", message: { role: "assistant", content: "Done", stop_reason: "end_turn" } }) + "\n");
+      expect(await parseClaudeTranscriptSnapshot(transcript)).toMatchObject({ peerInputs: [{ messageId: "selected-peer", completed: true }] });
+      await appendFile(transcript, line({ type: "assistant", uuid: "desktop-branch", parentUuid: "previous-head", message: { role: "assistant", content: "Desktop branch", stop_reason: "end_turn" } }) + "\n");
+      expect((await parseClaudeTranscriptSnapshot(transcript)).peerInputs ?? []).toEqual([]);
+    });
+
+    it("retains every selected peer id without inventing completion when a new user input starts", async () => {
+      const transcript = await fixture([
+        start, previous, peer,
+        { type: "user", uuid: "ordinary", parentUuid: "bridge-msg", message: { role: "user", content: "New Desktop input" } },
+        { type: "assistant", uuid: "ordinary-done", parentUuid: "ordinary", message: { role: "assistant", content: "Done", stop_reason: "end_turn" } },
+        { ...peer, uuid: "second-peer", parentUuid: "ordinary-done", origin: { kind: "peer", msg_id: "second-peer" }, message: { role: "user", content: [{ type: "text", text: "Second phone input" }] } },
+        { type: "assistant", uuid: "peer-done", parentUuid: "second-peer", message: { role: "assistant", content: "Done", stop_reason: "end_turn" } },
+        { ...peer, uuid: "third-peer", parentUuid: "peer-done", origin: { kind: "peer", msg_id: "third-peer" } },
+      ]);
+      const snapshot = await parseClaudeTranscriptSnapshot(transcript, { limit: 1 }, 1);
+      expect(snapshot).toMatchObject({
+        pendingUserMessageId: "third-peer", peerInputs: [
+          { messageId: "bridge-msg", completed: false },
+          { messageId: "second-peer", completed: true },
+          { messageId: "third-peer", completed: false },
+        ],
+      });
+      expect(await parseClaudeTranscriptSnapshot(transcript, { limit: 1 }, 1)).toEqual(snapshot);
+    });
+
+    it.each(["[Request interrupted by user]", "[Request interrupted by user for tool use]"])("marks %s as interrupted without successful completion", async (content) => {
+      const transcript = await fixture([
+        start, previous, peer,
+        { type: "user", uuid: "interrupt", parentUuid: "bridge-msg", message: { role: "user", content } },
+      ]);
+      expect(await parseClaudeTranscriptSnapshot(transcript)).toMatchObject({
+        atTurnBoundary: true, peerInputs: [{ messageId: "bridge-msg", completed: false, interrupted: true }],
+      });
+      await appendFile(transcript, line({ type: "assistant", uuid: "synthetic", parentUuid: "interrupt", message: { role: "assistant", content: "No response requested.", stop_reason: "stop_sequence", model: "<synthetic>" } }) + "\n");
+      expect(await parseClaudeTranscriptSnapshot(transcript)).toMatchObject({ peerInputs: [{ messageId: "bridge-msg", completed: false, interrupted: true }] });
+    });
+
+    it.each([
+      { origin: undefined },
+      { origin: { kind: "other" } },
+      { message: { role: "user", content: [{ type: "image", source: {} }] } },
+      { message: { role: "user", content: [{ type: "tool_result", content: "Result" }] } },
+      { toolUseResult: { content: "Result" } },
+      { isCompactSummary: true },
+      { message: { role: "user", content: "<local-command-stdout>Changed model</local-command-stdout>" } },
+    ])("preserves existing meta behavior for non-input record %j", async (overrides) => {
+      const transcript = await fixture([start, previous, { ...peer, ...overrides }]);
+      const snapshot = await parseClaudeTranscriptSnapshot(transcript);
+      expect(snapshot.atTurnBoundary).toBe(true);
+      expect(snapshot.pendingUserMessageId).toBeUndefined();
+      expect(snapshot.peerInputs ?? []).toEqual([]);
+      expect(snapshot.messages.map((message) => message.id)).toEqual(["start", "previous-head"]);
+    });
+  });
+
+  describe("review regressions: question waiting and background shells", () => {
+    async function fixture(records: Record<string, unknown>[]) {
+      const root = await mkdtemp(join(tmpdir(), "bridge-claude-review-parser-"));
+      directories.push(root);
+      const transcript = join(root, "session.jsonl");
+      await writeFile(transcript, records.map(line).join("\n") + "\n", "utf8");
+      return transcript;
+    }
+
+    const start = { type: "user", uuid: "start", parentUuid: null, message: { role: "user", content: "Run the check, then ask me." } };
+    const bash = { type: "assistant", uuid: "bash", parentUuid: "start", message: {
+      role: "assistant", stop_reason: null, content: [{ type: "tool_use", id: "bash-call", name: "Bash", input: { command: "true" } }],
+    } };
+    const question = { type: "assistant", uuid: "question", parentUuid: "bash", message: {
+      role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "question-call", name: "AskUserQuestion", input: {
+        questions: [{ question: "Continue?", header: "Next", options: [{ label: "Yes", description: "Continue" }, { label: "No", description: "Stop" }], multiSelect: false }],
+      } }],
+    } };
+    const bashResult = { type: "user", uuid: "bash-result", parentUuid: "question", message: {
+      role: "user", content: [{ type: "tool_result", tool_use_id: "bash-call", content: "Finished" }],
+    } };
+
+    it("#4 keeps a split Bash plus question batch busy until the Bash result arrives", async () => {
+      const transcript = await fixture([start, bash, question]);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).waitingForUserInput).not.toBe(true);
+      await appendFile(transcript, line(bashResult) + "\n");
+      const completedBash = await parseClaudeTranscriptSnapshot(transcript);
+      expect(completedBash.waitingForUserInput).toBe(true);
+      expect(completedBash.atTurnBoundary).toBe(false);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).waitingForUserInput).toBe(true);
+    });
+
+    it("#4 matches results by id on the selected branch", async () => {
+      const transcript = await fixture([
+        start, bash,
+        { ...bashResult, parentUuid: "bash" },
+        question,
+      ]);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).waitingForUserInput).not.toBe(true);
+      await appendFile(transcript, line({ ...bashResult, uuid: "other-result", message: {
+        role: "user", content: [{ type: "tool_result", tool_use_id: "other-call", content: "Finished" }],
+      } }) + "\n");
+      expect((await parseClaudeTranscriptSnapshot(transcript)).waitingForUserInput).not.toBe(true);
+    });
+
+    it("#15 preserves question waiting through transparent attachment tails", async () => {
+      const transcript = await fixture([
+        start,
+        { ...question, parentUuid: "start" },
+        { type: "attachment", uuid: "attachment", parentUuid: "question", attachment: { type: "hook_additional_context", content: ["Fixture context"] } },
+      ]);
+      expect(await parseClaudeTranscriptSnapshot(transcript)).toMatchObject({ waitingForUserInput: true, atTurnBoundary: false, terminalUuid: "attachment" });
+      await appendFile(transcript, line({ type: "user", uuid: "answer", parentUuid: "attachment", message: {
+        role: "user", content: [{ type: "tool_result", tool_use_id: "question-call", content: "Yes" }],
+      } }) + "\n");
+      expect((await parseClaudeTranscriptSnapshot(transcript)).waitingForUserInput).not.toBe(true);
+    });
+
+    it("does not carry an earlier question wait across a new user turn", async () => {
+      const transcript = await fixture([
+        start, { ...question, parentUuid: "start" },
+        { type: "user", uuid: "next-user", parentUuid: "question", message: { role: "user", content: "New task" } },
+        { type: "attachment", uuid: "attachment", parentUuid: "next-user", attachment: { type: "hook_additional_context" } },
+      ]);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).waitingForUserInput).not.toBe(true);
+    });
+
+    it("#3 exposes unresolved background Bash ids after end_turn and from cached snapshots", async () => {
+      const transcript = await fixture([
+        start, bash,
+        { ...bashResult, parentUuid: "bash", toolUseResult: { stdout: "", stderr: "", interrupted: false, backgroundTaskId: "shell-1" } },
+        { type: "assistant", uuid: "done", parentUuid: "bash-result", message: { role: "assistant", stop_reason: "end_turn", content: "The command continues in the background." } },
+      ]);
+      const snapshot = await parseClaudeTranscriptSnapshot(transcript);
+      expect(snapshot.atTurnBoundary).toBe(true);
+      expect(snapshot.pendingBackgroundShellTaskIds).toEqual(["shell-1"]);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual(["shell-1"]);
+      await appendFile(transcript, line({ type: "user", uuid: "finished", parentUuid: "done", isMeta: true, message: {
+        role: "user", content: "<task-notification><task-id>shell-1</task-id><status>completed</status></task-notification>",
+      } }) + "\n");
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual([]);
+    });
+
+    it.each(["completed", "failed", "stopped", "killed"])("#3 clears local_bash attachment evidence on %s", async (status) => {
+      const transcript = await fixture([
+        start,
+        { type: "attachment", attachment: { type: "task_status", taskId: "shell-2", taskType: "local_bash", status: "running" } },
+        { type: "attachment", attachment: { type: "task_status", taskId: "agent-1", taskType: "local_agent", status: "running" } },
+      ]);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual(["shell-2"]);
+      await appendFile(transcript, line({ type: "attachment", attachment: { type: "task_status", taskId: "shell-2", taskType: "local_bash", status } }) + "\n");
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual([]);
+    });
+
+    it("#3 excludes background starts and status anchors on an abandoned branch", async () => {
+      const transcript = await fixture([
+        start, bash,
+        { ...bashResult, parentUuid: "bash", toolUseResult: { backgroundTaskId: "old-shell" } },
+        { type: "attachment", attachment: { type: "task_status", taskId: "old-status-shell", taskType: "local_bash", status: "running" } },
+        { type: "assistant", uuid: "selected", parentUuid: "start", message: { role: "assistant", stop_reason: "end_turn", content: "Selected branch" } },
+      ]);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual([]);
+    });
+
+    it.each(["failed", "stopped"])("#3 uses actual %s notifications but ignores a quoted one", async (status) => {
+      const transcript = await fixture([
+        start, bash,
+        { ...bashResult, parentUuid: "bash", toolUseResult: { backgroundTaskId: "shell-note" } },
+        { type: "user", uuid: "quote", parentUuid: "bash-result", message: {
+          role: "user", content: `Explain this: <task-notification><task-id>shell-note</task-id><status>${status}</status></task-notification>`,
+        } },
+      ]);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual(["shell-note"]);
+      await appendFile(transcript, line({ type: "user", uuid: "note", parentUuid: "quote", isMeta: true, message: {
+        role: "user", content: `<task-notification><task-id>shell-note</task-id><status>${status}</status></task-notification>`,
+      } }) + "\n");
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual([]);
+    });
+
+    it("#3 clears a shell only after a successful matching TaskStop result", async () => {
+      const transcript = await fixture([
+        start, bash,
+        { ...bashResult, parentUuid: "bash", toolUseResult: { backgroundTaskId: "shell-3" } },
+        { type: "assistant", uuid: "stop-call", parentUuid: "bash-result", message: { role: "assistant", content: [
+          { type: "tool_use", id: "stop-tool", name: "TaskStop", input: { task_id: "shell-3" } },
+        ] } },
+        { type: "user", uuid: "stop-failed", parentUuid: "stop-call", toolUseResult: { task_id: "shell-3", message: "Could not stop task" }, message: {
+          role: "user", content: [{ type: "tool_result", tool_use_id: "stop-tool", is_error: true, content: "Could not stop task" }],
+        } },
+      ]);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual(["shell-3"]);
+      await appendFile(transcript, [
+        line({ type: "assistant", uuid: "retry-stop", parentUuid: "stop-failed", message: { role: "assistant", content: [
+          { type: "tool_use", id: "retry-stop-tool", name: "TaskStop", input: { task_id: "shell-3" } },
+        ] } }),
+        line({ type: "user", uuid: "stop-ok", parentUuid: "retry-stop", toolUseResult: {
+          task_id: "shell-3", message: "Successfully stopped task: shell-3",
+        }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "retry-stop-tool", content: "Stopped" }] } }),
+      ].join("\n") + "\n");
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual([]);
+    });
   });
 
   it("recognizes turn boundary on forked sessions after local /model, /compact, and attachment records", async () => {

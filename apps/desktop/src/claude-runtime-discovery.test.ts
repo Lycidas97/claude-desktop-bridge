@@ -217,6 +217,7 @@ describe("Claude runtime discovery privacy", () => {
     };
     const runtime = await prepareClaudeRuntime(environment, undefined, "darwin", home);
     expect(runtime.credentialPath).toBe(credentialPath);
+    expect(runtime.configSource).toEqual({ type: "fixed-gateway", profile: "claude-3p", path: credentialPath });
     expect(runtime.environment.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:3425");
     expect(runtime.environment.CLAUDE_CODE_HOST_CREDS_FILE).toBeUndefined();
     expect(runtime.environment.CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH).toBeUndefined();

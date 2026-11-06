@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backgroundSubagentBadge, formatElapsed, sessionActivity, subagentStalledSeconds } from "./session-activity.js";
+import { backgroundSubagentBadge, formatElapsed, sessionActivity, sessionQueueLabel, subagentStalledSeconds } from "./session-activity.js";
 
 describe("sessionActivity", () => {
   it("disappears when the session is idle or waiting", () => {
@@ -14,6 +14,14 @@ describe("sessionActivity", () => {
     }])).toEqual({ kind: "queued", label: "等待电脑端空闲" });
     expect(sessionActivity({ turnState: "running", ownership: "BRIDGE_RUNNING", pendingCount: 1 }, []))
       .toEqual({ kind: "queued", label: "等待前一条消息完成" });
+  });
+
+  it("requires closing the Desktop session instead of waiting idle when explicit handoff is present", () => {
+    const session = { turnState: "queued", ownership: "DESKTOP_OBSERVED", pendingCount: 1,
+      desktopHandoff: { state: "close-desktop", canReturn: false },
+    } as const;
+    expect(sessionQueueLabel(session)).toBe("等待关闭此 Desktop 会话");
+    expect(sessionActivity(session, [])).toEqual({ kind: "queued", label: "等待关闭此 Desktop 会话" });
   });
 
   it("reports queued sessions without a timer", () => {

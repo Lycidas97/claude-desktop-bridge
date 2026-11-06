@@ -6,7 +6,8 @@ import { cp, readdir, readFile } from "node:fs/promises";
 
 const root = dirname(fileURLToPath(import.meta.url));
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  envDir: mode === "test" ? false : root,
   base: "./",
   plugins: [react(), {
     name: "local-pdf-assets",
@@ -45,4 +46,4 @@ export default defineConfig({
     // font-src 'self' CSP in index.html and get blocked in packaged builds.
     assetsInlineLimit: (filePath) => (/\.woff2?$/i.test(filePath) ? false : undefined),
   },
-});
+}));

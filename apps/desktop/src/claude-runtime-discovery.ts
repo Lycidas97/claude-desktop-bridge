@@ -4,7 +4,7 @@ import { access, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import type { BridgeEffort, BridgeModelInfo } from "@bridge/protocol";
+import type { BridgeEffort, BridgeModelInfo, BridgeRuntimeDetection } from "@bridge/protocol";
 
 const execFileAsync = promisify(execFile);
 const GATEWAY_EFFORT_LEVELS = new Set<BridgeEffort>(["low", "medium", "high", "xhigh", "max"]);
@@ -188,6 +188,7 @@ export interface ClaudeRuntime {
   executablePath?: string;
   /** Source file: a Host credential file or the active fixed gateway profile. */
   credentialPath?: string;
+  configSource?: BridgeRuntimeDetection["configSource"];
   version?: string;
 }
 
@@ -199,6 +200,7 @@ export async function prepareClaudeRuntime(
 ): Promise<ClaudeRuntime> {
   const prepared = buildClaudeRuntimeEnvironment(environment);
   let credentialPath = await findClaudeHostCredentials(prepared, home, undefined, platform);
+  let configType: BridgeRuntimeDetection["configSource"]["type"] = credentialPath ? "host-credentials" : "none";
   if (credentialPath) {
     applyClaudeHostCredentials(prepared, credentialPath);
   } else {
@@ -229,6 +231,7 @@ export async function prepareClaudeRuntime(
       const url = URL.parse(baseUrl);
       if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) continue;
       credentialPath = path;
+      configType = "fixed-gateway";
       prepared.ANTHROPIC_BASE_URL = baseUrl;
       prepared.ANTHROPIC_AUTH_TOKEN = scheme === "bearer" ? key : "";
       prepared.ANTHROPIC_API_KEY = scheme === "x-api-key" ? key : "";
@@ -239,11 +242,8 @@ export async function prepareClaudeRuntime(
       break;
     }
   }
-  const previousExecutable = previous?.executablePath && await isExecutable(previous.executablePath, platform)
-    ? previous.executablePath
-    : undefined;
-  const executablePath = previousExecutable ?? await findClaudeExecutable(prepared, home, platform);
-  let version = executablePath === previous?.executablePath ? previous?.version : undefined;
+  const executablePath = await findClaudeExecutable(prepared, home, platform);
+  let version: string | undefined;
   if (executablePath && !version) {
     try {
       const result = await execFileAsync(executablePath, ["--version"], {
@@ -260,6 +260,12 @@ export async function prepareClaudeRuntime(
   }
   return {
     environment: prepared,
+    configSource: {
+      type: configType === "none" && prepared.ANTHROPIC_BASE_URL ? "environment" : configType,
+      profile: credentialPath && /(?:^|[\\/])Claude-3p(?:[\\/]|$)/iu.test(credentialPath) ? "claude-3p"
+        : credentialPath && /(?:^|[\\/])Claude(?:[\\/]|$)/iu.test(credentialPath) ? "claude" : "unknown",
+      ...(credentialPath ? { path: credentialPath } : {}),
+    },
     ...(executablePath ? { executablePath } : {}),
     ...(credentialPath ? { credentialPath } : {}),
     ...(version ? { version } : {}),
@@ -525,15 +531,15 @@ export async function discoverClaudeGatewayModels(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
-    return [];
+    throw new Error("Gateway model discovery request failed");
   }
-  if (!response.ok) return [];
+  if (!response.ok) throw new Error(`Gateway model discovery failed (HTTP ${response.status})`);
   let payload: GatewayModelsResponsePayload;
   try {
     payload = (await response.json()) as GatewayModelsResponsePayload;
   } catch {
-    return [];
+    throw new Error("Gateway model discovery returned invalid JSON");
   }
-  if (!Array.isArray(payload?.data)) return [];
+  if (!Array.isArray(payload?.data)) throw new Error("Gateway model discovery returned invalid data");
   return parseClaudeGatewayModels(payload.data);
 }

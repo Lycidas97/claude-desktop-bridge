@@ -1,0 +1,86 @@
+# Testing
+
+Use Node.js 22.13+ and the dependencies from `npm ci`. Dependency installation runs
+without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
+`trash-put` (`trash-cli`) on Linux, or Windows PowerShell and the system Recycle Bin.
+
+| Command | Coverage |
+| --- | --- |
+| `npm test` | Desktop, client, protocol, relay, then `plugins/magpie-quota`; sequential Vitest runs, at most two workers each |
+| `npm run typecheck` | All workspace typechecks, then the quota plugin explicitly |
+| `npm run verify` | Typecheck, five test suites, then the full root build; stops at the first failing stage |
+| `npm run test:infra` | Small fixtures for runner failure propagation and recycle-bin behavior |
+| `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture |
+| `npm run ci:run -- run build -w @bridge/protocol` | Example of wrapping another npm command with Trash-only Node cleanup |
+
+The quota plugin is outside the `apps/*` and `packages/*` workspaces; root test and
+typecheck include it explicitly. These commands do not enable real model sessions
+or the opt-in native WebRTC tests. Unit tests use their existing mocks and fixtures.
+Browser testing uses its own local fixture rather than a production service.
+Unit tests ignore the client's local env files and clear inherited `VITE_*` values;
+application build commands continue to use their configured build environment.
+CI tests the checked-out source under `apps/`, `packages/`, and the quota plugin.
+Snapshots under the ignored `output/` directory are not CI inputs; fixes must be
+integrated into the normal source before their candidates can be covered by CI.
+
+## Reports
+
+`npm test` writes `artifacts/tests/<suite>.xml` (JUnit), `<suite>.log` (stdout,
+stderr, and runner errors), and `summary.json`. The suite names are `desktop`,
+`client`, `protocol`, `relay`, and `quota`. A failed process, launch error, or missing
+or empty JUnit report fails the command. Later suites still run and retain evidence.
+A suite's previous JUnit report is sent to Trash before that suite starts, so it
+cannot satisfy the new run. Logs are replaced and the summary is updated after
+each suite. Reports are local artifacts; avoid including them in source commits.
+
+Browser evidence is written to `artifacts/browser-e2e`. To install the Chromium
+version matching the existing `playwright-core` dependency, run:
+
+```bash
+node node_modules/playwright-core/cli.js install --with-deps chromium
+```
+
+```bash
+npm run test:browser
+```
+
+Alternatively set `CHROME_PATH` to an installed Chrome/Chromium executable. The
+browser script owns fixture startup and shutdown; no separately running relay is
+required. Six independent contexts cover list/chat rename and delivery/approval/
+reconnect in light and dark at 375×812. The actual mobile App, hooks, crypto and
+local relay run normally; desktop RPCs and model responses are simulated. These
+checks do not exercise a native Desktop executor, an Android WebView or an IME.
+Failures retain screenshots, HTML, traces, console errors and RPC records.
+
+After the protocol and relay builds exist, a local debug fixture can be kept open:
+
+```bash
+BRIDGE_E2E_PORT=18909 node --require ./scripts/recycle-cleanup.cjs scripts/browser-e2e.mjs --serve
+```
+
+It listens only on loopback and prints a temporary test pairing URL. Use that
+exact origin, including its hostname, so the App's same-origin CSP remains valid.
+Stop the command to close its owned relay and HTTP server.
+
+## Cleanup boundary
+
+The runners append the checkout's `scripts/recycle-cleanup.cjs` to `NODE_OPTIONS`,
+keeping existing options and environment variables. Paths are resolved at runtime
+and quoted for checkouts containing spaces. The preload redirects Node's sync,
+promise, and callback `rm`, `unlink`, and `rmdir` APIs to the operating system's
+recycle command. Missing paths are ignored only with `force: true`. Unsupported
+systems, missing recycle commands, and recycle failures surface as errors; there
+is no permanent-delete fallback.
+
+This covers Node processes that inherit `NODE_OPTIONS`. It does not intercept
+native tools, shell deletion commands, browser internals, or processes that discard
+the environment. Use the operating system's Trash command for manual cleanup.
+
+## CI
+
+CI retains Linux verification, Windows/Linux installers, Android, and iOS builds,
+and adds macOS unit tests and browser E2E. Test reports and build artifacts upload
+with `if: always()`, including after failures. The fixed `Quality gate` check passes
+only when all seven jobs succeed; failed, cancelled, and skipped jobs fail it.
+Repository administrators can select that check as required after the workflow is
+published. Branch protection and release workflows are configured separately.

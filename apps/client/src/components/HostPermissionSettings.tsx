@@ -58,16 +58,18 @@ const RUNTIME_IDS: BridgeDesktopRuntimeId[] = [
 
 export function HostPermissionSettings({
   snapshot,
+  connected = true,
   onLoadSessionConfiguration,
   onConfigureHostPermission,
 }: {
   snapshot?: BridgeHostSnapshot;
+  connected?: boolean;
   onLoadSessionConfiguration(sessionId: string): Promise<BridgeSessionConfiguration>;
   onConfigureHostPermission(
     runtimeId: BridgeDesktopRuntimeId,
     mode: BridgePermissionMode,
     sessionId?: string,
-  ): Promise<void>;
+  ): Promise<BridgePermissionMode | void>;
 }) {
   const [runtimeId, setRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
   const [mode, setMode] = useState<BridgePermissionMode>("standard");
@@ -83,6 +85,8 @@ export function HostPermissionSettings({
     .sort((left, right) => right.lastActivityAt - left.lastActivityAt)[0]?.sessionId;
   const hostId = snapshot?.host.hostId;
   const claudeMode = snapshot?.host.defaultPermissionMode ?? "standard";
+  const runtimeDefaults = snapshot?.host.capabilities.includes("permission.runtime-defaults.v1") ?? false;
+  const runtimeMode = snapshot?.runtimes?.find((runtime) => runtime.id === runtimeId)?.defaultPermissionMode;
 
   useEffect(() => {
     setError(undefined);
@@ -93,6 +97,13 @@ export function HostPermissionSettings({
     if (runtimeId === "claude-desktop") {
       setMode(claudeMode);
       setSavedMode(claudeMode);
+      return;
+    }
+    if (runtimeDefaults) {
+      if (runtimeMode !== undefined) {
+        setMode(runtimeMode);
+        setSavedMode(runtimeMode);
+      }
       return;
     }
     if (!sessionId) return;
@@ -112,7 +123,7 @@ export function HostPermissionSettings({
         if (active) setLoading(false);
       });
     return () => { active = false; };
-  }, [hostId, runtimeId, sessionId, claudeMode, supported, onLoadSessionConfiguration]);
+  }, [hostId, runtimeId, sessionId, claudeMode, runtimeMode, runtimeDefaults, supported, onLoadSessionConfiguration]);
 
   useEffect(() => {
     if (!confirmFullAccess) return;
@@ -123,13 +134,14 @@ export function HostPermissionSettings({
   }, [confirmFullAccess, saving]);
 
   async function save(): Promise<void> {
-    if (saving || savedMode === undefined) return;
+    if (!connected || saving || savedMode === undefined) return;
     setSaving(true);
     setError(undefined);
     try {
-      await onConfigureHostPermission(runtimeId, mode, runtimeId === "claude-desktop" ? undefined : sessionId);
-      if (runtimeId === "claude-desktop") {
-        setSavedMode(mode);
+      const confirmed = await onConfigureHostPermission(runtimeId, mode, runtimeDefaults || runtimeId === "claude-desktop" ? undefined : sessionId);
+      if (runtimeDefaults || runtimeId === "claude-desktop") {
+        setMode(confirmed ?? mode);
+        setSavedMode(confirmed ?? mode);
       } else {
         const configuration = await onLoadSessionConfiguration(sessionId!);
         if (!configuration.permissionPolicy) throw new Error("电脑未返回授权配置");
@@ -180,13 +192,14 @@ export function HostPermissionSettings({
               <small>仅影响这台电脑上的 {runtimeName} 会话，其他应用的默认授权保持各自设置。</small>
             </span>
           </div>
-          {runtimeId !== "claude-desktop" && !sessionId ? (
-            <p className="mobile-settings-row">需要先在这台电脑上创建或同步一个 {runtimeName} 会话，才能读取和修改该应用的默认授权。</p>
+          {!connected && <p className="mobile-settings-row" role="status">电脑未连接，显示上次确认的默认授权。</p>}
+          {runtimeId !== "claude-desktop" && !runtimeDefaults && !sessionId ? (
+            <p className="mobile-settings-row">需要先在这台电脑上创建或同步一个 {runtimeName} 会话，才能读取和修改该应用的默认授权。更新电脑端 Bridge 后可直接设置。</p>
           ) : loading ? (
             <p className="mobile-settings-row" role="status"><LoaderCircle className="is-spinning" size={15} />正在读取 {runtimeName} 默认授权</p>
           ) : (
             <div className="mobile-settings-row">
-              <PermissionModeControls scope="host" value={mode} disabled={saving || savedMode === undefined} onChange={setMode} />
+              <PermissionModeControls scope="host" value={mode} disabled={!connected || saving || savedMode === undefined} onChange={setMode} />
             </div>
           )}
           {savedMode !== undefined && (
@@ -194,7 +207,7 @@ export function HostPermissionSettings({
               <button
                 type="button"
                 className="secondary-button"
-                disabled={loading || saving || mode === savedMode}
+                disabled={!connected || loading || saving || mode === savedMode}
                 onClick={() => {
                   if (mode === "full-access" && savedMode !== "full-access") setConfirmFullAccess(true);
                   else void save();

@@ -54,7 +54,7 @@ interface ReceiptIndex {
 
 const RECEIPT_ITEM_TYPES = new Set<BridgeEventType>([
   "session.observed", "user.message.accepted", "assistant.completed",
-  "tool.started", "tool.progress", "tool.completed",
+  "tool.started", "tool.progress", "tool.completed", "session.desktop-handoff",
 ]);
 const DEDUP_FIELDS = ["text", "interactivePrompt", "taskPlan", "summary"] as const;
 
@@ -299,6 +299,10 @@ export class SessionEventLog extends EventEmitter {
           const { latestText: _latestText, reportText: _reportText, ...subagent } = event.data.subagent as BridgeSubagentSummary;
           data.subagent = subagent;
         }
+        if (event.type === "session.desktop-handoff") {
+          data.state = event.data.state;
+          if (event.data.desktopProcesses !== undefined) data.desktopProcesses = event.data.desktopProcesses;
+        }
         // Fields used for edit detection persist as fixed-size digests, not transcript payloads.
         if (fromReceipt) {
           if (event.data.dedup) data.dedup = event.data.dedup;
@@ -477,6 +481,10 @@ export class SessionEventLog extends EventEmitter {
       ...(receipt?.terminal ? { terminal: receipt.terminal } : {}),
       ...(messageId ? { messageId } : {}),
     };
+  }
+
+  latestDesktopHandoffs(): BridgeEvent[] {
+    return [...this.latestItems.values()].filter((event) => event.type === "session.desktop-handoff");
   }
 
   latestTaskEvents(sessionId: string): BridgeEvent[] {

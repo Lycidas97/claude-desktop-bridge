@@ -26,6 +26,7 @@ import { TranscriptObserver } from "./transcript-observer.js";
 import { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
 import { DESKTOP_APP_DEFINITIONS } from "./desktop-app-definitions.js";
 import { ClaudeDesktopSessionRegistrar } from "./claude-desktop-session-registrar.js";
+import { ClaudeDesktopInbox } from "./claude-desktop-inbox.js";
 import { ElectronEvidencePreviewRenderer } from "./artifact-preview.js";
 import { EvidenceManager } from "./evidence-manager.js";
 import { EvidenceStore } from "./evidence-store.js";
@@ -181,8 +182,14 @@ export async function createServiceRuntime(options: { userDataPath: string; onSt
       apiKeyPath: join(userDataPath, "anthropic-api-key-v1.json"),
       safeStorage,
       claude3pStatus: () => runtimeStatus(),
+      claude3pModels: (): ReturnType<SessionBroker["availableModels"]> => broker.availableModels(),
     });
     const runtimePool = new ProviderRuntimePool(providers);
+    const desktopInbox = process.platform === "darwin" ? new ClaudeDesktopInbox() : undefined;
+    if (desktopInbox) {
+      desktopInbox.onError(() => process.stderr.write("Bridge Desktop inbox receipt error\n"));
+      resources.defer("Desktop inbox", () => desktopInbox.close());
+    }
     const broker = new SessionBroker({
       paths: runtimePaths,
       eventLog,
@@ -193,6 +200,7 @@ export async function createServiceRuntime(options: { userDataPath: string; onSt
       runtimePool,
       evidence,
       desktopRegistrar,
+      ...(desktopInbox ? { desktopInbox } : {}),
     });
     resources.defer("Session broker", () => broker.close());
     const permissionHook = new ClaudePermissionHook({

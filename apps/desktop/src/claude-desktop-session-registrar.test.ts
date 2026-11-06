@@ -19,6 +19,8 @@ import {
   parseWindowsClaudeDesktopProfiles,
 } from "./claude-desktop-session-registrar.js";
 import type { ClaudeRuntimePaths } from "./platform.js";
+import { listClaudeDesktopSessions } from "./claude-desktop-sessions.js";
+import { SessionDesktopRegistration, type SessionDesktopRegistrationOptions } from "./session-desktop-registration.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -129,6 +131,268 @@ describe("parseClaudeDesktopProfiles", () => {
 });
 
 describe("ClaudeDesktopSessionRegistrar", () => {
+  it.each(["written", "adopted", "settings-updated"] as const)("retains native registration when grouping fails and retries against that record (%s)", async mode => {
+    const { paths, profileRoot, accountDir, root } = await fixture();
+    const sessionId = randomUUID();
+    const desktopSessionId = `local_${mode === "written" ? sessionId : randomUUID()}`;
+    const metadataPath = join(await realpath(accountDir), `${desktopSessionId}.json`);
+    const configPath = join(profileRoot, "..", "claude_desktop_config.json");
+    const config = { preferences: { epitaxyPrefs: { "dframe-group-scopes": { scope: {
+      groups: [{ id: "cg-other", name: "Other" }], assignments: {},
+    } } } } };
+    await writeFile(configPath, JSON.stringify(config));
+    let transcriptPath: string | undefined;
+    let pid: number | undefined = 20;
+    const findTranscript = vi.fn(async () => transcriptPath);
+    const registrar = new ClaudeDesktopSessionRegistrar({
+      paths, platform: "darwin", now: () => 100,
+      listProfiles: async () => pid === undefined ? [] : [{ pid, userDataDir: join(profileRoot, "..") }],
+      findTranscript,
+    });
+    const register = vi.spyOn(registrar, "register");
+    const context: NonNullable<ReturnType<SessionDesktopRegistrationOptions["context"]>> = {
+      session: { sessionId, cwd: root, title: "Grouped", createdAt: 1, projectId: "cg-server" },
+      activeTurn: false, profile: {},
+      ...(mode === "settings-updated" ? { permissionMode: "full-access" } : {}),
+    };
+    const persist = vi.fn(async () => {});
+    const record = vi.fn(async () => {});
+    const registration = new SessionDesktopRegistration({ registrar, context: () => context, persist, record, changed: vi.fn() });
+    try {
+      await registration.reconcile(sessionId);
+      expect(context.session.desktopRegistration?.state).toBe("waiting-transcript");
+      transcriptPath = await transcript(paths, sessionId, root);
+      if (mode !== "written") {
+        await writeFile(metadataPath, JSON.stringify({ sessionId: desktopSessionId, cliSessionId: sessionId, cwd: root, title: "Adopted", permissionMode: "default", adoptedFromOtherSurface: true }));
+      }
+      await registration.reconcile(sessionId);
+      const failed = context.session.desktopRegistration!;
+      expect(failed).toMatchObject({
+        state: "failed", detail: expect.stringContaining("分组"), desktopSessionId,
+        profileSessionsRoot: profileRoot, metadataPath, metadataSha256: expect.any(String),
+        registeredAt: 100, nativeRegistrationState: mode === "adopted" ? "registered" : "restart-required",
+        ...(mode !== "adopted" ? { claudePidAtRegistration: 20 } : {}),
+        ...(mode === "settings-updated" ? { settingsReloadRequired: true } : {}),
+      });
+      expect(failed).not.toHaveProperty("groupAssignment");
+      expect(context.session.desktopSessionId).toBe(desktopSessionId);
+      expect(JSON.parse(await readFile(metadataPath, "utf8"))).toMatchObject({ sessionId: desktopSessionId, cliSessionId: sessionId });
+      expect(persist).toHaveBeenCalledTimes(2);
+      expect(record).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ state: "failed", desktopSessionId, detail: expect.stringContaining("分组") }) }));
+      expect(registrar.publicInfo(failed)).not.toHaveProperty("metadataPath");
+      expect(registrar.publicInfo(failed)).not.toHaveProperty("nativeRegistrationState");
+      await registration.reconcile(sessionId);
+      expect(register).toHaveBeenCalledTimes(2);
+
+      config.preferences.epitaxyPrefs["dframe-group-scopes"].scope.groups.push({ id: "cg-server", name: "Server" });
+      await writeFile(configPath, JSON.stringify(config));
+      // Retry without a running profile or a discoverable transcript: the saved native record owns identity.
+      pid = undefined;
+      transcriptPath = undefined;
+      findTranscript.mockClear();
+      const metadataBeforeRetry = await readFile(metadataPath, "utf8");
+      await registration.reconcile(sessionId, true);
+      expect(context.session.desktopRegistration).toMatchObject({
+        state: mode === "adopted" ? "registered" : "restart-required",
+        desktopSessionId, metadataPath, profileSessionsRoot: profileRoot, groupAssignment: "saved",
+        ...(mode !== "adopted" ? { claudePidAtRegistration: 20 } : {}),
+      });
+      expect(context.session.desktopRegistration).not.toHaveProperty("nativeRegistrationState");
+      expect(findTranscript).not.toHaveBeenCalled();
+      expect(await readFile(metadataPath, "utf8")).toBe(metadataBeforeRetry);
+      expect(JSON.parse(await readFile(configPath, "utf8")).preferences.epitaxyPrefs["dframe-group-scopes"].scope.assignments)
+        .toEqual({ [`code:${desktopSessionId}`]: "cg-server" });
+      pid = 21;
+      await registration.reconcile(sessionId);
+      expect(context.session.desktopRegistration?.state).toBe("registered");
+      expect(context.session.desktopSessionId).toBe(desktopSessionId);
+    } finally {
+      await registration.close();
+    }
+  });
+
+  it.each(["assignments", "members"])("assigns the selected group once after the first transcript (%s)", async format => {
+    const { paths, profileRoot, root } = await fixture();
+    const sessionId = randomUUID();
+    const desktopId = `local_${sessionId}`;
+    const key = `code:${desktopId}`;
+    const configPath = join(profileRoot, "..", "claude_desktop_config.json");
+    const config = {
+      untouched: { value: "preserve" },
+      preferences: { epitaxyPrefs: format === "assignments" ? {
+        "dframe-group-scopes": {
+          "other-scope": { groups: [{ id: "cg-unrelated", name: "Other scope" }], assignments: {} },
+          "account/workspace": {
+            groups: [{ id: "cg-server", name: "服务器管理" }, { id: "cg-other", name: "Other" }],
+            assignments: { "code:local_keep": "cg-other" } as Record<string, string>,
+          },
+        },
+      } : {
+        "dframe-code-sections": { "account/workspace": { sections: [
+          { id: "cg-server", name: "服务器管理", kind: "manual", shown: true, members: [] as string[] },
+          { id: "cg-other", name: "Other", kind: "manual", shown: true, members: ["code:local_keep"] },
+        ] } },
+      } },
+    };
+    const original = JSON.stringify(config);
+    await writeFile(configPath, original);
+    let transcriptPath: string | undefined;
+    const registrar = new ClaudeDesktopSessionRegistrar({
+      paths, platform: "darwin", listProfiles: async () => [{ pid: 20, userDataDir: join(profileRoot, "..") }],
+      findTranscript: async () => transcriptPath,
+    });
+    const input = { sessionId, cwd: root, title: "Grouped", createdAt: 1, lastActivityAt: 2, groupId: "cg-server" };
+    const waiting = await registrar.register(input);
+    expect(waiting.state).toBe("waiting-transcript");
+    expect(await readFile(configPath, "utf8")).toBe(original);
+    transcriptPath = await transcript(paths, sessionId, root);
+    const registered = await registrar.register(input, waiting);
+    expect(registered.groupAssignment).toBe("saved");
+    expect((await listClaudeDesktopSessions([profileRoot])).find(session => session.cliSessionId === sessionId))
+      .toMatchObject({ groupId: "cg-server", groupName: "服务器管理" });
+    expect(registrar.publicInfo(registered)).not.toHaveProperty("groupAssignment");
+    const saved = JSON.parse(await readFile(configPath, "utf8"));
+    expect(saved.untouched).toEqual(config.untouched);
+    const scope = format === "assignments"
+      ? saved.preferences.epitaxyPrefs["dframe-group-scopes"]["account/workspace"]
+      : saved.preferences.epitaxyPrefs["dframe-code-sections"]["account/workspace"];
+    if (format === "assignments") {
+      expect(scope.assignments["code:local_keep"]).toBe("cg-other");
+      expect(saved.preferences.epitaxyPrefs["dframe-group-scopes"]["other-scope"]).toEqual(
+        config.preferences.epitaxyPrefs["dframe-group-scopes"]!["other-scope"],
+      );
+      scope.assignments[key] = "cg-other";
+    } else {
+      expect(scope.sections[1].members).toEqual(["code:local_keep"]);
+      scope.sections[0].members = [];
+      scope.sections[1].members.push(key);
+    }
+    const moved = JSON.stringify(saved);
+    await writeFile(configPath, moved);
+    const again = await registrar.register(input, registered);
+    expect(await readFile(configPath, "utf8")).toBe(moved);
+    expect((await listClaudeDesktopSessions([profileRoot])).find(session => session.cliSessionId === sessionId)?.groupId).toBe("cg-other");
+    if (format === "assignments") delete scope.assignments[key];
+    else scope.sections[1].members = ["code:local_keep"];
+    const ungrouped = JSON.stringify(saved);
+    await writeFile(configPath, ungrouped);
+    await registrar.register(input, again);
+    expect(await readFile(configPath, "utf8")).toBe(ungrouped);
+    expect((await listClaudeDesktopSessions([profileRoot])).find(session => session.cliSessionId === sessionId)?.groupId).toBeUndefined();
+  });
+
+  it("does not guess a group in another profile when the selected group is missing", async () => {
+    const { paths, profileRoot, root } = await fixture();
+    const sessionId = randomUUID();
+    const transcriptPath = await transcript(paths, sessionId, root);
+    const activeConfig = join(profileRoot, "..", "claude_desktop_config.json");
+    const otherRoot = join(root, "Other-profile", "claude-code-sessions");
+    await mkdir(otherRoot, { recursive: true });
+    paths.desktopSessions.push(otherRoot);
+    const otherConfig = join(otherRoot, "..", "claude_desktop_config.json");
+    const contents = JSON.stringify({ preferences: { epitaxyPrefs: { "dframe-group-scopes": {
+      scope: { groups: [{ id: "cg-other", name: "Other" }], assignments: {} },
+    } } } });
+    const otherContents = contents.replace("cg-other", "cg-missing");
+    await writeFile(activeConfig, contents);
+    await writeFile(otherConfig, otherContents);
+    const registrar = new ClaudeDesktopSessionRegistrar({
+      paths, platform: "darwin", listProfiles: async () => [{ pid: 20, userDataDir: join(profileRoot, "..") }],
+      findTranscript: async () => transcriptPath,
+    });
+    await expect(registrar.register({ sessionId, cwd: root, title: "Grouped", createdAt: 1, lastActivityAt: 2, groupId: "cg-missing" }))
+      .resolves.toMatchObject({ state: "failed", detail: expect.stringContaining("分组"), desktopSessionId: `local_${sessionId}`, profileSessionsRoot: profileRoot, nativeRegistrationState: "restart-required" });
+    expect(await readFile(activeConfig, "utf8")).toBe(contents);
+    expect(await readFile(otherConfig, "utf8")).toBe(otherContents);
+  });
+
+  it("keeps an existing direct Desktop assignment on first registration", async () => {
+    const { paths, profileRoot, root } = await fixture();
+    const sessionId = randomUUID();
+    const configPath = join(profileRoot, "..", "claude_desktop_config.json");
+    const contents = JSON.stringify({ preferences: { epitaxyPrefs: { "dframe-group-scopes": { scope: {
+      groups: [{ id: "cg-server", name: "Server" }, { id: "cg-other", name: "Other" }],
+      assignments: { [`local_${sessionId}`]: "cg-other" },
+    } } } } });
+    await writeFile(configPath, contents);
+    const transcriptPath = await transcript(paths, sessionId, root);
+    const registrar = new ClaudeDesktopSessionRegistrar({
+      paths, platform: "darwin", listProfiles: async () => [{ pid: 20, userDataDir: join(profileRoot, "..") }],
+      findTranscript: async () => transcriptPath,
+    });
+    expect(await registrar.register({ sessionId, cwd: root, title: "Grouped", createdAt: 1, lastActivityAt: 2, groupId: "cg-server" }))
+      .toMatchObject({ groupAssignment: "saved" });
+    expect(await readFile(configPath, "utf8")).toBe(contents);
+    expect((await listClaudeDesktopSessions([profileRoot])).find(session => session.cliSessionId === sessionId)?.groupId).toBe("cg-other");
+  });
+
+  it("does not guess between the same group ID in multiple scopes", async () => {
+    const { paths, profileRoot, root } = await fixture();
+    const sessionId = randomUUID();
+    const configPath = join(profileRoot, "..", "claude_desktop_config.json");
+    const contents = JSON.stringify({ preferences: { epitaxyPrefs: { "dframe-group-scopes": {
+      first: { groups: [{ id: "cg-server", name: "Server" }], assignments: {} },
+      second: { groups: [{ id: "cg-server", name: "Server" }], assignments: {} },
+    } } } });
+    await writeFile(configPath, contents);
+    const transcriptPath = await transcript(paths, sessionId, root);
+    const registrar = new ClaudeDesktopSessionRegistrar({
+      paths, platform: "darwin", listProfiles: async () => [{ pid: 20, userDataDir: join(profileRoot, "..") }],
+      findTranscript: async () => transcriptPath,
+    });
+    await expect(registrar.register({ sessionId, cwd: root, title: "Grouped", createdAt: 1, lastActivityAt: 2, groupId: "cg-server" }))
+      .resolves.toMatchObject({ state: "failed", detail: expect.stringContaining("分组"), desktopSessionId: `local_${sessionId}`, profileSessionsRoot: profileRoot, nativeRegistrationState: "restart-required" });
+    expect(await readFile(configPath, "utf8")).toBe(contents);
+  });
+
+  it("retains all group assignments when several sessions finish registration together", async () => {
+    const { paths, profileRoot, root } = await fixture();
+    const configPath = join(profileRoot, "..", "claude_desktop_config.json");
+    await writeFile(configPath, JSON.stringify({ preferences: { epitaxyPrefs: { "dframe-group-scopes": { scope: {
+      groups: [{ id: "cg-server", name: "Server" }, { id: "cg-other", name: "Other" }], assignments: {},
+    } } } } }));
+    const inputs = ["cg-server", "cg-other", "cg-server"].map(groupId => ({
+      sessionId: randomUUID(), cwd: root, title: "Grouped", createdAt: 1, lastActivityAt: 2, groupId,
+    }));
+    const transcripts = new Map<string, string>(await Promise.all(inputs.map(async input => (
+      [input.sessionId, await transcript(paths, input.sessionId, root)] as const
+    ))));
+    const registrar = new ClaudeDesktopSessionRegistrar({
+      paths, platform: "darwin", listProfiles: async () => [{ pid: 20, userDataDir: join(profileRoot, "..") }],
+      findTranscript: async (_projects, sessionId) => transcripts.get(sessionId),
+    });
+    await Promise.all(inputs.map(input => registrar.register(input)));
+    const sessions = await listClaudeDesktopSessions([profileRoot]);
+    for (const input of inputs) {
+      expect(sessions.find(session => session.cliSessionId === input.sessionId)?.groupId).toBe(input.groupId);
+    }
+  });
+
+  it("registers a chosen group in its pinned profile when two Desktop profiles are running", async () => {
+    const selected = await fixture("Claude-3p");
+    const other = await fixture("Claude");
+    const configPath = join(selected.profileRoot, "..", "claude_desktop_config.json");
+    await writeFile(configPath, JSON.stringify({ preferences: { epitaxyPrefs: { "dframe-group-scopes": {
+      selected: { groups: [{ id: "cg-selected", name: "Selected" }], assignments: {} },
+    } } } }));
+    const sessionId = randomUUID();
+    const transcriptPath = await transcript(selected.paths, sessionId, selected.root);
+    const registrar = new ClaudeDesktopSessionRegistrar({
+      paths: { ...selected.paths, desktopSessions: [selected.profileRoot, other.profileRoot] }, platform: "darwin",
+      listProfiles: async () => [
+        { pid: 20, userDataDir: join(other.profileRoot, "..") },
+        { pid: 30, userDataDir: join(selected.profileRoot, "..") },
+      ],
+      findTranscript: async () => transcriptPath,
+    });
+    expect(await registrar.register({
+      sessionId, cwd: selected.root, title: "Pinned group", createdAt: 1, lastActivityAt: 2,
+      groupId: "cg-selected", groupSessionsRoot: selected.profileRoot, groupScope: "selected",
+    })).toMatchObject({ profileSessionsRoot: selected.profileRoot, groupAssignment: "saved" });
+    expect((await listClaudeDesktopSessions([selected.profileRoot])).find(session => session.cliSessionId === sessionId)?.groupId).toBe("cg-selected");
+    expect((await listClaudeDesktopSessions([other.profileRoot])).some(session => session.cliSessionId === sessionId)).toBe(false);
+  });
+
   it("waits for the first trusted transcript before writing metadata", async () => {
     const { paths, profileRoot } = await fixture();
     const sessionId = randomUUID();

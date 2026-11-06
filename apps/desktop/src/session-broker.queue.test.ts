@@ -36,8 +36,9 @@ it.each([false, true].flatMap((force) => ["prompt", "tool-call", "tool-result"].
   const sessionId = randomUUID();
   const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
   await Promise.all([mkdir(paths.sessions), mkdir(paths.projects)]);
-  await writeFile(join(paths.sessions, `${process.pid}.json`), JSON.stringify({
-    pid: process.pid, sessionId, cwd: root, startedAt: Date.now(), entrypoint: "claude-desktop-3p",
+  // Keep the Desktop catalog identity after its executor has exited.
+  await writeFile(join(paths.sessions, "desktop.json"), JSON.stringify({
+    pid: 999_999_999, sessionId, cwd: root, startedAt: Date.now(), entrypoint: "claude-desktop-3p",
   }));
   const transcript = join(paths.projects, `${sessionId}.jsonl`);
   await writeFile(transcript, [
@@ -83,7 +84,9 @@ it.each([false, true].flatMap((force) => ["prompt", "tool-call", "tool-result"].
       ...(tail === "tool-result" ? [JSON.stringify({ type: "user", uuid: "tool-result", parentUuid: "tool-call", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: "data" }] } })] : []),
       "",
     ].join("\n"));
-    await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
+    // The unfinished SDK turn does not leave a competing Desktop executor alive.
+    expect(observer.session(sessionId)?.desktopProcessAlive).toBe(false);
+    await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(true);
     await expect(broker.interruptTurn(sessionId, first.commandId, force)).resolves.toBe(true);
     const retry = await broker.startTurn({ sessionId, requestId: "retry", idempotencyKey: "retry", text: "Retry", origin: "mobile" });
     await vi.waitFor(() => expect(broker.runtimeStatus().activeTurns).toBe(1));
@@ -115,23 +118,15 @@ it.each([false, true].flatMap((force) => ["prompt", "tool-call", "tool-result"].
   }
 });
 
-it.each([false, true])("dispatches queued turns after an empty result and host release (external subagent=%s)", async (subagent) => {
+it.each([false, true])("dispatches queued turns after an empty result and host release (transcript subagent=%s)", async (subagent) => {
   const root = await mkdtemp(join(tmpdir(), "bridge-queue-empty-result-"));
   directories.push(root);
   const sessionId = randomUUID();
   const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
   await Promise.all([mkdir(paths.sessions), mkdir(paths.projects)]);
-  if (subagent) {
-    const directory = join(paths.projects, sessionId, "subagents");
-    await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, "agent-old.meta.json"), JSON.stringify({ description: "Previous child", finished: false }));
-    await writeFile(join(directory, "agent-old.jsonl"), `${JSON.stringify({
-      type: "assistant", uuid: "child-tool",
-      message: { role: "assistant", content: [{ type: "tool_use", id: "old-tool", name: "Read", input: {} }] },
-    })}\n`);
-  }
-  await writeFile(join(paths.sessions, `${process.pid}.json`), JSON.stringify({
-    pid: process.pid, sessionId, cwd: root, startedAt: Date.now() - 1_000, entrypoint: "claude-desktop-3p",
+  // Keep the Desktop catalog identity after its executor has exited.
+  await writeFile(join(paths.sessions, "desktop.json"), JSON.stringify({
+    pid: 999_999_999, sessionId, cwd: root, startedAt: Date.now() - 1_000, entrypoint: "claude-desktop-3p",
   }));
   const transcript = join(paths.projects, `${sessionId}.jsonl`);
   await writeFile(transcript, [
@@ -140,7 +135,7 @@ it.each([false, true])("dispatches queued turns after an empty result and host r
     "",
   ].join("\n"));
   const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
-  const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 60_000, catalogIntervalMs: 60_000 });
+  const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 60_000, catalogIntervalMs: 0 });
   const hosts: Array<{
     events: EventEmitter;
     sends: number;
@@ -182,6 +177,22 @@ it.each([false, true])("dispatches queued turns after an empty result and host r
     await broker.initialize();
     await broker.startTurn({ sessionId, requestId: "first", idempotencyKey: "first", text: "First", origin: "mobile" });
     await vi.waitFor(() => expect(hosts[0]?.sends).toBe(1));
+    if (subagent) {
+      // The child belongs to the live SDK executor, with Desktop already closed.
+      await writeFile(join(paths.sessions, "bridge.json"), JSON.stringify({
+        pid: process.pid, sessionId, cwd: root, startedAt: Date.now() - 1_000, entrypoint: "claude-bridge",
+      }));
+      const directory = join(paths.projects, sessionId, "subagents");
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "agent-child.meta.json"), JSON.stringify({ description: "SDK child", finished: false }));
+      await writeFile(join(directory, "agent-child.jsonl"), `${JSON.stringify({
+        type: "assistant", uuid: "child-tool", timestamp: new Date().toISOString(),
+        message: { role: "assistant", content: [{ type: "tool_use", id: "child-tool", name: "Read", input: {} }] },
+      })}\n`);
+      await (observer as unknown as { poll(): Promise<void> }).poll();
+      expect(observer.session(sessionId)).toMatchObject({ desktopProcessAlive: false, bridgeProcessAlive: true });
+      expect(observer.runningSubagents(sessionId)).toMatchObject({ count: 1 });
+    }
     const first = hosts[0]!.current!;
     await appendFile(transcript, `${JSON.stringify({ type: "user", uuid: first.messageId, parentUuid: "previous-answer", message: { role: "user", content: first.text } })}\n`);
     await broker.startTurn({ sessionId, requestId: "second", idempotencyKey: "second", text: "Second", origin: "mobile" });
@@ -195,9 +206,18 @@ it.each([false, true])("dispatches queued turns after an empty result and host r
     hosts[0]!.events.emit("event", { type: "turn.completed", sessionId, turnId: second.turnId, result: "", at: Date.now() } satisfies SessionHostEvent);
     await vi.waitFor(() => expect(broker.runtimeStatus().activeTurns).toBe(0));
     await vi.waitFor(() => expect(broker.session(sessionId)?.turnState).toBe("idle"));
-    // Exercise the existing release path immediately instead of waiting 15 seconds.
-    await (broker as unknown as { releaseSession(id: string): Promise<void> }).releaseSession(sessionId);
+    expect(broker.session(sessionId)?.desktopHandoff).toEqual({ state: "bridge", canReturn: !subagent });
+    if (subagent) {
+      await expect(broker.returnToDesktop(sessionId)).rejects.toThrow("后台任务");
+      // Automatic idle release must also retain a host with a running child.
+      await (broker as unknown as { releaseSession(id: string): Promise<void> }).releaseSession(sessionId);
+    } else {
+      const returned = await broker.returnToDesktop(sessionId);
+      expect(returned.sessionId).toBe(sessionId);
+      expect(returned.desktopHandoff).toBeUndefined();
+    }
     expect(hosts[0]!.closed).toBe(!subagent);
+    expect(eventLog.latestItem(sessionId, "session.desktop-handoff", sessionId)?.data.state).toBe(subagent ? "bridge" : "released");
     await broker.startTurn({ sessionId, requestId: "third", idempotencyKey: "third", text: "Third", origin: "mobile" });
     await vi.waitFor(() => expect(hosts[subagent ? 0 : 1]?.sends).toBe(subagent ? 3 : 1));
     expect(broker.session(sessionId)?.pendingCount).toBe(0);
@@ -215,8 +235,9 @@ it("interrupts an accepted unfinished turn on ownership conflict without replay 
   const sessionId = randomUUID();
   const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
   await Promise.all([mkdir(paths.sessions), mkdir(paths.projects)]);
-  await writeFile(join(paths.sessions, `${process.pid}.json`), JSON.stringify({
-    pid: process.pid, sessionId, cwd: root, startedAt: Date.now(), entrypoint: "claude-desktop-3p",
+  // Keep the Desktop catalog identity after its executor has exited.
+  await writeFile(join(paths.sessions, "desktop.json"), JSON.stringify({
+    pid: 999_999_999, sessionId, cwd: root, startedAt: Date.now(), entrypoint: "claude-desktop-3p",
   }));
   const transcript = join(paths.projects, `${sessionId}.jsonl`);
   await writeFile(transcript, [
@@ -330,8 +351,9 @@ it.each([
   const sessionId = randomUUID();
   const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
   await Promise.all([mkdir(paths.sessions), mkdir(paths.projects)]);
-  await writeFile(join(paths.sessions, `${process.pid}.json`), JSON.stringify({
-    pid: process.pid, sessionId, cwd: root, startedAt: Date.now(), entrypoint: "claude-desktop-3p",
+  // Keep the Desktop catalog identity after its executor has exited.
+  await writeFile(join(paths.sessions, "desktop.json"), JSON.stringify({
+    pid: 999_999_999, sessionId, cwd: root, startedAt: Date.now(), entrypoint: "claude-desktop-3p",
   }));
   const transcript = join(paths.projects, `${sessionId}.jsonl`);
   await writeFile(transcript, [

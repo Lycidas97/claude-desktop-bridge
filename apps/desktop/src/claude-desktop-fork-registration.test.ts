@@ -104,6 +104,24 @@ describe("Desktop fork registration", () => {
     expect(await registrar.register(input, repaired)).toMatchObject({ state: "registered" });
   });
 
+  it.each(["parent", "spawn", "both"])("repairs conflicting populated native fork identities (%s)", async broken => {
+    const { registrar, input, previous, path } = await adoptedFork();
+    const metadata = JSON.parse(await readFile(path, "utf8"));
+    const wrongParent = `local_${randomUUID()}`;
+    await writeFile(path, JSON.stringify({
+      ...metadata,
+      forkedFromSessionId: broken === "spawn" ? input.parentDesktopSessionId : wrongParent,
+      spawnedFrom: { sessionId: broken === "parent" ? input.parentDesktopSessionId : wrongParent,
+        taskId: "keep-task", name: "keep-name", userFork: true, sideSession: true, customField: "preserve" },
+    }));
+    const repaired = await registrar.register(input, previous);
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+      title: "Custom title", forkedFromSessionId: input.parentDesktopSessionId,
+      spawnedFrom: { sessionId: input.parentDesktopSessionId, taskId: "keep-task", name: "keep-name", customField: "preserve" },
+    });
+    expect(repaired).toMatchObject({ state: "restart-required", forkMetadataVersion: 1 });
+  });
+
   it("repairs a missing spawn link even when the parent field already exists", async () => {
     const { registrar, input, previous, path } = await adoptedFork();
     const metadata = JSON.parse(await readFile(path, "utf8"));

@@ -6,6 +6,8 @@ import { ComposerAttachmentMenu, FileAttachmentPicker } from "./FileAttachmentPi
 import { IconButton } from "./IconButton.js";
 import { MessageCopyButton } from "./MessageCopyButton.js";
 import { TaskPlanCard } from "./TaskPlanCard.js";
+import { DesktopHandoffNotice } from "./DesktopHandoffNotice.js";
+import { SessionCreateDialog } from "./SessionCreateDialog.js";
 
 const hooks = vi.hoisted(() => ({
   slots: [] as any[], index: 0, dirty: false,
@@ -188,6 +190,137 @@ describe("subagent overflow", () => {
   });
 });
 
+describe("mobile session creation", () => {
+  it("opens creation from an empty computer without historical projects", () => {
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: [], projects: [] } };
+    draw();
+    const header = elements(tree).find(element => element.props.title === "会话" && element.props.actions)!;
+    const create = elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "新建会话")!;
+    expect(create.props.disabled).toBe(false);
+    create.props.onClick(); draw();
+    expect(elements(tree).find(element => element.type === SessionCreateDialog)?.props.initialProjectId).toBe("");
+  });
+  it("passes the selected logical project when two projects share a cwd", async () => {
+    props = { ...props, snapshot: { ...props.snapshot!,
+      projects: [
+        { ...props.snapshot!.projects[0]!, projectId: "project-1", name: "First project", sessionCount: 1 },
+        { ...props.snapshot!.projects[0]!, projectId: "project-2", name: "Second project", sessionCount: 1 },
+      ],
+      sessions: props.snapshot!.sessions.map((session, index) => ({ ...session,
+        projectId: `project-${index + 1}`, projectName: index === 0 ? "First project" : "Second project",
+      })),
+    } };
+    vi.mocked(props.onCreateSession).mockResolvedValue(undefined);
+    draw();
+    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack();
+    draw();
+    const header = elements(tree).find(element => element.props.title === "会话" && element.props.actions)!;
+    elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "新建会话")!.props.onClick();
+    draw();
+    const dialog = elements(tree).find(element => element.type === SessionCreateDialog)!;
+    expect(dialog.props.snapshot.projects.map((project: { projectId: string }) => project.projectId)).toEqual(["project-1", "project-2"]);
+    expect(dialog.props.initialProjectId).toBe("");
+    expect(dialog.props.connected).toBe(true);
+    await dialog.props.onCreate("/tmp/project", "Created", "claude-desktop", "project-2");
+    expect(props.onCreateSession).toHaveBeenCalledOnce();
+    expect(props.onCreateSession).toHaveBeenCalledWith("/tmp/project", "Created", "claude-desktop", "project-2");
+  });
+});
+
+describe("mobile session renaming", () => {
+  function enableRename() {
+    props = { ...props, onRenameSession: vi.fn().mockResolvedValue(undefined),
+      snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["session.rename.v1"] } },
+    };
+    draw();
+  }
+  function openMenu(entry: "list" | "conversation") {
+    if (entry === "list") {
+      elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
+      const row = elements(tree).find(element => element.props["data-session-id"] === "A")!;
+      elements(row).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    } else {
+      const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+      elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    }
+    draw();
+  }
+  const renameAction = () => elements(tree).find(element => element.props.label === "重命名");
+  const dialog = () => elements(tree).find(element => element.props.role === "dialog" && element.props["aria-label"] === "重命名会话");
+  const titleInput = () => elements(dialog()).find(element => element.type === "input")!;
+  const save = () => elements(dialog()).find(element => element.type === "button" && element.props.type === "submit")!;
+  function editTitle(value: string) { titleInput().props.onChange({ target: { value } }); draw(); }
+  async function submit() {
+    elements(dialog()).find(element => element.type === "form")!.props.onSubmit({ preventDefault() {} });
+    await settle();
+  }
+
+  it.each(["list", "conversation"] as const)("prefills and saves a trimmed title from the %s menu", async entry => {
+    enableRename(); openMenu(entry);
+    expect(renameAction()).toBeDefined();
+    expect(elements(tree).some(element => element.props.label === "同步此会话")).toBe(true);
+    renameAction()!.props.onClick(); draw();
+    expect(titleInput().props.value).toBe("Session A");
+    editTitle("  手机项目名称  ");
+    await submit();
+    expect(props.onRenameSession).toHaveBeenCalledExactlyOnceWith("A", "手机项目名称");
+    expect(dialog()).toBeUndefined();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
+  it("cancels without sending a rename and prefills the current title next time", () => {
+    enableRename(); openMenu("conversation"); renameAction()!.props.onClick(); draw();
+    editTitle("尚未保存");
+    elements(dialog()).find(element => element.type === "button" && element.props.children === "取消")!.props.onClick(); draw();
+    expect(dialog()).toBeUndefined();
+    expect(props.onRenameSession).not.toHaveBeenCalled();
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A" ? { ...session, title: "另一端名称" } : session) } };
+    openMenu("conversation"); renameAction()!.props.onClick(); draw();
+    expect(titleInput().props.value).toBe("另一端名称");
+  });
+
+  it("retains the title and host error after a failed save, then allows retry", async () => {
+    enableRename();
+    vi.mocked(props.onRenameSession!).mockRejectedValueOnce(new Error("名称保存失败，请重试"));
+    openMenu("conversation"); renameAction()!.props.onClick(); draw(); editTitle("保留输入");
+    await submit();
+    expect(titleInput().props.value).toBe("保留输入");
+    expect(elements(dialog()).find(element => element.props.role === "alert")!.props.children).toBe("名称保存失败，请重试");
+    expect(save().props.disabled).toBe(false);
+    await submit();
+    expect(props.onRenameSession).toHaveBeenCalledTimes(2);
+    expect(dialog()).toBeUndefined();
+  });
+
+  it.each(["", "  \t  ", "Session A", "  Session A  "])("does not send an empty or unchanged title (%j)", async title => {
+    enableRename(); openMenu("conversation"); renameAction()!.props.onClick(); draw(); editTitle(title);
+    expect(save().props.disabled).toBe(true);
+    await submit();
+    expect(props.onRenameSession).not.toHaveBeenCalled();
+  });
+
+  it("renames a running session while keeping deletion unavailable", async () => {
+    enableRename();
+    props = { ...props, onDeleteSession: vi.fn(), snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+      ? { ...session, ownership: "BRIDGE_RUNNING", turnState: "running", activeTurnId: "turn", pendingCount: 1, pendingCommandIds: ["queued"] } : session) } };
+    draw(); openMenu("conversation");
+    expect(renameAction()!.props.disabled).toBe(false);
+    expect(elements(tree).find(element => element.props.label === "删除会话")!.props.disabled).toBe(true);
+    renameAction()!.props.onClick(); draw(); editTitle("运行中的新名称"); await submit();
+    expect(props.onRenameSession).toHaveBeenCalledExactlyOnceWith("A", "运行中的新名称");
+    expect(props.onInterruptTurn).not.toHaveBeenCalled();
+  });
+
+  it.each(["capability", "callback"])("hides rename without the %s", missing => {
+    enableRename();
+    if (missing === "capability") props = { ...props, snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: [] } } };
+    else delete props.onRenameSession;
+    draw(); openMenu("conversation");
+    expect(renameAction()).toBeUndefined();
+    expect(elements(tree).some(element => element.props.label === "同步此会话")).toBe(true);
+  });
+});
+
 describe("session update timestamps", () => {
   it("keeps time and order when opening a session, then advances them for an actual update", async () => {
     const now = Date.now();
@@ -290,6 +423,147 @@ describe("steering a message already queued on the host", () => {
     }
     draw();
     expect(action()).toBeUndefined();
+  });
+});
+
+describe("explicit Desktop handoff", () => {
+  it("requires closing the queued Desktop executor and preserves refresh and queue cancellation", async () => {
+    const onTakeoverDesktop = vi.fn().mockResolvedValue(undefined);
+    props = { ...props, onTakeoverDesktop, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A" ? {
+      ...session, ownership: "FALLBACK_CONFIRMATION_REQUIRED", turnState: "queued", pendingCount: 1, pendingCommandIds: ["queued"],
+      desktopHandoff: { state: "close-desktop", canReturn: false, canTakeover: true },
+    } : session) } };
+    text("保留草稿");
+    const notices = elements(tree).filter(element => element.type === DesktopHandoffNotice);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.props.session.pendingCount).toBe(1);
+    expect(notices[0]!.props.session.desktopHandoff.canTakeover).toBe(true);
+    expect(notices[0]!.props.online).toBe(true);
+    expect(elements(tree).some(element => element.props["aria-label"] === "消息排队状态")).toBe(false);
+    expect(elements(tree).some(element => element.props.children === "正在等待同会话接管")).toBe(false);
+    await notices[0]!.props.onRefresh();
+    expect(props.onRefresh).toHaveBeenCalledWith("A");
+    await notices[0]!.props.onTakeover("A");
+    expect(onTakeoverDesktop).toHaveBeenCalledExactlyOnceWith("A");
+    expect(input().props.value).toBe("保留草稿");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    text("");
+    elements(tree).find(element => element.props["aria-label"] === "停止任务")!.props.onClick(); draw();
+    const confirmation = elements(tree).find(element => element.props.open && element.props.title === "停止当前任务？")!;
+    expect(confirmation.props.description).toContain("排在最前面的一条指令会被取消");
+    confirmation.props.onConfirm(); await settle();
+    expect(props.onInterruptTurn).toHaveBeenCalledWith("A");
+  });
+
+  it.each(["close-desktop", "bridge", "reopen-desktop"] as const)("passes the selected %s session and return action to its notice", async state => {
+    const onReturnToDesktop = vi.fn().mockResolvedValue(undefined);
+    props = { ...props, onReturnToDesktop, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A" ? {
+      ...session, desktopHandoff: { state, canReturn: state === "bridge" },
+    } : session) } };
+    draw();
+    const notice = elements(tree).find(element => element.type === DesktopHandoffNotice)!;
+    expect(notice.props.session).toBe(props.snapshot!.sessions[0]);
+    expect(notice.props.online).toBe(true);
+    await notice.props.onReturn(notice.props.session.sessionId);
+    expect(onReturnToDesktop).toHaveBeenCalledExactlyOnceWith("A");
+    props = { ...props, desktopOnline: false }; draw();
+    expect(elements(tree).find(element => element.type === DesktopHandoffNotice)!.props.online).toBe(false);
+  });
+});
+
+describe("question answer delivery", () => {
+  it.each(["host-received", "submitted", "running"] as const)("labels this card's %s answer accurately without duplicating it or clearing the draft", async delivery => {
+    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
+      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
+        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } },
+    ] } } };
+    vi.mocked(props.onSendTurn).mockResolvedValueOnce({ requestId: "answer" });
+    text("保留草稿");
+    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
+    await settle();
+    props = { ...props, localTurns: [{ requestId: "answer", idempotencyKey: "answer-key", commandId: "queued", sessionId: "A", text: "Main", attachments: [], createdAt: 2, delivery }] };
+    draw();
+    const card = elements(tree).find(element => element.type === InteractivePromptCard)!;
+    expect(card.props.replyDelivery).toBe(delivery);
+    const rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
+    const status = elements(rendered).find(element => element.props.className === "interactive-prompt-status")!;
+    expect(status.props.children).toBe(delivery === "running" ? "已回复" : "回复已排队");
+    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
+    expect(elements(tree).filter(element => element.props.className === "conversation-bubble")).toHaveLength(1);
+    expect(input().props.value).toBe("保留草稿");
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Main", [], false);
+  });
+
+  it.each(["history-and-assistant", "history", "resolution", "assistant"])("keeps a confirmed reply complete after its receipt leaves memory (%s)", async confirmation => {
+    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
+      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
+        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } },
+    ] } } };
+    const question = props.histories.A!.items[0]!;
+    vi.mocked(props.onSendTurn).mockResolvedValueOnce({ requestId: "answer" });
+    draw();
+    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
+    await settle();
+    props = { ...props, localTurns: [{ requestId: "answer", idempotencyKey: "answer-key", commandId: "queued", sessionId: "A", text: "Main", attachments: [], createdAt: 2, delivery: "host-received" }] };
+    draw();
+    let card = elements(tree).find(element => element.type === InteractivePromptCard)!;
+    let rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
+    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")!.props.children).toBe("回复已排队");
+
+    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
+      { ...question, interactivePrompt: { ...question.interactivePrompt!, answered: confirmation.includes("history") } },
+      ...(confirmation.includes("assistant") ? [{ id: "continuation", sessionId: "A", role: "assistant" as const, text: "已收到回答继续执行", createdAt: 3, origin: "claude-desktop" as const }] : []),
+    ] } }, events: confirmation === "resolution" ? [
+      { eventId: "resolved", seq: 1, timestamp: 3, sessionId: "A", origin: "system", type: "question.resolved",
+        data: { requestId: "permission", toolName: "AskUserQuestion", input: { questions: question.interactivePrompt!.questions }, decision: "allow-once" } },
+    ] : [], localTurns: [{ requestId: "new-task", idempotencyKey: "new-key", commandId: "new-command", sessionId: "A", text: "处理新的无关任务", attachments: [], createdAt: 4, delivery: "host-received" }] };
+    draw();
+    card = elements(tree).find(element => element.type === InteractivePromptCard)!;
+    rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
+    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")!.props.children).toBe("已回复");
+    expect(card.props.replyDelivery).toBeUndefined();
+    expect(card.props.replyPending).not.toBe(true);
+    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Main", [], false);
+  });
+
+  it("keeps the prompt receipt with its session and computer across navigation", async () => {
+    props = { ...props, histories: Object.fromEntries(["A", "B"].map(sessionId => [sessionId, {
+      status: "ready", hasMore: false, items: [{ id: "question", sessionId, role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
+        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } }],
+    }])) };
+    vi.mocked(props.onSendTurn).mockResolvedValueOnce({ requestId: "answer" });
+    draw();
+    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
+    await settle();
+    const answer = { requestId: "answer", idempotencyKey: "answer-key", sessionId: "A", text: "Main", attachments: [], createdAt: 2, delivery: "host-received" as const };
+    props = { ...props, localTurns: [answer, { ...answer, sessionId: "B", delivery: "failed" }] };
+    open("B");
+    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBeUndefined();
+    open("A");
+    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBe("host-received");
+    props = { ...props, activeHostId: "computer-2", localTurns: [{ ...answer, delivery: "failed" }] };
+    draw();
+    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBeUndefined();
+    props = { ...props, activeHostId: "computer-1", localTurns: [answer] };
+    draw();
+    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBe("host-received");
+    expect(props.onSendTurn).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a legacy quick reply pending when its callback supplies no receipt", async () => {
+    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
+      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
+        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } },
+    ] } } };
+    draw();
+    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
+    await settle();
+    const card = elements(tree).find(element => element.type === InteractivePromptCard)!;
+    const rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
+    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")!.props.children).toBe("已提交，等待处理");
+    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Main", [], false);
   });
 });
 

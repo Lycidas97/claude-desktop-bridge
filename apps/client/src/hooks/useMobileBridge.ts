@@ -16,6 +16,7 @@ import {
   type BridgeDeliveryState,
   type BridgeDesktopAppStatus,
   type BridgeDesktopRuntimeId,
+  type BridgeDirectoryListing,
   type BridgeEndpoint,
   type BridgeEvidenceBundle,
   type BridgeEvidencePage,
@@ -1280,7 +1281,7 @@ export function useMobileBridge() {
   const sendRequest = useCallback(async (
     method: BridgeRequest["method"],
     params: Record<string, unknown>,
-    options: { wait?: boolean; allowOffline?: boolean; idempotencyKey?: string; timeoutMs?: number } = {},
+    options: { wait?: boolean; allowOffline?: boolean; requestId?: string; idempotencyKey?: string; timeoutMs?: number } = {},
   ): Promise<BridgeResponse | undefined> => {
     const crypto = cryptoRef.current;
     if (!crypto) throw new Error("No host selected");
@@ -1290,7 +1291,7 @@ export function useMobileBridge() {
     }
     const request: BridgeRequest = {
       kind: "request",
-      requestId: randomId(),
+      requestId: options.requestId ?? randomId(),
       idempotencyKey: options.idempotencyKey ?? randomId(),
       method,
       params: { ...params, client: clientMetadata() },
@@ -2756,11 +2757,13 @@ export function useMobileBridge() {
     attachments: BridgeAttachment[] = [],
     steer = false,
   ) => {
+    const requestId = randomId();
     await sendRequest(steer ? "turn.steer" : "turn.start", {
       sessionId,
       text,
       attachments,
-    }, { allowOffline: true, idempotencyKey: randomId() });
+    }, { allowOffline: true, requestId, idempotencyKey: randomId() });
+    return { requestId };
   }, [sendRequest]);
 
   const interruptTurn = useCallback(async (sessionId: string, commandId?: string) => {
@@ -2849,11 +2852,13 @@ export function useMobileBridge() {
     cwd: string,
     title?: string,
     runtimeId?: BridgeDesktopRuntimeId,
+    projectId?: string,
   ): Promise<BridgeSessionInfo | undefined> => {
     const response = await sendRequest("session.create", {
       cwd,
       ...(title ? { title } : {}),
       ...(runtimeId ? { runtimeId } : {}),
+      ...(projectId !== undefined ? { projectId } : {}),
     }, { wait: true });
     if (!response?.ok) throw new Error(response?.error?.message ?? "新建会话失败");
     const result = response.result as { session?: BridgeSessionInfo };
@@ -2887,6 +2892,24 @@ export function useMobileBridge() {
       } : current);
     }
     return result.session;
+  }, [sendRequest]);
+
+  const returnToDesktop = useCallback(async (sessionId: string): Promise<void> => {
+    const response = await sendRequest("session.return_to_desktop", { sessionId }, {
+      allowOffline: false, wait: true,
+    });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "交还 Desktop 失败");
+    const result = response.result as { session: BridgeSessionInfo };
+    setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+  }, [sendRequest]);
+
+  const takeoverDesktop = useCallback(async (sessionId: string): Promise<void> => {
+    const response = await sendRequest("session.takeover_desktop", { sessionId }, {
+      allowOffline: false, wait: true,
+    });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "接管 Desktop 会话失败");
+    const result = response.result as { session: BridgeSessionInfo };
+    setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
   }, [sendRequest]);
 
   const loadSessionConfiguration = useCallback(async (sessionId: string): Promise<BridgeSessionConfiguration> => {
@@ -2933,29 +2956,35 @@ export function useMobileBridge() {
     runtimeId: BridgeDesktopRuntimeId,
     mode: BridgePermissionMode,
     sessionId?: string,
-  ): Promise<void> => {
-    if (runtimeId !== "claude-desktop" && (!sessionId
+  ): Promise<BridgePermissionMode | void> => {
+    const crypto = cryptoRef.current;
+    const socket = socketRef.current;
+    const runtimeDefaults = stateRef.current.snapshot?.host.capabilities?.includes("permission.runtime-defaults.v1");
+    if (!runtimeDefaults && runtimeId !== "claude-desktop" && (!sessionId
       || !stateRef.current.snapshot?.sessions.some((session) => session.sessionId === sessionId
         && session.runtimeId === runtimeId && sessionId.startsWith(`${runtimeId}:`)))) {
       throw new Error("请先选择该应用的有效会话，再设置默认授权");
     }
     const response = await sendRequest("permission.policy.configure", {
-      scope: "host",
-      mode,
-      ...(runtimeId !== "claude-desktop" ? { sessionId } : {}),
-    }, { wait: true, timeoutMs: 45_000 });
+      scope: "host", mode,
+      ...(runtimeDefaults ? { runtimeId } : runtimeId !== "claude-desktop" ? { sessionId } : {}),
+    }, { wait: true, allowOffline: false, timeoutMs: 45_000 });
+    if (cryptoRef.current !== crypto || socketRef.current !== socket) throw new Error("已切换电脑，请在原电脑查看保存结果");
     if (!response?.ok) throw new Error(response?.error?.message ?? "默认授权保存失败");
     const result = response.result as { defaultPermissionMode?: BridgePermissionMode };
-    if (runtimeId === "claude-desktop" && result.defaultPermissionMode) {
+    if (runtimeDefaults && !result.defaultPermissionMode) throw new Error("电脑未返回默认授权确认值");
+    if (result.defaultPermissionMode) {
       setState((current) => current.snapshot ? {
         ...current,
         snapshot: {
           ...current.snapshot,
-          host: { ...current.snapshot.host, defaultPermissionMode: result.defaultPermissionMode! },
+          host: { ...current.snapshot.host, ...(runtimeId === "claude-desktop" ? { defaultPermissionMode: result.defaultPermissionMode! } : {}) },
+          ...(runtimeDefaults ? { runtimes: current.snapshot.runtimes?.map((runtime) => runtime.id === runtimeId ? { ...runtime, defaultPermissionMode: result.defaultPermissionMode! } : runtime) ?? [] } : {}),
         },
       } : current);
     }
     await resumeEvents();
+    if (runtimeDefaults) return result.defaultPermissionMode;
   }, [resumeEvents, sendRequest]);
 
   const configurePermissionPolicy = useCallback(async (
@@ -3082,6 +3111,22 @@ export function useMobileBridge() {
         )),
       },
     } : current);
+  }, [sendRequest]);
+
+  const browseDirectory = useCallback(async (path?: string): Promise<BridgeDirectoryListing> => {
+    const response = await sendRequest("directory.list", path ? { path } : {}, { wait: true, allowOffline: false });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "文件夹读取失败");
+    return (response.result as { listing: BridgeDirectoryListing }).listing;
+  }, [sendRequest]);
+
+  const redetectProviders = useCallback(async (): Promise<void> => {
+    const crypto = cryptoRef.current;
+    const socket = socketRef.current;
+    const response = await sendRequest("runtime.refresh", {}, { wait: true, allowOffline: false, timeoutMs: 45_000 });
+    if (cryptoRef.current !== crypto || socketRef.current !== socket) throw new Error("已切换电脑，请重新检测当前电脑");
+    if (!response?.ok) throw new Error(response?.error?.message ?? "检测失败");
+    const result = response.result as Pick<BridgeHostSnapshot, "runtime" | "runtimes" | "providers">;
+    setState((current) => current.snapshot ? { ...current, snapshot: { ...current.snapshot, ...result } } : current);
   }, [sendRequest]);
 
   const refreshProviders = useCallback(async (): Promise<void> => {
@@ -3353,6 +3398,21 @@ export function useMobileBridge() {
     uploadSessionFile(sendRequest, sessionId, file, onProgress, signal)
   ), [sendRequest]);
 
+  const renameSession = useCallback(async (sessionId: string, title: string): Promise<void> => {
+    const response = await sendRequest("session.rename", { sessionId, title }, { wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "重命名会话失败");
+    const result = response.result as { session: BridgeSessionInfo };
+    setState((current) => ({
+      ...current,
+      snapshot: current.snapshot && {
+        ...current.snapshot,
+        sessions: current.snapshot.sessions.map((session) => session.sessionId === result.session.sessionId
+          ? { ...session, title: result.session.title }
+          : session),
+      },
+    }));
+  }, [sendRequest]);
+
   const deleteSession = useCallback(async (sessionId: string) => {
     const response = await sendRequest("session.delete", {
       sessionId,
@@ -3372,6 +3432,8 @@ export function useMobileBridge() {
     loadEvidenceDetails,
     previewArtifact,
     requestMedia: sendRequest,
+    browseDirectory,
+    redetectProviders,
     uploadFile,
     downloadArtifact,
     downloadSessionFile,
@@ -3383,6 +3445,8 @@ export function useMobileBridge() {
     resolvePermission,
     createSession,
     forkSession,
+    returnToDesktop,
+    takeoverDesktop,
     loadSessionConfiguration,
     configureSession,
     configureHostPermission,
@@ -3398,6 +3462,7 @@ export function useMobileBridge() {
     pauseRuntimeGoal,
     resumeRuntimeGoal,
     archiveSession,
+    renameSession,
     deleteSession,
     openRuntimeFile,
     refreshProviders,

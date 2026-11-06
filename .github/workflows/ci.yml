@@ -3,23 +3,39 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Install recycle-bin support
+        run: sudo apt-get update && sudo apt-get install -y trash-cli
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+      - run: npm run test:infra
+      - run: npm run verify
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tests-linux
+          path: artifacts/tests/**
 
   desktop-windows:
     runs-on: windows-2022
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,48 +43,52 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run typecheck
+      - run: npm run test:infra
+      - run: npm run ci:run -- run typecheck
       - run: npm test
-      - run: npm run build -w @bridge/protocol
+      - run: npm run ci:run -- run build -w @bridge/protocol
       - name: Build Windows installer with empty optional release variables
-        run: npm run make:windows -w @bridge/desktop
+        run: npm run ci:run -- run make:windows -w @bridge/desktop
         env:
           BRIDGE_RELAY_URL: ""
           BRIDGE_PUBLIC_RELAY_URL: ""
           BRIDGE_PAIRING_BASE_URL: ""
           BRIDGE_SERVICE_ORIGIN: ""
           BRIDGE_ICE_SERVERS: ""
-      - run: npm run build -w @bridge/relay
+      - run: npm run ci:run -- run build -w @bridge/relay
       - name: Run packaged Windows QA and pairing
-        run: npm run test:desktop:packaged:windows
+        run: npm run ci:run -- run test:desktop:packaged:windows
       - name: Assert Windows installer output
         shell: pwsh
         run: |
           $setup = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
           if ($null -eq $setup) { throw "Assisted NSIS Setup.exe was not produced" }
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Bridge-Windows-installer-ci
           path: |
             apps/desktop/out/make/**
             artifacts/packaged-desktop/**
+            artifacts/tests/**
 
   desktop-linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Install recycle-bin and RPM/DEB toolchains
+        run: sudo apt-get update && sudo apt-get install -y trash-cli rpm fakeroot dpkg
       - run: npm ci
-      - run: npm run typecheck
+      - run: npm run ci:run -- run typecheck
       - run: npm test
-      - run: npm run build -w @bridge/protocol
-      - name: Install RPM/DEB toolchain for electron-forge makers
-        run: sudo apt-get update && sudo apt-get install -y rpm fakeroot dpkg
+      - run: npm run ci:run -- run build -w @bridge/protocol
       - name: Build Linux installers with empty optional release variables
-        run: npm run make:linux -w @bridge/desktop
+        run: npm run ci:run -- run make:linux -w @bridge/desktop
         env:
           BRIDGE_RELAY_URL: ""
           BRIDGE_PUBLIC_RELAY_URL: ""
@@ -84,12 +104,16 @@ jobs:
           find "$make_dir" -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }
           find "$make_dir" -name "*.zip" -print -quit | grep -q . || { echo "Missing .zip output"; exit 1; }
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Bridge-Linux-installers-ci
-          path: apps/desktop/out/make/**
+          path: |
+            apps/desktop/out/make/**
+            artifacts/tests/**
 
   android-debug:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -100,9 +124,11 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+      - name: Install recycle-bin support
+        run: sudo apt-get update && sudo apt-get install -y trash-cli
       - run: npm ci
-      - run: npm run build -w @bridge/protocol
-      - run: npm run sync -w @bridge/mobile
+      - run: npm run ci:run -- run build -w @bridge/protocol
+      - run: npm run ci:run -- run sync -w @bridge/mobile
       - run: ./gradlew assembleDebug
         working-directory: apps/mobile/android
       - name: Assert Android APK debug signature is stable
@@ -123,12 +149,14 @@ jobs:
           fi
           echo "Android APK debug signature OK: $ACTUAL"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Bridge-Android-debug
           path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
 
   ios:
     runs-on: macos-15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -136,11 +164,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build -w @bridge/protocol
+      - run: npm run ci:run -- run build -w @bridge/protocol
       - name: Build unsigned simulator app
-        run: npm run build:ios:simulator -w @bridge/mobile
+        run: npm run ci:run -- run build:ios:simulator -w @bridge/mobile
       - name: Build unsigned device app
-        run: npm run build:ios:device -w @bridge/mobile
+        run: npm run ci:run -- run build:ios:device -w @bridge/mobile
       - name: Assert iOS build outputs
         shell: bash
         run: |
@@ -150,10 +178,64 @@ jobs:
           test -d "apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app" \
             || { echo "Missing unsigned device App.app"; exit 1; }
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Bridge-iOS-simulator-ci
           path: apps/mobile/ios/DerivedData/Build/Products/Debug-iphonesimulator/App.app
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Bridge-iOS-device-unsigned-ci
           path: apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app
+
+  macos-unit:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:infra
+      - run: npm test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tests-macos
+          path: artifacts/tests/**
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install recycle-bin support
+        run: sudo apt-get update && sudo apt-get install -y trash-cli
+      - run: npm ci
+      - name: Install Chromium from the locked Playwright CLI
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-e2e
+          path: artifacts/browser-e2e/**
+
+  quality-gate:
+    name: Quality gate
+    if: always()
+    needs: [verify, desktop-windows, desktop-linux, android-debug, ios, macos-unit, browser-e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node -e 'const jobs = JSON.parse(process.env.JOB_RESULTS); for (const [name, job] of Object.entries(jobs)) console.log(`${name}: ${job.result}`); if (Object.values(jobs).some(job => job.result !== "success")) process.exit(1);'

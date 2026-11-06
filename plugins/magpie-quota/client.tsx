@@ -19,14 +19,17 @@ const QuotaContext = createContext<(QuotaState & { request(): () => void }) | un
 // One provider spans a host's whole UI so host details and the model picker share
 // one snapshot. It reads only while something showing quota is mounted, so
 // connecting or reconnecting with nothing on screen adds no request.
-export function MagpieQuotaProvider({ loader, enabled = true, children }: {
+export function MagpieQuotaProvider({ loader, enabled = true, sourceKey = "", children }: {
   loader: QuotaLoader;
   enabled?: boolean;
+  sourceKey?: string | number;
   children: ReactNode;
 }) {
-  const [snapshot, setSnapshot] = useState<QuotaSnapshot>();
+  const [reading, setReading] = useState<{ sourceKey: string | number; snapshot: QuotaSnapshot }>();
+  const snapshot = reading?.sourceKey === sourceKey ? reading.snapshot : undefined;
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string>();
+  const [failure, setFailure] = useState<{ sourceKey: string | number; error: string }>();
+  const error = failure?.sourceKey === sourceKey ? failure.error : undefined;
   const [consumers, setConsumers] = useState(0);
   const [refreshCount, setRefreshCount] = useState(0);
   // Only the read answering a manual refresh bypasses the desktop cache.
@@ -46,15 +49,15 @@ export function MagpieQuotaProvider({ loader, enabled = true, children }: {
     if (!enabled || !wanted) return;
     let active = true;
     setLoading(true);
-    setError(undefined);
+    setFailure(undefined);
     void loader({ refresh: refreshCount > delivered.current })
       .then((next) => {
         if (!active) return;
         delivered.current = refreshCount;
-        setSnapshot(next);
+        setReading({ sourceKey, snapshot: next });
       })
       .catch((reason: unknown) => {
-        if (active) setError(reason instanceof Error ? reason.message : "额度读取失败");
+        if (active) setFailure({ sourceKey, error: reason instanceof Error ? reason.message : "额度读取失败" });
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -64,7 +67,7 @@ export function MagpieQuotaProvider({ loader, enabled = true, children }: {
       active = false;
       setLoading(false);
     };
-  }, [enabled, wanted, loader, refreshCount]);
+  }, [enabled, wanted, loader, refreshCount, sourceKey]);
   return (
     <QuotaContext.Provider value={{ snapshot, loading, error, enabled, refresh, request }}>
       {children}

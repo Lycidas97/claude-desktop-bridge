@@ -30,7 +30,17 @@ vi.mock("electron", async () => {
     destroy = vi.fn();
     constructor() { super(); mocks.windows.push(this); }
   }
-  return { app, BrowserWindow, dialog: { showErrorBox: vi.fn() }, protocol: { registerSchemesAsPrivileged: vi.fn() }, ipcMain: { handle: vi.fn() }, Menu: {}, nativeImage: {}, shell: {}, Tray: class {} };
+  class Tray extends EventEmitter {
+    setToolTip = vi.fn();
+    setContextMenu = vi.fn();
+  }
+  return {
+    app, BrowserWindow, Tray,
+    dialog: { showErrorBox: vi.fn(), showOpenDialog: vi.fn() },
+    protocol: { registerSchemesAsPrivileged: vi.fn() }, ipcMain: { handle: vi.fn() },
+    Menu: { buildFromTemplate: vi.fn(() => ({ getMenuItemById: vi.fn(() => ({ checked: false })) })) },
+    nativeImage: { createFromPath: vi.fn(() => ({ resize: vi.fn(), setTemplateImage: vi.fn() })) }, shell: {},
+  };
 });
 
 let originalArgv: string[];
@@ -60,6 +70,29 @@ afterEach(() => {
   for (const [signal, listeners] of originalSignals) {
     for (const listener of process.listeners(signal)) if (!listeners.includes(listener)) process.removeListener(signal, listener);
   }
+});
+
+it("exposes the native directory picker only through trusted local renderer IPC", async () => {
+  process.argv = originalArgv;
+  const { EventEmitter } = await import("node:events");
+  const { dialog, ipcMain } = await import("electron");
+  const controller = Object.assign(new EventEmitter(), {
+    call: vi.fn(async () => ({ launchAtLogin: false, sessions: [] })), close: vi.fn(),
+  });
+  mocks.connect.mockResolvedValueOnce(controller);
+  await import("./main.js");
+  await vi.waitFor(() => expect(ipcMain.handle).toHaveBeenCalledWith("bridge:choose-directory", expect.any(Function)));
+  const choose = vi.mocked(ipcMain.handle).mock.calls.find(([channel]) => channel === "bridge:choose-directory")![1];
+  const event = { senderFrame: { url: process.env.BRIDGE_DEV_SERVER_URL || "file:///bridge/index.html" } } as Electron.IpcMainInvokeEvent;
+  vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: ["/chosen"] });
+  await expect(choose(event, "/initial")).resolves.toBe("/chosen");
+  expect(dialog.showOpenDialog).toHaveBeenCalledWith(expect.anything(), { properties: ["openDirectory"], defaultPath: "/initial" });
+  vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: true, filePaths: [] });
+  await expect(choose(event)).resolves.toBeUndefined();
+  expect(dialog.showOpenDialog).toHaveBeenLastCalledWith(expect.anything(), { properties: ["openDirectory"] });
+  expect(() => choose({ senderFrame: { url: "https://untrusted.invalid" } } as Electron.IpcMainInvokeEvent, "/initial")).toThrow("Untrusted renderer");
+  await expect(choose(event, 42)).rejects.toThrow("initialPath must be a string");
+  expect(dialog.showOpenDialog).toHaveBeenCalledTimes(2);
 });
 
 it("closes the runtime if starting the local listener fails", async () => {

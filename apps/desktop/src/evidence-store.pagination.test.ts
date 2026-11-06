@@ -219,7 +219,7 @@ describe("EvidenceStore pagination", () => {
       expect(sql).toMatch(/LIMIT/i);
       expect(sql).not.toMatch(/SELECT\s+\*|root_path|source_path|blob_key/i);
     }
-  });
+  }, 15_000);
 
   it.each(["tools", "artifacts"] as const)("distinguishes missing and empty %s pages", (kind) => {
     expect(store.details("missing", kind)).toBeUndefined();

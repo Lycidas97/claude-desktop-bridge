@@ -2,7 +2,8 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, normalize } from "node:path";
+import { accessibleDirectory } from "./working-directory.js";
 import type {
   BridgeAttachment,
   BridgeDesktopRuntime,
@@ -244,7 +245,7 @@ export class RuntimeSessionBroker extends EventEmitter {
   }
 
   runtimes(): BridgeDesktopRuntime[] {
-    return this.registry.runtimes();
+    return this.registry.runtimes().map(runtime => ({ ...runtime, defaultPermissionMode: this.hostPermissionModes.get(runtime.id) ?? "standard" }));
   }
 
   listSessions(runtimeId?: BridgeDesktopRuntimeId): BridgeSessionInfo[] {
@@ -270,6 +271,7 @@ export class RuntimeSessionBroker extends EventEmitter {
       } else {
         grouped.set(session.projectId, {
           projectId: session.projectId,
+          kind: "directory",
           name: session.projectName,
           cwd: session.cwd,
           sessionCount: 1,
@@ -291,9 +293,13 @@ export class RuntimeSessionBroker extends EventEmitter {
     return adapter && native ? this.toBridgeSession(adapter, native) : undefined;
   }
 
-  async createSession(runtimeId: BridgeDesktopRuntimeId, cwd: string, title?: string): Promise<BridgeSessionInfo> {
+  async createSession(runtimeId: BridgeDesktopRuntimeId, cwd: string, title?: string, projectId?: string): Promise<BridgeSessionInfo> {
     const adapter = this.requireAdapter(runtimeId, "session.create");
-    const native = await adapter.createSession({ cwd, ...(title ? { title } : {}) });
+    const directory = await accessibleDirectory(cwd);
+    if (projectId !== undefined && !this.listProjects().some(project => (
+      project.projectId === projectId && project.runtimeId === runtimeId && normalize(project.cwd) === directory
+    ))) throw new Error("Selected project does not match this runtime and working directory; native Desktop groups are unsupported");
+    const native = await adapter.createSession({ cwd: directory, ...(title ? { title } : {}) });
     this.upsert(runtimeId, native);
     await this.eventLog.append({
       sessionId: runtimeSessionId(runtimeId, native.nativeSessionId),
@@ -754,7 +760,7 @@ export class RuntimeSessionBroker extends EventEmitter {
       projectId,
       projectName: basename(session.cwd) || adapter.status().name,
       cwd: session.cwd,
-      title: session.title || "未命名任务",
+      title: this.state?.sessionTitle(sessionId) ?? (session.title || "未命名任务"),
       source: session.source,
       transport: session.transport,
       ownership: ownershipFor(session.turnState),

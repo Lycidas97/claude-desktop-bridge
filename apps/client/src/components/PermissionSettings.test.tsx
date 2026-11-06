@@ -204,6 +204,24 @@ describe("Magpie quota in the session form", () => {
 });
 
 describe("session authorization scope", () => {
+  it("reloads an open form after the other end confirms a settings change", async () => {
+    const props = { session, revision: 1, onLoad: vi.fn().mockResolvedValue(configuration), onSave: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle(); draw();
+    props.onLoad.mockResolvedValue({ ...configuration, model: "remote-model", availableModels: [{ value: "remote-model", displayName: "Remote" }] });
+    props.revision = 2;
+    draw(); await settle();
+    const tree = draw();
+    expect(props.onLoad).toHaveBeenCalledTimes(2);
+    expect(elements(tree).find((element) => element.type === "select")?.props.value).toBe("remote-model");
+  });
+
+  it("explains that an observed Desktop executor uses saved Bridge settings after takeover", async () => {
+    const props = { session: { ...session, desktopHandoff: { state: "close-desktop", canReturn: false } } as BridgeSessionInfo, onLoad: vi.fn().mockResolvedValue(configuration), onSave: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle();
+    expect(textContent(draw())).toContain("接管后生效");
+  });
   it("keeps mobile scope on the session through loading, inherit, and save", async () => {
     const onConfigurePermission = vi.fn().mockResolvedValue(configuration);
     const props = {
@@ -235,7 +253,7 @@ describe("session authorization scope", () => {
     expect(control(tree).props.value).toBe("inherit");
   });
 
-  it("preserves desktop host default and dual-scope choice", async () => {
+  it("defaults desktop configuration to the current session and cannot change host scope", async () => {
     const props = {
       session, onLoad: vi.fn().mockResolvedValue(configuration), onSave: vi.fn(),
       onConfigurePermission: vi.fn().mockResolvedValue(configuration), onClose: vi.fn(),
@@ -243,12 +261,12 @@ describe("session authorization scope", () => {
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
     draw();
     await settle();
-    let tree = draw();
-    expect(control(tree).props).toMatchObject({ scope: "host", value: "full-access" });
-    expect(button(tree, "整台电脑")).toBeDefined();
-    button(tree, "当前会话").props.onClick();
-    tree = draw();
+    const tree = draw();
     expect(control(tree).props).toMatchObject({ scope: "session", value: "inherit" });
+    expect(button(tree, "整台电脑")).toBeUndefined();
+    button(tree, "保存授权模式").props.onClick();
+    await settle();
+    expect(props.onConfigurePermission).toHaveBeenCalledWith("session", null);
   });
 
   it("closes full-access confirmation before the workspace on mobile back", async () => {
@@ -284,6 +302,41 @@ describe("session authorization scope", () => {
 });
 
 describe("host default authorization", () => {
+  it("configures a runtime default before any native session exists", async () => {
+    const host = snapshot();
+    host.host.capabilities.push("permission.runtime-defaults.v1");
+    host.sessions = [];
+    host.runtimes = [{ id: "dsh-desktop", defaultPermissionMode: "full-access" }] as NonNullable<BridgeHostSnapshot["runtimes"]>;
+    const props = {
+      snapshot: host,
+      onLoadSessionConfiguration: vi.fn(),
+      onConfigureHostPermission: vi.fn().mockResolvedValue("standard"),
+    };
+    const draw = () => render(() => <HostPermissionSettings {...props} />);
+    let tree = draw();
+    button(tree, "DSH").props.onClick();
+    draw();
+    tree = draw();
+    expect(control(tree)?.props.value).toBe("full-access");
+    control(tree).props.onChange("standard");
+    tree = draw();
+    button(tree, "保存 DSH 默认授权").props.onClick();
+    await settle();
+    tree = draw();
+    expect(props.onConfigureHostPermission).toHaveBeenCalledWith("dsh-desktop", "standard", undefined);
+    expect(props.onLoadSessionConfiguration).not.toHaveBeenCalled();
+    expect(control(tree).props.value).toBe("standard");
+  });
+
+  it("disables remote defaults while offline without losing the last confirmed mode", () => {
+    const props = { snapshot: snapshot(), connected: false, onLoadSessionConfiguration: vi.fn(), onConfigureHostPermission: vi.fn() };
+    const draw = () => render(() => <HostPermissionSettings {...props} />);
+    draw();
+    const tree = draw();
+    expect(control(tree).props.disabled).toBe(true);
+    expect(control(tree).props.value).toBe("standard");
+    expect(textContent(tree)).toContain("电脑未连接");
+  });
   it("saves Claude without a session, requires confirmation, and handles back first", async () => {
     const props = {
       snapshot: snapshot(), onLoadSessionConfiguration: vi.fn(),

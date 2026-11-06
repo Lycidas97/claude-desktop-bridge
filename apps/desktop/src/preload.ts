@@ -5,6 +5,9 @@ import type { LocalBridgeRequest } from "./controller.js";
 contextBridge.exposeInMainWorld("bridgeDesktop", {
   getSnapshot: () => ipcRenderer.invoke("bridge:get-snapshot") as Promise<DesktopControlSnapshot>,
   createPairing: () => ipcRenderer.invoke("bridge:create-pairing") as Promise<DesktopControlSnapshot>,
+  chooseDirectory: (initialPath?: string) => (
+    ipcRenderer.invoke("bridge:choose-directory", initialPath) as Promise<string | undefined>
+  ),
   revokeDevice: (deviceId: string) => (
     ipcRenderer.invoke("bridge:revoke-device", deviceId) as Promise<DesktopControlSnapshot>
   ),

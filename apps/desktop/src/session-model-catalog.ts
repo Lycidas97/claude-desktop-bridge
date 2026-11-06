@@ -9,6 +9,13 @@ export class SessionModelCatalog {
   modelCatalogComplete = false;
   modelCatalogDiscoveryAttempted = false;
 
+  clear(): void {
+    this.modelCache.clear();
+    this.gatewayModelsDiscovered = false;
+    this.modelCatalogComplete = false;
+    this.modelCatalogDiscoveryAttempted = false;
+  }
+
   rememberCatalogModels(sessions: readonly { hostModel?: string }[]): void {
     if (this.modelCatalogComplete) return;
     for (const session of sessions) {

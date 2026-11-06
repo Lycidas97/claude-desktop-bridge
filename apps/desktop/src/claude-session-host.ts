@@ -9,7 +9,6 @@ import {
   type SDKControlGetContextUsageResponse,
   type SDKMessage,
   type SDKUserMessage,
-  type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   isClaudeTranscriptControlMessage,
@@ -96,20 +95,6 @@ function needsWindowsShell(executablePath: string): boolean {
   return process.platform === "win32" && /\.(?:cmd|bat)$/iu.test(executablePath);
 }
 
-function spawnWindowsShim(options: SpawnOptions) {
-  const child = spawn(options.command, options.args, {
-    cwd: options.cwd,
-    env: options.env,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-    shell: true,
-  });
-  options.signal.addEventListener("abort", () => {
-    if (!child.killed) child.kill();
-  }, { once: true });
-  return child;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -168,7 +153,7 @@ export class ClaudeSessionHost extends EventEmitter {
   private streamTask: Promise<void> | undefined;
   private retiring = false;
   private hasStartedQuery = false;
-  private sessionIdValue: string;
+  private readonly sessionIdValue: string;
   private readonly eventSessionId: string;
   private currentTurnId: string | undefined;
   private nativeSteering = false;
@@ -240,6 +225,7 @@ export class ClaudeSessionHost extends EventEmitter {
       })
     );
     const resumeExistingSession = this.options.resume || this.hasStartedQuery;
+    const executor = { exited: Promise.resolve(), stderr: "" };
     const queryProcess = this.queryFactory({
       prompt: this.input,
       options: {
@@ -259,9 +245,27 @@ export class ClaudeSessionHost extends EventEmitter {
         ...(this.modelValue ? { model: this.modelValue } : {}),
         ...(this.effortValue ? { effort: this.effortValue } : {}),
         ...(this.autoCompactWindow ? { settings: { autoCompactWindow: this.autoCompactWindow } } : {}),
-        ...(needsWindowsShell(this.options.executablePath)
-          ? { spawnClaudeCodeProcess: spawnWindowsShim }
-          : {}),
+        spawnClaudeCodeProcess: (options) => {
+          const child = spawn(options.command, options.args, {
+            cwd: options.cwd,
+            env: options.env,
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+            shell: needsWindowsShell(this.options.executablePath),
+            signal: options.signal,
+          });
+          executor.exited = new Promise<void>((resolve) => {
+            child.once("exit", () => resolve());
+            child.once("error", () => {
+              // A failed spawn has no executor; abort errors still need the exit event.
+              if (child.pid === undefined) resolve();
+            });
+          });
+          child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+            executor.stderr = (executor.stderr + chunk).slice(-2_048);
+          });
+          return child;
+        },
         ...(resumeExistingSession
           ? { resume: this.sessionIdValue, forkSession: false }
           : { sessionId: this.sessionIdValue }),
@@ -275,7 +279,7 @@ export class ClaudeSessionHost extends EventEmitter {
       cwd: this.options.cwd,
       at: Date.now(),
     });
-    this.streamTask = this.consume(queryProcess);
+    this.streamTask = this.consume(queryProcess, executor);
   }
 
   async setModel(model?: string): Promise<void> {
@@ -418,7 +422,7 @@ export class ClaudeSessionHost extends EventEmitter {
     await this.streamTask;
   }
 
-  private async consume(queryProcess: Query): Promise<void> {
+  private async consume(queryProcess: Query, executor: { exited: Promise<void>; stderr: string }): Promise<void> {
     let failure: string | undefined;
     try {
       await queryProcess.initializationResult();
@@ -432,6 +436,9 @@ export class ClaudeSessionHost extends EventEmitter {
     } finally {
       // initialize can reject before iteration enters the SDK's cleanup-owning generator.
       await queryProcess[Symbol.asyncDispose]();
+      // SDK cleanup stops waiting after 2 s, before its TERM/KILL escalation finishes.
+      await executor.exited;
+      if (failure && executor.stderr.trim()) failure += `\n${executor.stderr.trim()}`;
       if (this.queryProcess === queryProcess) {
         const unfinishedTurns = this.pendingTurns.splice(0);
         const endedTasks = this.runningBackgroundTasks;
@@ -495,9 +502,6 @@ export class ClaudeSessionHost extends EventEmitter {
   }
 
   private handleMessage(message: SDKMessage): void {
-    if ("session_id" in message && typeof message.session_id === "string") {
-      this.sessionIdValue = message.session_id;
-    }
     if (message.type === "system" && message.subtype === "background_tasks_changed") {
       const at = Date.now();
       this.hasBackgroundSnapshot = true;

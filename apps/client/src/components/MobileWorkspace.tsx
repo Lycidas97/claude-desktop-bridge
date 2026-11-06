@@ -4,6 +4,7 @@ import type {
   BridgeArtifactPreview,
   BridgeDeliveryState,
   BridgeDesktopRuntimeId,
+  BridgeDirectoryListing,
   BridgeEvidenceBundle,
   BridgeEvidenceDetailPage,
   BridgeEvent,
@@ -87,6 +88,7 @@ import { desktopRuntimeId, desktopRuntimeName, isNativeRuntimeId, runtimeProvide
 import { useStreamEntrance } from "../lib/stream-entrance.js";
 import { backgroundSubagentBadge, formatElapsed, sessionActivity, sessionQueueLabel, subagentStalledSeconds } from "../lib/session-activity.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
+import { DesktopHandoffNotice } from "./DesktopHandoffNotice.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker, useFileAttachments } from "./FileAttachmentPicker.js";
@@ -110,11 +112,14 @@ import {
   type ProviderSwitchResult,
 } from "./ProviderSwitchDialog.js";
 import { RuntimeHandoffDialog } from "./RuntimeHandoffDialog.js";
+import { SessionCreateDialog } from "./SessionCreateDialog.js";
 import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
 import { TaskPlanCard } from "./TaskPlanCard.js";
 
 interface ConversationItem extends BridgeHistoryItem {
   delivery?: BridgeDeliveryState;
+  replyDelivery?: BridgeDeliveryState;
+  replyPending?: boolean;
   requestId?: string;
   commandId?: string;
   error?: string;
@@ -189,6 +194,8 @@ export function sessionProfile(session: BridgeSessionInfo): string {
 
 export function ownershipLabel(session: BridgeSessionInfo): string {
   const bridgeCreated = session.source === "bridge";
+  if (session.desktopHandoff?.state === "close-desktop") return "等待关闭此 Desktop 会话";
+  if (session.desktopHandoff?.state === "reopen-desktop") return "请重新打开 Desktop 会话";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
   if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
   if (session.turnState === "running" && session.executionStage === "starting") return "正在启动";
@@ -199,7 +206,7 @@ export function ownershipLabel(session: BridgeSessionInfo): string {
   if (session.turnState === "running") return bridgeCreated ? "Bridge 运行中" : "运行中";
   if (session.turnState === "queued") return `${sessionQueueLabel(session)} · ${session.pendingCount} 条`;
   if (session.turnState === "waiting") return "需处理";
-  if (bridgeCreated) return "Bridge 待机";
+  if (bridgeCreated || session.desktopHandoff?.state === "bridge") return "Bridge 待机";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
   if (session.runtimeId && session.runtimeId !== "claude-desktop") return `${desktopRuntimeName(session.runtimeId)} 待机`;
   if (session.ownership === "DESKTOP_OBSERVED") return "桌面待机";
@@ -207,6 +214,8 @@ export function ownershipLabel(session: BridgeSessionInfo): string {
 }
 
 function activeSessionBadgeLabel(session: BridgeSessionInfo): string | undefined {
+  if (session.desktopHandoff?.state === "close-desktop") return "等待关闭 Desktop";
+  if (session.desktopHandoff?.state === "reopen-desktop") return "请重新打开 Desktop";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "冲突";
   if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "待接管";
   if (session.turnState === "running") {
@@ -413,11 +422,15 @@ export function matchingQuestionPermission(
 
 export function InteractivePromptCard({
   prompt,
+  replyDelivery,
+  replyPending = false,
   canSend = true,
   busy = false,
   onSelectOption,
 }: {
   prompt: BridgeInteractivePrompt;
+  replyDelivery?: BridgeDeliveryState;
+  replyPending?: boolean;
   canSend?: boolean;
   busy?: boolean;
   onSelectOption?: (message: string) => void;
@@ -449,9 +462,11 @@ export function InteractivePromptCard({
         </span>
         <span className="interactive-prompt-status">
           {answered
-            ? selectedAction
-              ? `已选：${selectedAction.label}`
-              : "已回复"
+            ? replyPending
+              ? "已提交，等待处理"
+              : replyDelivery && !["session-received", "running", "completed"].includes(replyDelivery)
+                ? replyDelivery === "host-received" || replyDelivery === "submitted" ? "回复已排队" : `回复${deliveryLabel(replyDelivery)}`
+                : selectedAction ? `已选：${selectedAction.label}` : "已回复"
             : prompt.blocked
               ? "等待确认后继续"
               : "点击选项直接发送"}
@@ -646,6 +661,7 @@ export function conversationItems(
   events: BridgeEvent[],
   localTurns: LocalTurn[],
   paged = false,
+  promptReplies: Readonly<Record<string, string | null>> = {},
 ): ConversationItem[] {
   const items = new Map<string, ConversationItem>();
   const sessionHistory = history?.items.filter((item) => item.sessionId === sessionId) ?? [];
@@ -970,47 +986,70 @@ export function conversationItems(
   }).sort(
     (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
   );
-  const questionResolvedAt = sessionEvents
-    .filter((event) => event.type === "question.resolved")
-    .map((event) => event.timestamp);
-  for (let i = 0; i < sorted.length; i += 1) {
+  const replyDeliveries = new Map<string, BridgeDeliveryState>();
+  for (const event of sessionEvents) {
+    if (typeof event.data.requestId !== "string" || (event.type !== "message.delivery" && event.type !== "user.message.accepted")) continue;
+    const terminal = (typeof event.data.commandId === "string" ? terminalByCommand.get(event.data.commandId) : undefined)
+      ?? (event.turnId ? terminalByTurn.get(event.turnId) : undefined);
+    const delivery = terminal ? terminal.type === "turn.completed" ? "completed"
+      : terminal.type === "turn.failed" ? "failed" : "cancelled"
+      : event.type === "user.message.accepted" ? "session-received"
+      : event.data.delivery as BridgeDeliveryState | undefined;
+    if (delivery) replyDeliveries.set(event.data.requestId, delivery);
+  }
+  for (const item of items.values()) {
+    if (item.role === "user" && item.requestId && item.delivery) replyDeliveries.set(item.requestId, item.delivery);
+  }
+  const latestQuestionResolvedAt = sessionEvents.reduce((latest, event) => (
+    event.type === "question.resolved" ? Math.max(latest, event.timestamp) : latest
+  ), -Infinity);
+  let nextUserReply: string | undefined;
+  let hasLaterAssistant = false;
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
     const current = sorted[i]!;
-    if (!current.interactivePrompt || current.interactivePrompt.answered) continue;
-    const nextUser = sorted.slice(i + 1).find((candidate) => candidate.role === "user" && candidate.text.trim());
-    if (nextUser) {
-      const reply = nextUser.text.trim();
-      sorted[i] = {
-        ...current,
-        interactivePrompt: {
-          ...current.interactivePrompt,
-          answered: true,
-          ...(current.interactivePrompt.actions
-            ? {
-                actions: current.interactivePrompt.actions.map((action) => (
-                  action.message.trim() === reply || action.label.trim() === reply
-                    ? { ...action, selected: true }
-                    : action
-                )),
-              }
-            : {}),
-        },
-      };
-      continue;
+    if (current.interactivePrompt && !current.interactivePrompt.answered) {
+      // Transcript adjacency can close a prompt, but does not identify a reply's delivery receipt.
+      if (nextUserReply) {
+        sorted[i] = {
+          ...current,
+          ...(!hasLaterAssistant && !(current.interactivePrompt.kind === "question" && latestQuestionResolvedAt >= current.createdAt)
+            ? { replyPending: true } : {}),
+          interactivePrompt: {
+            ...current.interactivePrompt,
+            answered: true,
+            ...(current.interactivePrompt.actions
+              ? {
+                  actions: current.interactivePrompt.actions.map((action) => (
+                    action.message.trim() === nextUserReply || action.label.trim() === nextUserReply
+                      ? { ...action, selected: true }
+                      : action
+                  )),
+                }
+              : {}),
+          },
+        };
+      } else if (current.interactivePrompt.kind === "question" && (
+        latestQuestionResolvedAt >= current.createdAt || hasLaterAssistant
+      )) {
+        sorted[i] = {
+          ...current,
+          interactivePrompt: { ...current.interactivePrompt, answered: true },
+        };
+      }
     }
-    if (
-      current.interactivePrompt.kind === "question" && (
-        questionResolvedAt.some((resolvedAt) => resolvedAt >= current.createdAt) ||
-        sorted.slice(i + 1).some((candidate) => candidate.role === "assistant")
-      )
-    ) {
+    if (current.interactivePrompt && promptReplies[current.id] !== undefined) {
+      const requestId = promptReplies[current.id];
+      const replyDelivery = requestId ? replyDeliveries.get(requestId) : undefined;
       sorted[i] = {
-        ...current,
-        interactivePrompt: {
-          ...current.interactivePrompt,
-          answered: true,
-        },
+        ...sorted[i]!,
+        ...(replyDelivery ? { replyDelivery } : {}),
+        replyPending: !replyDelivery && !current.interactivePrompt.answered && !hasLaterAssistant
+          && !(current.interactivePrompt.kind === "question" && latestQuestionResolvedAt >= current.createdAt),
+        interactivePrompt: { ...sorted[i]!.interactivePrompt!, answered: true },
       };
     }
+    if (current.role === "user") nextUserReply = current.text.trim() || nextUserReply;
+    if (current.role === "assistant") hasLaterAssistant = true;
   }
   if (paged) {
     if (!history || (history.status === "loading" && history.items.length === 0)) return [];
@@ -1488,7 +1527,10 @@ export function MobileWorkspace({
   onResolveUncertain,
   onResolvePermission,
   onCreateSession,
+  onBrowseDirectory,
   onForkSession,
+  onReturnToDesktop,
+  onTakeoverDesktop,
   onLoadSessionConfiguration,
   onConfigureSession,
   onConfigurePermissionPolicy,
@@ -1503,6 +1545,7 @@ export function MobileWorkspace({
   onPauseRuntimeGoal,
   onResumeRuntimeGoal,
   onArchiveSession,
+  onRenameSession,
   onDeleteSession,
   onOpenRuntimeFile,
   onRefreshProviders,
@@ -1540,7 +1583,7 @@ export function MobileWorkspace({
   onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
   onDownloadSessionFile?(sessionId: string, filePath: string): Promise<void>;
   onUploadFile?: UploadFileHandler;
-  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<void>;
+  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<{ requestId: string } | void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
   onSteerQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
   onStopSubagent?(sessionId: string, agentId: string): Promise<void>;
@@ -1551,15 +1594,19 @@ export function MobileWorkspace({
     message?: string,
     updatedInput?: Record<string, unknown>,
   ): Promise<void>;
+  onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
   onCreateSession(
     cwd: string,
     title?: string,
     runtimeId?: BridgeDesktopRuntimeId,
+    projectId?: string,
   ): Promise<BridgeSessionInfo | undefined>;
   onForkSession?(
     sessionId: string,
     title?: string,
   ): Promise<BridgeSessionInfo | undefined>;
+  onReturnToDesktop?(sessionId: string): Promise<void>;
+  onTakeoverDesktop?(sessionId: string): Promise<void>;
   onLoadSessionConfiguration(sessionId: string): Promise<BridgeSessionConfiguration>;
   onConfigureSession(
     sessionId: string,
@@ -1597,6 +1644,7 @@ export function MobileWorkspace({
   onResumeRuntimeGoal(sessionId: string): Promise<void>;
   onArchiveSession?(sessionId: string, archived: boolean): Promise<void>;
   onOpenRuntimeFile?(sessionId: string, filePath: string): Promise<void>;
+  onRenameSession?(sessionId: string, title: string): Promise<void>;
   onDeleteSession?(sessionId: string): Promise<void>;
   onDesktopAppAction(
     runtimeId: BridgeDesktopRuntimeId,
@@ -1617,6 +1665,7 @@ export function MobileWorkspace({
     steer: boolean;
     imageError?: string | undefined;
   }>>({});
+  const [promptReplies, setPromptReplies] = useState<Record<string, Record<string, string | null>>>({});
   const draftKey = JSON.stringify([activeHostId, selectedSessionId]);
   const draft = drafts[draftKey] ?? { text: "", attachments: [], sending: false, steer: false };
   const { text, attachments, sending, steer, imageError } = draft;
@@ -1626,8 +1675,6 @@ export function MobileWorkspace({
   const [createOpen, setCreateOpen] = useState(false);
   const [createProjectId, setCreateProjectId] = useState("");
   const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
-  const [createTitle, setCreateTitle] = useState("");
-  const [createBusy, setCreateBusy] = useState(false);
   const [configurationSessionId, setConfigurationSessionId] = useState<string>();
   const [actionSessionId, setActionSessionId] = useState<string>();
   const [providerOpen, setProviderOpen] = useState(false);
@@ -1645,6 +1692,8 @@ export function MobileWorkspace({
   const [refreshing, setRefreshing] = useState(false);
   const [syncFlash, setSyncFlash] = useState(false);
   const [menuSessionId, setMenuSessionId] = useState<string>();
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameTitle, setRenameTitle] = useState("");
   const [deleteSessionConfirmOpen, setDeleteSessionConfirmOpen] = useState(false);
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const [sessionActionError, setSessionActionError] = useState<string>();
@@ -1701,9 +1750,9 @@ export function MobileWorkspace({
   const selectedEvidence = selectedSessionId ? evidence[selectedSessionId] : undefined;
   const items = useMemo(
     () => selectedSessionId
-      ? conversationItems(selectedSessionId, selectedHistory, events, localTurns, true)
+      ? conversationItems(selectedSessionId, selectedHistory, events, localTurns, true, promptReplies[draftKey])
       : [],
-    [events, localTurns, selectedHistory, selectedSessionId],
+    [draftKey, events, localTurns, promptReplies, selectedHistory, selectedSessionId],
   );
   const fileChangesSummary = useMemo(() => aggregateFileChanges(items), [items]);
   const timeline = useMemo(
@@ -1751,6 +1800,8 @@ export function MobileWorkspace({
     Boolean(session.archivedAt) && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
   ))), [runtimeFilter, sessions]);
   const menuSession = menuSessionId ? sessions.find((session) => session.sessionId === menuSessionId) : undefined;
+  const menuSupportsRename = Boolean(onRenameSession && snapshot?.host.capabilities.includes("session.rename.v1"));
+  const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== menuSession?.title && !sessionActionBusy);
   const menuSupportsFork = Boolean(menuSession && onForkSession && desktopRuntimeId(menuSession) === "claude-desktop");
   const menuSupportsProviderSwitch = Boolean(menuSession && desktopRuntimeId(menuSession) === "claude-desktop" && supportsProviderSwitching(snapshot));
   const menuSupportsRuntimeHandoff = Boolean(menuSession && runtimeHandoffAvailable && menuSession.allowedActions?.canRelay !== false);
@@ -1841,6 +1892,10 @@ export function MobileWorkspace({
         setCreateOpen(false);
         return true;
       }
+      if (renameOpen) {
+        closeRename();
+        return true;
+      }
       if (deleteSessionConfirmOpen) {
         setDeleteSessionConfirmOpen(false);
         return true;
@@ -1885,6 +1940,8 @@ export function MobileWorkspace({
     configurationSessionId,
     createOpen,
     deleteSessionConfirmOpen,
+    renameOpen,
+    sessionActionBusy,
     directoryMenuOpen,
     projectOrderOpen,
     fileDownloadBusy,
@@ -2010,6 +2067,7 @@ export function MobileWorkspace({
     setRelayOpen(false);
     setPermissionOpen(false);
     setCreateOpen(false);
+    setRenameOpen(false);
     setDeleteSessionConfirmOpen(false);
     setPendingFileDownload(undefined);
   }, [directoryRequest, visible]);
@@ -2107,10 +2165,7 @@ export function MobileWorkspace({
         : runtimeFilter);
     setCreateRuntimeId(runtimeId);
     setCreateProjectId(
-      targetProject?.projectId
-      ?? snapshot?.projects.find((project) => project.runtimeId === runtimeId)?.projectId
-      ?? snapshot?.projects[0]?.projectId
-      ?? "",
+      targetProject?.projectId ?? "",
     );
     setCreateOpen(true);
   }
@@ -2141,7 +2196,7 @@ export function MobileWorkspace({
     }
   }
 
-  async function sendQuickReply(promptText: string): Promise<void> {
+  async function sendQuickReply(promptId: string, promptText: string): Promise<void> {
     if (
       !selectedSession ||
       selectedSession.allowedActions?.canSend === false ||
@@ -2150,7 +2205,8 @@ export function MobileWorkspace({
     ) return;
     updateDraft((current) => ({ ...current, sending: true }));
     try {
-      await onSendTurn(selectedSession.sessionId, promptText.trim(), [], steer);
+      const receipt = await onSendTurn(selectedSession.sessionId, promptText.trim(), [], steer);
+      setPromptReplies((current) => ({ ...current, [draftKey]: { ...current[draftKey], [promptId]: receipt?.requestId ?? null } }));
       updateDraft((current) => ({ ...current, steer: false }));
     } finally {
       updateDraft((current) => ({ ...current, sending: false }));
@@ -2193,6 +2249,27 @@ export function MobileWorkspace({
       setMenuSessionId(undefined);
     } catch (error) {
       setSessionActionError(error instanceof Error ? error.message : "归档设置失败");
+    } finally {
+      setSessionActionBusy(false);
+    }
+  }
+
+  function closeRename(): void {
+    if (sessionActionBusy) return;
+    setRenameOpen(false);
+    setMenuSessionId(undefined);
+  }
+
+  async function renameSession(): Promise<void> {
+    if (!menuSession || !onRenameSession || !renameCanSave) return;
+    setSessionActionBusy(true);
+    setSessionActionError(undefined);
+    try {
+      await onRenameSession(menuSession.sessionId, renameTitle.trim());
+      setRenameOpen(false);
+      setMenuSessionId(undefined);
+    } catch (error) {
+      setSessionActionError(error instanceof Error ? error.message : "重命名会话失败");
     } finally {
       setSessionActionBusy(false);
     }
@@ -2255,28 +2332,6 @@ export function MobileWorkspace({
     }
   }
 
-  async function createSession(): Promise<void> {
-    const project = snapshot?.projects.find((candidate) => candidate.projectId === createProjectId);
-    if (!project || createBusy) return;
-    setCreateBusy(true);
-    try {
-      const created = await onCreateSession(
-        project.cwd,
-        createTitle.trim() || undefined,
-        createRuntimeId,
-      );
-      if (created) {
-        setCreateOpen(false);
-        setCreateTitle("");
-        setCollapsedProjectIds((current) => expandProject(current, created.projectId));
-        await onRefresh();
-        await selectSession(created.sessionId);
-      }
-    } finally {
-      setCreateBusy(false);
-    }
-  }
-
   const evidenceCount = (selectedEvidence?.items.length ?? 0) + (fileChangesSummary ? 1 : 0);
   const parentSession = selectedSession?.parentSessionId
     ? sessions.find((candidate) => candidate.sessionId === selectedSession.parentSessionId)
@@ -2288,7 +2343,7 @@ export function MobileWorkspace({
 
   const sessionOverlays = (
     <>
-      {menuSession && (
+      {menuSession && !renameOpen && (
         <MobileSheet
           eyebrow={`${menuSession.projectName} · ${desktopRuntimeName(desktopRuntimeId(menuSession))}`}
           title={menuSession.title}
@@ -2320,10 +2375,22 @@ export function MobileWorkspace({
             </div>
           )}
           <div className="m-group">
+            {menuSupportsRename && (
+              <SheetAction
+                icon={<FilePenLine size={19} />}
+                label="重命名"
+                disabled={sessionActionBusy}
+                onClick={() => {
+                  setRenameTitle(menuSession.title);
+                  setSessionActionError(undefined);
+                  setRenameOpen(true);
+                }}
+              />
+            )}
             {canConfigureSession(menuSession) && (
               <SheetAction
                 icon={<Settings2 size={19} />}
-                label="模型与会话设置"
+                label="会话设置"
                 detail={conciseModelName(menuSession)}
                 disabled={sessionActionBusy}
                 onClick={() => {
@@ -2408,6 +2475,41 @@ export function MobileWorkspace({
           {sessionActionError && <p className="m-sheet-note is-error" role="alert">{sessionActionError}</p>}
         </MobileSheet>
       )}
+      {renameOpen && menuSession && (
+        <div
+          className="modal-backdrop session-create-backdrop"
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) closeRename(); }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.stopPropagation();
+              closeRename();
+            }
+          }}
+        >
+          <section className="create-session-dialog session-create-dialog" role="dialog" aria-modal="true" aria-label="重命名会话">
+            <header><h2>重命名会话</h2></header>
+            <form onSubmit={(event) => { event.preventDefault(); void renameSession(); }}>
+              <label>
+                <span>会话名称</span>
+                <input
+                  value={renameTitle}
+                  autoFocus
+                  required
+                  disabled={sessionActionBusy}
+                  onFocus={(event) => event.target.select()}
+                  onChange={(event) => setRenameTitle(event.target.value)}
+                />
+              </label>
+              {sessionActionError && <p className="session-create-error" role="alert">{sessionActionError}</p>}
+              <div className="dialog-actions">
+                <button type="button" className="secondary-button" disabled={sessionActionBusy} onClick={closeRename}>取消</button>
+                <button type="submit" className="primary-button" disabled={!renameCanSave}>{sessionActionBusy ? "正在保存…" : "保存"}</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
       <ConfirmationDialog
         open={deleteSessionConfirmOpen && Boolean(menuSession)}
         title="删除会话"
@@ -2423,6 +2525,7 @@ export function MobileWorkspace({
           key={configurationSession.sessionId}
           session={configurationSession}
           permissionScope="session"
+          revision={events.filter((event) => (event.type === "session.configuration" && event.sessionId === configurationSession.sessionId) || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === configurationSession.sessionId))).at(-1)?.seq ?? 0}
           onLoad={() => onLoadSessionConfiguration(configurationSession.sessionId)}
           onSave={(change) => onConfigureSession(configurationSession.sessionId, change)}
           {...(onConfigurePermissionPolicy ? {
@@ -2526,7 +2629,7 @@ export function MobileWorkspace({
             <button
               type="button"
               className="m-host-chip"
-              aria-label="模型与会话设置"
+              aria-label="会话设置"
               onClick={() => setConfigurationSessionId(selectedSession.sessionId)}
             >
               <i className={`m-status-dot ${selectedSession.turnState}`} />
@@ -2554,7 +2657,17 @@ export function MobileWorkspace({
             }}><MoreHorizontal size={22} /></IconButton>
           )}
         />
-        {selectedSession.pendingCount > 0 && (
+        <DesktopHandoffNotice
+          key={selectedSession.sessionId}
+          session={selectedSession}
+          online={connection === "connected" && desktopOnline}
+          className="session-channel-warning message-queue-status"
+          {...(onReturnToDesktop ? { onReturn: onReturnToDesktop } : {})}
+          {...(onTakeoverDesktop ? { onTakeover: onTakeoverDesktop } : {})}
+          refreshing={refreshing}
+          onRefresh={() => runRefresh(selectedSession.sessionId)}
+        />
+        {selectedSession.pendingCount > 0 && selectedSession.desktopHandoff?.state !== "close-desktop" && (
           <div className="session-channel-warning message-queue-status" role="status" aria-label="消息排队状态">
             <LoaderCircle size={17} />
             <span>
@@ -2567,7 +2680,7 @@ export function MobileWorkspace({
               onClick={() => runRefresh(selectedSession.sessionId)}>{refreshing ? "同步中" : "同步状态"}</button>
           </div>
         )}
-        {selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && selectedSession.pendingCount === 0 && (
+        {!selectedSession.desktopHandoff && selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && selectedSession.pendingCount === 0 && (
           <div className="session-channel-warning">
             <AlertTriangle size={17} />
             <span><strong>正在等待同会话接管</strong>电脑端当前任务结束后会自动发送，无需额外操作。</span>
@@ -2872,6 +2985,8 @@ export function MobileWorkspace({
                 {item.interactivePrompt && (
                   <InteractivePromptCard
                     prompt={item.interactivePrompt}
+                    {...(item.replyDelivery ? { replyDelivery: item.replyDelivery } : {})}
+                    {...(item.replyPending ? { replyPending: true } : {})}
                     canSend={selectedSession.allowedActions?.canSend !== false && !officialActive}
                     busy={sending}
                     onSelectOption={(replyText) => {
@@ -2892,7 +3007,7 @@ export function MobileWorkspace({
                           return;
                         }
                       }
-                      void sendQuickReply(replyText);
+                      void sendQuickReply(item.id, replyText);
                     }}
                   />
                 )}
@@ -3303,7 +3418,7 @@ export function MobileWorkspace({
             {!isArchivedGroupPage && (
               <IconButton
                 label="新建会话"
-                disabled={!snapshot?.projects.length}
+                disabled={!snapshot || connection !== "connected" || !desktopOnline}
                 onClick={() => openCreateDialogForProject(activeProjectId)}
               >
                 <Plus size={22} />
@@ -3504,59 +3619,21 @@ export function MobileWorkspace({
           </div>
         </MobileSheet>
       )}
-      {createOpen && (
-        <MobileSheet
-          eyebrow={desktopName}
-          title="新建会话"
-          busy={createBusy}
+      {createOpen && snapshot && (
+        <SessionCreateDialog
+          key={snapshot.host.hostId}
+          snapshot={snapshot}
+          connected={connection === "connected" && desktopOnline}
+          initialProjectId={createProjectId}
+          initialRuntimeId={createRuntimeId}
+          {...(onBrowseDirectory ? { onBrowseDirectory } : {})}
+          onCreate={onCreateSession}
+          onCreated={(created) => {
+            setCollapsedProjectIds((current) => expandProject(current, created.projectId));
+            void onRefresh().then(() => selectSession(created.sessionId));
+          }}
           onClose={() => setCreateOpen(false)}
-          footer={(
-            <>
-              <button type="button" className="secondary-button" disabled={createBusy} onClick={() => setCreateOpen(false)}>取消</button>
-              <button type="button" className="primary-button" disabled={!createProjectId || createBusy} onClick={() => void createSession()}>
-                {createBusy && <LoaderCircle className="is-spinning" size={16} />}创建会话
-              </button>
-            </>
-          )}
-        >
-          {(snapshot?.runtimes?.length ?? 0) > 1 && (
-            <label className="m-field">
-              <span>Desktop 应用</span>
-              <select
-                value={createRuntimeId}
-                onChange={(event) => {
-                  const runtimeId = event.target.value as BridgeDesktopRuntimeId;
-                  setCreateRuntimeId(runtimeId);
-                  setCreateProjectId(
-                    snapshot?.projects.find((project) => project.runtimeId === runtimeId)?.projectId
-                    ?? snapshot?.projects[0]?.projectId
-                    ?? "",
-                  );
-                }}
-              >
-                {snapshot!.runtimes!.map((runtime) => (
-                  <option
-                    value={runtime.id}
-                    key={runtime.id}
-                    disabled={runtime.state !== "ready" || !runtime.capabilities.includes("session.create")}
-                  >
-                    {desktopRuntimeName(runtime.id)}{runtime.state === "ready" ? "" : "（不可用）"}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <label className="m-field">
-            <span>项目</span>
-            <select value={createProjectId} onChange={(event) => setCreateProjectId(event.target.value)}>
-              {snapshot?.projects.map((project) => <option value={project.projectId} key={project.projectId}>{project.name}</option>)}
-            </select>
-          </label>
-          <label className="m-field">
-            <span>会话名称</span>
-            <input value={createTitle} onChange={(event) => setCreateTitle(event.target.value)} placeholder="可留空" />
-          </label>
-        </MobileSheet>
+        />
       )}
     </main>
   );

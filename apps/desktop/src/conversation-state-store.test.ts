@@ -38,6 +38,29 @@ async function createStore(): Promise<{
 }
 
 describe("ConversationStateStore", () => {
+  it("persists display titles by full logical session ID without creating broker sessions or routes", async () => {
+    const { store } = await createStore();
+    await store.initialize();
+    expect(store.sessionTitle("native-1")).toBeUndefined();
+    store.setSessionTitle("native-1", "手机名称");
+    store.setSessionTitle("codex-desktop:native-1", "Codex 名称");
+    store.setSessionTitle("hermes-desktop:native-1", "Hermes 名称");
+    store.setSessionTitle("native-1", "再次改名");
+    expect(store.loadBrokerState().sessions).toEqual([]);
+    expect(store.route("native-1")).toBeUndefined();
+    store.close();
+    expect(store.sessionTitle("native-1")).toBeUndefined();
+    await store.initialize();
+    await store.initialize();
+    expect(store.sessionTitle("native-1")).toBe("再次改名");
+    expect(store.sessionTitle("codex-desktop:native-1")).toBe("Codex 名称");
+    expect(store.sessionTitle("hermes-desktop:native-1")).toBe("Hermes 名称");
+    expect(store.loadBrokerState().sessions).toEqual([]);
+    store.close();
+    expect(() => store.setSessionTitle("native-1", "失败写入")).toThrow();
+    expect(store.sessionTitle("native-1")).toBeUndefined();
+  });
+
   it("transactionally migrates legacy sessions and fixes every queued item to its lane", async () => {
     const fixture = await createStore();
     await writeFile(fixture.sessionsPath, JSON.stringify({

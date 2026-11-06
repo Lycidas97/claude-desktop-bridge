@@ -7,6 +7,7 @@ const harness = vi.hoisted(() => ({
   refs: [] as Array<{ current: any }>,
   requests: [] as BridgeRequest[],
   result: {} as Record<string, unknown>,
+  beforeReply: undefined as (() => void) | undefined,
 }));
 
 vi.mock("react", async (importOriginal) => ({
@@ -26,6 +27,7 @@ vi.mock("react", async (importOriginal) => ({
         const pending = harness.refs[6]!.current.get(request.requestId);
         clearTimeout(pending.timer);
         harness.refs[6]!.current.delete(request.requestId);
+        if (request.method !== "events.resume") harness.beforeReply?.();
         pending.resolve({
           kind: "response", requestId: request.requestId, ok: true,
           result: request.method === "events.resume" ? { events: [] } : harness.result,
@@ -43,6 +45,7 @@ beforeEach(() => {
   harness.refs = [];
   harness.requests = [];
   harness.result = {};
+  harness.beforeReply = undefined;
   harness.state = { snapshot: {
     host: { hostId: "computer", defaultPermissionMode: "standard" },
     sessions: [
@@ -54,6 +57,35 @@ beforeEach(() => {
 });
 
 describe("configureHostPermission", () => {
+  it("sets an explicit runtime default with no session and applies the confirmed value only to that runtime", async () => {
+    harness.state.snapshot.host.capabilities = ["permission.policy.v1", "permission.runtime-defaults.v1"];
+    harness.state.snapshot.sessions = [];
+    harness.state.snapshot.runtimes = [{ id: "codex-desktop", defaultPermissionMode: "standard" }];
+    const bridge = useMobileBridge();
+    harness.result = { runtimeId: "codex-desktop", defaultPermissionMode: "full-access" };
+    await expect(bridge.configureHostPermission("codex-desktop", "full-access")).resolves.toBe("full-access");
+    expect(harness.requests[0]).toMatchObject({ method: "permission.policy.configure", params: { scope: "host", runtimeId: "codex-desktop", mode: "full-access" } });
+    expect(harness.requests[0]!.params).not.toHaveProperty("sessionId");
+    expect(harness.state.snapshot.host.defaultPermissionMode).toBe("standard");
+    expect(harness.state.snapshot.runtimes[0].defaultPermissionMode).toBe("full-access");
+  });
+  it.each(["permission", "detection"])("does not apply a delayed %s response from computer A after switching to B", async (operation) => {
+    harness.state.snapshot.host.capabilities = ["permission.runtime-defaults.v1"];
+    harness.state.snapshot.runtimes = [{ id: "codex-desktop", defaultPermissionMode: "standard" }];
+    const bridge = useMobileBridge();
+    harness.result = operation === "permission" ? { runtimeId: "codex-desktop", defaultPermissionMode: "full-access" } : { runtime: { state: "ready", detail: "Computer A" }, providers: [{ id: "A-only" }] };
+    harness.beforeReply = () => {
+      harness.state = { ...harness.state, snapshot: { ...harness.state.snapshot, host: { ...harness.state.snapshot.host, hostId: "computer-B" }, runtime: { state: "ready", detail: "Computer B" }, providers: [{ id: "B-only" }] } };
+      harness.refs[0]!.current = harness.state;
+      harness.refs[1]!.current = { ...harness.refs[1]!.current };
+    };
+    await (operation === "permission" ? bridge.configureHostPermission("codex-desktop", "full-access") : bridge.redetectProviders()).catch(() => undefined);
+    expect(harness.state.snapshot.host.hostId).toBe("computer-B");
+    expect(harness.state.snapshot.runtimes[0].defaultPermissionMode).toBe("standard");
+    expect(harness.state.snapshot.runtime.detail).toBe("Computer B");
+    expect(harness.state.snapshot.providers).toEqual([{ id: "B-only" }]);
+  });
+
   it("saves Claude host defaults without a session or configuration response", async () => {
     const bridge = useMobileBridge();
     harness.result = { defaultPermissionMode: "full-access" };

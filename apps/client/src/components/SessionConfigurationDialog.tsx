@@ -53,13 +53,15 @@ export interface SessionConfigurationChange {
 
 export function SessionConfigurationDialog({
   session,
+  revision,
   onLoad,
   onSave,
   onConfigurePermission,
-  permissionScope: fixedPermissionScope,
+  permissionScope: fixedPermissionScope = "session",
   onClose,
 }: {
   session: BridgeSessionInfo;
+  revision?: string | number;
   permissionScope?: "host" | "session";
   onLoad(): Promise<BridgeSessionConfiguration>;
   onSave(change: SessionConfigurationChange): Promise<BridgeSessionConfiguration>;
@@ -84,7 +86,7 @@ export function SessionConfigurationDialog({
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
   const [error, setError] = useState<string>();
   const nativeRuntime = isNativeRuntimeId(session.runtimeId);
-  // Native runtimes don't route through Magpie; the desktop dashboard mounts no quota provider.
+  // Native runtimes do not route through Magpie.
   const quotaState = useOptionalMagpieQuota(!nativeRuntime);
   const quota = nativeRuntime ? undefined : quotaState;
 
@@ -115,7 +117,7 @@ export function SessionConfigurationDialog({
     return () => {
       active = false;
     };
-  }, [session.sessionId, fixedPermissionScope]);
+  }, [session.sessionId, revision, fixedPermissionScope]);
 
   useEffect(() => {
     if (!fixedPermissionScope || !confirmFullAccess) return;
@@ -230,7 +232,7 @@ export function SessionConfigurationDialog({
       <section className="session-configuration-dialog" role="dialog" aria-modal="true" aria-labelledby="session-configuration-title">
         <header>
           <div>
-            <span><Settings2 size={15} />会话配置</span>
+            <span><Settings2 size={15} />会话设置</span>
             <h2 id="session-configuration-title">{session.title}</h2>
           </div>
           <IconButton label="关闭" onClick={onClose}><X size={19} /></IconButton>
@@ -288,6 +290,7 @@ export function SessionConfigurationDialog({
                 ))}
               </select>
               <small>{selectedModel?.description || (!configuration?.modelsComplete ? "仅显示当前主机已发现的模型" : model)}</small>
+              {configuration && <small>配置来源：{{ bridge: "当前会话", "claude-desktop": "Claude Desktop", project: "项目配置", default: "电脑默认" }[configuration.modelSource]}</small>}
             </label>
             {quota && selectedModel && <MagpieModelQuota model={selectedModel} />}
 
@@ -368,8 +371,8 @@ export function SessionConfigurationDialog({
               </fieldset>
             )}
 
-            {appliesAfterTurn && <div className="session-configuration-notice">当前任务不会中断，修改从下一轮生效。</div>}
-            {error && <div className="session-configuration-error">{error}</div>}
+            {session.desktopHandoff?.state === "close-desktop" ? <div className="session-configuration-notice">配置保存在 Bridge，接管后生效。</div> : appliesAfterTurn && <div className="session-configuration-notice">当前任务不会中断，修改从下一轮生效。</div>}
+            {error && <div className="session-configuration-error" role="alert">{error}</div>}
 
             <footer>
               {!nativeRuntime && (configuration?.overrideModel || configuration?.overrideEffort) && (

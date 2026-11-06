@@ -34,6 +34,15 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
   }
 }
 
+async function setDesktopExecutorAlive(observer: TranscriptObserver, sessionId: string, registrationPath: string, alive: boolean): Promise<void> {
+  const session = observer.session(sessionId)!;
+  await writeFile(registrationPath, JSON.stringify({
+    pid: alive ? process.pid : 2147483647, sessionId: session.sessionId, cwd: session.cwd,
+    startedAt: Date.now(), entrypoint: "claude-desktop-3p",
+  }));
+  await waitFor(() => observer.session(sessionId)?.desktopProcessAlive === alive);
+}
+
 describe("TranscriptObserver", () => {
   it("deduplicates compacted text and prompts across restart while detecting later edits", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-observer-compact-dedup-"));
@@ -154,7 +163,7 @@ describe("TranscriptObserver", () => {
     }
   });
 
-  it("treats a focused Desktop session as a viewer until it writes a real user message", async () => {
+  it("keeps a focused idle Desktop executor exclusive while tracking real user writes", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-observer-viewer-"));
     directories.push(root);
     const desktopSessions = join(root, "desktop-sessions");
@@ -225,7 +234,8 @@ describe("TranscriptObserver", () => {
 
     expect(observer.catalog.sessions.find((session) => session.sessionId === sessionId)?.desktopProcessAlive)
       .toBe(true);
-    await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(true);
+    await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
+    await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
     expect(observer.isDesktopBusy(sessionId)).toBe(false);
     expect(observer.externalWriteVersion(sessionId)).toBe(0);
 
@@ -260,6 +270,8 @@ describe("TranscriptObserver", () => {
       > previousTranscriptMtime
     ));
     expect(observer.externalWriteVersion(sessionId)).toBe(0);
+    await setDesktopExecutorAlive(observer, sessionId, join(paths.sessions, `${process.pid}.json`), false);
+    await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(true);
 
     await eventLog.append({
       sessionId,
@@ -279,6 +291,8 @@ describe("TranscriptObserver", () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(observer.externalWriteVersion(sessionId)).toBe(0);
 
+    await setDesktopExecutorAlive(observer, sessionId, join(paths.sessions, `${process.pid}.json`), true);
+    await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
     await eventLog.append({
       sessionId,
       itemId: "bridge-assistant-late",
@@ -330,7 +344,7 @@ describe("TranscriptObserver", () => {
     ].join("\n"));
     const eventLog = new SessionEventLog(join(root, "events.jsonl"));
     const recovered: ObservedDesktopEvidence[] = [];
-    const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 20, catalogIntervalMs: 60_000, evidence: { async upsertDesktopEvidence(input) { recovered.push(input); } } });
+    const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 20, catalogIntervalMs: 20, evidence: { async upsertDesktopEvidence(input) { recovered.push(input); } } });
     observer.setSessionAlias(nativeId, sessionId);
     try {
       await eventLog.append({ sessionId, itemId: "owned-tool", origin: "claude-host", type: "tool.started", data: { toolName: "Read" } });
@@ -351,15 +365,60 @@ describe("TranscriptObserver", () => {
       await eventLog.append({ sessionId, turnId: "desktop-turn", origin: "claude-host", type: "turn.completed", data: {} });
       expect(observer.isMainTurnBusy(nativeId)).toBe(false);
       expect(observer.isMainTurnBusy(sessionId)).toBe(false);
+      await expect(observer.canStartBridgeHost(nativeId)).resolves.toBe(false);
+      await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
+      await setDesktopExecutorAlive(observer, sessionId, join(paths.sessions, `${process.pid}.json`), false);
       await expect(observer.canStartBridgeHost(nativeId)).resolves.toBe(true);
       await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(true);
+      expect(observer.externalWriteVersion(nativeId)).toBe(1);
+      expect(observer.externalWriteVersion(sessionId)).toBe(1);
     } finally {
       await observer.close();
       await eventLog.close();
     }
   });
 
-  it("allows a new or reused Bridge host at a main-turn boundary despite subagent activity", async () => {
+  it.each([false, true])("tracks background shell tasks past end_turn and clears fresh completion evidence (alias=%s)", async (alias) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-observer-background-shell-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    const nativeId = "background-shell-native";
+    const logicalId = alias ? "background-shell-logical" : nativeId;
+    const transcript = join(paths.projects, `${nativeId}.jsonl`);
+    await Promise.all([mkdir(paths.sessions, { recursive: true }), mkdir(paths.projects, { recursive: true })]);
+    await writeFile(join(paths.sessions, "executor.json"), JSON.stringify({
+      pid: process.pid, sessionId: nativeId, cwd: root, startedAt: Date.now(), entrypoint: "claude-desktop-3p",
+    }));
+    await writeFile(transcript, [
+      { type: "user", uuid: "start", parentUuid: null, message: { role: "user", content: "Run the job" } },
+      { type: "assistant", uuid: "bash", parentUuid: "start", message: { role: "assistant", content: [{ type: "tool_use", id: "bash-call", name: "Bash", input: { command: "long-job" } }] } },
+      { type: "user", uuid: "bash-result", parentUuid: "bash", toolUseResult: { backgroundTaskId: "shell-1" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "bash-call", content: "Running in background" }] } },
+      { type: "assistant", uuid: "done", parentUuid: "bash-result", message: { role: "assistant", stop_reason: "end_turn", content: "The job is still running." } },
+    ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 20, catalogIntervalMs: 60_000 });
+    if (alias) observer.setSessionAlias(nativeId, logicalId);
+    try {
+      await observer.start();
+      expect(observer.isMainTurnBusy(nativeId)).toBe(false);
+      expect(observer.hasPendingBackgroundShellTasks(nativeId)).toBe(true);
+      expect(observer.hasPendingBackgroundShellTasks(logicalId)).toBe(true);
+      expect(observer.hasPendingBackgroundShellTasks("unknown-session")).toBe(false);
+
+      await appendFile(transcript, [
+        { type: "user", uuid: "finished", parentUuid: "done", isMeta: true, message: { role: "user", content: "<task-notification><task-id>shell-1</task-id><status>completed</status></task-notification>" } },
+        { type: "assistant", uuid: "confirmed", parentUuid: "finished", message: { role: "assistant", stop_reason: "end_turn", content: "The job finished." } },
+      ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+      await waitFor(() => !observer.hasPendingBackgroundShellTasks(nativeId));
+      expect(observer.hasPendingBackgroundShellTasks(logicalId)).toBe(false);
+      expect(observer.isMainTurnBusy(logicalId)).toBe(false);
+    } finally {
+      await observer.close();
+      await eventLog.close();
+    }
+  });
+
+  it("requires Desktop executor exit for a new or reused host despite a main-turn boundary", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-observer-reuse-"));
     directories.push(root);
     const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
@@ -381,17 +440,22 @@ describe("TranscriptObserver", () => {
       message: { role: "assistant", content: [{ type: "tool_use", id: "old-tool", name: "Read", input: {} }] },
     })}\n`);
     const eventLog = new SessionEventLog(join(root, "events.jsonl"));
-    const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 60_000, catalogIntervalMs: 60_000 });
+    const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 20, catalogIntervalMs: 20 });
     try {
       await observer.start();
-      expect(observer.catalog.sessions.find((session) => session.sessionId === sessionId), "catalog contains viewer").toBeDefined();
+      expect(observer.catalog.sessions.find((session) => session.sessionId === sessionId), "catalog contains Desktop executor").toBeDefined();
       expect(observer.isDesktopBusy(sessionId), "subagent activity remains visible").toBe(true);
       expect(observer.isMainTurnBusy(sessionId)).toBe(false);
       expect(observer.runningSubagents(sessionId)?.count).toBe(1);
+      await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
+      await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
+      await setDesktopExecutorAlive(observer, sessionId, join(paths.sessions, `${process.pid}.json`), false);
       await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(true);
       await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(true);
+      await setDesktopExecutorAlive(observer, sessionId, join(paths.sessions, `${process.pid}.json`), true);
       await appendFile(transcript, `${JSON.stringify({ type: "user", uuid: "native-next", parentUuid: "assistant-1", message: { role: "user", content: "New Desktop input" } })}\n`);
-      expect(observer.externalWriteVersion(sessionId)).toBe(0);
+      await waitFor(() => observer.externalWriteVersion(sessionId) === 1);
+      expect(observer.isMainTurnBusy(sessionId)).toBe(true);
       await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
       await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
     } finally {
@@ -566,23 +630,38 @@ describe("TranscriptObserver", () => {
         message: { role: "assistant", content: [{ type: "tool_use", id: "old-tool", name: "Read", input: {} }] },
       })}\n`);
       const eventLog = new SessionEventLog(join(root, "events.jsonl"));
-      const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 60_000, catalogIntervalMs: 60_000 });
+      const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 20, catalogIntervalMs: 20 });
       try {
         await eventLog.append({ sessionId, turnId: "bridge-turn", itemId: "bridge-user", origin: "mobile", type: "user.message.accepted", data: { text: "Continue" } });
         await observer.start();
+        expect(observer.isMainTurnBusy(sessionId)).toBe(true);
+        expect(observer.runningSubagents(sessionId)?.count).toBe(1);
         await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
         await eventLog.append({ sessionId, turnId: "another-turn", origin: "claude-host", type: terminal, data: { result: "" } });
+        expect(observer.isMainTurnBusy(sessionId), "an unrelated turn cannot settle the pending input").toBe(true);
         await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
         await eventLog.append({ sessionId, turnId: "bridge-turn", origin: "claude-host", type: terminal, data: { result: "" } });
+        expect(observer.isMainTurnBusy(sessionId)).toBe(false);
         expect(observer.isDesktopBusy(sessionId)).toBe(false);
+        await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
+        await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
+        await setDesktopExecutorAlive(observer, sessionId, join(paths.sessions, `${process.pid}.json`), false);
         await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(true);
         await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(true);
+        await setDesktopExecutorAlive(observer, sessionId, join(paths.sessions, `${process.pid}.json`), true);
 
         await appendFile(transcript, `${JSON.stringify({ type: "user", uuid: "notification", parentUuid: "context", message: { role: "user", content: "<task-notification>Child finished</task-notification>" } })}\n`);
+        await waitFor(() => observer.isMainTurnBusy(sessionId));
         await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
+        const beforeFollowup = observer.session(sessionId)!.transcriptMtimeMs;
         await appendFile(transcript, `${JSON.stringify({ type: "assistant", uuid: "followup-tool", parentUuid: "notification", message: { role: "assistant", content: [{ type: "tool_use", id: "followup", name: "Read", input: {} }], stop_reason: "tool_use" } })}\n`);
+        await waitFor(() => observer.session(sessionId)!.transcriptMtimeMs > beforeFollowup);
+        expect(observer.isMainTurnBusy(sessionId)).toBe(true);
         await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
+        const beforeDesktopInput = observer.externalWriteVersion(sessionId);
         await appendFile(transcript, `${JSON.stringify({ type: "user", uuid: "desktop-next", parentUuid: "followup-tool", message: { role: "user", content: "New Desktop input" } })}\n`);
+        await waitFor(() => observer.externalWriteVersion(sessionId) > beforeDesktopInput);
+        expect(observer.isMainTurnBusy(sessionId)).toBe(true);
         await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
         await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
       } finally {
@@ -688,6 +767,9 @@ describe("TranscriptObserver", () => {
     })}\n`);
     await waitFor(() => !observer.isDesktopBusy(sessionId));
 
+    await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(false);
+    await expect(observer.canStartBridgeHost(sessionId, true)).resolves.toBe(false);
+    await setDesktopExecutorAlive(observer, sessionId, join(paths.sessions, `${process.pid}.json`), false);
     await expect(observer.canStartBridgeHost(sessionId)).resolves.toBe(true);
     await observer.close();
     await eventLog.close();

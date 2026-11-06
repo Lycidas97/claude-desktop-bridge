@@ -1,4 +1,4 @@
-import type { BridgeCrypto, BridgeEvent, BridgeHostSnapshot, BridgeRequest, BridgeResponse, DecryptedEnvelope, EncryptedEnvelope } from "@bridge/protocol";
+import type { BridgeCrypto, BridgeEvent, BridgeHostSnapshot, BridgeRequest, BridgeResponse, BridgeSessionInfo, DecryptedEnvelope, EncryptedEnvelope } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useMobileBridge } from "./useMobileBridge.js";
 
@@ -133,12 +133,200 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("session creation project identity", () => {
+  it.each([undefined, "project-2"])("preserves RPC compatibility and merges the returned session (projectId=%s)", async projectId => {
+    const existing: BridgeSessionInfo = {
+      sessionId: "existing", projectId: "project-1", projectName: "First project", cwd: "/tmp/project", title: "Existing",
+      source: "bridge", ownership: "BRIDGE_IDLE", transport: "bridge-host", turnState: "idle", lastActivityAt: 1, pendingCount: 0,
+    };
+    const current = snapshot("A");
+    current.sessions = [existing];
+    current.projects = [
+      { projectId: "project-1", name: "First project", cwd: "/tmp/project", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 },
+      { projectId: "project-2", name: "Second project", cwd: "/tmp/project", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 1 },
+    ];
+    harness.state.snapshot = current;
+    const created: BridgeSessionInfo = { ...existing, sessionId: "created", title: "Created", lastActivityAt: 2,
+      projectId: projectId ?? "project-1", projectName: projectId ? "Second project" : "First project",
+    };
+    harness.respond = async () => ({ session: created });
+    const bridge = useMobileBridge();
+    await expect(projectId === undefined
+      ? bridge.createSession("/tmp/project", "Created", "claude-desktop")
+      : bridge.createSession("/tmp/project", "Created", "claude-desktop", projectId)).resolves.toEqual(created);
+    expect(harness.requests).toHaveLength(1);
+    expect(harness.requests[0]!.request).toMatchObject({ method: "session.create", params: {
+      cwd: "/tmp/project", title: "Created", runtimeId: "claude-desktop",
+    } });
+    if (projectId === undefined) expect(harness.requests[0]!.request.params).not.toHaveProperty("projectId");
+    else expect(harness.requests[0]!.request.params).toHaveProperty("projectId", projectId);
+    expect(harness.state.snapshot.sessions).toEqual([created, existing]);
+    expect(harness.state.snapshot.projects).toEqual(current.projects);
+  });
+});
+
+describe("session display-name renaming", () => {
+  it("sends the complete logical ID and applies the returned title without changing session order or runtime state", async () => {
+    const session: BridgeSessionInfo = {
+      sessionId: "claude-desktop:logical-target", projectId: "project", projectName: "Project", cwd: "/tmp/project", title: "Old name",
+      source: "desktop", ownership: "BRIDGE_RUNNING", transport: "bridge-host", turnState: "running", lastActivityAt: 123,
+      activeTurnId: "active", pendingCount: 1, pendingCommandIds: ["queued"],
+    };
+    const sibling = { ...session, sessionId: "sibling", title: "Sibling", lastActivityAt: 456 };
+    harness.state.snapshot.sessions = [sibling, session];
+    harness.state.localTurns = [{ sessionId: session.sessionId, commandId: "queued", text: "Keep queued message", delivery: "host-received" }];
+    const before = harness.state.snapshot;
+    const localTurns = harness.state.localTurns;
+    const renamed = { ...session, title: "Server canonical title" };
+    harness.respond = async () => ({ session: renamed });
+    const bridge = useMobileBridge();
+    await expect(bridge.renameSession(session.sessionId, "Requested title")).resolves.toBeUndefined();
+    expect(harness.requests).toHaveLength(1);
+    expect(harness.requests[0]!.request).toMatchObject({ method: "session.rename", params: { sessionId: session.sessionId, title: "Requested title" } });
+    expect(harness.requests[0]!.request.params).toEqual({ sessionId: session.sessionId, title: "Requested title", client: { name: "Web 客户端", platform: "web" } });
+    expect(harness.state.snapshot.sessions).toEqual([sibling, renamed]);
+    expect(harness.state.snapshot.projects).toBe(before.projects);
+    expect(harness.state.localTurns).toBe(localTurns);
+    expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+
+  it.each(["turn.queued", "session.deleted"] as const)("preserves a newer %s event received before the rename response", async type => {
+    vi.useFakeTimers();
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const bridge = useMobileBridge();
+    await bridge.retryConnection();
+    const session: BridgeSessionInfo = {
+      sessionId: "target", projectId: "project", projectName: "Project", cwd: "/tmp/project", title: "Old name",
+      source: "desktop", ownership: "DESKTOP_OBSERVED", transport: "bridge-host", turnState: "running",
+      lastActivityAt: 10, activeTurnId: "active", pendingCount: 0, pendingCommandIds: [],
+    };
+    harness.state.snapshot = { ...snapshot("A"), sessions: [session], latestSeq: 10 };
+    harness.state.latestSeq = 10;
+    harness.refs[3]!.current.sendEnvelope = socket("A").sendEnvelope;
+    const response = deferred<Record<string, unknown>>();
+    harness.respond = async request => request.method === "session.rename" ? response.promise : {};
+    const saving = bridge.renameSession(session.sessionId, "New name");
+    await vi.waitFor(() => expect(harness.requests.some(({ request }) => request.method === "session.rename")).toBe(true));
+    const event: BridgeEvent = { eventId: "newer-event", sessionId: session.sessionId, seq: 11, timestamp: 11, origin: "system", type, data: { commandId: "queue-1" } };
+    harness.receive({ payload: { kind: "event", event }, header: { sentAt: Date.now() } } as DecryptedEnvelope, { id: event.eventId } as EncryptedEnvelope);
+    const latest = harness.state.snapshot.sessions[0];
+    if (type === "turn.queued") expect(latest).toMatchObject({ turnState: "running", pendingCount: 1, pendingCommandIds: ["queue-1"] });
+    else expect(harness.state.snapshot.sessions).toEqual([]);
+    response.resolve({ session: { ...session, title: "New name" } });
+    await saving;
+    try {
+      expect(harness.state.snapshot.latestSeq).toBe(11);
+      expect(harness.state.latestSeq).toBe(11);
+      expect(harness.state.snapshot.sessions).toEqual(type === "turn.queued" ? [{ ...latest, title: "New name" }] : []);
+    } finally { bridge.backToHosts(); vi.clearAllTimers(); }
+  });
+
+  it("rejects an offline rename without queuing it", async () => {
+    const bridge = useMobileBridge();
+    harness.refs[3]!.current.state = "closed";
+    await expect(bridge.renameSession("target", "New name")).rejects.toThrow("电脑当前离线");
+    expect(harness.requests).toEqual([]);
+    expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the server error and leaves the snapshot untouched", async () => {
+    const before = harness.state.snapshot;
+    const bridge = useMobileBridge();
+    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+      harness.requests.push({ host: "A", request });
+      const pending = harness.refs[6]!.current.get(request.requestId);
+      clearTimeout(pending.timer);
+      harness.refs[6]!.current.delete(request.requestId);
+      pending.resolve({ kind: "response", requestId: request.requestId, ok: false, error: { code: "INVALID_PARAMS", message: "会话名称过长" } });
+    };
+    await expect(bridge.renameSession("target", "New name")).rejects.toThrow("会话名称过长");
+    expect(harness.state.snapshot).toBe(before);
+    expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+});
+
+describe("returning a session to Desktop", () => {
+  it("sends only the explicit RPC and merges its returned session", async () => {
+    const session: BridgeSessionInfo = {
+      sessionId: "target", projectId: "project", projectName: "Project", cwd: "/tmp/project", title: "Target",
+      source: "desktop", ownership: "BRIDGE_IDLE", transport: "bridge-host", turnState: "idle", lastActivityAt: 1, pendingCount: 0,
+      desktopHandoff: { state: "bridge", canReturn: true },
+    };
+    const sibling = { ...session, sessionId: "sibling" };
+    harness.state.snapshot.sessions = [session, sibling];
+    const returned: BridgeSessionInfo = { ...session, desktopHandoff: { state: "reopen-desktop", canReturn: false } };
+    harness.respond = async () => ({ session: returned });
+    const bridge = useMobileBridge();
+    await expect(bridge.returnToDesktop("target")).resolves.toBeUndefined();
+    expect(harness.requests).toHaveLength(1);
+    expect(harness.requests[0]!.request).toMatchObject({ method: "session.return_to_desktop", params: { sessionId: "target" } });
+    expect(harness.state.snapshot.sessions).toEqual([returned, sibling]);
+    expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+
+  it("rejects an offline return without queuing a later handoff", async () => {
+    const bridge = useMobileBridge();
+    harness.refs[3]!.current.state = "closed";
+    await expect(bridge.returnToDesktop("target")).rejects.toThrow("电脑当前离线");
+    expect(harness.requests).toEqual([]);
+    expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+});
+
+describe("explicit single-session Desktop takeover", () => {
+  it("sends only the takeover RPC and merges the returned session while preserving queued answers", async () => {
+    const session: BridgeSessionInfo = {
+      sessionId: "target", projectId: "project", projectName: "Project", cwd: "/tmp/project", title: "Target",
+      source: "desktop", ownership: "DESKTOP_OBSERVED", transport: "bridge-host", turnState: "queued", lastActivityAt: 1, pendingCount: 1,
+      desktopHandoff: { state: "close-desktop", canReturn: false, canTakeover: true },
+    };
+    const sibling = { ...session, sessionId: "sibling" };
+    harness.state.snapshot.sessions = [session, sibling];
+    const answer = { requestId: "answer", sessionId: "target", text: "Main", delivery: "host-received" };
+    harness.state.localTurns = [answer];
+    const returned: BridgeSessionInfo = { ...session, desktopHandoff: { state: "bridge", canReturn: false, canTakeover: false } };
+    harness.respond = async () => ({ session: returned });
+    const bridge = useMobileBridge();
+    await expect(bridge.takeoverDesktop("target")).resolves.toBeUndefined();
+    expect(harness.requests).toHaveLength(1);
+    expect(harness.requests[0]!.request).toMatchObject({ method: "session.takeover_desktop", params: { sessionId: "target" } });
+    expect(harness.requests[0]!.request.params).toEqual({ sessionId: "target", client: { name: "Web 客户端", platform: "web" } });
+    expect(harness.state.snapshot.sessions).toEqual([returned, sibling]);
+    expect(harness.state.localTurns).toEqual([answer]);
+    expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+
+  it("rejects offline takeover without queuing a later process termination", async () => {
+    const bridge = useMobileBridge();
+    harness.refs[3]!.current.state = "closed";
+    await expect(bridge.takeoverDesktop("target")).rejects.toThrow("电脑当前离线");
+    expect(harness.requests).toEqual([]);
+    expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a backend refusal and leaves session state unchanged", async () => {
+    const before = harness.state.snapshot;
+    const bridge = useMobileBridge();
+    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+      harness.requests.push({ host: "A", request });
+      const pending = harness.refs[6]!.current.get(request.requestId);
+      clearTimeout(pending.timer);
+      harness.refs[6]!.current.delete(request.requestId);
+      pending.resolve({ kind: "response", requestId: request.requestId, ok: false, error: { code: "BUSY", message: "主任务或子代理仍在运行" } });
+    };
+    await expect(bridge.takeoverDesktop("target")).rejects.toThrow("主任务或子代理仍在运行");
+    expect(harness.state.snapshot).toBe(before);
+    expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+});
+
 describe("durable sends during transport failure", () => {
   it.each([false, true])("keeps a persisted message queued without restoring the draft (steer=%s)", async steer => {
     const bridge = useMobileBridge();
     const send = vi.fn().mockRejectedValue(new Error("Socket is not connected"));
     harness.refs[3]!.current.sendEnvelope = send;
-    await expect(bridge.sendTurn("session-1", "Continue", [], steer)).resolves.toBeUndefined();
+    const receipt = await bridge.sendTurn("session-1", "Continue", [], steer);
+    expect(receipt).toEqual({ requestId: expect.any(String) });
     expect(harness.addOutbox).toHaveBeenCalledOnce();
     expect(harness.saveMessage).toHaveBeenCalledOnce();
     expect(harness.state.localTurns).toHaveLength(1);
@@ -146,6 +334,8 @@ describe("durable sends during transport failure", () => {
     expect(send).toHaveBeenCalledOnce();
     const envelope = harness.addOutbox.mock.calls[0]![0];
     expect(send).toHaveBeenCalledWith(envelope);
+    expect(receipt).toEqual({ requestId: envelope.request.requestId });
+    expect(harness.state.localTurns[0].requestId).toBe(envelope.request.requestId);
     expect(envelope.request.method).toBe(steer ? "turn.steer" : "turn.start");
   });
 

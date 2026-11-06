@@ -1,4 +1,5 @@
 import type { BridgeEffort, BridgePermissionMode } from "@bridge/protocol";
+import { projectIdForCwd } from "./claude-session-catalog.js";
 import type {
   ClaudeDesktopSessionRegistrar,
   DesktopSessionRegistrationInput,
@@ -9,6 +10,9 @@ import type { BridgeEventDraft } from "./session-event-log.js";
 interface RegistrationSession {
   sessionId: string;
   cwd: string;
+  projectId?: string;
+  groupSessionsRoot?: string;
+  groupScope?: string;
   title: string;
   createdAt: number;
   parentDesktopSessionId?: string;
@@ -49,6 +53,9 @@ export class SessionDesktopRegistration {
     const input: DesktopSessionRegistrationInput = {
       sessionId,
       cwd: session.cwd,
+      ...(session.projectId && session.projectId !== projectIdForCwd(session.cwd) ? { groupId: session.projectId } : {}),
+      ...(session.groupSessionsRoot ? { groupSessionsRoot: session.groupSessionsRoot } : {}),
+      ...(session.groupScope ? { groupScope: session.groupScope } : {}),
       title: session.title,
       createdAt: session.createdAt,
       lastActivityAt: Math.max(session.createdAt, context.lastActivityAt ?? 0),
@@ -71,15 +78,8 @@ export class SessionDesktopRegistration {
       try {
         next = await registrar.register(input, session.desktopRegistration);
       } catch {
-        const previous = session.desktopRegistration;
         next = {
-          ...(previous?.metadataPath ? { metadataPath: previous.metadataPath } : {}),
-          ...(previous?.metadataSha256 ? { metadataSha256: previous.metadataSha256 } : {}),
-          ...(previous?.profileSessionsRoot ? { profileSessionsRoot: previous.profileSessionsRoot } : {}),
-          ...(previous?.desktopSessionId ? { desktopSessionId: previous.desktopSessionId } : {}),
-          ...(previous?.registeredAt ? { registeredAt: previous.registeredAt } : {}),
-          ...(previous?.claudePidAtRegistration ? { claudePidAtRegistration: previous.claudePidAtRegistration } : {}),
-          ...(previous?.settingsReloadRequired ? { settingsReloadRequired: true } : {}),
+          ...session.desktopRegistration,
           state: "failed",
           detail: "Claude Desktop 会话登记失败，Bridge 会话仍可正常使用。",
           updatedAt: Date.now(),
@@ -87,7 +87,7 @@ export class SessionDesktopRegistration {
       }
       if (!registrar.changed(session.desktopRegistration, next)) return;
       session.desktopRegistration = next;
-      if (next.state === "registered" && next.desktopSessionId) session.desktopSessionId = next.desktopSessionId;
+      if (next.desktopSessionId) session.desktopSessionId = next.desktopSessionId;
       await this.options.persist();
       await this.options.record({
         sessionId,

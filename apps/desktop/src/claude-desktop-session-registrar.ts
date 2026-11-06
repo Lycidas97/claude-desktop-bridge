@@ -35,6 +35,7 @@ import type {
 import { claudeDesktopProfileForPath } from "./claude-desktop-sessions.js";
 import { magpieModelIdHash, parseMagpieSyntheticModelId } from "./claude-runtime-discovery.js";
 import { findClaudeTranscriptFile } from "./claude-history.js";
+import { assignClaudeDesktopSessionGroup } from "./claude-desktop-sessions.js";
 import type { ClaudeRuntimePaths } from "./platform.js";
 
 const execFile = promisify(execFileCallback);
@@ -69,11 +70,18 @@ export interface StoredDesktopRegistration extends BridgeDesktopRegistrationInfo
   forkMetadataVersion?: 1;
   /** Desktop must reload settings written after its live session was imported. */
   settingsReloadRequired?: boolean;
+  /** Save creation intent once, then hand ownership to the observed Desktop group. */
+  groupAssignment?: "saved" | "observed";
+  /** Native registration succeeded, but group assignment still needs a retry. */
+  nativeRegistrationState?: "registered" | "restart-required";
 }
 
 export interface DesktopSessionRegistrationInput {
   sessionId: string;
   cwd: string;
+  groupId?: string;
+  groupSessionsRoot?: string;
+  groupScope?: string;
   title: string;
   createdAt: number;
   lastActivityAt: number;
@@ -274,6 +282,35 @@ export class ClaudeDesktopSessionRegistrar {
     input: DesktopSessionRegistrationInput,
     previous?: StoredDesktopRegistration,
   ): Promise<DesktopSessionRegistrationResult> {
+    if (previous?.nativeRegistrationState) {
+      const { nativeRegistrationState, ...nativeRegistration } = previous;
+      previous = { ...nativeRegistration, state: nativeRegistrationState };
+    }
+    const registration = await this.registerSession(input, previous);
+    if (previous?.groupAssignment) return { ...registration, groupAssignment: previous.groupAssignment };
+    if (!input.groupId || !registration.desktopSessionId || !registration.profileSessionsRoot ||
+      (registration.state !== "registered" && registration.state !== "restart-required")) return registration;
+    try {
+      if (input.groupSessionsRoot && resolve(input.groupSessionsRoot) !== resolve(registration.profileSessionsRoot)) {
+        throw new Error("Claude Desktop group profile does not match registration target");
+      }
+      assignClaudeDesktopSessionGroup(registration.profileSessionsRoot, registration.desktopSessionId, input.groupId, input.groupScope);
+    } catch {
+      return {
+        ...registration,
+        nativeRegistrationState: registration.state,
+        state: "failed",
+        detail: "Claude Desktop 会话已登记，但保存分组失败，请重试。",
+        updatedAt: this.now(),
+      };
+    }
+    return { ...registration, groupAssignment: "saved" };
+  }
+
+  private async registerSession(
+    input: DesktopSessionRegistrationInput,
+    previous?: StoredDesktopRegistration,
+  ): Promise<DesktopSessionRegistrationResult> {
     this.assertInput(input);
     const now = this.now();
     const platform = this.options.platform ?? process.platform;
@@ -306,7 +343,7 @@ export class ClaudeDesktopSessionRegistrar {
 
     let target: Awaited<ReturnType<ClaudeDesktopSessionRegistrar["activeTarget"]>>;
     try {
-      target = await this.activeTarget();
+      target = await this.activeTarget(input.groupSessionsRoot);
     } catch (error) {
       if (error instanceof RegistrationUnavailableError) {
         return this.stableStatus(previous, {
@@ -481,12 +518,12 @@ export class ClaudeDesktopSessionRegistrar {
       mutated = true;
     }
     if (input.parentDesktopSessionId) {
-      if (!raw.forkedFromSessionId) {
+      if (raw.forkedFromSessionId !== input.parentDesktopSessionId) {
         raw.forkedFromSessionId = input.parentDesktopSessionId;
         forkChanged = true;
         mutated = true;
       }
-      if (!raw.spawnedFrom) {
+      if (typeof raw.spawnedFrom !== "object" || raw.spawnedFrom === null || Array.isArray(raw.spawnedFrom)) {
         forkChanged = true;
         raw.spawnedFrom = {
           sessionId: input.parentDesktopSessionId,
@@ -497,6 +534,10 @@ export class ClaudeDesktopSessionRegistrar {
           userFork: true,
           name: input.forkLabel || "fork",
         };
+        mutated = true;
+      } else if ((raw.spawnedFrom as Record<string, unknown>).sessionId !== input.parentDesktopSessionId) {
+        raw.spawnedFrom = { ...raw.spawnedFrom, sessionId: input.parentDesktopSessionId };
+        forkChanged = true;
         mutated = true;
       }
     }
@@ -692,7 +733,7 @@ export class ClaudeDesktopSessionRegistrar {
     return next;
   }
 
-  private async activeTarget(): Promise<{
+  private async activeTarget(groupSessionsRoot?: string): Promise<{
     pid: number;
     sessionsRoot: string;
     accountDir: string;
@@ -704,7 +745,7 @@ export class ClaudeDesktopSessionRegistrar {
     ]));
     const candidates = profiles.flatMap((profile) => {
       const sessionsRoot = join(profile.userDataDir, "claude-code-sessions");
-      return configuredRoots.has(resolve(sessionsRoot))
+      return configuredRoots.has(resolve(sessionsRoot)) && (!groupSessionsRoot || resolve(sessionsRoot) === resolve(groupSessionsRoot))
         ? [{ ...profile, sessionsRoot }]
         : [];
     });

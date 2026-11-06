@@ -22,8 +22,9 @@ export interface SessionActivity {
  * indicator should disappear entirely.
  */
 export function sessionQueueLabel(
-  session: Pick<BridgeSessionInfo, "ownership" | "turnState">,
+  session: Pick<BridgeSessionInfo, "ownership" | "turnState" | "desktopHandoff">,
 ): string {
+  if (session.desktopHandoff?.state === "close-desktop") return "等待关闭此 Desktop 会话";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "等待写入冲突解除";
   if (session.ownership === "DESKTOP_OBSERVED" || session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待电脑端空闲";
   if (session.turnState === "running" || session.turnState === "waiting") return "等待前一条消息完成";
@@ -31,7 +32,7 @@ export function sessionQueueLabel(
 }
 
 export function sessionActivity(
-  session: Pick<BridgeSessionInfo, "turnState" | "executionStage"> & Partial<Pick<BridgeSessionInfo, "ownership" | "pendingCount">> | undefined,
+  session: Pick<BridgeSessionInfo, "turnState" | "executionStage" | "desktopHandoff"> & Partial<Pick<BridgeSessionInfo, "ownership" | "pendingCount">> | undefined,
   items: readonly SessionActivityItem[],
 ): SessionActivity | undefined {
   if (!session) return undefined;

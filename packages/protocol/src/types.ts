@@ -118,6 +118,7 @@ export interface BridgeDesktopRuntime {
   sessionCount: number;
   updatedAt: number;
   appVersion?: string;
+  defaultPermissionMode?: BridgePermissionMode;
 }
 
 export type BridgeSessionTransport =
@@ -182,9 +183,12 @@ export type BridgeCapability =
   | "conversation.lanes.v1"
   | "conversation.handoff.v1"
   | "permission.policy.v1"
+  | "permission.runtime-defaults.v1"
+  | "directory.browse.v1"
   | "runtime.adapter.v1"
   | "runtime.handoff.v1"
   | "session.visibility.v1"
+  | "session.rename.v1"
   | "subagent.stop.v1"
   | "turn.queue.steer.v1"
   | "plugin.magpie-quota.v1";
@@ -539,7 +543,16 @@ export interface BridgeAttachment {
  */
 export type BridgeHistoryAttachment = Omit<BridgeAttachment, "data"> & { data?: string };
 
+export interface BridgeDirectoryListing {
+  path: string;
+  parentPath?: string;
+  directories: Array<{ name: string; path: string }>;
+  recentPaths: string[];
+}
+
 export interface BridgeProjectInfo {
+  /** Directory shortcuts are not native Desktop group IDs. */
+  kind?: "directory" | "desktop-group";
   projectId: string;
   name: string;
   cwd: string;
@@ -605,6 +618,13 @@ export interface BridgeSessionInfo {
   configurationPending?: boolean;
   fallbackConfirmed?: boolean;
   desktopRegistration?: BridgeDesktopRegistrationInfo;
+  /** Desktop executor handoff or inbox submission awaiting transcript confirmation. */
+  desktopHandoff?: {
+    state: "close-desktop" | "bridge" | "reopen-desktop" | "desktop-inbox";
+    canReturn: boolean;
+    canTakeover?: boolean;
+    inputStatus?: "queued" | "submitted" | "held";
+  };
   activeLaneId?: string;
   activeProviderProfileId?: string;
   routeState?: BridgeRouteState;
@@ -834,7 +854,25 @@ export interface BridgePermissionResolution {
   reason?: BridgePermissionResolutionReason;
 }
 
+export interface BridgeRuntimeDetection {
+  cliPath?: string;
+  configSource: {
+    type: "host-credentials" | "fixed-gateway" | "environment" | "none";
+    profile: "claude-3p" | "claude" | "unknown";
+    path?: string;
+  };
+  gatewayState: "configured" | "unavailable";
+  modelDiscovery: {
+    state: "ready" | "error" | "unavailable";
+    count: number;
+    refreshedAt?: number;
+    error?: string;
+  };
+  refreshedAt: number;
+}
+
 export interface BridgeRuntimeStatus {
+  detection?: BridgeRuntimeDetection;
   state: "ready" | "working" | "auth-required" | "unavailable";
   detail: string;
   version?: string;
@@ -916,10 +954,12 @@ export type BridgeMethod =
   | "runtime.list"
   | "runtime.refresh"
   | "project.list"
+  | "directory.list"
   | "session.list"
   | "session.open"
   | "session.create"
   | "session.fork"
+  | "session.rename"
   | "session.history"
   | "session.configuration"
   | "session.configure"
@@ -928,6 +968,8 @@ export type BridgeMethod =
   | "session.delete"
   | "runtime.file.open"
   | "session.fallback.confirm"
+  | "session.return_to_desktop"
+  | "session.takeover_desktop"
   | "message.delivery.resolve"
   | "claude.desktop.status"
   | "claude.desktop.launch"
@@ -1001,6 +1043,7 @@ export type BridgeEventType =
   | "session.ownership"
   | "session.configuration"
   | "session.desktop-registration"
+  | "session.desktop-handoff"
   | "session.archived"
   | "session.deleted"
   | "session.transport"

@@ -19,6 +19,7 @@ import { MobilePageHeader } from "./components/MobilePageHeader.js";
 import { MobileQuotaPage } from "./components/MobileQuotaPage.js";
 import { MobileSettings } from "./components/MobileSettings.js";
 import { HostPermissionSettings } from "./components/HostPermissionSettings.js";
+import { ProviderSettings } from "./components/ProviderSettings.js";
 import { MAGPIE_QUOTA_METHOD, type QuotaLoader, type QuotaSnapshot } from "../../../plugins/magpie-quota/contract.js";
 import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
 
@@ -33,6 +34,7 @@ export function App() {
   const [tab, setTab] = useState<MobileTab>("sessions");
   const [computerDetailsHostId, setComputerDetailsHostId] = useState<string>();
   const [quotaOpen, setQuotaOpen] = useState(false);
+  const [providersOpen, setProvidersOpen] = useState(false);
   const [focusRequest, setFocusRequest] = useState<{ sessionId: string; key: number }>();
   const [directoryRequest, setDirectoryRequest] = useState(0);
   const handleFocusHandled = useCallback(() => setFocusRequest(undefined), []);
@@ -69,6 +71,11 @@ export function App() {
       setPairingOpen(false);
       return true;
     }
+    if (providersOpen || quotaOpen) {
+      setProvidersOpen(false);
+      setQuotaOpen(false);
+      return true;
+    }
     if (tab !== "sessions") {
       setComputerDetailsHostId(undefined);
       setQuotaOpen(false);
@@ -80,6 +87,8 @@ export function App() {
     mobile.state.hosts.length,
     mobile.state.pairingSync,
     pairingOpen,
+    providersOpen,
+    quotaOpen,
     tab,
   ]);
 
@@ -128,11 +137,12 @@ export function App() {
       onTabChange={(next) => {
         setComputerDetailsHostId(undefined);
         setQuotaOpen(false);
+        setProvidersOpen(false);
         setTab(next);
       }}
     >
       {/* One quota snapshot per computer, shared by the session form and the settings dashboard. */}
-      <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled}>
+      <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled} sourceKey={snapshot?.runtime.detection?.refreshedAt ?? 0}>
       {mobile.state.activeHostId ? (
         <div className="mobile-tab-page" hidden={tab !== "sessions"}>
           <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia}>
@@ -178,7 +188,13 @@ export function App() {
               onResolveUncertain={mobile.resolveUncertainDelivery}
               onResolvePermission={mobile.resolvePermission}
               onCreateSession={mobile.createSession}
+              {...(snapshot?.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: mobile.browseDirectory } : {})}
               onForkSession={mobile.forkSession}
+              {...(snapshot?.host.capabilities.includes("session.rename.v1")
+                ? { onRenameSession: mobile.renameSession }
+                : {})}
+              onReturnToDesktop={mobile.returnToDesktop}
+              onTakeoverDesktop={mobile.takeoverDesktop}
               onLoadSessionConfiguration={mobile.loadSessionConfiguration}
               onConfigureSession={mobile.configureSession}
               {...(mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1")
@@ -246,7 +262,9 @@ export function App() {
           onBack={() => setComputerDetailsHostId(undefined)}
           permissionSettings={mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1") ? (
             <HostPermissionSettings
-              {...(snapshot ? { snapshot } : {})}
+              key={mobile.state.activeHostId}
+              connected={mobile.state.connection === "connected" && mobile.state.desktopOnline}
+              {...(mobile.state.snapshot ? { snapshot: mobile.state.snapshot } : {})}
               onLoadSessionConfiguration={mobile.loadSessionConfiguration}
               onConfigureHostPermission={mobile.configureHostPermission}
             />
@@ -267,12 +285,18 @@ export function App() {
           onRepair={() => setPairingOpen(true)}
         />
       ))}
-      {tab === "settings" && (quotaOpen && quotaDeclared ? (
+      {tab === "settings" && (providersOpen ? (
+        <main className="mobile-workspace mobile-settings-page">
+          <MobilePageHeader title="提供方" onBack={() => setProvidersOpen(false)} />
+          <div className="mobile-settings-content"><section className="mobile-settings-group mobile-provider-settings"><ProviderSettings key={mobile.state.activeHostId} {...(snapshot ? { snapshot } : {})} connected={mobile.state.connection === "connected" && mobile.state.desktopOnline} onRefresh={mobile.redetectProviders} /></section></div>
+        </main>
+      ) : quotaOpen && quotaDeclared ? (
         <MobileQuotaPage desktopName={mobile.state.desktopName ?? "我的电脑"} onBack={closeQuota} />
       ) : (
         <MobileSettings
           themeControl={themeControl}
           agentVisibility={agentVisibility}
+          {...(mobile.state.activeHostId ? { providers: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setProvidersOpen(true) } } : {})}
           {...(mobile.state.snapshot ? { snapshot: mobile.state.snapshot } : {})}
           {...(quotaDeclared ? { quota: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setQuotaOpen(true) } } : {})}
         />

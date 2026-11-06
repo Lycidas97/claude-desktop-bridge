@@ -9,7 +9,8 @@ import type { BridgeDesktopRegistrationInfo, BridgeEffort, BridgeModelInfo, Desk
 import type { ModelInfo, SDKControlGetContextUsageResponse } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeSessionHostOptions, SessionHostEvent } from "./claude-session-host.js";
 import type { DesktopSessionRegistrationInput, StoredDesktopRegistration } from "./claude-desktop-session-registrar.js";
-import type { ClaudeCatalogSnapshot, ObservedClaudeSession } from "./claude-session-catalog.js";
+import { projectIdForCwd, type ClaudeCatalogSnapshot, type ObservedClaudeSession } from "./claude-session-catalog.js";
+import { ConversationStateStore } from "./conversation-state-store.js";
 import {
   SessionBroker,
   type SessionHostRuntime,
@@ -313,6 +314,62 @@ async function writeContextTranscript(
 }
 
 describe("SessionBroker", () => {
+  it("projects persistent titles ahead of Desktop titles without modifying source history, activity or ownership", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-titles-"));
+    directories.push(root);
+    const cwd = join(root, "project"), projects = join(root, "projects"), sessionId = randomUUID();
+    await mkdir(cwd);
+    await mkdir(projects);
+    const transcript = join(projects, `${sessionId}.jsonl`);
+    await writeFile(transcript, JSON.stringify({ type: "assistant", uuid: randomUUID(), parentUuid: null, sessionId, cwd, timestamp: "2026-11-01T00:00:00Z", message: { role: "assistant", stop_reason: "end_turn", content: "Fixture answer" } }) + "\n");
+    const beforeFile = await readFile(transcript), beforeStat = await stat(transcript);
+    const state = new ConversationStateStore({ databasePath: join(root, "state.sqlite"), sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"), masterSecret: "title-test" });
+    const observer = new FakeObserver({ projects: [], observedAt: 1, sessions: [
+      observed(sessionId, cwd, { desktopTitle: "Desktop 标题", title: "日志标题", lastActivityAt: 100, parentSessionId: "ancestor", forkLabel: "fork" }),
+      observed(randomUUID(), cwd, { lastActivityAt: 200 }),
+    ] });
+    observer.busy = true;
+    const hostFactory = vi.fn(() => { throw new Error("Rename must not start a host"); });
+    const register = vi.fn(async () => ({ state: "registered" as const, detail: "Fixture", updatedAt: 1 }));
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    const options = {
+      paths: { sessions: join(root, "runtime"), tasks: join(root, "tasks"), projects, desktopSessions: [] },
+      eventLog, observer, conversationState: state, sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"),
+      hostFactory, prepareRuntime: async () => ({ environment: {} }),
+      desktopRegistrar: { register, publicInfo: (value: StoredDesktopRegistration) => value, changed: () => false },
+    };
+    let broker = new SessionBroker(options);
+    try {
+      await broker.initialize();
+      const before = broker.listSessions();
+      const rename = "手机项目名称";
+      state.setSessionTitle(sessionId, rename);
+      observer.catalog.sessions[0]!.desktopTitle = "Desktop 后续标题";
+      observer.publish();
+      expect(broker.listSessions()).toEqual(before.map(session => session.sessionId === sessionId ? { ...session, title: rename } : session));
+      expect(broker.session(sessionId)?.title).toBe(rename);
+      expect(broker.listSessions(undefined, rename).map(session => session.sessionId)).toEqual([sessionId]);
+      expect(broker.listSessions(undefined, "Desktop 后续标题")).toEqual([]);
+      expect(state.loadBrokerState().sessions).toEqual([]);
+      expect(register).not.toHaveBeenCalled();
+      expect(hostFactory).not.toHaveBeenCalled();
+      expect(await readFile(transcript)).toEqual(beforeFile);
+      expect((await stat(transcript)).mtimeMs).toBe(beforeStat.mtimeMs);
+      await broker.close();
+      state.close();
+      broker = new SessionBroker(options);
+      await broker.initialize();
+      expect(broker.session(sessionId)).toEqual({ ...before.find(session => session.sessionId === sessionId), title: rename });
+      const fork = await broker.forkSession(sessionId);
+      expect(fork.title).toBe(`${rename} (fork)`);
+      expect(fork.parentSessionId).toBe(sessionId);
+      expect(state.sessionTitle(fork.sessionId)).toBeUndefined();
+      expect(await readFile(transcript)).toEqual(beforeFile);
+      expect((await stat(transcript)).mtimeMs).toBe(beforeStat.mtimeMs);
+      expect(hostFactory).not.toHaveBeenCalled();
+    } finally { await broker.close(); await eventLog.close(); state.close(); }
+  });
+
   it("pages full transcript messages without letting old clipped events skip an oversized message", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-full-history-"));
     directories.push(root);
@@ -365,7 +422,122 @@ describe("SessionBroker", () => {
     }
   });
 
-  it("creates metadata only for a discovered project without probing its protected path", async () => {
+  it.each([false, true])("preserves an explicitly selected group sharing a directory across restart (sqlite=%s)", async (sqlite) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-broker-group-"));
+    directories.push(root);
+    const cwd = join(root, "shared");
+    const sessionsRoot = join(root, "Claude-3p", "claude-code-sessions");
+    await mkdir(cwd);
+    await mkdir(sessionsRoot, { recursive: true });
+    await writeFile(join(root, "Claude-3p", "claude_desktop_config.json"), JSON.stringify({ preferences: { epitaxyPrefs: {
+      "dframe-group-scopes": { account: { groups: [{ id: "cg-server", name: "服务器管理" }], assignments: {} } },
+    } } }));
+    const observer = new FakeObserver({
+      projects: [], observedAt: 1,
+      sessions: [
+        observed(randomUUID(), cwd, { projectId: projectIdForCwd(cwd), projectName: "shared" }),
+        observed(randomUUID(), join(root, "another-directory"), { projectId: "cg-server", projectName: "服务器管理" }),
+        observed(randomUUID(), cwd, { projectId: "cg-server", projectName: "服务器管理" }),
+      ],
+    });
+    observer.catalog.desktopMetadataPaths = new Map(observer.catalog.sessions.map(session => [
+      session.sessionId, join(sessionsRoot, "device", "account", `local_${session.sessionId}.json`),
+    ]));
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const stateOptions = {
+      databasePath: join(root, "state.sqlite"), sessionsPath: join(root, "sessions.json"),
+      queuePath: join(root, "queue.json"), masterSecret: "group-creation-test",
+    };
+    let state = sqlite ? new ConversationStateStore(stateOptions) : undefined;
+    const options = {
+      paths: { sessions: join(root, "runtime"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [sessionsRoot] },
+      eventLog, observer, sessionsPath: stateOptions.sessionsPath, queuePath: stateOptions.queuePath,
+      prepareRuntime: async () => ({ environment: {} }),
+      hostFactory: () => { throw new Error("Group creation must not start a model host"); },
+      desktopRegistrar: {
+        register: vi.fn(async (_input: unknown, previous?: StoredDesktopRegistration): Promise<StoredDesktopRegistration> => ({
+          state: "registered", detail: "Registered", updatedAt: 1,
+          groupAssignment: previous?.groupAssignment ?? "saved",
+        })),
+        publicInfo: (value: StoredDesktopRegistration): BridgeDesktopRegistrationInfo => ({
+          state: value.state, detail: value.detail, updatedAt: value.updatedAt,
+        }),
+        changed: (left: StoredDesktopRegistration | undefined, right: StoredDesktopRegistration) => JSON.stringify(left) !== JSON.stringify(right),
+      },
+    };
+    let broker = new SessionBroker({ ...options, ...(state ? { conversationState: state } : {}) });
+    try {
+      await broker.initialize();
+      const created = await broker.createSession(cwd, "Grouped", "cg-server");
+      expect(created).toMatchObject({ cwd, projectId: "cg-server", projectName: "服务器管理" });
+      expect(broker.listSessions("cg-server").map(session => session.sessionId)).toContain(created.sessionId);
+      expect(broker.listProjects().find(project => project.projectId === "cg-server")?.sessionCount).toBe(3);
+
+      // A process-only observation and a not-yet-grouped Desktop record must not erase creation intent.
+      const processOnly = observed(created.sessionId, cwd, { projectId: projectIdForCwd(cwd), projectName: "shared" });
+      delete processOnly.desktopSessionId;
+      observer.catalog.sessions.push(processOnly);
+      observer.publish();
+      expect(broker.session(created.sessionId)).toMatchObject({ projectId: "cg-server", projectName: "服务器管理" });
+      processOnly.desktopSessionId = `local_${created.sessionId}`;
+      observer.publish();
+      expect(broker.session(created.sessionId)).toMatchObject({ projectId: "cg-server", projectName: "服务器管理" });
+
+      await broker.close();
+      state?.close();
+      observer.catalog.sessions = [];
+      state = sqlite ? new ConversationStateStore(stateOptions) : undefined;
+      broker = new SessionBroker({ ...options, ...(state ? { conversationState: state } : {}) });
+      await broker.initialize();
+      expect(broker.session(created.sessionId)).toMatchObject({ cwd, projectId: "cg-server", projectName: "服务器管理" });
+      await broker.registerDesktopSession(created.sessionId);
+      expect(options.desktopRegistrar.register).toHaveBeenLastCalledWith(expect.objectContaining({
+        groupId: "cg-server", groupSessionsRoot: sessionsRoot, groupScope: "account",
+      }), expect.anything());
+      const count = broker.listSessions().length;
+      await expect(broker.createSession(cwd, "Unknown", "cg-missing")).rejects.toThrow(/project/iu);
+      await expect(broker.createSession(join(root, "wrong"), "Missing directory", "cg-server")).rejects.toThrow(/ENOENT/u);
+      expect(broker.listSessions()).toHaveLength(count);
+      expect(await broker.createSession(cwd, "Legacy request")).toMatchObject({
+        projectId: projectIdForCwd(cwd), projectName: "shared",
+      });
+      expect(options.desktopRegistrar.register).toHaveBeenCalledWith(expect.objectContaining({ groupId: "cg-server" }), expect.anything());
+      options.desktopRegistrar.register.mockRejectedValueOnce(new Error("Group registration unavailable"));
+      await broker.registerDesktopSession(created.sessionId);
+      expect(broker.session(created.sessionId)).toMatchObject({ projectId: "cg-server", desktopRegistration: { state: "failed" } });
+      observer.catalog.sessions.push(processOnly);
+      observer.publish();
+      await broker.registerDesktopSession(created.sessionId);
+      expect(broker.session(created.sessionId)?.projectId).toBe("cg-server");
+
+      processOnly.projectId = "cg-server";
+      processOnly.projectName = "Renamed server group";
+      observer.publish();
+      await broker.registerDesktopSession(created.sessionId);
+      expect(broker.session(created.sessionId)?.projectName).toBe("Renamed server group");
+      processOnly.projectId = "cg-other";
+      processOnly.projectName = "Moved in Desktop";
+      observer.publish();
+      expect(broker.session(created.sessionId)).toMatchObject({ projectId: "cg-other", projectName: "Moved in Desktop" });
+      processOnly.projectId = projectIdForCwd(cwd);
+      processOnly.projectName = "shared";
+      observer.publish();
+      expect(broker.session(created.sessionId)).toMatchObject({ projectId: projectIdForCwd(cwd), projectName: "shared" });
+      await broker.close();
+      state?.close();
+      observer.catalog.sessions = [];
+      state = sqlite ? new ConversationStateStore(stateOptions) : undefined;
+      broker = new SessionBroker({ ...options, ...(state ? { conversationState: state } : {}) });
+      await broker.initialize();
+      expect(broker.session(created.sessionId)).toMatchObject({ projectId: projectIdForCwd(cwd), projectName: "shared" });
+    } finally {
+      await broker.close();
+      state?.close();
+      await eventLog.close();
+    }
+  });
+
+  it("requires a real accessible directory even when a project was previously discovered", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-project-"));
     directories.push(root);
     const cwd = join(root, "Documents", "project-not-mounted");
@@ -397,6 +569,8 @@ describe("SessionBroker", () => {
     await broker.initialize();
 
     await expect(access(cwd)).rejects.toThrow();
+    await expect(broker.createSession(cwd, "Missing project")).rejects.toThrow(/ENOENT/u);
+    await mkdir(cwd, { recursive: true });
     const created = await broker.createSession(cwd, "Explicit project");
     expect(created).toMatchObject({
       cwd,
@@ -405,7 +579,7 @@ describe("SessionBroker", () => {
       ownership: "BRIDGE_IDLE",
     });
     await expect(broker.createSession(join(root, "Documents", "unknown")))
-      .rejects.toThrow(/selected from a discovered Claude project/u);
+      .rejects.toThrow(/ENOENT/u);
 
     await broker.close();
     const restarted = new SessionBroker(options);
@@ -474,6 +648,7 @@ describe("SessionBroker", () => {
       }),
     });
     await broker.initialize();
+    await mkdir(cwd);
     const created = await broker.createSession(cwd, "Register me");
     expect(created.desktopRegistration).toEqual({
       state: "waiting-transcript",
@@ -530,6 +705,7 @@ describe("SessionBroker", () => {
     await broker.initialize();
     try {
       broker.setDefaultPermissionMode("full-access");
+      await mkdir(cwd);
       const session = await broker.createSession(cwd, "Created on phone");
       expect(register).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: session.sessionId, permissionMode: "full-access" }), undefined);
       await broker.configureSession({ sessionId: session.sessionId, model: "codex/gpt-6.1-sol", effort: "high" });
@@ -1111,7 +1287,7 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
-  it("waits for an active Desktop turn, then starts without closing an idle session viewer", async () => {
+  it("waits for the Desktop executor to exit even after its main turn becomes idle", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-writer-"));
     directories.push(root);
     const cwd = join(root, "project");
@@ -1196,8 +1372,17 @@ describe("SessionBroker", () => {
 
     observer.bridgeCanStart = true;
     observer.publish();
-    await waitFor(() => hosts[0]?.sends === 1);
-    expect(desktopSession.desktopProcessAlive).toBe(true);
+    expect(broker.session(sessionId)?.desktopHandoff?.state).toBe("close-desktop");
+    expect(hosts).toHaveLength(0);
+    desktopSession.desktopProcessAlive = false;
+    desktopSession.processAlive = false;
+    desktopSession.activeProcesses = [];
+    observer.publish();
+    await waitFor(() => {
+      const session = broker.session(sessionId);
+      return hosts[0]?.sends === 1 && session?.ownership === "BRIDGE_RUNNING" && session.turnState === "running" && session.executionStage === "running";
+    });
+    expect(desktopSession.desktopProcessAlive).toBe(false);
     expect(acquiringStages).toEqual(["starting"]);
     expect(broker.session(sessionId)).toMatchObject({
       ownership: "BRIDGE_RUNNING",
@@ -1213,6 +1398,7 @@ describe("SessionBroker", () => {
     directories.push(root);
     const sessions = Array.from({ length: 144 }, (_, index) => observed(randomUUID(), join(root, `project-${index}`)));
     const sessionId = sessions[0]!.sessionId;
+    sessions[0]!.desktopProcessAlive = true;
     const observer = new FakeObserver({ projects: [], sessions, observedAt: Date.now() });
     observer.bridgeCanStart = false;
     const canStart = vi.spyOn(observer, "canStartBridgeHost");
@@ -1250,9 +1436,11 @@ describe("SessionBroker", () => {
       expect(broker.listSessions()).toHaveLength(144);
       expect(broker.session(sessionId)).toMatchObject({ turnState: "queued", pendingCount: 1 });
       expect(hosts).toHaveLength(0);
+      sessions[0]!.desktopProcessAlive = false;
       observer.bridgeCanStart = true;
       observer.publish();
       await waitFor(() => hosts[0]?.sends === 1);
+      await (broker as unknown as { eventQueue: Promise<void> }).eventQueue;
       await Promise.all(publications.splice(0));
       expect(controller.broadcast).toHaveBeenCalledWith({
         kind: "snapshot", snapshot: expect.objectContaining({ sessions: expect.arrayContaining([
@@ -1314,7 +1502,7 @@ describe("SessionBroker", () => {
     }
   });
 
-  it("resumes beside a completed persistent Desktop viewer without quitting Claude Desktop", async () => {
+  it("resumes the existing transcript only after the completed Desktop executor exits", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-takeover-"));
     directories.push(root);
     const cwd = join(root, "project");
@@ -1367,13 +1555,19 @@ describe("SessionBroker", () => {
       origin: "mobile",
     });
 
+    await (broker as unknown as { pump(): Promise<void> }).pump();
+    expect(hosts).toHaveLength(0);
+    expect(broker.session(sessionId)?.desktopHandoff?.state).toBe("close-desktop");
+    desktopSession.desktopProcessAlive = false;
+    desktopSession.processAlive = false;
+    observer.publish();
     await waitFor(() => hosts[0]?.sends === 1);
     expect(hosts[0]!.options).toMatchObject({ sessionId, resume: true });
     expect(broker.session(sessionId)).toMatchObject({
       ownership: "BRIDGE_RUNNING",
       transport: "bridge-host",
     });
-    expect(desktopSession.desktopProcessAlive).toBe(true);
+    expect(desktopSession.desktopProcessAlive).toBe(false);
 
     await broker.close();
     await eventLog.close();
@@ -1825,7 +2019,7 @@ describe("SessionBroker", () => {
     await eventLog.close();
   });
 
-  it("continues queued turns on its retained host when Desktop's activity gate stays busy", async () => {
+  it("continues queued turns on its retained host despite stale activity without a live Desktop executor", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-queue-resume-"));
     directories.push(root);
     const cwd = join(root, "project");
@@ -1833,7 +2027,7 @@ describe("SessionBroker", () => {
     const sessionId = randomUUID();
     const observer = new FakeObserver({
       projects: [],
-      sessions: [observed(sessionId, cwd, { desktopProcessAlive: true })],
+      sessions: [observed(sessionId, cwd, { desktopProcessAlive: false })],
       observedAt: Date.now(),
     });
     const hosts: FakeHost[] = [];
@@ -2143,6 +2337,7 @@ describe("SessionBroker", () => {
     const broker = new SessionBroker(options);
     try {
       await broker.initialize();
+      await mkdir(cwd, { recursive: true });
       const createdB = await broker.createSession(cwd, "Session B");
       expect(createdB.sessionId).toBeDefined();
 
@@ -2791,7 +2986,87 @@ describe("SessionBroker", () => {
     await secondLog.close();
   });
 
-  it.each(["\n", ""])("forks an existing session with copied transcript history and trailing %j", async (ending) => {
+  it("repairs a saved fork parent identity from the parent's actual native record", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-fork-parent-repair-"));
+    directories.push(root);
+    const parentId = randomUUID(), childId = randomUUID();
+    const parentDesktopSessionId = `local_${randomUUID()}`;
+    const cwd = join(root, "project");
+    const sessionsPath = join(root, "sessions.json");
+    await writeFile(sessionsPath, JSON.stringify({ version: 2, sessions: [
+      { sessionId: parentId, cwd, title: "Parent", createdAt: 1,
+        desktopRegistration: { state: "restart-required", detail: "Pending reload", desktopSessionId: parentDesktopSessionId, updatedAt: 2 } },
+      { sessionId: childId, cwd, title: "Child", createdAt: 2, parentSessionId: parentId, parentDesktopSessionId: `local_${parentId}`, forkLabel: "fork" },
+    ] }));
+    const inputs: DesktopSessionRegistrationInput[] = [];
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "runtime-sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] },
+      eventLog, observer: new FakeObserver({ projects: [], sessions: [], observedAt: Date.now() }),
+      sessionsPath, queuePath: join(root, "queue.json"),
+      desktopRegistrar: {
+        async register(input) {
+          inputs.push(input);
+          return { state: "restart-required", detail: "Pending reload", desktopSessionId: input.sessionId === parentId ? parentDesktopSessionId : `local_${input.sessionId}`, updatedAt: 2 };
+        },
+        changed: (left, right) => JSON.stringify(left) !== JSON.stringify(right),
+        publicInfo: value => value,
+      },
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+    });
+    await broker.initialize();
+    try {
+      await broker.registerDesktopSession(childId);
+      expect(inputs.filter(input => input.sessionId === childId).at(-1)?.parentDesktopSessionId).toBe(parentDesktopSessionId);
+      const saved = JSON.parse(await readFile(sessionsPath, "utf8"));
+      expect(saved.sessions.find((session: { sessionId: string }) => session.sessionId === childId)?.parentDesktopSessionId).toBe(parentDesktopSessionId);
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
+  });
+
+  it.each([false, true])("uses a saved pending native identity before Desktop observes the parent (stale=%s)", async stale => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-fork-saved-native-"));
+    directories.push(root);
+    const sourceId = randomUUID();
+    const desktopSessionId = `local_${randomUUID()}`;
+    const cwd = join(root, "project");
+    const projects = join(root, "projects");
+    await writeContextTranscript(projects, cwd, sourceId, 10);
+    const sessionsPath = join(root, "sessions.json");
+    await writeFile(sessionsPath, JSON.stringify({ version: 2, sessions: [{
+      sessionId: sourceId, cwd, title: "Staged fork", createdAt: 1,
+      projectId: "cg-staged-group", projectName: "Staged group",
+      ...(stale ? { desktopSessionId: `local_${sourceId}` } : {}),
+      desktopRegistration: { state: "restart-required", detail: "Pending reload", desktopSessionId, updatedAt: 2 },
+    }] }));
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
+    const broker = new SessionBroker({
+      paths: { sessions: join(root, "runtime-sessions"), tasks: join(root, "tasks"), projects, desktopSessions: [] },
+      eventLog,
+      observer: new FakeObserver({ projects: [], sessions: [], observedAt: Date.now() }),
+      sessionsPath, queuePath: join(root, "queue.json"),
+      prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
+    });
+    await broker.initialize();
+    try {
+      const fork = await broker.forkSession(sourceId);
+      const saved = JSON.parse(await readFile(sessionsPath, "utf8"));
+      expect(saved.sessions.find((session: { sessionId: string }) => session.sessionId === fork.sessionId))
+        .toMatchObject({ parentSessionId: sourceId, parentDesktopSessionId: desktopSessionId, projectId: "cg-staged-group", projectName: "Staged group" });
+      expect(fork).toMatchObject({ projectId: "cg-staged-group", projectName: "Staged group" });
+      expect(broker.session(sourceId)?.desktopSessionId).toBe(desktopSessionId);
+    } finally {
+      await broker.close();
+      await eventLog.close();
+    }
+  });
+
+  it.each(["\n", ""].flatMap(ending => [
+    { ending, pendingNativeId: false },
+    { ending, pendingNativeId: true },
+  ]))("forks copied history with trailing $ending and pending native identity $pendingNativeId", async ({ ending, pendingNativeId }) => {
     const root = await mkdtemp(join(tmpdir(), "bridge-broker-fork-"));
     directories.push(root);
     const sessionId = randomUUID();
@@ -2823,6 +3098,7 @@ describe("SessionBroker", () => {
     ].join("\n") + ending);
 
     const registeredInputs: unknown[] = [];
+    const nativeIds = new Map<string, string>();
     const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
     const parentObs = {
       ...observed(sessionId, cwd),
@@ -2849,10 +3125,12 @@ describe("SessionBroker", () => {
       desktopRegistrar: {
         async register(input) {
           registeredInputs.push(input);
+          const desktopSessionId = nativeIds.get(input.sessionId) ?? `local_${pendingNativeId ? randomUUID() : input.sessionId}`;
+          nativeIds.set(input.sessionId, desktopSessionId);
           return {
-            state: "registered",
-            detail: "registered",
-            desktopSessionId: `local_${input.sessionId}`,
+            state: pendingNativeId ? "restart-required" : "registered",
+            detail: "Native record exists",
+            desktopSessionId,
             registeredAt: Date.now(),
             updatedAt: Date.now(),
           };
@@ -2904,7 +3182,7 @@ describe("SessionBroker", () => {
     });
     expect(registeredInputs.at(-1)).toMatchObject({
       sessionId: nested.sessionId,
-      parentDesktopSessionId: `local_${fork1.sessionId}`,
+      parentDesktopSessionId: nativeIds.get(fork1.sessionId),
     });
 
     const history = await broker.history(fork1.sessionId);

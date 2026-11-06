@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname } from "node:path";
 import type {
   BridgeProviderModel,
+  BridgeModelInfo,
   BridgeProviderProfile,
   BridgeRuntimeStatus,
 } from "@bridge/protocol";
@@ -42,6 +43,7 @@ export interface ProviderRegistryOptions {
   apiKeyPath: string;
   safeStorage: SafeStorageLike;
   claude3pStatus(): BridgeRuntimeStatus;
+  claude3pModels?(): BridgeModelInfo[];
   fetchImpl?: typeof fetch;
   platform?: NodeJS.Platform;
 }
@@ -161,11 +163,11 @@ export class ProviderRegistry extends EventEmitter {
   }
 
   list(): BridgeProviderProfile[] {
-    return this.options.state.listProviderProfiles();
+    return this.options.state.listProviderProfiles().map(profile => profile.kind === "claude-3p" ? this.claude3pProfile() : profile);
   }
 
   get(profileId: string): BridgeProviderProfile | undefined {
-    return this.options.state.providerProfile(profileId);
+    return this.list().find(profile => profile.id === profileId);
   }
 
   async refresh(profileId?: string): Promise<BridgeProviderProfile[]> {
@@ -223,20 +225,30 @@ export class ProviderRegistry extends EventEmitter {
   }
 
   private refreshClaude3p(): BridgeProviderProfile {
+    return this.save(this.claude3pProfile());
+  }
+
+  private claude3pProfile(): BridgeProviderProfile {
     const status = this.options.claude3pStatus();
     const ready = status.state === "ready" || status.state === "working";
-    return this.save({
+    return {
       id: CLAUDE_3P_PROFILE_ID,
       kind: "claude-3p",
       name: "Claude-3p",
       status: ready ? "ready" : "unavailable",
-      detail: ready ? "Agent SDK 与 Claude-3p Host Credentials 已就绪。" : status.detail,
+      detail: ready && status.detection?.modelDiscovery.state === "error"
+        ? "本地运行时已就绪，网关模型列表读取失败。"
+        : ready ? "Agent SDK 与 Claude-3p 配置已就绪。" : status.detail,
       configured: ready,
       localOnlyConfiguration: false,
       readOnly: false,
-      models: this.get(CLAUDE_3P_PROFILE_ID)?.models ?? [],
-      refreshedAt: Date.now(),
-    });
+      models: this.options.claude3pModels?.().map(model => ({
+        id: model.value, displayName: model.displayName,
+        ...(model.maxInputTokens ? { maxInputTokens: model.maxInputTokens } : {}),
+        capabilities: { ...(model.supportsEffort !== undefined ? { effort: { supported: model.supportsEffort } } : {}) },
+      })) ?? this.options.state.providerProfile(CLAUDE_3P_PROFILE_ID)?.models ?? [],
+      refreshedAt: status.detection?.refreshedAt ?? this.options.state.providerProfile(CLAUDE_3P_PROFILE_ID)?.refreshedAt ?? Date.now(),
+    };
   }
 
   private async refreshAnthropicApi(): Promise<BridgeProviderProfile> {

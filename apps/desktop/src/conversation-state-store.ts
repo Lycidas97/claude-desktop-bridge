@@ -39,6 +39,10 @@ interface SqlRow {
 export interface PersistedBridgeSession {
   sessionId: string;
   cwd: string;
+  projectId?: string;
+  projectName?: string;
+  groupSessionsRoot?: string;
+  groupScope?: string;
   title: string;
   createdAt: number;
   desktopSessionId?: string;
@@ -351,6 +355,7 @@ function sqliteTimestamp(value: number): number {
 
 export class ConversationStateStore {
   private database: DatabaseSync | undefined;
+  private readonly sessionTitles = new Map<string, string>();
   private readonly key: Buffer;
 
   constructor(private readonly options: ConversationStateStoreOptions) {
@@ -529,6 +534,11 @@ export class ConversationStateStore {
         updated_at INTEGER NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS session_titles (
+        session_id TEXT PRIMARY KEY,
+        title TEXT NOT NULL
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS session_visibility (
         session_id TEXT PRIMARY KEY,
         visibility TEXT NOT NULL,
@@ -548,6 +558,9 @@ export class ConversationStateStore {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(String(STORE_VERSION));
     this.database = database;
+    for (const row of database.prepare("SELECT session_id, title FROM session_titles").all() as SqlRow[]) {
+      this.sessionTitles.set(String(row.session_id), String(row.title));
+    }
     this.seedProviderProfiles();
     await this.migrateLegacyFiles();
   }
@@ -555,6 +568,19 @@ export class ConversationStateStore {
   close(): void {
     this.database?.close();
     this.database = undefined;
+    this.sessionTitles.clear();
+  }
+
+  sessionTitle(sessionId: string): string | undefined {
+    return this.sessionTitles.get(sessionId);
+  }
+
+  setSessionTitle(sessionId: string, title: string): void {
+    this.db.prepare(`
+      INSERT INTO session_titles(session_id, title) VALUES (?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET title = excluded.title
+    `).run(sessionId, title);
+    this.sessionTitles.set(sessionId, title);
   }
 
   listProviderProfiles(): BridgeProviderProfile[] {

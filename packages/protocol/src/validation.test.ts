@@ -23,8 +23,20 @@ describe("isBridgePayload", () => {
     }
   });
 
+  it("accepts display title rename requests on the paired channel", () => {
+    expect(isBridgePayload({ kind: "request", requestId: "rename", idempotencyKey: "rename", method: "session.rename", params: { sessionId: "session", title: "手机名称" } })).toBe(true);
+  });
+
+  it("accepts directory listing requests on the paired channel", () => {
+    expect(isBridgePayload({ kind: "request", requestId: "browse", idempotencyKey: "browse", method: "directory.list", params: {} })).toBe(true);
+  });
+
   it("accepts a queued-command steering request without another message payload", () => {
     expect(isBridgePayload({ kind: "request", requestId: "promote", idempotencyKey: "promote", method: "turn.queue.steer", params: { sessionId: "session", commandId: "queued" } })).toBe(true);
+  });
+
+  it("accepts an explicit return to Desktop without a new message payload", () => {
+    expect(isBridgePayload({ kind: "request", requestId: "return", idempotencyKey: "return", method: "session.return_to_desktop", params: { sessionId: "session" } })).toBe(true);
   });
 
   it("still rejects unknown methods", () => {

@@ -18,7 +18,10 @@
     "dev": "concurrently -n relay,web -c green,cyan \"npm run dev -w @bridge/relay\" \"npm run dev -w @bridge/client\"",
     "dev:desktop": "concurrently -k -n relay,web,desktop -c green,cyan,magenta \"npm run dev -w @bridge/relay\" \"npm run dev -w @bridge/client\" \"wait-on tcp:5188 tcp:8788 && npm run dev -w @bridge/desktop\"",
     "lint": "npm run lint -ws --if-present",
-    "test": "npm run test -ws --if-present",
+    "test": "node scripts/test.mjs",
+    "test:infra": "node --require ./scripts/recycle-cleanup.cjs --test scripts/ci-infrastructure.test.mjs",
+    "test:browser": "node scripts/ci-run.mjs browser",
+    "ci:run": "node scripts/ci-run.mjs npm",
     "test:coverage": "npm run test:coverage -ws --if-present",
     "test:visual": "node scripts/visual-qa.mjs",
     "test:html-preview": "node scripts/html-preview-qa.mjs",
@@ -32,8 +35,8 @@
     "probe:dsh": "node scripts/dsh-gateway-probe.mjs",
     "audit:runtime": "npm audit --omit=dev --audit-level=high",
     "migrate:relay-store": "node scripts/migrate-relay-json-to-sqlite.mjs",
-    "typecheck": "npm run typecheck -ws --if-present",
-    "verify": "npm run typecheck && npm test && npm run build",
+    "typecheck": "npm run typecheck -ws --if-present && npm --prefix plugins/magpie-quota run typecheck",
+    "verify": "node scripts/ci-run.mjs verify",
     "clean": "npm run clean -ws --if-present"
   },
   "engines": {

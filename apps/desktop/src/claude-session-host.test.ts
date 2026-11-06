@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type {
   ModelInfo,
@@ -356,6 +360,83 @@ describe("native Send now", () => {
 });
 
 describe("ClaudeSessionHost", () => {
+  it.each(["close", "retire", "initialization-failure"] as const)("waits for its OS executor to exit after SDK cleanup finishes (%s)", async (ending) => {
+    const cwd = await mkdtemp(join(tmpdir(), "bridge-host-exit-"));
+    const executablePath = join(cwd, "executor.js");
+    await writeFile(executablePath, `
+      const fs = require("node:fs");
+      const readline = require("node:readline");
+      fs.writeFileSync(${JSON.stringify(join(cwd, "pid"))}, String(process.pid));
+      process.on("SIGTERM", () => {});
+      setTimeout(() => process.exit(0), 15_000);
+      process.stderr.write("x".repeat(3_000) + "Executor diagnostic tail\\n");
+      readline.createInterface({ input: process.stdin }).on("line", line => {
+        const message = JSON.parse(line);
+        if (message.type === "control_request") process.stdout.write(JSON.stringify({
+          type: "control_response", response: ${JSON.stringify(ending)} === "initialization-failure" ? {
+            subtype: "error", request_id: message.request_id, error: "Fixture initialization failed",
+          } : {
+            subtype: "success", request_id: message.request_id, response: {},
+          },
+        }) + "\\n");
+      });
+      process.stdin.on("end", () => setTimeout(() => process.exit(0), 2_750));
+    `);
+    const host = new ClaudeSessionHost({
+      sessionId: randomUUID(), cwd, executablePath, environment: { ...process.env },
+      permissionBroker: new PermissionBroker(), resume: false, persistSession: false,
+      settingSources: [],
+    });
+    const events: SessionHostEvent[] = [];
+    host.onEvent(event => events.push(event));
+    let pid: number | undefined;
+    try {
+      host.start();
+      pid = await vi.waitFor(async () => Number(await readFile(join(cwd, "pid"), "utf8")));
+      if (ending !== "initialization-failure") await waitForEvent(events, "runtime.ready");
+      const started = Date.now();
+      if (ending === "close") await Promise.all([host.close(), host.close()]);
+      else if (ending === "retire") await host.setAutoCompactWindow(100_000);
+      else await vi.waitFor(() => {
+        expect(events.some(event => event.type === "runtime.stopped")).toBe(true);
+      }, { timeout: 10_000 });
+      let alive = true;
+      try { process.kill(pid, 0); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        alive = false;
+      }
+      console.info(JSON.stringify({ case: "host-close-executor-exit", ending, pid, closeMs: Date.now() - started, aliveAfterClose: alive }));
+      expect(alive, "Writer was released while its own OS executor was still alive").toBe(false);
+      expect(host.running).toBe(false);
+      expect(events.filter(event => event.type === "runtime.stopped")).toHaveLength(1);
+      if (ending === "initialization-failure") expect(events).toContainEqual(expect.objectContaining({
+        type: "runtime.error", error: expect.stringContaining("Executor diagnostic tail"),
+      }));
+    } finally {
+      await host.close();
+      if (pid !== undefined) await vi.waitFor(() => {
+        expect(() => process.kill(pid!, 0)).toThrow();
+      }, { timeout: 16_000, interval: 25 });
+      execFileSync("/usr/bin/trash", [cwd]);
+    }
+  }, 20_000);
+
+  it("finishes cleanup when the OS executor cannot be spawned", async () => {
+    const host = new ClaudeSessionHost({
+      sessionId: randomUUID(), cwd: tmpdir(), executablePath: join(tmpdir(), `missing-executor-${randomUUID()}`),
+      environment: { ...process.env }, permissionBroker: new PermissionBroker(), resume: false,
+      persistSession: false, settingSources: [],
+    });
+    const events: SessionHostEvent[] = [];
+    host.onEvent(event => events.push(event));
+    try {
+      host.start();
+      await waitForEvent(events, "runtime.stopped");
+      expect(events).toContainEqual(expect.objectContaining({ type: "runtime.error", error: expect.stringContaining("native binary not found") }));
+      expect(host.running).toBe(false);
+    } finally { await host.close(); }
+  });
+
   it("keeps one streaming query alive across turns and never forks", async () => {
     const fake = new FakeQuery();
     let queryCalls = 0;
@@ -423,6 +504,42 @@ describe("ClaudeSessionHost", () => {
     await host.interrupt();
     expect(fake.interrupted).toBe(true);
     await host.close();
+  });
+
+  it.each([true, false].flatMap(resume => [
+    { resume, source: "replay" }, { resume, source: "child" },
+  ]))("keeps the selected execution identity after $source output (resume=$resume)", async ({ resume, source }) => {
+    const sessionId = randomUUID(), foreignId = randomUUID();
+    const queries: Array<{ fake: FakeQuery; input: AsyncIterator<SDKUserMessage>; options: Parameters<typeof import("@anthropic-ai/claude-agent-sdk").query>[0]["options"] }> = [];
+    const host = new ClaudeSessionHost({
+      sessionId, eventSessionId: "broker-session", cwd: "/tmp/bridge-project", executablePath: "/fake/claude",
+      environment: {}, permissionBroker: new PermissionBroker(), resume,
+      queryFactory: ((params) => {
+        const fake = new FakeQuery();
+        queries.push({ fake, input: (params.prompt as AsyncIterable<SDKUserMessage>)[Symbol.asyncIterator](), options: params.options });
+        return fake as unknown as Query;
+      }) as typeof import("@anthropic-ai/claude-agent-sdk").query,
+    });
+    const events: SessionHostEvent[] = [];
+    host.onEvent(event => events.push(event));
+    try {
+      await host.contextUsage();
+      expect(queries[0]!.options).toMatchObject(resume ? { resume: sessionId, forkSession: false } : { sessionId });
+      queries[0]!.fake.push({
+        type: "user", uuid: randomUUID(), session_id: foreignId,
+        parent_tool_use_id: source === "child" ? "parent-agent" : null,
+        ...(source === "replay" ? { isReplay: true as const } : {}),
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "historical-tool", content: "Historical output" }] },
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      await host.setAutoCompactWindow(200_000);
+      await host.contextUsage();
+      expect(queries[1]!.options).toMatchObject({ resume: sessionId, forkSession: false });
+      const turn = host.send("Continue the selected conversation", "mobile");
+      expect((await queries[1]!.input.next()).value).toMatchObject({ uuid: turn.messageId, session_id: sessionId });
+      expect(host.sessionId).toBe(sessionId);
+      expect(events.every(event => event.sessionId === "broker-session")).toBe(true);
+    } finally { await host.close(); }
   });
 
   it("starts and resumes the native query with the updated auto-compact window", async () => {

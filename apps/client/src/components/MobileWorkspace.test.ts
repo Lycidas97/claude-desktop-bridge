@@ -314,6 +314,104 @@ describe("submitted mobile message identity", () => {
   });
 });
 
+describe("question reply delivery association", () => {
+  const question: BridgeHistoryItem = {
+    id: "question", sessionId: "session-1", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
+    interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] },
+  };
+  const history = (items: BridgeHistoryItem[]) => ({ status: "ready" as const, hasMore: false, items });
+  const unrelated = (delivery: LocalTurn["delivery"]): LocalTurn => ({
+    requestId: "new-task", idempotencyKey: "new-task-key", commandId: "new-command", sessionId: "session-1",
+    text: "Deploy the documentation", attachments: [], createdAt: 4, delivery,
+  });
+
+  it.each(["host-received", "failed"] as const)("keeps a transcript-resolved question independent of a later %s task", delivery => {
+    const resolved: BridgeHistoryItem = { ...question, interactivePrompt: {
+      ...question.interactivePrompt!, answered: true,
+      questions: [{ ...question.interactivePrompt!.questions![0]!, answer: "Main", options: [{ label: "Main", selected: true }] }],
+    } };
+    const before = conversationItems("session-1", history([resolved]), [], []);
+    const after = conversationItems("session-1", history([resolved]), [], [unrelated(delivery)]);
+    expect(after.find(item => item.id === question.id)).toEqual(before[0]);
+    expect(after.find(item => item.role === "user")?.delivery).toBe(delivery);
+  });
+
+  it.each(["host-received", "failed"] as const)("does not assign a later %s task to a permission-resolved question with no visible user reply", delivery => {
+    const resolved: BridgeEvent = { eventId: "resolved", seq: 1, timestamp: 2, sessionId: "session-1", origin: "system",
+      itemId: "permission", type: "question.resolved", data: { requestId: "permission", toolName: "AskUserQuestion", decision: "allow-once" } };
+    const items = conversationItems("session-1", history([question]), [resolved], [unrelated(delivery)]);
+    expect(items.find(item => item.id === question.id)).toMatchObject({ interactivePrompt: { answered: true } });
+    expect(items.find(item => item.id === question.id)?.replyDelivery).toBeUndefined();
+    expect(items.find(item => item.role === "user")?.delivery).toBe(delivery);
+  });
+
+  it("does not borrow a new task's delivery after assistant activity has already closed a question", () => {
+    const items = conversationItems("session-1", history([question, {
+      id: "continuation", sessionId: "session-1", role: "assistant", text: "Using Main", createdAt: 2, origin: "claude-desktop",
+    }]), [], [unrelated("failed")]);
+    expect(items.find(item => item.id === question.id)).toMatchObject({ interactivePrompt: { answered: true } });
+    expect(items.find(item => item.id === question.id)?.replyDelivery).toBeUndefined();
+  });
+
+  it.each([false, true])("uses the submitted reply request even when a nearer user message has the same text (transcript answered=%s)", answered => {
+    const items = conversationItems("session-1", history([{ ...question, interactivePrompt: { ...question.interactivePrompt!, answered } }]), [], [
+      { ...unrelated("failed"), text: "Main" }, { ...unrelated("host-received"), requestId: "actual-answer", idempotencyKey: "answer-key", text: "Main", createdAt: 5 },
+    ], false, { question: "actual-answer" });
+    expect(items.find(item => item.id === question.id)?.replyDelivery).toBe("host-received");
+    expect(items.find(item => item.id === question.id)?.interactivePrompt?.answered).toBe(true);
+  });
+
+  it("reads a matching delivery event by request ID before a visible user message exists", () => {
+    const event: BridgeEvent = { eventId: "queued-reply", seq: 1, timestamp: 2, sessionId: "session-1", origin: "claude-host",
+      type: "message.delivery", data: { requestId: "actual-answer", commandId: "answer-command", delivery: "host-received" } };
+    const items = conversationItems("session-1", history([question]), [event], [unrelated("failed")], false, { question: "actual-answer" });
+    expect(items.find(item => item.id === question.id)?.replyDelivery).toBe("host-received");
+  });
+
+  it("does not call an unlinked pending user message a confirmed question reply", () => {
+    const items = conversationItems("session-1", history([question]), [], [unrelated("host-received")]);
+    expect(items.find(item => item.id === question.id)?.replyDelivery).toBeUndefined();
+    expect(items.find(item => item.id === question.id)?.replyPending).toBe(true);
+  });
+
+  it("keeps a submitted reply pending if only another request's receipt is present", () => {
+    const items = conversationItems("session-1", history([question]), [], [unrelated("failed")], false, { question: "actual-answer" });
+    expect(items.find(item => item.id === question.id)?.replyDelivery).toBeUndefined();
+    expect(items.find(item => item.id === question.id)?.replyPending).toBe(true);
+  });
+
+  it("preserves a reply's terminal receipt after acceptance replaces its local placeholder", () => {
+    const events: BridgeEvent[] = [
+      { eventId: "accepted-reply", seq: 1, timestamp: 2, sessionId: "session-1", origin: "mobile", itemId: "reply", type: "user.message.accepted",
+        data: { requestId: "actual-answer", commandId: "answer-command", text: "Main" } },
+      { eventId: "failed-reply", seq: 2, timestamp: 3, sessionId: "session-1", origin: "claude-host", type: "turn.failed", data: { commandId: "answer-command" } },
+    ];
+    const items = conversationItems("session-1", history([question]), events, [unrelated("host-received")], false, { question: "actual-answer" });
+    expect(items.find(item => item.id === question.id)?.replyDelivery).toBe("failed");
+    expect(items.filter(item => item.role === "user").map(item => item.delivery)).toEqual(["failed", "host-received"]);
+  });
+
+  it("does not close the final question using itself, an empty user item, or an earlier resolution", () => {
+    const resolved: BridgeEvent = { eventId: "old-resolution", seq: 1, timestamp: 0, sessionId: "session-1", origin: "system",
+      type: "question.resolved", data: { decision: "allow-once" } };
+    const items = conversationItems("session-1", history([question, {
+      id: "empty-user", sessionId: "session-1", role: "user", text: "  ", createdAt: 2, origin: "claude-desktop",
+    }]), [resolved], []);
+    expect(items.find(item => item.id === question.id)?.interactivePrompt?.answered).toBeUndefined();
+  });
+
+  it("uses the nearest nonempty user reply when selecting wrap-up actions", () => {
+    const items = conversationItems("session-1", history([
+      { ...question, interactivePrompt: { kind: "wrap-up", actions: [{ label: "Feature", message: "Feature" }, { label: "Main", message: "Main" }] } },
+      { id: "empty-user", sessionId: "session-1", role: "user", text: "  ", createdAt: 2, origin: "claude-desktop" },
+      { id: "first-reply", sessionId: "session-1", role: "user", text: " Feature ", createdAt: 3, origin: "claude-desktop" },
+      { id: "later-user", sessionId: "session-1", role: "user", text: "Main", createdAt: 4, origin: "claude-desktop" },
+    ]), [], []);
+    expect(items[0]!.interactivePrompt?.actions?.map(action => Boolean(action.selected))).toEqual([true, false]);
+    expect(items[0]!.replyDelivery).toBeUndefined();
+  });
+});
+
 describe("restorableSessionId", () => {
   const sessions = [{ sessionId: "session-1" }] as BridgeSessionInfo[];
 

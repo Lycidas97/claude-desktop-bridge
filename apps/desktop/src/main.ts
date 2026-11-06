@@ -196,6 +196,15 @@ async function desktopMain(): Promise<void> {
 
     handle("bridge:get-snapshot", () => controller.call("snapshot"));
     handle("bridge:create-pairing", () => controller.call("createPairing"));
+    handle("bridge:choose-directory", async (initialPath?: string) => {
+      if (initialPath !== undefined && typeof initialPath !== "string") throw new Error("initialPath must be a string");
+      const options: Electron.OpenDialogOptions = {
+        properties: ["openDirectory"],
+        ...(initialPath ? { defaultPath: initialPath } : {}),
+      };
+      const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+      return result.canceled ? undefined : result.filePaths[0];
+    });
     handle("bridge:revoke-device", (deviceId: string) => controller.call("revokeDevice", deviceId));
     handle("bridge:set-launch-at-login", (enabled: boolean) => controller.call("setLaunchAtLogin", Boolean(enabled)));
     handle("bridge:set-relay-url", (url: string) => controller.call("setRelayUrl", url));

@@ -246,6 +246,62 @@ class FakeRuntimeAdapter extends DesktopRuntimeAdapter {
 }
 
 describe("RuntimeSessionBroker", () => {
+  it("keeps runtime display titles across native refresh without changing native data or activity", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-titles-"));
+    directories.push(directory);
+    const store = new ConversationStateStore({ databasePath: join(directory, "state.sqlite"), sessionsPath: join(directory, "sessions.json"), queuePath: join(directory, "queue.json"), masterSecret: "runtime-title-test" });
+    await store.initialize();
+    const codex = new FakeRuntimeAdapter("codex-desktop", "same-native");
+    const hermes = new FakeRuntimeAdapter("hermes-desktop", "same-native");
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+    const broker = new RuntimeSessionBroker(new RuntimeAdapterRegistry([codex, hermes]), eventLog, store);
+    try {
+      await broker.initialize();
+      const before = broker.listSessions();
+      const nativeBefore = [codex.sessions(), hermes.sessions()];
+      store.setSessionTitle(runtimeSessionId("codex-desktop", "same-native"), "手机 Codex");
+      store.setSessionTitle(runtimeSessionId("hermes-desktop", "same-native"), "手机 Hermes");
+      await broker.refresh();
+      expect(broker.listSessions()).toEqual(before.map(session => ({ ...session, title: session.runtimeId === "codex-desktop" ? "手机 Codex" : "手机 Hermes" })));
+      for (const session of broker.listSessions()) expect(broker.session(session.sessionId)).toEqual(session);
+      expect([codex.sessions(), hermes.sessions()]).toEqual(nativeBefore);
+      expect(store.loadBrokerState().sessions).toEqual([]);
+    } finally { await broker.close(); await eventLog.close(); store.close(); }
+  });
+
+  it("creates in new directories and rejects incompatible chosen groups", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-newcwd-"));
+    directories.push(directory);
+    const adapter = new FakeRuntimeAdapter("codex-desktop", "native");
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+    const broker = new RuntimeSessionBroker(new RuntimeAdapterRegistry([adapter]), eventLog);
+    try {
+      await broker.initialize();
+      await expect(broker.createSession("codex-desktop", directory, "Wrong group", "cg-claude")).rejects.toThrow(/project/u);
+      expect(await broker.createSession("codex-desktop", directory, "New cwd")).toMatchObject({ cwd: directory, runtimeId: "codex-desktop" });
+      const project = broker.listProjects().find(project => project.cwd === directory)!;
+      expect(project.kind).toBe("directory");
+      expect(await broker.createSession("codex-desktop", directory, "Directory shortcut", project.projectId)).toMatchObject({ cwd: directory });
+      await expect(broker.createSession("codex-desktop", "relative")).rejects.toThrow(/absolute/u);
+    } finally { await broker.close(); await eventLog.close(); }
+  });
+
+  it("exposes runtime default permissions without any sessions", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-defaults-"));
+    directories.push(directory);
+    const adapter = new FakeRuntimeAdapter("hermes-desktop", "native");
+    adapter.sessions = () => [];
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+    const broker = new RuntimeSessionBroker(new RuntimeAdapterRegistry([adapter]), eventLog);
+    try {
+      await broker.initialize();
+      expect(broker.listSessions()).toHaveLength(0);
+      expect(broker.runtimes()[0]).toMatchObject({ id: "hermes-desktop", defaultPermissionMode: "standard" });
+      await broker.setHostPermissionMode("hermes-desktop", "full-access");
+      expect(broker.runtimes()[0]).toMatchObject({ defaultPermissionMode: "full-access" });
+    } finally { await broker.close(); await eventLog.close(); }
+  });
+
   it("does not rebroadcast unchanged native messages and tools after receipt-only compaction", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-runtime-compact-dedup-"));
     directories.push(directory);

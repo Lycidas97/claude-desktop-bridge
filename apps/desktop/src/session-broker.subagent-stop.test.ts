@@ -9,6 +9,17 @@ import type { ClaudeCatalogSnapshot, ObservedClaudeSession } from "./claude-sess
 import { SessionBroker, type TranscriptObserverRuntime } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 
+// These fixtures deliberately give short-lived test processes historical registration times.
+// Exercise registration-only ownership selection here; OS identity/lifetime binding has its own catalog tests.
+vi.mock("./claude-session-catalog.js", async original => {
+  const actual = await original<typeof import("./claude-session-catalog.js")>();
+  return {
+    ...actual,
+    scanClaudeSessionProcesses: (paths: import("./platform.js").ClaudeRuntimePaths, sessionId: string) =>
+      actual.scanClaudeSessionProcesses(paths, sessionId, "linux"),
+  };
+});
+
 const directories: string[] = [];
 const children: ChildProcess[] = [];
 

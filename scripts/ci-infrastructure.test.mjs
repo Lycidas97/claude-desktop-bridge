@@ -5,7 +5,7 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { runSuites } from './test.mjs';
@@ -160,7 +160,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
     const mock = mockCleanup(platform);
     for (const method of ['rm', 'unlink', 'rmdir']) {
       mock.fs[`${method}Sync`](Buffer.from('a fixture'));
-      await mock.fs.promises[method](new URL('file:///tmp/a%20fixture'));
+      await mock.fs.promises[method](pathToFileURL(join(tmpdir(), 'a fixture')));
       await new Promise((resolve, reject) => mock.fs[method]('a fixture', error => error ? reject(error) : resolve()));
     }
     assert.equal(mock.calls.length, 9);

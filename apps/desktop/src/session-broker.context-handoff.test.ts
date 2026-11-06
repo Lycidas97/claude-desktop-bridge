@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -28,11 +28,14 @@ async function fixture(desktopOpen = true) {
   }));
   if (desktopOpen) await openDesktop();
   else await writeFile(desktopRegistration, JSON.stringify({ pid: 999_999_999, sessionId, cwd: root, startedAt: desktopStartedAt, entrypoint: "claude-desktop-3p" }));
-  await writeFile(join(paths.projects, `${sessionId}.jsonl`), [
+  const transcript = join(paths.projects, `${sessionId}.jsonl`);
+  await writeFile(transcript, [
     JSON.stringify({ type: "user", uuid: "desktop-input", parentUuid: null, sessionId, cwd: root, message: { role: "user", content: "Desktop task" } }),
     JSON.stringify({ type: "assistant", uuid: "desktop-loaded-head", parentUuid: "desktop-input", sessionId, message: { role: "assistant", content: "Finished", stop_reason: "end_turn" } }),
     "",
   ].join("\n"));
+  // Later fixture rewrites must change mtime even on a coarse filesystem clock.
+  await utimes(transcript, desktopStartedAt / 1_000, desktopStartedAt / 1_000);
   const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
   const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 60_000, catalogIntervalMs: 0 });
   let listener: ((event: SessionHostEvent) => void) | undefined;

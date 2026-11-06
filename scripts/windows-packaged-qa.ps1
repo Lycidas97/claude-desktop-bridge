@@ -146,15 +146,12 @@ try {
   if ($null -ne $relayProcess -and -not $relayProcess.HasExited) {
     Stop-Process -Id $relayProcess.Id -Force -ErrorAction SilentlyContinue
   }
-  $uninstaller = Get-ChildItem -Path $installRoot -Filter "Uninstall*.exe" -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-  if ($null -ne $uninstaller) {
-    Start-Process -FilePath $uninstaller.FullName -ArgumentList @("/S") -Wait -ErrorAction SilentlyContinue
-  }
-  Remove-Item -Path $qaRoot -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item -Path $smokeRoot -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item -Path $installRoot -Recurse -Force -ErrorAction SilentlyContinue
   foreach ($key in $environmentKeys) {
     [Environment]::SetEnvironmentVariable($key, $originalEnvironment[$key], "Process")
+  }
+  & node.exe --require (Join-Path $PSScriptRoot "recycle-cleanup.cjs") `
+    (Join-Path $PSScriptRoot "clean.mjs") $qaRoot $smokeRoot $installRoot
+  if ($LASTEXITCODE -ne 0) {
+    throw "Packaged QA recycle-bin cleanup failed with exit code $LASTEXITCODE."
   }
 }

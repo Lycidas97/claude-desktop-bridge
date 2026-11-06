@@ -79,6 +79,10 @@ the environment. Use the operating system's Trash command for manual cleanup.
 
 ## CI
 
+CI runs on pull requests, pushes to `main`, and manual dispatch. Feature branches
+are checked through their pull requests, avoiding duplicate push and PR runs that
+cancel each other for the same commit.
+
 CI retains Linux verification, Windows/Linux installers, Android, and iOS builds,
 and adds macOS unit tests and browser E2E. Native Desktop unit fixtures explicitly
 simulate macOS while mocking their process and inbox dependencies. POSIX mode-bit

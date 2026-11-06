@@ -535,7 +535,9 @@ describe("RuntimeSessionBroker", () => {
       lastActivityAt: 30,
     });
     codex.emitAssistantDelta("native-stream", "native-stream-turn", "完成的");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitFor(() => eventLog.replay().some((event) => (
+      event.sessionId === sessionId && event.type === "assistant.delta" && event.turnId === "native-stream-turn"
+    )), "active native stream event");
     await broker.syncLiveHistories();
 
     expect(eventLog.replay().filter((event) => event.itemId === "native-final-message")).toHaveLength(0);

@@ -19,6 +19,13 @@ Requirements: Node.js 22.13+, npm, and a checkout of the repository.
 
 ```bash
 npm ci
+```
+
+```bash
+npm run build -w @bridge/protocol
+```
+
+```bash
 npm run dev:desktop
 ```
 
@@ -58,7 +65,8 @@ Releases are controlled by automation on `main`:
 
 1. Code and README changes are committed and pushed normally.
 2. A synchronized version bump across all manifests triggers `release.yml`.
-3. The workflow creates the tag and GitHub Release after validation.
+3. After validation, the workflow creates a draft GitHub Release for that version, then starts the platform asset jobs.
+4. The Release and its tag are published only after the desktop, Android, and iOS asset jobs all succeed.
 
 Do not create tags or GitHub Releases manually, and do not bump only one workspace. The
 release workflow validates that `package.json`, every workspace, `package-lock.json`,

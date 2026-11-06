@@ -14,10 +14,13 @@
 | `client.tsx` | 接收宿主提供的 loader，按需读取和刷新，提供看板内容和会话配置里的模型详情 |
 | `styles.css` | 仅含 `magpie-quota` 前缀样式，沿用宿主手机端设计规范的变量 |
 
-插件自身的测试和类型检查不在根 `npm test` 的工作区列表中，需要单独执行：
+插件位于 npm workspace 之外，根 `npm test` 和 `npm run typecheck` 已显式包含它。也可单独执行：
 
-```sh
+```bash
 npm --prefix plugins/magpie-quota test
+```
+
+```bash
 npm --prefix plugins/magpie-quota run typecheck
 ```
 

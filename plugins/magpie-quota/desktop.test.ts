@@ -57,11 +57,11 @@ describe("standalone Magpie quota desktop plugin", () => {
     await plugin.handle(request);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     await plugin.handle({ ...request, params: { refresh: true } });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
     getGateway.mockReturnValue({ baseUrl: "https://other.example.test", authToken: "different-key" });
     await plugin.handle(request);
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
-    expect(fetchImpl.mock.calls[3]?.[0]).toBe("https://other.example.test/v1/magpie/quotas");
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
+    expect(fetchImpl.mock.calls[5]?.[0]).toBe("https://other.example.test/v1/magpie/quotas");
   });
 
   it("does not handle unrelated requests or fetch without a gateway", async () => {

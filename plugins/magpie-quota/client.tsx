@@ -32,7 +32,7 @@ export function MagpieQuotaProvider({ loader, enabled = true, sourceKey = "", ch
   const error = failure?.sourceKey === sourceKey ? failure.error : undefined;
   const [consumers, setConsumers] = useState(0);
   const [refreshCount, setRefreshCount] = useState(0);
-  // Only the read answering a manual refresh bypasses the desktop cache.
+  // Consume each manual refresh when its request starts, so interrupted reads cannot replay it.
   const delivered = useRef(0);
   const request = useCallback(() => {
     setConsumers((count) => count + 1);
@@ -50,10 +50,11 @@ export function MagpieQuotaProvider({ loader, enabled = true, sourceKey = "", ch
     let active = true;
     setLoading(true);
     setFailure(undefined);
-    void loader({ refresh: refreshCount > delivered.current })
+    const forceRefresh = refreshCount > delivered.current;
+    delivered.current = refreshCount;
+    void loader({ refresh: forceRefresh })
       .then((next) => {
         if (!active) return;
-        delivered.current = refreshCount;
         setReading({ sourceKey, snapshot: next });
       })
       .catch((reason: unknown) => {

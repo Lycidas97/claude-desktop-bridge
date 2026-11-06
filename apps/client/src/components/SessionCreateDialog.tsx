@@ -4,8 +4,8 @@ import type {
   BridgeHostSnapshot,
   BridgeSessionInfo,
 } from "@bridge/protocol";
-import { ArrowUp, ChevronRight, Folder, FolderOpen, History, LoaderCircle, X } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { ArrowUp, Check, ChevronLeft, ChevronRight, Folder, FolderOpen, LoaderCircle, Monitor, Pencil, X } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../lib/runtime-labels.js";
 import { IconButton } from "./IconButton.js";
@@ -18,43 +18,34 @@ export interface SessionCreateDialogProps {
   connected: boolean;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
   onChooseDirectory?(initialPath?: string): Promise<string | undefined>;
-  onCreate(
-    cwd: string,
-    title?: string,
-    runtimeId?: BridgeDesktopRuntimeId,
-    projectId?: string,
-  ): Promise<BridgeSessionInfo | undefined>;
+  onCreate(cwd: string, title?: string, runtimeId?: BridgeDesktopRuntimeId, projectId?: string): Promise<BridgeSessionInfo | undefined>;
   onCreated(session: BridgeSessionInfo): void;
   onClose(): void;
 }
 
+function folderName(path: string): string {
+  return path.replace(/[\\/]+$/u, "").split(/[\\/]/u).at(-1) || path;
+}
+
 /** Mount with the host ID as key so each computer owns its creation draft. */
-export function SessionCreateDialog({
-  snapshot,
-  initialProjectId,
-  initialRuntimeId,
-  connected,
-  onBrowseDirectory,
-  onChooseDirectory,
-  onCreate,
-  onCreated,
-  onClose,
-}: SessionCreateDialogProps) {
+export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntimeId, connected, onBrowseDirectory, onChooseDirectory, onCreate, onCreated, onClose }: SessionCreateDialogProps) {
   const titleId = useId();
+  const dialogRef = useRef<HTMLElement>(null);
   const initialProject = snapshot.projects.find((project) => project.projectId === initialProjectId);
   const [runtimeId, setRuntimeId] = useState<BridgeDesktopRuntimeId>(initialRuntimeId ?? initialProject?.runtimeId ?? "claude-desktop");
   const [cwd, setCwd] = useState((initialProject?.runtimeId ?? "claude-desktop") === runtimeId ? initialProject?.cwd ?? "" : "");
-  const [projectId, setProjectId] = useState(runtimeId === "claude-desktop" && initialProject?.kind === "desktop-group"
-    ? initialProject.projectId : "");
+  const [projectId, setProjectId] = useState(runtimeId === "claude-desktop" && initialProject?.kind === "desktop-group" ? initialProject.projectId : "");
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const [error, setError] = useState("");
+  const [view, setView] = useState<"form" | "recent" | "browse">("form");
   const [browseTarget, setBrowseTarget] = useState<{ path: string | undefined }>();
   const [browseInput, setBrowseInput] = useState("");
   const [listing, setListing] = useState<BridgeDirectoryListing>();
   const [browseLoading, setBrowseLoading] = useState(false);
   const [browseError, setBrowseError] = useState("");
+  const [pathEditing, setPathEditing] = useState(false);
 
   const runtime = snapshot.runtimes?.find((candidate) => candidate.id === runtimeId);
   const runtimeAvailable = snapshot.runtimes
@@ -64,43 +55,47 @@ export function SessionCreateDialog({
   if (!runtimeIds.includes(runtimeId)) runtimeIds.push(runtimeId);
   const projects = snapshot.projects.filter((project) => (project.runtimeId ?? "claude-desktop") === runtimeId);
   const groups = runtimeId === "claude-desktop" ? projects.filter((project) => project.kind === "desktop-group") : [];
-  // Legacy IDs can be raw Desktop group IDs or cwd hashes; only explicit kind
-  // identifies a group. Untyped projects remain useful as folder shortcuts.
-  const folders = projects.filter((project) => project.kind !== "desktop-group");
+  const recentPaths = [...new Set([
+    ...[...projects].sort((left, right) => right.lastActivityAt - left.lastActivityAt).map((project) => project.cwd),
+    ...(listing?.recentPaths ?? []),
+  ])];
   const locked = busy || choosing;
   const groupUnavailable = Boolean(projectId && !groups.some((project) => project.projectId === projectId));
   const canCreate = connected && runtimeAvailable && Boolean(cwd.trim()) && !groupUnavailable && !locked;
+  const canSelectFolder = connected && !browseLoading && (onBrowseDirectory
+    ? Boolean(listing && browseInput.trim() === listing.path)
+    : Boolean(browseInput.trim()));
 
   function back(): void {
     if (locked) return;
-    if (browseTarget) setBrowseTarget(undefined);
-    else onClose();
+    if (view === "form") onClose();
+    else {
+      setView("form");
+      setBrowseTarget(undefined);
+    }
   }
 
-  useEffect(() => registerMobileBackHandler(() => {
-    back();
-    return true;
-  }, 150), [browseTarget, locked, onClose]);
+  useEffect(() => registerMobileBackHandler(() => { back(); return true; }, 150), [view, locked, onClose]);
+
+  useEffect(() => {
+    if (!dialogRef.current?.contains(document.activeElement)) dialogRef.current?.focus();
+  }, [view, pathEditing, browseLoading]);
 
   useEffect(() => {
     if (!browseTarget || !onBrowseDirectory) return;
-    if (!connected) {
-      setBrowseLoading(false);
-      return;
-    }
+    if (!connected) { setBrowseLoading(false); return; }
     let active = true;
     void onBrowseDirectory(browseTarget.path)
       .then((next) => {
         if (!active) return;
         setListing(next);
         setBrowseInput(next.path);
+        setPathEditing(false);
       })
       .catch((reason: unknown) => {
         if (active) setBrowseError(reason instanceof Error ? reason.message : "文件夹读取失败");
       })
-      .finally(() => {
-        if (active) setBrowseLoading(false);
-      });
+      .finally(() => { if (active) setBrowseLoading(false); });
     return () => { active = false; };
   }, [browseTarget, runtimeId, snapshot.host.hostId, connected, onBrowseDirectory]);
 
@@ -108,13 +103,23 @@ export function SessionCreateDialog({
     setBrowseInput(path ?? "");
     setListing(undefined);
     setBrowseError("");
-    setBrowseLoading(true);
+    setBrowseLoading(Boolean(onBrowseDirectory));
     setBrowseTarget({ path });
+  }
+
+  function selectFolder(path: string): void {
+    setCwd(path);
+    setView("form");
+    setBrowseTarget(undefined);
+    setPathEditing(false);
+    setError("");
   }
 
   async function chooseDirectory(): Promise<void> {
     if (!connected || locked) return;
     if (!onChooseDirectory) {
+      setView(projects.length ? "recent" : "browse");
+      setPathEditing(!onBrowseDirectory);
       openDirectory(cwd.trim() || undefined);
       return;
     }
@@ -122,12 +127,10 @@ export function SessionCreateDialog({
     setError("");
     try {
       const path = await onChooseDirectory(cwd.trim() || undefined);
-      if (path) setCwd(path);
+      if (path) selectFolder(path);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "文件夹选择失败");
-    } finally {
-      setChoosing(false);
-    }
+    } finally { setChoosing(false); }
   }
 
   async function createSession(): Promise<void> {
@@ -136,203 +139,122 @@ export function SessionCreateDialog({
     setError("");
     try {
       const session = await onCreate(cwd.trim(), title.trim() || undefined, runtimeId, projectId || undefined);
-      if (!session) {
-        setError("会话未创建，请重试。");
-        return;
-      }
+      if (!session) { setError("会话未创建，请重试。"); return; }
       onCreated(session);
       onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "会话创建失败");
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   }
 
   return (
-    <div
-      className="modal-backdrop session-create-backdrop"
-      role="presentation"
-      onMouseDown={(event) => { if (event.target === event.currentTarget && !locked) onClose(); }}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.stopPropagation();
-          back();
-        }
-      }}
-    >
-      <section className="create-session-dialog session-create-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}>
-        <header>
-          <h2 id={titleId}>{browseTarget ? "选择文件夹" : "新建会话"}</h2>
-          <IconButton label="关闭" disabled={locked} onClick={onClose}><X size={18} /></IconButton>
+    <div className="modal-backdrop session-create-backdrop" role="presentation"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) back(); }}
+      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); back(); } }}>
+      <section ref={dialogRef} tabIndex={-1} className={`create-session-dialog session-create-dialog${view !== "form" ? " is-folder-picker" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <header className="session-create-header">
+          {view !== "form" && <button type="button" className="session-create-back" aria-label="返回新建会话" onClick={back}><ChevronLeft size={22} /></button>}
+          <div className="session-create-heading">
+            <h2 id={titleId}>{view === "form" ? "新建会话" : "选择文件夹"}</h2>
+            <p className="session-create-host"><Monitor size={13} />{snapshot.host.name}</p>
+          </div>
+          {view === "form" && <IconButton label="关闭" disabled={locked} onClick={onClose}><X size={18} /></IconButton>}
         </header>
         <form onSubmit={(event) => {
           event.preventDefault();
-          if (browseTarget) {
-            if (connected && !browseLoading) openDirectory(browseInput.trim() || undefined);
-          } else void createSession();
+          if (view === "form") void createSession();
+          else if (view === "browse" && pathEditing && connected && !browseLoading && onBrowseDirectory) openDirectory(browseInput.trim() || undefined);
         }}>
-          {browseTarget ? (
-            <>
-              <p className="session-create-host">{snapshot.host.name}</p>
-              <label>
-                <span>当前路径</span>
-                <div className="session-create-folder-row">
-                  <input
-                    aria-label="当前路径"
-                    value={browseInput}
-                    autoFocus
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    onChange={(event) => setBrowseInput(event.target.value)}
-                  />
-                  <button type="button" className="secondary-button" disabled={!connected || browseLoading} onClick={() => openDirectory(browseInput.trim() || undefined)}>打开</button>
-                </div>
-              </label>
-              <button
-                type="button"
-                className="secondary-button session-create-parent"
-                disabled={!connected || browseLoading || !listing?.parentPath}
-                onClick={() => openDirectory(listing!.parentPath)}
-              ><ArrowUp size={16} />上级目录</button>
-              {browseLoading && <div className="session-create-status" role="status"><LoaderCircle className="is-spinning" size={16} />正在读取文件夹</div>}
-              {browseError && <p className="session-create-error" role="alert">{browseError}</p>}
-              {listing && !browseLoading && (
-                <>
+          {view !== "form" && (
+            <nav className="session-create-tabs" aria-label="文件夹来源">
+              <button type="button" aria-pressed={view === "recent"} onClick={() => setView("recent")}>最近使用</button>
+              <button type="button" aria-pressed={view === "browse"} onClick={() => setView("browse")}>{onBrowseDirectory ? "浏览电脑" : "输入路径"}</button>
+            </nav>
+          )}
+          <div className="session-create-body">
+            {view === "recent" ? (
+              <>
+                <ul className="session-create-directories" aria-label="最近使用的文件夹">
+                  {recentPaths.map((path) => (
+                    <li key={path}>
+                      <button type="button" aria-label={`选择 ${path}`} aria-current={cwd === path ? "true" : undefined} disabled={!connected} onClick={() => selectFolder(path)}>
+                        <Folder size={20} /><span className="session-create-folder-copy"><strong>{folderName(path)}</strong><small>{path}</small></span>{cwd === path && <Check size={18} />}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                {!recentPaths.length && <div className="session-create-empty"><FolderOpen size={28} /><p>还没有最近使用的文件夹</p></div>}
+                {browseLoading && <p className="session-create-status" role="status"><LoaderCircle className="is-spinning" size={15} />正在更新文件夹</p>}
+              </>
+            ) : view === "browse" ? (
+              <>
+                {pathEditing ? (
+                  <label className="session-create-path-editor">
+                    <span>电脑上的绝对路径</span>
+                    <div className="session-create-folder-row">
+                      <input aria-label="当前路径" value={browseInput} autoFocus autoCapitalize="none" autoCorrect="off" spellCheck={false} disabled={browseLoading} placeholder="输入文件夹路径" onChange={(event) => setBrowseInput(event.target.value)} />
+                      {onBrowseDirectory && <button type="submit" className="secondary-button" disabled={!connected || browseLoading}>前往</button>}
+                    </div>
+                  </label>
+                ) : (
+                  <div className="session-create-location">
+                    <button type="button" className="session-create-parent" aria-label="上级目录" title="上级目录" disabled={!connected || browseLoading || !listing?.parentPath} onClick={() => openDirectory(listing!.parentPath)}><ArrowUp size={19} /></button>
+                    <span className="session-create-location-path">{listing?.path ?? (browseInput || "电脑主目录")}</span>
+                    <button type="button" className="session-create-edit-path" aria-label="输入路径" title="输入路径" disabled={browseLoading} onClick={() => setPathEditing(true)}><Pencil size={17} /></button>
+                  </div>
+                )}
+                {browseLoading && <div className="session-create-status" role="status"><LoaderCircle className="is-spinning" size={16} />正在读取文件夹</div>}
+                {browseError && <div className="session-create-browse-error"><p className="session-create-error" role="alert">{browseError}</p><button type="button" className="secondary-button" disabled={!connected || browseLoading} onClick={() => openDirectory(browseInput.trim() || undefined)}>重试</button></div>}
+                {listing && !browseLoading && (
                   <ul className="session-create-directories" aria-label="子文件夹">
                     {listing.directories.map((directory) => (
-                      <li key={directory.path}>
-                        <button type="button" disabled={!connected} onClick={() => openDirectory(directory.path)}>
-                          <Folder size={17} /><span>{directory.name}</span><ChevronRight size={16} />
-                        </button>
-                      </li>
+                      <li key={directory.path}><button type="button" aria-label={`打开 ${directory.name}`} disabled={!connected} onClick={() => openDirectory(directory.path)}><Folder size={20} /><span>{directory.name}</span><ChevronRight size={17} /></button></li>
                     ))}
-                    {!listing.directories.length && <li className="session-create-empty">没有子文件夹</li>}
+                    {!listing.directories.length && <li className="session-create-no-children">没有子文件夹，可直接使用当前文件夹</li>}
                   </ul>
-                  {listing.recentPaths.length > 0 && (
-                    <section className="session-create-recent" aria-label="最近使用">
-                      <h3>最近使用</h3>
-                      <ul className="session-create-directories">
-                        {listing.recentPaths.map((path) => (
-                          <li key={path}>
-                            <button type="button" disabled={!connected} onClick={() => openDirectory(path)}>
-                              <History size={16} /><span>{path}</span><ChevronRight size={16} />
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </section>
-                  )}
-                </>
-              )}
-              <footer className="dialog-actions">
-                <button type="button" className="secondary-button" onClick={back}>返回</button>
-                <button
-                  type="button"
-                  className="primary-button"
-                  disabled={!connected || browseLoading || !listing || browseInput.trim() !== listing.path}
-                  onClick={() => {
-                    setCwd(listing!.path);
-                    setBrowseTarget(undefined);
-                  }}
-                >选择此文件夹</button>
-              </footer>
-            </>
-          ) : (
-            <>
-              <label>
-                <span>运行时</span>
-                <select
-                  aria-label="运行时"
-                  value={runtimeId}
-                  disabled={locked}
-                  autoFocus
-                  onChange={(event) => {
-                    setRuntimeId(event.target.value as BridgeDesktopRuntimeId);
-                    setCwd("");
-                    setProjectId("");
-                    setError("");
-                    setBrowseTarget(undefined);
-                    setListing(undefined);
-                  }}
-                >
+                )}
+              </>
+            ) : (
+              <>
+                <label><span>运行时</span><select aria-label="运行时" value={runtimeId} disabled={locked} onChange={(event) => {
+                  setRuntimeId(event.target.value as BridgeDesktopRuntimeId); setCwd(""); setProjectId(""); setError(""); setBrowseTarget(undefined); setListing(undefined);
+                }}>
                   {runtimeIds.map((id) => {
                     const candidate = snapshot.runtimes?.find((item) => item.id === id);
-                    const available = snapshot.runtimes
-                      ? candidate?.state === "ready" && candidate.capabilities.includes("session.create")
-                      : runtimeAvailable;
+                    const available = snapshot.runtimes ? candidate?.state === "ready" && candidate.capabilities.includes("session.create") : runtimeAvailable;
                     return <option key={id} value={id} disabled={!available}>{desktopRuntimeName(id)}{available ? "" : "（不可用）"}</option>;
                   })}
-                </select>
-              </label>
-              <div className="session-create-folder">
-                <label>
-                  <span>工作文件夹</span>
-                  <input
-                    aria-label="工作文件夹"
-                    value={cwd}
-                    disabled={locked}
-                    placeholder="输入电脑上的绝对路径"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    onChange={(event) => setCwd(event.target.value)}
-                  />
-                </label>
-                {(onChooseDirectory || onBrowseDirectory) && (
-                  <button type="button" className="secondary-button" disabled={!connected || locked} onClick={() => void chooseDirectory()}>
-                    {choosing ? <LoaderCircle className="is-spinning" size={16} /> : <FolderOpen size={16} />}选择文件夹
+                </select></label>
+                <div className="session-create-folder">
+                  <span className="session-create-field-label">工作文件夹</span>
+                  <button type="button" className={`session-create-folder-trigger${cwd ? " has-folder" : ""}`} aria-label="选择文件夹" aria-describedby={`${titleId}-folder`} disabled={!connected || locked} onClick={() => void chooseDirectory()}>
+                    {choosing ? <LoaderCircle className="is-spinning" size={22} /> : <FolderOpen size={22} />}
+                    <span id={`${titleId}-folder`} className="session-create-folder-copy" aria-label="工作文件夹"><strong>{cwd ? folderName(cwd) : "选择工作文件夹"}</strong><small>{cwd || "电脑上的文件夹"}</small></span><ChevronRight size={18} />
                   </button>
-                )}
-                {folders.length > 0 && (
-                  <select
-                    aria-label="最近使用的文件夹"
-                    value=""
-                    disabled={locked}
-                    onChange={(event) => setCwd(folders.find((project) => project.projectId === event.target.value)!.cwd)}
-                  >
-                    <option value="" disabled>最近使用的文件夹</option>
-                    {folders.map((project) => <option key={project.projectId} value={project.projectId}>{project.name} — {project.cwd}</option>)}
-                  </select>
-                )}
-              </div>
-              <label>
-                <span>项目分组（可选）</span>
-                <select
-                  aria-label="项目分组（可选）"
-                  value={projectId}
-                  disabled={locked || runtimeId !== "claude-desktop"}
-                  onChange={(event) => {
-                    setProjectId(event.target.value);
-                    if (!cwd.trim()) setCwd(groups.find((project) => project.projectId === event.target.value)?.cwd ?? "");
-                  }}
-                >
-                  <option value="">{runtimeId === "claude-desktop" ? "未分组" : "按工作文件夹归类"}</option>
+                  {onChooseDirectory && <button type="button" className="session-create-folder-alternative" disabled={!connected || locked} onClick={() => {
+                    setView("recent"); setPathEditing(!onBrowseDirectory); openDirectory(cwd.trim() || undefined);
+                  }}>最近使用或输入路径</button>}
+                </div>
+                {(groups.length > 0 || groupUnavailable) && <label><span>项目分组（可选）</span><select aria-label="项目分组（可选）" value={projectId} disabled={locked} onChange={(event) => setProjectId(event.target.value)}>
+                  <option value="">未分组</option>
                   {groupUnavailable && <option value={projectId} disabled>分组已不可用</option>}
-                  {groups.length > 0 && (
-                    <optgroup label="Desktop 分组">
-                      {groups.map((project) => <option key={project.projectId} value={project.projectId}>{project.name}</option>)}
-                    </optgroup>
-                  )}
-                </select>
-              </label>
-              <label>
-                <span>会话名称（可选）</span>
-                <input aria-label="会话名称（可选）" value={title} disabled={locked} placeholder="可留空" onChange={(event) => setTitle(event.target.value)} />
-              </label>
-              {groupUnavailable && <p className="session-create-error" role="alert">所选分组已不可用，请重新选择。</p>}
-              {connected && !runtimeAvailable && <p className="session-create-error" role="alert">{desktopRuntimeName(runtimeId)} 当前无法创建会话。</p>}
-              {error && <p className="session-create-error" role="alert">{error}</p>}
-              <footer className="dialog-actions">
-                <button type="button" className="secondary-button" disabled={locked} onClick={onClose}>取消</button>
-                <button type="submit" className="primary-button" disabled={!canCreate}>
-                  {busy && <LoaderCircle className="is-spinning" size={16} />}创建会话
-                </button>
-              </footer>
-            </>
-          )}
-          {!connected && <p className="session-create-status" role="status">电脑已离线，连接后可创建会话。</p>}
+                  {groups.map((project) => <option key={project.projectId} value={project.projectId}>{project.name}</option>)}
+                </select></label>}
+                <label><span>会话名称（可选）</span><input aria-label="会话名称（可选）" value={title} disabled={locked} placeholder="可留空，稍后命名" onChange={(event) => setTitle(event.target.value)} /></label>
+                {groupUnavailable && <p className="session-create-error" role="alert">所选分组已不可用，请重新选择。</p>}
+                {connected && !runtimeAvailable && <p className="session-create-error" role="alert">{desktopRuntimeName(runtimeId)} 当前无法创建会话。</p>}
+                {error && <p className="session-create-error" role="alert">{error}</p>}
+              </>
+            )}
+          </div>
+          {!connected && <p className="session-create-status session-create-offline" role="status">电脑已离线，连接后可创建会话。</p>}
+          <footer className="dialog-actions session-create-actions">
+            {view === "form" ? (
+              <><button type="button" className="secondary-button" disabled={locked} onClick={onClose}>取消</button><button type="submit" className="primary-button" disabled={!canCreate}>{busy && <LoaderCircle className="is-spinning" size={16} />}创建会话</button></>
+            ) : (
+              <><button type="button" className="secondary-button" onClick={back}>取消选择</button>{view === "browse" ? <button type="button" className="primary-button" disabled={!canSelectFolder} onClick={() => selectFolder(onBrowseDirectory ? listing!.path : browseInput.trim())}>使用此文件夹</button> : <button type="button" className="primary-button" onClick={() => setView("browse")}>{onBrowseDirectory ? "浏览电脑文件夹" : "输入文件夹路径"}</button>}</>
+            )}
+          </footer>
         </form>
       </section>
     </div>

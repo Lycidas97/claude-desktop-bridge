@@ -8,6 +8,7 @@ import { MessageCopyButton } from "./MessageCopyButton.js";
 import { TaskPlanCard } from "./TaskPlanCard.js";
 import { DesktopHandoffNotice } from "./DesktopHandoffNotice.js";
 import { SessionCreateDialog } from "./SessionCreateDialog.js";
+import { dispatchMobileBack } from "../lib/mobile-back-navigation.js";
 
 const hooks = vi.hoisted(() => ({
   slots: [] as any[], index: 0, dirty: false,
@@ -139,6 +140,26 @@ beforeEach(() => {
   open("A");
 });
 afterEach(() => { hooks.effects.forEach((e) => e.cleanup?.()); vi.unstubAllGlobals(); });
+
+describe("session back navigation", () => {
+  it("returns to the directory without sending or losing the draft, then releases root back", () => {
+    text("保留这条未发送的草稿");
+    expect(dispatchMobileBack()).toBe(true); draw();
+    expect(input()).toBeUndefined();
+    expect(dispatchMobileBack()).toBe(false);
+    open("A");
+    expect(input().props.value).toBe("保留这条未发送的草稿");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+  it("closes session actions before leaving the conversation", () => {
+    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+    elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick(); draw();
+    expect(dispatchMobileBack()).toBe(true); draw();
+    expect(input()).toBeDefined();
+    expect(dispatchMobileBack()).toBe(true); draw();
+    expect(input()).toBeUndefined();
+  });
+});
 
 describe("subagent overflow", () => {
   function agents(count: number) {

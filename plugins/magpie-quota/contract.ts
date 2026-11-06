@@ -17,6 +17,8 @@ export interface QuotaWindow {
 
 export interface QuotaAccount {
   provider: string;
+  /** Remote Magpie provenance; remote cards are retained rather than refreshed locally. */
+  from?: string;
   name?: string;
   user?: string;
   alias?: string;
@@ -58,7 +60,7 @@ export function parseQuotaAccounts(payload: unknown): QuotaAccount[] {
     }
     const source = raw as Record<string, unknown>;
     const account: QuotaAccount = { provider: raw.provider, windows: [] };
-    for (const key of ["name", "user", "alias", "kind", "plan", "readAt", "lastServedAt", "balance", "error", "asOf"] as const) {
+    for (const key of ["name", "user", "alias", "kind", "plan", "readAt", "lastServedAt", "balance", "error", "asOf", "from"] as const) {
       if (typeof source[key] === "string") account[key] = source[key];
     }
     if (typeof source.readDeferred === "boolean") account.readDeferred = source.readDeferred;

@@ -1,3 +1,22 @@
+## 1.2.0
+
+- Deliver supported macOS Desktop inbox input to the verified original executor,
+  with UUID-bound receipts and no second executor or uncertain delivery replay.
+- Distinguish main-turn availability from background tasks, and bind native fork
+  writers to the child session instead of marking the parent busy.
+- Rename sessions from mobile using persistent Bridge display names, without
+  changing native transcript files or overwriting newer queue state.
+- Actively refresh local Magpie quota accounts on request, normalize the result,
+  retain remote readings, and avoid replaying refreshes after reconnecting.
+- Unify recent and browsed working folders in session creation, keep project
+  grouping separate from the directory, and preserve the form on return.
+- Return through mobile page and overlay parents before leaving the app; retain
+  unsent drafts and open the directory when choosing Sessions from the menu.
+- Verify native Capacitor plugin registration in Android packages so system back,
+  filesystem, sharing and push plugins are loaded alongside their compiled code.
+- Add maintained regression, browser and cross-platform build checks, including
+  the quota plugin, with isolated test data and system recycle-bin cleanup.
+
 ## 1.1.2
 
 - Keep Desktop takeover attempts queued until a host actually begins acquiring,

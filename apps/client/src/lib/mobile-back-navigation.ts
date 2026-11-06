@@ -62,7 +62,7 @@ export function installMobileBackNavigation(): () => void {
 
   if (Capacitor.getPlatform() === "android") {
     void CapacitorApp.addListener("backButton", () => {
-      dispatchMobileBack();
+      if (!dispatchMobileBack()) void CapacitorApp.minimizeApp();
     }).then((listener) => {
       if (disposed) void listener.remove();
       else androidListener = listener;

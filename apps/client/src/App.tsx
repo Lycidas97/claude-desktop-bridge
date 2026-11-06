@@ -41,9 +41,9 @@ export function App() {
   // requestMedia is the hook's plain request function; its identity never changes.
   const request = mobile.requestMedia;
   const loadMagpieQuota = useCallback<QuotaLoader>(async (options) => {
-    // The desktop gives its gateway 15 s; wait past that.
+    // Manual refresh has a shared 60 s desktop budget; ordinary reads still use 15 s.
     const response = await request(MAGPIE_QUOTA_METHOD, { refresh: options?.refresh ?? false }, {
-      wait: true, allowOffline: false, timeoutMs: 30_000,
+      wait: true, allowOffline: false, timeoutMs: options?.refresh ? 75_000 : 30_000,
     });
     if (!response?.ok) throw new Error(response?.error?.message ?? "Magpie 额度读取失败");
     return response.result as QuotaSnapshot;
@@ -56,7 +56,7 @@ export function App() {
   async function openComputer(hostId: string, sessionId?: string): Promise<void> {
     if (hostId !== mobile.state.activeHostId) await mobile.selectHost(hostId);
     if (sessionId) setFocusRequest({ sessionId, key: Date.now() });
-    else setDirectoryRequest(Date.now());
+    else setDirectoryRequest(value => value + 1);
     setComputerDetailsHostId(undefined);
     setTab("sessions");
   }
@@ -71,6 +71,11 @@ export function App() {
       setPairingOpen(false);
       return true;
     }
+    if (mobile.state.hosts.length === 0) return false;
+    if (tab === "computers" && computerDetailsHostId) {
+      setComputerDetailsHostId(undefined);
+      return true;
+    }
     if (providersOpen || quotaOpen) {
       setProvidersOpen(false);
       setQuotaOpen(false);
@@ -79,11 +84,13 @@ export function App() {
     if (tab !== "sessions") {
       setComputerDetailsHostId(undefined);
       setQuotaOpen(false);
+      setDirectoryRequest(value => value + 1);
       setTab("sessions");
       return true;
     }
-    return true;
+    return false;
   }, -100), [
+    computerDetailsHostId,
     mobile.state.hosts.length,
     mobile.state.pairingSync,
     pairingOpen,
@@ -138,6 +145,7 @@ export function App() {
         setComputerDetailsHostId(undefined);
         setQuotaOpen(false);
         setProvidersOpen(false);
+        if (next === "sessions") setDirectoryRequest(value => value + 1);
         setTab(next);
       }}
     >

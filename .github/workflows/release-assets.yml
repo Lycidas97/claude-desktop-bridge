@@ -22,15 +22,15 @@ jobs:
         include:
           - os: macos-15
             name: macOS
-            make_command: npm run make:adhoc -w @bridge/desktop
+            make_command: npm run ci:run -- run make:adhoc -w @bridge/desktop
             artifact_suffix: adhoc
           - os: windows-2022
             name: Windows
-            make_command: npm run make:windows -w @bridge/desktop
+            make_command: npm run ci:run -- run make:windows -w @bridge/desktop
             artifact_suffix: installer
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             name: Linux
-            make_command: npm run make:linux -w @bridge/desktop
+            make_command: npm run ci:run -- run make:linux -w @bridge/desktop
             artifact_suffix: installers
     runs-on: ${{ matrix.os }}
     env:
@@ -43,13 +43,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install recycle-bin and RPM/DEB toolchains
+        if: matrix.os == 'ubuntu-24.04'
+        run: sudo apt-get update && sudo apt-get install -y trash-cli rpm fakeroot dpkg
       - run: npm ci
-      - run: npm run typecheck
+      - run: npm run ci:run -- run typecheck
       - run: npm test
-      - run: npm run build -w @bridge/protocol
-      - name: Install RPM/DEB toolchain for electron-forge makers
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y rpm fakeroot dpkg
+      - run: npm run ci:run -- run build -w @bridge/protocol
       - name: Prepare Windows Authenticode certificate
         if: matrix.os == 'windows-2022' && env.BRIDGE_WIN_CERTIFICATE_BASE64 != ''
         shell: pwsh
@@ -67,7 +67,7 @@ jobs:
         run: npm run build -w @bridge/relay
       - name: Run packaged Windows QA and pairing
         if: matrix.os == 'windows-2022'
-        run: npm run test:desktop:packaged:windows
+        run: npm run ci:run -- run test:desktop:packaged:windows
       - name: Assert Windows installer output
         if: matrix.os == 'windows-2022'
         shell: pwsh
@@ -94,7 +94,7 @@ jobs:
           }
           $evidence | ConvertTo-Json | Set-Content -Encoding utf8 "apps/desktop/out/make/windows-release-evidence.json"
       - name: Assert Linux installer outputs
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         shell: bash
         run: |
           set -euo pipefail
@@ -103,7 +103,7 @@ jobs:
           find "$make_dir" -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }
           find "$make_dir" -name "*.zip" -print -quit | grep -q . || { echo "Missing .zip output"; exit 1; }
       - name: Record Linux hashes
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         shell: bash
         run: |
           set -euo pipefail
@@ -145,9 +145,11 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+      - name: Install recycle-bin support
+        run: sudo apt-get update && sudo apt-get install -y trash-cli
       - run: npm ci
-      - run: npm run build -w @bridge/protocol
-      - run: npm run sync -w @bridge/mobile
+      - run: npm run ci:run -- run build -w @bridge/protocol
+      - run: npm run ci:run -- run sync -w @bridge/mobile
       - run: ./gradlew assembleDebug
         working-directory: apps/mobile/android
       - name: Assert Android APK output
@@ -190,11 +192,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build -w @bridge/protocol
+      - run: npm run ci:run -- run build -w @bridge/protocol
       - name: Build unsigned simulator app
-        run: npm run build:ios:simulator -w @bridge/mobile
+        run: npm run ci:run -- run build:ios:simulator -w @bridge/mobile
       - name: Build unsigned device app
-        run: npm run build:ios:device -w @bridge/mobile
+        run: npm run ci:run -- run build:ios:device -w @bridge/mobile
       - name: Assert iOS build outputs
         shell: bash
         run: |
@@ -253,20 +255,18 @@ jobs:
               head -1 || true
           )"
           NOTES_FILE="$RUNNER_TEMP/release-notes.md"
-          {
-            echo "## Changes"
-            echo
-            if [[ -n "$LAST_TAG" ]]; then
-              git log "${LAST_TAG}..${GITHUB_SHA}" --pretty=format:'- `%h` %s (%an)'
-            else
-              git log "$GITHUB_SHA" -n 20 --pretty=format:'- `%h` %s (%an)'
-            fi
-            echo
-            echo
-            if [[ -n "$LAST_TAG" ]]; then
-              echo "**Full Changelog**: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${LAST_TAG}...${TAG}"
-            fi
-          } > "$NOTES_FILE"
+          python3 -I - "$TAG" "$NOTES_FILE" <<'PY'
+          from pathlib import Path
+          import sys
+          tag, target = sys.argv[1:]
+          marker = f"## {tag.removeprefix('v')}\n"
+          section = Path("CHANGELOG.md").read_text().split(marker, 1)[1].split("\n## ", 1)[0].strip()
+          Path(target).write_text(section + "\n")
+          PY
+          if [[ -n "$LAST_TAG" ]]; then
+            printf '\n**Full Changelog**: %s/%s/compare/%s...%s\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$LAST_TAG" "$TAG" >> "$NOTES_FILE"
+          fi
       - name: Publish GitHub Release with platform assets
         env:
           GH_TOKEN: ${{ github.token }}

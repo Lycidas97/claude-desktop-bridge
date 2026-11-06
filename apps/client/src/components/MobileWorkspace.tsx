@@ -2488,24 +2488,26 @@ export function MobileWorkspace({
           }}
         >
           <section className="create-session-dialog session-create-dialog" role="dialog" aria-modal="true" aria-label="重命名会话">
-            <header><h2>重命名会话</h2></header>
+            <header className="session-create-header"><h2>重命名会话</h2></header>
             <form onSubmit={(event) => { event.preventDefault(); void renameSession(); }}>
-              <label>
-                <span>会话名称</span>
-                <input
-                  value={renameTitle}
-                  autoFocus
-                  required
-                  disabled={sessionActionBusy}
-                  onFocus={(event) => event.target.select()}
-                  onChange={(event) => setRenameTitle(event.target.value)}
-                />
-              </label>
-              {sessionActionError && <p className="session-create-error" role="alert">{sessionActionError}</p>}
-              <div className="dialog-actions">
+              <div className="session-create-body">
+                <label>
+                  <span>会话名称</span>
+                  <input
+                    value={renameTitle}
+                    autoFocus
+                    required
+                    disabled={sessionActionBusy}
+                    onFocus={(event) => event.target.select()}
+                    onChange={(event) => setRenameTitle(event.target.value)}
+                  />
+                </label>
+                {sessionActionError && <p className="session-create-error" role="alert">{sessionActionError}</p>}
+              </div>
+              <footer className="dialog-actions session-create-actions">
                 <button type="button" className="secondary-button" disabled={sessionActionBusy} onClick={closeRename}>取消</button>
                 <button type="submit" className="primary-button" disabled={!renameCanSave}>{sessionActionBusy ? "正在保存…" : "保存"}</button>
-              </div>
+              </footer>
             </form>
           </section>
         </div>

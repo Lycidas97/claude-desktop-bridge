@@ -114,6 +114,24 @@ flowchart LR
 | [中继部署](docs/RELAY-REDEPLOY.md) | 自托管中继与迁移 |
 | [后台服务](docs/BACKGROUND-SERVICE.md) | 窗口、后台进程与状态恢复 |
 
+## 自建中继
+
+服务器使用 Docker Engine 与 Docker Compose，从本 fork 的 `main` 源码构建中继镜像。提供独立的 [仅中继 Compose](deploy/relay-only.compose.yml) 和 [自动 TLS 配置](deploy/relay-only.Caddyfile)：只有 Relay 与 Caddy，公网 TCP 80 / 443，Relay 的 8788 只在 Docker 网络内使用。HTTPS 根路径和 `/metrics` 返回 404。
+
+在已克隆的仓库根目录创建配置：
+
+```bash
+cp deploy/relay-only.env.example .env
+```
+
+将 `.env` 中的 `BRIDGE_DOMAIN` 改为自己的域名，确保 DNS 指向服务器、80 / 443 可达，再构建并启动：
+
+```bash
+docker compose --env-file .env -f deploy/relay-only.compose.yml up -d --build
+```
+
+两端中继地址均填写 `wss://你的域名/ws`。数据库、备份与 TLS 证书使用持久化卷。完整的首次安装、WSS 探测、两端配置、备份与升级步骤见 [自建中继指南](docs/RELAY-REDEPLOY.md)。已有反向代理或旧中继部署时，先按指南确认端口与原数据卷。
+
 ## 开发与验证
 
 要求 **Node.js ≥ 22.13** 和 npm。Android 构建另需 JDK 与 Android SDK，桌面和 iOS 构建需要对应平台工具链。

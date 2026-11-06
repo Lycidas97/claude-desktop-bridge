@@ -1,211 +1,180 @@
-# Bridge Relay 腾讯云 CVM 重新部署手册
+# 自建 Bridge 中继
 
-> 面向 `relay.alioxis.com`（腾讯云 CVM，`49.233.218.252`）的中继升级/重部署。
-> 本文档把 0.7.9 实际执行过的一整套步骤固化成可复用流程；升级到任何后续版本时
-> 只需把 `v0.7.9` 换成目标 tag，其余不变。
+本指南使用本 fork 的源码构建 Relay，由 Caddy 自动申请和续期 HTTPS 证书。服务器运行 **Relay + TLS 反向代理**，不部署 WebUI。电脑和 Android 客户端连接同一个 `wss://你的域名/ws`。
 
-## 0. 本次部署背景（0.7.9）
+部署模板随本仓库 `main` 维护。下面的克隆命令取得当前模板；若改用某个 Release tag，请先确认该 tag 包含 `deploy/relay-only.compose.yml`。
 
-0.7.9 修复了两个线上中继问题，必须重建 relay 容器才能生效：
+## 准备
 
-1. **原生客户端来源被 Origin 白名单拒绝（手机配对失败根因）**：
-   - Capacitor 手机端在 iOS 上报 `capacitor://localhost`、Android 上报
-     `http://localhost` / `https://localhost`，Electron 桌面加载 `file://` 时可能上报
-     `null`。
-   - 旧 `BRIDGE_ALLOWED_ORIGINS` 只有 `https://` 域名，导致这些 WebSocket 升级被
-     HTTP 403 拒绝——手机配对应答不稳定，只有不发 Origin 头的客户端（Node 桌面
-     主进程）正常。
-   - 修复：relay 对非浏览器协议来源（`capacitor://`、`bridge://`、`file://`、
-     `null` 等）和回环来源永远放行；白名单只拦截远程网页来源。
-2. **每连接帧预算过低导致隧道被掐断**：
-   - 桌面端把每条事件扇出给每个已配对设备，活跃会话很容易超过旧上限 600 帧/分钟，
-     被 `RATE_LIMITED` 断开（close 1008），随后反复重连，手机看到主机反复掉线。
-   - 修复：新增 `BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE`，默认 6000。
+- 一台 Linux 服务器，已安装 Docker Engine 与 Docker Compose v2 或更新版本。
+- 一个自己的域名，A / AAAA 记录指向该服务器。配置 IPv6 时，也要保证对应地址可达。
+- 公网 TCP **80、443** 可达，且没有其他服务占用它们。80 用于证书申请与 HTTPS 跳转，443 用于 WSS。
 
-## 1. 部署目录结构（CVM 上现状）
+Relay 的 **8788 只在 Docker 网络内使用**，不映射到宿主机。最小方案不运行 Web、STUN 或 TURN 服务；直连不可用时使用加密 WSS 中继。已有 Nginx / Caddy 的服务器应复用现有反向代理，不要再启动一套争用 80 / 443 的 Caddy。
 
-```text
-/opt/bridge-relay/
-├── .env                     # compose 变量（非敏感运行参数）
-├── relay.compose.yml        # 构建/启动 bridge-relay（build context = ./source）
-├── relay.nginx.conf         # 渲染好的 nginx 段（已挂入 suntong-frontend）
-├── relay.nginx.conf.template
-├── install-relay-nginx.sh
-├── source/                  # 仓库源码（git clone，可 checkout 任意 tag）
-└── web/                     # 静态客户端（挂载进 bridge-web，一般不用动）
-```
+## 首次安装
 
-关键事实：
-
-- relay 数据在命名卷 `bridge-relay-data`（SQLite WAL + 每日备份），**重建容器不丢数据**。
-- nginx（`suntong-frontend` 容器）已配置 `/ws` → `bridge-relay:8788`，
-  `proxy_read_timeout 3600s`、`proxy_buffering off`，**重部署 relay 不需要改 nginx**。
-- 宿主机 `127.0.0.1:8788` 连不上是正常的——compose 用 `expose`，relay 只在
-  `suntong_default` 网络内监听，公网一律走 nginx。
-
-## 2. 前置确认
+以下操作从一个新的源码目录开始；已有部署的升级与数据迁移见后文。
 
 ```bash
-# SSH 登录（本机已有密钥 ~/.ssh/czh-tencent-cvm.pem）
-ssh -i ~/.ssh/czh-tencent-cvm.pem root@49.233.218.252
-
-# 环境
-docker --version && docker compose version
-git --version
-docker ps --format '{{.Names}}\t{{.Image}}' | grep -E 'bridge|nginx'
-```
-
-应看到 `bridge-relay`（当前旧版本）、`bridge-web`、`suntong-frontend` 等容器。
-
-## 3. 备份
-
-```bash
-cd /opt/bridge-relay
-cp .env .env.bak-$(date +%Y%m%d-%H%M%S)
-cp relay.compose.yml relay.compose.yml.bak-$(date +%Y%m%d-%H%M%S)
-cp relay.nginx.conf relay.nginx.conf.bak-$(date +%Y%m%d-%H%M%S)
-# 给旧镜像打个 tag，方便回滚
-docker tag bridge-relay-relay bridge-relay-relay:pre-0.7.9-$(date +%Y%m%d) || true
-```
-
-## 4. 拉取目标版本源码
-
-```bash
-cd /opt/bridge-relay
-rm -rf source.github-partial-*   # 清理历史遗留的 partial clone（如有）
-git clone --depth 1 --branch v0.7.9 \
-  https://github.com/czhmartinez/claude-desktop-bridge.git source
-cd source && git log --oneline -1   # 应显示 v0.7.9 提交
-```
-
-## 5. 更新 .env
-
-`BRIDGE_ALLOWED_ORIGINS` 必须包含托管页面域名 + 全部原生 WebView 来源；
-`BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE` 必须存在（0.7.9 起生效）。
-
-```bash
-cd /opt/bridge-relay
-cat > .env <<'EOF'
-BRIDGE_ALLOWED_ORIGINS=https://relay.alioxis.com,https://alioxis.com,https://www.alioxis.com,https://localhost,capacitor://localhost,bridge://localhost,http://localhost,ionic://localhost,file://
-BRIDGE_RELAY_HOST=0.0.0.0
-BRIDGE_RELAY_PORT=8788
-BRIDGE_RELAY_DATA=/data/bridge-relay.db
-BRIDGE_RELAY_NETWORK=suntong_default
-BRIDGE_TRUST_PROXY=1
-BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE=6000
-EOF
-```
-
-> 若自托管其它域名，把 `relay.alioxis.com` / `alioxis.com` 换成自己的域名，
-> 并保留 `capacitor://localhost,bridge://localhost,http://localhost,https://localhost,
-> ionic://localhost,file://` 这些原生来源。
-
-## 6. compose 透传帧预算变量
-
-`relay.compose.yml` 的 relay 服务需要新增一行（0.7.9 之前的 compose 没有）：
-
-```yaml
-    environment:
-      BRIDGE_ALLOWED_ORIGINS: ${BRIDGE_ALLOWED_ORIGINS}
-      BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE: ${BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE:-6000}
+git clone --branch main https://github.com/Lycidas97/claude-desktop-bridge.git bridge-relay
 ```
 
 ```bash
-cd /opt/bridge-relay
-python3 - <<'PY'
-path = "relay.compose.yml"
-src = open(path).read()
-if "BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE" not in src:
-    src = src.replace(
-        "      BRIDGE_ALLOWED_ORIGINS: ${BRIDGE_ALLOWED_ORIGINS}",
-        "      BRIDGE_ALLOWED_ORIGINS: ${BRIDGE_ALLOWED_ORIGINS}\n"
-        "      BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE: ${BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE:-6000}",
-    )
-    open(path, "w").write(src)
-    print("added")
-PY
-grep -n "BRIDGE_" relay.compose.yml
+cd bridge-relay
 ```
 
-## 7. 重建并启动
+记录本次源码提交，便于复查和回退：
 
 ```bash
-cd /opt/bridge-relay
-docker compose -f relay.compose.yml up -d --build
-# 等健康检查通过（start_period 10s + interval 30s）
-for i in $(seq 1 12); do
-  st=$(docker inspect bridge-relay --format "{{.State.Health.Status}}" 2>/dev/null)
-  echo "wait $i: $st"; [ "$st" = "healthy" ] && break; sleep 5
-done
-docker logs bridge-relay --tail 20
+git rev-parse HEAD
 ```
 
-容器 `healthy` 且日志出现 `Claude Bridge relay listening at ws://0.0.0.0:8788/ws`
-即成功。**不要**用宿主机 `curl 127.0.0.1:8788` 验证（expose 模式下连不通）。
-
-## 8. 验证（从本地 Mac 执行）
+创建本地配置：
 
 ```bash
-# 8.1 健康 / 就绪 / 协议契约
-curl -fsS https://relay.alioxis.com/health
-curl -fsS https://relay.alioxis.com/ready
-cd <repo> && npm run probe:relay
-
-# 8.2 原生来源必须全部放行，远程恶意来源必须 403
-node -e '
-const { WebSocket } = require("ws");
-const cases = ["https://relay.alioxis.com","capacitor://localhost","bridge://localhost",
-  "http://localhost","https://localhost","ionic://localhost","null","file://","https://evil.example"];
-let done = 0;
-for (const origin of cases) {
-  const ws = new WebSocket("wss://relay.alioxis.com/ws", { headers: { Origin: origin } });
-  const t = setTimeout(() => { ws.terminate(); console.log(origin.padEnd(28), "TIMEOUT"); fin(); }, 8000);
-  const fin = () => { clearTimeout(t); if (++done === cases.length) process.exit(0); };
-  ws.on("open", () => { console.log(origin.padEnd(28), "OPEN (allowed)"); ws.close(); fin(); });
-  ws.on("unexpected-response", (_r, res) => { console.log(origin.padEnd(28), res.statusCode); fin(); });
-  ws.on("error", () => {});
-}
-'
-
-# 8.3 帧预算：700 帧突发不应被 RATE_LIMITED 掐断
-node -e '
-const { WebSocket } = require("ws");
-const { randomBytes } = require("crypto");
-const rid = (n) => randomBytes(n).toString("base64url");
-const ws = new WebSocket("wss://relay.alioxis.com/ws");
-const errors = [];
-ws.on("open", () => ws.send(JSON.stringify({ type: "hello", version: 3, roomId: rid(18),
-  role: "desktop", deviceId: rid(12), authToken: rid(32), create: true })));
-ws.on("message", (d) => {
-  const f = JSON.parse(d.toString());
-  if (f.type === "ready") {
-    for (let i = 0; i < 700; i++) ws.send(JSON.stringify({ type: "ping", at: Date.now() }));
-    setTimeout(() => { console.log("errors:", errors.length ? errors.join(",") : "none",
-      errors.length ? "FAIL" : "PASS"); ws.close(); process.exit(0); }, 1500);
-  }
-  if (f.type === "error") errors.push(f.code);
-});
-ws.on("close", (c) => { if (!errors.length) { console.log("unexpected close", c); process.exit(1); } });
-setTimeout(() => process.exit(1), 15000);
-'
+cp deploy/relay-only.env.example .env
 ```
 
-预期：8.2 原生来源全部 `OPEN`、`https://evil.example` 为 `403`；8.3 输出 `PASS`。
+编辑 `.env`，将 `BRIDGE_DOMAIN=relay.example.com` 改为你自己的域名。域名字段不带 `https://` 或 `/ws`。其余默认值可用于 Android + 电脑端；真实配置不提交到 Git。
 
-## 9. 回滚
+| 参数 | 用途 |
+| --- | --- |
+| `BRIDGE_DOMAIN` | Caddy 申请证书和接收连接的域名 |
+| `BRIDGE_ALLOWED_ORIGINS` | 来源配置，示例保留原生客户端来源；它不代替设备配对认证 |
+| `BRIDGE_RELAY_IMAGE` | 本地构建的镜像名，默认 `bridge-relay:local` |
+| `BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE` | 每连接帧预算，默认 6000；活跃流式会话需要保留足够预算 |
+
+先检查配置，再构建源码镜像：
 
 ```bash
-cd /opt/bridge-relay
-git -C source checkout v0.7.8        # 或任意旧 tag
-docker compose -f relay.compose.yml up -d --build
-# 旧配置也都有 .bak 备份，必要时一并还原
+docker compose --env-file .env -f deploy/relay-only.compose.yml config --quiet
 ```
 
-## 10. 常见排查
+```bash
+docker compose --env-file .env -f deploy/relay-only.compose.yml build relay
+```
+
+构建使用 [relay.Dockerfile](../deploy/relay.Dockerfile)：Node.js 22 Alpine 多阶段镜像，先编译 `packages/protocol` 和 `apps/relay`，再生成运行镜像。服务器不需要另装 Node.js，也不需要构建 Android、Electron 或 Web 客户端。Dockerfile 专用上下文清单只发送根构建清单、协议和中继源码，不包含本机依赖、打包产物或 `.env`。
+
+启动中继和 Caddy：
+
+```bash
+docker compose --env-file .env -f deploy/relay-only.compose.yml up -d
+```
+
+```bash
+docker compose --env-file .env -f deploy/relay-only.compose.yml ps
+```
+
+```bash
+docker compose --env-file .env -f deploy/relay-only.compose.yml logs --tail 80 relay caddy
+```
+
+Relay 就绪后 Caddy 启动并申请证书。首次申请需要域名、DNS 和公网 80 / 443 均已配置正确。
+
+## 验证连接
+
+下面示例中的 `relay.example.com` 均替换为自己的域名。
+
+```bash
+curl -fsS https://relay.example.com/health
+```
+
+```bash
+curl -fsS https://relay.example.com/ready
+```
+
+两者应返回 HTTP 200。HTTPS 根路径和 `/metrics` 应为 404：该配置仅代理 `/ws`、`/health`、`/ready`。
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://relay.example.com/
+```
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://relay.example.com/metrics
+```
+
+用仓库自带的协议探测脚本核验公网 WSS。脚本在 Relay 容器内执行，服务器不需要额外安装 npm 依赖：
+
+```bash
+docker compose --env-file .env -f deploy/relay-only.compose.yml \
+  exec -T -e BRIDGE_RELAY_URL=wss://relay.example.com/ws relay \
+  node --input-type=module < scripts/relay-contract-probe.mjs
+```
+
+预期输出 `ok: true`、当前协议的 `ROOM_NOT_FOUND` 和旧协议的 `UPGRADE_REQUIRED`。探测使用随机的不存在房间，不发送模型请求，也不使用真实配对凭据。只有健康接口通过而协议探测失败时，优先检查 TLS 和 WebSocket 升级链路。
+
+## 配置电脑与 Android
+
+在两端填写完全相同的中继地址，例如 `wss://relay.example.com/ws`：
+
+1. **电脑 Bridge**：“状态”中的中继地址，保存并重连。
+2. **Android**：“电脑 → 电脑行 ⋯ → 连接与电脑设置”中的中继地址，保存并重连。
+3. 首次使用，通过电脑端的一次性二维码或配对链接添加电脑；已有配对迁移中继后继续使用原身份。
+4. 确认电脑在线，再打开会话检查列表同步和连接诊断。
+
+只改服务器地址不会自动改写两端已保存的中继设置。两端显式保存的地址优先于安装包默认值，升级保留手动配置。本方案不依赖上游公共中继。
+
+FCM / APNs 系统推送需要单独配置服务凭据，最小模板未启用。前台通信通过现有加密连接完成；手机后台行为还受系统限制。需要 WebRTC 自建 STUN / TURN 时另行配置 ICE，WSS 中继本身不要求公开 3478。
+
+## 数据、备份与升级
+
+Compose 项目名固定为 `bridge-relay`，使用三个命名卷：
+
+| 卷 | 内容 |
+| --- | --- |
+| `relay-data` | `/data/bridge-relay.db`、SQLite WAL 与 `/data/backups` |
+| `caddy-data` | TLS 证书与 ACME 状态 |
+| `caddy-config` | Caddy 运行配置 |
+
+中继启动时和此后每天生成 SQLite 备份，保留最近七份。卷内备份仍在同一台服务器上，重要数据需另做离机备份。保留 Relay 数据卷才能延续既有房间、连接身份与离线队列；Caddy 证书卷同样应作为私有数据保管。
+
+需要拷贝完整 Relay 数据时，先停止它，短暂断开连接；将整个 `/data` 复制到源码目录之外，再启动：
+
+```bash
+docker compose --env-file .env -f deploy/relay-only.compose.yml stop relay
+```
+
+```bash
+docker compose --env-file .env -f deploy/relay-only.compose.yml cp relay:/data "../bridge-relay-backup-$(date +%Y%m%d-%H%M%S)"
+```
+
+```bash
+docker compose --env-file .env -f deploy/relay-only.compose.yml start relay
+```
+
+升级前记录提交并备份数据；使用默认镜像名时，可保留当前镜像作为回退入口：
+
+```bash
+docker image tag bridge-relay:local bridge-relay:before-upgrade
+```
+
+```bash
+git pull --ff-only
+```
+
+```bash
+docker compose --env-file .env -f deploy/relay-only.compose.yml up -d --build relay
+```
+
+然后重新检查 `/health`、`/ready` 与 WSS 协议探测。更新容器继续使用原命名卷，不需要清空配对、数据库或队列。若需回退到保留的镜像：
+
+```bash
+BRIDGE_RELAY_IMAGE=bridge-relay:before-upgrade docker compose --env-file .env -f deploy/relay-only.compose.yml up -d --no-build relay
+```
+
+已有其他 Compose 项目或手动部署时，先确认原数据卷的名称和挂载路径。新模板默认创建自己的卷，不会自动发现旧卷；迁移应先备份、停止旧中继，再把新服务的 `relay-data` 映射到原卷。不要同时启动两个中继写同一份 SQLite。
+
+## 排查
 
 | 现象 | 检查 |
-|---|---|
-| 容器一直 `health: starting` | `docker logs bridge-relay --tail 50`，多半是 SQLite/数据卷权限 |
-| 公网 `/ws` 403 | 确认 `.env` 的 `BRIDGE_ALLOWED_ORIGINS` 含原生来源；确认容器 env 已生效（`docker inspect bridge-relay --format "{{range .Config.Env}}{{println .}}{{end}}"`） |
-| 手机配对仍失败 | 先跑 8.2 Origin 探测；再确认手机端/桌面端都是 0.7.9（配对 instanceId 修复在客户端） |
-| 宿主连不上 8788 | 正常，relay 走 `expose`，公网经 nginx 代理 |
+| --- | --- |
+| Caddy 无法申请证书 | 域名的 A / AAAA、80 / 443、防火墙与端口占用；查看 Caddy 日志 |
+| Relay 不健康 | Relay 日志、数据卷权限和磁盘空间；就绪检测使用容器内 `/ready` |
+| HTTPS 正常，WSS 不通 | `/ws` 是否被代理，CDN 是否支持 WebSocket，两端 URL 是否含正确路径 |
+| 手机显示电脑离线 | 两端是否使用同一中继，电脑后台服务是否运行，电脑端连接诊断 |
+| 宿主机访问不了 8788 | 此模板只在 Docker 网络内开放该端口；从公网用 HTTPS / WSS 检查 |
+| 网页根路径返回 404 | 符合预期，本方案未部署 WebUI |
+
+配置文件入口见 [deploy](../deploy/README.md)，数据与权限边界见 [安全模型](SECURITY.md)。

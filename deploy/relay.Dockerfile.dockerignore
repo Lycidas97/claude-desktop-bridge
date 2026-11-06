@@ -1,0 +1,16 @@
+**
+!package.json
+!package-lock.json
+!tsconfig.base.json
+!packages
+!packages/protocol
+!packages/protocol/package.json
+!packages/protocol/tsconfig.json
+!packages/protocol/src
+!packages/protocol/src/**
+!apps
+!apps/relay
+!apps/relay/package.json
+!apps/relay/tsconfig.json
+!apps/relay/src
+!apps/relay/src/**

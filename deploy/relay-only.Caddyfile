@@ -1,0 +1,11 @@
+{$BRIDGE_DOMAIN} {
+  @relay path /ws /health /ready
+
+  handle @relay {
+    reverse_proxy relay:8788
+  }
+
+  handle {
+    respond "Not found" 404
+  }
+}

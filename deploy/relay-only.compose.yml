@@ -1,0 +1,52 @@
+name: bridge-relay
+
+services:
+  relay:
+    image: ${BRIDGE_RELAY_IMAGE:-bridge-relay:local}
+    build:
+      context: ..
+      dockerfile: deploy/relay.Dockerfile
+    restart: unless-stopped
+    environment:
+      BRIDGE_RELAY_HOST: 0.0.0.0
+      BRIDGE_RELAY_PORT: 8788
+      BRIDGE_RELAY_DATA: /data/bridge-relay.db
+      BRIDGE_RELAY_BACKUP_DIR: /data/backups
+      BRIDGE_TRUST_PROXY: "1"
+      BRIDGE_ALLOWED_ORIGINS: ${BRIDGE_ALLOWED_ORIGINS:?Set BRIDGE_ALLOWED_ORIGINS in .env}
+      BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE: ${BRIDGE_RELAY_MAX_FRAMES_PER_MINUTE:-6000}
+    expose:
+      - "8788"
+    volumes:
+      - relay-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8788/ready').then(response => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      relay:
+        condition: service_healthy
+    environment:
+      BRIDGE_DOMAIN: ${BRIDGE_DOMAIN:?Set BRIDGE_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./relay-only.Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  relay-data:
+  caddy-data:
+  caddy-config:

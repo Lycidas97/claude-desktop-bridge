@@ -114,6 +114,24 @@ This fork's everyday deployment uses **a local desktop host and Android client, 
 | [Relay deployment](docs/RELAY-REDEPLOY.md) | Self-hosting and migration |
 | [Background service](docs/BACKGROUND-SERVICE.md) | Desktop windows, background processes and state recovery |
 
+## Self-host a relay
+
+Use Docker Engine and Docker Compose to build the relay from this fork's `main` source. The standalone [relay-only Compose](deploy/relay-only.compose.yml) and [automatic TLS configuration](deploy/relay-only.Caddyfile) run only Relay and Caddy. Public TCP ports are 80 and 443; Relay port 8788 stays inside the Docker network. The HTTPS root and `/metrics` return 404.
+
+From the root of your cloned repository, create the configuration:
+
+```bash
+cp deploy/relay-only.env.example .env
+```
+
+Set `BRIDGE_DOMAIN` in `.env` to your own domain, point DNS at the server and make ports 80 / 443 reachable. Then build and start:
+
+```bash
+docker compose --env-file .env -f deploy/relay-only.compose.yml up -d --build
+```
+
+Set both clients to `wss://your-domain/ws`. Database data, backups and TLS certificates use persistent volumes. See the [self-hosting guide](docs/RELAY-REDEPLOY.md) for initial setup, WSS probes, client settings, backups and upgrades. If you already have a reverse proxy or relay deployment, check existing ports and data volumes before migrating.
+
 ## Development and validation
 
 Requires **Node.js ≥ 22.13** and npm. Android builds also need a JDK and Android SDK. Desktop and iOS builds need the corresponding platform toolchains.

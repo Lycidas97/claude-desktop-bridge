@@ -25,8 +25,9 @@ function mockCleanup(platform, { missing = false, failure = false, directory = f
     calls.push(args);
     if (failure) throw Object.assign(new Error('trash command failed'), { code: 'ENOENT' });
   };
+  const mockProcess = { platform, env: { PRESERVE_ME: 'yes' } };
   vm.runInNewContext(preload, {
-    Buffer, URL, process: { platform, env: { PRESERVE_ME: 'yes' } },
+    Buffer, URL, process: mockProcess,
     require(name) {
       if (name === 'node:fs') return mockFs;
       if (name === 'node:module') return { syncBuiltinESMExports() {} };
@@ -40,7 +41,7 @@ function mockCleanup(platform, { missing = false, failure = false, directory = f
       return require(name);
     },
   });
-  return { fs: mockFs, calls };
+  return { fs: mockFs, calls, process: mockProcess };
 }
 
 test('suite failures, missing reports and startup errors preserve subsequent evidence', async () => {
@@ -175,6 +176,13 @@ for (const platform of ['darwin', 'linux', 'win32']) {
     }
   });
 }
+
+test('cleanup keeps the physical host platform when application tests mock process.platform', () => {
+  const mock = mockCleanup('win32');
+  mock.process.platform = 'darwin';
+  mock.fs.rmSync('a fixture');
+  assert.equal(mock.calls[0][0], 'powershell.exe');
+});
 
 test('force ignores only missing paths; failed and unsupported trash never falls back', async () => {
   const missing = mockCleanup('darwin', { missing: true });

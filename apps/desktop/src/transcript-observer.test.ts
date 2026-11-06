@@ -1,5 +1,5 @@
-import { execFileSync, spawn } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, utimes, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,19 +11,8 @@ import type { ObservedClaudeSession } from "./claude-session-catalog.js";
 
 const directories: string[] = [];
 
-afterEach(() => {
-  const fixtures = directories.splice(0);
-  if (fixtures.length === 0) return;
-  const recycle = process.platform === "darwin" ? "/usr/bin/trash" : process.platform === "linux" ? "trash-put" : undefined;
-  if (!recycle) {
-    console.warn("No recycle command configured; keeping test fixtures:", fixtures);
-    return;
-  }
-  try {
-    execFileSync(recycle, fixtures);
-  } catch (error) {
-    console.warn("Could not recycle test fixtures; keeping remaining files:", fixtures, error);
-  }
+afterEach(async () => {
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
@@ -354,6 +343,7 @@ describe("TranscriptObserver", () => {
         JSON.stringify({ type: "user", uuid: "bridge-user", parentUuid: "first-answer", message: { role: "user", content: "Bridge" } }),
         JSON.stringify({ type: "user", uuid: "desktop-user", parentUuid: "bridge-user", message: { role: "user", content: "Desktop" } }), "",
       ].join("\n"));
+      await utimes(transcript, new Date(), new Date(Date.now() + 1_000));
       await waitFor(() => Boolean(eventLog.latestItem(sessionId, "session.observed", "desktop-user")));
       expect(observer.externalWriteVersion(nativeId)).toBe(1);
       expect(observer.externalWriteVersion(sessionId)).toBe(1);
@@ -409,6 +399,7 @@ describe("TranscriptObserver", () => {
         { type: "user", uuid: "finished", parentUuid: "done", isMeta: true, message: { role: "user", content: "<task-notification><task-id>shell-1</task-id><status>completed</status></task-notification>" } },
         { type: "assistant", uuid: "confirmed", parentUuid: "finished", message: { role: "assistant", stop_reason: "end_turn", content: "The job finished." } },
       ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+      await utimes(transcript, new Date(), new Date(Date.now() + 1_000));
       await waitFor(() => !observer.hasPendingBackgroundShellTasks(nativeId));
       expect(observer.hasPendingBackgroundShellTasks(logicalId)).toBe(false);
       expect(observer.isMainTurnBusy(logicalId)).toBe(false);

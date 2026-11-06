@@ -1,10 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { appendFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ClaudeSessionHostOptions, SessionHostEvent } from "./claude-session-host.js";
 import { ConversationStateStore } from "./conversation-state-store.js";
 import { ProviderRuntimePool } from "./provider-runtime-pool.js";
@@ -15,8 +14,13 @@ import { TranscriptObserver } from "./transcript-observer.js";
 import { InboxSendError } from "./claude-desktop-inbox.js";
 
 const directories: string[] = [];
-afterEach(() => {
-  if (directories.length) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", directories.splice(0));
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+beforeEach(() => {
+  Object.defineProperty(process, "platform", { value: "darwin" });
+});
+afterEach(async () => {
+  Object.defineProperty(process, "platform", platformDescriptor);
+  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
 
 async function fixture({ busy = false, split = true, staleLogical = false, desktopAlive = true, inbox = false } = {}) {

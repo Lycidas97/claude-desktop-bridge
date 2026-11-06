@@ -1,6 +1,5 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BridgeArtifactManifest, BridgeEvidenceBundle } from "@bridge/protocol";
@@ -9,10 +8,8 @@ import { EvidenceStore } from "./evidence-store.js";
 
 const directories: string[] = [];
 
-afterEach(() => {
-  if (directories.length) {
-    execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", directories.splice(0));
-  }
+afterEach(async () => {
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 function bundle(id = "evidence-1"): BridgeEvidenceBundle {

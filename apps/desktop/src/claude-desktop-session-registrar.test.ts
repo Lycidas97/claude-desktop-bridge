@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import {
@@ -24,17 +23,14 @@ import { SessionDesktopRegistration, type SessionDesktopRegistrationOptions } fr
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return {
-    ...actual, readFile: vi.fn(actual.readFile),
-    unlink: async (path: string) => { execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [path]); },
-  };
+  return { ...actual, readFile: vi.fn(actual.readFile) };
 });
 
 const directories: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   vi.clearAllMocks();
-  if (directories.length) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", directories.splice(0));
+  for (const directory of directories.splice(0)) await fs.rm(directory, { recursive: true, force: true });
 });
 
 async function fixture(profileName = "Claude-active"): Promise<{

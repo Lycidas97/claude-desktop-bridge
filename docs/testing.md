@@ -70,7 +70,8 @@ and quoted for checkouts containing spaces. The preload redirects Node's sync,
 promise, and callback `rm`, `unlink`, and `rmdir` APIs to the operating system's
 recycle command. Missing paths are ignored only with `force: true`. Unsupported
 systems, missing recycle commands, and recycle failures surface as errors; there
-is no permanent-delete fallback.
+is no permanent-delete fallback. The preload selects the host platform at startup,
+so application tests that mock `process.platform` do not change the recycle command.
 
 This covers Node processes that inherit `NODE_OPTIONS`. It does not intercept
 native tools, shell deletion commands, browser internals, or processes that discard
@@ -79,7 +80,10 @@ the environment. Use the operating system's Trash command for manual cleanup.
 ## CI
 
 CI retains Linux verification, Windows/Linux installers, Android, and iOS builds,
-and adds macOS unit tests and browser E2E. Test reports and build artifacts upload
+and adds macOS unit tests and browser E2E. Native Desktop unit fixtures explicitly
+simulate macOS while mocking their process and inbox dependencies. POSIX mode-bit
+assertions apply on macOS/Linux; Windows skips the two real child-process tests
+that require POSIX signal reporting in exit events. Test reports and build artifacts upload
 with `if: always()`, including after failures. The fixed `Quality gate` check passes
 only when all seven jobs succeed; failed, cancelled, and skipped jobs fail it.
 Repository administrators can select that check as required after the workflow is

@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import { appendFile, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,7 +18,7 @@ const servers: ClaudePermissionHook[] = [];
 afterEach(async () => {
   for (const server of servers.splice(0)) await server.close();
   vi.clearAllMocks();
-  if (directories.length) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", directories.splice(0));
+  for (const directory of directories.splice(0)) await fs.rm(directory, { recursive: true, force: true });
 });
 
 async function fixture() {

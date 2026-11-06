@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,19 +17,8 @@ import {
 
 const directories: string[] = [];
 
-afterEach(() => {
-  const fixtures = directories.splice(0);
-  if (fixtures.length === 0) return;
-  const recycle = process.platform === "darwin" ? "/usr/bin/trash" : process.platform === "linux" ? "trash-put" : undefined;
-  if (!recycle) {
-    console.warn("No recycle command configured; keeping test fixtures:", fixtures);
-    return;
-  }
-  try {
-    execFileSync(recycle, fixtures);
-  } catch (error) {
-    console.warn("Could not recycle test fixtures; keeping remaining files:", fixtures, error);
-  }
+afterEach(async () => {
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 function line(value: Record<string, unknown>): string {

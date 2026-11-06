@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { join, dirname } from "node:path";
-import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeDesktopInbox,
@@ -11,8 +9,6 @@ import {
   type DesktopInboxEndpoint,
   type DesktopInboxReceipt,
 } from "./claude-desktop-inbox.js";
-
-const run = promisify(execFile);
 
 describe.skipIf(process.platform !== "darwin")("ClaudeDesktopInbox", () => {
   let directory: string;
@@ -32,7 +28,7 @@ describe.skipIf(process.platform !== "darwin")("ClaudeDesktopInbox", () => {
     await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
     })));
-    await run("/usr/bin/trash", [directory]);
+    await rm(directory, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
 

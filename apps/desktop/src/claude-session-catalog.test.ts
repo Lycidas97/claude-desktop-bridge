@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -125,6 +125,7 @@ describe("Claude session process catalog", () => {
     await Promise.all([mkdir(paths.sessions), mkdir(paths.projects)]);
     await writeFile(join(paths.sessions, "700.json"), JSON.stringify({ pid: 700, sessionId: child, cwd: root, startedAt: Date.parse("Thu Jan 1 10:00:00 2026") + 456, entrypoint: "claude-desktop-3p", peerProtocol: 1, messagingSocketPath: join(root, "child.sock") }));
     const transcript = join(paths.projects, child + ".jsonl");
+    const transcriptTime = Date.now();
     await writeFile(transcript, JSON.stringify({ type: "user", uuid: "fork-user", sessionId: child, cwd: root, message: { role: "user", content: "Continue the fork" } }) + "\n");
     const log = new SessionEventLog(join(root, "events.jsonl"), 1);
     const observer = new TranscriptObserver({ paths, eventLog: log, platform: "darwin", pollIntervalMs: 60_000, catalogIntervalMs: 0 });
@@ -138,10 +139,12 @@ describe("Claude session process catalog", () => {
       expect(broker.session(parent)?.turnState ?? "idle").toBe("idle");
       expect(await observer.canStartBridgeHost(child)).toBe(false);
       await appendFile(transcript, JSON.stringify({ type: "assistant", uuid: "fork-done", parentUuid: "fork-user", sessionId: child, message: { role: "assistant", content: "Done", stop_reason: "end_turn" } }) + "\n");
+      await utimes(transcript, new Date(), new Date(transcriptTime + 1_000));
       mockProcessRows("darwin", processTable); await (observer as unknown as { poll(): Promise<void> }).poll();
       expect(broker.session(child)?.turnState).toBe("idle");
       expect(await observer.canStartBridgeHost(child)).toBe(false);
       await appendFile(transcript, JSON.stringify({ type: "user", uuid: "fork-next", parentUuid: "fork-done", sessionId: child, message: { role: "user", content: "Next main turn" } }) + "\n");
+      await utimes(transcript, new Date(), new Date(transcriptTime + 2_000));
       mockProcessRows("darwin", processTable); await (observer as unknown as { poll(): Promise<void> }).poll();
       expect(broker.session(child)?.turnState).toBe("running");
       expect(observer.session(child)?.activeProcesses.filter((process) => process.processAlive)).toEqual([expect.objectContaining({ pid: 700, peerProtocol: 1 })]);

@@ -1,14 +1,21 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SessionBroker, type SessionHostRuntime } from "./session-broker.js";
 import type { SessionHostEvent } from "./claude-session-host.js";
 import { parseClaudeTranscriptSnapshot } from "./claude-history.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
+
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+beforeEach(() => {
+  Object.defineProperty(process, "platform", { value: "darwin" });
+});
+afterEach(() => {
+  Object.defineProperty(process, "platform", platformDescriptor);
+});
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "bridge-background-shell-handoff-"));
@@ -88,7 +95,7 @@ async function fixture() {
       await observer.close();
       await eventLog.close();
       signal.mockRestore();
-      execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [root]);
+      await rm(root, { recursive: true, force: true });
     },
   };
 }

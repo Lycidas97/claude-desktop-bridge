@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -22,6 +21,6 @@ it("retains the last executor handoff through compaction and restart", async () 
   } finally {
     await log.close();
     await reopened.close();
-    execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [root]);
+    await rm(root, { recursive: true, force: true });
   }
 });

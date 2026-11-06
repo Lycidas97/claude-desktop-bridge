@@ -1,6 +1,5 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,15 +14,9 @@ vi.mock("node:child_process", async (original) => ({
     else throw new Error(`Unexpected external command: ${command}`);
   },
 }));
-vi.mock("node:fs/promises", async (original) => ({
-  ...await original<typeof import("node:fs/promises")>(),
-  // The registrar's existing temporary-file cleanup must also obey the Trash-only test policy.
-  unlink: async (path: string) => { execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [path]); },
-}));
-
 const directories: string[] = [];
-afterEach(() => {
-  if (directories.length) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", directories.splice(0));
+afterEach(async () => {
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 async function adoptedFork(extra: Record<string, unknown> = {}) {
@@ -64,7 +57,7 @@ describe("Desktop fork registration", () => {
     await writeFile(join(account, `local_${parentId}.json`), JSON.stringify({ sessionId: `local_${parentId}`, cliSessionId: parentId,
       cwd: root, title: "Parent", titleSource: "custom", createdAt: 1, lastActivityAt: 1 }));
     await writeFile(join(projects, `${sessionId}.jsonl`), JSON.stringify({ sessionId, cwd: root, type: "user", message: { role: "user", content: "QA" } }) + "\n");
-    const registrar = new ClaudeDesktopSessionRegistrar({ paths: { projects, sessions: join(root, "sessions"), tasks: join(root, "tasks"), desktopSessions: [sessionsRoot] }, platform: "darwin" });
+    const registrar = new ClaudeDesktopSessionRegistrar({ paths: { projects, sessions: join(root, "sessions"), tasks: join(root, "tasks"), desktopSessions: [sessionsRoot] }, platform: "darwin", listProfiles: async () => [{ pid: 100, userDataDir: desktop.profile }] });
     const result = await registrar.register({ sessionId, cwd: root, title: "Fork", createdAt: 1, lastActivityAt: 2, parentDesktopSessionId: `local_${parentId}`, forkLabel: "fork" });
     expect(desktop.opens).toBe(0);
     expect(result).toMatchObject({ state: "restart-required", claudePidAtRegistration: 100, forkMetadataVersion: 1 });

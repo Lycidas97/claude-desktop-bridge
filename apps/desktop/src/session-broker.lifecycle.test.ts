@@ -1,7 +1,6 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { appendFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -12,19 +11,8 @@ import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
 
 const directories: string[] = [];
-afterEach(() => {
-  const fixtures = directories.splice(0);
-  if (fixtures.length === 0) return;
-  const recycle = process.platform === "darwin" ? "/usr/bin/trash" : process.platform === "linux" ? "trash-put" : undefined;
-  if (!recycle) {
-    console.warn("No recycle command configured; keeping test fixtures:", fixtures);
-    return;
-  }
-  try {
-    execFileSync(recycle, fixtures);
-  } catch (error) {
-    console.warn("Could not recycle test fixtures; keeping remaining files:", fixtures, error);
-  }
+afterEach(async () => {
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 it.each(["prompt", "tool-call", "tool-result"])("dispatches a fork copied during %s only after its Desktop executor exits", async (tail) => {

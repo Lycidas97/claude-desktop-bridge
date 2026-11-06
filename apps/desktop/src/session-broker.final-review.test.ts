@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -12,9 +11,9 @@ import { EvidenceManager } from "./evidence-manager.js";
 import { EvidenceStore } from "./evidence-store.js";
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  if (roots.length) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", roots.splice(0));
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
 async function fixture(maxParallelTurns = 8) {

@@ -1,6 +1,6 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { EventEmitter, once } from "node:events";
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as http from "node:http";
 import { join } from "node:path";
@@ -22,8 +22,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 const directories: string[] = [];
-afterEach(() => {
-  if (directories.length) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", directories.splice(0));
+afterEach(async () => {
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 it("keeps the running task and pending approval alive across UI disconnect and reconnect", async () => {

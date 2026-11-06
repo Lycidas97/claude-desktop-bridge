@@ -1,6 +1,5 @@
-import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -8,7 +7,7 @@ import { SessionBroker, type SessionHostRuntime, type TranscriptObserverRuntime 
 import { SessionEventLog } from "./session-event-log.js";
 
 const roots: string[] = [];
-afterEach(() => { if (roots.length) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", roots.splice(0)); });
+afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
 async function fixture(maxParallelTurns = 2) {
   const root = await mkdtemp(join(tmpdir(), "bridge-dispatch-")); roots.push(root);

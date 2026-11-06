@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -42,8 +41,8 @@ async function state(transcript: string, liveSince: number | undefined = 0) {
   return (await readClaudeTranscriptSubagents(transcript, liveSince)).find(agent => agent.agentId === "child")?.state;
 }
 
-afterEach(() => {
-  for (const root of roots.splice(0)) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [root]);
+afterEach(async () => {
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
 describe("structured-output subagent completion boundaries", () => {

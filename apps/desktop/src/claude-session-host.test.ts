@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -417,7 +416,7 @@ describe("ClaudeSessionHost", () => {
       if (pid !== undefined) await vi.waitFor(() => {
         expect(() => process.kill(pid!, 0)).toThrow();
       }, { timeout: 16_000, interval: 25 });
-      execFileSync("/usr/bin/trash", [cwd]);
+      await rm(cwd, { recursive: true, force: true });
     }
   }, 20_000);
 

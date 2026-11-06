@@ -1,6 +1,5 @@
-import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -12,9 +11,9 @@ import { SessionEventLog } from "./session-event-log.js";
 import { discoverClaudeGatewayModels } from "./claude-runtime-discovery.js";
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  if (roots.length) execFileSync("/usr/bin/trash", roots.splice(0));
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
 async function fixture(group = false) {

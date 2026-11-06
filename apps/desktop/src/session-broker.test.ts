@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { execFileSync } from "node:child_process";
-import { access, appendFile, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -27,20 +26,9 @@ vi.mock("node:fs/promises", async (original) => {
 
 const directories: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  const fixtures = directories.splice(0);
-  if (fixtures.length === 0) return;
-  const recycle = process.platform === "darwin" ? "/usr/bin/trash" : process.platform === "linux" ? "trash-put" : undefined;
-  if (!recycle) {
-    console.warn("No recycle command configured; keeping test fixtures:", fixtures);
-    return;
-  }
-  try {
-    execFileSync(recycle, fixtures);
-  } catch (error) {
-    console.warn("Could not recycle test fixtures; keeping remaining files:", fixtures, error);
-  }
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 class FakeObserver extends EventEmitter implements TranscriptObserverRuntime {
@@ -3154,7 +3142,7 @@ describe("SessionBroker", () => {
     const fork1 = await broker.forkSession(sessionId);
     const fork2 = await broker.forkSession(sessionId);
     expect(fullReads.mock.calls.filter(([path]) => String(path).endsWith(".jsonl"))).toEqual([]);
-    expect((await stat(join(projectsRoot, `${fork1.sessionId}.jsonl`))).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect((await stat(join(projectsRoot, `${fork1.sessionId}.jsonl`))).mode & 0o777).toBe(0o600);
 
     expect(fork1).toMatchObject({
       parentSessionId: sessionId,

@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { promisify } from "node:util";
 import type {
   BridgeArtifactManifest,
   BridgeEvidenceBundle,
@@ -28,7 +26,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.restoreAllMocks();
   await store.close();
-  await promisify(execFile)(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [directory]);
+  await rm(directory, { recursive: true, force: true });
 });
 
 function tool(index: number): BridgeToolEvidence {

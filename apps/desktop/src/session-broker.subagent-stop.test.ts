@@ -1,7 +1,7 @@
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -23,12 +23,9 @@ vi.mock("./claude-session-catalog.js", async original => {
 const directories: string[] = [];
 const children: ChildProcess[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   for (const child of children.splice(0)) child.kill("SIGKILL");
-  const fixtures = directories.splice(0);
-  if (fixtures.length === 0) return;
-  const recycle = process.platform === "darwin" ? "/usr/bin/trash" : process.platform === "linux" ? "trash-put" : undefined;
-  if (recycle) execFileSync(recycle, fixtures);
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 const AGENT_STARTED_AT = Date.now() - 60_000;
@@ -107,7 +104,8 @@ describe("SessionBroker.stopSubagent", () => {
     await eventLog.close();
   });
 
-  it("ends only the process that launched the subagent", async () => {
+  // Windows does not report POSIX signals in child-process exit events.
+  it.skipIf(process.platform === "win32")("ends only the process that launched the subagent", async () => {
     const { broker, observer, eventLog, sessionId, register } = await harness();
     const owner = sessionProcess(CLAUDE_FLAGS);
     const newer = sessionProcess(CLAUDE_FLAGS);
@@ -163,7 +161,7 @@ describe("SessionBroker.stopSubagent", () => {
 });
 
 describe("SessionBroker.interruptTurn for a Desktop-owned main turn", () => {
-  it("asks only the newest Desktop process to stop, with the signal that records the interruption", async () => {
+  it.skipIf(process.platform === "win32")("asks only the newest Desktop process to stop, with the signal that records the interruption", async () => {
     const { broker, observer, eventLog, sessionId, register } = await harness();
     const older = sessionProcess(CLAUDE_FLAGS);
     const newest = sessionProcess(CLAUDE_FLAGS);

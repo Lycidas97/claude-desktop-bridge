@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,8 +9,8 @@ import { readSessionHistory } from "./session-history.js";
 import { SessionTaskState } from "./session-task-state.js";
 
 const directories: string[] = [];
-afterEach(() => {
-  for (const directory of directories.splice(0)) execFileSync("/usr/bin/trash", [directory]);
+afterEach(async () => {
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "bridge-plan-sync-"));

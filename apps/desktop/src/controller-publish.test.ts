@@ -1,6 +1,5 @@
-import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BridgeSessionInfo, DesktopControlSnapshot } from "@bridge/protocol";
@@ -205,12 +204,7 @@ describe("mobile snapshot publication", () => {
       }
     } finally {
       await log.close();
-      try {
-        if (process.platform === "darwin") execFileSync("/usr/bin/trash", [directory]);
-        else if (process.platform === "linux") execFileSync("trash-put", [directory]);
-      } catch (error) {
-        console.warn("Could not recycle test fixtures; keeping remaining files:", directory, error);
-      }
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
@@ -247,12 +241,7 @@ describe("mobile snapshot publication", () => {
     } finally {
       resume();
       await log.close();
-      try {
-        if (process.platform === "darwin") execFileSync("/usr/bin/trash", [directory]);
-        else if (process.platform === "linux") execFileSync("trash-put", [directory]);
-      } catch (error) {
-        console.warn("Could not recycle test fixtures; keeping remaining files:", directory, error);
-      }
+      await rm(directory, { recursive: true, force: true });
     }
   });
 

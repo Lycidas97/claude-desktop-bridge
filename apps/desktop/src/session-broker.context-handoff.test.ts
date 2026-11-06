@@ -1,13 +1,20 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SessionBroker, type SessionHostRuntime, type SessionBrokerOptions, type QueuedTurn } from "./session-broker.js";
 import type { SessionHostEvent } from "./claude-session-host.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
+
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+beforeEach(() => {
+  Object.defineProperty(process, "platform", { value: "darwin" });
+});
+afterEach(() => {
+  Object.defineProperty(process, "platform", platformDescriptor);
+});
 
 async function fixture(desktopOpen = true) {
   const root = await mkdtemp(join(tmpdir(), "bridge-context-handoff-"));
@@ -75,7 +82,7 @@ async function fixture(desktopOpen = true) {
       await broker.close();
       await observer.close();
       await eventLog.close();
-      execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [root]);
+      await rm(root, { recursive: true, force: true });
     },
   };
 }

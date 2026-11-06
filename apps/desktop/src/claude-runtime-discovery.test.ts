@@ -1,5 +1,4 @@
-import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,16 +17,7 @@ import {
 const directories: string[] = [];
 
 afterEach(async () => {
-  for (const directory of directories.splice(0)) {
-    const result = process.platform === "win32"
-      ? spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-          "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($env:BRIDGE_TEST_TRASH_DIRECTORY, 'OnlyErrorDialogs', 'SendToRecycleBin')",
-        ], { env: { ...process.env, BRIDGE_TEST_TRASH_DIRECTORY: directory } })
-      : spawnSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [directory]);
-    if (result.error || result.status !== 0) {
-      console.warn(`Could not recycle test fixtures; retained ${directory}: ${result.error?.message ?? result.stderr.toString()}`);
-    }
-  }
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 describe("Claude runtime discovery privacy", () => {
@@ -196,7 +186,9 @@ describe("Claude runtime discovery privacy", () => {
   it.each(["bearer", "x-api-key"] as const)("uses the active fixed gateway with %s auth without a Host file", async (authScheme) => {
     const home = await mkdtemp(join(tmpdir(), "bridge-fixed-gateway-"));
     directories.push(home);
-    const configLibrary = join(home, "Library", "Application Support", "Claude-3p", "configLibrary");
+    const platform = process.platform === "win32" ? "win32" : "darwin";
+    const appData = platform === "win32" ? join(home, "AppData", "Roaming") : join(home, "Library", "Application Support");
+    const configLibrary = join(appData, "Claude-3p", "configLibrary");
     await mkdir(configLibrary, { recursive: true });
     const credentialPath = join(configLibrary, "active.json");
     await writeFile(join(configLibrary, "_meta.json"), JSON.stringify({ appliedId: "active" }));
@@ -208,6 +200,7 @@ describe("Claude runtime discovery privacy", () => {
     }), { mode: 0o600 });
     const environment = {
       PATH: "",
+      APPDATA: appData,
       CLAUDE_CODE_HOST_CREDS_FILE: join(home, "missing.json"),
       CLAUDE_CODE_HOST_AUTH_ENV_VAR: "ANTHROPIC_AUTH_TOKEN",
       CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH: "1",
@@ -215,7 +208,7 @@ describe("Claude runtime discovery privacy", () => {
       ANTHROPIC_API_KEY: "stale-api-key",
       ANTHROPIC_AUTH_TOKEN: "stale-bearer",
     };
-    const runtime = await prepareClaudeRuntime(environment, undefined, "darwin", home);
+    const runtime = await prepareClaudeRuntime(environment, undefined, platform, home);
     expect(runtime.credentialPath).toBe(credentialPath);
     expect(runtime.configSource).toEqual({ type: "fixed-gateway", profile: "claude-3p", path: credentialPath });
     expect(runtime.environment.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:3425");
@@ -234,7 +227,7 @@ describe("Claude runtime discovery privacy", () => {
 
     const hostPath = join(home, "host-creds-priority.json");
     await writeFile(hostPath, "{}", { mode: 0o600 });
-    const withHost = await prepareClaudeRuntime({ ...environment, CLAUDE_CODE_HOST_CREDS_FILE: hostPath }, undefined, "darwin", home);
+    const withHost = await prepareClaudeRuntime({ ...environment, CLAUDE_CODE_HOST_CREDS_FILE: hostPath }, undefined, platform, home);
     expect(withHost.credentialPath).toBe(hostPath);
     expect(withHost.environment.CLAUDE_CODE_HOST_CREDS_FILE).toBe(hostPath);
   });

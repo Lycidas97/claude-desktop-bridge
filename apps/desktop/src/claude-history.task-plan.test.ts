@@ -1,14 +1,12 @@
-import { execFile } from "node:child_process";
-import { appendFile, mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseClaudeTranscriptSnapshot, readClaudeSessionHistoryPage } from "./claude-history.js";
 
 const directories: string[] = [];
 afterEach(async () => {
-  for (const directory of directories.splice(0)) await promisify(execFile)("/usr/bin/trash", [directory]);
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 async function fixture() {

@@ -6,19 +6,20 @@ const { fileURLToPath } = require('node:url');
 const { resolve } = require('node:path');
 const { syncBuiltinESMExports } = require('node:module');
 const run = promisify(execFile);
+const platform = process.platform;
 const normalize = value => resolve(value instanceof URL ? fileURLToPath(value) : Buffer.isBuffer(value) ? value.toString() : value);
 
 function command(path, directory) {
-  if (process.platform === 'darwin') return ['/usr/bin/trash', [path], {}];
-  if (process.platform === 'linux') return ['trash-put', [path], {}];
-  if (process.platform === 'win32') {
+  if (platform === 'darwin') return ['/usr/bin/trash', [path], {}];
+  if (platform === 'linux') return ['trash-put', [path], {}];
+  if (platform === 'win32') {
     return ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
       "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName Microsoft.VisualBasic; " +
       `[Microsoft.VisualBasic.FileIO.FileSystem]::Delete${directory ? 'Directory' : 'File'}(` +
       "[Environment]::GetEnvironmentVariable('BRIDGE_RECYCLE_PATH'), 'OnlyErrorDialogs', 'SendToRecycleBin', 'ThrowException')"],
     { env: { ...process.env, BRIDGE_RECYCLE_PATH: path } }];
   }
-  throw new Error(`Trash-only cleanup is unsupported on ${process.platform}; nothing was deleted`);
+  throw new Error(`Trash-only cleanup is unsupported on ${platform}; nothing was deleted`);
 }
 
 function recycleSync(value, options = {}) {

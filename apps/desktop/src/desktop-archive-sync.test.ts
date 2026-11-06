@@ -1,6 +1,5 @@
-import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BridgeSessionInfo } from "@bridge/protocol";
@@ -16,10 +15,8 @@ const OLD_CHILD = "10000000-0000-4000-8000-000000000003";
 const SIDE_CHAT = "10000000-0000-4000-8000-000000000004";
 const roots: string[] = [];
 
-afterEach(() => {
-  for (const root of roots.splice(0)) {
-    execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [root]);
-  }
+afterEach(async () => {
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
 function record(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {

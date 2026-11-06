@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,10 +6,9 @@ import { scanClaudeCatalog } from "./claude-session-catalog.js";
 
 const directories: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllEnvs();
-  const fixtures = directories.splice(0);
-  if (fixtures.length) execFileSync(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", fixtures);
+  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 describe("session last-update time", () => {

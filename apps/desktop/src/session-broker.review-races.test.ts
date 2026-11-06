@@ -1,7 +1,6 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { appendFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,13 +14,16 @@ import { ANTHROPIC_API_PROFILE_ID, CLAUDE_3P_PROFILE_ID, ConversationStateStore 
 import type { ProviderRuntimePool } from "./provider-runtime-pool.js";
 
 const roots: string[] = [];
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
 beforeEach(() => {
+  Object.defineProperty(process, "platform", { value: "darwin" });
   // Every process probe and signal in this suite is fake, including unexpected PIDs.
   vi.spyOn(process, "kill").mockImplementation(() => true);
 });
-afterEach(() => {
+afterEach(async () => {
+  Object.defineProperty(process, "platform", platformDescriptor);
   vi.restoreAllMocks();
-  if (roots.length) execFileSync("/usr/bin/trash", roots.splice(0));
+  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 
 function deferred<T>() {

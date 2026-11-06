@@ -69,7 +69,7 @@ describe("Claude Desktop archive records", () => {
     expect(await readJson(request.metadataPath)).toEqual(record(PARENT, { isArchived: true }));
     expect(await readFile(join(dir, "archived-sessions.idx"), "utf8"))
       .toBe(JSON.stringify({ v: 1, archived: [`local_${OLD_CHILD}`, `local_${PARENT}`].sort() }));
-    expect((await stat(request.metadataPath)).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect((await stat(request.metadataPath)).mode & 0o777).toBe(0o600);
 
     await writeDesktopArchiveState({ ...request, archived: false });
     expect(await readJson(request.metadataPath)).toEqual(record(PARENT));

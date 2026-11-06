@@ -339,7 +339,7 @@ it.each([false, true])("publishes only a complete descriptor while its write is 
     try {
       await client.connect();
       expect(JSON.parse(await readFile(addressPath, "utf8"))).toMatchObject({ port: expect.any(Number), token: expect.any(String), protocol: 1 });
-      expect((await stat(addressPath)).mode & 0o777).toBe(0o600);
+      if (process.platform !== "win32") expect((await stat(addressPath)).mode & 0o777).toBe(0o600);
     } finally { client.close(); await service.close(); }
   }
 });

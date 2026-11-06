@@ -89,8 +89,10 @@ it("rejects relative, missing, file and unreadable paths before saving a session
   await writeFile(file, "fixture");
   try {
     for (const path of ["relative", join(f.root, "missing"), file]) await expect(f.broker.createSession(path)).rejects.toThrow();
-    await chmod(f.cwd, 0);
-    await expect(f.broker.createSession(f.cwd)).rejects.toThrow();
+    if (process.platform !== "win32") {
+      await chmod(f.cwd, 0);
+      await expect(f.broker.createSession(f.cwd)).rejects.toThrow();
+    }
     expect(f.broker.listSessions()).toHaveLength(0);
   } finally { await chmod(f.cwd, 0o700); await f.broker.close(); await f.eventLog.close(); }
 });

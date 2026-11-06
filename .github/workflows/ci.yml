@@ -73,7 +73,8 @@ jobs:
             artifacts/tests/**
 
   desktop-linux:
-    runs-on: ubuntu-latest
+    # Forge's RPM maker expects the RPM 4.18 build layout shipped by this LTS.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4

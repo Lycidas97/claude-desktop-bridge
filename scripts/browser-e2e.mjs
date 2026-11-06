@@ -597,13 +597,12 @@ try {
     try { await browser.close(); } catch (error) { infrastructureErrors.push(`browser cleanup: ${error.stack}`); }
   }
   for (const host of hosts) host.close();
+  // Finish the relay's WebSocket close handshakes while its proxy is still alive.
+  if (relay) {
+    try { await relay.close(); } catch (error) { infrastructureErrors.push(`relay cleanup: ${error.stack}`); }
+  }
   if (vite) {
     try { await vite.close(); } catch (error) { infrastructureErrors.push(`Vite cleanup: ${error.stack}`); }
-  }
-  if (relay) {
-    // Only sockets owned by this in-memory fixture are terminated here.
-    for (const socket of relay.wsServer.clients) socket.terminate();
-    try { await relay.close(); } catch (error) { infrastructureErrors.push(`relay cleanup: ${error.stack}`); }
   }
   for (const key of Object.keys(process.env)) if (key.startsWith("VITE_")) delete process.env[key];
   Object.assign(process.env, inheritedVite);

@@ -235,12 +235,12 @@ jobs:
           set -euo pipefail
           version="$(jq -er '.version' package.json)"
           mkdir -p assets
-          (cd "packed/Bridge-macOS-adhoc-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-macos-adhoc-ci.zip" .)
-          (cd "packed/Bridge-Windows-installer-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-windows-installer-ci.zip" .)
-          (cd "packed/Bridge-Linux-installers-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-linux-installers-ci.zip" .)
-          cp "packed/Bridge-Android-debug-ci/app-debug.apk" "assets/Bridge-${version}-android-debug-ci.apk"
-          (cd "packed/Bridge-iOS-simulator-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-ios-simulator-ci.zip" .)
-          (cd "packed/Bridge-iOS-device-unsigned-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-ios-device-unsigned-ci.zip" .)
+          (cd "packed/Bridge-macOS-adhoc-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-macos-adhoc.zip" .)
+          (cd "packed/Bridge-Windows-installer-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-windows-installer.zip" .)
+          (cd "packed/Bridge-Linux-installers-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-linux-installers.zip" .)
+          cp "packed/Bridge-Android-debug-ci/app-debug.apk" "assets/Bridge-${version}-android-debug.apk"
+          (cd "packed/Bridge-iOS-simulator-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-ios-simulator.zip" .)
+          (cd "packed/Bridge-iOS-device-unsigned-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-ios-device-unsigned.zip" .)
           ls -l assets
       - name: Generate release notes
         env:
@@ -295,7 +295,7 @@ jobs:
             # releases; the tag materializes when the draft is published.
             gh release create "$TAG" --draft --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "Release $TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+              --title "Bridge $TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
             gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
           fi

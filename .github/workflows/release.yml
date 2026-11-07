@@ -185,7 +185,7 @@ jobs:
             --draft \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "Release $TAG" \
+            --title "Bridge $TAG" \
             --notes "Platform builds in progress; published automatically once all assets land."
 
       - name: Dispatch platform asset builds for the release

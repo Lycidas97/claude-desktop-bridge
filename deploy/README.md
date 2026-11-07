@@ -6,7 +6,7 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| [relay.Dockerfile](relay.Dockerfile) | Node.js 22 多阶段构建，编译协议和 Relay，不构建 Web 或桌面端 |
+| [relay.Dockerfile](relay.Dockerfile) | Node.js 26 LTS Alpine 多阶段构建，编译协议和 Relay，不构建 Web 或桌面端 |
 | [relay.Dockerfile.dockerignore](relay.Dockerfile.dockerignore) | 中继构建的源码上下文清单 |
 | [relay-only.compose.yml](relay-only.compose.yml) | 首次自建的独立方案，仅 Relay + Caddy，公网 TCP 80 / 443 |
 | [relay-only.env.example](relay-only.env.example) | 自己的域名、原生来源和帧预算示例 |
@@ -29,6 +29,8 @@ docker compose --env-file .env -f deploy/relay-only.compose.yml up -d
 Relay 的 8788 仅供 Docker 内部网络使用。数据库和备份位于 Relay 数据卷，证书另存 Caddy 数据卷。已有部署应先确认原卷与反向代理，再迁移，不直接覆盖配置或创建空卷替代原数据。
 
 ## 其他部署文件
+
+[web.Dockerfile](web.Dockerfile) 同样使用 Node.js 26 LTS Alpine 构建客户端，运行阶段使用 Nginx。
 
 仓库根 `docker-compose.yml`、`deploy/relay.compose.yml`、`Caddyfile` 和 `relay.nginx.conf.template` 保留上游 Web / 多服务部署方式，不是本 fork 的仅中继入口。不要在只需 Android 接入的服务器上直接启动这些配置的全部服务。
 

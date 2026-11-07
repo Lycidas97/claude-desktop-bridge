@@ -1,4 +1,4 @@
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* tsconfig.base.json ./
 COPY packages/protocol/package.json packages/protocol/tsconfig.json ./packages/protocol/
@@ -8,7 +8,7 @@ COPY packages/protocol ./packages/protocol
 COPY apps/relay ./apps/relay
 RUN npm run build -w @bridge/protocol && npm run build -w @bridge/relay
 
-FROM node:22-alpine
+FROM node:26-alpine
 ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json package-lock.json* ./

@@ -38,10 +38,10 @@ jobs:
       BRIDGE_PAIRING_BASE_URL: ${{ vars.BRIDGE_PAIRING_BASE_URL }}
       BRIDGE_WIN_CERTIFICATE_BASE64: ${{ secrets.BRIDGE_WIN_CERTIFICATE_BASE64 }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       - name: Install recycle-bin and RPM/DEB toolchains
         if: matrix.os == 'ubuntu-24.04'
@@ -121,13 +121,13 @@ jobs:
             Where-Object { $keep -contains $_.Extension.ToLowerInvariant() } |
             Copy-Item -Destination $payload
           if ((Get-ChildItem $payload).Count -eq 0) { throw "Installer payload is empty" }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: Bridge-${{ matrix.name }}-${{ matrix.artifact_suffix }}-ci
           path: apps/desktop/out/release-payload/**
       - name: Upload packaged Windows QA evidence
         if: matrix.os == 'windows-2022'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: Bridge-Windows-qa-ci
           path: artifacts/packaged-desktop/**
@@ -136,12 +136,12 @@ jobs:
   android:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6.2.0
         with:
           distribution: temurin
           java-version: 21
@@ -178,7 +178,7 @@ jobs:
             exit 1
           fi
           echo "Android APK debug signature OK: $ACTUAL"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: Bridge-Android-debug-ci
           path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
@@ -186,10 +186,10 @@ jobs:
   ios:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - run: npm run ci:run -- run build -w @bridge/protocol
@@ -205,11 +205,11 @@ jobs:
             || { echo "Missing simulator App.app"; exit 1; }
           test -d "apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app" \
             || { echo "Missing unsigned device App.app"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: Bridge-iOS-simulator-ci
           path: apps/mobile/ios/DerivedData/Build/Products/Debug-iphonesimulator/App.app
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: Bridge-iOS-device-unsigned-ci
           path: apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app
@@ -222,10 +222,10 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8.0.2
         with:
           pattern: Bridge-*
           path: packed

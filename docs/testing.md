@@ -1,6 +1,7 @@
 # Testing
 
-Use Node.js 22.13+ and the dependencies from `npm ci`. Dependency installation runs
+Use Node.js 26 LTS from [`.nvmrc`](../.nvmrc) and the dependencies from `npm ci`.
+The minimum compatible Node.js version remains 22.13. Dependency installation runs
 without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 `trash-put` (`trash-cli`) on Linux, or Windows PowerShell and the system Recycle Bin.
 

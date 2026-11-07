@@ -44,7 +44,10 @@
   },
   "overrides": {
     "tar": "$tar",
-    "tmp": "$tmp"
+    "tmp": "$tmp",
+    "@electron/packager": {
+      "extract-zip": "npm:@electron-internal/extract-zip@1.0.8"
+    }
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

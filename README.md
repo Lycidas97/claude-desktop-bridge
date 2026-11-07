@@ -139,7 +139,7 @@ docker compose --env-file .env -f deploy/relay-only.compose.yml up -d --build
 
 ## 开发与验证
 
-要求 **Node.js ≥ 22.13** 和 npm。Android 构建另需 JDK 与 Android SDK，桌面和 iOS 构建需要对应平台工具链。
+开发与 CI 使用 **Node.js 26 LTS** 和 npm，版本选择见 [.nvmrc](.nvmrc)；安装了 nvm 时，可先运行 `nvm install` 和 `nvm use`。最低兼容版本仍为 Node.js 22.13。Electron 使用其自带的 Node.js 运行时。Android 构建另需 JDK 21 与 Android SDK，桌面和 iOS 构建需要对应平台工具链。
 
 ```bash
 git clone https://github.com/Lycidas97/claude-desktop-bridge.git

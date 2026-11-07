@@ -58,7 +58,7 @@ export function DesktopHandoffNotice({ session, online, className, onReturn, onT
                 ? "消息等待发送"
                 : handoff.inputStatus === "held" ? "等待 Desktop 接收许可" : "正在交给 Desktop"
             : queued
-              ? online ? "等待关闭此 Desktop 会话" : "连接已断开，等待同步状态"
+              ? !online ? "连接已断开，等待同步状态" : handoff.reason === "inbox-confirmation-expired" ? "Desktop 接收确认已过期" : "等待关闭此 Desktop 会话"
               : handoff.state === "close-desktop"
                 ? "请关闭此 Desktop 会话"
                 : handoff.state === "reopen-desktop" ? "请重新打开 Desktop 会话" : "由 Bridge 接续"}</strong>
@@ -68,12 +68,14 @@ export function DesktopHandoffNotice({ session, online, className, onReturn, onT
               : handoff.inputStatus === "queued"
                 ? "当前主轮结束后会自动交给 Desktop。"
                 : handoff.inputStatus === "held"
-                  ? "消息已由 Desktop 暂存，尚未交给会话处理。"
+                  ? "请在电脑端允许接收这条消息；尚未交给会话处理，无需重复发送。"
                   : "等待原会话确认接收。"
             : queued && !online
               ? `上次同步时有 ${session.pendingCount} 条消息排队，当前进度尚未确认。`
               : handoff.state === "close-desktop"
-                ? `${queued ? `${session.pendingCount} 条消息已到电脑。` : ""}请关闭此会话的 Desktop 执行进程，或接管此会话；仅等待空闲不会交接。`
+                ? handoff.reason === "inbox-confirmation-expired"
+                  ? "消息仍保留在电脑队列中，不会再次投递到同一收件箱。可确认接管此会话，由 Bridge 继续处理；仅等待空闲不会交接。"
+                  : `${queued ? `${session.pendingCount} 条消息已到电脑。` : ""}请关闭此会话的 Desktop 执行进程，或接管此会话；仅等待空闲不会交接。`
                 : handoff.state === "reopen-desktop"
                   ? "请在 Claude Desktop 中关闭并重新打开此会话，加载手机端产生的历史。"
                   : handoff.canReturn

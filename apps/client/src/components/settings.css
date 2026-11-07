@@ -23,7 +23,10 @@
 .provider-quota-toggle { margin: 8px 0; }
 .provider-key-settings { display: grid; gap: 12px; max-width: 520px; margin-top: 16px; }
 .provider-key-settings label { display: grid; gap: 8px; font-size: 14px; }
-.provider-key-settings input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-input); background: var(--surface); color: var(--text); }
+.provider-key-settings input, .provider-key-settings select { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-input); background: var(--surface); color: var(--text); font: inherit; }
+.provider-magpie-settings .settings-notice { margin: 0; }
+.provider-magpie-settings [role="status"]:empty { display: none; }
+.provider-magpie-test { margin: 0; }
 .settings-inline-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .mobile-provider-settings { padding: 16px; }
 .settings-section-content .host-permission-settings { margin: 0; }

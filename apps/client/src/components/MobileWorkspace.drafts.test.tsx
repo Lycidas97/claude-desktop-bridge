@@ -492,6 +492,90 @@ describe("explicit Desktop handoff", () => {
   });
 });
 
+describe("native structured approvals", () => {
+  function nativePrompt(prompt: NonNullable<ComponentProps<typeof InteractivePromptCard>["prompt"]>, id = "tool:native-question") {
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+      ? { ...session, source: "desktop", transport: "claude-desktop-managed", ownership: "DESKTOP_OBSERVED", runtimeId: "claude-desktop" } : session) },
+      histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
+        { id, sessionId: "A", role: "assistant", toolName: prompt.kind === "question" ? "AskUserQuestion" : "mcp__ccd_turn__wrap_up", text: "", createdAt: 1, origin: "claude-desktop", interactivePrompt: { ...prompt, toolUseId: "native-question" } },
+      ] } } };
+    draw();
+    return elements(tree).find(element => element.type === InteractivePromptCard)!;
+  }
+
+  it("does not send blocked native wrap-up approval as peer chat", async () => {
+    const card = nativePrompt({ kind: "wrap-up", blocked: true, ask: "批准实施？", actions: [{ label: "批准实施", message: "批准实施" }] });
+    const rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
+    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
+    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")?.props.children).toBe("需在电脑端确认");
+    card.props.onSelectOption("批准实施");
+    await settle();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(props.onResolvePermission).not.toHaveBeenCalled();
+  });
+
+  it("does not turn an unmatched native question into a chat reply", async () => {
+    const card = nativePrompt({ kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] });
+    const rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
+    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
+    card.props.onSelectOption("Main");
+    await settle();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(props.onResolvePermission).not.toHaveBeenCalled();
+  });
+
+  it("uses the native tool ID when two live questions have identical text", async () => {
+    const question = { question: "Which branch?", options: [{ label: "Main" }, { label: "Feature" }] };
+    const permission: BridgePermissionInfo = { requestId: "exact-request", sessionId: "A", toolUseId: "native-question", toolName: "AskUserQuestion", input: { questions: [question] }, createdAt: 1, canAllowAlways: false };
+    props = { ...props, permissions: [{ ...permission, requestId: "other-request", toolUseId: "another-tool" }, permission] };
+    const card = nativePrompt({ kind: "question", questions: [question] });
+    card.props.onSelectOption("Main");
+    await settle();
+    expect(props.onResolvePermission).toHaveBeenCalledExactlyOnceWith("exact-request", "allow-once", undefined, { ...permission.input, answers: { "Which branch?": "Main" } });
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
+  it("does not close another native question when identical text was answered elsewhere", () => {
+    const question = { question: "Which branch?", options: [{ label: "Main" }] };
+    nativePrompt({ kind: "question", questions: [question] });
+    const first = props.histories.A!.items[0]!;
+    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
+      { ...first, id: "question-first", interactivePrompt: { kind: "question", toolUseId: "first-tool", questions: [question] } },
+      { ...first, id: "question-second", createdAt: 2, interactivePrompt: { kind: "question", toolUseId: "second-tool", questions: [question] } },
+    ] } }, events: [{ eventId: "resolved-first", seq: 1, timestamp: 3, sessionId: "A", origin: "system", type: "question.resolved", data: { requestId: "first-request", toolUseId: "first-tool", decision: "allow-once" } }] };
+    draw();
+    const cards = elements(tree).filter(element => element.type === InteractivePromptCard);
+    expect(cards.find(card => card.props.prompt.toolUseId === "first-tool")?.props.prompt.answered).toBe(true);
+    expect(cards.find(card => card.props.prompt.toolUseId === "second-tool")?.props.prompt.answered).not.toBe(true);
+  });
+
+  it("preserves non-blocking native quick replies as messages", async () => {
+    const card = nativePrompt({ kind: "wrap-up", blocked: false, ask: "接下来做什么？", actions: [{ label: "继续调查", message: "继续调查" }] });
+    card.props.onSelectOption("继续调查");
+    await settle();
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "继续调查", [], false);
+    expect(props.onResolvePermission).not.toHaveBeenCalled();
+  });
+
+  it("submits all checkbox answers through the pending question request", async () => {
+    const permission: BridgePermissionInfo = { requestId: "multi-request", sessionId: "A", toolUseId: "native-question", toolName: "AskUserQuestion", createdAt: 1, canAllowAlways: false,
+      input: { questions: [{ question: "Which checks?", multiSelect: true, options: [{ label: "类型检查" }, { label: "回归测试" }] }] } };
+    const onResolve = vi.fn().mockResolvedValue(undefined);
+    const child = PermissionPrompt({ permission, onResolve });
+    const drawQuestion = () => { hooks.index = 0; return (child.type as (props: unknown) => ReactElement)(child.props); };
+    hooks.slots = [];
+    let rendered = drawQuestion();
+    expect(elements(rendered).filter(element => element.type === "input").map(element => element.props.type)).toEqual(["checkbox", "checkbox"]);
+    elements(rendered).filter(element => element.type === "input")[0]!.props.onChange();
+    rendered = drawQuestion();
+    elements(rendered).filter(element => element.type === "input")[1]!.props.onChange();
+    rendered = drawQuestion();
+    elements(rendered).find(element => element.props.className === "primary-button")!.props.onClick();
+    await Promise.resolve();
+    expect(onResolve).toHaveBeenCalledExactlyOnceWith("multi-request", "allow-once", undefined, { ...permission.input, answers: { "Which checks?": "类型检查, 回归测试" } });
+  });
+});
+
 describe("question answer delivery", () => {
   it.each(["host-received", "submitted", "running"] as const)("labels this card's %s answer accurately without duplicating it or clearing the draft", async delivery => {
     props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [

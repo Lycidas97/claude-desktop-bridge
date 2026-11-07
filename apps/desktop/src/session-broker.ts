@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { copyFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import { basename, dirname, isAbsolute, join, normalize } from "node:path";
-import { CLAUDE_INTERRUPTED_USER_MESSAGE } from "@bridge/protocol";
 import type {
   BridgeAttachment,
   BridgeConfigurationSource,
@@ -35,7 +36,9 @@ import {
 import { signalProcess } from "./claude-desktop-lifecycle.js";
 import {
   findClaudeTranscriptFile,
+  isNonDagTranscriptRecord,
   parseClaudeTranscriptSnapshot,
+  type ClaudeForkBoundary,
   readClaudeSessionContextEstimate,
   readClaudeSessionSubagents,
 } from "./claude-history.js";
@@ -52,6 +55,7 @@ import { PermissionBroker, type PermissionDecision } from "./permission-broker.j
 import type { ClaudeRuntimePaths } from "./platform.js";
 import {
   discoverClaudeGatewayModels,
+  hasClaudeRuntimeCredentials,
   parseMagpieSyntheticModelId,
   prepareClaudeRuntime,
   resolveClaudeGatewayConfig,
@@ -74,6 +78,8 @@ import {
 } from "./conversation-state-store.js";
 import type { BridgeConversationRoute, BridgeExecutionLane } from "@bridge/protocol";
 import type { ProviderRuntimePool } from "./provider-runtime-pool.js";
+import { MagpieConnectionRepository, testMagpieGateway } from "./magpie-connection.js";
+import type { BridgeMagpieConnectionTestResult, BridgeMagpieSettings } from "@bridge/protocol";
 
 interface StoredBridgeSession {
   sessionId: string;
@@ -87,6 +93,7 @@ interface StoredBridgeSession {
   desktopSessionId?: string;
   parentSessionId?: string;
   parentDesktopSessionId?: string;
+  forkBoundary?: ClaudeForkBoundary;
   forkLabel?: string;
   hostModel?: string;
   hostEffort?: BridgeEffort;
@@ -126,6 +133,7 @@ export interface QueuedTurn {
   mode?: "start" | "steer" | "handoff";
   transport?: "claude-desktop-managed" | "bridge-host" | "desktop-inbox";
   inboxHeld?: boolean;
+  inboxConfirmationExpired?: boolean;
   turnId?: string;
   messageId?: string;
   evidenceId?: string;
@@ -222,6 +230,7 @@ export interface SessionBrokerOptions {
   queuePath: string;
   conversationState?: ConversationStateStore;
   runtimePool?: ProviderRuntimePool;
+  magpieConnection?: MagpieConnectionRepository;
   maxParallelTurns?: number;
   hostFactory?: (options: ClaudeSessionHostOptions) => SessionHostRuntime;
   prepareRuntime?: typeof prepareClaudeRuntime;
@@ -408,6 +417,7 @@ export class SessionBroker extends EventEmitter {
   async initialize(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
+    await this.options.magpieConnection?.initialize();
     if (this.options.conversationState) {
       await Promise.all([
         this.options.eventLog.initialize(),
@@ -519,11 +529,12 @@ export class SessionBroker extends EventEmitter {
     if (this.closed) return false;
     if (this.runtimeRefresh) return this.runtimeRefresh;
     const refresh = (async () => {
-      const next = await this.runtimeFactory(process.env, this.runtime);
+      const discovered = await this.runtimeFactory(process.env, this.runtime);
+      const next = this.options.magpieConnection?.apply(discovered) ?? discovered;
       if (this.closed) return false;
       this.runtime = next;
       await this.refreshGatewayModels(next, true);
-      if (next.executablePath && next.credentialPath) this.clearRuntimeRetry();
+      if (next.executablePath && hasClaudeRuntimeCredentials(next)) this.clearRuntimeRetry();
       else this.scheduleRuntimeRetry();
       this.emit("changed");
       if (next.executablePath) void this.pump();
@@ -538,6 +549,33 @@ export class SessionBroker extends EventEmitter {
   /** The gateway Claude-3p sessions run through, as this runtime was prepared. */
   gatewayConfig(): Promise<ClaudeGatewayConfig | undefined> {
     return resolveClaudeGatewayConfig(this.runtime);
+  }
+
+  private magpieConnectionSettings: BridgeMagpieSettings | undefined;
+
+  magpieSettings(): { magpie?: BridgeMagpieSettings } {
+    return this.magpieConnectionSettings ? { magpie: this.magpieConnectionSettings } : {};
+  }
+
+  async testMagpieConnection(input: unknown): Promise<BridgeMagpieConnectionTestResult> {
+    if (!this.options.magpieConnection) throw new Error("Magpie 接入设置不可用，请更新电脑端 Bridge");
+    const connection = this.options.magpieConnection.resolve(input);
+    const discovered = await this.runtimeFactory(process.env, this.runtime);
+    const candidate = this.options.magpieConnection.apply(discovered, connection);
+    return testMagpieGateway(candidate, await resolveClaudeGatewayConfig(candidate));
+  }
+
+  async saveMagpieConnection(input: unknown): Promise<void> {
+    if (!this.options.magpieConnection) throw new Error("Magpie 接入设置不可用，请更新电脑端 Bridge");
+    const connection = this.options.magpieConnection.resolve(input);
+    if (connection.mode === "manual") {
+      const discovered = await this.runtimeFactory(process.env, this.runtime);
+      const candidate = this.options.magpieConnection.apply(discovered, connection);
+      const result = await testMagpieGateway(candidate, await resolveClaudeGatewayConfig(candidate));
+      if (result.models.state !== "ready") throw new Error(result.models.error);
+    }
+    await this.options.magpieConnection.save(connection);
+    await this.refreshRuntime();
   }
 
   runtimeStatus(): BridgeRuntimeStatus {
@@ -561,7 +599,7 @@ export class SessionBroker extends EventEmitter {
         maxParallelTurns: this.maxParallelTurns,
       });
     }
-    if (!this.runtime.credentialPath) {
+    if (!hasClaudeRuntimeCredentials(this.runtime)) {
       return withDesktop({
         state: "auth-required",
         detail: "未找到 Claude Desktop 第三方 Host 凭据。Bridge 不提供官方账号登录。",
@@ -1178,40 +1216,38 @@ export class SessionBroker extends EventEmitter {
     const createdAt = Date.now();
     const newSessionId = randomUUID();
     const targetTranscript = join(dirname(sourceTranscript), `${newSessionId}.jsonl`);
-    const customTitleRecord = JSON.stringify({
-      type: "custom-title",
-      customTitle: forkTitle,
-      sessionId: newSessionId,
-      uuid: randomUUID(),
-      timestamp: new Date(createdAt).toISOString(),
-    });
-    await copyFile(sourceTranscript, targetTranscript);
-    // A copied in-flight turn has no writer that can finish it in the new session.
-    const forkSnapshot = await parseClaudeTranscriptSnapshot(targetTranscript, { limit: 1 });
-    if (!forkSnapshot.available) throw new Error("无法读取分支对话记录");
-    const interruptedRecord = forkSnapshot.atTurnBoundary === false && forkSnapshot.terminalUuid
-      ? `${JSON.stringify({
-          type: "user",
-          uuid: randomUUID(),
-          parentUuid: forkSnapshot.terminalUuid,
-          sessionId: newSessionId,
-          cwd: source.cwd,
-          timestamp: new Date(createdAt).toISOString(),
-          message: { role: "user", content: CLAUDE_INTERRUPTED_USER_MESSAGE },
-        })}\n`
-      : "";
-    const target = await open(targetTranscript, "a+");
+    const forkSnapshot = await parseClaudeTranscriptSnapshot(sourceTranscript, { limit: 1 });
+    const baseMessageUuid = forkSnapshot.branch?.forkBaseMessageUuid;
+    if (!forkSnapshot.available || baseMessageUuid === undefined) {
+      throw new Error("无法确定本轮开始前的完整对话位置，请等待本轮完成后再分支");
+    }
+    const parentDesktopSessionId = source.desktopSessionId ?? `local_${nativeSessionId}`;
+    const forkBoundary: ClaudeForkBoundary = {
+      parentSessionId, parentNativeSessionId: nativeSessionId, parentDesktopSessionId, baseMessageUuid,
+      reason: baseMessageUuid === null ? "empty" : forkSnapshot.atTurnBoundary ? "completed-head" : "before-active-turn",
+    };
+    const selected = new Set(forkSnapshot.branch!.uuids.slice(0,
+      baseMessageUuid === null ? 0 : forkSnapshot.branch!.uuids.indexOf(baseMessageUuid) + 1));
+    const target = await open(targetTranscript, "wx", 0o600);
     try {
-      await target.chmod(0o600);
-      const { size } = await target.stat();
-      const lastByte = Buffer.alloc(1);
-      if (size > 0) await target.read(lastByte, 0, 1, size - 1);
-      await target.appendFile(`${size > 0 && lastByte[0] !== 0x0a ? "\n" : ""}${interruptedRecord}${customTitleRecord}\n`, "utf8");
+      const lines = createInterface({ input: createReadStream(sourceTranscript, { encoding: "utf8" }), crlfDelay: Infinity });
+      let anchorUuid: string | undefined;
+      for await (const line of lines) {
+        let value: Record<string, unknown>;
+        try { value = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+        if (!value || typeof value !== "object" || value.isSidechain === true || isNonDagTranscriptRecord(value)) continue;
+        if (typeof value.uuid === "string") anchorUuid = value.uuid;
+        if (anchorUuid && selected.has(anchorUuid)) await target.write(`${line}\n`);
+      }
+      // The marker travels with the native transcript, so observers retain the
+      // inherited boundary even before the broker store is loaded after restart.
+      await target.write(`${JSON.stringify({
+        type: "custom-title", customTitle: forkTitle, sessionId: newSessionId,
+        uuid: randomUUID(), timestamp: new Date(createdAt).toISOString(), bridgeFork: forkBoundary,
+      })}\n`);
     } finally {
       await target.close();
     }
-
-    const parentDesktopSessionId = source.desktopSessionId ?? `local_${parentSessionId}`;
     const parent = this.bridgeSessions.get(sourceSessionId);
     const session: StoredBridgeSession = {
       sessionId: newSessionId,
@@ -1224,6 +1260,7 @@ export class SessionBroker extends EventEmitter {
       createdAt,
       parentSessionId,
       parentDesktopSessionId,
+      forkBoundary,
       forkLabel,
     };
     this.bridgeSessions.set(session.sessionId, session);
@@ -1811,7 +1848,7 @@ export class SessionBroker extends EventEmitter {
   private async sendToDesktopInbox(turn: QueuedTurn, nativeSessionId: string, writers?: ActiveClaudeProcess[]): Promise<boolean> {
     const inbox = this.options.desktopInbox;
     const state = this.runtimeStates.get(turn.sessionId)!;
-    if (!inbox || process.platform !== "darwin" || state.host || turn.attachments.length || turn.mode === "handoff" ||
+    if (!inbox || process.platform !== "darwin" || state.host || turn.inboxConfirmationExpired || turn.attachments.length || turn.mode === "handoff" ||
       this.options.observer.isMainTurnBusy(nativeSessionId) || this.options.observer.isWaitingForUserInput?.(nativeSessionId)) return false;
     const live = (writers ?? await this.sessionProcessScanner(this.options.paths, nativeSessionId)).filter(writer => writer.processAlive);
     const owner = live[0];
@@ -1906,15 +1943,37 @@ export class SessionBroker extends EventEmitter {
     const turn = this.pending.find(candidate => candidate.transport === "desktop-inbox" && candidate.messageId === receipt.messageId);
     if (!turn) return;
     if (receipt.status === "held") {
+      if (turn.sessionAcceptedAt) return;
       turn.inboxHeld = true;
       const state = this.runtimeStates.get(turn.sessionId);
       if (state) state.turnState = "waiting";
       await this.saveQueue();
+      await this.record({ sessionId: turn.sessionId, itemId: receipt.messageId, origin: "system", type: "message.delivery",
+        data: { commandId: turn.commandId, requestId: turn.requestId, messageId: receipt.messageId, delivery: "waiting-confirmation" } });
     } else if (receipt.status === "delivered") {
       delete turn.inboxHeld;
       const state = this.runtimeStates.get(turn.sessionId);
       if (state && !turn.sessionAcceptedAt) state.turnState = "queued";
       await this.saveQueue();
+      if (!turn.sessionAcceptedAt) await this.record({ sessionId: turn.sessionId, itemId: receipt.messageId, origin: "system", type: "message.delivery",
+        data: { commandId: turn.commandId, requestId: turn.requestId, messageId: receipt.messageId, delivery: "submitted" } });
+    } else if (receipt.status === "expired" && !turn.sessionAcceptedAt) {
+      this.options.desktopInbox?.forget(receipt.messageId);
+      const state = this.runtimeStates.get(turn.sessionId);
+      if (state?.active === turn) { delete state.active; this.activeTurns = Math.max(0, this.activeTurns - 1); }
+      if (state) { state.turnState = "queued"; state.desktopExitRequired = true; }
+      turn.state = "queued";
+      turn.inboxConfirmationExpired = true;
+      delete turn.transport;
+      delete turn.inboxHeld;
+      delete turn.messageId;
+      delete turn.turnId;
+      delete turn.submissionStartedAt;
+      await this.saveQueue();
+      await this.record({ sessionId: turn.sessionId, itemId: turn.commandId, origin: "system", type: "message.delivery",
+        data: { commandId: turn.commandId, requestId: turn.requestId, messageId: receipt.messageId, delivery: "host-received",
+          error: "Desktop 接收确认已过期，消息仍在电脑队列中，等待确认交接。" } });
+      this.scheduleTakeoverRetry(turn.sessionId);
     } else {
       this.options.desktopInbox?.forget(receipt.messageId);
       await this.record({ sessionId: turn.sessionId, ...(turn.turnId ? { turnId: turn.turnId } : {}), itemId: turn.commandId, origin: "system", type: "turn.failed",
@@ -1933,7 +1992,7 @@ export class SessionBroker extends EventEmitter {
       await this.failQueuedTurn(turn, "Claude 官方通道为只读，请升级 Bridge 并在 Claude 官方继续");
       return;
     }
-    if (providerKind === "claude-3p" && !this.runtime.credentialPath) return;
+    if (providerKind === "claude-3p" && !hasClaudeRuntimeCredentials(this.runtime)) return;
     const nativeSessionId = this.options.runtimePool ? lane?.nativeSessionId ?? turn.sessionId : turn.sessionId;
     if (providerKind === "claude-3p") this.options.observer.setSessionAlias?.(nativeSessionId, turn.sessionId);
     const observed = this.catalog.sessions.find((candidate) => candidate.sessionId === nativeSessionId);
@@ -2152,7 +2211,7 @@ export class SessionBroker extends EventEmitter {
       throw new Error("Conversation lane is invalid");
     }
     const providerKind = lane?.providerKind ?? "claude-3p";
-    if (providerKind === "claude-3p" && !this.runtime.credentialPath) {
+    if (providerKind === "claude-3p" && !hasClaudeRuntimeCredentials(this.runtime)) {
       throw new Error("Claude-3p Host Credentials are unavailable");
     }
     const state = this.runtimeStates.get(sessionId) ?? {
@@ -2194,7 +2253,8 @@ export class SessionBroker extends EventEmitter {
         executablePath: plan.executablePath,
         environment: plan.environment,
         permissionBroker: this.permissionBroker,
-        resume: Boolean(transcript),
+        resume: Boolean(transcript && (this.bridgeSessions.get(sessionId)?.forkBoundary?.reason !== "empty" ||
+          (await parseClaudeTranscriptSnapshot(transcript, { limit: 1 })).terminalUuid)),
         ...(hostModel ? { model: hostModel } : {}),
         ...(profile.effort ? { effort: profile.effort } : {}),
       });
@@ -2297,6 +2357,7 @@ export class SessionBroker extends EventEmitter {
     reset = false,
   ): Promise<boolean> {
     const gateway = await resolveClaudeGatewayConfig(runtime);
+    this.magpieConnectionSettings = this.options.magpieConnection?.settings(gateway);
     const refreshedAt = Date.now();
     if (reset) {
       this.modelCatalog.clear();
@@ -2333,7 +2394,7 @@ export class SessionBroker extends EventEmitter {
   private async discoverModelsWithoutAttaching(
     session: BridgeSessionInfo,
   ): ReturnType<SessionHostRuntime["supportedModels"]> {
-    if (!this.runtime?.executablePath || !this.runtime.credentialPath) return [];
+    if (!this.runtime?.executablePath || !hasClaudeRuntimeCredentials(this.runtime)) return [];
     const profile = this.effectiveProfile(session.sessionId, session.cwd);
     const host = this.hostFactory({
       sessionId: randomUUID(),
@@ -2984,7 +3045,7 @@ export class SessionBroker extends EventEmitter {
       return state.active.sessionAcceptedAt ? undefined : { state: "desktop-inbox", canReturn: false, inputStatus: state.active.inboxHeld ? "held" : "submitted" };
     }
     if (queuedTurn?.transport === "desktop-inbox" && queuedTurn.state === "uncertain") return undefined;
-    if (queuedTurn?.state === "queued" && this.options.desktopInbox && process.platform === "darwin" &&
+    if (queuedTurn?.state === "queued" && !queuedTurn.inboxConfirmationExpired && this.options.desktopInbox && process.platform === "darwin" &&
       !state?.host && !queuedTurn.attachments.length && queuedTurn.mode !== "handoff") {
       const live = observed?.activeProcesses.filter(process => process.processAlive) ?? [];
       const owner = live[0];
@@ -2994,7 +3055,9 @@ export class SessionBroker extends EventEmitter {
       }
     }
     if ((queued || state?.host) && (observed?.desktopProcessAlive || state?.desktopExitRequired)) {
-      return { state: "close-desktop", canReturn, canTakeover: process.platform === "darwin" && queued &&
+      return { state: "close-desktop", canReturn,
+        ...(queuedTurn?.inboxConfirmationExpired ? { reason: "inbox-confirmation-expired" as const } : {}),
+        canTakeover: process.platform === "darwin" && queued &&
         !state?.host && !state?.active && !state?.desktopTakeoverRequested &&
         !this.options.observer.runningSubagents(nativeSessionId)?.count &&
         !this.options.observer.hasPendingBackgroundShellTasks?.(nativeSessionId) &&
@@ -3137,7 +3200,7 @@ export class SessionBroker extends EventEmitter {
       if (this.activeTurns + starting >= this.maxParallelTurns) break;
       if (turn.state !== "queued" || turn.recoveryBlocked || this.dispatching.has(turn.sessionId)) continue;
       const providerKind = this.options.conversationState?.lane(turn.laneId)?.providerKind ?? "claude-3p";
-      if (providerKind === "claude-3p" && !this.runtime.credentialPath) {
+      if (providerKind === "claude-3p" && !hasClaudeRuntimeCredentials(this.runtime)) {
         this.scheduleRuntimeRetry();
         continue;
       }

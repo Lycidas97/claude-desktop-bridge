@@ -413,6 +413,7 @@ export class DesktopController extends EventEmitter {
       sessions: this.allSessions(),
       devices: this.deviceSnapshots(),
       runtime: this.broker.runtimeStatus(),
+      ...await this.broker.magpieSettings(),
       runtimes: this.desktopRuntimes(),
       transport: {
         path: this.socket?.path ?? relayPathForUrl(this.config.relayUrl),
@@ -488,6 +489,16 @@ export class DesktopController extends EventEmitter {
     this.onlineDevices.clear();
     await this.reconnect();
     return this.snapshot();
+  }
+
+  async testMagpieConnection(input: unknown) {
+    return this.broker.testMagpieConnection(input);
+  }
+
+  async saveMagpieConnection(input: unknown): Promise<DesktopControlSnapshot> {
+    await this.broker.saveMagpieConnection(input);
+    await this.providers?.refresh("provider:claude-3p:default");
+    return this.publish();
   }
 
   async setAnthropicApiKey(value: string): Promise<DesktopControlSnapshot> {
@@ -1943,6 +1954,7 @@ export class DesktopController extends EventEmitter {
       runtimeDefaults: snapshot.runtimes?.map(runtime => [runtime.id, runtime.defaultPermissionMode]),
       detection: snapshot.runtime?.detection,
       providers: snapshot.providers,
+      magpie: snapshot.magpie,
     }) + "\n" + snapshot.sessions
       .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${JSON.stringify(session.desktopHandoff ?? null)}\t${session.runningSubagents?.count ?? ""}\t${session.subagentStopScope ?? ""}\t${session.executionStage ?? ""}\t${session.ownership === "DESKTOP_OBSERVED" ? session.turnState : ""}\t${session.mainTurnStopScope ?? ""}`)
       .sort()

@@ -1,5 +1,7 @@
 import type {
   BridgeDesktopRuntimeId,
+  BridgeMagpieConnectionInput,
+  BridgeMagpieConnectionTestResult,
   BridgeEvent,
   BridgeRequest,
   BridgeResponse,
@@ -21,6 +23,8 @@ export interface DesktopApi {
   revokeDevice(deviceId: string): Promise<DesktopControlSnapshot>;
   setLaunchAtLogin(enabled: boolean): Promise<DesktopControlSnapshot>;
   setRelayUrl(url: string): Promise<DesktopControlSnapshot>;
+  testMagpieConnection?(input: BridgeMagpieConnectionInput): Promise<BridgeMagpieConnectionTestResult>;
+  saveMagpieConnection?(input: BridgeMagpieConnectionInput): Promise<DesktopControlSnapshot>;
   setAnthropicApiKey(value: string): Promise<DesktopControlSnapshot>;
   removeAnthropicApiKey(): Promise<DesktopControlSnapshot>;
   launchClaudeDesktop(): Promise<DesktopControlSnapshot>;

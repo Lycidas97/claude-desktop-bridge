@@ -32,7 +32,13 @@ export function DesktopSettings({ snapshot, api, onSnapshot, themeControl, agent
         const response = await api.request({ method: "runtime.refresh", params: {} });
         if (!response.ok) throw new Error(response.error?.message ?? "检测失败");
         onSnapshot(await api.getSnapshot());
-      }} onSetApiKey={async (value) => onSnapshot(await api.setAnthropicApiKey(value))} onRemoveApiKey={async () => onSnapshot(await api.removeAnthropicApiKey())} />}
+      }} onSetApiKey={async (value) => onSnapshot(await api.setAnthropicApiKey(value))} onRemoveApiKey={async () => onSnapshot(await api.removeAnthropicApiKey())}
+        onTestMagpieConnection={api.testMagpieConnection ? (input) => api.testMagpieConnection!(input) : undefined}
+        onSaveMagpieConnection={api.saveMagpieConnection ? async (input) => {
+          const saved = await api.saveMagpieConnection!(input);
+          onSnapshot(saved);
+          return saved;
+        } : undefined} />}
       {section === "permissions" && <HostPermissionSettings snapshot={snapshot} onLoadSessionConfiguration={async (sessionId) => {
         const response = await api.request({ method: "session.configuration", params: { sessionId } });
         if (!response.ok) throw new Error(response.error?.message ?? "授权配置读取失败");

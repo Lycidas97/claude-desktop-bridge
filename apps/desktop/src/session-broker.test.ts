@@ -3021,7 +3021,8 @@ describe("SessionBroker", () => {
     const desktopSessionId = `local_${randomUUID()}`;
     const cwd = join(root, "project");
     const projects = join(root, "projects");
-    await writeContextTranscript(projects, cwd, sourceId, 10);
+    const transcript = await writeContextTranscript(projects, cwd, sourceId, 10);
+    await appendFile(transcript, `\n${JSON.stringify({ type: "assistant", uuid: "completed-context", message: { role: "assistant", content: "done", stop_reason: "end_turn" } })}\n`);
     const sessionsPath = join(root, "sessions.json");
     await writeFile(sessionsPath, JSON.stringify({ version: 2, sessions: [{
       sessionId: sourceId, cwd, title: "Staged fork", createdAt: 1,

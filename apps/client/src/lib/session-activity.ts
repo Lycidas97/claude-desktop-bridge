@@ -24,6 +24,8 @@ export interface SessionActivity {
 export function sessionQueueLabel(
   session: Pick<BridgeSessionInfo, "ownership" | "turnState" | "desktopHandoff">,
 ): string {
+  if (session.desktopHandoff?.reason === "inbox-confirmation-expired") return "等待确认交接";
+  if (session.desktopHandoff?.inputStatus === "held") return "等待电脑允许接收";
   if (session.desktopHandoff?.state === "close-desktop") return "等待关闭此 Desktop 会话";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "等待写入冲突解除";
   if (session.ownership === "DESKTOP_OBSERVED" || session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待电脑端空闲";

@@ -146,7 +146,7 @@ describe("explicit Desktop handoff", () => {
   it.each([
     ["queued", "消息等待发送", "当前主轮结束后会自动交给 Desktop。"],
     ["submitted", "正在交给 Desktop", "等待原会话确认接收。"],
-    ["held", "等待 Desktop 接收许可", "消息已由 Desktop 暂存，尚未交给会话处理。"],
+    ["held", "等待 Desktop 接收许可", "请在电脑端允许接收这条消息；尚未交给会话处理，无需重复发送。"],
   ] as const)("shows %s Desktop inbox progress without handoff or approval actions", (inputStatus, title, detail) => {
     snapshot.sessions[0]!.desktopHandoff = { state: "desktop-inbox", canReturn: false, canTakeover: true, inputStatus };
     const onReturn = vi.fn();
@@ -162,6 +162,24 @@ describe("explicit Desktop handoff", () => {
     expect(elements(rendered).find(element => element.type === ConfirmationDialog)!.props.open).toBe(false);
     expect(onReturn).not.toHaveBeenCalled();
     expect(onTakeover).not.toHaveBeenCalled();
+  });
+
+  it("keeps an expired input recoverable and requires explicit confirmation before takeover", async () => {
+    const onTakeover = vi.fn(async () => {});
+    const notice = renderer(DesktopHandoffNotice, {
+      session: { ...snapshot.sessions[0], pendingCount: 1, desktopHandoff: { state: "close-desktop", canReturn: false, canTakeover: true, reason: "inbox-confirmation-expired" } },
+      online: true, className: "desktop-channel-banner", onTakeover,
+    });
+    const rendered = notice.draw();
+    expect(textContent(rendered)).toContain("Desktop 接收确认已过期");
+    expect(textContent(rendered)).toContain("消息仍保留在电脑队列中");
+    expect(onTakeover).not.toHaveBeenCalled();
+    elements(rendered).find(element => element.type === "button")!.props.onClick();
+    const confirmation = elements(notice.draw()).find(element => element.type === ConfirmationDialog)!;
+    expect(confirmation.props.open).toBe(true);
+    expect(onTakeover).not.toHaveBeenCalled();
+    await confirmation.props.onConfirm();
+    expect(onTakeover).toHaveBeenCalledExactlyOnceWith("A");
   });
 
   it.each(["queued", "submitted", "held"] as const)("marks offline %s Desktop inbox status as unconfirmed", inputStatus => {

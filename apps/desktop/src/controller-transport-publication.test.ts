@@ -107,7 +107,7 @@ async function fixture(withWebRtc = false) {
     repository: { save: vi.fn(async () => undefined) },
     broker: {
       listSessions: () => sessions, listProjects: () => [], runtimeStatus: () => ({ state: "ready" }),
-      permissionBroker: { list: () => [] },
+      permissionBroker: { list: () => [] }, magpieSettings: async () => ({}),
     },
     eventLog: { latestSeq: () => 0 },
     claudeDesktop: { status: async () => ({ state: "stopped" }) },

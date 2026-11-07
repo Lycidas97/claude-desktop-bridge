@@ -433,6 +433,7 @@ export function applyEventToTurns(turns: LocalTurn[], event: BridgeEvent): Local
           "relay-received",
           "host-received",
           "submitted",
+          "waiting-confirmation",
           "session-received",
           "running",
           "completed",

@@ -701,7 +701,7 @@ describe("RuntimeSessionBroker", () => {
 
     hermes.requestPermission("native-1", "pending-1");
     codex.requestPermission("native-1", "pending-2");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitFor(() => broker.listPermissions().length === 2, "both runtime permission requests");
     expect(broker.listPermissions()).toHaveLength(2);
 
     // Host default for Hermes sweeps only Hermes pendings; Codex is untouched.

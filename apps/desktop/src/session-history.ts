@@ -49,6 +49,7 @@ export async function readSessionHistory(
     const observed = observedSessions.find((candidate) => candidate.sessionId === lane.nativeSessionId);
     const [transcript, subagents] = await Promise.all([
       readClaudeSessionHistory(paths.projects, lane.nativeSessionId!, session.cwd, {
+        includeBranch: true,
         limit: Math.min(10_000, pageSize * 3),
         chronological: true,
         ...(before ? { before: { createdAt: before.at, id: before.id } } : {}),
@@ -137,7 +138,10 @@ export async function readSessionHistory(
   const transcriptBoundary = transcriptItems
     .filter((item) => transcripts.some(({ transcript }) => transcript.nextCursor === item.id))
     .sort(historyOrder).at(-1);
+  const excludedMessages = new Set(transcripts.flatMap(({ transcript }) => transcript.branch?.excludedMessageUuids ?? []));
+  const excludedTools = new Set(transcripts.flatMap(({ transcript }) => transcript.branch?.excludedToolUseIds ?? []));
   const all = [...merged.values()].sort(historyOrder).filter((item) => (
+    !excludedMessages.has(item.id) && !excludedTools.has(item.subagent?.toolUseId ?? item.id.replace(/:completed$/u, "")) &&
     (!before || item.createdAt < before.at || (item.createdAt === before.at && item.id < before.id)) &&
     (!transcriptBoundary || historyOrder(item, transcriptBoundary) >= 0)
   ));

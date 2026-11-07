@@ -208,6 +208,8 @@ async function desktopMain(): Promise<void> {
     handle("bridge:revoke-device", (deviceId: string) => controller.call("revokeDevice", deviceId));
     handle("bridge:set-launch-at-login", (enabled: boolean) => controller.call("setLaunchAtLogin", Boolean(enabled)));
     handle("bridge:set-relay-url", (url: string) => controller.call("setRelayUrl", url));
+    handle("bridge:test-magpie-connection", (input: unknown) => controller.call("testMagpieConnection", input));
+    handle("bridge:save-magpie-connection", (input: unknown) => controller.call("saveMagpieConnection", input));
     handle("bridge:set-anthropic-api-key", (value: string) => controller.call("setAnthropicApiKey", value));
     handle("bridge:remove-anthropic-api-key", () => controller.call("removeAnthropicApiKey"));
     handle("bridge:launch-claude-desktop", () => controller.call("launchClaudeDesktop"));

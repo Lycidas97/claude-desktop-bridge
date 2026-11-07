@@ -202,8 +202,8 @@ export class SessionTaskState {
       const authoritative = host?.source === "host" && host.generation === session?.generation && !session?.ended;
       let latest = authoritative ? host.summary
         : previous && previous.updatedAt > summary.updatedAt ? previous : summary;
-      if (!authoritative && latest.state === "running" && session?.authority && session.snapshotAt !== undefined) {
-        latest = { ...latest, state: "unknown", updatedAt: Math.max(latest.updatedAt, session.snapshotAt) };
+      if (!authoritative && latest.state === "running" && session?.generation && !session.ended) {
+        latest = { ...latest, state: "unknown", updatedAt: Math.max(latest.updatedAt, session.snapshotAt ?? 0) };
       }
       const details = latest === summary ? { ...previous, ...summary } : { ...summary, ...previous };
       const recentTools = [latest.recentTools, summary.recentTools, previous?.recentTools].find((tools) => tools?.length);

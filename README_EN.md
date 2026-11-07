@@ -8,7 +8,7 @@
 
 Bridge brings desktop sessions, task progress, approvals, questions and workspace files to your phone. Continue an existing conversation, queue the next instruction, create a fork, inspect subagents and results, or answer an approval while away from your computer.
 
-This independently maintained fork focuses on **macOS + Android + Claude**. This guide describes **v1.2.0**; see this repository's [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) for available installers and publication status. Upstream Codex, Hermes and DSH adapters remain available. Only Claude is shown by default; enable other Agents in settings.
+This independently maintained fork focuses on **macOS + Android + Claude**. This guide describes **v1.2.1** source, including Magpie connection settings, structured phone approvals, inbox recovery and fork boundary fixes. See this repository's [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) for available installers and publication status. Upstream Codex, Hermes and DSH adapters remain available. Only Claude is shown by default; enable other Agents in settings.
 
 ## Get started
 
@@ -37,6 +37,7 @@ A background service owns Bridge's connections, queues and tasks. Reopening the 
 ### Organize and create sessions
 
 - Browse projects, search and archive sessions. Expand forks by their immediate parent/child relationships, including deeper forks. Active descendants remain accessible after a parent is archived.
+- Fork from a complete turn boundary on the selected parent chain. The unfinished turn is excluded, and parent tasks do not become live child tasks. Forks share the working directory; creating a fork does not roll back files.
 - Rename from the session list or conversation actions. Bridge persists the display name across restarts without rewriting native Claude Desktop titles or transcript files.
 - Choose a recent working folder or browse the computer through one session-creation entry point. Enter a subdirectory before confirming it; choose the project group separately from the actual working directory.
 - Preserve unsent drafts when returning to the directory and reopening a session. The session-creation form retains entered values while browsing folders, canceling folder selection, or returning from the folder picker.
@@ -48,6 +49,8 @@ A background service owns Bridge's connections, queues and tasks. Reopening the 
 - Load directories, history and evidence on demand. Page older content, defer media loading and coalesce frequent progress updates to reduce repeated work on large transcripts, responses and reconnects.
 
 Context capacity, immediate steering and when model settings take effect depend on the execution source. Existing Claude Desktop processes may need a restart to load settings written only to disk. Native windows and sidebars do not necessarily reflect all Bridge changes immediately.
+
+Inbox input to the original Desktop executor remains a peer message. A session receipt confirms delivery, not authorization. The phone submits allow/deny decisions and question answers only against a live, correlated request. Blocking confirmations and historical questions without a native response path explicitly require action on the computer. Native approval coverage depends on the Desktop version emitting the corresponding Hook event.
 
 ## Mobile navigation
 
@@ -82,7 +85,9 @@ Back navigation and page changes neither send drafts nor stop desktop tasks. See
 
 Oversized, binary and invalid UTF-8 text produces an explicit error instead of a truncated preview. Uploads are stored under `.bridge-uploads/<uploadId>/<filename>` in the session's working directory, and sending appends relative paths. Files can be sent without additional text. Removing an attachment from the composer does not delete the saved file on the computer.
 
-## Magpie quota dashboard
+## Magpie connection and quota
+
+On the computer, open Settings → Providers → Magpie connection to reuse the Claude/Claude-3p configuration or enter a Gateway URL, authentication method (Bearer / x-api-key) and Magpie Key. Test connection checks the model and quota endpoints without saving. Save Magpie configuration validates the model catalog and encrypts the Key in local system storage. Model discovery, quota reads and subsequently started Bridge executors use the selected connection; running executors retain their existing configuration. The phone shows the current source and connection status without receiving the Key. Switching back to automatic configuration restores Claude/Claude-3p discovery.
 
 With a compatible Magpie Gateway, open Settings → Magpie quota to view accounts, plans, quota windows, balances and reset times. Session model settings also show the corresponding quota information.
 

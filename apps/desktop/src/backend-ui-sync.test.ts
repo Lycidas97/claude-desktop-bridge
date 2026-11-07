@@ -186,6 +186,20 @@ it("broadcasts changed runtime defaults even when the session set is unchanged",
   expect(broadcast).toHaveBeenCalledWith({ kind: "snapshot", snapshot }, true);
 });
 
+it("broadcasts changed Magpie settings without depending on a changed session or detection timestamp", async () => {
+  const snapshot = { sessions: [], magpie: { mode: "auto", keyConfigured: true } };
+  const broadcast = vi.fn(async () => {});
+  const c = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
+    snapshot: async () => snapshot, broadcast, eventLog: { append: vi.fn() },
+    lastPublishedSessionKey: "", lastPublishedSubagentActivity: new Map(),
+  });
+  await c.publish();
+  broadcast.mockClear();
+  snapshot.magpie.mode = "manual";
+  await c.publish();
+  expect(broadcast).toHaveBeenCalledWith({ kind: "snapshot", snapshot }, true);
+});
+
 it("rejects permission runtime and session mismatch", async () => {
   const c = controller({ config: { devices: [] } });
   await expect(c.handleRequest(request("permission.policy.configure", {

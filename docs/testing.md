@@ -46,11 +46,25 @@ npm run test:browser
 
 Alternatively set `CHROME_PATH` to an installed Chrome/Chromium executable. The
 browser script owns fixture startup and shutdown; no separately running relay is
-required. Six independent contexts cover list/chat rename and delivery/approval/
-reconnect in light and dark at 375×812. The actual mobile App, hooks, crypto and
-local relay run normally; desktop RPCs and model responses are simulated. These
-checks do not exercise a native Desktop executor, an Android WebView or an IME.
-Failures retain screenshots, HTML, traces, console errors and RPC records.
+required. Eight independent contexts cover list/chat rename, delivery/approval/
+reconnect, and native permission requests in light and dark at 375×812. The actual
+mobile App, hooks, crypto and local relay run normally. The native approval case
+uses a real `ClaudePermissionHook`, `PermissionBroker`, and the controller's
+`permission.resolve` handler, with synthetic native Hook events and temporary
+settings. It verifies allow/deny and single/multiple-choice answers on the waiting
+Hook request, including phone identity and reconnect, without sending a chat turn.
+Transcript-only native confirmations and unmatched questions remain non-actionable.
+Other desktop RPCs and model responses are simulated. These checks do not launch a
+native Desktop executor, an Android WebView or an IME; they do not prove which
+requests a particular installed Desktop version emits.
+
+`native-phone-approval.integration.test.ts` additionally checks stale IDs, duplicate
+responses, native local answers, lifecycle cancellation, and disconnected Hook
+requests. Native manual-only requests remain pending through full-access policy
+changes. No test changes real Claude settings or calls a model.
+
+Browser failures retain screenshots, HTML, traces, console errors and RPC records;
+passing native scenarios also retain screenshots and a correlated request trace.
 
 After the protocol and relay builds exist, a local debug fixture can be kept open:
 
@@ -61,6 +75,16 @@ BRIDGE_E2E_PORT=18909 node --require ./scripts/recycle-cleanup.cjs scripts/brows
 It listens only on loopback and prints a temporary test pairing URL. Use that
 exact origin, including its hostname, so the App's same-origin CSP remains valid.
 Stop the command to close its owned relay and HTTP server.
+
+## Fork boundaries
+
+`fork-boundary.test.ts` and the broker lifecycle/history tests use synthetic DAG
+transcripts and fake hosts. They check complete-turn cutoffs, selected-parent-chain
+filtering, persisted ancestry after restart, and separation of inherited Agent
+history from tasks owned by the child's current host generation. Child background
+tasks remain live when the main turn ends. Metadata-only first-turn forks start a
+new native session; forks with their own native history resume that history.
+These checks do not call a model or alter the parent's transcript or working files.
 
 ## Cleanup boundary
 

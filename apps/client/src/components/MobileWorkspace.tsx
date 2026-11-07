@@ -411,10 +411,12 @@ export function SubagentCard({
 export function matchingQuestionPermission(
   prompt: BridgeInteractivePrompt,
   permissions: BridgePermissionInfo[],
+  toolUseId?: string,
 ): BridgePermissionInfo | undefined {
   const questions = prompt.questions;
   if (prompt.kind !== "question" || !questions?.length) return undefined;
   return permissions.find((permission) => permission.toolName === "AskUserQuestion"
+    && (toolUseId === undefined || permission.toolUseId === toolUseId)
     && Array.isArray(permission.input.questions)
     && permission.input.questions.length === questions.length
     && permission.input.questions.every((question, index) => question.question === questions[index]!.question));
@@ -426,6 +428,8 @@ export function InteractivePromptCard({
   replyPending = false,
   canSend = true,
   busy = false,
+  unavailableReason,
+  error,
   onSelectOption,
 }: {
   prompt: BridgeInteractivePrompt;
@@ -433,6 +437,8 @@ export function InteractivePromptCard({
   replyPending?: boolean;
   canSend?: boolean;
   busy?: boolean;
+  unavailableReason?: string;
+  error?: string;
   onSelectOption?: (message: string) => void;
 }) {
   const isWrapUp = prompt.kind === "wrap-up";
@@ -440,7 +446,7 @@ export function InteractivePromptCard({
   const questions = prompt.questions ?? [];
   const answered = Boolean(prompt.answered);
   const selectedAction = actions.find((action) => action.selected);
-  const interactive = !answered && canSend && !busy && Boolean(onSelectOption);
+  const interactive = !answered && !unavailableReason && canSend && !busy && Boolean(onSelectOption);
 
   const badgeLabel = isWrapUp
     ? actions.length === 1
@@ -467,12 +473,13 @@ export function InteractivePromptCard({
               : replyDelivery && !["session-received", "running", "completed"].includes(replyDelivery)
                 ? replyDelivery === "host-received" || replyDelivery === "submitted" ? "回复已排队" : `回复${deliveryLabel(replyDelivery)}`
                 : selectedAction ? `已选：${selectedAction.label}` : "已回复"
-            : prompt.blocked
+            : unavailableReason ?? (prompt.blocked
               ? "等待确认后继续"
-              : "点击选项直接发送"}
+              : "点击选项直接发送")}
         </span>
       </div>
 
+      {error && <div className="permission-error" role="alert">{error}</div>}
       {prompt.recap && (
         <div className="interactive-prompt-recap">{prompt.recap}</div>
       )}
@@ -635,6 +642,7 @@ function deliveryLabel(state: BridgeDeliveryState): string {
   if (state === "relay-received") return "已送达中继，等待电脑接收";
   if (state === "host-received") return "主机已接收";
   if (state === "submitted") return "已提交，等待执行";
+  if (state === "waiting-confirmation") return "等待电脑允许接收";
   if (state === "session-received") return "会话已接收";
   if (state === "running") return "正在处理中";
   if (state === "completed") return "已完成";
@@ -1003,16 +1011,20 @@ export function conversationItems(
   const latestQuestionResolvedAt = sessionEvents.reduce((latest, event) => (
     event.type === "question.resolved" ? Math.max(latest, event.timestamp) : latest
   ), -Infinity);
+  const resolvedQuestionTools = new Set(sessionEvents.filter((event) => event.type === "question.resolved")
+    .map((event) => event.data.toolUseId));
   let nextUserReply: string | undefined;
   let hasLaterAssistant = false;
   for (let i = sorted.length - 1; i >= 0; i -= 1) {
     const current = sorted[i]!;
+    const questionResolved = current.interactivePrompt?.kind === "question" && (current.interactivePrompt.toolUseId
+      ? resolvedQuestionTools.has(current.interactivePrompt.toolUseId) : latestQuestionResolvedAt >= current.createdAt);
     if (current.interactivePrompt && !current.interactivePrompt.answered) {
-      // Transcript adjacency can close a prompt, but does not identify a reply's delivery receipt.
-      if (nextUserReply) {
+      // Known tool invocations are completed only by their own response, not adjacent messages.
+      if (nextUserReply && !current.interactivePrompt.toolUseId) {
         sorted[i] = {
           ...current,
-          ...(!hasLaterAssistant && !(current.interactivePrompt.kind === "question" && latestQuestionResolvedAt >= current.createdAt)
+          ...(!hasLaterAssistant && !questionResolved
             ? { replyPending: true } : {}),
           interactivePrompt: {
             ...current.interactivePrompt,
@@ -1029,7 +1041,7 @@ export function conversationItems(
           },
         };
       } else if (current.interactivePrompt.kind === "question" && (
-        latestQuestionResolvedAt >= current.createdAt || hasLaterAssistant
+        questionResolved || (!current.interactivePrompt.toolUseId && hasLaterAssistant)
       )) {
         sorted[i] = {
           ...current,
@@ -1043,8 +1055,7 @@ export function conversationItems(
       sorted[i] = {
         ...sorted[i]!,
         ...(replyDelivery ? { replyDelivery } : {}),
-        replyPending: !replyDelivery && !current.interactivePrompt.answered && !hasLaterAssistant
-          && !(current.interactivePrompt.kind === "question" && latestQuestionResolvedAt >= current.createdAt),
+        replyPending: !replyDelivery && !current.interactivePrompt.answered && !hasLaterAssistant && !questionResolved,
         interactivePrompt: { ...sorted[i]!.interactivePrompt!, answered: true },
       };
     }
@@ -1280,11 +1291,11 @@ function QuestionPrompt({
         Boolean(question) && typeof question === "object"
       ))
     : [];
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const complete = questions.every((question) => (
-    typeof question.question === "string" && Boolean(answers[question.question])
+    typeof question.question === "string" && Boolean(answers[question.question]?.length)
   ));
   async function resolveQuestion(
     decision: "allow-once" | "deny",
@@ -1321,10 +1332,14 @@ function QuestionPrompt({
               return (
                 <label key={label} className="question-option">
                   <input
-                    type="radio"
+                    type={question.multiSelect === true ? "checkbox" : "radio"}
                     name={`${permission.requestId}:${index}`}
-                    checked={answers[prompt] === label}
-                    onChange={() => setAnswers((current) => ({ ...current, [prompt]: label }))}
+                    checked={question.multiSelect === true ? answers[prompt]?.includes(label) ?? false : answers[prompt] === label}
+                    onChange={() => setAnswers((current) => {
+                      if (question.multiSelect !== true) return { ...current, [prompt]: label };
+                      const selected = Array.isArray(current[prompt]) ? current[prompt] : [];
+                      return { ...current, [prompt]: selected.includes(label) ? selected.filter((value) => value !== label) : [...selected, label] };
+                    })}
                   />
                   <span><strong>{label}</strong>{typeof option.description === "string" && <small>{option.description}</small>}</span>
                 </label>
@@ -1341,7 +1356,7 @@ function QuestionPrompt({
           disabled={!complete || busy}
           onClick={() => void resolveQuestion(
             "allow-once",
-            { ...permission.input, answers },
+            { ...permission.input, answers: Object.fromEntries(Object.entries(answers).map(([question, answer]) => [question, Array.isArray(answer) ? answer.join(", ") : answer])) },
           )}
         >
           {busy && <LoaderCircle className="is-spinning" size={15} />}提交回答
@@ -1655,6 +1670,7 @@ export function MobileWorkspace({
   onRetry(): Promise<void>;
 }) {
   const [queuedSteers, setQueuedSteers] = useState<Record<string, { state: "pending" | "requested" | "error"; error?: string }>>({});
+  const [promptErrors, setPromptErrors] = useState<Record<string, string>>({});
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
   const [search, setSearch] = useState("");
@@ -2968,6 +2984,15 @@ export function MobileWorkspace({
               && bridgeRunning && !officialActive && desktopRuntimeId(selectedSession) === "claude-desktop"
               && selectedSession.allowedActions?.canSteer !== false;
             const copyable = (item.role === "assistant" || item.role === "user") && Boolean(item.text.trim());
+            const peerMessages = selectedSession.transport === "claude-desktop-managed" || selectedSession.desktopHandoff?.state === "desktop-inbox";
+            const pendingQuestion = item.interactivePrompt ? matchingQuestionPermission(
+              item.interactivePrompt, sessionPermissions, item.interactivePrompt.toolUseId ?? (peerMessages ? "" : undefined),
+            ) : undefined;
+            const unavailableReason = peerMessages && item.interactivePrompt
+              ? item.interactivePrompt.kind === "question" && !pendingQuestion ? "需在电脑端回答"
+                : item.interactivePrompt.kind === "wrap-up" && item.interactivePrompt.blocked ? "需在电脑端确认" : undefined
+              : undefined;
+            const promptKey = `${draftKey}:${item.id}`;
             const content = (
               <>
                 {item.text && (
@@ -2991,25 +3016,33 @@ export function MobileWorkspace({
                     {...(item.replyPending ? { replyPending: true } : {})}
                     canSend={selectedSession.allowedActions?.canSend !== false && !officialActive}
                     busy={sending}
-                    onSelectOption={(replyText) => {
-                      if (item.interactivePrompt?.kind === "question") {
-                        const pendingQuestion = matchingQuestionPermission(item.interactivePrompt, sessionPermissions);
-                        if (pendingQuestion) {
-                          const questions = item.interactivePrompt.questions ?? [];
-                          if (questions.length === 1 && !questions[0]?.multiSelect) {
-                            void onResolvePermission(
-                              pendingQuestion.requestId,
-                              "allow-once",
-                              undefined,
-                              { ...pendingQuestion.input, answers: { [questions[0]!.question]: replyText } },
-                            );
-                            return;
-                          }
+                    {...(unavailableReason ? { unavailableReason } : {})}
+                    {...(promptErrors[promptKey] ? { error: promptErrors[promptKey] } : {})}
+                    onSelectOption={async (replyText) => {
+                      if (unavailableReason || sending) return;
+                      if (pendingQuestion && item.interactivePrompt?.kind === "question") {
+                        const questions = item.interactivePrompt.questions ?? [];
+                        if (questions.length !== 1 || questions[0]?.multiSelect) {
                           setPermissionOpen(true);
                           return;
                         }
+                        updateDraft((current) => ({ ...current, sending: true }));
+                        setPromptErrors((current) => ({ ...current, [promptKey]: "" }));
+                        try {
+                          await onResolvePermission(
+                            pendingQuestion.requestId,
+                            "allow-once",
+                            undefined,
+                            { ...pendingQuestion.input, answers: { [questions[0]!.question]: replyText } },
+                          );
+                        } catch (error) {
+                          setPromptErrors((current) => ({ ...current, [promptKey]: error instanceof Error ? error.message : "回答提交失败" }));
+                        } finally {
+                          updateDraft((current) => ({ ...current, sending: false }));
+                        }
+                        return;
                       }
-                      void sendQuickReply(item.id, replyText);
+                      await sendQuickReply(item.id, replyText);
                     }}
                   />
                 )}

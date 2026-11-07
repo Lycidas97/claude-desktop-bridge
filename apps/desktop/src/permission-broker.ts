@@ -21,6 +21,7 @@ export interface PendingPermission {
   description?: string;
   suggestions: PermissionUpdate[];
   createdAt: number;
+  manualOnly?: boolean;
 }
 
 export interface ExternalPermissionRequest {
@@ -80,11 +81,12 @@ export class PermissionBroker extends EventEmitter {
       input,
       suggestions: options.suggestions ?? [],
       createdAt: Date.now(),
+      ...(options.manualOnly ? { manualOnly: true } : {}),
       ...(options.title ? { title: options.title } : {}),
       ...(options.displayName ? { displayName: options.displayName } : {}),
       ...(options.description ? { description: options.description } : {}),
     };
-    if (!options.manualOnly && this.canApproveAutomatically(request)) {
+    if (this.canApproveAutomatically(request)) {
       return this.approveAutomatically(request);
     }
     return new Promise<PermissionResult>((resolve) => {
@@ -254,7 +256,7 @@ export class PermissionBroker extends EventEmitter {
   }
 
   private canApproveAutomatically(request: PendingPermission): boolean {
-    return request.toolName !== "AskUserQuestion" && this.modeForSession(request.sessionId) === "full-access";
+    return !request.manualOnly && request.toolName !== "AskUserQuestion" && this.modeForSession(request.sessionId) === "full-access";
   }
 
   private approveAutomatically(request: PendingPermission): PermissionResult {

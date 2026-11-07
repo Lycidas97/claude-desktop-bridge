@@ -165,6 +165,7 @@ export type BridgeDeliveryState =
   | "relay-received"
   | "host-received"
   | "submitted"
+  | "waiting-confirmation"
   | "session-received"
   | "running"
   | "completed"
@@ -624,6 +625,7 @@ export interface BridgeSessionInfo {
     canReturn: boolean;
     canTakeover?: boolean;
     inputStatus?: "queued" | "submitted" | "held";
+    reason?: "inbox-confirmation-expired";
   };
   activeLaneId?: string;
   activeProviderProfileId?: string;
@@ -751,6 +753,8 @@ export interface BridgeInteractiveQuestion {
 
 export interface BridgeInteractivePrompt {
   kind: "wrap-up" | "question";
+  /** Original tool invocation, used to correlate a live runtime response. */
+  toolUseId?: string;
   recap?: string;
   ask?: string;
   blocked?: boolean;
@@ -854,10 +858,26 @@ export interface BridgePermissionResolution {
   reason?: BridgePermissionResolutionReason;
 }
 
+export type BridgeMagpieConnectionInput =
+  | { mode: "auto" }
+  | { mode: "manual"; baseUrl: string; authScheme: "bearer" | "x-api-key"; apiKey?: string };
+
+export interface BridgeMagpieSettings {
+  mode: "auto" | "manual";
+  baseUrl?: string;
+  authScheme?: "bearer" | "x-api-key";
+  keyConfigured: boolean;
+}
+
+export interface BridgeMagpieConnectionTestResult {
+  models: { state: "ready" | "error"; count: number; error?: string };
+  quota: { state: "available" | "unsupported" | "error"; error?: string };
+}
+
 export interface BridgeRuntimeDetection {
   cliPath?: string;
   configSource: {
-    type: "host-credentials" | "fixed-gateway" | "environment" | "none";
+    type: "host-credentials" | "fixed-gateway" | "manual-gateway" | "environment" | "none";
     profile: "claude-3p" | "claude" | "unknown";
     path?: string;
   };
@@ -930,6 +950,7 @@ export interface BridgeHostSnapshot {
   sessions: BridgeSessionInfo[];
   devices: BridgeDeviceInfo[];
   runtime: BridgeRuntimeStatus;
+  magpie?: BridgeMagpieSettings;
   transport?: BridgeConnectionStatus;
   claudeDesktop?: ClaudeDesktopAppStatus;
   desktopApps?: BridgeDesktopAppStatus[];

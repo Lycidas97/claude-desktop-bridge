@@ -90,6 +90,26 @@ it("requires the local bearer token and refuses non-allowlisted methods", async 
   } finally { client.close(); await server.close(); }
 });
 
+it("routes Magpie testing and saving only through the authenticated local service", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-service-magpie-"));
+  directories.push(root);
+  const addressPath = join(root, "address.json");
+  const input = { mode: "manual" as const, baseUrl: "https://example.test", authScheme: "bearer" as const, apiKey: "synthetic-key" };
+  const testMagpieConnection = vi.fn(async () => ({ models: { state: "ready", count: 2 }, quota: { state: "available" } }));
+  const saveMagpieConnection = vi.fn(async () => ({ magpie: { mode: "manual", baseUrl: input.baseUrl, keyConfigured: true } }));
+  const controller = Object.assign(new EventEmitter(), { async snapshot() { return {}; }, testMagpieConnection, saveMagpieConnection });
+  const server = await serveDesktopService({ addressPath, controller: controller as unknown as ServiceController, shutdown() {} });
+  const client = new DesktopServiceClient(addressPath);
+  try {
+    await client.connect();
+    expect(await client.call("testMagpieConnection", input)).toMatchObject({ models: { count: 2 } });
+    expect(await client.call("saveMagpieConnection", input)).toMatchObject({ magpie: { keyConfigured: true } });
+    expect(testMagpieConnection).toHaveBeenCalledWith(input);
+    expect(saveMagpieConnection).toHaveBeenCalledWith(input);
+    await expect((client.call as (...args: unknown[]) => Promise<unknown>)("saveMagpieConnection")).rejects.toThrow("Expected one Magpie configuration");
+  } finally { client.close(); await server.close(); }
+});
+
 it("replays events missed during a connection loss before publishing the new snapshot", async () => {
   const root = await mkdtemp(join(tmpdir(), "bridge-service-replay-"));
   directories.push(root);

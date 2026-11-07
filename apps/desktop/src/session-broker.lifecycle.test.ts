@@ -4,7 +4,6 @@ import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { CLAUDE_INTERRUPTED_USER_MESSAGE } from "@bridge/protocol";
 import { parseClaudeTranscriptSnapshot } from "./claude-history.js";
 import { SessionBroker, type SessionHostRuntime } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
@@ -35,6 +34,7 @@ it.each(["prompt", "tool-call", "tool-result"])("dispatches a fork copied during
   const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
   const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", pollIntervalMs: 60_000, catalogIntervalMs: 0 });
   let sends = 0;
+  let firstHostResume: boolean | undefined;
   const broker = new SessionBroker({
     paths, observer, eventLog, sessionsPath: join(root, "bridge-sessions.json"), queuePath: join(root, "queue.json"),
     scanSessionProcesses: async () => [], discoverGatewayModels: async () => [],
@@ -50,10 +50,10 @@ it.each(["prompt", "tool-call", "tool-result"])("dispatches a fork copied during
       changed(left, right) { return JSON.stringify(left) !== JSON.stringify(right); },
       publicInfo(value) { return value; },
     },
-    hostFactory: () => ({
+    hostFactory: ({ resume }) => ({
       start() {}, async setModel() {}, async setEffort() {}, async setAutoCompactWindow() {},
       async supportedModels() { return []; }, async contextUsage() { throw new Error("unused"); },
-      send() { sends += 1; return { messageId: randomUUID(), turnId: randomUUID() }; },
+      send() { firstHostResume = resume; sends += 1; return { messageId: randomUUID(), turnId: randomUUID() }; },
       async interrupt() {}, async stopTask() {}, async close() {}, onEvent() { return () => {}; },
     }),
   });
@@ -64,14 +64,14 @@ it.each(["prompt", "tool-call", "tool-result"])("dispatches a fork copied during
     const forkPath = join(paths.projects, `${fork.sessionId}.jsonl`);
     expect(await readFile(transcript, "utf8")).toBe(original);
     const forkRecords = (await readFile(forkPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-    expect(forkRecords.at(-2)).toMatchObject({
-      sessionId: fork.sessionId,
-      parentUuid: tail === "prompt" ? "parent-user" : tail === "tool-call" ? "parent-tool" : "parent-result",
-      message: { content: CLAUDE_INTERRUPTED_USER_MESSAGE },
-    });
-    // Cache reads must retain the terminal UUID as well as completion status.
+    expect(forkRecords).toEqual([expect.objectContaining({
+      type: "custom-title", sessionId: fork.sessionId,
+      bridgeFork: expect.objectContaining({ baseMessageUuid: null, reason: "empty" }),
+    })]);
+    // A fork of the unfinished first turn has an empty, idle native transcript.
     const firstSnapshot = await parseClaudeTranscriptSnapshot(forkPath, { limit: 1 });
-    expect(await parseClaudeTranscriptSnapshot(forkPath, { limit: 1 })).toMatchObject({ atTurnBoundary: true, terminalUuid: firstSnapshot.terminalUuid });
+    expect(firstSnapshot).toMatchObject({ atTurnBoundary: true, messages: [] });
+    expect(await parseClaudeTranscriptSnapshot(forkPath, { limit: 1 })).toMatchObject({ atTurnBoundary: true, messages: [] });
     await (observer as unknown as { poll(): Promise<void> }).poll();
     expect(await observer.canStartBridgeHost(sessionId)).toBe(false);
     expect(observer.isMainTurnBusy(fork.sessionId)).toBe(false);
@@ -93,6 +93,7 @@ it.each(["prompt", "tool-call", "tool-result"])("dispatches a fork copied during
     await vi.waitFor(() => {
       expect({ sends, pendingCount: broker.session(fork.sessionId)?.pendingCount }).toEqual({ sends: 1, pendingCount: 0 });
     }, { timeout: 3_000 });
+    expect(firstHostResume).toBe(false);
     expect(broker.session(fork.sessionId)?.pendingCommandIds).toEqual([]);
     expect(eventLog.latestItem(fork.sessionId, "session.desktop-handoff", fork.sessionId)?.data.state).toBe("bridge");
 

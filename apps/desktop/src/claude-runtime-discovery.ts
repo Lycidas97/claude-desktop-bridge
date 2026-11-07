@@ -192,6 +192,10 @@ export interface ClaudeRuntime {
   version?: string;
 }
 
+export function hasClaudeRuntimeCredentials(runtime: ClaudeRuntime): boolean {
+  return Boolean(runtime.credentialPath || runtime.configSource?.type === "manual-gateway");
+}
+
 export async function prepareClaudeRuntime(
   environment: NodeJS.ProcessEnv = process.env,
   previous?: ClaudeRuntime,

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
 import { BridgeCrypto, BridgeSocket, buildPairingUrl } from "../packages/protocol/dist/index.js";
@@ -35,6 +35,10 @@ let relay;
 let vite;
 let browser;
 let baseUrl;
+let startNativeApprovalHost;
+let nativeFixtureSequence = 0;
+const nativeHosts = [];
+const scenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals"];
 
 // Bounded polling is only for observable browser/protocol state, never a fixed
 // sleep intended to hide a race. Unexpected selector or transport errors surface.
@@ -49,7 +53,7 @@ async function eventually(read, expected, message, timeout = 15_000) {
   assert.deepEqual(actual, expected, message);
 }
 
-async function createMockHost(queued, failFirstRename, errors) {
+async function createMockHost(queued, failFirstRename, errors, native = false) {
   const now = Date.now();
   const clientRelayUrl = `${baseUrl.replace("http:", "ws:")}/ws`;
   const { crypto, pairing } = await BridgeCrypto.createDesktop(clientRelayUrl, "Browser E2E 隔离电脑");
@@ -63,7 +67,8 @@ async function createMockHost(queued, failFirstRename, errors) {
     runtimeId: "claude-desktop",
     title: originalTitle,
     source: "desktop",
-    ownership: "BRIDGE_IDLE",
+    transport: native ? "claude-desktop-managed" : "bridge-host",
+    ownership: native ? "DESKTOP_OBSERVED" : "BRIDGE_IDLE",
     turnState: queued ? "queued" : "idle",
     lastActivityAt: now - 7_200_000,
     pendingCount: queued ? 1 : 0,
@@ -123,7 +128,7 @@ async function createMockHost(queued, failFirstRename, errors) {
   let turnRequest;
   const socket = new BridgeSocket({ crypto, role: "desktop", createRoom: true, reconnect: false });
   const host = {
-    socket, crypto, pairing, session, snapshot, events, requests, resumeBatches,
+    socket, crypto, pairing, session, snapshot, events, history, requests, resumeBatches, nativeTrace: [],
     send: (payload) => socket.send(payload, "mobile", { crypto, toDeviceId: pairing.deviceId }),
     async emit(type, data, options = {}) {
       const event = {
@@ -188,6 +193,30 @@ async function createMockHost(queued, failFirstRename, errors) {
       hosts.delete(host);
     },
   };
+  if (native) {
+    const directory = resolve(runDir, "native-fixtures", String(++nativeFixtureSequence));
+    await mkdir(directory, { recursive: true });
+    host.nativeApproval = await startNativeApprovalHost({
+      directory, sessionId, deviceId: pairing.deviceId,
+      onRequested(request) {
+        snapshot.permissions.push(request);
+        session.turnState = "waiting";
+        host.nativeTrace.push({ type: "requested", requestId: request.requestId, toolUseId: request.toolUseId, toolName: request.toolName });
+        void host.emit(request.toolName === "AskUserQuestion" ? "question.requested" : "permission.requested", request)
+          .catch((error) => errors.push(`native request: ${error.stack}`));
+      },
+      onResolved(request, result, resolution) {
+        snapshot.permissions = snapshot.permissions.filter((pending) => pending.requestId !== request.requestId);
+        session.turnState = "idle";
+        host.nativeTrace.push({ type: "resolved", requestId: request.requestId, decision: resolution.decision, resolvedByDeviceId: resolution.resolvedByDeviceId });
+        void host.emit(request.toolName === "AskUserQuestion" ? "question.resolved" : "permission.resolved", {
+          ...request, ...resolution, behavior: result.behavior,
+        }).then(() => host.send({ kind: "snapshot", snapshot }))
+          .catch((error) => errors.push(`native resolution: ${error.stack}`));
+      },
+    });
+    nativeHosts.push(host.nativeApproval);
+  }
   hosts.add(host);
   socket.onFrame((frame) => {
     if (frame.type === "presence" && frame.role === "mobile" && frame.online) {
@@ -246,6 +275,7 @@ async function createMockHost(queued, failFirstRename, errors) {
           result = { commandId: "browser-e2e-command", state: "queued" };
           break;
         case "permission.resolve":
+          if (native) { result = await host.nativeApproval.resolve(request); break; }
           assert.equal(request.params.requestId, "browser-e2e-permission");
           assert.equal(request.params.decision, "allow-once");
           snapshot.permissions = [];
@@ -267,7 +297,7 @@ async function createMockHost(queued, failFirstRename, errors) {
           pendingCommandIds: ["browser-e2e-command"],
         }, { itemId: "browser-e2e-command" });
       }
-      if (request.method === "permission.resolve") {
+      if (request.method === "permission.resolve" && !native) {
         await host.emit("permission.resolved", {
           requestId: "browser-e2e-permission", decision: "allow-once",
         }, { turnId: "browser-e2e-turn" });
@@ -417,6 +447,70 @@ async function verifyDelivery(page, host, steps) {
   steps.push("completed response clears the queue; request and user message stay unique");
 }
 
+async function verifyNativeApprovals(page, host, steps, directory) {
+  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  await host.emit("session.observed", { role: "assistant", text: "", interactivePrompt: {
+    kind: "wrap-up", blocked: true, ask: "批准这项原生操作？", actions: [{ label: "批准实施", message: "批准实施" }],
+  } }, { itemId: "native-unavailable-confirmation" });
+  const unavailable = page.locator(".interactive-prompt-card").filter({ hasText: "批准这项原生操作？" });
+  await unavailable.getByText("需在电脑端确认", { exact: true }).waitFor();
+  assert.equal(await unavailable.getByRole("button", { name: /批准实施/u }).isDisabled(), true);
+  await host.emit("session.observed", { role: "assistant", text: "", interactivePrompt: {
+    kind: "question", toolUseId: "unmatched-native-question", questions: [{ question: "未接通的历史问题", options: [{ label: "确认" }] }],
+  } }, { itemId: "native-unmatched-question" });
+  const unmatched = page.locator(".interactive-prompt-card").filter({ hasText: "未接通的历史问题" });
+  await unmatched.getByText("需在电脑端回答", { exact: true }).waitFor();
+  assert.equal(await unmatched.getByRole("button", { name: "确认", exact: true }).isDisabled(), true);
+  assert.equal(host.requests.filter((request) => request.method === "turn.start").length, 0);
+  await page.screenshot({ path: resolve(directory, "native-unavailable.png"), fullPage: true });
+  steps.push("native transcript-only confirmation and unmatched question are non-actionable; no peer chat sent");
+
+  for (const decision of ["allow-once", "deny"]) {
+    const open = await host.nativeApproval.open("Bash", { command: "synthetic-native-tool --never-executed", description: "仅验证原生审批响应" });
+    const dialog = page.getByRole("dialog", { name: "Claude 等待授权", exact: true });
+    await dialog.waitFor();
+    await dialog.getByRole("button", { name: decision === "deny" ? "拒绝" : "允许一次", exact: true }).click();
+    const response = await open.response;
+    assert.equal(response.hookSpecificOutput.decision.behavior, decision === "deny" ? "deny" : "allow");
+    await eventually(() => host.nativeApproval.list().length, 0, "Native permission must resolve");
+    const trace = host.nativeTrace.find((event) => event.type === "resolved" && event.requestId === open.request.requestId);
+    assert.equal(trace.resolvedByDeviceId, host.pairing.deviceId);
+    await dialog.waitFor({ state: "hidden" });
+  }
+  steps.push("allow and deny travel through encrypted permission.resolve and return to the original Hook request with phone attribution");
+
+  const input = { questions: [
+    { question: "选择执行范围", multiSelect: false, options: [{ label: "仅本机", description: "使用隔离测试目录" }, { label: "稍后处理" }] },
+    { question: "选择检查项目", multiSelect: true, options: [{ label: "类型检查" }, { label: "回归测试" }] },
+  ] };
+  const question = await host.nativeApproval.open("AskUserQuestion", input);
+  const dialog = page.getByRole("dialog", { name: "Claude 等待授权", exact: true });
+  await dialog.waitFor();
+  const snapshotCount = host.requests.filter((request) => request.method === "snapshot.get").length;
+  const peer = [...relayPeers].find(([, hello]) => hello.roomId === host.pairing.roomId && hello.role === "mobile");
+  assert.ok(peer, "Native approval scenario must own a connected phone");
+  peer[0].close(1012, "native approval reconnect fixture");
+  await eventually(() => host.requests.filter((request) => request.method === "snapshot.get").length > snapshotCount, true, "Reconnect must fetch pending native approval");
+  assert.equal(host.nativeApproval.list()[0].requestId, question.request.requestId);
+  await dialog.getByRole("radio", { name: /仅本机/u }).check();
+  await dialog.getByRole("checkbox", { name: "类型检查", exact: true }).check();
+  await dialog.getByRole("checkbox", { name: "回归测试", exact: true }).check();
+  await page.screenshot({ path: resolve(directory, "native-question.png"), fullPage: true });
+  await dialog.getByRole("button", { name: "提交回答", exact: true }).click();
+  assert.deepEqual((await question.response).hookSpecificOutput.decision, {
+    behavior: "allow", updatedInput: { ...input, answers: { "选择执行范围": "仅本机", "选择检查项目": "类型检查, 回归测试" } },
+  });
+  await dialog.waitFor({ state: "hidden" });
+  const resolutions = host.requests.filter((request) => request.method === "permission.resolve");
+  assert.equal(resolutions.length, 3);
+  assert.equal(new Set(resolutions.map((request) => request.params.requestId)).size, 3);
+  assert.equal(resolutions.filter((request) => request.params.requestId === question.request.requestId).length, 1);
+  assert.equal(host.requests.filter((request) => request.method === "turn.start").length, 0);
+  steps.push("live native questions survive reconnect; single-choice and multi-select answers reach the same Hook exactly once without chat");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Native approval must fit the phone viewport");
+}
+
 async function runScenario(theme, scenario) {
   const name = `${theme}-${scenario}`;
   const directory = resolve(runDir, name);
@@ -430,7 +524,7 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(scenario !== "delivery-approval-reconnect", scenario !== "delivery-approval-reconnect", errors);
+    host = await createMockHost(scenario !== "delivery-approval-reconnect" && scenario !== "native-approvals", scenario !== "delivery-approval-reconnect", errors, scenario === "native-approvals");
     context = await browser.newContext({
       viewport: { width: 375, height: 812 }, colorScheme: theme,
       serviceWorkers: "block",
@@ -479,7 +573,8 @@ async function runScenario(theme, scenario) {
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
-    if (scenario === "delivery-approval-reconnect") await verifyDelivery(page, host, steps);
+    if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
+    else if (scenario === "delivery-approval-reconnect") await verifyDelivery(page, host, steps);
     else await verifyRename(page, host, scenario === "rename-list" ? "list" : "chat", steps);
     assert.deepEqual(errors, [], "Browser runtime, console, network isolation, or host errors");
   } catch (error) {
@@ -503,6 +598,7 @@ async function runScenario(theme, scenario) {
     await writeFile(resolve(directory, "host-rpc.json"), JSON.stringify({
       requests: host?.requests.map(({ method, requestId, idempotencyKey, params }) => ({ method, requestId, idempotencyKey, params })),
       resumeBatches: host?.resumeBatches,
+      nativeTrace: host?.nativeTrace,
     }, null, 2));
   }
   const result = {
@@ -518,6 +614,20 @@ async function runScenario(theme, scenario) {
 
 await mkdir(runDir, { recursive: true });
 try {
+  const { build } = await import("esbuild");
+  const nativeModule = resolve(runDir, "native-approval-host.mjs");
+  await build({
+    entryPoints: [resolve(root, "scripts/fixtures/native-approval-host.ts")], outfile: nativeModule,
+    bundle: true, platform: "node", format: "esm", packages: "external", logLevel: "silent",
+    banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
+    plugins: [{ name: "synthetic-electron", setup(builder) {
+      builder.onResolve({ filter: /^electron$/ }, () => ({ path: "electron", namespace: "synthetic-electron" }));
+      builder.onLoad({ filter: /.*/, namespace: "synthetic-electron" }, () => ({
+        contents: 'module.exports = { shell: { openPath() { throw new Error("Native shell unavailable in approval fixture"); }, openExternal() { throw new Error("Native shell unavailable in approval fixture"); } } };', loader: "js",
+      }));
+    } }],
+  });
+  ({ startNativeApprovalHost } = await import(pathToFileURL(nativeModule).href));
   // Vite must not read a developer's .env or inherit production VITE_* values.
   for (const key of Object.keys(inheritedVite)) delete process.env[key];
   relay = await startRelayServer({
@@ -585,7 +695,7 @@ try {
       args: ["--disable-background-networking", "--disable-component-update", "--no-first-run"],
     });
     for (const theme of ["light", "dark"]) {
-      for (const scenario of ["rename-list", "rename-chat", "delivery-approval-reconnect"]) {
+      for (const scenario of scenarios) {
         await runScenario(theme, scenario);
       }
     }
@@ -596,6 +706,7 @@ try {
   if (browser) {
     try { await browser.close(); } catch (error) { infrastructureErrors.push(`browser cleanup: ${error.stack}`); }
   }
+  for (const native of nativeHosts) await native.close();
   for (const host of hosts) host.close();
   // Finish the relay's WebSocket close handshakes while its proxy is still alive.
   if (relay) {
@@ -607,7 +718,7 @@ try {
   for (const key of Object.keys(process.env)) if (key.startsWith("VITE_")) delete process.env[key];
   Object.assign(process.env, inheritedVite);
   if (!serve) {
-    const failed = infrastructureErrors.length > 0 || results.length !== 6 || results.some((result) => result.status === "failed");
+    const failed = infrastructureErrors.length > 0 || results.length !== scenarios.length * 2 || results.some((result) => result.status === "failed");
     const report = {
       status: failed ? "failed" : "passed", browser: browser?.version(), node: process.version,
       client: resolve(root, "apps/client"), runDir,
@@ -617,7 +728,7 @@ try {
     };
     await writeFile(resolve(runDir, "report.json"), JSON.stringify(report, null, 2));
     await writeFile(resolve(artifactRoot, "report.json"), JSON.stringify(report, null, 2));
-    console.log(`Browser E2E ${report.status}: ${report.passed}/6 passed. Report: ${resolve(runDir, "report.json")}`);
+    console.log(`Browser E2E ${report.status}: ${report.passed}/${scenarios.length * 2} passed. Report: ${resolve(runDir, "report.json")}`);
     if (failed) process.exitCode = 1;
   }
   if (infrastructureErrors.length) {

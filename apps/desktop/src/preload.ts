@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld("bridgeDesktop", {
   setLaunchAtLogin: (enabled: boolean) => (
     ipcRenderer.invoke("bridge:set-launch-at-login", enabled) as Promise<DesktopControlSnapshot>
   ),
+  testMagpieConnection: (input: unknown) => ipcRenderer.invoke("bridge:test-magpie-connection", input),
+  saveMagpieConnection: (input: unknown) => ipcRenderer.invoke("bridge:save-magpie-connection", input),
   setAnthropicApiKey: (value: string) => (
     ipcRenderer.invoke("bridge:set-anthropic-api-key", value) as Promise<DesktopControlSnapshot>
   ),

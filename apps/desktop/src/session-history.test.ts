@@ -167,7 +167,7 @@ describe("readSessionHistory", () => {
     const second = await readSessionHistory(options, first.nextCursor, 1);
     expect(second.items.map((item) => item.id)).toEqual(["a"]);
     expect(second.hasMore).toBe(false);
-    expect(readHistory).toHaveBeenLastCalledWith(options.paths.projects, "session-1", options.session.cwd, { limit: 3, chronological: true, before: { createdAt: 1, id: "b" } });
+    expect(readHistory).toHaveBeenLastCalledWith(options.paths.projects, "session-1", options.session.cwd, { includeBranch: true, limit: 3, chronological: true, before: { createdAt: 1, id: "b" } });
     await options.eventLog.close();
   });
 

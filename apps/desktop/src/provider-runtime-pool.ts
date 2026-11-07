@@ -1,5 +1,5 @@
 import type { BridgeExecutionLane, BridgeProviderKind } from "@bridge/protocol";
-import type { ClaudeRuntime } from "./claude-runtime-discovery.js";
+import { hasClaudeRuntimeCredentials, type ClaudeRuntime } from "./claude-runtime-discovery.js";
 import type { ProviderRegistry } from "./provider-registry.js";
 
 export interface ProviderHostPlan {
@@ -37,7 +37,7 @@ export class Claude3pProviderAdapter implements ProviderAdapter {
     lane: BridgeExecutionLane,
     runtime: ClaudeRuntime,
   ): Promise<ProviderHostPlan> {
-    if (!runtime.credentialPath) throw new Error("Claude-3p Host Credentials 不可用");
+    if (!hasClaudeRuntimeCredentials(runtime)) throw new Error("Claude-3p Host Credentials 不可用");
     return {
       logicalSessionId,
       nativeSessionId: requiredNativeSession(lane),

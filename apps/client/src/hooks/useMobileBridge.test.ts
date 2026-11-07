@@ -222,6 +222,17 @@ describe("mergeBridgeEvents", () => {
     expect(applyEventToTurns(turns, { ...submitted, eventId: "failed", seq: 2, type: "turn.failed", data: { commandId: "command-1", error: "Rejected" } })[0]?.delivery).toBe("failed");
   });
 
+  it("tracks waiting confirmation and expiry recovery without failing or duplicating the original input", () => {
+    const turn: LocalTurn = { requestId: "request-1", idempotencyKey: "key-1", sessionId: "session-1", text: "Task", attachments: [], createdAt: 1, delivery: "submitted", commandId: "command-1", messageId: "message-1" };
+    const held: BridgeEvent = { eventId: "held", seq: 2, timestamp: 2, origin: "system", type: "message.delivery", sessionId: "session-1", data: { requestId: "request-1", commandId: "command-1", messageId: "message-1", delivery: "waiting-confirmation" } };
+    const waiting = applyEventToTurns([turn], held);
+    expect(waiting).toHaveLength(1);
+    expect(waiting[0]).toMatchObject({ delivery: "waiting-confirmation", text: "Task", commandId: "command-1" });
+    const recovered = applyEventToTurns(waiting, { ...held, eventId: "expired", seq: 3, data: { ...held.data, delivery: "host-received" } });
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({ delivery: "host-received", text: "Task", commandId: "command-1" });
+  });
+
   it("retains accepted command and turn correlation for subsequent native lifecycle events", () => {
     const turn: LocalTurn = {
       requestId: "request-1",

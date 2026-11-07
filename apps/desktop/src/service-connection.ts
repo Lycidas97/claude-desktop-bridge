@@ -12,7 +12,7 @@ import { ServiceResources } from "./service-resources.js";
 export const SERVICE_PROTOCOL = 1;
 export const SERVICE_METHODS = [
   "snapshot", "createPairing", "revokeDevice", "setRelayUrl", "setLaunchAtLogin",
-  "setAnthropicApiKey", "removeAnthropicApiKey", "launchClaudeDesktop", "quitClaudeDesktop",
+  "setAnthropicApiKey", "removeAnthropicApiKey", "testMagpieConnection", "saveMagpieConnection", "launchClaudeDesktop", "quitClaudeDesktop",
   "launchDesktopApp", "quitDesktopApp", "dispatchLocal", "diagnostics", "refreshRuntime",
 ] as const;
 export type ServiceMethod = typeof SERVICE_METHODS[number];
@@ -71,6 +71,8 @@ export async function serveDesktopService(options: {
             const args = request.args;
             if (["setRelayUrl", "revokeDevice", "setAnthropicApiKey"].includes(method)) {
               if (args.length !== 1 || typeof args[0] !== "string") throw new Error("Expected one string");
+            } else if (method === "testMagpieConnection" || method === "saveMagpieConnection") {
+              if (args.length !== 1) throw new Error("Expected one Magpie configuration");
             } else if (method === "setLaunchAtLogin") {
               if (args.length !== 1 || typeof args[0] !== "boolean") throw new Error("Expected one boolean");
             } else if (method === "launchDesktopApp" || method === "quitDesktopApp") {

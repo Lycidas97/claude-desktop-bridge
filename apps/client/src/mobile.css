@@ -885,10 +885,11 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 
 /* ---- Conversation ---- */
 
-.mobile-app-shell .message-queue-status { align-items: flex-start; }
-.mobile-app-shell .message-queue-status > span { flex: 1; min-width: 0; }
+.mobile-app-shell .message-queue-status { align-items: flex-start; flex-wrap: wrap; }
+.mobile-app-shell .message-queue-status > span { flex: 1 1 calc(100% - 27px); min-width: 0; }
 .mobile-app-shell .message-queue-status > svg { margin-top: 3px; }
 .mobile-app-shell .message-queue-status > button { flex: 0 0 auto; min-height: 36px; }
+.mobile-app-shell .message-queue-status > button:first-of-type { margin-left: 27px; }
 .mobile-app-shell .delivery-state { font-size: var(--m-fs-footnote); }
 
 /* A sent message: the bubble wraps only its text, in the composer's shape and the sent

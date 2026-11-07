@@ -213,7 +213,7 @@ it.each([false, true])("delivers through the original Desktop inbox and confirms
   } finally { await f.close(); }
 });
 
-it.each(["held", "refused"] as const)("preserves the original Desktop inbox decision without replay (%s)", async status => {
+it.each(["held", "refused", "denied", "dropped"] as const)("preserves the original Desktop inbox decision without replay (%s)", async status => {
   const f = await fixture({ inbox: true });
   try {
     const input = { sessionId: f.sessionId, requestId: "decision", idempotencyKey: "decision", text: "Phone input", origin: "mobile" as const };
@@ -230,6 +230,66 @@ it.each(["held", "refused"] as const)("preserves the original Desktop inbox deci
       expect(f.broker.runtimeStatus().activeTurns).toBe(0);
     }
     await f.drain(); expect(f.inboxSend).toHaveBeenCalledOnce(); expect(f.hostFactory).not.toHaveBeenCalled();
+  } finally { await f.close(); }
+});
+
+it.each(["delivered", "held"] as const)("does not regress transcript-confirmed acceptance when a %s receipt arrives later", async status => {
+  const f = await fixture({ inbox: true });
+  try {
+    const input = { sessionId: f.sessionId, requestId: "accepted-before-receipt", idempotencyKey: "accepted-before-receipt", text: "Native input", origin: "mobile" as const };
+    await f.broker.startTurn(input); await f.drain();
+    const messageId = f.inboxSend.mock.calls[0]![1].messageId;
+    await appendFile(f.transcript, JSON.stringify({ type: "user", uuid: messageId, parentUuid: "initial-answer", isMeta: true, origin: { kind: "peer", msg_id: messageId }, message: { role: "user", content: input.text } }) + "\n");
+    await f.poll(); await f.drain();
+    expect(f.eventLog.hasItem(f.sessionId, "user.message.accepted", messageId)).toBe(true);
+    const acceptedSeq = f.eventLog.latestSeq();
+    f.inboxEvents.emit("receipt", { messageId, status }); await f.drain();
+    expect(f.eventLog.replay().some(event => event.seq > acceptedSeq && event.type === "message.delivery" &&
+      (event.data.delivery === "submitted" || event.data.delivery === "waiting-confirmation"))).toBe(false);
+    expect(f.broker.session(f.sessionId)?.turnState).toBe("running");
+  } finally { await f.close(); }
+});
+
+it.each([false, true])("retains an expired confirmation in the original queue without retrying the same inbox (restart=%s)", async restart => {
+  const f = await fixture({ inbox: true }); let restored: SessionBroker | undefined;
+  try {
+    const input = { sessionId: f.sessionId, requestId: "expiry", idempotencyKey: "expiry", text: "Keep this exact input", origin: "mobile" as const };
+    const turn = await f.broker.startTurn(input); await f.drain();
+    const messageId = f.inboxSend.mock.calls[0]![1].messageId;
+    f.inboxEvents.emit("receipt", { messageId, status: "held" }); await f.drain();
+    f.inboxEvents.emit("receipt", { messageId, status: "expired" }); await f.drain();
+    expect((await f.broker.startTurn(input))).toMatchObject({ commandId: turn.commandId, state: "queued" });
+    expect(f.broker.session(f.sessionId)).toMatchObject({ pendingCount: 1, desktopHandoff: { state: "close-desktop", reason: "inbox-confirmation-expired", canTakeover: true } });
+    expect(f.broker.runtimeStatus().activeTurns).toBe(0);
+    expect(f.eventLog.replay().some(event => event.type === "message.delivery" && event.data.delivery === "waiting-confirmation")).toBe(true);
+    expect(f.eventLog.replay().some(event => event.type === "turn.failed" && event.data.commandId === turn.commandId)).toBe(false);
+    if (restart) {
+      await f.broker.close(); restored = new SessionBroker(f.brokerOptions); await restored.initialize();
+      await (restored as unknown as { pump(): Promise<void> }).pump();
+      expect((await restored.startTurn(input))).toMatchObject({ commandId: turn.commandId, state: "queued" });
+      expect(restored.session(f.sessionId)?.desktopHandoff).toMatchObject({ state: "close-desktop", reason: "inbox-confirmation-expired" });
+    }
+    expect(f.inboxSend).toHaveBeenCalledOnce();
+    expect(f.hostFactory).not.toHaveBeenCalled();
+    expect(f.send).not.toHaveBeenCalled();
+  } finally { await restored?.close(); await f.close(); }
+});
+
+it("continues the retained expired input once after the original Desktop executor exits", async () => {
+  const f = await fixture({ inbox: true });
+  try {
+    const input = { sessionId: f.sessionId, requestId: "recover", idempotencyKey: "recover", text: "Preserve the original instruction", origin: "mobile" as const };
+    const turn = await f.broker.startTurn(input); await f.drain();
+    const messageId = f.inboxSend.mock.calls[0]![1].messageId;
+    f.inboxEvents.emit("receipt", { messageId, status: "expired" }); await f.drain();
+    expect(f.hostFactory).not.toHaveBeenCalled();
+    await f.setDesktopExecutorAlive(false); await f.drain();
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledOnce(), { timeout: 3_000 });
+    expect(f.hostFactory.mock.calls[0]![0]).toMatchObject({ sessionId: f.nativeSessionId, eventSessionId: f.sessionId, resume: true });
+    expect(f.send.mock.calls[0]![0]).toMatchObject({ text: input.text });
+    expect((await f.broker.startTurn(input)).commandId).toBe(turn.commandId);
+    expect(f.inboxSend).toHaveBeenCalledOnce();
+    await f.drain(); expect(f.send).toHaveBeenCalledOnce();
   } finally { await f.close(); }
 });
 

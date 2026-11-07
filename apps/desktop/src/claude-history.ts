@@ -79,12 +79,22 @@ export interface ClaudeTranscriptEvidenceTurn {
 }
 
 export interface ClaudeHistoryReadResult {
+  /** Selected DAG ancestry, independent of the visible-message page budget. */
+  branch?: {
+    uuids: string[];
+    inheritedUuids: string[];
+    excludedMessageUuids: string[];
+    excludedToolUseIds: string[];
+    /** Undefined when missing ancestry prevents establishing a safe boundary. */
+    forkBaseMessageUuid?: string | null;
+  };
   available: boolean;
   messages: ClaudeHistoryMessage[];
   truncated: boolean;
 }
 
 export interface ClaudeHistoryReadOptions {
+  includeBranch?: boolean;
   beforeCursor?: string;
   before?: { createdAt: number; id: string };
   chronological?: boolean;
@@ -269,7 +279,8 @@ export function resolveTranscriptParentUuid<T extends { uuid: string; parentUuid
   if (typeof value.logicalParentUuid === "string" && value.logicalParentUuid) {
     return value.logicalParentUuid;
   }
-  return undefined;
+  // Older transcripts omit parentUuid entirely; explicit null still starts a root.
+  return !("parentUuid" in value) && !("logicalParentUuid" in value) ? lastMainUuid : undefined;
 }
 
 export function isNonDagTranscriptRecord(value: Record<string, unknown>): boolean {
@@ -643,6 +654,7 @@ function extractInteractivePrompt(value: Record<string, unknown>): BridgeInterac
       if (questions.length > 0) {
         found = {
           kind: "question",
+          ...(typeof block.id === "string" ? { toolUseId: block.id } : {}),
           ...(questions[0]?.question ? { ask: questions[0].question } : {}),
           questions,
         };
@@ -833,6 +845,14 @@ export async function findClaudeTranscriptFile(
   return undefined;
 }
 
+export interface ClaudeForkBoundary {
+  parentSessionId: string;
+  parentNativeSessionId: string;
+  parentDesktopSessionId: string;
+  baseMessageUuid: string | null;
+  reason: "before-active-turn" | "completed-head" | "empty";
+}
+
 export interface ClaudeTranscriptSnapshot extends ClaudeHistoryReadResult {
   nextCursor?: string;
   userMessages: ClaudeHistoryMessage[];
@@ -886,6 +906,7 @@ const transcriptSnapshotCache = new Map<string, {
   pendingUserMessageId?: string;
   peerInputs: NonNullable<ClaudeTranscriptSnapshot["peerInputs"]>;
   terminalUuid?: string;
+  branch: NonNullable<ClaudeTranscriptSnapshot["branch"]>;
 }>();
 
 export async function parseClaudeTranscriptSnapshot(
@@ -904,6 +925,7 @@ export async function parseClaudeTranscriptSnapshot(
       available: true,
       ...trimHistory(cached.allMessages, options),
       userMessages: cached.userMessages,
+      branch: cached.branch,
       ...(cached.terminalUuid ? { terminalUuid: cached.terminalUuid } : {}),
       ...(cached.atTurnBoundary !== undefined ? { atTurnBoundary: cached.atTurnBoundary } : {}),
       ...(cached.waitingForUserInput ? { waitingForUserInput: true } : {}),
@@ -918,6 +940,7 @@ export async function parseClaudeTranscriptSnapshot(
   const userMessages: ClaudeHistoryMessage[] = [];
   let index = 0;
   let lastMainUuid: string | undefined;
+  let inheritedHead: string | null | undefined;
   try {
     const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
     for await (const line of lines) {
@@ -928,7 +951,12 @@ export async function parseClaudeTranscriptSnapshot(
       } catch {
         continue;
       }
-      if (!isRecord(value) || isNonDagTranscriptRecord(value)) continue;
+      if (!isRecord(value) || value.isSidechain === true) continue;
+      if (value.type === "custom-title" && isRecord(value.bridgeFork) &&
+        (typeof value.bridgeFork.baseMessageUuid === "string" || value.bridgeFork.baseMessageUuid === null)) {
+        inheritedHead = value.bridgeFork.baseMessageUuid;
+      }
+      if (isNonDagTranscriptRecord(value)) continue;
       const backgroundShellUpdates: NonNullable<TranscriptNode["backgroundShellUpdates"]> = [];
       if (value.isSidechain !== true && value.type === "attachment" && isRecord(value.attachment)) {
         const task = value.attachment;
@@ -1055,7 +1083,10 @@ export async function parseClaudeTranscriptSnapshot(
   const terminal = [...nodes.values()]
     .filter((node) => !referencedParents.has(node.uuid))
     .sort((left, right) => right.index - left.index)[0];
-  if (!terminal) return { available: true, messages: [], truncated: false, userMessages };
+  if (!terminal) return {
+    available: true, messages: [], truncated: false, userMessages, atTurnBoundary: true,
+    pendingBackgroundShellTaskIds: [], branch: { uuids: [], inheritedUuids: [], excludedMessageUuids: [], excludedToolUseIds: [], forkBaseMessageUuid: null },
+  };
   const atTurnBoundary = transcriptTurnBoundary(nodes, terminal);
   let pendingUserMessageId: string | undefined;
   if (!atTurnBoundary) {
@@ -1084,12 +1115,29 @@ export async function parseClaudeTranscriptSnapshot(
   }
   chain.reverse();
 
+  const inheritedIndex = inheritedHead ? nodes.get(inheritedHead)?.index ?? -1 : -1;
+  const inheritedUuids = new Set(chain.filter((node) => node.index <= inheritedIndex).map((node) => node.uuid));
+  // Steering inputs and tool results remain part of the unfinished round. Only
+  // explicit completion/interruption evidence establishes its preceding boundary.
+  const completedHead = [...chain].reverse().find((node) => node.interruptedBoundary ||
+    (node.type === "assistant" && ["end_turn", "max_tokens", "stop_sequence", "refusal", "model_context_window_exceeded"].includes(node.stopReason ?? "")));
+  const branch: NonNullable<ClaudeTranscriptSnapshot["branch"]> = {
+    uuids: chain.map((node) => node.uuid), inheritedUuids: [...inheritedUuids],
+    excludedMessageUuids: [...nodes.keys()].filter((uuid) => !seen.has(uuid)),
+    excludedToolUseIds: [...nodes.values()].filter((node) => !seen.has(node.uuid)).flatMap((node) => (node.tools ?? []).map((tool) => tool.id)),
+    ...(atTurnBoundary ? { forkBaseMessageUuid: terminal.uuid }
+      : completedHead ? { forkBaseMessageUuid: completedHead.uuid }
+      : !chain[0]?.parentUuid && chain[0]?.type === "user" && !chain[0].nonTurnUser && !chain[0].toolResult
+        ? { forkBaseMessageUuid: null } : {}),
+  };
+
   const pendingTools = new Map<string, NonNullable<TranscriptNode["tools"]>[number]>();
   const backgroundShellTasks = new Set<string>();
   const peerInputs: NonNullable<ClaudeTranscriptSnapshot["peerInputs"]> = [];
   let currentPeerInput: typeof peerInputs[number] | undefined;
   let lastAssistantStopReason: string | undefined;
   for (const node of chain) {
+    if (inheritedUuids.has(node.uuid)) continue;
     if (node.type === "user" && (node.interruptedBoundary || (!node.nonTurnUser && !node.toolResult))) {
       pendingTools.clear();
       lastAssistantStopReason = undefined;
@@ -1274,6 +1322,7 @@ export async function parseClaudeTranscriptSnapshot(
     signature: cacheSignature,
     allMessages: messages,
     userMessages,
+    branch,
     terminalUuid: terminal.uuid,
     ...(waitingForUserInput ? { waitingForUserInput: true } : {}),
     pendingBackgroundShellTaskIds,
@@ -1285,6 +1334,7 @@ export async function parseClaudeTranscriptSnapshot(
     available: true,
     ...trimHistory(messages, options),
     userMessages,
+    branch,
     atTurnBoundary,
     ...(waitingForUserInput ? { waitingForUserInput: true } : {}),
     pendingBackgroundShellTaskIds,
@@ -1306,6 +1356,7 @@ export async function parseClaudeTranscript(
 ): Promise<ClaudeHistoryReadResult & { nextCursor?: string }> {
   const {
     userMessages: _userMessages,
+    branch: _branch,
     atTurnBoundary: _atTurnBoundary,
     pendingBackgroundShellTaskIds: _pendingBackgroundShellTaskIds,
     pendingUserMessageId: _pendingUserMessageId,
@@ -1313,7 +1364,7 @@ export async function parseClaudeTranscript(
     terminalUuid: _terminalUuid,
     ...result
   } = await parseClaudeTranscriptSnapshot(path, options);
-  return result;
+  return { ...result, ...(options.includeBranch && _branch ? { branch: _branch } : {}) };
 }
 
 export async function readClaudeTranscriptUserMessages(
@@ -1639,20 +1690,27 @@ const parentSubagentCache = new Map<string, {
   summaries: BridgeSubagentSummary[];
   compactedAt: number;
   taskStates: Map<string, { state: BridgeSubagentSummary["state"]; at: number }>;
+  excludedTasks: Set<string>;
 }>();
 
 async function parseParentTranscriptSubagents(
   transcriptPath: string,
-): Promise<{ summaries: BridgeSubagentSummary[]; compactedAt: number; taskStates: Map<string, { state: BridgeSubagentSummary["state"]; at: number }> }> {
+): Promise<{ summaries: BridgeSubagentSummary[]; compactedAt: number; taskStates: Map<string, { state: BridgeSubagentSummary["state"]; at: number }>; excludedTasks: Set<string> }> {
   const fileStat = await stat(transcriptPath).catch(() => undefined);
-  if (!fileStat) return { summaries: [], compactedAt: 0, taskStates: new Map() };
+  if (!fileStat) return { summaries: [], compactedAt: 0, taskStates: new Map(), excludedTasks: new Set() };
   const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}`;
   const cached = parentSubagentCache.get(transcriptPath);
   if (cached && cached.signature === cacheSignature) return cached;
   let compactedAt = 0;
   const taskStates = new Map<string, { state: BridgeSubagentSummary["state"]; at: number }>();
 
+  const snapshot = await parseClaudeTranscriptSnapshot(transcriptPath, { limit: 1 });
+  const selected = new Set(snapshot.branch?.uuids);
+  const inherited = new Set(snapshot.branch?.inheritedUuids);
+  const excludedTasks = new Set<string>();
+  let anchorUuid: string | undefined;
   const callsByToolId = new Map<string, {
+    inherited: boolean;
     toolUseId: string;
     agentId?: string;
     agentType?: string;
@@ -1679,7 +1737,22 @@ async function parseParentTranscriptSubagents(
       } catch {
         continue;
       }
-      if (!isRecord(value)) continue;
+      if (!isRecord(value) || isNonDagTranscriptRecord(value)) continue;
+      if (typeof value.uuid === "string") anchorUuid = value.uuid;
+      if (value.isSidechain === true || (anchorUuid && !selected.has(anchorUuid))) {
+        const message = isRecord(value.message) ? value.message : undefined;
+        for (const tool of toolUses(message?.content)) {
+          if (tool.name === "Agent" || tool.name === "Task") excludedTasks.add(tool.id);
+        }
+        if (Array.isArray(message?.content)) {
+          for (const block of message.content) {
+            if (!isRecord(block) || block.type !== "tool_result" || !excludedTasks.has(String(block.tool_use_id))) continue;
+            const agentId = /agentId:\s*([^\s(]+)/u.exec(textFromContent(block.content))?.[1];
+            if (agentId) excludedTasks.add(agentId);
+          }
+        }
+        continue;
+      }
       const parsedAt = typeof value.timestamp === "string" ? Date.parse(value.timestamp) : Number.NaN;
       const ts = Number.isFinite(parsedAt) && parsedAt > 0 ? parsedAt : Date.now();
       if (value.type === "system" && value.subtype === "compact_boundary") {
@@ -1717,6 +1790,7 @@ async function parseParentTranscriptSubagents(
             ? input.subagent_type.trim()
             : undefined;
           callsByToolId.set(block.id, {
+            inherited: Boolean(anchorUuid && inherited.has(anchorUuid)),
             toolUseId: block.id,
             ...(agentType ? { agentType } : {}),
             description: desc,
@@ -1771,7 +1845,7 @@ async function parseParentTranscriptSubagents(
       }
     }
   } catch {
-    return { summaries: [], compactedAt: 0, taskStates: new Map() };
+    return { summaries: [], compactedAt: 0, taskStates: new Map(), excludedTasks };
   }
 
   const results: BridgeSubagentSummary[] = [];
@@ -1785,7 +1859,7 @@ async function parseParentTranscriptSubagents(
       toolUseId: call.toolUseId,
       ...(call.agentType ? { agentType: call.agentType } : {}),
       description: call.description,
-      state: endedByAgentId.get(agentId) ?? (reportText ? "completed" : "running"),
+      state: endedByAgentId.get(agentId) ?? (reportText ? "completed" : call.inherited ? "unknown" : "running"),
       toolCount: 0,
       ...(reportText ? { reportText } : {}),
       startedAt: call.startedAt,
@@ -1797,7 +1871,7 @@ async function parseParentTranscriptSubagents(
     const oldestKey = parentSubagentCache.keys().next().value;
     if (typeof oldestKey === "string") parentSubagentCache.delete(oldestKey);
   }
-  const result = { summaries: results, compactedAt, taskStates };
+  const result = { summaries: results, compactedAt, taskStates, excludedTasks };
   parentSubagentCache.set(transcriptPath, { signature: cacheSignature, ...result });
   return result;
 }
@@ -1825,6 +1899,7 @@ export async function readClaudeTranscriptSubagents(
     byKey.set(call.toolUseId ?? call.agentId, call);
   }
   for (const fileItem of parsedFiles) {
+    if (parent.excludedTasks.has(fileItem.agentId) || (fileItem.toolUseId && parent.excludedTasks.has(fileItem.toolUseId))) continue;
     const key = fileItem.toolUseId
       ?? parentCalls.find((c) => c.agentId === fileItem.agentId)?.toolUseId
       ?? fileItem.agentId;

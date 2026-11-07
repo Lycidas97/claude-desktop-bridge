@@ -47,4 +47,36 @@ describe("provider settings independent of sessions", () => {
     expect(markup).toContain("最近检测");
     expect(markup).toMatch(/disabled=""[^>]*>.*重新检测/s);
   });
+  it("labels the manual Magpie source in detection details", () => {
+    const markup = renderToStaticMarkup(createElement(ProviderSettings, {
+      snapshot: { ...snapshot, runtime: { ...snapshot.runtime, detection: { ...snapshot.runtime.detection!, configSource: { type: "manual-gateway", profile: "unknown" } } } },
+      onRefresh: vi.fn(),
+    }));
+    expect(markup).toContain("手动配置 Magpie");
+  });
+  it("shows only saved Magpie connection facts on mobile", () => {
+    const markup = renderToStaticMarkup(createElement(ProviderSettings, {
+      snapshot: { ...snapshot, magpie: { mode: "manual", baseUrl: "https://magpie.example.com", authScheme: "x-api-key", keyConfigured: true } },
+      onRefresh: vi.fn(), onTestMagpieConnection: vi.fn(), onSaveMagpieConnection: vi.fn(),
+    }));
+    expect(markup).toContain("手动配置 Magpie");
+    expect(markup).toContain("https://magpie.example.com");
+    expect(markup).toContain("x-api-key");
+    expect(markup).toContain("已配置");
+    expect(markup).toContain("请在这台电脑的 Bridge 设置中管理 Magpie 连接");
+    expect(markup).not.toContain('type="password"');
+    expect(markup).not.toContain("测试连接");
+  });
+  it("requires the new snapshot field and both local methods before offering Magpie editing", () => {
+    const magpie = { mode: "auto", keyConfigured: false } as const;
+    for (const props of [
+      { snapshot, onTestMagpieConnection: vi.fn(), onSaveMagpieConnection: vi.fn() },
+      { snapshot: { ...snapshot, magpie }, onTestMagpieConnection: vi.fn() },
+      { snapshot: { ...snapshot, magpie }, onSaveMagpieConnection: vi.fn() },
+    ]) {
+      const markup = renderToStaticMarkup(createElement(ProviderSettings, { ...props, desktopLocal: true, onRefresh: vi.fn() }));
+      expect(markup).not.toContain('id="magpie-mode"');
+      expect(markup).not.toContain("保存 Magpie 配置");
+    }
+  });
 });

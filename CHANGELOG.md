@@ -1,3 +1,23 @@
+## 1.2.1
+
+- Add desktop Magpie gateway settings with automatic discovery or manual URL,
+  Bearer / x-api-key authentication, connection testing and locally protected keys.
+  Model discovery, quota queries and newly started executors share the setting;
+  phones receive connection status without credentials.
+- Submit live mobile approvals and single/multiple-choice answers against their
+  original native request. Keep historical questions and unsupported blocking
+  confirmations on the computer, without turning chat delivery into approval.
+- Keep native manual-only requests pending through full-access policy changes.
+- Retain queued input when Desktop inbox confirmation expires, avoid automatic
+  replay, and require explicit takeover with the existing task checks.
+- Fork from a complete turn on the selected parent chain, excluding unfinished
+  input and output. Persist ancestry, filter sibling tasks, and keep inherited
+  task history separate from the child's live background work and stop authority.
+- Start metadata-only forks as new native sessions, then resume their own history
+  on later starts, including after a broker restart. Forks still share files.
+- Fix narrow mobile handoff notices and expand synthetic native approval, inbox
+  recovery and fork lifecycle regression coverage.
+
 ## 1.2.0
 
 - Deliver supported macOS Desktop inbox input to the verified original executor,

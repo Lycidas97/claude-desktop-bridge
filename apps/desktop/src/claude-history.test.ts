@@ -1194,6 +1194,7 @@ describe("Claude transcript history", () => {
       text: "",
       interactivePrompt: {
         kind: "question",
+        toolUseId: "call_q_1",
         ask: questionText,
       },
     });

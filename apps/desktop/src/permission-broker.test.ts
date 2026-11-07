@@ -72,6 +72,36 @@ describe("PermissionBroker policy", () => {
     await expect(pending).resolves.toMatchObject({ behavior: "allow" });
   });
 
+  it.each([
+    { toolName: "Bash", manualOnly: true },
+    { toolName: "AskUserQuestion", manualOnly: false },
+  ])("keeps $toolName manual approval pending after switching to full access", async ({ toolName, manualOnly }) => {
+    let mode: BridgePermissionMode = "standard";
+    const broker = new PermissionBroker(() => mode);
+    const resolved = vi.fn();
+    broker.on("resolved", resolved);
+    const settled = vi.fn();
+    const pending = broker.request("session-1", toolName, {}, {
+      signal: new AbortController().signal,
+      toolUseId: "native-tool",
+      manualOnly,
+    }).then(settled);
+    const requestId = broker.list()[0]!.requestId;
+
+    mode = "full-access";
+    expect(broker.applyPolicy("session-1")).toBe(0);
+    expect(broker.applyPolicy()).toBe(0);
+    await Promise.resolve();
+    expect(broker.list()).toEqual([expect.objectContaining({ requestId })]);
+    expect(settled).not.toHaveBeenCalled();
+    expect(resolved).not.toHaveBeenCalled();
+
+    expect(broker.resolveRequest(requestId, "allow-once")).toBe(true);
+    await pending;
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ behavior: "allow" }));
+    expect(resolved).toHaveBeenCalledOnce();
+  });
+
   it("honors the first response and records turn-finished cleanup as automatic", async () => {
     const resolutions: BridgePermissionResolution[] = [];
     const broker = new PermissionBroker();

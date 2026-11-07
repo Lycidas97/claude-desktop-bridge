@@ -36,6 +36,7 @@ import {
 } from "./webrtc-runtime.js";
 import { ConversationStateStore } from "./conversation-state-store.js";
 import { ProviderRegistry } from "./provider-registry.js";
+import { MagpieConnectionRepository } from "./magpie-connection.js";
 import { ProviderRuntimePool } from "./provider-runtime-pool.js";
 import { HandoffService } from "./handoff-service.js";
 import { CodexAppServerAdapter } from "./codex-app-server-adapter.js";
@@ -198,6 +199,7 @@ export async function createServiceRuntime(options: { userDataPath: string; onSt
       queuePath: join(userDataPath, "turn-queue-v2.json"),
       conversationState,
       runtimePool,
+      magpieConnection: new MagpieConnectionRepository(join(userDataPath, "magpie-connection-v1.json"), safeStorage),
       evidence,
       desktopRegistrar,
       ...(desktopInbox ? { desktopInbox } : {}),

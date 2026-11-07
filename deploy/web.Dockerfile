@@ -6,6 +6,7 @@ COPY apps/client/package.json apps/client/tsconfig.json apps/client/vite.config.
 RUN npm install --ignore-scripts --no-audit --no-fund
 COPY packages/protocol ./packages/protocol
 COPY apps/client ./apps/client
+COPY plugins/magpie-quota ./plugins/magpie-quota
 RUN npm run build -w @bridge/protocol && npm run build -w @bridge/client
 
 FROM nginx:1.29-alpine

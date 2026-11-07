@@ -55,7 +55,7 @@ docker compose --env-file .env -f deploy/relay-only.compose.yml config --quiet
 docker compose --env-file .env -f deploy/relay-only.compose.yml build relay
 ```
 
-构建使用 [relay.Dockerfile](../deploy/relay.Dockerfile)：Node.js 22 Alpine 多阶段镜像，先编译 `packages/protocol` 和 `apps/relay`，再生成运行镜像。服务器不需要另装 Node.js，也不需要构建 Android、Electron 或 Web 客户端。Dockerfile 专用上下文清单只发送根构建清单、协议和中继源码，不包含本机依赖、打包产物或 `.env`。
+构建使用 [relay.Dockerfile](../deploy/relay.Dockerfile)：Node.js 26 LTS Alpine 多阶段镜像，先编译 `packages/protocol` 和 `apps/relay`，再生成运行镜像。服务器不需要另装 Node.js，也不需要构建 Android、Electron 或 Web 客户端。Dockerfile 专用上下文清单只发送根构建清单、协议和中继源码，不包含本机依赖、打包产物或 `.env`。
 
 启动中继和 Caddy：
 

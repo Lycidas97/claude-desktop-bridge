@@ -139,7 +139,7 @@ Set both clients to `wss://your-domain/ws`. Database data, backups and TLS certi
 
 ## Development and validation
 
-Requires **Node.js ≥ 22.13** and npm. Android builds also need a JDK and Android SDK. Desktop and iOS builds need the corresponding platform toolchains.
+Development and CI use **Node.js 26 LTS** and npm, selected by [.nvmrc](.nvmrc). With nvm installed, run `nvm install` and `nvm use` first. The minimum compatible version remains Node.js 22.13. Electron uses its bundled Node.js runtime. Android builds also need JDK 21 and the Android SDK. Desktop and iOS builds need the corresponding platform toolchains.
 
 ```bash
 git clone https://github.com/Lycidas97/claude-desktop-bridge.git

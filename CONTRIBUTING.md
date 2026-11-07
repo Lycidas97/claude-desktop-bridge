@@ -15,7 +15,15 @@ apps/relay         Ciphertext relay and push wake
 packages/protocol  Protocol V3, crypto, reliable transports
 ```
 
-Requirements: Node.js 22.13+, npm, and a checkout of the repository.
+Use Node.js 26 LTS (selected by [`.nvmrc`](.nvmrc)), npm, and a checkout of the repository.
+With nvm installed, run `nvm install` and `nvm use` before installing dependencies.
+The minimum compatible Node.js version remains 22.13; Electron runs its bundled Node.js.
+CI build jobs select Node.js from `.nvmrc`. Official JavaScript Actions use their own
+Node.js 24 runtime and require an Actions runner version of at least 2.327.1.
+
+The scoped `@electron/packager` override uses Electron's maintained native ZIP
+extractor. Its older `extract-zip` dependency leaves the Electron 43 macOS archive
+unfinished on Node.js 26, so Forge can exit without producing an app bundle.
 
 ```bash
 npm ci

@@ -87,6 +87,8 @@ it.each([false, true].flatMap((force) => ["prompt", "tool-call", "tool-result"].
         uuid: randomUUID(), session_id: sessionId, stop_reason: null,
       } as SDKMessage);
     }
+    // Active turns are counted before persistence finishes and the new query starts.
+    await vi.waitFor(() => expect(queries).toHaveLength(force ? 2 : 1));
     const retryQuery = queries.at(-1)!;
     const retryMessage = await retryQuery.prompt.next();
     expect(retryMessage.done).toBe(false);

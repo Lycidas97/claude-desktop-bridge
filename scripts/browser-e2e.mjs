@@ -519,6 +519,7 @@ async function runScenario(theme, scenario) {
   const browserLog = [];
   const steps = [];
   const startedAt = Date.now();
+  const serverRoutes = [];
   let context;
   let page;
   let host;
@@ -546,7 +547,8 @@ async function runScenario(theme, scenario) {
     await context.routeWebSocket("**/*", (socket) => {
       const url = new URL(socket.url());
       if (url.hostname === "127.0.0.1" && [new URL(baseUrl).port, new URL(relay.url).port].includes(url.port)) {
-        socket.connectToServer();
+        const serverRoute = socket.connectToServer();
+        if (url.pathname === "/ws") serverRoutes.push(serverRoute);
       } else {
         errors.push(`Blocked non-fixture WebSocket: ${url.href}`);
         socket.close({ code: 1008, reason: "Isolated E2E only permits its loopback servers" });
@@ -590,6 +592,9 @@ async function runScenario(theme, scenario) {
       try {
         await context.tracing.stop(failure ? { path: resolve(directory, "trace.zip") } : {});
       } catch (error) { errors.push(`trace cleanup: ${error.stack}`); }
+      // Complete owned relay handshakes before Chromium tears down their sockets.
+      for (const route of serverRoutes) await route.close({ code: 1000, reason: "Scenario complete" });
+      await eventually(() => [...relayPeers.values()].filter(hello => hello.roomId === host.pairing.roomId && hello.role === "mobile").length, 0, "Scenario sockets close before disposing their browser context");
       try { await context.close(); } catch (error) { errors.push(`context cleanup: ${error.stack}`); }
     }
     host?.close();

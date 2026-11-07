@@ -103,7 +103,7 @@ try {
   $relayUrl = "ws://127.0.0.1:8788/ws"
   [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_HOST", "0.0.0.0", "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_URL", $relayUrl, "Process")
-  [Environment]::SetEnvironmentVariable("BRIDGE_PUBLIC_RELAY_URL", "", "Process")
+  [Environment]::SetEnvironmentVariable("BRIDGE_PUBLIC_RELAY_URL", $relayUrl, "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_PAIRING_BASE_URL", "http://127.0.0.1:8788", "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_SERVICE_ORIGIN", "http://127.0.0.1:8788", "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_DATA", (Join-Path $qaRoot "relay.sqlite"), "Process")

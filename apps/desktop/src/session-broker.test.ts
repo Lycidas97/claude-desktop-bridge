@@ -1038,6 +1038,7 @@ describe("SessionBroker", () => {
       observer,
       sessionsPath: join(root, "sessions.json"),
       queuePath: join(root, "queue.json"),
+      scanSessionProcesses: async () => [],
       hostFactory: (options) => {
         const host = new FakeHost(options);
         hosts.push(host);
@@ -1059,7 +1060,7 @@ describe("SessionBroker", () => {
     });
 
     try {
-      await waitFor(() => hosts[0]?.sends === 1, 1_000);
+      await waitFor(() => hosts[0]?.sends === 1);
       expect(hosts[0]?.options).toMatchObject({ resume: true, model: "claude-opus-5" });
       expect(eventLog.replay().some((event) => event.type === "turn.failed")).toBe(false);
       hosts[0]!.complete();
@@ -1099,6 +1100,7 @@ describe("SessionBroker", () => {
       observer,
       sessionsPath: join(root, "sessions.json"),
       queuePath: join(root, "queue.json"),
+      scanSessionProcesses: async () => [],
       hostFactory: (options) => {
         const host = new FakeHost(options);
         hosts.push(host);
@@ -1132,7 +1134,7 @@ describe("SessionBroker", () => {
       origin: "mobile",
     });
     try {
-      await waitFor(() => hosts[0]?.sends === 2, 1_000);
+      await waitFor(() => hosts[0]?.sends === 2);
       expect(eventLog.replay().some((event) => (
         event.type === "turn.failed" && event.data.requestId === "recheck-request"
       ))).toBe(false);
@@ -1410,6 +1412,8 @@ describe("SessionBroker", () => {
     });
     const publications: Array<Promise<unknown>> = [];
     broker.on("changed", () => { publications.push(controller.publish()); });
+    // Production controller initialization also republishes persisted host events.
+    eventLog.on("event", () => { publications.push(controller.publish()); });
     await broker.initialize();
     try {
       await broker.startTurn({ requestId: "busy", idempotencyKey: "busy", sessionId, text: "Wait for Desktop", origin: "mobile" });

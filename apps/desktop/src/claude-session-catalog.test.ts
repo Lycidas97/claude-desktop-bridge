@@ -428,7 +428,7 @@ describe("Claude session process catalog", () => {
     expect(JSON.stringify(catalog.sessions[0])).not.toContain(desktopSessions);
   });
 
-  it("excludes archived Desktop sessions, archived-sessions.idx entries, and /btw side chats even if CLI session files remain", async () => {
+  it("excludes archived Desktop sessions and archived-sessions.idx entries while exposing /btw side chats", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-session-archived-catalog-"));
     directories.push(root);
     const sessions = join(root, "sessions");
@@ -439,6 +439,7 @@ describe("Claude session process catalog", () => {
     const archivedIdxId = "10000000-0000-4000-8000-000000000003";
     const childOfArchivedId = "10000000-0000-4000-8000-000000000004";
     const btwChildId = "10000000-0000-4000-8000-000000000005";
+    const archivedBtwChildId = "10000000-0000-4000-8000-000000000006";
     await Promise.all([mkdir(sessions, { recursive: true }), mkdir(desktopSessions, { recursive: true }), mkdir(project, { recursive: true })]);
     await Promise.all([
       writeFile(join(desktopSessions, "archived-sessions.idx"), JSON.stringify({
@@ -489,6 +490,20 @@ describe("Claude session process catalog", () => {
           sessionId: `local_${activeParentId}`,
           btw: true,
           sideSession: true,
+          name: "fork-4",
+        },
+      })),
+      writeFile(join(desktopSessions, `local_${archivedBtwChildId}.json`), JSON.stringify({
+        sessionId: `local_${archivedBtwChildId}`,
+        cliSessionId: archivedBtwChildId,
+        cwd: project,
+        title: "Archived Side Question",
+        lastFocusedAt: 50,
+        isArchived: true,
+        spawnedFrom: {
+          sessionId: `local_${activeParentId}`,
+          btw: true,
+          sideSession: true,
         },
       })),
       writeFile(join(sessions, "archived-process.json"), JSON.stringify({
@@ -507,12 +522,25 @@ describe("Claude session process catalog", () => {
       projects: join(root, "projects"),
       desktopSessions: [desktopSessions],
     });
-    expect(catalog.sessions.map((session) => session.sessionId)).toEqual([activeParentId, childOfArchivedId]);
+    expect(catalog.sessions.map((session) => session.sessionId)).toEqual([activeParentId, childOfArchivedId, btwChildId]);
+    expect(catalog.sessions.find((session) => session.sessionId === btwChildId)).toMatchObject({
+      parentSessionId: activeParentId,
+      forkLabel: "fork-4",
+      sidechat: true,
+      title: "Side Question",
+    });
+    expect(catalog.archivedSessions?.find((session) => session.sessionId === archivedBtwChildId)).toMatchObject({
+      parentSessionId: activeParentId,
+      forkLabel: "btw",
+      sidechat: true,
+      title: "Archived Side Question",
+    });
     expect(catalog.archivedSessionIds?.has(childOfArchivedId)).toBe(false);
+    expect(catalog.archivedSessionIds?.has(btwChildId)).toBe(false);
     expect([...(catalog.archivedSessionIds ?? [])]).toEqual(expect.arrayContaining([
       archivedFlagId,
       archivedIdxId,
-      btwChildId,
+      archivedBtwChildId,
     ]));
   });
 });

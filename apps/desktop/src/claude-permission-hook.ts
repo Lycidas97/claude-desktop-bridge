@@ -26,7 +26,9 @@ export interface ClaudePermissionHookOptions {
 
 interface PendingHookPermission {
   id: string;
+  sessionId: string;
   nativeSessionId: string;
+  toolUseId?: string;
   toolName: string;
   toolInput: Record<string, unknown>;
   inputKey: string;
@@ -277,6 +279,7 @@ export class ClaudePermissionHook {
   private token = "";
   private url = "";
   private readonly pending = new Map<string, PendingHookPermission>();
+  private readonly modeChanges = new Map<string, PendingHookPermission>();
 
   constructor(private readonly options: ClaudePermissionHookOptions) {}
 
@@ -306,6 +309,7 @@ export class ClaudePermissionHook {
   async close(): Promise<void> {
     for (const entry of this.pending.values()) entry.controller.abort();
     this.pending.clear();
+    this.modeChanges.clear();
     const server = this.server;
     this.server = undefined;
     if (server) {
@@ -368,6 +372,14 @@ export class ClaudePermissionHook {
       if (typeof body.tool_name === "string") {
         const postInput = isRecord(body.tool_input) ? body.tool_input : {};
         const inputKey = canonicalJson(postInput);
+        if (typeof body.permission_mode === "string" && typeof body.agent_id !== "string") {
+          for (const entry of this.modeChanges.values()) {
+            if (entry.nativeSessionId !== nativeSessionId || entry.toolName !== body.tool_name ||
+              (entry.toolUseId && entry.toolUseId !== body.tool_use_id) || !matchesPendingToolInput(entry, postInput, inputKey)) continue;
+            this.options.broker.observeNativeMode(entry.sessionId, entry.id, body.permission_mode);
+            this.modeChanges.delete(entry.id);
+          }
+        }
         for (const entry of this.pending.values()) {
           if (
             entry.nativeSessionId === nativeSessionId &&
@@ -385,6 +397,9 @@ export class ClaudePermissionHook {
     if (eventName === "Stop" || eventName === "SessionEnd") {
       for (const entry of this.pending.values()) {
         if (entry.nativeSessionId === nativeSessionId) entry.controller.abort();
+      }
+      for (const entry of this.modeChanges.values()) {
+        if (entry.nativeSessionId === nativeSessionId) this.modeChanges.delete(entry.id);
       }
       res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
       return;
@@ -407,7 +422,9 @@ export class ClaudePermissionHook {
     const id = randomUUID();
     this.pending.set(id, {
       id,
+      sessionId: logicalSessionId,
       nativeSessionId,
+      ...(typeof body.tool_use_id === "string" ? { toolUseId: body.tool_use_id } : {}),
       toolName: body.tool_name,
       toolInput,
       inputKey,
@@ -437,8 +454,10 @@ export class ClaudePermissionHook {
           : undefined;
       const result = await this.options.broker.request(logicalSessionId, body.tool_name, toolInput, {
         signal: controller.signal,
+        requestId: id,
         toolUseId: typeof body.tool_use_id === "string" ? body.tool_use_id : id,
         manualOnly: true,
+        canSetNativeFullAccess: typeof body.agent_id !== "string" && body.tool_name !== "AskUserQuestion",
         ...(suggestions ? { suggestions } : {}),
         ...(typeof body.title === "string" ? { title: body.title } : {}),
         ...(typeof body.display_name === "string" ? { displayName: body.display_name } : {}),
@@ -451,6 +470,10 @@ export class ClaudePermissionHook {
       ) {
         res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
         return;
+      }
+      if (result.behavior === "allow" && result.updatedPermissions?.some(update =>
+        update.type === "setMode" && update.mode === "bypassPermissions" && update.destination === "session")) {
+        this.modeChanges.set(id, this.pending.get(id)!);
       }
       const updatedInput = result.behavior === "allow" &&
         result.updatedInput &&

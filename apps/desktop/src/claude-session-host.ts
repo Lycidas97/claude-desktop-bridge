@@ -9,10 +9,14 @@ import {
   type SDKControlGetContextUsageResponse,
   type SDKMessage,
   type SDKUserMessage,
+  type Settings,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   isClaudeTranscriptControlMessage,
   type BridgeAttachment,
+  type BridgePermissionRules,
+  type BridgeSDKPermissionMode,
+  type BridgeSlashCommand,
 } from "@bridge/protocol";
 import { AsyncInputQueue } from "./async-input-queue.js";
 import type { ClaudeSessionEffort } from "./claude-desktop-sessions.js";
@@ -48,6 +52,10 @@ export type SessionHostEvent =
   | { type: "background.tasks"; sessionId: string; tasks: SessionHostBackgroundTask[]; at: number }
   | ({ type: "task.started" | "task.progress" | "task.notification"; sessionId: string; turnId?: string; at: number } & SessionHostBackgroundTask)
   | { type: "turn.started"; sessionId: string; turnId: string; at: number }
+  | { type: "command.output"; sessionId: string; turnId?: string; itemId: string; text: string; at: number }
+  | { type: "command.status"; sessionId: string; turnId?: string; text: string; at: number }
+  | { type: "session.compacted"; sessionId: string; itemId: string; at: number }
+  | { type: "session.reset"; sessionId: string; previousNativeSessionId: string; nativeSessionId: string; at: number }
   | {
       type: "user.accepted";
       sessionId: string;
@@ -153,8 +161,11 @@ export class ClaudeSessionHost extends EventEmitter {
   private streamTask: Promise<void> | undefined;
   private retiring = false;
   private hasStartedQuery = false;
-  private readonly sessionIdValue: string;
-  private readonly eventSessionId: string;
+  private sessionIdValue: string;
+  private eventSessionId: string;
+  private slashCommandsValue: BridgeSlashCommand[] | undefined;
+  private permissionModeValue: BridgeSDKPermissionMode = "default";
+  private permissionSettings: NonNullable<Settings["permissions"]> = {};
   private currentTurnId: string | undefined;
   private nativeSteering = false;
   private readonly toolTurns = new Map<string, string>();
@@ -179,6 +190,14 @@ export class ClaudeSessionHost extends EventEmitter {
 
   get sessionId(): string {
     return this.sessionIdValue;
+  }
+
+  get slashCommands(): BridgeSlashCommand[] | undefined {
+    return this.slashCommandsValue;
+  }
+
+  rebindSession(logicalSessionId: string): void {
+    this.eventSessionId = logicalSessionId;
   }
 
   get running(): boolean {
@@ -226,6 +245,10 @@ export class ClaudeSessionHost extends EventEmitter {
     );
     const resumeExistingSession = this.options.resume || this.hasStartedQuery;
     const executor = { exited: Promise.resolve(), stderr: "" };
+    const settings: Settings = {
+      ...(this.autoCompactWindow ? { autoCompactWindow: this.autoCompactWindow } : {}),
+      ...(Object.keys(this.permissionSettings).length > 0 ? { permissions: this.permissionSettings } : {}),
+    };
     const queryProcess = this.queryFactory({
       prompt: this.input,
       options: {
@@ -239,12 +262,12 @@ export class ClaudeSessionHost extends EventEmitter {
         includeHookEvents: true,
         extraArgs: { "replay-user-messages": null },
         settingSources: this.options.settingSources ?? ["user", "project", "local"],
-        permissionMode: "default",
+        permissionMode: this.permissionModeValue,
         canUseTool,
         persistSession: this.options.persistSession ?? true,
         ...(this.modelValue ? { model: this.modelValue } : {}),
         ...(this.effortValue ? { effort: this.effortValue } : {}),
-        ...(this.autoCompactWindow ? { settings: { autoCompactWindow: this.autoCompactWindow } } : {}),
+        ...(Object.keys(settings).length > 0 ? { settings } : {}),
         spawnClaudeCodeProcess: (options) => {
           const child = spawn(options.command, options.args, {
             cwd: options.cwd,
@@ -282,6 +305,10 @@ export class ClaudeSessionHost extends EventEmitter {
     this.streamTask = this.consume(queryProcess, executor);
   }
 
+  async ready(): Promise<void> {
+    await this.activeQuery().initializationResult();
+  }
+
   async setModel(model?: string): Promise<void> {
     if (this.modelValue === model) return;
     const query = this.activeQuery();
@@ -302,6 +329,26 @@ export class ClaudeSessionHost extends EventEmitter {
     // Headless CLI only applies this setting at query startup.
     if (this.queryProcess) await this.retireQuery(undefined, this.queryProcess);
     this.autoCompactWindow = maxTokens;
+  }
+
+  getPermissions(): { mode: BridgeSDKPermissionMode; rules: BridgePermissionRules } {
+    return {
+      mode: this.permissionModeValue,
+      rules: {
+        allow: this.permissionSettings.allow ?? [],
+        ask: this.permissionSettings.ask ?? [],
+        deny: this.permissionSettings.deny ?? [],
+      },
+    };
+  }
+
+  async setPermissions(mode: BridgeSDKPermissionMode, rules: BridgePermissionRules): Promise<void> {
+    const query = this.activeQuery();
+    await query.setPermissionMode(mode);
+    this.permissionModeValue = mode;
+    const permissions = { ...this.permissionSettings, ...rules };
+    await query.applyFlagSettings({ permissions });
+    this.permissionSettings = permissions;
   }
 
   async supportedModels(): Promise<ModelInfo[]> {
@@ -425,7 +472,7 @@ export class ClaudeSessionHost extends EventEmitter {
   private async consume(queryProcess: Query, executor: { exited: Promise<void>; stderr: string }): Promise<void> {
     let failure: string | undefined;
     try {
-      await queryProcess.initializationResult();
+      this.slashCommandsValue = (await queryProcess.initializationResult()).commands;
       if (!this.closed && !this.retiring) {
         this.initializedValue = true;
         this.emitEvent({ type: "runtime.ready", sessionId: this.sessionIdValue, at: Date.now() });
@@ -502,6 +549,32 @@ export class ClaudeSessionHost extends EventEmitter {
   }
 
   private handleMessage(message: SDKMessage): void {
+    if (message.type === "conversation_reset") {
+      const previousNativeSessionId = this.sessionIdValue;
+      this.sessionIdValue = message.new_conversation_id;
+      this.emitEvent({
+        type: "session.reset", sessionId: this.eventSessionId,
+        previousNativeSessionId, nativeSessionId: this.sessionIdValue, at: Date.now(),
+      });
+      return;
+    }
+    if (message.type === "system" && message.subtype === "init") {
+      this.permissionModeValue = message.permissionMode;
+      const commands = new Map(this.slashCommandsValue?.map(command => [command.name, command]));
+      for (const name of message.slash_commands) {
+        if (!commands.has(name)) commands.set(name, { name, description: "" });
+      }
+      this.slashCommandsValue = [...commands.values()];
+      return;
+    }
+    if (message.type === "system" && message.subtype === "commands_changed") {
+      this.slashCommandsValue = message.commands;
+      return;
+    }
+    if (message.type === "system" && message.subtype === "compact_boundary") {
+      this.emitEvent({ type: "session.compacted", sessionId: this.sessionIdValue, itemId: message.uuid, at: Date.now() });
+      return;
+    }
     if (message.type === "system" && message.subtype === "background_tasks_changed") {
       const at = Date.now();
       this.hasBackgroundSnapshot = true;
@@ -592,6 +665,23 @@ export class ClaudeSessionHost extends EventEmitter {
       ("parent_tool_use_id" in message && message.parent_tool_use_id !== null);
     const turnId = backgroundOutput ? undefined : streamTurn?.turnId;
     const drainingInterruptedTurn = !backgroundOutput && streamTurn?.interrupted === true;
+    if (message.type === "system" && message.subtype === "local_command_output") {
+      this.emitEvent({
+        type: "command.output", sessionId: this.sessionIdValue,
+        ...(turnId ? { turnId } : {}), itemId: message.uuid, text: message.content, at: Date.now(),
+      });
+      return;
+    }
+    if (message.type === "system" && message.subtype === "status") {
+      if (message.permissionMode !== undefined) this.permissionModeValue = message.permissionMode;
+      const text = message.compact_result === "failed" ? message.compact_error ?? "Compaction failed"
+        : message.status === "compacting" ? "Compacting conversation…" : undefined;
+      if (text !== undefined) this.emitEvent({
+        type: "command.status", sessionId: this.sessionIdValue,
+        ...(turnId ? { turnId } : {}), text, at: Date.now(),
+      });
+      return;
+    }
     const partial = partialText(message);
     if (partial) {
       if ((!turnId && !backgroundOutput) || drainingInterruptedTurn) return;

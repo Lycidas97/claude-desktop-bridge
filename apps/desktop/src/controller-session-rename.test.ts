@@ -17,6 +17,7 @@ function fixture(turnState: BridgeTurnState = "running", sessionId = "native-1")
     broker: {
       listSessions: () => external ? [] : [row()], session: () => row(),
       refreshDesktopConfiguration: vi.fn(async () => undefined), history: vi.fn(async () => ({ items: [] })),
+      rename: vi.fn(async (id: string, title: string) => { controller.conversationState.setSessionTitle(id, title); }),
     },
     runtimeSessions: external ? { listSessions: () => [row()], session: () => row(), history: vi.fn(async () => ({ items: [] })) } : undefined,
     conversationState: { setSessionTitle: vi.fn((id: string, title: string) => titles.set(id, title)) },
@@ -38,6 +39,7 @@ describe("session.rename", () => {
     await controller.publish();
     controller.broadcast.mockClear();
     expect(await rename("  手机显示名  ")).toEqual({ session: { ...session, title: "手机显示名" } });
+    expect(controller.broker.rename).toHaveBeenCalledExactlyOnceWith(session.sessionId, "手机显示名");
     expect(controller.conversationState.setSessionTitle).toHaveBeenCalledExactlyOnceWith(session.sessionId, "手机显示名");
     expect(controller.broadcast).toHaveBeenCalledExactlyOnceWith({ kind: "snapshot", snapshot: { sessions: [{ ...session, title: "手机显示名" }] } }, true);
     expect(await controller.handleRequest({ method: "session.list", params: { search: "手机显示名" } }, "mobile")).toEqual({ sessions: [{ ...session, title: "手机显示名" }] });
@@ -82,6 +84,14 @@ describe("session.rename", () => {
     await expect(rename("Name")).rejects.toThrow("database write failed");
     expect(controller.broadcast).not.toHaveBeenCalled();
     expect(controller.allSessions()[0].title).toBe("原生标题");
+  });
+
+  it("does not publish a title when SDK persistence fails", async () => {
+    const { controller, rename } = fixture();
+    controller.broker.rename.mockRejectedValueOnce(new Error("transcript is unavailable"));
+    await expect(rename("Name")).rejects.toThrow("transcript is unavailable");
+    expect(controller.conversationState.setSessionTitle).not.toHaveBeenCalled();
+    expect(controller.broadcast).not.toHaveBeenCalled();
   });
 
   it("rejects rename when persistent state is unavailable", async () => {

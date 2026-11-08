@@ -68,7 +68,7 @@ export function DesktopHandoffNotice({ session, online, className, onReturn, onT
               : handoff.inputStatus === "queued"
                 ? "当前主轮结束后会自动交给 Desktop。"
                 : handoff.inputStatus === "held"
-                  ? "请在电脑端允许接收这条消息；尚未交给会话处理，无需重复发送。"
+                  ? "请在电脑端允许接收这条消息，完全授权不会代替此确认；无需重复发送。"
                   : "等待原会话确认接收。"
             : queued && !online
               ? `上次同步时有 ${session.pendingCount} 条消息排队，当前进度尚未确认。`

@@ -7,6 +7,8 @@ import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./FileAttachmentPicker.js";
 import { IconButton } from "./IconButton.js";
 import { InteractivePromptCard } from "./MobileWorkspace.js";
+import { SlashCommandInput } from "./SlashCommandInput.js";
+import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
 
 type HookStore = {
   slots: any[]; index: number; dirty: boolean;
@@ -131,6 +133,57 @@ function textContent(node: ReactNode): string {
   return elements(node).flatMap(element => element.props.children).filter(child => typeof child === "string").join(" ");
 }
 
+describe("desktop custom command input", () => {
+  const input = () => elements(tree).find(element => element.type === SlashCommandInput)!;
+
+  it("loads the selected logical session through the read-only RPC and changes text without sending", async () => {
+    snapshot.host.capabilities = ["session.commands.v1"];
+    await openSessions();
+    const catalog = { sessionId: "A", commands: [{ name: "review", description: "检查变更" }] };
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "commands", ok: true, result: { catalog } });
+    await expect(input().props.onLoad()).resolves.toEqual(catalog);
+    expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "session.commands", params: { sessionId: "A" } });
+    input().props.onChange("/review "); tree = sessions.draw();
+    expect(input().props.value).toBe("/review ");
+    expect(apiRequest).toHaveBeenCalledOnce();
+    elements(tree).find(element => element.type === "form" && element.props.className.startsWith("composer-form"))!.props.onSubmit({ preventDefault() {} });
+    await settle();
+    expect(apiRequest).toHaveBeenLastCalledWith(expect.objectContaining({ method: "turn.start", params: { sessionId: "A", text: "/review", attachments: [] } }));
+  });
+
+  it("propagates catalog errors and changes the widget identity across hosts and sessions", async () => {
+    snapshot.host.capabilities = ["session.commands.v1"];
+    snapshot.sessions.push({ ...snapshot.sessions[0]!, sessionId: "B", title: "Session B" });
+    await openSessions();
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "commands", ok: false, error: { code: "READ_FAILED", message: "命令目录不可读" } });
+    await expect(input().props.onLoad()).rejects.toThrow("命令目录不可读");
+    const firstKey = input().key;
+    elements(tree).find(element => element.type === "button" && element.props.className?.includes("desktop-session-row") && textContent(element).includes("Session B"))!.props.onClick();
+    tree = sessions.draw();
+    expect(input().key).not.toBe(firstKey);
+    const secondKey = input().key;
+    tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot, host: { ...snapshot.host, hostId: "other-computer" } } });
+    expect(input().key).not.toBe(secondKey);
+  });
+
+  it.each(["old-host", "codex-desktop", "hermes-desktop", "dsh-desktop"] as const)("keeps ordinary text input for %s", async runtime => {
+    if (runtime !== "old-host") {
+      snapshot.host.capabilities = ["session.commands.v1"];
+      snapshot.sessions[0]!.runtimeId = runtime;
+    }
+    await openSessions();
+    if (runtime !== "old-host") {
+      // This renderer tests DesktopSessions directly; visibility is a separate dashboard concern.
+      tree = sessions.draw({ ...sessionsProps, snapshot });
+      await settle(); tree = sessions.draw(); apiRequest.mockClear();
+    }
+    expect(input().props.onLoad).toBeUndefined();
+    input().props.onChange("/ordinary"); tree = sessions.draw();
+    expect(input().props.value).toBe("/ordinary");
+    expect(apiRequest).not.toHaveBeenCalled();
+  });
+});
+
 describe("desktop empty creation", () => {
   it("enables the creation entry without any historical project", async () => {
     snapshot.sessions = []; snapshot.projects = [];
@@ -146,7 +199,7 @@ describe("explicit Desktop handoff", () => {
   it.each([
     ["queued", "消息等待发送", "当前主轮结束后会自动交给 Desktop。"],
     ["submitted", "正在交给 Desktop", "等待原会话确认接收。"],
-    ["held", "等待 Desktop 接收许可", "请在电脑端允许接收这条消息；尚未交给会话处理，无需重复发送。"],
+    ["held", "等待 Desktop 接收许可", "请在电脑端允许接收这条消息，完全授权不会代替此确认；无需重复发送。"],
   ] as const)("shows %s Desktop inbox progress without handoff or approval actions", (inputStatus, title, detail) => {
     snapshot.sessions[0]!.desktopHandoff = { state: "desktop-inbox", canReturn: false, canTakeover: true, inputStatus };
     const onReturn = vi.fn();
@@ -473,4 +526,95 @@ describe("desktop conversation actions", () => {
     expect(elements(tree).find((element) => element.type === FileAttachmentPicker)!.props.state.entries).toEqual([]);
     expect(apiRequest).not.toHaveBeenCalled();
   });
+
+  it("displays /btw sidechats under their active parent and navigates between parent and sidechats", async () => {
+    snapshot.sessions = [
+      snapshot.sessions[0]!,
+      {
+        ...snapshot.sessions[0]!,
+        sessionId: "btw-1",
+        title: "btw: 检查 IPv6 转发",
+        parentSessionId: "A",
+        forkLabel: "fork-4",
+        sidechat: true,
+      },
+      {
+        ...snapshot.sessions[0]!,
+        sessionId: "btw-2",
+        title: "btw: 收集白名单域名",
+        parentSessionId: "A",
+        forkLabel: "btw",
+        sidechat: true,
+        archivedAt: 100,
+      },
+    ];
+    await openSessions();
+    expect(textContent(tree)).toContain("2 个 /btw 侧聊");
+    expect(textContent(tree)).toContain("/btw · btw: 检查 IPv6 转发");
+    expect(textContent(tree)).toContain("/btw · btw: 收集白名单域名");
+    const toggle = elements(tree).find((element) => element.type === "button" && element.props.className === "desktop-fork-toggle")!;
+    toggle.props.onClick();
+    tree = sessions.draw();
+    const badges = elements(tree).filter((element) => element.type === "em" && String(element.props.className).includes("is-sidechat"));
+    expect(badges.map((badge) => badge.props.children)).toEqual(["/btw", "/btw"]);
+  });
+});
+
+
+describe("desktop common commands", () => {
+  it("submits /help through session.command, displays the returned catalog and never sends a model turn", async () => {
+    snapshot.host.capabilities = ["session.commands.v1", "session.command.v1"];
+    await openSessions();
+    const catalog = { sessionId: "A", commands: [{ name: "help", description: "帮助" }] };
+    apiRequest.mockImplementation(async ({ method }) => ({ kind: "response", requestId: "command", ok: true,
+      result: method === "session.commands" ? { catalog } : { command: { action: "help", catalog } },
+    }));
+    elements(tree).find(element => element.type === SlashCommandInput)!.props.onChange("/help"); tree = sessions.draw();
+    elements(tree).find(element => element.type === "form" && element.props.className.startsWith("composer-form"))!.props.onSubmit({ preventDefault() {} });
+    await settle(); tree = sessions.draw();
+    expect(apiRequest.mock.calls.map(call => call[0].method)).toEqual(["session.commands", "session.command"]);
+    expect(apiRequest.mock.calls[1]![0].params).toEqual({ sessionId: "A", text: "/help" });
+    expect(elements(tree).find(element => element.type === SessionCommandDialogs)!.props.result).toEqual({ action: "help", catalog });
+  });
+  it("refreshes compacted history and switches reset sessions through real open requests", async () => {
+    await openSessions();
+    const event = { eventId: "compact", sessionId: "A", seq: 1, timestamp: 1, origin: "claude-host", type: "session.compacted", data: {} };
+    tree = sessions.draw({ ...sessionsProps, events: [event] }); await settle(); tree = sessions.draw();
+    expect(apiRequest).toHaveBeenCalledWith(expect.objectContaining({ method: "session.open", params: expect.objectContaining({ sessionId: "A" }) }));
+    apiRequest.mockClear();
+    const next = { ...snapshot.sessions[0]!, sessionId: "new-A", title: "New context", nativeSessionId: "new-native" };
+    snapshot = { ...snapshot, sessions: [...snapshot.sessions, next] };
+    const reset = { ...event, eventId: "reset", seq: 2, type: "session.reset", data: { sessionId: "new-A", previousSessionId: "A", nativeSessionId: "new-native" } };
+    tree = sessions.draw({ ...sessionsProps, snapshot, events: [event, reset] }); await settle(); tree = sessions.draw();
+    expect(apiRequest).toHaveBeenCalledWith(expect.objectContaining({ method: "session.open", params: expect.objectContaining({ sessionId: "new-A" }) }));
+    expect(elements(tree).find(element => element.type === SessionCommandDialogs)!.props.session.sessionId).toBe("new-A");
+  });
+});
+
+
+it("[edge] keeps an old session's slash failure out of the new draft and pending command", async () => {
+  snapshot.host.capabilities = ["session.commands.v1", "session.command.v1"];
+  snapshot.sessions.push({ ...snapshot.sessions[0]!, sessionId: "B", title: "Session B" });
+  await openSessions();
+  let failA!: (error: Error) => void;
+  let finishB!: (result: unknown) => void;
+  apiRequest.mockImplementation(async ({ method, params }) => {
+    if (method === "session.commands") return { kind: "response", requestId: "catalog", ok: true, result: { catalog: { sessionId: params.sessionId, commands: [] } } };
+    if (method === "session.command") return new Promise((resolve, reject) => { if (params.sessionId === "A") failA = reject; else finishB = resolve; });
+    return { kind: "response", requestId: "history", ok: true, result: method === "session.open" ? { history: { items: [], hasMore: false } } : { evidence: { items: [], hasMore: false } } };
+  });
+  const input = () => elements(tree).find(element => element.type === SlashCommandInput)!;
+  const send = () => elements(tree).find(element => element.type === "form" && element.props.className.startsWith("composer-form"))!.props.onSubmit({ preventDefault() {} });
+  input().props.onChange("/context"); tree = sessions.draw(); send(); await settle(); tree = sessions.draw();
+  elements(tree).find(element => element.type === "button" && element.props.className?.includes("desktop-session-row") && textContent(element).includes("Session B"))!.props.onClick(); tree = sessions.draw();
+  input().props.onChange("/compact"); tree = sessions.draw();
+  expect(elements(tree).find(element => element.type === "button" && element.props["aria-label"] === "发送")!.props.disabled).toBe(false);
+  send(); await settle(); tree = sessions.draw();
+  input().props.onChange("next B draft"); tree = sessions.draw();
+  failA(new Error("A command failed")); await settle(); tree = sessions.draw();
+  expect(input().props.value).toBe("next B draft");
+  expect(elements(tree).some(element => element.props.role === "alert" && element.props.children === "A command failed")).toBe(false);
+  expect(elements(tree).find(element => element.type === "button" && element.props["aria-label"] === "发送")!.props.disabled).toBe(true);
+  finishB({ kind: "response", requestId: "B", ok: true, result: { command: { action: "sent" } } }); await settle(); tree = sessions.draw();
+  expect(apiRequest.mock.calls.filter(call => call[0].method === "session.command").map(call => call[0].params)).toEqual([{ sessionId: "A", text: "/context" }, { sessionId: "B", text: "/compact" }]);
 });

@@ -44,6 +44,7 @@ export interface ClaudeDesktopSession {
   ultracode?: boolean;
   parentSessionId?: string;
   forkLabel?: string;
+  sidechat?: boolean;
   groupId?: string;
   groupName?: string;
 }
@@ -328,14 +329,16 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
       : undefined;
     const isDetached = value.detached === true || value.lineageDetached === true;
     const isBtwChild = spawnedFrom?.btw === true && !isDetached;
+    const archived = value.isArchived === true || archivedDesktopIds.has(value.sessionId);
     let rawParentDesktopId = desktopParents.get(value.sessionId);
     // Keep active descendants, attaching them to the nearest visible ancestor.
-    for (let hop = 0; rawParentDesktopId && archivedDesktopIds.has(rawParentDesktopId) && hop < desktopParents.size; hop += 1) {
-      const ancestor = desktopParents.get(rawParentDesktopId);
-      if (!ancestor) break;
-      rawParentDesktopId = ancestor;
+    if (!archived) {
+      for (let hop = 0; rawParentDesktopId && archivedDesktopIds.has(rawParentDesktopId) && hop < desktopParents.size; hop += 1) {
+        const ancestor = desktopParents.get(rawParentDesktopId);
+        if (!ancestor) break;
+        rawParentDesktopId = ancestor;
+      }
     }
-    const archived = value.isArchived === true || archivedDesktopIds.has(value.sessionId);
     const priorCliSessionIds = Array.isArray(value.priorCliSessionIds)
       ? value.priorCliSessionIds
           .filter((priorId): priorId is string => typeof priorId === "string" && Boolean(priorId.trim()))
@@ -343,10 +346,8 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
           .filter((priorId) => priorId !== value.cliSessionId)
       : [];
     for (const priorId of priorCliSessionIds) archivedCliSessionIds.add(priorId);
-    if (archived || isBtwChild) {
+    if (archived) {
       archivedCliSessionIds.add(value.cliSessionId);
-      // Side chats stay hidden; archived sessions are listed as archived.
-      if (isBtwChild) continue;
     } else {
       activeCliSessionIds.add(value.cliSessionId);
     }
@@ -362,13 +363,15 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
     const forkLabel = parentSessionId
       ? typeof spawnedFrom?.name === "string" && spawnedFrom.name.trim()
         ? spawnedFrom.name.trim()
-        : "fork"
+        : isBtwChild ? "btw" : "fork"
       : undefined;
     const rawTitle = typeof value.title === "string" ? value.title.trim() : "";
     const spawnedTitle = typeof spawnedFrom?.title === "string" ? spawnedFrom.title.trim() : "";
-    const title = parentSessionId && spawnedTitle && (!rawTitle || spawnedTitle === `${rawTitle} (fork)`)
-      ? spawnedTitle
-      : rawTitle;
+    const title = isBtwChild
+      ? (rawTitle || spawnedTitle.replace(/\s*\(fork\)$/iu, ""))
+      : parentSessionId && spawnedTitle && (!rawTitle || spawnedTitle === `${rawTitle} (fork)`)
+        ? spawnedTitle
+        : rawTitle;
     let group = desktopGroups.get(value.sessionId);
     for (
       let hop = 0, cursor = desktopParents.get(value.sessionId);
@@ -392,6 +395,7 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
       ...(ultracode !== undefined ? { ultracode } : {}),
       ...(parentSessionId && parentSessionId !== value.cliSessionId ? { parentSessionId } : {}),
       ...(forkLabel && parentSessionId !== value.cliSessionId ? { forkLabel } : {}),
+      ...(isBtwChild && parentSessionId !== value.cliSessionId ? { sidechat: true } : {}),
       ...(group ? { groupId: group.id, groupName: group.name } : {}),
     };
     metadataPaths.set(value.cliSessionId, file);

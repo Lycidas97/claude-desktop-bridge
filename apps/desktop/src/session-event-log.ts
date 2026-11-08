@@ -54,6 +54,7 @@ interface ReceiptIndex {
 
 const RECEIPT_ITEM_TYPES = new Set<BridgeEventType>([
   "session.observed", "user.message.accepted", "assistant.completed",
+  "command.output", "command.status", "session.compacted", "session.reset",
   "tool.started", "tool.progress", "tool.completed", "session.desktop-handoff",
 ]);
 const DEDUP_FIELDS = ["text", "interactivePrompt", "taskPlan", "summary"] as const;
@@ -124,6 +125,17 @@ function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
       text,
       ...(interactivePrompt ? { interactivePrompt } : {}),
       ...(taskPlan ? { taskPlan } : {}),
+    };
+  }
+  if (event.type === "command.output" || event.type === "command.status" ||
+    event.type === "session.compacted" || event.type === "session.reset") {
+    const text = textValue(event.data.text);
+    if (!text) return undefined;
+    return {
+      ...base,
+      id: event.itemId ?? event.eventId,
+      role: "system",
+      text,
     };
   }
   if (event.type === "session.observed") {

@@ -26,6 +26,13 @@
 - 手机创建的 Claude Desktop 会话将所选授权保存到原生会话记录：标准授权对应 `default`，
   完全授权对应 `bypassPermissions`。运行中的 Desktop 需要重新加载后才读取这些设置，
   Bridge 会保留待重启状态；不会自动重启 Desktop，也不改变其应用或受管策略。
+- 对运行中的原生会话，手机明确确认“此 Desktop 会话完全授权”后，Bridge 仅向当前
+  PermissionRequest 返回固定的 `setMode / bypassPermissions / session` 补丁；是否应用
+  仍受原生启动选项和受管策略约束，必须取得匹配的原生 Hook 反馈才显示已确认。
+- Desktop 收件箱的接收许可独立于工具授权。`held` 仍需在电脑端确认，Bridge 默认完全授权
+  或原生会话模式变更均不代替这一步；拒收、禁收和丢弃不会触发自动重发或改走执行器。
+- 收件箱图片通过现有上传校验保存到会话 `.bridge-uploads`，新目录为 `0700`、文件为
+  `0600`；在原会话中读取图片仍服从原生工具与系统目录权限，不因附件来自手机自动放行。
 - 第三方 Claude Host 凭据不写入 Bridge 配置，不经 Relay，不出现在诊断或日志中。
 - Anthropic Console API Key 只接受 Desktop 本地 IPC；保存前必须由 Electron
   `safeStorage` 加密，磁盘格式固定带 `os:` 标记，系统安全存储不可用时拒绝保存，

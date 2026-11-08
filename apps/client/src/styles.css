@@ -5247,6 +5247,210 @@ button:disabled {
   grid-template-columns: 38px minmax(0, 1fr) 40px;
 }
 
+.slash-command-input {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.slash-command-menu {
+  position: absolute;
+  z-index: 30;
+  right: 0;
+  bottom: calc(100% + 12px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: min(300px, 42dvh);
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-panel);
+  background: var(--card-fill);
+  box-shadow: var(--glass-shadow);
+  color: var(--text);
+  text-align: left;
+}
+
+.session-command-dialog {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.session-command-dialog > header,
+.session-permissions-editor > footer,
+.session-permissions-editor > .session-configuration-error {
+  flex-shrink: 0;
+}
+
+.session-permissions-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.session-command-body {
+  display: grid;
+  gap: 18px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.session-permissions-editor > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.session-command-dialog .session-model-field textarea,
+.session-command-dialog .session-model-field input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.session-command-dialog .session-model-field textarea:focus-visible,
+.session-command-dialog .session-model-field input:focus-visible {
+  outline: 1px solid var(--accent);
+}
+
+.session-command-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.session-command-entry {
+  display: grid;
+  gap: 4px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-btn);
+  text-align: left;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.session-command-entry small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-command-entry[aria-disabled="true"],
+.slash-command-option:disabled {
+  opacity: 0.6;
+}
+
+.session-command-dialog pre {
+  margin: 4px 0 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.slash-command-heading {
+  padding: 6px 9px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.slash-command-options {
+  position: relative;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: thin;
+}
+
+.slash-command-option {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  min-height: 44px;
+  padding: 9px;
+  border: 0;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.slash-command-option.is-active,
+.slash-command-option:hover {
+  background: var(--surface-2);
+}
+
+.slash-command-option.is-active {
+  box-shadow: inset 2px 0 var(--accent);
+}
+
+.slash-command-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  overflow-wrap: anywhere;
+}
+
+.slash-command-name strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.slash-command-name small,
+.slash-command-description {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.slash-command-description {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.slash-command-status,
+.slash-command-warning {
+  padding: 9px;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.slash-command-status.is-error {
+  color: var(--danger-ink);
+}
+
+.slash-command-warning {
+  overflow: hidden;
+  display: -webkit-box;
+  flex-shrink: 0;
+  max-height: 3.5em;
+  font-size: 11px;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 .mobile-composer textarea,
 .desktop-composer textarea {
   width: 100%;
@@ -7458,6 +7662,12 @@ button:disabled {
   font-weight: 650;
   line-height: 1.35;
   vertical-align: middle;
+}
+
+.session-fork-badge.is-sidechat {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+  color: var(--muted);
 }
 
 .desktop-session-row strong .session-fork-badge,

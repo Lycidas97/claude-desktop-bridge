@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -12,7 +12,10 @@ import { SessionBroker, type SessionHostRuntime } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
 import { InboxSendError } from "./claude-desktop-inbox.js";
+import { ClaudePermissionHook } from "./claude-permission-hook.js";
 
+const inboxImageBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7X0AAAAASUVORK5CYII=", "base64");
+const inboxImage = { id: "inbox-image", name: "inbox-image.png", mimeType: "image/png" as const, size: inboxImageBytes.length, data: inboxImageBytes.toString("base64") };
 const directories: string[] = [];
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
 beforeEach(() => {
@@ -67,6 +70,7 @@ async function fixture({ busy = false, split = true, staleLogical = false, deskt
   const hostFactory = vi.fn((_options: ClaudeSessionHostOptions): SessionHostRuntime => ({
     start() {}, async setModel() {}, async setEffort() {}, async setAutoCompactWindow() {},
     async supportedModels() { return []; }, async contextUsage() { throw new Error("unused"); },
+    rebindSession: vi.fn(),
     send, async interrupt() {}, async stopTask() {}, close: closeHost,
     onEvent(listener: (event: SessionHostEvent) => void) { events.on("event", listener); return () => events.off("event", listener); },
   }));
@@ -94,11 +98,113 @@ async function fixture({ busy = false, split = true, staleLogical = false, deskt
   };
   const poll = () => (observer as unknown as { poll(): Promise<void> }).poll();
   return {
-    sessionId, nativeSessionId, paths, transcript, broker, brokerOptions, observer, eventLog, send, closeHost, hostFactory, scanSessionProcesses, drain, poll, inboxSend, inboxEvents,
+    root, sessionId, nativeSessionId, paths, transcript, broker, brokerOptions, observer, eventLog, send, closeHost, hostFactory, scanSessionProcesses, drain, poll, inboxSend, inboxEvents, events, state,
     async setDesktopExecutorAlive(alive: boolean) { await registerDesktopExecutor(alive); await poll(); },
     async close() { await broker.close(); await observer.close(); await eventLog.close(); state.close(); },
   };
 }
+
+it("discovers commands for the logical native fork without starting or messaging an executor", async () => {
+  const f = await fixture({ inbox: true, busy: true });
+  try {
+    await mkdir(join(f.root, ".claude/commands"), { recursive: true });
+    await writeFile(join(f.root, ".claude/commands/project.md"), "---\ndescription: Fork project command\n---\nBody");
+    await mkdir(join(f.root, "commands"));
+    await writeFile(join(f.root, "commands/personal.md"), "---\ndescription: Personal command\n---\nBody");
+    const configuration = vi.spyOn(f.broker, "configuration").mockImplementation(async () => { throw new Error("Discovery must not start model discovery"); });
+    const catalog = await f.broker.commands(f.sessionId);
+    expect(catalog.sessionId).toBe(f.sessionId);
+    expect(catalog.commands.filter(command => !command.action)).toEqual([
+      { name: "personal", description: "Personal command" }, { name: "project", description: "Fork project command" },
+    ]);
+    expect(catalog.commands.find(command => command.name === "compact")?.unavailableReason).toBeTruthy();
+    expect(catalog.commands.find(command => command.name === "help")?.unavailableReason).toBeUndefined();
+    await expect(f.broker.commands("missing-session")).rejects.toThrow();
+    expect(configuration).not.toHaveBeenCalled();
+    expect(f.hostFactory).not.toHaveBeenCalled();
+    expect(f.inboxSend).not.toHaveBeenCalled();
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.broker.session(f.sessionId)?.pendingCount).toBe(0);
+  } finally { await f.close(); }
+});
+
+it("does not route an SDK command through an independently owned Native inbox", async () => {
+  const f = await fixture({ inbox: true, busy: true });
+  try {
+    await f.broker.startTurn({ sessionId: f.sessionId, requestId: "context", idempotencyKey: "context", text: "/context", slashCommand: true, origin: "mobile" });
+    await f.drain();
+    expect(f.inboxSend).not.toHaveBeenCalled();
+    expect(f.hostFactory).not.toHaveBeenCalled();
+    expect(f.broker.session(f.sessionId)?.pendingCount).toBe(0);
+    expect(f.eventLog.replay(0).some(event => event.type === "turn.failed")).toBe(true);
+  } finally { await f.close(); }
+});
+
+it("keeps the old history and queue identity while resetting the host into a new conversation", async () => {
+  const f = await fixture({ desktopAlive: false });
+  try {
+    await f.broker.startTurn({ sessionId: f.sessionId, requestId: "clear", idempotencyKey: "clear", text: "/clear", origin: "mobile" });
+    await f.drain();
+    const receipt = f.send.mock.results[0]!.value;
+    await f.broker.startTurn({ sessionId: f.sessionId, requestId: "old-queue", idempotencyKey: "old-queue", text: "Remain in the original context", origin: "mobile" });
+    await f.drain();
+    const nextNativeId = randomUUID();
+    f.events.emit("event", { type: "session.reset", sessionId: f.sessionId, previousNativeSessionId: f.nativeSessionId, nativeSessionId: nextNativeId, at: Date.now() });
+    await f.drain();
+    expect(f.broker.session(nextNativeId)).toBeUndefined();
+    f.events.emit("event", { type: "command.output", sessionId: f.sessionId, turnId: receipt.turnId, itemId: "clear-output", text: "Conversation cleared", at: Date.now() });
+    f.events.emit("event", { type: "turn.completed", sessionId: f.sessionId, turnId: receipt.turnId, result: "Conversation cleared", at: Date.now() });
+    await f.drain();
+    expect(f.state.activeLane(f.sessionId)?.nativeSessionId).toBe(f.nativeSessionId);
+    expect(f.state.activeLane(nextNativeId)?.nativeSessionId).toBe(nextNativeId);
+    expect(f.broker.session(nextNativeId)?.turnState).toBe("idle");
+    expect(f.hostFactory.mock.results[0]!.value.rebindSession).toHaveBeenCalledWith(nextNativeId);
+    expect(f.closeHost).not.toHaveBeenCalled();
+    expect(f.hostFactory.mock.calls[1]![0]).toMatchObject({ sessionId: f.nativeSessionId, eventSessionId: f.sessionId, resume: true });
+    expect(f.state.loadBrokerState().pending).toEqual([expect.objectContaining({ sessionId: f.sessionId, text: "Remain in the original context", idempotencyKey: "old-queue" })]);
+    expect((await f.broker.history(f.sessionId)).items.filter(item => item.text === "Conversation cleared")).toHaveLength(1);
+    expect((await f.broker.history(nextNativeId)).items).toEqual([]);
+    expect((await readFile(f.transcript, "utf8"))).toContain("Desktop work");
+    expect(f.eventLog.replay(0).find(event => event.type === "session.reset")?.data).toMatchObject({ previousSessionId: f.sessionId, sessionId: nextNativeId, nativeSessionId: nextNativeId });
+  } finally { await f.close(); }
+});
+
+it("[edge] detects the first external write after reset even when the old conversation had a higher counter", async () => {
+  const f = await fixture({ desktopAlive: false });
+  try {
+    let newExternalWrites = 0;
+    vi.spyOn(f.observer, "externalWriteVersion").mockImplementation(id => id === f.sessionId ? 5 : newExternalWrites);
+    await f.broker.startTurn({ sessionId: f.sessionId, requestId: "clear", idempotencyKey: "clear", text: "/clear", origin: "mobile" });
+    await f.drain();
+    const receipt = f.send.mock.results[0]!.value;
+    const nextId = randomUUID();
+    f.events.emit("event", { type: "session.reset", sessionId: f.sessionId, previousNativeSessionId: f.nativeSessionId, nativeSessionId: nextId, at: Date.now() });
+    f.events.emit("event", { type: "turn.completed", sessionId: f.sessionId, turnId: receipt.turnId, result: "", at: Date.now() });
+    await f.drain();
+    expect(f.broker.session(nextId)?.ownership).toBe("BRIDGE_IDLE");
+    newExternalWrites = 1;
+    expect(f.broker.session(nextId)?.ownership).toBe("OWNERSHIP_CONFLICT");
+    expect(f.hostFactory).toHaveBeenCalledTimes(1);
+  } finally { await f.close(); }
+});
+
+it.each(["turn.failed", "turn.interrupted"] as const)("[edge] retains an already-reset identity when the original command ends as %s", async type => {
+  const f = await fixture({ desktopAlive: false });
+  try {
+    await f.broker.startTurn({ sessionId: f.sessionId, requestId: "clear", idempotencyKey: "clear", text: "/clear", origin: "mobile" });
+    await f.drain();
+    const receipt = f.send.mock.results[0]!.value;
+    const nextId = randomUUID();
+    f.events.emit("event", { type: "session.reset", sessionId: f.sessionId, previousNativeSessionId: f.nativeSessionId, nativeSessionId: nextId, at: Date.now() });
+    f.events.emit("event", { type, sessionId: f.sessionId, turnId: receipt.turnId, error: "Command ended after reset", at: Date.now() });
+    await f.drain();
+    expect(f.state.activeLane(f.sessionId)?.nativeSessionId).toBe(f.nativeSessionId);
+    expect(f.state.activeLane(nextId)?.nativeSessionId).toBe(nextId);
+    expect((await f.broker.history(nextId)).items).toEqual([]);
+    expect(f.state.loadBrokerState().pending).toEqual([]);
+    expect(f.closeHost).not.toHaveBeenCalled();
+  } finally { await f.close(); }
+});
 
 it.each([false, true])("waits for native Desktop executor exit after its turn ends (stale logical=%s)", async staleLogical => {
   const f = await fixture({ busy: true, staleLogical });
@@ -179,6 +285,109 @@ it.each(["idle", "background-agent", "background-shell"])("records the current e
   } finally { await f.close(); }
 });
 
+it.each([{ busy: false, held: false }, { busy: true, held: false }, { busy: false, held: true }])("delivers readable image references through the living Desktop and preserves them after restart (busy=$busy, held=$held)", async ({ busy, held }) => {
+  const f = await fixture({ inbox: true, busy });
+  let restored: SessionBroker | undefined;
+  try {
+    const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7X0AAAAASUVORK5CYII=";
+    const image = { id: "photo-1", name: "phone image.png", mimeType: "image/png" as const, size: Buffer.from(data, "base64").length, data };
+    const input = { sessionId: f.sessionId, requestId: "image", idempotencyKey: "image", text: "Inspect this photo", attachments: [image], origin: "mobile" as const };
+    const turn = await f.broker.startTurn(input); await f.drain();
+    if (busy) {
+      expect(f.inboxSend).not.toHaveBeenCalled();
+      expect(f.broker.session(f.sessionId)?.desktopHandoff).toMatchObject({ state: "desktop-inbox", inputStatus: "queued" });
+      await appendFile(f.transcript, JSON.stringify({ type: "assistant", uuid: "photo-main-finished", parentUuid: "initial-user", message: { role: "assistant", content: "Done", stop_reason: "end_turn" } }) + "\n");
+      await f.poll();
+    }
+    await vi.waitFor(() => expect(f.inboxSend).toHaveBeenCalledOnce(), { timeout: 3_000 });
+    const submitted = f.inboxSend.mock.calls[0]![1];
+    const pending = (f.broker as unknown as { pending: Array<{ commandId: string; text: string; attachments: unknown[]; desktopInboxImages: Array<{ attachmentId: string; path: string }> }> }).pending[0]!;
+    expect(pending).toMatchObject({ commandId: turn.commandId, text: input.text, attachments: [image] });
+    expect(pending.desktopInboxImages).toHaveLength(1);
+    expect(pending.desktopInboxImages[0]).toMatchObject({ attachmentId: image.id });
+    const imagePath = join(f.root, pending.desktopInboxImages[0]!.path);
+    expect(await readFile(imagePath)).toEqual(Buffer.from(data, "base64"));
+    expect(submitted.text).toContain(input.text);
+    expect(submitted.text).toContain(imagePath);
+    expect(submitted.text).not.toContain(data);
+    if (held) {
+      f.inboxEvents.emit("receipt", { messageId: submitted.messageId, status: "held" }); await f.drain();
+      expect(f.broker.session(f.sessionId)?.desktopHandoff).toMatchObject({ state: "desktop-inbox", inputStatus: "held" });
+      expect(f.eventLog.hasItem(f.sessionId, "user.message.accepted", submitted.messageId)).toBe(false);
+    }
+    expect(f.hostFactory).not.toHaveBeenCalled();
+    expect(f.closeHost).not.toHaveBeenCalled();
+    await f.broker.close();
+    restored = new SessionBroker(f.brokerOptions); await restored.initialize();
+    expect((await restored.startTurn(input)).state).toBe("uncertain");
+    expect((restored as unknown as { pending: unknown[] }).pending[0]).toMatchObject({
+      commandId: turn.commandId, attachments: [image], desktopInboxImages: pending.desktopInboxImages,
+    });
+    expect(await readFile(imagePath)).toEqual(Buffer.from(data, "base64"));
+    expect(f.inboxSend).toHaveBeenCalledOnce();
+    await appendFile(f.transcript, [
+      { type: "user", uuid: submitted.messageId, parentUuid: "initial-answer", isMeta: true, origin: { kind: "peer", msg_id: submitted.messageId }, message: { role: "user", content: submitted.text } },
+      { type: "assistant", uuid: "image-answer", parentUuid: submitted.messageId, message: { role: "assistant", content: "Read the image", stop_reason: "end_turn" } },
+    ].map(record => JSON.stringify(record)).join("\n") + "\n");
+    await f.poll(); await (restored as unknown as { eventQueue: Promise<void> }).eventQueue;
+    expect((await restored.startTurn(input)).state).toBe("completed");
+    expect(f.eventLog.replay(0)).toContainEqual(expect.objectContaining({
+      itemId: submitted.messageId, type: "user.message.accepted", data: expect.objectContaining({ text: input.text, attachments: [image], commandId: turn.commandId }),
+    }));
+    expect(f.inboxSend).toHaveBeenCalledOnce();
+  } finally { await restored?.close(); await f.close(); }
+});
+
+it.each(["allow-once", "deny"] as const)("keeps inbox admission and the image Read permission independent (%s)", async decision => {
+  const f = await fixture({ inbox: true });
+  const settingsPath = join(f.root, "permission-settings.json");
+  const hook = new ClaudePermissionHook({ settingsPath, broker: f.broker.permissionBroker,
+    sessionId: nativeId => f.broker.resolveNativePermissionSessionId(nativeId) });
+  try {
+    await hook.start();
+    const installed = JSON.parse(await readFile(settingsPath, "utf8")).hooks.PermissionRequest[0].hooks[0];
+    await f.broker.startTurn({ sessionId: f.sessionId, requestId: "image-permission", idempotencyKey: "image-permission",
+      text: "Read this image", attachments: [inboxImage], origin: "mobile" });
+    await f.drain();
+    const submitted = f.inboxSend.mock.calls[0]![1];
+    const pending = (f.broker as unknown as { pending: Array<{ desktopInboxImages: Array<{ path: string }> }> }).pending[0]!;
+    const imagePath = join(f.root, pending.desktopInboxImages[0]!.path);
+    if (platformDescriptor.value !== "win32") {
+      expect((await stat(imagePath)).mode & 0o777).toBe(0o600);
+      expect((await stat(join(imagePath, ".."))).mode & 0o777).toBe(0o700);
+    }
+    f.inboxEvents.emit("receipt", { messageId: submitted.messageId, status: "held" }); await f.drain();
+    f.broker.setDefaultPermissionMode("full-access");
+    expect(f.broker.permissionBroker.applyPolicy()).toBe(0);
+    await f.drain();
+    expect(f.broker.session(f.sessionId)?.desktopHandoff).toMatchObject({ state: "desktop-inbox", inputStatus: "held" });
+    expect(f.eventLog.hasItem(f.sessionId, "user.message.accepted", submitted.messageId)).toBe(false);
+    expect(f.inboxSend).toHaveBeenCalledOnce();
+    f.inboxEvents.emit("receipt", { messageId: submitted.messageId, status: "delivered" }); await f.drain();
+    expect(f.eventLog.hasItem(f.sessionId, "user.message.accepted", submitted.messageId)).toBe(false);
+    await appendFile(f.transcript, JSON.stringify({ type: "user", uuid: submitted.messageId, parentUuid: "initial-answer", isMeta: true,
+      origin: { kind: "peer", msg_id: submitted.messageId }, message: { role: "user", content: submitted.text } }) + "\n");
+    await f.poll(); await f.drain();
+    const settled = vi.fn();
+    const response = fetch(installed.url, { method: "POST", headers: { "Content-Type": "application/json", ...installed.headers },
+      body: JSON.stringify({ session_id: f.nativeSessionId, hook_event_name: "PermissionRequest", tool_name: "Read",
+        tool_input: { file_path: imagePath }, tool_use_id: "read-inbox-image" }) }).then(reply => reply.json()).then(body => { settled(); return body; });
+    await vi.waitFor(() => expect(f.broker.permissionBroker.list()).toHaveLength(1));
+    const request = f.broker.permissionBroker.list()[0]!;
+    expect(request).toMatchObject({ sessionId: f.sessionId, toolName: "Read", input: { file_path: imagePath }, manualOnly: true });
+    expect(f.broker.permissionBroker.applyPolicy()).toBe(0);
+    expect(settled).not.toHaveBeenCalled();
+    expect(f.broker.resolvePermission(request.requestId, decision, undefined, undefined, { deviceId: "paired-phone", name: "Paired phone" })).toBe(true);
+    const toolDecision = (await response).hookSpecificOutput.decision;
+    expect(toolDecision).toMatchObject({ behavior: decision === "deny" ? "deny" : "allow" });
+    expect(toolDecision).not.toHaveProperty("updatedPermissions");
+    expect(f.broker.session(f.sessionId)?.nativePermissionModeChange).toBeUndefined();
+    expect(await readFile(imagePath)).toEqual(inboxImageBytes);
+    expect(f.inboxSend).toHaveBeenCalledOnce();
+    expect(f.hostFactory).not.toHaveBeenCalled();
+  } finally { await hook.close(); await f.close(); }
+});
+
 it.each([false, true])("delivers through the original Desktop inbox and confirms its UUID without a second writer (background=%s)", async background => {
   const f = await fixture({ inbox: true });
   try {
@@ -213,10 +422,12 @@ it.each([false, true])("delivers through the original Desktop inbox and confirms
   } finally { await f.close(); }
 });
 
-it.each(["held", "refused", "denied", "dropped"] as const)("preserves the original Desktop inbox decision without replay (%s)", async status => {
+it.each((["held", "refused", "denied", "dropped"] as const).flatMap(status => [false, true].map(image => ({ status, image }))))("preserves the original Desktop inbox decision without replay ($status, image=$image)", async ({ status, image }) => {
   const f = await fixture({ inbox: true });
   try {
-    const input = { sessionId: f.sessionId, requestId: "decision", idempotencyKey: "decision", text: "Phone input", origin: "mobile" as const };
+    const input = { sessionId: f.sessionId, requestId: "decision", idempotencyKey: "decision", text: "Phone input", origin: "mobile" as const,
+      ...(image ? { attachments: [inboxImage] } : {}) };
+    f.broker.setDefaultPermissionMode("full-access");
     const turn = await f.broker.startTurn(input); await f.drain();
     expect(f.inboxSend).toHaveBeenCalledOnce();
     const messageId = f.inboxSend.mock.calls[0]![1].messageId;

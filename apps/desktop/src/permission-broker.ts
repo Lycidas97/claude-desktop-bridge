@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type {
+  BridgeNativePermissionModeChange,
   BridgePermissionDecision,
   BridgePermissionMode,
   BridgePermissionResolution,
@@ -22,6 +23,7 @@ export interface PendingPermission {
   suggestions: PermissionUpdate[];
   createdAt: number;
   manualOnly?: boolean;
+  canSetNativeFullAccess?: boolean;
 }
 
 export interface ExternalPermissionRequest {
@@ -45,6 +47,22 @@ interface PendingResolver {
 
 export class PermissionBroker extends EventEmitter {
   private readonly pending = new Map<string, PendingResolver>();
+  private readonly nativeModes = new Map<string, BridgeNativePermissionModeChange>();
+
+  nativeModeChange(sessionId: string): BridgeNativePermissionModeChange | undefined {
+    return this.nativeModes.get(sessionId);
+  }
+
+  observeNativeMode(sessionId: string, requestId: string, mode: string): void {
+    const change = this.nativeModes.get(sessionId);
+    if (!change || change.requestId !== requestId || change.state !== "requested") return;
+    this.nativeModes.set(sessionId, {
+      requestId,
+      state: mode === "bypassPermissions" ? "confirmed" : "not-applied",
+      observedMode: mode,
+    });
+    this.emit("native-mode");
+  }
 
   constructor(
     private readonly modeForSession: (sessionId: string) => BridgePermissionMode = () => "standard",
@@ -66,15 +84,17 @@ export class PermissionBroker extends EventEmitter {
     options: {
       signal: AbortSignal;
       toolUseId: string;
+      requestId?: string;
       suggestions?: PermissionUpdate[];
       title?: string;
       displayName?: string;
       description?: string;
       manualOnly?: boolean;
+      canSetNativeFullAccess?: boolean;
     },
   ): Promise<PermissionResult> {
     const request: PendingPermission = {
-      requestId: randomUUID(),
+      requestId: options.requestId ?? randomUUID(),
       sessionId,
       toolUseId: options.toolUseId,
       toolName,
@@ -82,6 +102,7 @@ export class PermissionBroker extends EventEmitter {
       suggestions: options.suggestions ?? [],
       createdAt: Date.now(),
       ...(options.manualOnly ? { manualOnly: true } : {}),
+      ...(options.canSetNativeFullAccess ? { canSetNativeFullAccess: true } : {}),
       ...(options.title ? { title: options.title } : {}),
       ...(options.displayName ? { displayName: options.displayName } : {}),
       ...(options.description ? { description: options.description } : {}),
@@ -188,10 +209,14 @@ export class PermissionBroker extends EventEmitter {
     metadata?: {
       automatic?: boolean;
       reason?: BridgePermissionResolutionReason;
+      nativeMode?: "full-access";
     },
   ): boolean {
     const pending = this.pending.get(requestId);
     if (!pending) return false;
+    if (metadata?.nativeMode && (decision !== "allow-once" || !pending.request.canSetNativeFullAccess)) {
+      throw new Error("此请求不支持修改原生 Desktop 会话授权");
+    }
     const canAllowAlways = pending.request.suggestions.some(
       (suggestion) => suggestion.destination === "localSettings",
     );
@@ -214,9 +239,12 @@ export class PermissionBroker extends EventEmitter {
       );
       return true;
     }
-    const updatedPermissions = effectiveDecision === "allow-always"
-      ? pending.request.suggestions.filter((suggestion) => suggestion.destination === "localSettings")
-      : [];
+    const updatedPermissions: PermissionUpdate[] = metadata?.nativeMode
+      ? [{ type: "setMode", mode: "bypassPermissions", destination: "session" }]
+      : effectiveDecision === "allow-always"
+        ? pending.request.suggestions.filter((suggestion) => suggestion.destination === "localSettings")
+        : [];
+    if (metadata?.nativeMode) this.nativeModes.set(pending.request.sessionId, { requestId, state: "requested" });
     pending.resolve(
       {
         behavior: "allow",

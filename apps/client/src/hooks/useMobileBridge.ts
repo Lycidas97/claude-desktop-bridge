@@ -37,8 +37,13 @@ import {
   type BridgeRuntimeGoalInfo,
   type BridgeRuntimeHandoff,
   type BridgeRuntimeHandoffPreview,
+  type BridgeSessionCommandResult,
+  type BridgeSessionPermissions,
+  type BridgeSDKPermissionMode,
+  type BridgePermissionRules,
   type BridgeSessionConfiguration,
   type BridgeSessionInfo,
+  type BridgeSlashCommandCatalog,
   type BridgeTransport,
   type BridgeTransportCandidate,
   type BridgeTransportMetrics,
@@ -579,6 +584,7 @@ function permissionFromEvent(event: BridgeEvent): BridgePermissionInfo | undefin
     input: event.data.input as Record<string, unknown>,
     createdAt: typeof event.data.createdAt === "number" ? event.data.createdAt : event.timestamp,
     canAllowAlways: event.data.canAllowAlways === true,
+    ...(event.data.canSetNativeFullAccess === true ? { canSetNativeFullAccess: true } : {}),
     ...(typeof event.data.title === "string" && event.data.title ? { title: event.data.title } : {}),
     ...(typeof event.data.displayName === "string" && event.data.displayName
       ? { displayName: event.data.displayName }
@@ -2426,9 +2432,12 @@ export function useMobileBridge() {
     }));
   }, []);
 
+  const openedSessionRef = useRef<string | undefined>(undefined);
+  const handledCommandEvents = useRef(new Set<string>());
   const openingSessionsRef = useRef(new Map<string, { socket: BridgeTransport | undefined; task: Promise<void> }>());
 
   const openSession = useCallback(async (sessionId: string) => {
+    openedSessionRef.current = sessionId;
     const crypto = cryptoRef.current;
     const socket = socketRef.current;
     const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
@@ -2554,6 +2563,22 @@ export function useMobileBridge() {
     openingSessionsRef.current.set(key, { socket, task });
     return task;
   }, [sendRequest]);
+
+  useEffect(() => {
+    for (const event of state.events) {
+      if ((event.type !== "session.reset" && event.type !== "session.compacted") || handledCommandEvents.current.has(event.eventId)) continue;
+      handledCommandEvents.current.add(event.eventId);
+      if (event.type === "session.reset" && event.data.previousSessionId === openedSessionRef.current && typeof event.data.sessionId === "string") {
+        const sessionId = event.data.sessionId;
+        setState(current => ({ ...current,
+          histories: { ...current.histories, [sessionId]: { status: "ready", items: [], hasMore: false } },
+        }));
+        void refreshSnapshot().then(() => openSession(sessionId)).catch(reason => setState(current => ({ ...current, error: reason instanceof Error ? reason.message : "新会话打开失败" })));
+      } else if (event.type === "session.compacted" && event.sessionId === openedSessionRef.current) {
+        void openSession(event.sessionId!);
+      }
+    }
+  }, [state.events, openSession, refreshSnapshot]);
 
   const loadOlderEvidence = useCallback(async (sessionId: string) => {
     const current = stateRef.current.evidence[sessionId];
@@ -2810,12 +2835,14 @@ export function useMobileBridge() {
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
+    nativeMode?: "full-access",
   ) => {
     const response = await sendRequest("permission.resolve", {
       requestId,
       decision,
       ...(message ? { message } : {}),
       ...(updatedInput ? { updatedInput } : {}),
+      ...(nativeMode ? { nativeMode } : {}),
     }, { allowOffline: false, wait: true });
     if (!response?.ok) {
       if (response?.error?.code === "ALREADY_RESOLVED") {
@@ -2911,6 +2938,36 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "接管 Desktop 会话失败");
     const result = response.result as { session: BridgeSessionInfo };
     setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+  }, [sendRequest]);
+
+  const loadSessionCommands = useCallback(async (sessionId: string): Promise<BridgeSlashCommandCatalog> => {
+    const response = await sendRequest("session.commands", { sessionId }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "自定义命令读取失败");
+    return (response.result as { catalog: BridgeSlashCommandCatalog }).catalog;
+  }, [sendRequest]);
+
+  const runSessionCommand = useCallback(async (sessionId: string, text: string): Promise<BridgeSessionCommandResult> => {
+    const crypto = cryptoRef.current;
+    const socket = socketRef.current;
+    const response = await sendRequest("session.command", { sessionId, text }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "命令执行失败");
+    const result = (response.result as { command: BridgeSessionCommandResult }).command;
+    if (result.session && cryptoRef.current === crypto && socketRef.current === socket) {
+      setState(current => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+    }
+    return result;
+  }, [sendRequest]);
+
+  const loadSessionPermissions = useCallback(async (sessionId: string): Promise<BridgeSessionPermissions> => {
+    const response = await sendRequest("session.permissions", { sessionId }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "SDK 权限读取失败");
+    return (response.result as { permissions: BridgeSessionPermissions }).permissions;
+  }, [sendRequest]);
+
+  const saveSessionPermissions = useCallback(async (sessionId: string, mode: BridgeSDKPermissionMode, rules: BridgePermissionRules): Promise<BridgeSessionPermissions> => {
+    const response = await sendRequest("session.permissions.configure", { sessionId, mode, rules }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "SDK 权限保存失败");
+    return (response.result as { permissions: BridgeSessionPermissions }).permissions;
   }, [sendRequest]);
 
   const loadSessionConfiguration = useCallback(async (sessionId: string): Promise<BridgeSessionConfiguration> => {
@@ -3449,6 +3506,10 @@ export function useMobileBridge() {
     returnToDesktop,
     takeoverDesktop,
     loadSessionConfiguration,
+    loadSessionCommands,
+    runSessionCommand,
+    loadSessionPermissions,
+    saveSessionPermissions,
     configureSession,
     configureHostPermission,
     configurePermissionPolicy,

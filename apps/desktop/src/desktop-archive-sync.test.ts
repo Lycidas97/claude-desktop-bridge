@@ -41,18 +41,20 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
 }
 
 describe("Claude Desktop archive records", () => {
-  it("lists archived Desktop sessions with their archive time and keeps side chats hidden", async () => {
+  it("lists archived Desktop sessions with their archive time and preserves /btw sidechat metadata", async () => {
     const dir = await desktopDir([
       record(PARENT),
       record(CHILD, { isArchived: true, forkedFromSessionId: `local_${PARENT}` }),
       record(OLD_CHILD),
-      record(SIDE_CHAT, { spawnedFrom: { sessionId: `local_${PARENT}`, btw: true } }),
+      record(SIDE_CHAT, { isArchived: true, spawnedFrom: { sessionId: `local_${PARENT}`, btw: true } }),
     ], [`local_${OLD_CHILD}`]);
     const state = await listClaudeDesktopSessionState([join(dir, "..", "..")]);
     expect(state.sessions.map((session) => session.cliSessionId)).toEqual([PARENT]);
-    expect(state.archivedSessions.map((session) => session.cliSessionId).sort()).toEqual([CHILD, OLD_CHILD]);
+    expect(state.archivedSessions.map((session) => session.cliSessionId).sort()).toEqual([CHILD, OLD_CHILD, SIDE_CHAT]);
     const child = state.archivedSessions.find((session) => session.cliSessionId === CHILD)!;
+    const sideChat = state.archivedSessions.find((session) => session.cliSessionId === SIDE_CHAT)!;
     expect(child).toMatchObject({ parentSessionId: PARENT });
+    expect(sideChat).toMatchObject({ parentSessionId: PARENT, forkLabel: "btw", sidechat: true });
     expect(state.metadataPaths.get(CHILD)).toBe(join(dir, `local_${CHILD}.json`));
     expect(JSON.stringify([...state.sessions, ...state.archivedSessions])).not.toContain(dir);
     expect(child.archivedAt).toBe((await stat(join(dir, `local_${CHILD}.json`))).mtimeMs);

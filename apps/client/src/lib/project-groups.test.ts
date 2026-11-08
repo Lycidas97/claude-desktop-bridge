@@ -184,6 +184,18 @@ describe("project group collapse state", () => {
     expect(getSessionAncestorIds(sessions, "orphan-child")).toEqual(["orphan"]);
     expect(getSessionAncestorIds(sessions, "orphan")).toEqual([]);
   });
+
+  it("does not let an archived sidechat boost an active parent above newer active sessions", () => {
+    const sessions = [
+      { sessionId: "older-parent", lastActivityAt: 100 },
+      { sessionId: "archived-btw", parentSessionId: "older-parent", lastActivityAt: 900, archivedAt: 950 },
+      { sessionId: "newer-active", lastActivityAt: 300 },
+    ];
+    const families = groupProjectSessionFamilies(sessions);
+    expect(families.map((family) => family.primary.sessionId)).toEqual(["newer-active", "older-parent"]);
+    expect(families[1]!.lastActivityAt).toBe(100);
+    expect(families[1]!.forks.map((fork) => fork.primary.sessionId)).toEqual(["archived-btw"]);
+  });
 });
 
 describe("project order the user sets", () => {

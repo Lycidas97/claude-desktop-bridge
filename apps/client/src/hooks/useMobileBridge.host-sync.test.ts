@@ -801,3 +801,42 @@ describe("host-bound synchronization", () => {
     expect(harness.requests).toHaveLength(1);
   });
 });
+
+
+describe("session command control RPCs", () => {
+  it("waits for session.command and never adds it to the offline outbox or a fake local turn", async () => {
+    harness.respond = async () => ({ command: { action: "sent" } });
+    const bridge = useMobileBridge();
+    await expect(bridge.runSessionCommand("sdk-session", "/compact preserve decisions")).resolves.toEqual({ action: "sent" });
+    expect(harness.requests[0]!.request).toMatchObject({ method: "session.command", params: { sessionId: "sdk-session", text: "/compact preserve decisions" } });
+    expect(harness.addOutbox).not.toHaveBeenCalled(); expect(harness.state.localTurns).toEqual([]);
+  });
+  it("rejects offline commands without creating an offline prompt", async () => {
+    const bridge = useMobileBridge(); harness.refs[3]!.current.state = "closed";
+    await expect(bridge.runSessionCommand("sdk-session", "/clear")).rejects.toThrow("离线");
+    expect(harness.requests).toEqual([]); expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+  it("loads and saves actual SDK permissions through dedicated RPCs", async () => {
+    const permissions = { sessionId: "sdk-session", mode: "plan" as const, canConfigure: true,
+      rules: { allow: ["Read"], ask: ["Edit"], deny: [] }, inheritedRules: { allow: [], ask: [], deny: [] } };
+    harness.respond = async () => ({ permissions }); const bridge = useMobileBridge();
+    await expect(bridge.loadSessionPermissions("sdk-session")).resolves.toEqual(permissions);
+    await expect(bridge.saveSessionPermissions("sdk-session", "plan", permissions.rules)).resolves.toEqual(permissions);
+    expect(harness.requests.map(entry => entry.request.method)).toEqual(["session.permissions", "session.permissions.configure"]);
+    expect(harness.requests[1]!.request.params).toMatchObject({ sessionId: "sdk-session", mode: "plan", rules: permissions.rules });
+    expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+});
+
+
+it("keeps a completed command's returned session on its original computer after switching hosts", async () => {
+  const result = deferred<Record<string, unknown>>();
+  harness.respond = () => result.promise;
+  const bridge = useMobileBridge();
+  const command = bridge.runSessionCommand("same-session-id", "/fork");
+  await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+  switchHost("B");
+  result.resolve({ command: { action: "session", session: { sessionId: "A-fork", title: "A fork" } } });
+  await command;
+  expect(harness.state.snapshot.sessions).toEqual([]);
+});

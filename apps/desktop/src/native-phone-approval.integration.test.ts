@@ -81,11 +81,11 @@ async function fixture() {
       devices: [{ deviceId: "paired-phone", name: "Paired Android", platform: "android", pairedAt: 1 }],
     },
   }) as { handleRequest(request: BridgeRequest, origin: "mobile", sourceDeviceId: string): Promise<unknown> };
-  const resolve = (requestId: string, decision: BridgePermissionDecision, updatedInput?: Record<string, unknown>) => {
+  const resolve = (requestId: string, decision: BridgePermissionDecision, updatedInput?: Record<string, unknown>, nativeMode?: string) => {
     const rpcId = randomUUID();
     return controller.handleRequest({
       kind: "request", method: "permission.resolve", requestId: rpcId, idempotencyKey: rpcId,
-      params: { requestId, decision, ...(updatedInput ? { updatedInput } : {}) },
+      params: { requestId, decision, ...(updatedInput ? { updatedInput } : {}), ...(nativeMode ? { nativeMode } : {}) },
     }, "mobile", "paired-phone");
   };
   const resolutions = () => eventLog.replay(0).filter((event) => event.type === "permission.resolved" || event.type === "question.resolved");
@@ -113,6 +113,45 @@ async function fixture() {
 }
 
 describe("native hook phone approval through the controller", () => {
+  it.each(["bypassPermissions", "auto"] as const)("requests native session full access and confirms only the related observed mode (%s)", async mode => {
+    const { broker, post, resolve, open } = await fixture();
+    const { request, response } = await open();
+    await resolve(request.requestId, "allow-once", undefined, "full-access");
+    await expect(response).resolves.toMatchObject({
+      hookSpecificOutput: { decision: { behavior: "allow", updatedPermissions: [
+        { type: "setMode", mode: "bypassPermissions", destination: "session" },
+      ] } },
+    });
+    expect(broker.session("logical-session")?.nativePermissionModeChange).toMatchObject({ requestId: request.requestId, state: "requested" });
+    await post({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "different tool" }, tool_use_id: "other-tool", permission_mode: "bypassPermissions" });
+    expect(broker.session("logical-session")?.nativePermissionModeChange?.state).toBe("requested");
+    await post({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: request.input, tool_use_id: "native-tool", permission_mode: "bypassPermissions", agent_id: "child-agent" });
+    expect(broker.session("logical-session")?.nativePermissionModeChange?.state).toBe("requested");
+    await post({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: request.input, tool_use_id: "native-tool", permission_mode: mode });
+    expect(broker.session("logical-session")?.nativePermissionModeChange).toMatchObject({
+      requestId: request.requestId, state: mode === "bypassPermissions" ? "confirmed" : "not-applied", observedMode: mode,
+    });
+    expect(broker.permissionPolicy("logical-session").hostMode).toBe("standard");
+  });
+
+  it.each([
+    ["Bash", "deny", "full-access"],
+    ["Bash", "allow-always", "full-access"],
+    ["AskUserQuestion", "allow-once", "full-access"],
+    ["Bash", "allow-once", "global"],
+  ] as const)("rejects an invalid native upgrade without resolving the request (%s/%s/%s)", async (tool, decision, mode) => {
+    const { broker, resolve, open } = await fixture();
+    const { request, response, settled } = await open(tool);
+    await expect(resolve(request.requestId, decision, undefined, mode)).rejects.toThrow();
+    expect(broker.permissionBroker.list()).toEqual([request]);
+    expect(broker.session("logical-session")?.nativePermissionModeChange).toBeUndefined();
+    expect(settled).not.toHaveBeenCalled();
+    await resolve(request.requestId, "deny");
+    await expect(response).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: "deny" } } });
+    await expect(resolve(request.requestId, "allow-once", undefined, "full-access")).rejects.toMatchObject({ code: "ALREADY_RESOLVED" });
+    expect(broker.session("logical-session")?.nativePermissionModeChange).toBeUndefined();
+  });
+
   it.each(["allow-once", "deny"] as const)("returns %s on the original hook HTTP request with phone attribution", async (decision) => {
     const { broker, resolve, resolutions, open } = await fixture();
     const { request, response, settled } = await open();

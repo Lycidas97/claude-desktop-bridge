@@ -7,9 +7,11 @@ import type {
   ModelInfo,
   Query,
   SDKControlGetContextUsageResponse,
+  SDKControlInitializeResponse,
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import type { BridgePermissionRules, BridgeSDKPermissionMode } from "@bridge/protocol";
 import { ClaudeSessionHost, type SessionHostEvent } from "./claude-session-host.js";
 import { PermissionBroker } from "./permission-broker.js";
 import { AsyncInputQueue } from "./async-input-queue.js";
@@ -25,6 +27,9 @@ class FakeQuery implements AsyncGenerator<SDKMessage, void> {
   readonly stoppedTasks: string[] = [];
   readonly backgroundedTools: Array<string | undefined> = [];
   initialization: Promise<void> = Promise.resolve();
+  initializationResponse: SDKControlInitializeResponse = {
+    commands: [], agents: [], output_style: "default", available_output_styles: [], models: [], account: {},
+  };
   disposal: Promise<void> = Promise.resolve();
   disposing = false;
   selectedModel: string | undefined;
@@ -73,7 +78,7 @@ class FakeQuery implements AsyncGenerator<SDKMessage, void> {
     return true;
   }
 
-  async setPermissionMode(): Promise<void> {}
+  async setPermissionMode(_mode: Parameters<Query["setPermissionMode"]>[0]): Promise<void> {}
   async setModel(model?: string): Promise<void> { this.selectedModel = model; }
   async setMaxThinkingTokens(): Promise<void> {}
   async setThinking(): Promise<void> {}
@@ -86,7 +91,7 @@ class FakeQuery implements AsyncGenerator<SDKMessage, void> {
   async setPlugins(): Promise<void> {}
   async setTools(): Promise<void> {}
   async setSkills(): Promise<void> {}
-  async applyFlagSettings(settings: { effortLevel?: string | null }): Promise<void> {
+  async applyFlagSettings(settings: Parameters<Query["applyFlagSettings"]>[0]): Promise<void> {
     this.selectedEffort = settings.effortLevel;
   }
   async supportedModels(): Promise<ModelInfo[]> {
@@ -118,7 +123,10 @@ class FakeQuery implements AsyncGenerator<SDKMessage, void> {
   async rewindFiles(): Promise<void> {}
   async reconnectMcpServer(): Promise<void> {}
   async toggleMcpServer(): Promise<void> {}
-  async initializationResult(): Promise<unknown> { await this.initialization; return {}; }
+  async initializationResult(): Promise<SDKControlInitializeResponse> {
+    await this.initialization;
+    return this.initializationResponse;
+  }
   async stopTask(taskId: string): Promise<void> { this.stoppedTasks.push(taskId); }
   async backgroundTasks(toolUseId?: string): Promise<boolean> { this.backgroundedTools.push(toolUseId); return true; }
 
@@ -149,6 +157,383 @@ function waitForEvent(events: SessionHostEvent[], type: SessionHostEvent["type"]
     poll();
   });
 }
+
+describe("approved common slash host contract", () => {
+  function fixture() {
+    const fake = new FakeQuery();
+    const events: SessionHostEvent[] = [];
+    const queries: Array<{ fake: FakeQuery; input: AsyncIterator<SDKUserMessage>; options: Parameters<typeof import("@anthropic-ai/claude-agent-sdk").query>[0]["options"] }> = [];
+    const queryFactory = vi.fn((params: Parameters<typeof import("@anthropic-ai/claude-agent-sdk").query>[0]) => {
+      const current = queries.length === 0 ? fake : new FakeQuery();
+      queries.push({ fake: current, input: (params.prompt as AsyncIterable<SDKUserMessage>)[Symbol.asyncIterator](), options: params.options });
+      return current as unknown as Query;
+    });
+    const host = new ClaudeSessionHost({
+      sessionId: randomUUID(), eventSessionId: "original-logical-session", cwd: "/tmp/bridge-slash-host",
+      executablePath: "/fake/claude", environment: {}, permissionBroker: new PermissionBroker(), resume: false,
+      queryFactory: queryFactory as typeof import("@anthropic-ai/claude-agent-sdk").query,
+    });
+    host.onEvent(event => events.push(event));
+    const init = (permissionMode: BridgeSDKPermissionMode, slash_commands: string[] = []) => fake.push({
+      type: "system", subtype: "init", permissionMode, slash_commands, session_id: host.sessionId, uuid: randomUUID(),
+      apiKeySource: "user", claude_code_version: "fixture", cwd: "/tmp/bridge-slash-host", tools: [],
+      mcp_servers: [], model: "fixture", output_style: "default", skills: [], plugins: [],
+    });
+    const result = (messageId: string, text = "Done", current = fake) => current.push({
+      type: "result", subtype: "success", is_error: false, result: text, user_message_uuid: messageId,
+      origin: { kind: "human" }, session_id: host.sessionId, uuid: randomUUID(),
+    } as SDKMessage);
+    return { host, fake, events, queries, queryFactory, init, result };
+  }
+
+  it("reads an unknown catalog passively without starting a query", async () => {
+    const f = fixture();
+    try {
+      expect(f.host.slashCommands).toBeUndefined();
+      expect(f.host.slashCommands).toBeUndefined();
+      expect(f.queryFactory).not.toHaveBeenCalled();
+      expect(f.host.running).toBe(false);
+    } finally { await f.host.close(); }
+  });
+
+  it("ready waits for initialization and populates the catalog without submitting a prompt", async () => {
+    const f = fixture();
+    let initialize!: () => void;
+    f.fake.initialization = new Promise(resolve => { initialize = resolve; });
+    f.fake.initializationResponse.commands = [{ name: "context", description: "Show context", argumentHint: "" }];
+    let resolved = false;
+    let submitted = false;
+    try {
+      const pending = f.host.ready().then(() => { resolved = true; });
+      void f.queries[0]!.input.next().then(result => { submitted = !result.done; });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(resolved).toBe(false);
+      expect(f.host.initialized).toBe(false);
+      expect(f.host.slashCommands).toBeUndefined();
+      initialize();
+      await pending;
+      expect(f.host.initialized).toBe(true);
+      expect(f.host.slashCommands).toEqual(f.fake.initializationResponse.commands);
+      expect(submitted).toBe(false);
+      expect(f.host.busy).toBe(false);
+      expect(f.events.map(event => event.type)).toEqual(["runtime.started", "runtime.ready"]);
+    } finally { initialize(); await f.host.close(); }
+  });
+
+  it("repeated ready calls reuse the query and retain a pushed catalog replacement", async () => {
+    const f = fixture();
+    try {
+      await Promise.all([f.host.ready(), f.host.ready()]);
+      const commands = [{ name: "usage", description: "Show usage", argumentHint: "" }];
+      f.fake.push({ type: "system", subtype: "commands_changed", commands, session_id: f.host.sessionId, uuid: randomUUID() });
+      await new Promise(resolve => setImmediate(resolve));
+      await f.host.ready();
+      expect(f.queryFactory).toHaveBeenCalledTimes(1);
+      expect(f.host.slashCommands).toEqual(commands);
+      expect(f.events.filter(event => event.type === "runtime.ready")).toHaveLength(1);
+      expect(f.events.some(event => event.type === "user.submitted")).toBe(false);
+    } finally { await f.host.close(); }
+  });
+
+  it("ready reconnects an exited idle query only when explicitly called", async () => {
+    const f = fixture();
+    f.fake.initializationResponse.commands = [{ name: "help", description: "Show help", argumentHint: "" }];
+    try {
+      await f.host.ready();
+      f.fake.close();
+      await waitForEvent(f.events, "runtime.stopped");
+      expect(f.host.slashCommands).toEqual(f.fake.initializationResponse.commands);
+      expect(f.queryFactory).toHaveBeenCalledTimes(1);
+      await f.host.ready();
+      expect(f.queryFactory).toHaveBeenCalledTimes(2);
+      expect(f.queries[1]!.options).toMatchObject({ resume: f.host.sessionId, forkSession: false });
+      expect(f.host.initialized).toBe(true);
+      expect(f.events.some(event => event.type === "user.submitted")).toBe(false);
+    } finally { await f.host.close(); }
+  });
+
+  it("ready propagates SDK initialization errors", async () => {
+    const f = fixture();
+    const error = new Error("SDK initialization rejected");
+    let rejectInitialization!: (error: Error) => void;
+    f.fake.initialization = new Promise((_resolve, reject) => { rejectInitialization = reject; });
+    try {
+      const pending = f.host.ready();
+      rejectInitialization(error);
+      await expect(pending).rejects.toBe(error);
+      expect(f.host.initialized).toBe(false);
+      expect(f.events.some(event => event.type === "runtime.ready")).toBe(false);
+    } finally { await f.host.close(); }
+  });
+
+  it("caches initialization metadata and adds init command names without an active catalog request", async () => {
+    const f = fixture();
+    const supportedCommands = vi.spyOn(f.fake, "supportedCommands");
+    const initializationResult = vi.spyOn(f.fake, "initializationResult");
+    f.fake.initializationResponse.commands = [{ name: "review", description: "Review changes", argumentHint: "[path]", aliases: ["inspect"] }];
+    try {
+      f.host.start();
+      await waitForEvent(f.events, "runtime.ready");
+      expect(f.host.slashCommands).toEqual(f.fake.initializationResponse.commands);
+      f.init("default", ["help", "review", "context"]);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.host.slashCommands).toEqual([
+        { name: "review", description: "Review changes", argumentHint: "[path]", aliases: ["inspect"] },
+        { name: "help", description: "" }, { name: "context", description: "" },
+      ]);
+      expect(f.queryFactory).toHaveBeenCalledTimes(1);
+      expect(initializationResult).toHaveBeenCalledTimes(1);
+      expect(supportedCommands).not.toHaveBeenCalled();
+      f.fake.close();
+      await waitForEvent(f.events, "runtime.stopped");
+      expect(f.host.slashCommands?.map(command => command.name)).toEqual(["review", "help", "context"]);
+      expect(f.queryFactory).toHaveBeenCalledTimes(1);
+    } finally { await f.host.close(); }
+  });
+
+  it("replaces the entire catalog on commands_changed, including an empty replacement", async () => {
+    const f = fixture();
+    try {
+      f.host.start();
+      f.init("default", ["help", "removed"]);
+      const commands = [{ name: "usage", description: "Show usage", argumentHint: "", aliases: ["cost", "stats"] }];
+      f.fake.push({ type: "system", subtype: "commands_changed", commands, session_id: f.host.sessionId, uuid: randomUUID() });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.host.slashCommands).toEqual(commands);
+      f.fake.push({ type: "system", subtype: "commands_changed", commands: [], session_id: f.host.sessionId, uuid: randomUUID() });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.host.slashCommands).toEqual([]);
+    } finally { await f.host.close(); }
+  });
+
+  it.each(["echo", "no-echo", "empty-result"])("settles output plus success with no assistant message (%s)", async source => {
+    const f = fixture();
+    try {
+      const turn = f.host.send("/usage", "mobile");
+      if (source === "echo") f.fake.push({
+        type: "user", uuid: turn.messageId as NonNullable<SDKUserMessage["uuid"]>, session_id: f.host.sessionId, parent_tool_use_id: null,
+        origin: { kind: "human" }, message: { role: "user", content: "/usage" },
+      });
+      const itemId = randomUUID();
+      f.fake.push({ type: "system", subtype: "local_command_output", content: "Usage: 42 tokens", uuid: itemId, session_id: f.host.sessionId });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.events.filter(event => event.type === "command.output")).toEqual([{
+        type: "command.output", sessionId: "original-logical-session", turnId: turn.turnId,
+        itemId, text: "Usage: 42 tokens", at: expect.any(Number),
+      }]);
+      expect(f.host.busy).toBe(true);
+      expect(f.events.some(event => event.type === "turn.completed")).toBe(false);
+      f.result(turn.messageId, source === "empty-result" ? "" : "Usage: 42 tokens");
+      await waitForEvent(f.events, "turn.completed");
+      expect(f.events.filter(event => event.type === "turn.completed")).toEqual([expect.objectContaining({
+        turnId: turn.turnId, result: source === "empty-result" ? "" : "Usage: 42 tokens",
+      })]);
+      expect(f.events.filter(event => event.type.startsWith("assistant."))).toEqual([]);
+      expect(f.events.filter(event => event.type === "command.output")).toHaveLength(1);
+      expect(f.host.busy).toBe(false);
+      expect(f.host.hasPendingInput).toBe(false);
+      const next = f.host.send("Continue", "mobile");
+      f.result(next.messageId);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.events.filter(event => event.type === "turn.completed").map(event => event.turnId)).toEqual([turn.turnId, next.turnId]);
+      expect(f.queryFactory).toHaveBeenCalledTimes(1);
+    } finally { await f.host.close(); }
+  });
+
+  it("emits local output without a turn when the host is idle", async () => {
+    const f = fixture();
+    try {
+      f.host.start();
+      const itemId = randomUUID();
+      f.fake.push({ type: "system", subtype: "local_command_output", content: "Command notice", uuid: itemId, session_id: f.host.sessionId });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.events.find(event => event.type === "command.output")).toEqual({
+        type: "command.output", sessionId: "original-logical-session", itemId, text: "Command notice", at: expect.any(Number),
+      });
+      expect(f.host.busy).toBe(false);
+    } finally { await f.host.close(); }
+  });
+
+  it("emits compact progress and the real boundary without completing its turn", async () => {
+    const f = fixture();
+    try {
+      const turn = f.host.send("/compact retain the decisions", "mobile");
+      expect((await f.queries[0]!.input.next()).value?.message.content).toEqual([{ type: "text", text: "/compact retain the decisions" }]);
+      f.fake.push({ type: "system", subtype: "status", status: "compacting", session_id: f.host.sessionId, uuid: randomUUID() });
+      const itemId = randomUUID();
+      f.fake.push({ type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 1000 }, session_id: f.host.sessionId, uuid: itemId });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.events.filter(event => event.type === "command.status")).toEqual([expect.objectContaining({ turnId: turn.turnId, text: "Compacting conversation…" })]);
+      expect(f.events.filter(event => event.type === "session.compacted")).toEqual([{
+        type: "session.compacted", sessionId: "original-logical-session", itemId, at: expect.any(Number),
+      }]);
+      expect(f.host.busy).toBe(true);
+      f.result(turn.messageId, "Compacted");
+      await waitForEvent(f.events, "turn.completed");
+    } finally { await f.host.close(); }
+  });
+
+  it("does not report compaction without a boundary and preserves the SDK failure reason", async () => {
+    const f = fixture();
+    try {
+      const turn = f.host.send("/compact", "mobile");
+      f.fake.push({ type: "system", subtype: "status", status: null, compact_result: "success", session_id: f.host.sessionId, uuid: randomUUID() });
+      f.fake.push({ type: "system", subtype: "status", status: null, compact_result: "failed", compact_error: "Nothing could be compacted", session_id: f.host.sessionId, uuid: randomUUID() });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.events.filter(event => event.type === "session.compacted")).toEqual([]);
+      expect(f.events.filter(event => event.type === "command.status")).toEqual([expect.objectContaining({ turnId: turn.turnId, text: "Nothing could be compacted" })]);
+      expect(f.host.busy).toBe(true);
+    } finally { await f.host.close(); }
+  });
+
+  it("updates native send and restart IDs on reset while retaining the original logical event ID", async () => {
+    const f = fixture();
+    try {
+      const previousNativeSessionId = f.host.sessionId;
+      const turn = f.host.send("/clear", "mobile");
+      await f.queries[0]!.input.next();
+      const nativeSessionId = randomUUID();
+      f.fake.push({ type: "conversation_reset", new_conversation_id: nativeSessionId, session_id: previousNativeSessionId, uuid: randomUUID() });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.host.sessionId).toBe(nativeSessionId);
+      expect(f.events.filter(event => event.type === "session.reset")).toEqual([{
+        type: "session.reset", sessionId: "original-logical-session", previousNativeSessionId, nativeSessionId, at: expect.any(Number),
+      }]);
+      expect(f.host.busy).toBe(true);
+      expect(f.fake.closed).toBe(false);
+      f.result(turn.messageId, "Cleared");
+      await waitForEvent(f.events, "turn.completed");
+      const next = f.host.send("New context", "mobile");
+      expect((await f.queries[0]!.input.next()).value).toMatchObject({ uuid: next.messageId, session_id: nativeSessionId });
+      f.result(next.messageId);
+      await new Promise(resolve => setImmediate(resolve));
+      f.fake.close();
+      await waitForEvent(f.events, "runtime.stopped");
+      f.host.start();
+      expect(f.queries[1]!.options).toMatchObject({ resume: nativeSessionId, forkSession: false });
+      expect(f.queries[1]!.options).not.toHaveProperty("sessionId");
+      expect(f.events.every(event => event.sessionId === "original-logical-session")).toBe(true);
+    } finally { await f.host.close(); }
+  });
+
+  it("rebinds subsequent events after the old turn settles without replacing the native query", async () => {
+    const f = fixture();
+    try {
+      const turn = f.host.send("/clear", "mobile");
+      const nativeSessionId = randomUUID();
+      f.fake.push({ type: "conversation_reset", new_conversation_id: nativeSessionId, session_id: f.host.sessionId, uuid: randomUUID() });
+      f.result(turn.messageId, "Cleared");
+      await waitForEvent(f.events, "turn.completed");
+      expect(f.events.every(event => event.sessionId === "original-logical-session")).toBe(true);
+      f.host.rebindSession("new-logical-session");
+      const start = f.events.length;
+      const next = f.host.send("Continue in the new logical session", "mobile");
+      f.fake.push({ type: "system", subtype: "local_command_output", content: "New lane", session_id: nativeSessionId, uuid: randomUUID() });
+      f.result(next.messageId);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.events.slice(start).every(event => event.sessionId === "new-logical-session")).toBe(true);
+      expect(f.events.slice(start)).toContainEqual(expect.objectContaining({ type: "turn.completed", turnId: next.turnId }));
+      expect(f.queryFactory).toHaveBeenCalledTimes(1);
+      expect(f.fake.closed).toBe(false);
+      expect(f.host.sessionId).toBe(nativeSessionId);
+    } finally { await f.host.close(); }
+  });
+
+  it("reads actual init/status permission modes passively with empty host overrides", async () => {
+    const f = fixture();
+    try {
+      expect(f.host.getPermissions()).toEqual({ mode: "default", rules: { allow: [], ask: [], deny: [] } });
+      expect(f.queryFactory).not.toHaveBeenCalled();
+      f.host.start();
+      f.init("plan");
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.host.getPermissions()).toEqual({ mode: "plan", rules: { allow: [], ask: [], deny: [] } });
+      f.fake.push({ type: "system", subtype: "status", status: null, permissionMode: "auto", session_id: f.host.sessionId, uuid: randomUUID() });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.host.getPermissions().mode).toBe("auto");
+      expect(f.queries[0]!.options).toMatchObject({ permissionMode: "default" });
+      expect(f.queries[0]!.options).not.toHaveProperty("allowDangerouslySkipPermissions");
+    } finally { await f.host.close(); }
+  });
+
+  it("waits for real permission RPCs before storing mode and flag rules", async () => {
+    const f = fixture();
+    let finishMode!: () => void;
+    let finishRules!: () => void;
+    const mode = vi.spyOn(f.fake, "setPermissionMode").mockImplementationOnce(() => new Promise(resolve => { finishMode = resolve; }));
+    const flags = vi.spyOn(f.fake, "applyFlagSettings").mockImplementationOnce(() => new Promise(resolve => { finishRules = resolve; }));
+    const rules: BridgePermissionRules = { allow: ["Read"], ask: ["Bash(*)"], deny: ["Write"] };
+    try {
+      const pending = f.host.setPermissions("acceptEdits", rules);
+      expect(mode).toHaveBeenCalledExactlyOnceWith("acceptEdits");
+      expect(f.host.getPermissions()).toEqual({ mode: "default", rules: { allow: [], ask: [], deny: [] } });
+      expect(flags).not.toHaveBeenCalled();
+      finishMode();
+      await new Promise(resolve => setImmediate(resolve));
+      expect(f.host.getPermissions()).toEqual({ mode: "acceptEdits", rules: { allow: [], ask: [], deny: [] } });
+      expect(flags).toHaveBeenCalledExactlyOnceWith({ permissions: rules });
+      finishRules();
+      await pending;
+      expect(f.host.getPermissions()).toEqual({ mode: "acceptEdits", rules });
+      expect(f.queryFactory).toHaveBeenCalledTimes(1);
+      expect(f.fake.closed).toBe(false);
+    } finally { await f.host.close(); }
+  });
+
+  it("preserves other permission flag keys while replacing the three rule arrays", async () => {
+    const f = fixture();
+    const flags = vi.spyOn(f.fake, "applyFlagSettings");
+    // Seed another host-owned flag to exercise the SDK's whole-object replacement contract.
+    Object.assign(f.host, { permissionSettings: { additionalDirectories: ["/tmp/shared"], disableBypassPermissionsMode: "disable" } });
+    try {
+      const first: BridgePermissionRules = { allow: ["Read"], ask: ["Bash(*)"], deny: ["Write"] };
+      await f.host.setPermissions("plan", first);
+      const second: BridgePermissionRules = { allow: [], ask: [], deny: ["Bash(*)"] };
+      await f.host.setPermissions("plan", second);
+      expect(flags).toHaveBeenLastCalledWith({ permissions: {
+        additionalDirectories: ["/tmp/shared"], disableBypassPermissionsMode: "disable", ...second,
+      } });
+      expect(f.host.getPermissions()).toEqual({ mode: "plan", rules: second });
+      f.fake.close();
+      await waitForEvent(f.events, "runtime.stopped");
+      f.host.start();
+      expect(f.queries[1]!.options).toMatchObject({ permissionMode: "plan", settings: { permissions: {
+        additionalDirectories: ["/tmp/shared"], disableBypassPermissionsMode: "disable", ...second,
+      } } });
+    } finally { await f.host.close(); }
+  });
+
+  it("returns mode errors unchanged and does not apply rules or enable bypass", async () => {
+    const f = fixture();
+    const error = new Error("Bypass is disabled by policy");
+    const mode = vi.spyOn(f.fake, "setPermissionMode").mockRejectedValueOnce(error);
+    const flags = vi.spyOn(f.fake, "applyFlagSettings");
+    try {
+      await expect(f.host.setPermissions("bypassPermissions", { allow: [], ask: [], deny: [] })).rejects.toBe(error);
+      expect(mode).toHaveBeenCalledExactlyOnceWith("bypassPermissions");
+      expect(flags).not.toHaveBeenCalled();
+      expect(f.host.getPermissions()).toEqual({ mode: "default", rules: { allow: [], ask: [], deny: [] } });
+      expect(f.queryFactory).toHaveBeenCalledTimes(1);
+      expect(f.queries[0]!.options).not.toHaveProperty("allowDangerouslySkipPermissions");
+      expect(f.fake.closed).toBe(false);
+    } finally { await f.host.close(); }
+  });
+
+  it("keeps successful mode and prior rules when the flag settings RPC fails", async () => {
+    const f = fixture();
+    const flags = vi.spyOn(f.fake, "applyFlagSettings");
+    const rules: BridgePermissionRules = { allow: ["Read"], ask: [], deny: [] };
+    try {
+      await f.host.setPermissions("plan", rules);
+      const error = new Error("Rules rejected by managed policy");
+      flags.mockRejectedValueOnce(error);
+      await expect(f.host.setPermissions("dontAsk", { allow: [], ask: [], deny: ["Read"] })).rejects.toBe(error);
+      expect(f.host.getPermissions()).toEqual({ mode: "dontAsk", rules });
+      expect(f.queryFactory).toHaveBeenCalledTimes(1);
+      expect(f.fake.closed).toBe(false);
+    } finally { await f.host.close(); }
+  });
+});
 
 describe("native Send now", () => {
   function fixture() {

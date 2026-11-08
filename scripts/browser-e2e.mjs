@@ -16,6 +16,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Preview tools may run --serve without launching a browser. Only this debug
 // mode accepts a fixed port; the automated suite always binds random ports.
 const serve = process.argv.includes("--serve");
+const nativePreview = serve && process.argv.includes("--native-permissions-preview");
+let previewHost;
+let previewApproval;
 const port = serve ? Number(process.env.BRIDGE_E2E_PORT ?? 0) : 0;
 assert.ok(Number.isInteger(port) && port >= 0 && port <= 65535, "BRIDGE_E2E_PORT must be a valid loopback port");
 const artifactRoot = resolve(root, "artifacts/browser-e2e");
@@ -90,7 +93,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
       online: true,
       lastSeenAt: now,
       version: "1.1.1",
-      capabilities: ["session.rename.v1", "runtime.adapter.v1"],
+      capabilities: ["session.rename.v1", "runtime.adapter.v1", ...(native ? ["session.commands.v1"] : [])],
       defaultPermissionMode: "standard",
     },
     projects: [{
@@ -99,10 +102,40 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
       pendingCount: session.pendingCount, lastActivityAt: now - 3_600_000,
     }],
     // A newer neighbour makes accidental activity/order changes observable.
-    sessions: [{
-      ...session, sessionId: "browser-e2e-neighbour", title: "较新的相邻会话",
-      lastActivityAt: now - 3_600_000, turnState: "idle", pendingCount: 0, pendingCommandIds: [],
-    }, session],
+    sessions: [
+      {
+        ...session, sessionId: "browser-e2e-neighbour", title: "较新的相邻会话",
+        lastActivityAt: now - 3_600_000, turnState: "idle", pendingCount: 0, pendingCommandIds: [],
+      },
+      session,
+      ...(nativePreview ? [
+        {
+          ...session,
+          sessionId: "browser-e2e-btw-active",
+          title: "btw: 能不能把 ipv6 的转发也搞回来",
+          parentSessionId: sessionId,
+          forkLabel: "fork-4",
+          sidechat: true,
+          lastActivityAt: now - 5_400_000,
+          turnState: "idle",
+          pendingCount: 0,
+          pendingCommandIds: [],
+        },
+        {
+          ...session,
+          sessionId: "browser-e2e-btw-archived",
+          title: "btw: 收集需要稳定 ip 的白名单域名",
+          parentSessionId: sessionId,
+          forkLabel: "btw",
+          sidechat: true,
+          archivedAt: now - 6_000_000,
+          lastActivityAt: now - 6_000_000,
+          turnState: "idle",
+          pendingCount: 0,
+          pendingCommandIds: [],
+        },
+      ] : []),
+    ],
     devices: [{
       deviceId: pairing.deviceId, name: "隔离浏览器", platform: "web",
       online: true, createdAt: now, lastSeenAt: now,
@@ -110,7 +143,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
     runtime: { state: "ready", detail: "固定响应宿主", activeTurns: 0, maxParallelTurns: 1 },
     runtimes: [{
       id: "claude-desktop", name: "Claude Desktop", state: "ready", detail: "隔离宿主",
-      capabilities: ["session.list", "session.history", "turn.start", "permission.resolve"],
+      capabilities: ["session.list", "session.history", "turn.start", "permission.resolve", ...(native ? ["attachment.image"] : [])],
       sessionIsolation: "independent", sessionCount: 2, updatedAt: now,
     }],
     providers: [{
@@ -198,6 +231,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
     await mkdir(directory, { recursive: true });
     host.nativeApproval = await startNativeApprovalHost({
       directory, sessionId, deviceId: pairing.deviceId,
+      ...(nativePreview ? { requestTimeoutMs: 300_000 } : {}),
       onRequested(request) {
         snapshot.permissions.push(request);
         session.turnState = "waiting";
@@ -208,11 +242,16 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
       onResolved(request, result, resolution) {
         snapshot.permissions = snapshot.permissions.filter((pending) => pending.requestId !== request.requestId);
         session.turnState = "idle";
+        session.nativePermissionModeChange = host.nativeApproval.modeChange();
         host.nativeTrace.push({ type: "resolved", requestId: request.requestId, decision: resolution.decision, resolvedByDeviceId: resolution.resolvedByDeviceId });
         void host.emit(request.toolName === "AskUserQuestion" ? "question.resolved" : "permission.resolved", {
           ...request, ...resolution, behavior: result.behavior,
         }).then(() => host.send({ kind: "snapshot", snapshot }))
           .catch((error) => errors.push(`native resolution: ${error.stack}`));
+      },
+      onModeChanged(change) {
+        session.nativePermissionModeChange = change;
+        void host.send({ kind: "snapshot", snapshot }).catch((error) => errors.push(`native mode: ${error.stack}`));
       },
     });
     nativeHosts.push(host.nativeApproval);
@@ -242,15 +281,45 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
           result = { events: resumed, latestSeq: snapshot.latestSeq, hasMore: false };
           break;
         }
+        case "session.commands": result = await host.nativeApproval.commands(request); break;
         case "session.list": result = { sessions: snapshot.sessions }; break;
         case "project.list": result = { projects: snapshot.projects }; break;
-        case "session.open":
+        case "session.open": {
+          const sidechatItems = nativePreview && String(request.params.sessionId).startsWith("browser-e2e-btw-")
+            ? [
+                {
+                  id: `${request.params.sessionId}-u1`,
+                  sessionId: request.params.sessionId,
+                  turnId: `${request.params.sessionId}-t1`,
+                  role: "user",
+                  text: request.params.sessionId === "browser-e2e-btw-active"
+                    ? "btw: 能不能把 ipv6 的转发也搞回来？"
+                    : "btw: 收集需要稳定 ip 的白名单域名",
+                  createdAt: now - 6_000_000,
+                  origin: "claude-desktop",
+                },
+                {
+                  id: `${request.params.sessionId}-a1`,
+                  sessionId: request.params.sessionId,
+                  turnId: `${request.params.sessionId}-t1`,
+                  role: "assistant",
+                  text: "已在 /btw 侧聊中记录该问题并给出独立分析。",
+                  createdAt: now - 5_900_000,
+                  origin: "claude-desktop",
+                },
+              ]
+            : [];
           result = {
             session: snapshot.sessions.find((candidate) => candidate.sessionId === request.params.sessionId),
-            history: { sessionId: request.params.sessionId, items: request.params.sessionId === sessionId ? history : [], hasMore: false },
+            history: {
+              sessionId: request.params.sessionId,
+              items: request.params.sessionId === sessionId ? history : sidechatItems,
+              hasMore: false,
+            },
             latestSeq: snapshot.latestSeq,
           };
           break;
+        }
         case "evidence.list":
           result = { evidence: { sessionId: request.params.sessionId, items: [], hasMore: false } };
           break;
@@ -271,6 +340,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
           turnRequest = request;
           Object.assign(session, {
             turnState: "queued", pendingCount: 1, pendingCommandIds: ["browser-e2e-command"],
+            ...(native ? { desktopHandoff: { state: "desktop-inbox", canReturn: false, inputStatus: "queued" } } : {}),
           });
           result = { commandId: "browser-e2e-command", state: "queued" };
           break;
@@ -296,6 +366,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
           delivery: "host-received", text: userText, pendingCount: 1,
           pendingCommandIds: ["browser-e2e-command"],
         }, { itemId: "browser-e2e-command" });
+        if (native) await host.send({ kind: "snapshot", snapshot });
       }
       if (request.method === "permission.resolve" && !native) {
         await host.emit("permission.resolved", {
@@ -450,6 +521,17 @@ async function verifyDelivery(page, host, steps) {
 async function verifyNativeApprovals(page, host, steps, directory) {
   await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  const slashInput = page.getByRole("combobox", { name: "给 Claude 发指令" });
+  await slashInput.fill("/r");
+  await page.getByRole("option", { name: /^\/review\b/u }).waitFor();
+  assert.equal(await page.getByRole("option").count(), 2);
+  await page.screenshot({ path: resolve(directory, "native-slash-menu.png"), fullPage: true });
+  await page.getByRole("option", { name: /^\/review\b/u }).click();
+  assert.equal(await slashInput.inputValue(), "/review ");
+  assert.equal(host.requests.filter(request => request.method === "session.commands").length, 1);
+  assert.equal(host.requests.filter(request => request.method === "turn.start").length, 0);
+  await slashInput.fill("");
+  steps.push("custom slash commands come from synthetic-directory metadata through session.commands; selection inserts without sending");
   await host.emit("session.observed", { role: "assistant", text: "", interactivePrompt: {
     kind: "wrap-up", blocked: true, ask: "批准这项原生操作？", actions: [{ label: "批准实施", message: "批准实施" }],
   } }, { itemId: "native-unavailable-confirmation" });
@@ -508,6 +590,21 @@ async function verifyNativeApprovals(page, host, steps, directory) {
   assert.equal(resolutions.filter((request) => request.params.requestId === question.request.requestId).length, 1);
   assert.equal(host.requests.filter((request) => request.method === "turn.start").length, 0);
   steps.push("live native questions survive reconnect; single-choice and multi-select answers reach the same Hook exactly once without chat");
+  for (const mode of ["bypassPermissions", "auto"]) {
+    const open = await host.nativeApproval.open("Bash", { command: "synthetic-native-mode --never-executed" });
+    const dialog = page.getByRole("dialog", { name: "Claude 等待授权", exact: true });
+    await dialog.getByRole("button", { name: "此 Desktop 会话完全授权", exact: true }).click();
+    await page.getByRole("button", { name: "确认完全授权", exact: true }).click();
+    assert.deepEqual((await open.response).hookSpecificOutput.decision.updatedPermissions,
+      [{ type: "setMode", mode: "bypassPermissions", destination: "session" }]);
+    await page.getByText("已请求此会话完全授权，等待 Desktop 确认", { exact: true }).waitFor();
+    await host.nativeApproval.observe(open.request, mode);
+    await page.getByText(mode === "bypassPermissions" ? "Desktop 已确认本次授权变更" : "Desktop 未应用完全授权，后续请求仍需确认", { exact: true }).waitFor();
+    assert.equal(host.snapshot.host.defaultPermissionMode, "standard");
+    await page.screenshot({ path: resolve(directory, `native-mode-${mode}.png`), fullPage: true });
+  }
+  assert.equal(host.requests.filter((request) => request.method === "permission.policy.configure" || request.method === "turn.start").length, 0);
+  steps.push("native full access returns the fixed session patch and waits for a matching Hook observation before reporting confirmation or rejection");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Native approval must fit the phone viewport");
 }
 
@@ -664,7 +761,45 @@ try {
     configFile: false, envDir: false,
     root: resolve(root, "apps/client"),
     cacheDir: resolve(runDir, "vite-cache"),
-    plugins: [react()], customLogger: logger,
+    plugins: [react(), {
+      name: "synthetic-native-preview",
+      configureServer(server) {
+        if (!nativePreview) return;
+        server.middlewares.use("/__bridge_test", (request, response) => {
+          void (async () => {
+            const url = new URL(request.url, "http://127.0.0.1");
+            let result;
+            if (request.method === "GET" && url.pathname === "/pairing") {
+              result = { url: buildPairingUrl(baseUrl, previewHost.pairing) };
+            } else if (request.method === "POST" && url.pathname === "/request") {
+              previewApproval = await previewHost.nativeApproval.open("Bash", { command: "synthetic-native-mode --never-executed" });
+              previewHost.nativeResponse = undefined;
+              void previewApproval.response.then(reply => { previewHost.nativeResponse = reply; })
+                .catch(error => infrastructureErrors.push(error.stack));
+              result = { requestId: previewApproval.request.requestId };
+            } else if (request.method === "POST" && url.pathname === "/observe") {
+              await previewHost.nativeApproval.observe(previewApproval.request, url.searchParams.get("mode") ?? "bypassPermissions");
+              result = { observed: true };
+            } else if (request.method === "POST" && url.pathname === "/hold") {
+              previewHost.session.turnState = "waiting";
+              previewHost.session.desktopHandoff = { state: "desktop-inbox", inputStatus: "held", canReturn: false };
+              await previewHost.send({ kind: "snapshot", snapshot: previewHost.snapshot });
+              result = { held: true };
+            } else if (request.method === "GET" && url.pathname === "/state") {
+              result = { modeChange: previewHost.nativeApproval.modeChange(), hookResponse: previewHost.nativeResponse,
+                requests: previewHost.requests.map(({ method, params }) => ({ method, nativeMode: params.nativeMode,
+                  requestId: params.requestId, attachments: params.attachments?.length ?? 0 })), errors: infrastructureErrors };
+            } else {
+              response.statusCode = 404;
+              response.end();
+              return;
+            }
+            response.setHeader("Content-Type", "application/json");
+            response.end(JSON.stringify(result));
+          })().catch(error => { response.statusCode = 500; response.end(error.message); });
+        });
+      },
+    }], customLogger: logger,
     resolve: { alias: { "@bridge/protocol": resolve(root, "packages/protocol/src/index.ts") } },
     server: {
       host: "127.0.0.1", port, strictPort: true, open: false,
@@ -677,7 +812,7 @@ try {
     },
   });
   await vite.listen();
-  baseUrl = `http://127.0.0.1:${vite.httpServer.address().port}`;
+  baseUrl = `http://${nativePreview ? "localhost" : "127.0.0.1"}:${vite.httpServer.address().port}`;
   // Port 0 is allocated at listen time. Set Vite's public environment before
   // the first module is transformed, so probes and pairing use this origin.
   Object.assign(vite.config.env, {
@@ -690,8 +825,9 @@ try {
       process.once("SIGINT", finish);
       process.once("SIGTERM", finish);
     });
-    const host = await createMockHost(true, false, infrastructureErrors);
-    console.log(buildPairingUrl(baseUrl, host.pairing));
+    const host = await createMockHost(!nativePreview, false, infrastructureErrors, nativePreview);
+    previewHost = host;
+    console.log(nativePreview ? `Synthetic native preview ready at ${baseUrl}` : buildPairingUrl(baseUrl, host.pairing));
     await stopped;
   } else {
     browser = await chromium.launch({

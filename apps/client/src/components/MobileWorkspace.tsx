@@ -17,8 +17,13 @@ import type {
   BridgeRuntimeGoalStatus,
   BridgeRuntimeHandoff,
   BridgeRuntimeHandoffPreview,
+  BridgeSessionCommandResult,
+  BridgeSessionPermissions,
+  BridgeSDKPermissionMode,
+  BridgePermissionRules,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
+  BridgeSlashCommandCatalog,
   BridgeSubagentSummary,
   BridgeTaskPlan,
   BridgeTransportMetrics,
@@ -115,6 +120,9 @@ import { RuntimeHandoffDialog } from "./RuntimeHandoffDialog.js";
 import { SessionCreateDialog } from "./SessionCreateDialog.js";
 import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
 import { TaskPlanCard } from "./TaskPlanCard.js";
+import { SlashCommandInput } from "./SlashCommandInput.js";
+import { useSessionCommands } from "../hooks/useSessionCommands.js";
+import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
 
 interface ConversationItem extends BridgeHistoryItem {
   delivery?: BridgeDeliveryState;
@@ -824,6 +832,17 @@ export function conversationItems(
         ...(typeof event.data.commandId === "string" ? { commandId: event.data.commandId } : {}),
       });
     }
+    if (event.type === "command.output" || event.type === "command.status") {
+      const text = eventText(event);
+      if (text) {
+        const id = event.itemId ?? event.eventId;
+        items.set(id, {
+          ...items.get(id), id, sessionId,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          role: "system", text, createdAt: items.get(id)?.createdAt ?? event.timestamp, origin: event.origin,
+        });
+      }
+    }
     if (event.type === "assistant.delta" && !(event.turnId && finalizedAssistantTurns.has(event.turnId))) {
       // Provider stream events can use a new item id for every chunk. The turn is the stable stream identity.
       const id = event.turnId ? `assistant:${event.turnId}` : event.itemId ?? event.eventId;
@@ -1370,6 +1389,7 @@ function ToolPermissionPrompt({
   permission,
   onResolve,
   onEnableFullAccess,
+  onEnableNativeFullAccess,
 }: {
   permission: BridgePermissionInfo;
   onResolve(
@@ -1379,16 +1399,17 @@ function ToolPermissionPrompt({
     updatedInput?: Record<string, unknown>,
   ): Promise<void>;
   onEnableFullAccess?(sessionId: string): Promise<void>;
+  onEnableNativeFullAccess?(requestId: string): Promise<void>;
 }) {
   const presentation = permissionPresentation(permission);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const [confirmFullAccess, setConfirmFullAccess] = useState(false);
+  const [confirmFullAccess, setConfirmFullAccess] = useState<"host" | "native">();
 
   useEffect(() => {
     if (!confirmFullAccess) return;
     return registerMobileBackHandler(() => {
-      if (!busy) setConfirmFullAccess(false);
+      if (!busy) setConfirmFullAccess(undefined);
       return true;
     }, 150);
   }, [confirmFullAccess, busy]);
@@ -1407,16 +1428,17 @@ function ToolPermissionPrompt({
   }
 
   async function enableFullAccess(): Promise<void> {
-    if (!onEnableFullAccess || busy) return;
+    if (busy) return;
     setBusy(true);
     setError(undefined);
     try {
-      await onEnableFullAccess(permission.sessionId);
+      if (confirmFullAccess === "native") await onEnableNativeFullAccess?.(permission.requestId);
+      else await onEnableFullAccess?.(permission.sessionId);
     } catch (resolveError) {
       setError(resolveError instanceof Error ? resolveError.message : "完全授权设置失败");
     } finally {
       setBusy(false);
-      setConfirmFullAccess(false);
+      setConfirmFullAccess(undefined);
     }
   }
 
@@ -1460,20 +1482,27 @@ function ToolPermissionPrompt({
         {permission.canAllowAlways && (
           <button type="button" className="secondary-button" disabled={busy} onClick={() => void decide("allow-always")}>始终允许</button>
         )}
+        {permission.canSetNativeFullAccess && onEnableNativeFullAccess && (
+          <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("native")}>
+            <ShieldCheck size={15} />此 Desktop 会话完全授权
+          </button>
+        )}
         {onEnableFullAccess && (
-          <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess(true)}>
-            <ShieldCheck size={15} />电脑默认完全授权
+          <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("host")}>
+            <ShieldCheck size={15} />Bridge 默认完全授权
           </button>
         )}
       </div>
     </section>
     <ConfirmationDialog
-      open={confirmFullAccess}
-      title="更改当前电脑的默认授权模式"
-      description={`这会将当前电脑上 ${desktopRuntimeName(permission.sessionId.includes(":") ? permission.sessionId.split(":")[0] as BridgeDesktopRuntimeId : "claude-desktop")} 的默认授权设为完全授权，自动批准使用此默认值的会话命令和文件修改，并处理积压授权；模型的提问仍需回答。`}
-      confirmLabel="启用完全授权"
+      open={Boolean(confirmFullAccess)}
+      title={confirmFullAccess === "native" ? "此 Desktop 会话完全授权" : "更改 Bridge 默认授权模式"}
+      description={confirmFullAccess === "native"
+        ? "这会允许当前工具，并请求将当前 Desktop 会话切换为完全授权，需等待 Desktop 确认；提问和强制确认仍需响应。收件箱接收许可仍需在电脑端确认。"
+        : `这会将当前电脑上 ${desktopRuntimeName(permission.sessionId.includes(":") ? permission.sessionId.split(":")[0] as BridgeDesktopRuntimeId : "claude-desktop")} 的 Bridge 默认授权设为完全授权，自动批准使用此默认值的工具请求，并处理积压授权；提问和强制确认仍需响应。`}
+      confirmLabel={confirmFullAccess === "native" ? "确认完全授权" : "启用 Bridge 默认完全授权"}
       busy={busy}
-      onCancel={() => setConfirmFullAccess(false)}
+      onCancel={() => setConfirmFullAccess(undefined)}
       onConfirm={() => void enableFullAccess()}
     />
     </>
@@ -1484,6 +1513,7 @@ export function PermissionPrompt({
   permission,
   onResolve,
   onEnableFullAccess,
+  onEnableNativeFullAccess,
 }: {
   permission: BridgePermissionInfo;
   onResolve(
@@ -1493,6 +1523,7 @@ export function PermissionPrompt({
     updatedInput?: Record<string, unknown>,
   ): Promise<void>;
   onEnableFullAccess?(sessionId: string): Promise<void>;
+  onEnableNativeFullAccess?(requestId: string): Promise<void>;
 }) {
   return permission.toolName === "AskUserQuestion"
     ? <QuestionPrompt permission={permission} onResolve={onResolve} />
@@ -1501,6 +1532,7 @@ export function PermissionPrompt({
         permission={permission}
         onResolve={onResolve}
         {...(onEnableFullAccess ? { onEnableFullAccess } : {})}
+        {...(onEnableNativeFullAccess ? { onEnableNativeFullAccess } : {})}
       />
     );
 }
@@ -1547,6 +1579,10 @@ export function MobileWorkspace({
   onReturnToDesktop,
   onTakeoverDesktop,
   onLoadSessionConfiguration,
+  onLoadSessionCommands,
+  onRunSessionCommand,
+  onLoadSessionPermissions,
+  onSaveSessionPermissions,
   onConfigureSession,
   onConfigurePermissionPolicy,
   onPreviewProviderSwitch,
@@ -1608,6 +1644,7 @@ export function MobileWorkspace({
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
+    nativeMode?: "full-access",
   ): Promise<void>;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
   onCreateSession(
@@ -1623,6 +1660,10 @@ export function MobileWorkspace({
   onReturnToDesktop?(sessionId: string): Promise<void>;
   onTakeoverDesktop?(sessionId: string): Promise<void>;
   onLoadSessionConfiguration(sessionId: string): Promise<BridgeSessionConfiguration>;
+  onLoadSessionCommands?(sessionId: string): Promise<BridgeSlashCommandCatalog>;
+  onRunSessionCommand?(sessionId: string, text: string): Promise<BridgeSessionCommandResult>;
+  onLoadSessionPermissions?(sessionId: string): Promise<BridgeSessionPermissions>;
+  onSaveSessionPermissions?(sessionId: string, mode: BridgeSDKPermissionMode, rules: BridgePermissionRules): Promise<BridgeSessionPermissions>;
   onConfigureSession(
     sessionId: string,
     change: SessionConfigurationChange,
@@ -1722,7 +1763,9 @@ export function MobileWorkspace({
   ));
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
-  const [forkChainOpen, setForkChainOpen] = useState(false);
+  const [forkChainOpen, setForkChainOpen] = useState(() => (
+    Boolean(selectedSessionId && snapshot?.sessions.find((session) => session.sessionId === selectedSessionId)?.sidechat)
+  ));
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [projectSearch, setProjectSearch] = useState("");
@@ -1755,6 +1798,24 @@ export function MobileWorkspace({
   const sessions = snapshot?.sessions ?? [];
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
   const fileUploads = useFileAttachments(selectedSession?.sessionId, onUploadFile);
+  const commands = useSessionCommands({
+    sessionId: selectedSession?.sessionId,
+    sessionKey: draftKey,
+    enabled: Boolean(selectedSession && desktopRuntimeId(selectedSession) === "claude-desktop"),
+    supported: Boolean(snapshot?.host.capabilities.includes("session.command.v1")),
+    onLoad: onLoadSessionCommands && snapshot?.host.capabilities.includes("session.commands.v1")
+      ? () => onLoadSessionCommands(selectedSession!.sessionId) : undefined,
+    onRun: onRunSessionCommand ? value => onRunSessionCommand(selectedSession!.sessionId, value) : undefined,
+    onModel: () => setConfigurationSessionId(selectedSession!.sessionId),
+    onRename: () => {
+      setMenuSessionId(selectedSession!.sessionId);
+      setRenameTitle(selectedSession!.title);
+      setSessionActionError(undefined);
+      setRenameOpen(true);
+    },
+    onSession: selectSession,
+  });
+  const commandDraft = commands.recognizes(text.trim());
   const configurationSession = sessions.find((session) => session.sessionId === configurationSessionId);
   const actionSession = sessions.find((session) => session.sessionId === actionSessionId);
   const providers = snapshot?.providers ?? [];
@@ -1794,10 +1855,14 @@ export function MobileWorkspace({
     const unplaced = projectOrder.filter((projectId) => !placedProjects.includes(projectId));
     if (unplaced.length) placeProjects([...unplaced, ...placedProjects]);
   }, [placedProjects, projectOrder]);
+  const activeParentProjects = useMemo(
+    () => new Map(sessions.filter((session) => !session.archivedAt).map((session) => [session.sessionId, session.projectId])),
+    [sessions],
+  );
   const grouped = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const filtered = sessions.filter((session) => (
-      !session.archivedAt
+      (!session.archivedAt || Boolean(session.sidechat && session.parentSessionId && activeParentProjects.get(session.parentSessionId) === session.projectId))
       && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
       && (!query || `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query))
     ));
@@ -1811,7 +1876,7 @@ export function MobileWorkspace({
       project: snapshot?.projects.find((project) => project.projectId === projectId),
       sessions: sortProjectSessionsByRecent(groups.get(projectId)!),
     }));
-  }, [projectOrder, runtimeFilter, search, sessions, snapshot?.projects]);
+  }, [activeParentProjects, projectOrder, runtimeFilter, search, sessions, snapshot?.projects]);
   const archivedSessions = useMemo(() => sortProjectSessionsByRecent(sessions.filter((session) => (
     Boolean(session.archivedAt) && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
   ))), [runtimeFilter, sessions]);
@@ -2137,9 +2202,20 @@ export function MobileWorkspace({
     }
   }, [permissionOpen, permissions, selectedSessionId, visible]);
 
+  const handledCommandResets = useRef(new Set<string>());
+  useEffect(() => {
+    for (const event of events) {
+      if (event.type !== "session.reset" || handledCommandResets.current.has(event.eventId)) continue;
+      handledCommandResets.current.add(event.eventId);
+      if (event.data.previousSessionId === selectedSessionId && typeof event.data.sessionId === "string") {
+        void selectSession(event.data.sessionId);
+      }
+    }
+  }, [events]);
+
   async function selectSession(sessionId: string): Promise<void> {
     setConfigurationSessionId(undefined);
-    setForkChainOpen(false);
+    setForkChainOpen(Boolean(sessions.find((session) => session.sessionId === sessionId)?.sidechat));
     setSessionView("conversation");
     setStopError(undefined);
     setSelectedSessionId(sessionId);
@@ -2196,14 +2272,19 @@ export function MobileWorkspace({
     const nextText = text.trim();
     const nextAttachments = runtimeSupports(snapshot, selectedSession, "attachment.image") ? attachments : [];
     const nextFiles = fileUploads.files;
-    updateDraft((current) => ({ ...current, text: "", attachments: [], sending: true }));
+    updateDraft((current) => ({ ...current, text: "", attachments: [], sending: true, imageError: undefined }));
     try {
+      if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) {
+        updateDraft(current => ({ ...current, steer: false }));
+        return;
+      }
       await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, steer);
       fileUploads.clear(nextFiles);
       updateDraft((current) => ({ ...current, steer: false }));
-    } catch {
+    } catch (error) {
       updateDraft((current) => ({
         ...current,
+        imageError: error instanceof Error ? error.message : "发送失败",
         text: [nextText, current.text].filter(Boolean).join("\n"),
         attachments: [...nextAttachments, ...current.attachments],
       }));
@@ -2277,11 +2358,13 @@ export function MobileWorkspace({
   }
 
   async function renameSession(): Promise<void> {
-    if (!menuSession || !onRenameSession || !renameCanSave) return;
+    if (!menuSession || (!onRenameSession && !onRunSessionCommand) || !renameCanSave) return;
     setSessionActionBusy(true);
     setSessionActionError(undefined);
     try {
-      await onRenameSession(menuSession.sessionId, renameTitle.trim());
+      if (onRunSessionCommand && snapshot?.host.capabilities.includes("session.command.v1") && desktopRuntimeId(menuSession) === "claude-desktop") {
+        await onRunSessionCommand(menuSession.sessionId, `/rename ${renameTitle.trim()}`);
+      } else await onRenameSession!(menuSession.sessionId, renameTitle.trim());
       setRenameOpen(false);
       setMenuSessionId(undefined);
     } catch (error) {
@@ -2353,12 +2436,21 @@ export function MobileWorkspace({
     ? sessions.find((candidate) => candidate.sessionId === selectedSession.parentSessionId)
     : undefined;
   const childForks = selectedSession ? sessions.filter((candidate) => (
-    candidate.parentSessionId === selectedSession.sessionId && !candidate.archivedAt
+    candidate.parentSessionId === selectedSession.sessionId && (!candidate.archivedAt || Boolean(candidate.sidechat))
   )) : [];
   const relatedForkCount = (parentSession ? 1 : 0) + childForks.length;
 
   const sessionOverlays = (
     <>
+      {selectedSession && <SessionCommandDialogs
+        key={selectedSession.sessionId}
+        session={selectedSession}
+        result={commands.dialog}
+        onClose={commands.close}
+        onOpenSession={selectSession}
+        onLoadPermissions={() => onLoadSessionPermissions!(selectedSession.sessionId)}
+        onSavePermissions={(mode, rules) => onSaveSessionPermissions!(selectedSession.sessionId, mode, rules)}
+      />}
       {menuSession && !renameOpen && (
         <MobileSheet
           eyebrow={`${menuSession.projectName} · ${desktopRuntimeName(desktopRuntimeId(menuSession))}`}
@@ -2380,8 +2472,20 @@ export function MobileWorkspace({
               {relatedForkCount > 0 && (
                 <SheetAction
                   icon={<GitFork size={19} />}
-                  label={childForks.length > 0 ? `分支 ${childForks.length}` : "主会话"}
-                  detail={childForks.length > 0 ? "查看由此会话 fork 出的分支" : `来自：${parentSession?.title ?? ""}`}
+                  label={childForks.length > 0
+                    ? (childForks.every((fork) => fork.sidechat)
+                        ? `侧聊 ${childForks.length}`
+                        : childForks.some((fork) => fork.sidechat)
+                          ? `分支与侧聊 ${childForks.length}`
+                          : `分支 ${childForks.length}`)
+                    : "主会话"}
+                  detail={childForks.length > 0
+                    ? (childForks.every((fork) => fork.sidechat)
+                        ? "查看此会话的 /btw 侧聊"
+                        : childForks.some((fork) => fork.sidechat)
+                          ? "查看由此会话派生的分支与 /btw 侧聊"
+                          : "查看由此会话 fork 出的分支")
+                    : `来自：${parentSession?.title ?? ""}`}
                   onClick={() => {
                     setForkChainOpen(true);
                     setMenuSessionId(undefined);
@@ -2543,7 +2647,7 @@ export function MobileWorkspace({
           key={configurationSession.sessionId}
           session={configurationSession}
           permissionScope="session"
-          revision={events.filter((event) => (event.type === "session.configuration" && event.sessionId === configurationSession.sessionId) || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === configurationSession.sessionId))).at(-1)?.seq ?? 0}
+          revision={events.filter((event) => ((event.type === "session.configuration" || event.type === "session.compacted") && event.sessionId === configurationSession.sessionId) || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === configurationSession.sessionId))).at(-1)?.seq ?? 0}
           onLoad={() => onLoadSessionConfiguration(configurationSession.sessionId)}
           onSave={(change) => onConfigureSession(configurationSession.sessionId, change)}
           {...(onConfigurePermissionPolicy ? {
@@ -2685,7 +2789,17 @@ export function MobileWorkspace({
           refreshing={refreshing}
           onRefresh={() => runRefresh(selectedSession.sessionId)}
         />
-        {selectedSession.pendingCount > 0 && selectedSession.desktopHandoff?.state !== "close-desktop" && (
+        {selectedSession.nativePermissionModeChange && (
+          <div className="session-channel-warning message-queue-status" role="status" aria-label="Desktop 会话授权变更">
+            <ShieldCheck size={17} />
+            <span>{selectedSession.nativePermissionModeChange.state === "requested"
+              ? "已请求此会话完全授权，等待 Desktop 确认"
+              : selectedSession.nativePermissionModeChange.state === "confirmed"
+                ? "Desktop 已确认本次授权变更"
+                : "Desktop 未应用完全授权，后续请求仍需确认"}</span>
+          </div>
+        )}
+        {selectedSession.pendingCount > 0 && selectedSession.desktopHandoff?.state !== "close-desktop" && selectedSession.desktopHandoff?.state !== "desktop-inbox" && (
           <div className="session-channel-warning message-queue-status" role="status" aria-label="消息排队状态">
             <LoaderCircle size={17} />
             <span>
@@ -2789,7 +2903,7 @@ export function MobileWorkspace({
                 }}
               >
                 <GitFork size={14} />
-                {`${fork.forkLabel || "fork"} · ${fork.title}`}
+                {`${fork.sidechat ? "/btw" : (fork.forkLabel || "fork")} · ${fork.title}`}
               </button>
             ))}
             <button type="button" className="relay-chain-link" aria-label="收起分支" onClick={() => setForkChainOpen(false)}>
@@ -3175,8 +3289,8 @@ export function MobileWorkspace({
               ))}
             </div>
           )}
-          {imageError && <div className="composer-error">{imageError}</div>}
-          {bridgeRunning && selectedSession.allowedActions?.canSteer !== false && (
+          {imageError && <div className="composer-error" role="alert">{imageError}</div>}
+          {bridgeRunning && !commandDraft && selectedSession.allowedActions?.canSteer !== false && (
             <div className="composer-mode" role="group" aria-label="发送方式">
               <button type="button" className={!steer ? "active" : ""} onClick={() => updateDraft((current) => ({ ...current, steer: false }))}>排到下一轮</button>
               <button type="button" className={steer ? "active" : ""} onClick={() => updateDraft((current) => ({ ...current, steer: true }))}>立即调整</button>
@@ -3197,18 +3311,22 @@ export function MobileWorkspace({
             {(canAttachImages || Boolean(onUploadFile)) && (
               <ComposerAttachmentMenu
                 canAttachImages={canAttachImages}
-                imageDisabled={selectedSession.allowedActions?.canSend === false}
+                imageDisabled={commandDraft || selectedSession.allowedActions?.canSend === false}
                 onPickImages={() => fileRef.current?.click()}
                 {...(onUploadFile ? {
                   fileUploads,
-                  fileDisabled: selectedSession.allowedActions?.canSend === false || sending || connection !== "connected" || !desktopOnline,
+                  fileDisabled: commandDraft || selectedSession.allowedActions?.canSend === false || sending || connection !== "connected" || !desktopOnline,
                 } : {})}
               />
             )}
-            <textarea
-              ref={composerRef}
+            <SlashCommandInput
+              key={draftKey}
+              textareaRef={composerRef}
+              {...(onLoadSessionCommands && snapshot?.host.capabilities.includes("session.commands.v1") && desktopRuntimeId(selectedSession) === "claude-desktop" ? {
+                onLoad: commands.load!,
+              } : {})}
               value={text}
-              onChange={({ target: { value } }) => updateDraft((current) => ({ ...current, text: value }))}
+              onChange={(value) => updateDraft((current) => ({ ...current, text: value }))}
               disabled={selectedSession.allowedActions?.canSend === false}
               placeholder={desktopOnline
                 ? selectedSession.allowedActions?.reason ?? (
@@ -3217,7 +3335,6 @@ export function MobileWorkspace({
                       : `给这个 ${runtimeName} 会话发指令`
                   )
                 : "电脑离线，消息会保存在手机并自动送达"}
-              rows={1}
               aria-label={`给 ${runtimeName} 发指令`}
             />
             {stopTarget && !hasDraft && !sending ? (
@@ -3258,6 +3375,7 @@ export function MobileWorkspace({
               key={activePermission.requestId}
               permission={activePermission}
               onResolve={onResolvePermission}
+              onEnableNativeFullAccess={(requestId) => onResolvePermission(requestId, "allow-once", undefined, undefined, "full-access")}
               {...(onConfigurePermissionPolicy ? {
                 onEnableFullAccess: (sessionId: string) => (
                   onConfigurePermissionPolicy(sessionId, "host", "full-access").then(() => undefined)
@@ -3312,7 +3430,7 @@ export function MobileWorkspace({
     ? isArchivedGroupPage
       ? archivedSessions
       : sortProjectSessionsByRecent(sessions.filter((session) => (
-          !session.archivedAt
+          (!session.archivedAt || Boolean(session.sidechat && session.parentSessionId && activeParentProjects.get(session.parentSessionId) === session.projectId))
           && session.projectId === activeProjectId
           && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
         )))
@@ -3351,10 +3469,13 @@ export function MobileWorkspace({
     isForkChild = false,
   ): ReactNode {
     const { primary: session, forks } = family;
-    const turnBadge = isArchivedList ? "已归档" : activeSessionBadgeLabel(session);
-    const subagentBadge = isArchivedList || turnBadge ? undefined : backgroundSubagentBadge(session);
+    const isArchivedRow = isArchivedList || Boolean(session.archivedAt);
+    const turnBadge = isArchivedRow ? "已归档" : activeSessionBadgeLabel(session);
+    const subagentBadge = isArchivedRow || turnBadge ? undefined : backgroundSubagentBadge(session);
     const badge = turnBadge ?? subagentBadge?.label;
     const forksExpanded = expandedForkParents.has(session.sessionId);
+    const badgeLabel = session.sidechat ? "/btw" : (session.forkLabel || "fork");
+    const badgeClassName = `session-fork-badge${session.sidechat ? " is-sidechat" : ""}`;
     return (
       <div className="mobile-session-family" key={session.sessionId}>
         <div className={`session-row-v2 ${isForkChild ? "is-fork-child" : ""}`} data-session-id={session.sessionId}>
@@ -3366,16 +3487,16 @@ export function MobileWorkspace({
             <span className={`session-state-dot ${session.turnState}`} />
             <span className="session-row-copy">
               <strong>
-                {isForkChild && <em className="session-fork-badge">{session.forkLabel || "fork"}</em>}
+                {isForkChild && <em className={badgeClassName}>{badgeLabel}</em>}
                 {session.title}
                 {!isForkChild && session.parentSessionId && (
-                  <em className="session-fork-badge">{session.forkLabel || "fork"}</em>
+                  <em className={badgeClassName}>{badgeLabel}</em>
                 )}
               </strong>
               <small>
                 {!isForkChild && populatedRuntimeCount > 1 ? `${desktopRuntimeName(desktopRuntimeId(session))} · ` : ""}
                 {relativeTime(session.lastActivityAt)}
-                {!isArchivedList && session.currentSummary ? ` · ${session.currentSummary}` : ""}
+                {!isArchivedRow && session.currentSummary ? ` · ${session.currentSummary}` : ""}
               </small>
             </span>
             {badge && (
@@ -3404,7 +3525,13 @@ export function MobileWorkspace({
               onClick={() => toggleForkGroup(session.sessionId)}
             >
               <GitFork size={12} />
-              <span>{forks.length} 个 Fork 分支</span>
+              <span>
+                {forks.every((fork) => fork.primary.sidechat)
+                  ? `${forks.length} 个 /btw 侧聊`
+                  : forks.some((fork) => fork.primary.sidechat)
+                    ? `${forks.length} 个分支与侧聊`
+                    : `${forks.length} 个 Fork 分支`}
+              </span>
               {forksExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
             </button>
             {forksExpanded && (

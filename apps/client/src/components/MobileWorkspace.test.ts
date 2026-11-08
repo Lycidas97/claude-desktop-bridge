@@ -7,12 +7,14 @@ import type {
   BridgeSessionInfo,
   BridgeTaskPlan,
 } from "@bridge/protocol";
-import { type ComponentProps, createElement } from "react";
+import * as React from "react";
+import { type ComponentProps, type ReactElement, type ReactNode, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyEventToTurns, mergeBridgeEvents, type LocalTurn } from "../hooks/useMobileBridge.js";
 import {
   MobileWorkspace,
+  PermissionPrompt,
   SubagentCard,
   aggregateFileChanges,
   canConfigureSession,
@@ -29,6 +31,19 @@ import {
   supportsRuntimeHandoff,
   usesOfficialComposer,
 } from "./MobileWorkspace.js";
+import { ConfirmationDialog } from "./ConfirmationDialog.js";
+
+vi.mock("react", async (original) => {
+  const actual = await original<typeof import("react")>();
+  return { ...actual, useState: vi.fn(actual.useState), useEffect: vi.fn(actual.useEffect) };
+});
+
+function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!node || typeof node !== "object" || !("props" in node)) return [];
+  const element = node as ReactElement<Record<string, any>>;
+  return [element, ...elements(element.props.children)];
+}
 
 describe("mobile workspace directory", () => {
   // Node's global localStorage has no storage file here; the workspace keeps project order in it.
@@ -162,11 +177,197 @@ describe("mobile workspace directory", () => {
     expect(html).not.toContain("Nested Fork");
   });
 
+  it("groups active and archived /btw sidechats under their active parent and shows direct parent return in sidechat detail", () => {
+    const sidechatActive: BridgeSessionInfo = {
+      ...session,
+      sessionId: "btw-active",
+      title: "btw: 检查 IPv6 转发",
+      parentSessionId: session.sessionId,
+      forkLabel: "fork-4",
+      sidechat: true,
+    };
+    const sidechatArchived: BridgeSessionInfo = {
+      ...session,
+      sessionId: "btw-archived",
+      title: "btw: 收集白名单域名",
+      parentSessionId: session.sessionId,
+      forkLabel: "btw",
+      sidechat: true,
+      archivedAt: 100,
+    };
+    const directoryHtml = renderToStaticMarkup(createElement(MobileWorkspace, {
+      ...workspaceProps(),
+      snapshot: {
+        ...snapshot,
+        sessions: [session, sidechatActive, sidechatArchived],
+      },
+    }));
+    expect(directoryHtml).toContain("2 个 /btw 侧聊");
+
+    const useState = vi.mocked(React.useState).getMockImplementation()!;
+    const stateSpy = vi.mocked(React.useState)
+      .mockImplementationOnce(useState)
+      .mockImplementationOnce(useState)
+      .mockReturnValueOnce(["btw-active", vi.fn()]);
+    try {
+      const detailHtml = renderToStaticMarkup(createElement(MobileWorkspace, {
+        ...workspaceProps(),
+        snapshot: {
+          ...snapshot,
+          sessions: [session, sidechatActive, sidechatArchived],
+        },
+      }));
+      expect(detailHtml).toContain(`主会话：${session.title}`);
+    } finally {
+      stateSpy.mockReset();
+    }
+
+    const mixedHtml = renderToStaticMarkup(createElement(MobileWorkspace, {
+      ...workspaceProps(),
+      snapshot: {
+        ...snapshot,
+        sessions: [
+          session,
+          sidechatActive,
+          { ...session, sessionId: "fork-regular", title: "普通分支", parentSessionId: session.sessionId, forkLabel: "fork-2" },
+          { ...session, sessionId: "archived-parent", title: "已归档父会话", archivedAt: 50 },
+          { ...session, sessionId: "btw-of-archived-parent", title: "btw: 归档父会话的侧聊", parentSessionId: "archived-parent", sidechat: true, archivedAt: 60 },
+          { ...session, sessionId: "btw-wrong-project", title: "btw: 跨项目孤儿保护", parentSessionId: session.sessionId, projectId: "other-project", sidechat: true, archivedAt: 70 },
+        ],
+      },
+    }));
+    expect(mixedHtml).toContain("2 个分支与侧聊");
+    expect(mixedHtml).not.toContain("btw: 归档父会话的侧聊");
+    expect(mixedHtml).not.toContain("btw: 跨项目孤儿保护");
+  });
+
+  it.each([
+    ["requested", "已请求此会话完全授权，等待 Desktop 确认"],
+    ["confirmed", "Desktop 已确认本次授权变更"],
+    ["not-applied", "Desktop 未应用完全授权，后续请求仍需确认"],
+  ] as const)("shows the %s Desktop session mode change without claiming a permanent mode", (state, label) => {
+    const useState = vi.mocked(React.useState).getMockImplementation()!;
+    const stateSpy = vi.mocked(React.useState)
+      .mockImplementationOnce(useState)
+      .mockImplementationOnce(useState)
+      .mockReturnValueOnce([session.sessionId, vi.fn()]);
+    try {
+      const html = renderToStaticMarkup(createElement(MobileWorkspace, {
+        ...workspaceProps(),
+        snapshot: { ...snapshot, sessions: [{ ...session, nativePermissionModeChange: { requestId: "native-request", state } }] },
+      }));
+      expect(html).toContain('aria-label="Desktop 会话授权变更"');
+      expect(html).toContain(label);
+      expect(html).not.toContain("永久完全授权");
+      expect(html).not.toContain("全局完全授权");
+    } finally {
+      stateSpy.mockReset();
+    }
+  });
+
+  it.each(["queued", "submitted", "held"] as const)("uses only the inbox notice while native input is %s, even after full access is confirmed", (inputStatus) => {
+    const useState = vi.mocked(React.useState).getMockImplementation()!;
+    const stateSpy = vi.mocked(React.useState)
+      .mockImplementationOnce(useState)
+      .mockImplementationOnce(useState)
+      .mockReturnValueOnce([session.sessionId, vi.fn()]);
+    try {
+      const html = renderToStaticMarkup(createElement(MobileWorkspace, {
+        ...workspaceProps(), snapshot: { ...snapshot, sessions: [{ ...session, pendingCount: 1,
+          desktopHandoff: { state: "desktop-inbox", canReturn: false, inputStatus },
+          nativePermissionModeChange: { requestId: "native-request", state: "confirmed" },
+        }] },
+      }));
+      expect(html).toContain("Desktop 已确认本次授权变更");
+      expect(html).toContain('aria-label="Desktop 会话交接"');
+      expect(html).not.toContain('aria-label="消息排队状态"');
+      expect(html).not.toContain("轮到后会自动执行");
+      expect(html).not.toContain("等待关闭此 Desktop 会话");
+      if (inputStatus === "held") {
+        expect(html).toContain("请在电脑端允许接收这条消息");
+        expect(html).toContain("完全授权不会代替此确认");
+      }
+    } finally { stateSpy.mockReset(); }
+  });
+
   it("offers configuration according to session runtime capabilities", () => {
     expect(canConfigureSession(session)).toBe(true);
     expect(canConfigureSession({ ...session, allowedActions: { canConfigure: false } as NonNullable<BridgeSessionInfo["allowedActions"]> })).toBe(false);
     expect(canConfigureSession({ ...session, runtimeId: "codex-desktop" })).toBe(false);
     expect(canConfigureSession({ ...session, runtimeId: "codex-desktop", allowedActions: { canConfigure: true } as NonNullable<BridgeSessionInfo["allowedActions"]> })).toBe(true);
+  });
+});
+
+describe("native Desktop permission actions", () => {
+  const permission: BridgePermissionInfo = {
+    requestId: "native-request", sessionId: "session-1", toolUseId: "tool-1", toolName: "Bash",
+    input: { command: "pwd" }, createdAt: 1, canAllowAlways: false, canSetNativeFullAccess: true,
+  };
+  afterEach(() => {
+    vi.mocked(React.useState).mockReset();
+    vi.mocked(React.useEffect).mockReset();
+  });
+
+  it.each([
+    [true, true, true],
+    [true, false, false],
+    [false, true, false],
+    [false, false, false],
+  ])("requires capability %s and a native callback %s to show the native button", (capability, callback, visible) => {
+    const html = renderToStaticMarkup(createElement(PermissionPrompt, {
+      permission: { ...permission, canSetNativeFullAccess: capability }, onResolve: vi.fn(),
+      onEnableFullAccess: vi.fn(),
+      ...(callback ? { onEnableNativeFullAccess: vi.fn() } : {}),
+    }));
+    expect(html.includes("此 Desktop 会话完全授权")).toBe(visible);
+    expect(html).toContain("Bridge 默认完全授权");
+    expect(html).not.toContain("电脑默认完全授权");
+  });
+
+  it("does not offer either upgrade action on AskUserQuestion", () => {
+    const html = renderToStaticMarkup(createElement(PermissionPrompt, {
+      permission: { ...permission, toolName: "AskUserQuestion", input: { questions: [{ question: "选择环境？", options: [{ label: "测试" }] }] } },
+      onResolve: vi.fn(), onEnableFullAccess: vi.fn(), onEnableNativeFullAccess: vi.fn(),
+    }));
+    expect(html).toContain("选择环境？");
+    expect(html).not.toContain("此 Desktop 会话完全授权");
+    expect(html).not.toContain("Bridge 默认完全授权");
+  });
+
+  it.each(["native", "host"] as const)("keeps the %s confirmation and callback independent", async (mode) => {
+    const onResolve = vi.fn().mockResolvedValue(undefined);
+    const onEnableFullAccess = vi.fn().mockResolvedValue(undefined);
+    const onEnableNativeFullAccess = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(React.useState)
+      .mockReturnValueOnce([false, vi.fn()])
+      .mockReturnValueOnce([undefined, vi.fn()])
+      .mockReturnValueOnce([mode, vi.fn()]);
+    vi.mocked(React.useEffect).mockImplementationOnce(() => undefined);
+    const child = PermissionPrompt({ permission, onResolve, onEnableFullAccess, onEnableNativeFullAccess });
+    const tree = (child.type as (props: typeof child.props) => ReactNode)(child.props);
+    const confirmation = elements(tree).find(element => element.type === ConfirmationDialog)!;
+    expect(confirmation.props.open).toBe(true);
+    expect(confirmation.props.description).toContain("提问和强制确认仍需响应");
+    if (mode === "native") {
+      expect(confirmation.props.title).toBe("此 Desktop 会话完全授权");
+      expect(confirmation.props.description).toContain("允许当前工具");
+      expect(confirmation.props.description).toContain("当前 Desktop 会话");
+      expect(confirmation.props.description).toContain("需等待 Desktop 确认");
+      expect(confirmation.props.description).toContain("收件箱接收许可仍需在电脑端确认");
+    } else {
+      expect(confirmation.props.title).toBe("更改 Bridge 默认授权模式");
+      expect(confirmation.props.description).toContain("Bridge 默认授权");
+    }
+    confirmation.props.onConfirm();
+    await Promise.resolve();
+    if (mode === "native") {
+      expect(onEnableNativeFullAccess).toHaveBeenCalledWith(permission.requestId);
+      expect(onEnableFullAccess).not.toHaveBeenCalled();
+    } else {
+      expect(onEnableFullAccess).toHaveBeenCalledWith(permission.sessionId);
+      expect(onEnableNativeFullAccess).not.toHaveBeenCalled();
+    }
+    expect(onResolve).not.toHaveBeenCalled();
   });
 });
 
@@ -1350,5 +1551,25 @@ describe("permissionPresentation", () => {
       { label: "命令", value: "npm test", code: true },
       { label: "目录", value: "/Users/test/project", code: true },
     ]);
+  });
+});
+
+
+describe("SDK command output history", () => {
+  it("renders local command output once across live replay and saved history, with no assistant response", () => {
+    const output: BridgeEvent = { eventId: "output", seq: 2, timestamp: 200, sessionId: "session-1", turnId: "turn-1", itemId: "sdk-output",
+      origin: "claude-host", type: "command.output", data: { text: "Context usage\nTools: 1200 tokens" } };
+    const saved: BridgeHistoryItem = { id: "sdk-output", sessionId: "session-1", turnId: "turn-1", role: "system", text: "Context usage\nTools: 1200 tokens", origin: "claude-host", createdAt: 200 };
+    const events: BridgeEvent[] = [output, output, { ...output, eventId: "done", seq: 3, type: "turn.completed", data: {} }];
+    const items = conversationItems("session-1", { status: "ready", items: [saved], hasMore: false }, events, []);
+    expect(items).toEqual([saved]);
+    expect(items.some(item => item.role === "assistant")).toBe(false);
+  });
+
+  it("updates command status by item identity without repeating a status card", () => {
+    const event: BridgeEvent = { eventId: "status-1", seq: 1, timestamp: 100, sessionId: "session-1", itemId: "compact-status", origin: "claude-host", type: "command.status", data: { text: "正在压缩…" } };
+    const items = conversationItems("session-1", undefined, [event, { ...event, eventId: "status-2", seq: 2, timestamp: 200, data: { text: "压缩完成" } }], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ role: "system", text: "压缩完成", createdAt: 100 });
   });
 });

@@ -190,6 +190,8 @@ export type BridgeCapability =
   | "runtime.handoff.v1"
   | "session.visibility.v1"
   | "session.rename.v1"
+  | "session.commands.v1"
+  | "session.command.v1"
   | "subagent.stop.v1"
   | "turn.queue.steer.v1"
   | "plugin.magpie-quota.v1";
@@ -592,6 +594,8 @@ export interface BridgeSessionInfo {
   parentSessionId?: string;
   /** Short fork handle (e.g. "fork", "fork-2") from Claude Desktop or Bridge. */
   forkLabel?: string;
+  /** Set when this session was spawned as a Claude Desktop /btw side chat. */
+  sidechat?: boolean;
   projectId: string;
   projectName: string;
   cwd: string;
@@ -617,6 +621,7 @@ export interface BridgeSessionInfo {
   /** Native runtime fast/priority mode for Codex/Hermes. */
   fast?: boolean;
   configurationPending?: boolean;
+  nativePermissionModeChange?: BridgeNativePermissionModeChange;
   fallbackConfirmed?: boolean;
   desktopRegistration?: BridgeDesktopRegistrationInfo;
   /** Desktop executor handoff or inbox submission awaiting transcript confirmation. */
@@ -680,6 +685,46 @@ export interface BridgeSessionContextUsage {
   percentage: number;
   model?: string;
   estimated: boolean;
+}
+
+export interface BridgeSlashCommand {
+  name: string;
+  description: string;
+  argumentHint?: string;
+  aliases?: string[];
+  action?: "sdk" | "help" | "model" | "permissions" | "fork" | "resume" | "rename";
+  unavailableReason?: string;
+}
+
+export type BridgeSDKPermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto";
+
+export interface BridgePermissionRules {
+  allow: string[];
+  ask: string[];
+  deny: string[];
+}
+
+export interface BridgeSessionPermissions {
+  sessionId: string;
+  mode: BridgeSDKPermissionMode;
+  rules: BridgePermissionRules;
+  inheritedRules: BridgePermissionRules;
+  canConfigure: boolean;
+  unavailableReason?: string;
+}
+
+export interface BridgeSessionCommandResult {
+  action: "sent" | "help" | "model" | "permissions" | "resume" | "rename" | "session" | "message";
+  catalog?: BridgeSlashCommandCatalog;
+  session?: BridgeSessionInfo;
+  sessions?: BridgeSessionInfo[];
+  message?: string;
+}
+
+export interface BridgeSlashCommandCatalog {
+  sessionId: string;
+  commands: BridgeSlashCommand[];
+  warnings?: string[];
 }
 
 export interface BridgeSessionConfiguration {
@@ -835,6 +880,12 @@ export interface BridgeDeviceInfo {
   revokedAt?: number;
 }
 
+export interface BridgeNativePermissionModeChange {
+  requestId: string;
+  state: "requested" | "confirmed" | "not-applied";
+  observedMode?: string;
+}
+
 export interface BridgePermissionInfo {
   requestId: string;
   sessionId: string;
@@ -846,6 +897,7 @@ export interface BridgePermissionInfo {
   input: Record<string, unknown>;
   createdAt: number;
   canAllowAlways: boolean;
+  canSetNativeFullAccess?: boolean;
 }
 
 export interface BridgePermissionResolution {
@@ -983,6 +1035,10 @@ export type BridgeMethod =
   | "session.rename"
   | "session.history"
   | "session.configuration"
+  | "session.commands"
+  | "session.command"
+  | "session.permissions"
+  | "session.permissions.configure"
   | "session.configure"
   | "session.desktop.register"
   | "session.archive"
@@ -1069,6 +1125,10 @@ export type BridgeEventType =
   | "session.deleted"
   | "session.transport"
   | "session.ownership-conflict"
+  | "session.reset"
+  | "session.compacted"
+  | "command.output"
+  | "command.status"
   | "user.message.accepted"
   | "message.delivery"
   | "assistant.delta"

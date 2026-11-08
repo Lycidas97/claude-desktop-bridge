@@ -66,6 +66,118 @@ describe("SessionEventLog", () => {
     await reopened.close();
   });
 
+  it("persists command output as one system item per SDK UUID without rendering the turn result", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-command-history-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const itemId = "37d1561e-743c-4b6f-8dd2-ec4d1978ff45";
+    const log = new SessionEventLog(path);
+    let expected;
+    try {
+      for (let index = 0; index < 2; index++) {
+        await log.append({ sessionId: "session-1", turnId: "turn-1", itemId, origin: "claude-host", type: "command.output", timestamp: 100, data: { text: "Current model: test-model" } });
+      }
+      await log.append({ sessionId: "session-1", turnId: "turn-1", origin: "claude-host", type: "turn.completed", data: { result: "Current model: test-model" } });
+      await log.append({ sessionId: "session-1", itemId: "output-without-turn", origin: "claude-host", type: "command.output", timestamp: 200, data: { text: "Available commands" } });
+      await log.append({ sessionId: "other-session", itemId, origin: "claude-host", type: "command.output", data: { text: "Other output" } });
+      await log.append({ sessionId: "session-1", origin: "claude-desktop", type: "session.observed", data: { role: "assistant", text: "No response requested." } });
+      await log.append({ sessionId: "session-1", origin: "claude-desktop", type: "session.observed", data: { role: "user", text: "[Request interrupted by user]" } });
+      expected = [
+        { id: itemId, sessionId: "session-1", turnId: "turn-1", role: "system", text: "Current model: test-model", createdAt: 100, origin: "claude-host" },
+        { id: "output-without-turn", sessionId: "session-1", role: "system", text: "Available commands", createdAt: 200, origin: "claude-host" },
+      ];
+      expect(log.history("session-1").items).toEqual(expected);
+      expect(log.history("other-session").items).toMatchObject([{ id: itemId, role: "system", text: "Other output" }]);
+    } finally {
+      await log.close();
+    }
+    const reopened = new SessionEventLog(path);
+    try {
+      await reopened.initialize();
+      expect(reopened.history("session-1").items).toEqual(expected);
+      expect(reopened.hasItem("session-1", "command.output", itemId)).toBe(true);
+      expect(reopened.itemMatches("session-1", "command.output", itemId, { text: "Current model: test-model" })).toBe(true);
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  it("keeps command output and explicit session status in the compacted history tail", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-command-compaction-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const log = new SessionEventLog(path);
+    try {
+      await log.append({ sessionId: "session-1", origin: "system", type: "session.desktop-registration" });
+      await log.append({ sessionId: "session-1", origin: "claude-host", type: "assistant.delta", data: { text: "Discard partial" } });
+      for (const type of ["command.output", "command.status", "session.compacted", "session.reset"] as const) {
+        await log.append({ sessionId: "session-1", origin: "claude-host", type, data: { text: "" } });
+      }
+      await log.append({ sessionId: "session-1", itemId: "compact-1", origin: "claude-host", type: "session.compacted", timestamp: 100, data: { text: "上下文已压缩" } });
+      await log.append({ sessionId: "session-1", itemId: "compact-1", origin: "claude-host", type: "session.compacted", timestamp: 100, data: { text: "上下文已压缩" } });
+      await log.append({ sessionId: "session-1", itemId: "output-1", origin: "claude-host", type: "command.output", timestamp: 200, data: { text: "Compaction complete" } });
+      await log.append({ sessionId: "session-1", origin: "claude-host", type: "turn.completed", data: { result: "Compaction complete" } });
+      const status = await log.append({ sessionId: "session-1", origin: "claude-host", type: "command.status", timestamp: 300, data: { text: "Command ready" } });
+      await log.append({ sessionId: "session-1", itemId: "reset-1", origin: "claude-host", type: "session.reset", timestamp: 400, data: { text: "Session reset" } });
+      await log.append({ sessionId: "session-1", itemId: "assistant-1", origin: "claude-host", type: "assistant.completed", timestamp: 500, data: { text: "Normal answer" } });
+      const expected = [
+        { id: "compact-1", role: "system", text: "上下文已压缩" },
+        { id: "output-1", role: "system", text: "Compaction complete" },
+        { id: status.eventId, role: "system", text: "Command ready" },
+        { id: "reset-1", role: "system", text: "Session reset" },
+        { id: "assistant-1", role: "assistant", text: "Normal answer" },
+      ];
+      expect(log.history("session-1").items).toMatchObject(expected);
+      await log.close();
+      for (const compact of [true, false, true, false]) {
+        const reopened = new SessionEventLog(path, 80, compact ? { bytesThreshold: 1, retainEvents: 7 } : undefined);
+        try {
+          await reopened.initialize();
+          expect(reopened.history("session-1").items).toMatchObject(expected);
+          expect(reopened.latestItem("session-1", "command.output", "output-1")).toMatchObject({ data: { text: "Compaction complete" } });
+          const page = reopened.history("session-1", undefined, 2);
+          expect(page.items).toMatchObject(expected.slice(-2));
+          expect(page.hasMore).toBe(true);
+          expect(reopened.history("session-1", page.nextCursor, 2).items).toMatchObject(expected.slice(1, 3));
+        } finally {
+          await reopened.close();
+        }
+      }
+    } finally {
+      await log.close();
+    }
+  });
+
+  it("keeps command UUID receipts and text digests after the history window is compacted away", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-command-receipts-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const first = new SessionEventLog(path);
+    try {
+      for (const type of ["command.output", "command.status", "session.compacted", "session.reset"] as const) {
+        await first.append({ sessionId: "session-1", itemId: `item-${type}`, origin: "claude-host", type, data: { text: `OMIT_PAYLOAD_${type}` } });
+      }
+    } finally {
+      await first.close();
+    }
+    for (const compact of [true, false, true, false]) {
+      const log = new SessionEventLog(path, 80, compact ? { bytesThreshold: 1, retainEvents: 0 } : undefined);
+      try {
+        await log.initialize();
+        expect(log.history("session-1").items).toEqual([]);
+        for (const type of ["command.output", "command.status", "session.compacted", "session.reset"] as const) {
+          expect(log.hasItem("session-1", type, `item-${type}`)).toBe(true);
+          expect(log.itemMatches("session-1", type, `item-${type}`, { text: `OMIT_PAYLOAD_${type}` })).toBe(true);
+          expect(log.itemMatches("session-1", type, `item-${type}`, { text: "Changed" })).toBe(false);
+          expect(log.hasItem("other-session", type, `item-${type}`)).toBe(false);
+        }
+        expect(await readFile(path, "utf8")).not.toContain("OMIT_PAYLOAD_");
+      } finally {
+        await log.close();
+      }
+    }
+  });
+
   it("keeps the latest activity aggregate without displacing conversation events during compaction", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-progress-compaction-"));
     directories.push(directory);

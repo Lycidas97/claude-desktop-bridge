@@ -99,6 +99,7 @@ export function groupProjectSessionFamilies<T extends {
   sessionId: string;
   parentSessionId?: string;
   lastActivityAt: number;
+  archivedAt?: number;
 }>(sessions: readonly T[], recency: SessionRecency<T> = lastActivity): SessionFamily<T>[] {
   const byId = new Map<string, SessionFamily<T>>(sessions.map((primary) => [
     primary.sessionId,
@@ -117,7 +118,9 @@ export function groupProjectSessionFamilies<T extends {
       sortFamilies(family.forks);
       family.lastActivityAt = Math.max(
         recency(family.primary),
-        ...family.forks.map((fork) => fork.lastActivityAt),
+        ...family.forks
+          .filter((fork) => Boolean(family.primary.archivedAt) || !fork.primary.archivedAt)
+          .map((fork) => fork.lastActivityAt),
       );
     }
     return families.sort((left, right) => right.lastActivityAt - left.lastActivityAt);
@@ -129,6 +132,7 @@ export function previewProjectSessionFamilies<T extends {
   sessionId: string;
   parentSessionId?: string;
   lastActivityAt: number;
+  archivedAt?: number;
 }>(
   sessions: readonly T[],
   limit = PROJECT_PREVIEW_SESSION_LIMIT,

@@ -162,7 +162,122 @@ describe("Claude Desktop session catalog", () => {
       forkLabel: "fork-2",
       title: "第四章叙事与分析设计讨论 (fork)",
     });
+    expect(forkSession?.sidechat).toBeUndefined();
     expect(detachedSession?.parentSessionId).toBeUndefined();
+  });
+
+  it("exposes /btw sidechats with sidechat flag, native forkLabel, direct parent, and raw title", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-desktop-btw-"));
+    directories.push(root);
+    await Promise.all([
+      writeFile(join(root, "local_grandparent.json"), JSON.stringify({
+        sessionId: "local_grandparent",
+        cliSessionId: "grandparent-cli",
+        cwd: "/work/server",
+        title: "244 透明网关多拨架构",
+        lastFocusedAt: 100,
+      })),
+      writeFile(join(root, "local_archived_parent.json"), JSON.stringify({
+        sessionId: "local_archived_parent",
+        cliSessionId: "archived-parent-cli",
+        cwd: "/work/server",
+        title: "244 透明网关多拨架构 (fork)",
+        isArchived: true,
+        forkedFromSessionId: "local_grandparent",
+        lastFocusedAt: 150,
+      })),
+      writeFile(join(root, "local_btw_named.json"), JSON.stringify({
+        sessionId: "local_btw_named",
+        cliSessionId: "btw-named-cli",
+        cwd: "/work/server",
+        title: "btw: 能不能把 ipv6 的转发也搞回来",
+        lastFocusedAt: 300,
+        forkedFromSessionId: "local_grandparent",
+        spawnedFrom: {
+          sessionId: "local_grandparent",
+          title: "244 透明网关多拨架构 (fork)",
+          sideSession: true,
+          userFork: true,
+          btw: true,
+          name: "fork-4",
+        },
+      })),
+      writeFile(join(root, "local_btw_archived.json"), JSON.stringify({
+        sessionId: "local_btw_archived",
+        cliSessionId: "btw-archived-cli",
+        cwd: "/work/server",
+        title: "Side chat",
+        isArchived: true,
+        lastFocusedAt: 200,
+        forkedFromSessionId: "local_archived_parent",
+        spawnedFrom: {
+          sessionId: "local_archived_parent",
+          sideSession: true,
+          userFork: true,
+          btw: true,
+        },
+      })),
+      writeFile(join(root, "local_btw_active_under_archived.json"), JSON.stringify({
+        sessionId: "local_btw_active_under_archived",
+        cliSessionId: "btw-active-under-archived-cli",
+        cwd: "/work/server",
+        title: "",
+        isArchived: false,
+        lastFocusedAt: 250,
+        forkedFromSessionId: "local_archived_parent",
+        spawnedFrom: {
+          sessionId: "local_archived_parent",
+          title: "244 透明网关多拨架构 (fork)",
+          sideSession: true,
+          userFork: true,
+          btw: true,
+        },
+      })),
+      writeFile(join(root, "local_btw_detached.json"), JSON.stringify({
+        sessionId: "local_btw_detached",
+        cliSessionId: "btw-detached-cli",
+        cwd: "/work/server",
+        title: "btw: 已脱离父会话的侧聊",
+        isArchived: false,
+        detached: true,
+        lastFocusedAt: 180,
+        forkedFromSessionId: "local_grandparent",
+        spawnedFrom: {
+          sessionId: "local_grandparent",
+          sideSession: true,
+          userFork: true,
+          btw: true,
+        },
+      })),
+    ]);
+
+    const state = await listClaudeDesktopSessionState([root]);
+    expect(state.sessions.find((s) => s.cliSessionId === "btw-named-cli")).toMatchObject({
+      cliSessionId: "btw-named-cli",
+      parentSessionId: "grandparent-cli",
+      forkLabel: "fork-4",
+      sidechat: true,
+      title: "btw: 能不能把 ipv6 的转发也搞回来",
+    });
+    expect(state.sessions.find((s) => s.cliSessionId === "btw-active-under-archived-cli")).toMatchObject({
+      cliSessionId: "btw-active-under-archived-cli",
+      parentSessionId: "grandparent-cli",
+      forkLabel: "btw",
+      sidechat: true,
+      title: "244 透明网关多拨架构",
+    });
+    const detachedBtw = state.sessions.find((s) => s.cliSessionId === "btw-detached-cli");
+    expect(detachedBtw?.parentSessionId).toBeUndefined();
+    expect(detachedBtw?.sidechat).toBeUndefined();
+    expect(state.archivedCliSessionIds.has("btw-named-cli")).toBe(false);
+    expect(state.archivedSessions.find((s) => s.cliSessionId === "btw-archived-cli")).toMatchObject({
+      cliSessionId: "btw-archived-cli",
+      parentSessionId: "archived-parent-cli",
+      forkLabel: "btw",
+      sidechat: true,
+      title: "Side chat",
+    });
+    expect(state.archivedCliSessionIds.has("btw-archived-cli")).toBe(true);
   });
 
   it("maps custom sidebar groups from claude_desktop_config.json onto sessions and their forks", async () => {

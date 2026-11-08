@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createReadStream } from "node:fs";
 import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
@@ -19,9 +19,15 @@ import type {
   BridgeSessionConfiguration,
   BridgeSessionContextUsage,
   BridgeSessionInfo,
+  BridgeSlashCommandCatalog,
   BridgeSubagentSummary,
   BridgeTurnState,
+  BridgeUploadedFile,
 } from "@bridge/protocol";
+import { renameSession as renameSDKSession, resolveSettings } from "@anthropic-ai/claude-agent-sdk";
+import type { BridgeSlashCommand, BridgeSessionCommandResult, BridgeSessionPermissions, BridgePermissionRules, BridgeSDKPermissionMode } from "@bridge/protocol";
+import { FileUploadManager } from "./file-upload.js";
+import { discoverSlashCommands } from "./slash-command-catalog.js";
 import type {
   ClaudeDesktopSessionRegistrar,
   StoredDesktopRegistration,
@@ -124,6 +130,7 @@ export interface QueuedTurn {
   laneId: string;
   text: string;
   attachments: BridgeAttachment[];
+  desktopInboxImages?: Array<BridgeUploadedFile & { attachmentId: string }>;
   origin: "desktop" | "mobile" | "system";
   sourceDeviceId?: string;
   requestedAt: number;
@@ -131,6 +138,7 @@ export interface QueuedTurn {
   attempts: number;
   state: "queued" | "running" | "uncertain";
   mode?: "start" | "steer" | "handoff";
+  slashCommand?: boolean;
   transport?: "claude-desktop-managed" | "bridge-host" | "desktop-inbox";
   inboxHeld?: boolean;
   inboxConfirmationExpired?: boolean;
@@ -180,6 +188,8 @@ interface SessionRuntimeState {
   active?: QueuedTurn;
   externalWriteVersion?: number;
   configurationPending?: boolean;
+  resetNativeSessionId?: string;
+  slashCommands?: BridgeSlashCommand[];
   desktopExitRequired?: boolean;
   desktopTakeoverRequested?: boolean;
   releaseTimer?: ReturnType<typeof setTimeout>;
@@ -192,6 +202,11 @@ export interface SessionHostRuntime {
   readonly backgroundTasksKnown?: boolean;
   readonly hasPendingInput?: boolean;
   readonly initialized?: boolean;
+  readonly slashCommands?: BridgeSlashCommand[] | undefined;
+  getPermissions?(): { mode: BridgeSDKPermissionMode; rules: BridgePermissionRules };
+  setPermissions?(mode: BridgeSDKPermissionMode, rules: BridgePermissionRules): Promise<void>;
+  rebindSession?(logicalSessionId: string): void;
+  ready?(): Promise<void>;
   start(): void;
   send(
     input: Parameters<ClaudeSessionHost["send"]>[0],
@@ -288,6 +303,7 @@ export interface StartTurnInput {
   sourceDeviceId?: string;
   priority?: number;
   mode?: "start" | "steer";
+  slashCommand?: boolean;
 }
 
 export interface ConfigureSessionInput {
@@ -461,6 +477,7 @@ export class SessionBroker extends EventEmitter {
       this.reconcileDesktopRegistrations();
       void this.pump();
     });
+    this.permissionBroker.on("native-mode", () => this.emit("changed"));
     this.permissionBroker.on("requested", (request) => {
       const type = request.toolName === "AskUserQuestion" ? "question.requested" : "permission.requested";
       const state = this.runtimeStates.get(request.sessionId);
@@ -485,6 +502,7 @@ export class SessionBroker extends EventEmitter {
             canAllowAlways: request.suggestions.some(
               (suggestion: { destination?: string }) => suggestion.destination === "localSettings",
             ),
+            ...(request.canSetNativeFullAccess ? { canSetNativeFullAccess: true } : {}),
           },
         }));
       this.emit("changed");
@@ -689,6 +707,7 @@ export class SessionBroker extends EventEmitter {
         ?? this.options.paths.projects;
       const state = this.runtimeStates.get(sessionId);
       const desktopHandoff = this.desktopHandoff(sessionId, observed, queuedTurn);
+      const nativePermissionModeChange = this.permissionBroker.nativeModeChange(sessionId);
       const pendingCommandIds = this.pending.filter((turn) => (
         turn.sessionId === sessionId && (turn.state === "queued" || turn.state === "uncertain")
       )).map((turn) => turn.commandId);
@@ -735,6 +754,7 @@ export class SessionBroker extends EventEmitter {
         ...(desktopSessionId ? { desktopSessionId } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(forkLabel ? { forkLabel } : {}),
+        ...(source?.sidechat ? { sidechat: true } : {}),
         projectId: project?.projectId ?? projectIdForCwd(cwd),
         projectName: project?.projectName ?? (basename(cwd) || cwd),
         cwd,
@@ -748,6 +768,7 @@ export class SessionBroker extends EventEmitter {
         transport: "bridge-host",
         ownership,
         ...(desktopHandoff ? { desktopHandoff } : {}),
+        ...(nativePermissionModeChange ? { nativePermissionModeChange } : {}),
         turnState: pendingCount > 0 && turnState === "idle" ? "queued" : turnState,
         ...(state?.active ? {
           executionStage: state.active.sessionAcceptedAt !== undefined ? "running" as const
@@ -863,6 +884,151 @@ export class SessionBroker extends EventEmitter {
       else delete session.hostEffort;
     }
     return desktop;
+  }
+
+  async commands(sessionId: string): Promise<BridgeSlashCommandCatalog> {
+    const session = this.session(sessionId);
+    if (!session) throw new Error("Session not found");
+    const state = this.runtimeStates.get(sessionId);
+    const host = state?.host;
+    const sdkUnavailableReason = state?.ownership === "BRIDGE_IDLE" || (host && state?.ownership === "BRIDGE_RUNNING")
+      ? undefined
+      : host ? "会话执行器正在交接或存在冲突，请稍后再试" : "当前会话由 Desktop 执行，尚未连接内置命令控制";
+    if (host?.slashCommands !== undefined) state!.slashCommands = host.slashCommands;
+    const liveCommands = host?.slashCommands ?? state?.slashCommands;
+    const discovered = liveCommands === undefined
+      ? await discoverSlashCommands(session.cwd, dirname(this.options.paths.projects))
+      : { commands: liveCommands };
+    const commands: BridgeSlashCommand[] = discovered.commands.map(command => ({ ...command, ...(liveCommands ? { action: "sdk" as const } : {}) }));
+    const common: BridgeSlashCommand[] = [
+      { name: "help", description: "查看可用命令", action: "help" },
+      { name: "context", description: "查看上下文用量", action: "sdk" },
+      { name: "usage", description: "查看实际用量", action: "sdk" },
+      { name: "compact", description: "压缩当前上下文", argumentHint: "[保留说明]", action: "sdk" },
+      { name: "clear", aliases: ["new"], description: "开始空白会话，保留旧历史", action: "sdk" },
+      { name: "model", description: "选择会话模型", argumentHint: "[模型]", action: "model" },
+      { name: "permissions", description: "管理当前会话权限", action: "permissions" },
+      { name: "fork", description: "从当前历史创建分支", argumentHint: "[名称]", action: "fork" },
+      { name: "resume", description: "恢复已有会话", argumentHint: "[会话]", action: "resume" },
+      { name: "rename", description: "重命名当前会话", argumentHint: "[名称]", action: "rename" },
+    ];
+    for (const command of common) {
+      const index = commands.findIndex(candidate => candidate.name === command.name);
+      const live = index < 0 ? undefined : commands[index];
+      const needsHost = command.action === "sdk" || command.action === "model" || command.action === "permissions";
+      const unavailableReason = needsHost && sdkUnavailableReason
+        ? sdkUnavailableReason
+        : command.action === "sdk" && liveCommands !== undefined && !liveCommands.some(candidate => candidate.name === command.name)
+          ? "当前 SDK 未提供此命令"
+          : undefined;
+      const entry = { ...live, ...command, ...(live?.description ? { description: live.description } : {}), ...(unavailableReason ? { unavailableReason } : {}) };
+      if (index >= 0) commands[index] = entry;
+      else commands.push(entry);
+    }
+    if (sdkUnavailableReason) {
+      for (const command of commands) {
+        if (command.action === "sdk") command.unavailableReason ??= sdkUnavailableReason;
+      }
+    }
+    return { sessionId, ...discovered, commands };
+  }
+
+  async runCommand(input: Omit<StartTurnInput, "attachments" | "mode" | "priority">): Promise<BridgeSessionCommandResult> {
+    const match = /^\/([^\s/\\]+)(?:\s+([\s\S]*))?$/u.exec(input.text.trim());
+    if (!match) throw new Error("请输入有效的命令");
+    const catalog = await this.commands(input.sessionId);
+    const name = match[1]!.toLocaleLowerCase();
+    let command = catalog.commands.find(candidate => candidate.name.toLocaleLowerCase() === name || candidate.aliases?.some(alias => alias.toLocaleLowerCase() === name));
+    if (!command) throw new Error("当前会话不支持此命令");
+    if (command.unavailableReason) throw new Error(command.unavailableReason);
+    if (command.action === "sdk" || command.action === "model" || command.action === "permissions") {
+      await this.commandHost(input.sessionId);
+      command = (await this.commands(input.sessionId)).commands.find(candidate => candidate.name.toLocaleLowerCase() === name || candidate.aliases?.some(alias => alias.toLocaleLowerCase() === name));
+      if (!command || command.unavailableReason) throw new Error(command?.unavailableReason ?? "当前 SDK 未提供此命令");
+    }
+    const argument = match[2]?.trim() ?? "";
+    if (command.action === "help") return { action: "help", catalog };
+    if (command.action === "model") {
+      if (!argument) return { action: "model" };
+      const configuration = await this.configuration(input.sessionId);
+      if (!configuration.availableModels.some(model => model.value === argument)) throw new Error("请选择当前会话支持的模型");
+      const applied = await this.configureSession({ sessionId: input.sessionId, model: argument });
+      return { action: "message", message: applied.appliesAfterTurn ? "模型已保存，将从下一轮生效" : "模型已切换" };
+    }
+    if (command.action === "permissions") {
+      if (argument) throw new Error("请在权限面板中选择模式与规则");
+      return { action: "permissions" };
+    }
+    if (command.action === "fork") return { action: "session", session: await this.forkSession(input.sessionId, argument || undefined) };
+    if (command.action === "resume") {
+      const sessions = this.listSessions().filter(candidate => candidate.cwd === this.session(input.sessionId)!.cwd);
+      if (!argument) return { action: "resume", sessions };
+      const exact = sessions.find(candidate => candidate.sessionId === argument);
+      if (exact) return { action: "session", session: exact };
+      const matches = sessions.filter(candidate => candidate.title === argument);
+      if (matches.length !== 1) throw new Error("无法唯一匹配会话，请从恢复列表选择");
+      return { action: "session", session: matches[0]! };
+    }
+    if (command.action === "rename") {
+      if (!argument) return { action: "rename" };
+      await this.rename(input.sessionId, argument);
+      return { action: "message", message: "会话已重命名" };
+    }
+    await this.startTurn({ ...input, text: `/${command.name}${match[2] === undefined ? "" : ` ${match[2]}`}`, mode: "start", ...(command.action === "sdk" ? { slashCommand: true } : {}) });
+    return { action: "sent" };
+  }
+
+  async rename(sessionId: string, title: string): Promise<void> {
+    const session = this.session(sessionId);
+    if (!session) throw new Error("Session not found");
+    const nativeSessionId = this.options.conversationState?.activeLane(sessionId)?.nativeSessionId ?? sessionId;
+    await renameSDKSession(nativeSessionId, title, { dir: session.cwd });
+    this.options.conversationState?.setSessionTitle(sessionId, title);
+    const stored = this.bridgeSessions.get(sessionId);
+    if (stored) stored.title = title;
+    await this.saveSessions();
+    this.emit("changed");
+  }
+
+  private async commandHost(sessionId: string): Promise<SessionHostRuntime> {
+    const state = this.runtimeStates.get(sessionId);
+    if (state?.ownership !== "BRIDGE_IDLE" && state?.ownership !== "BRIDGE_RUNNING") {
+      throw new Error("会话执行器尚未就绪或存在归属冲突，请稍后再试");
+    }
+    let host = state?.host;
+    if (!host) {
+      if (state?.ownership !== "BRIDGE_IDLE") throw new Error("当前会话由 Desktop 执行，尚未连接内置命令控制");
+      await this.initialize();
+      const session = this.session(sessionId)!;
+      const lane = this.activeLane(sessionId);
+      const nativeSessionId = lane?.nativeSessionId ?? sessionId;
+      if (!await this.options.observer.canStartBridgeHost(nativeSessionId, false)) throw new Error("会话已有执行器，请在原 Desktop 中继续");
+      await this.assertBridgeHostCompatible(session);
+      host = await this.ensureHost(sessionId, lane?.laneId ?? legacyClaudeLaneId(sessionId));
+    }
+    await host.ready?.();
+    this.scheduleRelease(sessionId);
+    return host;
+  }
+
+  async permissions(sessionId: string): Promise<BridgeSessionPermissions> {
+    const session = this.session(sessionId);
+    if (!session) throw new Error("Session not found");
+    const host = await this.commandHost(sessionId);
+    if (!host?.getPermissions) throw new Error("当前会话尚未连接 SDK 权限控制");
+    const inherited = (await resolveSettings({ cwd: session.cwd, settingSources: ["user", "project", "local"] })).effective.permissions;
+    return {
+      sessionId, ...host.getPermissions(),
+      inheritedRules: { allow: inherited?.allow ?? [], ask: inherited?.ask ?? [], deny: inherited?.deny ?? [] },
+      canConfigure: Boolean(host.setPermissions),
+    };
+  }
+
+  async configurePermissions(sessionId: string, mode: BridgeSDKPermissionMode, rules: BridgePermissionRules): Promise<BridgeSessionPermissions> {
+    const host = await this.commandHost(sessionId);
+    if (!host?.setPermissions) throw new Error("当前会话尚未连接 SDK 权限控制");
+    await host.setPermissions(mode, rules);
+    return this.permissions(sessionId);
   }
 
   async configuration(sessionId: string, discoverModels = true): Promise<BridgeSessionConfiguration> {
@@ -1203,7 +1369,7 @@ export class SessionBroker extends EventEmitter {
       this.listSessions()
         .filter((candidate) => candidate.parentSessionId === parentSessionId)
         .map((candidate) => candidate.forkLabel)
-        .filter((label): label is string => Boolean(label)),
+        .filter((label): label is string => Boolean(label) && label !== "btw"),
     );
     let forkIndex = existingForkLabels.size + 1;
     let forkLabel = forkIndex === 1 && !existingForkLabels.has("fork") ? "fork" : `fork-${forkIndex}`;
@@ -1356,6 +1522,7 @@ export class SessionBroker extends EventEmitter {
       attempts: 0,
       state: "queued",
       mode: input.mode ?? "start",
+      ...(input.slashCommand ? { slashCommand: true } : {}),
       sessionCwd: session.cwd,
       sessionTitle: session.title,
       ...(session.desktopSessionId ? { desktopSessionId: session.desktopSessionId } : {}),
@@ -1800,8 +1967,9 @@ export class SessionBroker extends EventEmitter {
       deviceId: string;
       name: string;
     },
+    nativeMode?: "full-access",
   ): boolean {
-    return this.permissionBroker.resolveRequest(requestId, decision, message, updatedInput, resolver);
+    return this.permissionBroker.resolveRequest(requestId, decision, message, updatedInput, resolver, nativeMode ? { nativeMode } : undefined);
   }
 
   resolveNativePermissionSessionId(nativeSessionId: string): string | undefined {
@@ -1848,12 +2016,28 @@ export class SessionBroker extends EventEmitter {
   private async sendToDesktopInbox(turn: QueuedTurn, nativeSessionId: string, writers?: ActiveClaudeProcess[]): Promise<boolean> {
     const inbox = this.options.desktopInbox;
     const state = this.runtimeStates.get(turn.sessionId)!;
-    if (!inbox || process.platform !== "darwin" || state.host || turn.inboxConfirmationExpired || turn.attachments.length || turn.mode === "handoff" ||
+    if (!inbox || process.platform !== "darwin" || state.host || turn.inboxConfirmationExpired || turn.mode === "handoff" ||
       this.options.observer.isMainTurnBusy(nativeSessionId) || this.options.observer.isWaitingForUserInput?.(nativeSessionId)) return false;
     const live = (writers ?? await this.sessionProcessScanner(this.options.paths, nativeSessionId)).filter(writer => writer.processAlive);
     const owner = live[0];
     if (live.length !== 1 || !owner?.entrypoint.startsWith("claude-desktop") || owner.pid === undefined ||
       owner.peerProtocol !== 1 || !owner.messagingSocketPath || this.desktopRequiresReload(turn.sessionId, nativeSessionId, [owner])) return false;
+    if (turn.attachments.length) {
+      const uploads = new FileUploadManager();
+      turn.sessionCwd ??= this.session(turn.sessionId)!.cwd;
+      turn.desktopInboxImages ??= [];
+      for (const attachment of turn.attachments) {
+        if (turn.desktopInboxImages.some(image => image.attachmentId === attachment.id)) continue;
+        const bytes = Buffer.from(attachment.data, "base64");
+        const upload = await uploads.open({ owner: turn.commandId, sessionId: turn.sessionId, cwd: turn.sessionCwd,
+          name: attachment.name, size: attachment.size, sha256: createHash("sha256").update(bytes).digest("hex") });
+        for (let index = 0; index < upload.totalChunks; index += 1) {
+          uploads.write(upload.uploadId, index, bytes.subarray(index * upload.chunkBytes, (index + 1) * upload.chunkBytes).toString("base64"), turn.commandId);
+        }
+        turn.desktopInboxImages.push({ ...await uploads.commit(upload.uploadId, turn.commandId), attachmentId: attachment.id });
+        await this.saveQueue();
+      }
+    }
     if (!this.canDispatch(turn)) return true;
     this.clearTakeoverRetry(turn.sessionId);
     delete state.desktopExitRequired;
@@ -1871,7 +2055,12 @@ export class SessionBroker extends EventEmitter {
     await this.record({ sessionId: turn.sessionId, turnId: turn.turnId, itemId: turn.messageId, origin: "system", type: "message.delivery",
       data: { commandId: turn.commandId, requestId: turn.requestId, messageId: turn.messageId, delivery: "submitted" } });
     try {
-      await inbox.send({ socketPath: owner.messagingSocketPath, sessionId: nativeSessionId, pid: owner.pid }, { messageId: turn.messageId, text: turn.text });
+      await inbox.send({ socketPath: owner.messagingSocketPath, sessionId: nativeSessionId, pid: owner.pid }, {
+        messageId: turn.messageId,
+        text: turn.desktopInboxImages?.length
+          ? [turn.text, "请用 Read 读取以下本机图片，再回答这条消息：", ...turn.desktopInboxImages.map(image => JSON.stringify(join(turn.sessionCwd!, image.path)))].join("\n\n")
+          : turn.text,
+      });
     } catch (error) {
       if (!(error instanceof InboxSendError)) throw error;
       if (!this.pending.includes(turn)) return true;
@@ -2013,6 +2202,7 @@ export class SessionBroker extends EventEmitter {
         Boolean(state.host && state.hostLaneId === turn.laneId),
       )
     ) {
+      if (turn.slashCommand) { await this.failQueuedTurn(turn, "SDK 命令无法由当前 Desktop 执行器接收"); return; }
       if (await this.sendToDesktopInbox(turn, nativeSessionId)) return;
       state.desktopExitRequired = true;
       state.ownership = "DESKTOP_OBSERVED";
@@ -2043,6 +2233,7 @@ export class SessionBroker extends EventEmitter {
       return;
     }
     if (desktopWriter || (providerKind === "claude-3p" && observed?.desktopProcessAlive)) {
+      if (turn.slashCommand) { await this.failQueuedTurn(turn, "SDK 命令无法由当前 Desktop 执行器接收"); return; }
       if (await this.sendToDesktopInbox(turn, nativeSessionId, liveWriters)) return;
       state.desktopExitRequired = true;
       state.ownership = "DESKTOP_OBSERVED";
@@ -2072,6 +2263,15 @@ export class SessionBroker extends EventEmitter {
       if (providerKind === "claude-3p") await this.refreshDesktopConfiguration(turn.sessionId);
       if (!this.canDispatch(turn)) return;
       const host = await this.ensureHost(turn.sessionId, turn.laneId);
+      if (turn.slashCommand) {
+        await host.ready?.();
+        const commandName = /^\/([^\s]+)/u.exec(turn.text)?.[1];
+        if (!host.slashCommands?.some(command => command.name === commandName)) {
+          await this.failQueuedTurn(turn, "当前 SDK 未提供此命令");
+          this.scheduleRelease(turn.sessionId);
+          return;
+        }
+      }
       const effective = this.effectiveProfile(turn.sessionId, session.cwd);
       await this.applyHostConfiguration(host, {
         ...effective,
@@ -2272,8 +2472,9 @@ export class SessionBroker extends EventEmitter {
           .catch(() => undefined)
           .then(() => {
             if (event.type === "runtime.started") {
-              if (state.host !== host) return;
-              state.hostGeneration = eventGeneration;
+              const currentState = this.runtimeStates.get(event.sessionId);
+              if (currentState?.host !== host) return;
+              currentState.hostGeneration = eventGeneration;
             }
             return this.handleHostEvent(event, eventGeneration);
           });
@@ -2554,6 +2755,21 @@ export class SessionBroker extends EventEmitter {
     );
     if ((event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.interrupted") &&
       (!active || (event.turnId !== undefined && active.turnId !== event.turnId))) return;
+    if (event.type === "session.reset") {
+      if (state) state.resetNativeSessionId = event.nativeSessionId;
+      return;
+    }
+    if (event.type === "command.output" || event.type === "command.status" || event.type === "session.compacted") {
+      const itemId = "itemId" in event ? event.itemId : undefined;
+      if (itemId && this.options.eventLog.hasItem(event.sessionId, event.type, itemId)) return;
+      await this.record({
+        sessionId: event.sessionId, ...("turnId" in event && event.turnId ? { turnId: event.turnId } : {}),
+        ...(itemId ? { itemId } : {}), timestamp: event.at, origin: eventOrigin, type: event.type,
+        data: { text: event.type === "session.compacted" ? "上下文已压缩" : event.text },
+      });
+      this.emit("changed");
+      return;
+    }
     if (event.type === "assistant.delta") {
       // SDK stream event UUIDs identify chunks, not the assistant response stream.
       const itemId = event.turnId ? `assistant:${event.turnId}` : event.itemId;
@@ -2904,10 +3120,52 @@ export class SessionBroker extends EventEmitter {
       }
     }
     await this.saveQueue();
+    if (state.resetNativeSessionId && !state.active) await this.applyConversationReset(sessionId, state);
     this.scheduleRelease(sessionId);
     this.emit("changed");
     void this.reconcileDesktopRegistration(sessionId);
     await this.pump();
+  }
+
+  private async applyConversationReset(previousSessionId: string, state: SessionRuntimeState): Promise<void> {
+    const nativeSessionId = state.resetNativeSessionId!;
+    const previous = this.session(previousSessionId)!;
+    const lane = this.options.conversationState?.activeLane(previousSessionId);
+    const session: StoredBridgeSession = {
+      sessionId: nativeSessionId, cwd: previous.cwd,
+      ...(previous.projectId ? { projectId: previous.projectId, projectName: previous.projectName } : {}),
+      ...(this.bridgeSessions.get(previousSessionId)?.groupSessionsRoot ? { groupSessionsRoot: this.bridgeSessions.get(previousSessionId)!.groupSessionsRoot! } : {}),
+      ...(this.bridgeSessions.get(previousSessionId)?.groupScope ? { groupScope: this.bridgeSessions.get(previousSessionId)!.groupScope! } : {}),
+      title: basename(previous.cwd) || previous.cwd, createdAt: Date.now(),
+    };
+    this.bridgeSessions.set(session.sessionId, session);
+    const route = this.options.conversationState?.ensureConversation({
+      conversationId: session.sessionId, cwd: session.cwd, title: session.title, source: "bridge",
+      providerProfileId: lane?.providerProfileId ?? CLAUDE_3P_PROFILE_ID,
+      providerKind: lane?.providerKind ?? "claude-3p", nativeSessionId, access: "read-write", createdAt: session.createdAt,
+    });
+    if (lane?.model && route) this.options.conversationState!.updateLane(route.activeLaneId, { model: lane.model });
+    const configuration = this.sessionConfigurations.get(previousSessionId);
+    if (configuration) this.sessionConfigurations.set(session.sessionId, { ...configuration, sessionId: session.sessionId });
+    if (state.releaseTimer) { clearTimeout(state.releaseTimer); delete state.releaseTimer; }
+    delete state.resetNativeSessionId;
+    const nextState: SessionRuntimeState = { ...state, ownership: "BRIDGE_IDLE", turnState: "idle", hostLaneId: route?.activeLaneId ?? legacyClaudeLaneId(session.sessionId) };
+    if (state.host) {
+      if (!state.host.rebindSession) throw new Error("SDK host cannot rebind a cleared conversation");
+      state.host.rebindSession(session.sessionId);
+    }
+    this.runtimeStates.set(session.sessionId, nextState);
+    delete state.host;
+    delete state.hostLaneId;
+    delete state.hostGeneration;
+    this.options.observer.setSessionAlias?.(nativeSessionId, session.sessionId);
+    nextState.externalWriteVersion = this.options.observer.externalWriteVersion(session.sessionId);
+    if (nextState.hostGeneration) this.taskState.beginGeneration(session.sessionId, nextState.hostGeneration);
+    await this.saveSessions();
+    await this.record({ sessionId: session.sessionId, origin: "system", type: "session.created", data: { cwd: session.cwd, title: session.title } });
+    await this.record({ sessionId: previousSessionId, origin: "system", type: "session.reset", data: { previousSessionId, sessionId: session.sessionId, nativeSessionId } });
+    await this.reconcileDesktopRegistration(session.sessionId, true);
+    this.scheduleRelease(session.sessionId);
   }
 
   private reconcileDesktopRegistrations(): void {
@@ -3000,6 +3258,7 @@ export class SessionBroker extends EventEmitter {
 
   private async closeHost(sessionId: string, host: SessionHostRuntime, laneId?: string): Promise<void> {
     const lane = laneId ? this.options.conversationState?.lane(laneId) : undefined;
+    if (host.slashCommands !== undefined) this.runtimeStates.get(sessionId)!.slashCommands = host.slashCommands;
     await host.close();
     if (!lane || lane.providerKind === "claude-3p") {
       await this.recordDesktopHandoff(sessionId, lane?.nativeSessionId ?? sessionId, "released");
@@ -3046,7 +3305,7 @@ export class SessionBroker extends EventEmitter {
     }
     if (queuedTurn?.transport === "desktop-inbox" && queuedTurn.state === "uncertain") return undefined;
     if (queuedTurn?.state === "queued" && !queuedTurn.inboxConfirmationExpired && this.options.desktopInbox && process.platform === "darwin" &&
-      !state?.host && !queuedTurn.attachments.length && queuedTurn.mode !== "handoff") {
+      !state?.host && queuedTurn.mode !== "handoff") {
       const live = observed?.activeProcesses.filter(process => process.processAlive) ?? [];
       const owner = live[0];
       if (live.length === 1 && owner?.entrypoint.startsWith("claude-desktop") && owner.pid !== undefined &&

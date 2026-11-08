@@ -9,6 +9,9 @@ import { TaskPlanCard } from "./TaskPlanCard.js";
 import { DesktopHandoffNotice } from "./DesktopHandoffNotice.js";
 import { SessionCreateDialog } from "./SessionCreateDialog.js";
 import { dispatchMobileBack } from "../lib/mobile-back-navigation.js";
+import { SlashCommandInput } from "./SlashCommandInput.js";
+import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
+import { SessionConfigurationDialog } from "./SessionConfigurationDialog.js";
 
 const hooks = vi.hoisted(() => ({
   slots: [] as any[], index: 0, dirty: false,
@@ -87,10 +90,10 @@ function draw() {
   }
   throw new Error("Workspace did not settle");
 }
-function input() { return elements(tree).find((e) => e.type === "textarea")!; }
+function input() { return elements(tree).find((e) => e.type === SlashCommandInput)!; }
 function form() { return elements(tree).find((e) => e.type === "form" && e.props.className.startsWith("composer-form"))!; }
 function sendButton() { return elements(tree).find((e) => e.type === "button" && e.props["aria-label"] === "发送")!; }
-function text(value: string) { input().props.onChange({ target: { value } }); draw(); }
+function text(value: string) { input().props.onChange(value); draw(); }
 function open(sessionId: string) {
   props = { ...props, focusRequest: { sessionId, key: ++focusKey } };
   draw();
@@ -140,6 +143,50 @@ beforeEach(() => {
   open("A");
 });
 afterEach(() => { hooks.effects.forEach((e) => e.cleanup?.()); vi.unstubAllGlobals(); });
+
+describe("mobile custom command input", () => {
+  it.each([undefined, "claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop"] as const)("only loads Claude commands for runtime %s", async runtimeId => {
+    const catalog = { sessionId: "A", commands: [{ name: "review", description: "检查变更" }] };
+    const load = vi.fn().mockResolvedValue(catalog);
+    props = { ...props, onLoadSessionCommands: load, snapshot: { ...props.snapshot!,
+      host: { ...props.snapshot!.host, capabilities: ["session.commands.v1"] },
+      sessions: props.snapshot!.sessions.map(session => ({ ...session, ...(runtimeId ? { runtimeId } : {}) })),
+    } };
+    draw();
+    if (runtimeId === undefined || runtimeId === "claude-desktop") {
+      await expect(input().props.onLoad()).resolves.toEqual(catalog);
+      expect(load).toHaveBeenCalledExactlyOnceWith("A");
+    } else {
+      expect(input().props.onLoad).toBeUndefined();
+      expect(load).not.toHaveBeenCalled();
+    }
+    expect(props.onLoadSessionConfiguration).not.toHaveBeenCalled();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
+  it("retains text, image, and the autoheight ref when the input changes without sending", async () => {
+    text("/re");
+    selectImage(); hooks.readers[0].finish(); await settle();
+    expect(input().props.textareaRef).toBeDefined();
+    input().props.onChange("/review "); draw();
+    expect(input().props.value).toBe("/review ");
+    expect(imageNames()).toEqual(["移除 A.png"]);
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
+  it("isolates menu state by host and logical fork session, and omits loaders for old hosts", () => {
+    props = { ...props, onLoadSessionCommands: vi.fn(), snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["session.commands.v1"] } } };
+    draw();
+    const originalKey = input().key;
+    open("B");
+    expect(input().key).not.toBe(originalKey);
+    const otherSessionKey = input().key;
+    props = { ...props, activeHostId: "computer-2" }; draw();
+    expect(input().key).not.toBe(otherSessionKey);
+    props = { ...props, snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: [] } } }; draw();
+    expect(input().props.onLoad).toBeUndefined();
+  });
+});
 
 describe("session back navigation", () => {
   it("returns to the directory without sending or losing the draft, then releases root back", () => {
@@ -930,5 +977,177 @@ describe("mobile conversation draft ownership", () => {
     expect(attachMenus[0]!.props.canAttachImages).toBe(true);
     expect(attachMenus[0]!.props.fileUploads).toBeDefined();
     expect(typeof attachMenus[0]!.props.onPickImages).toBe("function");
+  });
+});
+
+
+describe("sidechat and slash command integration", () => {
+  it.each([false, true])("keeps command discovery and execution on the selected sidechat (archived=%s)", async archived => {
+    const sidechat = { ...props.snapshot!.sessions[1]!, title: "btw: Side question", parentSessionId: "A", sidechat: true,
+      ...(archived ? { archivedAt: 100 } : {}) };
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: [props.snapshot!.sessions[0]!, sidechat],
+      host: { ...props.snapshot!.host, capabilities: ["session.commands.v1", "session.command.v1"] } },
+      onLoadSessionCommands: vi.fn(async sessionId => ({ sessionId, commands: [{ name: "help", description: "Help", action: "help" as const }] })),
+      onRunSessionCommand: vi.fn(async () => ({ action: "help" as const })),
+    };
+    text("parent draft"); open("B");
+    expect(elements(tree).some(element => Array.isArray(element.props.children) && element.props.children.includes("主会话：Session A"))).toBe(true);
+    await input().props.onLoad(); await settle();
+    text("/help"); form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(props.onLoadSessionCommands).toHaveBeenCalledExactlyOnceWith("B");
+    expect(props.onRunSessionCommand).toHaveBeenCalledExactlyOnceWith("B", "/help");
+    expect(elements(tree).find(element => element.type === SessionCommandDialogs)!.props.session.sessionId).toBe("B");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    elements(tree).find(element => element.type === "button" && Array.isArray(element.props.children) && element.props.children.includes("主会话：Session A"))!.props.onClick(); await settle();
+    expect(input().props.value).toBe("parent draft");
+    expect(props.onOpenSession).toHaveBeenLastCalledWith("A");
+  });
+
+  it("opens an archived sidechat from /resume with its own history and parent navigation", async () => {
+    const sidechat = { ...props.snapshot!.sessions[1]!, title: "btw: Archived", parentSessionId: "A", sidechat: true, archivedAt: 100 };
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: [props.snapshot!.sessions[0]!, sidechat],
+      host: { ...props.snapshot!.host, capabilities: ["session.commands.v1", "session.command.v1"] } },
+      onLoadSessionCommands: vi.fn(async sessionId => ({ sessionId, commands: [] })),
+      onRunSessionCommand: vi.fn(async () => ({ action: "resume" as const, sessions: [sidechat] })),
+    };
+    text("/resume"); form().props.onSubmit({ preventDefault() {} }); await settle();
+    const dialog = elements(tree).find(element => element.type === SessionCommandDialogs)!;
+    expect(dialog.props.result.sessions).toEqual([sidechat]);
+    await dialog.props.onOpenSession("B"); await settle();
+    expect(props.onOpenSession).toHaveBeenLastCalledWith("B");
+    expect(elements(tree).some(element => Array.isArray(element.props.children) && element.props.children.includes("主会话：Session A"))).toBe(true);
+    expect(props.onRunSessionCommand).toHaveBeenCalledExactlyOnceWith("A", "/resume");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
+  it("does not follow a late sidechat fork result after returning to its parent", async () => {
+    let finish!: (result: { action: "session"; session: BridgeSessionInfo }) => void;
+    props = { ...props, snapshot: { ...props.snapshot!,
+      sessions: props.snapshot!.sessions.map(session => session.sessionId === "B" ? { ...session, parentSessionId: "A", sidechat: true } : session),
+      host: { ...props.snapshot!.host, capabilities: ["session.commands.v1", "session.command.v1"] } },
+      onLoadSessionCommands: vi.fn(async sessionId => ({ sessionId, commands: [] })),
+      onRunSessionCommand: vi.fn(() => new Promise<{ action: "session"; session: BridgeSessionInfo }>(resolve => { finish = resolve; })),
+    };
+    text("parent draft"); open("B"); text("/fork branch"); form().props.onSubmit({ preventDefault() {} }); await settle();
+    elements(tree).find(element => element.type === "button" && Array.isArray(element.props.children) && element.props.children.includes("主会话：Session A"))!.props.onClick(); await settle();
+    finish({ action: "session", session: { ...props.snapshot!.sessions[1]!, sessionId: "late-fork" } }); await settle();
+    expect(props.onRunSessionCommand).toHaveBeenCalledExactlyOnceWith("B", "/fork branch");
+    expect(props.onOpenSession).not.toHaveBeenCalledWith("late-fork");
+    expect(input().props.value).toBe("parent draft");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+});
+
+describe("mobile common commands", () => {
+  function enable(result: Record<string, unknown>) {
+    props = { ...props, onRunSessionCommand: vi.fn().mockResolvedValue(result), onRenameSession: vi.fn(),
+      onLoadSessionCommands: vi.fn().mockResolvedValue({ sessionId: "A", commands: [] }),
+      snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["session.commands.v1", "session.command.v1", "session.rename.v1"] } },
+    }; draw();
+  }
+  it.each(["help", "permissions", "resume"])("dispatches /%s to the shared action UI without sending a model prompt", async action => {
+    enable({ action, sessions: [props.snapshot!.sessions[1]], catalog: { sessionId: "A", commands: [] } });
+    text(`/${action}`); form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(props.onRunSessionCommand).toHaveBeenCalledWith("A", `/${action}`);
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    const dialog = elements(tree).find(element => element.type === SessionCommandDialogs)!;
+    expect(dialog.props.result.action).toBe(action);
+    if (action === "resume") {
+      await dialog.props.onOpenSession("B"); await settle();
+      expect(props.onOpenSession).toHaveBeenCalledWith("B");
+    }
+  });
+  it("opens the existing model picker without configuring anything on selection or cancellation", async () => {
+    enable({ action: "model" }); text("/model");
+    expect(props.onRunSessionCommand).not.toHaveBeenCalled();
+    form().props.onSubmit({ preventDefault() {} }); await settle();
+    const dialog = elements(tree).find(element => element.type === SessionConfigurationDialog)!;
+    expect(dialog).toBeDefined(); dialog.props.onClose(); draw();
+    expect(props.onConfigureSession).not.toHaveBeenCalled();
+  });
+  it("selects the actual returned fork and opens its history", async () => {
+    enable({ action: "session", session: props.snapshot!.sessions[1] }); text("/fork branch");
+    form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(props.onOpenSession).toHaveBeenLastCalledWith("B");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+  it("keeps unavailable builtin drafts and displays the server reason", async () => {
+    enable({ action: "sent" });
+    props.onLoadSessionCommands = vi.fn().mockResolvedValue({ sessionId: "A", commands: [{ name: "context", description: "上下文", unavailableReason: "请在 Desktop 中执行" }] });
+    draw(); text("/context"); form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(input().props.value).toBe("/context");
+    expect(elements(tree).find(element => element.props.role === "alert")!.props.children).toBe("请在 Desktop 中执行");
+    expect(props.onRunSessionCommand).not.toHaveBeenCalled(); expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+  it("disables command attachments and steering while preserving path messages", async () => {
+    enable({ action: "sent" }); text("/compact notes");
+    const attachments = elements(tree).find(element => element.type === ComposerAttachmentMenu)!;
+    expect(attachments.props.imageDisabled).toBe(true);
+    expect(elements(tree).some(element => element.props.className === "composer-mode")).toBe(false);
+    text("/absolute/path prompt"); form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(props.onSendTurn).toHaveBeenCalledWith("A", "/absolute/path prompt", [], false);
+    expect(props.onRunSessionCommand).not.toHaveBeenCalled();
+  });
+});
+
+
+it("follows session.reset only while the old session is selected and loads the new empty context", async () => {
+  props = { ...props, events: [{ eventId: "reset-A", seq: 1, timestamp: 1, sessionId: "A", origin: "claude-host", type: "session.reset",
+    data: { sessionId: "B", previousSessionId: "A", nativeSessionId: "new-native" } }] };
+  draw(); await settle();
+  expect(props.onOpenSession).toHaveBeenLastCalledWith("B");
+  expect(input().props.value).toBe("");
+});
+
+
+describe("mobile slash submission edges", () => {
+  function enable() {
+    props = { ...props, onRunSessionCommand: vi.fn().mockResolvedValue({ action: "sent" }),
+      onLoadSessionCommands: vi.fn().mockResolvedValue({ sessionId: "A", commands: [] }),
+      snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["session.commands.v1", "session.command.v1"] } },
+    }; draw();
+  }
+
+  it("[edge] keeps the command and concurrently typed text after a submit-time catalog failure without model fallback", async () => {
+    enable();
+    const catalog = deferred();
+    props.onLoadSessionCommands = vi.fn().mockReturnValue(catalog.promise);
+    draw(); text("/context"); form().props.onSubmit({ preventDefault() {} }); draw();
+    text("follow-up draft"); catalog.reject(new Error("catalog unavailable")); await settle();
+    expect(input().props.value).toBe("/context\nfollow-up draft");
+    expect(elements(tree).find(element => element.props.role === "alert")!.props.children).toBe("catalog unavailable");
+    expect(props.onRunSessionCommand).not.toHaveBeenCalled(); expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(sendButton().props.disabled).toBe(false);
+  });
+
+  it("[edge] a delayed catalog follows the original send but does not open its model panel in the next session", async () => {
+    enable();
+    let resolve!: (catalog: { sessionId: string; commands: [] }) => void;
+    props.onLoadSessionCommands = vi.fn(() => new Promise<{ sessionId: string; commands: [] }>(yes => { resolve = yes; }));
+    props.onRunSessionCommand = vi.fn().mockResolvedValue({ action: "model" });
+    draw(); text("/model"); form().props.onSubmit({ preventDefault() {} }); draw();
+    open("B"); text("keep B"); resolve({ sessionId: "A", commands: [] }); await settle();
+    expect(props.onRunSessionCommand).toHaveBeenCalledExactlyOnceWith("A", "/model");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(elements(tree).some(element => element.type === SessionConfigurationDialog)).toBe(false);
+    expect(input().props.value).toBe("keep B"); expect(sendButton().props.disabled).toBe(false);
+    open("A"); expect(input().props.value).toBe(""); expect(sendButton().props.disabled).toBe(true);
+  });
+
+  it("[edge] rejects slash attachments while preserving image, uploaded file and immediate-adjustment choice", async () => {
+    enable();
+    const file = { uploadId: "done", name: "done.txt", path: ".bridge-uploads/done.txt", size: 8, sha256: "abc" };
+    props = { ...props, onUploadFile: vi.fn().mockResolvedValue(file), snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(item => ({ ...item, turnState: "running", ownership: "BRIDGE_RUNNING" })) } };
+    draw(); elements(tree).find(element => element.type === "button" && element.props.children === "立即调整")!.props.onClick(); draw();
+    selectImage(); hooks.readers[0].finish(); await settle();
+    await elements(tree).find(element => element.type === FileAttachmentPicker)!.props.state.add([{ name: "done.txt", size: 8 }]); draw();
+    text("/compact keep decisions"); form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(props.onRunSessionCommand).not.toHaveBeenCalled(); expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(input().props.value).toBe("/compact keep decisions"); expect(imageNames()).toEqual(["移除 A.png"]);
+    expect(elements(tree).find(element => element.type === FileAttachmentPicker)!.props.state.files).toEqual([file]);
+    text("continue analysis");
+    expect(elements(tree).find(element => element.type === "button" && element.props.children === "立即调整")!.props.className).toBe("active");
+    form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(props.onSendTurn).toHaveBeenCalledWith("A", expect.stringContaining(".bridge-uploads/done.txt"), [expect.objectContaining({ name: "A.png" })], true);
   });
 });

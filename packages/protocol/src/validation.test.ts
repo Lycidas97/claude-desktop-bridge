@@ -27,6 +27,14 @@ describe("isBridgePayload", () => {
     expect(isBridgePayload({ kind: "request", requestId: "rename", idempotencyKey: "rename", method: "session.rename", params: { sessionId: "session", title: "手机名称" } })).toBe(true);
   });
 
+  it("accepts read-only session command discovery on the paired channel", () => {
+    expect(isBridgePayload({ kind: "request", requestId: "commands", idempotencyKey: "commands", method: "session.commands", params: { sessionId: "fork" } })).toBe(true);
+  });
+
+  it.each(["session.command", "session.permissions", "session.permissions.configure", "session.fork"])("accepts %s on the paired channel", method => {
+    expect(isBridgePayload({ kind: "request", requestId: method, idempotencyKey: method, method, params: { sessionId: "fork" } })).toBe(true);
+  });
+
   it("accepts directory listing requests on the paired channel", () => {
     expect(isBridgePayload({ kind: "request", requestId: "browse", idempotencyKey: "browse", method: "directory.list", params: {} })).toBe(true);
   });

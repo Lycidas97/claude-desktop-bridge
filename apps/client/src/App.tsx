@@ -204,6 +204,14 @@ export function App() {
               onReturnToDesktop={mobile.returnToDesktop}
               onTakeoverDesktop={mobile.takeoverDesktop}
               onLoadSessionConfiguration={mobile.loadSessionConfiguration}
+              {...(snapshot?.host.capabilities.includes("session.commands.v1")
+                ? { onLoadSessionCommands: mobile.loadSessionCommands }
+                : {})}
+              {...(snapshot?.host.capabilities.includes("session.command.v1") ? {
+                onRunSessionCommand: mobile.runSessionCommand,
+                onLoadSessionPermissions: mobile.loadSessionPermissions,
+                onSaveSessionPermissions: mobile.saveSessionPermissions,
+              } : {})}
               onConfigureSession={mobile.configureSession}
               {...(mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1")
                 ? { onConfigurePermissionPolicy: mobile.configurePermissionPolicy }

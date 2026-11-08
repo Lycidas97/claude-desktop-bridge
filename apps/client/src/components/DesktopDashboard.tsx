@@ -14,8 +14,11 @@ import type {
   BridgeResponse,
   BridgeRuntimeHandoff,
   BridgeRuntimeHandoffPreview,
+  BridgeSessionCommandResult,
+  BridgeSessionPermissions,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
+  BridgeSlashCommandCatalog,
   DesktopControlSnapshot,
 } from "@bridge/protocol";
 import {
@@ -105,6 +108,9 @@ import {
 } from "./ProviderSwitchDialog.js";
 import { RuntimeHandoffDialog } from "./RuntimeHandoffDialog.js";
 import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
+import { SlashCommandInput } from "./SlashCommandInput.js";
+import { useSessionCommands } from "../hooks/useSessionCommands.js";
+import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
 import { sessionActivity } from "../lib/session-activity.js";
 import {
   SessionConfigurationDialog,
@@ -230,6 +236,21 @@ function DesktopSessions({
   useEffect(() => {
     if (runtimeFilter !== "all" && !snapshot.runtimes?.some((runtime) => runtime.id === runtimeFilter)) setRuntimeFilter("all");
   }, [runtimeFilter, snapshot.runtimes]);
+  const handledCommandEvents = useRef(new Set<string>());
+  useEffect(() => {
+    for (const event of events) {
+      if ((event.type !== "session.reset" && event.type !== "session.compacted") || handledCommandEvents.current.has(event.eventId)) continue;
+      handledCommandEvents.current.add(event.eventId);
+      if (event.type === "session.reset" && event.data.previousSessionId === selectedId && typeof event.data.sessionId === "string") {
+        const sessionId = event.data.sessionId;
+        setHistory(current => ({ ...current, [sessionId]: { status: "ready", items: [], hasMore: false } }));
+        setText(""); setAttachments([]); setSteer(false); setConfigurationOpen(false); setSelectedId(sessionId);
+        void onRefreshSnapshot().then(() => openSession(sessionId)).catch(reason => setStopError(reason instanceof Error ? reason.message : "新会话打开失败"));
+      } else if (event.type === "session.compacted" && event.sessionId === selectedId) {
+        void openSession(selectedId!);
+      }
+    }
+  }, [events]);
   const fileRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
   const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
@@ -237,6 +258,31 @@ function DesktopSessions({
     uploadSessionFile(async (method, params) => apiRequest({ method, params }), sessionId, file, onProgress, signal));
   const selectedRuntime = selected ? desktopRuntimeId(selected) : "claude-desktop";
   const selectedRuntimeName = desktopRuntimeName(selectedRuntime);
+  const [commandError, setCommandError] = useState<string>();
+  const composerKey = JSON.stringify([snapshot.host.hostId, selectedId]);
+  const composerKeyRef = useRef(composerKey);
+  composerKeyRef.current = composerKey;
+  useEffect(() => {
+    setSending(false);
+    setCommandError(undefined);
+  }, [composerKey]);
+  const commands = useSessionCommands({
+    sessionId: selected?.sessionId,
+    sessionKey: composerKey,
+    enabled: selectedRuntime === "claude-desktop",
+    supported: snapshot.host.capabilities.includes("session.command.v1"),
+    onLoad: selected && selectedRuntime === "claude-desktop" && snapshot.host.capabilities.includes("session.commands.v1")
+      ? async () => unwrap<{ catalog: BridgeSlashCommandCatalog }>(await apiRequest({ method: "session.commands", params: { sessionId: selected.sessionId } })).catalog
+      : undefined,
+    onRun: async value => {
+      const result = unwrap<{ command: BridgeSessionCommandResult }>(await apiRequest({ method: "session.command", params: { sessionId: selected!.sessionId, text: value } })).command;
+      if (result.session) await onRefreshSnapshot();
+      return result;
+    },
+    onModel: () => setConfigurationOpen(true),
+    onSession: async sessionId => { setSelectedId(sessionId); await openSession(sessionId); },
+  });
+  const commandDraft = commands.recognizes(text.trim());
   const canAttachImages = selected
     ? snapshot.runtimes?.find((runtime) => runtime.id === selectedRuntime)?.capabilities.includes("attachment.image")
       ?? selectedRuntime === "claude-desktop"
@@ -276,9 +322,12 @@ function DesktopSessions({
   const streamEntering = useStreamEntrance(selectedId, streamKeys);
   const activity = useMemo(() => sessionActivity(selected, items), [selected, items]);
   const grouped = useMemo(() => {
+    const activeParentProjects = new Map(
+      snapshot.sessions.filter((candidate) => !candidate.archivedAt).map((candidate) => [candidate.sessionId, candidate.projectId]),
+    );
     const map = new Map<string, BridgeSessionInfo[]>();
     for (const session of snapshot.sessions.filter((candidate) => (
-      !candidate.archivedAt
+      (!candidate.archivedAt || Boolean(candidate.sidechat && candidate.parentSessionId && activeParentProjects.get(candidate.parentSessionId) === candidate.projectId))
       && (runtimeFilter === "all" || desktopRuntimeId(candidate) === runtimeFilter)
     ))) {
       const list = map.get(session.projectId) ?? [];
@@ -587,7 +636,12 @@ function DesktopSessions({
     setText("");
     setAttachments([]);
     setSending(true);
+    setCommandError(undefined);
     try {
+      if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) {
+        if (composerKeyRef.current === composerKey) setSteer(false);
+        return;
+      }
       unwrap(await apiRequest({
         method: steer ? "turn.steer" : "turn.start",
         params: {
@@ -598,12 +652,14 @@ function DesktopSessions({
         idempotencyKey: crypto.randomUUID(),
       }));
       fileUploads.clear(nextFiles);
-      setSteer(false);
-    } catch {
-      setText(nextText);
-      setAttachments(nextAttachments);
+      if (composerKeyRef.current === composerKey) setSteer(false);
+    } catch (error) {
+      if (composerKeyRef.current !== composerKey) return;
+      setCommandError(error instanceof Error ? error.message : "发送失败");
+      setText(current => [nextText, current].filter(Boolean).join("\n"));
+      setAttachments(current => [...nextAttachments, ...current]);
     } finally {
-      setSending(false);
+      if (composerKeyRef.current === composerKey) setSending(false);
     }
   }
 
@@ -912,6 +968,8 @@ function DesktopSessions({
     isForkChild = false,
   ): ReactNode {
     const forksExpanded = expandedForkParents.has(session.sessionId);
+    const badgeLabel = session.sidechat ? "/btw" : (session.forkLabel || "fork");
+    const badgeClassName = `session-fork-badge${session.sidechat ? " is-sidechat" : ""}`;
     return (
       <div className="desktop-session-family" key={session.sessionId}>
         <button
@@ -922,15 +980,15 @@ function DesktopSessions({
           <span className={`session-state-dot ${session.turnState}`} />
           <span>
             <strong>
-              {isForkChild && <em className="session-fork-badge">{session.forkLabel || "fork"}</em>}
+              {isForkChild && <em className={badgeClassName}>{badgeLabel}</em>}
               {session.title}
               {!isForkChild && session.parentSessionId && (
-                <em className="session-fork-badge">{session.forkLabel || "fork"}</em>
+                <em className={badgeClassName}>{badgeLabel}</em>
               )}
             </strong>
             <small>
               {!isForkChild && `${desktopRuntimeName(desktopRuntimeId(session))} · `}
-              {sessionState(session)}
+              {session.archivedAt ? "已归档" : sessionState(session)}
             </small>
           </span>
           {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
@@ -944,7 +1002,13 @@ function DesktopSessions({
               onClick={() => toggleForkGroup(session.sessionId)}
             >
               <GitFork size={12} />
-              <span>{forks.length} 个 Fork 分支</span>
+              <span>
+                {forks.every((fork) => fork.primary.sidechat)
+                  ? `${forks.length} 个 /btw 侧聊`
+                  : forks.some((fork) => fork.primary.sidechat)
+                    ? `${forks.length} 个分支与侧聊`
+                    : `${forks.length} 个 Fork 分支`}
+              </span>
               {forksExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
             </button>
             {forksExpanded && (
@@ -1254,7 +1318,7 @@ function DesktopSessions({
                 ? snapshot.sessions.find((candidate) => candidate.sessionId === selected.parentSessionId)
                 : undefined;
               const childForks = snapshot.sessions.filter((candidate) => (
-                candidate.parentSessionId === selected.sessionId && !candidate.archivedAt
+                candidate.parentSessionId === selected.sessionId && (!candidate.archivedAt || Boolean(candidate.sidechat))
               ));
               if (!parentSession && childForks.length === 0) return null;
               return (
@@ -1277,7 +1341,7 @@ function DesktopSessions({
                       onClick={() => setSelectedId(fork.sessionId)}
                     >
                       <GitFork size={14} />
-                      {`${fork.forkLabel || "fork"} · ${fork.title}`}
+                      {`${fork.sidechat ? "/btw" : (fork.forkLabel || "fork")} · ${fork.title}`}
                     </button>
                   ))}
                 </div>
@@ -1516,13 +1580,14 @@ function DesktopSessions({
                 </button>
               ) : (
               <>
+              {commandError && <div className="composer-error" role="alert">{commandError}</div>}
               <FileAttachmentPicker state={fileUploads} />
               {attachments.length > 0 && (
                 <div className="composer-attachments">
                   {attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={12} /></button></span>)}
                 </div>
               )}
-              {bridgeRunning && (
+              {bridgeRunning && !commandDraft && (
                 <div className="composer-mode">
                   <button type="button" className={!steer ? "active" : ""} onClick={() => setSteer(false)}>排到下一轮</button>
                   <button type="button" className={steer ? "active" : ""} onClick={() => setSteer(true)}>立即调整</button>
@@ -1535,21 +1600,24 @@ function DesktopSessions({
                 <input ref={fileRef} type="file" hidden multiple accept="image/jpeg,image/png,image/gif,image/webp" onChange={(event) => void addImages(event.target.files)} />
                 <ComposerAttachmentMenu
                   canAttachImages={canAttachImages}
-                  imageDisabled={selected.allowedActions?.canSend === false}
+                  imageDisabled={commandDraft || selected.allowedActions?.canSend === false}
                   onPickImages={() => fileRef.current?.click()}
                   fileUploads={fileUploads}
-                  fileDisabled={selected.allowedActions?.canSend === false || sending || snapshot.connection !== "connected"}
+                  fileDisabled={commandDraft || selected.allowedActions?.canSend === false || sending || snapshot.connection !== "connected"}
                 />
-                <textarea
+                <SlashCommandInput
+                  key={JSON.stringify([snapshot.host.hostId, selected.sessionId])}
+                  {...(selectedRuntime === "claude-desktop" && snapshot.host.capabilities.includes("session.commands.v1") ? {
+                    onLoad: commands.load!,
+                  } : {})}
                   value={text}
-                  onChange={(event) => setText(event.target.value)}
+                  onChange={setText}
                   disabled={selected.allowedActions?.canSend === false}
                   placeholder={selected.allowedActions?.reason ?? (
                     selected.source === "bridge"
                       ? "在这个 Bridge 会话中继续"
                       : `在这个 ${selectedRuntimeName} 会话中继续`
                   )}
-                  rows={1}
                 />
                 <button type="submit" className="send-button" aria-label="发送" disabled={selected.allowedActions?.canSend === false || sending || fileUploads.uploading || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)}><Send size={18} /></button>
               </form>
@@ -1579,11 +1647,24 @@ function DesktopSessions({
           onClose={() => setCreateOpen(false)}
         />
       )}
+      {selected && <SessionCommandDialogs
+        key={selected.sessionId}
+        result={commands.dialog}
+        session={selected}
+        onClose={commands.close}
+        onOpenSession={async sessionId => { setSelectedId(sessionId); await openSession(sessionId); }}
+        onRename={async title => {
+          unwrap(await apiRequest({ method: "session.command", params: { sessionId: selected.sessionId, text: `/rename ${title}` } }));
+          await onRefreshSnapshot();
+        }}
+        onLoadPermissions={async () => unwrap<{ permissions: BridgeSessionPermissions }>(await apiRequest({ method: "session.permissions", params: { sessionId: selected.sessionId } })).permissions}
+        onSavePermissions={async (mode, rules) => unwrap<{ permissions: BridgeSessionPermissions }>(await apiRequest({ method: "session.permissions.configure", params: { sessionId: selected.sessionId, mode, rules } })).permissions}
+      />}
       {configurationOpen && selected && canConfigure && (
         <SessionConfigurationDialog
           session={selected}
           permissionScope="session"
-          revision={events.filter((event) => (event.type === "session.configuration" && event.sessionId === selected.sessionId) || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === selected.sessionId))).at(-1)?.seq ?? 0}
+          revision={events.filter((event) => ((event.type === "session.configuration" || event.type === "session.compacted") && event.sessionId === selected.sessionId) || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === selected.sessionId))).at(-1)?.seq ?? 0}
           onLoad={loadConfiguration}
           onSave={saveConfiguration}
           onConfigurePermission={savePermissionPolicy}

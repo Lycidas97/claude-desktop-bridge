@@ -402,6 +402,8 @@ export class DesktopController extends EventEmitter {
           "directory.browse.v1",
           "runtime.adapter.v1",
           "session.visibility.v1",
+          "session.commands.v1",
+          "session.command.v1",
           ...(this.conversationState ? ["session.rename.v1" as const] : []),          "subagent.stop.v1",
           "turn.queue.steer.v1",
           "plugin.magpie-quota.v1",
@@ -760,6 +762,7 @@ export class DesktopController extends EventEmitter {
       ...(request.displayName ? { displayName: request.displayName } : {}),
       ...(request.description ? { description: request.description } : {}),
       canAllowAlways: request.suggestions.some((suggestion) => suggestion.destination === "localSettings"),
+      ...(request.canSetNativeFullAccess ? { canSetNativeFullAccess: true } : {}),
     }));
   }
 
@@ -1187,7 +1190,8 @@ export class DesktopController extends EventEmitter {
       const session = this.allSessions().find((candidate) => candidate.sessionId === sessionId);
       if (!session) throw new Error("Session not found");
       if (session.title === title) return { session };
-      this.conversationState.setSessionTitle(sessionId, title);
+      if (this.routesToExternalRuntime(sessionId)) this.conversationState.setSessionTitle(sessionId, title);
+      else await this.broker.rename(sessionId, title);
       const snapshot = await this.publish();
       return { session: snapshot.sessions.find((candidate) => candidate.sessionId === sessionId) };
     }
@@ -1240,6 +1244,37 @@ export class DesktopController extends EventEmitter {
           numberParam(params, "limit", 50),
         ),
       };
+    }
+    if (request.method === "session.commands") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.routesToExternalRuntime(sessionId)) return { catalog: { sessionId, commands: [] } };
+      return { catalog: await this.broker.commands(sessionId) };
+    }
+    if (request.method === "session.command") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.routesToExternalRuntime(sessionId)) throw new Error("当前运行时不支持 Claude 命令");
+      return { command: await this.broker.runCommand({
+        sessionId, text: stringParam(params, "text")!, requestId: request.requestId,
+        idempotencyKey: request.idempotencyKey, origin,
+        ...(sourceDeviceId ? { sourceDeviceId } : {}),
+      }) };
+    }
+    if (request.method === "session.permissions" || request.method === "session.permissions.configure") {
+      const sessionId = stringParam(params, "sessionId")!;
+      if (this.routesToExternalRuntime(sessionId)) throw new Error("当前运行时不支持 Claude 权限控制");
+      if (request.method === "session.permissions") return { permissions: await this.broker.permissions(sessionId) };
+      const mode = stringParam(params, "mode")!;
+      if (!["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto"].includes(mode)) throw new Error("Invalid SDK permission mode");
+      const rules = params.rules;
+      if (!rules || typeof rules !== "object" || Array.isArray(rules)) throw new Error("Permission rules are required");
+      const input = rules as Record<string, unknown>;
+      for (const key of ["allow", "ask", "deny"] as const) {
+        if (!Array.isArray(input[key]) || !input[key].every(rule => typeof rule === "string" && rule.trim())) throw new Error(`Invalid ${key} permission rules`);
+      }
+      return { permissions: await this.broker.configurePermissions(
+        sessionId, mode as Parameters<SessionBroker["configurePermissions"]>[1],
+        input as unknown as Parameters<SessionBroker["configurePermissions"]>[2],
+      ) };
     }
     if (request.method === "session.configuration") {
       const sessionId = stringParam(params, "sessionId")!;
@@ -1481,10 +1516,12 @@ export class DesktopController extends EventEmitter {
       const decision = stringParam(params, "decision")!;
       if (!["allow-once", "allow-always", "deny"].includes(decision)) throw new Error("Invalid permission decision");
       const requestId = stringParam(params, "requestId")!;
+      const nativeMode = stringParam(params, "nativeMode", false);
+      if (nativeMode !== undefined && nativeMode !== "full-access") throw new Error("Invalid native permission mode");
       const updatedInput = params.updatedInput && typeof params.updatedInput === "object" && !Array.isArray(params.updatedInput)
         ? params.updatedInput as Record<string, unknown>
         : undefined;
-      const externalResolved = await this.runtimeSessions?.resolvePermission(
+      const externalResolved = !nativeMode && await this.runtimeSessions?.resolvePermission(
         requestId,
         decision as "allow-once" | "allow-always" | "deny",
         updatedInput,
@@ -1505,6 +1542,7 @@ export class DesktopController extends EventEmitter {
         stringParam(params, "message", false),
         updatedInput,
         resolver,
+        nativeMode,
       );
       if (!resolved) {
         throw new BridgeRequestError(
@@ -1956,7 +1994,7 @@ export class DesktopController extends EventEmitter {
       providers: snapshot.providers,
       magpie: snapshot.magpie,
     }) + "\n" + snapshot.sessions
-      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${JSON.stringify(session.desktopHandoff ?? null)}\t${session.runningSubagents?.count ?? ""}\t${session.subagentStopScope ?? ""}\t${session.executionStage ?? ""}\t${session.ownership === "DESKTOP_OBSERVED" ? session.turnState : ""}\t${session.mainTurnStopScope ?? ""}`)
+      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.forkLabel ?? ""}\t${session.sidechat ? "1" : ""}\t${session.archivedAt ?? ""}\t${session.desktopArchivePending ? "1" : ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${JSON.stringify(session.desktopHandoff ?? null)}\t${JSON.stringify(session.nativePermissionModeChange ?? null)}\t${session.runningSubagents?.count ?? ""}\t${session.subagentStopScope ?? ""}\t${session.executionStage ?? ""}\t${session.ownership === "DESKTOP_OBSERVED" ? session.turnState : ""}\t${session.mainTurnStopScope ?? ""}`)
       .sort()
       .join("\n");
     const previousKey = this.lastPublishedSessionKey;

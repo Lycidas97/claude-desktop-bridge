@@ -22,7 +22,7 @@ function fixture(turnState: BridgeTurnState = "running", sessionId = "native-1")
     runtimeSessions: external ? { listSessions: () => [row()], session: () => row(), history: vi.fn(async () => ({ items: [] })) } : undefined,
     conversationState: { setSessionTitle: vi.fn((id: string, title: string) => titles.set(id, title)) },
     sessionVisibility: new Map(), desktopArchiveRequests: new Map(),
-    lastPublishedSessionKey: "", lastPublishedSubagentActivity: new Map(),
+    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
     eventLog: { latestSeq: () => 7, append: vi.fn() },
     broadcast: vi.fn(async () => undefined),
   });
@@ -42,6 +42,7 @@ describe("session.rename", () => {
     expect(controller.broker.rename).toHaveBeenCalledExactlyOnceWith(session.sessionId, "手机显示名");
     expect(controller.conversationState.setSessionTitle).toHaveBeenCalledExactlyOnceWith(session.sessionId, "手机显示名");
     expect(controller.broadcast).toHaveBeenCalledExactlyOnceWith({ kind: "snapshot", snapshot: { sessions: [{ ...session, title: "手机显示名" }] } }, true);
+    expect(controller.eventLog.append).not.toHaveBeenCalled();
     expect(await controller.handleRequest({ method: "session.list", params: { search: "手机显示名" } }, "mobile")).toEqual({ sessions: [{ ...session, title: "手机显示名" }] });
     expect(await controller.handleRequest({ method: "session.list", params: { search: "原生标题" } }, "mobile")).toEqual({ sessions: [] });
     expect(await controller.handleRequest({ method: "session.open", params: { sessionId: session.sessionId } }, "mobile")).toMatchObject({ session: { ...session, title: "手机显示名" } });

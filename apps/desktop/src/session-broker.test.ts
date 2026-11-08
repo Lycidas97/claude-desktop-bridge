@@ -1406,14 +1406,17 @@ describe("SessionBroker", () => {
       prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/creds.json", environment: {} }),
     });
     const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-      lastPublishedSessionKey: "", lastPublishedSubagentActivity: new Map<string, number>(),
+      lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
+      eventLog,
       snapshot: async () => ({ sessions: broker.listSessions(), latestSeq: eventLog.latestSeq() }) as DesktopControlSnapshot,
       broadcast: vi.fn(async () => undefined),
     });
     const publications: Array<Promise<unknown>> = [];
     broker.on("changed", () => { publications.push(controller.publish()); });
-    // Production controller initialization also republishes persisted host events.
-    eventLog.on("event", () => { publications.push(controller.publish()); });
+    // Production republishes host events but does not loop session replacement events back into publish.
+    eventLog.on("event", event => {
+      if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") publications.push(controller.publish());
+    });
     await broker.initialize();
     try {
       await broker.startTurn({ requestId: "busy", idempotencyKey: "busy", sessionId, text: "Wait for Desktop", origin: "mobile" });
@@ -1434,11 +1437,11 @@ describe("SessionBroker", () => {
       await waitFor(() => hosts[0]?.sends === 1);
       await (broker as unknown as { eventQueue: Promise<void> }).eventQueue;
       await Promise.all(publications.splice(0));
-      expect(controller.broadcast).toHaveBeenCalledWith({
-        kind: "snapshot", snapshot: expect.objectContaining({ sessions: expect.arrayContaining([
-          expect.objectContaining({ sessionId, executionStage: "running" }),
-        ]) }),
-      }, true);
+      expect(eventLog.latestItem(sessionId, "runtime.updated", "session:subagent-activity")).toMatchObject({
+        sessionId, type: "runtime.updated", data: {
+          replaceSession: true, session: { sessionId, executionStage: "running", turnState: "running", pendingCount: 0 },
+        },
+      });
       expect(hosts).toHaveLength(1);
       expect(broker.session(sessionId)?.pendingCount).toBe(0);
     } finally {

@@ -177,13 +177,14 @@ it("broadcasts changed runtime defaults even when the session set is unchanged",
   const broadcast = vi.fn(async () => {});
   const c = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
     snapshot: async () => snapshot, broadcast, eventLog: { append: vi.fn() },
-    lastPublishedSessionKey: "", lastPublishedSubagentActivity: new Map(),
+    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
   });
   await c.publish();
   broadcast.mockClear();
   snapshot.runtimes[0]!.defaultPermissionMode = "full-access";
   await c.publish();
   expect(broadcast).toHaveBeenCalledWith({ kind: "snapshot", snapshot }, true);
+  expect(c.eventLog.append).not.toHaveBeenCalled();
 });
 
 it("broadcasts changed Magpie settings without depending on a changed session or detection timestamp", async () => {
@@ -191,13 +192,14 @@ it("broadcasts changed Magpie settings without depending on a changed session or
   const broadcast = vi.fn(async () => {});
   const c = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
     snapshot: async () => snapshot, broadcast, eventLog: { append: vi.fn() },
-    lastPublishedSessionKey: "", lastPublishedSubagentActivity: new Map(),
+    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
   });
   await c.publish();
   broadcast.mockClear();
   snapshot.magpie.mode = "manual";
   await c.publish();
   expect(broadcast).toHaveBeenCalledWith({ kind: "snapshot", snapshot }, true);
+  expect(c.eventLog.append).not.toHaveBeenCalled();
 });
 
 it("rejects permission runtime and session mismatch", async () => {

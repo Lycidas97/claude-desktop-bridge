@@ -738,6 +738,7 @@ function applyEventToSession(
   if (event.type === "runtime.updated") {
     const updated = event.data.session as Partial<BridgeSessionInfo> | undefined;
     if (updated?.sessionId === session.sessionId) {
+      if (event.data.replaceSession === true) return updated as BridgeSessionInfo;
       const { allowedActions, ...fields } = updated;
       return {
         ...session,

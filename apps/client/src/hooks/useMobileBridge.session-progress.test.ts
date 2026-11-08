@@ -61,6 +61,18 @@ describe("small subagent progress session updates", () => {
     expect(rebased.snapshot.sessions[0]?.turnState).toBe("running");
   });
 
+  it("replaces a serialized authoritative session and clears ended runtime fields in live and replay paths", () => {
+    const before = snapshot();
+    const { activeTurnId: _turn, executionStage: _stage, currentSummary: _summary, runningSubagents: _agents, subagentStopScope: _agentScope, mainTurnStopScope: _scope, ...session } = before.sessions[0]!;
+    const event: BridgeEvent = JSON.parse(JSON.stringify({ ...progress(11, 20), data: { replaceSession: true, session: { ...session, turnState: "idle", pendingCount: 0 } } }));
+    const after = applyEventToSnapshot(before, event, [])!;
+    expect(after.sessions[0]).toEqual({ ...session, turnState: "idle", pendingCount: 0 });
+    expect(after.sessions[1]).toBe(before.sessions[1]);
+    expect(applyEventsToSnapshot(before, [event], []).snapshot).toEqual(after);
+    expect(rebaseSnapshot(before, [event]).snapshot).toEqual(after);
+    expect(applyEventToSnapshot(after, event, [])).toBe(after);
+  });
+
   it("does not apply a patch whose nested session belongs to another conversation", () => {
     const before = snapshot();
     const event = progress(11, 20);

@@ -268,7 +268,7 @@ export class DesktopController extends EventEmitter {
   private transportMetrics: BridgeTransportMetrics | undefined;
   private relayHealthy = false;
   private lastPublishedSessionKey = "";
-  private lastPublishedSubagentActivity = new Map<string, number>();
+  private lastPublishedSessions = new Map<string, string>();
   private lastDiscoveryRefreshAt = 0;
   private readonly sessionVisibility = new Map<string, { visibility: SessionVisibility; updatedAt: number }>();
   private readonly desktopArchiveRequests = new Map<string, DesktopArchiveRequest>();
@@ -1985,36 +1985,36 @@ export class DesktopController extends EventEmitter {
   private async publish(): Promise<DesktopControlSnapshot> {
     const snapshot = await this.snapshot();
     this.emit("snapshot", snapshot);
-    // Counts, capabilities and lifecycle changes still need a complete snapshot.
-    // Subagent timestamps travel as small session patches through the event log.
+    // Catalog metadata and global runtime changes need a complete snapshot.
+    // Session runtime changes use the existing coalesced event channel.
     const sessionKey = JSON.stringify({
       defaultPermissionMode: snapshot.host?.defaultPermissionMode,
       runtimeDefaults: snapshot.runtimes?.map(runtime => [runtime.id, runtime.defaultPermissionMode]),
       detection: snapshot.runtime?.detection,
+      runtime: [snapshot.runtime?.state, snapshot.runtime?.activeTurns, snapshot.runtime?.maxParallelTurns],
       providers: snapshot.providers,
       magpie: snapshot.magpie,
     }) + "\n" + snapshot.sessions
-      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.forkLabel ?? ""}\t${session.sidechat ? "1" : ""}\t${session.archivedAt ?? ""}\t${session.desktopArchivePending ? "1" : ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${JSON.stringify(session.desktopHandoff ?? null)}\t${JSON.stringify(session.nativePermissionModeChange ?? null)}\t${session.runningSubagents?.count ?? ""}\t${session.subagentStopScope ?? ""}\t${session.executionStage ?? ""}\t${session.ownership === "DESKTOP_OBSERVED" ? session.turnState : ""}\t${session.mainTurnStopScope ?? ""}`)
+      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.forkLabel ?? ""}\t${session.sidechat ? "1" : ""}\t${session.archivedAt ?? ""}\t${session.desktopArchivePending ? "1" : ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${JSON.stringify(session.desktopHandoff ?? null)}\t${JSON.stringify(session.nativePermissionModeChange ?? null)}`)
       .sort()
       .join("\n");
     const previousKey = this.lastPublishedSessionKey;
-    const previousActivity = this.lastPublishedSubagentActivity;
+    const previousSessions = this.lastPublishedSessions;
+    const sessions = new Map(snapshot.sessions.map((session) => [session.sessionId, JSON.stringify(session)]));
     this.lastPublishedSessionKey = sessionKey;
-    this.lastPublishedSubagentActivity = new Map(snapshot.sessions.flatMap((session) => (
-      session.runningSubagents ? [[session.sessionId, session.runningSubagents.lastUpdatedAt] as const] : []
-    )));
+    this.lastPublishedSessions = sessions;
     if (previousKey !== sessionKey) {
       await this.broadcast({ kind: "snapshot", snapshot }, true);
     } else {
       // Start all appends before waiting for disk so later snapshots cover their sequences.
       await Promise.all(snapshot.sessions.map((session) => {
-        if (!session.runningSubagents || previousActivity.get(session.sessionId) === session.runningSubagents.lastUpdatedAt) return;
+        if (previousSessions.get(session.sessionId) === sessions.get(session.sessionId)) return;
         return this.eventLog.append({
           sessionId: session.sessionId,
           itemId: "session:subagent-activity",
           origin: "system",
           type: "runtime.updated",
-          data: { session: { sessionId: session.sessionId, runningSubagents: session.runningSubagents, lastActivityAt: session.lastActivityAt } },
+          data: { replaceSession: true, session },
         });
       }));
     }

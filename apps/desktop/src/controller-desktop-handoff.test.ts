@@ -11,8 +11,9 @@ it("publishes handoff control changes without rebroadcasting an unchanged catalo
   };
   const snapshot = { sessions: [session], latestSeq: 0 };
   const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-    lastPublishedSessionKey: "", lastPublishedSubagentActivity: new Map(),
+    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
     snapshot: async () => snapshot, broadcast: vi.fn(async () => {}),
+    eventLog: { append: vi.fn(async () => undefined) },
   });
   await controller.publish();
   controller.broadcast.mockClear();
@@ -27,6 +28,7 @@ it("publishes handoff control changes without rebroadcasting an unchanged catalo
   expect(controller.broadcast).toHaveBeenCalledTimes(3);
   await controller.publish();
   expect(controller.broadcast).toHaveBeenCalledTimes(3);
+  expect(controller.eventLog.append).not.toHaveBeenCalled();
 });
 
 it("routes a confirmed single-session takeover to the broker", async () => {

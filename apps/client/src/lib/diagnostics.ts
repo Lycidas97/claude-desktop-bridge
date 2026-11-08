@@ -1,5 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 import { useEffect, useState } from "react";
+import clientPackage from "../../package.json";
 
 export interface DiagnosticLogEntry {
   seq: number;
@@ -12,7 +13,7 @@ export interface DiagnosticLogEntry {
 
 const MAX_LOG_ENTRIES = 400;
 const DIAG_ENABLED_STORAGE_KEY = "bridge.mobile.diag.enabled.v1";
-export const BUILD_DIAG_TAG = "v1.0.3";
+export const BUILD_DIAG_TAG = `v${clientPackage.version}`;
 const DEFAULT_DIAG_RELAY_URL = String(
   import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? "wss://relay.alioxis.com/ws",
 ).trim();
@@ -429,7 +430,7 @@ export async function inspectIndexedDbSummary(): Promise<Record<string, unknown>
   if (typeof indexedDB === "undefined") return { available: false };
   return new Promise((resolve) => {
     try {
-      const req = indexedDB.open("claude-bridge", 3);
+      const req = indexedDB.open("claude-bridge");
       req.addEventListener("error", () => {
         resolve({ error: req.error?.message ?? "indexedDB.open failed" });
       });
@@ -438,7 +439,7 @@ export async function inspectIndexedDbSummary(): Promise<Record<string, unknown>
         const stores = [...db.objectStoreNames];
         if (!stores.includes("identity")) {
           db.close();
-          resolve({ stores, identities: [] });
+          resolve({ version: db.version, stores, identities: [] });
           return;
         }
         const tx = db.transaction(["identity", "messages", "outbox"].filter((s) => stores.includes(s)), "readonly");
@@ -468,6 +469,7 @@ export async function inspectIndexedDbSummary(): Promise<Record<string, unknown>
           });
           db.close();
           resolve({
+            version: db.version,
             stores,
             identities,
             messagesCount: msgCountReq?.result ?? 0,

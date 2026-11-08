@@ -1,4 +1,9 @@
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   BridgeCrypto,
   PROTOCOL_VERSION,
@@ -13,6 +18,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LoadedDesktopConfig } from "./config.js";
 import { DesktopController } from "./controller.js";
+import { SessionEventLog } from "./session-event-log.js";
 
 // Only the WebSocket I/O boundary is replaced. connect(), the transport router,
 // relay/socket parsing, controller subscriptions and publication remain real.
@@ -48,7 +54,12 @@ class LocalWebSocket extends EventTarget {
   }
 }
 
-const controllers: Array<{ socket: { close(): void }; publishTimer?: ReturnType<typeof setTimeout> }> = [];
+const controllers: Array<{
+  socket: { close(): void };
+  publishTimer?: ReturnType<typeof setTimeout>;
+  eventLog: SessionEventLog;
+  root: string;
+}> = [];
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -57,10 +68,19 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true })));
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const controller of controllers.splice(0)) {
     controller.socket.close();
     if (controller.publishTimer) clearTimeout(controller.publishTimer);
+    await controller.eventLog.close();
+    if (process.platform === "win32") {
+      await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+        "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName Microsoft.VisualBasic; " +
+        "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($env:BRIDGE_RECYCLE_PATH, 'OnlyErrorDialogs', 'SendToRecycleBin', 'ThrowException')",
+      ], { env: { ...process.env, BRIDGE_RECYCLE_PATH: controller.root } });
+    } else {
+      await promisify(execFile)(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [controller.root]);
+    }
   }
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -94,28 +114,31 @@ async function fixture(withWebRtc = false) {
     projectId: "synthetic", projectName: "Synthetic", source: "desktop", transport: "bridge-host",
     ownership: "DESKTOP_OBSERVED", turnState: "idle", pendingCount: 0, lastActivityAt: 1,
   }));
-  // Synthetic business dependencies; snapshot(), publish() and message delivery use their real implementations.
+  const root = await mkdtemp(join(tmpdir(), "bridge-transport-publication-"));
+  const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+  // Synthetic business dependencies; initialization, snapshots, event logging and message delivery remain real.
   const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-    config, hostCrypto: host.crypto, relayConnectUrl: relayUrl,
+    root, config, hostCrypto: host.crypto, relayConnectUrl: relayUrl,
     ...(withWebRtc ? { RTCPeerConnectionImpl: vi.fn() } : {}),
     connection: "idle", relayHealthy: false, lastSeenAt: 1,
     deviceCryptos: new Map([[paired.pairing.deviceId, paired.desktopCrypto.withSenderDevice(config.hostDeviceId)]]),
     onlineDevices: new Set<string>(), responseCache: new Map(),
-    lastPublishedSessionKey: "", lastPublishedSubagentActivity: new Map(),
+    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
     sessionVisibility: new Map(), desktopArchiveRequests: new Map(),
-    app: { getVersion: () => "synthetic" },
-    repository: { save: vi.fn(async () => undefined) },
-    broker: {
+    app: { getVersion: () => "synthetic", getLoginItemSettings: () => ({ openAtLogin: false }) },
+    repository: { loadOrCreate: async () => config, save: vi.fn(async () => undefined) },
+    broker: Object.assign(new EventEmitter(), {
+      initialize: async () => undefined, setDefaultPermissionMode: vi.fn(),
       listSessions: () => sessions, listProjects: () => [], runtimeStatus: () => ({ state: "ready" }),
       permissionBroker: { list: () => [] }, magpieSettings: async () => ({}),
-    },
-    eventLog: { latestSeq: () => 0 },
+    }),
+    eventLog,
     claudeDesktop: { status: async () => ({ state: "stopped" }) },
     desktopAppStatuses: async () => [],
   });
   const published = vi.fn<(snapshot: DesktopControlSnapshot) => void>();
   controller.on("snapshot", published);
-  await controller.connect();
+  await controller.initialize();
   controllers.push(controller);
   const ws = LocalWebSocket.instances[0]!;
   ws.open();
@@ -242,6 +265,63 @@ describe("controller transport publication", () => {
     expect(controller.responseCache.has("local-request")).toBe(true);
     expect(snapshot).not.toHaveBeenCalled();
     expect(published).not.toHaveBeenCalled();
+  });
+
+  it("sends complete runtime replacements over the live socket and current state after reconnect", async () => {
+    const { ws, controller, paired, sessions } = await fixture();
+    const append = vi.spyOn(controller.eventLog, "append");
+    sessions[0]!.turnState = "running";
+    sessions[0]!.mainTurnStopScope = "process";
+    sessions[0]!.runningSubagents = { count: 2, lastUpdatedAt: 20 };
+    sessions[0]!.subagentStopScope = "task";
+    controller.broker.emit("changed");
+    await vi.waitFor(() => expect(ws.sent.filter(frame => frame.type === "envelope")).toHaveLength(1));
+    const runningFrame = ws.sent.find(frame => frame.type === "envelope")!;
+    if (runningFrame.type !== "envelope") throw new Error("Expected runtime replacement");
+    const running = (await paired.desktopCrypto.decrypt(runningFrame.envelope)).payload;
+    expect(running).toMatchObject({ kind: "event", event: {
+      seq: 1, sessionId: sessions[0]!.sessionId, itemId: "session:subagent-activity", type: "runtime.updated",
+      data: { replaceSession: true, session: sessions[0] },
+    } });
+    expect(runningFrame.envelope.temporary).toBe(true);
+
+    sessions[0]!.turnState = "idle";
+    delete sessions[0]!.mainTurnStopScope;
+    delete sessions[0]!.runningSubagents;
+    delete sessions[0]!.subagentStopScope;
+    controller.broker.emit("changed");
+    await vi.waitFor(() => expect(ws.sent.filter(frame => frame.type === "envelope")).toHaveLength(2));
+    const completedFrame = ws.sent.filter(frame => frame.type === "envelope")[1]!;
+    if (completedFrame.type !== "envelope") throw new Error("Expected completion replacement");
+    const completed = (await paired.desktopCrypto.decrypt(completedFrame.envelope)).payload;
+    expect(completed).toMatchObject({ kind: "event", event: {
+      seq: 2, sessionId: sessions[0]!.sessionId, type: "runtime.updated", data: { replaceSession: true, session: sessions[0] },
+    } });
+    if (completed.kind !== "event") throw new Error("Expected runtime event");
+    expect(completed.event.data.session).not.toHaveProperty("mainTurnStopScope");
+    expect(completed.event.data.session).not.toHaveProperty("runningSubagents");
+    expect(completed.event.data.session).not.toHaveProperty("subagentStopScope");
+    await vi.advanceTimersByTimeAsync(150);
+    expect(append).toHaveBeenCalledTimes(2);
+    expect(ws.sent.filter(frame => frame.type === "envelope")).toHaveLength(2);
+
+    ws.close();
+    await vi.advanceTimersByTimeAsync(650);
+    const reconnected = LocalWebSocket.instances[1]!;
+    reconnected.open();
+    reconnected.receive({ type: "ready", connectionId: "runtime-reconnected", queued: 0, online: ["desktop", "mobile"], onlineDevices: [
+      { role: "mobile", deviceId: paired.pairing.deviceId },
+    ] });
+    await vi.waitFor(() => expect(reconnected.sent.some(frame => frame.type === "envelope")).toBe(true));
+    const snapshotFrame = reconnected.sent.find(frame => frame.type === "envelope")!;
+    if (snapshotFrame.type !== "envelope") throw new Error("Expected reconnect snapshot");
+    const snapshot = (await paired.desktopCrypto.decrypt(snapshotFrame.envelope)).payload;
+    expect(snapshot).toMatchObject({ kind: "snapshot", snapshot: { latestSeq: 2, sessions: expect.arrayContaining(sessions) } });
+    if (snapshot.kind !== "snapshot") throw new Error("Expected complete snapshot");
+    expect(snapshot.snapshot.sessions).toHaveLength(144);
+    expect(snapshot.snapshot.sessions[0]).not.toHaveProperty("mainTurnStopScope");
+    expect(snapshot.snapshot.sessions[0]).not.toHaveProperty("runningSubagents");
+    expect(snapshot.snapshot.sessions[0]).not.toHaveProperty("subagentStopScope");
   });
 
   it("still sends durable events to paired phones while they are offline", async () => {

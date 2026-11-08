@@ -368,7 +368,7 @@ describe("TranscriptObserver", () => {
     }
   });
 
-  it.each([false, true])("tracks background shell tasks past end_turn and clears fresh completion evidence (alias=%s)", async (alias) => {
+  it.each([false, true].flatMap(alias => [false, true].map(queued => ({ alias, queued }))))("tracks background shell tasks past end_turn and clears fresh completion evidence (alias=$alias, queued=$queued)", async ({ alias, queued }) => {
     const root = await mkdtemp(join(tmpdir(), "bridge-observer-background-shell-"));
     directories.push(root);
     const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
@@ -396,7 +396,9 @@ describe("TranscriptObserver", () => {
       expect(observer.hasPendingBackgroundShellTasks("unknown-session")).toBe(false);
 
       await appendFile(transcript, [
-        { type: "user", uuid: "finished", parentUuid: "done", isMeta: true, message: { role: "user", content: "<task-notification><task-id>shell-1</task-id><status>completed</status></task-notification>" } },
+        queued
+          ? { type: "attachment", uuid: "finished", parentUuid: "done", attachment: { type: "queued_command", prompt: "<task-notification><task-id>shell-1</task-id><status>completed</status></task-notification>", origin: "task-notification" } }
+          : { type: "user", uuid: "finished", parentUuid: "done", isMeta: true, message: { role: "user", content: "<task-notification><task-id>shell-1</task-id><status>completed</status></task-notification>" } },
         { type: "assistant", uuid: "confirmed", parentUuid: "finished", message: { role: "assistant", stop_reason: "end_turn", content: "The job finished." } },
       ].map((row) => JSON.stringify(row)).join("\n") + "\n");
       await utimes(transcript, new Date(), new Date(Date.now() + 1_000));

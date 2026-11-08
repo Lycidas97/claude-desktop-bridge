@@ -74,7 +74,7 @@ export function DesktopHandoffNotice({ session, online, className, onReturn, onT
               ? `上次同步时有 ${session.pendingCount} 条消息排队，当前进度尚未确认。`
               : handoff.state === "close-desktop"
                 ? handoff.reason === "inbox-confirmation-expired"
-                  ? "消息仍保留在电脑队列中，不会再次投递到同一收件箱。可确认接管此会话，由 Bridge 继续处理；仅等待空闲不会交接。"
+                  ? `消息仍保留在电脑队列中，不会再次投递到同一收件箱。${handoff.canTakeover ? "可确认接管此会话，由 Bridge 继续处理；仅等待空闲不会交接。" : "当前不可接管此会话。"}`
                   : `${queued ? `${session.pendingCount} 条消息已到电脑。` : ""}请关闭此会话的 Desktop 执行进程，或接管此会话；仅等待空闲不会交接。`
                 : handoff.state === "reopen-desktop"
                   ? "请在 Claude Desktop 中关闭并重新打开此会话，加载手机端产生的历史。"

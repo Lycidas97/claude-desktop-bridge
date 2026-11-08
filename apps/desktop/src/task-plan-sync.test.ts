@@ -89,6 +89,62 @@ describe("task-plan transport and recovery", () => {
     } finally { await observer.close(); await log.close(); }
   });
 
+  it.each([false, true])("removes an imported plan when its initialization later fails, including after restart (compact=%s)", async compact => {
+    const f = await fixture();
+    await f.observe();
+    expect(f.log.history(f.session.sessionId).items.some(item => item.taskPlan)).toBe(true);
+    await appendFile(f.path, JSON.stringify({ uuid: "failure", parentUuid: "p", type: "user", timestamp: new Date(3000).toISOString(), message: {
+      role: "user", content: [{ type: "tool_result", tool_use_id: "plan-tool", is_error: true, content: "No such tool available" }],
+    } }) + "\n");
+    await f.observe();
+    expect(f.log.history(f.session.sessionId).items.some(item => item.taskPlan)).toBe(false);
+    const page = await readSessionHistory({ paths: f.paths, eventLog: f.log, taskState: new SessionTaskState(), session: { sessionId: f.session.sessionId, cwd: f.root }, activeTurn: false, observedSessions: [] });
+    expect(page.items.some(item => item.taskPlan)).toBe(false);
+    expect(f.log.replay().filter(event => event.data.taskPlanInvalidated === true)).toHaveLength(1);
+    await f.observer.close(); await f.log.close();
+    if (compact) {
+      const compacted = new SessionEventLog(f.log.path, 80, { bytesThreshold: 1, retainEvents: 0 });
+      await compacted.initialize(); await compacted.close();
+    }
+    const log = new SessionEventLog(f.log.path);
+    await log.initialize();
+    const observer = new TranscriptObserver({ paths: f.paths, eventLog: log });
+    try {
+      const before = log.latestSeq();
+      await (observer as unknown as { primeTranscript(session: ObservedClaudeSession): Promise<void> }).primeTranscript(f.session);
+      expect(log.history(f.session.sessionId).items.some(item => item.taskPlan)).toBe(false);
+      expect(log.latestItem(f.session.sessionId, "session.observed", "plan:plan-tool")?.data.taskPlanInvalidated).toBe(true);
+      expect(log.latestSeq()).toBe(before);
+    } finally { await observer.close(); await log.close(); }
+  });
+
+  it("filters a previously imported failed plan before an observer refresh", async () => {
+    const f = await fixture();
+    try {
+      await f.observe();
+      await appendFile(f.path, JSON.stringify({ uuid: "failure", parentUuid: "p", type: "user", message: {
+        role: "user", content: [{ type: "tool_result", tool_use_id: "plan-tool", is_error: true, content: "Failed" }],
+      } }) + "\n");
+      const page = await readSessionHistory({ paths: f.paths, eventLog: f.log, taskState: new SessionTaskState(), session: { sessionId: f.session.sessionId, cwd: f.root }, activeTurn: false, observedSessions: [] });
+      expect(page.items.some(item => item.taskPlan)).toBe(false);
+    } finally { await f.observer.close(); await f.log.close(); }
+  });
+
+  it("publishes a newer correction after a previously imported advance fails", async () => {
+    const f = await fixture();
+    try {
+      await f.observe(); await f.advance(); await f.observe();
+      const attempted = f.log.history(f.session.sessionId).items.find(item => item.taskPlan)!.taskPlan!;
+      await appendFile(f.path, JSON.stringify({ uuid: "advance-failure", parentUuid: "a", type: "user", timestamp: new Date(3000).toISOString(), message: {
+        role: "user", content: [{ type: "tool_result", tool_use_id: "advance-tool", is_error: true, content: "Failed" }],
+      } }) + "\n");
+      await f.observe();
+      const corrected = f.log.history(f.session.sessionId).items.find(item => item.taskPlan)!.taskPlan!;
+      expect(corrected.items.map(item => item.status)).toEqual(["in_progress", "pending"]);
+      expect(corrected.updatedAt).toBeGreaterThan(attempted.updatedAt);
+    } finally { await f.observer.close(); await f.log.close(); }
+  });
+
   it("keeps newer transcript plan state when an older host event exists", async () => {
     const f = await fixture();
     try {

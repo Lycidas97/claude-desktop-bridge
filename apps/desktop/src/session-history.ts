@@ -88,9 +88,11 @@ export async function readSessionHistory(
     } while (eventCursor);
     return pages.reverse().flat().map((item) => ({ ...item, sessionId }));
   });
+  const failedPlanTools = new Set(transcripts.flatMap(({ transcript }) => transcript.branch?.failedPlanToolUseIds ?? []));
   const merged = new Map<string, BridgeHistoryItem>();
   for (const item of transcriptItems) merged.set(item.id, item);
   for (const item of eventItems) {
+    if (item.taskPlan && failedPlanTools.has(item.taskPlan.id)) continue;
     if (!taskState.isInline(sessionId, item.subagent?.toolUseId ?? item.subagent?.agentId ?? item.id)) continue;
     const existing = merged.get(item.id);
     if (!existing || item.origin !== "claude-desktop") {

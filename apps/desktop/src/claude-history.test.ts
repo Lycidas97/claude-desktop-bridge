@@ -1461,6 +1461,47 @@ describe("Claude transcript history", () => {
       expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual([]);
     });
 
+    it.each(["completed", "failed", "stopped", "killed"])("clears a selected-branch queued_command task notification on %s", async status => {
+      const transcript = await fixture([
+        start, bash,
+        { ...bashResult, parentUuid: "bash", toolUseResult: { backgroundTaskId: "shell-queued" } },
+        { type: "assistant", uuid: "done", parentUuid: "bash-result", message: { role: "assistant", stop_reason: "end_turn", content: "Main turn finished" } },
+      ]);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual(["shell-queued"]);
+      await appendFile(transcript, line({ type: "attachment", uuid: "notification", parentUuid: "done", attachment: {
+        type: "queued_command", origin: "task-notification", prompt: `<task-notification><task-id>shell-queued</task-id><status>${status}</status></task-notification>`,
+      } }) + "\n");
+      const snapshot = await parseClaudeTranscriptSnapshot(transcript);
+      expect(snapshot.pendingBackgroundShellTaskIds).toEqual([]);
+      expect(snapshot.atTurnBoundary).toBe(true);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual([]);
+    });
+
+    it.each([
+      "Quoted: <task-notification><task-id>shell-queued</task-id><status>completed</status></task-notification>",
+      "<task-notification><task-id>shell-queued</task-id><status>running</status></task-notification>",
+      "<task-notification><task-id>another-task</task-id><status>completed</status></task-notification>",
+    ])("does not clear an unresolved task for an unrelated queued prompt: %s", async prompt => {
+      const transcript = await fixture([
+        start, bash,
+        { ...bashResult, parentUuid: "bash", toolUseResult: { backgroundTaskId: "shell-queued" } },
+        { type: "attachment", uuid: "notification", parentUuid: "bash-result", attachment: { type: "queued_command", prompt } },
+      ]);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual(["shell-queued"]);
+    });
+
+    it("does not consume queued completion notices from an abandoned branch or the global queue", async () => {
+      const prompt = "<task-notification><task-id>shell-queued</task-id><status>completed</status></task-notification>";
+      const transcript = await fixture([
+        start, bash,
+        { ...bashResult, parentUuid: "bash", toolUseResult: { backgroundTaskId: "shell-queued" } },
+        { type: "attachment", uuid: "abandoned", parentUuid: "bash-result", attachment: { type: "queued_command", prompt } },
+        { type: "assistant", uuid: "selected", parentUuid: "bash-result", message: { role: "assistant", stop_reason: "end_turn", content: "Selected branch" } },
+        { type: "queue-operation", operation: "enqueue", content: prompt },
+      ]);
+      expect((await parseClaudeTranscriptSnapshot(transcript)).pendingBackgroundShellTaskIds).toEqual(["shell-queued"]);
+    });
+
     it.each(["completed", "failed", "stopped", "killed"])("#3 clears local_bash attachment evidence on %s", async (status) => {
       const transcript = await fixture([
         start,

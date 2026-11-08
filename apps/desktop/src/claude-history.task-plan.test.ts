@@ -171,6 +171,61 @@ describe("Desktop task plan history", () => {
     expect(completed.items.every(item => item.status === "completed")).toBe(true);
   });
 
+  it("does not import an explicitly failed initialization, including cached reads", async () => {
+    const f = await fixture();
+    const initial = await f.plan({ items: items() });
+    await f.record("user", [{ type: "tool_result", tool_use_id: (initial.message.content[0] as { id: string }).id, is_error: true, content: "No such tool available: mcp__ccd_turn__update_plan" }]);
+    expect(await f.plans()).toEqual([]);
+    expect(await f.plans()).toEqual([]);
+    expect((await readClaudeSessionHistoryPage(f.directory, "plan-session")).items.some(item => item.taskPlan)).toBe(false);
+  });
+
+  it.each([
+    { advance: true },
+    { done: [1, 2], start: 3 },
+    { scope: "continuation", items: [{ content: "Replacement", status: "completed" }] },
+    { scope: "new_task", items: [{ content: "Another task", status: "in_progress" }] },
+  ])("keeps the last valid plan after a failed update: %j", async input => {
+    const f = await fixture();
+    await f.plan({ items: items() });
+    const previous = (await f.plans())[0]!;
+    const update = await f.plan(input);
+    await f.record("user", [{ type: "tool_result", tool_use_id: (update.message.content[0] as { id: string }).id, is_error: true, content: "Plan update failed" }]);
+    const plans = await f.plans();
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({ id: previous.id, createdAt: previous.createdAt, taskPlan: { id: previous.taskPlan!.id, items: previous.taskPlan!.items } });
+  });
+
+  it("does not complete the plan when wrap-up fails", async () => {
+    const f = await fixture();
+    await f.plan({ items: items() });
+    const wrap = await f.wrap();
+    await f.record("user", [{ type: "tool_result", tool_use_id: (wrap.message.content[0] as { id: string }).id, is_error: true, content: "No such tool available" }]);
+    await f.record("assistant", [{ type: "text", text: "The response ended" }]);
+    expect((await f.plans())[0]!.taskPlan!.items).toEqual(items());
+  });
+
+  it("uses only matching failures on the selected branch", async () => {
+    const f = await fixture();
+    const initial = await f.plan({ items: items() });
+    await f.record("user", [{ type: "tool_result", tool_use_id: (initial.message.content[0] as { id: string }).id, is_error: true, content: "Abandoned failure" }]);
+    await f.record("assistant", [{ type: "text", text: "Selected continuation" }], initial.uuid);
+    expect((await f.plans())[0]!.taskPlan!.items).toEqual(items());
+    await f.record("user", [{ type: "tool_result", tool_use_id: "unrelated-tool", is_error: true, content: "Unrelated failure" }]);
+    expect((await f.plans())[0]!.taskPlan!.items).toEqual(items());
+  });
+
+  it("applies successful initialization, advance and wrap-up results", async () => {
+    const f = await fixture();
+    for (const input of [{ items: items() }, { advance: true }]) {
+      const update = await f.plan(input);
+      await f.record("user", [{ type: "tool_result", tool_use_id: (update.message.content[0] as { id: string }).id, is_error: false, content: "Plan updated" }]);
+    }
+    const wrap = await f.wrap();
+    await f.record("user", [{ type: "tool_result", tool_use_id: (wrap.message.content[0] as { id: string }).id, content: "Completed" }]);
+    expect((await f.plans())[0]!.taskPlan!.items.every(item => item.status === "completed")).toBe(true);
+  });
+
   it("carries plan state through the public history-page API", async () => {
     const f = await fixture();
     await f.plan({ items: items() });

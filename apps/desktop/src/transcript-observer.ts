@@ -278,6 +278,7 @@ export class TranscriptObserver extends EventEmitter {
     if (!session.transcriptPath) return;
     const result = await parseClaudeTranscriptSnapshot(session.transcriptPath, { limit: 50 });
     this.updateTurnBoundary(session.sessionId, result);
+    await this.invalidateFailedPlans(session, result);
     const sessionId = this.sessionAliases.get(session.sessionId) ?? session.sessionId;
     const known = this.knownMessages.get(session.sessionId) ?? new Map<string, string>();
     const knownUsers = this.knownUserMessages.get(session.sessionId) ?? new Map<string, string>();
@@ -318,6 +319,7 @@ export class TranscriptObserver extends EventEmitter {
     if (!session.transcriptPath) return;
     const result = await parseClaudeTranscriptSnapshot(session.transcriptPath, { limit: 50 });
     this.updateTurnBoundary(session.sessionId, result);
+    await this.invalidateFailedPlans(session, result);
     this.knownMessages.set(
       session.sessionId,
       new Map(result.messages.map((message) => [
@@ -337,6 +339,16 @@ export class TranscriptObserver extends EventEmitter {
     }
     await this.observeSubagents(session, true);
     await this.observeEvidence(session);
+  }
+
+  private async invalidateFailedPlans(session: ObservedClaudeSession, snapshot: Awaited<ReturnType<typeof parseClaudeTranscriptSnapshot>>): Promise<void> {
+    const sessionId = this.sessionAliases.get(session.sessionId) ?? session.sessionId;
+    for (const id of snapshot.branch?.failedPlanToolUseIds ?? []) {
+      const itemId = `plan:${id}`;
+      if (!this.options.eventLog.hasItem(sessionId, "session.observed", itemId) ||
+        this.options.eventLog.latestItem(sessionId, "session.observed", itemId)?.data.taskPlanInvalidated === true) continue;
+      await this.options.eventLog.append({ sessionId, itemId, origin: "claude-desktop", type: "session.observed", data: { taskPlanInvalidated: true } });
+    }
   }
 
   private async observeSubagents(session: ObservedClaudeSession, primeOnly: boolean): Promise<void> {

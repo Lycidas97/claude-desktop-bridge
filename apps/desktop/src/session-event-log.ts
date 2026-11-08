@@ -304,7 +304,7 @@ export class SessionEventLog extends EventEmitter {
           }
         }
         const data: Record<string, unknown> = {};
-        for (const name of ["role", "toolName", "task", "generation"] as const) {
+        for (const name of ["role", "toolName", "task", "generation", "taskPlanInvalidated"] as const) {
           if (event.data[name] !== undefined) data[name] = event.data[name];
         }
         if (event.data.subagent && typeof event.data.subagent === "object") {
@@ -588,12 +588,15 @@ export class SessionEventLog extends EventEmitter {
 
   history(sessionId: string, cursor?: string, limit = 50): BridgeHistoryPage {
     const beforeSeq = cursor ? Number.parseInt(cursor, 10) : Number.POSITIVE_INFINITY;
-    const rawItems = this.events
-      .filter((event) => event.sessionId === sessionId && event.seq < beforeSeq)
-      .map(historyItem)
-      .filter((item): item is BridgeHistoryItem => item !== undefined);
     const byId = new Map<string, BridgeHistoryItem>();
-    for (const item of rawItems) {
+    for (const event of this.events) {
+      if (event.sessionId !== sessionId || event.seq >= beforeSeq) continue;
+      if (event.type === "session.observed" && event.data.taskPlanInvalidated === true) {
+        if (event.itemId) byId.delete(event.itemId);
+        continue;
+      }
+      const item = historyItem(event);
+      if (!item) continue;
       if (item.role === "tool" && item.id.endsWith(":completed")) {
         const baseId = item.id.replace(/:completed$/u, "");
         const started = byId.get(baseId);

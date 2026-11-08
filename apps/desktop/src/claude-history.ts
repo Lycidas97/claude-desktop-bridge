@@ -32,7 +32,7 @@ interface TranscriptNode {
   text?: string;
   interactivePrompt?: BridgeInteractivePrompt;
   tools?: Array<{ id: string; name: string; stopTaskId?: string }>;
-  results?: Array<{ id: string; backgroundTaskId?: string; stoppedTaskId?: string }>;
+  results?: Array<{ id: string; failed?: boolean; backgroundTaskId?: string; stoppedTaskId?: string }>;
   backgroundShellUpdates?: Array<{ taskId: string; pending: boolean }>;
   planUpdates?: Array<{ id: string; input: Record<string, unknown>; wrapUp: boolean }>;
   toolResultAnswers?: Record<string, string>;
@@ -85,6 +85,8 @@ export interface ClaudeHistoryReadResult {
     inheritedUuids: string[];
     excludedMessageUuids: string[];
     excludedToolUseIds: string[];
+    /** Explicitly failed plan operations on this branch, including already imported cards. */
+    failedPlanToolUseIds?: string[];
     /** Undefined when missing ancestry prevents establishing a safe boundary. */
     forkBaseMessageUuid?: string | null;
   };
@@ -957,7 +959,19 @@ export async function parseClaudeTranscriptSnapshot(
         inheritedHead = value.bridgeFork.baseMessageUuid;
       }
       if (isNonDagTranscriptRecord(value)) continue;
+      const message = isRecord(value.message) ? value.message : undefined;
+      const rawText = message ? textFromContent(message.content)
+        : value.type === "attachment" && isRecord(value.attachment) && value.attachment.type === "queued_command"
+          ? textFromContent(value.attachment.prompt) : "";
       const backgroundShellUpdates: NonNullable<TranscriptNode["backgroundShellUpdates"]> = [];
+      if ((value.type === "user" || value.type === "attachment") && rawText.trimStart().startsWith("<task-notification>")) {
+        const status = /<status>(\w+)<\/status>/u.exec(rawText)?.[1];
+        if (status && ["completed", "failed", "stopped", "killed"].includes(status)) {
+          for (const match of rawText.matchAll(/<task-id>([^<]+)<\/task-id>/gu)) {
+            backgroundShellUpdates.push({ taskId: match[1]!, pending: false });
+          }
+        }
+      }
       if (value.isSidechain !== true && value.type === "attachment" && isRecord(value.attachment)) {
         const task = value.attachment;
         if (task.type === "task_status" && task.taskType === "local_bash" && typeof task.taskId === "string" && typeof task.status === "string") {
@@ -978,8 +992,6 @@ export async function parseClaudeTranscriptSnapshot(
       const parentUuid = existing?.parentUuid ?? resolveTranscriptParentUuid(value, nodes, lastMainUuid);
       if (parentUuid) referencedParents.add(parentUuid);
       const visible = visibleMessage(value);
-      const message = isRecord(value.message) ? value.message : undefined;
-      const rawText = message ? textFromContent(message.content) : "";
       const parsedAt = typeof value.timestamp === "string" ? Date.parse(value.timestamp) : Number.NaN;
       const createdAt = existing?.createdAt || (Number.isFinite(parsedAt) ? parsedAt : 0);
       const type = value.type === "user" || value.type === "assistant"
@@ -1001,6 +1013,7 @@ export async function parseClaudeTranscriptSnapshot(
             if (!isRecord(block) || block.type !== "tool_result" || typeof block.tool_use_id !== "string") return [];
             return [{
               id: block.tool_use_id,
+              ...(block.is_error === true ? { failed: true } : {}),
               ...(typeof directResult?.backgroundTaskId === "string" && block.is_error !== true
                 ? { backgroundTaskId: directResult.backgroundTaskId } : {}),
               ...(typeof directResult?.task_id === "string" && block.is_error !== true &&
@@ -1009,14 +1022,6 @@ export async function parseClaudeTranscriptSnapshot(
             }];
           })
         : [];
-      if (value.type === "user" && rawText.trimStart().startsWith("<task-notification>")) {
-        const status = /<status>(\w+)<\/status>/u.exec(rawText)?.[1];
-        if (status && ["completed", "failed", "stopped"].includes(status)) {
-          for (const match of rawText.matchAll(/<task-id>([^<]+)<\/task-id>/gu)) {
-            backgroundShellUpdates.push({ taskId: match[1]!, pending: false });
-          }
-        }
-      }
       const planUpdates = value.type === "assistant" && Array.isArray(message?.content)
         ? message.content.flatMap((block) => {
             if (!isRecord(block) || block.type !== "tool_use" || typeof block.id !== "string" || !isRecord(block.input) ||
@@ -1132,11 +1137,15 @@ export async function parseClaudeTranscriptSnapshot(
   };
 
   const pendingTools = new Map<string, NonNullable<TranscriptNode["tools"]>[number]>();
+  const failedTools = new Map<string, number>();
   const backgroundShellTasks = new Set<string>();
   const peerInputs: NonNullable<ClaudeTranscriptSnapshot["peerInputs"]> = [];
   let currentPeerInput: typeof peerInputs[number] | undefined;
   let lastAssistantStopReason: string | undefined;
   for (const node of chain) {
+    for (const result of node.results ?? []) {
+      if (result.failed) failedTools.set(result.id, node.createdAt);
+    }
     if (inheritedUuids.has(node.uuid)) continue;
     if (node.type === "user" && (node.interruptedBoundary || (!node.nonTurnUser && !node.toolResult))) {
       pendingTools.clear();
@@ -1175,6 +1184,15 @@ export async function parseClaudeTranscriptSnapshot(
   let planMessage: ClaudeHistoryMessage | undefined;
   for (const node of chain) {
     for (const update of node.planUpdates ?? []) {
+      const failedAt = failedTools.get(update.id);
+      if (failedAt !== undefined) {
+        (branch.failedPlanToolUseIds ??= []).push(update.id);
+        if (planMessage?.taskPlan) {
+          // A correction must supersede a provisional update, even with equal timestamps.
+          planMessage.taskPlan.updatedAt = Math.max(failedAt, node.createdAt + 1, planMessage.taskPlan.updatedAt + 2);
+        }
+        continue;
+      }
       if (update.wrapUp) {
         if (planMessage?.taskPlan) {
           planMessage.taskPlan = {

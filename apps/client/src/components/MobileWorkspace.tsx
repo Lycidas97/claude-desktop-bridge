@@ -778,6 +778,10 @@ export function conversationItems(
   const toolByItem = new Map<string, ConversationItem>();
   for (const event of sessionEvents) {
     if (event.type === "session.observed") {
+      if (event.data.taskPlanInvalidated === true) {
+        items.delete(event.itemId ?? event.eventId);
+        continue;
+      }
       const role = event.data.role;
       const text = eventText(event);
       const interactivePrompt = event.data.interactivePrompt && typeof event.data.interactivePrompt === "object"

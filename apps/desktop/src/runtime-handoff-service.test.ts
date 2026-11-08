@@ -389,6 +389,18 @@ function seedClaudeSource(fixture: Fixture, texts?: { user: string; assistant: s
 }
 
 describe("RuntimeHandoffService", () => {
+  it.each([true, false])("preserves native Bridge execution actions during relay enrichment (%s)", async canRequestBridgeExecution => {
+    const fixture = await createFixture();
+    const session = claudeSession(CLAUDE_SOURCE, fixture.cwd);
+    session.ownership = "DESKTOP_OBSERVED";
+    session.allowedActions = {
+      canSend: true, canSteer: false, canInterrupt: true, canSwitchProvider: false,
+      canContinueOfficial: false, canConfigure: true, canRequestBridgeExecution,
+    };
+    const [enriched] = fixture.service.enrichSessions([session]);
+    expect(enriched?.allowedActions).toMatchObject({ ...session.allowedActions, canRelay: true });
+  });
+
   it("builds a bounded, redacted preview package from a Claude source", async () => {
     const fixture = await createFixture();
     seedClaudeSource(fixture, {

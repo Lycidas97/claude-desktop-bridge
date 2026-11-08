@@ -221,6 +221,7 @@ export class RuntimeHandoffService {
       return {
         ...session,
         allowedActions: {
+          ...base,
           canSend: base?.canSend ?? true,
           canSteer: base?.canSteer ?? true,
           canInterrupt: base?.canInterrupt ?? true,

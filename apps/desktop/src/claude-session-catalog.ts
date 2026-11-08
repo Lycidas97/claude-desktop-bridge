@@ -149,18 +149,19 @@ function parseWindowsProcessRows(stdout: string): ProcessRow[] {
 interface ProcessScan {
   sessions: Map<string, ActiveClaudeProcess[]>;
   forks: Map<number, { parentSessionId: string; process: ActiveClaudeProcess }>;
+  unassigned: Map<number, ActiveClaudeProcess>;
 }
 
 function indexClaudeProcesses(processes: Map<number, ProcessRow>, platform: NodeJS.Platform): ProcessScan {
   const sessions = new Map<string, ActiveClaudeProcess[]>();
   const forks = new Map<number, { parentSessionId: string; process: ActiveClaudeProcess }>();
+  const unassigned = new Map<number, ActiveClaudeProcess>();
   for (const [pid, processInfo] of processes) {
     const command = processInfo.command;
     if (!isStreamJsonProcess(command)) continue;
     const explicit = /--session-id(?:=|\s+)"?([0-9a-f-]{36})"?(?:\s|$)/iu.exec(command);
     const resumed = /--resume(?:=|\s+)"?([0-9a-f-]{36})"?(?:\s|$)/iu.exec(command);
     const sessionId = (explicit ?? resumed)?.[1];
-    if (!sessionId) continue;
     const process: ActiveClaudeProcess = {
       pid,
       startedAt: processInfo.startedAt,
@@ -169,6 +170,11 @@ function indexClaudeProcesses(processes: Map<number, ProcessRow>, platform: Node
       entrypoint: entrypointFromAncestors(pid, processes, platform),
       source: "process",
     };
+    if (!sessionId) {
+      // Initialize-time session IDs are supplied by verified process registrations.
+      unassigned.set(pid, process);
+      continue;
+    }
     if (!explicit && /(?:^|\s)--fork-session(?:\s|$)/u.test(command)) {
       // --resume names the history source; the new writer ID comes from its registration.
       forks.set(pid, { parentSessionId: sessionId, process });
@@ -178,7 +184,7 @@ function indexClaudeProcesses(processes: Map<number, ProcessRow>, platform: Node
     values.push(process);
     sessions.set(sessionId, values);
   }
-  return { sessions, forks };
+  return { sessions, forks, unassigned };
 }
 
 export function parseWindowsClaudeProcessSessions(stdout: string): Map<string, ActiveClaudeProcess[]> {
@@ -285,8 +291,9 @@ async function listActiveSessions(
       const existing = result.get(value.sessionId) ?? [];
       const fork = pid !== undefined ? scan?.forks.get(pid) : undefined;
       const scanned = existing.find((candidate) => candidate.pid !== undefined && candidate.pid === active.pid)
-        ?? (fork && fork.parentSessionId !== value.sessionId ? fork.process : undefined);
-      // Fork IDs come from the child registration after verifying its OS PID and lifetime.
+        ?? (fork && fork.parentSessionId !== value.sessionId ? fork.process : undefined)
+        ?? (pid !== undefined ? scan?.unassigned.get(pid) : undefined);
+      // Fork and initialize-time IDs come from registrations after verifying the OS PID and lifetime.
       if (scanned && scanned.startedAt > 0 && active.startedAt >= scanned.startedAt && active.startedAt <= scannedAt) {
         if (!existing.includes(scanned)) existing.push(scanned);
         scanned.cwd = value.cwd;

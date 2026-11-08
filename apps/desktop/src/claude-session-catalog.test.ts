@@ -46,6 +46,87 @@ afterEach(async () => {
 });
 
 describe("Claude session process catalog", () => {
+  it.each(["darwin", "win32"] as const)("binds a registered initialize-time session without ID flags on %s", async (platform) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-process-initialize-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const startedAt = Date.parse("Thu Jan 1 10:00:00 2026");
+    await mkdir(paths.sessions);
+    await writeFile(join(paths.sessions, "700.json"), JSON.stringify({ pid: 700, sessionId, cwd: root, startedAt: startedAt + 456, entrypoint: "claude-desktop-3p", peerProtocol: 1 }));
+    mockProcessRows(platform, [{ pid: 700, ppid: 1, command: "claude --input-format stream-json --output-format stream-json --await-initialize" }]);
+    expect((await scanClaudeProcesses(paths, platform)).get(sessionId)).toEqual([
+      expect.objectContaining({ pid: 700, processAlive: true, source: "process", entrypoint: "claude-desktop-3p", startedAt, registeredAt: startedAt + 456, peerProtocol: 1 }),
+    ]);
+  });
+
+  it.each(["darwin", "win32"] as const)("does not invent an initialize-time session without a registration on %s", async (platform) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-process-unregistered-initialize-"));
+    directories.push(root);
+    mockProcessRows(platform, [{ pid: 700, ppid: 1, command: "claude --input-format stream-json --output-format stream-json --await-initialize" }]);
+    expect((await scanClaudeProcesses({ sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] }, platform)).size).toBe(0);
+  });
+
+  it.each([
+    { platform: "darwin" as const, scenario: "reused PID" }, { platform: "win32" as const, scenario: "reused PID" },
+    { platform: "darwin" as const, scenario: "unrelated process" }, { platform: "win32" as const, scenario: "unrelated process" },
+    { platform: "darwin" as const, scenario: "another session" }, { platform: "win32" as const, scenario: "another session" },
+  ])("rejects an initialize-time registration for $scenario on $platform", async ({ platform, scenario }) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-process-initialize-identity-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    await mkdir(paths.sessions);
+    await writeFile(join(paths.sessions, "700.json"), JSON.stringify({ pid: 700, sessionId, cwd: root, startedAt: Date.parse("Thu Jan 1 10:00:00 2026") + 456, entrypoint: "claude-desktop-3p", peerProtocol: 1, messagingSocketPath: join(root, "stale.sock") }));
+    mockProcessRows(platform, [{ pid: 700, ppid: 1, start: scenario === "reused PID" ? "10:01:00" : "10:00:00", command: scenario === "unrelated process" ? "node unrelated-worker.js" : `claude --input-format stream-json --output-format stream-json ${scenario === "another session" ? "--session-id 22222222-2222-4222-8222-222222222222" : "--await-initialize"}` }]);
+    const sessions = await scanClaudeProcesses(paths, platform);
+    expect(sessions.get(sessionId)?.filter(process => process.processAlive)).toEqual([]);
+    for (const process of [...sessions.values()].flat().filter(process => process.processAlive)) {
+      expect(process).not.toHaveProperty("messagingSocketPath");
+      expect(process).not.toHaveProperty("peerProtocol");
+    }
+  });
+
+  it("keeps background agents visible after an initialize-time native main turn ends", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-initialize-subagents-"));
+    directories.push(root);
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const processTable = [{ pid: 700, ppid: 1, command: "claude --input-format stream-json --output-format stream-json --await-initialize" }];
+    await Promise.all([mkdir(paths.sessions), mkdir(paths.projects)]);
+    await writeFile(join(paths.sessions, "700.json"), JSON.stringify({ pid: 700, sessionId, cwd: root, startedAt: Date.parse("Thu Jan 1 10:00:00 2026") + 456, entrypoint: "claude-desktop-3p" }));
+    const transcript = join(paths.projects, sessionId + ".jsonl");
+    const timestamp = new Date().toISOString();
+    await writeFile(transcript, [
+      { type: "assistant", uuid: "launch", sessionId, cwd: root, timestamp, message: { role: "assistant", content: [{ type: "tool_use", id: "child-tool", name: "Agent", input: { description: "Background review" } }] } },
+      { type: "user", uuid: "launched", parentUuid: "launch", sessionId, timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "child-tool", content: "Async agent launched successfully.\nagentId: child" }] } },
+      { type: "assistant", uuid: "waiting", parentUuid: "launched", sessionId, timestamp, message: { role: "assistant", content: "Waiting for background review", stop_reason: "end_turn" } },
+    ].map(value => JSON.stringify(value)).join("\n") + "\n");
+    const childDirectory = join(paths.projects, sessionId, "subagents");
+    await mkdir(childDirectory, { recursive: true });
+    await writeFile(join(childDirectory, "agent-child.meta.json"), JSON.stringify({ description: "Background review", toolUseId: "child-tool" }));
+    await writeFile(join(childDirectory, "agent-child.jsonl"), JSON.stringify({ type: "assistant", timestamp, message: { role: "assistant", content: [{ type: "tool_use", id: "read", name: "Read", input: {} }], stop_reason: "tool_use" } }) + "\n");
+    const log = new SessionEventLog(join(root, "events.jsonl"));
+    const observer = new TranscriptObserver({ paths, eventLog: log, platform: "darwin", pollIntervalMs: 60_000, catalogIntervalMs: 0 });
+    const hostFactory = vi.fn(() => { throw new Error("Native observation must not launch a model host"); });
+    const broker = new SessionBroker({ paths, observer, eventLog: log, sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"), hostFactory, discoverGatewayModels: async () => [], prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/credentials.json", environment: {} }) });
+    try {
+      mockProcessRows("darwin", processTable);
+      await observer.start(); await broker.initialize();
+      expect(observer.isMainTurnBusy(sessionId)).toBe(false);
+      expect(observer.runningSubagents(sessionId)).toEqual({ count: 1, lastUpdatedAt: Date.parse(timestamp) });
+      expect(broker.session(sessionId)).toMatchObject({ turnState: "idle", runningSubagents: { count: 1 }, subagentStopScope: "process" });
+      await appendFile(join(childDirectory, "agent-child.jsonl"), JSON.stringify({ type: "assistant", timestamp: new Date(Date.parse(timestamp) + 1000).toISOString(), message: { role: "assistant", content: [{ type: "text", text: "Completed review" }], stop_reason: "end_turn" } }) + "\n");
+      await utimes(join(childDirectory, "agent-child.jsonl"), new Date(), new Date(Date.parse(timestamp) + 2000));
+      mockProcessRows("darwin", processTable);
+      await (observer as unknown as { poll(): Promise<void> }).poll();
+      expect(observer.runningSubagents(sessionId)).toBeUndefined();
+      expect(broker.session(sessionId)?.turnState).toBe("idle");
+      expect(broker.session(sessionId)?.runningSubagents).toBeUndefined();
+      expect(hostFactory).not.toHaveBeenCalled();
+    } finally { await broker.close(); await observer.close(); await log.close(); }
+  });
+
   it.each(["darwin", "win32"] as const)("binds a verified fork executor to its registered child on %s", async (platform) => {
     const root = await mkdtemp(join(tmpdir(), "bridge-process-fork-"));
     directories.push(root);

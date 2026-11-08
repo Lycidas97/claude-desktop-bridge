@@ -20,9 +20,14 @@ const directories: string[] = [];
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
 beforeEach(() => {
   Object.defineProperty(process, "platform", { value: "darwin" });
+  vi.spyOn(process, "kill").mockImplementation(pid => {
+    if (pid === process.pid) return true;
+    throw Object.assign(new Error("Fixture process exited"), { code: "ESRCH" });
+  });
 });
 afterEach(async () => {
   Object.defineProperty(process, "platform", platformDescriptor);
+  vi.restoreAllMocks();
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
 
@@ -103,6 +108,116 @@ async function fixture({ busy = false, split = true, staleLogical = false, deskt
     async close() { await broker.close(); await observer.close(); await eventLog.close(); state.close(); },
   };
 }
+
+it("runs explicitly remote input once without inbox delivery and continues after host release", async () => {
+  const f = await fixture({ inbox: true });
+  let exited = Promise.resolve(), alive = true;
+  vi.mocked(process.kill).mockImplementation((pid, signal) => {
+    if (signal === "SIGINT") { alive = false; exited = f.setDesktopExecutorAlive(false); return true; }
+    if (pid === process.pid && alive) return true;
+    throw Object.assign(new Error("Fixture process exited"), { code: "ESRCH" });
+  });
+  try {
+    const input = { sessionId: f.sessionId, requestId: "remote-first", idempotencyKey: "remote-first", text: "Remote work", origin: "mobile" as const, bridgeExecutionRequested: true };
+    const receipt = await f.broker.startTurn(input);
+    await exited;
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledOnce(), { timeout: 4_000 });
+    expect(f.inboxSend).not.toHaveBeenCalled();
+    expect(f.send.mock.calls[0]![0]).toMatchObject({ text: input.text });
+    expect(f.hostFactory.mock.calls[0]![0]).toMatchObject({ sessionId: f.nativeSessionId, resume: true });
+    expect((await f.broker.startTurn(input)).commandId).toBe(receipt.commandId);
+    const first = f.send.mock.results[0]!.value;
+    f.events.emit("event", { type: "turn.completed", sessionId: f.sessionId, turnId: first.turnId, result: "Done", at: Date.now() });
+    await f.drain();
+    await f.broker.returnToDesktop(f.sessionId);
+    await f.broker.startTurn({ sessionId: f.sessionId, requestId: "remote-next", idempotencyKey: "remote-next", text: "Continue", origin: "mobile" });
+    await f.drain();
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(f.hostFactory).toHaveBeenCalledTimes(2);
+    expect(f.inboxSend).not.toHaveBeenCalled();
+  } finally { await exited; await f.close(); }
+});
+
+it("queues multiple authorized messages, cancels only one, and waits for native work to finish", async () => {
+  const f = await fixture({ inbox: true, busy: true });
+  let alive = true, exited = Promise.resolve();
+  vi.mocked(process.kill).mockImplementation((pid, signal) => {
+    if (signal === "SIGINT") { alive = false; exited = f.setDesktopExecutorAlive(false); return true; }
+    if (pid === process.pid && alive) return true;
+    throw Object.assign(new Error("Fixture process exited"), { code: "ESRCH" });
+  });
+  try {
+    expect(f.broker.session(f.sessionId)?.allowedActions?.canRequestBridgeExecution).toBe(true);
+    const input = { sessionId: f.sessionId, origin: "mobile" as const, bridgeExecutionRequested: true };
+    const a = await f.broker.startTurn({ ...input, requestId: "remote-a", idempotencyKey: "remote-a", text: "Cancel A" });
+    const b = await f.broker.startTurn({ ...input, requestId: "remote-b", idempotencyKey: "remote-b", text: "Run B" });
+    await f.drain();
+    expect(f.state.loadBrokerState().pending).toEqual([
+      expect.objectContaining({ commandId: a.commandId, bridgeExecutionRequested: true }),
+      expect.objectContaining({ commandId: b.commandId, bridgeExecutionRequested: true }),
+    ]);
+    await f.broker.interruptTurn(f.sessionId, a.commandId);
+    expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === "SIGINT")).toHaveLength(0);
+    await appendFile(f.transcript, `${JSON.stringify({ type: "assistant", uuid: "natural-end", parentUuid: "initial-user", sessionId: f.nativeSessionId, message: { role: "assistant", content: "Finished naturally", stop_reason: "end_turn" } })}\n`);
+    await f.poll();
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledOnce(), { timeout: 4_000 });
+    await exited;
+    expect(f.send.mock.calls[0]![0]).toMatchObject({ text: "Run B" });
+    expect(f.inboxSend).not.toHaveBeenCalled();
+    expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === "SIGINT")).toHaveLength(1);
+    expect(f.broker.session(f.sessionId)?.allowedActions?.canRequestBridgeExecution).toBe(false);
+  } finally { await exited; await f.close(); }
+});
+
+it.each(["submitted", "held", "uncertain", "expired", "queued"] as const)("requires the original %s input to be handled before a new remote message", async status => {
+  const f = await fixture({ inbox: true, busy: status === "queued" });
+  let restored: SessionBroker | undefined;
+  try {
+    const old = await f.broker.startTurn({ sessionId: f.sessionId, requestId: "old-input", idempotencyKey: "old-input", text: "Old input", origin: "mobile" });
+    await f.drain();
+    if (status === "held" || status === "expired") {
+      f.inboxEvents.emit("receipt", { messageId: f.inboxSend.mock.calls[0]![1].messageId, status });
+      await f.drain();
+    }
+    if (status === "uncertain") {
+      await f.broker.close();
+      restored = new SessionBroker(f.brokerOptions);
+      await restored.initialize();
+    }
+    const broker = restored ?? f.broker;
+    if (status === "submitted" || status === "held" || status === "uncertain") {
+      await expect(broker.takeoverDesktop(f.sessionId, old.commandId)).rejects.toThrow(/投递|旧指令/);
+    }
+    await expect(broker.startTurn({ sessionId: f.sessionId, requestId: "new-remote", idempotencyKey: "new-remote", text: "New work", origin: "mobile", bridgeExecutionRequested: true })).rejects.toThrow(/旧|先处理|原指令/);
+    await expect(broker.startTurn({ sessionId: f.sessionId, requestId: "old-input", idempotencyKey: "old-input", text: "Old input", origin: "mobile", bridgeExecutionRequested: true })).rejects.toThrow(/旧|先处理|原指令/);
+    expect(f.state.loadBrokerState().pending).toEqual([expect.objectContaining({ commandId: old.commandId })]);
+    expect(f.inboxSend).toHaveBeenCalledTimes(status === "queued" ? 0 : 1);
+  } finally { await restored?.close(); await f.close(); }
+});
+
+it("authorizes an expired original command by id and restores that authorization without resubmitting inbox", async () => {
+  const f = await fixture({ inbox: true });
+  let restored: SessionBroker | undefined;
+  try {
+    const input = { sessionId: f.sessionId, requestId: "expired-original", idempotencyKey: "expired-original", text: "Original text", origin: "mobile" as const };
+    const old = await f.broker.startTurn(input);
+    await f.drain();
+    f.inboxEvents.emit("receipt", { messageId: f.inboxSend.mock.calls[0]![1].messageId, status: "expired" });
+    await f.drain();
+    await appendFile(f.transcript, `${JSON.stringify({ type: "user", uuid: "busy-again", parentUuid: "initial-answer", sessionId: f.nativeSessionId, message: { role: "user", content: "Desktop still working" } })}\n`);
+    await f.poll();
+    await f.broker.takeoverDesktop(f.sessionId, old.commandId);
+    expect(f.state.loadBrokerState().pending).toEqual([expect.objectContaining({ commandId: old.commandId, bridgeExecutionRequested: true, state: "queued" })]);
+    await f.broker.close();
+    restored = new SessionBroker(f.brokerOptions);
+    await restored.initialize();
+    expect((await restored.startTurn({ ...input, bridgeExecutionRequested: true })).commandId).toBe(old.commandId);
+    await f.setDesktopExecutorAlive(false);
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledOnce(), { timeout: 3_000 });
+    expect(f.inboxSend).toHaveBeenCalledOnce();
+    expect(f.send.mock.calls[0]![0]).toMatchObject({ text: input.text });
+  } finally { await restored?.close(); await f.close(); }
+});
 
 it("discovers commands for the logical native fork without starting or messaging an executor", async () => {
   const f = await fixture({ inbox: true, busy: true });

@@ -139,6 +139,8 @@ export interface QueuedTurn {
   state: "queued" | "running" | "uncertain";
   mode?: "start" | "steer" | "handoff";
   slashCommand?: boolean;
+  bridgeExecutionRequested?: boolean;
+  bridgeExecutionError?: string;
   transport?: "claude-desktop-managed" | "bridge-host" | "desktop-inbox";
   inboxHeld?: boolean;
   inboxConfirmationExpired?: boolean;
@@ -304,6 +306,7 @@ export interface StartTurnInput {
   priority?: number;
   mode?: "start" | "steer";
   slashCommand?: boolean;
+  bridgeExecutionRequested?: boolean;
 }
 
 export interface ConfigureSessionInput {
@@ -727,6 +730,7 @@ export class SessionBroker extends EventEmitter {
         ? this.modelCatalog.resolveModelDisplayName(hostModel)
         : undefined;
       const route = this.options.conversationState?.route(sessionId);
+      const executionLane = this.executionLane(sessionId, queuedTurn) ?? this.options.conversationState?.activeLane(sessionId);
       const parentSessionId = source?.parentSessionId ?? bridge?.parentSessionId;
       const parentObserved = parentSessionId ? observed.get(parentSessionId) : undefined;
       // Process observations and a Desktop record awaiting its first assignment have only cwd identity.
@@ -800,7 +804,12 @@ export class SessionBroker extends EventEmitter {
           activeLaneId: route.activeLaneId,
           activeProviderProfileId: route.activeProviderProfileId,
           routeState: route.state,
-          allowedActions: route.allowedActions,
+          allowedActions: {
+            ...route.allowedActions,
+            canRequestBridgeExecution: process.platform === "darwin" && !state?.host &&
+              executionLane?.providerKind === "claude-3p" &&
+              Boolean(observed.get(executionLane.nativeSessionId ?? sessionId)?.desktopProcessAlive),
+          },
           ...(route.pendingHandoff ? { pendingHandoff: route.pendingHandoff } : {}),
         } : {}),
         ...(archivedSource?.archivedAt ? { archivedAt: archivedSource.archivedAt } : {}),
@@ -1497,7 +1506,13 @@ export class SessionBroker extends EventEmitter {
       );
     }
     const existing = this.pending.find((turn) => turn.idempotencyKey === input.idempotencyKey);
-    if (existing) return existing;
+    if (existing) {
+      if (input.bridgeExecutionRequested && !existing.bridgeExecutionRequested &&
+        (existing.state === "queued" || existing.state === "uncertain" || existing.transport === "desktop-inbox")) {
+        throw new Error("请先处理旧指令；已过期消息请确认交接原指令，不要重新发送");
+      }
+      return existing;
+    }
     if (this.completedKeys.has(input.idempotencyKey)) {
       return this.terminalTurns.get(input.idempotencyKey) ?? {
         commandId: `completed:${input.idempotencyKey}`,
@@ -1507,6 +1522,11 @@ export class SessionBroker extends EventEmitter {
         state: "completed",
       };
     }
+    if (input.bridgeExecutionRequested && this.pending.some(turn => turn.sessionId === input.sessionId && (
+      (turn.state === "queued" && !turn.bridgeExecutionRequested) || turn.state === "uncertain" ||
+      turn.transport === "desktop-inbox" || turn.bridgeExecutionError
+    ))) throw new Error("请先处理旧指令；已过期消息请确认交接原指令，不要重新发送");
+    const awaitingDesktop = input.bridgeExecutionRequested && !this.runtimeStates.get(input.sessionId)?.host;
     const queued: QueuedTurn = {
       commandId: randomUUID(),
       requestId: input.requestId,
@@ -1518,11 +1538,12 @@ export class SessionBroker extends EventEmitter {
       origin: input.origin,
       ...(input.sourceDeviceId ? { sourceDeviceId: input.sourceDeviceId } : {}),
       requestedAt: Date.now(),
-      priority: input.priority ?? 0,
+      priority: awaitingDesktop ? 0 : input.priority ?? 0,
       attempts: 0,
       state: "queued",
-      mode: input.mode ?? "start",
+      mode: awaitingDesktop ? "start" : input.mode ?? "start",
       ...(input.slashCommand ? { slashCommand: true } : {}),
+      ...(input.bridgeExecutionRequested ? { bridgeExecutionRequested: true } : {}),
       sessionCwd: session.cwd,
       sessionTitle: session.title,
       ...(session.desktopSessionId ? { desktopSessionId: session.desktopSessionId } : {}),
@@ -1625,6 +1646,7 @@ export class SessionBroker extends EventEmitter {
       if (receipt) return receipt;
       throw new Error("未找到这条排队消息，请同步状态后重试");
     }
+    if (turn.state === "queued" && turn.bridgeExecutionRequested && !this.runtimeStates.get(sessionId)?.host) return turn;
     if (turn.state === "uncertain" || turn.recoveryBlocked) throw new Error("这条消息的投递状态尚未确认，请先同步状态");
     if (turn.state !== "queued") return turn;
     if (this.dispatching.has(sessionId)) throw new Error("消息正在启动，请同步状态后重试");
@@ -2172,6 +2194,33 @@ export class SessionBroker extends EventEmitter {
     this.emit("changed");
   }
 
+  private async waitForDesktop(turn: QueuedTurn, nativeSessionId: string, writers?: ActiveClaudeProcess[]): Promise<void> {
+    const state = this.runtimeStates.get(turn.sessionId)!;
+    if (turn.bridgeExecutionRequested) {
+      try {
+        await this.handoffDesktopExecutor(turn.sessionId, turn.commandId);
+      } catch (error) {
+        if (!this.canDispatch(turn)) return;
+        turn.bridgeExecutionError = error instanceof Error ? error.message : String(error);
+        turn.recoveryBlocked = true;
+        await this.saveQueue();
+        await this.record({ sessionId: turn.sessionId, itemId: turn.commandId, origin: "system", type: "message.delivery",
+          data: { commandId: turn.commandId, requestId: turn.requestId, delivery: "host-received", error: turn.bridgeExecutionError } });
+      }
+    } else {
+      if (turn.slashCommand) { await this.failQueuedTurn(turn, "SDK 命令无法由当前 Desktop 执行器接收"); return; }
+      if (await this.sendToDesktopInbox(turn, nativeSessionId, writers)) return;
+    }
+    if (!this.canDispatch(turn)) return;
+    const enteringWait = !state.desktopExitRequired || state.ownership !== "DESKTOP_OBSERVED";
+    state.desktopExitRequired = true;
+    state.ownership = "DESKTOP_OBSERVED";
+    state.turnState = "queued";
+    if (enteringWait) await this.recordOwnership(turn.sessionId, state.ownership);
+    if (!turn.recoveryBlocked) this.scheduleTakeoverRetry(turn.sessionId);
+    this.emit("changed");
+  }
+
   private async acquire(turn: QueuedTurn): Promise<void> {
     const session = this.session(turn.sessionId);
     if (!session || !this.runtime?.executablePath) return;
@@ -2202,14 +2251,7 @@ export class SessionBroker extends EventEmitter {
         Boolean(state.host && state.hostLaneId === turn.laneId),
       )
     ) {
-      if (turn.slashCommand) { await this.failQueuedTurn(turn, "SDK 命令无法由当前 Desktop 执行器接收"); return; }
-      if (await this.sendToDesktopInbox(turn, nativeSessionId)) return;
-      state.desktopExitRequired = true;
-      state.ownership = "DESKTOP_OBSERVED";
-      state.turnState = "queued";
-      await this.recordOwnership(turn.sessionId, state.ownership);
-      this.scheduleTakeoverRetry(turn.sessionId);
-      this.emit("changed");
+      await this.waitForDesktop(turn, nativeSessionId);
       return;
     }
     if (!this.canDispatch(turn)) return;
@@ -2233,14 +2275,7 @@ export class SessionBroker extends EventEmitter {
       return;
     }
     if (desktopWriter || (providerKind === "claude-3p" && observed?.desktopProcessAlive)) {
-      if (turn.slashCommand) { await this.failQueuedTurn(turn, "SDK 命令无法由当前 Desktop 执行器接收"); return; }
-      if (await this.sendToDesktopInbox(turn, nativeSessionId, liveWriters)) return;
-      state.desktopExitRequired = true;
-      state.ownership = "DESKTOP_OBSERVED";
-      state.turnState = "queued";
-      await this.recordOwnership(turn.sessionId, state.ownership);
-      this.scheduleTakeoverRetry(turn.sessionId);
-      this.emit("changed");
+      await this.waitForDesktop(turn, nativeSessionId, liveWriters);
       return;
     }
     delete state.desktopExitRequired;
@@ -3304,7 +3339,7 @@ export class SessionBroker extends EventEmitter {
       return state.active.sessionAcceptedAt ? undefined : { state: "desktop-inbox", canReturn: false, inputStatus: state.active.inboxHeld ? "held" : "submitted" };
     }
     if (queuedTurn?.transport === "desktop-inbox" && queuedTurn.state === "uncertain") return undefined;
-    if (queuedTurn?.state === "queued" && !queuedTurn.inboxConfirmationExpired && this.options.desktopInbox && process.platform === "darwin" &&
+    if (queuedTurn?.state === "queued" && !queuedTurn.bridgeExecutionRequested && !queuedTurn.inboxConfirmationExpired && this.options.desktopInbox && process.platform === "darwin" &&
       !state?.host && queuedTurn.mode !== "handoff") {
       const live = observed?.activeProcesses.filter(process => process.processAlive) ?? [];
       const owner = live[0];
@@ -3315,7 +3350,9 @@ export class SessionBroker extends EventEmitter {
     }
     if ((queued || state?.host) && (observed?.desktopProcessAlive || state?.desktopExitRequired)) {
       return { state: "close-desktop", canReturn,
-        ...(queuedTurn?.inboxConfirmationExpired ? { reason: "inbox-confirmation-expired" as const } : {}),
+        ...(queuedTurn?.bridgeExecutionRequested ? { reason: "bridge-execution-requested" as const }
+          : queuedTurn?.inboxConfirmationExpired ? { reason: "inbox-confirmation-expired" as const } : {}),
+        ...(queuedTurn?.bridgeExecutionError ? { error: queuedTurn.bridgeExecutionError } : {}),
         canTakeover: process.platform === "darwin" && queued &&
         !state?.host && !state?.active && !state?.desktopTakeoverRequested &&
         !this.options.observer.runningSubagents(nativeSessionId)?.count &&
@@ -3341,16 +3378,47 @@ export class SessionBroker extends EventEmitter {
     } });
   }
 
-  async takeoverDesktop(sessionId: string): Promise<BridgeSessionInfo> {
+  async takeoverDesktop(sessionId: string, commandId?: string): Promise<BridgeSessionInfo> {
+    if (commandId !== undefined) {
+      if (process.platform !== "darwin") throw new Error("当前平台暂不支持单会话 Desktop 接管");
+      const turn = this.pending.find(candidate => candidate.sessionId === sessionId && candidate.commandId === commandId);
+      if (!turn || turn.state !== "queued") throw new Error("原指令尚未确认投递结果或已不在队列中，请先处理旧指令");
+      const lane = this.executionLane(sessionId, turn);
+      if (lane && lane.providerKind !== "claude-3p") throw new Error("该会话不支持 Claude Desktop 接管");
+      if (this.pending.some(candidate => candidate.sessionId === sessionId && candidate !== turn &&
+        (candidate.state === "uncertain" || candidate.transport === "desktop-inbox"))) {
+        throw new Error("请先处理旧指令的投递状态");
+      }
+      turn.bridgeExecutionRequested = true;
+      turn.mode = "start";
+      turn.priority = 0;
+      delete turn.bridgeExecutionError;
+      delete turn.recoveryBlocked;
+      await this.saveQueue();
+      this.clearTakeoverRetry(sessionId);
+      this.emit("changed");
+      void this.pump();
+      return this.session(sessionId)!;
+    }
+    await this.handoffDesktopExecutor(sessionId);
+    this.clearTakeoverRetry(sessionId);
+    void this.pump();
+    return this.session(sessionId)!;
+  }
+
+  private async handoffDesktopExecutor(sessionId: string, commandId?: string): Promise<void> {
     if (process.platform !== "darwin") throw new Error("当前平台暂不支持单会话 Desktop 接管");
     const session = this.session(sessionId);
     if (!session) throw new Error("Session not found");
-    const lane = this.executionLane(sessionId, this.pending.find(turn => turn.sessionId === sessionId && turn.state === "queued"));
+    const lane = this.executionLane(sessionId, this.pending.find(turn => turn.sessionId === sessionId && turn.state === "queued" &&
+      (commandId === undefined || turn.commandId === commandId)));
     if (lane && lane.providerKind !== "claude-3p") throw new Error("该会话不支持 Claude Desktop 接管");
     const nativeSessionId = lane?.nativeSessionId ?? sessionId;
     const state = this.runtimeStates.get(sessionId);
-    if (state?.desktopTakeoverRequested) return session;
+    if (state?.desktopTakeoverRequested) return;
     if (state?.host || state?.active) throw new Error("Bridge 已在运行此会话，不能结束 Desktop 执行器");
+    const authorized = () => !this.closed && this.pending.some(turn => turn.sessionId === sessionId && turn.state === "queued" &&
+      (commandId === undefined || (turn.commandId === commandId && turn.bridgeExecutionRequested && !turn.recoveryBlocked)));
     const runtime: SessionRuntimeState = state ?? { ownership: "DESKTOP_OBSERVED", turnState: "queued" };
     runtime.desktopTakeoverRequested = true;
     this.runtimeStates.set(sessionId, runtime);
@@ -3359,39 +3427,41 @@ export class SessionBroker extends EventEmitter {
       const observed = this.catalog.sessions.find(candidate => candidate.sessionId === nativeSessionId);
       if (!observed?.transcriptPath) throw new Error("无法确认 Desktop 会话状态，消息保持排队");
       const transcript = await parseClaudeTranscriptSnapshot(observed.transcriptPath);
-      if (!transcript.available || (!transcript.atTurnBoundary && !transcript.waitingForUserInput)) {
+      if (!transcript.available) throw new Error("无法确认 Desktop 会话状态，消息保持排队");
+      if (!transcript.atTurnBoundary && (commandId !== undefined || !transcript.waitingForUserInput)) {
+        if (commandId !== undefined) return;
         throw new Error("Desktop 主任务仍在运行；仅空闲或等待回答时可以接管");
       }
       const writers = await this.sessionProcessScanner(this.options.paths, nativeSessionId);
       const subagents = await readClaudeSessionSubagents(
         this.options.paths.projects, nativeSessionId, session.cwd, oldestLiveProcessStart(writers),
       );
-      if (subagents.some(agent => agent.state === "running") || this.options.observer.runningSubagents(nativeSessionId)?.count) {
+      if (subagents.some(agent => agent.state === "running") || this.options.observer.runningSubagents(nativeSessionId)?.count ||
+        transcript.pendingBackgroundShellTaskIds?.length || this.options.observer.hasPendingBackgroundShellTasks?.(nativeSessionId)) {
+        if (commandId !== undefined) return;
         throw new Error("Desktop 后台任务仍在运行，暂时不能接管");
       }
       // Only a fresh process scan proves both the native session id and Desktop ancestry.
       const owners = writers.filter(candidate => candidate.processAlive && candidate.source === "process" &&
         candidate.entrypoint.startsWith("claude-desktop") && candidate.pid !== undefined);
-      if (!this.pending.some(turn => turn.sessionId === sessionId && turn.state === "queued")) {
-        throw new Error("没有等待接管的排队消息");
-      }
+      if (!authorized()) throw new Error("没有仍获授权的等待接管排队消息");
       if (!owners.length) {
         if (writers.some(candidate => candidate.processAlive)) throw new Error("无法确认目标 Desktop 执行器，消息保持排队");
-        this.clearTakeoverRetry(sessionId);
-        void this.pump();
-        return this.session(sessionId)!;
+        return;
       }
-      if (owners.length !== 1) throw new Error("检测到多个 Desktop 执行器，暂时不能接管");
+      if (owners.length !== 1 || writers.filter(candidate => candidate.processAlive).length !== 1) throw new Error("检测到多个 Desktop 执行器，暂时不能接管");
       const latestTranscript = await parseClaudeTranscriptSnapshot(observed.transcriptPath);
-      if (!latestTranscript.available || (!latestTranscript.atTurnBoundary && !latestTranscript.waitingForUserInput)) {
+      if (!latestTranscript.available) throw new Error("无法确认 Desktop 会话状态，消息保持排队");
+      if (!latestTranscript.atTurnBoundary && (commandId !== undefined || !latestTranscript.waitingForUserInput)) {
+        if (commandId !== undefined) return;
         throw new Error("Desktop 主任务仍在运行；仅空闲或等待回答时可以接管");
       }
-      if (latestTranscript.pendingBackgroundShellTaskIds?.length) {
+      if (latestTranscript.pendingBackgroundShellTaskIds?.length || this.options.observer.hasPendingBackgroundShellTasks?.(nativeSessionId) ||
+        this.options.observer.runningSubagents(nativeSessionId)?.count) {
+        if (commandId !== undefined) return;
         throw new Error("Desktop 后台任务仍在运行，暂时不能接管");
       }
-      if (!this.pending.some(turn => turn.sessionId === sessionId && turn.state === "queued")) {
-        throw new Error("没有等待接管的排队消息");
-      }
+      if (!authorized()) throw new Error("没有仍获授权的等待接管排队消息");
       process.kill(owners[0]!.pid!, "SIGINT");
       const deadline = Date.now() + 5_000;
       let exited = false;
@@ -3410,9 +3480,6 @@ export class SessionBroker extends EventEmitter {
       delete runtime.desktopTakeoverRequested;
       this.emit("changed");
     }
-    this.clearTakeoverRetry(sessionId);
-    void this.pump();
-    return this.session(sessionId)!;
   }
 
   async returnToDesktop(sessionId: string): Promise<BridgeSessionInfo> {
@@ -3458,6 +3525,7 @@ export class SessionBroker extends EventEmitter {
       const starting = [...this.dispatching.keys()].filter((id) => !this.runtimeStates.get(id)?.active).length;
       if (this.activeTurns + starting >= this.maxParallelTurns) break;
       if (turn.state !== "queued" || turn.recoveryBlocked || this.dispatching.has(turn.sessionId)) continue;
+      if (turn.bridgeExecutionRequested && this.pending.some(candidate => candidate.sessionId === turn.sessionId && candidate.bridgeExecutionError)) continue;
       const providerKind = this.options.conversationState?.lane(turn.laneId)?.providerKind ?? "claude-3p";
       if (providerKind === "claude-3p" && !hasClaudeRuntimeCredentials(this.runtime)) {
         this.scheduleRuntimeRetry();
@@ -3901,7 +3969,7 @@ export class SessionBroker extends EventEmitter {
     for (const turn of this.pending) {
       if (turn.state !== "queued" && turn.state !== "uncertain") continue;
       const blocked = !observedIds.has(turn.sessionId) && !this.bridgeSessions.has(turn.sessionId);
-      turn.recoveryBlocked = blocked;
+      turn.recoveryBlocked = blocked || Boolean(turn.bridgeExecutionError);
       if (!blocked || turn.state !== "uncertain") continue;
       if (turn.mode === "handoff") continue;
       if (turn.mode !== "steer") this.activeTurns = Math.max(0, this.activeTurns - 1);

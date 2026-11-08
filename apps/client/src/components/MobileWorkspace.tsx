@@ -202,6 +202,8 @@ export function sessionProfile(session: BridgeSessionInfo): string {
 
 export function ownershipLabel(session: BridgeSessionInfo): string {
   const bridgeCreated = session.source === "bridge";
+  if (session.desktopHandoff?.reason === "bridge-execution-requested") return "等待当前工作结束后交接";
+  if (session.desktopHandoff?.reason === "inbox-confirmation-expired") return "等待确认交接";
   if (session.desktopHandoff?.state === "close-desktop") return "等待关闭此 Desktop 会话";
   if (session.desktopHandoff?.state === "reopen-desktop") return "请重新打开 Desktop 会话";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
@@ -222,6 +224,8 @@ export function ownershipLabel(session: BridgeSessionInfo): string {
 }
 
 function activeSessionBadgeLabel(session: BridgeSessionInfo): string | undefined {
+  if (session.desktopHandoff?.reason === "bridge-execution-requested") return "等待交接";
+  if (session.desktopHandoff?.reason === "inbox-confirmation-expired") return "等待确认交接";
   if (session.desktopHandoff?.state === "close-desktop") return "等待关闭 Desktop";
   if (session.desktopHandoff?.state === "reopen-desktop") return "请重新打开 Desktop";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "冲突";
@@ -1638,7 +1642,7 @@ export function MobileWorkspace({
   onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
   onDownloadSessionFile?(sessionId: string, filePath: string): Promise<void>;
   onUploadFile?: UploadFileHandler;
-  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<{ requestId: string } | void>;
+  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean, bridgeExecutionRequested?: boolean): Promise<{ requestId: string } | void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
   onSteerQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
   onStopSubagent?(sessionId: string, agentId: string): Promise<void>;
@@ -1662,7 +1666,7 @@ export function MobileWorkspace({
     title?: string,
   ): Promise<BridgeSessionInfo | undefined>;
   onReturnToDesktop?(sessionId: string): Promise<void>;
-  onTakeoverDesktop?(sessionId: string): Promise<void>;
+  onTakeoverDesktop?(sessionId: string, commandId?: string): Promise<void>;
   onLoadSessionConfiguration(sessionId: string): Promise<BridgeSessionConfiguration>;
   onLoadSessionCommands?(sessionId: string): Promise<BridgeSlashCommandCatalog>;
   onRunSessionCommand?(sessionId: string, text: string): Promise<BridgeSessionCommandResult>;
@@ -1771,6 +1775,9 @@ export function MobileWorkspace({
     Boolean(selectedSessionId && snapshot?.sessions.find((session) => session.sessionId === selectedSessionId)?.sidechat)
   ));
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
+  const [remoteExecutionConfirm, setRemoteExecutionConfirm] = useState<{ key: string; reply?: { id: string; text: string } }>();
+  const activeDraftKey = useRef(draftKey);
+  activeDraftKey.current = draftKey;
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [projectSearch, setProjectSearch] = useState("");
   const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
@@ -2266,7 +2273,35 @@ export function MobileWorkspace({
     setCreateOpen(true);
   }
 
-  async function sendMessage(): Promise<void> {
+  function remoteExecutionChoice(session: BridgeSessionInfo, confirmed: boolean, reply?: { id: string; text: string }): boolean | undefined {
+    const handoff = session.desktopHandoff;
+    if ((handoff?.state === "desktop-inbox" && handoff.inputStatus !== "queued") || localTurns.some(turn =>
+      turn.sessionId === session.sessionId && turn.delivery === "uncertain")) {
+      updateDraft(current => ({ ...current, imageError: "已有消息正在等待 Desktop 接收结果，请先同步状态；新草稿已保留。" }));
+      return;
+    }
+    const supported = snapshot?.host.capabilities.includes("session.remote-execution.v1");
+    const requested = handoff?.reason === "bridge-execution-requested" || localTurns.some(turn =>
+      turn.sessionId === session.sessionId && turn.bridgeExecutionRequested &&
+      (turn.delivery === "local-saved" || turn.delivery === "relay-received"));
+    if (!supported && (session.allowedActions?.canRequestBridgeExecution ||
+      (session.ownership === "DESKTOP_OBSERVED" && session.transport === "bridge-host" && (!session.runtimeId || session.runtimeId === "claude-desktop")))) {
+      updateDraft(current => ({ ...current, imageError: "请更新电脑端 Bridge 后使用手机远程执行。" }));
+      return;
+    }
+    if (!requested && !session.allowedActions?.canRequestBridgeExecution) return false;
+    if (!requested && session.pendingCount > 0) {
+      updateDraft(current => ({ ...current, imageError: "请先确认由 Bridge 继续执行现有排队消息；新草稿已保留。" }));
+      return;
+    }
+    if (!requested && !confirmed) {
+      setRemoteExecutionConfirm({ key: draftKey, ...(reply ? { reply } : {}) });
+      return;
+    }
+    return true;
+  }
+
+  async function sendMessage(bridgeExecutionConfirmed = false): Promise<void> {
     if (
       !selectedSession ||
       selectedSession.allowedActions?.canSend === false ||
@@ -2276,13 +2311,19 @@ export function MobileWorkspace({
     const nextText = text.trim();
     const nextAttachments = runtimeSupports(snapshot, selectedSession, "attachment.image") ? attachments : [];
     const nextFiles = fileUploads.files;
+    const remoteExecution = commands.recognizes(nextText) ? false : remoteExecutionChoice(selectedSession, bridgeExecutionConfirmed === true);
+    if (remoteExecution === undefined) return;
     updateDraft((current) => ({ ...current, text: "", attachments: [], sending: true, imageError: undefined }));
     try {
       if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) {
         updateDraft(current => ({ ...current, steer: false }));
         return;
       }
-      await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, steer);
+      if (remoteExecution) {
+        await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, false, true);
+      } else {
+        await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, steer);
+      }
       fileUploads.clear(nextFiles);
       updateDraft((current) => ({ ...current, steer: false }));
     } catch (error) {
@@ -2297,16 +2338,20 @@ export function MobileWorkspace({
     }
   }
 
-  async function sendQuickReply(promptId: string, promptText: string): Promise<void> {
+  async function sendQuickReply(promptId: string, promptText: string, bridgeExecutionConfirmed = false): Promise<void> {
     if (
       !selectedSession ||
       selectedSession.allowedActions?.canSend === false ||
       sending ||
       !promptText.trim()
     ) return;
+    const remoteExecution = remoteExecutionChoice(selectedSession, bridgeExecutionConfirmed === true, { id: promptId, text: promptText });
+    if (remoteExecution === undefined) return;
     updateDraft((current) => ({ ...current, sending: true }));
     try {
-      const receipt = await onSendTurn(selectedSession.sessionId, promptText.trim(), [], steer);
+      const receipt = remoteExecution
+        ? await onSendTurn(selectedSession.sessionId, promptText.trim(), [], false, true)
+        : await onSendTurn(selectedSession.sessionId, promptText.trim(), [], steer);
       setPromptReplies((current) => ({ ...current, [draftKey]: { ...current[draftKey], [promptId]: receipt?.requestId ?? null } }));
       updateDraft((current) => ({ ...current, steer: false }));
     } finally {
@@ -2915,6 +2960,22 @@ export function MobileWorkspace({
             </button>
           </div>
         )}
+        <ConfirmationDialog
+          open={remoteExecutionConfirm?.key === draftKey}
+          title="由 Bridge 继续执行？"
+          description="等待此会话的当前任务和后台任务结束后，结束它的闲置 Desktop 执行进程并保留历史。之后可直接在手机继续，无需到电脑允许接收。工具审批仍按当前授权设置。"
+          confirmLabel="确认并发送"
+          busy={sending}
+          onCancel={() => setRemoteExecutionConfirm(undefined)}
+          onConfirm={() => {
+            const confirmation = remoteExecutionConfirm;
+            setRemoteExecutionConfirm(undefined);
+            if (!confirmation || confirmation.key !== activeDraftKey.current) return;
+            return confirmation.reply
+              ? sendQuickReply(confirmation.reply.id, confirmation.reply.text, true)
+              : sendMessage(true);
+          }}
+        />
         <ConfirmationDialog
           open={stopConfirmOpen && Boolean(stopTarget)}
           title={processStop

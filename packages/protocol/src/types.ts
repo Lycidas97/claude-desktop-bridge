@@ -192,6 +192,7 @@ export type BridgeCapability =
   | "session.rename.v1"
   | "session.commands.v1"
   | "session.command.v1"
+  | "session.remote-execution.v1"
   | "subagent.stop.v1"
   | "turn.queue.steer.v1"
   | "plugin.magpie-quota.v1";
@@ -342,6 +343,8 @@ export interface BridgeSessionAllowedActions {
   canConfigure: boolean;
   /** Cross-Desktop relay to another runtime (0.7+). */
   canRelay?: boolean;
+  /** A live Desktop executor must be handed over before Bridge can execute remotely. */
+  canRequestBridgeExecution?: boolean;
   reason?: string;
 }
 
@@ -630,7 +633,9 @@ export interface BridgeSessionInfo {
     canReturn: boolean;
     canTakeover?: boolean;
     inputStatus?: "queued" | "submitted" | "held";
-    reason?: "inbox-confirmation-expired";
+    reason?: "inbox-confirmation-expired" | "bridge-execution-requested";
+    /** A failed handoff remains queued until explicitly retried. */
+    error?: string;
   };
   activeLaneId?: string;
   activeProviderProfileId?: string;

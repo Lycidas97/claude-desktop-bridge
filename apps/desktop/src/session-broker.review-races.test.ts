@@ -39,7 +39,7 @@ class Observer extends EventEmitter implements TranscriptObserverRuntime {
   constructor(readonly catalog: ClaudeCatalogSnapshot) { super(); }
   isDesktopBusy() { return this.busy; }
   isMainTurnBusy() { return this.busy; }
-  runningSubagents(): undefined { return undefined; }
+  runningSubagents(): { count: number; lastUpdatedAt: number } | undefined { return undefined; }
   externalWriteVersion() { return this.writeVersion; }
   async canStartBridgeHost(_id: string, _reuse = false) { return this.allowed; }
   onCatalog(listener: (catalog: ClaudeCatalogSnapshot) => void) {
@@ -102,7 +102,7 @@ async function fixture(desktopOpen = false, setup?: (options: SessionBrokerOptio
   await setup?.(options, sessionId);
   const broker = new SessionBroker(options);
   await broker.initialize();
-  const internals = broker as unknown as { pump(): Promise<void>; conflictTasks: Map<string, Promise<void>> };
+  const internals = broker as unknown as { pump(): Promise<void>; clearTakeoverRetry(sessionId: string): void; conflictTasks: Map<string, Promise<void>> };
   return {
     root, sessionId, transcriptPath, observed, observer, eventLog, hosts, scan, options, broker, internals,
     submit: (key: string) => broker.startTurn({ sessionId, requestId: key, idempotencyKey: key, text: `Phone message ${key}`, origin: "mobile" }),
@@ -112,6 +112,114 @@ async function fixture(desktopOpen = false, setup?: (options: SessionBrokerOptio
     async close() { await broker.close(); await eventLog.close(); },
   };
 }
+
+describe("broker remote execution regressions", () => {
+  it.each([true, false])("records only the first of four unchanged ownership waits (observer blocks=%s)", async blocked => {
+    const f = await fixture(true);
+    try {
+      f.observer.allowed = !blocked;
+      const canStart = vi.spyOn(f.observer, "canStartBridgeHost");
+      f.scan.mockResolvedValue([f.owner()]);
+      await f.submit("ownership-wait");
+      await f.internals.pump();
+      for (let i = 1; i < 4; i++) {
+        f.internals.clearTakeoverRetry(f.sessionId);
+        await f.internals.pump();
+      }
+      expect(f.eventLog.replay().filter(event => event.sessionId === f.sessionId && event.type === "session.ownership" && event.data.ownership === "DESKTOP_OBSERVED")).toHaveLength(1);
+      expect(canStart).toHaveBeenCalledTimes(4);
+      if (!blocked) expect(f.scan).toHaveBeenCalledTimes(4);
+    } finally { await f.close(); }
+  });
+
+  it.each(["main-turn", "question", "subagent", "shell"] as const)("keeps remote steer queued without signalling unfinished Desktop %s", async busy => {
+    const f = await fixture(true);
+    try {
+      f.scan.mockResolvedValue([f.owner()]);
+      if (busy === "main-turn" || busy === "question") {
+        await appendFile(f.transcriptPath, `${JSON.stringify({ type: "user", uuid: "next-task", parentUuid: "desktop-finished", sessionId: f.sessionId, message: { role: "user", content: "Continue" } })}\n`);
+        f.observer.busy = true;
+        if (busy === "question") await appendFile(f.transcriptPath, `${JSON.stringify({ type: "assistant", uuid: "question", parentUuid: "next-task", sessionId: f.sessionId, message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [{ question: "Continue?", options: [] }] } }] } })}\n`);
+      } else if (busy === "subagent") {
+        vi.spyOn(f.observer, "runningSubagents").mockReturnValue({ count: 1, lastUpdatedAt: Date.now() });
+      } else {
+        await appendFile(f.transcriptPath, `${JSON.stringify({ type: "assistant", uuid: "shell-start", parentUuid: "desktop-finished", sessionId: f.sessionId, message: { role: "assistant", content: [{ type: "tool_use", id: "shell-use", name: "Bash", input: { command: "long work", run_in_background: true } }] } })}\n${JSON.stringify({ type: "user", uuid: "shell-result", parentUuid: "shell-start", sessionId: f.sessionId, toolUseResult: { backgroundTaskId: "shell-1" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "shell-use", content: "Command running in background with ID: shell-1" }] } })}\n${JSON.stringify({ type: "assistant", uuid: "shell-boundary", parentUuid: "shell-result", sessionId: f.sessionId, message: { role: "assistant", content: "Waiting", stop_reason: "end_turn" } })}\n`);
+      }
+      const transcript = await parseClaudeTranscriptSnapshot(f.transcriptPath);
+      expect(transcript.available).toBe(true);
+      if (busy === "question") { expect(transcript.waitingForUserInput).toBe(true); expect(transcript.atTurnBoundary).toBe(false); }
+      if (busy === "shell") { expect(transcript.atTurnBoundary).toBe(true); expect(transcript.pendingBackgroundShellTaskIds).toEqual(["shell-1"]); }
+      const remote = await f.broker.steerTurn({ sessionId: f.sessionId, requestId: busy, idempotencyKey: busy, text: "Remote after work", origin: "mobile", bridgeExecutionRequested: true });
+      expect((await f.broker.steerQueuedTurn(f.sessionId, remote.commandId)).state).toBe("queued");
+      await f.internals.pump();
+      expect(remote.state).toBe("queued");
+      expect(f.broker.session(f.sessionId)?.desktopHandoff?.reason).toBe("bridge-execution-requested");
+      expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === "SIGINT")).toHaveLength(0);
+      expect(f.hosts).toHaveLength(0);
+    } finally { await f.close(); }
+  });
+
+  it("does not use ordinary B as authorization after remote A is cancelled in the final transcript check", async () => {
+    const f = await fixture(true);
+    const entered = deferred<void>(), release = deferred<void>();
+    const parse = history.parseClaudeTranscriptSnapshot;
+    let reads = 0;
+    vi.spyOn(history, "parseClaudeTranscriptSnapshot").mockImplementation(async (...args) => {
+      if (++reads === 2) { entered.resolve(); await release.promise; }
+      return parse(...args);
+    });
+    f.scan.mockResolvedValue([f.owner()]);
+    let dispatch: Promise<void> | undefined;
+    try {
+      const a = await f.broker.startTurn({ sessionId: f.sessionId, requestId: "authorized-a", idempotencyKey: "authorized-a", text: "A", origin: "mobile", bridgeExecutionRequested: true });
+      dispatch = f.internals.pump();
+      // The baseline ignores the flag, so enter via its existing public takeover path.
+      const takeover = f.broker.takeoverDesktop(f.sessionId, a.commandId).catch(() => undefined);
+      await entered.promise;
+      await f.submit("ordinary-b");
+      const cancelling = f.broker.interruptTurn(f.sessionId, a.commandId);
+      await vi.waitFor(() => expect(f.broker.session(f.sessionId)?.pendingCommandIds).not.toContain(a.commandId));
+      release.resolve();
+      await cancelling;
+      await takeover;
+      await dispatch;
+      expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === "SIGINT")).toHaveLength(0);
+      expect(JSON.parse(await readFile(f.options.queuePath, "utf8")).pending).toEqual([expect.objectContaining({ idempotencyKey: "ordinary-b", state: "queued" })]);
+    } finally { release.resolve(); await dispatch; await f.close(); }
+  }, 10_000);
+
+  it.each(["unknown-owner", "exit-timeout"] as const)("preserves and blocks remote input after %s until explicit reauthorization", async failure => {
+    const f = await fixture(true);
+    let restored: SessionBroker | undefined;
+    try {
+      f.scan.mockResolvedValue([{ ...f.owner(), source: failure === "unknown-owner" ? "registration" : "process" }]);
+      const receipt = await f.broker.startTurn({ sessionId: f.sessionId, requestId: failure, idempotencyKey: failure, text: "Retain this", origin: "mobile", bridgeExecutionRequested: true });
+      await f.internals.pump();
+      for (let i = 0; i < 2; i++) {
+        f.observer.publish();
+        f.internals.clearTakeoverRetry(f.sessionId);
+        await f.internals.pump();
+      }
+      expect(JSON.parse(await readFile(f.options.queuePath, "utf8")).pending).toEqual([expect.objectContaining({ commandId: receipt.commandId, state: "queued", recoveryBlocked: true })]);
+      expect(f.eventLog.replay().some(event => event.data.commandId === receipt.commandId && /无法确认|尚未退出/.test(String(event.data.error)))).toBe(true);
+      await f.broker.close();
+      restored = new SessionBroker(f.options);
+      await restored.initialize();
+      expect((await restored.startTurn({ sessionId: f.sessionId, requestId: failure, idempotencyKey: failure, text: "Retain this", origin: "mobile", bridgeExecutionRequested: true })).state).toBe("queued");
+      expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === "SIGINT")).toHaveLength(failure === "exit-timeout" ? 1 : 0);
+      expect(f.hosts).toHaveLength(0);
+      let alive = true;
+      vi.mocked(process.kill).mockImplementation((_pid, signal) => {
+        if (signal === "SIGINT") { alive = false; f.observed.desktopProcessAlive = false; f.observer.allowed = true; return true; }
+        if (!alive) throw Object.assign(new Error("Exited"), { code: "ESRCH" });
+        return true;
+      });
+      f.scan.mockImplementation(async () => alive ? [f.owner()] : []);
+      await restored.takeoverDesktop(f.sessionId, receipt.commandId);
+      await vi.waitFor(() => expect(f.hosts[0]?.send).toHaveBeenCalledOnce(), { timeout: 4_000 });
+    } finally { await restored?.close(); await f.close(); }
+  }, 15_000);
+});
 
 describe("broker review race regressions", () => {
   it("#2 P1 refuses takeover if Desktop starts a main turn while the owner scan is awaiting", async () => {

@@ -62,6 +62,32 @@ it("[edge] accepts explicit empty rule arrays to clear the session override", as
   expect(configurePermissions).toHaveBeenCalledExactlyOnceWith("fork", "default", { allow: [], ask: [], deny: [] });
 });
 
+it.each(["turn.start", "turn.steer"])("forwards the confirmed remote choice through %s with the original identity", async method => {
+  const startTurn = vi.fn(async () => ({ commandId: "command", state: "queued" }));
+  const steerTurn = vi.fn(async () => ({ commandId: "command", state: "queued" }));
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { startTurn, steerTurn }, routesToExternalRuntime: () => false });
+  await controller.handleRequest({ kind: "request", method, requestId: "remote", idempotencyKey: "key",
+    params: { sessionId: "native", text: "Continue", bridgeExecutionRequested: true } }, "mobile", "phone");
+  expect(method === "turn.start" ? startTurn : steerTurn).toHaveBeenCalledExactlyOnceWith({ sessionId: "native", text: "Continue", attachments: [],
+    requestId: "remote", idempotencyKey: "key", origin: "mobile", sourceDeviceId: "phone", bridgeExecutionRequested: true });
+});
+
+it.each(["true", null, 1])("rejects invalid remote choice %j before creating a turn", async bridgeExecutionRequested => {
+  const startTurn = vi.fn();
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { startTurn }, routesToExternalRuntime: () => false });
+  await expect(controller.handleRequest({ kind: "request", method: "turn.start", requestId: "invalid", idempotencyKey: "key",
+    params: { sessionId: "native", text: "Continue", bridgeExecutionRequested } }, "mobile")).rejects.toThrow("Invalid bridgeExecutionRequested");
+  expect(startTurn).not.toHaveBeenCalled();
+});
+
+it("authorizes the existing queued command without submitting another prompt", async () => {
+  const takeoverDesktop = vi.fn(async () => ({ sessionId: "native" }));
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { takeoverDesktop }, routesToExternalRuntime: () => false });
+  await controller.handleRequest({ kind: "request", method: "session.takeover_desktop", requestId: "takeover", idempotencyKey: "key",
+    params: { sessionId: "native", commandId: "original-command" } }, "mobile");
+  expect(takeoverDesktop).toHaveBeenCalledExactlyOnceWith("native", "original-command");
+});
+
 it("validates SDK permission rules before modifying the runtime", async () => {
   const configurePermissions = vi.fn(async () => ({ mode: "acceptEdits" }));
   const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { configurePermissions }, routesToExternalRuntime: () => false });

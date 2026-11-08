@@ -203,7 +203,7 @@ function DesktopSessions({
   onRemoveAnthropicApiKey(): Promise<void>;
   onRefreshSnapshot(): Promise<void>;
   onReturnToDesktop(sessionId: string): Promise<void>;
-  onTakeoverDesktop(sessionId: string): Promise<void>;
+  onTakeoverDesktop(sessionId: string, commandId?: string): Promise<void>;
 }) {
   const openMedia = useMediaPreview();
   const [selectedId, setSelectedId] = useState(snapshot.sessions[0]?.sessionId);
@@ -2007,10 +2007,10 @@ export function DesktopDashboard({ themeControl, agentVisibility }: { themeContr
                 sessions: current.sessions.map((session) => session.sessionId === result.session.sessionId ? result.session : session),
               } : current);
             }}
-            onTakeoverDesktop={async (sessionId) => {
+            onTakeoverDesktop={async (sessionId, commandId) => {
               const result = unwrap<{ session: BridgeSessionInfo }>(await api.request({
                 method: "session.takeover_desktop",
-                params: { sessionId },
+                params: { sessionId, ...(commandId ? { commandId } : {}) },
               }));
               setSnapshot((current) => current ? {
                 ...current,

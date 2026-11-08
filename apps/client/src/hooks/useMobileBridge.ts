@@ -141,6 +141,7 @@ export interface LocalTurn {
   turnId?: string;
   messageId?: string;
   lastEventSeq?: number;
+  bridgeExecutionRequested?: boolean;
   error?: string;
 }
 
@@ -1017,6 +1018,7 @@ async function readStoredHostState(
       requestId: message.payload.requestId,
       idempotencyKey: message.payload.idempotencyKey,
       sessionId: params.sessionId,
+      ...(params.bridgeExecutionRequested === true ? { bridgeExecutionRequested: true } : {}),
       text: typeof params.text === "string" ? params.text : "",
       attachments: Array.isArray(params.attachments)
         ? params.attachments.flatMap((attachment) => {
@@ -1164,6 +1166,7 @@ export function useMobileBridge() {
   const desktopHomeRef = useRef<string | undefined>(undefined);
   const linkGateRef = useRef<() => boolean>(() => true);
   const sendAttemptedAtRef = useRef<number | undefined>(undefined);
+  const remoteExecutionCapabilityRef = useRef<boolean | undefined>(undefined);
 
   const updateHostCache = useCallback((
     roomId: string,
@@ -1339,11 +1342,18 @@ export function useMobileBridge() {
             sessionId: String(params.sessionId ?? ""),
             text: typeof params.text === "string" ? params.text : "",
             attachments,
+            ...(params.bridgeExecutionRequested === true ? { bridgeExecutionRequested: true } : {}),
             createdAt: envelope.sentAt,
             delivery: "local-saved",
           },
         ],
       }));
+    }
+    if (params.bridgeExecutionRequested === true && remoteExecutionCapabilityRef.current !== true) {
+      if (remoteExecutionCapabilityRef.current === false) {
+        setState(current => ({ ...current, error: "请更新电脑端 Bridge；已确认的远程消息仍保存在手机待发箱。" }));
+      }
+      return undefined;
     }
     if (!socket || socket.state !== "connected") {
       return undefined;
@@ -1663,6 +1673,7 @@ export function useMobileBridge() {
         })
       : relay;
     socketRef.current = socket;
+    remoteExecutionCapabilityRef.current = undefined;
     let bootstrapPending = bootstrap;
     let authenticatedDesktop = false;
     let authenticationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1704,6 +1715,12 @@ export function useMobileBridge() {
             const decrypted = await crypto.decrypt(envelope);
             if (decrypted.payload.kind === "request") {
               envelopeRequestsRef.current.set(envelope.id, decrypted.payload.requestId);
+              if (decrypted.payload.params.bridgeExecutionRequested === true && remoteExecutionCapabilityRef.current !== true) {
+                if (remoteExecutionCapabilityRef.current === false) {
+                  setState(current => ({ ...current, error: "请更新电脑端 Bridge；已确认的远程消息仍保存在手机待发箱。" }));
+                }
+                break;
+              }
             }
             sendAttemptedAtRef.current = Date.now();
             await socket.sendEnvelope(envelope);
@@ -1768,7 +1785,10 @@ export function useMobileBridge() {
         home: desktopHomeRef.current,
         linkHasDesktop,
       });
-      if (connection !== "connected") linkHasDesktop = false;
+      if (connection !== "connected") {
+        linkHasDesktop = false;
+        remoteExecutionCapabilityRef.current = undefined;
+      }
       setState((current) => ({
         ...current,
         connection,
@@ -2034,6 +2054,13 @@ export function useMobileBridge() {
           !stateRef.current.localTurns.some((turn) => turn.requestId === responseRequestId)
         ) {
           return;
+        }
+      }
+      if (message.payload.kind === "response" && message.payload.ok && pendingResponsesRef.current.has(message.payload.requestId)) {
+        const snapshot = (message.payload.result as { snapshot?: BridgeHostSnapshot } | undefined)?.snapshot;
+        if (snapshot) {
+          remoteExecutionCapabilityRef.current = snapshot.host.capabilities.includes("session.remote-execution.v1");
+          void flushOutbox();
         }
       }
       handlePayload(message.payload, encrypted, crypto);
@@ -2783,12 +2810,27 @@ export function useMobileBridge() {
     text: string,
     attachments: BridgeAttachment[] = [],
     steer = false,
+    bridgeExecutionRequested = false,
   ) => {
+    if (bridgeExecutionRequested) {
+      if (!stateRef.current.snapshot?.host.capabilities?.includes("session.remote-execution.v1")) {
+        throw new Error("请更新电脑端 Bridge 后使用手机远程执行。");
+      }
+      const crypto = cryptoRef.current!;
+      for (const envelope of await bridgeVault.listOutbox(crypto.identity.roomId)) {
+        const message = await crypto.decrypt(envelope);
+        if (message.payload.kind === "request" && (message.payload.method === "turn.start" || message.payload.method === "turn.steer") &&
+          message.payload.params.sessionId === sessionId && message.payload.params.bridgeExecutionRequested !== true) {
+          throw new Error("请先同步此会话的旧待发消息，再确认远程执行；草稿已保留。");
+        }
+      }
+    }
     const requestId = randomId();
-    await sendRequest(steer ? "turn.steer" : "turn.start", {
+    await sendRequest(steer && !bridgeExecutionRequested ? "turn.steer" : "turn.start", {
       sessionId,
       text,
       attachments,
+      ...(bridgeExecutionRequested ? { bridgeExecutionRequested: true } : {}),
     }, { allowOffline: true, requestId, idempotencyKey: randomId() });
     return { requestId };
   }, [sendRequest]);
@@ -2932,8 +2974,11 @@ export function useMobileBridge() {
     setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
   }, [sendRequest]);
 
-  const takeoverDesktop = useCallback(async (sessionId: string): Promise<void> => {
-    const response = await sendRequest("session.takeover_desktop", { sessionId }, {
+  const takeoverDesktop = useCallback(async (sessionId: string, commandId?: string): Promise<void> => {
+    if (commandId && remoteExecutionCapabilityRef.current !== true) {
+      throw new Error("请先同步状态，确认电脑端 Bridge 支持远程执行。");
+    }
+    const response = await sendRequest("session.takeover_desktop", { sessionId, ...(commandId ? { commandId } : {}) }, {
       allowOffline: false, wait: true,
     });
     if (!response?.ok) throw new Error(response?.error?.message ?? "接管 Desktop 会话失败");

@@ -16,7 +16,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Preview tools may run --serve without launching a browser. Only this debug
 // mode accepts a fixed port; the automated suite always binds random ports.
 const serve = process.argv.includes("--serve");
-const nativePreview = serve && process.argv.includes("--native-permissions-preview");
+const remotePreview = serve && process.argv.includes("--remote-execution-preview");
+const nativePreview = serve && !remotePreview && process.argv.includes("--native-permissions-preview");
 let previewHost;
 let previewApproval;
 const port = serve ? Number(process.env.BRIDGE_E2E_PORT ?? 0) : 0;
@@ -24,7 +25,7 @@ assert.ok(Number.isInteger(port) && port >= 0 && port <= 65535, "BRIDGE_E2E_PORT
 const artifactRoot = resolve(root, "artifacts/browser-e2e");
 const runDir = resolve(artifactRoot, new Date().toISOString().replaceAll(":", "-"));
 const sessionId = "browser-e2e-session";
-const originalTitle = "隔离回归会话";
+const originalTitle = remotePreview ? "远程执行交接预览" : "隔离回归会话";
 const renamedTitle = "隔离回归新名称";
 const userText = "只发送一次的隔离测试消息";
 const recoveredText = "断线期间积累的固定回复";
@@ -70,9 +71,10 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
     runtimeId: "claude-desktop",
     title: originalTitle,
     source: "desktop",
-    transport: native ? "claude-desktop-managed" : "bridge-host",
-    ownership: native ? "DESKTOP_OBSERVED" : "BRIDGE_IDLE",
-    turnState: queued ? "queued" : "idle",
+    transport: native || remotePreview ? "claude-desktop-managed" : "bridge-host",
+    ownership: native || remotePreview ? "DESKTOP_OBSERVED" : "BRIDGE_IDLE",
+    turnState: remotePreview ? "running" : queued ? "queued" : "idle",
+    ...(remotePreview ? { activeTurnId: "browser-e2e-native-active", currentSummary: "合成 Desktop 原工作尚未结束" } : {}),
     lastActivityAt: now - 7_200_000,
     pendingCount: queued ? 1 : 0,
     pendingCommandIds: queued ? ["pre-existing-command"] : [],
@@ -82,6 +84,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
     allowedActions: {
       canSend: true, canSteer: true, canInterrupt: true,
       canConfigure: false, canSwitchProvider: false, canContinueOfficial: false,
+      ...(remotePreview ? { canRequestBridgeExecution: true } : {}),
     },
   };
   const snapshot = {
@@ -93,20 +96,20 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
       online: true,
       lastSeenAt: now,
       version: "1.1.1",
-      capabilities: ["session.rename.v1", "runtime.adapter.v1", ...(native ? ["session.commands.v1"] : [])],
+      capabilities: ["session.rename.v1", "runtime.adapter.v1", ...(native ? ["session.commands.v1"] : []), ...(remotePreview ? ["session.remote-execution.v1"] : [])],
       defaultPermissionMode: "standard",
     },
     projects: [{
       projectId: session.projectId, name: session.projectName, cwd: session.cwd,
-      runtimeId: "claude-desktop", sessionCount: 2, runningCount: 0,
+      runtimeId: "claude-desktop", sessionCount: remotePreview ? 1 : 2, runningCount: remotePreview ? 1 : 0,
       pendingCount: session.pendingCount, lastActivityAt: now - 3_600_000,
     }],
     // A newer neighbour makes accidental activity/order changes observable.
     sessions: [
-      {
+      ...(remotePreview ? [] : [{
         ...session, sessionId: "browser-e2e-neighbour", title: "较新的相邻会话",
         lastActivityAt: now - 3_600_000, turnState: "idle", pendingCount: 0, pendingCommandIds: [],
-      },
+      }]),
       session,
       ...(nativePreview ? [
         {
@@ -140,11 +143,11 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
       deviceId: pairing.deviceId, name: "隔离浏览器", platform: "web",
       online: true, createdAt: now, lastSeenAt: now,
     }],
-    runtime: { state: "ready", detail: "固定响应宿主", activeTurns: 0, maxParallelTurns: 1 },
+    runtime: { state: "ready", detail: "固定响应宿主", activeTurns: remotePreview ? 1 : 0, maxParallelTurns: 1 },
     runtimes: [{
       id: "claude-desktop", name: "Claude Desktop", state: "ready", detail: "隔离宿主",
-      capabilities: ["session.list", "session.history", "turn.start", "permission.resolve", ...(native ? ["attachment.image"] : [])],
-      sessionIsolation: "independent", sessionCount: 2, updatedAt: now,
+      capabilities: ["session.list", "session.history", "turn.start", "permission.resolve", ...(native || remotePreview ? ["attachment.image"] : [])],
+      sessionIsolation: "independent", sessionCount: remotePreview ? 1 : 2, updatedAt: now,
     }],
     providers: [{
       id: "provider:e2e", kind: "claude-3p", name: "固定响应", status: "ready",
@@ -157,6 +160,11 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
   const history = [];
   const requests = [];
   const resumeBatches = [];
+  // This producer models protocol transitions only; it never owns a native task.
+  const remote = remotePreview ? {
+    phase: "native-running", nativeWorkActive: true, nativeWorkFinishes: 0, finishCalls: 0,
+    commands: new Map(),
+  } : undefined;
   let renameAttempts = 0;
   let turnRequest;
   const socket = new BridgeSocket({ crypto, role: "desktop", createRoom: true, reconnect: false });
@@ -221,6 +229,108 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
         delivery: "completed", pendingCount: 0, pendingCommandIds: [],
       }, { turnId: "browser-e2e-turn" });
     },
+    remoteState() {
+      const commands = [...remote.commands.values()];
+      return {
+        mode: "synthetic-remote-execution", sessionId, title: session.title,
+        phase: remote.phase, nativeWorkActive: remote.nativeWorkActive,
+        nativeWorkFinishes: remote.nativeWorkFinishes, finishCalls: remote.finishCalls,
+        // Remote requests have no Desktop inbox branch in this fixture.
+        nativeInboxSubmissions: 0,
+        turnStartCount: requests.filter(request => request.method === "turn.start").length,
+        snapshotGetCount: requests.filter(request => request.method === "snapshot.get").length,
+        uniqueCommandCount: commands.length,
+        duplicateRequestCount: commands.reduce((sum, command) => sum + command.requestCount - 1, 0),
+        processedCount: commands.reduce((sum, command) => sum + command.processingCount, 0),
+        completedCount: commands.reduce((sum, command) => sum + command.completionCount, 0),
+        commands: commands.map(({ commandId, state, requestCount, processingCount, completionCount, request }) => ({
+          commandId, state, requestCount, processingCount, completionCount,
+          requestId: request.requestId, idempotencyKey: request.idempotencyKey,
+          text: request.params.text, bridgeExecutionRequested: request.params.bridgeExecutionRequested,
+          attachmentCount: request.params.attachments?.length ?? 0,
+        })),
+        requests: requests.map(({ method, requestId, idempotencyKey, params }) => ({
+          method, requestId, idempotencyKey,
+          params: {
+            sessionId: params.sessionId, text: params.text,
+            bridgeExecutionRequested: params.bridgeExecutionRequested,
+            attachmentCount: params.attachments?.length ?? 0,
+          },
+        })),
+        session: structuredClone(session), defaultPermissionMode: snapshot.host.defaultPermissionMode,
+        history: history.map(({ id, role, text, turnId, attachments }) => ({ id, role, text, turnId, attachmentCount: attachments?.length ?? 0 })),
+        events: events.map(({ eventId, type, data }) => ({ eventId, type, commandId: data.commandId, requestId: data.requestId })),
+        errors: [...errors],
+      };
+    },
+    async finishRemoteWork() {
+      remote.finishCalls += 1;
+      if (remote.nativeWorkActive) {
+        remote.nativeWorkActive = false;
+        remote.nativeWorkFinishes += 1;
+        remote.phase = "bridge-idle";
+        Object.assign(session, {
+          transport: "bridge-host", ownership: "BRIDGE_IDLE",
+          turnState: session.pendingCount > 0 ? "queued" : "idle",
+          desktopHandoff: { state: "bridge", canReturn: false },
+        });
+        session.allowedActions.canRequestBridgeExecution = false;
+        delete session.activeTurnId;
+        delete session.currentSummary;
+        snapshot.runtime.activeTurns = 0;
+        snapshot.projects[0].runningCount = 0;
+        await host.send({ kind: "snapshot", snapshot });
+      }
+      for (const command of remote.commands.values()) await host.completeRemoteCommand(command);
+    },
+    async completeRemoteCommand(command) {
+      if (command.state !== "queued") return;
+      command.state = "running";
+      command.processingCount += 1;
+      remote.phase = "bridge-running";
+      const { request, commandId } = command;
+      const turnId = `${commandId}-turn`;
+      Object.assign(session, {
+        turnState: "running", ownership: "BRIDGE_RUNNING", activeTurnId: turnId,
+        pendingCommandIds: session.pendingCommandIds.filter(id => id !== commandId),
+      });
+      session.pendingCount = session.pendingCommandIds.length;
+      snapshot.projects[0].pendingCount = session.pendingCount;
+      snapshot.projects[0].runningCount = 1;
+      snapshot.runtime.activeTurns = 1;
+      const userItem = {
+        id: `${commandId}-user`, sessionId, turnId, role: "user", text: request.params.text,
+        attachments: request.params.attachments ?? [], createdAt: Date.now(), origin: "mobile",
+      };
+      history.push(userItem);
+      await host.emit("user.message.accepted", {
+        commandId, requestId: request.requestId, text: userItem.text,
+        attachments: userItem.attachments, delivery: "session-received",
+      }, { turnId, itemId: userItem.id });
+      await host.emit("turn.started", {
+        commandId, requestId: request.requestId, delivery: "running",
+        pendingCount: session.pendingCount, pendingCommandIds: session.pendingCommandIds,
+      }, { turnId });
+      await host.send({ kind: "snapshot", snapshot });
+      const assistantItem = {
+        id: `${commandId}-assistant`, sessionId, turnId, role: "assistant",
+        text: `合成 Bridge 已完成：${userItem.text}`, createdAt: Date.now(), origin: "claude-host",
+      };
+      history.push(assistantItem);
+      await host.emit("assistant.completed", { text: assistantItem.text }, { turnId, itemId: assistantItem.id });
+      command.state = "completed";
+      command.completionCount += 1;
+      remote.phase = "bridge-idle";
+      Object.assign(session, { turnState: session.pendingCount > 0 ? "queued" : "idle", ownership: "BRIDGE_IDLE" });
+      delete session.activeTurnId;
+      snapshot.projects[0].runningCount = 0;
+      snapshot.runtime.activeTurns = 0;
+      await host.emit("turn.completed", {
+        commandId, requestId: request.requestId, delivery: "completed",
+        pendingCount: session.pendingCount, pendingCommandIds: session.pendingCommandIds,
+      }, { turnId });
+      await host.send({ kind: "snapshot", snapshot });
+    },
     close() {
       socket.close();
       hosts.delete(host);
@@ -273,6 +383,8 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
       requests.push(structuredClone(request));
       let result;
       let error;
+      let remoteCommand;
+      let remoteCommandCreated = false;
       switch (request.method) {
         case "snapshot.get": result = { snapshot }; break;
         case "events.resume": {
@@ -335,8 +447,34 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
           break;
         case "turn.start":
           assert.equal(request.params.sessionId, sessionId);
-          assert.equal(request.params.text, userText);
           assert.ok(request.idempotencyKey, "turn.start requires an idempotency key");
+          if (remotePreview) {
+            remoteCommand = remote.commands.get(request.idempotencyKey);
+            if (!remoteCommand) {
+              if (remote.nativeWorkActive && request.params.bridgeExecutionRequested !== true) {
+                error = { code: "E2E_REMOTE_AUTHORIZATION_REQUIRED", message: "合成原生会话需要先确认由 Bridge 继续执行" };
+                break;
+              }
+              remoteCommand = {
+                commandId: `browser-e2e-remote-command-${remote.commands.size + 1}`,
+                request: structuredClone(request), state: "queued", requestCount: 0, processingCount: 0, completionCount: 0,
+              };
+              remote.commands.set(request.idempotencyKey, remoteCommand);
+              remoteCommandCreated = true;
+              session.pendingCommandIds.push(remoteCommand.commandId);
+              session.pendingCount = session.pendingCommandIds.length;
+              session.turnState = "queued";
+              snapshot.projects[0].pendingCount = session.pendingCount;
+              if (remote.nativeWorkActive) {
+                remote.phase = "waiting-handoff";
+                session.desktopHandoff = { state: "close-desktop", canReturn: false, reason: "bridge-execution-requested" };
+              }
+            }
+            remoteCommand.requestCount += 1;
+            result = { commandId: remoteCommand.commandId, state: remoteCommand.state };
+            break;
+          }
+          assert.equal(request.params.text, userText);
           turnRequest = request;
           Object.assign(session, {
             turnState: "queued", pendingCount: 1, pendingCommandIds: ["browser-e2e-command"],
@@ -360,7 +498,17 @@ async function createMockHost(queued, failFirstRename, errors, native = false) {
         ...(error ? { error } : { result }),
       });
       socket.ack([encrypted.id]);
-      if (request.method === "turn.start") {
+      if (request.method === "turn.start" && remotePreview && !error) {
+        if (remoteCommandCreated) {
+          await host.emit("turn.queued", {
+            commandId: remoteCommand.commandId, requestId: request.requestId,
+            delivery: "host-received", text: request.params.text, attachments: request.params.attachments ?? [],
+            pendingCount: session.pendingCount, pendingCommandIds: session.pendingCommandIds,
+          }, { itemId: remoteCommand.commandId });
+        }
+        await host.send({ kind: "snapshot", snapshot });
+        if (!remote.nativeWorkActive) await host.completeRemoteCommand(remoteCommand);
+      } else if (request.method === "turn.start" && !remotePreview) {
         await host.emit("turn.queued", {
           commandId: "browser-e2e-command", requestId: request.requestId,
           delivery: "host-received", text: userText, pendingCount: 1,
@@ -764,28 +912,39 @@ try {
     plugins: [react(), {
       name: "synthetic-native-preview",
       configureServer(server) {
-        if (!nativePreview) return;
+        if (!nativePreview && !remotePreview) return;
         server.middlewares.use("/__bridge_test", (request, response) => {
           void (async () => {
             const url = new URL(request.url, "http://127.0.0.1");
             let result;
             if (request.method === "GET" && url.pathname === "/pairing") {
               result = { url: buildPairingUrl(baseUrl, previewHost.pairing) };
-            } else if (request.method === "POST" && url.pathname === "/request") {
+            } else if (remotePreview && request.method === "GET" && url.pathname === "/remote/state") {
+              result = previewHost.remoteState();
+            } else if (remotePreview && request.method === "POST" && url.pathname === "/remote/finish") {
+              await previewHost.finishRemoteWork();
+              result = previewHost.remoteState();
+            } else if (remotePreview && request.method === "POST" && url.pathname === "/remote/disconnect") {
+              const peers = [...relayPeers].filter(([, hello]) => hello.roomId === previewHost.pairing.roomId &&
+                hello.role === "mobile" && hello.deviceId === previewHost.pairing.deviceId);
+              const snapshotGetCountBefore = previewHost.requests.filter(request => request.method === "snapshot.get").length;
+              for (const [socket] of peers) socket.close(1012, "synthetic remote reconnect");
+              result = { disconnected: peers.length, snapshotGetCountBefore };
+            } else if (nativePreview && request.method === "POST" && url.pathname === "/request") {
               previewApproval = await previewHost.nativeApproval.open("Bash", { command: "synthetic-native-mode --never-executed" });
               previewHost.nativeResponse = undefined;
               void previewApproval.response.then(reply => { previewHost.nativeResponse = reply; })
                 .catch(error => infrastructureErrors.push(error.stack));
               result = { requestId: previewApproval.request.requestId };
-            } else if (request.method === "POST" && url.pathname === "/observe") {
+            } else if (nativePreview && request.method === "POST" && url.pathname === "/observe") {
               await previewHost.nativeApproval.observe(previewApproval.request, url.searchParams.get("mode") ?? "bypassPermissions");
               result = { observed: true };
-            } else if (request.method === "POST" && url.pathname === "/hold") {
+            } else if (nativePreview && request.method === "POST" && url.pathname === "/hold") {
               previewHost.session.turnState = "waiting";
               previewHost.session.desktopHandoff = { state: "desktop-inbox", inputStatus: "held", canReturn: false };
               await previewHost.send({ kind: "snapshot", snapshot: previewHost.snapshot });
               result = { held: true };
-            } else if (request.method === "GET" && url.pathname === "/state") {
+            } else if (nativePreview && request.method === "GET" && url.pathname === "/state") {
               result = { modeChange: previewHost.nativeApproval.modeChange(), hookResponse: previewHost.nativeResponse,
                 requests: previewHost.requests.map(({ method, params }) => ({ method, nativeMode: params.nativeMode,
                   requestId: params.requestId, attachments: params.attachments?.length ?? 0 })), errors: infrastructureErrors };
@@ -795,6 +954,7 @@ try {
               return;
             }
             response.setHeader("Content-Type", "application/json");
+            if (remotePreview) response.setHeader("Cache-Control", "no-store");
             response.end(JSON.stringify(result));
           })().catch(error => { response.statusCode = 500; response.end(error.message); });
         });
@@ -812,7 +972,7 @@ try {
     },
   });
   await vite.listen();
-  baseUrl = `http://${nativePreview ? "localhost" : "127.0.0.1"}:${vite.httpServer.address().port}`;
+  baseUrl = `http://${nativePreview || remotePreview ? "localhost" : "127.0.0.1"}:${vite.httpServer.address().port}`;
   // Port 0 is allocated at listen time. Set Vite's public environment before
   // the first module is transformed, so probes and pairing use this origin.
   Object.assign(vite.config.env, {
@@ -825,9 +985,10 @@ try {
       process.once("SIGINT", finish);
       process.once("SIGTERM", finish);
     });
-    const host = await createMockHost(!nativePreview, false, infrastructureErrors, nativePreview);
+    const host = await createMockHost(!nativePreview && !remotePreview, false, infrastructureErrors, nativePreview);
     previewHost = host;
-    console.log(nativePreview ? `Synthetic native preview ready at ${baseUrl}` : buildPairingUrl(baseUrl, host.pairing));
+    console.log(remotePreview ? `Synthetic remote execution preview ready at ${baseUrl}`
+      : nativePreview ? `Synthetic native preview ready at ${baseUrl}` : buildPairingUrl(baseUrl, host.pairing));
     await stopped;
   } else {
     browser = await chromium.launch({

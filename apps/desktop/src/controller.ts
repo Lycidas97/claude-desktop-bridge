@@ -404,6 +404,7 @@ export class DesktopController extends EventEmitter {
           "session.visibility.v1",
           "session.commands.v1",
           "session.command.v1",
+          ...(process.platform === "darwin" ? ["session.remote-execution.v1" as const] : []),
           ...(this.conversationState ? ["session.rename.v1" as const] : []),          "subagent.stop.v1",
           "turn.queue.steer.v1",
           "plugin.magpie-quota.v1",
@@ -1410,7 +1411,10 @@ export class DesktopController extends EventEmitter {
     if (request.method === "session.takeover_desktop") {
       const sessionId = stringParam(params, "sessionId")!;
       if (this.routesToExternalRuntime(sessionId)) throw new Error("该会话不支持 Claude Desktop 交接");
-      return { session: await this.broker.takeoverDesktop(sessionId) };
+      const commandId = stringParam(params, "commandId", false);
+      return { session: commandId
+        ? await this.broker.takeoverDesktop(sessionId, commandId)
+        : await this.broker.takeoverDesktop(sessionId) };
     }
     if (request.method === "session.return_to_desktop") {
       const sessionId = stringParam(params, "sessionId")!;
@@ -1463,7 +1467,11 @@ export class DesktopController extends EventEmitter {
       const sessionId = stringParam(params, "sessionId")!;
       const text = stringParam(params, "text", false) ?? "";
       const attachments = attachmentsParam(params);
+      if (params.bridgeExecutionRequested !== undefined && typeof params.bridgeExecutionRequested !== "boolean") {
+        throw new Error("Invalid bridgeExecutionRequested");
+      }
       if (this.routesToExternalRuntime(sessionId)) {
+        if (params.bridgeExecutionRequested) throw new Error("该会话不支持 Claude Desktop 交接");
         if (!text.trim() && attachments.length === 0) throw new Error("Message cannot be empty");
         const turn = await this.runtimeSessions!.startTurn({
           sessionId,
@@ -1483,6 +1491,7 @@ export class DesktopController extends EventEmitter {
         text,
         attachments,
         origin,
+        ...(params.bridgeExecutionRequested === true ? { bridgeExecutionRequested: true } : {}),
         ...(sourceDeviceId ? { sourceDeviceId } : {}),
       };
       const turn = request.method === "turn.steer"

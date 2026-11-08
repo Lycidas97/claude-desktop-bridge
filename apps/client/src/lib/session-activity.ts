@@ -24,6 +24,7 @@ export interface SessionActivity {
 export function sessionQueueLabel(
   session: Pick<BridgeSessionInfo, "ownership" | "turnState" | "desktopHandoff">,
 ): string {
+  if (session.desktopHandoff?.reason === "bridge-execution-requested") return "等待当前工作结束后交接";
   if (session.desktopHandoff?.reason === "inbox-confirmation-expired") return "等待确认交接";
   if (session.desktopHandoff?.inputStatus === "held") return "等待电脑允许接收";
   if (session.desktopHandoff?.state === "close-desktop") return "等待关闭此 Desktop 会话";

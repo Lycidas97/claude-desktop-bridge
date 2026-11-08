@@ -12,6 +12,7 @@ import { dispatchMobileBack } from "../lib/mobile-back-navigation.js";
 import { SlashCommandInput } from "./SlashCommandInput.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
 import { SessionConfigurationDialog } from "./SessionConfigurationDialog.js";
+import { ConfirmationDialog } from "./ConfirmationDialog.js";
 
 const hooks = vi.hoisted(() => ({
   slots: [] as any[], index: 0, dirty: false,
@@ -185,6 +186,91 @@ describe("mobile custom command input", () => {
     expect(input().key).not.toBe(otherSessionKey);
     props = { ...props, snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: [] } } }; draw();
     expect(input().props.onLoad).toBeUndefined();
+  });
+});
+
+describe("remote execution confirmation", () => {
+  function nativeSession(capable = true) {
+    props = { ...props, snapshot: { ...props.snapshot!,
+      host: { ...props.snapshot!.host, capabilities: capable ? ["session.remote-execution.v1"] : [] },
+      sessions: props.snapshot!.sessions.map(session => session.sessionId !== "A" ? session : {
+        ...session, source: "desktop", ownership: "DESKTOP_OBSERVED",
+        allowedActions: { canSend: true, canSteer: true, canInterrupt: true, canConfigure: true,
+          canSwitchProvider: true, canContinueOfficial: false, canRequestBridgeExecution: true },
+      }),
+    } };
+    draw();
+  }
+  const confirmation = () => elements(tree).find(element => element.type === ConfirmationDialog && element.props.title === "由 Bridge 继续执行？");
+  async function submit() { form().props.onSubmit({ preventDefault() {} }); await settle(); }
+
+  it("asks before sending and retains text and images when cancelled", async () => {
+    nativeSession(); text("Continue remotely");
+    selectImage(); hooks.readers[0].finish(); await settle();
+    await submit();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(input().props.value).toBe("Continue remotely");
+    expect(imageNames()).toEqual(["移除 A.png"]);
+    expect(confirmation()?.props.open).toBe(true);
+    confirmation()!.props.onCancel(); draw();
+    expect(input().props.value).toBe("Continue remotely");
+    expect(imageNames()).toEqual(["移除 A.png"]);
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
+  it("confirms the original input as an ordinary remote turn", async () => {
+    nativeSession(); text("Continue remotely"); await submit();
+    expect(confirmation()?.props.open).toBe(true);
+    await confirmation()!.props.onConfirm(); await settle();
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Continue remotely", [], false, true);
+    expect(input().props.value).toBe("");
+  });
+
+  it("restores the original draft after a confirmed send fails", async () => {
+    nativeSession(); text("Preserve after failure");
+    props.onSendTurn = vi.fn().mockRejectedValue(new Error("Storage unavailable"));
+    await submit();
+    await confirmation()!.props.onConfirm(); await settle();
+    expect(input().props.value).toBe("Preserve after failure");
+    expect(elements(tree).some(element => element.props.children === "Storage unavailable")).toBe(true);
+  });
+
+  it("does not submit an old dialog after changing sessions", async () => {
+    nativeSession(); text("A draft"); await submit();
+    const dialog = confirmation(); expect(dialog?.props.open).toBe(true);
+    open("B");
+    await dialog!.props.onConfirm(); await settle();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    open("A"); expect(input().props.value).toBe("A draft");
+  });
+
+  it("keeps the draft on hosts without remote execution support", async () => {
+    nativeSession(false); text("Upgrade first"); await submit();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(confirmation()?.props.open).not.toBe(true);
+    expect(input().props.value).toBe("Upgrade first");
+    expect(elements(tree).some(element => typeof element.props.children === "string" && element.props.children.includes("更新电脑端 Bridge"))).toBe(true);
+  });
+
+  it("does not add a new send behind an unsettled Desktop inbox message", async () => {
+    nativeSession();
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId !== "A" ? session : {
+      ...session, desktopHandoff: { state: "desktop-inbox", canReturn: false, inputStatus: "held" }, turnState: "waiting",
+    }) } }; draw();
+    text("Keep the next draft"); await submit();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(input().props.value).toBe("Keep the next draft");
+    expect(confirmation()?.props.open).not.toBe(true);
+  });
+
+  it("reuses the confirmed execution choice while handoff is queued", async () => {
+    nativeSession();
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId !== "A" ? session : {
+      ...session, pendingCount: 1, desktopHandoff: { state: "close-desktop", canReturn: false, reason: "bridge-execution-requested" }, turnState: "queued",
+    }) } }; draw();
+    text("The next remote input"); await submit();
+    expect(confirmation()?.props.open).not.toBe(true);
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "The next remote input", [], false, true);
   });
 });
 
@@ -601,6 +687,23 @@ describe("native structured approvals", () => {
     card.props.onSelectOption("继续调查");
     await settle();
     expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "继续调查", [], false);
+    expect(props.onResolvePermission).not.toHaveBeenCalled();
+  });
+
+  it("confirms a non-blocking quick reply before handing the native session to Bridge", async () => {
+    nativePrompt({ kind: "wrap-up", blocked: false, ask: "Next?", actions: [{ label: "继续调查", message: "继续调查" }] });
+    props = { ...props, snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["session.remote-execution.v1"] },
+      sessions: props.snapshot!.sessions.map(session => session.sessionId !== "A" ? session : { ...session, allowedActions: {
+        canSend: true, canSteer: true, canInterrupt: true, canConfigure: true, canSwitchProvider: true, canContinueOfficial: false, canRequestBridgeExecution: true,
+      } }),
+    } }; draw();
+    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("继续调查");
+    await settle();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    const dialog = elements(tree).find(element => element.type === ConfirmationDialog && element.props.title === "由 Bridge 继续执行？")!;
+    expect(dialog.props.open).toBe(true);
+    await dialog.props.onConfirm(); await settle();
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "继续调查", [], false, true);
     expect(props.onResolvePermission).not.toHaveBeenCalled();
   });
 

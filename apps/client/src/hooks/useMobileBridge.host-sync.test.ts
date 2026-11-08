@@ -1,6 +1,8 @@
 import type { BridgeCrypto, BridgeEvent, BridgeHostSnapshot, BridgeRequest, BridgeResponse, BridgeSessionInfo, DecryptedEnvelope, EncryptedEnvelope } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useMobileBridge } from "./useMobileBridge.js";
+import { bridgeVault } from "../lib/vault.js";
+import { PROTOCOL_VERSION } from "@bridge/protocol";
 
 const harness = vi.hoisted(() => ({
   state: undefined as any,
@@ -71,7 +73,7 @@ function deferred<T>() {
 
 function snapshot(host: string): BridgeHostSnapshot {
   return {
-    host: { hostId: host, name: host, online: true },
+    host: { hostId: host, name: host, online: true, capabilities: [] },
     sessions: [], projects: [], permissions: [], latestSeq: 0,
   } as unknown as BridgeHostSnapshot;
 }
@@ -121,6 +123,7 @@ beforeEach(() => {
   harness.saveMessage.mockReset().mockResolvedValue(undefined);
   harness.listMessages.mockReset().mockResolvedValue([]);
   harness.addOutbox.mockReset().mockResolvedValue(undefined);
+  vi.mocked(bridgeVault.listOutbox).mockReset().mockResolvedValue([]);
   harness.respond = async (request) => {
     if (request.method === "events.resume") return { events: [], latestSeq: 0 };
     if (request.method === "snapshot.get") return { snapshot: snapshot("A") };
@@ -353,6 +356,69 @@ describe("durable sends during transport failure", () => {
     const bridge = useMobileBridge();
     harness.refs[3]!.current.sendEnvelope = vi.fn().mockRejectedValue(new Error("Socket is not connected"));
     await expect(bridge.interruptTurn("session-1")).rejects.toThrow("Socket is not connected");
+    expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+});
+
+describe("remote execution requests", () => {
+  it("persists the confirmed choice without native steering before fresh capability verification", async () => {
+    harness.state.snapshot.host.capabilities = ["session.remote-execution.v1"];
+    const bridge = useMobileBridge();
+    const send = vi.fn(); harness.refs[3]!.current.sendEnvelope = send;
+    const receipt = await bridge.sendTurn("session-1", "Continue remotely", [], true, true);
+    expect(harness.addOutbox).toHaveBeenCalledOnce();
+    const envelope = harness.addOutbox.mock.calls[0]![0];
+    expect(envelope.request).toMatchObject({ method: "turn.start", requestId: receipt.requestId,
+      params: { sessionId: "session-1", text: "Continue remotely", bridgeExecutionRequested: true } });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported hosts before creating an outbox message", async () => {
+    harness.state.snapshot.host.capabilities = [];
+    const bridge = useMobileBridge();
+    await expect(bridge.sendTurn("session-1", "Keep draft", [], false, true)).rejects.toThrow("更新电脑端 Bridge");
+    expect(harness.addOutbox).not.toHaveBeenCalled();
+  });
+});
+
+describe("remote execution outbox capability", () => {
+  it("keeps an authorized envelope on an older host and flushes only after a fresh supported response", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    harness.state.snapshot.host.capabilities = ["session.remote-execution.v1"];
+    const bridge = useMobileBridge();
+    await bridge.sendTurn("session-1", "Continue remotely", [], false, true);
+    const envelope = { ...harness.addOutbox.mock.calls[0]![0], version: PROTOCOL_VERSION, roomId: "A", from: "mobile", fromDeviceId: "phone-A", to: "desktop",
+      sentAt: Date.now(), expiresAt: Date.now() + 60_000 };
+    vi.mocked(bridgeVault.listOutbox).mockResolvedValue([envelope]);
+    harness.listMessages.mockResolvedValue([envelope]);
+    harness.refs[1]!.current.decrypt = async () => ({ header: { from: "mobile", sentAt: envelope.sentAt }, payload: envelope.request });
+    await bridge.retryConnection();
+    const send = vi.fn().mockResolvedValue(undefined);
+    harness.refs[3]!.current.sendEnvelope = send;
+    const fresh = (requestId: string, supported: boolean) => {
+      harness.refs[6]!.current.set(requestId, { resolve: vi.fn(), reject: vi.fn(), timer: setTimeout(() => {}, 10_000) });
+      const current = snapshot("A"); current.host.capabilities = supported ? ["session.remote-execution.v1"] : [];
+      harness.receive({ header: { sentAt: Date.now() }, payload: { kind: "response", requestId, ok: true, result: { snapshot: current } } } as DecryptedEnvelope,
+        { id: requestId } as EncryptedEnvelope);
+    };
+    fresh("old-capabilities", false);
+    await vi.waitFor(() => expect(harness.state.error).toContain("更新电脑端 Bridge"));
+    expect(send).not.toHaveBeenCalled();
+    expect(harness.state.localTurns[0]).toMatchObject({ text: "Continue remotely", delivery: "local-saved", bridgeExecutionRequested: true });
+    await Promise.resolve();
+    fresh("new-capabilities", true);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledExactlyOnceWith(envelope));
+    bridge.backToHosts();
+  });
+
+  it("does not create a new remote request ahead of an older ordinary outbox entry", async () => {
+    harness.state.snapshot.host.capabilities = ["session.remote-execution.v1"];
+    const bridge = useMobileBridge();
+    const old = { id: "older" } as EncryptedEnvelope;
+    vi.mocked(bridgeVault.listOutbox).mockResolvedValue([old]);
+    harness.refs[1]!.current.decrypt = async () => ({ payload: { kind: "request", method: "turn.start", params: { sessionId: "session-1", text: "Older input" } } });
+    await expect(bridge.sendTurn("session-1", "New draft", [], false, true)).rejects.toThrow("先同步此会话的旧待发消息");
     expect(harness.addOutbox).not.toHaveBeenCalled();
   });
 });

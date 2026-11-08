@@ -8,6 +8,30 @@ const session: BridgeSessionInfo = {
   source: "desktop", ownership: "DESKTOP_MANAGED_IDLE", transport: "claude-desktop-managed", turnState: "idle", lastActivityAt: 1, pendingCount: 1,
 };
 
+describe("requested Bridge execution", () => {
+  it("shows a failed handoff and offers an explicit retry for the same queued command", () => {
+    const html = renderToStaticMarkup(<DesktopHandoffNotice
+      session={{ ...session, pendingCommandIds: ["original-command"], desktopHandoff: {
+        state: "close-desktop", reason: "bridge-execution-requested", canReturn: false, error: "目标 Desktop 执行器尚未退出",
+      } }} online className="desktop-channel-banner" onTakeover={vi.fn()}
+    />);
+    expect(html).toContain("目标 Desktop 执行器尚未退出");
+    expect(html).not.toContain("当前工作结束后自动继续");
+    expect(html).toMatch(/<button\b[^>]*>重试交接<\/button>/);
+  });
+
+  it("shows the confirmed wait without offering another takeover", () => {
+    const html = renderToStaticMarkup(<DesktopHandoffNotice
+      session={{ ...session, desktopHandoff: { state: "close-desktop", reason: "bridge-execution-requested", canReturn: false } }}
+      online className="desktop-channel-banner" onTakeover={vi.fn()}
+    />);
+    expect(html).toContain("等待交接给 Bridge");
+    expect(html).toContain("无需到电脑允许接收");
+    expect(html).not.toContain("等待关闭");
+    expect(html).not.toContain(">接管此会话</button>");
+  });
+});
+
 describe("expired Desktop inbox confirmation", () => {
   it.each([0, 1])("explains that takeover is unavailable with %i queued messages without guessing why", pendingCount => {
     const onTakeover = vi.fn(async () => {});

@@ -1276,3 +1276,43 @@ describe("mobile slash submission edges", () => {
     expect(props.onSendTurn).toHaveBeenCalledWith("A", expect.stringContaining(".bridge-uploads/done.txt"), [expect.objectContaining({ name: "A.png" })], true);
   });
 });
+
+describe("older history auto-load", () => {
+  const item = (id: string) => ({ id, sessionId: "A", turnId: `t-${id}`, role: "user" as const, text: id, createdAt: 1, origin: "mobile" as const });
+  function stream() { return elements(tree).find((e) => e.type === "section" && e.props.className === "conversation-stream")!; }
+  function place(scrollTop: number) {
+    const element = stream();
+    (element.props.ref ?? (element as unknown as { ref: { current: unknown } }).ref).current = {
+      scrollTop, scrollHeight: 2_000, clientHeight: 600, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0, bottom: 0 }),
+    };
+  }
+  function history(ids: string[], status: "ready" | "loading" = "ready") {
+    props = { ...props, histories: { ...props.histories, A: { status, items: ids.map(item), hasMore: true } } };
+    draw();
+  }
+
+  it("keeps filling a short stream page by page without retrying a failed load", () => {
+    place(0);
+    history(["m3"]);
+    expect(props.onLoadOlderHistory).toHaveBeenCalledExactlyOnceWith("A");
+    history(["m3"], "loading");
+    history(["m3"]);
+    expect(props.onLoadOlderHistory).toHaveBeenCalledTimes(1);
+    history(["m2", "m3"]);
+    expect(props.onLoadOlderHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads on scroll only near the top and never while a page is loading", () => {
+    place(800);
+    history(["m3"]);
+    expect(props.onLoadOlderHistory).not.toHaveBeenCalled();
+    stream().props.onScroll();
+    expect(props.onLoadOlderHistory).not.toHaveBeenCalled();
+    place(120);
+    stream().props.onScroll();
+    expect(props.onLoadOlderHistory).toHaveBeenCalledExactlyOnceWith("A");
+    history(["m3"], "loading");
+    stream().props.onScroll();
+    expect(props.onLoadOlderHistory).toHaveBeenCalledTimes(1);
+  });
+});

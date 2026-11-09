@@ -104,6 +104,7 @@ interface StoredBridgeSession {
   parentDesktopSessionId?: string;
   forkBoundary?: ClaudeForkBoundary;
   forkLabel?: string;
+  sidechat?: boolean;
   hostModel?: string;
   hostEffort?: BridgeEffort;
   desktopRegistration?: StoredDesktopRegistration;
@@ -799,7 +800,7 @@ export class SessionBroker extends EventEmitter {
         ...(desktopSessionId ? { desktopSessionId } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(forkLabel ? { forkLabel } : {}),
-        ...(source?.sidechat ? { sidechat: true } : {}),
+        ...(source?.sidechat || bridge?.sidechat ? { sidechat: true } : {}),
         projectId: project?.projectId ?? projectIdForCwd(cwd),
         projectName: project?.projectName ?? (basename(cwd) || cwd),
         cwd,
@@ -959,6 +960,7 @@ export class SessionBroker extends EventEmitter {
       { name: "model", description: "选择会话模型", argumentHint: "[模型]", action: "model" },
       { name: "permissions", description: "管理当前会话权限", action: "permissions" },
       { name: "fork", description: "从当前历史创建分支", argumentHint: "[名称]", action: "fork" },
+      { name: "btw", description: "在侧聊中顺便问一句，不打断当前会话", argumentHint: "<问题>", action: "btw" },
       { name: "resume", description: "恢复已有会话", argumentHint: "[会话]", action: "resume" },
       { name: "rename", description: "重命名当前会话", argumentHint: "[名称]", action: "rename" },
     ];
@@ -1010,6 +1012,12 @@ export class SessionBroker extends EventEmitter {
       return { action: "permissions" };
     }
     if (command.action === "fork") return { action: "session", session: await this.forkSession(input.sessionId, argument || undefined) };
+    if (command.action === "btw") {
+      if (!argument) throw new Error("请在 /btw 后输入问题");
+      const sidechat = await this.forkSession(input.sessionId, argument, { sidechat: true });
+      await this.startTurn({ ...input, sessionId: sidechat.sessionId, text: argument, mode: "start" });
+      return { action: "session", session: sidechat };
+    }
     if (command.action === "resume") {
       const sessions = this.listSessions().filter(candidate => candidate.cwd === this.session(input.sessionId)!.cwd);
       if (!argument) return { action: "resume", sessions };
@@ -1399,7 +1407,7 @@ export class SessionBroker extends EventEmitter {
     return this.session(session.sessionId)!;
   }
 
-  async forkSession(sourceSessionId: string, title?: string): Promise<BridgeSessionInfo> {
+  async forkSession(sourceSessionId: string, title?: string, options: { sidechat?: boolean } = {}): Promise<BridgeSessionInfo> {
     await this.initialize();
     const source = this.session(sourceSessionId);
     if (!source) throw new Error("Session not found");
@@ -1477,7 +1485,7 @@ export class SessionBroker extends EventEmitter {
       parentSessionId,
       parentDesktopSessionId,
       forkBoundary,
-      forkLabel,
+      ...(options.sidechat ? { forkLabel: "btw", sidechat: true } : { forkLabel }),
     };
     this.bridgeSessions.set(session.sessionId, session);
     const sourceProfile = this.effectiveProfile(sourceSessionId, source.cwd);

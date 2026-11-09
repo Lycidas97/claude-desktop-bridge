@@ -17,6 +17,7 @@ interface RegistrationSession {
   createdAt: number;
   parentDesktopSessionId?: string;
   forkLabel?: string;
+  sidechat?: boolean;
   desktopSessionId?: string;
   desktopRegistration?: StoredDesktopRegistration;
 }
@@ -66,6 +67,7 @@ export class SessionDesktopRegistration {
       ...(context.permissionMode ? { permissionMode: context.permissionMode } : {}),
       ...(session.parentDesktopSessionId ? { parentDesktopSessionId: session.parentDesktopSessionId } : {}),
       ...(session.forkLabel ? { forkLabel: session.forkLabel } : {}),
+      ...(session.sidechat ? { sidechat: true } : {}),
     };
     const active = this.jobs.get(sessionId);
     if (active) {

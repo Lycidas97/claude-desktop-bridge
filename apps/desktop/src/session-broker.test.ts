@@ -3170,7 +3170,17 @@ describe("SessionBroker", () => {
       forkLabel: "fork",
     });
 
-    const nested = await broker.forkSession(fork1.sessionId, "Gemini 绘图");
+    const side = await broker.forkSession(sessionId, "这个接口为什么要分页？", { sidechat: true });
+    expect(side).toMatchObject({ parentSessionId: sessionId, forkLabel: "btw", sidechat: true, title: "这个接口为什么要分页？" });
+    expect(registeredInputs.at(-1)).toMatchObject({
+      sessionId: side.sessionId,
+      parentDesktopSessionId: "local_parent_01",
+      forkLabel: "btw",
+      sidechat: true,
+    });
+    expect((await broker.forkSession(sessionId)).forkLabel).toBe("fork-3");
+
+    const nested =await broker.forkSession(fork1.sessionId, "Gemini 绘图");
     expect(nested).toMatchObject({
       parentSessionId: fork1.sessionId,
       title: "Gemini 绘图",

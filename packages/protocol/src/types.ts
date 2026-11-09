@@ -699,7 +699,7 @@ export interface BridgeSlashCommand {
   description: string;
   argumentHint?: string;
   aliases?: string[];
-  action?: "sdk" | "help" | "model" | "permissions" | "fork" | "resume" | "rename";
+  action?: "sdk" | "help" | "model" | "permissions" | "fork" | "btw" | "resume" | "rename";
   unavailableReason?: string;
 }
 

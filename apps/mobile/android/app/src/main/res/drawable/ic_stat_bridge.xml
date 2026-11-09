@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar silhouette of apps/client/public/bridge-mark.svg. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <group android:translateY="-13">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M364,250H660A132,132 0,0 1,792 382V558A132,132 0,0 1,660 690H482L344,796Q326,808 330,788L364,690A132,132 0,0 1,232 558V382A132,132 0,0 1,364 250ZM332,606V510A180,180 0,0 1,692 510V606H612V510A100,100 0,0 0,412 510V606Z" />
+    </group>
+</vector>

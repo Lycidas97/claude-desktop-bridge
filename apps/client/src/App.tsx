@@ -6,6 +6,7 @@ import {
   installMobileBackNavigation,
   registerMobileBackHandler,
 } from "./lib/mobile-back-navigation.js";
+import { onSessionNotificationTap } from "./lib/session-notifications.js";
 import { DesktopDashboard } from "./components/DesktopDashboard.js";
 import { DiagnosticFloatingEntry } from "./components/DiagnosticLogDialog.js";
 import { HostBrowser } from "./components/HostBrowser.js";
@@ -62,6 +63,11 @@ export function App() {
   }
 
   useEffect(() => installMobileBackNavigation(), []);
+
+  // openComputer only reads activeHostId and the stable selectHost callback.
+  useEffect(() => onSessionNotificationTap(({ hostId, sessionId }) => {
+    void openComputer(hostId, sessionId);
+  }), [mobile.state.activeHostId, mobile.selectHost]);
 
   useEffect(() => registerMobileBackHandler(() => {
     if (window.bridgeDesktop) return false;

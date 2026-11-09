@@ -26,6 +26,7 @@ import {
   type BridgeEndpoint,
   type BridgeEffort,
   type BridgeEvent,
+  type BridgeNativePermissionMode,
   type BridgePermissionInfo,
   type BridgePermissionMode,
   type BridgePayload,
@@ -1525,12 +1526,16 @@ export class DesktopController extends EventEmitter {
       const decision = stringParam(params, "decision")!;
       if (!["allow-once", "allow-always", "deny"].includes(decision)) throw new Error("Invalid permission decision");
       const requestId = stringParam(params, "requestId")!;
-      const nativeMode = stringParam(params, "nativeMode", false);
-      if (nativeMode !== undefined && nativeMode !== "full-access") throw new Error("Invalid native permission mode");
+      // `nativeMode: "full-access"` is the pre-`mode` spelling of bypassPermissions, still sent by older phones.
+      const mode = params.nativeMode === "full-access" ? "bypassPermissions" : stringParam(params, "mode", false);
+      if (
+        (params.nativeMode !== undefined && params.nativeMode !== "full-access") ||
+        (mode !== undefined && !["default", "acceptEdits", "bypassPermissions"].includes(mode))
+      ) throw new Error("Invalid native permission mode");
       const updatedInput = params.updatedInput && typeof params.updatedInput === "object" && !Array.isArray(params.updatedInput)
         ? params.updatedInput as Record<string, unknown>
         : undefined;
-      const externalResolved = !nativeMode && await this.runtimeSessions?.resolvePermission(
+      const externalResolved = !mode && await this.runtimeSessions?.resolvePermission(
         requestId,
         decision as "allow-once" | "allow-always" | "deny",
         updatedInput,
@@ -1551,7 +1556,7 @@ export class DesktopController extends EventEmitter {
         stringParam(params, "message", false),
         updatedInput,
         resolver,
-        nativeMode,
+        mode as BridgeNativePermissionMode | undefined,
       );
       if (!resolved) {
         throw new BridgeRequestError(

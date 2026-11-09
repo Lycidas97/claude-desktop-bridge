@@ -509,6 +509,8 @@
 .m-sheet .permission-title span { font-size: var(--m-fs-footnote); }
 .m-sheet .permission-prompt pre { border-radius: var(--m-r-control); font-size: var(--m-fs-footnote); }
 .m-sheet .permission-error { border-radius: var(--m-r-control); font-size: var(--m-fs-footnote); }
+.m-sheet .permission-plan,
+.m-sheet .permission-feedback textarea { border-radius: var(--m-r-control); font-size: var(--m-fs-callout); }
 
 .m-sheet .question-option {
   padding: 12px;

@@ -44,8 +44,8 @@ export async function startNativeApprovalHost(options: {
         if (sessionId !== options.sessionId) throw new Error("Unknown synthetic session");
         return { sessionId, ...await discoverSlashCommands(commandCwd, commandHome) };
       },
-      resolvePermission: (...[id, decision, message, input, resolver, nativeMode]: Parameters<SessionBroker["resolvePermission"]>) =>
-        broker.resolveRequest(id, decision, message, input, resolver, nativeMode ? { nativeMode } : undefined),
+      resolvePermission: (...[id, decision, message, input, resolver, mode]: Parameters<SessionBroker["resolvePermission"]>) =>
+        broker.resolveRequest(id, decision, message, input, resolver, mode ? { mode } : undefined),
     },
     config: { hostDeviceId: "synthetic-desktop", desktopName: "隔离电脑", devices: [{ deviceId: options.deviceId, name: "隔离手机", platform: "android", pairedAt: 1 }] },
   }) as { handleRequest(request: BridgeRequest, origin: "mobile", deviceId: string): Promise<unknown> };

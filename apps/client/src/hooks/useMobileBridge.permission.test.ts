@@ -81,10 +81,10 @@ describe("resolvePermission", () => {
     harness.result = { requestId: permission.requestId, nativePermissionModeChange: { requestId: permission.requestId, state: "requested" } };
     harness.beforeReply = () => expect(harness.state.permissions).toEqual([permission]);
 
-    await bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "full-access");
+    await bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "bypassPermissions");
 
     expect(harness.requests[0]).toMatchObject({ method: "permission.resolve", params: {
-      requestId: permission.requestId, decision: "allow-once", nativeMode: "full-access",
+      requestId: permission.requestId, decision: "allow-once", mode: "bypassPermissions",
     } });
     expect(harness.requests[0]!.params).not.toHaveProperty("updatedInput");
     expect(harness.requests[0]!.params).not.toHaveProperty("message");
@@ -100,7 +100,7 @@ describe("resolvePermission", () => {
     expect(harness.requests[0]).toMatchObject({ method: "permission.resolve", params: {
       requestId: permission.requestId, decision, message: "Answer", updatedInput: { answers: { Question: "Choice" } },
     } });
-    expect(harness.requests[0]!.params).not.toHaveProperty("nativeMode");
+    expect(harness.requests[0]!.params).not.toHaveProperty("mode");
   });
 
   it("keeps a pending permission when the native request fails", async () => {
@@ -108,7 +108,7 @@ describe("resolvePermission", () => {
     harness.state.permissions = [permission];
     harness.state.snapshot.permissions = [permission];
     harness.error = { code: "INVALID_REQUEST", message: "Native mode is unavailable" };
-    await expect(bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "full-access"))
+    await expect(bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "bypassPermissions"))
       .rejects.toThrow("Native mode is unavailable");
     expect(harness.state.permissions).toEqual([permission]);
     expect(harness.state.snapshot.permissions).toEqual([permission]);
@@ -119,7 +119,7 @@ describe("resolvePermission", () => {
     harness.state.permissions = [permission];
     harness.state.snapshot.permissions = [permission];
     harness.error = { code: "ALREADY_RESOLVED", message: "Already handled on Desktop" };
-    await expect(bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "full-access"))
+    await expect(bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "bypassPermissions"))
       .rejects.toThrow("Already handled on Desktop");
     expect(harness.state.permissions).toEqual([]);
     expect(harness.state.snapshot.permissions).toEqual([]);

@@ -231,15 +231,73 @@ describe("native Claude permission hook", () => {
     expect(await (await response).json()).toEqual({});
   });
 
-  it("accepts a complete initial tool result without a final newline", async () => {
+  it("accepts a complete initial tool_use without a final newline", async () => {
+    const { broker, post, settingsPath } = await fixture();
+    const transcriptPath = join(settingsPath, "..", "native-session.jsonl");
+    await writeFile(transcriptPath, JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "final-tool", name: "Bash", input: input.tool_input }] },
+    }));
+    const response = post({ ...input, transcript_path: transcriptPath });
+    await vi.waitFor(() => expect(broker.list()).toHaveLength(1));
+    await appendFile(transcriptPath, `\n${JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "final-tool", content: "Denied" }] },
+    })}\n`);
+    await vi.waitFor(() => expect(broker.list()).toEqual([]));
+    expect(await (await response).json()).toEqual({});
+  });
+
+  it("keeps a repeated request pending when only an earlier identical call is closed on disk", async () => {
     const { broker, post, settingsPath } = await fixture();
     const transcriptPath = join(settingsPath, "..", "native-session.jsonl");
     await writeFile(transcriptPath, [
-      { type: "assistant", message: { content: [{ type: "tool_use", id: "final-tool", name: "Bash", input: input.tool_input }] } },
-      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "final-tool", content: "Denied" }] } },
-    ].map((record) => JSON.stringify(record)).join("\n"));
-    expect(await (await post({ ...input, transcript_path: transcriptPath })).json()).toEqual({});
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "earlier-tool", name: "Bash", input: input.tool_input }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "earlier-tool", content: "ok" }] } },
+    ].map((record) => `${JSON.stringify(record)}\n`).join(""));
+    const response = post({ ...input, transcript_path: transcriptPath });
+    await vi.waitFor(() => expect(broker.list()).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(broker.list()).toHaveLength(1);
+    await appendFile(transcriptPath, [
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "current-tool", name: "Bash", input: input.tool_input }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "current-tool", content: "Denied" }] } },
+    ].map((record) => `${JSON.stringify(record)}\n`).join(""));
+    await vi.waitFor(() => expect(broker.list()).toEqual([]));
+    expect(await (await response).json()).toEqual({});
+  });
+
+  it("keeps a subagent's pending request when the main thread stops", async () => {
+    const { broker, post } = await fixture();
+    const response = post({ ...input, agent_id: "agent-background" });
+    await vi.waitFor(() => expect(broker.list()).toHaveLength(1));
+    await post({ session_id: "native-session", hook_event_name: "Stop" });
+    expect(broker.list()).toHaveLength(1);
+    await post({ session_id: "native-session", hook_event_name: "SessionEnd" });
+    expect(await (await response).json()).toEqual({});
     expect(broker.list()).toEqual([]);
+  });
+
+  it("cancels only the answered question and leaves another agent's identical tool pending", async () => {
+    const { broker, post } = await fixture();
+    const question = (text: string) => [{ question: text, header: text, multiSelect: false, options: [{ label: "A", description: "" }, { label: "B", description: "" }] }];
+    const first = post({ ...input, tool_name: "AskUserQuestion", tool_input: { questions: question("第一个") } });
+    const second = post({ ...input, tool_name: "AskUserQuestion", tool_input: { questions: question("第二个") } });
+    const subagentBash = post({ ...input, agent_id: "agent-background" });
+    await vi.waitFor(() => expect(broker.list()).toHaveLength(3));
+    await post({
+      session_id: "native-session",
+      hook_event_name: "PostToolUse",
+      tool_name: "AskUserQuestion",
+      tool_use_id: "call_q_first",
+      tool_input: { questions: question("第一个"), answers: { 第一个: "A" } },
+    });
+    await post({ ...input, hook_event_name: "PostToolUse", tool_use_id: "call_main_bash" });
+    expect(await (await first).json()).toEqual({});
+    expect(broker.list().map((request) => request.toolName)).toEqual(["AskUserQuestion", "Bash"]);
+    expect(broker.list()[0]!.input).toEqual({ questions: question("第二个") });
+    await post({ session_id: "native-session", hook_event_name: "SessionEnd" });
+    await Promise.all([second, subagentBash]);
   });
 
   it("does not cancel a different tool request or another session", async () => {

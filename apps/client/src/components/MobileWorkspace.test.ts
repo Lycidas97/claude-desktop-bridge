@@ -242,10 +242,11 @@ describe("mobile workspace directory", () => {
   });
 
   it.each([
-    ["requested", "已请求此会话完全授权，等待 Desktop 确认"],
-    ["confirmed", "Desktop 已确认本次授权变更"],
-    ["not-applied", "Desktop 未应用完全授权，后续请求仍需确认"],
-  ] as const)("shows the %s Desktop session mode change without claiming a permanent mode", (state, label) => {
+    ["requested", undefined, "已请求切换为「完全授权」，等待 Desktop 确认"],
+    ["requested", "acceptEdits", "已请求切换为「自动接受编辑」，等待 Desktop 确认"],
+    ["confirmed", "default", "Desktop 已确认本次授权变更"],
+    ["not-applied", "default", "Desktop 未切换为「逐个确认」，后续请求仍需确认"],
+  ] as const)("shows the %s Desktop session mode change (%s) without claiming a permanent mode", (state, mode, label) => {
     const useState = vi.mocked(React.useState).getMockImplementation()!;
     const stateSpy = vi.mocked(React.useState)
       .mockImplementationOnce(useState)
@@ -254,7 +255,7 @@ describe("mobile workspace directory", () => {
     try {
       const html = renderToStaticMarkup(createElement(MobileWorkspace, {
         ...workspaceProps(),
-        snapshot: { ...snapshot, sessions: [{ ...session, nativePermissionModeChange: { requestId: "native-request", state } }] },
+        snapshot: { ...snapshot, sessions: [{ ...session, nativePermissionModeChange: { requestId: "native-request", state, ...(mode ? { mode } : {}) } }] },
       }));
       expect(html).toContain('aria-label="Desktop 会话授权变更"');
       expect(html).toContain(label);
@@ -341,7 +342,8 @@ describe("native Desktop permission actions", () => {
     vi.mocked(React.useState)
       .mockReturnValueOnce([false, vi.fn()])
       .mockReturnValueOnce([undefined, vi.fn()])
-      .mockReturnValueOnce([mode, vi.fn()]);
+      .mockReturnValueOnce([mode, vi.fn()])
+      .mockReturnValueOnce([undefined, vi.fn()]);
     vi.mocked(React.useEffect).mockImplementationOnce(() => undefined);
     const child = PermissionPrompt({ permission, onResolve, onEnableFullAccess, onEnableNativeFullAccess });
     const tree = (child.type as (props: typeof child.props) => ReactNode)(child.props);
@@ -368,6 +370,58 @@ describe("native Desktop permission actions", () => {
       expect(onEnableNativeFullAccess).not.toHaveBeenCalled();
     }
     expect(onResolve).not.toHaveBeenCalled();
+  });
+
+  const renderPrompt = (props: ComponentProps<typeof PermissionPrompt>, feedback?: string) => {
+    vi.mocked(React.useState)
+      .mockReturnValueOnce([false, vi.fn()])
+      .mockReturnValueOnce([undefined, vi.fn()])
+      .mockReturnValueOnce([undefined, vi.fn()])
+      .mockReturnValueOnce([feedback, vi.fn()]);
+    vi.mocked(React.useEffect).mockImplementationOnce(() => undefined);
+    const child = PermissionPrompt(props);
+    return elements((child.type as (props: typeof child.props) => ReactNode)(child.props));
+  };
+  const button = (tree: ReactElement<Record<string, any>>[], label: string) => tree.find((element) => (
+    element.type === "button" && [element.props.children].flat().includes(label)
+  ));
+  const plan: BridgePermissionInfo = { ...permission, toolName: "ExitPlanMode", input: { plan: "# 计划\n\n- 第一步" } };
+
+  it("renders the full ExitPlanMode plan and maps each approval to a session mode", async () => {
+    const html = renderToStaticMarkup(createElement(PermissionPrompt, { permission: plan, onResolve: vi.fn() }));
+    expect(html).toContain("<h1");
+    expect(html).not.toContain("查看完整参数");
+    const onResolve = vi.fn().mockResolvedValue(undefined);
+    const tree = renderPrompt({ permission: plan, onResolve, onEnableNativeFullAccess: vi.fn() });
+    expect(button(tree, "是，完全授权")).toBeDefined();
+    button(tree, "是，自动接受编辑")!.props.onClick();
+    await Promise.resolve();
+    expect(onResolve).toHaveBeenCalledWith(plan.requestId, "allow-once", undefined, undefined, "acceptEdits");
+    button(renderPrompt({ permission: plan, onResolve }), "是，逐个确认")!.props.onClick();
+    await Promise.resolve();
+    expect(onResolve).toHaveBeenLastCalledWith(plan.requestId, "allow-once", undefined, undefined, "default");
+  });
+
+  it("offers plain plan approval when the request cannot change the session mode", () => {
+    const html = renderToStaticMarkup(createElement(PermissionPrompt, {
+      permission: { ...plan, canSetNativeFullAccess: false }, onResolve: vi.fn(),
+    }));
+    expect(html).toContain("批准计划");
+    expect(html).toContain("否，继续规划");
+    expect(html).not.toContain("自动接受编辑");
+  });
+
+  it.each([
+    [permission, "拒绝", "改用只读命令"],
+    [plan, "继续规划", "先补充回滚方案"],
+  ] as const)("sends deny feedback from the %s composer", async (request, label, text) => {
+    const onResolve = vi.fn().mockResolvedValue(undefined);
+    const tree = renderPrompt({ permission: request, onResolve }, `  ${text} `);
+    expect(tree.some((element) => element.type === "textarea")).toBe(true);
+    expect(button(tree, "允许一次")).toBeUndefined();
+    button(tree, label)!.props.onClick();
+    await Promise.resolve();
+    expect(onResolve).toHaveBeenCalledWith(request.requestId, "deny", text, undefined, undefined);
   });
 });
 

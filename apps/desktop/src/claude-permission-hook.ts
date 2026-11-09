@@ -28,11 +28,16 @@ interface PendingHookPermission {
   id: string;
   sessionId: string;
   nativeSessionId: string;
+  agentId?: string;
   toolUseId?: string;
   toolName: string;
   toolInput: Record<string, unknown>;
   inputKey: string;
   controller: AbortController;
+}
+
+function logPermission(message: string): void {
+  process.stderr.write(`Bridge permission hook: ${message}\n`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -50,7 +55,7 @@ function matchesPendingToolInput(
   postInput: Record<string, unknown>,
   postInputKey: string,
 ): boolean {
-  if (entry.inputKey === postInputKey || entry.toolName === "AskUserQuestion") return true;
+  if (entry.inputKey === postInputKey) return true;
   const keys = Object.keys(entry.toolInput);
   return keys.length > 0 && keys.every((key) => (
     key in postInput && canonicalJson(postInput[key]) === canonicalJson(entry.toolInput[key])
@@ -187,7 +192,13 @@ async function watchTranscriptResolution(
         for (let index = inspectFrom; index < lines.length; index += 1) {
           inspectPostBoundaryLine(lines[index]!);
         }
-        return sawPostRequestBoundary;
+        // PermissionRequest carries no tool_use_id. A matching call that is already closed when the
+        // request arrives is an earlier identical call; keep watching for the current one.
+        if (sawPostRequestBoundary) {
+          matchedToolUseId = undefined;
+          sawPostRequestBoundary = false;
+        }
+        return false;
       } catch {
         return false;
       } finally {
@@ -241,10 +252,7 @@ async function watchTranscriptResolution(
     }
   };
 
-  if (await scan(true)) {
-    onResolved();
-    return;
-  }
+  await scan(true);
   const timer = setInterval(() => {
     if (scanning) return;
     scanning = true;
@@ -307,7 +315,7 @@ export class ClaudePermissionHook {
   }
 
   async close(): Promise<void> {
-    for (const entry of this.pending.values()) entry.controller.abort();
+    for (const entry of this.pending.values()) entry.controller.abort("shutdown");
     this.pending.clear();
     this.modeChanges.clear();
     const server = this.server;
@@ -367,12 +375,13 @@ export class ClaudePermissionHook {
     }
     const nativeSessionId = body.session_id;
     const eventName = body.hook_event_name;
+    const agentId = typeof body.agent_id === "string" ? body.agent_id : undefined;
 
     if (eventName === "PostToolUse" || eventName === "PostToolUseFailure") {
       if (typeof body.tool_name === "string") {
         const postInput = isRecord(body.tool_input) ? body.tool_input : {};
         const inputKey = canonicalJson(postInput);
-        if (typeof body.permission_mode === "string" && typeof body.agent_id !== "string") {
+        if (typeof body.permission_mode === "string" && !agentId) {
           for (const entry of this.modeChanges.values()) {
             if (entry.nativeSessionId !== nativeSessionId || entry.toolName !== body.tool_name ||
               (entry.toolUseId && entry.toolUseId !== body.tool_use_id) || !matchesPendingToolInput(entry, postInput, inputKey)) continue;
@@ -380,23 +389,29 @@ export class ClaudePermissionHook {
             this.modeChanges.delete(entry.id);
           }
         }
-        for (const entry of this.pending.values()) {
-          if (
-            entry.nativeSessionId === nativeSessionId &&
-            entry.toolName === body.tool_name &&
-            matchesPendingToolInput(entry, postInput, inputKey)
-          ) {
-            entry.controller.abort();
-          }
-        }
+        const candidates = [...this.pending.values()].filter((entry) => (
+          entry.nativeSessionId === nativeSessionId &&
+          entry.agentId === agentId &&
+          entry.toolName === body.tool_name &&
+          (!entry.toolUseId || entry.toolUseId === body.tool_use_id)
+        ));
+        const matched = candidates.filter((entry) => matchesPendingToolInput(entry, postInput, inputKey));
+        // Answering may rewrite AskUserQuestion input; a lone pending question is still the answered one.
+        const answered = matched.length === 0 && body.tool_name === "AskUserQuestion" && candidates.length === 1
+          ? candidates
+          : matched;
+        for (const entry of answered) entry.controller.abort(eventName);
       }
       res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
       return;
     }
 
     if (eventName === "Stop" || eventName === "SessionEnd") {
+      // Stop ends one thread's turn; a background subagent's request outlives the main thread's Stop.
       for (const entry of this.pending.values()) {
-        if (entry.nativeSessionId === nativeSessionId) entry.controller.abort();
+        if (entry.nativeSessionId === nativeSessionId && (eventName === "SessionEnd" || entry.agentId === agentId)) {
+          entry.controller.abort(eventName);
+        }
       }
       for (const entry of this.modeChanges.values()) {
         if (entry.nativeSessionId === nativeSessionId) this.modeChanges.delete(entry.id);
@@ -411,6 +426,9 @@ export class ClaudePermissionHook {
     }
 
     const logicalSessionId = this.options.sessionId(nativeSessionId);
+    const id = randomUUID();
+    const startedAt = Date.now();
+    logPermission(`${id} ${body.tool_name} native=${nativeSessionId} agent=${agentId ?? "main"} -> ${logicalSessionId ?? "unmapped, left to Desktop"}`);
     if (!logicalSessionId) {
       res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
       return;
@@ -419,11 +437,11 @@ export class ClaudePermissionHook {
     const toolInput = isRecord(body.tool_input) ? body.tool_input : {};
     const inputKey = canonicalJson(toolInput);
     const controller = new AbortController();
-    const id = randomUUID();
     this.pending.set(id, {
       id,
       sessionId: logicalSessionId,
       nativeSessionId,
+      ...(agentId ? { agentId } : {}),
       ...(typeof body.tool_use_id === "string" ? { toolUseId: body.tool_use_id } : {}),
       toolName: body.tool_name,
       toolInput,
@@ -436,11 +454,11 @@ export class ClaudePermissionHook {
         body.tool_name,
         inputKey,
         controller.signal,
-        () => controller.abort(),
+        () => controller.abort("transcript"),
       );
     }
     res.once("close", () => {
-      if (!res.writableEnded) controller.abort();
+      if (!res.writableEnded) controller.abort("hook-connection-closed");
     });
 
     try {
@@ -457,7 +475,7 @@ export class ClaudePermissionHook {
         requestId: id,
         toolUseId: typeof body.tool_use_id === "string" ? body.tool_use_id : id,
         manualOnly: true,
-        canSetNativeFullAccess: typeof body.agent_id !== "string" && body.tool_name !== "AskUserQuestion",
+        canSetNativeFullAccess: !agentId && body.tool_name !== "AskUserQuestion",
         ...(suggestions ? { suggestions } : {}),
         ...(typeof body.title === "string" ? { title: body.title } : {}),
         ...(typeof body.display_name === "string" ? { displayName: body.display_name } : {}),
@@ -468,11 +486,12 @@ export class ClaudePermissionHook {
         controller.signal.aborted ||
         (result.behavior === "deny" && result.message === "Bridge session ended before this request was answered.")
       ) {
+        logPermission(`${id} ${body.tool_name} returned to Desktop: ${controller.signal.aborted ? String(controller.signal.reason) : "bridge-cancelled"} after ${Date.now() - startedAt}ms`);
         res.writeHead(200, { "Content-Type": "application/json" }).end("{}");
         return;
       }
       if (result.behavior === "allow" && result.updatedPermissions?.some(update =>
-        update.type === "setMode" && update.mode === "bypassPermissions" && update.destination === "session")) {
+        update.type === "setMode" && update.destination === "session")) {
         this.modeChanges.set(id, this.pending.get(id)!);
       }
       const updatedInput = result.behavior === "allow" &&

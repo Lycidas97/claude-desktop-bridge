@@ -5062,6 +5062,34 @@ button:disabled {
   border-radius: 0;
 }
 
+.permission-plan {
+  max-height: min(55vh, 520px);
+  margin-top: 12px;
+  padding: 10px 12px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.permission-feedback {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.permission-feedback textarea {
+  width: 100%;
+  min-height: 76px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
 .permission-error {
   margin-top: 10px;
   padding: 8px 9px;

@@ -9,6 +9,7 @@ import type {
   BridgeHistoryPage,
   BridgeDesktopAppStatus,
   BridgeDesktopRuntimeId,
+  BridgeNativePermissionMode,
   BridgePermissionMode,
   BridgeProviderProfile,
   BridgeResponse,
@@ -867,10 +868,11 @@ function DesktopSessions({
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
+    mode?: BridgeNativePermissionMode,
   ): Promise<void> {
     unwrap(await apiRequest({
       method: "permission.resolve",
-      params: { requestId, decision, ...(message ? { message } : {}), ...(updatedInput ? { updatedInput } : {}) },
+      params: { requestId, decision, ...(message ? { message } : {}), ...(updatedInput ? { updatedInput } : {}), ...(mode ? { mode } : {}) },
     }));
   }
 

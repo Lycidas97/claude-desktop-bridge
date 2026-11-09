@@ -67,6 +67,16 @@ it("returns real UI actions and validates models through the current catalog", a
   expect(f.broker.startTurn).not.toHaveBeenCalled();
 });
 
+it("opens /btw as a side-chat fork and submits the question there, not to the parent", async () => {
+  const f = fixture();
+  await expect(f.broker.runCommand(f.input("/btw"))).rejects.toThrow();
+  await expect(f.broker.runCommand(f.input("/btw 为什么要分页？"))).resolves.toMatchObject({ action: "session", session: { sessionId: "fork" } });
+  expect(f.broker.forkSession).toHaveBeenCalledWith("logical", "为什么要分页？", { sidechat: true });
+  expect(f.broker.startTurn).toHaveBeenCalledTimes(1);
+  expect(f.broker.startTurn).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "fork", text: "为什么要分页？", mode: "start" }));
+  expect(f.broker.startTurn).not.toHaveBeenCalledWith(expect.objectContaining({ slashCommand: true }));
+});
+
 it("reconnects an idle SDK host only for an explicitly submitted command", async () => {
   const f = fixture();
   delete (f.state as { host?: unknown }).host;

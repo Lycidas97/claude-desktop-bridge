@@ -63,6 +63,25 @@ describe("Desktop fork registration", () => {
     expect(result).toMatchObject({ state: "restart-required", claudePidAtRegistration: 100, forkMetadataVersion: 1 });
     expect(JSON.parse(await readFile(result.metadataPath!, "utf8"))).toMatchObject({ forkedFromSessionId: `local_${parentId}`,
       spawnedFrom: { sessionId: `local_${parentId}`, userFork: true } });
+    expect(JSON.parse(await readFile(result.metadataPath!, "utf8")).spawnedFrom.btw).toBeUndefined();
+
+    const sideId = randomUUID();
+    await writeFile(join(projects, `${sideId}.jsonl`), JSON.stringify({ sessionId: sideId, cwd: root, type: "user", message: { role: "user", content: "QA" } }) + "\n");
+    const side = await registrar.register({ sessionId: sideId, cwd: root, title: "Side", createdAt: 1, lastActivityAt: 2, parentDesktopSessionId: `local_${parentId}`, forkLabel: "btw", sidechat: true });
+    expect(JSON.parse(await readFile(side.metadataPath!, "utf8"))).toMatchObject({ forkedFromSessionId: `local_${parentId}`,
+      spawnedFrom: { sessionId: `local_${parentId}`, userFork: true, sideSession: true, btw: true, name: "btw" } });
+  });
+
+  it("marks an already registered fork as a /btw side chat without dropping native spawn fields", async () => {
+    const { registrar, input, previous, path } = await adoptedFork();
+    const metadata = JSON.parse(await readFile(path, "utf8"));
+    await writeFile(path, JSON.stringify({ ...metadata, forkedFromSessionId: input.parentDesktopSessionId,
+      spawnedFrom: { sessionId: input.parentDesktopSessionId, taskId: "keep-task", userFork: true, sideSession: true, name: "keep-name" } }));
+    const staged = await registrar.register({ ...input, sidechat: true }, previous);
+    expect(JSON.parse(await readFile(path, "utf8")).spawnedFrom).toEqual({
+      sessionId: input.parentDesktopSessionId, taskId: "keep-task", userFork: true, sideSession: true, name: "keep-name", btw: true,
+    });
+    expect(staged).toMatchObject({ state: "restart-required", forkMetadataVersion: 1 });
   });
 
   it("migrates old registered forks even when their disk metadata is already complete", async () => {

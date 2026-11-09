@@ -1,7 +1,7 @@
 import type { BridgeSessionCommandResult, BridgeSlashCommandCatalog } from "@bridge/protocol";
 import { useEffect, useRef, useState } from "react";
 
-const BUILTINS = new Set(["help", "context", "usage", "compact", "model", "permissions", "clear", "new", "fork", "resume", "rename"]);
+const BUILTINS = new Set(["help", "context", "usage", "compact", "model", "permissions", "clear", "new", "fork", "btw", "resume", "rename"]);
 
 export function sessionCommandName(text: string): string | undefined {
   return /^\/([^\s/\\]+)(?:\s|$)/u.exec(text)?.[1]?.toLocaleLowerCase();

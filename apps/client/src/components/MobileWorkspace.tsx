@@ -2106,6 +2106,18 @@ export function MobileWorkspace({
     rememberStreamPosition();
   }, [streamKeys, selectedSessionId, sessionView]);
 
+  // Near the top, or when a page leaves the stream too short to scroll, fetch the next older page.
+  function loadOlderNearTop(): void {
+    const stream = streamRef.current;
+    if (!stream || !selectedSessionId || !selectedHistory?.hasMore || selectedHistory.status === "loading") return;
+    if (stream.scrollTop < 200) void onLoadOlderHistory(selectedSessionId);
+  }
+
+  // Keyed on the first item so a failed load (status returns to ready, nothing prepended) does not retry in a loop.
+  useEffect(() => {
+    if (sessionView === "conversation") loadOlderNearTop();
+  }, [streamKeys[0], selectedSessionId, sessionView]);
+
   useEffect(() => {
     if (search.trim()) setCollapsedProjectIds(new Set());
   }, [search]);
@@ -3068,7 +3080,10 @@ export function MobileWorkspace({
           className="conversation-stream"
           aria-live="polite"
           ref={streamRef}
-          onScroll={rememberStreamPosition}
+          onScroll={() => {
+            rememberStreamPosition();
+            loadOlderNearTop();
+          }}
         >
           {selectedHistory?.hasMore && (
             <button

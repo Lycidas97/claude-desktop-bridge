@@ -67,6 +67,7 @@ import { diagLog, setDiagBridgeStateSummary } from "../lib/diagnostics.js";
 import { uploadSessionFile, type UploadFileHandler } from "../lib/file-upload.js";
 import { isReplayableMobileEnvelope } from "../lib/outbox.js";
 import { nativePushRegistration, onNativePushWake } from "../lib/push-wake.js";
+import { ensureSessionNotificationPermission, showSessionNotification } from "../lib/session-notifications.js";
 
 export interface PairedHost {
   hostId: string;
@@ -1876,6 +1877,7 @@ export function useMobileBridge() {
             setState((current) => ({ ...current, connectionIssue: undefined }));
           }
           void flushOutbox();
+          void ensureSessionNotificationPermission();
           const push = await nativePushRegistration();
           if (push && isCurrent() && socket.state === "connected") {
             socket.registerPushToken(push.platform, push.token);
@@ -2082,7 +2084,27 @@ export function useMobileBridge() {
       if (isNewPermission && document.visibilityState === "visible") {
         navigator.vibrate?.([120, 60, 120]);
       }
-      if (
+      if (Capacitor.isNativePlatform()) {
+        // assistant.completed fires per message; a turn ends with turn.completed.
+        if (
+          document.visibilityState !== "visible" &&
+          event && (
+            event.type === "turn.completed" ||
+            event.type === "turn.failed" ||
+            event.type === "permission.requested" ||
+            event.type === "question.requested"
+          )
+        ) {
+          void showSessionNotification(
+            { hostId: roomId, ...(event.sessionId ? { sessionId: event.sessionId } : {}) },
+            stateRef.current.snapshot?.sessions.find((session) => session.sessionId === event.sessionId)?.title
+              ?? crypto.identity.desktopName,
+            event.type === "turn.completed" ? "任务已完成"
+              : event.type === "turn.failed" ? "任务失败"
+                : "Claude 正在等待你处理",
+          );
+        }
+      } else if (
         document.visibilityState !== "visible" &&
         typeof Notification !== "undefined" &&
         Notification.permission === "granted" &&

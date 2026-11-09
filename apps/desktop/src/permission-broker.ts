@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type {
+  BridgeNativePermissionMode,
   BridgeNativePermissionModeChange,
   BridgePermissionDecision,
   BridgePermissionMode,
@@ -57,8 +58,8 @@ export class PermissionBroker extends EventEmitter {
     const change = this.nativeModes.get(sessionId);
     if (!change || change.requestId !== requestId || change.state !== "requested") return;
     this.nativeModes.set(sessionId, {
-      requestId,
-      state: mode === "bypassPermissions" ? "confirmed" : "not-applied",
+      ...change,
+      state: mode === change.mode ? "confirmed" : "not-applied",
       observedMode: mode,
     });
     this.emit("native-mode");
@@ -209,12 +210,12 @@ export class PermissionBroker extends EventEmitter {
     metadata?: {
       automatic?: boolean;
       reason?: BridgePermissionResolutionReason;
-      nativeMode?: "full-access";
+      mode?: BridgeNativePermissionMode;
     },
   ): boolean {
     const pending = this.pending.get(requestId);
     if (!pending) return false;
-    if (metadata?.nativeMode && (decision !== "allow-once" || !pending.request.canSetNativeFullAccess)) {
+    if (metadata?.mode && (decision !== "allow-once" || !pending.request.canSetNativeFullAccess)) {
       throw new Error("此请求不支持修改原生 Desktop 会话授权");
     }
     const canAllowAlways = pending.request.suggestions.some(
@@ -239,12 +240,12 @@ export class PermissionBroker extends EventEmitter {
       );
       return true;
     }
-    const updatedPermissions: PermissionUpdate[] = metadata?.nativeMode
-      ? [{ type: "setMode", mode: "bypassPermissions", destination: "session" }]
+    const updatedPermissions: PermissionUpdate[] = metadata?.mode
+      ? [{ type: "setMode", mode: metadata.mode, destination: "session" }]
       : effectiveDecision === "allow-always"
         ? pending.request.suggestions.filter((suggestion) => suggestion.destination === "localSettings")
         : [];
-    if (metadata?.nativeMode) this.nativeModes.set(pending.request.sessionId, { requestId, state: "requested" });
+    if (metadata?.mode) this.nativeModes.set(pending.request.sessionId, { requestId, state: "requested", mode: metadata.mode });
     pending.resolve(
       {
         behavior: "allow",

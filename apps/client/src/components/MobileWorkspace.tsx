@@ -12,6 +12,7 @@ import type {
   BridgeHistoryItem,
   BridgeHostSnapshot,
   BridgeInteractivePrompt,
+  BridgeNativePermissionMode,
   BridgePermissionInfo,
   BridgePermissionMode,
   BridgeRuntimeGoalStatus,
@@ -1393,6 +1394,12 @@ function QuestionPrompt({
   );
 }
 
+const NATIVE_MODE_LABELS: Record<BridgeNativePermissionMode, string> = {
+  default: "逐个确认",
+  acceptEdits: "自动接受编辑",
+  bypassPermissions: "完全授权",
+};
+
 function ToolPermissionPrompt({
   permission,
   onResolve,
@@ -1405,6 +1412,7 @@ function ToolPermissionPrompt({
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
+    mode?: BridgeNativePermissionMode,
   ): Promise<void>;
   onEnableFullAccess?(sessionId: string): Promise<void>;
   onEnableNativeFullAccess?(requestId: string): Promise<void>;
@@ -1413,21 +1421,31 @@ function ToolPermissionPrompt({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [confirmFullAccess, setConfirmFullAccess] = useState<"host" | "native">();
+  // Defined while the deny-with-feedback composer is open.
+  const [feedback, setFeedback] = useState<string>();
+  const composing = feedback !== undefined;
+  const plan = permission.toolName === "ExitPlanMode" ? inputText(permission.input, "plan") ?? "" : undefined;
 
   useEffect(() => {
-    if (!confirmFullAccess) return;
+    if (!confirmFullAccess && !composing) return;
     return registerMobileBackHandler(() => {
-      if (!busy) setConfirmFullAccess(undefined);
+      if (busy) return true;
+      if (confirmFullAccess) setConfirmFullAccess(undefined);
+      else setFeedback(undefined);
       return true;
     }, 150);
-  }, [confirmFullAccess, busy]);
+  }, [confirmFullAccess, composing, busy]);
 
-  async function decide(decision: "allow-once" | "allow-always" | "deny"): Promise<void> {
+  async function decide(
+    decision: "allow-once" | "allow-always" | "deny",
+    mode?: BridgeNativePermissionMode,
+    message?: string,
+  ): Promise<void> {
     if (busy) return;
     setBusy(true);
     setError(undefined);
     try {
-      await onResolve(permission.requestId, decision);
+      await onResolve(permission.requestId, decision, message, undefined, mode);
     } catch (resolveError) {
       setError(resolveError instanceof Error ? resolveError.message : "授权处理失败");
     } finally {
@@ -1450,57 +1468,106 @@ function ToolPermissionPrompt({
     }
   }
 
+  const spinner = busy && <LoaderCircle className="is-spinning" size={15} />;
   return (
     <>
     <section className="permission-prompt">
       <div className="permission-title">
-        <strong>{permission.title || `${permission.toolName} 请求权限`}</strong>
-        <span>{presentation.summary}</span>
+        <strong>{permission.title || (plan !== undefined ? "计划待确认" : `${permission.toolName} 请求权限`)}</strong>
+        {plan === undefined && <span>{presentation.summary}</span>}
       </div>
-      <div className={`permission-risk ${presentation.mutating ? "mutating" : ""}`}>
-        {presentation.mutating ? <AlertTriangle size={16} /> : <Wrench size={16} />}
-        <span>{presentation.mutating ? "操作前请核对目标与内容" : "当前任务正在等待你的确认"}</span>
-      </div>
-      {presentation.facts.length > 0 && (
-        <dl className="permission-facts">
-          {presentation.facts.map((fact) => (
-            <div key={`${fact.label}:${fact.value}`}>
-              <dt>{fact.label}</dt>
-              <dd className={fact.code ? "is-code" : ""}>{fact.value}</dd>
-            </div>
-          ))}
-        </dl>
+      {plan !== undefined ? (
+        <div className="permission-plan">
+          <MarkdownText text={plan} collapsible={false} />
+        </div>
+      ) : (
+        <>
+          <div className={`permission-risk ${presentation.mutating ? "mutating" : ""}`}>
+            {presentation.mutating ? <AlertTriangle size={16} /> : <Wrench size={16} />}
+            <span>{presentation.mutating ? "操作前请核对目标与内容" : "当前任务正在等待你的确认"}</span>
+          </div>
+          {presentation.facts.length > 0 && (
+            <dl className="permission-facts">
+              {presentation.facts.map((fact) => (
+                <div key={`${fact.label}:${fact.value}`}>
+                  <dt>{fact.label}</dt>
+                  <dd className={fact.code ? "is-code" : ""}>{fact.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {presentation.preview && (
+            <details className="permission-details">
+              <summary><FilePenLine size={15} />{presentation.preview.label}</summary>
+              <pre>{presentation.preview.value}</pre>
+            </details>
+          )}
+          <details className="permission-details raw-details">
+            <summary><Terminal size={15} />查看完整参数</summary>
+            <pre>{presentation.raw}</pre>
+          </details>
+        </>
       )}
-      {presentation.preview && (
-        <details className="permission-details">
-          <summary><FilePenLine size={15} />{presentation.preview.label}</summary>
-          <pre>{presentation.preview.value}</pre>
-        </details>
-      )}
-      <details className="permission-details raw-details">
-        <summary><Terminal size={15} />查看完整参数</summary>
-        <pre>{presentation.raw}</pre>
-      </details>
       {error && <div className="permission-error" role="alert">{error}</div>}
-      <div className="permission-actions">
-        <button type="button" className="secondary-button danger-text" disabled={busy} onClick={() => void decide("deny")}>拒绝</button>
-        <button type="button" className="primary-button" disabled={busy} onClick={() => void decide("allow-once")}>
-          {busy && <LoaderCircle className="is-spinning" size={15} />}允许一次
-        </button>
-        {permission.canAllowAlways && (
-          <button type="button" className="secondary-button" disabled={busy} onClick={() => void decide("allow-always")}>始终允许</button>
-        )}
-        {permission.canSetNativeFullAccess && onEnableNativeFullAccess && (
-          <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("native")}>
-            <ShieldCheck size={15} />此 Desktop 会话完全授权
+      {composing ? (
+        <div className="permission-feedback">
+          <textarea
+            aria-label={plan !== undefined ? "计划修改意见" : "拒绝原因"}
+            placeholder={plan !== undefined ? "需要调整的地方（可选）" : "告诉 Claude 应该怎么做（可选）"}
+            rows={3}
+            value={feedback}
+            disabled={busy}
+            onChange={(event) => setFeedback(event.target.value)}
+          />
+          <div className="permission-actions">
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setFeedback(undefined)}>返回</button>
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void decide("deny", undefined, feedback.trim() || undefined)}>
+              {spinner}{plan !== undefined ? "继续规划" : "拒绝"}
+            </button>
+          </div>
+        </div>
+      ) : plan !== undefined ? (
+        <div className="permission-actions">
+          {permission.canSetNativeFullAccess ? (
+            <>
+              <button type="button" className="primary-button" disabled={busy} onClick={() => void decide("allow-once", "acceptEdits")}>
+                {spinner}是，自动接受编辑
+              </button>
+              <button type="button" className="secondary-button" disabled={busy} onClick={() => void decide("allow-once", "default")}>是，逐个确认</button>
+            </>
+          ) : (
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void decide("allow-once")}>
+              {spinner}批准计划
+            </button>
+          )}
+          {permission.canSetNativeFullAccess && onEnableNativeFullAccess && (
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("native")}>
+              <ShieldCheck size={15} />是，完全授权
+            </button>
+          )}
+          <button type="button" className="secondary-button" disabled={busy} onClick={() => setFeedback("")}>否，继续规划</button>
+        </div>
+      ) : (
+        <div className="permission-actions">
+          <button type="button" className="secondary-button danger-text" disabled={busy} onClick={() => setFeedback("")}>拒绝</button>
+          <button type="button" className="primary-button" disabled={busy} onClick={() => void decide("allow-once")}>
+            {spinner}允许一次
           </button>
-        )}
-        {onEnableFullAccess && (
-          <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("host")}>
-            <ShieldCheck size={15} />Bridge 默认完全授权
-          </button>
-        )}
-      </div>
+          {permission.canAllowAlways && (
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => void decide("allow-always")}>始终允许</button>
+          )}
+          {permission.canSetNativeFullAccess && onEnableNativeFullAccess && (
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("native")}>
+              <ShieldCheck size={15} />此 Desktop 会话完全授权
+            </button>
+          )}
+          {onEnableFullAccess && (
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("host")}>
+              <ShieldCheck size={15} />Bridge 默认完全授权
+            </button>
+          )}
+        </div>
+      )}
     </section>
     <ConfirmationDialog
       open={Boolean(confirmFullAccess)}
@@ -1529,6 +1596,7 @@ export function PermissionPrompt({
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
+    mode?: BridgeNativePermissionMode,
   ): Promise<void>;
   onEnableFullAccess?(sessionId: string): Promise<void>;
   onEnableNativeFullAccess?(requestId: string): Promise<void>;
@@ -1652,7 +1720,7 @@ export function MobileWorkspace({
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
-    nativeMode?: "full-access",
+    mode?: BridgeNativePermissionMode,
   ): Promise<void>;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
   onCreateSession(
@@ -2842,10 +2910,10 @@ export function MobileWorkspace({
           <div className="session-channel-warning message-queue-status" role="status" aria-label="Desktop 会话授权变更">
             <ShieldCheck size={17} />
             <span>{selectedSession.nativePermissionModeChange.state === "requested"
-              ? "已请求此会话完全授权，等待 Desktop 确认"
+              ? `已请求切换为「${NATIVE_MODE_LABELS[selectedSession.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，等待 Desktop 确认`
               : selectedSession.nativePermissionModeChange.state === "confirmed"
                 ? "Desktop 已确认本次授权变更"
-                : "Desktop 未应用完全授权，后续请求仍需确认"}</span>
+                : `Desktop 未切换为「${NATIVE_MODE_LABELS[selectedSession.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，后续请求仍需确认`}</span>
           </div>
         )}
         {selectedSession.pendingCount > 0 && selectedSession.desktopHandoff?.state !== "close-desktop" && selectedSession.desktopHandoff?.state !== "desktop-inbox" && (
@@ -3440,7 +3508,7 @@ export function MobileWorkspace({
               key={activePermission.requestId}
               permission={activePermission}
               onResolve={onResolvePermission}
-              onEnableNativeFullAccess={(requestId) => onResolvePermission(requestId, "allow-once", undefined, undefined, "full-access")}
+              onEnableNativeFullAccess={(requestId) => onResolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions")}
               {...(onConfigurePermissionPolicy ? {
                 onEnableFullAccess: (sessionId: string) => (
                   onConfigurePermissionPolicy(sessionId, "host", "full-access").then(() => undefined)

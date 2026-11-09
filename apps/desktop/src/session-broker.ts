@@ -9,6 +9,7 @@ import type {
   BridgeConfigurationSource,
   BridgeEffort,
   BridgeHistoryPage,
+  BridgeNativePermissionMode,
   BridgeOwnershipState,
   BridgePermissionMode,
   BridgePermissionPolicy,
@@ -507,7 +508,10 @@ export class SessionBroker extends EventEmitter {
             ),
             ...(request.canSetNativeFullAccess ? { canSetNativeFullAccess: true } : {}),
           },
-        }));
+        }))
+        .then(() => {
+          process.stderr.write(`Bridge permission ${request.requestId} ${request.toolName} published after ${Date.now() - request.createdAt}ms\n`);
+        });
       this.emit("changed");
     });
     this.permissionBroker.on("resolved", (request, result, resolution) => {
@@ -1989,9 +1993,9 @@ export class SessionBroker extends EventEmitter {
       deviceId: string;
       name: string;
     },
-    nativeMode?: "full-access",
+    mode?: BridgeNativePermissionMode,
   ): boolean {
-    return this.permissionBroker.resolveRequest(requestId, decision, message, updatedInput, resolver, nativeMode ? { nativeMode } : undefined);
+    return this.permissionBroker.resolveRequest(requestId, decision, message, updatedInput, resolver, mode ? { mode } : undefined);
   }
 
   resolveNativePermissionSessionId(nativeSessionId: string): string | undefined {

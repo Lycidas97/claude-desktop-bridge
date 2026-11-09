@@ -81,11 +81,17 @@ async function fixture() {
       devices: [{ deviceId: "paired-phone", name: "Paired Android", platform: "android", pairedAt: 1 }],
     },
   }) as { handleRequest(request: BridgeRequest, origin: "mobile", sourceDeviceId: string): Promise<unknown> };
-  const resolve = (requestId: string, decision: BridgePermissionDecision, updatedInput?: Record<string, unknown>, nativeMode?: string) => {
+  const resolve = (
+    requestId: string,
+    decision: BridgePermissionDecision,
+    updatedInput?: Record<string, unknown>,
+    nativeMode?: string,
+    extra: Record<string, unknown> = {},
+  ) => {
     const rpcId = randomUUID();
     return controller.handleRequest({
       kind: "request", method: "permission.resolve", requestId: rpcId, idempotencyKey: rpcId,
-      params: { requestId, decision, ...(updatedInput ? { updatedInput } : {}), ...(nativeMode ? { nativeMode } : {}) },
+      params: { requestId, decision, ...(updatedInput ? { updatedInput } : {}), ...(nativeMode ? { nativeMode } : {}), ...extra },
     }, "mobile", "paired-phone");
   };
   const resolutions = () => eventLog.replay(0).filter((event) => event.type === "permission.resolved" || event.type === "question.resolved");
@@ -132,6 +138,34 @@ describe("native hook phone approval through the controller", () => {
       requestId: request.requestId, state: mode === "bypassPermissions" ? "confirmed" : "not-applied", observedMode: mode,
     });
     expect(broker.permissionPolicy("logical-session").hostMode).toBe("standard");
+  });
+
+  it("approves ExitPlanMode into a chosen session mode and confirms that mode", async () => {
+    const { broker, post, resolve, open } = await fixture();
+    const input = { plan: "# 计划\n\n- 第一步" };
+    const { request, response, settled } = await open("ExitPlanMode", input);
+    await expect(resolve(request.requestId, "allow-once", undefined, undefined, { mode: "plan" })).rejects.toThrow();
+    expect(settled).not.toHaveBeenCalled();
+    await resolve(request.requestId, "allow-once", undefined, undefined, { mode: "acceptEdits" });
+    await expect(response).resolves.toMatchObject({
+      hookSpecificOutput: { decision: { behavior: "allow", updatedPermissions: [
+        { type: "setMode", mode: "acceptEdits", destination: "session" },
+      ] } },
+    });
+    expect(broker.session("logical-session")?.nativePermissionModeChange).toMatchObject({
+      requestId: request.requestId, state: "requested", mode: "acceptEdits",
+    });
+    await post({ hook_event_name: "PostToolUse", tool_name: "ExitPlanMode", tool_input: input, tool_use_id: "native-tool", permission_mode: "acceptEdits" });
+    expect(broker.session("logical-session")?.nativePermissionModeChange?.state).toBe("confirmed");
+  });
+
+  it("returns the phone's feedback when ExitPlanMode is rejected to keep planning", async () => {
+    const { resolve, open } = await fixture();
+    const { request, response } = await open("ExitPlanMode", { plan: "# 计划" });
+    await resolve(request.requestId, "deny", undefined, undefined, { message: "先补充回滚方案" });
+    await expect(response).resolves.toEqual({
+      hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: "先补充回滚方案" } },
+    });
   });
 
   it.each([

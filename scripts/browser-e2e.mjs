@@ -701,7 +701,12 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     const dialog = page.getByRole("dialog", { name: "Claude 等待授权", exact: true });
     await dialog.waitFor();
     await dialog.getByRole("button", { name: decision === "deny" ? "拒绝" : "允许一次", exact: true }).click();
+    if (decision === "deny") {
+      await dialog.getByRole("textbox", { name: "拒绝原因", exact: true }).fill("改用只读检查");
+      await dialog.getByRole("button", { name: "拒绝", exact: true }).click();
+    }
     const response = await open.response;
+    if (decision === "deny") assert.equal(response.hookSpecificOutput.decision.message, "改用只读检查");
     assert.equal(response.hookSpecificOutput.decision.behavior, decision === "deny" ? "deny" : "allow");
     await eventually(() => host.nativeApproval.list().length, 0, "Native permission must resolve");
     const trace = host.nativeTrace.find((event) => event.type === "resolved" && event.requestId === open.request.requestId);
@@ -745,14 +750,26 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     await page.getByRole("button", { name: "确认完全授权", exact: true }).click();
     assert.deepEqual((await open.response).hookSpecificOutput.decision.updatedPermissions,
       [{ type: "setMode", mode: "bypassPermissions", destination: "session" }]);
-    await page.getByText("已请求此会话完全授权，等待 Desktop 确认", { exact: true }).waitFor();
+    await page.getByText("已请求切换为「完全授权」，等待 Desktop 确认", { exact: true }).waitFor();
     await host.nativeApproval.observe(open.request, mode);
-    await page.getByText(mode === "bypassPermissions" ? "Desktop 已确认本次授权变更" : "Desktop 未应用完全授权，后续请求仍需确认", { exact: true }).waitFor();
+    await page.getByText(mode === "bypassPermissions" ? "Desktop 已确认本次授权变更" : "Desktop 未切换为「完全授权」，后续请求仍需确认", { exact: true }).waitFor();
     assert.equal(host.snapshot.host.defaultPermissionMode, "standard");
     await page.screenshot({ path: resolve(directory, `native-mode-${mode}.png`), fullPage: true });
   }
   assert.equal(host.requests.filter((request) => request.method === "permission.policy.configure" || request.method === "turn.start").length, 0);
   steps.push("native full access returns the fixed session patch and waits for a matching Hook observation before reporting confirmation or rejection");
+
+  const planApproval = await host.nativeApproval.open("ExitPlanMode", { plan: "# 迁移计划\n\n1. 备份配置\n2. 切换中继" });
+  const planDialog = page.getByRole("dialog", { name: "Claude 等待授权", exact: true });
+  await planDialog.getByRole("heading", { name: "迁移计划" }).waitFor();
+  await page.screenshot({ path: resolve(directory, "native-exit-plan.png"), fullPage: true });
+  await planDialog.getByRole("button", { name: "是，自动接受编辑", exact: true }).click();
+  assert.deepEqual((await planApproval.response).hookSpecificOutput.decision.updatedPermissions,
+    [{ type: "setMode", mode: "acceptEdits", destination: "session" }]);
+  await page.getByText("已请求切换为「自动接受编辑」，等待 Desktop 确认", { exact: true }).waitFor();
+  await host.nativeApproval.observe(planApproval.request, "acceptEdits");
+  await page.getByText("Desktop 已确认本次授权变更", { exact: true }).waitFor();
+  steps.push("ExitPlanMode renders the plan and approves into the chosen session mode");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Native approval must fit the phone viewport");
 }
 
@@ -946,7 +963,7 @@ try {
               result = { held: true };
             } else if (nativePreview && request.method === "GET" && url.pathname === "/state") {
               result = { modeChange: previewHost.nativeApproval.modeChange(), hookResponse: previewHost.nativeResponse,
-                requests: previewHost.requests.map(({ method, params }) => ({ method, nativeMode: params.nativeMode,
+                requests: previewHost.requests.map(({ method, params }) => ({ method, mode: params.mode,
                   requestId: params.requestId, attachments: params.attachments?.length ?? 0 })), errors: infrastructureErrors };
             } else {
               response.statusCode = 404;

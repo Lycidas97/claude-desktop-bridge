@@ -885,9 +885,14 @@ export interface BridgeDeviceInfo {
   revokedAt?: number;
 }
 
+/** Claude permission mode a native session switches to when a request is approved. */
+export type BridgeNativePermissionMode = "default" | "acceptEdits" | "bypassPermissions";
+
 export interface BridgeNativePermissionModeChange {
   requestId: string;
   state: "requested" | "confirmed" | "not-applied";
+  /** Absent from hosts older than mode-aware approvals, which only requested bypassPermissions. */
+  mode?: BridgeNativePermissionMode;
   observedMode?: string;
 }
 

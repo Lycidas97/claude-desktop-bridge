@@ -29,6 +29,7 @@ import {
   type BridgeArtifactPreview,
   type BridgeConversationRoute,
   type BridgeHandoff,
+  type BridgeNativePermissionMode,
   type BridgePermissionInfo,
   type BridgePermissionMode,
   type BridgeProviderProfile,
@@ -1198,6 +1199,11 @@ export function useMobileBridge() {
     if (payload.kind === "snapshot") {
       const rebased = rebaseSnapshot(payload.snapshot, stateRef.current.events);
       const { snapshot, permissions } = rebased;
+      diagLog("info", "permission", `snapshot latestSeq=${rebased.latestSeq} permissions=${permissions.length}`, permissions.map((permission) => ({
+        requestId: permission.requestId,
+        sessionId: permission.sessionId,
+        toolName: permission.toolName,
+      })));
       // Receiving it already marked the desktop online. Its host.online can be stale: a restarting
       // desktop builds the snapshot before its relay state reads "connected" and sends it after.
       setState((current) => ({
@@ -1212,6 +1218,15 @@ export function useMobileBridge() {
       return;
     }
     if (payload.kind === "event") {
+      const { event } = payload;
+      if (/^(permission|question)\.(requested|resolved)$/u.test(event.type)) {
+        const snapshotSeq = stateRef.current.snapshot?.latestSeq ?? 0;
+        const dropped = event.seq <= snapshotSeq;
+        diagLog(dropped ? "warn" : "info", "permission", `${event.type} seq=${event.seq} snapshotSeq=${snapshotSeq}${dropped ? " 已忽略" : ""}`, {
+          requestId: event.data.requestId,
+          sessionId: event.sessionId,
+        }, dropped);
+      }
       setState((current) => {
         const permissions = payload.event.seq <= (current.snapshot?.latestSeq ?? 0)
           ? current.permissions
@@ -2878,16 +2893,18 @@ export function useMobileBridge() {
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
-    nativeMode?: "full-access",
+    mode?: BridgeNativePermissionMode,
   ) => {
+    diagLog("info", "permission", `resolve ${requestId} ${decision}${mode ? ` mode=${mode}` : ""}`);
     const response = await sendRequest("permission.resolve", {
       requestId,
       decision,
       ...(message ? { message } : {}),
       ...(updatedInput ? { updatedInput } : {}),
-      ...(nativeMode ? { nativeMode } : {}),
+      ...(mode ? { mode } : {}),
     }, { allowOffline: false, wait: true });
     if (!response?.ok) {
+      diagLog("error", "permission", `resolve ${requestId} 失败`, response?.error ?? "no response", true);
       if (response?.error?.code === "ALREADY_RESOLVED") {
         setState((current) => {
           const permissions = current.permissions.filter((permission) => permission.requestId !== requestId);

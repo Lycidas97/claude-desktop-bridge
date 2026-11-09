@@ -7222,36 +7222,137 @@ button:disabled {
   font-size: 10px;
 }
 
-.subagent-overflow {
+/* Background tasks: one line per task in the stream, details in the tray sheet. */
+.background-task-marker {
+  display: flex;
   width: min(100%, 680px);
   max-width: 100%;
-  margin: 0 0 14px;
-}
-
-.subagent-overflow > summary {
-  display: flex;
+  min-height: 36px;
   align-items: center;
   gap: 8px;
-  min-height: 44px;
-  padding: 10px 12px;
+  margin: 4px 0 10px;
+  padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
-  color: var(--text);
-  font-size: 12px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
   cursor: pointer;
-  list-style: none;
+  transition: border-color var(--t-fast) ease, background var(--t-fast) ease;
 }
 
-.subagent-overflow > summary::-webkit-details-marker { display: none; }
-.subagent-overflow > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.subagent-overflow > summary small { color: var(--muted); font-size: 11px; white-space: nowrap; }
-.subagent-overflow-chevron { flex: none; margin-left: auto; transition: transform 140ms ease; }
-.subagent-overflow-collapse { display: none; }
-.subagent-overflow[open] > summary .subagent-overflow-expand { display: none; }
-.subagent-overflow[open] > summary .subagent-overflow-collapse { display: inline; }
-.subagent-overflow[open] > summary .subagent-overflow-chevron { transform: rotate(180deg); }
-.subagent-overflow-body > .conversation-subagent-card:last-child { margin-bottom: 0; }
+.background-task-marker:hover { background: var(--surface-2); }
+.background-task-marker:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.background-task-marker.is-running { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--text); }
+.background-task-marker.is-entering { animation: stream-item-in var(--t-enter) var(--ease-out); }
+.background-task-marker > svg { flex: none; }
+.background-task-marker-text { flex: 1; min-width: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.background-task-marker-chevron { color: var(--muted); }
+
+.background-task-state { display: inline-grid; flex: none; place-items: center; color: var(--muted); }
+.background-task-state.is-running { color: var(--accent); }
+.background-task-state.is-completed { color: var(--success); }
+.background-task-state.is-failed { color: var(--danger); }
+
+.background-tasks-button { position: relative; }
+.background-tasks-count {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--surface);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.background-task-group { display: grid; gap: 6px; min-width: 0; }
+.background-task-group > h3 { margin: 0; color: var(--muted); font-size: 12px; font-weight: 650; }
+
+.background-task-entry {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--card-border, var(--line));
+  border-radius: 12px;
+  background: var(--card-fill, var(--surface));
+}
+
+.background-task-entry > .conversation-subagent-card,
+.workflow-phase-agents .conversation-subagent-card {
+  width: auto;
+  margin: 0 10px 10px;
+}
+
+/* The tray row above already names the task. */
+.background-task-entry .subagent-description { display: none; }
+
+.background-task-row {
+  display: flex;
+  width: 100%;
+  min-height: 46px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.background-task-row:disabled { cursor: default; opacity: 1; }
+.background-task-row > svg { flex: none; color: var(--muted); }
+.background-task-row > small { flex: none; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.background-task-row-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.background-task-row.is-nested { min-height: 38px; padding: 6px 12px 6px 0; font-size: 12.5px; }
+
+.workflow-timeline { margin: 0; padding: 0 12px 10px 18px; list-style: none; }
+
+.workflow-phase {
+  position: relative;
+  padding-left: 18px;
+  border-left: 2px solid var(--line);
+}
+
+.workflow-phase:last-child { border-left-color: transparent; }
+.workflow-phase.is-running { border-left-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.workflow-phase.is-completed { border-left-color: color-mix(in srgb, var(--success) 55%, var(--line)); }
+
+.workflow-phase-header {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.workflow-phase-header > small { margin-left: auto; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.workflow-phase.is-pending .workflow-phase-header { color: var(--muted); }
+
+.workflow-phase-dot {
+  position: absolute;
+  left: -7px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.workflow-phase.is-running .workflow-phase-dot { border-color: var(--accent); background: var(--accent-soft); }
+.workflow-phase.is-completed .workflow-phase-dot { border-color: var(--success); background: var(--success); }
+.workflow-phase.is-failed .workflow-phase-dot { border-color: var(--danger); }
+
+.workflow-phase-agents { margin: 0 0 6px; padding: 0; list-style: none; }
 
 .conversation-subagent-card {
   width: min(100%, 680px);

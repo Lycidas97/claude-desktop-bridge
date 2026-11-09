@@ -1,9 +1,10 @@
 import { createReadStream } from "node:fs";
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   isClaudeTranscriptControlMessage,
+  type BridgeBackgroundTask,
   type BridgeHistoryPage,
   type BridgeInteractiveAction,
   type BridgeInteractivePrompt,
@@ -1519,7 +1520,10 @@ export async function getClaudeSubagentsMtimeMs(transcriptPath: string): Promise
   const subagentsDir = subagentsDirectoryForTranscript(transcriptPath);
   const files = await collectSubagentJsonlFiles(subagentsDir);
   if (files.length === 0) return 0;
-  let maxMtime = 0;
+  // A workflow journal records phase results after its agent's transcript stops changing.
+  const journals = [...new Set(files.filter((file) => /[\\/]workflows[\\/]wf_[^\\/]+[\\/]agent-[^\\/]+$/u.test(file))
+    .map((file) => join(dirname(file), "journal.jsonl")))];
+  let maxMtime = Math.max(0, ...await Promise.all(journals.map((file) => stat(file).then((s) => s.mtimeMs, () => 0))));
   for (const file of files) {
     const [jsonlMtime, metaMtime] = await Promise.all([
       stat(file).then((s) => s.mtimeMs, () => 0),
@@ -1672,6 +1676,8 @@ async function parseSingleSubagentFile(
   const agentType = typeof meta.agentType === "string" && meta.agentType
     ? meta.agentType
     : undefined;
+  const workflowRunId = /[\\/]workflows[\\/](wf_[^\\/]+)[\\/]agent-[^\\/]+$/u.exec(jsonlPath)?.[1];
+  const workflowPhase = typeof meta.workflowPhase === "string" && meta.workflowPhase ? meta.workflowPhase : undefined;
   const effectiveStartedAt = startedAt || updatedAt || Date.now();
   const effectiveUpdatedAt = Math.max(effectiveStartedAt, updatedAt || Math.round(fileStat.mtimeMs));
   const state: BridgeSubagentSummary["state"] = explicitlyFinished
@@ -1694,6 +1700,8 @@ async function parseSingleSubagentFile(
     startedAt: effectiveStartedAt,
     updatedAt: effectiveUpdatedAt,
     durationMs: Math.max(0, effectiveUpdatedAt - effectiveStartedAt),
+    ...(workflowRunId ? { workflowRunId } : {}),
+    ...(workflowPhase ? { workflowPhase } : {}),
   };
   if (subagentSummaryCache.size > 2_000) {
     const oldestKey = subagentSummaryCache.keys().next().value;
@@ -1703,19 +1711,31 @@ async function parseSingleSubagentFile(
   return summary;
 }
 
-const parentSubagentCache = new Map<string, {
-  signature: string;
+interface ParentBackgroundLaunch {
+  kind: "bash" | "workflow";
+  taskId: string;
+  toolUseId: string;
+  runId?: string;
+  name?: string;
+  description: string;
+  state: BridgeSubagentSummary["state"];
+  startedAt: number;
+  updatedAt: number;
+}
+
+interface ParentTranscriptTasks {
   summaries: BridgeSubagentSummary[];
+  launches: ParentBackgroundLaunch[];
   compactedAt: number;
   taskStates: Map<string, { state: BridgeSubagentSummary["state"]; at: number }>;
   excludedTasks: Set<string>;
-}>();
+}
 
-async function parseParentTranscriptSubagents(
-  transcriptPath: string,
-): Promise<{ summaries: BridgeSubagentSummary[]; compactedAt: number; taskStates: Map<string, { state: BridgeSubagentSummary["state"]; at: number }>; excludedTasks: Set<string> }> {
+const parentSubagentCache = new Map<string, ParentTranscriptTasks & { signature: string }>();
+
+async function parseParentTranscriptSubagents(transcriptPath: string): Promise<ParentTranscriptTasks> {
   const fileStat = await stat(transcriptPath).catch(() => undefined);
-  if (!fileStat) return { summaries: [], compactedAt: 0, taskStates: new Map(), excludedTasks: new Set() };
+  if (!fileStat) return { summaries: [], launches: [], compactedAt: 0, taskStates: new Map(), excludedTasks: new Set() };
   const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}`;
   const cached = parentSubagentCache.get(transcriptPath);
   if (cached && cached.signature === cacheSignature) return cached;
@@ -1740,7 +1760,10 @@ async function parseParentTranscriptSubagents(
   const toolIdByAgentId = new Map<string, string>();
   const reportsByAgentId = new Map<string, { text: string; at: number }>();
   const endedByAgentId = new Map<string, BridgeSubagentSummary["state"]>();
+  const endedAt = new Map<string, number>();
   const stopRequests = new Map<string, string>();
+  const backgroundCalls = new Map<string, { name: "Bash" | "Workflow"; description: string; inherited: boolean }>();
+  const launches: Array<Omit<ParentBackgroundLaunch, "state" | "updatedAt"> & { inherited: boolean }> = [];
 
   try {
     const lines = createInterface({
@@ -1779,7 +1802,8 @@ async function parseParentTranscriptSubagents(
       }
       if (value.type === "attachment" && isRecord(value.attachment)) {
         const task = value.attachment;
-        if (task.type === "task_status" && task.taskType === "local_agent" && typeof task.taskId === "string"
+        if (task.type === "task_status" && typeof task.taskId === "string"
+          && (task.taskType === "local_agent" || task.taskType === "local_bash" || task.taskType === "local_workflow")
           && (task.status === "running" || task.status === "pending" || task.status === "paused"
             || task.status === "completed" || task.status === "failed" || task.status === "stopped")) {
           taskStates.set(task.taskId, {
@@ -1794,6 +1818,17 @@ async function parseParentTranscriptSubagents(
           if (!isRecord(block) || block.type !== "tool_use" || typeof block.id !== "string") continue;
           if (block.name === "TaskStop" && isRecord(block.input) && typeof block.input.task_id === "string") {
             stopRequests.set(block.id, block.input.task_id);
+            continue;
+          }
+          if (block.name === "Bash" || block.name === "Workflow") {
+            const input = isRecord(block.input) ? block.input : {};
+            const label = [input.description, input.command, input.name]
+              .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
+            backgroundCalls.set(block.id, {
+              name: block.name,
+              description: label?.trim().slice(0, 120) ?? block.name,
+              inherited: Boolean(anchorUuid && inherited.has(anchorUuid)),
+            });
             continue;
           }
           if (block.name !== "Agent" && block.name !== "Task") continue;
@@ -1826,6 +1861,24 @@ async function parseParentTranscriptSubagents(
               && typeof result.message === "string" && result.message.startsWith("Successfully stopped task:")) {
               taskStates.set(stoppedId, { state: "stopped", at: ts });
             }
+            const background = backgroundCalls.get(block.tool_use_id);
+            if (background && block.is_error !== true && isRecord(result)) {
+              const taskId = background.name === "Bash" ? result.backgroundTaskId : result.taskId;
+              if (typeof taskId === "string" && taskId) {
+                const name = typeof result.workflowName === "string" && result.workflowName ? result.workflowName : undefined;
+                const summary = typeof result.summary === "string" && result.summary.trim() ? result.summary.trim() : undefined;
+                launches.push({
+                  kind: background.name === "Bash" ? "bash" : "workflow",
+                  taskId,
+                  toolUseId: block.tool_use_id,
+                  ...(typeof result.runId === "string" && result.runId ? { runId: result.runId } : {}),
+                  ...(name ? { name } : {}),
+                  description: summary ?? name ?? background.description,
+                  startedAt: ts,
+                  inherited: background.inherited,
+                });
+              }
+            }
             const call = callsByToolId.get(block.tool_use_id);
             if (!call) continue;
             const txt = textFromContent(block.content);
@@ -1848,6 +1901,7 @@ async function parseParentTranscriptSubagents(
             // One notification can end several tasks.
             for (const match of rawText.matchAll(/<task-id>([^<]+)<\/task-id>/gu)) {
               endedByAgentId.set(match[1]!, status === "completed" ? "completed" : status === "failed" ? "failed" : "stopped");
+              endedAt.set(match[1]!, ts);
             }
           }
         }
@@ -1863,7 +1917,7 @@ async function parseParentTranscriptSubagents(
       }
     }
   } catch {
-    return { summaries: [], compactedAt: 0, taskStates: new Map(), excludedTasks };
+    return { summaries: [], launches: [], compactedAt: 0, taskStates: new Map(), excludedTasks };
   }
 
   const results: BridgeSubagentSummary[] = [];
@@ -1889,7 +1943,19 @@ async function parseParentTranscriptSubagents(
     const oldestKey = parentSubagentCache.keys().next().value;
     if (typeof oldestKey === "string") parentSubagentCache.delete(oldestKey);
   }
-  const result = { summaries: results, compactedAt, taskStates, excludedTasks };
+  const result: ParentTranscriptTasks = {
+    summaries: results,
+    launches: launches.map(({ inherited: inheritedLaunch, ...launch }) => {
+      const task = taskStates.get(launch.taskId);
+      const ended = endedByAgentId.get(launch.taskId) ?? (task && task.state !== "running" ? task.state : undefined);
+      return {
+        ...launch,
+        state: ended ?? (inheritedLaunch ? "unknown" : "running"),
+        updatedAt: Math.max(launch.startedAt, endedAt.get(launch.taskId) ?? task?.at ?? 0),
+      };
+    }),
+    compactedAt, taskStates, excludedTasks,
+  };
   parentSubagentCache.set(transcriptPath, { signature: cacheSignature, ...result });
   return result;
 }
@@ -1950,6 +2016,150 @@ export async function readClaudeTranscriptSubagents(
       return subagent;
     })
     .sort((left, right) => left.startedAt - right.startedAt || left.agentId.localeCompare(right.agentId));
+}
+
+const workflowFileCache = new Map<string, { signature: string; value: unknown }>();
+
+/** Reads a small file once per mtime/size; parse failures surface as undefined (files may be mid-write). */
+async function readCachedWorkflowFile<T>(path: string, parse: (text: string) => T): Promise<T | undefined> {
+  const fileStat = await stat(path).catch(() => undefined);
+  if (!fileStat) return undefined;
+  const signature = `${fileStat.mtimeMs}:${fileStat.size}`;
+  const cached = workflowFileCache.get(path);
+  if (cached?.signature === signature) return cached.value as T;
+  let value: T | undefined;
+  try {
+    value = parse(await readFile(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+  workflowFileCache.set(path, { signature, value });
+  return value;
+}
+
+/** Tray entries ride along in every session snapshot; the full report stays in history items. */
+export function compactTraySubagent(subagent: BridgeSubagentSummary): BridgeSubagentSummary {
+  const { reportText: _reportText, latestText, ...rest } = subagent;
+  return { ...rest, ...(latestText ? { latestText: latestText.length > 280 ? `${latestText.slice(0, 279)}…` : latestText } : {}) };
+}
+
+/**
+ * Live phases come from the run's journal (`started` / `result` events). The run summary is
+ * only written when a run ends (and may be stale while a resumed run is live), so it only
+ * contributes the phase plan and run name.
+ */
+async function readClaudeWorkflowRun(
+  transcriptPath: string,
+  runId: string,
+  runState: BridgeSubagentSummary["state"],
+  subagents: readonly BridgeSubagentSummary[],
+): Promise<NonNullable<BridgeBackgroundTask["workflow"]>> {
+  const sessionDir = transcriptPath.replace(/\.jsonl$/u, "");
+  const [journal, summary] = await Promise.all([
+    readCachedWorkflowFile(join(sessionDir, "subagents", "workflows", runId, "journal.jsonl"), (text) => text.split("\n").flatMap((line) => {
+      try {
+        const value = JSON.parse(line) as unknown;
+        return isRecord(value) && typeof value.agentId === "string" ? [value] : [];
+      } catch {
+        return [];
+      }
+    })),
+    readCachedWorkflowFile(join(sessionDir, "workflows", `${runId}.json`), (text) => JSON.parse(text) as unknown),
+  ]);
+  const phases = isRecord(summary) && Array.isArray(summary.phases)
+    ? summary.phases.flatMap((phase) => isRecord(phase) && typeof phase.title === "string" ? [phase.title] : [])
+    : [];
+  const files = new Map(subagents.filter((agent) => agent.workflowRunId === runId).map((agent) => [agent.agentId, agent]));
+  const agents = new Map<string, BridgeSubagentSummary>();
+  const finished = new Set((journal ?? []).filter((event) => event.type === "result").map((event) => event.agentId as string));
+  for (const event of journal ?? []) {
+    if (event.type !== "started") continue;
+    const agentId = event.agentId as string;
+    const file = files.get(agentId);
+    const phase = typeof event.phase === "string" && event.phase ? event.phase : file?.workflowPhase;
+    const label = typeof event.label === "string" && event.label ? event.label : undefined;
+    const state = file?.state === "failed" ? "failed"
+      : finished.has(agentId) ? "completed"
+        : file?.state ?? (runState === "running" ? "running" : runState);
+    agents.set(agentId, {
+      agentId,
+      description: label ?? file?.description ?? agentId,
+      state,
+      toolCount: file?.toolCount ?? 0,
+      startedAt: file?.startedAt ?? 0,
+      updatedAt: file?.updatedAt ?? 0,
+      workflowRunId: runId,
+      ...(phase ? { workflowPhase: phase } : {}),
+    });
+  }
+  // Workflows can run dozens of agents; members carry only what the phase timeline shows.
+  for (const file of files.values()) {
+    if (agents.has(file.agentId)) continue;
+    const { agentId, description, state, toolCount, startedAt, updatedAt, workflowPhase } = file;
+    agents.set(agentId, { agentId, description, state, toolCount, startedAt, updatedAt, workflowRunId: runId, ...(workflowPhase ? { workflowPhase } : {}) });
+  }
+  for (const agent of agents.values()) {
+    if (agent.workflowPhase && !phases.includes(agent.workflowPhase)) phases.push(agent.workflowPhase);
+  }
+  const name = isRecord(summary) && typeof summary.workflowName === "string" && summary.workflowName
+    ? summary.workflowName : undefined;
+  return { runId, ...(name ? { name } : {}), phases, agents: [...agents.values()] };
+}
+
+/**
+ * Every background task the parent transcript and its `subagents/` tree know about:
+ * agents (outside workflows), Workflow runs with their phase timeline, and backgrounded Bash.
+ * @param subagents Result of readClaudeTranscriptSubagents for the same transcript.
+ */
+export async function readClaudeTranscriptBackgroundTasks(
+  transcriptPath: string,
+  subagents: readonly BridgeSubagentSummary[],
+  liveSince?: number,
+): Promise<BridgeBackgroundTask[]> {
+  const parent = await parseParentTranscriptSubagents(transcriptPath);
+  const tasks: BridgeBackgroundTask[] = subagents.filter((agent) => !agent.workflowRunId).map((agent) => ({
+    id: agent.toolUseId ?? `task:${agent.agentId}`,
+    kind: "subagent",
+    taskId: agent.agentId,
+    ...(agent.toolUseId ? { toolUseId: agent.toolUseId } : {}),
+    description: agent.description,
+    state: agent.state,
+    startedAt: agent.startedAt,
+    updatedAt: agent.updatedAt,
+    subagent: compactTraySubagent(agent),
+  }));
+  // A resumed workflow relaunches the same run directory; the latest launch describes it.
+  const latestRun = new Map(parent.launches.filter((launch) => launch.runId).map((launch) => [launch.runId, launch]));
+  for (const launch of parent.launches) {
+    if (launch.runId && latestRun.get(launch.runId) !== launch) continue;
+    let state = launch.state;
+    let updatedAt = launch.updatedAt;
+    // Background shells and workflow runs live inside the process that launched them.
+    if (state === "running" && !subagentProcessLive(launch.startedAt, liveSince)) state = "stopped";
+    else if (state === "running" && launch.startedAt < parent.compactedAt && updatedAt < parent.compactedAt) {
+      state = "unknown";
+      updatedAt = Math.max(updatedAt, parent.compactedAt);
+    }
+    const workflow = launch.kind === "workflow" && launch.runId
+      ? await readClaudeWorkflowRun(transcriptPath, launch.runId, state, subagents)
+      : undefined;
+    if (workflow) {
+      updatedAt = Math.max(updatedAt, ...workflow.agents.map((agent) => agent.updatedAt));
+      if (!workflow.name && launch.name) workflow.name = launch.name;
+    }
+    tasks.push({
+      id: launch.toolUseId,
+      kind: launch.kind,
+      taskId: launch.taskId,
+      toolUseId: launch.toolUseId,
+      description: launch.description,
+      state,
+      startedAt: launch.startedAt,
+      updatedAt,
+      ...(workflow ? { workflow } : {}),
+    });
+  }
+  return tasks.sort((left, right) => right.startedAt - left.startedAt);
 }
 
 export async function readClaudeSessionSubagents(

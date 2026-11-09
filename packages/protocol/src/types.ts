@@ -584,6 +584,8 @@ export interface BridgeSessionInfo {
   executionStage?: "starting" | "submitted" | "running";
   /** Subagents not yet ended. They outlive the main conversation, which turnState describes. */
   runningSubagents?: { count: number; lastUpdatedAt: number };
+  /** Running background tasks plus the most recent finished ones, newest first. */
+  backgroundTasks?: BridgeBackgroundTask[];
   /** What subagent.stop can reach: that one task, or only the session's whole Claude process. */
   subagentStopScope?: "task" | "process";
   /** Set when the running main turn can only be stopped by ending the Desktop process that runs it. */
@@ -778,6 +780,35 @@ export interface BridgeSubagentSummary {
   startedAt: number;
   updatedAt: number;
   durationMs?: number;
+  /** Set for background tasks that are not agents (host task_type local_bash / local_workflow). */
+  taskKind?: "bash" | "workflow";
+  /** Workflow run directory (`wf_*`) for agents spawned by a Workflow script. */
+  workflowRunId?: string;
+  workflowPhase?: string;
+}
+
+export interface BridgeWorkflowRun {
+  runId: string;
+  name?: string;
+  /** Phase titles in script order; agents reference them through workflowPhase. */
+  phases: string[];
+  /** Report and live text are omitted; history items carry them. */
+  agents: BridgeSubagentSummary[];
+}
+
+/** One entry in a session's background task tray. */
+export interface BridgeBackgroundTask {
+  /** Tool use that launched the task, else `task:<taskId>`. */
+  id: string;
+  kind: "subagent" | "workflow" | "bash";
+  taskId?: string;
+  toolUseId?: string;
+  description: string;
+  state: BridgeSubagentSummary["state"];
+  startedAt: number;
+  updatedAt: number;
+  subagent?: BridgeSubagentSummary;
+  workflow?: BridgeWorkflowRun;
 }
 
 export interface BridgeInteractiveAction {

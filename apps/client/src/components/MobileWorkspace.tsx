@@ -51,6 +51,7 @@ import {
   Forward,
   GitFork,
   Goal,
+  Layers,
   LoaderCircle,
   MessageSquare,
   MoreHorizontal,
@@ -67,7 +68,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   LocalTurn,
   MobileConnectionIssue,
@@ -93,6 +94,7 @@ import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeId, desktopRuntimeName, isNativeRuntimeId, runtimeProviderLabel } from "../lib/runtime-labels.js";
 import { useStreamEntrance } from "../lib/stream-entrance.js";
 import { backgroundSubagentBadge, formatElapsed, sessionActivity, sessionQueueLabel, subagentStalledSeconds } from "../lib/session-activity.js";
+import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "./BackgroundTasks.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { DesktopHandoffNotice } from "./DesktopHandoffNotice.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
@@ -256,15 +258,18 @@ function conciseSessionSubtitle(session: BridgeSessionInfo): string {
 type DisplayTimelineNode =
   | ConversationTimelineEntry
   | { kind: "tool-group"; id: string; tools: ConversationItem[] }
-  | { kind: "subagent-group"; id: string; agents: ConversationItem[] };
+  | { kind: "background-task"; id: string; item: ConversationItem };
 
 function groupTimelineTools(timeline: ConversationTimelineEntry[]): DisplayTimelineNode[] {
   const result: DisplayTimelineNode[] = [];
+  const workflowRuns = new Set<string>();
   for (const entry of timeline) {
     if (entry.kind === "message" && entry.item.subagent) {
-      const previous = result.at(-1);
-      if (previous?.kind === "subagent-group") previous.agents.push(entry.item);
-      else result.push({ kind: "subagent-group", id: `subagent-group:${entry.item.id}`, agents: [entry.item] });
+      // Details live in the background task sheet; a workflow run gets one line for all its agents.
+      const runId = entry.item.subagent.workflowRunId;
+      if (runId && workflowRuns.has(runId)) continue;
+      if (runId) workflowRuns.add(runId);
+      result.push({ kind: "background-task", id: runId ? `workflow:${runId}` : entry.item.id, item: entry.item });
       continue;
     }
     if (entry.kind === "message" && entry.item.role === "tool" && !entry.item.subagent) {
@@ -1821,6 +1826,8 @@ export function MobileWorkspace({
     scope: "task" | "process";
   }>();
   const [subagentStopBusy, setSubagentStopBusy] = useState(false);
+  /** Open background task sheet, with the stream item it was opened from. */
+  const [backgroundTasksOpen, setBackgroundTasksOpen] = useState<{ focus?: ConversationItem }>();
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [syncFlash, setSyncFlash] = useState(false);
@@ -2068,6 +2075,10 @@ export function MobileWorkspace({
         if (!subagentStopBusy) setStopSubagentTarget(undefined);
         return true;
       }
+      if (backgroundTasksOpen) {
+        setBackgroundTasksOpen(undefined);
+        return true;
+      }
       if (menuSessionId) {
         setMenuSessionId(undefined);
         return true;
@@ -2109,6 +2120,7 @@ export function MobileWorkspace({
     pendingFileDownload,
     stopSubagentTarget,
     subagentStopBusy,
+    backgroundTasksOpen,
     permissionOpen,
     providerOpen,
     relayOpen,
@@ -2840,6 +2852,8 @@ export function MobileWorkspace({
       ? sessions.find((session) => session.sessionId === otherPermission.sessionId)
       : undefined;
     const displayNodes = groupTimelineTools(timeline);
+    const backgroundTasks = selectedSession.backgroundTasks ?? [];
+    const runningBackgroundTasks = backgroundTasks.filter((task) => task.state === "running").length;
     const renderSubagent = (item: ConversationItem) => (
       <SubagentCard
         item={item}
@@ -2890,10 +2904,22 @@ export function MobileWorkspace({
             }
           }}
           actions={(
-            <IconButton label="会话操作" onClick={() => {
-              setSessionActionError(undefined);
-              setMenuSessionId(selectedSession.sessionId);
-            }}><MoreHorizontal size={22} /></IconButton>
+            <>
+              {backgroundTasks.length > 0 && (
+                <IconButton
+                  label={runningBackgroundTasks > 0 ? `后台任务，${runningBackgroundTasks} 个运行中` : "后台任务"}
+                  className="background-tasks-button"
+                  onClick={() => setBackgroundTasksOpen({})}
+                >
+                  <Layers size={20} />
+                  {runningBackgroundTasks > 0 && <span className="background-tasks-count">{runningBackgroundTasks}</span>}
+                </IconButton>
+              )}
+              <IconButton label="会话操作" onClick={() => {
+                setSessionActionError(undefined);
+                setMenuSessionId(selectedSession.sessionId);
+              }}><MoreHorizontal size={22} /></IconButton>
+            </>
           )}
         />
         <DesktopHandoffNotice
@@ -3065,6 +3091,16 @@ export function MobileWorkspace({
             if (stopTarget) void stopTask(stopTarget.sessionId);
           }}
         />
+        {backgroundTasksOpen && (
+          <BackgroundTasksSheet
+            sessionId={selectedSession.sessionId}
+            tasks={backgroundTasks}
+            items={items}
+            {...(backgroundTasksOpen.focus ? { focus: backgroundTasksOpen.focus } : {})}
+            renderSubagent={renderSubagent}
+            onClose={() => setBackgroundTasksOpen(undefined)}
+          />
+        )}
         <ConfirmationDialog
           open={Boolean(stopSubagentTarget)}
           title={stopSubagentTarget?.scope === "process" ? "结束这个会话的 Claude 进程？" : "停止这个子代理？"}
@@ -3201,24 +3237,16 @@ export function MobileWorkspace({
                 </details>
               );
             }
-            if (node.kind === "subagent-group") {
-              const hiddenAgents = node.agents.slice(3);
-              const running = hiddenAgents.filter(item => item.subagent!.state === "running").length;
+            if (node.kind === "background-task") {
+              const task = findBackgroundTask(backgroundTasks, node.item.subagent!);
               return (
-                <Fragment key={`${selectedSession.sessionId}:${node.id}`}>
-                  {node.agents.slice(0, 3).map(renderSubagent)}
-                  {hiddenAgents.length > 0 && (
-                    <details className="subagent-overflow" data-stream-key={`${node.id}:overflow`} key={`${node.id}:overflow`}>
-                      <summary>
-                        <span className="subagent-overflow-expand">展开其余 {hiddenAgents.length} 个子代理</span>
-                        <span className="subagent-overflow-collapse">收起其余 {hiddenAgents.length} 个子代理</span>
-                        {running > 0 && <small>{running} 个运行中</small>}
-                        <ChevronDown size={16} className="subagent-overflow-chevron" aria-hidden="true" />
-                      </summary>
-                      <div className="subagent-overflow-body">{hiddenAgents.map(renderSubagent)}</div>
-                    </details>
-                  )}
-                </Fragment>
+                <BackgroundTaskMarker
+                  key={`${selectedSession.sessionId}:${node.id}`}
+                  item={node.item}
+                  {...(task ? { task } : {})}
+                  entering={streamEntering(node.item.id)}
+                  onOpen={() => setBackgroundTasksOpen({ focus: node.item })}
+                />
               );
             }
             const item = node.item;

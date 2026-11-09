@@ -7,6 +7,7 @@ import { basename, dirname, isAbsolute, join, normalize } from "node:path";
 import type {
   BridgeAttachment,
   BridgeConfigurationSource,
+  BridgeBackgroundTask,
   BridgeEffort,
   BridgeHistoryPage,
   BridgeOwnershipState,
@@ -41,6 +42,7 @@ import {
 } from "./claude-desktop-sessions.js";
 import { signalProcess } from "./claude-desktop-lifecycle.js";
 import {
+  compactTraySubagent,
   findClaudeTranscriptFile,
   isNonDagTranscriptRecord,
   parseClaudeTranscriptSnapshot,
@@ -232,6 +234,7 @@ export interface TranscriptObserverRuntime {
   isWaitingForUserInput?(sessionId: string): boolean;
   hasPendingBackgroundShellTasks?(sessionId: string): boolean;
   runningSubagents(sessionId: string): { count: number; lastUpdatedAt: number } | undefined;
+  backgroundTasks?(sessionId: string): readonly BridgeBackgroundTask[];
   externalWriteVersion(sessionId: string): number;
   canStartBridgeHost(sessionId: string, reusingIdleHost?: boolean): Promise<boolean>;
   onCatalog(listener: (catalog: ClaudeCatalogSnapshot) => void): () => void;
@@ -672,6 +675,38 @@ export class SessionBroker extends EventEmitter {
     return [...grouped.values()].sort((left, right) => right.lastActivityAt - left.lastActivityAt);
   }
 
+  /**
+   * Transcript-derived tasks, overridden by live host task state where the SDK owns the session.
+   * Every session snapshot carries this list, so it keeps running tasks plus at most ten
+   * finished ones from the last six hours.
+   */
+  private backgroundTasks(sessionId: string): BridgeBackgroundTask[] {
+    const tasks = new Map((this.options.observer.backgroundTasks?.(sessionId) ?? []).map((task) => [task.id, task]));
+    for (const { task, summary } of this.taskState.hostTasks(sessionId)) {
+      const existing = tasks.get(task.toolUseId ?? `task:${task.taskId}`)
+        ?? [...tasks.values()].find((candidate) => candidate.taskId === task.taskId);
+      const kind = existing?.kind
+        ?? (task.taskType === "local_bash" ? "bash" : task.taskType === "local_workflow" ? "workflow" : "subagent");
+      const id = existing?.id ?? task.toolUseId ?? `task:${task.taskId}`;
+      tasks.set(id, {
+        ...existing,
+        id,
+        kind,
+        taskId: task.taskId,
+        ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
+        description: task.description || existing?.description || summary.description,
+        state: summary.state,
+        startedAt: existing?.startedAt ?? summary.startedAt,
+        updatedAt: Math.max(existing?.updatedAt ?? 0, summary.updatedAt),
+        ...(kind === "subagent" ? { subagent: compactTraySubagent({ ...existing?.subagent, ...summary }) } : {}),
+      });
+    }
+    const finished = [...tasks.values()].filter((task) => task.state !== "running" && Date.now() - task.updatedAt < 6 * 60 * 60_000)
+      .sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 10);
+    return [...tasks.values()].filter((task) => task.state === "running").concat(finished)
+      .sort((left, right) => right.startedAt - left.startedAt);
+  }
+
   listSessions(projectId?: string, search?: string): BridgeSessionInfo[] {
     const observed = new Map(this.catalog.sessions.map((session) => [session.sessionId, session]));
     const archived = new Map((this.catalog.archivedSessions ?? []).map((session) => [session.sessionId, session]));
@@ -742,8 +777,10 @@ export class SessionBroker extends EventEmitter {
       const runningSubagents = this.taskState.hasAuthority(sessionId)
         ? this.taskState.runningSubagents(sessionId)
         : this.options.observer.runningSubagents(sessionId);
+      const backgroundTasks = this.backgroundTasks(sessionId);
       const item: BridgeSessionInfo = {
         sessionId,
+        ...(backgroundTasks.length ? { backgroundTasks } : {}),
         ...(runningSubagents ? {
           runningSubagents,
           ...(state?.host

@@ -2,11 +2,12 @@ import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { BridgeSubagentSummary, ClaudeHistoryMessage } from "@bridge/protocol";
+import type { BridgeBackgroundTask, ClaudeHistoryMessage } from "@bridge/protocol";
 import {
   ClaudeTranscriptEvidenceCursor,
   getClaudeSubagentsMtimeMs,
   parseClaudeTranscriptSnapshot,
+  readClaudeTranscriptBackgroundTasks,
   readClaudeTranscriptSubagents,
 } from "./claude-history.js";
 import type { ObservedDesktopEvidence } from "./evidence-manager.js";
@@ -51,6 +52,7 @@ export class TranscriptObserver extends EventEmitter {
   private readonly knownEvidence = new Map<string, string>();
   private readonly knownSubagents = new Map<string, Map<string, string>>();
   private readonly runningSubagentSessions = new Map<string, { count: number; lastUpdatedAt: number }>();
+  private readonly backgroundTaskSessions = new Map<string, BridgeBackgroundTask[]>();
   private readonly sessionAliases = new Map<string, string>();
   private readonly hostTaskAuthority = new Set<string>();
   private readonly pendingSubagentRefresh = new Set<string>();
@@ -121,6 +123,10 @@ export class TranscriptObserver extends EventEmitter {
 
   runningSubagents(sessionId: string): { count: number; lastUpdatedAt: number } | undefined {
     return this.runningSubagentSessions.get(this.session(sessionId)?.sessionId ?? sessionId);
+  }
+
+  backgroundTasks(sessionId: string): readonly BridgeBackgroundTask[] {
+    return this.backgroundTaskSessions.get(this.session(sessionId)?.sessionId ?? sessionId) ?? [];
   }
 
   externalWriteVersion(sessionId: string): number {
@@ -256,9 +262,10 @@ export class TranscriptObserver extends EventEmitter {
     for (const { session, mtimeMs } of mtimes) {
       const previousMtime = this.lastMtime.get(session.sessionId);
       if (previousMtime === mtimeMs) {
-        // Process exit may write nothing, so re-read while any subagent runs.
-        if (this.runningSubagentSessions.has(session.sessionId) || this.pendingSubagentRefresh.has(session.sessionId)) {
-          await this.observeSubagents(session, false);
+        // Process exit may write nothing, so re-read while any subagent or background task runs.
+        if (this.runningSubagentSessions.has(session.sessionId) || this.pendingSubagentRefresh.has(session.sessionId)
+          || this.backgroundTaskSessions.get(session.sessionId)?.some((task) => task.state === "running")) {
+          if (await this.observeSubagents(session, false)) changed = true;
           if (!this.runningSubagentSessions.has(session.sessionId)) changed = true;
         }
         continue;
@@ -351,12 +358,15 @@ export class TranscriptObserver extends EventEmitter {
     }
   }
 
-  private async observeSubagents(session: ObservedClaudeSession, primeOnly: boolean): Promise<void> {
-    if (!session.transcriptPath) return;
-    const subagents = await readClaudeTranscriptSubagents(
-      session.transcriptPath,
-      oldestLiveProcessStart(session.activeProcesses),
-    );
+  /** Resolves true when the session's background task list changed. */
+  private async observeSubagents(session: ObservedClaudeSession, primeOnly: boolean): Promise<boolean> {
+    if (!session.transcriptPath) return false;
+    const liveSince = oldestLiveProcessStart(session.activeProcesses);
+    const subagents = await readClaudeTranscriptSubagents(session.transcriptPath, liveSince);
+    const tasks = await readClaudeTranscriptBackgroundTasks(session.transcriptPath, subagents, liveSince);
+    const tasksChanged = JSON.stringify(tasks) !== JSON.stringify(this.backgroundTaskSessions.get(session.sessionId) ?? []);
+    if (tasks.length) this.backgroundTaskSessions.set(session.sessionId, tasks);
+    else this.backgroundTaskSessions.delete(session.sessionId);
     const running = subagents.filter((subagent) => subagent.state === "running");
     if (running.length > 0) {
       this.runningSubagentSessions.set(session.sessionId, {
@@ -368,7 +378,7 @@ export class TranscriptObserver extends EventEmitter {
     }
     this.pendingSubagentRefresh.delete(session.sessionId);
     const sessionId = this.sessionAliases.get(session.sessionId) ?? session.sessionId;
-    if (this.hostTaskAuthority.has(sessionId)) return;
+    if (this.hostTaskAuthority.has(sessionId)) return tasksChanged;
     const known = this.knownSubagents.get(session.sessionId) ?? new Map<string, string>();
     for (const subagent of subagents) {
       const itemId = subagent.toolUseId ?? `subagent:${subagent.agentId}`;
@@ -401,6 +411,7 @@ export class TranscriptObserver extends EventEmitter {
       });
     }
     this.knownSubagents.set(session.sessionId, known);
+    return tasksChanged;
   }
 
   private updateTurnBoundary(

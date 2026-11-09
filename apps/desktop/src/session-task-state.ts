@@ -50,6 +50,8 @@ export class SessionTaskState {
       agentId: task.taskId,
       ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
       ...(task.subagentType ? { agentType: task.subagentType } : {}),
+      ...(task.taskType === "local_bash" ? { taskKind: "bash" as const }
+        : task.taskType === "local_workflow" ? { taskKind: "workflow" as const } : {}),
       description: task.description,
       state: running ? "running" : task.state as BridgeSubagentSummary["state"],
       toolCount: task.usage?.toolUses ?? previous?.toolCount ?? 0,
@@ -158,6 +160,14 @@ export class SessionTaskState {
     const session = this.sessions.get(sessionId);
     const record = session && this.find(session, id);
     return record?.source === "host" && record.generation === session?.generation ? record.task : undefined;
+  }
+
+  /** Host-reported tasks of the live generation, with their merged summaries. */
+  hostTasks(sessionId: string): Array<{ task: SessionHostBackgroundTask; summary: BridgeSubagentSummary }> {
+    const session = this.sessions.get(sessionId);
+    if (!session?.authority) return [];
+    return [...session.records.values()].flatMap((record) => record.source === "host" && record.generation === session.generation && record.task
+      ? [{ task: record.task, summary: record.summary }] : []);
   }
 
   isRunning(sessionId: string, id: string): boolean {

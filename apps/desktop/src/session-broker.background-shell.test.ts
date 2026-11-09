@@ -7,6 +7,7 @@ import { SessionBroker, type SessionHostRuntime } from "./session-broker.js";
 import type { SessionHostEvent } from "./claude-session-host.js";
 import { parseClaudeTranscriptSnapshot } from "./claude-history.js";
 import { SessionEventLog } from "./session-event-log.js";
+import type { SessionTaskState } from "./session-task-state.js";
 import { TranscriptObserver } from "./transcript-observer.js";
 
 const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -81,6 +82,7 @@ async function fixture() {
   await (broker as unknown as { pump(): Promise<void> }).pump();
   return {
     broker, host, observer, sessionId, signal,
+    emit(event: SessionHostEvent) { listener?.(event); },
     sigints() { return signal.mock.calls.filter(([, name]) => name === "SIGINT"); },
     async completeShell() {
       await appendFile(transcript, line({ type: "user", uuid: "completed", parentUuid: "done", isMeta: true, message: {
@@ -122,5 +124,37 @@ it("#3 permits takeover after the background Bash completion notification", asyn
     await f.broker.takeoverDesktop(f.sessionId);
     await vi.waitFor(() => expect(f.host.send).toHaveBeenCalledOnce(), { timeout: 3_000 });
     expect(f.sigints()).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
+it("lists the backgrounded Bash in the session's background tasks until its notification", async () => {
+  const f = await fixture();
+  try {
+    expect(f.broker.session(f.sessionId)?.backgroundTasks).toEqual([expect.objectContaining({
+      id: "bash-call", kind: "bash", taskId: "shell-1", description: "true", state: "running",
+    })]);
+    await f.completeShell();
+    expect(f.broker.session(f.sessionId)?.backgroundTasks?.[0]).toMatchObject({ id: "bash-call", state: "completed" });
+  } finally { await f.close(); }
+});
+
+it("lets live host task state override and extend the transcript's background tasks", async () => {
+  const f = await fixture();
+  try {
+    const taskState = (f.broker as unknown as { taskState: SessionTaskState }).taskState;
+    const now = Date.now();
+    taskState.beginGeneration(f.sessionId, "generation-1");
+    taskState.update(f.sessionId, "generation-1", {
+      taskId: "shell-1", toolUseId: "bash-call", taskType: "local_bash", description: "Background check",
+      state: "failed", startedAt: now - 5_000, updatedAt: now, completedAt: now,
+    });
+    taskState.update(f.sessionId, "generation-1", {
+      taskId: "wf-task", toolUseId: "workflow-call", taskType: "local_workflow", description: "Review figures",
+      state: "running", startedAt: now, updatedAt: now,
+    });
+    expect(f.broker.session(f.sessionId)?.backgroundTasks?.map((task) => [task.id, task.kind, task.state, task.description])).toEqual([
+      ["workflow-call", "workflow", "running", "Review figures"],
+      ["bash-call", "bash", "failed", "Background check"],
+    ]);
   } finally { await f.close(); }
 });

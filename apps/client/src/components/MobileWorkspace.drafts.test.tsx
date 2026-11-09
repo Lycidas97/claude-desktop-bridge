@@ -1,4 +1,5 @@
-import type { BridgePermissionInfo, BridgeSessionInfo } from "@bridge/protocol";
+import type { BridgeBackgroundTask, BridgePermissionInfo, BridgeSessionInfo, BridgeSubagentSummary } from "@bridge/protocol";
+import { BackgroundTaskMarker, BackgroundTasksSheet } from "./BackgroundTasks.js";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InteractivePromptCard, MobileWorkspace, PermissionPrompt, SubagentCard } from "./MobileWorkspace.js";
@@ -294,53 +295,74 @@ describe("session back navigation", () => {
   });
 });
 
-describe("subagent overflow", () => {
-  function agents(count: number) {
+describe("background tasks", () => {
+  function agents(count: number, extra: (index: number) => Partial<BridgeSubagentSummary> = () => ({}), backgroundTasks?: BridgeBackgroundTask[]) {
     const now = Date.now();
     props = { ...props, onStopSubagent: vi.fn().mockResolvedValue(undefined),
-      snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({ ...session, subagentStopScope: "task" as const })) },
+      snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({
+        ...session, subagentStopScope: "task" as const, ...(backgroundTasks ? { backgroundTasks } : {}),
+      })) },
       histories: { ...props.histories, A: { status: "ready", hasMore: false, items: Array.from({ length: count }, (_, index) => ({
         id: `tool:agent-tool-${index}`, sessionId: "A", role: "tool" as const, text: "", toolName: "Agent", createdAt: now + index, origin: "claude-host" as const,
-        subagent: { agentId: `agent-${index}`, toolUseId: `agent-tool-${index}`, description: `子代理 ${index + 1}`, state: "running" as const, toolCount: 1, startedAt: now + index, updatedAt: now + index },
+        subagent: { agentId: `agent-${index}`, toolUseId: `agent-tool-${index}`, description: `子代理 ${index + 1}`, state: "running" as const, toolCount: 1, startedAt: now + index, updatedAt: now + index, ...extra(index) },
       })) } },
     };
     draw();
   }
-  const overflow = () => elements(tree).find(element => element.type === "details" && element.props.className === "subagent-overflow");
+  const markers = () => elements(tree).filter(element => element.type === BackgroundTaskMarker);
+  const traySheet = () => elements(tree).find(element => element.type === BackgroundTasksSheet);
+  const trayButton = () => {
+    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+    return elements(header.props.actions).find(element => element.type === IconButton && element.props.label.startsWith("后台任务"));
+  };
+  const running: BridgeBackgroundTask = {
+    id: "agent-tool-0", kind: "subagent", taskId: "agent-0", toolUseId: "agent-tool-0", description: "子代理 1", state: "running", startedAt: 1, updatedAt: 2,
+  };
+  const shell: BridgeBackgroundTask = {
+    id: "bash-call", kind: "bash", taskId: "bsh01", toolUseId: "bash-call", description: "Start dev server", state: "completed", startedAt: 1, updatedAt: 2,
+  };
 
-  it.each([0, 1, 3, 4, 8])("leaves three visible and collapses only the excess of %s subagents", count => {
+  it.each([0, 1, 4, 8])("shows each of %s subagents as one line instead of an inline card", count => {
     agents(count);
-    const hidden = overflow() ? elements(overflow()!.props.children[1]).filter(element => element.type === SubagentCard) : [];
-    expect(Boolean(overflow())).toBe(count > 3);
-    expect(overflow()?.props.open).toBeUndefined();
-    expect(hidden).toHaveLength(Math.max(0, count - 3));
-    expect(elements(tree).filter(element => element.type === SubagentCard).length - hidden.length).toBe(Math.min(3, count));
+    expect(markers()).toHaveLength(count);
+    expect(elements(tree).filter(element => element.type === SubagentCard)).toHaveLength(0);
   });
 
-  it("updates the existing group and retains a hidden agent's stop action", async () => {
-    agents(6);
-    const key = overflow()!.key;
-    const hidden = elements(overflow()!.props.children[1]).find(element => element.type === SubagentCard)!;
-    hidden.props.onStop();
-    draw();
+  it("gives a workflow run one line for all of its agents", () => {
+    agents(5, index => index < 4 ? { workflowRunId: "wf_1", workflowPhase: index < 2 ? "Draft" : "Check" } : {});
+    expect(markers().map(marker => marker.key)).toEqual(["A:workflow:wf_1", "A:tool:agent-tool-4"]);
+  });
+
+  it("shows the header entry only when the session has background tasks, counting running ones", () => {
+    agents(1);
+    expect(trayButton()).toBeUndefined();
+    agents(1, () => ({}), [running, shell]);
+    expect(trayButton()!.props.label).toBe("后台任务，1 个运行中");
+    agents(1, () => ({}), [shell]);
+    expect(trayButton()!.props.label).toBe("后台任务");
+  });
+
+  it("opens the tray from the header and from a line focused on its item, and closes it on back", () => {
+    agents(2, () => ({}), [running, shell]);
+    trayButton()!.props.onClick(); draw();
+    expect(traySheet()!.props.tasks).toEqual([running, shell]);
+    expect(traySheet()!.props.focus).toBeUndefined();
+    expect(dispatchMobileBack()).toBe(true); draw();
+    expect(traySheet()).toBeUndefined();
+    expect(markers()[0]!.props.task).toBe(running);
+    markers()[1]!.props.onOpen(); draw();
+    expect(traySheet()!.props.focus.id).toBe("tool:agent-tool-1");
+  });
+
+  it("keeps the stop action on subagent cards inside the tray", async () => {
+    agents(2, () => ({}), [running]);
+    markers()[0]!.props.onOpen(); draw();
+    const card = traySheet()!.props.renderSubagent(props.histories.A!.items[0]);
+    card.props.onStop(); draw();
     const confirmation = elements(tree).find(element => element.props.title === "停止这个子代理？")!;
-    expect(confirmation.props.description).toContain("子代理 4");
+    expect(confirmation.props.description).toContain("子代理 1");
     await confirmation.props.onConfirm();
-    expect(props.onStopSubagent).toHaveBeenCalledWith("A", "agent-3");
-    props = { ...props, histories: { ...props.histories, A: { ...props.histories.A!, items: props.histories.A!.items.map(item => ({ ...item, subagent: { ...item.subagent!, state: "completed" as const, toolCount: 9 } })) } } };
-    draw();
-    expect(overflow()!.key).toBe(key);
-    expect(elements(overflow()!.props.children[1]).filter(element => element.type === SubagentCard).every(element => element.props.item.subagent.state === "completed")).toBe(true);
-  });
-
-  it("keeps separate batches on their own sides of an assistant message", () => {
-    agents(8);
-    const items = [...props.histories.A!.items];
-    items.splice(3, 0, { id: "separator", sessionId: "A", role: "assistant", text: "继续下一批", createdAt: items[2]!.createdAt + 0.5, origin: "claude-host" });
-    props = { ...props, histories: { ...props.histories, A: { ...props.histories.A!, items } } };
-    draw();
-    expect(elements(tree).filter(element => element.type === "details" && element.props.className === "subagent-overflow")).toHaveLength(1);
-    expect(elements(overflow()!.props.children[1]).filter(element => element.type === SubagentCard)).toHaveLength(2);
+    expect(props.onStopSubagent).toHaveBeenCalledWith("A", "agent-0");
   });
 });
 

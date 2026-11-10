@@ -18,7 +18,7 @@ Desktop advertises support in `snapshot.host.capabilities`; mobile advertises it
 
 New receivers read both formats, including saved encrypted messages and outbox entries. Downgrading an endpoint to a version that cannot read compressed messages already queued or cached is outside this compatibility guarantee. Replay preserves those original envelopes. The existing 80 ms text merge window is unchanged.
 
-BridgeSocket delivers encrypted frames in arrival order across asynchronous chunk assembly, decryption and inflation; WebRTC does the same per peer. This preserves the mobile event sequence guard: a large permission event must reach it before a later small event from another session. Control frames retain their existing immediate handling.
+BridgeSocket preserves arrival order during asynchronous encrypted-frame processing, chunk assembly, decryption and inflation; WebRTC does the same per peer. This does not guarantee global event-sequence delivery order: while a sender waits for chunk-query acknowledgements, a later small event from another runtime can arrive first. Mobile permission projection separately uses the snapshot sequence and each request's lifecycle to accept unseen delayed permission events newer than the snapshot baseline, without reviving requests resolved by newer events. Control frames retain their existing immediate handling.
 
 ## Relay WebSocket compression
 

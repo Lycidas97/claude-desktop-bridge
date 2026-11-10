@@ -3,12 +3,14 @@
 - Keep native permission cards synchronized as requests appear and disappear.
   Establish the baseline from snapshots and retain later permission events across
   delayed snapshots, reconnects and cached mobile state without reviving resolved
-  requests.
+  requests. Use the snapshot sequence and each request's lifecycle to accept unseen
+  permission events delayed by chunked delivery.
 - Compress supported message bodies before AES-GCM encryption after both ends
   advertise support, and enable negotiated Relay WebSocket compression. Preserve
-  receive order across chunk assembly, decryption and inflation so large earlier
-  permission events are not overtaken. Keep legacy bootstrap and unadvertised
-  clients compatible with Protocol V3 and the existing pairing format.
+  arrival order during asynchronous frame processing, chunk assembly, decryption
+  and inflation. This does not guarantee global event-sequence delivery order.
+  Keep legacy bootstrap and unadvertised clients compatible with Protocol V3 and
+  the existing pairing format.
 - Group native sessions using Git project metadata, including worktrees, instead
   of relying only on their current working directory.
 - Make native and fork notices collapsible, align Android system bars with the

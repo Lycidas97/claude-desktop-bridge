@@ -327,21 +327,6 @@ describe("mobile snapshot publication", () => {
     });
   });
 
-  it("always sends current complete state to a newly connected phone", async () => {
-    const { controller, sessions } = progressFixture();
-    await controller.publish();
-    sessions[0]!.runningSubagents!.lastUpdatedAt = 20;
-    await controller.publish();
-    delete sessions[0]!.runningSubagents;
-    await controller.publish();
-    controller.sendToDevice = vi.fn(async () => undefined);
-    await controller.sendSnapshot("reconnected-phone");
-    expect(controller.sendToDevice).toHaveBeenCalledWith({
-      kind: "snapshot", snapshot: expect.objectContaining({ sessions }),
-    }, "reconnected-phone", undefined, true);
-    expect(controller.sendToDevice.mock.calls[0]![0].snapshot.sessions).toHaveLength(140);
-    expect(controller.sendToDevice.mock.calls[0]![0].snapshot.sessions[0]).not.toHaveProperty("runningSubagents");
-  });
 });
 
 async function trashTestDirectory(directory: string) {

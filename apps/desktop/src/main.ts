@@ -8,6 +8,7 @@ import type { LocalBridgeRequest } from "./controller.js";
 import { connectDesktopService, serveDesktopService } from "./service-connection.js";
 import { createServiceRuntime } from "./service-runtime.js";
 import { ServiceResources } from "./service-resources.js";
+import { claudeDesktopDeveloperSettings } from "./claude-desktop-developer-settings.js";
 
 protocol.registerSchemesAsPrivileged([{
   scheme: "bridge-artifact",
@@ -195,6 +196,8 @@ async function desktopMain(): Promise<void> {
     }
 
     handle("bridge:get-snapshot", () => controller.call("snapshot"));
+    handle("bridge:check-claude-developer-settings", (profile?: unknown) => claudeDesktopDeveloperSettings({ profile }));
+    handle("bridge:enable-claude-developer-settings", (profile: unknown) => claudeDesktopDeveloperSettings({ profile, enable: true }));
     handle("bridge:create-pairing", () => controller.call("createPairing"));
     handle("bridge:choose-directory", async (initialPath?: string) => {
       if (initialPath !== undefined && typeof initialPath !== "string") throw new Error("initialPath must be a string");

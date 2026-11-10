@@ -63,6 +63,41 @@ beforeAll(() => {
   });
 });
 
+describe("paired relay routing", () => {
+  it("keeps the QR endpoint and authenticated home relay across a change in packaged defaults", async () => {
+    const original = new BridgeVault();
+    await original.clear();
+    try {
+      const { pairing, desktopCrypto } = await BridgeCrypto.createDevicePairing({
+        hostId: "paired-routing-host", roomId: "paired-routing-room", pairingEpoch: 3,
+        relayUrl: "wss://paired.example/ws", serviceOrigin: "https://paired.example",
+        relayEndpoints: [bridgeEndpoint("wss://paired.example/ws", 0, "qr")], activeEndpoint: "qr", desktopName: "Paired computer",
+      });
+      const crypto = await original.importPairing(pairing);
+      vi.stubEnv("VITE_BRIDGE_PUBLIC_RELAY_URL", "wss://different-build.example/ws");
+      vi.stubEnv("VITE_BRIDGE_SERVICE_ORIGIN", "https://different-build.example");
+      vi.resetModules();
+      const { BridgeVault: UpdatedVault } = await import("./vault.js");
+      const updated = new UpdatedVault();
+      const host = (await updated.getHost(pairing.roomId))!;
+      expect(host.relayUrl).toBe("wss://paired.example/ws");
+      expect(host.serviceOrigin).toBe("https://paired.example");
+      expect(host.activeEndpoint).toBe("qr");
+      expect(host.relayEndpoints).toEqual(pairing.relayEndpoints);
+      await updated.setDesktopRelay(pairing.roomId, "wss://paired.example/ws");
+      await updated.touchHost(host.crypto);
+      const reloaded = (await new UpdatedVault().getHost(pairing.roomId))!;
+      expect(reloaded.desktopRelayUrl).toBe("wss://paired.example/ws");
+      expect(reloaded.crypto.identity.authToken).toBe(crypto.identity.authToken);
+      expect(reloaded.crypto.identity.deviceId).toBe(crypto.identity.deviceId);
+      const response = await desktopCrypto.withSenderDevice(pairing.hostId).encrypt({ kind: "response", requestId: "pairing-round-trip", ok: true, result: { confirmed: true } }, "desktop", "mobile", Date.now(), 60_000, pairing.deviceId);
+      expect((await reloaded.crypto.decrypt(response)).payload).toMatchObject({ kind: "response", ok: true, result: { confirmed: true } });
+    } finally {
+      vi.unstubAllEnvs(); vi.resetModules(); await original.clear();
+    }
+  });
+});
+
 describe("BridgeVault manual relay override", () => {
   it.each([
     ["wss://manual.example:9443/custom/ws?region=west", "https://manual.example:9443"],
@@ -292,7 +327,7 @@ describe("BridgeVault pairing migration", () => {
     await vault.clear();
   });
 
-  it("prefers the packaged Relay while retaining an existing public Relay as fallback", async () => {
+  it("keeps the paired public Relay and service origin when the package has another default", async () => {
     const vault = new BridgeVault();
     await vault.clear();
     const pairing = await BridgeCrypto.createDevicePairing({
@@ -308,16 +343,10 @@ describe("BridgeVault pairing migration", () => {
 
     await vault.importPairing(pairing.pairing);
     expect(await vault.listHosts()).toEqual([expect.objectContaining({
-      relayUrl: "wss://relay.alioxis.com/ws",
+      relayUrl: "wss://relay.alioxis.uk/ws",
+      serviceOrigin: "https://relay.alioxis.uk",
       activeEndpoint: "public",
-      relayEndpoints: expect.arrayContaining([
-        expect.objectContaining({ id: "public", url: "wss://relay.alioxis.com/ws", priority: 10 }),
-        expect.objectContaining({
-          id: "legacy-public-0",
-          url: "wss://relay.alioxis.uk/ws",
-          priority: 30,
-        }),
-      ]),
+      relayEndpoints: [bridgeEndpoint("wss://relay.alioxis.uk/ws", 10, "public")],
     })]);
     await vault.clear();
   });

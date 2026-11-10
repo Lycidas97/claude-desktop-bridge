@@ -1,3 +1,4 @@
+import { isClaudeNativeRelay } from "../hooks/useMobileBridge.js";
 import type {
   BridgeAttachment,
   BridgeArtifactManifest,
@@ -9,12 +10,15 @@ import type {
   BridgeHistoryPage,
   BridgeDesktopAppStatus,
   BridgeDesktopRuntimeId,
+  BridgeNativePermissionMode,
   BridgePermissionMode,
   BridgeProviderProfile,
   BridgeResponse,
   BridgeRuntimeHandoff,
   BridgeRuntimeHandoffPreview,
   BridgeSessionCommandResult,
+  BridgeSessionRewindPreview,
+  BridgeSessionRewindResult,
   BridgeSessionPermissions,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
@@ -69,7 +73,6 @@ import {
 import type { LocalBridgeRequest } from "../runtime/desktop.js";
 import { BrandMark } from "./BrandMark.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
-import { DesktopHandoffNotice } from "./DesktopHandoffNotice.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker, useFileAttachments } from "./FileAttachmentPicker.js";
@@ -93,6 +96,8 @@ import {
   isNativeRuntimeId,
   matchingQuestionPermission,
   ownershipLabel,
+  canSendSession,
+  canConfigureSession,
   PermissionPrompt,
   runtimeProviderLabel,
   sessionProfile,
@@ -100,17 +105,12 @@ import {
   SubagentCard,
   supportsRuntimeHandoff,
 } from "./MobileWorkspace.js";
-import {
-  ProviderSwitchDialog,
-  providerName,
-  type ProviderSwitchPreview,
-  type ProviderSwitchResult,
-} from "./ProviderSwitchDialog.js";
 import { RuntimeHandoffDialog } from "./RuntimeHandoffDialog.js";
 import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
 import { SlashCommandInput } from "./SlashCommandInput.js";
 import { useSessionCommands } from "../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
+import { SessionRewindDialog } from "./SessionRewindDialog.js";
 import { sessionActivity } from "../lib/session-activity.js";
 import {
   SessionConfigurationDialog,
@@ -150,6 +150,7 @@ function connectionLabel(snapshot: DesktopControlSnapshot): string {
 }
 
 function sessionState(session: BridgeSessionInfo): string {
+  if (session.transport === "claude-desktop-native") return ownershipLabel(session);
   if (session.desktopHandoff) return ownershipLabel(session);
   const bridgeCreated = session.source === "bridge";
   if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
@@ -169,6 +170,8 @@ function sessionState(session: BridgeSessionInfo): string {
 }
 
 function transportLabel(session: BridgeSessionInfo): string {
+  if (session.transport === "claude-desktop-native") return "Claude Desktop 原生会话";
+  if (!session.runtimeId || session.runtimeId === "claude-desktop") return "Claude Desktop";
   if (session.desktopHandoff) return "手动交接";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
   if (isNativeRuntimeId(session.runtimeId)) {
@@ -186,24 +189,14 @@ function DesktopSessions({
   snapshot,
   events,
   apiRequest,
-  onClaudeDesktopLaunch,
-  onClaudeDesktopQuit,
-  onSetAnthropicApiKey,
-  onRemoveAnthropicApiKey,
   onRefreshSnapshot,
-  onReturnToDesktop,
-  onTakeoverDesktop,
 }: {
   snapshot: DesktopControlSnapshot;
   events: BridgeEvent[];
   apiRequest(request: LocalBridgeRequest): Promise<BridgeResponse>;
-  onClaudeDesktopLaunch(): Promise<DesktopControlSnapshot>;
-  onClaudeDesktopQuit(): Promise<DesktopControlSnapshot>;
-  onSetAnthropicApiKey(value: string): Promise<void>;
-  onRemoveAnthropicApiKey(): Promise<void>;
   onRefreshSnapshot(): Promise<void>;
-  onReturnToDesktop(sessionId: string): Promise<void>;
-  onTakeoverDesktop(sessionId: string, commandId?: string): Promise<void>;
+  onReturnToDesktop?(sessionId: string): Promise<void>;
+  onTakeoverDesktop?(sessionId: string, commandId?: string): Promise<void>;
 }) {
   const openMedia = useMediaPreview();
   const [selectedId, setSelectedId] = useState(snapshot.sessions[0]?.sessionId);
@@ -219,11 +212,9 @@ function DesktopSessions({
   const [sending, setSending] = useState(false);
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
   const [stopError, setStopError] = useState<string>();
-  const [registrationBusy, setRegistrationBusy] = useState(false);
-  const [registrationError, setRegistrationError] = useState<string>();
   const [createOpen, setCreateOpen] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
-  const [providerOpen, setProviderOpen] = useState(false);
+  const [rewindTarget, setRewindTarget] = useState<{ sessionId: string; messageId?: string }>();
   const [relayOpen, setRelayOpen] = useState(false);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [deleteSessionOpen, setDeleteSessionOpen] = useState(false);
@@ -239,13 +230,17 @@ function DesktopSessions({
   const handledCommandEvents = useRef(new Set<string>());
   useEffect(() => {
     for (const event of events) {
-      if ((event.type !== "session.reset" && event.type !== "session.compacted") || handledCommandEvents.current.has(event.eventId)) continue;
+      if ((event.type !== "session.reset" && event.type !== "session.compacted" && event.type !== "session.rewound") || handledCommandEvents.current.has(event.eventId)) continue;
       handledCommandEvents.current.add(event.eventId);
       if (event.type === "session.reset" && event.data.previousSessionId === selectedId && typeof event.data.sessionId === "string") {
         const sessionId = event.data.sessionId;
         setHistory(current => ({ ...current, [sessionId]: { status: "ready", items: [], hasMore: false } }));
         setText(""); setAttachments([]); setSteer(false); setConfigurationOpen(false); setSelectedId(sessionId);
         void onRefreshSnapshot().then(() => openSession(sessionId)).catch(reason => setStopError(reason instanceof Error ? reason.message : "新会话打开失败"));
+      } else if (event.type === "session.rewound" && event.sessionId) {
+        const sessionId = event.sessionId;
+        setHistory(current => ({ ...current, [sessionId]: { status: "loading", items: [], hasMore: false } }));
+        if (sessionId === selectedId) void openSession(sessionId);
       } else if (event.type === "session.compacted" && event.sessionId === selectedId) {
         void openSession(selectedId!);
       }
@@ -280,6 +275,7 @@ function DesktopSessions({
       return result;
     },
     onModel: () => setConfigurationOpen(true),
+    onRewind: () => setRewindTarget({ sessionId: selected!.sessionId }),
     onSession: async sessionId => { setSelectedId(sessionId); await openSession(sessionId); },
   });
   const commandDraft = commands.recognizes(text.trim());
@@ -287,22 +283,15 @@ function DesktopSessions({
     ? snapshot.runtimes?.find((runtime) => runtime.id === selectedRuntime)?.capabilities.includes("attachment.image")
       ?? selectedRuntime === "claude-desktop"
     : false;
-  const canConfigure = selected?.allowedActions?.canConfigure === true
-    || (selectedRuntime === "claude-desktop" && selected?.allowedActions?.canConfigure !== false);
-  const providers = snapshot.providers ?? [];
-  const providerSwitchingAvailable = Boolean(
-    selected
-    && desktopRuntimeId(selected) === "claude-desktop"
-    && snapshot.host.capabilities.includes("provider.profile.v1")
-    && snapshot.host.capabilities.includes("conversation.handoff.v1"),
-  );
+  const canConfigure = Boolean(selected && canConfigureSession(selected, snapshot));
+  const rewindAvailable = selected?.transport === "claude-desktop-native" && snapshot.host.capabilities.includes("session.rewind.v1");
+  const rewindDisabled = selected?.turnState === "running" || selected?.turnState === "waiting" || Boolean(selected?.pendingCount);
   const runtimeHandoffAvailable = supportsRuntimeHandoff(snapshot);
-  const activeProvider = providers.find((profile) => profile.id === selected?.activeProviderProfileId);
-  const officialActive = activeProvider?.kind === "claude-official";
   const selectedEvidence = selectedId ? evidence[selectedId] : undefined;
   const bridgeRunning = selected?.turnState === "running" && (
     selected.ownership === "BRIDGE_RUNNING" ||
-    selected.ownership === "DESKTOP_MANAGED_RUNNING"
+    selected.ownership === "DESKTOP_MANAGED_RUNNING" ||
+    selected.ownership === "DESKTOP_NATIVE_RUNNING"
   );
   const stopTarget = stoppableBridgeTask(snapshot.sessions, selected?.sessionId);
   const canStop = Boolean(stopTarget);
@@ -373,7 +362,6 @@ function DesktopSessions({
     setSessionView("conversation");
     setConfigurationOpen(false);
     setStopError(undefined);
-    setRegistrationError(undefined);
     void openSession(selectedId);
   }, [selectedId]);
 
@@ -628,7 +616,7 @@ function DesktopSessions({
   }
 
   async function send(): Promise<void> {
-    if (!selected || selected.allowedActions?.canSend === false || sending || fileUploads.uploading
+    if (!selected || !canSendSession(selected, snapshot) || sending || fileUploads.uploading
       || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)) return;
     const nextText = text.trim();
     const nextAttachments = canAttachImages ? attachments : [];
@@ -664,7 +652,7 @@ function DesktopSessions({
   }
 
   async function sendQuickReply(promptId: string, promptText: string): Promise<void> {
-    if (!selected || selected.allowedActions?.canSend === false || sending || !promptText.trim()) return;
+    if (!selected || !canSendSession(selected, snapshot) || sending || !promptText.trim()) return;
     setSending(true);
     try {
       const response = await apiRequest({
@@ -682,43 +670,6 @@ function DesktopSessions({
     } finally {
       setSending(false);
     }
-  }
-
-  async function previewProviderSwitch(
-    targetProviderProfileId: string,
-    model?: string,
-  ): Promise<ProviderSwitchPreview> {
-    if (!selected) throw new Error("Session not found");
-    return unwrap<ProviderSwitchPreview>(await apiRequest({
-      method: "conversation.switch.preview",
-      params: {
-        sessionId: selected.sessionId,
-        targetProviderProfileId,
-        ...(model ? { model } : {}),
-      },
-    }));
-  }
-
-  async function commitProviderSwitch(
-    handoffId: string,
-    targetNativeSessionId?: string,
-    model?: string,
-  ): Promise<ProviderSwitchResult> {
-    return unwrap<ProviderSwitchResult>(await apiRequest({
-      method: "conversation.switch.commit",
-      params: {
-        handoffId,
-        ...(targetNativeSessionId ? { targetNativeSessionId } : {}),
-        ...(model ? { model } : {}),
-      },
-    }));
-  }
-
-  async function cancelProviderSwitch(handoffId: string): Promise<void> {
-    unwrap(await apiRequest({
-      method: "conversation.switch.cancel",
-      params: { handoffId },
-    }));
   }
 
   async function previewRuntimeHandoff(
@@ -805,43 +756,6 @@ function DesktopSessions({
     }
   }
 
-  async function refreshDesktopRegistration(): Promise<void> {
-    if (!selected || registrationBusy) return;
-    setRegistrationBusy(true);
-    setRegistrationError(undefined);
-    try {
-      unwrap(await apiRequest({
-        method: "session.desktop.register",
-        params: { sessionId: selected.sessionId },
-      }));
-    } catch (error) {
-      setRegistrationError(error instanceof Error ? error.message : "Claude Desktop 会话登记失败");
-    } finally {
-      setRegistrationBusy(false);
-    }
-  }
-
-  async function restartClaudeForRegistration(): Promise<void> {
-    if (!selected || registrationBusy) return;
-    setRegistrationBusy(true);
-    setRegistrationError(undefined);
-    try {
-      const stopped = await onClaudeDesktopQuit();
-      if (stopped.claudeDesktop.state !== "stopped") {
-        throw new Error("已取消重启，登记文件仍会保留。");
-      }
-      await onClaudeDesktopLaunch();
-      unwrap(await apiRequest({
-        method: "session.desktop.register",
-        params: { sessionId: selected.sessionId },
-      }));
-    } catch (error) {
-      setRegistrationError(error instanceof Error ? error.message : "Claude Desktop 重启失败");
-    } finally {
-      setRegistrationBusy(false);
-    }
-  }
-
   async function createSession(cwd: string, title?: string, runtimeId?: BridgeDesktopRuntimeId, projectId?: string): Promise<BridgeSessionInfo> {
     const result = unwrap<{ session: BridgeSessionInfo }>(await apiRequest({
       method: "session.create", params: { cwd, ...(title ? { title } : {}), ...(runtimeId ? { runtimeId } : {}), ...(projectId ? { projectId } : {}) },
@@ -867,10 +781,11 @@ function DesktopSessions({
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
+    mode?: BridgeNativePermissionMode,
   ): Promise<void> {
     unwrap(await apiRequest({
       method: "permission.resolve",
-      params: { requestId, decision, ...(message ? { message } : {}), ...(updatedInput ? { updatedInput } : {}) },
+      params: { requestId, decision, ...(message ? { message } : {}), ...(updatedInput ? { updatedInput } : {}), ...(mode ? { mode } : {}) },
     }));
   }
 
@@ -1136,17 +1051,6 @@ function DesktopSessions({
                 <span>{selectedRuntimeName} · {selected.projectName} · {sessionState(selected)} · {transportLabel(selected)}</span>
               </div>
               <div className="desktop-conversation-heading-actions">
-                {providerSwitchingAvailable && (
-                  <button
-                    type="button"
-                    className="session-provider-trigger"
-                    aria-label="切换执行提供方"
-                    onClick={() => setProviderOpen(true)}
-                  >
-                    <ArrowRightLeft size={15} />
-                    <span>{providerName(selected.activeProviderProfileId, providers)}</span>
-                  </button>
-                )}
                 {runtimeHandoffAvailable && selected.allowedActions?.canRelay !== false && (
                   <button
                     type="button"
@@ -1158,7 +1062,7 @@ function DesktopSessions({
                     <span>接力</span>
                   </button>
                 )}
-                {!providerSwitchingAvailable && !runtimeHandoffAvailable && selectedRuntime !== "claude-desktop" && (
+                {!runtimeHandoffAvailable && selectedRuntime !== "claude-desktop" && (
                   <span
                     className="session-provider-trigger is-static"
                     title={`${selectedRuntimeName} 是独立的会话域，不提供跨 Desktop 接力`}
@@ -1240,21 +1144,13 @@ function DesktopSessions({
                 <span><strong>会话操作失败</strong>{sessionActionError}</span>
               </div>
             )}
-            <DesktopHandoffNotice
-              key={selected.sessionId}
-              session={selected}
-              online
-              className="desktop-channel-banner"
-              onReturn={onReturnToDesktop}
-              onTakeover={onTakeoverDesktop}
-            />
-            {!selected.desktopHandoff && selected.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
+            {selectedRuntime !== "claude-desktop" && !selected.desktopHandoff && selected.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
               <div className="desktop-channel-banner">
                 <AlertTriangle size={18} />
                 <span><strong>正在等待同会话接管</strong>Claude Desktop 当前任务结束后，Bridge 会自动恢复这条会话。</span>
               </div>
             )}
-            {selected.ownership === "OWNERSHIP_CONFLICT" && (
+            {selectedRuntime !== "claude-desktop" && selected.ownership === "OWNERSHIP_CONFLICT" && (
               <div className="desktop-channel-banner danger">
                 <AlertTriangle size={18} />
                 <span><strong>检测到重复写入</strong>Bridge 已停止重叠写入并会自动复查；持续冲突时再结束重复进程。</span>
@@ -1353,69 +1249,6 @@ function DesktopSessions({
                 <span><strong>任务停止失败</strong>{stopError}</span>
               </div>
             )}
-            {providerSwitchingAvailable && selected.routeState && selected.routeState !== "ready" && (
-              <button
-                type="button"
-                className="desktop-channel-banner provider-route-banner"
-                onClick={() => setProviderOpen(true)}
-              >
-                <ArrowRightLeft size={18} />
-                <span>
-                  <strong>{selected.routeState === "awaiting-user-confirmation"
-                    ? "等待本机确认"
-                    : selected.routeState === "awaiting-target-selection"
-                      ? "选择 Claude 官方会话"
-                      : selected.routeState === "failed"
-                        ? "提供方切换未完成"
-                        : "正在切换执行通道"}</strong>
-                  {selected.pendingHandoff?.summary ?? "原执行通道保持活动。"}
-                </span>
-              </button>
-            )}
-            {selected.source === "bridge" &&
-              !selected.desktopHandoff &&
-              !officialActive &&
-              selected.desktopRegistration &&
-              selected.desktopRegistration.state !== "registered" && (
-                <div className={`desktop-channel-banner ${
-                  selected.desktopRegistration.state === "failed" ? "danger" : ""
-                }`}>
-                  {registrationBusy
-                    ? <LoaderCircle className="is-spinning" size={18} />
-                    : <AlertTriangle size={18} />}
-                  <span>
-                    <strong>
-                      {selected.desktopRegistration.state === "restart-required"
-                        ? "等待 Claude Desktop 重启"
-                        : selected.desktopRegistration.state === "waiting-transcript"
-                          ? "等待首轮会话记录"
-                          : "尚未登记到 Claude Desktop"}
-                    </strong>
-                    {registrationError ?? selected.desktopRegistration.detail}
-                  </span>
-                  {selected.desktopRegistration.state === "restart-required" ? (
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={registrationBusy}
-                      onClick={() => void restartClaudeForRegistration()}
-                    >
-                      <RefreshCw size={15} />
-                      {registrationBusy ? "重启中" : "重启并登记"}
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={registrationBusy}
-                      onClick={() => void refreshDesktopRegistration()}
-                    >
-                      <RefreshCw size={15} />
-                      {registrationBusy ? "检查中" : "重新检查"}
-                    </button>
-                  )}
-                </div>
-              )}
             <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
               <button
                 type="button"
@@ -1471,7 +1304,7 @@ function DesktopSessions({
                       prompt={entry.item.interactivePrompt}
                       {...(entry.item.replyDelivery ? { replyDelivery: entry.item.replyDelivery } : {})}
                       {...(entry.item.replyPending ? { replyPending: true } : {})}
-                      canSend={selected.allowedActions?.canSend !== false && !officialActive}
+                      canSend={canSendSession(selected, snapshot)}
                       busy={sending}
                       onSelectOption={(replyText) => {
                         if (entry.item.interactivePrompt?.kind === "question") {
@@ -1505,17 +1338,21 @@ function DesktopSessions({
                       ))}
                     </div>
                   ) : null}
+                  {rewindAvailable && entry.item.role === "user" && !entry.item.id.startsWith("local:") && <div className="conversation-message-actions">
+                    <button type="button" className="message-copy-button" aria-label="回退到这条消息之前" disabled={rewindDisabled}
+                      onClick={() => setRewindTarget({ sessionId: selected.sessionId, messageId: entry.item.id })}>回退</button>
+                  </div>}
                 </article>
               ))}
               {snapshot.permissions
-                .filter((permission) => permission.sessionId === selected.sessionId)
+                .filter((permission) => permission.sessionId === selected.sessionId && (selectedRuntime !== "claude-desktop" || (isClaudeNativeRelay(snapshot) && selected.transport === "claude-desktop-native")))
                 .map((permission) => (
                   <PermissionPrompt
                     key={permission.requestId}
                     permission={permission}
                     onResolve={resolvePermission}
-                    {...(selectedRuntime === "claude-desktop" ? {
-                      onEnableFullAccess: () => savePermissionPolicy("host", "full-access").then(() => undefined),
+                    {...(permission.canSetNativeFullAccess ? {
+                      onEnableNativeFullAccess: (requestId: string) => resolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions"),
                     } : {})}
                   />
                 ))}
@@ -1569,17 +1406,6 @@ function DesktopSessions({
             <>
             <SessionActivityIndicator activity={activity} />
             <div className="desktop-composer">
-              {officialActive ? (
-                <button
-                  type="button"
-                  className="official-continue-button"
-                  onClick={() => void onClaudeDesktopLaunch()}
-                >
-                  <ArrowRightLeft size={18} />
-                  在 Claude 官方继续
-                </button>
-              ) : (
-              <>
               {commandError && <div className="composer-error" role="alert">{commandError}</div>}
               <FileAttachmentPicker state={fileUploads} />
               {attachments.length > 0 && (
@@ -1587,7 +1413,7 @@ function DesktopSessions({
                   {attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={12} /></button></span>)}
                 </div>
               )}
-              {bridgeRunning && !commandDraft && (
+              {bridgeRunning && !commandDraft && canSendSession(selected, snapshot) && (selectedRuntime === "claude-desktop" ? selected.allowedActions?.canSteer === true : selected.allowedActions?.canSteer !== false) && (
                 <div className="composer-mode">
                   <button type="button" className={!steer ? "active" : ""} onClick={() => setSteer(false)}>排到下一轮</button>
                   <button type="button" className={steer ? "active" : ""} onClick={() => setSteer(true)}>立即调整</button>
@@ -1600,10 +1426,10 @@ function DesktopSessions({
                 <input ref={fileRef} type="file" hidden multiple accept="image/jpeg,image/png,image/gif,image/webp" onChange={(event) => void addImages(event.target.files)} />
                 <ComposerAttachmentMenu
                   canAttachImages={canAttachImages}
-                  imageDisabled={commandDraft || selected.allowedActions?.canSend === false}
+                  imageDisabled={commandDraft || !canSendSession(selected, snapshot)}
                   onPickImages={() => fileRef.current?.click()}
                   fileUploads={fileUploads}
-                  fileDisabled={commandDraft || selected.allowedActions?.canSend === false || sending || snapshot.connection !== "connected"}
+                  fileDisabled={commandDraft || !canSendSession(selected, snapshot) || sending || snapshot.connection !== "connected"}
                 />
                 <SlashCommandInput
                   key={JSON.stringify([snapshot.host.hostId, selected.sessionId])}
@@ -1612,17 +1438,15 @@ function DesktopSessions({
                   } : {})}
                   value={text}
                   onChange={setText}
-                  disabled={selected.allowedActions?.canSend === false}
+                  disabled={!canSendSession(selected, snapshot)}
                   placeholder={selected.allowedActions?.reason ?? (
                     selected.source === "bridge"
                       ? "在这个 Bridge 会话中继续"
                       : `在这个 ${selectedRuntimeName} 会话中继续`
                   )}
                 />
-                <button type="submit" className="send-button" aria-label="发送" disabled={selected.allowedActions?.canSend === false || sending || fileUploads.uploading || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)}><Send size={18} /></button>
+                <button type="submit" className="send-button" aria-label="发送" disabled={!canSendSession(selected, snapshot) || sending || fileUploads.uploading || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)}><Send size={18} /></button>
               </form>
-              </>
-              )}
             </div>
             </>
             )}
@@ -1647,6 +1471,22 @@ function DesktopSessions({
           onClose={() => setCreateOpen(false)}
         />
       )}
+      {rewindAvailable && selected && rewindTarget?.sessionId === selected.sessionId && <SessionRewindDialog
+        key={`${composerKey}:${rewindTarget.messageId ?? "latest"}`}
+        messages={items}
+        {...(rewindTarget.messageId ? { initialMessageId: rewindTarget.messageId } : {})}
+        disabled={rewindDisabled}
+        onPreview={async messageId => unwrap<{ rewind: BridgeSessionRewindPreview }>(await apiRequest({ method: "session.rewind.preview", params: { sessionId: selected.sessionId, messageId } })).rewind}
+        onRewind={async (messageId, scope) => {
+          const result = unwrap<{ rewind: BridgeSessionRewindResult }>(await apiRequest({ method: "session.rewind", params: { sessionId: selected.sessionId, messageId, scope } }));
+          return result.rewind;
+        }}
+        onComplete={result => {
+          if (result.scope !== "files") { setText(result.prefill ?? ""); setAttachments([]); setSteer(false); fileUploads.clear(fileUploads.files); }
+          setRewindTarget(undefined);
+        }}
+        onClose={() => setRewindTarget(undefined)}
+      />}
       {selected && <SessionCommandDialogs
         key={selected.sessionId}
         result={commands.dialog}
@@ -1667,23 +1507,8 @@ function DesktopSessions({
           revision={events.filter((event) => ((event.type === "session.configuration" || event.type === "session.compacted") && event.sessionId === selected.sessionId) || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === selected.sessionId))).at(-1)?.seq ?? 0}
           onLoad={loadConfiguration}
           onSave={saveConfiguration}
-          onConfigurePermission={savePermissionPolicy}
+          {...(selectedRuntime !== "claude-desktop" ? { onConfigurePermission: savePermissionPolicy } : {})}
           onClose={() => setConfigurationOpen(false)}
-        />
-      )}
-      {providerOpen && selected && providerSwitchingAvailable && (
-        <ProviderSwitchDialog
-          session={selected}
-          profiles={providers}
-          desktopLocal
-          onPreview={previewProviderSwitch}
-          onCommit={commitProviderSwitch}
-          onCancel={cancelProviderSwitch}
-          onRefresh={refreshProviders}
-          onSetApiKey={onSetAnthropicApiKey}
-          onRemoveApiKey={onRemoveAnthropicApiKey}
-          onChanged={onRefreshSnapshot}
-          onClose={() => setProviderOpen(false)}
         />
       )}
       {relayOpen && selected && runtimeHandoffAvailable && (
@@ -1702,7 +1527,9 @@ function DesktopSessions({
       <ConfirmationDialog
         open={deleteSessionOpen && Boolean(selected)}
         title="删除会话"
-        description={`从 Bridge 列表中删除「${selected?.title ?? ""}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
+        description={selected?.transport === "claude-desktop-native"
+          ? `从 Claude Desktop 中删除「${selected.title}」会话及其对话记录？此操作不可恢复。`
+          : `从 Bridge 列表中删除「${selected?.title ?? ""}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
         confirmLabel="删除会话"
         danger
         busy={sessionActionBusy}
@@ -1806,11 +1633,7 @@ function DesktopStatus({
   const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
   const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
   const snapshot = visibleAgentSnapshot(rawSnapshot, agentVisibility.enabled);
-  const takeoverReady = snapshot.runtime.state === "ready" || snapshot.runtime.state === "working";
-  const explicitDesktopHandoff = snapshot.sessions.some((session) => session.desktopHandoff);
-  const takeoverTitle = takeoverReady
-    ? explicitDesktopHandoff ? "手动交接已就绪" : snapshot.runtime.state === "working" ? "正在接管" : "自动接管已就绪"
-    : snapshot.runtime.state === "auth-required" ? "等待第三方凭据" : "运行时不可用";
+  const nativeRelay = isClaudeNativeRelay(snapshot);
   const desktopApps: BridgeDesktopAppStatus[] = snapshot.desktopApps ?? [{
     id: "claude-desktop",
     name: "Claude Desktop",
@@ -1837,15 +1660,10 @@ function DesktopStatus({
         <button type="button" className="secondary-button" onClick={() => void onExport()}><Download size={17} />导出诊断</button>
       </header>
       <div className="status-grid-v2">
-        <section className={`managed-status-card ${takeoverReady ? "ready" : "disconnected"}`}>
-          <span>会话所有权</span>
-          <strong>{takeoverTitle}</strong>
-          <p>{takeoverReady
-            ? explicitDesktopHandoff
-              ? "关闭目标 Desktop 会话后由 Bridge 接续；交还后需关闭并重新打开该会话，加载手机历史。"
-              : "Claude Desktop 执行时排队，空闲后恢复相同 sessionId 与 transcript。"
-            : snapshot.runtime.detail}</p>
-          <small>第三方 Host · 无 CDP · 无焦点或剪贴板控制</small>
+        <section className={`managed-status-card ${nativeRelay ? "ready" : "disconnected"}`}>
+          <span>Claude Desktop 中转</span>
+          <strong>{nativeRelay ? "原生中转已就绪" : "请更新电脑端 Bridge"}</strong>
+          <p>Claude 的执行与授权由 Desktop 管理。</p>
         </section>
         <section>
           <span>Claude 通道</span>
@@ -1973,50 +1791,19 @@ export function DesktopDashboard({ themeControl, agentVisibility }: { themeContr
         <ThemeMenu control={themeControl} side="right" iconSize={18} />
       </aside>
       <section className="desktop-content-v2">
+        {snapshot.claudeInspector?.state === "error" && <div role="alert" className="inspector-warning"><AlertTriangle size={18} /><span>Claude 调试连接监测不可用：{snapshot.claudeInspector.error}</span></div>}
+        {snapshot.claudeInspector?.clients.some((client) => !client.approved) && <div role="alert" className="inspector-warning">
+          <AlertTriangle size={18} /><div><strong>Claude 调试接口存在未认可的进程连接</strong>{snapshot.claudeInspector.clients.filter((client) => !client.approved).map((client) => <p key={client.pid}>PID {client.pid} · {client.name} · {client.executablePath ?? client.pathError ?? "路径未知"}</p>)}</div>
+        </div>}
         {tab === "sessions" && (
           <DesktopSessions
             snapshot={visibleSnapshot!}
             events={events}
             apiRequest={request}
-            onClaudeDesktopLaunch={async () => {
-              const next = await api.launchClaudeDesktop();
-              setSnapshot(next);
-              return next;
-            }}
-            onClaudeDesktopQuit={async () => {
-              const next = await api.quitClaudeDesktop();
-              setSnapshot(next);
-              return next;
-            }}
-            onSetAnthropicApiKey={async (value) => {
-              setSnapshot(await api.setAnthropicApiKey(value));
-            }}
-            onRemoveAnthropicApiKey={async () => {
-              setSnapshot(await api.removeAnthropicApiKey());
-            }}
             onRefreshSnapshot={async () => {
               setSnapshot(await api.getSnapshot());
             }}
-            onReturnToDesktop={async (sessionId) => {
-              const result = unwrap<{ session: BridgeSessionInfo }>(await api.request({
-                method: "session.return_to_desktop",
-                params: { sessionId },
-              }));
-              setSnapshot((current) => current ? {
-                ...current,
-                sessions: current.sessions.map((session) => session.sessionId === result.session.sessionId ? result.session : session),
-              } : current);
-            }}
-            onTakeoverDesktop={async (sessionId, commandId) => {
-              const result = unwrap<{ session: BridgeSessionInfo }>(await api.request({
-                method: "session.takeover_desktop",
-                params: { sessionId, ...(commandId ? { commandId } : {}) },
-              }));
-              setSnapshot((current) => current ? {
-                ...current,
-                sessions: current.sessions.map((session) => session.sessionId === result.session.sessionId ? result.session : session),
-              } : current);
-            }}
+
           />
         )}
         {tab === "devices" && (

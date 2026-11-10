@@ -1,9 +1,10 @@
 import { createReadStream } from "node:fs";
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   isClaudeTranscriptControlMessage,
+  type BridgeBackgroundTask,
   type BridgeHistoryPage,
   type BridgeInteractiveAction,
   type BridgeInteractivePrompt,
@@ -538,7 +539,7 @@ export function isNonTurnUserRecord(value: Record<string, unknown>, rawText: str
   );
 }
 
-function visibleMessage(value: Record<string, unknown>): Pick<TranscriptNode, "role" | "text"> | undefined {
+export function visibleMessage(value: Record<string, unknown>): Pick<TranscriptNode, "role" | "text"> | undefined {
   if (value.type !== "user" && value.type !== "assistant") return undefined;
   if (!isRecord(value.message)) return undefined;
   if (
@@ -547,7 +548,9 @@ function visibleMessage(value: Record<string, unknown>): Pick<TranscriptNode, "r
       value.toolUseResult !== undefined ||
       value.tool_use_result !== undefined ||
       value.isMeta === true ||
-      value.isCompactSummary === true
+      value.isCompactSummary === true ||
+      value.isSynthetic === true ||
+      value.isVisibleInTranscriptOnly === true
     )
   ) return undefined;
   const text = textFromContent(value.message.content);
@@ -588,7 +591,7 @@ function defaultWrapUpActionLabel(actionKey: string): string {
   return actionKey;
 }
 
-function extractInteractivePrompt(value: Record<string, unknown>): BridgeInteractivePrompt | undefined {
+export function extractInteractivePrompt(value: Record<string, unknown>): BridgeInteractivePrompt | undefined {
   if (value.type !== "assistant" || !isRecord(value.message) || !Array.isArray(value.message.content)) {
     return undefined;
   }
@@ -911,6 +914,31 @@ const transcriptSnapshotCache = new Map<string, {
   branch: NonNullable<ClaudeTranscriptSnapshot["branch"]>;
 }>();
 
+export function updateClaudeTaskPlan(previous: BridgeTaskPlan | undefined, id: string, input: Record<string, unknown>, wrapUp: boolean, at: number): BridgeTaskPlan | undefined {
+  if (wrapUp) return previous ? { ...previous, items: previous.items.map(item => ({ ...item, status: "completed" })), updatedAt: Math.max(at, previous.updatedAt + 1) } : undefined;
+  if ("items" in input) {
+    if (!Array.isArray(input.items) || input.items.length === 0 || !input.items.every(item => isRecord(item) && typeof item.content === "string" && item.content.trim() && typeof item.status === "string" && ["pending", "in_progress", "completed"].includes(item.status))) return previous;
+    const items = input.items.map(item => ({ content: String(item.content).trim(), status: item.status as BridgeTaskPlan["items"][number]["status"] }));
+    const fresh = !previous || input.scope === "new_task" || input.scope === "first_task";
+    return { id: fresh ? id : previous.id, items, updatedAt: fresh ? at : Math.max(at, previous.updatedAt + 1) };
+  }
+  if (!previous) return undefined;
+  const items = previous.items.map(item => ({ ...item }));
+  if (input.advance === true) {
+    const current = items.find(item => item.status === "in_progress");
+    if (current) current.status = "completed";
+    const next = items.find(item => item.status === "pending");
+    if (next) next.status = "in_progress";
+  }
+  for (const index of Array.isArray(input.done) ? input.done : []) if (typeof index === "number" && Number.isInteger(index) && items[index - 1]) items[index - 1]!.status = "completed";
+  if (typeof input.start === "number" && Number.isInteger(input.start) && items[input.start - 1]) {
+    for (const item of items) if (item.status === "in_progress") item.status = "pending";
+    items[input.start - 1]!.status = "in_progress";
+  }
+  return items.some((item, index) => item.status !== previous.items[index]!.status)
+    ? { ...previous, items, updatedAt: Math.max(at, previous.updatedAt + 1) } : previous;
+}
+
 export async function parseClaudeTranscriptSnapshot(
   path: string,
   options: ClaudeHistoryReadOptions = {},
@@ -1193,56 +1221,14 @@ export async function parseClaudeTranscriptSnapshot(
         }
         continue;
       }
-      if (update.wrapUp) {
-        if (planMessage?.taskPlan) {
-          planMessage.taskPlan = {
-            ...planMessage.taskPlan,
-            items: planMessage.taskPlan.items.map((item) => ({ ...item, status: "completed" })),
-            updatedAt: Math.max(node.createdAt, planMessage.taskPlan.updatedAt + 1),
-          };
-          planMessage = undefined;
-        }
-        continue;
-      }
-      const input = update.input;
-      if ("items" in input) {
-        if (!Array.isArray(input.items) || input.items.length === 0 || !input.items.every((item) =>
-          isRecord(item) && typeof item.content === "string" && item.content.trim() &&
-          typeof item.status === "string" && ["pending", "in_progress", "completed"].includes(item.status))) continue;
-        const items = input.items.map((item) => ({ content: item.content.trim() as string, status: item.status as BridgeTaskPlan["items"][number]["status"] }));
-        if (!planMessage || input.scope === "new_task" || input.scope === "first_task") {
-          planMessage = {
-            id: `plan:${update.id}`,
-            role: "assistant",
-            text: "",
-            createdAt: node.createdAt,
-            taskPlan: { id: update.id, items, updatedAt: node.createdAt },
-          };
+      const plan = updateClaudeTaskPlan(planMessage?.taskPlan, update.id, update.input, update.wrapUp, node.createdAt);
+      if (plan) {
+        if (!planMessage || plan.id !== planMessage.taskPlan?.id) {
+          planMessage = { id: `plan:${plan.id}`, role: "assistant", text: "", createdAt: node.createdAt, taskPlan: plan };
           messages.push(planMessage);
-        } else {
-          planMessage.taskPlan = { id: planMessage.taskPlan!.id, items, updatedAt: Math.max(node.createdAt, planMessage.taskPlan!.updatedAt + 1) };
-        }
-        continue;
+        } else planMessage.taskPlan = plan;
       }
-      if (!planMessage?.taskPlan) continue;
-      const previousPlan = planMessage.taskPlan;
-      const items = previousPlan.items.map((item) => ({ ...item }));
-      if (input.advance === true) {
-        const current = items.find((item) => item.status === "in_progress");
-        if (current) current.status = "completed";
-        const next = items.find((item) => item.status === "pending");
-        if (next) next.status = "in_progress";
-      }
-      for (const index of Array.isArray(input.done) ? input.done : []) {
-        if (typeof index === "number" && Number.isInteger(index) && items[index - 1]) items[index - 1]!.status = "completed";
-      }
-      if (typeof input.start === "number" && Number.isInteger(input.start) && items[input.start - 1]) {
-        for (const item of items) if (item.status === "in_progress") item.status = "pending";
-        items[input.start - 1]!.status = "in_progress";
-      }
-      if (items.some((item, index) => item.status !== previousPlan.items[index]!.status)) {
-        planMessage.taskPlan = { ...previousPlan, items, updatedAt: Math.max(node.createdAt, previousPlan.updatedAt + 1) };
-      }
+      if (update.wrapUp) planMessage = undefined;
     }
     if (node.interactivePrompt) {
       const previous = messages.at(-1);
@@ -1519,7 +1505,10 @@ export async function getClaudeSubagentsMtimeMs(transcriptPath: string): Promise
   const subagentsDir = subagentsDirectoryForTranscript(transcriptPath);
   const files = await collectSubagentJsonlFiles(subagentsDir);
   if (files.length === 0) return 0;
-  let maxMtime = 0;
+  // A workflow journal records phase results after its agent's transcript stops changing.
+  const journals = [...new Set(files.filter((file) => /[\\/]workflows[\\/]wf_[^\\/]+[\\/]agent-[^\\/]+$/u.test(file))
+    .map((file) => join(dirname(file), "journal.jsonl")))];
+  let maxMtime = Math.max(0, ...await Promise.all(journals.map((file) => stat(file).then((s) => s.mtimeMs, () => 0))));
   for (const file of files) {
     const [jsonlMtime, metaMtime] = await Promise.all([
       stat(file).then((s) => s.mtimeMs, () => 0),
@@ -1672,6 +1661,8 @@ async function parseSingleSubagentFile(
   const agentType = typeof meta.agentType === "string" && meta.agentType
     ? meta.agentType
     : undefined;
+  const workflowRunId = /[\\/]workflows[\\/](wf_[^\\/]+)[\\/]agent-[^\\/]+$/u.exec(jsonlPath)?.[1];
+  const workflowPhase = typeof meta.workflowPhase === "string" && meta.workflowPhase ? meta.workflowPhase : undefined;
   const effectiveStartedAt = startedAt || updatedAt || Date.now();
   const effectiveUpdatedAt = Math.max(effectiveStartedAt, updatedAt || Math.round(fileStat.mtimeMs));
   const state: BridgeSubagentSummary["state"] = explicitlyFinished
@@ -1694,6 +1685,8 @@ async function parseSingleSubagentFile(
     startedAt: effectiveStartedAt,
     updatedAt: effectiveUpdatedAt,
     durationMs: Math.max(0, effectiveUpdatedAt - effectiveStartedAt),
+    ...(workflowRunId ? { workflowRunId } : {}),
+    ...(workflowPhase ? { workflowPhase } : {}),
   };
   if (subagentSummaryCache.size > 2_000) {
     const oldestKey = subagentSummaryCache.keys().next().value;
@@ -1703,19 +1696,31 @@ async function parseSingleSubagentFile(
   return summary;
 }
 
-const parentSubagentCache = new Map<string, {
-  signature: string;
+interface ParentBackgroundLaunch {
+  kind: "bash" | "workflow";
+  taskId: string;
+  toolUseId: string;
+  runId?: string;
+  name?: string;
+  description: string;
+  state: BridgeSubagentSummary["state"];
+  startedAt: number;
+  updatedAt: number;
+}
+
+interface ParentTranscriptTasks {
   summaries: BridgeSubagentSummary[];
+  launches: ParentBackgroundLaunch[];
   compactedAt: number;
   taskStates: Map<string, { state: BridgeSubagentSummary["state"]; at: number }>;
   excludedTasks: Set<string>;
-}>();
+}
 
-async function parseParentTranscriptSubagents(
-  transcriptPath: string,
-): Promise<{ summaries: BridgeSubagentSummary[]; compactedAt: number; taskStates: Map<string, { state: BridgeSubagentSummary["state"]; at: number }>; excludedTasks: Set<string> }> {
+const parentSubagentCache = new Map<string, ParentTranscriptTasks & { signature: string }>();
+
+async function parseParentTranscriptSubagents(transcriptPath: string): Promise<ParentTranscriptTasks> {
   const fileStat = await stat(transcriptPath).catch(() => undefined);
-  if (!fileStat) return { summaries: [], compactedAt: 0, taskStates: new Map(), excludedTasks: new Set() };
+  if (!fileStat) return { summaries: [], launches: [], compactedAt: 0, taskStates: new Map(), excludedTasks: new Set() };
   const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}`;
   const cached = parentSubagentCache.get(transcriptPath);
   if (cached && cached.signature === cacheSignature) return cached;
@@ -1740,7 +1745,10 @@ async function parseParentTranscriptSubagents(
   const toolIdByAgentId = new Map<string, string>();
   const reportsByAgentId = new Map<string, { text: string; at: number }>();
   const endedByAgentId = new Map<string, BridgeSubagentSummary["state"]>();
+  const endedAt = new Map<string, number>();
   const stopRequests = new Map<string, string>();
+  const backgroundCalls = new Map<string, { name: "Bash" | "Workflow"; description: string; inherited: boolean }>();
+  const launches: Array<Omit<ParentBackgroundLaunch, "state" | "updatedAt"> & { inherited: boolean }> = [];
 
   try {
     const lines = createInterface({
@@ -1779,7 +1787,8 @@ async function parseParentTranscriptSubagents(
       }
       if (value.type === "attachment" && isRecord(value.attachment)) {
         const task = value.attachment;
-        if (task.type === "task_status" && task.taskType === "local_agent" && typeof task.taskId === "string"
+        if (task.type === "task_status" && typeof task.taskId === "string"
+          && (task.taskType === "local_agent" || task.taskType === "local_bash" || task.taskType === "local_workflow")
           && (task.status === "running" || task.status === "pending" || task.status === "paused"
             || task.status === "completed" || task.status === "failed" || task.status === "stopped")) {
           taskStates.set(task.taskId, {
@@ -1788,12 +1797,26 @@ async function parseParentTranscriptSubagents(
           });
         }
       }
-      if (!isRecord(value.message)) continue;
-      if (value.type === "assistant" && Array.isArray(value.message.content)) {
-        for (const block of value.message.content) {
+      const message = isRecord(value.message) ? value.message
+        : value.type === "attachment" && isRecord(value.attachment) && value.attachment.type === "queued_command"
+          ? { content: value.attachment.prompt } : undefined;
+      if (!message) continue;
+      if (value.type === "assistant" && Array.isArray(message.content)) {
+        for (const block of message.content) {
           if (!isRecord(block) || block.type !== "tool_use" || typeof block.id !== "string") continue;
           if (block.name === "TaskStop" && isRecord(block.input) && typeof block.input.task_id === "string") {
             stopRequests.set(block.id, block.input.task_id);
+            continue;
+          }
+          if (block.name === "Bash" || block.name === "Workflow") {
+            const input = isRecord(block.input) ? block.input : {};
+            const label = [input.description, input.command, input.name]
+              .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
+            backgroundCalls.set(block.id, {
+              name: block.name,
+              description: label?.trim().slice(0, 120) ?? block.name,
+              inherited: Boolean(anchorUuid && inherited.has(anchorUuid)),
+            });
             continue;
           }
           if (block.name !== "Agent" && block.name !== "Task") continue;
@@ -1816,15 +1839,33 @@ async function parseParentTranscriptSubagents(
             updatedAt: ts,
           });
         }
-      } else if (value.type === "user") {
-        if (Array.isArray(value.message.content)) {
-          for (const block of value.message.content) {
+      } else if (value.type === "user" || value.type === "attachment") {
+        if (Array.isArray(message.content)) {
+          for (const block of message.content) {
             if (!isRecord(block) || block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
             const stoppedId = stopRequests.get(block.tool_use_id);
             const result = value.toolUseResult;
             if (stoppedId && block.is_error !== true && isRecord(result) && result.task_id === stoppedId
               && typeof result.message === "string" && result.message.startsWith("Successfully stopped task:")) {
               taskStates.set(stoppedId, { state: "stopped", at: ts });
+            }
+            const background = backgroundCalls.get(block.tool_use_id);
+            if (background && block.is_error !== true && isRecord(result)) {
+              const taskId = background.name === "Bash" ? result.backgroundTaskId : result.taskId;
+              if (typeof taskId === "string" && taskId) {
+                const name = typeof result.workflowName === "string" && result.workflowName ? result.workflowName : undefined;
+                const summary = typeof result.summary === "string" && result.summary.trim() ? result.summary.trim() : undefined;
+                launches.push({
+                  kind: background.name === "Bash" ? "bash" : "workflow",
+                  taskId,
+                  toolUseId: block.tool_use_id,
+                  ...(typeof result.runId === "string" && result.runId ? { runId: result.runId } : {}),
+                  ...(name ? { name } : {}),
+                  description: summary ?? name ?? background.description,
+                  startedAt: ts,
+                  inherited: background.inherited,
+                });
+              }
             }
             const call = callsByToolId.get(block.tool_use_id);
             if (!call) continue;
@@ -1841,13 +1882,14 @@ async function parseParentTranscriptSubagents(
             }
           }
         }
-        const rawText = textFromContent(value.message.content);
+        const rawText = textFromContent(message.content);
         if (rawText.trimStart().startsWith("<task-notification>")) {
           const status = /<status>(\w+)<\/status>/u.exec(rawText)?.[1];
           if (status) {
             // One notification can end several tasks.
             for (const match of rawText.matchAll(/<task-id>([^<]+)<\/task-id>/gu)) {
               endedByAgentId.set(match[1]!, status === "completed" ? "completed" : status === "failed" ? "failed" : "stopped");
+              endedAt.set(match[1]!, ts);
             }
           }
         }
@@ -1863,7 +1905,7 @@ async function parseParentTranscriptSubagents(
       }
     }
   } catch {
-    return { summaries: [], compactedAt: 0, taskStates: new Map(), excludedTasks };
+    return { summaries: [], launches: [], compactedAt: 0, taskStates: new Map(), excludedTasks };
   }
 
   const results: BridgeSubagentSummary[] = [];
@@ -1889,7 +1931,19 @@ async function parseParentTranscriptSubagents(
     const oldestKey = parentSubagentCache.keys().next().value;
     if (typeof oldestKey === "string") parentSubagentCache.delete(oldestKey);
   }
-  const result = { summaries: results, compactedAt, taskStates, excludedTasks };
+  const result: ParentTranscriptTasks = {
+    summaries: results,
+    launches: launches.map(({ inherited: inheritedLaunch, ...launch }) => {
+      const task = taskStates.get(launch.taskId);
+      const ended = endedByAgentId.get(launch.taskId) ?? (task && task.state !== "running" ? task.state : undefined);
+      return {
+        ...launch,
+        state: ended ?? (inheritedLaunch ? "unknown" : "running"),
+        updatedAt: Math.max(launch.startedAt, endedAt.get(launch.taskId) ?? task?.at ?? 0),
+      };
+    }),
+    compactedAt, taskStates, excludedTasks,
+  };
   parentSubagentCache.set(transcriptPath, { signature: cacheSignature, ...result });
   return result;
 }
@@ -1950,6 +2004,150 @@ export async function readClaudeTranscriptSubagents(
       return subagent;
     })
     .sort((left, right) => left.startedAt - right.startedAt || left.agentId.localeCompare(right.agentId));
+}
+
+const workflowFileCache = new Map<string, { signature: string; value: unknown }>();
+
+/** Reads a small file once per mtime/size; parse failures surface as undefined (files may be mid-write). */
+async function readCachedWorkflowFile<T>(path: string, parse: (text: string) => T): Promise<T | undefined> {
+  const fileStat = await stat(path).catch(() => undefined);
+  if (!fileStat) return undefined;
+  const signature = `${fileStat.mtimeMs}:${fileStat.size}`;
+  const cached = workflowFileCache.get(path);
+  if (cached?.signature === signature) return cached.value as T;
+  let value: T | undefined;
+  try {
+    value = parse(await readFile(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+  workflowFileCache.set(path, { signature, value });
+  return value;
+}
+
+/** Tray entries ride along in every session snapshot; the full report stays in history items. */
+export function compactTraySubagent(subagent: BridgeSubagentSummary): BridgeSubagentSummary {
+  const { reportText: _reportText, latestText, ...rest } = subagent;
+  return { ...rest, ...(latestText ? { latestText: latestText.length > 280 ? `${latestText.slice(0, 279)}…` : latestText } : {}) };
+}
+
+/**
+ * Live phases come from the run's journal (`started` / `result` events). The run summary is
+ * only written when a run ends (and may be stale while a resumed run is live), so it only
+ * contributes the phase plan and run name.
+ */
+async function readClaudeWorkflowRun(
+  transcriptPath: string,
+  runId: string,
+  runState: BridgeSubagentSummary["state"],
+  subagents: readonly BridgeSubagentSummary[],
+): Promise<NonNullable<BridgeBackgroundTask["workflow"]>> {
+  const sessionDir = transcriptPath.replace(/\.jsonl$/u, "");
+  const [journal, summary] = await Promise.all([
+    readCachedWorkflowFile(join(sessionDir, "subagents", "workflows", runId, "journal.jsonl"), (text) => text.split("\n").flatMap((line) => {
+      try {
+        const value = JSON.parse(line) as unknown;
+        return isRecord(value) && typeof value.agentId === "string" ? [value] : [];
+      } catch {
+        return [];
+      }
+    })),
+    readCachedWorkflowFile(join(sessionDir, "workflows", `${runId}.json`), (text) => JSON.parse(text) as unknown),
+  ]);
+  const phases = isRecord(summary) && Array.isArray(summary.phases)
+    ? summary.phases.flatMap((phase) => isRecord(phase) && typeof phase.title === "string" ? [phase.title] : [])
+    : [];
+  const files = new Map(subagents.filter((agent) => agent.workflowRunId === runId).map((agent) => [agent.agentId, agent]));
+  const agents = new Map<string, BridgeSubagentSummary>();
+  const finished = new Set((journal ?? []).filter((event) => event.type === "result").map((event) => event.agentId as string));
+  for (const event of journal ?? []) {
+    if (event.type !== "started") continue;
+    const agentId = event.agentId as string;
+    const file = files.get(agentId);
+    const phase = typeof event.phase === "string" && event.phase ? event.phase : file?.workflowPhase;
+    const label = typeof event.label === "string" && event.label ? event.label : undefined;
+    const state = file?.state === "failed" ? "failed"
+      : finished.has(agentId) ? "completed"
+        : file?.state ?? (runState === "running" ? "running" : runState);
+    agents.set(agentId, {
+      agentId,
+      description: label ?? file?.description ?? agentId,
+      state,
+      toolCount: file?.toolCount ?? 0,
+      startedAt: file?.startedAt ?? 0,
+      updatedAt: file?.updatedAt ?? 0,
+      workflowRunId: runId,
+      ...(phase ? { workflowPhase: phase } : {}),
+    });
+  }
+  // Workflows can run dozens of agents; members carry only what the phase timeline shows.
+  for (const file of files.values()) {
+    if (agents.has(file.agentId)) continue;
+    const { agentId, description, state, toolCount, startedAt, updatedAt, workflowPhase } = file;
+    agents.set(agentId, { agentId, description, state, toolCount, startedAt, updatedAt, workflowRunId: runId, ...(workflowPhase ? { workflowPhase } : {}) });
+  }
+  for (const agent of agents.values()) {
+    if (agent.workflowPhase && !phases.includes(agent.workflowPhase)) phases.push(agent.workflowPhase);
+  }
+  const name = isRecord(summary) && typeof summary.workflowName === "string" && summary.workflowName
+    ? summary.workflowName : undefined;
+  return { runId, ...(name ? { name } : {}), phases, agents: [...agents.values()] };
+}
+
+/**
+ * Every background task the parent transcript and its `subagents/` tree know about:
+ * agents (outside workflows), Workflow runs with their phase timeline, and backgrounded Bash.
+ * @param subagents Result of readClaudeTranscriptSubagents for the same transcript.
+ */
+export async function readClaudeTranscriptBackgroundTasks(
+  transcriptPath: string,
+  subagents: readonly BridgeSubagentSummary[],
+  liveSince?: number,
+): Promise<BridgeBackgroundTask[]> {
+  const parent = await parseParentTranscriptSubagents(transcriptPath);
+  const tasks: BridgeBackgroundTask[] = subagents.filter((agent) => !agent.workflowRunId).map((agent) => ({
+    id: agent.toolUseId ?? `task:${agent.agentId}`,
+    kind: "subagent",
+    taskId: agent.agentId,
+    ...(agent.toolUseId ? { toolUseId: agent.toolUseId } : {}),
+    description: agent.description,
+    state: agent.state,
+    startedAt: agent.startedAt,
+    updatedAt: agent.updatedAt,
+    subagent: compactTraySubagent(agent),
+  }));
+  // A resumed workflow relaunches the same run directory; the latest launch describes it.
+  const latestRun = new Map(parent.launches.filter((launch) => launch.runId).map((launch) => [launch.runId, launch]));
+  for (const launch of parent.launches) {
+    if (launch.runId && latestRun.get(launch.runId) !== launch) continue;
+    let state = launch.state;
+    let updatedAt = launch.updatedAt;
+    // Background shells and workflow runs live inside the process that launched them.
+    if (state === "running" && !subagentProcessLive(launch.startedAt, liveSince)) state = "stopped";
+    else if (state === "running" && launch.startedAt < parent.compactedAt && updatedAt < parent.compactedAt) {
+      state = "unknown";
+      updatedAt = Math.max(updatedAt, parent.compactedAt);
+    }
+    const workflow = launch.kind === "workflow" && launch.runId
+      ? await readClaudeWorkflowRun(transcriptPath, launch.runId, state, subagents)
+      : undefined;
+    if (workflow) {
+      updatedAt = Math.max(updatedAt, ...workflow.agents.map((agent) => agent.updatedAt));
+      if (!workflow.name && launch.name) workflow.name = launch.name;
+    }
+    tasks.push({
+      id: launch.toolUseId,
+      kind: launch.kind,
+      taskId: launch.taskId,
+      toolUseId: launch.toolUseId,
+      description: launch.description,
+      state,
+      startedAt: launch.startedAt,
+      updatedAt,
+      ...(workflow ? { workflow } : {}),
+    });
+  }
+  return tasks.sort((left, right) => right.startedAt - left.startedAt);
 }
 
 export async function readClaudeSessionSubagents(

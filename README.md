@@ -8,12 +8,14 @@
 
 Bridge 将电脑上的会话、任务进度、授权提问和工作区文件带到手机。你可以继续已有会话、排队发送下一条指令、创建 Fork、查看子代理和成果，也可以在离开电脑后处理等待中的授权。
 
-这是独立维护的 fork，主要围绕 **macOS + Android + Claude** 完善日常使用。本文对应 **v1.2.1** 源码，包含 Magpie 连接设置、手机结构化审批、收件箱恢复与 Fork 边界修复。安装包与发布状态以本仓库的 [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) 为准。保留上游 Codex、Hermes、DSH 适配器，默认只显示 Claude，其他 Agent 可在设置中启用。
+这是独立维护的 fork，主要围绕 **macOS + Android + Claude** 完善日常使用。安装包与发布状态以本仓库的 [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) 为准。保留上游 Codex、Hermes、DSH 适配器，默认只显示 Claude，其他 Agent 可在设置中启用。
+
+**1.3.0 改用 Claude Desktop 原生接入**：会话执行、队列和权限由 Desktop 管理，Bridge 通过 `LocalSessions` 转发操作，不再启动 Claude SDK/CLI Host 或提供旧的接管/交还入口。新版加入原生 Send now、撤回与回退，改善大历史加载、网络重连、流式阅读和工具显示。macOS 已通过真实 Desktop 的会话与历史验证，更多边界使用隔离夹具验收；完整范围见[重构记录](docs/HOSTING-REFACTOR.md)。
 
 ## 开始使用
 
 1. 从本 fork 的 Releases 下载电脑端和 Android 客户端，尽量使用同一版本。上游安装包不包含本 fork 的全部改进。
-2. 在电脑上准备好可用的 Claude Desktop / Claude-3p Host 环境，启动 Bridge。
+2. 在电脑上运行 Claude Desktop，使用用户自行开启的 Node inspector（`127.0.0.1:9229`），再启动 Bridge。未开启时 Claude 显示不可用；Bridge 不会修改安装包、重启 Desktop 或自动开启 inspector。
 3. 在 Android 安装 APK，通过电脑端的一次性二维码或配对链接添加电脑。
 4. 打开手机的会话目录，选择已有会话，或用右上角“+”创建会话。
 5. 在对话中发送文本、图片或文件，查看执行进度，并处理授权与提问。
@@ -26,31 +28,37 @@ Bridge 将电脑上的会话、任务进度、授权提问和工作区文件带�
 
 ### 继续已有工作
 
-- 浏览原生 Desktop 与 Bridge 管理的会话，查看 Markdown、工具调用、任务计划、子代理进度和完整报告。
-- 在支持的 macOS Claude Desktop 环境中，将输入送到经核验的原会话执行器，并按输入 UUID 跟踪接收与完成；投递结果不确定时保留状态，不自动重发或另起执行器。
+- 直接浏览 Desktop 的原生会话与历史，使用 Desktop 返回的会话 ID，查看 Markdown、工具调用、任务计划、子代理进度和完整报告。
+- Claude 输入通过 Desktop 的 `claude.web.LocalSessions` 原生接口提交；接收与完成分别记录，投递结果不确定时保留状态，不自动重发或另起执行器。
 - 区分主轮执行、等待授权、后台 Agent / Bash 与进程存活，避免把后台任务或 Fork 子进程误算为父会话一直忙碌。
-- 运行中可排队下一条指令；支持的执行来源还可立即调整当前任务。队列、附件和消息回执保留各自身份，重连后恢复状态。
+- 运行中可通过原生接口排队下一条指令；支持的运行时还可立即调整当前任务。Claude 队列由 Desktop 管理，Bridge 保留请求幂等、附件身份、收据和事件 replay。旧 Bridge 队列与手机缓存的 `bridgeExecutionRequested` 不会自动重发。
 - 授权与 `AskUserQuestion` 在手机和电脑之间同步，已处理的请求及时收起。停止任务、删除会话等操作保留确认。
 
-Bridge 的后台服务负责连接、队列和任务。关闭再打开 Bridge 窗口会重新连接服务；**关闭窗口与停止后台服务是不同的操作**。
+Bridge 的后台服务负责连接和事件转发；Claude 任务和队列由 Desktop 执行。关闭再打开 Bridge 窗口会重新连接服务；**关闭窗口与停止后台服务是不同的操作**。
+
+### 排队与回退
+
+- 对尚未开始处理的已提交、已接收或排队消息，使用 **Send now** 或撤回；操作始终指向原生消息，由 Desktop 判断是否仍可执行。
+- 消息旁的回退入口分别预览对话和文件资格。确认对话回退会停止当前任务，移除所选消息及之后的对话；文件恢复仍受原生检查点和忙碌状态限制。原文回填输入框，附件需重新添加。
+- 输出期间上翻会暂停跟随，回到底部后恢复；顶部补页保留阅读位置。工具完成和历史重放保留调用名称与参数。
 
 ### 整理与创建会话
 
 - 按项目浏览、搜索和归档会话；Fork 按直接父子关系逐层展开，支持从分支继续创建分支。父会话归档后，活跃后代仍可查看。
-- Fork 从选中父链的完整轮次边界创建；当前未完成的一轮不复制，父分支任务不成为子分支的运行中任务。分支共享工作目录，创建分支不会回滚文件。
-- 在会话列表或对话操作中重命名。名称持久保存在 Bridge 中，重启后仍在；它是 Bridge 显示名，不改写 Claude Desktop 的原生标题和会话文件。
+- Claude Fork 通过 Desktop 原生接口创建，历史边界由 Desktop 决定；分支共享工作目录，创建分支不会回滚文件。
+- 在会话列表或对话操作中重命名；Claude 会话更新通过 Desktop 原生接口提交。
 - 新建会话时，在同一入口选择最近工作文件夹或浏览电脑目录。点击子目录先进入，确认当前目录后才选中；项目分组与实际工作目录分别设置。
 - 返回目录再打开会话时保留未发送草稿。新建表单在浏览目录、取消文件夹选择和从文件夹选择返回时保留已填内容。
 
 ### 模型、上下文与大会话
 
-- 从当前 Gateway 读取模型名称和声明的上下文容量，保留模型与思考强度设置，识别压缩记录和压缩后的 token 信息。
+- Claude 模型、思考强度和上下文用量通过 Desktop 原生接口读取或设置，能力以当前 Desktop 实际提供的接口为准。
 - 长回复可折叠并展开全文，保留压缩前后的历史与子代理报告。
 - 目录、历史和成果按需加载；逐步补页、延迟加载媒体，并合并频繁进度更新，减少大 JSONL、大回复与重连时的重复读取和传输。
 
-实际上下文容量、立即调整和模型设置生效方式取决于执行来源。已经运行的 Claude Desktop 进程可能需要重启才能加载只写入磁盘的模型设置；原生窗口和侧边栏也不保证实时呈现 Bridge 中的全部变化。
+实际上下文容量、立即调整和模型设置生效方式取决于各原生运行时。Claude 权限请求与回答通过 Desktop 原生通道转发，Bridge 不安装 Host 权限 Hook，也不替 Desktop 作审批决定；历史问答不能作为实时审批提交。
 
-原 Desktop 会话的 inbox 输入仍属于会话间消息，“会话已接收”表示消息送达，不表示授权已提交。手机仅对实时、可关联的权限请求提交允许、拒绝或问答答案；未接通原生响应通道的阻塞确认和历史问答会标明需要在电脑端处理。实际原生审批覆盖取决于 Desktop 是否发出对应 Hook 事件。
+Claude 历史直接读取 Desktop 记录，不迁移旧数据、不关联旧逻辑 ID，也不提供旧历史入口或从旧队列恢复草稿；既有数据与配对 identity 不碰。退役旧连接组件时先写 `.bridge-backup`，只清理旧 `claude-bridge` MCP、固定 Bridge URL，以及带专有 header/env 标记的动态权限 Hook；无关 Hook、MCP 和用户设置保持原样。
 
 ## 手机端怎么操作
 
@@ -85,9 +93,19 @@ Android 系统返回键按页面层级工作：
 
 超限、二进制或无效 UTF-8 文本会明确报错，不以截断内容代替全文。上传文件保存在会话工作目录的 `.bridge-uploads/<uploadId>/<filename>`，发送时附上相对路径；可以只发送文件。从输入区移除附件不会删除已保存在电脑上的文件。
 
+## Claude Desktop 开发者工具
+
+macOS 电脑端打开“设置 → 诊断与关于 → Claude Desktop 开发者工具”，检查 `Claude` 或 `Claude-3p` 标准配置目录。两个目录都存在时需要选择目标；“一键开启”仅将该目录下 `developer_settings.json` 的 `allowDevTools` 设为 `true`，保留其他字段。检查不写入，已开启不重复改写，JSON 格式错误会显示错误并保留原文件。
+
+修改后需重启 Claude Desktop 才会加载。需要主进程调试时，再手动点击 **Developer → Enable Main Process Debugger**；菜单仍受账号与 workspace 策略限制。此功能不自动重启应用或打开调试端口。
+
+Bridge 后台每 3 秒检查当前用户可见的 9229 TCP 连接，用 macOS `proc_pidpath` 读取连接进程的完整可执行路径。当前 Bridge 应用包、`/Applications/Bridge.app/` 和 `/Applications/Google Chrome.app/` 内的进程属于认可路径；其他位置或路径无法识别时触发系统通知及窗口内告警。设置页显示 PID、完整路径和最近 20 条告警（当前后台运行期间）；同一进程持续连接不重复通知，断开后再次连接会再次提醒。关闭 Bridge 窗口后监测继续，停止后台服务后监测停止。
+
+这是按路径提醒的轮询监测，短连接可能漏检，不会阻止其他进程连接，也不会自动关闭调试端口。升级到带监测的版本时，需要在任务结束后停止旧后台服务再打开新版 Bridge；设置页会提示后台尚未提供监测状态。
+
 ## Magpie 接入与额度
 
-电脑端打开“设置 → 提供方 → Magpie 连接”，可选择沿用 Claude/Claude-3p 配置，或手动填写网关 URL、认证方式（Bearer / x-api-key）和 Magpie Key。“测试连接”分别检查模型与额度接口，不保存配置；“保存 Magpie 配置”验证模型列表并在电脑本地加密保存 Key。模型发现、额度读取和随后启动的 Bridge 执行器使用选定配置；运行中的执行器保留原配置。手机端可查看当前来源和连接状态，Key 不会回传。切回自动配置后重新使用 Claude/Claude-3p 的配置。
+Magpie 额度插件保留，Claude 的账号、模型与执行配置由 Desktop 管理。旧“提供方 → Magpie 连接”中的 Host 执行器配置与 standalone API Key lane 不再用于 Claude 执行；已有配置保留，凭据不会发送到手机或 Relay。
 
 使用兼容的 Magpie Gateway 时，可在“设置 → Magpie 额度”查看账号、套餐、各额度窗口、余额和重置时间；会话模型选择中也会显示相应额度信息。
 
@@ -105,12 +123,15 @@ flowchart LR
   Phone[Android 客户端] <-->|WebRTC| Host[本机 Bridge]
   Phone <-->|WS / WSS| Relay[自托管中继]
   Host <-->|WS / WSS| Relay
-  Host --> Runtime[Claude Desktop / 本地运行时]
+  Host -->|本机 Node inspector| Claude[Claude Desktop LocalSessions]
+  Host --> Runtime[Codex / Hermes / DSH 原生接入]
 ```
 
 手机与 Bridge 之间的业务正文使用每设备 AES-256-GCM 端到端加密。中继可见连接、路由、密文与队列元数据。支持 WebRTC 直连和中继回退，实际连接方式取决于网络与 ICE 配置。
 
-本 fork 的日常部署是**本机桌面 Host + Android 客户端，服务器只运行中继**，无需向公网部署 WebUI。Web/PWA 保留供开发使用。模型凭据留在电脑端，各运行时的账号和会话保持隔离；跨运行时接力需要显式确认。
+本 fork 的日常部署是**本机 Bridge + Android 客户端，服务器只运行中继**，无需向公网部署 WebUI。Web/PWA 保留供开发使用，各运行时的账号和会话保持隔离。
+
+Claude 接入从 `http://127.0.0.1:9229/json/list` 动态取得 WebSocket，通过 `process.mainModule.require('electron')` 找到 `app://localhost` WebContents，再以 `executeJavaScript` 调用 `claude.web.LocalSessions`。用户已选择常开该本机 inspector，本次选择覆盖旧文档“绝不 CDP / 不附着”的 Claude 限制；不改 asar、不签 token、不添加 LaunchAgent、不用辅助功能自动点菜单。Relay 不提供任意 evaluate 入口，也不接收账号凭据。
 
 | 文档 | 内容 |
 | --- | --- |
@@ -168,7 +189,7 @@ npm run dev:desktop
 | `npm run verify` | 全部类型检查、五组回归测试和完整构建 |
 | `npm test` | 桌面、客户端、协议、中继、Magpie 插件回归 |
 | `npm run test:infra` | 测试入口、失败传播与回收站清理约定 |
-| `npm run test:browser` | 实际 App、加密协议和本地中继上的六个隔离浏览器场景 |
+| `npm run test:browser` | 实际 App、加密协议和本地中继上的八个场景，分别验证明暗主题 |
 | `npm run ci:run -- run build:android:debug` | 构建 Android APK，并检查原生插件注册和全部 DEX |
 | `npm run ci:run -- run make:adhoc -w @bridge/desktop` | 构建 macOS ad-hoc 测试安装包 |
 

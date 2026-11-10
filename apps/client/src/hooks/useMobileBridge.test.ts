@@ -8,10 +8,26 @@ import {
   applyPermissionEvent,
   confirmedPairingSnapshot,
   mergeBridgeEvents,
+  mergeAcceptedDelivery,
   rebaseSnapshot,
   relayLinkAllowsSend,
   type LocalTurn,
 } from "./useMobileBridge.js";
+
+describe("native queue delivery projection", () => {
+  it("adds and withdraws a pending command without changing the active task", () => {
+    const session = { sessionId: "native", pendingCount: 0, pendingCommandIds: [], activeTurnId: "active", ownership: "DESKTOP_NATIVE_RUNNING", transport: "claude-desktop-native", turnState: "running" } as unknown as BridgeHostSnapshot["sessions"][number];
+    const snapshot = { latestSeq: 0, sessions: [session], permissions: [] } as unknown as BridgeHostSnapshot;
+    const queued: BridgeEvent = { eventId: "queued", seq: 1, timestamp: 1, origin: "claude-desktop", sessionId: "native", type: "message.delivery", data: { commandId: "pending", messageId: "uuid", delivery: "queued" } };
+    const updated = applyEventToSnapshot(snapshot, queued, [])!;
+    expect(updated.sessions[0]).toMatchObject({ pendingCommandIds: ["pending"], pendingCount: 1, activeTurnId: "active", turnState: "running" });
+    const rekey = { ...queued, eventId: "rekey", seq: 2, data: { ...queued.data, previousMessageId: "uuid", messageId: "rekeyed" } };
+    const rekeyed = applyEventToSnapshot(updated, rekey, [])!;
+    expect(rekeyed.sessions[0]?.pendingCount).toBe(1);
+    const cancelled = { ...queued, eventId: "cancelled", seq: 3, data: { ...queued.data, delivery: "cancelled" } };
+    expect(applyEventToSnapshot(rekeyed, cancelled, [])?.sessions[0]).toMatchObject({ pendingCommandIds: [], pendingCount: 0, activeTurnId: "active", turnState: "running", ownership: "DESKTOP_NATIVE_RUNNING" });
+  });
+});
 
 describe("relayLinkAllowsSend", () => {
   const home = "wss://relay.example/ws";
@@ -100,7 +116,62 @@ function event(seq: number, eventId = `event-${seq}`): BridgeEvent {
   };
 }
 
+describe("receipt delivery merge boundaries", () => {
+  it("keeps completed when merging another accepted or history terminal snapshot", () => {
+    expect(mergeAcceptedDelivery("completed", "failed")).toBe("completed");
+  });
+
+  it.each((["completed", "failed", "cancelled"] as const).flatMap(current =>
+    (["submitted", "session-received", "queued", "running"] as const).map(incoming => ({ current, incoming })),
+  ))("keeps $current when a later nonterminal $incoming receipt arrives", ({ current, incoming }) => {
+    expect(mergeAcceptedDelivery(current, incoming)).toBe(current);
+  });
+});
+
+describe("native message receipt identity", () => {
+  const turns: LocalTurn[] = ["one", "two"].map(id => ({
+    requestId: `request-${id}`, idempotencyKey: `key-${id}`, sessionId: "session",
+    messageId: `uuid-${id}`, text: "相同正文", attachments: [], createdAt: 1, delivery: "session-received",
+  }));
+  const native = (type: BridgeEvent["type"], seq: number, data: BridgeEvent["data"] = {}): BridgeEvent => ({
+    eventId: `native-${seq}`, sessionId: "session", origin: "claude-desktop", timestamp: seq, seq, type, data,
+  });
+
+  it.each(["turn.completed", "turn.failed", "turn.interrupted"] as const)("does not settle equal-text UUIDs from an uncorrelated native %s", type => {
+    expect(applyEventToTurns(turns, native(type, 3))).toEqual(turns);
+  });
+
+  it("uses the exact session and user UUID for queued, started and terminal stages", () => {
+    let current = applyEventToTurns(turns, { ...native("turn.queued", 2), turnId: "uuid-two" });
+    expect(current.map(turn => turn.delivery)).toEqual(["session-received", "queued"]);
+    current = applyEventToTurns(current, { ...native("turn.started", 3), turnId: "uuid-two" });
+    expect(current.map(turn => turn.delivery)).toEqual(["session-received", "running"]);
+    expect(applyEventToTurns(current, { ...native("turn.completed", 4), turnId: "uuid-two" }).map(turn => turn.delivery))
+      .toEqual(["session-received", "completed"]);
+    expect(applyEventToTurns(current, { ...native("turn.completed", 5), sessionId: "other", turnId: "uuid-two" })).toEqual(current);
+  });
+
+  it("keeps started after a later accepted event reports receipt", () => {
+    const started = applyEventToTurns(turns, { ...native("turn.started", 2, { requestId: "request-one" }), turnId: "uuid-one" });
+    const accepted = applyEventToTurns(started, { ...native("user.message.accepted", 3, { requestId: "request-one", delivery: "session-received" }), itemId: "uuid-one" });
+    expect(accepted[0]).toMatchObject({ delivery: "running", messageId: "uuid-one" });
+  });
+
+  it("consumes the accepted delivery stage", () => {
+    expect(applyEventToTurns(turns, { ...native("user.message.accepted", 2, { delivery: "queued" }), itemId: "uuid-one" })[0]?.delivery).toBe("queued");
+  });
+});
+
 describe("local receipt replay boundaries", () => {
+  it("clears pre-rewind local turns while a replayed boundary preserves new turns and other sessions", () => {
+    const base: LocalTurn = { requestId: "old", idempotencyKey: "key", sessionId: "session", text: "Old branch", attachments: [], createdAt: 999, delivery: "completed", lastEventSeq: 3 };
+    const after: LocalTurn = { ...base, requestId: "new", text: "New branch", delivery: "local-saved", lastEventSeq: 4 };
+    const other: LocalTurn = { ...base, sessionId: "other" };
+    const rewound: BridgeEvent = { eventId: "rewound", sessionId: "session", seq: 4, timestamp: 4, origin: "claude-desktop", type: "session.rewound", data: { messageId: "target", scope: "conversation" } };
+    expect(applyEventToTurns([base, after, other], rewound)).toEqual([after, other]);
+    expect(applyEventToTurns([after, other], rewound)).toEqual([after, other]);
+  });
+
   it.each(([
     ["turn.completed", "completed"], ["turn.failed", "failed"], ["turn.interrupted", "cancelled"],
   ] as const).flatMap(([terminal, delivery]) => (

@@ -1,5 +1,7 @@
+import { isClaudeNativeRelay, mergeAcceptedDelivery } from "../hooks/useMobileBridge.js";
 import type {
   BridgeAttachment,
+  BridgeBackgroundTask,
   BridgeArtifactManifest,
   BridgeArtifactPreview,
   BridgeDeliveryState,
@@ -12,12 +14,16 @@ import type {
   BridgeHistoryItem,
   BridgeHostSnapshot,
   BridgeInteractivePrompt,
+  BridgeNativePermissionMode,
   BridgePermissionInfo,
   BridgePermissionMode,
   BridgeRuntimeGoalStatus,
   BridgeRuntimeHandoff,
   BridgeRuntimeHandoffPreview,
   BridgeSessionCommandResult,
+  BridgeSessionRewindPreview,
+  BridgeSessionRewindResult,
+  BridgeSessionRewindScope,
   BridgeSessionPermissions,
   BridgeSDKPermissionMode,
   BridgePermissionRules,
@@ -50,6 +56,7 @@ import {
   Forward,
   GitFork,
   Goal,
+  Layers,
   LoaderCircle,
   MessageSquare,
   MoreHorizontal,
@@ -66,7 +73,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { Fragment, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   LocalTurn,
   MobileConnectionIssue,
@@ -92,8 +99,8 @@ import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeId, desktopRuntimeName, isNativeRuntimeId, runtimeProviderLabel } from "../lib/runtime-labels.js";
 import { useStreamEntrance } from "../lib/stream-entrance.js";
 import { backgroundSubagentBadge, formatElapsed, sessionActivity, sessionQueueLabel, subagentStalledSeconds } from "../lib/session-activity.js";
+import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "./BackgroundTasks.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
-import { DesktopHandoffNotice } from "./DesktopHandoffNotice.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./EvidencePanel.js";
 import { FileChangesCard } from "./FileChangesCard.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker, useFileAttachments } from "./FileAttachmentPicker.js";
@@ -102,6 +109,7 @@ import { MediaGallery } from "./MediaGallery.js";
 import { useMediaPreview } from "./MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
 import { IconButton } from "./IconButton.js";
+import { ImageAttachment } from "./ImageAttachment.js";
 import { MarkdownText } from "./MarkdownText.js";
 import { MessageCopyButton } from "./MessageCopyButton.js";
 import { MobilePageHeader } from "./MobilePageHeader.js";
@@ -111,8 +119,6 @@ import {
   type SessionConfigurationChange,
 } from "./SessionConfigurationDialog.js";
 import {
-  ProviderSwitchDialog,
-  providerName,
   type ProviderSwitchPreview,
   type ProviderSwitchResult,
 } from "./ProviderSwitchDialog.js";
@@ -123,6 +129,7 @@ import { TaskPlanCard } from "./TaskPlanCard.js";
 import { SlashCommandInput } from "./SlashCommandInput.js";
 import { useSessionCommands } from "../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
+import { SessionRewindDialog } from "./SessionRewindDialog.js";
 
 interface ConversationItem extends BridgeHistoryItem {
   delivery?: BridgeDeliveryState;
@@ -201,6 +208,7 @@ export function sessionProfile(session: BridgeSessionInfo): string {
 }
 
 export function ownershipLabel(session: BridgeSessionInfo): string {
+  if (session.transport === "claude-desktop-native") return session.turnState === "waiting" ? "需处理" : session.turnState === "queued" ? sessionQueueLabel(session) : session.ownership === "DESKTOP_NATIVE_RUNNING" ? "桌面运行中" : "桌面待机";
   const bridgeCreated = session.source === "bridge";
   if (session.desktopHandoff?.reason === "bridge-execution-requested") return "等待当前工作结束后交接";
   if (session.desktopHandoff?.reason === "inbox-confirmation-expired") return "等待确认交接";
@@ -224,6 +232,7 @@ export function ownershipLabel(session: BridgeSessionInfo): string {
 }
 
 function activeSessionBadgeLabel(session: BridgeSessionInfo): string | undefined {
+  if (session.transport === "claude-desktop-native") return session.turnState === "idle" ? undefined : ownershipLabel(session);
   if (session.desktopHandoff?.reason === "bridge-execution-requested") return "等待交接";
   if (session.desktopHandoff?.reason === "inbox-confirmation-expired") return "等待确认交接";
   if (session.desktopHandoff?.state === "close-desktop") return "等待关闭 Desktop";
@@ -255,15 +264,18 @@ function conciseSessionSubtitle(session: BridgeSessionInfo): string {
 type DisplayTimelineNode =
   | ConversationTimelineEntry
   | { kind: "tool-group"; id: string; tools: ConversationItem[] }
-  | { kind: "subagent-group"; id: string; agents: ConversationItem[] };
+  | { kind: "background-task"; id: string; item: ConversationItem };
 
 function groupTimelineTools(timeline: ConversationTimelineEntry[]): DisplayTimelineNode[] {
   const result: DisplayTimelineNode[] = [];
+  const workflowRuns = new Set<string>();
   for (const entry of timeline) {
     if (entry.kind === "message" && entry.item.subagent) {
-      const previous = result.at(-1);
-      if (previous?.kind === "subagent-group") previous.agents.push(entry.item);
-      else result.push({ kind: "subagent-group", id: `subagent-group:${entry.item.id}`, agents: [entry.item] });
+      // Details live in the background task sheet; a workflow run gets one line for all its agents.
+      const runId = entry.item.subagent.workflowRunId;
+      if (runId && workflowRuns.has(runId)) continue;
+      if (runId) workflowRuns.add(runId);
+      result.push({ kind: "background-task", id: runId ? `workflow:${runId}` : entry.item.id, item: entry.item });
       continue;
     }
     if (entry.kind === "message" && entry.item.role === "tool" && !entry.item.subagent) {
@@ -597,13 +609,23 @@ function runtimeSupports(
   return runtime?.capabilities.includes(capability) ?? desktopRuntimeId(session) === "claude-desktop";
 }
 
-export function canConfigureSession(session: BridgeSessionInfo): boolean {
-  return session.allowedActions?.canConfigure === true
-    || (desktopRuntimeId(session) === "claude-desktop"
-      && session.allowedActions?.canConfigure !== false);
+export function canSendSession(session: BridgeSessionInfo, snapshot: BridgeHostSnapshot | undefined): boolean {
+  if (desktopRuntimeId(session) !== "claude-desktop") return session.allowedActions?.canSend !== false;
+  return isClaudeNativeRelay(snapshot) && session.transport === "claude-desktop-native" && session.allowedActions?.canSend === true;
+}
+
+export function canConfigureSession(session: BridgeSessionInfo, snapshot?: BridgeHostSnapshot): boolean {
+  if (desktopRuntimeId(session) === "claude-desktop") {
+    return isClaudeNativeRelay(snapshot) && session.transport === "claude-desktop-native" && session.allowedActions?.canConfigure === true;
+  }
+  return session.allowedActions?.canConfigure === true;
 }
 
 export function canStopBridgeTask(session: BridgeSessionInfo): boolean {
+  if (desktopRuntimeId(session) === "claude-desktop") {
+    return session.transport === "claude-desktop-native" && session.allowedActions?.canInterrupt === true
+      && (session.ownership === "DESKTOP_NATIVE_RUNNING" || session.pendingCount > 0 || session.turnState === "running" || session.turnState === "waiting");
+  }
   if (session.pendingCount > 0 || session.turnState === "queued") return true;
   if (session.turnState !== "running" && session.turnState !== "waiting") return false;
   return session.ownership === "BRIDGE_RUNNING"
@@ -613,10 +635,7 @@ export function canStopBridgeTask(session: BridgeSessionInfo): boolean {
 export function supportsProviderSwitching(
   snapshot: BridgeHostSnapshot | undefined,
 ): boolean {
-  return Boolean(
-    snapshot?.host.capabilities.includes("provider.profile.v1") &&
-    snapshot.host.capabilities.includes("conversation.handoff.v1"),
-  );
+  return false;
 }
 
 export function supportsRuntimeHandoff(
@@ -630,14 +649,6 @@ export function goalStatusLabel(status: BridgeRuntimeGoalStatus): string {
   if (status === "paused") return "goal 已暂停";
   if (status === "blocked") return "goal 受阻";
   return "goal 已完成";
-}
-
-export function usesOfficialComposer(
-  session: BridgeSessionInfo,
-  providers: NonNullable<BridgeHostSnapshot["providers"]>,
-): boolean {
-  return providers.find((profile) => profile.id === session.activeProviderProfileId)?.kind
-    === "claude-official";
 }
 
 export function stoppableBridgeTask(
@@ -655,7 +666,8 @@ function deliveryLabel(state: BridgeDeliveryState): string {
   if (state === "host-received") return "主机已接收";
   if (state === "submitted") return "已提交，等待执行";
   if (state === "waiting-confirmation") return "等待电脑允许接收";
-  if (state === "session-received") return "会话已接收";
+  if (state === "session-received") return "已接收";
+  if (state === "queued") return "排队中";
   if (state === "running") return "正在处理中";
   if (state === "completed") return "已完成";
   if (state === "failed") return "处理失败";
@@ -685,7 +697,26 @@ export function conversationItems(
 ): ConversationItem[] {
   const items = new Map<string, ConversationItem>();
   const sessionHistory = history?.items.filter((item) => item.sessionId === sessionId) ?? [];
-  const sessionEvents = events.filter((event) => event.sessionId === sessionId);
+  const allSessionEvents = events.filter((event) => event.sessionId === sessionId);
+  const rewoundAt = allSessionEvents.reduce((seq, event) => event.type === "session.rewound" ? Math.max(seq, event.seq) : seq, -1);
+  const sessionEvents = allSessionEvents.filter(event => event.seq > rewoundAt).sort((left, right) => left.seq - right.seq);
+  const messageRekeys = new Map<string, string>();
+  for (const event of sessionEvents) {
+    if (event.type === "message.delivery" && typeof event.data.previousMessageId === "string" && typeof event.data.messageId === "string") {
+      messageRekeys.set(event.data.previousMessageId, event.data.messageId);
+    }
+  }
+  const historyIdsByCommand = new Map(sessionHistory.flatMap(item => item.role === "user" && item.commandId ? [[item.commandId, item.id] as const] : []));
+  const historyIdsByRequest = new Map(sessionHistory.flatMap(item => item.role === "user" && item.requestId ? [[item.requestId, item.id] as const] : []));
+  function canonicalMessageId(id: string, commandId?: string, requestId?: string): string {
+    while (messageRekeys.has(id)) id = messageRekeys.get(id)!;
+    let historyId = (commandId ? historyIdsByCommand.get(commandId) : undefined)
+      ?? (requestId ? historyIdsByRequest.get(requestId) : undefined);
+    if (!historyId) return id;
+    while (messageRekeys.has(historyId)) historyId = messageRekeys.get(historyId)!;
+    if (id !== historyId) messageRekeys.set(id, historyId);
+    return historyId;
+  }
   const subagentItemIds = new Map<string, string>();
   const subagentInvocations = new Map<string, Map<number, string>>();
   for (const subagent of [
@@ -722,7 +753,7 @@ export function conversationItems(
       ? `tool:${item.subagent.toolUseId ?? subagentInvocations.get(item.subagent.agentId)?.get(item.subagent.startedAt) ?? subagentItemIds.get(item.subagent.agentId)}`
       : item.role === "tool" && !item.id.startsWith("tool:")
         ? `tool:${item.id.replace(/:completed$/u, "")}`
-        : item.id;
+        : item.role === "user" ? canonicalMessageId(item.id, item.commandId, item.requestId) : item.id;
     if (item.role === "tool" && hiddenTaskItems.has(normalizedId.replace(/^tool:/u, ""))) continue;
     const previous = items.get(normalizedId);
     const taskPlan = previous?.taskPlan && (!item.taskPlan || previous.taskPlan.updatedAt >= item.taskPlan.updatedAt)
@@ -730,8 +761,11 @@ export function conversationItems(
       : item.taskPlan;
     if (previous?.subagent && item.subagent && previous.subagent.updatedAt > item.subagent.updatedAt) continue;
     items.set(normalizedId, {
+      ...previous,
       ...item,
       id: normalizedId,
+      ...(item.role === "user" && (previous?.delivery || item.delivery)
+        ? { delivery: mergeAcceptedDelivery(previous?.delivery, item.delivery) } : {}),
       ...(taskPlan ? { taskPlan } : {}),
     });
   }
@@ -741,14 +775,15 @@ export function conversationItems(
       .map((event) => event.data.requestId as string),
   );
   const messageIdsByRequest = new Map(sessionEvents.flatMap((event) => {
-    if (event.type !== "message.delivery" || event.data.delivery !== "submitted" || typeof event.data.requestId !== "string") return [];
-    const messageId = typeof event.data.messageId === "string" ? event.data.messageId : event.itemId;
-    return messageId ? [[event.data.requestId, messageId] as const] : [];
+    if (event.type !== "message.delivery" || typeof event.data.requestId !== "string") return [];
+    const messageId = typeof event.data.messageId === "string" ? event.data.messageId
+      : event.data.delivery === "submitted" ? event.itemId : undefined;
+    return messageId ? [[event.data.requestId, canonicalMessageId(messageId)] as const] : [];
   }));
   for (const turn of localTurns.filter((candidate) => candidate.sessionId === sessionId)) {
     if (acceptedRequests.has(turn.requestId)) continue;
     // Submission links the transcript UUID before SDK acceptance arrives.
-    const id = turn.messageId ?? messageIdsByRequest.get(turn.requestId) ?? `local:${turn.requestId}`;
+    const id = canonicalMessageId(turn.messageId ?? messageIdsByRequest.get(turn.requestId) ?? `local:${turn.requestId}`, turn.commandId, turn.requestId);
     items.set(id, {
       id,
       sessionId,
@@ -758,7 +793,7 @@ export function conversationItems(
       origin: "mobile",
       attachments: turn.attachments,
       ...items.get(id),
-      delivery: turn.delivery,
+      delivery: mergeAcceptedDelivery(turn.delivery, items.get(id)?.delivery ?? turn.delivery),
       requestId: turn.requestId,
       ...(turn.error ? { error: turn.error } : {}),
       ...(turn.commandId ? { commandId: turn.commandId } : {}),
@@ -778,6 +813,12 @@ export function conversationItems(
       ))
       .map((event) => event.turnId!),
   );
+  const finalizedAssistantItems = new Set([
+    ...sessionHistory.filter(item => item.role === "assistant" && !item.taskPlan).map(item => item.id),
+    ...sessionEvents.filter(event => event.type === "assistant.completed"
+      || (event.type === "session.observed" && event.data.role === "assistant" && !event.data.taskPlan))
+      .flatMap(event => event.itemId ? [event.itemId] : []),
+  ]);
   const deltaByStream = new Map<string, ConversationItem>();
   const toolByItem = new Map<string, ConversationItem>();
   for (const event of sessionEvents) {
@@ -797,7 +838,9 @@ export function conversationItems(
         (text || interactivePrompt || taskPlan) &&
         (!text || !isClaudeTranscriptControlMessage(role, text))
       ) {
-        const itemId = event.itemId ?? event.eventId;
+        const itemId = role === "user" ? canonicalMessageId(event.itemId ?? event.eventId,
+          typeof event.data.commandId === "string" ? event.data.commandId : undefined,
+          typeof event.data.requestId === "string" ? event.data.requestId : undefined) : event.itemId ?? event.eventId;
         const prev = items.get(itemId);
         const mergedPrompt = interactivePrompt
           ? (prev?.interactivePrompt?.answered && !interactivePrompt.answered ? prev.interactivePrompt : interactivePrompt)
@@ -824,17 +867,19 @@ export function conversationItems(
       const attachments = Array.isArray(event.data.attachments)
         ? event.data.attachments as ConversationItem["attachments"]
         : undefined;
-      const itemId = event.itemId ?? event.eventId;
+      const itemId = canonicalMessageId(event.itemId ?? event.eventId,
+        typeof event.data.commandId === "string" ? event.data.commandId : undefined,
+        typeof event.data.requestId === "string" ? event.data.requestId : undefined);
       items.set(itemId, {
         ...items.get(itemId),
         id: itemId,
         sessionId,
-        ...(event.turnId ? { turnId: event.turnId } : {}),
+        ...(event.turnId ? { turnId: canonicalMessageId(event.turnId) } : {}),
         role: "user",
         text,
         createdAt: event.timestamp,
         origin: event.origin,
-        delivery: "session-received",
+        delivery: mergeAcceptedDelivery(items.get(itemId)?.delivery, event.data.delivery as BridgeDeliveryState | undefined),
         ...(attachments?.length ? { attachments } : {}),
         ...(typeof event.data.requestId === "string" ? { requestId: event.data.requestId } : {}),
         ...(typeof event.data.commandId === "string" ? { commandId: event.data.commandId } : {}),
@@ -851,7 +896,9 @@ export function conversationItems(
         });
       }
     }
-    if (event.type === "assistant.delta" && !(event.turnId && finalizedAssistantTurns.has(event.turnId))) {
+    if (event.type === "assistant.delta"
+      && !(event.turnId && finalizedAssistantTurns.has(event.turnId))
+      && !(event.itemId && finalizedAssistantItems.has(event.itemId))) {
       // Provider stream events can use a new item id for every chunk. The turn is the stable stream identity.
       const id = event.turnId ? `assistant:${event.turnId}` : event.itemId ?? event.eventId;
       const existing = deltaByStream.get(id);
@@ -872,22 +919,29 @@ export function conversationItems(
       const interactivePrompt = event.data.interactivePrompt && typeof event.data.interactivePrompt === "object"
         ? event.data.interactivePrompt as BridgeInteractivePrompt
         : undefined;
-      if (!text && !interactivePrompt) continue;
+      const taskPlan = event.origin !== "claude-desktop" || event.data.taskPlanSource === "native-main"
+        ? event.data.taskPlan as BridgeTaskPlan | undefined
+        : undefined;
+      if (!text && !interactivePrompt && !taskPlan) continue;
       const itemId = event.itemId ?? event.eventId;
       const prev = items.get(itemId);
+      const mergedTaskPlan = prev?.taskPlan && (!taskPlan || prev.taskPlan.updatedAt >= taskPlan.updatedAt)
+        ? prev.taskPlan
+        : taskPlan;
       items.set(itemId, {
         id: itemId,
         sessionId,
         ...(event.turnId ? { turnId: event.turnId } : {}),
         role: "assistant",
         text,
-        createdAt: event.timestamp,
+        createdAt: mergedTaskPlan ? prev?.createdAt ?? event.timestamp : event.timestamp,
         origin: "claude-host",
         ...(interactivePrompt
           ? { interactivePrompt }
           : prev?.interactivePrompt
             ? { interactivePrompt: prev.interactivePrompt }
             : {}),
+        ...(mergedTaskPlan ? { taskPlan: mergedTaskPlan } : {}),
       });
     }
     if (event.type === "tool.started" || event.type === "tool.progress" || event.type === "tool.completed") {
@@ -899,6 +953,7 @@ export function conversationItems(
         : event.itemId ?? event.eventId;
       if (hiddenTaskItems.has(id)) continue;
       const existing = toolByItem.get(id) ?? items.get(`tool:${id}`);
+      if (event.origin === "claude-desktop" && event.type === "tool.completed" && !existing && !incomingSubagent && !event.data.toolName) continue;
       const toolName = typeof event.data.toolName === "string" && event.data.toolName
         ? event.data.toolName
         : existing?.toolName ?? "工具";
@@ -998,19 +1053,46 @@ export function conversationItems(
     if (typeof event.data.commandId === "string") terminalByCommand.set(event.data.commandId, event);
     if (event.turnId) terminalByTurn.set(event.turnId, event);
   }
+  const localByMessage = new Map(localTurns.filter(turn => turn.sessionId === sessionId && turn.messageId)
+    .map(turn => [canonicalMessageId(turn.messageId!), turn]));
+  const stages = sessionEvents.filter(event => event.type === "message.delivery"
+    || (event.type === "turn.queued" && event.origin === "claude-desktop") || event.type === "turn.started"
+    || event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.interrupted");
   for (const item of items.values()) {
     if (item.role !== "user") continue;
-    const local = item.requestId ? localByRequest.get(item.requestId) : undefined;
-    const commandId = item.commandId ?? local?.commandId;
-    const terminal = (commandId ? terminalByCommand.get(commandId) : undefined)
-      ?? (item.turnId ? terminalByTurn.get(item.turnId) : undefined);
-    if (!local && !terminal) continue;
-    const delivery = terminal ? terminal.type === "turn.completed" ? "completed"
-      : terminal.type === "turn.failed" ? "failed" : "cancelled" : local!.delivery;
+    const local = (item.requestId ? localByRequest.get(item.requestId) : undefined) ?? localByMessage.get(item.id);
+    let commandId = item.commandId ?? local?.commandId;
+    let requestId = item.requestId ?? local?.requestId;
+    let delivery = local ? mergeAcceptedDelivery(local.delivery, item.delivery ?? local.delivery) : item.delivery;
+    let error = local?.error;
+    for (const event of stages) {
+      if (!((commandId && event.data.commandId === commandId)
+        || (requestId && event.data.requestId === requestId)
+        || (item.turnId && event.turnId && canonicalMessageId(event.turnId) === canonicalMessageId(item.turnId))
+        || (typeof event.data.messageId === "string" && canonicalMessageId(event.data.messageId) === item.id)
+        || (event.origin === "claude-desktop" && ((event.turnId && canonicalMessageId(event.turnId) === item.id)
+          || (event.itemId && canonicalMessageId(event.itemId) === item.id))))) continue;
+      if (typeof event.data.commandId === "string") commandId = event.data.commandId;
+      if (typeof event.data.requestId === "string") requestId = event.data.requestId;
+      const incoming = event.type === "message.delivery" ? event.data.delivery as BridgeDeliveryState | undefined
+        : event.type === "turn.completed" ? "completed" : event.type === "turn.failed" ? "failed"
+        : event.type === "turn.interrupted" ? "cancelled" : event.type === "turn.started" ? "running" : "queued";
+      if (incoming) delivery = incoming === "completed" || incoming === "failed" || incoming === "cancelled"
+        ? incoming : mergeAcceptedDelivery(delivery, incoming);
+      if (typeof event.data.error === "string") error = event.data.error;
+    }
+    const attachments = item.attachments?.length ? item.attachments : local?.attachments;
     items.set(item.id, {
-      ...item, delivery,
+      ...item,
+      ...(delivery ? { delivery } : {}),
       ...(commandId ? { commandId } : {}),
-      ...(typeof terminal?.data.error === "string" ? { error: terminal.data.error } : local?.error ? { error: local.error } : {}),
+      ...(requestId ? { requestId } : {}),
+      ...(error ? { error } : {}),
+      ...(attachments?.length ? { attachments: attachments.map((attachment, index) => ({
+        ...attachment,
+        ...(attachment.nativeImage ? { nativeImage: { ...attachment.nativeImage, messageUuid: canonicalMessageId(attachment.nativeImage.messageUuid) } } : {}),
+        ...(local?.attachments[index]?.data ? { data: local.attachments[index]!.data } : {}),
+      })) } : {}),
     });
   }
   const sorted = [...items.values()].flatMap((item) => {
@@ -1028,7 +1110,7 @@ export function conversationItems(
       ?? (event.turnId ? terminalByTurn.get(event.turnId) : undefined);
     const delivery = terminal ? terminal.type === "turn.completed" ? "completed"
       : terminal.type === "turn.failed" ? "failed" : "cancelled"
-      : event.type === "user.message.accepted" ? "session-received"
+      : event.type === "user.message.accepted" ? mergeAcceptedDelivery(replyDeliveries.get(event.data.requestId), event.data.delivery as BridgeDeliveryState | undefined)
       : event.data.delivery as BridgeDeliveryState | undefined;
     if (delivery) replyDeliveries.set(event.data.requestId, delivery);
   }
@@ -1319,10 +1401,11 @@ function QuestionPrompt({
       ))
     : [];
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
+  const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const complete = questions.every((question) => (
-    typeof question.question === "string" && Boolean(answers[question.question]?.length)
+    typeof question.question === "string" && Boolean(answers[question.question]?.length || customAnswers[question.question]?.trim())
   ));
   async function resolveQuestion(
     decision: "allow-once" | "deny",
@@ -1362,16 +1445,32 @@ function QuestionPrompt({
                     type={question.multiSelect === true ? "checkbox" : "radio"}
                     name={`${permission.requestId}:${index}`}
                     checked={question.multiSelect === true ? answers[prompt]?.includes(label) ?? false : answers[prompt] === label}
-                    onChange={() => setAnswers((current) => {
-                      if (question.multiSelect !== true) return { ...current, [prompt]: label };
-                      const selected = Array.isArray(current[prompt]) ? current[prompt] : [];
-                      return { ...current, [prompt]: selected.includes(label) ? selected.filter((value) => value !== label) : [...selected, label] };
-                    })}
+                    onChange={() => {
+                      if (question.multiSelect !== true) setCustomAnswers(current => ({ ...current, [prompt]: "" }));
+                      setAnswers((current) => {
+                        if (question.multiSelect !== true) return { ...current, [prompt]: label };
+                        const selected = Array.isArray(current[prompt]) ? current[prompt] : [];
+                        return { ...current, [prompt]: selected.includes(label) ? selected.filter((value) => value !== label) : [...selected, label] };
+                      });
+                    }}
                   />
                   <span><strong>{label}</strong>{typeof option.description === "string" && <small>{option.description}</small>}</span>
                 </label>
               );
             })}
+            <label className="question-freeform">
+              <span>{options.length ? "其他回答" : "你的回答"}</span>
+              <input
+                type="text"
+                aria-label={`${prompt}：${options.length ? "其他回答" : "你的回答"}`}
+                value={customAnswers[prompt] ?? ""}
+                disabled={busy}
+                onChange={event => {
+                  setCustomAnswers(current => ({ ...current, [prompt]: event.target.value }));
+                  if (question.multiSelect !== true) setAnswers(current => ({ ...current, [prompt]: "" }));
+                }}
+              />
+            </label>
           </fieldset>
         );
       })}
@@ -1383,7 +1482,7 @@ function QuestionPrompt({
           disabled={!complete || busy}
           onClick={() => void resolveQuestion(
             "allow-once",
-            { ...permission.input, answers: Object.fromEntries(Object.entries(answers).map(([question, answer]) => [question, Array.isArray(answer) ? answer.join(", ") : answer])) },
+            { ...permission.input, answers: Object.fromEntries(questions.map(question => [question.question, [answers[question.question as string], customAnswers[question.question as string]?.trim()].flat().filter(Boolean).join(", ")])) },
           )}
         >
           {busy && <LoaderCircle className="is-spinning" size={15} />}提交回答
@@ -1392,6 +1491,12 @@ function QuestionPrompt({
     </section>
   );
 }
+
+const NATIVE_MODE_LABELS: Record<BridgeNativePermissionMode, string> = {
+  default: "逐个确认",
+  acceptEdits: "自动接受编辑",
+  bypassPermissions: "完全授权",
+};
 
 function ToolPermissionPrompt({
   permission,
@@ -1405,6 +1510,7 @@ function ToolPermissionPrompt({
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
+    mode?: BridgeNativePermissionMode,
   ): Promise<void>;
   onEnableFullAccess?(sessionId: string): Promise<void>;
   onEnableNativeFullAccess?(requestId: string): Promise<void>;
@@ -1413,21 +1519,31 @@ function ToolPermissionPrompt({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [confirmFullAccess, setConfirmFullAccess] = useState<"host" | "native">();
+  // Defined while the deny-with-feedback composer is open.
+  const [feedback, setFeedback] = useState<string>();
+  const composing = feedback !== undefined;
+  const plan = permission.toolName === "ExitPlanMode" ? inputText(permission.input, "plan") ?? "" : undefined;
 
   useEffect(() => {
-    if (!confirmFullAccess) return;
+    if (!confirmFullAccess && !composing) return;
     return registerMobileBackHandler(() => {
-      if (!busy) setConfirmFullAccess(undefined);
+      if (busy) return true;
+      if (confirmFullAccess) setConfirmFullAccess(undefined);
+      else setFeedback(undefined);
       return true;
     }, 150);
-  }, [confirmFullAccess, busy]);
+  }, [confirmFullAccess, composing, busy]);
 
-  async function decide(decision: "allow-once" | "allow-always" | "deny"): Promise<void> {
+  async function decide(
+    decision: "allow-once" | "allow-always" | "deny",
+    mode?: BridgeNativePermissionMode,
+    message?: string,
+  ): Promise<void> {
     if (busy) return;
     setBusy(true);
     setError(undefined);
     try {
-      await onResolve(permission.requestId, decision);
+      await onResolve(permission.requestId, decision, message, undefined, mode);
     } catch (resolveError) {
       setError(resolveError instanceof Error ? resolveError.message : "授权处理失败");
     } finally {
@@ -1450,57 +1566,106 @@ function ToolPermissionPrompt({
     }
   }
 
+  const spinner = busy && <LoaderCircle className="is-spinning" size={15} />;
   return (
     <>
     <section className="permission-prompt">
       <div className="permission-title">
-        <strong>{permission.title || `${permission.toolName} 请求权限`}</strong>
-        <span>{presentation.summary}</span>
+        <strong>{permission.title || (plan !== undefined ? "计划待确认" : `${permission.toolName} 请求权限`)}</strong>
+        {plan === undefined && <span>{presentation.summary}</span>}
       </div>
-      <div className={`permission-risk ${presentation.mutating ? "mutating" : ""}`}>
-        {presentation.mutating ? <AlertTriangle size={16} /> : <Wrench size={16} />}
-        <span>{presentation.mutating ? "操作前请核对目标与内容" : "当前任务正在等待你的确认"}</span>
-      </div>
-      {presentation.facts.length > 0 && (
-        <dl className="permission-facts">
-          {presentation.facts.map((fact) => (
-            <div key={`${fact.label}:${fact.value}`}>
-              <dt>{fact.label}</dt>
-              <dd className={fact.code ? "is-code" : ""}>{fact.value}</dd>
-            </div>
-          ))}
-        </dl>
+      {plan !== undefined ? (
+        <div className="permission-plan">
+          <MarkdownText text={plan} collapsible={false} />
+        </div>
+      ) : (
+        <>
+          <div className={`permission-risk ${presentation.mutating ? "mutating" : ""}`}>
+            {presentation.mutating ? <AlertTriangle size={16} /> : <Wrench size={16} />}
+            <span>{presentation.mutating ? "操作前请核对目标与内容" : "当前任务正在等待你的确认"}</span>
+          </div>
+          {presentation.facts.length > 0 && (
+            <dl className="permission-facts">
+              {presentation.facts.map((fact) => (
+                <div key={`${fact.label}:${fact.value}`}>
+                  <dt>{fact.label}</dt>
+                  <dd className={fact.code ? "is-code" : ""}>{fact.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {presentation.preview && (
+            <details className="permission-details">
+              <summary><FilePenLine size={15} />{presentation.preview.label}</summary>
+              <pre>{presentation.preview.value}</pre>
+            </details>
+          )}
+          <details className="permission-details raw-details">
+            <summary><Terminal size={15} />查看完整参数</summary>
+            <pre>{presentation.raw}</pre>
+          </details>
+        </>
       )}
-      {presentation.preview && (
-        <details className="permission-details">
-          <summary><FilePenLine size={15} />{presentation.preview.label}</summary>
-          <pre>{presentation.preview.value}</pre>
-        </details>
-      )}
-      <details className="permission-details raw-details">
-        <summary><Terminal size={15} />查看完整参数</summary>
-        <pre>{presentation.raw}</pre>
-      </details>
       {error && <div className="permission-error" role="alert">{error}</div>}
-      <div className="permission-actions">
-        <button type="button" className="secondary-button danger-text" disabled={busy} onClick={() => void decide("deny")}>拒绝</button>
-        <button type="button" className="primary-button" disabled={busy} onClick={() => void decide("allow-once")}>
-          {busy && <LoaderCircle className="is-spinning" size={15} />}允许一次
-        </button>
-        {permission.canAllowAlways && (
-          <button type="button" className="secondary-button" disabled={busy} onClick={() => void decide("allow-always")}>始终允许</button>
-        )}
-        {permission.canSetNativeFullAccess && onEnableNativeFullAccess && (
-          <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("native")}>
-            <ShieldCheck size={15} />此 Desktop 会话完全授权
+      {composing ? (
+        <div className="permission-feedback">
+          <textarea
+            aria-label={plan !== undefined ? "计划修改意见" : "拒绝原因"}
+            placeholder={plan !== undefined ? "需要调整的地方（可选）" : "告诉 Claude 应该怎么做（可选）"}
+            rows={3}
+            value={feedback}
+            disabled={busy}
+            onChange={(event) => setFeedback(event.target.value)}
+          />
+          <div className="permission-actions">
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setFeedback(undefined)}>返回</button>
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void decide("deny", undefined, feedback.trim() || undefined)}>
+              {spinner}{plan !== undefined ? "继续规划" : "拒绝"}
+            </button>
+          </div>
+        </div>
+      ) : plan !== undefined ? (
+        <div className="permission-actions">
+          {permission.canSetNativeFullAccess ? (
+            <>
+              <button type="button" className="primary-button" disabled={busy} onClick={() => void decide("allow-once", "acceptEdits")}>
+                {spinner}是，自动接受编辑
+              </button>
+              <button type="button" className="secondary-button" disabled={busy} onClick={() => void decide("allow-once", "default")}>是，逐个确认</button>
+            </>
+          ) : (
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void decide("allow-once")}>
+              {spinner}批准计划
+            </button>
+          )}
+          {permission.canSetNativeFullAccess && onEnableNativeFullAccess && (
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("native")}>
+              <ShieldCheck size={15} />是，完全授权
+            </button>
+          )}
+          <button type="button" className="secondary-button" disabled={busy} onClick={() => setFeedback("")}>否，继续规划</button>
+        </div>
+      ) : (
+        <div className="permission-actions">
+          <button type="button" className="secondary-button danger-text" disabled={busy} onClick={() => setFeedback("")}>拒绝</button>
+          <button type="button" className="primary-button" disabled={busy} onClick={() => void decide("allow-once")}>
+            {spinner}允许一次
           </button>
-        )}
-        {onEnableFullAccess && (
-          <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("host")}>
-            <ShieldCheck size={15} />Bridge 默认完全授权
-          </button>
-        )}
-      </div>
+          {permission.canAllowAlways && (
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => void decide("allow-always")}>始终允许</button>
+          )}
+          {permission.canSetNativeFullAccess && onEnableNativeFullAccess && (
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("native")}>
+              <ShieldCheck size={15} />此 Desktop 会话完全授权
+            </button>
+          )}
+          {onEnableFullAccess && (
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("host")}>
+              <ShieldCheck size={15} />Bridge 默认完全授权
+            </button>
+          )}
+        </div>
+      )}
     </section>
     <ConfirmationDialog
       open={Boolean(confirmFullAccess)}
@@ -1529,6 +1694,7 @@ export function PermissionPrompt({
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
+    mode?: BridgeNativePermissionMode,
   ): Promise<void>;
   onEnableFullAccess?(sessionId: string): Promise<void>;
   onEnableNativeFullAccess?(requestId: string): Promise<void>;
@@ -1578,24 +1744,23 @@ export function MobileWorkspace({
   onSendTurn,
   onInterruptTurn,
   onSteerQueuedTurn,
+  onCancelQueuedTurn,
   onStopSubagent,
   onResolveUncertain,
   onResolvePermission,
   onCreateSession,
   onBrowseDirectory,
   onForkSession,
-  onReturnToDesktop,
-  onTakeoverDesktop,
+  onLoadBackgroundTasks,
   onLoadSessionConfiguration,
   onLoadSessionCommands,
   onRunSessionCommand,
   onLoadSessionPermissions,
   onSaveSessionPermissions,
   onConfigureSession,
+  onPreviewRewind,
+  onRewindSession,
   onConfigurePermissionPolicy,
-  onPreviewProviderSwitch,
-  onCommitProviderSwitch,
-  onCancelProviderSwitch,
   onPreviewRuntimeHandoff,
   onCommitRuntimeHandoff,
   onConfirmRuntimeHandoff,
@@ -1607,7 +1772,6 @@ export function MobileWorkspace({
   onRenameSession,
   onDeleteSession,
   onOpenRuntimeFile,
-  onRefreshProviders,
   onDesktopAppAction,
   onRefresh,
   onBackToHosts,
@@ -1642,9 +1806,10 @@ export function MobileWorkspace({
   onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
   onDownloadSessionFile?(sessionId: string, filePath: string): Promise<void>;
   onUploadFile?: UploadFileHandler;
-  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean, bridgeExecutionRequested?: boolean): Promise<{ requestId: string } | void>;
+  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<{ requestId: string } | void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
   onSteerQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
+  onCancelQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
   onStopSubagent?(sessionId: string, agentId: string): Promise<void>;
   onResolveUncertain(commandId: string, action: "confirm" | "retry"): Promise<void>;
   onResolvePermission(
@@ -1652,7 +1817,7 @@ export function MobileWorkspace({
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
-    nativeMode?: "full-access",
+    mode?: BridgeNativePermissionMode,
   ): Promise<void>;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
   onCreateSession(
@@ -1667,6 +1832,9 @@ export function MobileWorkspace({
   ): Promise<BridgeSessionInfo | undefined>;
   onReturnToDesktop?(sessionId: string): Promise<void>;
   onTakeoverDesktop?(sessionId: string, commandId?: string): Promise<void>;
+  onPreviewRewind?(sessionId: string, messageId: string): Promise<BridgeSessionRewindPreview>;
+  onRewindSession?(sessionId: string, messageId: string, scope: BridgeSessionRewindScope): Promise<BridgeSessionRewindResult>;
+  onLoadBackgroundTasks?(sessionId: string): Promise<BridgeBackgroundTask[]>;
   onLoadSessionConfiguration(sessionId: string): Promise<BridgeSessionConfiguration>;
   onLoadSessionCommands?(sessionId: string): Promise<BridgeSlashCommandCatalog>;
   onRunSessionCommand?(sessionId: string, text: string): Promise<BridgeSessionCommandResult>;
@@ -1718,7 +1886,7 @@ export function MobileWorkspace({
   onBackToHosts(): void;
   onRetry(): Promise<void>;
 }) {
-  const [queuedSteers, setQueuedSteers] = useState<Record<string, { state: "pending" | "requested" | "error"; error?: string }>>({});
+  const [queuedSteers, setQueuedSteers] = useState<Record<string, { state: "pending" | "requested" | "error"; action: "steer" | "cancel"; error?: string }>>({});
   const [promptErrors, setPromptErrors] = useState<Record<string, string>>({});
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
@@ -1741,8 +1909,8 @@ export function MobileWorkspace({
   const [createProjectId, setCreateProjectId] = useState("");
   const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
   const [configurationSessionId, setConfigurationSessionId] = useState<string>();
+  const [rewindTarget, setRewindTarget] = useState<{ sessionId: string; messageId?: string }>();
   const [actionSessionId, setActionSessionId] = useState<string>();
-  const [providerOpen, setProviderOpen] = useState(false);
   const [relayOpen, setRelayOpen] = useState(false);
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
   const [stopError, setStopError] = useState<string>();
@@ -1753,6 +1921,8 @@ export function MobileWorkspace({
     scope: "task" | "process";
   }>();
   const [subagentStopBusy, setSubagentStopBusy] = useState(false);
+  /** Open background task sheet, with the stream item it was opened from. */
+  const [backgroundTasksOpen, setBackgroundTasksOpen] = useState<{ focus?: ConversationItem }>();
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [syncFlash, setSyncFlash] = useState(false);
@@ -1775,7 +1945,6 @@ export function MobileWorkspace({
     Boolean(selectedSessionId && snapshot?.sessions.find((session) => session.sessionId === selectedSessionId)?.sidechat)
   ));
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
-  const [remoteExecutionConfirm, setRemoteExecutionConfirm] = useState<{ key: string; reply?: { id: string; text: string } }>();
   const activeDraftKey = useRef(draftKey);
   activeDraftKey.current = draftKey;
   const [activeProjectId, setActiveProjectId] = useState<string>();
@@ -1797,6 +1966,7 @@ export function MobileWorkspace({
     lastKey?: string | undefined;
     anchorKey?: string | undefined;
     anchorOffset: number;
+    scrollTop?: number | undefined;
     pinnedToBottom: boolean;
   }>({ anchorOffset: 0, pinnedToBottom: true });
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1818,6 +1988,7 @@ export function MobileWorkspace({
       ? () => onLoadSessionCommands(selectedSession!.sessionId) : undefined,
     onRun: onRunSessionCommand ? value => onRunSessionCommand(selectedSession!.sessionId, value) : undefined,
     onModel: () => setConfigurationSessionId(selectedSession!.sessionId),
+    onRewind: () => setRewindTarget({ sessionId: selectedSession!.sessionId }),
     onRename: () => {
       setMenuSessionId(selectedSession!.sessionId);
       setRenameTitle(selectedSession!.title);
@@ -1829,12 +2000,31 @@ export function MobileWorkspace({
   const commandDraft = commands.recognizes(text.trim());
   const configurationSession = sessions.find((session) => session.sessionId === configurationSessionId);
   const actionSession = sessions.find((session) => session.sessionId === actionSessionId);
-  const providers = snapshot?.providers ?? [];
-  const providerSwitchingAvailable = Boolean(
-    selectedSession && desktopRuntimeId(selectedSession) === "claude-desktop" && supportsProviderSwitching(snapshot),
-  );
   const runtimeHandoffAvailable = supportsRuntimeHandoff(snapshot);
+  const rewindAvailable = Boolean(selectedSession?.transport === "claude-desktop-native" && snapshot?.host.capabilities.includes("session.rewind.v1") && onPreviewRewind && onRewindSession);
+  const rewindDisabled = connection !== "connected" || !desktopOnline;
   const selectedHistory = selectedSessionId ? histories[selectedSessionId] : undefined;
+  const taskHistoryReady = selectedHistory?.status === "ready" || Boolean(selectedHistory?.items.length);
+  const [backgroundTaskDetails, setBackgroundTaskDetails] = useState<{ key: string; tasks: BridgeBackgroundTask[]; error?: string }>();
+  useEffect(() => {
+    if (!onLoadBackgroundTasks || !visible || sessionView !== "conversation" || connection !== "connected" || !desktopOnline || !selectedSession || desktopRuntimeId(selectedSession) !== "claude-desktop" || !taskHistoryReady) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      try {
+        const tasks = await onLoadBackgroundTasks(selectedSession.sessionId);
+        if (active) setBackgroundTaskDetails({ key: draftKey, tasks });
+      } catch (error) {
+        if (active) setBackgroundTaskDetails(current => ({
+          key: draftKey, tasks: current?.key === draftKey ? current.tasks : [],
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
+      if (active) timer = setTimeout(() => void refresh(), 2_000);
+    };
+    void refresh();
+    return () => { active = false; clearTimeout(timer); };
+  }, [draftKey, selectedSession?.sessionId, selectedSession?.runtimeId, visible, sessionView, connection, desktopOnline, taskHistoryReady, onLoadBackgroundTasks]);
   const selectedEvidence = selectedSessionId ? evidence[selectedSessionId] : undefined;
   const items = useMemo(
     () => selectedSessionId
@@ -1895,7 +2085,6 @@ export function MobileWorkspace({
   const menuSupportsRename = Boolean(onRenameSession && snapshot?.host.capabilities.includes("session.rename.v1"));
   const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== menuSession?.title && !sessionActionBusy);
   const menuSupportsFork = Boolean(menuSession && onForkSession && desktopRuntimeId(menuSession) === "claude-desktop");
-  const menuSupportsProviderSwitch = Boolean(menuSession && desktopRuntimeId(menuSession) === "claude-desktop" && supportsProviderSwitching(snapshot));
   const menuSupportsRuntimeHandoff = Boolean(menuSession && runtimeHandoffAvailable && menuSession.allowedActions?.canRelay !== false);
   const menuSessionBusy = Boolean(menuSession && (
     menuSession.turnState === "running"
@@ -1964,10 +2153,6 @@ export function MobileWorkspace({
   useEffect(() => {
     if (!visible) return;
     return registerMobileBackHandler(() => {
-      if (providerOpen) {
-        setProviderOpen(false);
-        return true;
-      }
       if (relayOpen) {
         setRelayOpen(false);
         return true;
@@ -1998,6 +2183,10 @@ export function MobileWorkspace({
       }
       if (stopSubagentTarget) {
         if (!subagentStopBusy) setStopSubagentTarget(undefined);
+        return true;
+      }
+      if (backgroundTasksOpen) {
+        setBackgroundTasksOpen(undefined);
         return true;
       }
       if (menuSessionId) {
@@ -2041,8 +2230,8 @@ export function MobileWorkspace({
     pendingFileDownload,
     stopSubagentTarget,
     subagentStopBusy,
+    backgroundTasksOpen,
     permissionOpen,
-    providerOpen,
     relayOpen,
     selectedSessionId,
     sessionView,
@@ -2067,7 +2256,7 @@ export function MobileWorkspace({
     return () => window.removeEventListener("resize", resize);
   }, [draftKey, text, sessionView, visible]);
 
-  function rememberStreamPosition(): void {
+  function rememberStreamPosition(updateFollow = false): void {
     const stream = streamRef.current;
     if (!stream) return;
     const top = stream.getBoundingClientRect().top;
@@ -2077,7 +2266,10 @@ export function MobileWorkspace({
       ...streamScrollState.current,
       anchorKey: anchor?.dataset.streamKey,
       anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0,
-      pinnedToBottom: stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120,
+      scrollTop: stream.scrollTop,
+      pinnedToBottom: updateFollow
+        ? stream.scrollHeight - stream.scrollTop - stream.clientHeight <= 4
+        : streamScrollState.current.pinnedToBottom,
     };
   }
 
@@ -2090,7 +2282,8 @@ export function MobileWorkspace({
     const previous = streamScrollState.current;
     const firstKey = streamKeys[0];
     const lastKey = streamKeys.at(-1);
-    if (previous.sessionId !== selectedSessionId || !previous.lastKey) {
+    const entering = previous.sessionId !== selectedSessionId || !previous.lastKey;
+    if (entering) {
       stream.scrollTop = stream.scrollHeight;
     } else if (firstKey !== previous.firstKey && previous.anchorKey) {
       // Preserve a visible message's position when an older page is prepended.
@@ -2102,9 +2295,21 @@ export function MobileWorkspace({
     } else if (previous.pinnedToBottom) {
       stream.scrollTop = stream.scrollHeight;
     }
-    streamScrollState.current = { ...previous, sessionId: selectedSessionId, firstKey, lastKey };
+    streamScrollState.current = { ...previous, sessionId: selectedSessionId, firstKey, lastKey, pinnedToBottom: entering || previous.pinnedToBottom };
     rememberStreamPosition();
   }, [streamKeys, selectedSessionId, sessionView]);
+
+  // Near the top, or when a page leaves the stream too short to scroll, fetch the next older page.
+  function loadOlderNearTop(): void {
+    const stream = streamRef.current;
+    if (!stream || !selectedSessionId || !selectedHistory?.hasMore || !selectedHistory.nextCursor || selectedHistory.status !== "ready" || selectedHistory.error) return;
+    if (stream.scrollTop < 200) void onLoadOlderHistory(selectedSessionId);
+  }
+
+  // A successful page can advance the cursor without adding a visible item; failed pages keep both unchanged.
+  useEffect(() => {
+    if (sessionView === "conversation") loadOlderNearTop();
+  }, [streamKeys[0], selectedHistory?.nextCursor, selectedSessionId, sessionView]);
 
   useEffect(() => {
     if (search.trim()) setCollapsedProjectIds(new Set());
@@ -2155,7 +2360,6 @@ export function MobileWorkspace({
     setConfigurationSessionId(undefined);
     setMenuSessionId(undefined);
     setDirectoryMenuOpen(false);
-    setProviderOpen(false);
     setRelayOpen(false);
     setPermissionOpen(false);
     setCreateOpen(false);
@@ -2174,7 +2378,7 @@ export function MobileWorkspace({
     handledFocusRequestRef.current = focusRequest.key;
     if (focusSessionId === focusRequest.sessionId) handledFocusRef.current = focusSessionId;
     void selectSession(focusRequest.sessionId);
-    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusRequest.sessionId));
+    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusRequest.sessionId && permission.toolName !== "AskUserQuestion"));
     onFocusHandled?.();
   }, [focusRequest, focusSessionId, onFocusHandled, permissions, sessions, visible]);
 
@@ -2188,13 +2392,14 @@ export function MobileWorkspace({
     ) return;
     handledFocusRef.current = focusSessionId;
     void selectSession(focusSessionId);
-    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusSessionId));
+    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusSessionId && permission.toolName !== "AskUserQuestion"));
   }, [focusRequest, focusSessionId, permissions, sessions, visible]);
 
   useEffect(() => {
     if (!visible || !selectedSessionId) return;
     const next = permissions.find((permission) => (
       permission.sessionId === selectedSessionId &&
+      permission.toolName !== "AskUserQuestion" &&
       !announcedPermissionsRef.current.has(permission.requestId)
     ));
     if (!next) return;
@@ -2207,7 +2412,7 @@ export function MobileWorkspace({
       visible &&
       permissionOpen &&
       selectedSessionId &&
-      !permissions.some((permission) => permission.sessionId === selectedSessionId)
+      !permissions.some((permission) => permission.sessionId === selectedSessionId && permission.toolName !== "AskUserQuestion")
     ) {
       setPermissionOpen(false);
     }
@@ -2273,57 +2478,23 @@ export function MobileWorkspace({
     setCreateOpen(true);
   }
 
-  function remoteExecutionChoice(session: BridgeSessionInfo, confirmed: boolean, reply?: { id: string; text: string }): boolean | undefined {
-    const handoff = session.desktopHandoff;
-    if ((handoff?.state === "desktop-inbox" && handoff.inputStatus !== "queued") || localTurns.some(turn =>
-      turn.sessionId === session.sessionId && turn.delivery === "uncertain")) {
-      updateDraft(current => ({ ...current, imageError: "已有消息正在等待 Desktop 接收结果，请先同步状态；新草稿已保留。" }));
-      return;
-    }
-    const supported = snapshot?.host.capabilities.includes("session.remote-execution.v1");
-    const requested = handoff?.reason === "bridge-execution-requested" || localTurns.some(turn =>
-      turn.sessionId === session.sessionId && turn.bridgeExecutionRequested &&
-      (turn.delivery === "local-saved" || turn.delivery === "relay-received"));
-    if (!supported && (session.allowedActions?.canRequestBridgeExecution ||
-      (session.ownership === "DESKTOP_OBSERVED" && session.transport === "bridge-host" && (!session.runtimeId || session.runtimeId === "claude-desktop")))) {
-      updateDraft(current => ({ ...current, imageError: "请更新电脑端 Bridge 后使用手机远程执行。" }));
-      return;
-    }
-    if (!requested && !session.allowedActions?.canRequestBridgeExecution) return false;
-    if (!requested && session.pendingCount > 0) {
-      updateDraft(current => ({ ...current, imageError: "请先确认由 Bridge 继续执行现有排队消息；新草稿已保留。" }));
-      return;
-    }
-    if (!requested && !confirmed) {
-      setRemoteExecutionConfirm({ key: draftKey, ...(reply ? { reply } : {}) });
-      return;
-    }
-    return true;
-  }
-
-  async function sendMessage(bridgeExecutionConfirmed = false): Promise<void> {
+  async function sendMessage(): Promise<void> {
     if (
       !selectedSession ||
-      selectedSession.allowedActions?.canSend === false ||
+      !canSendSession(selectedSession, snapshot) ||
       sending || fileUploads.uploading ||
       (!text.trim() && (!runtimeSupports(snapshot, selectedSession, "attachment.image") || attachments.length === 0) && fileUploads.files.length === 0)
     ) return;
     const nextText = text.trim();
     const nextAttachments = runtimeSupports(snapshot, selectedSession, "attachment.image") ? attachments : [];
     const nextFiles = fileUploads.files;
-    const remoteExecution = commands.recognizes(nextText) ? false : remoteExecutionChoice(selectedSession, bridgeExecutionConfirmed === true);
-    if (remoteExecution === undefined) return;
     updateDraft((current) => ({ ...current, text: "", attachments: [], sending: true, imageError: undefined }));
     try {
       if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) {
         updateDraft(current => ({ ...current, steer: false }));
         return;
       }
-      if (remoteExecution) {
-        await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, false, true);
-      } else {
-        await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, steer);
-      }
+      await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, steer);
       fileUploads.clear(nextFiles);
       updateDraft((current) => ({ ...current, steer: false }));
     } catch (error) {
@@ -2338,20 +2509,16 @@ export function MobileWorkspace({
     }
   }
 
-  async function sendQuickReply(promptId: string, promptText: string, bridgeExecutionConfirmed = false): Promise<void> {
+  async function sendQuickReply(promptId: string, promptText: string): Promise<void> {
     if (
       !selectedSession ||
-      selectedSession.allowedActions?.canSend === false ||
+      !canSendSession(selectedSession, snapshot) ||
       sending ||
       !promptText.trim()
     ) return;
-    const remoteExecution = remoteExecutionChoice(selectedSession, bridgeExecutionConfirmed === true, { id: promptId, text: promptText });
-    if (remoteExecution === undefined) return;
     updateDraft((current) => ({ ...current, sending: true }));
     try {
-      const receipt = remoteExecution
-        ? await onSendTurn(selectedSession.sessionId, promptText.trim(), [], false, true)
-        : await onSendTurn(selectedSession.sessionId, promptText.trim(), [], steer);
+      const receipt = await onSendTurn(selectedSession.sessionId, promptText.trim(), [], steer);
       setPromptReplies((current) => ({ ...current, [draftKey]: { ...current[draftKey], [promptId]: receipt?.requestId ?? null } }));
       updateDraft((current) => ({ ...current, steer: false }));
     } finally {
@@ -2472,7 +2639,7 @@ export function MobileWorkspace({
       const total = candidates.reduce((sum, file) => sum + file.size, attachments.reduce((sum, item) => sum + item.size, 0));
       if (total > 6 * 1024 * 1024) throw new Error("图片总大小不能超过 6 MB");
       const next = await Promise.all(candidates.map(fileToAttachment));
-      updateDraft((current) => ({ ...current, attachments: [...current.attachments, ...next].slice(0, 4) }));
+      updateDraft((current) => ({ ...current, attachments: [...current.attachments, ...next] }));
     } catch (error) {
       updateDraft((current) => ({ ...current, imageError: error instanceof Error ? error.message : "图片读取失败" }));
     } finally {
@@ -2491,8 +2658,24 @@ export function MobileWorkspace({
 
   const sessionOverlays = (
     <>
+      {rewindAvailable && selectedSession && rewindTarget?.sessionId === selectedSession.sessionId && <SessionRewindDialog
+        key={`${draftKey}:${rewindTarget.messageId ?? "latest"}`}
+        messages={items}
+        {...(rewindTarget.messageId ? { initialMessageId: rewindTarget.messageId } : {})}
+        disabled={rewindDisabled}
+        onPreview={messageId => onPreviewRewind!(selectedSession.sessionId, messageId)}
+        onRewind={(messageId, scope) => onRewindSession!(selectedSession.sessionId, messageId, scope)}
+        onComplete={result => {
+          if (result.scope !== "files") {
+            updateDraft(current => ({ ...current, text: result.prefill ?? "", attachments: [], steer: false }));
+            fileUploads.clear(fileUploads.files);
+          }
+          setRewindTarget(undefined);
+        }}
+        onClose={() => setRewindTarget(undefined)}
+      />}
       {selectedSession && <SessionCommandDialogs
-        key={selectedSession.sessionId}
+        key={`commands:${selectedSession.sessionId}`}
         session={selectedSession}
         result={commands.dialog}
         onClose={commands.close}
@@ -2556,7 +2739,7 @@ export function MobileWorkspace({
                 }}
               />
             )}
-            {canConfigureSession(menuSession) && (
+            {canConfigureSession(menuSession, snapshot) && (
               <SheetAction
                 icon={<Settings2 size={19} />}
                 label="会话设置"
@@ -2576,7 +2759,7 @@ export function MobileWorkspace({
               onClick={() => void runRefresh(menuSession.sessionId)}
             />
           </div>
-          {(menuSupportsFork || menuSupportsProviderSwitch || menuSupportsRuntimeHandoff) && (
+          {(menuSupportsFork || menuSupportsRuntimeHandoff) && (
             <div className="m-group">
               {menuSupportsFork && (
                 <SheetAction
@@ -2585,19 +2768,6 @@ export function MobileWorkspace({
                   detail="复制完整对话为独立会话，原会话不变"
                   disabled={sessionActionBusy}
                   onClick={() => void forkSessionById(menuSession.sessionId)}
-                />
-              )}
-              {menuSupportsProviderSwitch && (
-                <SheetAction
-                  icon={<ArrowRightLeft size={19} />}
-                  label="切换执行来源"
-                  detail={`当前：${providerName(menuSession.activeProviderProfileId, providers)}`}
-                  disabled={sessionActionBusy}
-                  onClick={() => {
-                    setActionSessionId(menuSession.sessionId);
-                    setProviderOpen(true);
-                    setMenuSessionId(undefined);
-                  }}
                 />
               )}
               {menuSupportsRuntimeHandoff && (
@@ -2632,7 +2802,7 @@ export function MobileWorkspace({
                   label="删除会话"
                   detail={menuSessionBusy || menuSession.pendingRuntimeHandoff
                     ? "任务或接力进行中，先停止再删除"
-                    : "仅从 Bridge 移除，Desktop 原会话保留"}
+                    : menuSession.transport === "claude-desktop-native" ? "删除 Claude Desktop 中的会话" : "仅从 Bridge 移除，Desktop 原会话保留"}
                   danger
                   disabled={sessionActionBusy || menuSessionBusy || Boolean(menuSession.pendingRuntimeHandoff)}
                   onClick={() => setDeleteSessionConfirmOpen(true)}
@@ -2684,22 +2854,24 @@ export function MobileWorkspace({
       <ConfirmationDialog
         open={deleteSessionConfirmOpen && Boolean(menuSession)}
         title="删除会话"
-        description={`从 Bridge 列表中删除「${menuSession?.title ?? ""}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
+        description={menuSession?.transport === "claude-desktop-native"
+          ? `从 Claude Desktop 中删除「${menuSession.title}」会话及其对话记录？此操作不可恢复。`
+          : `从 Bridge 列表中删除「${menuSession?.title ?? ""}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
         confirmLabel="删除会话"
         danger
         busy={sessionActionBusy}
         onCancel={() => setDeleteSessionConfirmOpen(false)}
         onConfirm={() => menuSession && void deleteSessionById(menuSession.sessionId)}
       />
-      {configurationSession && canConfigureSession(configurationSession) && (
+      {configurationSession && canConfigureSession(configurationSession, snapshot) && (
         <SessionConfigurationDialog
-          key={configurationSession.sessionId}
+          key={`configuration:${configurationSession.sessionId}`}
           session={configurationSession}
           permissionScope="session"
           revision={events.filter((event) => ((event.type === "session.configuration" || event.type === "session.compacted") && event.sessionId === configurationSession.sessionId) || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === configurationSession.sessionId))).at(-1)?.seq ?? 0}
           onLoad={() => onLoadSessionConfiguration(configurationSession.sessionId)}
           onSave={(change) => onConfigureSession(configurationSession.sessionId, change)}
-          {...(onConfigurePermissionPolicy ? {
+          {...(desktopRuntimeId(configurationSession) !== "claude-desktop" && onConfigurePermissionPolicy ? {
             onConfigurePermission: (scope: "host" | "session", mode: BridgePermissionMode | null) => (
               onConfigurePermissionPolicy(configurationSession.sessionId, scope, mode)
             ),
@@ -2707,25 +2879,9 @@ export function MobileWorkspace({
           onClose={() => setConfigurationSessionId(undefined)}
         />
       )}
-      {providerOpen && actionSession && desktopRuntimeId(actionSession) === "claude-desktop" && supportsProviderSwitching(snapshot) && (
-        <ProviderSwitchDialog
-          key={actionSession.sessionId}
-          session={actionSession}
-          profiles={providers}
-          onPreview={(targetProviderProfileId, model) => onPreviewProviderSwitch(actionSession.sessionId, targetProviderProfileId, model)}
-          onCommit={onCommitProviderSwitch}
-          onCancel={onCancelProviderSwitch}
-          onRefresh={async () => {
-            await onRefreshProviders();
-            await onRefresh();
-          }}
-          onChanged={() => void onRefresh()}
-          onClose={() => setProviderOpen(false)}
-        />
-      )}
       {relayOpen && actionSession && runtimeHandoffAvailable && (
         <RuntimeHandoffDialog
-          key={actionSession.sessionId}
+          key={`handoff:${actionSession.sessionId}`}
           session={actionSession}
           runtimes={snapshot?.runtimes ?? []}
           onPreview={(targetRuntimeId) => onPreviewRuntimeHandoff(actionSession.sessionId, targetRuntimeId)}
@@ -2748,30 +2904,39 @@ export function MobileWorkspace({
   if (selectedSession) {
     const runtimeName = desktopRuntimeName(desktopRuntimeId(selectedSession));
     const canAttachImages = runtimeSupports(snapshot, selectedSession, "attachment.image");
-    const canConfigure = canConfigureSession(selectedSession);
-    const officialActive = usesOfficialComposer(selectedSession, providers);
+    const canConfigure = canConfigureSession(selectedSession, snapshot);
     const bridgeRunning = selectedSession.turnState === "running"
       && (
         selectedSession.ownership === "BRIDGE_RUNNING" ||
-        selectedSession.ownership === "DESKTOP_MANAGED_RUNNING"
+        selectedSession.ownership === "DESKTOP_MANAGED_RUNNING" ||
+        selectedSession.ownership === "DESKTOP_NATIVE_RUNNING"
       );
     const selectedBusy = selectedSession.pendingCount > 0
       || selectedSession.turnState === "running"
       || selectedSession.turnState === "queued"
       || selectedSession.turnState === "waiting";
-    const processStop = selectedBusy && selectedSession.mainTurnStopScope === "process";
+    const processStop = desktopRuntimeId(selectedSession) !== "claude-desktop" && selectedBusy && selectedSession.mainTurnStopScope === "process";
     const stopTarget = processStop
       ? selectedSession
       : selectedBusy ? stoppableBridgeTask(sessions, selectedSession.sessionId) : undefined;
     const stopping = stoppingSessionId === stopTarget?.sessionId;
     const hasDraft = Boolean(text.trim()) || (canAttachImages && attachments.length > 0) || fileUploads.files.length > 0;
-    const sessionPermissions = permissions.filter((permission) => permission.sessionId === selectedSession.sessionId);
-    const activePermission = sessionPermissions[0];
-    const otherPermission = permissions.find((permission) => permission.sessionId !== selectedSession.sessionId);
+    const sessionPermissions = desktopRuntimeId(selectedSession) !== "claude-desktop" || (isClaudeNativeRelay(snapshot) && selectedSession.transport === "claude-desktop-native")
+      ? permissions.filter(permission => permission.sessionId === selectedSession.sessionId) : [];
+    const sessionQuestions = sessionPermissions.filter(permission => permission.toolName === "AskUserQuestion");
+    const toolPermissions = sessionPermissions.filter(permission => permission.toolName !== "AskUserQuestion");
+    const activePermission = toolPermissions[0];
+    const otherPermission = permissions.find(permission => {
+      if (permission.sessionId === selectedSession.sessionId) return false;
+      const session = sessions.find(candidate => candidate.sessionId === permission.sessionId);
+      return session && (desktopRuntimeId(session) !== "claude-desktop" || (isClaudeNativeRelay(snapshot) && session.transport === "claude-desktop-native"));
+    });
     const otherPermissionSession = otherPermission
       ? sessions.find((session) => session.sessionId === otherPermission.sessionId)
       : undefined;
     const displayNodes = groupTimelineTools(timeline);
+    const backgroundTasks = (backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails.tasks : undefined) ?? selectedSession.backgroundTasks ?? [];
+    const runningBackgroundTasks = backgroundTasks.filter((task) => task.state === "running").length;
     const renderSubagent = (item: ConversationItem) => (
       <SubagentCard
         item={item}
@@ -2822,30 +2987,35 @@ export function MobileWorkspace({
             }
           }}
           actions={(
-            <IconButton label="会话操作" onClick={() => {
-              setSessionActionError(undefined);
-              setMenuSessionId(selectedSession.sessionId);
-            }}><MoreHorizontal size={22} /></IconButton>
+            <>
+              {backgroundTasks.length > 0 && (
+                <IconButton
+                  label={runningBackgroundTasks > 0 ? `后台任务，${runningBackgroundTasks} 个运行中` : "后台任务"}
+                  className="background-tasks-button"
+                  onClick={() => setBackgroundTasksOpen({})}
+                >
+                  <Layers size={20} />
+                  {runningBackgroundTasks > 0 && <span className="background-tasks-count">{runningBackgroundTasks}</span>}
+                </IconButton>
+              )}
+              <IconButton label="会话操作" onClick={() => {
+                setSessionActionError(undefined);
+                setMenuSessionId(selectedSession.sessionId);
+              }}><MoreHorizontal size={22} /></IconButton>
+            </>
           )}
         />
-        <DesktopHandoffNotice
-          key={selectedSession.sessionId}
-          session={selectedSession}
-          online={connection === "connected" && desktopOnline}
-          className="session-channel-warning message-queue-status"
-          {...(onReturnToDesktop ? { onReturn: onReturnToDesktop } : {})}
-          {...(onTakeoverDesktop ? { onTakeover: onTakeoverDesktop } : {})}
-          refreshing={refreshing}
-          onRefresh={() => runRefresh(selectedSession.sessionId)}
-        />
+        {backgroundTaskDetails?.key === draftKey && backgroundTaskDetails.error && (
+          <p className="session-channel-warning" role="alert">后台任务：{backgroundTaskDetails.error}</p>
+        )}
         {selectedSession.nativePermissionModeChange && (
           <div className="session-channel-warning message-queue-status" role="status" aria-label="Desktop 会话授权变更">
             <ShieldCheck size={17} />
             <span>{selectedSession.nativePermissionModeChange.state === "requested"
-              ? "已请求此会话完全授权，等待 Desktop 确认"
+              ? `已请求切换为「${NATIVE_MODE_LABELS[selectedSession.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，等待 Desktop 确认`
               : selectedSession.nativePermissionModeChange.state === "confirmed"
                 ? "Desktop 已确认本次授权变更"
-                : "Desktop 未应用完全授权，后续请求仍需确认"}</span>
+                : `Desktop 未切换为「${NATIVE_MODE_LABELS[selectedSession.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，后续请求仍需确认`}</span>
           </div>
         )}
         {selectedSession.pendingCount > 0 && selectedSession.desktopHandoff?.state !== "close-desktop" && selectedSession.desktopHandoff?.state !== "desktop-inbox" && (
@@ -2861,13 +3031,13 @@ export function MobileWorkspace({
               onClick={() => runRefresh(selectedSession.sessionId)}>{refreshing ? "同步中" : "同步状态"}</button>
           </div>
         )}
-        {!selectedSession.desktopHandoff && selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && selectedSession.pendingCount === 0 && (
+        {desktopRuntimeId(selectedSession) !== "claude-desktop" && !selectedSession.desktopHandoff && selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && selectedSession.pendingCount === 0 && (
           <div className="session-channel-warning">
             <AlertTriangle size={17} />
             <span><strong>正在等待同会话接管</strong>电脑端当前任务结束后会自动发送，无需额外操作。</span>
           </div>
         )}
-        {selectedSession.ownership === "OWNERSHIP_CONFLICT" && (
+        {desktopRuntimeId(selectedSession) !== "claude-desktop" && selectedSession.ownership === "OWNERSHIP_CONFLICT" && (
           <div className="session-channel-warning danger">
             <AlertTriangle size={17} />
             <span><strong>检测到重复写入</strong>Bridge 已停止重叠写入并会自动复查；当前指令保留排队，无需重复发送。</span>
@@ -2961,22 +3131,6 @@ export function MobileWorkspace({
           </div>
         )}
         <ConfirmationDialog
-          open={remoteExecutionConfirm?.key === draftKey}
-          title="由 Bridge 继续执行？"
-          description="等待此会话的当前任务和后台任务结束后，结束它的闲置 Desktop 执行进程并保留历史。之后可直接在手机继续，无需到电脑允许接收。工具审批仍按当前授权设置。"
-          confirmLabel="确认并发送"
-          busy={sending}
-          onCancel={() => setRemoteExecutionConfirm(undefined)}
-          onConfirm={() => {
-            const confirmation = remoteExecutionConfirm;
-            setRemoteExecutionConfirm(undefined);
-            if (!confirmation || confirmation.key !== activeDraftKey.current) return;
-            return confirmation.reply
-              ? sendQuickReply(confirmation.reply.id, confirmation.reply.text, true)
-              : sendMessage(true);
-          }}
-        />
-        <ConfirmationDialog
           open={stopConfirmOpen && Boolean(stopTarget)}
           title={processStop
             ? "结束这个会话的 Claude 进程？"
@@ -2997,6 +3151,16 @@ export function MobileWorkspace({
             if (stopTarget) void stopTask(stopTarget.sessionId);
           }}
         />
+        {backgroundTasksOpen && (
+          <BackgroundTasksSheet
+            sessionId={selectedSession.sessionId}
+            tasks={backgroundTasks}
+            items={items}
+            {...(backgroundTasksOpen.focus ? { focus: backgroundTasksOpen.focus } : {})}
+            renderSubagent={renderSubagent}
+            onClose={() => setBackgroundTasksOpen(undefined)}
+          />
+        )}
         <ConfirmationDialog
           open={Boolean(stopSubagentTarget)}
           title={stopSubagentTarget?.scope === "process" ? "结束这个会话的 Claude 进程？" : "停止这个子代理？"}
@@ -3024,51 +3188,15 @@ export function MobileWorkspace({
             <button type="button" className="secondary-button goal-action" onClick={() => setFileDownloadError(undefined)}>关闭</button>
           </div>
         )}
-        {providerSwitchingAvailable && selectedSession.routeState && selectedSession.routeState !== "ready" && (
-          <button
-            type="button"
-            className="session-channel-warning provider-route-banner"
-            onClick={() => {
-              setActionSessionId(selectedSession.sessionId);
-              setProviderOpen(true);
-            }}
-          >
-            <ArrowRightLeft size={17} />
-            <span>
-              <strong>{selectedSession.routeState === "awaiting-user-confirmation"
-                ? "等待本机确认"
-                : selectedSession.routeState === "awaiting-target-selection"
-                  ? "选择 Claude 官方会话"
-                  : selectedSession.routeState === "failed"
-                    ? "提供方切换未完成"
-                    : "正在切换执行通道"}</strong>
-              {selectedSession.pendingHandoff?.summary ?? "原执行通道保持活动。"}
-            </span>
-          </button>
-        )}
-
-        <div className={`permission-dock-slot ${activePermission || otherPermission ? "has-attention" : ""}`}>
-          {activePermission ? (
-            <button type="button" className="permission-dock" onClick={() => setPermissionOpen(true)}>
-              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
-              <span><strong>{runtimeName} 正在等待授权</strong><small>{activePermission.title || activePermission.displayName || activePermission.toolName}</small></span>
-              <b>{sessionPermissions.length > 1 ? `${sessionPermissions.length} 项` : "处理"}</b>
-            </button>
-          ) : otherPermission && otherPermissionSession ? (
-            <button type="button" className="permission-dock" onClick={() => void selectSession(otherPermission.sessionId)}>
-              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
-              <span><strong>另一会话需要处理</strong><small>{otherPermissionSession.title}</small></span>
-              <b>前往</b>
-            </button>
-          ) : null}
-        </div>
-
         {sessionView === "conversation" ? (
         <section
           className="conversation-stream"
           aria-live="polite"
           ref={streamRef}
-          onScroll={rememberStreamPosition}
+          onScroll={() => {
+            rememberStreamPosition(true);
+            loadOlderNearTop();
+          }}
         >
           {selectedHistory?.hasMore && (
             <button
@@ -3078,8 +3206,11 @@ export function MobileWorkspace({
               onClick={() => void onLoadOlderHistory(selectedSession.sessionId)}
             >
               {selectedHistory.status === "loading" && <LoaderCircle className="is-spinning" size={15} />}
-              {selectedHistory.status === "loading" ? "正在分段加载更早消息…" : "加载更早消息"}
+              {selectedHistory.status === "loading" ? "正在分段加载更早消息…" : selectedHistory.error ? "重试加载更早消息" : "加载更早消息"}
             </button>
+          )}
+          {selectedHistory?.hasMore && selectedHistory.error && (
+            <div className="conversation-error-detail" role="alert">{selectedHistory.error}</div>
           )}
           {selectedHistory?.status === "loading" && selectedHistory.items.length === 0 && (
             <div className="conversation-loading"><LoaderCircle className="is-spinning" size={20} />正在加载最新对话…</div>
@@ -3133,42 +3264,34 @@ export function MobileWorkspace({
                 </details>
               );
             }
-            if (node.kind === "subagent-group") {
-              const hiddenAgents = node.agents.slice(3);
-              const running = hiddenAgents.filter(item => item.subagent!.state === "running").length;
+            if (node.kind === "background-task") {
+              const task = findBackgroundTask(backgroundTasks, node.item.subagent!);
               return (
-                <Fragment key={`${selectedSession.sessionId}:${node.id}`}>
-                  {node.agents.slice(0, 3).map(renderSubagent)}
-                  {hiddenAgents.length > 0 && (
-                    <details className="subagent-overflow" data-stream-key={`${node.id}:overflow`} key={`${node.id}:overflow`}>
-                      <summary>
-                        <span className="subagent-overflow-expand">展开其余 {hiddenAgents.length} 个子代理</span>
-                        <span className="subagent-overflow-collapse">收起其余 {hiddenAgents.length} 个子代理</span>
-                        {running > 0 && <small>{running} 个运行中</small>}
-                        <ChevronDown size={16} className="subagent-overflow-chevron" aria-hidden="true" />
-                      </summary>
-                      <div className="subagent-overflow-body">{hiddenAgents.map(renderSubagent)}</div>
-                    </details>
-                  )}
-                </Fragment>
+                <BackgroundTaskMarker
+                  key={`${selectedSession.sessionId}:${node.id}`}
+                  item={node.item}
+                  {...(task ? { task } : {})}
+                  entering={streamEntering(node.item.id)}
+                  onOpen={() => setBackgroundTasksOpen({ focus: node.item })}
+                />
               );
             }
             const item = node.item;
             const showDelivery = Boolean(item.delivery);
-            const messageQueued = item.delivery === "host-received"
+            const messageQueued = (item.delivery === "queued" || item.delivery === "host-received")
               && item.commandId && selectedSession.pendingCommandIds?.includes(item.commandId);
             const queueActionKey = JSON.stringify([activeHostId, selectedSession.sessionId, item.commandId]);
             const queueAction = queuedSteers[queueActionKey];
-            const canSteerQueued = item.role === "user" && messageQueued && onSteerQueuedTurn
-              && bridgeRunning && !officialActive && desktopRuntimeId(selectedSession) === "claude-desktop"
-              && selectedSession.allowedActions?.canSteer !== false;
+            const canActOnQueued = item.role === "user" && item.commandId
+              && (messageQueued || item.delivery === "submitted" || item.delivery === "session-received")
+              && desktopRuntimeId(selectedSession) === "claude-desktop" && canSendSession(selectedSession, snapshot);
             const copyable = (item.role === "assistant" || item.role === "user") && Boolean(item.text.trim());
-            const peerMessages = selectedSession.transport === "claude-desktop-managed" || selectedSession.desktopHandoff?.state === "desktop-inbox";
+            const peerMessages = selectedSession.transport === "claude-desktop-native" || selectedSession.transport === "claude-desktop-managed" || selectedSession.desktopHandoff?.state === "desktop-inbox";
             const pendingQuestion = item.interactivePrompt ? matchingQuestionPermission(
               item.interactivePrompt, sessionPermissions, item.interactivePrompt.toolUseId ?? (peerMessages ? "" : undefined),
             ) : undefined;
             const unavailableReason = peerMessages && item.interactivePrompt
-              ? item.interactivePrompt.kind === "question" && !pendingQuestion ? "需在电脑端回答"
+              ? item.interactivePrompt.kind === "question" && !pendingQuestion ? "提问已不在待回答列表"
                 : item.interactivePrompt.kind === "wrap-up" && item.interactivePrompt.blocked ? "需在电脑端确认" : undefined
               : undefined;
             const promptKey = `${draftKey}:${item.id}`;
@@ -3188,47 +3311,25 @@ export function MobileWorkspace({
                   )
                 )}
                 {item.taskPlan && <TaskPlanCard key={`${item.sessionId}:${item.taskPlan.id}`} plan={item.taskPlan} />}
-                {item.interactivePrompt && (
+                {item.interactivePrompt && (!pendingQuestion || item.interactivePrompt.answered) && (
                   <InteractivePromptCard
                     prompt={item.interactivePrompt}
                     {...(item.replyDelivery ? { replyDelivery: item.replyDelivery } : {})}
                     {...(item.replyPending ? { replyPending: true } : {})}
-                    canSend={selectedSession.allowedActions?.canSend !== false && !officialActive}
+                    canSend={canSendSession(selectedSession, snapshot)}
                     busy={sending}
                     {...(unavailableReason ? { unavailableReason } : {})}
                     {...(promptErrors[promptKey] ? { error: promptErrors[promptKey] } : {})}
                     onSelectOption={async (replyText) => {
                       if (unavailableReason || sending) return;
-                      if (pendingQuestion && item.interactivePrompt?.kind === "question") {
-                        const questions = item.interactivePrompt.questions ?? [];
-                        if (questions.length !== 1 || questions[0]?.multiSelect) {
-                          setPermissionOpen(true);
-                          return;
-                        }
-                        updateDraft((current) => ({ ...current, sending: true }));
-                        setPromptErrors((current) => ({ ...current, [promptKey]: "" }));
-                        try {
-                          await onResolvePermission(
-                            pendingQuestion.requestId,
-                            "allow-once",
-                            undefined,
-                            { ...pendingQuestion.input, answers: { [questions[0]!.question]: replyText } },
-                          );
-                        } catch (error) {
-                          setPromptErrors((current) => ({ ...current, [promptKey]: error instanceof Error ? error.message : "回答提交失败" }));
-                        } finally {
-                          updateDraft((current) => ({ ...current, sending: false }));
-                        }
-                        return;
-                      }
                       await sendQuickReply(item.id, replyText);
                     }}
                   />
                 )}
                 {item.attachments?.length ? (
                   <div className="conversation-attachments">
-                    {item.attachments.map((attachment) => attachment.data ? (
-                      <button type="button" className="conversation-image-preview" key={attachment.id} aria-label={`查看 ${attachment.name}`} onClick={() => openMedia({ name: attachment.name, kind: "image", dataUrl: `data:${attachment.mimeType};base64,${attachment.data}` })}><img src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} loading="lazy" /></button>
+                    {item.attachments.map((attachment) => attachment.data || attachment.nativeImage ? (
+                      <ImageAttachment key={attachment.id} attachment={attachment} sessionId={item.sessionId} />
                     ) : (
                       <span className="attachment-chip" key={attachment.id}>{attachment.name}</span>
                     ))}
@@ -3250,26 +3351,35 @@ export function MobileWorkspace({
                 )}
                 {/* A sent message's bubble holds only what was sent; status and copy sit under it. */}
                 {item.role === "user" ? <div className="conversation-bubble">{content}</div> : content}
-                {(copyable || showDelivery) && (
+                {(copyable || showDelivery || (rewindAvailable && item.role === "user")) && (
                   <div className="conversation-message-actions">
                     {showDelivery && <span className={`delivery-state ${item.delivery}`} role="status">{messageQueued ? `已排队 · ${sessionQueueLabel(selectedSession)}` : deliveryLabel(item.delivery!)}</span>}
-                    {canSteerQueued && (
-                      <button type="button" className="message-copy-button queued-steer-button"
-                        disabled={connection !== "connected" || !desktopOnline || queueAction?.state === "pending" || queueAction?.state === "requested"}
-                        title={connection !== "connected" || !desktopOnline ? "电脑离线，连接后再调整" : "让当前任务优先处理这条消息"}
+                    {canActOnQueued && ([
+                      { label: "Send now", action: "steer", callback: onSteerQueuedTurn, className: "queued-steer-button" },
+                      { label: "撤回", action: "cancel", callback: onCancelQueuedTurn, className: "queued-cancel-button" },
+                    ] as const).map(({ label, action, callback, className }) => callback && (
+                      <button key={label} type="button" className={`message-copy-button ${className}`}
+                        disabled={connection !== "connected" || !desktopOnline || queueAction?.state === "pending"
+                          || (queueAction?.state === "requested" && (queueAction.action === "cancel" || queueAction.action === action))}
+                        aria-busy={queueAction?.state === "pending" && queueAction.action === action}
+                        title={connection !== "connected" || !desktopOnline ? "电脑离线，连接后再操作" : label === "Send now" ? "立即发送这条排队消息" : "撤回这条排队消息"}
                         onClick={async () => {
-                          setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "pending" } }));
+                          setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "pending", action } }));
                           try {
-                            await onSteerQueuedTurn!(selectedSession.sessionId, item.commandId!);
-                            setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "requested" } }));
+                            await callback(selectedSession.sessionId, item.commandId!);
+                            setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "requested", action } }));
                           } catch (error) {
-                            setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "error", error: error instanceof Error ? error.message : "立即调整失败" } }));
+                            setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "error", action, error: error instanceof Error ? error.message : `${label}失败` } }));
                           }
                         }}>
-                        {queueAction?.state === "pending" ? "调整中…" : queueAction?.state === "requested" ? "已调整" : "立即调整"}
+                        {label}
                       </button>
-                    )}
+                    ))}
                     {copyable && <MessageCopyButton text={item.text} label={item.role === "assistant" ? "复制这条回复" : "复制这条消息"} />}
+                    {rewindAvailable && item.role === "user" && !item.id.startsWith("local:") && <button
+                      type="button" className="message-copy-button" aria-label="回退到这条消息之前" disabled={rewindDisabled}
+                      onClick={() => setRewindTarget({ sessionId: selectedSession.sessionId, messageId: item.id })}
+                    >回退</button>}
                   </div>
                 )}
                 {queueAction?.error && <div className="delivery-error-detail" role="alert">{queueAction.error}</div>}
@@ -3282,10 +3392,14 @@ export function MobileWorkspace({
                     <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(item.commandId!, "retry")}>检查后重发</button>
                   </div>
                 )}
-                {item.live && <span className="stream-caret" aria-label="正在生成" />}
               </article>
             );
           })}
+          {sessionQuestions.map(permission => (
+            <article className="conversation-item assistant pending-question" key={`${draftKey}:${permission.requestId}`} data-stream-key={`question:${permission.requestId}`} aria-label="待回答">
+              <PermissionPrompt key={permission.requestId} permission={permission} onResolve={onResolvePermission} />
+            </article>
+          ))}
         </section>
         ) : (
           <section className="mobile-evidence-view">
@@ -3321,21 +3435,32 @@ export function MobileWorkspace({
           </section>
         )}
 
+        <div className={`permission-dock-slot ${activePermission || otherPermission || (sessionView === "evidence" && sessionQuestions.length) ? "has-attention" : ""}`}>
+          {activePermission ? (
+            <button type="button" className="permission-dock" onClick={() => setPermissionOpen(true)}>
+              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
+              <span><strong>{runtimeName} 正在等待授权</strong><small>{activePermission.title || activePermission.displayName || activePermission.toolName}</small></span>
+              <b>{toolPermissions.length > 1 ? `${toolPermissions.length} 项` : "处理"}</b>
+            </button>
+          ) : sessionView === "evidence" && sessionQuestions[0] ? (
+            <button type="button" className="permission-dock" onClick={() => setSessionView("conversation")}>
+              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
+              <span><strong>{runtimeName} 正在等待回答</strong><small>{sessionQuestions[0].title || "提问与选择"}</small></span>
+              <b>回答</b>
+            </button>
+          ) : otherPermission && otherPermissionSession ? (
+            <button type="button" className="permission-dock" onClick={() => void selectSession(otherPermission.sessionId)}>
+              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
+              <span><strong>另一会话{otherPermission.toolName === "AskUserQuestion" ? "待回答" : "待授权"}</strong><small>{otherPermissionSession.title}</small></span>
+              <b>前往</b>
+            </button>
+          ) : null}
+        </div>
+
         {sessionView === "conversation" && (
         <>
         <SessionActivityIndicator activity={activity} />
         <section className="mobile-composer">
-          {officialActive ? (
-            <button
-              type="button"
-              className="official-continue-button"
-              onClick={() => void onDesktopAppAction("claude-desktop", "launch")}
-            >
-              <ArrowRightLeft size={18} />
-              在 Claude 官方继续
-            </button>
-          ) : (
-          <>
           {connectionIssue && (
             <button type="button" className="composer-connection" onClick={() => void onRetry()}>
               {connectionIssue.message} 点击重试
@@ -3355,7 +3480,7 @@ export function MobileWorkspace({
             </div>
           )}
           {imageError && <div className="composer-error" role="alert">{imageError}</div>}
-          {bridgeRunning && !commandDraft && selectedSession.allowedActions?.canSteer !== false && (
+          {bridgeRunning && !commandDraft && (desktopRuntimeId(selectedSession) === "claude-desktop" ? canSendSession(selectedSession, snapshot) && selectedSession.allowedActions?.canSteer === true : selectedSession.allowedActions?.canSteer !== false) && (
             <div className="composer-mode" role="group" aria-label="发送方式">
               <button type="button" className={!steer ? "active" : ""} onClick={() => updateDraft((current) => ({ ...current, steer: false }))}>排到下一轮</button>
               <button type="button" className={steer ? "active" : ""} onClick={() => updateDraft((current) => ({ ...current, steer: true }))}>立即调整</button>
@@ -3376,11 +3501,11 @@ export function MobileWorkspace({
             {(canAttachImages || Boolean(onUploadFile)) && (
               <ComposerAttachmentMenu
                 canAttachImages={canAttachImages}
-                imageDisabled={commandDraft || selectedSession.allowedActions?.canSend === false}
+                imageDisabled={commandDraft || !canSendSession(selectedSession, snapshot)}
                 onPickImages={() => fileRef.current?.click()}
                 {...(onUploadFile ? {
                   fileUploads,
-                  fileDisabled: commandDraft || selectedSession.allowedActions?.canSend === false || sending || connection !== "connected" || !desktopOnline,
+                  fileDisabled: commandDraft || !canSendSession(selectedSession, snapshot) || sending || connection !== "connected" || !desktopOnline,
                 } : {})}
               />
             )}
@@ -3392,8 +3517,8 @@ export function MobileWorkspace({
               } : {})}
               value={text}
               onChange={(value) => updateDraft((current) => ({ ...current, text: value }))}
-              disabled={selectedSession.allowedActions?.canSend === false}
-              placeholder={desktopOnline
+              disabled={!canSendSession(selectedSession, snapshot)}
+              placeholder={desktopRuntimeId(selectedSession) === "claude-desktop" && !canSendSession(selectedSession, snapshot) ? "请连接 Claude Desktop 原生会话" : desktopOnline
                 ? selectedSession.allowedActions?.reason ?? (
                     selectedSession.source === "bridge"
                       ? "给这个 Bridge 会话发指令"
@@ -3417,14 +3542,12 @@ export function MobileWorkspace({
                 type="submit"
                 className="send-button"
                 aria-label="发送"
-                disabled={selectedSession.allowedActions?.canSend === false || sending || fileUploads.uploading || !hasDraft}
+                disabled={!canSendSession(selectedSession, snapshot) || sending || fileUploads.uploading || !hasDraft}
               >
                 {sending ? <LoaderCircle className="is-spinning" size={19} /> : <Send size={19} />}
               </button>
             )}
           </form>
-          </>
-          )}
         </section>
         </>
         )}
@@ -3435,13 +3558,13 @@ export function MobileWorkspace({
             closeLabel="暂时关闭"
             onClose={() => setPermissionOpen(false)}
           >
-            {sessionPermissions.length > 1 && <div className="permission-queue-count">还有 {sessionPermissions.length} 项待处理，提交后自动显示下一项。</div>}
+            {toolPermissions.length > 1 && <div className="permission-queue-count">还有 {toolPermissions.length} 项待授权，提交后自动显示下一项。</div>}
             <PermissionPrompt
               key={activePermission.requestId}
               permission={activePermission}
               onResolve={onResolvePermission}
-              onEnableNativeFullAccess={(requestId) => onResolvePermission(requestId, "allow-once", undefined, undefined, "full-access")}
-              {...(onConfigurePermissionPolicy ? {
+              onEnableNativeFullAccess={(requestId) => onResolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions")}
+              {...(desktopRuntimeId(selectedSession) !== "claude-desktop" && onConfigurePermissionPolicy ? {
                 onEnableFullAccess: (sessionId: string) => (
                   onConfigurePermissionPolicy(sessionId, "host", "full-access").then(() => undefined)
                 ),
@@ -3535,7 +3658,8 @@ export function MobileWorkspace({
   ): ReactNode {
     const { primary: session, forks } = family;
     const isArchivedRow = isArchivedList || Boolean(session.archivedAt);
-    const turnBadge = isArchivedRow ? "已归档" : activeSessionBadgeLabel(session);
+    const pendingPermission = isArchivedRow ? undefined : permissions.find(permission => permission.sessionId === session.sessionId);
+    const turnBadge = isArchivedRow ? "已归档" : pendingPermission ? pendingPermission.toolName === "AskUserQuestion" ? "待回答" : "待授权" : activeSessionBadgeLabel(session);
     const subagentBadge = isArchivedRow || turnBadge ? undefined : backgroundSubagentBadge(session);
     const badge = turnBadge ?? subagentBadge?.label;
     const forksExpanded = expandedForkParents.has(session.sessionId);
@@ -3549,7 +3673,7 @@ export function MobileWorkspace({
             className="session-row-hit"
             onClick={() => void selectSession(session.sessionId)}
           >
-            <span className={`session-state-dot ${session.turnState}`} />
+            <span className={`session-state-dot ${pendingPermission ? "waiting" : session.turnState}`} />
             <span className="session-row-copy">
               <strong>
                 {isForkChild && <em className={badgeClassName}>{badgeLabel}</em>}
@@ -3565,7 +3689,7 @@ export function MobileWorkspace({
               </small>
             </span>
             {badge && (
-              <span className={`session-row-status ${subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState}`}>
+              <span className={`session-row-status ${pendingPermission ? "waiting" : subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState}`}>
                 {badge}
               </span>
             )}
@@ -3695,7 +3819,7 @@ export function MobileWorkspace({
           <button type="button" className="host-permission-alert" onClick={() => void selectSession(permissions[0]!.sessionId)}>
             <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
             <span>
-              <strong>Desktop 任务正在等待处理</strong>
+              <strong>{permissions[0].toolName === "AskUserQuestion" ? "有提问待你回答" : "有操作待你授权"}</strong>
               <small>{sessions.find((session) => session.sessionId === permissions[0]!.sessionId)?.title ?? permissions[0]!.toolName}</small>
             </span>
             <b>{permissions.length > 1 ? `${permissions.length} 项` : "查看"}</b>

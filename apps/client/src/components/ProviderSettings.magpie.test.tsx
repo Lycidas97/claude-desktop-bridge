@@ -157,7 +157,8 @@ describe("Magpie connection settings", () => {
     expect(text()).toContain("网关 URLhttps://new.example.com");
     expect(text()).toContain("认证方式x-api-key");
     expect(text()).toContain("Magpie 配置已保存");
-    expect(text()).toContain("下次启动 Bridge 执行器起生效");
+    expect(text()).toContain("保存后用于 Magpie 额度查询");
+    expect(text()).not.toContain("下次启动 Bridge 执行器");
     expect(button("保存 Magpie 配置").props.disabled).toBe(true);
     expect(props.onSetApiKey).not.toHaveBeenCalled();
   });

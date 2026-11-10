@@ -1,4 +1,5 @@
 import { cp, mkdir, readFile, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -45,6 +46,13 @@ const mainBanner = {
 await rm(resolve(dist, "native"), { recursive: true, force: true });
 await rm(resolve(dist, "node_modules"), { recursive: true, force: true });
 await mkdir(dist, { recursive: true });
+if (process.platform === "darwin") {
+  await mkdir(resolve(dist, "native"), { recursive: true });
+  execFileSync("/usr/bin/clang", [
+    "-std=c11", "-O2", "-Wall", "-Wextra", resolve(root, "native/inspector-process-path.c"),
+    "-o", resolve(dist, "native/inspector-process-path"), "-lproc",
+  ], { stdio: "inherit" });
+}
 await mkdir(resolve(dist, "assets"), { recursive: true });
 await Promise.all(["trayTemplate.svg", "trayTemplate.png", "trayTemplate@2x.png"].map((name) => (
   cp(resolve(root, "assets", name), resolve(dist, "assets", name))
@@ -86,17 +94,6 @@ await Promise.all([
     format: "cjs",
     target: "node22",
     external: ["electron"],
-    sourcemap: true,
-    alias,
-    define: sharedDefine,
-  }),
-  build({
-    entryPoints: [resolve(root, "src/claude-desktop-helper.ts")],
-    outfile: resolve(dist, "claude-desktop-helper.cjs"),
-    bundle: true,
-    platform: "node",
-    format: "cjs",
-    target: "node22",
     sourcemap: true,
     alias,
     define: sharedDefine,

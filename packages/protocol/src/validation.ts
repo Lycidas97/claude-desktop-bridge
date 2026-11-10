@@ -2,6 +2,7 @@ import {
   PROTOCOL_VERSION,
   MAX_ENVELOPE_CHUNKS,
   type BridgePayload,
+  type BridgeNativeImageRef,
   type BridgeRole,
   type ClientFrame,
   type EncryptedEnvelopeChunk,
@@ -31,6 +32,8 @@ const METHODS = new Set([
   "session.configuration",
   "session.commands",
   "session.command",
+  "session.rewind.preview",
+  "session.rewind",
   "session.permissions",
   "session.permissions.configure",
   "session.configure",
@@ -51,6 +54,7 @@ const METHODS = new Set([
   "turn.start",
   "turn.steer",
   "turn.queue.steer",
+  "turn.queue.cancel",
   "turn.interrupt",
   "subagent.stop",
   "permission.resolve",
@@ -88,6 +92,11 @@ const METHODS = new Set([
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function isBridgeNativeImageRef(value: unknown): value is BridgeNativeImageRef {
+  return isRecord(value) && typeof value.messageUuid === "string" && value.messageUuid.length > 0 &&
+    typeof value.imageIndex === "number" && Number.isInteger(value.imageIndex) && value.imageIndex >= 0;
 }
 
 export function isBridgeRole(value: unknown): value is BridgeRole {

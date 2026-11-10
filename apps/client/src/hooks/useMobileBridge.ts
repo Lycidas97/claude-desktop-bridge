@@ -13,6 +13,7 @@ import {
   summarizeEvidenceEvent,
   type BridgeEvidenceDetailPage,
   type BridgeAttachment,
+  type BridgeBackgroundTask,
   type BridgeDeliveryState,
   type BridgeDesktopAppStatus,
   type BridgeDesktopRuntimeId,
@@ -22,6 +23,7 @@ import {
   type BridgeEvidencePage,
   type BridgeEvent,
   type BridgeHistoryItem,
+  type BridgeHistoryAttachment,
   type BridgeHistoryPage,
   type BridgeHostSnapshot,
   type BridgePayload,
@@ -29,6 +31,7 @@ import {
   type BridgeArtifactPreview,
   type BridgeConversationRoute,
   type BridgeHandoff,
+  type BridgeNativePermissionMode,
   type BridgePermissionInfo,
   type BridgePermissionMode,
   type BridgeProviderProfile,
@@ -38,6 +41,9 @@ import {
   type BridgeRuntimeHandoff,
   type BridgeRuntimeHandoffPreview,
   type BridgeSessionCommandResult,
+  type BridgeSessionRewindPreview,
+  type BridgeSessionRewindResult,
+  type BridgeSessionRewindScope,
   type BridgeSessionPermissions,
   type BridgeSDKPermissionMode,
   type BridgePermissionRules,
@@ -66,6 +72,7 @@ import { diagLog, setDiagBridgeStateSummary } from "../lib/diagnostics.js";
 import { uploadSessionFile, type UploadFileHandler } from "../lib/file-upload.js";
 import { isReplayableMobileEnvelope } from "../lib/outbox.js";
 import { nativePushRegistration, onNativePushWake } from "../lib/push-wake.js";
+import { ensureSessionNotificationPermission, showSessionNotification } from "../lib/session-notifications.js";
 
 export interface PairedHost {
   hostId: string;
@@ -134,7 +141,7 @@ export interface LocalTurn {
   idempotencyKey: string;
   sessionId: string;
   text: string;
-  attachments: Array<Omit<BridgeAttachment, "data">>;
+  attachments: BridgeHistoryAttachment[];
   createdAt: number;
   delivery: BridgeDeliveryState;
   commandId?: string;
@@ -143,6 +150,10 @@ export interface LocalTurn {
   lastEventSeq?: number;
   bridgeExecutionRequested?: boolean;
   error?: string;
+}
+
+export function isClaudeNativeRelay(snapshot: BridgeHostSnapshot | undefined): boolean {
+  return snapshot?.host.capabilities.includes("claude.native-relay.v1") ?? false;
 }
 
 export type PairingSyncStage = "connecting" | "verifying" | "syncing" | "ready";
@@ -212,6 +223,7 @@ const INITIAL_STATE: MobileBridgeState = {
   error: undefined,
 };
 
+const HISTORY_PAGE_SIZE = 50;
 const LOCAL_EVIDENCE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const LAST_ACTIVE_HOST_KEY = "bridge.mobile.last-active-host.v1";
 const PENDING_PAIRING_INSTANCE_PREFIX = "bridge.mobile.pending-pairing-instance.v1.";
@@ -398,35 +410,50 @@ function isBridgeResponse(value: BridgePayload): value is BridgeResponse {
   return value.kind === "response";
 }
 
+export function mergeAcceptedDelivery(
+  current: BridgeDeliveryState | undefined,
+  incoming: BridgeDeliveryState = "session-received",
+): BridgeDeliveryState {
+  if (current === "completed" || current === "failed" || current === "cancelled") return current;
+  if (current === "running" && incoming !== "completed" && incoming !== "failed" && incoming !== "cancelled") return current;
+  if (current === "session-received" && (incoming === "host-received" || incoming === "submitted")) return current;
+  return current === "queued" && (incoming === "session-received" || incoming === "submitted") ? current : incoming;
+}
+
 export function applyEventToTurns(turns: LocalTurn[], event: BridgeEvent): LocalTurn[] {
+  if (event.type === "session.rewound") return turns.filter(turn => turn.sessionId !== event.sessionId || (turn.lastEventSeq ?? -1) >= event.seq);
   const requestId = typeof event.data.requestId === "string" ? event.data.requestId : undefined;
   const commandId = typeof event.data.commandId === "string" ? event.data.commandId : undefined;
+  const native = event.origin === "claude-desktop";
+  const messageId = event.type === "user.message.accepted" ? event.itemId
+    : typeof event.data.messageId === "string" ? event.data.messageId
+    : event.type === "message.delivery" && event.data.delivery === "submitted" ? event.itemId
+    : native && event.type.startsWith("turn.") ? event.turnId ?? event.itemId : undefined;
   return turns.map((turn) => {
     if (
+      (event.sessionId && turn.sessionId !== event.sessionId) ||
       (requestId && turn.requestId !== requestId) ||
       (!requestId && commandId && turn.commandId !== commandId) ||
-      // Native runtimes omit command IDs on terminal events; only finish accepted turns.
-      (!requestId && !commandId && (
-        turn.sessionId !== event.sessionId ||
-        (event.type !== "turn.completed" && event.type !== "turn.failed" && event.type !== "turn.interrupted") ||
-        (turn.delivery !== "session-received" && turn.delivery !== "running") ||
-        (turn.turnId && event.turnId && turn.turnId !== event.turnId)
+      (!requestId && !commandId && (native
+        ? !((messageId && turn.messageId === messageId) || (event.turnId && turn.turnId === event.turnId))
+        : (
+          turn.sessionId !== event.sessionId ||
+          (event.type !== "turn.completed" && event.type !== "turn.failed" && event.type !== "turn.interrupted") ||
+          (turn.delivery !== "session-received" && turn.delivery !== "running") ||
+          (turn.turnId && event.turnId && turn.turnId !== event.turnId)
+        )
       ))
     ) return turn;
-    const messageId = event.type === "user.message.accepted" ? event.itemId
-      : event.type === "message.delivery" && event.data.delivery === "submitted"
-        ? typeof event.data.messageId === "string" ? event.data.messageId : event.itemId
-        : undefined;
     if (event.seq <= (turn.lastEventSeq ?? -1)) {
       return !turn.messageId && messageId ? { ...turn, messageId } : turn;
     }
     if (event.type === "turn.queued") {
-      return { ...turn, lastEventSeq: event.seq, delivery: "host-received", ...(commandId ? { commandId } : {}) };
+      return { ...turn, lastEventSeq: event.seq, delivery: native ? "queued" : "host-received", ...(commandId ? { commandId } : {}), ...(messageId ? { messageId } : {}), ...(event.turnId ? { turnId: event.turnId } : {}) };
     }
     if (event.type === "user.message.accepted") return {
       ...turn,
       lastEventSeq: event.seq,
-      delivery: "session-received",
+      delivery: mergeAcceptedDelivery(turn.delivery, event.data.delivery as BridgeDeliveryState | undefined),
       ...(commandId ? { commandId } : {}),
       ...(event.turnId ? { turnId: event.turnId } : {}),
       ...(messageId ? { messageId } : {}),
@@ -441,6 +468,7 @@ export function applyEventToTurns(turns: LocalTurn[], event: BridgeEvent): Local
           "submitted",
           "waiting-confirmation",
           "session-received",
+          "queued",
           "running",
           "completed",
           "failed",
@@ -626,6 +654,7 @@ function snapshotWithPermissions(
     ...snapshot,
     permissions,
     sessions: snapshot.sessions.map((session) => {
+      if (session.transport === "claude-desktop-native") return session;
       if (waitingSessions.has(session.sessionId)) return { ...session, turnState: "waiting" };
       if (session.turnState !== "waiting") return session;
       return {
@@ -796,6 +825,13 @@ function applyEventToSession(
     else if (event.data.appliesAfterTurn === false) delete next.configurationPending;
     return next;
   }
+  if (event.type === "message.delivery" && typeof event.data.commandId === "string") {
+    const pendingCommandIds = new Set(session.pendingCommandIds ?? []);
+    if (event.data.delivery === "queued") pendingCommandIds.add(event.data.commandId);
+    else if (["running", "completed", "failed", "cancelled"].includes(String(event.data.delivery))) pendingCommandIds.delete(event.data.commandId);
+    else return session;
+    return { ...session, pendingCommandIds: [...pendingCommandIds], pendingCount: pendingCommandIds.size };
+  }
   if (
     event.type === "turn.queued" || event.type === "turn.started" ||
     event.type === "turn.completed" || event.type === "turn.failed" || event.type === "turn.interrupted"
@@ -840,7 +876,7 @@ function applyEventToSession(
       return {
         ...session,
         ...queued,
-        ownership: session.transport === "claude-desktop-managed" ? "DESKTOP_MANAGED_RUNNING" : "BRIDGE_RUNNING",
+        ownership: session.transport === "claude-desktop-native" ? "DESKTOP_NATIVE_RUNNING" : session.transport === "claude-desktop-managed" ? "DESKTOP_MANAGED_RUNNING" : "BRIDGE_RUNNING",
         turnState: hasPendingPermission ? "waiting" : "running",
         executionStage: "running",
         ...(event.turnId ? { activeTurnId: event.turnId } : {}),
@@ -853,7 +889,7 @@ function applyEventToSession(
     return {
       ...rest,
       ...queued,
-      ownership: session.transport === "claude-desktop-managed" ? "DESKTOP_MANAGED_IDLE" : "BRIDGE_IDLE",
+      ownership: session.transport === "claude-desktop-native" ? "DESKTOP_NATIVE_IDLE" : session.transport === "claude-desktop-managed" ? "DESKTOP_MANAGED_IDLE" : "BRIDGE_IDLE",
       turnState: hasPendingPermission ? "waiting" : queued.pendingCount > 0 ? "queued" : "idle",
     };
   }
@@ -1050,7 +1086,8 @@ async function readStoredHostState(
             : undefined;
       appliedTurns[turnIndex] = {
         ...turn,
-        delivery: terminalDelivery ?? (turn.delivery === "local-saved" ? "host-received" : turn.delivery),
+        delivery: terminalDelivery ?? (result?.state === "submitted" ? mergeAcceptedDelivery(turn.delivery, "submitted")
+          : turn.delivery === "local-saved" ? "host-received" : turn.delivery),
         ...(typeof result?.commandId === "string" ? { commandId: result.commandId } : {}),
       };
     } else {
@@ -1166,7 +1203,7 @@ export function useMobileBridge() {
   const desktopHomeRef = useRef<string | undefined>(undefined);
   const linkGateRef = useRef<() => boolean>(() => true);
   const sendAttemptedAtRef = useRef<number | undefined>(undefined);
-  const remoteExecutionCapabilityRef = useRef<boolean | undefined>(undefined);
+  const nativeRelayCapabilityRef = useRef<boolean | undefined>(undefined);
 
   const updateHostCache = useCallback((
     roomId: string,
@@ -1198,6 +1235,11 @@ export function useMobileBridge() {
     if (payload.kind === "snapshot") {
       const rebased = rebaseSnapshot(payload.snapshot, stateRef.current.events);
       const { snapshot, permissions } = rebased;
+      diagLog("info", "permission", `snapshot latestSeq=${rebased.latestSeq} permissions=${permissions.length}`, permissions.map((permission) => ({
+        requestId: permission.requestId,
+        sessionId: permission.sessionId,
+        toolName: permission.toolName,
+      })));
       // Receiving it already marked the desktop online. Its host.online can be stale: a restarting
       // desktop builds the snapshot before its relay state reads "connected" and sends it after.
       setState((current) => ({
@@ -1212,6 +1254,15 @@ export function useMobileBridge() {
       return;
     }
     if (payload.kind === "event") {
+      const { event } = payload;
+      if (/^(permission|question)\.(requested|resolved)$/u.test(event.type)) {
+        const snapshotSeq = stateRef.current.snapshot?.latestSeq ?? 0;
+        const dropped = event.seq <= snapshotSeq;
+        diagLog(dropped ? "warn" : "info", "permission", `${event.type} seq=${event.seq} snapshotSeq=${snapshotSeq}${dropped ? " 已忽略" : ""}`, {
+          requestId: event.data.requestId,
+          sessionId: event.sessionId,
+        }, dropped);
+      }
       setState((current) => {
         const permissions = payload.event.seq <= (current.snapshot?.latestSeq ?? 0)
           ? current.permissions
@@ -1264,11 +1315,8 @@ export function useMobileBridge() {
               : undefined;
         localTurns[index] = {
           ...turn,
-          delivery: terminalDelivery ?? (
-            turn.delivery === "local-saved" || turn.delivery === "relay-received"
-              ? "host-received"
-              : turn.delivery
-          ),
+          delivery: terminalDelivery ?? (result?.state === "submitted" ? mergeAcceptedDelivery(turn.delivery, "submitted")
+            : turn.delivery === "local-saved" || turn.delivery === "relay-received" ? "host-received" : turn.delivery),
           ...(typeof result?.commandId === "string" ? { commandId: result.commandId } : {}),
         };
       } else {
@@ -1325,13 +1373,8 @@ export function useMobileBridge() {
       setState((current) => ({ ...current, pendingOutbound: current.pendingOutbound + 1 }));
     }
     if (method === "turn.start" || method === "turn.steer") {
-      const attachments = Array.isArray(params.attachments)
-        ? params.attachments.flatMap((attachment) => {
-            if (!attachment || typeof attachment !== "object") return [];
-            const { data: _data, ...metadata } = attachment as BridgeAttachment;
-            return [metadata];
-          })
-        : [];
+      // Keep the outgoing preview in memory; replay still restores metadata only.
+      const attachments = Array.isArray(params.attachments) ? params.attachments as BridgeAttachment[] : [];
       setState((current) => ({
         ...current,
         localTurns: [
@@ -1344,16 +1387,15 @@ export function useMobileBridge() {
             attachments,
             ...(params.bridgeExecutionRequested === true ? { bridgeExecutionRequested: true } : {}),
             createdAt: envelope.sentAt,
+            lastEventSeq: current.latestSeq,
             delivery: "local-saved",
           },
         ],
       }));
     }
-    if (params.bridgeExecutionRequested === true && remoteExecutionCapabilityRef.current !== true) {
-      if (remoteExecutionCapabilityRef.current === false) {
-        setState(current => ({ ...current, error: "请更新电脑端 Bridge；已确认的远程消息仍保存在手机待发箱。" }));
-      }
-      return undefined;
+    if (method === "turn.start" || method === "turn.steer") {
+      const session = stateRef.current.snapshot?.sessions.find(candidate => candidate.sessionId === params.sessionId);
+      if ((!session?.runtimeId || session.runtimeId === "claude-desktop") && nativeRelayCapabilityRef.current !== true) return undefined;
     }
     if (!socket || socket.state !== "connected") {
       return undefined;
@@ -1490,21 +1532,24 @@ export function useMobileBridge() {
     return true;
   }, [sendRequest]);
 
-  const refreshSnapshot = useCallback(async (): Promise<boolean> => {
+  const refreshSnapshot = useCallback(async (verifiedSnapshot?: BridgeHostSnapshot): Promise<boolean> => {
     const crypto = cryptoRef.current;
     const socket = socketRef.current;
     if (!crypto) throw new Error("电脑当前离线");
     const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
-    const response = await sendRequest("snapshot.get", {}, {
-      wait: true,
-      timeoutMs: 20_000,
-    });
-    if (!isCurrent()) return false;
-    if (!response?.ok) throw new Error(response?.error?.message ?? "电脑端快照刷新失败");
-    const result = response.result as { snapshot?: BridgeHostSnapshot } | undefined;
-    if (!result?.snapshot) throw new Error("电脑端未返回最新会话快照");
+    if (!verifiedSnapshot) {
+      const response = await sendRequest("snapshot.get", {}, {
+        wait: true,
+        timeoutMs: 20_000,
+      });
+      if (!isCurrent()) return false;
+      if (!response?.ok) throw new Error(response?.error?.message ?? "电脑端快照刷新失败");
+      const result = response.result as { snapshot?: BridgeHostSnapshot } | undefined;
+      if (!result?.snapshot) throw new Error("电脑端未返回最新会话快照");
+      verifiedSnapshot = result.snapshot;
+    }
     const roomId = crypto.identity.roomId;
-    const initial = rebaseSnapshot(result.snapshot, stateRef.current.events);
+    const initial = rebaseSnapshot(verifiedSnapshot, stateRef.current.events);
     const cacheCrypto = crypto.withSenderDevice(crypto.identity.hostId ?? crypto.identity.deviceId);
     const cachedEnvelope = await cacheCrypto.encrypt(
       { kind: "snapshot", snapshot: initial.snapshot },
@@ -1517,10 +1562,10 @@ export function useMobileBridge() {
     if (!isCurrent()) return false;
     await bridgeVault.saveMessage(cachedEnvelope);
     if (!isCurrent()) return false;
-    applyLanRelayAdvertisement(roomId, result.snapshot);
+    applyLanRelayAdvertisement(roomId, verifiedSnapshot);
     setState((current) => {
       if (!isCurrent()) return current;
-      const rebased = rebaseSnapshot(result.snapshot!, current.events);
+      const rebased = rebaseSnapshot(verifiedSnapshot, current.events);
       return {
         ...current,
         snapshot: rebased.snapshot,
@@ -1543,6 +1588,7 @@ export function useMobileBridge() {
     focusSessionId?: string,
     provisionalPairing?: PairingBundle,
     pairingPhase?: PairingConnectionPhase,
+    restored?: Awaited<ReturnType<typeof readStoredHostState>>,
   ) => {
     if (connectionTimerRef.current) clearTimeout(connectionTimerRef.current);
     socketRef.current?.close();
@@ -1589,9 +1635,7 @@ export function useMobileBridge() {
       error: undefined,
     }));
 
-    const stored = provisionalPairing
-      ? await readStoredHostState(crypto, [])
-      : await readStoredHostState(crypto);
+    const stored = restored ?? await readStoredHostState(crypto, provisionalPairing ? [] : undefined);
     const queuedOutbox = provisionalPairing ? [] : await bridgeVault.listOutbox(roomId);
     const replayableOutbox = queuedOutbox.filter((envelope) => isReplayableMobileEnvelope(
       envelope,
@@ -1673,7 +1717,7 @@ export function useMobileBridge() {
         })
       : relay;
     socketRef.current = socket;
-    remoteExecutionCapabilityRef.current = undefined;
+    nativeRelayCapabilityRef.current = undefined;
     let bootstrapPending = bootstrap;
     let authenticatedDesktop = false;
     let authenticationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1715,12 +1759,13 @@ export function useMobileBridge() {
             const decrypted = await crypto.decrypt(envelope);
             if (decrypted.payload.kind === "request") {
               envelopeRequestsRef.current.set(envelope.id, decrypted.payload.requestId);
-              if (decrypted.payload.params.bridgeExecutionRequested === true && remoteExecutionCapabilityRef.current !== true) {
-                if (remoteExecutionCapabilityRef.current === false) {
-                  setState(current => ({ ...current, error: "请更新电脑端 Bridge；已确认的远程消息仍保存在手机待发箱。" }));
-                }
-                break;
-              }
+              // Retired execution requests are never sent or converted to native input.
+              if (decrypted.payload.params.bridgeExecutionRequested === true) continue;
+            }
+            if (decrypted.payload.kind === "request" && (decrypted.payload.method === "turn.start" || decrypted.payload.method === "turn.steer")) {
+              const sessionId = decrypted.payload.params.sessionId;
+              const session = stateRef.current.snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
+              if ((!session?.runtimeId || session.runtimeId === "claude-desktop") && nativeRelayCapabilityRef.current !== true) continue;
             }
             sendAttemptedAtRef.current = Date.now();
             await socket.sendEnvelope(envelope);
@@ -1777,6 +1822,29 @@ export function useMobileBridge() {
         }
       }).catch(() => undefined);
     }, 10_000);
+    const synchronizeDesktop = async () => {
+      const bootstrapResume = bootstrapPending;
+      bootstrapPending = false;
+      const previousSeq = stateRef.current.latestSeq;
+      const snapshotSynced = await refreshSnapshot().catch(() => false);
+      if (!isCurrent() || socket.state !== "connected") return;
+      if (previousSeq > 0) {
+        await resumeEvents(false, previousSeq);
+      } else if (bootstrapResume || !snapshotSynced) {
+        await resumeEvents(true);
+      }
+      if (!isCurrent() || socket.state !== "connected") return;
+      const sessionListSynced = snapshotSynced || await refreshSessionList().catch(() => false);
+      if (sessionListSynced && rejectedOutbox.length > 0 && isCurrent()) {
+        setState((current) => ({ ...current, connectionIssue: undefined }));
+      }
+      void flushOutbox();
+      void ensureSessionNotificationPermission();
+      const push = await nativePushRegistration();
+      if (push && isCurrent() && socket.state === "connected") {
+        socket.registerPushToken(push.platform, push.token);
+      }
+    };
     socket.onState((connection) => {
       if (!isCurrent()) return;
       diagLog("info", "bridge", `socket.onState -> ${connection}`, {
@@ -1787,7 +1855,7 @@ export function useMobileBridge() {
       });
       if (connection !== "connected") {
         linkHasDesktop = false;
-        remoteExecutionCapabilityRef.current = undefined;
+        nativeRelayCapabilityRef.current = undefined;
       }
       setState((current) => ({
         ...current,
@@ -1844,28 +1912,7 @@ export function useMobileBridge() {
             }));
           }).catch(() => undefined);
         }
-        if (!isProvisionalPairing()) void (async () => {
-          const bootstrapResume = bootstrapPending;
-          bootstrapPending = false;
-          const previousSeq = stateRef.current.latestSeq;
-          const snapshotSynced = await refreshSnapshot().catch(() => false);
-          if (!isCurrent() || socket.state !== "connected") return;
-          if (previousSeq > 0) {
-            await resumeEvents(false, previousSeq);
-          } else if (bootstrapResume || !snapshotSynced) {
-            await resumeEvents(true);
-          }
-          if (!isCurrent() || socket.state !== "connected") return;
-          const sessionListSynced = snapshotSynced || await refreshSessionList().catch(() => false);
-          if (sessionListSynced && rejectedOutbox.length > 0 && isCurrent()) {
-            setState((current) => ({ ...current, connectionIssue: undefined }));
-          }
-          void flushOutbox();
-          const push = await nativePushRegistration();
-          if (push && isCurrent() && socket.state === "connected") {
-            socket.registerPushToken(push.platform, push.token);
-          }
-        })();
+        if (!isProvisionalPairing() && linkHasDesktop) void synchronizeDesktop();
       } else if (authenticationTimer) {
         clearTimeout(authenticationTimer);
         authenticationTimer = undefined;
@@ -1896,15 +1943,13 @@ export function useMobileBridge() {
         }
       }
       if (frame.type === "presence" && frame.role === "desktop") {
+        const wasOnline = linkHasDesktop;
         linkHasDesktop = frame.online;
         if (frame.online) {
           learnHome(relay.endpoint);
           setState((current) => ({ ...current, desktopOnline: true, error: undefined }));
           void flushOutbox();
-          if (!isProvisionalPairing()) {
-            void refreshSnapshot().catch(() => undefined);
-            void resumeEvents();
-          }
+          if (!wasOnline && !isProvisionalPairing() && socket.state === "connected") void synchronizeDesktop();
         }
         if (!frame.online) setState((current) => ({ ...current, desktopOnline: false }));
       }
@@ -2040,11 +2085,14 @@ export function useMobileBridge() {
       setState((current) => ({ ...current, desktopOnline: true, connectionIssue: undefined }));
       socket.ack([encrypted.id]);
       const event = message.payload.kind === "event" ? message.payload.event : undefined;
-      const isNewPermission = Boolean(
-        event &&
-        (event.type === "permission.requested" || event.type === "question.requested") &&
-        !stateRef.current.events.some((candidate) => candidate.eventId === event.eventId),
-      );
+      const incomingSnapshot = message.payload.kind === "snapshot" ? message.payload.snapshot
+        : message.payload.kind === "response" && message.payload.ok
+          ? (message.payload.result as { snapshot?: BridgeHostSnapshot } | undefined)?.snapshot
+          : undefined;
+      const requestedPermission = event ? permissionFromEvent(event) : undefined;
+      const newPermissions = (incomingSnapshot?.permissions ?? (requestedPermission ? [requestedPermission] : []))
+        .filter((permission) => !stateRef.current.permissions.some((current) => current.requestId === permission.requestId));
+      const isNewPermission = newPermissions.length > 0;
       // Drop stale queued RPC responses (>60s old with no active waiter) before
       // they trigger redundant state Churn on reconnect.
       if (message.payload.kind === "response" && Date.now() - message.header.sentAt > 60_000) {
@@ -2059,15 +2107,39 @@ export function useMobileBridge() {
       if (message.payload.kind === "response" && message.payload.ok && pendingResponsesRef.current.has(message.payload.requestId)) {
         const snapshot = (message.payload.result as { snapshot?: BridgeHostSnapshot } | undefined)?.snapshot;
         if (snapshot) {
-          remoteExecutionCapabilityRef.current = snapshot.host.capabilities.includes("session.remote-execution.v1");
+          nativeRelayCapabilityRef.current = isClaudeNativeRelay(snapshot);
           void flushOutbox();
         }
+      }
+      if (message.payload.kind === "snapshot") {
+        nativeRelayCapabilityRef.current = isClaudeNativeRelay(message.payload.snapshot);
+        void flushOutbox();
       }
       handlePayload(message.payload, encrypted, crypto);
       if (isNewPermission && document.visibilityState === "visible") {
         navigator.vibrate?.([120, 60, 120]);
       }
-      if (
+      if (Capacitor.isNativePlatform()) {
+        if (document.visibilityState !== "visible") {
+          for (const permission of newPermissions) {
+            void showSessionNotification(
+              { hostId: roomId, sessionId: permission.sessionId },
+              (incomingSnapshot ?? stateRef.current.snapshot)?.sessions.find((session) => session.sessionId === permission.sessionId)?.title
+                ?? crypto.identity.desktopName,
+              "Claude 正在等待你处理",
+            );
+          }
+          // assistant.completed fires per message; a turn ends with turn.completed.
+          if (event && (event.type === "turn.completed" || event.type === "turn.failed")) {
+            void showSessionNotification(
+              { hostId: roomId, ...(event.sessionId ? { sessionId: event.sessionId } : {}) },
+              stateRef.current.snapshot?.sessions.find((session) => session.sessionId === event.sessionId)?.title
+                ?? crypto.identity.desktopName,
+              event.type === "turn.completed" ? "任务已完成" : "任务失败",
+            );
+          }
+        }
+      } else if (
         document.visibilityState !== "visible" &&
         typeof Notification !== "undefined" &&
         Notification.permission === "granted" &&
@@ -2191,10 +2263,8 @@ export function useMobileBridge() {
       })));
       if (!active) return;
       cryptoByRoomRef.current = new Map(hosts.map((host) => [host.roomId, host.crypto]));
-      const summaries = await Promise.all(hosts.map(async (host) => {
-        const stored = await readStoredHostState(host.crypto);
-        return hostSummary(host, stored.snapshot, stored.permissions);
-      }));
+      const restored = await Promise.all(hosts.map(host => readStoredHostState(host.crypto)));
+      const summaries = hosts.map((host, index) => hostSummary(host, restored[index]!.snapshot, restored[index]!.permissions));
       if (!active) return;
       setState((current) => ({ ...current, loading: false, hosts: summaries }));
       const lastRoomId = readLastActiveHost();
@@ -2203,7 +2273,7 @@ export function useMobileBridge() {
       if (lastRoomId && (!lastHost || lastHost.needsRepair)) writeLastActiveHost();
       if (lastHost && !lastHost.needsRepair) {
         writeLastActiveHost(lastHost.roomId);
-        await start(lastHost.crypto, false);
+        await start(lastHost.crypto, false, undefined, undefined, undefined, restored[hosts.indexOf(lastHost)]);
       } else {
         diagLog("warn", "bridge", "未自动启动连接", {
           lastRoomId,
@@ -2229,30 +2299,41 @@ export function useMobileBridge() {
     };
   }, [start]);
 
-  const reconnectAndResume = useCallback(() => {
+  const reconnectAndResume = useCallback((networkChanged = false) => {
     const socket = socketRef.current;
     if (!socket) return;
+    if (networkChanged) socket.close();
     socket.connect();
-    if (socket.state === "connected") {
+    if (!networkChanged && socket.state === "connected") {
       void refreshSnapshot().catch(() => undefined);
       void resumeEvents();
     }
   }, [refreshSnapshot, resumeEvents]);
 
-  useEffect(() => onNativePushWake(reconnectAndResume), [reconnectAndResume]);
+  useEffect(() => onNativePushWake(() => reconnectAndResume()), [reconnectAndResume]);
 
   useEffect(() => {
-    const reconnect = () => {
-      if (document.visibilityState === "hidden") return;
-      reconnectAndResume();
+    const network = (navigator as Navigator & { connection?: EventTarget & { type?: string } }).connection;
+    let networkType = network?.type;
+    const online = () => {
+      networkType = network?.type;
+      // Android can report online just before changing its interface from none.
+      if (networkType !== "none") reconnectAndResume(true);
+    };
+    const networkChanged = () => {
+      if (network?.type === networkType) return;
+      networkType = network?.type;
+      if (navigator.onLine) reconnectAndResume(true);
     };
     const visibilityChanged = () => {
-      if (document.visibilityState === "visible") reconnect();
+      if (document.visibilityState === "visible") reconnectAndResume();
     };
-    window.addEventListener("online", reconnect);
+    window.addEventListener("online", online);
+    network?.addEventListener("change", networkChanged);
     document.addEventListener("visibilitychange", visibilityChanged);
     return () => {
-      window.removeEventListener("online", reconnect);
+      window.removeEventListener("online", online);
+      network?.removeEventListener("change", networkChanged);
       document.removeEventListener("visibilitychange", visibilityChanged);
     };
   }, [reconnectAndResume]);
@@ -2358,10 +2439,9 @@ export function useMobileBridge() {
       }));
       writeLastActiveHost(crypto.identity.roomId);
       setState((current) => advancePairingSync(current, crypto.identity.roomId, "syncing", 72));
+      await refreshSnapshot(verifiedSnapshot);
       await resumeEvents(true);
       setState((current) => advancePairingSync(current, crypto.identity.roomId, "syncing", 80));
-      const snapshotSynced = await refreshSnapshot().catch(() => false);
-      if (!snapshotSynced) await refreshSessionList().catch(() => false);
       setState((current) => advancePairingSync(current, crypto.identity.roomId, "ready", 100));
       void nativePushRegistration().then((push) => {
         if (push && cryptoRef.current === crypto && socketRef.current?.state === "connected") {
@@ -2499,7 +2579,7 @@ export function useMobileBridge() {
         },
       }));
       try {
-        const response = await sendRequest("session.open", { sessionId, limit: 16 }, {
+        const response = await sendRequest("session.open", { sessionId, limit: HISTORY_PAGE_SIZE }, {
           wait: true,
           timeoutMs: 25_000,
         });
@@ -2594,7 +2674,7 @@ export function useMobileBridge() {
 
   useEffect(() => {
     for (const event of state.events) {
-      if ((event.type !== "session.reset" && event.type !== "session.compacted") || handledCommandEvents.current.has(event.eventId)) continue;
+      if ((event.type !== "session.reset" && event.type !== "session.compacted" && event.type !== "session.rewound") || handledCommandEvents.current.has(event.eventId)) continue;
       handledCommandEvents.current.add(event.eventId);
       if (event.type === "session.reset" && event.data.previousSessionId === openedSessionRef.current && typeof event.data.sessionId === "string") {
         const sessionId = event.data.sessionId;
@@ -2602,6 +2682,10 @@ export function useMobileBridge() {
           histories: { ...current.histories, [sessionId]: { status: "ready", items: [], hasMore: false } },
         }));
         void refreshSnapshot().then(() => openSession(sessionId)).catch(reason => setState(current => ({ ...current, error: reason instanceof Error ? reason.message : "新会话打开失败" })));
+      } else if (event.type === "session.rewound" && event.sessionId) {
+        const sessionId = event.sessionId;
+        setState(current => ({ ...current, histories: { ...current.histories, [sessionId]: { status: "loading", items: [], hasMore: false } } }));
+        if (sessionId === openedSessionRef.current) void openSession(sessionId);
       } else if (event.type === "session.compacted" && event.sessionId === openedSessionRef.current) {
         void openSession(event.sessionId!);
       }
@@ -2748,14 +2832,22 @@ export function useMobileBridge() {
     }
   }, [sendRequest]);
 
+  const loadingHistoryRef = useRef(new Map<string, BridgeTransport | undefined>());
   const loadOlderHistory = useCallback(async (sessionId: string) => {
     const current = stateRef.current.histories[sessionId];
-    if (!current?.nextCursor || current.status === "loading") return;
+    if (!current?.hasMore || !current.nextCursor || current.status === "loading") return;
+    const crypto = cryptoRef.current;
+    const socket = socketRef.current;
+    const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
+    const key = `${crypto?.identity.roomId}:${sessionId}`;
+    if (loadingHistoryRef.current.has(key) && loadingHistoryRef.current.get(key) === socket) return;
+    loadingHistoryRef.current.set(key, socket);
     const requestedCursor = current.nextCursor;
     setState((stateValue) => ({
       ...stateValue,
       histories: {
         ...stateValue.histories,
+        // Keep the error row until the prepend can compensate for its removal.
         [sessionId]: { ...current, status: "loading" },
       },
     }));
@@ -2763,13 +2855,15 @@ export function useMobileBridge() {
       const response = await sendRequest("session.history", {
         sessionId,
         cursor: requestedCursor,
-        limit: 25,
+        limit: HISTORY_PAGE_SIZE,
       }, { wait: true, timeoutMs: 25_000 });
+      if (!isCurrent()) return;
       if (!response?.ok) throw new Error(response?.error?.message ?? "历史加载失败");
       const result = response.result as { history?: BridgeHistoryPage };
       if (!result.history) throw new Error("电脑未返回历史");
       const page = result.history;
       setState((stateValue) => {
+        if (!isCurrent()) return stateValue;
         const existingItems = stateValue.histories[sessionId]?.items ?? current.items;
         const seen = new Set<string>();
         const mergedItems: BridgeHistoryItem[] = [];
@@ -2791,17 +2885,20 @@ export function useMobileBridge() {
           },
         };
       });
-    } catch {
-      setState((stateValue) => ({
+    } catch (error) {
+      setState((stateValue) => isCurrent() ? {
         ...stateValue,
         histories: {
           ...stateValue.histories,
           [sessionId]: {
             ...(stateValue.histories[sessionId] ?? current),
             status: "ready",
+            error: error instanceof Error ? error.message : "历史加载失败",
           },
         },
-      }));
+      } : stateValue);
+    } finally {
+      if (loadingHistoryRef.current.get(key) === socket) loadingHistoryRef.current.delete(key);
     }
   }, [sendRequest]);
 
@@ -2810,28 +2907,15 @@ export function useMobileBridge() {
     text: string,
     attachments: BridgeAttachment[] = [],
     steer = false,
-    bridgeExecutionRequested = false,
   ) => {
-    if (bridgeExecutionRequested) {
-      if (!stateRef.current.snapshot?.host.capabilities?.includes("session.remote-execution.v1")) {
-        throw new Error("请更新电脑端 Bridge 后使用手机远程执行。");
-      }
-      const crypto = cryptoRef.current!;
-      for (const envelope of await bridgeVault.listOutbox(crypto.identity.roomId)) {
-        const message = await crypto.decrypt(envelope);
-        if (message.payload.kind === "request" && (message.payload.method === "turn.start" || message.payload.method === "turn.steer") &&
-          message.payload.params.sessionId === sessionId && message.payload.params.bridgeExecutionRequested !== true) {
-          throw new Error("请先同步此会话的旧待发消息，再确认远程执行；草稿已保留。");
-        }
-      }
+    const session = stateRef.current.snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
+    if ((!session?.runtimeId || session.runtimeId === "claude-desktop") &&
+        (!isClaudeNativeRelay(stateRef.current.snapshot) || session?.transport !== "claude-desktop-native" || session.allowedActions?.canSend !== true)) {
+      throw new Error("请先连接支持原生中转的 Claude Desktop 会话。");
     }
     const requestId = randomId();
-    await sendRequest(steer && !bridgeExecutionRequested ? "turn.steer" : "turn.start", {
-      sessionId,
-      text,
-      attachments,
-      ...(bridgeExecutionRequested ? { bridgeExecutionRequested: true } : {}),
-    }, { allowOffline: true, requestId, idempotencyKey: randomId() });
+    await sendRequest(steer ? "turn.steer" : "turn.start", { sessionId, text, attachments },
+      { allowOffline: true, requestId, idempotencyKey: randomId() });
     return { requestId };
   }, [sendRequest]);
 
@@ -2849,10 +2933,16 @@ export function useMobileBridge() {
 
   const steerQueuedTurn = useCallback(async (sessionId: string, commandId: string) => {
     const response = await sendRequest("turn.queue.steer", { sessionId, commandId }, { allowOffline: false, wait: true });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "立即调整失败");
+    if (!response?.ok) throw new Error(response?.error?.message ?? "立即发送失败");
     const result = response.result as { state: string };
     await resumeEvents();
     if (result.state === "uncertain") throw new Error("消息投递状态尚未确认，请同步状态后重试");
+  }, [resumeEvents, sendRequest]);
+
+  const cancelQueuedTurn = useCallback(async (sessionId: string, commandId: string) => {
+    const response = await sendRequest("turn.queue.cancel", { sessionId, commandId }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "撤回失败");
+    await resumeEvents();
   }, [resumeEvents, sendRequest]);
 
   const stopSubagent = useCallback(async (sessionId: string, agentId: string) => {
@@ -2878,16 +2968,18 @@ export function useMobileBridge() {
     decision: "allow-once" | "allow-always" | "deny",
     message?: string,
     updatedInput?: Record<string, unknown>,
-    nativeMode?: "full-access",
+    mode?: BridgeNativePermissionMode,
   ) => {
+    diagLog("info", "permission", `resolve ${requestId} ${decision}${mode ? ` mode=${mode}` : ""}`);
     const response = await sendRequest("permission.resolve", {
       requestId,
       decision,
       ...(message ? { message } : {}),
       ...(updatedInput ? { updatedInput } : {}),
-      ...(nativeMode ? { nativeMode } : {}),
+      ...(mode ? { mode } : {}),
     }, { allowOffline: false, wait: true });
     if (!response?.ok) {
+      diagLog("error", "permission", `resolve ${requestId} 失败`, response?.error ?? "no response", true);
       if (response?.error?.code === "ALREADY_RESOLVED") {
         setState((current) => {
           const permissions = current.permissions.filter((permission) => permission.requestId !== requestId);
@@ -2965,26 +3057,13 @@ export function useMobileBridge() {
     return result.session;
   }, [sendRequest]);
 
-  const returnToDesktop = useCallback(async (sessionId: string): Promise<void> => {
-    const response = await sendRequest("session.return_to_desktop", { sessionId }, {
-      allowOffline: false, wait: true,
-    });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "交还 Desktop 失败");
-    const result = response.result as { session: BridgeSessionInfo };
-    setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
-  }, [sendRequest]);
+  const returnToDesktop = useCallback(async (_sessionId: string): Promise<void> => {
+    throw new Error("Claude 已由 Desktop 原生执行，无需交还。");
+  }, []);
 
-  const takeoverDesktop = useCallback(async (sessionId: string, commandId?: string): Promise<void> => {
-    if (commandId && remoteExecutionCapabilityRef.current !== true) {
-      throw new Error("请先同步状态，确认电脑端 Bridge 支持远程执行。");
-    }
-    const response = await sendRequest("session.takeover_desktop", { sessionId, ...(commandId ? { commandId } : {}) }, {
-      allowOffline: false, wait: true,
-    });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "接管 Desktop 会话失败");
-    const result = response.result as { session: BridgeSessionInfo };
-    setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
-  }, [sendRequest]);
+  const takeoverDesktop = useCallback(async (_sessionId: string, _commandId?: string): Promise<void> => {
+    throw new Error("Claude 已由 Desktop 原生执行，不再支持 Bridge 接管。");
+  }, []);
 
   const loadSessionCommands = useCallback(async (sessionId: string): Promise<BridgeSlashCommandCatalog> => {
     const response = await sendRequest("session.commands", { sessionId }, { allowOffline: false, wait: true });
@@ -3030,6 +3109,26 @@ export function useMobileBridge() {
     return result.configuration;
   }, [sendRequest]);
 
+  const loadBackgroundTasks = useCallback(async (sessionId: string): Promise<BridgeBackgroundTask[]> => {
+    const response = await sendRequest("session.configuration", { sessionId, includeBackgroundTasks: true }, { wait: true, timeoutMs: 45_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "后台任务读取失败");
+    return (response.result as { session?: BridgeSessionInfo }).session?.backgroundTasks ?? [];
+  }, [sendRequest]);
+
+  const previewRewind = useCallback(async (sessionId: string, messageId: string): Promise<BridgeSessionRewindPreview> => {
+    const response = await sendRequest("session.rewind.preview", { sessionId, messageId }, { wait: true, timeoutMs: 45_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "回退预览读取失败");
+    return (response.result as { rewind: BridgeSessionRewindPreview }).rewind;
+  }, [sendRequest]);
+
+  const rewindSession = useCallback(async (sessionId: string, messageId: string, scope: BridgeSessionRewindScope): Promise<BridgeSessionRewindResult> => {
+    const response = await sendRequest("session.rewind", { sessionId, messageId, scope }, { wait: true, timeoutMs: 45_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "回退失败");
+    const result = response.result as { rewind: BridgeSessionRewindResult; session?: BridgeSessionInfo };
+    setState(current => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
+    return result.rewind;
+  }, [sendRequest]);
+
   const configureSession = useCallback(async (
     sessionId: string,
     change: {
@@ -3038,6 +3137,7 @@ export function useMobileBridge() {
       effort?: string | null;
       reasoningEffort?: string | null;
       fast?: boolean | null;
+      permissionMode?: BridgeSDKPermissionMode;
     },
   ): Promise<BridgeSessionConfiguration> => {
     const response = await sendRequest("session.configure", { sessionId, ...change }, {
@@ -3061,17 +3161,18 @@ export function useMobileBridge() {
     mode: BridgePermissionMode,
     sessionId?: string,
   ): Promise<BridgePermissionMode | void> => {
+    if (runtimeId === "claude-desktop") throw new Error("Claude 授权由 Desktop 管理。");
     const crypto = cryptoRef.current;
     const socket = socketRef.current;
     const runtimeDefaults = stateRef.current.snapshot?.host.capabilities?.includes("permission.runtime-defaults.v1");
-    if (!runtimeDefaults && runtimeId !== "claude-desktop" && (!sessionId
+    if (!runtimeDefaults && (!sessionId
       || !stateRef.current.snapshot?.sessions.some((session) => session.sessionId === sessionId
         && session.runtimeId === runtimeId && sessionId.startsWith(`${runtimeId}:`)))) {
       throw new Error("请先选择该应用的有效会话，再设置默认授权");
     }
     const response = await sendRequest("permission.policy.configure", {
       scope: "host", mode,
-      ...(runtimeDefaults ? { runtimeId } : runtimeId !== "claude-desktop" ? { sessionId } : {}),
+      ...(runtimeDefaults ? { runtimeId } : { sessionId }),
     }, { wait: true, allowOffline: false, timeoutMs: 45_000 });
     if (cryptoRef.current !== crypto || socketRef.current !== socket) throw new Error("已切换电脑，请在原电脑查看保存结果");
     if (!response?.ok) throw new Error(response?.error?.message ?? "默认授权保存失败");
@@ -3082,7 +3183,7 @@ export function useMobileBridge() {
         ...current,
         snapshot: {
           ...current.snapshot,
-          host: { ...current.snapshot.host, ...(runtimeId === "claude-desktop" ? { defaultPermissionMode: result.defaultPermissionMode! } : {}) },
+          host: current.snapshot.host,
           ...(runtimeDefaults ? { runtimes: current.snapshot.runtimes?.map((runtime) => runtime.id === runtimeId ? { ...runtime, defaultPermissionMode: result.defaultPermissionMode! } : runtime) ?? [] } : {}),
         },
       } : current);
@@ -3096,6 +3197,8 @@ export function useMobileBridge() {
     scope: "host" | "session",
     mode: BridgePermissionMode | null,
   ): Promise<BridgeSessionConfiguration> => {
+    const session = stateRef.current.snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
+    if (!session?.runtimeId || session.runtimeId === "claude-desktop") throw new Error("Claude 授权由 Desktop 管理。");
     const response = await sendRequest("permission.policy.configure", {
       sessionId,
       scope,
@@ -3123,99 +3226,17 @@ export function useMobileBridge() {
     return result.configuration;
   }, [resumeEvents, sendRequest]);
 
-  const previewProviderSwitch = useCallback(async (
-    sessionId: string,
-    targetProviderProfileId: string,
-    model?: string,
-  ) => {
-    const response = await sendRequest("conversation.switch.preview", {
-      sessionId,
-      targetProviderProfileId,
-      ...(model ? { model } : {}),
-    }, { wait: true, timeoutMs: 45_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "提供方接力预览失败");
-    const result = response.result as {
-      handoff?: BridgeHandoff;
-      route?: BridgeConversationRoute;
-      target?: BridgeProviderProfile;
-      summary?: string;
-    };
-    if (!result.handoff || !result.route || !result.target || typeof result.summary !== "string") {
-      throw new Error("电脑未返回完整接力预览");
-    }
-    setState((current) => current.snapshot ? {
-      ...current,
-      snapshot: {
-        ...current.snapshot,
-        sessions: current.snapshot.sessions.map((session) => (
-          session.sessionId === result.route!.conversationId
-            ? sessionWithRoute(session, result.route!)
-            : session
-        )),
-      },
-    } : current);
-    return {
-      handoff: result.handoff,
-      route: result.route,
-      target: result.target,
-      summary: result.summary,
-    };
-  }, [sendRequest]);
+  const previewProviderSwitch = useCallback(async (_sessionId: string, _targetProviderProfileId: string, _model?: string): Promise<never> => {
+    throw new Error("Claude 提供方由 Desktop 管理。");
+  }, []);
 
-  const commitProviderSwitch = useCallback(async (
-    handoffId: string,
-    targetNativeSessionId?: string,
-    model?: string,
-  ) => {
-    const response = await sendRequest("conversation.switch.commit", {
-      handoffId,
-      ...(targetNativeSessionId ? { targetNativeSessionId } : {}),
-      ...(model ? { model } : {}),
-    }, { wait: true, timeoutMs: 45_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "提供方切换失败");
-    const result = response.result as {
-      handoff?: BridgeHandoff;
-      route?: BridgeConversationRoute;
-      deepLink?: string;
-    };
-    if (!result.handoff || !result.route) throw new Error("电脑未返回完整接力状态");
-    setState((current) => current.snapshot ? {
-      ...current,
-      snapshot: {
-        ...current.snapshot,
-        sessions: current.snapshot.sessions.map((session) => (
-          session.sessionId === result.route!.conversationId
-            ? sessionWithRoute(session, result.route!)
-            : session
-        )),
-      },
-    } : current);
-    return {
-      handoff: result.handoff,
-      route: result.route,
-      ...(result.deepLink ? { deepLink: result.deepLink } : {}),
-    };
-  }, [sendRequest]);
+  const commitProviderSwitch = useCallback(async (_handoffId: string, _targetNativeSessionId?: string, _model?: string): Promise<never> => {
+    throw new Error("Claude 提供方由 Desktop 管理。");
+  }, []);
 
-  const cancelProviderSwitch = useCallback(async (handoffId: string): Promise<void> => {
-    const response = await sendRequest("conversation.switch.cancel", {
-      handoffId,
-    }, { wait: true, timeoutMs: 45_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "取消接力失败");
-    const result = response.result as { route?: BridgeConversationRoute };
-    if (!result.route) return;
-    setState((current) => current.snapshot ? {
-      ...current,
-      snapshot: {
-        ...current.snapshot,
-        sessions: current.snapshot.sessions.map((session) => (
-          session.sessionId === result.route!.conversationId
-            ? sessionWithRoute(session, result.route!)
-            : session
-        )),
-      },
-    } : current);
-  }, [sendRequest]);
+  const cancelProviderSwitch = useCallback(async (_handoffId: string): Promise<void> => {
+    throw new Error("Claude 提供方由 Desktop 管理。");
+  }, []);
 
   const browseDirectory = useCallback(async (path?: string): Promise<BridgeDirectoryListing> => {
     const response = await sendRequest("directory.list", path ? { path } : {}, { wait: true, allowOffline: false });
@@ -3544,6 +3565,7 @@ export function useMobileBridge() {
     sendTurn,
     interruptTurn,
     steerQueuedTurn,
+    cancelQueuedTurn,
     stopSubagent,
     resolveUncertainDelivery,
     resolvePermission,
@@ -3551,11 +3573,14 @@ export function useMobileBridge() {
     forkSession,
     returnToDesktop,
     takeoverDesktop,
+    loadBackgroundTasks,
     loadSessionConfiguration,
     loadSessionCommands,
     runSessionCommand,
     loadSessionPermissions,
     saveSessionPermissions,
+    previewRewind,
+    rewindSession,
     configureSession,
     configureHostPermission,
     configurePermissionPolicy,

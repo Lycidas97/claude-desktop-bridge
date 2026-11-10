@@ -47,6 +47,20 @@ describe("media previews", () => {
     ]).map((file) => file.id)).toEqual(["new"]);
   });
 
+  it("opens native images by stable reference without a project path", async () => {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const nativeImage = { messageUuid: "user-uuid", imageIndex: 4 };
+    const source = await openMediaTransfer({ name: "image.png", kind: "image", sessionId: "session", nativeImage }, async (method, params) => {
+      calls.push({ method, params });
+      if (method === "artifact.transfer.read") return response({ chunk: { transferId: "image-lease", index: 0, data: btoa("image") } });
+      return response({ transfer: { transferId: "image-lease", size: 5, chunkBytes: 8, mimeType: "image/png" } });
+    });
+    expect(calls).toEqual([{ method: "artifact.transfer.open", params: { sessionId: "session", nativeImage } }]);
+    expect(new TextDecoder().decode(await source.read(0, 5))).toBe("image");
+    await source.close();
+    expect(calls.at(-1)).toEqual({ method: "artifact.transfer.close", params: { transferId: "image-lease" } });
+  });
+
   it("fetches only requested chunks, reuses overlap, and closes its lease", async () => {
     const bytes = new TextEncoder().encode("0123456789abcdef");
     const reads: number[] = [];
@@ -66,6 +80,50 @@ describe("media previews", () => {
     await source.close();
     expect(closed).toBe(true);
     await expect(source.read(0, 4)).rejects.toThrow("预览已关闭");
+  });
+
+  it("reports unique decoded bytes before a multi-chunk range finishes", async () => {
+    const progress: number[][] = [];
+    const reads: number[] = [];
+    const pending = new Map<number, (value: BridgeResponse) => void>();
+    const request = async (method: string, params: Record<string, unknown>) => {
+      if (method === "artifact.transfer.open") return response({ transfer: { transferId: "lease", size: 10, chunkBytes: 4 } });
+      if (method === "artifact.transfer.close") return response({ closed: true });
+      reads.push(Number(params.index));
+      return new Promise<BridgeResponse>((resolve) => pending.set(Number(params.index), resolve));
+    };
+    const source = await openMediaTransfer({ name: "report.pdf", kind: "pdf", artifactId: "pdf" }, request, (loaded, total) => progress.push([loaded, total]));
+    expect(progress).toEqual([[0, 10]]);
+    const range = source.read(0, 10);
+    const overlap = source.read(1, 4);
+    expect(reads).toEqual([0]);
+    pending.get(0)!(response({ chunk: { transferId: "lease", index: 0, data: btoa("0123") } }));
+    expect(new TextDecoder().decode(await overlap)).toBe("123");
+    expect(progress).toEqual([[0, 10], [4, 10]]);
+    await source.read(0, 2);
+    expect(progress).toEqual([[0, 10], [4, 10]]);
+    expect(reads).toEqual([0, 1]);
+    pending.get(1)!(response({ chunk: { transferId: "lease", index: 1, data: btoa("4567") } }));
+    await source.read(4, 8);
+    expect(progress.at(-1)).toEqual([8, 10]);
+    pending.get(2)!(response({ chunk: { transferId: "lease", index: 2, data: btoa("89") } }));
+    expect(new TextDecoder().decode(await range)).toBe("0123456789");
+    expect(progress).toEqual([[0, 10], [4, 10], [8, 10], [10, 10]]);
+    expect(reads).toEqual([0, 1, 2]);
+    await source.close();
+    const reopened = await openMediaTransfer({ name: "report.pdf", kind: "pdf", artifactId: "pdf" }, request, (loaded, total) => progress.push([loaded, total]));
+    expect(progress.at(-1)).toEqual([0, 10]);
+    await reopened.close();
+  });
+
+  it("does not count a failed chunk as downloaded", async () => {
+    const progress: number[] = [];
+    const source = await openMediaTransfer({ name: "report.pdf", kind: "pdf", artifactId: "pdf" }, async (method) => {
+      if (method === "artifact.transfer.open") return response({ transfer: { transferId: "lease", size: 4, chunkBytes: 4 } });
+      return response({ chunk: { transferId: "other-lease", index: 0, data: btoa("0123") } });
+    }, (loaded) => progress.push(loaded));
+    await expect(source.read(0, 4)).rejects.toThrow("文件分块校验失败");
+    expect(progress).toEqual([0]);
   });
 
   it("requests text-preview and decodes UTF-8 only after reading every chunk", async () => {

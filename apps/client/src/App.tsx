@@ -6,6 +6,7 @@ import {
   installMobileBackNavigation,
   registerMobileBackHandler,
 } from "./lib/mobile-back-navigation.js";
+import { onSessionNotificationTap } from "./lib/session-notifications.js";
 import { DesktopDashboard } from "./components/DesktopDashboard.js";
 import { DiagnosticFloatingEntry } from "./components/DiagnosticLogDialog.js";
 import { HostBrowser } from "./components/HostBrowser.js";
@@ -62,6 +63,11 @@ export function App() {
   }
 
   useEffect(() => installMobileBackNavigation(), []);
+
+  // openComputer only reads activeHostId and the stable selectHost callback.
+  useEffect(() => onSessionNotificationTap(({ hostId, sessionId }) => {
+    void openComputer(hostId, sessionId);
+  }), [mobile.state.activeHostId, mobile.selectHost]);
 
   useEffect(() => registerMobileBackHandler(() => {
     if (window.bridgeDesktop) return false;
@@ -190,6 +196,9 @@ export function App() {
               {...(mobile.state.snapshot?.host.capabilities.includes("turn.queue.steer.v1")
                 ? { onSteerQueuedTurn: mobile.steerQueuedTurn }
                 : {})}
+              {...(mobile.state.snapshot?.host.capabilities.includes("turn.queue.cancel.v1")
+                ? { onCancelQueuedTurn: mobile.cancelQueuedTurn }
+                : {})}
               {...(mobile.state.snapshot?.host.capabilities.includes("subagent.stop.v1")
                 ? { onStopSubagent: mobile.stopSubagent }
                 : {})}
@@ -204,6 +213,7 @@ export function App() {
               onReturnToDesktop={mobile.returnToDesktop}
               onTakeoverDesktop={mobile.takeoverDesktop}
               onLoadSessionConfiguration={mobile.loadSessionConfiguration}
+              {...(snapshot?.host.capabilities.includes("claude.native-relay.v1") ? { onLoadBackgroundTasks: mobile.loadBackgroundTasks } : {})}
               {...(snapshot?.host.capabilities.includes("session.commands.v1")
                 ? { onLoadSessionCommands: mobile.loadSessionCommands }
                 : {})}
@@ -213,6 +223,8 @@ export function App() {
                 onSaveSessionPermissions: mobile.saveSessionPermissions,
               } : {})}
               onConfigureSession={mobile.configureSession}
+              onPreviewRewind={mobile.previewRewind}
+              onRewindSession={mobile.rewindSession}
               {...(mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1")
                 ? { onConfigurePermissionPolicy: mobile.configurePermissionPolicy }
                 : {})}

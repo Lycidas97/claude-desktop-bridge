@@ -99,6 +99,7 @@ export type BridgeRuntimeCapability =
   | "session.fork"
   | "session.history"
   | "session.configure"
+  | "session.rewind"
   | "turn.start"
   | "turn.steer"
   | "turn.interrupt"
@@ -122,6 +123,7 @@ export interface BridgeDesktopRuntime {
 }
 
 export type BridgeSessionTransport =
+  | "claude-desktop-native"
   | "claude-desktop-managed"
   | "bridge-host"
   | "codex-app-server"
@@ -134,6 +136,8 @@ export type ClaudeDesktopIntegrationState =
   | "incompatible"
   | "disconnected";
 export type BridgeOwnershipState =
+  | "DESKTOP_NATIVE_IDLE"
+  | "DESKTOP_NATIVE_RUNNING"
   | "DESKTOP_OBSERVED"
   | "DESKTOP_MANAGED_IDLE"
   | "DESKTOP_MANAGED_RUNNING"
@@ -167,6 +171,7 @@ export type BridgeDeliveryState =
   | "submitted"
   | "waiting-confirmation"
   | "session-received"
+  | "queued"
   | "running"
   | "completed"
   | "failed"
@@ -174,6 +179,7 @@ export type BridgeDeliveryState =
   | "uncertain";
 
 export type BridgeCapability =
+  | "claude.native-relay.v1"
   | "evidence.v1"
   | "evidence.details.v1"
   | "artifact.preview.v1"
@@ -192,9 +198,11 @@ export type BridgeCapability =
   | "session.rename.v1"
   | "session.commands.v1"
   | "session.command.v1"
+  | "session.rewind.v1"
   | "session.remote-execution.v1"
   | "subagent.stop.v1"
   | "turn.queue.steer.v1"
+  | "turn.queue.cancel.v1"
   | "plugin.magpie-quota.v1";
 
 /**
@@ -542,12 +550,22 @@ export interface BridgeAttachment {
   data: string;
 }
 
-/**
- * Attachment summary carried by history pages. `data` is omitted for
- * transports that cannot replay image bytes (e.g. Claude transcripts);
- * Codex runtime history fills it from the host file so clients can render.
- */
-export type BridgeHistoryAttachment = Omit<BridgeAttachment, "data"> & { data?: string };
+/** Exact image identity within a native user message; imageIndex counts image blocks. */
+export interface BridgeNativeImageRef {
+  messageUuid: string;
+  imageIndex: number;
+}
+
+/** Native images carry a reference for artifact.transfer.open instead of image bytes. */
+export type BridgeHistoryAttachment = Omit<BridgeAttachment, "data"> & {
+  data?: string;
+  nativeImage?: BridgeNativeImageRef;
+};
+
+export type BridgeArtifactTransferOpenParams =
+  | { artifactId: string; purpose?: "text-preview" }
+  | { sessionId: string; path: string; purpose?: "text-preview" }
+  | { sessionId: string; nativeImage: BridgeNativeImageRef };
 
 export interface BridgeDirectoryListing {
   path: string;
@@ -584,6 +602,8 @@ export interface BridgeSessionInfo {
   executionStage?: "starting" | "submitted" | "running";
   /** Subagents not yet ended. They outlive the main conversation, which turnState describes. */
   runningSubagents?: { count: number; lastUpdatedAt: number };
+  /** Running background tasks plus the most recent finished ones, newest first. */
+  backgroundTasks?: BridgeBackgroundTask[];
   /** What subagent.stop can reach: that one task, or only the session's whole Claude process. */
   subagentStopScope?: "task" | "process";
   /** Set when the running main turn can only be stopped by ending the Desktop process that runs it. */
@@ -697,7 +717,7 @@ export interface BridgeSlashCommand {
   description: string;
   argumentHint?: string;
   aliases?: string[];
-  action?: "sdk" | "help" | "model" | "permissions" | "fork" | "resume" | "rename";
+  action?: "sdk" | "help" | "model" | "permissions" | "fork" | "btw" | "resume" | "rename" | "rewind";
   unavailableReason?: string;
 }
 
@@ -718,8 +738,29 @@ export interface BridgeSessionPermissions {
   unavailableReason?: string;
 }
 
+export type BridgeSessionRewindScope = "conversation" | "files" | "both";
+
+export interface BridgeSessionRewindPreview {
+  sessionId: string;
+  messageId: string;
+  canRewindConversation: boolean;
+  canRewindFiles: boolean;
+  filesChanged: string[];
+  fileError?: string;
+  filesInFlight?: boolean;
+  insertions?: number;
+  deletions?: number;
+}
+
+export interface BridgeSessionRewindResult {
+  sessionId: string;
+  messageId: string;
+  scope: BridgeSessionRewindScope;
+  prefill?: string;
+}
+
 export interface BridgeSessionCommandResult {
-  action: "sent" | "help" | "model" | "permissions" | "resume" | "rename" | "session" | "message";
+  action: "sent" | "help" | "model" | "permissions" | "resume" | "rename" | "session" | "message" | "rewind";
   catalog?: BridgeSlashCommandCatalog;
   session?: BridgeSessionInfo;
   sessions?: BridgeSessionInfo[];
@@ -734,6 +775,9 @@ export interface BridgeSlashCommandCatalog {
 
 export interface BridgeSessionConfiguration {
   sessionId: string;
+  modelDisplayName?: string;
+  /** Native Desktop mode, independent of Bridge's policy for other runtimes. */
+  nativePermissionMode?: BridgeSDKPermissionMode;
   /** Native runtime provider; distinct from BridgeProviderProfile. */
   provider?: string;
   model?: string;
@@ -778,6 +822,35 @@ export interface BridgeSubagentSummary {
   startedAt: number;
   updatedAt: number;
   durationMs?: number;
+  /** Set for background tasks that are not agents (host task_type local_bash / local_workflow). */
+  taskKind?: "bash" | "workflow";
+  /** Workflow run directory (`wf_*`) for agents spawned by a Workflow script. */
+  workflowRunId?: string;
+  workflowPhase?: string;
+}
+
+export interface BridgeWorkflowRun {
+  runId: string;
+  name?: string;
+  /** Phase titles in script order; agents reference them through workflowPhase. */
+  phases: string[];
+  /** Report and live text are omitted; history items carry them. */
+  agents: BridgeSubagentSummary[];
+}
+
+/** One entry in a session's background task tray. */
+export interface BridgeBackgroundTask {
+  /** Tool use that launched the task, else `task:<taskId>`. */
+  id: string;
+  kind: "subagent" | "workflow" | "bash";
+  taskId?: string;
+  toolUseId?: string;
+  description: string;
+  state: BridgeSubagentSummary["state"];
+  startedAt: number;
+  updatedAt: number;
+  subagent?: BridgeSubagentSummary;
+  workflow?: BridgeWorkflowRun;
 }
 
 export interface BridgeInteractiveAction {
@@ -833,6 +906,11 @@ export interface BridgeHistoryItem {
   origin: BridgeOrigin;
   toolName?: string;
   state?: BridgeTurnState;
+  /** Bridge receipt identity for a user message sent through the paired channel. */
+  commandId?: string;
+  requestId?: string;
+  /** Last native delivery stage observed for this exact session and user UUID. */
+  delivery?: BridgeDeliveryState;
   attachments?: BridgeHistoryAttachment[];
   /**
    * Structured summary for file-change tool items (Codex). Lets clients
@@ -885,9 +963,14 @@ export interface BridgeDeviceInfo {
   revokedAt?: number;
 }
 
+/** Claude permission mode a native session switches to when a request is approved. */
+export type BridgeNativePermissionMode = "default" | "acceptEdits" | "bypassPermissions";
+
 export interface BridgeNativePermissionModeChange {
   requestId: string;
   state: "requested" | "confirmed" | "not-applied";
+  /** Absent from hosts older than mode-aware approvals, which only requested bypassPermissions. */
+  mode?: BridgeNativePermissionMode;
   observedMode?: string;
 }
 
@@ -1017,7 +1100,30 @@ export interface BridgeHostSnapshot {
   latestSeq: number;
 }
 
+export interface BridgeInspectorClient {
+  pid: number;
+  name: string;
+  executablePath?: string;
+  approved: boolean;
+  pathError?: string;
+}
+
+export interface BridgeInspectorAlert extends BridgeInspectorClient {
+  detectedAt: number;
+}
+
+export interface BridgeInspectorStatus {
+  state: "starting" | "unsupported" | "closed" | "listening" | "error";
+  port: number;
+  pollIntervalMs: number;
+  clients: BridgeInspectorClient[];
+  alerts: BridgeInspectorAlert[];
+  error?: string;
+  notificationError?: string;
+}
+
 export interface DesktopControlSnapshot extends BridgeHostSnapshot {
+  claudeInspector?: BridgeInspectorStatus;
   connection: "idle" | "connecting" | "connected" | "reconnecting" | "closed";
   launchAtLogin: boolean;
   managedDesktopEnabled: boolean;
@@ -1042,6 +1148,8 @@ export type BridgeMethod =
   | "session.configuration"
   | "session.commands"
   | "session.command"
+  | "session.rewind.preview"
+  | "session.rewind"
   | "session.permissions"
   | "session.permissions.configure"
   | "session.configure"
@@ -1062,6 +1170,7 @@ export type BridgeMethod =
   | "turn.start"
   | "turn.steer"
   | "turn.queue.steer"
+  | "turn.queue.cancel"
   | "turn.interrupt"
   | "subagent.stop"
   | "permission.resolve"
@@ -1132,6 +1241,7 @@ export type BridgeEventType =
   | "session.ownership-conflict"
   | "session.reset"
   | "session.compacted"
+  | "session.rewound"
   | "command.output"
   | "command.status"
   | "user.message.accepted"

@@ -1,32 +1,27 @@
 import { join } from "node:path";
-import { rename } from "node:fs/promises";
 import {
   DEFAULT_BRIDGE_ICE_SERVERS_JSON,
   parseBridgeIceServers,
   relayPathForUrl,
 } from "@bridge/protocol";
-import { app, powerMonitor, safeStorage, shell } from "electron";
+import { app, Notification, powerMonitor, safeStorage, shell } from "electron";
+import { ClaudeInspectorMonitor } from "./claude-inspector-monitor.js";
 import {
   DesktopConfigRepository,
   fileSecretProtector,
 } from "./config.js";
 import { removeLegacyConnector } from "./connector.js";
-import { ClaudePermissionHook } from "./claude-permission-hook.js";
 import { DesktopController } from "./controller.js";
 import {
-  claudeRuntimePaths,
   connectorPaths,
   defaultDesktopName,
   firstNonEmpty,
   networkReachableUrl,
 } from "./platform.js";
-import { SessionBroker } from "./session-broker.js";
+import { ClaudeDesktopBridge } from "./claude-desktop-bridge.js";
 import { SessionEventLog } from "./session-event-log.js";
-import { TranscriptObserver } from "./transcript-observer.js";
 import { ClaudeDesktopLifecycle } from "./claude-desktop-lifecycle.js";
 import { DESKTOP_APP_DEFINITIONS } from "./desktop-app-definitions.js";
-import { ClaudeDesktopSessionRegistrar } from "./claude-desktop-session-registrar.js";
-import { ClaudeDesktopInbox } from "./claude-desktop-inbox.js";
 import { ElectronEvidencePreviewRenderer } from "./artifact-preview.js";
 import { EvidenceManager } from "./evidence-manager.js";
 import { EvidenceStore } from "./evidence-store.js";
@@ -35,10 +30,7 @@ import {
   loadDesktopPeerConnection,
 } from "./webrtc-runtime.js";
 import { ConversationStateStore } from "./conversation-state-store.js";
-import { ProviderRegistry } from "./provider-registry.js";
 import { MagpieConnectionRepository } from "./magpie-connection.js";
-import { ProviderRuntimePool } from "./provider-runtime-pool.js";
-import { HandoffService } from "./handoff-service.js";
 import { CodexAppServerAdapter } from "./codex-app-server-adapter.js";
 import { HermesGatewayAdapter } from "./hermes-gateway-adapter.js";
 import { DshDesktopAdapter } from "./dsh-desktop-adapter.js";
@@ -87,13 +79,6 @@ function configPath(userDataPath: string): string {
   return join(base, "bridge-config.json");
 }
 
-async function archiveLegacyQueue(userDataPath: string): Promise<void> {
-  const path = join(userDataPath, "bridge-claude-sessions.json");
-  await rename(path, `${path}.v1-archive-${Date.now()}`).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== "ENOENT") throw error;
-  });
-}
-
 export async function createServiceRuntime(options: { userDataPath: string; onStage?(stage: string): void }): Promise<{
   controller: DesktopController;
   close(): Promise<void>;
@@ -103,10 +88,7 @@ export async function createServiceRuntime(options: { userDataPath: string; onSt
   resources.defer("WebRTC", cleanupDesktopPeerConnection);
   try {
     const userDataPath = options.userDataPath;
-    options.onStage?.("迁移旧版任务记录");
-    await archiveLegacyQueue(userDataPath);
-    const connectors = connectorPaths();
-    await removeLegacyConnector(connectors).catch((error: unknown) => {
+    await removeLegacyConnector(connectorPaths()).catch((error: unknown) => {
       process.stderr.write(`Bridge legacy connector cleanup failed: ${String(error)}\n`);
     });
     options.onStage?.("读取本机配置与配对信息");
@@ -152,87 +134,23 @@ export async function createServiceRuntime(options: { userDataPath: string; onSt
     resources.defer("Evidence store", () => evidence.close());
     options.onStage?.("打开成果数据库");
     await evidence.initialize();
-    const runtimePaths = claudeRuntimePaths();
-    const observer = new TranscriptObserver({
-      paths: runtimePaths,
+    const broker = new ClaudeDesktopBridge({
+      settingsPath: connectorPaths().claudeSettings,
       eventLog,
-      evidence,
-      // Keep direct Claude Desktop transcript changes on the same cadence as
-      // Codex/Hermes native runtime events.
-      pollIntervalMs: 900,
-      catalogIntervalMs: 2_000,
-    });
-    resources.defer("Transcript observer", () => observer.close());
-    options.onStage?.("扫描桌面会话");
-    await observer.start();
-    const desktopRegistrar = new ClaudeDesktopSessionRegistrar({ paths: runtimePaths });
-    let runtimeStatus = (): ReturnType<SessionBroker["runtimeStatus"]> => ({
-      state: "unavailable",
-      detail: "Claude-3p 运行时尚未初始化。",
-      activeTurns: 0,
-      maxParallelTurns: 2,
-      desktopIntegration: {
-        state: "not-managed",
-        detail: "尚未初始化。",
-        enabled: false,
-        canRestart: process.platform === "darwin" || process.platform === "win32",
-      },
-    });
-    const providers = new ProviderRegistry({
-      state: conversationState,
-      apiKeyPath: join(userDataPath, "anthropic-api-key-v1.json"),
-      safeStorage,
-      claude3pStatus: () => runtimeStatus(),
-      claude3pModels: (): ReturnType<SessionBroker["availableModels"]> => broker.availableModels(),
-    });
-    const runtimePool = new ProviderRuntimePool(providers);
-    const desktopInbox = process.platform === "darwin" ? new ClaudeDesktopInbox() : undefined;
-    if (desktopInbox) {
-      desktopInbox.onError(() => process.stderr.write("Bridge Desktop inbox receipt error\n"));
-      resources.defer("Desktop inbox", () => desktopInbox.close());
-    }
-    const broker = new SessionBroker({
-      paths: runtimePaths,
-      eventLog,
-      observer,
-      sessionsPath: join(userDataPath, "sessions-v2.json"),
-      queuePath: join(userDataPath, "turn-queue-v2.json"),
       conversationState,
-      runtimePool,
       magpieConnection: new MagpieConnectionRepository(join(userDataPath, "magpie-connection-v1.json"), safeStorage),
       evidence,
-      desktopRegistrar,
-      ...(desktopInbox ? { desktopInbox } : {}),
     });
-    resources.defer("Session broker", () => broker.close());
-    const permissionHook = new ClaudePermissionHook({
-      settingsPath: connectors.claudeSettings,
-      broker: broker.permissionBroker,
-      sessionId: (nativeSessionId) => broker.resolveNativePermissionSessionId(nativeSessionId),
-    });
-    runtimeStatus = () => broker.runtimeStatus();
+    resources.defer("Claude Desktop bridge", () => broker.close());
     const runtimeRegistry = new RuntimeAdapterRegistry([
       new CodexAppServerAdapter(),
       new HermesGatewayAdapter(),
       new DshDesktopAdapter(),
     ]);
     const runtimeSessions = new RuntimeSessionBroker(runtimeRegistry, eventLog, conversationState, { evidence });
-    const handoffs = new HandoffService({
-      state: conversationState,
-      broker,
-      eventLog,
-      evidence,
-      providers,
-      runtimePool,
-      observer,
-      paths: runtimePaths,
-      openExternal: (url) => shell.openExternal(url),
-    });
     const runtimeHandoffs = new RuntimeHandoffService({
       state: conversationState,
-      broker,
       eventLog,
-      evidence,
       runtimeRegistry,
       runtimeSessions,
     });
@@ -263,8 +181,6 @@ export async function createServiceRuntime(options: { userDataPath: string; onSt
       evidence,
       claudeDesktop,
       RTCPeerConnectionImpl,
-      providers,
-      handoffs,
       runtimeSessions,
       desktopAppControls,
       runtimeHandoffs,
@@ -273,17 +189,23 @@ export async function createServiceRuntime(options: { userDataPath: string; onSt
 
     // Controller owns runtime sessions and handoffs; the service owns the broker.
     resources.defer("Desktop controller", () => controller.close());
-    resources.defer("Permission hook", () => permissionHook.close());
-    options.onStage?.("安装本机权限回调");
-    await permissionHook.start().catch((error: unknown) => {
-      process.stderr.write(
-        `Bridge Claude permission hook failed to start: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
-    });
     options.onStage?.("初始化运行时与中继连接");
     await controller.initialize();
-    options.onStage?.("记录服务启动完成");
-    await conversationState.recordSuccessfulStartup();
+    const inspector = new ClaudeInspectorMonitor({
+      onUpdate: (status) => controller.updateInspectorStatus(status),
+      onAlert: (alert) => {
+        if (!Notification.isSupported()) return "系统通知不可用，请查看 Bridge 内的调试连接告警。";
+        const notification = new Notification({
+          title: "Claude 调试接口出现未认可的连接",
+          body: `PID ${alert.pid} · ${alert.name}\n${alert.executablePath ?? alert.pathError ?? "路径未知"}`,
+        });
+        notification.on("failed", (_event, error) => inspector.notificationFailed(error));
+        notification.show();
+        return undefined;
+      },
+    });
+    resources.defer("Inspector monitor", () => inspector.close());
+    await inspector.start();
     const onSuspend = () => controller.pauseForSleep();
     const onResume = () => void controller.reconnect().catch((error: unknown) => {
       process.stderr.write(`Bridge resume failed: ${String(error)}\n`);

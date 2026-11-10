@@ -67,6 +67,7 @@ export interface ObservedDesktopEvidence {
   id: string;
   sessionId: string;
   cwd: string;
+  readCwd?: string;
   turnId?: string;
   startedAt: number;
   completedAt: number;
@@ -594,7 +595,7 @@ export class EvidenceManager {
     });
     const artifactsByPath = new Map<string, EvidenceArtifactInput>();
     for (const candidate of [...new Set(input.paths)]) {
-      const normalized = normalizedProjectPath(input.cwd, candidate);
+      const normalized = normalizedProjectPath(input.cwd, resolve(input.readCwd ?? input.cwd, candidate));
       const relativePath = normalized.relativePath ?? `[项目外]/${artifactDisplayName(candidate)}`;
       if (artifactsByPath.has(relativePath)) continue;
       const metadata = artifactMetadata(relativePath);
@@ -732,39 +733,40 @@ export class EvidenceManager {
   }
 
   async openTransfer(artifactId: string, owner: string, textPreview = false): Promise<BridgeArtifactTransferInfo> {
-    this.pruneTransfers();
-    if (
-      this.transfers.size >= MAX_ACTIVE_TRANSFERS ||
-      [...this.transfers.values()].filter((transfer) => transfer.owner === owner).length
-        >= MAX_ACTIVE_TRANSFERS_PER_OWNER
-    ) {
-      throw new Error("Too many artifact transfers are active");
-    }
     const artifact = this.options.store.artifact(artifactId);
     if (!artifact) throw new Error("Artifact not found");
     if (!artifact.manifest.downloadAllowed) {
       throw new Error(artifact.manifest.blockedReason ?? "Artifact download is unavailable");
     }
     if (textPreview && artifact.manifest.size > TEXT_PREVIEW_MAX_BYTES) throw new Error("文本预览仅支持 1 MB 以内的文件，请下载查看全文");
-    const bytes = await this.ensureArtifactSnapshot(artifactId, textPreview ? TEXT_PREVIEW_MAX_BYTES : ARTIFACT_MAX_BYTES);
-    if (bytes.byteLength > ARTIFACT_MAX_BYTES) throw new Error("Artifact exceeds the 20 MiB limit");
+    return this.openBytesTransfer({
+      artifactId, name: artifact.manifest.name, mimeType: artifact.manifest.mimeType,
+      bytes: await this.ensureArtifactSnapshot(artifactId, textPreview ? TEXT_PREVIEW_MAX_BYTES : ARTIFACT_MAX_BYTES),
+    }, owner);
+  }
+
+  /** In-memory sources share the existing artifact transfer table; no snapshot is written. */
+  openBytesTransfer(input: { artifactId: string; name: string; mimeType: string; bytes: Buffer }, owner: string): BridgeArtifactTransferInfo {
+    this.pruneTransfers();
+    if (
+      this.transfers.size >= MAX_ACTIVE_TRANSFERS ||
+      [...this.transfers.values()].filter(transfer => transfer.owner === owner).length >= MAX_ACTIVE_TRANSFERS_PER_OWNER
+    ) throw new Error("Too many artifact transfers are active");
+    if (input.bytes.byteLength > ARTIFACT_MAX_BYTES) throw new Error("Artifact exceeds the 20 MiB limit");
     const transferId = randomUUID();
     const info: BridgeArtifactTransferInfo = {
-      transferId,
-      artifactId,
-      name: artifact.manifest.name,
-      mimeType: artifact.manifest.mimeType,
-      size: bytes.byteLength,
-      sha256: createHash("sha256").update(bytes).digest("hex"),
+      transferId, artifactId: input.artifactId, name: input.name, mimeType: input.mimeType,
+      size: input.bytes.byteLength,
+      sha256: createHash("sha256").update(input.bytes).digest("hex"),
       chunkBytes: ARTIFACT_TRANSFER_CHUNK_BYTES,
-      totalChunks: Math.max(1, Math.ceil(bytes.byteLength / ARTIFACT_TRANSFER_CHUNK_BYTES)),
+      totalChunks: Math.max(1, Math.ceil(input.bytes.byteLength / ARTIFACT_TRANSFER_CHUNK_BYTES)),
       expiresAt: Date.now() + ARTIFACT_TRANSFER_TTL_MS,
     };
-    this.transfers.set(transferId, { owner, info, bytes });
+    this.transfers.set(transferId, { owner, info, bytes: input.bytes });
     return info;
   }
 
-  async openFileTransfer(cwd: string, candidatePath: string, owner: string, textPreview = false): Promise<BridgeArtifactTransferInfo> {
+  async openFileTransfer(cwd: string, candidatePath: string, owner: string, textPreview = false, readCwd?: string): Promise<BridgeArtifactTransferInfo> {
     this.pruneTransfers();
     const cleaned = candidatePath.trim().replace(/:\d+(?::\d+)?$/u, "");
     if (!cleaned) throw new Error("文件路径不能为空");
@@ -772,7 +774,7 @@ export class EvidenceManager {
     const expanded = cleaned.startsWith("~/")
       ? resolve(process.env.HOME ?? cwd, cleaned.slice(2))
       : cleaned;
-    const resolvedCandidate = isAbsolute(expanded) ? resolve(expanded) : resolve(rootPath, expanded);
+    const resolvedCandidate = isAbsolute(expanded) ? resolve(expanded) : resolve(readCwd ? await realpath(readCwd) : rootPath, expanded);
     let sourcePath = await realpath(resolvedCandidate).catch(() => undefined);
     if (!sourcePath && !isAbsolute(expanded)) {
       const rootBase = rootPath.split(sep).at(-1);
@@ -789,30 +791,12 @@ export class EvidenceManager {
     if (!metadata.isFile()) throw new Error("目标路径不是普通文件");
     if (textPreview && metadata.size > TEXT_PREVIEW_MAX_BYTES) throw new Error("文本预览仅支持 1 MB 以内的文件，请下载查看全文");
     if (metadata.size > ARTIFACT_MAX_BYTES) throw new Error("文件超过 20 MiB 传输上限");
-    const artifactKey = `file:${stableId(sourcePath)}`;
-    if (
-      this.transfers.size >= MAX_ACTIVE_TRANSFERS ||
-      [...this.transfers.values()].filter((transfer) => transfer.owner === owner).length
-        >= MAX_ACTIVE_TRANSFERS_PER_OWNER
-    ) {
-      throw new Error("当前同时传输的文件过多，请稍后重试");
-    }
-    const bytes = await readFile(sourcePath);
-    const fileMeta = artifactMetadata(normalized.relativePath);
-    const transferId = randomUUID();
-    const info: BridgeArtifactTransferInfo = {
-      transferId,
-      artifactId: artifactKey,
+    return this.openBytesTransfer({
+      artifactId: `file:${stableId(sourcePath)}`,
       name: artifactDisplayName(normalized.relativePath),
-      mimeType: fileMeta.mimeType,
-      size: bytes.byteLength,
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-      chunkBytes: ARTIFACT_TRANSFER_CHUNK_BYTES,
-      totalChunks: Math.max(1, Math.ceil(bytes.byteLength / ARTIFACT_TRANSFER_CHUNK_BYTES)),
-      expiresAt: Date.now() + ARTIFACT_TRANSFER_TTL_MS,
-    };
-    this.transfers.set(transferId, { owner, info, bytes });
-    return info;
+      mimeType: artifactMetadata(normalized.relativePath).mimeType,
+      bytes: await readFile(sourcePath),
+    }, owner);
   }
 
   readTransfer(transferId: string, index: number, owner: string): BridgeArtifactTransferChunk {

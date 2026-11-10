@@ -3,6 +3,8 @@ import type { BridgeSessionInfo } from "@bridge/protocol";
 import { expect, it, vi } from "vitest";
 import { DesktopController } from "./controller.js";
 
+vi.mock("electron", () => ({ shell: {} }));
+
 it("publishes handoff control changes without rebroadcasting an unchanged catalog", async () => {
   const session: BridgeSessionInfo = {
     sessionId: "handoff", projectId: "project", projectName: "Project", cwd: "/test/project", title: "Session",
@@ -31,26 +33,14 @@ it("publishes handoff control changes without rebroadcasting an unchanged catalo
   expect(controller.eventLog.append).not.toHaveBeenCalled();
 });
 
-it("routes a confirmed single-session takeover to the broker", async () => {
-  const session = { sessionId: "handoff" };
-  const takeoverDesktop = vi.fn(async () => session);
+it.each(["session.takeover_desktop", "session.return_to_desktop"])("rejects %s without changing the Desktop executor", async method => {
+  const takeoverDesktop = vi.fn(), returnToDesktop = vi.fn();
   const controller = Object.assign(Object.create(DesktopController.prototype), {
-    broker: { takeoverDesktop }, routesToExternalRuntime: () => false,
+    broker: { takeoverDesktop, returnToDesktop }, routesToExternalRuntime: () => false,
   });
   await expect(controller.handleRequest({
-    kind: "request", method: "session.takeover_desktop", requestId: "takeover", idempotencyKey: "takeover", params: { sessionId: "handoff" },
-  }, "mobile")).resolves.toEqual({ session });
-  expect(takeoverDesktop).toHaveBeenCalledWith("handoff");
-});
-
-it("routes an explicit return to the broker without launching or quitting Desktop", async () => {
-  const session = { sessionId: "handoff", desktopHandoff: { state: "reopen-desktop", canReturn: false } };
-  const returnToDesktop = vi.fn(async () => session);
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
-    broker: { returnToDesktop }, routesToExternalRuntime: () => false,
-  });
-  await expect(controller.handleRequest({
-    kind: "request", method: "session.return_to_desktop", requestId: "return", idempotencyKey: "return", params: { sessionId: "handoff" },
-  }, "mobile")).resolves.toEqual({ session });
-  expect(returnToDesktop).toHaveBeenCalledWith("handoff");
+    kind: "request", method, requestId: "handoff", idempotencyKey: "handoff", params: { sessionId: "handoff" },
+  }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
+  expect(takeoverDesktop).not.toHaveBeenCalled();
+  expect(returnToDesktop).not.toHaveBeenCalled();
 });

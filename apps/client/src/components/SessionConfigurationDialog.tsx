@@ -1,5 +1,6 @@
 import type {
   BridgePermissionMode,
+  BridgeSDKPermissionMode,
   BridgeSessionConfiguration,
   BridgeSessionInfo,
 } from "@bridge/protocol";
@@ -49,6 +50,7 @@ export interface SessionConfigurationChange {
   effort?: string | null;
   reasoningEffort?: string | null;
   fast?: boolean | null;
+  permissionMode?: BridgeSDKPermissionMode;
 }
 
 export function SessionConfigurationDialog({
@@ -76,6 +78,7 @@ export function SessionConfigurationDialog({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("medium");
   const [fast, setFast] = useState(false);
+  const [nativePermissionMode, setNativePermissionMode] = useState<BridgeSDKPermissionMode>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [permissionScope, setPermissionScope] = useState<"host" | "session">(fixedPermissionScope ?? "host");
@@ -85,10 +88,11 @@ export function SessionConfigurationDialog({
   const [savingPermission, setSavingPermission] = useState(false);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
   const [error, setError] = useState<string>();
-  const nativeRuntime = isNativeRuntimeId(session.runtimeId);
-  // Native runtimes do not route through Magpie.
-  const quotaState = useOptionalMagpieQuota(!nativeRuntime);
-  const quota = nativeRuntime ? undefined : quotaState;
+  const claudeSession = !session.runtimeId || session.runtimeId === "claude-desktop";
+  const nativeRuntime = isNativeRuntimeId(session.runtimeId) || session.transport === "claude-desktop-native";
+  // Quota lookup is independent of Claude Desktop's native execution channel.
+  const quotaState = useOptionalMagpieQuota(claudeSession);
+  const quota = claudeSession ? quotaState : undefined;
 
   useEffect(() => {
     let active = true;
@@ -103,6 +107,7 @@ export function SessionConfigurationDialog({
         setModel(next.model ?? next.availableModels[0]?.value ?? "");
         setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
         setFast(next.fast ?? false);
+        setNativePermissionMode(next.nativePermissionMode);
         setPermissionMode(fixedPermissionScope === "session"
           ? next.permissionPolicy?.sessionMode ?? "inherit"
           : next.permissionPolicy?.hostMode ?? "standard");
@@ -141,7 +146,7 @@ export function SessionConfigurationDialog({
     ? selectedModel.supportedEffortLevels
     : configuration?.availableReasoningEfforts?.length
       ? configuration.availableReasoningEfforts
-      : configuration?.availableEffortLevels ?? ["low", "medium", "high", "xhigh", "max"];
+      : configuration?.availableEffortLevels ?? [];
   // Keep the session's own effort so a model that supports it gets it back; show and save what this one allows.
   const shownEffort = supportedEffort(effort, effortLevels);
   const runtimeName = desktopRuntimeName(session.runtimeId);
@@ -176,12 +181,25 @@ export function SessionConfigurationDialog({
       setModel(next.model ?? next.availableModels[0]?.value ?? "");
       setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
       setFast(next.fast ?? false);
+        setNativePermissionMode(next.nativePermissionMode);
       if (change.model !== null) onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "会话配置保存失败");
     } finally {
       setSaving(false);
     }
+  }
+
+  function saveSelectedConfiguration(): Promise<void> {
+    return save({
+      ...(modelOptions.length ? { model } : {}),
+      ...(nativeRuntime ? {
+        ...(configuration?.availableProviders?.length ? { provider: provider || null } : {}),
+        ...(effortLevels.length && selectedModel?.supportsEffort !== false ? { reasoningEffort: shownEffort } : {}),
+        ...(configuration?.supportsFastMode ? { fast: fastSupported ? fast : false } : {}),
+        ...(claudeSession && nativePermissionMode ? { permissionMode: nativePermissionMode } : {}),
+      } : { effort: selectedModel?.supportsEffort === false ? null : shownEffort }),
+    });
   }
 
   function choosePermissionScope(scope: "host" | "session"): void {
@@ -241,7 +259,7 @@ export function SessionConfigurationDialog({
         {loading ? (
           <div className="session-configuration-loading">
             <LoaderCircle className="is-spinning" size={19} />
-            正在读取 {nativeRuntime ? `${runtimeName} Desktop` : "Claude Host"} 配置
+            正在读取 {runtimeName} Desktop 配置
           </div>
         ) : (
           <>
@@ -264,7 +282,7 @@ export function SessionConfigurationDialog({
                 >
                   <i style={{ width: `${Math.min(100, configuration.context.percentage)}%` }} />
                 </div>
-                <small>{configuration.context.estimated ? "基于最近一次会话用量" : "Claude Host 实时用量"}</small>
+                <small>{configuration.context.estimated ? "基于最近一次会话用量" : `${runtimeName} Desktop 用量`}</small>
               </div>
             )}
 
@@ -280,7 +298,7 @@ export function SessionConfigurationDialog({
               </label>
             ) : null}
 
-            <label className="session-model-field">
+            {modelOptions.length > 0 && <label className="session-model-field">
               <span>模型</span>
               <select value={model} disabled={!modelOptions.length} onChange={(event) => chooseModel(event.target.value)}>
                 {modelOptions.map((candidate) => (
@@ -291,7 +309,7 @@ export function SessionConfigurationDialog({
               </select>
               <small>{selectedModel?.description || (!configuration?.modelsComplete ? "仅显示当前主机已发现的模型" : model)}</small>
               {configuration && <small>配置来源：{{ bridge: "当前会话", "claude-desktop": "Claude Desktop", project: "项目配置", default: "电脑默认" }[configuration.modelSource]}</small>}
-            </label>
+            </label>}
             {quota && selectedModel && <MagpieModelQuota model={selectedModel} />}
 
             {effortLevels.length > 0 && selectedModel?.supportsEffort !== false && (
@@ -329,7 +347,21 @@ export function SessionConfigurationDialog({
               </label>
             )}
 
-            {onConfigurePermission && configuration?.permissionPolicy && (
+            {claudeSession && configuration?.nativePermissionMode && (
+              <label className="session-model-field">
+                <span>Desktop 授权模式</span>
+                <select aria-label="Desktop 授权模式" value={nativePermissionMode} onChange={event => setNativePermissionMode(event.target.value as BridgeSDKPermissionMode)}>
+                  <option value="default">默认</option>
+                  <option value="acceptEdits">允许文件修改</option>
+                  <option value="plan">计划模式</option>
+                  <option value="auto">自动模式</option>
+                  <option value="dontAsk">不询问</option>
+                  <option value="bypassPermissions">完全授权</option>
+                </select>
+              </label>
+            )}
+
+            {!claudeSession && onConfigurePermission && configuration?.permissionPolicy && (
               <fieldset className="session-permission-field">
                 <legend><ShieldCheck size={15} />授权模式</legend>
                 {!fixedPermissionScope && (
@@ -371,7 +403,7 @@ export function SessionConfigurationDialog({
               </fieldset>
             )}
 
-            {session.desktopHandoff?.state === "close-desktop" ? <div className="session-configuration-notice">配置保存在 Bridge，接管后生效。</div> : appliesAfterTurn && <div className="session-configuration-notice">当前任务不会中断，修改从下一轮生效。</div>}
+            {appliesAfterTurn && <div className="session-configuration-notice">当前任务不会中断，修改从下一轮生效。</div>}
             {error && <div className="session-configuration-error" role="alert">{error}</div>}
 
             <footer>
@@ -383,19 +415,11 @@ export function SessionConfigurationDialog({
               <button
                 type="button"
                 className="primary-button"
-                disabled={saving || !model}
-                onClick={() => void save({
-                  model,
-                  ...(nativeRuntime
-                    ? {
-                        provider: provider || null,
-                        ...(selectedModel?.supportsEffort === false ? { reasoningEffort: null } : { reasoningEffort: shownEffort }),
-                        ...(configuration?.supportsFastMode ? { fast: fastSupported ? fast : false } : {}),
-                      }
-                    : {
-                        effort: selectedModel?.supportsEffort === false ? null : shownEffort,
-                      }),
-                })}
+                disabled={saving || (!modelOptions.length && !effortLevels.length && !configuration?.supportsFastMode && !configuration?.nativePermissionMode)}
+                onClick={() => {
+                  if (claudeSession && nativePermissionMode === "bypassPermissions" && configuration?.nativePermissionMode !== "bypassPermissions") setConfirmFullAccess(true);
+                  else void saveSelectedConfiguration();
+                }}
               >
                 {saving && <LoaderCircle className="is-spinning" size={16} />}
                 {appliesAfterTurn ? "应用到下一轮" : "保存配置"}
@@ -407,15 +431,18 @@ export function SessionConfigurationDialog({
       <ConfirmationDialog
         open={confirmFullAccess}
         title="启用完全授权"
-        description={permissionScope === "host"
+        description={claudeSession ? "当前 Claude Desktop 会话将跳过工具授权确认。此设置由 Desktop 管理。" : permissionScope === "host"
           ? nativeRuntime
             ? `这台电脑上的 ${runtimeName} 会话将自动批准命令和文件修改；${runtimeName} 的提问仍需你回答。`
             : "这台电脑上的 Bridge 会话将自动批准命令和文件修改；Claude 的提问仍需你回答。"
           : `当前会话将自动批准命令和文件修改；${runtimeName} 的提问仍需你回答。`}
         confirmLabel="启用完全授权"
-        busy={savingPermission}
+        busy={savingPermission || saving}
         onCancel={() => setConfirmFullAccess(false)}
-        onConfirm={() => void savePermission()}
+        onConfirm={() => {
+          if (claudeSession) { setConfirmFullAccess(false); void saveSelectedConfiguration(); }
+          else void savePermission();
+        }}
       />
     </div>
   );

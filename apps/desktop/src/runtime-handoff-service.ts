@@ -26,17 +26,15 @@ import {
   type HandoffArtifactSummary,
   type RuntimeHandoffPackage,
 } from "./handoff-package.js";
-import type { EvidenceManager } from "./evidence-manager.js";
 import type { RuntimeAdapterGoal, RuntimeAdapterRegistry } from "./runtime-adapter.js";
 import { parseRuntimeSessionId, type RuntimeSessionBroker } from "./runtime-session-broker.js";
-import type { SessionBroker } from "./session-broker.js";
 import type { SessionEventLog } from "./session-event-log.js";
 
 const PREVIEW_TTL_MS = 30 * 60 * 1_000;
 const SOURCE_INTERRUPT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_CONTINUATIONS = 20;
 const PLAN_TEXT_LIMIT = 24_000;
-const RUNTIME_IDS: BridgeDesktopRuntimeId[] = ["claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop"];
+const RUNTIME_IDS: BridgeDesktopRuntimeId[] = ["codex-desktop", "hermes-desktop", "dsh-desktop"];
 
 const GOAL_MARKER_PATTERN = /GOAL_STATUS:\s*(continue|done|blocked)\b\s*[:\-–]?\s*([^\n]*)/iu;
 
@@ -66,9 +64,7 @@ interface RuntimeHandoffEndpoint {
 
 export interface RuntimeHandoffServiceOptions {
   state: ConversationStateStore;
-  broker: SessionBroker;
   eventLog: SessionEventLog;
-  evidence: EvidenceManager;
   runtimeRegistry: RuntimeAdapterRegistry;
   runtimeSessions: RuntimeSessionBroker;
   now?: () => number;
@@ -96,7 +92,6 @@ export class RuntimeHandoffService {
     this.now = options.now ?? Date.now;
     this.maxContinuations = options.maxContinuations ?? DEFAULT_MAX_CONTINUATIONS;
     this.interruptTimeoutMs = options.interruptTimeoutMs ?? SOURCE_INTERRUPT_TIMEOUT_MS;
-    this.endpoints.set("claude-desktop", this.claudeEndpoint());
     for (const runtimeId of ["codex-desktop", "hermes-desktop", "dsh-desktop"] as const) {
       this.endpoints.set(runtimeId, this.adapterEndpoint(runtimeId));
     }
@@ -108,6 +103,7 @@ export class RuntimeHandoffService {
     this.options.eventLog.on("event", this.handleEvent);
     this.options.runtimeRegistry.on("event", this.handleRegistryEvent);
     for (const handoff of this.options.state.listActiveRuntimeHandoffs()) {
+      if (!this.endpoints.has(handoff.sourceRuntimeId) || !this.endpoints.has(handoff.targetRuntimeId)) continue;
       await this.recoverHandoff(handoff).catch(() => undefined);
     }
     for (const goal of this.options.state.listRuntimeGoals(["active"])) {
@@ -208,6 +204,7 @@ export class RuntimeHandoffService {
       const runtimeId = parseRuntimeSessionId(session.sessionId)?.runtimeId
         ?? session.runtimeId
         ?? "claude-desktop";
+      if (!this.endpoints.has(runtimeId)) return session;
       const pending = activeBySource.get(session.sessionId);
       const canRelay = !pending
         && RUNTIME_IDS.some((candidate) => candidate !== runtimeId && available.get(candidate));
@@ -227,10 +224,7 @@ export class RuntimeHandoffService {
           canInterrupt: base?.canInterrupt ?? true,
           canSwitchProvider: base?.canSwitchProvider ?? false,
           canContinueOfficial: base?.canContinueOfficial ?? false,
-          // A Claude session without route-level actions (desktop-observed)
-          // is configurable by default; external runtimes always carry a
-          // capability-derived base, so the fallback only matters for Claude.
-          canConfigure: base?.canConfigure ?? runtimeId === "claude-desktop",
+          canConfigure: base?.canConfigure ?? false,
           ...(base?.reason ? { reason: base.reason } : {}),
           canRelay,
         },
@@ -299,10 +293,12 @@ export class RuntimeHandoffService {
     targetRuntimeId: BridgeDesktopRuntimeId;
   }): Promise<BridgeRuntimeHandoffPreview> {
     const found = this.endpointForSession(input.sessionId);
-    if (!found) throw new Error("Session not found");
+    if (!found || !this.endpoints.has(input.targetRuntimeId)) {
+      throw new Error("UNSUPPORTED: Claude Desktop 原生会话不支持 Bridge 跨运行时接力。");
+    }
     const { endpoint, runtimeId: sourceRuntimeId } = found;
     if (sourceRuntimeId === input.targetRuntimeId) {
-      throw new Error("目标运行时需要与当前会话不同；同运行切换请使用提供方接力");
+      throw new Error("目标运行时需要与当前会话不同");
     }
     if (!RUNTIME_IDS.includes(input.targetRuntimeId)) throw new Error("Unknown target runtime");
     const target = this.endpoints.get(input.targetRuntimeId);
@@ -345,6 +341,9 @@ export class RuntimeHandoffService {
 
   async commit(input: { handoffId: string }): Promise<{ handoff: StoredRuntimeHandoff }> {
     let handoff = this.get(input.handoffId);
+    if (!this.endpoints.has(handoff.sourceRuntimeId) || !this.endpoints.has(handoff.targetRuntimeId)) {
+      throw new Error("UNSUPPORTED: Claude Desktop 原生会话不支持 Bridge 跨运行时接力。");
+    }
     if (handoff.state !== "previewed") throw new Error(`接力当前状态为 ${handoff.state}，不能确认`);
     if (handoff.expiresAt && this.now() > handoff.expiresAt) {
       await this.fail(handoff, "接力预览已过期，请重新发起");
@@ -410,6 +409,9 @@ export class RuntimeHandoffService {
     goal: StoredRuntimeGoal;
   }> {
     let handoff = this.get(input.handoffId);
+    if (!this.endpoints.has(handoff.sourceRuntimeId) || !this.endpoints.has(handoff.targetRuntimeId)) {
+      throw new Error("UNSUPPORTED: Claude Desktop 原生会话不支持 Bridge 跨运行时接力。");
+    }
     if (handoff.state !== "plan-ready") throw new Error(`接力当前状态为 ${handoff.state}，不能确认执行`);
     if (!handoff.targetSessionId) throw new Error("接力目标会话缺失");
     const objective = input.objective?.trim() || handoff.objective;
@@ -481,6 +483,9 @@ export class RuntimeHandoffService {
 
   async pauseGoal(sessionId: string): Promise<{ goal?: StoredRuntimeGoal }> {
     const goal = this.options.state.runtimeGoal(sessionId);
+    if (goal && !this.endpoints.has(goal.runtimeId)) {
+      throw new Error("UNSUPPORTED: Claude Desktop 原生会话不支持 Bridge 目标续跑。");
+    }
     if (!goal || goal.status !== "active") return { ...(goal ? { goal } : {}) };
     const endpoint = this.endpoints.get(goal.runtimeId);
     if (goal.native) await endpoint?.goalPause?.(sessionId).catch(() => false);
@@ -496,6 +501,9 @@ export class RuntimeHandoffService {
   async resumeGoal(sessionId: string): Promise<{ goal: StoredRuntimeGoal }> {
     const goal = this.options.state.runtimeGoal(sessionId);
     if (!goal) throw new Error("当前会话没有接力目标");
+    if (!this.endpoints.has(goal.runtimeId)) {
+      throw new Error("UNSUPPORTED: Claude Desktop 原生会话不支持 Bridge 目标续跑。");
+    }
     if (goal.status === "complete") throw new Error("目标已完成，不能恢复");
     if (goal.status === "active") return { goal };
     const endpoint = this.endpoints.get(goal.runtimeId);
@@ -533,7 +541,7 @@ export class RuntimeHandoffService {
   };
 
   private async acceptEvent(event: BridgeEvent): Promise<void> {
-    if (!event.sessionId) return;
+    if (!event.sessionId || !this.endpointForSession(event.sessionId)) return;
     if (!["turn.completed", "turn.failed", "turn.interrupted"].includes(event.type)) return;
     const sessionId = event.sessionId;
 
@@ -552,6 +560,9 @@ export class RuntimeHandoffService {
     }
 
     const goal = this.options.state.runtimeGoal(sessionId);
+    if (goal && !this.endpoints.has(goal.runtimeId)) {
+      throw new Error("UNSUPPORTED: Claude Desktop 原生会话不支持 Bridge 目标续跑。");
+    }
     if (!goal || goal.status !== "active") return;
     if (event.type === "turn.interrupted") {
       // A user-initiated stop must never fight the goal loop.
@@ -844,59 +855,6 @@ export class RuntimeHandoffService {
     const runtimeId: BridgeDesktopRuntimeId = parsed?.runtimeId ?? "claude-desktop";
     const endpoint = this.endpoints.get(runtimeId);
     return endpoint ? { endpoint, runtimeId } : undefined;
-  }
-
-  private claudeEndpoint(): RuntimeHandoffEndpoint {
-    const broker = this.options.broker;
-    const evidence = this.options.evidence;
-    return {
-      runtimeId: "claude-desktop",
-      available: () => {
-        const state = broker.runtimeStatus().state;
-        return state === "ready" || state === "working";
-      },
-      sessionInfo: (sessionId) => broker.session(sessionId),
-      hasActiveOrPending: (sessionId) => broker.hasActiveOrPending(sessionId),
-      interrupt: (sessionId) => broker.interruptTurn(sessionId, undefined, true),
-      history: async (sessionId) => {
-        const page = await broker.history(sessionId, undefined, 50);
-        return page.items.map((item) => ({
-          role: item.role,
-          text: item.text,
-          createdAt: item.createdAt,
-          ...(item.toolName ? { toolName: item.toolName } : {}),
-        }));
-      },
-      toolsAndArtifacts: async (sessionId) => {
-        const cwd = broker.session(sessionId)?.cwd;
-        const bundles = evidence.list(sessionId, undefined, 12).items;
-        return {
-          tools: bundles
-            .flatMap((bundle) => bundle.tools.map((tool) => redact(compact(tool.summary, 300), cwd)))
-            .slice(0, 100),
-          artifacts: bundles
-            .flatMap((bundle) => bundle.artifacts.map((artifact) => ({
-              path: artifact.relativePath,
-              change: artifact.changeKind,
-              size: artifact.size,
-              ...(artifact.sha256 ? { sha256: artifact.sha256 } : {}),
-            })))
-            .filter((artifact, index, all) => all.findIndex((candidate) => candidate.path === artifact.path) === index)
-            .slice(0, 200),
-        };
-      },
-      createSession: (cwd, title) => broker.createSession(cwd, title),
-      startTurn: async (sessionId, text, idempotencyKey) => {
-        await broker.startTurn({
-          requestId: randomUUID(),
-          idempotencyKey,
-        sessionId,
-          text,
-          attachments: [],
-          origin: "desktop",
-        });
-      },
-    };
   }
 
   private adapterEndpoint(runtimeId: BridgeDesktopRuntimeId): RuntimeHandoffEndpoint {

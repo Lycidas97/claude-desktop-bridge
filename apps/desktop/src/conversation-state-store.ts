@@ -4,7 +4,7 @@ import {
   createHash,
   randomBytes,
 } from "node:crypto";
-import { mkdir, readFile, rename } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
@@ -77,6 +77,17 @@ export interface PersistedQueuedTurn extends Record<string, unknown> {
   sessionId: string;
   laneId: string;
   state: string;
+}
+
+export interface NativeDesktopReceipt {
+  idempotencyKey: string;
+  commandId: string;
+  requestId: string;
+  sessionId: string;
+  messageId: string;
+  queueMode?: "deferred" | "steered";
+  state: "dispatching" | "submitted" | "session-received" | "queued" | "running" | "completed" | "cancelled" | "uncertain" | "failed";
+  error?: string;
 }
 
 export interface ConversationBrokerState {
@@ -335,19 +346,6 @@ function allowedActions(
   };
 }
 
-function isMissing(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException).code === "ENOENT";
-}
-
-async function readJsonFile(path: string): Promise<unknown | undefined> {
-  try {
-    return JSON.parse(await readFile(path, "utf8")) as unknown;
-  } catch (error) {
-    if (isMissing(error)) return undefined;
-    throw error;
-  }
-}
-
 function sqliteTimestamp(value: number): number {
   if (!Number.isFinite(value)) throw new Error("Timestamp must be finite");
   return Math.trunc(value);
@@ -374,6 +372,11 @@ export class ConversationStateStore {
       PRAGMA synchronous = FULL;
       PRAGMA foreign_keys = ON;
       PRAGMA busy_timeout = 5000;
+
+      CREATE TABLE IF NOT EXISTS native_desktop_receipts (
+        idempotency_key TEXT PRIMARY KEY,
+        receipt_json TEXT NOT NULL
+      ) STRICT;
 
       CREATE TABLE IF NOT EXISTS conversation_meta (
         key TEXT PRIMARY KEY,
@@ -562,7 +565,6 @@ export class ConversationStateStore {
       this.sessionTitles.set(String(row.session_id), String(row.title));
     }
     this.seedProviderProfiles();
-    await this.migrateLegacyFiles();
   }
 
   close(): void {
@@ -1205,6 +1207,22 @@ export class ConversationStateStore {
     }));
   }
 
+  nativeDesktopReceipt(idempotencyKey: string): NativeDesktopReceipt | undefined {
+    const row = this.db.prepare("SELECT receipt_json FROM native_desktop_receipts WHERE idempotency_key = ?").get(idempotencyKey) as SqlRow | undefined;
+    return row ? JSON.parse(String(row.receipt_json)) as NativeDesktopReceipt : undefined;
+  }
+
+  listNativeDesktopReceipts(): NativeDesktopReceipt[] {
+    return (this.db.prepare("SELECT receipt_json FROM native_desktop_receipts ORDER BY rowid").all() as SqlRow[])
+      .map(row => JSON.parse(String(row.receipt_json)) as NativeDesktopReceipt);
+  }
+
+  saveNativeDesktopReceipt(receipt: NativeDesktopReceipt): void {
+    this.db.prepare(`INSERT INTO native_desktop_receipts(idempotency_key, receipt_json) VALUES (?, ?)
+      ON CONFLICT(idempotency_key) DO UPDATE SET receipt_json = excluded.receipt_json`)
+      .run(receipt.idempotencyKey, JSON.stringify(receipt));
+  }
+
   loadBrokerState(): ConversationBrokerState {
     const sessions = (this.db.prepare(
       "SELECT session_json FROM bridge_sessions ORDER BY rowid ASC",
@@ -1312,142 +1330,9 @@ export class ConversationStateStore {
     }
   }
 
-  async recordSuccessfulStartup(): Promise<number> {
-    const marker = this.marker<{ count?: number }>("successful_startups");
-    const count = (marker?.count ?? 0) + 1;
-    this.saveMarker("successful_startups", { count, at: Date.now() });
-    if (count < 2) return count;
-    await this.archiveLegacyFile(this.options.sessionsPath);
-    await this.archiveLegacyFile(this.options.queuePath);
-    this.saveMarker("legacy_files_archived", { at: Date.now() });
-    return count;
-  }
-
   private seedProviderProfiles(): void {
     for (const profile of defaultProviderProfiles()) {
       if (!this.providerProfile(profile.id)) this.saveProviderProfile(profile);
-    }
-  }
-
-  private async migrateLegacyFiles(): Promise<void> {
-    if (this.marker("legacy_v2_imported")) return;
-    const [sessionsValue, queueValue] = await Promise.all([
-      readJsonFile(this.options.sessionsPath),
-      readJsonFile(this.options.queuePath),
-    ]);
-    const sessionsFile = sessionsValue as {
-      version?: unknown;
-      sessions?: unknown;
-      configurations?: unknown;
-    } | undefined;
-    const queueFile = queueValue as {
-      version?: unknown;
-      pending?: unknown;
-      completedIdempotencyKeys?: unknown;
-      terminalTurns?: unknown;
-    } | undefined;
-    if (
-      sessionsFile &&
-      (
-        sessionsFile.version !== 2 ||
-        !Array.isArray(sessionsFile.sessions) ||
-        (sessionsFile.configurations !== undefined && !Array.isArray(sessionsFile.configurations))
-      )
-    ) throw new Error("Unsupported sessions-v2.json migration source");
-    if (
-      queueFile &&
-      (
-        queueFile.version !== 2 ||
-        !Array.isArray(queueFile.pending) ||
-        !Array.isArray(queueFile.completedIdempotencyKeys) ||
-        (queueFile.terminalTurns !== undefined && !Array.isArray(queueFile.terminalTurns))
-      )
-    ) throw new Error("Unsupported turn-queue-v2.json migration source");
-
-    const sessions = (sessionsFile?.sessions ?? []) as PersistedBridgeSession[];
-    const configurations = (sessionsFile?.configurations ?? []) as PersistedSessionConfiguration[];
-    const pending = (queueFile?.pending ?? []) as Array<Record<string, unknown>>;
-    const completed = (queueFile?.completedIdempotencyKeys ?? []) as string[];
-    const receipts = (queueFile?.terminalTurns ?? []) as PersistedTerminalReceipt[];
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const insertSession = this.db.prepare(`
-        INSERT OR REPLACE INTO bridge_sessions(session_id, session_json) VALUES (?, ?)
-      `);
-      for (const session of sessions) {
-        if (
-          !session ||
-          typeof session.sessionId !== "string" ||
-          typeof session.cwd !== "string" ||
-          typeof session.title !== "string" ||
-          typeof session.createdAt !== "number"
-        ) throw new Error("Invalid Bridge session migration record");
-        insertSession.run(session.sessionId, JSON.stringify(session));
-        this.insertLegacyConversation(session);
-      }
-      const insertConfiguration = this.db.prepare(`
-        INSERT OR REPLACE INTO session_configurations(session_id, configuration_json)
-        VALUES (?, ?)
-      `);
-      for (const configuration of configurations) {
-        insertConfiguration.run(configuration.sessionId, JSON.stringify(configuration));
-      }
-      const insertTurn = this.db.prepare(`
-        INSERT OR REPLACE INTO turn_queue(
-          command_id, session_id, lane_id, idempotency_key, state, turn_json
-        ) VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      for (const raw of pending) {
-        const sessionId = typeof raw.sessionId === "string" ? raw.sessionId : "";
-        if (
-          !sessionId ||
-          typeof raw.commandId !== "string" ||
-          typeof raw.requestId !== "string" ||
-          typeof raw.idempotencyKey !== "string" ||
-          typeof raw.state !== "string"
-        ) throw new Error("Invalid Bridge queue migration record");
-        if (!this.route(sessionId)) {
-          this.insertLegacyConversation({
-            sessionId,
-            cwd: typeof raw.sessionCwd === "string" ? raw.sessionCwd : process.cwd(),
-            title: typeof raw.sessionTitle === "string" ? raw.sessionTitle : "恢复的 Bridge 会话",
-            createdAt: typeof raw.requestedAt === "number" ? raw.requestedAt : Date.now(),
-          });
-        }
-        const laneId = legacyClaudeLaneId(sessionId);
-        const turn = { ...raw, laneId };
-        insertTurn.run(
-          raw.commandId,
-          sessionId,
-          laneId,
-          raw.idempotencyKey,
-          raw.state,
-          JSON.stringify(turn),
-        );
-      }
-      const insertKey = this.db.prepare(`
-        INSERT OR REPLACE INTO completed_idempotency_keys(idempotency_key, completed_at)
-        VALUES (?, ?)
-      `);
-      for (const key of completed) {
-        if (typeof key === "string") insertKey.run(key, Date.now());
-      }
-      const insertReceipt = this.db.prepare(`
-        INSERT OR REPLACE INTO terminal_receipts(idempotency_key, receipt_json)
-        VALUES (?, ?)
-      `);
-      for (const receipt of receipts) {
-        insertReceipt.run(receipt.idempotencyKey, JSON.stringify(receipt));
-      }
-      this.saveMarker("legacy_v2_imported", {
-        at: Date.now(),
-        sessions: sessions.length,
-        pending: pending.length,
-      });
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
     }
   }
 
@@ -1482,31 +1367,6 @@ export class ConversationStateStore {
       createdAt,
       createdAt,
     );
-  }
-
-  private marker<T>(key: string): T | undefined {
-    const row = this.db.prepare(
-      "SELECT value_json FROM migration_markers WHERE key = ?",
-    ).get(key) as SqlRow | undefined;
-    return row ? JSON.parse(String(row.value_json)) as T : undefined;
-  }
-
-  private saveMarker(key: string, value: unknown): void {
-    this.db.prepare(`
-      INSERT INTO migration_markers(key, value_json, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET
-        value_json = excluded.value_json,
-        updated_at = excluded.updated_at
-    `).run(key, JSON.stringify(value), Date.now());
-  }
-
-  private async archiveLegacyFile(path: string): Promise<void> {
-    try {
-      await rename(path, `${path}.migrated`);
-    } catch (error) {
-      if (!isMissing(error)) throw error;
-    }
   }
 
   private encryptPackage(value: StoredHandoffPackage | StoredRuntimeHandoffPackage): Buffer {

@@ -1,7 +1,7 @@
 import type { BridgeSessionCommandResult, BridgeSlashCommandCatalog } from "@bridge/protocol";
 import { useEffect, useRef, useState } from "react";
 
-const BUILTINS = new Set(["help", "context", "usage", "compact", "model", "permissions", "clear", "new", "fork", "resume", "rename"]);
+const BUILTINS = new Set(["help", "context", "usage", "compact", "model", "permissions", "clear", "new", "fork", "btw", "resume", "rename", "rewind"]);
 
 export function sessionCommandName(text: string): string | undefined {
   return /^\/([^\s/\\]+)(?:\s|$)/u.exec(text)?.[1]?.toLocaleLowerCase();
@@ -14,7 +14,7 @@ export function findSessionCommand(text: string, catalog?: BridgeSlashCommandCat
 }
 
 /** Selection only edits the draft. execute is called exclusively by an explicit send. */
-export function useSessionCommands({ sessionId, sessionKey = sessionId, enabled, supported, onLoad, onRun, onModel, onRename, onSession }: {
+export function useSessionCommands({ sessionId, sessionKey = sessionId, enabled, supported, onLoad, onRun, onModel, onRename, onRewind, onSession }: {
   sessionId: string | undefined;
   sessionKey?: string | undefined;
   enabled: boolean;
@@ -23,6 +23,7 @@ export function useSessionCommands({ sessionId, sessionKey = sessionId, enabled,
   onRun?: ((text: string) => Promise<BridgeSessionCommandResult>) | undefined;
   onModel(): void;
   onRename?(): void;
+  onRewind?(): void;
   onSession(sessionId: string): Promise<void>;
 }) {
   const [catalog, setCatalog] = useState<{ key: string | undefined; value: BridgeSlashCommandCatalog }>();
@@ -59,6 +60,7 @@ export function useSessionCommands({ sessionId, sessionKey = sessionId, enabled,
     if (activeKey.current !== sessionKey) return true;
     if (result.catalog) setCatalog({ key: sessionKey, value: result.catalog });
     if (result.action === "model") onModel();
+    else if (result.action === "rewind" && onRewind) onRewind();
     else if (result.action === "rename" && onRename) onRename();
     else if (result.action === "session" && result.session) await onSession(result.session.sessionId);
     else if (result.action !== "sent") setDialog(result);

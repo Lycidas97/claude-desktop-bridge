@@ -1,27 +1,31 @@
 name: Release
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "package.json"
-      - "package-lock.json"
-      - "apps/*/package.json"
-      - "packages/*/package.json"
-      - "apps/mobile/android/app/build.gradle"
-      - "apps/mobile/ios/App/App.xcodeproj/project.pbxproj"
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: bridge-release
   cancel-in-progress: false
 
+env:
+  RELEASE_REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
+
 jobs:
   check-version:
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -30,12 +34,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ env.RELEASE_REVISION }}
           fetch-depth: 0
 
       - uses: actions/setup-node@v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
+
+      - name: Require successful CI for manual retry
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+            --branch main --commit "$RELEASE_REVISION" --event push --status success \
+            --json headSha --jq 'any(.[]; .headSha == env.RELEASE_REVISION)' | grep -qx true
 
       - name: Inspect release version
         id: version
@@ -53,17 +69,12 @@ jobs:
 
           TAG="v${CURRENT_VERSION}"
           echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
-
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || true)" == "false" ]]; then
             echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "Release $TAG already exists; skipping."
+            echo "Release $TAG is already published; skipping."
           else
             echo "should_release=true" >> "$GITHUB_OUTPUT"
-            if git show-ref --verify --quiet "refs/tags/$TAG"; then
-              echo "Tag $TAG exists without a Release; resuming publication."
-            else
-              echo "New version detected: $TAG"
-            fi
+            echo "Creating or resuming draft $TAG at $RELEASE_REVISION."
           fi
 
       - name: Validate synchronized versions
@@ -145,62 +156,33 @@ jobs:
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     permissions:
       actions: write
       contents: write
     steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      - name: Install recycle-bin support
-        run: sudo apt-get update && sudo apt-get install -y trash-cli
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Verify build
-        run: npm run verify
-
-      - name: Create draft GitHub Release and tag
+      - name: Create or resume draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check-version.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-
           TAG="v${VERSION}"
-          # Draft-first: release-assets.yml attaches every platform artifact to
-          # this draft and only then publishes, which keeps the flow compatible
-          # with immutable releases. The git tag only materializes when the
-          # draft is published; drafts never create tags.
-          gh release create "$TAG" \
-            --draft \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Bridge $TAG" \
-            --notes "Platform builds in progress; published automatically once all assets land."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_REVISION"
+          else
+            gh release create "$TAG" --draft --repo "$GITHUB_REPOSITORY" \
+              --target "$RELEASE_REVISION" --title "Bridge $TAG" \
+              --notes "Platform builds in progress; published automatically once all assets land."
+          fi
 
-      - name: Dispatch platform asset builds for the release
+      - name: Dispatch platform asset builds for the verified revision
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check-version.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-
-          TAG="v${VERSION}"
-          # Drafts have no git tag yet, and the dispatch API only accepts
-          # branch or tag refs, so the aggregate build is dispatched on the
-          # triggering branch and told which release to publish. GITHUB_TOKEN
-          # dispatches never cascade push:tags triggers either way, which is
-          # why this explicit dispatch exists.
           gh workflow run release-assets.yml --repo "$GITHUB_REPOSITORY" \
-            --ref "$GITHUB_REF_NAME" -f "tag=$TAG"
+            --ref main -f "tag=v${VERSION}" -f "revision=$RELEASE_REVISION"

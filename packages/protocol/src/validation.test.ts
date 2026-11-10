@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { isBridgePayload } from "./validation.js";
+import { isBridgeNativeImageRef, isBridgePayload } from "./validation.js";
+
+describe("native image refs", () => {
+  it("accepts exact UUID and zero-based image identities without accepting paths or bytes", () => {
+    expect(isBridgeNativeImageRef({ messageUuid: "native-uuid", imageIndex: 4 })).toBe(true);
+    for (const value of [null, {}, { messageUuid: "", imageIndex: 0 }, { messageUuid: "uuid", imageIndex: -1 }, { messageUuid: "uuid", imageIndex: 0.1 }, { messageUuid: "uuid", imageIndex: "0" }, { path: "/project/image.jpg" }]) expect(isBridgeNativeImageRef(value)).toBe(false);
+  });
+});
 
 describe("isBridgePayload", () => {
   it("accepts 0.7 runtime handoff and goal methods", () => {
@@ -35,12 +42,16 @@ describe("isBridgePayload", () => {
     expect(isBridgePayload({ kind: "request", requestId: method, idempotencyKey: method, method, params: { sessionId: "fork" } })).toBe(true);
   });
 
+  it.each(["session.rewind.preview", "session.rewind"])("accepts native %s on the paired channel", method => {
+    expect(isBridgePayload({ kind: "request", requestId: method, idempotencyKey: method, method, params: { sessionId: "native", messageId: "raw-uuid", scope: "both" } })).toBe(true);
+  });
+
   it("accepts directory listing requests on the paired channel", () => {
     expect(isBridgePayload({ kind: "request", requestId: "browse", idempotencyKey: "browse", method: "directory.list", params: {} })).toBe(true);
   });
 
-  it("accepts a queued-command steering request without another message payload", () => {
-    expect(isBridgePayload({ kind: "request", requestId: "promote", idempotencyKey: "promote", method: "turn.queue.steer", params: { sessionId: "session", commandId: "queued" } })).toBe(true);
+  it.each(["turn.queue.steer", "turn.queue.cancel"])("accepts %s without another message payload", method => {
+    expect(isBridgePayload({ kind: "request", requestId: "queue-action", idempotencyKey: "queue-action", method, params: { sessionId: "session", commandId: "queued" } })).toBe(true);
   });
 
   it("accepts an explicit return to Desktop without a new message payload", () => {

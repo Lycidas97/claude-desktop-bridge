@@ -29,6 +29,18 @@
 .provider-magpie-test { margin: 0; }
 .settings-inline-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .mobile-provider-settings { padding: 16px; }
+.inspector-connections { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 16px; }
+.inspector-connections h4 { margin: 0; font-size: 14px; }
+.inspector-process-list { list-style: none; padding: 0; display: grid; gap: 12px; }
+.inspector-process-list li { display: grid; gap: 4px; font-size: 13px; overflow-wrap: anywhere; }
+.inspector-process-list span { color: var(--muted); }
+.inspector-process-unknown strong { color: var(--danger-ink); }
+.inspector-warning { display: flex; gap: 10px; align-items: flex-start; padding: 12px 20px; background: var(--danger-soft); color: var(--danger-ink); border-bottom: 1px solid var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+.desktop-content-v2:has(> .inspector-warning) { display: flex; flex-direction: column; }
+.desktop-content-v2:has(> .inspector-warning) > :not(.inspector-warning) { flex: 1; min-height: 0; }
+.inspector-warning { flex: none; }
+.inspector-warning > svg { flex: none; }
+.inspector-warning p { margin: 4px 0 0; }
 .settings-section-content .host-permission-settings { margin: 0; }
 .settings-section-content .permission-scope-segments { flex-wrap: wrap; }
 .settings-section-content .mobile-settings-row > span, .mobile-provider-settings .settings-section-heading > div { min-width: 0; }

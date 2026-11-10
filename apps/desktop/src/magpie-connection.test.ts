@@ -1,18 +1,12 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { rm, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SafeStorageLike } from "./config.js";
 import { hasClaudeRuntimeCredentials, resolveClaudeGatewayConfig, type ClaudeRuntime } from "./claude-runtime-discovery.js";
 import { MagpieConnectionRepository, testMagpieGateway } from "./magpie-connection.js";
-import { Claude3pProviderAdapter } from "./provider-runtime-pool.js";
-import { SessionBroker } from "./session-broker.js";
-import { SessionEventLog } from "./session-event-log.js";
-import { TranscriptObserver } from "./transcript-observer.js";
 
 const roots: string[] = [];
-const brokers: SessionBroker[] = [];
-const logs: SessionEventLog[] = [];
 const storage: SafeStorageLike = {
   isEncryptionAvailable: () => true,
   encryptString: (text) => Buffer.from(text.split("").reverse().join("")),
@@ -36,8 +30,6 @@ const gatewayFetch = vi.fn(async (url: string | URL | Request) => String(url).in
   : Response.json({ data: [{ provider: "example", user: "synthetic", windows: [] }] }));
 
 afterEach(async () => {
-  for (const broker of brokers.splice(0)) await broker.close();
-  for (const log of logs.splice(0)) await log.close();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
   vi.unstubAllGlobals();
   gatewayFetch.mockClear();
@@ -78,7 +70,7 @@ describe("Magpie connection storage and authentication", () => {
     await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it.each(["bearer", "x-api-key"] as const)("uses only the selected %s authentication for discovery, quota and an executor without a Host credential file", async (authScheme) => {
+  it.each(["bearer", "x-api-key"] as const)("uses only the selected %s authentication for discovery and quota without a Host credential file", async (authScheme) => {
     const { repository } = await fixture();
     const runtime = repository.apply(automatic, repository.resolve({ ...manual, authScheme }));
     expect(runtime.credentialPath).toBeUndefined();
@@ -92,12 +84,6 @@ describe("Magpie connection storage and authentication", () => {
       expect(headers[authScheme === "bearer" ? "authorization" : "x-api-key"]).toBe(authScheme === "bearer" ? `Bearer ${manual.apiKey}` : manual.apiKey);
       expect(headers[authScheme === "bearer" ? "x-api-key" : "authorization"]).toBeUndefined();
     }
-    const plan = await new Claude3pProviderAdapter().hostPlan("logical", {
-      laneId: "lane", conversationId: "logical", providerProfileId: "profile", providerKind: "claude-3p",
-      status: "active", access: "read-write", nativeSessionId: "native", createdAt: 1, updatedAt: 1,
-    }, runtime);
-    expect(plan.environment.ANTHROPIC_BASE_URL).toBe(manual.baseUrl);
-    expect(plan.nativeSessionId).toBe("native");
   });
 
   it("reports an unsupported quota endpoint separately from a working model endpoint", async () => {
@@ -116,33 +102,4 @@ describe("Magpie connection storage and authentication", () => {
     expect(result.quota.state).toBe("error");
     expect(JSON.stringify(result)).not.toContain(manual.apiKey);
   });
-});
-
-it("applies manual settings to broker discovery and quota, keeps the saved setting on failed validation, and restores automatic discovery", async () => {
-  const { root, path, repository } = await fixture();
-  vi.stubGlobal("fetch", gatewayFetch);
-  const paths = { sessions: join(root, "sessions"), projects: join(root, "projects"), tasks: join(root, "tasks"), desktopSessions: [] };
-  const eventLog = new SessionEventLog(join(root, "events.jsonl"), 1);
-  logs.push(eventLog);
-  const observer = new TranscriptObserver({ paths, eventLog, platform: "linux", catalogIntervalMs: 0 });
-  const broker = new SessionBroker({ paths, observer, eventLog, sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"), magpieConnection: repository, prepareRuntime: async () => automatic });
-  brokers.push(broker);
-  await broker.initialize();
-  const before = await broker.magpieSettings();
-  expect(before.magpie).toMatchObject({ mode: "auto", baseUrl: "https://automatic.example.test" });
-  await broker.testMagpieConnection(manual);
-  expect(await broker.magpieSettings()).toEqual(before);
-  await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
-  await broker.saveMagpieConnection(manual);
-  expect(broker.runtimeStatus()).toMatchObject({ state: "ready", detection: { configSource: { type: "manual-gateway" }, modelDiscovery: { state: "ready", count: 1 } } });
-  expect(await broker.gatewayConfig()).toMatchObject({ baseUrl: manual.baseUrl, authToken: manual.apiKey });
-  expect(broker.availableModels().some((model) => model.value === "example/model")).toBe(true);
-  vi.stubGlobal("fetch", async () => new Response("synthetic failure", { status: 401 }));
-  await expect(broker.saveMagpieConnection({ ...manual, baseUrl: "https://bad.example.test" })).rejects.toThrow("模型列表读取失败");
-  expect((await broker.magpieSettings()).magpie?.baseUrl).toBe(manual.baseUrl);
-  vi.stubGlobal("fetch", gatewayFetch);
-  await broker.saveMagpieConnection({ mode: "auto" });
-  expect((await broker.gatewayConfig())?.baseUrl).toBe("https://automatic.example.test");
-  expect((await broker.magpieSettings()).magpie?.mode).toBe("auto");
-  expect(JSON.stringify(await broker.magpieSettings())).not.toContain("synthetic-auto-key");
 });

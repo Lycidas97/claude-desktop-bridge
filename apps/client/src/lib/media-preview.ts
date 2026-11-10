@@ -4,6 +4,7 @@ import type {
   BridgeArtifactTransferChunk,
   BridgeArtifactTransferInfo,
   BridgeEvidenceBundle,
+  BridgeNativeImageRef,
   BridgeRequest,
   BridgeResponse,
 } from "@bridge/protocol";
@@ -21,6 +22,7 @@ export interface MediaTarget {
   sessionId?: string;
   path?: string;
   dataUrl?: string;
+  nativeImage?: BridgeNativeImageRef;
 }
 
 export function mediaKind(path: string): MediaTarget["kind"] | undefined {
@@ -91,17 +93,21 @@ function unwrap<T>(response: BridgeResponse | undefined): T {
   return response.result as T;
 }
 
-export async function openMediaTransfer(target: MediaTarget, request: MediaRequest) {
+export async function openMediaTransfer(target: MediaTarget, request: MediaRequest, onProgress?: (loaded: number, total: number) => void) {
   const { transfer } = unwrap<{ transfer: BridgeArtifactTransferInfo }>(await request(
     "artifact.transfer.open",
     {
-      ...(target.artifactId ? { artifactId: target.artifactId } : { sessionId: target.sessionId, path: target.path?.trim().replace(/:\d+(?::\d+)?$/u, "") }),
+      ...(target.nativeImage ? { sessionId: target.sessionId, nativeImage: target.nativeImage }
+        : target.artifactId ? { artifactId: target.artifactId }
+        : { sessionId: target.sessionId, path: target.path?.trim().replace(/:\d+(?::\d+)?$/u, "") }),
       ...(target.kind === "text" ? { purpose: "text-preview" } : {}),
     },
     { wait: true, timeoutMs: 60_000 },
   ));
   const chunks = new Map<number, Promise<Uint8Array>>();
+  let loaded = 0;
   let closed = false;
+  onProgress?.(0, transfer.size);
   return {
     transfer,
     async read(begin: number, end: number): Promise<Uint8Array> {
@@ -115,7 +121,10 @@ export async function openMediaTransfer(target: MediaTarget, request: MediaReque
           }).then((response) => {
             const { chunk } = unwrap<{ chunk: BridgeArtifactTransferChunk }>(response);
             if (chunk.transferId !== transfer.transferId || chunk.index !== index) throw new Error("文件分块校验失败");
-            return Uint8Array.from(atob(chunk.data), (char) => char.charCodeAt(0));
+            const bytes = Uint8Array.from(atob(chunk.data), (char) => char.charCodeAt(0));
+            loaded += bytes.length;
+            onProgress?.(loaded, transfer.size);
+            return bytes;
           });
           chunks.set(index, pending);
         }

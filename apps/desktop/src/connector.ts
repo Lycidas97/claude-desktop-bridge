@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { BridgeModelInfo } from "@bridge/protocol";
 
 export interface ConnectorPaths {
   claudeDesktop: string[];
@@ -20,6 +21,7 @@ async function readJson(path: string): Promise<ClaudeConfig> {
     return JSON.parse(await readFile(path, "utf8")) as ClaudeConfig;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    if (error instanceof SyntaxError) throw new Error("Claude configuration is not valid JSON");
     throw error;
   }
 }
@@ -54,17 +56,37 @@ function removeBridgeHooks(config: ClaudeConfig): boolean {
       const hooks = handler.hooks.filter((candidate) => !(
         isRecord(candidate)
         && candidate.type === "http"
-        && candidate.url === BRIDGE_HOOK_URL
+        && (
+          candidate.url === BRIDGE_HOOK_URL
+          || (
+            typeof candidate.url === "string"
+            && /^http:\/\/127\.0\.0\.1:\d+\/hooks\/claude-permission$/u.test(candidate.url)
+            && isRecord(candidate.headers)
+            && candidate.headers["X-Bridge-Permission-Host"] === "$BRIDGE_PERMISSION_HOST"
+            && Array.isArray(candidate.allowedEnvVars)
+            && candidate.allowedEnvVars.includes("BRIDGE_PERMISSION_HOST")
+          )
+        )
       ));
       if (hooks.length === handler.hooks.length) return [handler];
       changed = true;
       return hooks.length > 0 ? [{ ...handler, hooks }] : [];
     });
-    if (handlers.length > 0) nextHooks[event] = handlers;
-    else if (handlersValue.length > 0) changed = true;
+    if (handlers.length > 0 || handlersValue.length === 0) nextHooks[event] = handlers;
+    else changed = true;
   }
   if (changed) config.hooks = nextHooks;
   return changed;
+}
+
+/** Read the saved picker directory without exposing settings, descriptions or environment. */
+export async function readClaudeModelOptions(settingsPath: string): Promise<BridgeModelInfo[] | undefined> {
+  const settings = await readJson(settingsPath);
+  if (!isRecord(settings) || !isRecord(settings.modelPicker) || !Array.isArray(settings.modelPicker.options)) return undefined;
+  const models = settings.modelPicker.options.flatMap(option =>
+    isRecord(option) && typeof option.model === "string" && option.model.length > 0 && typeof option.label === "string" && option.label.length > 0
+      ? [{ value: option.model, displayName: option.label }] : []);
+  return models.length ? models : undefined;
 }
 
 export async function removeLegacyConnector(paths: ConnectorPaths): Promise<boolean> {

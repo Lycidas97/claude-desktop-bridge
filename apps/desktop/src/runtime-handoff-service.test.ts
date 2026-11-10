@@ -1,16 +1,12 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
   BridgeEventType,
-  BridgeHistoryItem,
-  BridgeHistoryPage,
-  BridgeRuntimeHandoffState,
   BridgeSessionInfo,
 } from "@bridge/protocol";
 import { ConversationStateStore } from "./conversation-state-store.js";
-import type { EvidenceManager } from "./evidence-manager.js";
 import type { RuntimeHandoffPackage } from "./handoff-package.js";
 import {
   DesktopRuntimeAdapter,
@@ -26,7 +22,6 @@ import {
 } from "./runtime-adapter.js";
 import { RuntimeHandoffService } from "./runtime-handoff-service.js";
 import { RuntimeSessionBroker, runtimeSessionId } from "./runtime-session-broker.js";
-import type { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 
 const directories: string[] = [];
@@ -37,7 +32,7 @@ afterEach(async () => {
     await Promise.resolve(cleanup()).catch(() => {});
   }
   await Promise.all(directories.splice(0).map((directory) => (
-    rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rm(directory, { recursive: true, force: true })
   )));
 });
 
@@ -59,7 +54,7 @@ class FakeAdapter extends DesktopRuntimeAdapter {
   goalUnsupported = false;
 
   constructor(
-    id: "codex-desktop" | "hermes-desktop",
+    id: "codex-desktop" | "hermes-desktop" | "dsh-desktop",
     name: string,
     goalNative: boolean,
   ) {
@@ -86,7 +81,7 @@ class FakeAdapter extends DesktopRuntimeAdapter {
       createdAt: Date.now(),
       lastActivityAt: Date.now(),
       turnState: "idle",
-      transport: this.id === "codex-desktop" ? "codex-app-server" : "hermes-gateway",
+      transport: this.id === "codex-desktop" ? "codex-app-server" : this.id === "dsh-desktop" ? "dsh-gateway" : "hermes-gateway",
     });
     this.historyMap.set(nativeSessionId, [...history]);
     const session = this.sessionMap.get(nativeSessionId)!;
@@ -239,70 +234,18 @@ function claudeSession(sessionId: string, cwd: string, title = "Claude 会话"):
     cwd,
     title,
     source: "bridge",
-    transport: "bridge-host",
-    ownership: "BRIDGE_IDLE",
+    transport: "claude-desktop-native",
+    ownership: "DESKTOP_NATIVE_IDLE",
     turnState: "idle",
     lastActivityAt: Date.now(),
     pendingCount: 0,
   };
 }
 
-class FakeBroker {
-  readonly sessions = new Map<string, BridgeSessionInfo>();
-  readonly historyMap = new Map<string, BridgeHistoryItem[]>();
-  readonly active = new Set<string>();
-  readonly interrupts: string[] = [];
-  readonly startedTurns: Array<{ sessionId: string; text: string; idempotencyKey: string }> = [];
-
-  runtimeStatus(): { state: string } {
-    return { state: "ready" };
-  }
-
-  session(sessionId: string): BridgeSessionInfo | undefined {
-    return this.sessions.get(sessionId);
-  }
-
-  hasActiveOrPending(sessionId: string): boolean {
-    return this.active.has(sessionId);
-  }
-
-  async interruptTurn(sessionId: string): Promise<boolean> {
-    this.interrupts.push(sessionId);
-    this.active.delete(sessionId);
-    return true;
-  }
-
-  async history(sessionId: string): Promise<BridgeHistoryPage> {
-    return { sessionId, items: [...(this.historyMap.get(sessionId) ?? [])], hasMore: false };
-  }
-
-  async createSession(cwd: string, title?: string): Promise<BridgeSessionInfo> {
-    const sessionId = `claude-new-${this.sessions.size + 1}`;
-    const session = claudeSession(sessionId, cwd, title ?? "untitled");
-    this.sessions.set(sessionId, session);
-    this.historyMap.set(sessionId, []);
-    return session;
-  }
-
-  async startTurn(input: { sessionId: string; text: string; idempotencyKey: string }): Promise<void> {
-    this.startedTurns.push(input);
-    const items = this.historyMap.get(input.sessionId) ?? [];
-    items.push({
-      id: `user-${items.length}`,
-      sessionId: input.sessionId,
-      role: "user",
-      text: input.text,
-      createdAt: Date.now(),
-      origin: "desktop",
-    });
-    this.historyMap.set(input.sessionId, items);
-  }
-}
-
 interface Fixture {
   state: ConversationStateStore;
   eventLog: SessionEventLog;
-  broker: FakeBroker;
+  dsh: FakeAdapter;
   codex: FakeAdapter;
   hermes: FakeAdapter;
   registry: RuntimeAdapterRegistry;
@@ -332,18 +275,15 @@ async function createFixture(options: {
   await state.initialize();
   const eventLog = new SessionEventLog(join(root, "events.jsonl"));
   await eventLog.initialize();
-  const broker = new FakeBroker();
   const codex = new FakeAdapter("codex-desktop", "Codex Desktop", true);
   const hermes = new FakeAdapter("hermes-desktop", "Hermes Desktop", false);
-  const registry = new RuntimeAdapterRegistry([codex, hermes]);
+  const dsh = new FakeAdapter("dsh-desktop", "DSH", false);
+  const registry = new RuntimeAdapterRegistry([codex, hermes, dsh]);
   const runtimeSessions = new RuntimeSessionBroker(registry, eventLog);
   await runtimeSessions.initialize();
-  const evidence = { list: () => ({ items: [] }) } as unknown as EvidenceManager;
   const service = new RuntimeHandoffService({
     state,
-    broker: broker as unknown as SessionBroker,
     eventLog,
-    evidence,
     runtimeRegistry: registry,
     runtimeSessions,
     ...(options.now ? { now: options.now } : {}),
@@ -361,54 +301,77 @@ async function createFixture(options: {
     state.close();
     await eventLog.close();
   });
-  return { state, eventLog, broker, codex, hermes, registry, runtimeSessions, service, cwd, events };
+  return { state, eventLog, dsh, codex, hermes, registry, runtimeSessions, service, cwd, events };
 }
 
-const CLAUDE_SOURCE = "claude-source-1";
+const SOURCE = runtimeSessionId("dsh-desktop", "source-1");
 
-function seedClaudeSource(fixture: Fixture, texts?: { user: string; assistant: string }): void {
-  fixture.broker.sessions.set(CLAUDE_SOURCE, claudeSession(CLAUDE_SOURCE, fixture.cwd, "源任务"));
-  fixture.broker.historyMap.set(CLAUDE_SOURCE, [
-    {
-      id: "u1",
-      sessionId: CLAUDE_SOURCE,
-      role: "user",
-      text: texts?.user ?? "帮我重构这个模块，不要改变对外接口",
-      createdAt: Date.now() - 2_000,
-      origin: "desktop",
-    },
-    {
-      id: "a1",
-      sessionId: CLAUDE_SOURCE,
-      role: "assistant",
-      text: texts?.assistant ?? "已经开始分析，初步发现三个可改进点。",
-      createdAt: Date.now() - 1_000,
-      origin: "desktop",
-    },
+async function seedSource(fixture: Fixture, texts?: { user: string; assistant: string }): Promise<void> {
+  fixture.dsh.addSession("source-1", fixture.cwd, "源任务", [
+    { id: "u1", role: "user", text: texts?.user ?? "帮我重构这个模块，不要改变对外接口", createdAt: Date.now() - 2_000 },
+    { id: "a1", role: "assistant", text: texts?.assistant ?? "已经开始分析，初步发现三个可改进点。", createdAt: Date.now() - 1_000 },
   ]);
+  await waitFor(() => fixture.runtimeSessions.session(SOURCE) !== undefined, "source visible");
 }
 
 describe("RuntimeHandoffService", () => {
-  it.each([true, false])("preserves native Bridge execution actions during relay enrichment (%s)", async canRequestBridgeExecution => {
+  it("leaves native Claude actions unchanged and rejects Claude relay endpoints", async () => {
     const fixture = await createFixture();
-    const session = claudeSession(CLAUDE_SOURCE, fixture.cwd);
-    session.ownership = "DESKTOP_OBSERVED";
+    const session = claudeSession("native-claude", fixture.cwd);
     session.allowedActions = {
       canSend: true, canSteer: false, canInterrupt: true, canSwitchProvider: false,
-      canContinueOfficial: false, canConfigure: true, canRequestBridgeExecution,
+      canContinueOfficial: false, canConfigure: true,
     };
-    const [enriched] = fixture.service.enrichSessions([session]);
-    expect(enriched?.allowedActions).toMatchObject({ ...session.allowedActions, canRelay: true });
+    expect(fixture.service.enrichSessions([session])).toEqual([session]);
+    expect(fixture.service.canRelay(session.sessionId)).toBe(false);
+    await expect(fixture.service.preview({ sessionId: session.sessionId, targetRuntimeId: "codex-desktop" }))
+      .rejects.toThrow("UNSUPPORTED");
+    await seedSource(fixture);
+    await expect(fixture.service.preview({ sessionId: SOURCE, targetRuntimeId: "claude-desktop" }))
+      .rejects.toThrow("UNSUPPORTED");
+    expect(fixture.codex.turns).toHaveLength(0);
   });
 
-  it("builds a bounded, redacted preview package from a Claude source", async () => {
+  it("leaves persisted Claude handoffs and goals inert across startup and turn completion", async () => {
     const fixture = await createFixture();
-    seedClaudeSource(fixture, {
+    await seedSource(fixture);
+    const preview = await fixture.service.preview({ sessionId: SOURCE, targetRuntimeId: "codex-desktop" });
+    const legacy = fixture.state.saveRuntimeHandoff({
+      ...preview.handoff, handoffId: "legacy-claude-handoff", state: "planning", targetRuntimeId: "claude-desktop",
+      targetSessionId: "native-claude", targetNativeSessionId: "native-claude", updatedAt: 1,
+    });
+    fixture.state.saveRuntimeGoal({
+      sessionId: "native-claude", nativeSessionId: "native-claude", handoffId: legacy.handoffId,
+      runtimeId: "claude-desktop", objective: "Legacy unfinished goal", status: "active",
+      native: false, continuations: 0, updatedAt: 1,
+    });
+    await fixture.service.close();
+    const recovered = new RuntimeHandoffService({
+      state: fixture.state, eventLog: fixture.eventLog, runtimeRegistry: fixture.registry,
+      runtimeSessions: fixture.runtimeSessions,
+    });
+    await recovered.initialize();
+    await fixture.eventLog.append({ sessionId: "native-claude", origin: "claude-desktop", type: "turn.completed", data: {} });
+    await recovered.close();
+    expect(fixture.state.runtimeHandoff(legacy.handoffId)?.state).toBe("planning");
+    expect(fixture.state.runtimeGoal("native-claude")).toMatchObject({ status: "active", continuations: 0, updatedAt: 1 });
+    expect(fixture.codex.turns).toHaveLength(0);
+    expect(fixture.hermes.turns).toHaveLength(0);
+    expect(fixture.dsh.turns).toHaveLength(0);
+    await expect(recovered.pauseGoal("native-claude")).rejects.toThrow("UNSUPPORTED");
+    await expect(recovered.resumeGoal("native-claude")).rejects.toThrow("UNSUPPORTED");
+    await expect(recovered.commit({ handoffId: legacy.handoffId })).rejects.toThrow("UNSUPPORTED");
+    await expect(recovered.confirm({ handoffId: legacy.handoffId })).rejects.toThrow("UNSUPPORTED");
+  });
+
+  it("builds a bounded, redacted preview package from a DSH source", async () => {
+    const fixture = await createFixture();
+    await seedSource(fixture, {
       user: "用这个 sk-ant-abcdef123456 调用，并读取 /etc/passwd 对比",
       assistant: "好的",
     });
     const preview = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "codex-desktop",
     });
     expect(preview.handoff.state).toBe("previewed");
@@ -428,36 +391,39 @@ describe("RuntimeHandoffService", () => {
 
   it("rejects invalid previews", async () => {
     const fixture = await createFixture();
-    seedClaudeSource(fixture);
+    await seedSource(fixture);
     await expect(fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
-      targetRuntimeId: "claude-desktop",
+      sessionId: SOURCE,
+      targetRuntimeId: "dsh-desktop",
     })).rejects.toThrow("不同");
-    fixture.broker.sessions.set("empty", claudeSession("empty", fixture.cwd));
-    fixture.broker.historyMap.set("empty", []);
+    fixture.dsh.addSession("empty", fixture.cwd, "empty");
+    const emptyId = runtimeSessionId("dsh-desktop", "empty");
+    await waitFor(() => fixture.runtimeSessions.session(emptyId) !== undefined, "empty session visible");
     await expect(fixture.service.preview({
-      sessionId: "empty",
+      sessionId: emptyId,
       targetRuntimeId: "codex-desktop",
     })).rejects.toThrow("可见上下文");
-    const first = await fixture.service.preview({ sessionId: CLAUDE_SOURCE, targetRuntimeId: "codex-desktop" });
+    const first = await fixture.service.preview({ sessionId: SOURCE, targetRuntimeId: "codex-desktop" });
     expect(first.handoff.state).toBe("previewed");
     await expect(fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "hermes-desktop",
     })).rejects.toThrow("未完成");
   });
 
-  it("runs the full Claude to Codex relay with a native goal", async () => {
+  it("runs the full DSH to Codex relay with a native goal", async () => {
     const fixture = await createFixture();
-    seedClaudeSource(fixture);
-    fixture.broker.active.add(CLAUDE_SOURCE);
+    await seedSource(fixture);
+    fixture.dsh.sessionMap.get("source-1")!.turnState = "running";
+    fixture.dsh.publish({ type: "session.updated", session: { ...fixture.dsh.sessionMap.get("source-1")! } });
+    await waitFor(() => fixture.runtimeSessions.session(SOURCE)?.turnState === "running", "source running");
     const preview = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "codex-desktop",
     });
     const { handoff: committed } = await fixture.service.commit({ handoffId: preview.handoff.handoffId });
     expect(committed.state).toBe("planning");
-    expect(fixture.broker.interrupts).toEqual([CLAUDE_SOURCE]);
+    expect(fixture.dsh.interrupts).toEqual(["source-1"]);
     expect(committed.targetSessionId).toBe(runtimeSessionId("codex-desktop", committed.targetNativeSessionId!));
     const targetNative = committed.targetNativeSessionId!;
     expect(fixture.codex.collaborationModes).toEqual([{ nativeSessionId: targetNative, mode: "plan" }]);
@@ -502,28 +468,30 @@ describe("RuntimeHandoffService", () => {
     expect(fixture.events.some((event) => event.type === "runtime.goal.updated")).toBe(true);
 
     // Relay chain metadata links both directions.
-    const sourceRelay = fixture.service.relayMetadata(CLAUDE_SOURCE);
+    const sourceRelay = fixture.service.relayMetadata(SOURCE);
     expect(sourceRelay?.outbound?.[0]).toMatchObject({
       sessionId: applied.targetSessionId,
       runtimeId: "codex-desktop",
     });
     const targetRelay = fixture.service.relayMetadata(applied.targetSessionId!);
     expect(targetRelay?.inbound).toMatchObject({
-      sessionId: CLAUDE_SOURCE,
-      runtimeId: "claude-desktop",
+      sessionId: SOURCE,
+      runtimeId: "dsh-desktop",
       title: "源任务",
     });
     // Pending handoff exposure never leaks plan text or native IDs.
-    expect(fixture.service.pendingHandoff(CLAUDE_SOURCE)).toBeUndefined();
+    expect(fixture.service.pendingHandoff(SOURCE)).toBeUndefined();
   });
 
   it("keeps the source untouched and fails when it will not stop", async () => {
     const fixture = await createFixture({ interruptTimeoutMs: 300 });
-    seedClaudeSource(fixture);
-    fixture.broker.active.add(CLAUDE_SOURCE);
-    fixture.broker.interruptTurn = async () => false; // source refuses to settle
+    await seedSource(fixture);
+    fixture.dsh.sessionMap.get("source-1")!.turnState = "running";
+    fixture.dsh.publish({ type: "session.updated", session: { ...fixture.dsh.sessionMap.get("source-1")! } });
+    await waitFor(() => fixture.runtimeSessions.session(SOURCE)?.turnState === "running", "source running");
+    fixture.dsh.interruptTurn = async () => false; // source refuses to settle
     const preview = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "codex-desktop",
     });
     await expect(fixture.service.commit({ handoffId: preview.handoff.handoffId })).rejects.toThrow("未能停止");
@@ -535,9 +503,9 @@ describe("RuntimeHandoffService", () => {
   it("expires previews", async () => {
     let now = 1_000_000;
     const fixture = await createFixture({ now: () => now });
-    seedClaudeSource(fixture);
+    await seedSource(fixture);
     const preview = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "codex-desktop",
     });
     now += 31 * 60 * 1_000;
@@ -547,9 +515,9 @@ describe("RuntimeHandoffService", () => {
 
   it("fails when the plan turn produces no readable plan", async () => {
     const fixture = await createFixture();
-    seedClaudeSource(fixture);
+    await seedSource(fixture);
     const preview = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "codex-desktop",
     });
     const { handoff } = await fixture.service.commit({ handoffId: preview.handoff.handoffId });
@@ -618,9 +586,9 @@ describe("RuntimeHandoffService", () => {
 
   it("surfaces blocked markers with detail", async () => {
     const fixture = await createFixture();
-    seedClaudeSource(fixture);
+    await seedSource(fixture);
     const preview = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "hermes-desktop",
     });
     const { handoff } = await fixture.service.commit({ handoffId: preview.handoff.handoffId });
@@ -639,9 +607,9 @@ describe("RuntimeHandoffService", () => {
 
   it("pauses on user stop and never fights it; resume restarts the loop", async () => {
     const fixture = await createFixture();
-    seedClaudeSource(fixture);
+    await seedSource(fixture);
     const preview = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "hermes-desktop",
     });
     const { handoff } = await fixture.service.commit({ handoffId: preview.handoff.handoffId });
@@ -676,9 +644,9 @@ describe("RuntimeHandoffService", () => {
 
   it("mirrors native Codex goal notifications", async () => {
     const fixture = await createFixture();
-    seedClaudeSource(fixture);
+    await seedSource(fixture);
     const preview = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "codex-desktop",
     });
     const { handoff } = await fixture.service.commit({ handoffId: preview.handoff.handoffId });
@@ -712,10 +680,10 @@ describe("RuntimeHandoffService", () => {
 
   it("falls back to emulated goals when the target rejects native goal RPCs", async () => {
     const fixture = await createFixture();
-    seedClaudeSource(fixture);
+    await seedSource(fixture);
     fixture.codex.goalUnsupported = true;
     const preview = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "codex-desktop",
     });
     const { handoff } = await fixture.service.commit({ handoffId: preview.handoff.handoffId });
@@ -729,16 +697,16 @@ describe("RuntimeHandoffService", () => {
 
   it("supports cancel at preview and planning, but not after applying", async () => {
     const fixture = await createFixture();
-    seedClaudeSource(fixture);
+    await seedSource(fixture);
     const preview = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "codex-desktop",
     });
     const { handoff: cancelledPreview } = await fixture.service.cancel(preview.handoff.handoffId);
     expect(cancelledPreview.state).toBe("cancelled");
 
     const second = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "codex-desktop",
     });
     const { handoff } = await fixture.service.commit({ handoffId: second.handoff.handoffId });
@@ -747,7 +715,7 @@ describe("RuntimeHandoffService", () => {
     expect(fixture.codex.interrupts).toEqual([handoff.targetNativeSessionId!]);
 
     const third = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "codex-desktop",
     });
     const { handoff: thirdCommitted } = await fixture.service.commit({ handoffId: third.handoff.handoffId });
@@ -759,9 +727,9 @@ describe("RuntimeHandoffService", () => {
 
   it("recovers from a restart: planning recovers to plan-ready, executing to applied, preparing fails", async () => {
     const fixture = await createFixture();
-    seedClaudeSource(fixture);
+    await seedSource(fixture);
     const preview = await fixture.service.preview({
-      sessionId: CLAUDE_SOURCE,
+      sessionId: SOURCE,
       targetRuntimeId: "codex-desktop",
     });
     const { handoff } = await fixture.service.commit({ handoffId: preview.handoff.handoffId });
@@ -787,9 +755,7 @@ describe("RuntimeHandoffService", () => {
     // plumbing picks up in-flight handoffs without re-sending anything.
     const recovered = new RuntimeHandoffService({
       state: fixture.state,
-      broker: fixture.broker as unknown as SessionBroker,
       eventLog: fixture.eventLog,
-      evidence: { list: () => ({ items: [] }) } as unknown as EvidenceManager,
       runtimeRegistry: fixture.registry,
       runtimeSessions: fixture.runtimeSessions,
     });

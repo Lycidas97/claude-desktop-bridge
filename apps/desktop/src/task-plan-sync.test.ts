@@ -1,12 +1,11 @@
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { rm, appendFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ObservedClaudeSession } from "./claude-session-catalog.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
-import { readSessionHistory } from "./session-history.js";
-import { SessionTaskState } from "./session-task-state.js";
+import { readClaudeSessionHistory } from "./claude-history.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -98,8 +97,8 @@ describe("task-plan transport and recovery", () => {
     } }) + "\n");
     await f.observe();
     expect(f.log.history(f.session.sessionId).items.some(item => item.taskPlan)).toBe(false);
-    const page = await readSessionHistory({ paths: f.paths, eventLog: f.log, taskState: new SessionTaskState(), session: { sessionId: f.session.sessionId, cwd: f.root }, activeTurn: false, observedSessions: [] });
-    expect(page.items.some(item => item.taskPlan)).toBe(false);
+    const page = await readClaudeSessionHistory(f.paths.projects, f.session.sessionId, f.root);
+    expect(page.messages.some(item => item.taskPlan)).toBe(false);
     expect(f.log.replay().filter(event => event.data.taskPlanInvalidated === true)).toHaveLength(1);
     await f.observer.close(); await f.log.close();
     if (compact) {
@@ -125,8 +124,8 @@ describe("task-plan transport and recovery", () => {
       await appendFile(f.path, JSON.stringify({ uuid: "failure", parentUuid: "p", type: "user", message: {
         role: "user", content: [{ type: "tool_result", tool_use_id: "plan-tool", is_error: true, content: "Failed" }],
       } }) + "\n");
-      const page = await readSessionHistory({ paths: f.paths, eventLog: f.log, taskState: new SessionTaskState(), session: { sessionId: f.session.sessionId, cwd: f.root }, activeTurn: false, observedSessions: [] });
-      expect(page.items.some(item => item.taskPlan)).toBe(false);
+      const page = await readClaudeSessionHistory(f.paths.projects, f.session.sessionId, f.root);
+      expect(page.messages.some(item => item.taskPlan)).toBe(false);
     } finally { await f.observer.close(); await f.log.close(); }
   });
 
@@ -150,8 +149,8 @@ describe("task-plan transport and recovery", () => {
     try {
       await f.advance();
       await f.log.append({ sessionId: f.session.sessionId, itemId: "plan:plan-tool", timestamp: 2000, type: "session.observed", origin: "claude-host", data: { role: "assistant", text: "", taskPlan: { id: "plan-tool", updatedAt: 2000, items: [{ content: "First", status: "in_progress" }, { content: "Second", status: "pending" }] } } });
-      const page = await readSessionHistory({ paths: f.paths, eventLog: f.log, taskState: new SessionTaskState(), session: { sessionId: f.session.sessionId, cwd: f.root }, activeTurn: false, observedSessions: [] });
-      expect(page.items.find(item => item.taskPlan)?.taskPlan?.items.map(item => item.status)).toEqual(["completed", "in_progress"]);
+      const page = await readClaudeSessionHistory(f.paths.projects, f.session.sessionId, f.root);
+      expect(page.messages.find(item => item.taskPlan)?.taskPlan?.items.map(item => item.status)).toEqual(["completed", "in_progress"]);
     } finally { await f.observer.close(); await f.log.close(); }
   });
 });

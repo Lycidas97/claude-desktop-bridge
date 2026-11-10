@@ -92,6 +92,7 @@ export interface DesktopSessionRegistrationInput {
   permissionMode?: BridgePermissionMode;
   parentDesktopSessionId?: string;
   forkLabel?: string;
+  sidechat?: boolean;
 }
 
 export interface DesktopSessionRegistrationResult extends StoredDesktopRegistration {}
@@ -444,6 +445,7 @@ export class ClaudeDesktopSessionRegistrar {
           sideSession: true,
           sharedFolder: true,
           userFork: true,
+          ...(input.sidechat ? { btw: true } : {}),
           name: input.forkLabel || "fork",
         },
       } : {}),
@@ -532,13 +534,21 @@ export class ClaudeDesktopSessionRegistrar {
           sideSession: true,
           sharedFolder: true,
           userFork: true,
+          ...(input.sidechat ? { btw: true } : {}),
           name: input.forkLabel || "fork",
         };
         mutated = true;
-      } else if ((raw.spawnedFrom as Record<string, unknown>).sessionId !== input.parentDesktopSessionId) {
-        raw.spawnedFrom = { ...raw.spawnedFrom, sessionId: input.parentDesktopSessionId };
-        forkChanged = true;
-        mutated = true;
+      } else {
+        const spawnedFrom = raw.spawnedFrom as Record<string, unknown>;
+        if (spawnedFrom.sessionId !== input.parentDesktopSessionId || (input.sidechat && spawnedFrom.btw !== true)) {
+          raw.spawnedFrom = {
+            ...spawnedFrom,
+            sessionId: input.parentDesktopSessionId,
+            ...(input.sidechat ? { btw: true } : {}),
+          };
+          forkChanged = true;
+          mutated = true;
+        }
       }
     }
     const targetModel = input.overrideModel ?? (

@@ -39,6 +39,25 @@ async function managerFixture() {
 }
 
 describe("EvidenceManager", () => {
+  it("uses the existing owner, chunk, capacity, TTL and size rules for in-memory bytes", async () => {
+    const { manager } = await managerFixture();
+    try {
+      const bytes = Buffer.alloc(600 * 1024, 0x42);
+      const image = { artifactId: "native-image:uuid:4", name: "photo.jpg", mimeType: "image/jpeg", bytes };
+      const transfer = manager.openBytesTransfer(image, "phone");
+      expect(transfer).toMatchObject({ artifactId: image.artifactId, name: image.name, mimeType: image.mimeType, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), chunkBytes: 256 * 1024, totalChunks: 3 });
+      expect(Buffer.concat([0, 1, 2].map(index => Buffer.from(manager.readTransfer(transfer.transferId, index, "phone").data, "base64")))).toEqual(bytes);
+      expect(() => manager.readTransfer(transfer.transferId, 0, "stranger")).toThrow("expired");
+      expect(manager.closeTransfer(transfer.transferId, "stranger")).toBe(false);
+      expect(() => manager.openBytesTransfer({ ...image, bytes: Buffer.alloc(20 * 1024 * 1024 + 1) }, "phone")).toThrow("20 MiB");
+      for (let i = 0; i < 3; i++) manager.openBytesTransfer(image, "phone");
+      expect(() => manager.openBytesTransfer(image, "phone")).toThrow("Too many");
+      vi.spyOn(Date, "now").mockReturnValue(transfer.expiresAt + 1);
+      expect(() => manager.readTransfer(transfer.transferId, 0, "phone")).toThrow("expired");
+      expect(manager.openBytesTransfer(image, "phone").size).toBe(bytes.length);
+    } finally { await manager.close(); }
+  });
+
   it("redacts recovered tool output and blocks sensitive or project-external paths", async () => {
     const { directory, manager } = await managerFixture();
     await writeFile(join(directory, "report.txt"), "report body\n");
@@ -209,6 +228,30 @@ describe("EvidenceManager", () => {
     } finally {
       await manager.close();
     }
+  });
+
+  it("uses the worktree as a read base while retaining the project boundary", async () => {
+    const { directory, manager } = await managerFixture();
+    try {
+      const project = join(directory, "repo");
+      const readCwd = join(project, ".claude/worktrees/task");
+      await mkdir(readCwd, { recursive: true });
+      await writeFile(join(project, "README.md"), "project docs");
+      await writeFile(join(directory, "outside.txt"), "outside");
+      await writeFile(join(readCwd, ".env"), "SECRET=fixture");
+      await mkdir(join(readCwd, ".git"));
+      await writeFile(join(readCwd, ".git/config"), "git fixture");
+      await symlink(join(directory, "outside.txt"), join(readCwd, "linked.txt"));
+      const transfer = await manager.openFileTransfer(project, "../../../README.md", "phone", true, readCwd);
+      expect(Buffer.from(manager.readTransfer(transfer.transferId, 0, "phone").data, "base64").toString()).toBe("project docs");
+      for (const path of [join(directory, "outside.txt"), "../../../../outside.txt", "linked.txt"]) {
+        await expect(manager.openFileTransfer(project, path, "phone", true, readCwd)).rejects.toThrow("项目目录");
+      }
+      for (const path of [".env", ".git/config"]) {
+        await expect(manager.openFileTransfer(project, path, "phone", true, readCwd)).rejects.toThrow("不允许远程读取");
+      }
+      await expect(manager.openFileTransfer(project, "outside.txt", "phone", true, directory)).rejects.toThrow("项目目录");
+    } finally { await manager.close(); }
   });
 
   it.each(["artifact", "file"] as const)("enforces owner and global limits without invalidating active %s transfers", async (source) => {

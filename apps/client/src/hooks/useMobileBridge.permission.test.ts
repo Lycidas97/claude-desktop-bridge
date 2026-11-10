@@ -81,10 +81,10 @@ describe("resolvePermission", () => {
     harness.result = { requestId: permission.requestId, nativePermissionModeChange: { requestId: permission.requestId, state: "requested" } };
     harness.beforeReply = () => expect(harness.state.permissions).toEqual([permission]);
 
-    await bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "full-access");
+    await bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "bypassPermissions");
 
     expect(harness.requests[0]).toMatchObject({ method: "permission.resolve", params: {
-      requestId: permission.requestId, decision: "allow-once", nativeMode: "full-access",
+      requestId: permission.requestId, decision: "allow-once", mode: "bypassPermissions",
     } });
     expect(harness.requests[0]!.params).not.toHaveProperty("updatedInput");
     expect(harness.requests[0]!.params).not.toHaveProperty("message");
@@ -100,7 +100,7 @@ describe("resolvePermission", () => {
     expect(harness.requests[0]).toMatchObject({ method: "permission.resolve", params: {
       requestId: permission.requestId, decision, message: "Answer", updatedInput: { answers: { Question: "Choice" } },
     } });
-    expect(harness.requests[0]!.params).not.toHaveProperty("nativeMode");
+    expect(harness.requests[0]!.params).not.toHaveProperty("mode");
   });
 
   it("keeps a pending permission when the native request fails", async () => {
@@ -108,7 +108,7 @@ describe("resolvePermission", () => {
     harness.state.permissions = [permission];
     harness.state.snapshot.permissions = [permission];
     harness.error = { code: "INVALID_REQUEST", message: "Native mode is unavailable" };
-    await expect(bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "full-access"))
+    await expect(bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "bypassPermissions"))
       .rejects.toThrow("Native mode is unavailable");
     expect(harness.state.permissions).toEqual([permission]);
     expect(harness.state.snapshot.permissions).toEqual([permission]);
@@ -119,7 +119,7 @@ describe("resolvePermission", () => {
     harness.state.permissions = [permission];
     harness.state.snapshot.permissions = [permission];
     harness.error = { code: "ALREADY_RESOLVED", message: "Already handled on Desktop" };
-    await expect(bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "full-access"))
+    await expect(bridge.resolvePermission(permission.requestId, "allow-once", undefined, undefined, "bypassPermissions"))
       .rejects.toThrow("Already handled on Desktop");
     expect(harness.state.permissions).toEqual([]);
     expect(harness.state.snapshot.permissions).toEqual([]);
@@ -157,14 +157,11 @@ describe("configureHostPermission", () => {
     expect(harness.state.snapshot.providers).toEqual([{ id: "B-only" }]);
   });
 
-  it("saves Claude host defaults without a session or configuration response", async () => {
+  it("does not save retired Claude host defaults", async () => {
     const bridge = useMobileBridge();
-    harness.result = { defaultPermissionMode: "full-access" };
-    await expect(bridge.configureHostPermission("claude-desktop", "full-access", "codex-desktop:first"))
-      .resolves.toBeUndefined();
-    expect(harness.requests[0]).toMatchObject({ method: "permission.policy.configure", params: { scope: "host", mode: "full-access" } });
-    expect(harness.requests[0]!.params).not.toHaveProperty("sessionId");
-    expect(harness.state.snapshot.host.defaultPermissionMode).toBe("full-access");
+    await expect(bridge.configureHostPermission("claude-desktop", "full-access")).rejects.toThrow("Desktop 管理");
+    expect(harness.requests).toEqual([]);
+    expect(harness.state.snapshot.host.defaultPermissionMode).toBe("standard");
   });
 
   it("targets one external app and preserves Claude's snapshot default", async () => {
@@ -188,11 +185,11 @@ describe("configureHostPermission", () => {
 
   it("keeps the existing session policy method's configuration return contract", async () => {
     const bridge = useMobileBridge();
-    const configuration = { sessionId: "session-1", permissionPolicy: { hostMode: "standard", source: "host", effectiveMode: "standard" } };
+    const configuration = { sessionId: "codex-desktop:first", permissionPolicy: { hostMode: "standard", source: "host", effectiveMode: "standard" } };
     harness.result = { configuration };
-    await expect(bridge.configurePermissionPolicy("session-1", "session", null)).resolves.toEqual(configuration);
+    await expect(bridge.configurePermissionPolicy("codex-desktop:first", "session", null)).resolves.toEqual(configuration);
     expect(harness.requests[0]).toMatchObject({
-      method: "permission.policy.configure", params: { sessionId: "session-1", scope: "session", mode: null },
+      method: "permission.policy.configure", params: { sessionId: "codex-desktop:first", scope: "session", mode: null },
     });
   });
 });

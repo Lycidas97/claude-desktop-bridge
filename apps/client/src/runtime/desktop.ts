@@ -16,7 +16,20 @@ export interface LocalBridgeRequest {
   idempotencyKey?: string;
 }
 
+export type ClaudeDesktopProfile = "Claude" | "Claude-3p";
+
+export interface ClaudeDesktopDeveloperSettings {
+  supported: boolean;
+  profiles: Array<{ id: ClaudeDesktopProfile; path: string }>;
+  profile?: ClaudeDesktopProfile;
+  path?: string;
+  enabled?: boolean;
+  changed?: boolean;
+}
+
 export interface DesktopApi {
+  checkClaudeDesktopDeveloperSettings(profile?: ClaudeDesktopProfile): Promise<ClaudeDesktopDeveloperSettings>;
+  enableClaudeDesktopDeveloperSettings(profile: ClaudeDesktopProfile): Promise<ClaudeDesktopDeveloperSettings>;
   getSnapshot(): Promise<DesktopControlSnapshot>;
   chooseDirectory?(initialPath?: string): Promise<string | undefined>;
   createPairing(): Promise<DesktopControlSnapshot>;

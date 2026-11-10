@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { rm, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,7 +12,7 @@ const directories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => (
-    rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rm(directory, { recursive: true, force: true })
   )));
 });
 
@@ -61,74 +61,62 @@ describe("ConversationStateStore", () => {
     expect(store.sessionTitle("native-1")).toBeUndefined();
   });
 
-  it("transactionally migrates legacy sessions and fixes every queued item to its lane", async () => {
+  it("leaves legacy sessions and queue files untouched and unimported across startups", async () => {
     const fixture = await createStore();
-    await writeFile(fixture.sessionsPath, JSON.stringify({
-      version: 2,
-      sessions: [{
-        sessionId: "session-1",
-        cwd: "/tmp/project-one",
-        title: "Project one",
-        createdAt: 1_000,
-      }],
-      configurations: [{
-        sessionId: "session-1",
-        model: "claude-fable-5",
-        updatedAt: 1_100,
-      }],
-    }), "utf8");
-    await writeFile(fixture.queuePath, JSON.stringify({
-      version: 2,
-      pending: [{
-        commandId: "command-1",
-        requestId: "request-1",
-        idempotencyKey: "idempotency-1",
-        sessionId: "session-1",
-        text: "continue",
-        attachments: [],
-        origin: "mobile",
-        requestedAt: 1_200,
-        priority: 0,
-        attempts: 0,
-        state: "queued",
-      }],
-      completedIdempotencyKeys: ["already-complete"],
-      terminalTurns: [],
-    }), "utf8");
+    const sessions = JSON.stringify({ version: 2, sessions: [{
+      sessionId: "session-1", cwd: "/tmp/project-one", title: "Project one", createdAt: 1_000,
+    }], configurations: [{ sessionId: "session-1", model: "legacy-model", updatedAt: 1_100 }] }, null, 2) + "\n";
+    const queue = JSON.stringify({ version: 2, pending: [{
+      commandId: "command-1", requestId: "request-1", idempotencyKey: "idempotency-1", sessionId: "session-1",
+      text: "continue", origin: "mobile", state: "queued",
+    }], completedIdempotencyKeys: ["already-complete"], terminalTurns: [{
+      idempotencyKey: "old-receipt", commandId: "old-command", requestId: "old-request", sessionId: "session-1", state: "completed",
+    }] }, null, 2) + "\n";
+    await writeFile(fixture.sessionsPath, sessions);
+    await writeFile(fixture.queuePath, queue);
+    const sourceStats = await Promise.all([fixture.sessionsPath, fixture.queuePath].map(path => stat(path)));
+    const receipt = { idempotencyKey: "native-key", commandId: "native-command", requestId: "native-request",
+      sessionId: "native-session", messageId: "native-message", state: "queued" as const };
+    for (let startup = 0; startup < 3; startup += 1) {
+      try {
+        await fixture.store.initialize();
+        expect(fixture.store.loadBrokerState()).toEqual({
+          sessions: [], configurations: [], pending: [], completedIdempotencyKeys: [], terminalTurns: [],
+        });
+        expect(fixture.store.route("session-1")).toBeUndefined();
+        if (startup === 0) {
+          fixture.store.setSessionTitle("codex-desktop:native-1", "Existing database title");
+          fixture.store.saveRuntimeSessionPermission("codex-desktop:native-1", "full-access");
+          fixture.store.saveNativeDesktopReceipt(receipt);
+        }
+        expect(fixture.store.sessionTitle("codex-desktop:native-1")).toBe("Existing database title");
+        expect(fixture.store.listRuntimeSessionPermissions()).toEqual([
+          expect.objectContaining({ sessionId: "codex-desktop:native-1", permissionMode: "full-access" }),
+        ]);
+        expect(fixture.store.nativeDesktopReceipt(receipt.idempotencyKey)).toEqual(receipt);
+        expect(await readFile(fixture.sessionsPath, "utf8")).toBe(sessions);
+        expect(await readFile(fixture.queuePath, "utf8")).toBe(queue);
+        for (const [index, path] of [fixture.sessionsPath, fixture.queuePath].entries()) {
+          const current = await stat(path);
+          expect({ ino: current.ino, mtimeMs: current.mtimeMs }).toEqual({ ino: sourceStats[index]!.ino, mtimeMs: sourceStats[index]!.mtimeMs });
+        }
+        expect((await readdir(fixture.directory)).filter(name => name.startsWith("sessions-v2.json") || name.startsWith("turn-queue-v2.json")).sort())
+          .toEqual(["sessions-v2.json", "turn-queue-v2.json"]);
+      } finally { fixture.store.close(); }
+    }
+  });
 
-    await fixture.store.initialize();
-    const state = fixture.store.loadBrokerState();
-    expect(state.sessions).toHaveLength(1);
-    expect(state.configurations).toHaveLength(1);
-    expect(state.pending).toEqual([
-      expect.objectContaining({
-        commandId: "command-1",
-        laneId: "lane:claude-3p:session-1",
-      }),
-    ]);
-    expect(fixture.store.route("session-1")).toMatchObject({
-      activeLaneId: "lane:claude-3p:session-1",
-      activeProviderProfileId: "provider:claude-3p:default",
-      state: "ready",
-    });
-
-    expect(await fixture.store.recordSuccessfulStartup()).toBe(1);
-    await expect(stat(fixture.sessionsPath)).resolves.toBeDefined();
-    expect(await fixture.store.recordSuccessfulStartup()).toBe(2);
-    await expect(stat(`${fixture.sessionsPath}.migrated`)).resolves.toBeDefined();
-    await expect(stat(`${fixture.queuePath}.migrated`)).resolves.toBeDefined();
-    await expect(stat(fixture.sessionsPath)).rejects.toMatchObject({ code: "ENOENT" });
-
-    fixture.store.close();
-    const reopened = new ConversationStateStore({
-      databasePath: fixture.databasePath,
-      sessionsPath: fixture.sessionsPath,
-      queuePath: fixture.queuePath,
-      masterSecret: "test-conversation-state-secret",
-    });
-    await reopened.initialize();
-    expect(reopened.loadBrokerState().pending[0]?.laneId).toBe("lane:claude-3p:session-1");
-    reopened.close();
+  it("does not parse malformed legacy JSON during initialization", async () => {
+    const fixture = await createStore();
+    await writeFile(fixture.sessionsPath, "{ untouched legacy sessions");
+    await writeFile(fixture.queuePath, "old queue content");
+    try {
+      await fixture.store.initialize();
+      expect(fixture.store.loadBrokerState().sessions).toEqual([]);
+      expect(fixture.store.loadBrokerState().pending).toEqual([]);
+      expect(await readFile(fixture.sessionsPath, "utf8")).toBe("{ untouched legacy sessions");
+      expect(await readFile(fixture.queuePath, "utf8")).toBe("old queue content");
+    } finally { fixture.store.close(); }
   });
 
   it("normalizes fractional observed timestamps for strict SQLite columns", async () => {

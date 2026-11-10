@@ -55,6 +55,7 @@ try {
         iceServers: bridgeIceServers(pairing.iceServers),
       });
   const requestId = randomId();
+  const snapshotRequestId = randomId();
 
   const result = await new Promise((resolve, reject) => {
     const state = { snapshot: undefined, response: undefined };
@@ -66,9 +67,8 @@ try {
       relayMessages: [],
       messages: [],
     };
-    // Windows CI runners sit an ocean away from the public relay: handshake,
-    // room registration and the pairing claim can legitimately take >20s on a
-    // congested evening. 60s keeps the gate about correctness, not geography.
+    // Include room registration, pairing and encrypted snapshot bootstrap in
+    // the transport timeout, for both local QA and remote relay runs.
     const timeout = setTimeout(() => reject(new Error(
       `Pairing E2E timed out: ${JSON.stringify(diagnostics)}`,
     )), 60_000);
@@ -79,14 +79,17 @@ try {
       sent = true;
       void mobile.send({
         kind: "request",
+        requestId: snapshotRequestId,
+        idempotencyKey: randomId(),
+        method: "snapshot.get",
+        params: { client: { name: "Pairing E2E", platform: "web" } },
+      }, "desktop").then(() => mobile.send({
+        kind: "request",
         requestId,
         idempotencyKey: randomId(),
         method: "project.list",
-        params: {
-          client: { name: "Pairing E2E", platform: "web" },
-          padding: "x".repeat(paddingBytes),
-        },
-      }, "desktop").catch(reject);
+        params: { padding: "x".repeat(paddingBytes) },
+      }, "desktop")).catch(reject);
     };
     relay.onMessage((message) => diagnostics.relayMessages.push(message.payload.kind));
     const finish = () => {
@@ -114,7 +117,13 @@ try {
           : message.payload.kind,
       );
       mobile.ack([encrypted.id]);
-      if (message.payload.kind === "snapshot") state.snapshot = message.payload.snapshot;
+      if (message.payload.kind === "response" && message.payload.requestId === snapshotRequestId) {
+        if (!message.payload.ok) {
+          reject(new Error(message.payload.error?.message ?? "Pairing snapshot request failed"));
+          return;
+        }
+        state.snapshot = message.payload.result?.snapshot;
+      }
       if (message.payload.kind === "response" && message.payload.requestId === requestId) {
         state.response = message.payload;
       }

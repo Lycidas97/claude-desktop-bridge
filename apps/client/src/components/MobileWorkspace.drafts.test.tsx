@@ -871,6 +871,84 @@ describe("native structured approvals", () => {
     return elements(tree).find(element => element.type === InteractivePromptCard)!;
   }
 
+  it.each(["history", "streaming", "completed"] as const)("keeps the current native question after the latest %s output without moving its context", stage => {
+    const question = { question: "接下来检查什么？", options: [{ label: "检查全文" }] };
+    props = { ...props, permissions: [{ requestId: "pending-question", sessionId: "A", toolUseId: "native-question", toolName: "AskUserQuestion", input: { questions: [question] }, createdAt: 1, canAllowAlways: false }] };
+    nativePrompt({ kind: "question", questions: [question] });
+    const prompt = props.histories.A!.items[0]!;
+    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
+      { ...prompt, text: "提问前的上下文" },
+      ...(stage === "history" ? [{ id: "latest-output", sessionId: "A", role: "assistant" as const, text: "最新的总结内容", createdAt: 3, origin: "claude-desktop" as const }] : []),
+    ] } }, events: stage === "history" ? [] : [{ eventId: "latest-event", seq: 1, timestamp: 3, sessionId: "A", itemId: "latest-output", origin: "claude-desktop", type: stage === "streaming" ? "assistant.delta" : "assistant.completed", data: { text: "最新的总结内容" } }] };
+    draw();
+    const nodes = elements(tree);
+    const cards = nodes.filter(element => element.type === PermissionPrompt && element.props.permission.requestId === "pending-question");
+    expect(cards).toHaveLength(1);
+    expect(nodes.some(element => element.type === InteractivePromptCard)).toBe(false);
+    expect(nodes.findIndex(element => element.props.text === "提问前的上下文")).toBeLessThan(nodes.findIndex(element => element.props.text === "最新的总结内容"));
+    expect(nodes.indexOf(cards[0]!)).toBeGreaterThan(nodes.findIndex(element => element.props.text === "最新的总结内容"));
+  });
+
+  it.each(["Bash", "AskUserQuestion"])("keeps the %s entry below output and above the composer even before history arrives", toolName => {
+    props = { ...props, permissions: [{ requestId: "pending-before-history", sessionId: "A", toolUseId: "pending-before-history-tool", toolName, input: toolName === "AskUserQuestion" ? { questions: [{ question: "选哪个？", options: [{ label: "继续" }] }] } : { command: "synthetic-noop" }, createdAt: 1, canAllowAlways: false }], histories: { A: { status: "loading", hasMore: false, items: [] } } };
+    draw();
+    const nodes = elements(tree);
+    const stream = nodes.findIndex(element => element.props.className === "conversation-stream");
+    const dock = nodes.findIndex(element => String(element.props.className).startsWith("permission-dock-slot"));
+    const composer = nodes.findIndex(element => element.props.className === "mobile-composer");
+    expect(dock).toBeGreaterThan(stream);
+    expect(dock).toBeLessThan(composer);
+    expect(nodes.some(element => element.type === PermissionPrompt && element.props.permission.requestId === "pending-before-history")).toBe(true);
+    if (toolName === "AskUserQuestion") {
+      expect(elements(nodes[stream]!).some(element => element.type === PermissionPrompt && element.props.permission.requestId === "pending-before-history")).toBe(true);
+      expect(nodes.some(element => element.props.title === "Claude 等待授权")).toBe(false);
+    } else {
+      expect(nodes.some(element => element.type === "strong" && [element.props.children].flat().join("") === "Claude 正在等待授权")).toBe(true);
+    }
+  });
+
+  it.each(["Bash", "AskUserQuestion"])("marks the session's current %s request without requiring loaded history or inferred native state", toolName => {
+    props = { ...props, permissions: [{ requestId: "list-request", sessionId: "B", toolUseId: "list-tool", toolName, input: {}, createdAt: 1, canAllowAlways: false }] };
+    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
+    const row = elements(tree).find(element => element.props["data-session-id"] === "B")!;
+    expect(elements(row).find(element => String(element.props.className).startsWith("session-row-status"))?.props.children).toBe(toolName === "AskUserQuestion" ? "待回答" : "待授权");
+    expect(props.snapshot!.sessions.find(session => session.sessionId === "B")!.turnState).toBe("idle");
+    elements(row).find(element => element.props.className === "session-row-hit")!.props.onClick(); draw();
+    expect(props.onOpenSession).toHaveBeenCalledWith("B");
+    expect(elements(tree).some(element => element.type === PermissionPrompt && element.props.permission.requestId === "list-request")).toBe(true);
+    props = { ...props, permissions: [] }; draw();
+    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
+    const clearedRow = elements(tree).find(element => element.props["data-session-id"] === "B")!;
+    expect(elements(clearedRow).some(element => String(element.props.className).startsWith("session-row-status"))).toBe(false);
+  });
+
+  it("keeps a newly arrived question reachable while reading session evidence", () => {
+    props = { ...props, histories: { A: { status: "ready", hasMore: false, items: [{ id: "prior-user", sessionId: "A", turnId: "prior-turn", role: "user", text: "之前的工作", createdAt: 1, origin: "claude-desktop" }] } },
+      evidence: { A: { status: "ready", hasMore: false, items: [{ id: "prior-evidence", sessionId: "A", turnId: "prior-turn", source: "claude-desktop", confidence: "exact", state: "ready", startedAt: 1, completedAt: 2, toolCount: 0, changeCount: 0, artifactCount: 0, tools: [], artifacts: [], warnings: [] }] } } };
+    draw();
+    elements(tree).find(element => element.props.evidence?.id === "prior-evidence")!.props.onOpen(); draw();
+    expect(elements(tree).some(element => element.props.className === "mobile-evidence-view")).toBe(true);
+    props = { ...props, permissions: [{ requestId: "evidence-question", sessionId: "A", toolUseId: "evidence-tool", toolName: "AskUserQuestion", input: { questions: [{ question: "继续吗？", options: [{ label: "继续" }] }] }, createdAt: 3, canAllowAlways: false }] }; draw();
+    const entry = elements(tree).find(element => element.props.className === "permission-dock")!;
+    expect(entry).toBeDefined();
+    entry.props.onClick(); draw();
+    expect(elements(tree).some(element => element.type === PermissionPrompt && element.props.permission.requestId === "evidence-question")).toBe(true);
+    expect(elements(tree).some(element => element.props.title === "Claude 等待授权")).toBe(false);
+  });
+
+  it("keeps an answered historical wrap-up before its later summary", () => {
+    nativePrompt({ kind: "wrap-up", answered: true, ask: "继续？", actions: [{ label: "继续", message: "继续", selected: true }] });
+    props = { ...props, histories: { ...props.histories, A: { ...props.histories.A!, items: [...props.histories.A!.items,
+      { id: "answered-summary", sessionId: "A", role: "assistant", text: "已完成的后续总结", createdAt: 3, origin: "claude-desktop" },
+    ] } } };
+    draw();
+    const nodes = elements(tree);
+    const card = nodes.find(element => element.type === InteractivePromptCard)!;
+    expect(card.props.prompt.answered).toBe(true);
+    expect(nodes.indexOf(card)).toBeLessThan(nodes.findIndex(element => element.props.text === "已完成的后续总结"));
+    expect(nodes.some(element => element.props.className === "permission-dock")).toBe(false);
+  });
+
   it("does not send blocked native wrap-up approval as peer chat", async () => {
     const card = nativePrompt({ kind: "wrap-up", blocked: true, ask: "批准实施？", actions: [{ label: "批准实施", message: "批准实施" }] });
     const rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
@@ -896,9 +974,14 @@ describe("native structured approvals", () => {
     const question = { question: "Which branch?", options: [{ label: "Main" }, { label: "Feature" }] };
     const permission: BridgePermissionInfo = { requestId: "exact-request", sessionId: "A", toolUseId: "native-question", toolName: "AskUserQuestion", input: { questions: [question] }, createdAt: 1, canAllowAlways: false };
     props = { ...props, permissions: [{ ...permission, requestId: "other-request", toolUseId: "another-tool" }, permission] };
-    const card = nativePrompt({ kind: "question", questions: [question] });
-    card.props.onSelectOption("Main");
-    await settle();
+    nativePrompt({ kind: "question", questions: [question] });
+    const card = elements(tree).find(element => element.type === PermissionPrompt && element.props.permission.toolUseId === "native-question")!;
+    const child = PermissionPrompt(card.props as ComponentProps<typeof PermissionPrompt>);
+    hooks.slots = [];
+    const drawQuestion = () => { hooks.index = 0; return (child.type as (props: unknown) => ReactElement)(child.props); };
+    elements(drawQuestion()).find(element => element.type === "input")!.props.onChange();
+    const answering = elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.onClick();
+    await answering;
     expect(props.onResolvePermission).toHaveBeenCalledExactlyOnceWith("exact-request", "allow-once", undefined, { ...permission.input, answers: { "Which branch?": "Main" } });
     expect(props.onSendTurn).not.toHaveBeenCalled();
   });
@@ -925,6 +1008,26 @@ describe("native structured approvals", () => {
     expect(props.onResolvePermission).not.toHaveBeenCalled();
   });
 
+  it.each(["single", "multi", "open"] as const)("submits a %s text answer through the original question without sending chat", async mode => {
+    const question = { question: "下一步怎么做？", multiSelect: mode === "multi", options: mode === "open" ? [] : [{ label: "先检查" }] };
+    const permission: BridgePermissionInfo = { requestId: "text-answer", sessionId: "A", toolUseId: "text-tool", toolName: "AskUserQuestion", createdAt: 1, canAllowAlways: false, input: { questions: [question] } };
+    const onResolve = vi.fn().mockRejectedValueOnce(new Error("回答尚未提交")).mockResolvedValue(undefined);
+    const child = PermissionPrompt({ permission, onResolve });
+    hooks.slots = [];
+    const drawQuestion = () => { hooks.index = 0; return (child.type as (props: unknown) => ReactElement)(child.props); };
+    if (mode !== "open") elements(drawQuestion()).find(element => element.type === "input" && element.props.type !== "text")!.props.onChange();
+    elements(drawQuestion()).find(element => element.type === "input" && element.props.type === "text")!.props.onChange({ target: { value: "  按修订意见继续  " } });
+    expect(elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.disabled).toBe(false);
+    elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.onClick();
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(elements(drawQuestion()).find(element => element.props.role === "alert")?.props.children).toBe("回答尚未提交");
+    expect(elements(drawQuestion()).find(element => element.type === "input" && element.props.type === "text")!.props.value).toBe("  按修订意见继续  ");
+    elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.onClick();
+    expect(onResolve).toHaveBeenCalledTimes(2);
+    expect(onResolve).toHaveBeenLastCalledWith("text-answer", "allow-once", undefined, { ...permission.input, answers: { "下一步怎么做？": mode === "multi" ? "先检查, 按修订意见继续" : "按修订意见继续" } });
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
   it("submits all checkbox answers through the pending question request", async () => {
     const permission: BridgePermissionInfo = { requestId: "multi-request", sessionId: "A", toolUseId: "native-question", toolName: "AskUserQuestion", createdAt: 1, canAllowAlways: false,
       input: { questions: [{ question: "Which checks?", multiSelect: true, options: [{ label: "类型检查" }, { label: "回归测试" }] }] } };
@@ -933,7 +1036,7 @@ describe("native structured approvals", () => {
     const drawQuestion = () => { hooks.index = 0; return (child.type as (props: unknown) => ReactElement)(child.props); };
     hooks.slots = [];
     let rendered = drawQuestion();
-    expect(elements(rendered).filter(element => element.type === "input").map(element => element.props.type)).toEqual(["checkbox", "checkbox"]);
+    expect(elements(rendered).filter(element => element.type === "input").map(element => element.props.type)).toEqual(["checkbox", "checkbox", "text"]);
     elements(rendered).filter(element => element.type === "input")[0]!.props.onChange();
     rendered = drawQuestion();
     elements(rendered).filter(element => element.type === "input")[1]!.props.onChange();
@@ -1262,7 +1365,8 @@ describe("mobile conversation draft ownership", () => {
     elements(questionTree!).find((element) => element.props.className === "primary-button")!.props.onClick();
     props = { ...props, permissions: [{ ...first, requestId: "second", toolUseId: "tool-second" }] }; draw();
     drawPrompt();
-    expect(elements(questionTree!).filter((element) => element.type === "input").map((element) => element.props.checked)).toEqual([false, false]);
+    expect(elements(questionTree!).filter((element) => element.type === "input" && element.props.type === "radio").map((element) => element.props.checked)).toEqual([false, false]);
+    expect(elements(questionTree!).find(element => element.type === "input" && element.props.type === "text")?.props.value).toBe("");
     expect(elements(questionTree!).find((element) => element.props.className === "secondary-button")!.props.disabled).toBe(false);
     expect(elements(questionTree!).find((element) => element.props.className === "primary-button")!.props.disabled).toBe(true);
     submitting.reject(new Error("Previous answer failed")); await settle(); drawPrompt();
@@ -1282,7 +1386,12 @@ describe("mobile conversation draft ownership", () => {
       { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-host", interactivePrompt: { kind: "question", toolUseId: "matching-tool", questions: [question] } },
     ] } } };
     draw();
-    elements(tree).find((element) => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
+    const prompt = elements(tree).find(element => element.type === PermissionPrompt && element.props.permission.requestId === "matching")!;
+    const child = PermissionPrompt(prompt.props as ComponentProps<typeof PermissionPrompt>);
+    hooks.slots = [];
+    const drawQuestion = () => { hooks.index = 0; return (child.type as (props: unknown) => ReactElement)(child.props); };
+    elements(drawQuestion()).find(element => element.type === "input" && element.props.type === "radio")!.props.onChange();
+    elements(drawQuestion()).find(element => element.props.className === "primary-button")!.props.onClick();
     expect(props.onResolvePermission).toHaveBeenCalledWith("matching", "allow-once", undefined, { ...permission.input, answers: { "Which branch?": "Main" } });
     expect(props.onSendTurn).not.toHaveBeenCalled();
   });

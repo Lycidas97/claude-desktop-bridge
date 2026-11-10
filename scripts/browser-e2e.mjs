@@ -794,7 +794,7 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     kind: "question", toolUseId: "unmatched-native-question", questions: [{ question: "未接通的历史问题", options: [{ label: "确认" }] }],
   } }, { itemId: "native-unmatched-question" });
   const unmatched = page.locator(".interactive-prompt-card").filter({ hasText: "未接通的历史问题" });
-  await unmatched.getByText("需在电脑端回答", { exact: true }).waitFor();
+  await unmatched.getByText("提问已不在待回答列表", { exact: true }).waitFor();
   assert.equal(await unmatched.getByRole("button", { name: "确认", exact: true }).isDisabled(), true);
   assert.equal(host.requests.filter((request) => request.method === "turn.start").length, 0);
   await page.screenshot({ path: resolve(directory, "native-unavailable.png"), fullPage: true });
@@ -804,6 +804,12 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     const open = await host.nativeApproval.open("Bash", { command: "synthetic-native-tool --never-executed", description: "仅验证原生审批响应" });
     const dialog = page.getByRole("dialog", { name: "Claude 等待授权", exact: true });
     await dialog.waitFor();
+    await dialog.getByRole("button", { name: "暂时关闭", exact: true }).click();
+    const dock = await page.locator(".permission-dock-slot").boundingBox();
+    const stream = await page.locator(".conversation-stream").boundingBox();
+    const composer = await page.locator(".mobile-composer").boundingBox();
+    assert.ok(stream.height > 0 && dock.y >= stream.y + stream.height - 1 && dock.y + dock.height <= composer.y + 1, "Authorization entry follows the scrollable output and precedes the composer");
+    await page.locator(".permission-dock").click();
     await dialog.getByRole("button", { name: decision === "deny" ? "拒绝" : "允许一次", exact: true }).click();
     if (decision === "deny") {
       await dialog.getByRole("textbox", { name: "拒绝原因", exact: true }).fill("改用只读检查");
@@ -824,25 +830,39 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     { question: "选择执行范围", multiSelect: false, options: [{ label: "仅本机", description: "使用隔离测试目录" }, { label: "稍后处理" }] },
     { question: "选择检查项目", multiSelect: true, options: [{ label: "类型检查" }, { label: "回归测试" }] },
   ] };
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   const question = await host.nativeApproval.open("AskUserQuestion", input);
-  const dialog = page.getByRole("dialog", { name: "Claude 等待授权", exact: true });
-  await dialog.waitFor();
+  const sessionRow = page.locator(`[data-session-id="${sessionId}"]`);
+  await sessionRow.getByText("待回答", { exact: true }).waitFor();
+  await page.getByText("有提问待你回答", { exact: true }).waitFor();
+  await sessionRow.getByRole("button").first().click();
+  const questionCard = page.locator(".conversation-stream .pending-question");
+  await questionCard.waitFor();
+  assert.equal(await page.getByRole("dialog", { name: "Claude 等待授权", exact: true }).count(), 0, "Questions are answered inline without another approval sheet");
+  await host.emit("assistant.delta", { text: "提问后到达的最新总结内容" }, { itemId: "question-later-summary" });
+  await host.emit("assistant.completed", { text: "提问后到达的最新总结内容" }, { itemId: "question-later-summary" });
+  const latestOutput = page.locator(".conversation-item").filter({ hasText: "提问后到达的最新总结内容" });
+  await latestOutput.waitFor();
+  assert.equal(await latestOutput.evaluate(output => Boolean(output.compareDocumentPosition(document.querySelector(".pending-question")) & Node.DOCUMENT_POSITION_FOLLOWING)), true, "The live question stays after subsequent assistant output");
   const snapshotCount = host.requests.filter((request) => request.method === "snapshot.get").length;
   const peer = [...relayPeers].find(([, hello]) => hello.roomId === host.pairing.roomId && hello.role === "mobile");
   assert.ok(peer, "Native approval scenario must own a connected phone");
   peer[0].close(1012, "native approval reconnect fixture");
   await eventually(() => host.requests.filter((request) => request.method === "snapshot.get").length > snapshotCount, true, "Reconnect must fetch pending native approval");
   assert.equal(host.nativeApproval.list()[0].requestId, question.request.requestId);
-  await dialog.getByRole("radio", { name: /仅本机/u }).check();
-  await dialog.getByRole("checkbox", { name: "类型检查", exact: true }).check();
-  await dialog.getByRole("checkbox", { name: "回归测试", exact: true }).check();
+  await questionCard.getByRole("radio", { name: /仅本机/u }).check();
+  await questionCard.getByRole("checkbox", { name: "类型检查", exact: true }).check();
+  await questionCard.getByRole("checkbox", { name: "回归测试", exact: true }).check();
   await page.screenshot({ path: resolve(directory, "native-question.png"), fullPage: true });
-  await dialog.getByRole("button", { name: "提交回答", exact: true }).click();
+  await questionCard.getByRole("button", { name: "提交回答", exact: true }).click();
   const questionReply = await question.response;
   assert.equal(questionReply.decision, "once");
   assert.equal(questionReply.requestId, question.request.requestId);
   assert.deepEqual(questionReply.response, { ...input, answers: { "选择执行范围": "仅本机", "选择检查项目": "类型检查, 回归测试" } });
-  await dialog.waitFor({ state: "hidden" });
+  await questionCard.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await sessionRow.getByText("待回答", { exact: true }).waitFor({ state: "hidden" });
+  await sessionRow.getByRole("button").first().click();
   const resolutions = host.requests.filter((request) => request.method === "permission.resolve");
   assert.equal(resolutions.length, 3);
   assert.equal(new Set(resolutions.map((request) => request.params.requestId)).size, 3);
@@ -1677,7 +1697,9 @@ try {
               previewHost.history.splice(0, previewHost.history.length, ...(await previewHost.nativeApproval.history()).items);
               result = { events: events.length };
             } else if (nativePreview && request.method === "POST" && url.pathname === "/request") {
-              previewApproval = await previewHost.nativeApproval.open("Bash", { command: "synthetic-native-mode --never-executed" });
+              previewApproval = url.searchParams.get("kind") === "question"
+                ? await previewHost.nativeApproval.open("AskUserQuestion", { questions: [{ question: "接下来要做什么？", options: [{ label: "复核全文" }, { label: "修订摘要" }], multiSelect: url.searchParams.get("multi") === "true" }] })
+                : await previewHost.nativeApproval.open("Bash", { command: "synthetic-native-mode --never-executed" });
               previewHost.nativeResponse = undefined;
               void previewApproval.response.then(reply => { previewHost.nativeResponse = reply; })
                 .catch(error => infrastructureErrors.push(error.stack));

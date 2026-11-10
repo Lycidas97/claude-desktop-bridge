@@ -12,6 +12,10 @@
   composer; a readback disconnect after Native success no longer loses that result.
 - Forward live native permissions and structured question/plan approvals; keep
   completed requests synchronized without treating historical cards as approvals.
+- Keep pending question cards after the latest output and answer them directly
+  on mobile with single-choice, multi-select or text, without another approval
+  sheet. Mark sessions as awaiting an answer or authorization, and place tool
+  authorization entry points below the output.
 - Surface background tasks, workflow progress, /btw side chats and online mobile
   notifications for completed work and pending approvals.
 - Reduce repeated large-history and reconnect loads, retain paged history and

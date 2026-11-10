@@ -3478,12 +3478,13 @@ button:disabled {
 
 .permission-dock-slot {
   min-height: 0;
+  flex-shrink: 0;
   background: var(--surface);
 }
 
 .permission-dock-slot.has-attention {
   padding: 8px max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
-  border-bottom: 1px solid color-mix(in srgb, var(--warm) 30%, var(--line));
+  border-top: 1px solid color-mix(in srgb, var(--warm) 30%, var(--line));
 }
 
 .permission-dock,
@@ -5232,6 +5233,24 @@ button:disabled {
   color: var(--muted);
   font-size: 9px;
   line-height: 1.4;
+}
+
+.question-freeform {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.question-freeform input {
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
 }
 
 .mobile-composer {

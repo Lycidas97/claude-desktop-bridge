@@ -1401,10 +1401,11 @@ function QuestionPrompt({
       ))
     : [];
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
+  const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const complete = questions.every((question) => (
-    typeof question.question === "string" && Boolean(answers[question.question]?.length)
+    typeof question.question === "string" && Boolean(answers[question.question]?.length || customAnswers[question.question]?.trim())
   ));
   async function resolveQuestion(
     decision: "allow-once" | "deny",
@@ -1444,16 +1445,32 @@ function QuestionPrompt({
                     type={question.multiSelect === true ? "checkbox" : "radio"}
                     name={`${permission.requestId}:${index}`}
                     checked={question.multiSelect === true ? answers[prompt]?.includes(label) ?? false : answers[prompt] === label}
-                    onChange={() => setAnswers((current) => {
-                      if (question.multiSelect !== true) return { ...current, [prompt]: label };
-                      const selected = Array.isArray(current[prompt]) ? current[prompt] : [];
-                      return { ...current, [prompt]: selected.includes(label) ? selected.filter((value) => value !== label) : [...selected, label] };
-                    })}
+                    onChange={() => {
+                      if (question.multiSelect !== true) setCustomAnswers(current => ({ ...current, [prompt]: "" }));
+                      setAnswers((current) => {
+                        if (question.multiSelect !== true) return { ...current, [prompt]: label };
+                        const selected = Array.isArray(current[prompt]) ? current[prompt] : [];
+                        return { ...current, [prompt]: selected.includes(label) ? selected.filter((value) => value !== label) : [...selected, label] };
+                      });
+                    }}
                   />
                   <span><strong>{label}</strong>{typeof option.description === "string" && <small>{option.description}</small>}</span>
                 </label>
               );
             })}
+            <label className="question-freeform">
+              <span>{options.length ? "其他回答" : "你的回答"}</span>
+              <input
+                type="text"
+                aria-label={`${prompt}：${options.length ? "其他回答" : "你的回答"}`}
+                value={customAnswers[prompt] ?? ""}
+                disabled={busy}
+                onChange={event => {
+                  setCustomAnswers(current => ({ ...current, [prompt]: event.target.value }));
+                  if (question.multiSelect !== true) setAnswers(current => ({ ...current, [prompt]: "" }));
+                }}
+              />
+            </label>
           </fieldset>
         );
       })}
@@ -1465,7 +1482,7 @@ function QuestionPrompt({
           disabled={!complete || busy}
           onClick={() => void resolveQuestion(
             "allow-once",
-            { ...permission.input, answers: Object.fromEntries(Object.entries(answers).map(([question, answer]) => [question, Array.isArray(answer) ? answer.join(", ") : answer])) },
+            { ...permission.input, answers: Object.fromEntries(questions.map(question => [question.question, [answers[question.question as string], customAnswers[question.question as string]?.trim()].flat().filter(Boolean).join(", ")])) },
           )}
         >
           {busy && <LoaderCircle className="is-spinning" size={15} />}提交回答
@@ -2361,7 +2378,7 @@ export function MobileWorkspace({
     handledFocusRequestRef.current = focusRequest.key;
     if (focusSessionId === focusRequest.sessionId) handledFocusRef.current = focusSessionId;
     void selectSession(focusRequest.sessionId);
-    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusRequest.sessionId));
+    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusRequest.sessionId && permission.toolName !== "AskUserQuestion"));
     onFocusHandled?.();
   }, [focusRequest, focusSessionId, onFocusHandled, permissions, sessions, visible]);
 
@@ -2375,13 +2392,14 @@ export function MobileWorkspace({
     ) return;
     handledFocusRef.current = focusSessionId;
     void selectSession(focusSessionId);
-    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusSessionId));
+    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusSessionId && permission.toolName !== "AskUserQuestion"));
   }, [focusRequest, focusSessionId, permissions, sessions, visible]);
 
   useEffect(() => {
     if (!visible || !selectedSessionId) return;
     const next = permissions.find((permission) => (
       permission.sessionId === selectedSessionId &&
+      permission.toolName !== "AskUserQuestion" &&
       !announcedPermissionsRef.current.has(permission.requestId)
     ));
     if (!next) return;
@@ -2394,7 +2412,7 @@ export function MobileWorkspace({
       visible &&
       permissionOpen &&
       selectedSessionId &&
-      !permissions.some((permission) => permission.sessionId === selectedSessionId)
+      !permissions.some((permission) => permission.sessionId === selectedSessionId && permission.toolName !== "AskUserQuestion")
     ) {
       setPermissionOpen(false);
     }
@@ -2905,7 +2923,9 @@ export function MobileWorkspace({
     const hasDraft = Boolean(text.trim()) || (canAttachImages && attachments.length > 0) || fileUploads.files.length > 0;
     const sessionPermissions = desktopRuntimeId(selectedSession) !== "claude-desktop" || (isClaudeNativeRelay(snapshot) && selectedSession.transport === "claude-desktop-native")
       ? permissions.filter(permission => permission.sessionId === selectedSession.sessionId) : [];
-    const activePermission = sessionPermissions[0];
+    const sessionQuestions = sessionPermissions.filter(permission => permission.toolName === "AskUserQuestion");
+    const toolPermissions = sessionPermissions.filter(permission => permission.toolName !== "AskUserQuestion");
+    const activePermission = toolPermissions[0];
     const otherPermission = permissions.find(permission => {
       if (permission.sessionId === selectedSession.sessionId) return false;
       const session = sessions.find(candidate => candidate.sessionId === permission.sessionId);
@@ -3168,22 +3188,6 @@ export function MobileWorkspace({
             <button type="button" className="secondary-button goal-action" onClick={() => setFileDownloadError(undefined)}>关闭</button>
           </div>
         )}
-        <div className={`permission-dock-slot ${activePermission || otherPermission ? "has-attention" : ""}`}>
-          {activePermission ? (
-            <button type="button" className="permission-dock" onClick={() => setPermissionOpen(true)}>
-              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
-              <span><strong>{runtimeName} 正在等待授权</strong><small>{activePermission.title || activePermission.displayName || activePermission.toolName}</small></span>
-              <b>{sessionPermissions.length > 1 ? `${sessionPermissions.length} 项` : "处理"}</b>
-            </button>
-          ) : otherPermission && otherPermissionSession ? (
-            <button type="button" className="permission-dock" onClick={() => void selectSession(otherPermission.sessionId)}>
-              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
-              <span><strong>另一会话需要处理</strong><small>{otherPermissionSession.title}</small></span>
-              <b>前往</b>
-            </button>
-          ) : null}
-        </div>
-
         {sessionView === "conversation" ? (
         <section
           className="conversation-stream"
@@ -3287,7 +3291,7 @@ export function MobileWorkspace({
               item.interactivePrompt, sessionPermissions, item.interactivePrompt.toolUseId ?? (peerMessages ? "" : undefined),
             ) : undefined;
             const unavailableReason = peerMessages && item.interactivePrompt
-              ? item.interactivePrompt.kind === "question" && !pendingQuestion ? "需在电脑端回答"
+              ? item.interactivePrompt.kind === "question" && !pendingQuestion ? "提问已不在待回答列表"
                 : item.interactivePrompt.kind === "wrap-up" && item.interactivePrompt.blocked ? "需在电脑端确认" : undefined
               : undefined;
             const promptKey = `${draftKey}:${item.id}`;
@@ -3307,7 +3311,7 @@ export function MobileWorkspace({
                   )
                 )}
                 {item.taskPlan && <TaskPlanCard key={`${item.sessionId}:${item.taskPlan.id}`} plan={item.taskPlan} />}
-                {item.interactivePrompt && (
+                {item.interactivePrompt && (!pendingQuestion || item.interactivePrompt.answered) && (
                   <InteractivePromptCard
                     prompt={item.interactivePrompt}
                     {...(item.replyDelivery ? { replyDelivery: item.replyDelivery } : {})}
@@ -3318,28 +3322,6 @@ export function MobileWorkspace({
                     {...(promptErrors[promptKey] ? { error: promptErrors[promptKey] } : {})}
                     onSelectOption={async (replyText) => {
                       if (unavailableReason || sending) return;
-                      if (pendingQuestion && item.interactivePrompt?.kind === "question") {
-                        const questions = item.interactivePrompt.questions ?? [];
-                        if (questions.length !== 1 || questions[0]?.multiSelect) {
-                          setPermissionOpen(true);
-                          return;
-                        }
-                        updateDraft((current) => ({ ...current, sending: true }));
-                        setPromptErrors((current) => ({ ...current, [promptKey]: "" }));
-                        try {
-                          await onResolvePermission(
-                            pendingQuestion.requestId,
-                            "allow-once",
-                            undefined,
-                            { ...pendingQuestion.input, answers: { [questions[0]!.question]: replyText } },
-                          );
-                        } catch (error) {
-                          setPromptErrors((current) => ({ ...current, [promptKey]: error instanceof Error ? error.message : "回答提交失败" }));
-                        } finally {
-                          updateDraft((current) => ({ ...current, sending: false }));
-                        }
-                        return;
-                      }
                       await sendQuickReply(item.id, replyText);
                     }}
                   />
@@ -3413,6 +3395,11 @@ export function MobileWorkspace({
               </article>
             );
           })}
+          {sessionQuestions.map(permission => (
+            <article className="conversation-item assistant pending-question" key={`${draftKey}:${permission.requestId}`} data-stream-key={`question:${permission.requestId}`} aria-label="待回答">
+              <PermissionPrompt key={permission.requestId} permission={permission} onResolve={onResolvePermission} />
+            </article>
+          ))}
         </section>
         ) : (
           <section className="mobile-evidence-view">
@@ -3447,6 +3434,28 @@ export function MobileWorkspace({
             />
           </section>
         )}
+
+        <div className={`permission-dock-slot ${activePermission || otherPermission || (sessionView === "evidence" && sessionQuestions.length) ? "has-attention" : ""}`}>
+          {activePermission ? (
+            <button type="button" className="permission-dock" onClick={() => setPermissionOpen(true)}>
+              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
+              <span><strong>{runtimeName} 正在等待授权</strong><small>{activePermission.title || activePermission.displayName || activePermission.toolName}</small></span>
+              <b>{toolPermissions.length > 1 ? `${toolPermissions.length} 项` : "处理"}</b>
+            </button>
+          ) : sessionView === "evidence" && sessionQuestions[0] ? (
+            <button type="button" className="permission-dock" onClick={() => setSessionView("conversation")}>
+              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
+              <span><strong>{runtimeName} 正在等待回答</strong><small>{sessionQuestions[0].title || "提问与选择"}</small></span>
+              <b>回答</b>
+            </button>
+          ) : otherPermission && otherPermissionSession ? (
+            <button type="button" className="permission-dock" onClick={() => void selectSession(otherPermission.sessionId)}>
+              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
+              <span><strong>另一会话{otherPermission.toolName === "AskUserQuestion" ? "待回答" : "待授权"}</strong><small>{otherPermissionSession.title}</small></span>
+              <b>前往</b>
+            </button>
+          ) : null}
+        </div>
 
         {sessionView === "conversation" && (
         <>
@@ -3549,7 +3558,7 @@ export function MobileWorkspace({
             closeLabel="暂时关闭"
             onClose={() => setPermissionOpen(false)}
           >
-            {sessionPermissions.length > 1 && <div className="permission-queue-count">还有 {sessionPermissions.length} 项待处理，提交后自动显示下一项。</div>}
+            {toolPermissions.length > 1 && <div className="permission-queue-count">还有 {toolPermissions.length} 项待授权，提交后自动显示下一项。</div>}
             <PermissionPrompt
               key={activePermission.requestId}
               permission={activePermission}
@@ -3649,7 +3658,8 @@ export function MobileWorkspace({
   ): ReactNode {
     const { primary: session, forks } = family;
     const isArchivedRow = isArchivedList || Boolean(session.archivedAt);
-    const turnBadge = isArchivedRow ? "已归档" : activeSessionBadgeLabel(session);
+    const pendingPermission = isArchivedRow ? undefined : permissions.find(permission => permission.sessionId === session.sessionId);
+    const turnBadge = isArchivedRow ? "已归档" : pendingPermission ? pendingPermission.toolName === "AskUserQuestion" ? "待回答" : "待授权" : activeSessionBadgeLabel(session);
     const subagentBadge = isArchivedRow || turnBadge ? undefined : backgroundSubagentBadge(session);
     const badge = turnBadge ?? subagentBadge?.label;
     const forksExpanded = expandedForkParents.has(session.sessionId);
@@ -3663,7 +3673,7 @@ export function MobileWorkspace({
             className="session-row-hit"
             onClick={() => void selectSession(session.sessionId)}
           >
-            <span className={`session-state-dot ${session.turnState}`} />
+            <span className={`session-state-dot ${pendingPermission ? "waiting" : session.turnState}`} />
             <span className="session-row-copy">
               <strong>
                 {isForkChild && <em className={badgeClassName}>{badgeLabel}</em>}
@@ -3679,7 +3689,7 @@ export function MobileWorkspace({
               </small>
             </span>
             {badge && (
-              <span className={`session-row-status ${subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState}`}>
+              <span className={`session-row-status ${pendingPermission ? "waiting" : subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState}`}>
                 {badge}
               </span>
             )}
@@ -3809,7 +3819,7 @@ export function MobileWorkspace({
           <button type="button" className="host-permission-alert" onClick={() => void selectSession(permissions[0]!.sessionId)}>
             <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
             <span>
-              <strong>Desktop 任务正在等待处理</strong>
+              <strong>{permissions[0].toolName === "AskUserQuestion" ? "有提问待你回答" : "有操作待你授权"}</strong>
               <small>{sessions.find((session) => session.sessionId === permissions[0]!.sessionId)?.title ?? permissions[0]!.toolName}</small>
             </span>
             <b>{permissions.length > 1 ? `${permissions.length} 项` : "查看"}</b>

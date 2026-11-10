@@ -1456,6 +1456,7 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   await composer.fill(receivedText);
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await eventually(() => host.nativeApproval.receipts().length, 4, "A real browser immediate send reaches the native receipt without a queued flag");
+  await eventually(() => host.nativeApproval.receipts().at(-1)?.state, "submitted", "The delivered-only Native reply must arrive before checking the submitted receipt");
   const received = host.nativeApproval.receipts().at(-1);
   assert.equal(received.queueMode, "steered");
   assert.equal(received.state, "submitted");

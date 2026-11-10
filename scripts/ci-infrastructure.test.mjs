@@ -200,6 +200,28 @@ test('force ignores only missing paths; failed and unsupported trash never falls
   }
 });
 
+test('browser harness records proxy resets without failing intentional disconnect scenarios', async () => {
+  const source = await readFile(new URL('./browser-e2e.mjs', import.meta.url), 'utf8');
+  const logger = {};
+  const infrastructureErrors = [];
+  const logged = [];
+  vm.runInNewContext(source.match(/logger\.error = \(message, options\) => \{[\s\S]*?\n  \};/u)[0], {
+    logger, infrastructureErrors, logError: message => logged.push(message),
+  });
+  for (const message of ['\u001b[31mws proxy error:\u001b[39m\nError: read ECONNRESET', 'ws proxy socket error:\nError: read ECONNRESET']) {
+    logger.error(message, { error: { code: 'ECONNRESET' } });
+  }
+  assert.deepEqual(infrastructureErrors, []);
+  for (const [message, options] of [
+    ['ws proxy error: refused', { error: { code: 'ECONNREFUSED' } }],
+    ['http proxy error: /health', { error: { code: 'ECONNRESET' } }],
+    ['transform error', { error: { code: 'ECONNRESET' } }],
+    ['ws proxy error: unknown failure', undefined],
+  ]) logger.error(message, options);
+  assert.equal(infrastructureErrors.length, 4);
+  assert.equal(logged.length, 6);
+});
+
 test('real system recycle command removes a disposable fixture from its original path', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bridge recycle-'));
   try {

@@ -1648,7 +1648,9 @@ try {
   const logger = createLogger("warn");
   const logError = logger.error.bind(logger);
   logger.error = (message, options) => {
-    infrastructureErrors.push(message);
+    // Reload/reconnect scenarios close sockets; retain their reset logs while
+    // keeping proxy connection failures, HTTP errors and app assertions fatal.
+    if (options?.error?.code !== "ECONNRESET" || !/ws proxy(?: socket)? error:/u.test(message)) infrastructureErrors.push(message);
     logError(message, options);
   };
   vite = await createServer({

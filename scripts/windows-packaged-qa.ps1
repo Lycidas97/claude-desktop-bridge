@@ -194,9 +194,15 @@ try {
   foreach ($key in $environmentKeys) {
     [Environment]::SetEnvironmentVariable($key, $originalEnvironment[$key], "Process")
   }
-  & node.exe --require (Join-Path $PSScriptRoot "recycle-cleanup.cjs") `
-    (Join-Path $PSScriptRoot "clean.mjs") $qaRoot $smokeRoot $installRoot
-  if ($LASTEXITCODE -ne 0) {
-    throw "Packaged QA recycle-bin cleanup failed with exit code $LASTEXITCODE."
+  if ($env:RUNNER_ENVIRONMENT -eq "github-hosted") {
+    # Hosted Windows runners can reject recycle-bin directory operations.
+    # Retain isolated QA data rather than substitute permanent deletion.
+    Write-Warning "Packaged QA data retained (hosted Windows recycle-bin cleanup is unsupported on some runners): $qaRoot; $smokeRoot; $installRoot"
+  } else {
+    & node.exe --require (Join-Path $PSScriptRoot "recycle-cleanup.cjs") `
+      (Join-Path $PSScriptRoot "clean.mjs") $qaRoot $smokeRoot $installRoot
+    if ($LASTEXITCODE -ne 0) {
+      throw "Packaged QA recycle-bin cleanup failed with exit code $LASTEXITCODE. Inspect remaining paths: $qaRoot; $smokeRoot; $installRoot"
+    }
   }
 }

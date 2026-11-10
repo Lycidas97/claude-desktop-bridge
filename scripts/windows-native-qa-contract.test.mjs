@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const qaSource = await readFile(new URL("./packaged-desktop-qa.mjs", import.meta.url), "utf8");
@@ -128,6 +130,42 @@ test("packaged QA rejects missing Native capability and an accidentally restored
   await assert.rejects(runQa(nativeSnapshot(), {
     "provider.list": { ok: true, result: { providers: [] } },
   }), /provider\.list/u);
+});
+
+test("hosted Windows QA retains data while local recycle failures still fail", { skip: process.platform !== "win32" }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "bridge-qa-retention-"));
+  try {
+    for (const name of ["qa", "smoke", "install"]) {
+      await mkdir(join(directory, name));
+      await writeFile(join(directory, name, "retained.txt"), "retained");
+    }
+    const fixture = join(directory, "cleanup.ps1");
+    await writeFile(fixture, `
+      $ErrorActionPreference = "Stop"
+      $environmentKeys = @()
+      $qaRoot = Join-Path $env:BRIDGE_QA_TEST_ROOT "qa"
+      $smokeRoot = Join-Path $env:BRIDGE_QA_TEST_ROOT "smoke"
+      $installRoot = Join-Path $env:BRIDGE_QA_TEST_ROOT "install"
+      function node.exe { throw "RECYCLE_CALLED" }
+      try { if ($env:BRIDGE_QA_TEST_FAILURE) { throw $env:BRIDGE_QA_TEST_FAILURE } } finally {
+      ${windowsSource.slice(windowsSource.indexOf("  foreach ($key in $environmentKeys) {", windowsSource.indexOf("} finally {")))}
+    `);
+    for (const [environment, failure] of [["github-hosted", ""], ["self-hosted", ""], ["github-hosted", "QA_ASSERTION_FAILED"]]) {
+      const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture], {
+        encoding: "utf8", env: { ...process.env, BRIDGE_QA_TEST_ROOT: directory, RUNNER_ENVIRONMENT: environment, BRIDGE_QA_TEST_FAILURE: failure },
+      });
+      if (environment === "github-hosted" && !failure) {
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /Packaged QA data retained/u);
+      } else {
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, new RegExp(failure || "RECYCLE_CALLED", "u"));
+      }
+      for (const name of ["qa", "smoke", "install"]) assert.equal(await readFile(join(directory, name, "retained.txt"), "utf8"), "retained");
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("Windows QA keeps the local public relay and isolates both app launches", () => {

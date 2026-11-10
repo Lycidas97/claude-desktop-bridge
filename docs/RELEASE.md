@@ -64,6 +64,8 @@ npm run ci:run -- run test:desktop:packaged:windows
 
 支持可选 Authenticode：CI 使用 `BRIDGE_WIN_CERTIFICATE_BASE64` 与 `BRIDGE_WIN_CERTIFICATE_PASSWORD`；本机可使用 `BRIDGE_WIN_CERTIFICATE_FILE`，或 electron-builder 的 `WIN_CSC_LINK` 与 `WIN_CSC_KEY_PASSWORD`。证书和密码不得入库。没有有效证书时明确标记为未签名 CI 验收包，不宣称已经过 Authenticode 验证。
 
+GitHub 托管的 Windows runner 可能不支持回收站目录操作，因此打包 QA 保留三个隔离临时目录并在日志中输出路径，不尝试删除。本机和自托管 runner 继续使用系统回收站；失败时报告原因和剩余路径，不回退到永久删除。
+
 Windows 编译、安装和配对通过，不代表真实 Claude Desktop、DPAPI 跨重启、托盘、开机启动及手机网络切换都已完成实机验收。macOS 的 inspector 进程路径监测 helper 不在 Windows 上启用。
 
 ## macOS 与 Linux

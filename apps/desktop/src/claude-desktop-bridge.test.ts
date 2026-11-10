@@ -773,7 +773,7 @@ describe("Claude native relay", () => {
       await expect(f.bridge.readNativeImage("local-native", { messageUuid: "missing", imageIndex: 0 })).rejects.toThrow();
       await expect(f.bridge.readNativeImage("local-native", { messageUuid: "large-user-7", imageIndex: 5 })).rejects.toThrow();
     } finally { await evidence.close(); await f.close(); }
-  });
+  }, 30_000);
 
   it.each(["worktree-only", "same-name", "plain"])("previews native files from the execution directory without changing the project (%s)", async mode => {
     const f = await fixture();

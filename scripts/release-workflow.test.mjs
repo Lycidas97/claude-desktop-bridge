@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-const release = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-const assets = await readFile(new URL('../.github/workflows/release-assets.yml', import.meta.url), 'utf8');
+const release = (await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8')).replace(/\r\n/gu, '\n');
+const assets = (await readFile(new URL('../.github/workflows/release-assets.yml', import.meta.url), 'utf8')).replace(/\r\n/gu, '\n');
 
 function shellStep(workflow, name) {
   const lines = workflow.split(`- name: ${name}\n`)[1].split('        run: |\n')[1].split('\n');

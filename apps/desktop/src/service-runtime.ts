@@ -6,6 +6,7 @@ import {
 } from "@bridge/protocol";
 import { app, Notification, powerMonitor, safeStorage, shell } from "electron";
 import { ClaudeInspectorMonitor } from "./claude-inspector-monitor.js";
+import { ClaudeInspectorStartup } from "./claude-inspector-startup.js";
 import {
   DesktopConfigRepository,
   fileSecretProtector,
@@ -191,7 +192,9 @@ export async function createServiceRuntime(options: { userDataPath: string; onSt
     resources.defer("Desktop controller", () => controller.close());
     options.onStage?.("初始化运行时与中继连接");
     await controller.initialize();
+    const inspectorStartup = new ClaudeInspectorStartup({ recordPath: join(userDataPath, "claude-inspector-startup-v1.json") });
     const inspector = new ClaudeInspectorMonitor({
+      ...(!process.env.BRIDGE_CLAUDE_INSPECTOR_URL ? { startup: (listening: boolean) => inspectorStartup.check(listening) } : {}),
       onUpdate: (status) => controller.updateInspectorStatus(status),
       onAlert: (alert) => {
         if (!Notification.isSupported()) return "系统通知不可用，请查看 Bridge 内的调试连接告警。";

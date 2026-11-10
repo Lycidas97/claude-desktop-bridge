@@ -75,6 +75,7 @@ export class ClaudeInspectorMonitor {
     onUpdate(status: BridgeInspectorStatus): void;
     onAlert(alert: BridgeInspectorAlert): string | undefined;
     scan?: () => Promise<{ listening: boolean; clients: BridgeInspectorClient[] }>;
+    startup?: (listening: boolean) => Promise<string | undefined>;
     platform?: NodeJS.Platform;
     intervalMs?: number;
     port?: number;
@@ -106,6 +107,8 @@ export class ClaudeInspectorMonitor {
     try {
       const observed = await (this.options.scan ?? (() => readInspectorConnections({ port: this.status.port })))();
       if (this.closed) return;
+      const startupError = await this.options.startup?.(observed.listening);
+      if (this.closed) return;
       const alerts = [...this.status.alerts];
       let notificationError = this.status.notificationError;
       for (const client of observed.clients.filter((candidate) => !candidate.approved)) {
@@ -117,6 +120,7 @@ export class ClaudeInspectorMonitor {
       next = {
         state: observed.listening ? "listening" : "closed", port: this.status.port, pollIntervalMs: this.status.pollIntervalMs,
         clients: observed.clients, alerts: alerts.slice(0, 20), ...(notificationError ? { notificationError } : {}),
+        ...(startupError ? { error: startupError } : {}),
       };
     } catch (error) {
       if (this.closed) return;

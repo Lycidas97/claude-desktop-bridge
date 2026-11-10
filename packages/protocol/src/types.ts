@@ -179,6 +179,7 @@ export type BridgeDeliveryState =
   | "uncertain";
 
 export type BridgeCapability =
+  | "payload.deflate.v1"
   | "claude.native-relay.v1"
   | "evidence.v1"
   | "evidence.details.v1"

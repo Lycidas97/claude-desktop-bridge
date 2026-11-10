@@ -39,7 +39,7 @@ flowchart LR
 ## Claude 原生接入
 
 新 `claude-desktop-bridge.ts` 是薄中转层，Claude Desktop 是会话执行、队列和权限的
-唯一权威。Bridge 从用户已开启并选择常开的 `http://127.0.0.1:9229/json/list` 动态
+唯一权威。用户选择常开本机 inspector，Bridge 从 `http://127.0.0.1:9229/json/list` 动态
 取得 Node inspector 的 `webSocketDebuggerUrl`，经 `process.mainModule.require('electron')`
 定位 `app://localhost` WebContents，再以 `executeJavaScript` 调用
 `claude.web.LocalSessions`。会话创建、发送、排队、中断和权限答复均走原生接口，
@@ -51,8 +51,8 @@ lane、自动 goal 续跑或侧边栏文件登记。
 请求幂等与收据、附件传输和证据被动收集，不把事件转发变成第二套会话调度。
 
 用户本次选择覆盖旧“绝不 CDP / 不附着”的 Claude 限制；不改 asar、不签 token、
-不重启 Desktop、不加 LaunchAgent 或辅助功能菜单自动化。inspector 未开启时显示
-不可用；Relay 不暴露任意 evaluate，也不传账号凭据。macOS 已实测空会话创建、发送、
+不重启 Desktop、不加 LaunchAgent。macOS 后台每次发现新的 Desktop 主进程后，仅通过
+原生菜单尝试开启一次 inspector，保留账号与工作区策略；失败时显示具体错误与不可用状态。Relay 不暴露任意 evaluate，也不传账号凭据。macOS 已实测空会话创建、发送、
 原生生命周期事件、历史、请求去重与正常关闭；原生审批和子代理停止尚未对真实 Desktop
 做端到端验证。
 
@@ -76,7 +76,7 @@ Claude 直接使用 Desktop 返回的原生会话 ID，历史分页直接调用 
 
 | 运行时 | 本地适配方式 | Bridge 可统一的操作 | 明确边界 |
 |---|---|---|---|
-| Claude Desktop | 用户已开启的 Node inspector → WebContents → `claude.web.LocalSessions` | 原生会话操作、队列、事件、权限与被动证据（实测范围见重构记录） | Desktop 唯一执行权威；无 Host、lane、接管或自动 goal |
+| Claude Desktop | 本机 Node inspector → WebContents → `claude.web.LocalSessions` | 原生会话操作、队列、事件、权限与被动证据（实测范围见重构记录） | Desktop 唯一执行权威；无 Host、lane、接管或自动 goal |
 | Codex Desktop | Bridge 自己启动的本地 `codex app-server --stdio` | 会话、发送、steer、流、工具、审批、追问、中断 | 不附着或篡改已运行 Desktop 进程；不共享 Claude/Hermes 历史或授权 |
 | Hermes Desktop | Bridge 自己启动的仅环回 Hermes Gateway，使用进程级随机令牌 | 会话、发送、steer、流、工具、审批、追问、中断 | 不读取 Desktop token/keychain；不接受非环回 Gateway 地址 |
 | DSH Desktop | 附着正在运行的 DSH 宿主：`/api` 一元 RPC + `events.mux`/`events.host` 双下行流（DSH 自带回环信任栅栏） | 会话、发送、queue/steer、流、工具、审批、追问、中断、模型配置、图片附件 | 只认回环权威（Host 头），不读取 DSH 凭据；`BRIDGE_DSH_GATEWAY_URL` 可显式指定宿主 |
@@ -352,17 +352,20 @@ ICE 五秒未成功即保持 WSS 路径。ICE 服务器为独立显式配置，�
 
 ## 运行时发现
 
-Claude 仅发现用户已开启的本机 Node inspector 和提供 `claude.web.LocalSessions`
-的 `app://localhost` WebContents；动态 WebSocket 路径每次由 `/json/list` 获取。
-未开启、接口缺失或断连时显示不可用，不启动 CLI/SDK Host、不切换 provider lane，
-也不通过重启 Desktop 或菜单自动化恢复连接。Codex、Hermes、DSH 沿用各自现有的
-原生发现与连接方式。
+Claude 从本机 Node inspector 发现提供 `claude.web.LocalSessions` 的 `app://localhost`
+WebContents；动态 WebSocket 路径每次由 `/json/list` 获取。macOS 的现有 inspector monitor
+每3秒通过 PID、启动时间和完整可执行路径识别 Desktop 新进程，使用 System Events 触发
+一次原生主进程调试菜单；已开放时跳过，菜单未就绪时等待。已处理身份及失败记录保存在
+Bridge userData，跨后台重启尊重同进程手动关闭；自定义 inspector origin 禁用真实菜单动作。
+端口开放后现有 Bridge 刷新自行重连。未开启、接口缺失或断连时显示不可用，不启动 CLI/SDK
+Host、不切换 provider lane、不重启 Desktop。Codex、Hermes、DSH 保持各自原生发现方式。
 
 ## 明确不做
 
 Bridge 不展示、存储或从行为推断隐藏 CoT，不自动故障转移，不代理官方 OAuth；
 不合并各运行时的原生会话、历史、认证、模型或权限。Claude 本机 Node inspector
 仅按本次用户选择用于明确的原生操作，不向 Relay 暴露任意 evaluate，不改 asar、
-签 token、重启 Desktop 或添加 LaunchAgent/辅助功能菜单自动化；不恢复旧 Host、
+签 token、重启 Desktop、添加 LaunchAgent、发 SIGUSR1 或改调试启动参数；辅助功能仅用于
+已授权的每次启动单次原生调试菜单操作，不恢复旧 Host、
 inbox、lane、接管/交还或自动 goal 续跑。不提供远程编辑器、动态站点直播、自动启动
 开发服务或超过 20 MiB 的文件传输。

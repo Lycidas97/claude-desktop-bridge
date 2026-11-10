@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   BridgeCrypto,
+  PAYLOAD_DEFLATE_CAPABILITY,
+  PAYLOAD_DEFLATE_SUPPORTED,
   ARTIFACT_TRANSFER_TTL_MS,
   PAIRING_SCHEMA_VERSION,
   PROTOCOL_VERSION,
@@ -268,6 +270,7 @@ export class DesktopController extends EventEmitter {
   private currentPairingDeviceId: string | undefined;
   private readonly deviceCryptos = new Map<string, BridgeCrypto>();
   private readonly onlineDevices = new Set<string>();
+  private readonly deflateDevices = new Set<string>();
   private readonly responseCache = new Map<string, BridgeResponse>();
   private readonly uploads = new FileUploadManager();
   private readonly magpieQuota = createMagpieQuotaPlugin({ getGateway: () => this.broker.gatewayConfig() });
@@ -276,6 +279,7 @@ export class DesktopController extends EventEmitter {
   private relayHealthy = false;
   private lastPublishedSessionKey = "";
   private lastPublishedSessions = new Map<string, string>();
+  private lastPublishedPermissions = new Map<string, BridgePermissionInfo>();
   private lastDiscoveryRefreshAt = 0;
   private readonly sessionVisibility = new Map<string, { visibility: SessionVisibility; updatedAt: number }>();
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
@@ -375,6 +379,7 @@ export class DesktopController extends EventEmitter {
         lastSeenAt: this.lastSeenAt,
         version: this.app.getVersion(),
         capabilities: [
+          ...(PAYLOAD_DEFLATE_SUPPORTED ? [PAYLOAD_DEFLATE_CAPABILITY] as const : []),
           "evidence.v1",
           "evidence.details.v1",
           "artifact.preview.v1",
@@ -805,6 +810,7 @@ export class DesktopController extends EventEmitter {
     socket.onFrame((frame) => {
       if (frame.type !== "ready" && (frame.type !== "presence" || frame.role !== "mobile")) return;
       if (frame.type === "ready") {
+        this.deflateDevices.clear();
         this.onlineDevices.clear();
         for (const device of frame.onlineDevices) {
           if (device.role !== "mobile") continue;
@@ -818,6 +824,7 @@ export class DesktopController extends EventEmitter {
         this.registerPendingDevices();
       }
       if (frame.type === "presence" && frame.role === "mobile") {
+        this.deflateDevices.delete(frame.deviceId);
         if (frame.online) {
           if (!this.acceptsDevice(frame.deviceId)) {
             this.rejectUnknownDevice(frame.deviceId);
@@ -862,7 +869,7 @@ export class DesktopController extends EventEmitter {
     await this.rememberDevice(message.header.fromDeviceId, message.payload.params);
     const cached = this.responseCache.get(message.payload.requestId);
     if (cached) {
-      await this.sendToDevice(cached, message.header.fromDeviceId);
+      await this.sendToDevice(cached, message.header.fromDeviceId, undefined, false, message.payload.method !== "snapshot.get");
       this.socket?.ack([encrypted.id]);
       return;
     }
@@ -883,6 +890,7 @@ export class DesktopController extends EventEmitter {
       message.header.fromDeviceId,
       message.payload.method.startsWith("artifact.") ? ARTIFACT_TRANSFER_TTL_MS : undefined,
       temporaryResponse,
+      message.payload.method !== "snapshot.get",
     ).catch(() => undefined);
     this.socket?.ack([encrypted.id]);
     if (
@@ -1672,6 +1680,7 @@ export class DesktopController extends EventEmitter {
     deviceId: string,
     ttlMs?: number,
     temporary = false,
+    compress = true,
   ): Promise<string> {
     if (!this.socket || this.connection !== "connected") throw new Error("Bridge is not connected");
     const crypto = this.deviceCryptos.get(deviceId);
@@ -1681,6 +1690,7 @@ export class DesktopController extends EventEmitter {
       crypto,
       ...(ttlMs !== undefined ? { ttlMs } : {}),
       ...(temporary ? { temporary: true } : {}),
+      compress: compress && this.deflateDevices.has(deviceId),
     });
   }
 
@@ -1751,9 +1761,13 @@ export class DesktopController extends EventEmitter {
     device.pairedAt ??= now;
     device.lastSeenAt = now;
     if (this.socket?.path === "public-relay") device.publicRelayClaimedAt ??= now;
+    if (metadata) this.deflateDevices.delete(deviceId);
     const client = metadata?.client;
     if (client && typeof client === "object") {
       const value = client as Record<string, unknown>;
+      if (Array.isArray(value.capabilities) && value.capabilities.includes(PAYLOAD_DEFLATE_CAPABILITY)) {
+        this.deflateDevices.add(deviceId);
+      }
       if (typeof value.name === "string" && value.name.trim()) device.name = value.name.trim().slice(0, 80);
       if (value.platform === "android" || value.platform === "ios" || value.platform === "web") {
         device.platform = value.platform;
@@ -1819,23 +1833,44 @@ export class DesktopController extends EventEmitter {
       .join("\n");
     const previousKey = this.lastPublishedSessionKey;
     const previousSessions = this.lastPublishedSessions;
+    const previousPermissions = this.lastPublishedPermissions;
+    const permissions = new Map(snapshot.permissions
+      .filter((permission) => !parseRuntimeSessionId(permission.sessionId))
+      .map((permission) => [permission.requestId, permission]));
     const sessions = new Map(snapshot.sessions.map((session) => [session.sessionId, JSON.stringify(session)]));
     this.lastPublishedSessionKey = sessionKey;
     this.lastPublishedSessions = sessions;
+    this.lastPublishedPermissions = permissions;
     if (previousKey !== sessionKey) {
       await this.broadcast({ kind: "snapshot", snapshot }, true);
     } else {
       // Start all appends before waiting for disk so later snapshots cover their sequences.
-      await Promise.all(snapshot.sessions.map((session) => {
-        if (previousSessions.get(session.sessionId) === sessions.get(session.sessionId)) return;
-        return this.eventLog.append({
-          sessionId: session.sessionId,
-          itemId: "session:subagent-activity",
-          origin: "system",
-          type: "runtime.updated",
-          data: { replaceSession: true, session },
-        });
-      }));
+      await Promise.all([
+        ...[...permissions.values()].filter((permission) => !previousPermissions.has(permission.requestId)).map((permission) => this.eventLog.append({
+          sessionId: permission.sessionId,
+          itemId: permission.toolUseId,
+          origin: "claude-desktop",
+          type: permission.toolName === "AskUserQuestion" ? "question.requested" : "permission.requested",
+          data: { ...permission },
+        })),
+        ...[...previousPermissions.values()].filter((permission) => !permissions.has(permission.requestId)).map((permission) => this.eventLog.append({
+          sessionId: permission.sessionId,
+          itemId: permission.toolUseId,
+          origin: "claude-desktop",
+          type: permission.toolName === "AskUserQuestion" ? "question.resolved" : "permission.resolved",
+          data: { requestId: permission.requestId, automatic: true },
+        })),
+        ...snapshot.sessions.map((session) => {
+          if (previousSessions.get(session.sessionId) === sessions.get(session.sessionId)) return;
+          return this.eventLog.append({
+            sessionId: session.sessionId,
+            itemId: "session:subagent-activity",
+            origin: "system",
+            type: "runtime.updated",
+            data: { replaceSession: true, session },
+          });
+        }),
+      ]);
     }
     return snapshot;
   }

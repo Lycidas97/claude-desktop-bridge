@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Capacitor, SystemBars, SystemBarsStyle } from "@capacitor/core";
 
 export type Theme = "light" | "dark";
 
@@ -48,6 +49,9 @@ export function useTheme(): ThemeControl {
     localStorage.setItem(THEME_KEY, theme);
     localStorage.setItem(FAMILY_KEY, family);
     document.querySelector('meta[name="theme-color"]')?.setAttribute("content", META_THEME_COLOR[family][theme]);
+    if (Capacitor.getPlatform() === "android") {
+      void SystemBars.setStyle({ style: theme === "dark" ? SystemBarsStyle.Dark : SystemBarsStyle.Light });
+    }
   }, [theme, family]);
   const toggleTheme = useCallback(() => setTheme((value) => (value === "dark" ? "light" : "dark")), []);
   return { theme, family, setTheme, setFamily, toggleTheme };

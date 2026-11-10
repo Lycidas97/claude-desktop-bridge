@@ -14,7 +14,7 @@ import { claudeRuntimePaths } from "./platform.js";
 import type { SessionEventLog, BridgeEventDraft } from "./session-event-log.js";
 import type { EvidenceManager, ObservedDesktopTool } from "./evidence-manager.js";
 import { oldestLiveProcessStart, projectIdForCwd, scanClaudeCatalog, type ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
-import { findClaudeHostCredentials, magpieModelIdHash, parseMagpieSyntheticModelId, resolveClaudeGatewayConfig, type ClaudeGatewayConfig, type ClaudeRuntime } from "./claude-runtime-discovery.js";
+import { discoverClaudeProjectDirectory, findClaudeHostCredentials, magpieModelIdHash, parseMagpieSyntheticModelId, resolveClaudeGatewayConfig, type ClaudeGatewayConfig, type ClaudeProjectDirectory, type ClaudeRuntime } from "./claude-runtime-discovery.js";
 import { MagpieConnectionRepository, testMagpieGateway } from "./magpie-connection.js";
 import { readClaudeModelOptions } from "./connector.js";
 
@@ -168,6 +168,7 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
 export class ClaudeDesktopBridge extends EventEmitter {
   private readonly inspector: InspectorTransport;
   private readonly native = new Map<string, NativeSession>();
+  private readonly projectDirectories = new Map<string, ClaudeProjectDirectory>();
   private readonly sessions = new Map<string, BridgeSessionInfo>();
   private readonly permissions = new Map<string, BridgePermissionInfo>();
   private readonly receipts = new Map<string, NativeDesktopReceipt>();
@@ -233,7 +234,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const sessions = result.map(nativeSession);
       this.models = await readClaudeModelOptions(this.options.settingsPath);
       this.native.clear();
-      for (const session of sessions) this.native.set(session.sessionId, session);
+      for (const session of sessions) await this.observeNativeSession(session);
       this.permissions.clear();
       for (const session of sessions) for (const permission of session.pendingToolPermissions ?? []) this.observePermission(permission, session.sessionId);
       this.projectSessions();
@@ -277,7 +278,26 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const exact = this.models?.find(option => option.value === model);
     if (exact) return exact;
     const alias = parseMagpieSyntheticModelId(model);
-    return alias ? this.models?.find(option => magpieModelIdHash(option.value) === alias.hash && /\[1m\]$/iu.test(option.value) === alias.longContext) : undefined;
+    const matched = alias ? this.models?.find(option => magpieModelIdHash(option.value) === alias.hash && /\[1m\]$/iu.test(option.value) === alias.longContext) : undefined;
+    if (matched) return matched;
+    if (!/\[1m\]$/iu.test(model)) return undefined;
+    const base = this.models?.find(option => model === `${option.value}[1m]`)
+      ?? (alias ? this.models?.find(option => !/\[1m\]$/iu.test(option.value) && magpieModelIdHash(option.value) === alias.hash) : undefined);
+    // Desktop's provider can prefer 1M even when the saved picker only lists
+    // the base model. Preserve the actual context in the returned value/label.
+    return base ? { ...base, value: `${base.value}[1m]`, displayName: `${base.displayName} · 1M` } : undefined;
+  }
+
+  private async observeNativeSession(session: NativeSession): Promise<void> {
+    if (!this.projectDirectories.has(session.cwd)) this.projectDirectories.set(session.cwd, await discoverClaudeProjectDirectory(session.cwd));
+    this.native.set(session.sessionId, session);
+  }
+
+  private projectCwd(cwd: string): string {
+    const project = this.projectDirectories.get(cwd)!;
+    if (project.cwd === cwd) return cwd;
+    // Keep the original main-project spelling (and its saved ordering ID).
+    return [...this.projectDirectories].find(([original, candidate]) => original === candidate.cwd && candidate.realCwd === project.realCwd)?.[0] ?? project.cwd;
   }
 
   private projectSessions(): void {
@@ -291,9 +311,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const pendingCommandIds = [...this.receipts.values()].filter(receipt => receipt.sessionId === sessionId && receipt.state === "queued").map(receipt => receipt.commandId);
       const modeChange = this.permissionModeChanges.get(sessionId);
       const parentSessionId = native.forkedFromSessionId ?? native.spawnedFrom?.sessionId;
+      const projectCwd = this.projectCwd(native.cwd);
       this.sessions.set(sessionId, {
         sessionId, nativeSessionId: native.sessionId, desktopSessionId: native.sessionId, runtimeId: "claude-desktop",
-        projectId: projectIdForCwd(native.cwd), projectName: basename(native.cwd) || native.cwd, cwd: native.cwd,
+        projectId: projectIdForCwd(projectCwd), projectName: basename(projectCwd) || projectCwd, cwd: native.cwd,
         title: native.title || "Claude 会话", source: "desktop", transport: "claude-desktop-native",
         ownership: running ? "DESKTOP_NATIVE_RUNNING" : "DESKTOP_NATIVE_IDLE",
         turnState: waiting ? "waiting" : running ? "running" : "idle",
@@ -327,7 +348,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   listProjects(): BridgeProjectInfo[] {
     const projects = new Map<string, BridgeProjectInfo>();
     for (const session of this.sessions.values()) {
-      const project = projects.get(session.projectId) ?? { projectId: session.projectId, name: session.projectName, cwd: session.cwd, runtimeId: "claude-desktop", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 };
+      const project = projects.get(session.projectId) ?? { projectId: session.projectId, name: session.projectName, cwd: this.projectCwd(session.cwd), runtimeId: "claude-desktop", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 };
       project.sessionCount++;
       project.runningCount += session.turnState === "running" ? 1 : 0;
       project.pendingCount += session.pendingCount;
@@ -401,7 +422,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop rewind is unavailable while inspector is disconnected");
     if (!this.capabilities().includes("session.rewind")) throw new NativeCallError("Unsupported Claude Desktop rewind methods");
     const native = nativeSession(await this.inspector.call("getSession", [id]));
-    this.native.set(id, native);
+    await this.observeNativeSession(native);
     this.projectSessions();
     const result = await this.inspector.call("getTranscript", [id]);
     const messages = Array.isArray(result) ? result : record(result).messages;
@@ -460,7 +481,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       this.streams.delete(sessionId);
     }
     try {
-      this.native.set(id, nativeSession(await this.inspector.call("getSession", [id])));
+      await this.observeNativeSession(nativeSession(await this.inspector.call("getSession", [id])));
       if (scope !== "files") await this.history(sessionId);
     } catch (error) {
       if (!(error instanceof InspectorDisconnectedError)) throw error;
@@ -559,7 +580,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (result.status !== "started" || typeof result.sessionId !== "string") throw new NativeCallError(`Desktop side chat ${String(result.status ?? "returned an invalid response")}${typeof result.refusalReason === "string" ? `: ${result.refusalReason}` : ""}`);
         const child = nativeSession(await this.inspector.call("getSession", [result.sessionId]));
         childId = child.sessionId;
-        this.native.set(childId, child);
+        await this.observeNativeSession(child);
         this.projectSessions();
         this.emit("changed");
       }
@@ -573,14 +594,16 @@ export class ClaudeDesktopBridge extends EventEmitter {
   async configuration(sessionId: string): Promise<BridgeSessionConfiguration> {
     const native = nativeSession(await this.inspector.call("getSession", [this.desktopId(sessionId)]));
     this.models = await readClaudeModelOptions(this.options.settingsPath);
-    this.native.set(native.sessionId, native);
+    await this.observeNativeSession(native);
     this.projectSessions();
     const model = native.model ? this.savedModel(native.model) : undefined;
     return {
       sessionId, ...(native.model ? { model: model?.value ?? native.model, modelDisplayName: model?.displayName ?? native.model } : {}), ...(native.effort ? { effort: native.effort } : {}),
       ...(native.permissionMode ? { nativePermissionMode: native.permissionMode } : {}),
       modelSource: "claude-desktop", effortSource: "claude-desktop",
-      availableModels: this.models ?? (native.model ? [{ value: native.model, displayName: native.model }] : []), availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      availableModels: this.models ? [...this.models, ...(model && !this.models.some(option => option.value === model.value) ? [model] : [])]
+        : native.model ? [{ value: native.model, displayName: native.model }] : [],
+      availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
       modelsComplete: this.models !== undefined, appliesAfterTurn: native.turnRunning === true,
     };
   }
@@ -601,9 +624,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
           }) ?? (longContext ? directory.find(candidate => {
             const alias = parseMagpieSyntheticModelId(candidate);
             return alias?.hash === hash && !alias.longContext;
-          }) : undefined);
+          }) : directory.find(candidate => {
+            const alias = parseMagpieSyntheticModelId(candidate);
+            return candidate === `${base}[1m]` || (alias?.hash === hash && alias.longContext);
+          }));
           if (!found) throw new NativeCallError("Selected model is unavailable in Claude Desktop's native model directory");
-          nativeModel = `${found.replace(/\[1m\]$/iu, "")}${longContext ? "[1m]" : ""}`;
+          nativeModel = longContext && !/\[1m\]$/iu.test(found) ? `${found}[1m]` : found;
         }
       }
       await this.inspector.call("setModel", [id, nativeModel]);
@@ -612,7 +638,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (input.permissionMode !== undefined) await this.inspector.call("setPermissionMode", [id, input.permissionMode]);
     await this.refreshRuntime();
     const configuration = await this.configuration(input.sessionId);
-    if (typeof input.model === "string" && configuration.model !== input.model) throw new NativeCallError(`Desktop did not apply the selected model: ${input.model}; observed ${configuration.model ?? "default"}`);
+    // Accept only Desktop's known base -> preferred-1M normalization when the
+    // picker did not offer that context as an independent saved choice.
+    if (typeof input.model === "string" && configuration.model !== input.model && !(
+      !/\[1m\]$/iu.test(input.model) && configuration.model === `${input.model}[1m]`
+      && !this.models?.some(option => option.value === configuration.model)
+    )) throw new NativeCallError(`Desktop did not apply the selected model: ${input.model}; observed ${configuration.model ?? "default"}`);
     return configuration;
   }
 
@@ -752,7 +783,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (typeof event.sessionId !== "string") return;
     if (event.session) {
       const session = nativeSession(event.session);
-      this.native.set(session.sessionId, session);
+      await this.observeNativeSession(session);
       this.projectSessions();
     }
     const sessionId = event.sessionId;

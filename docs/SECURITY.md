@@ -21,8 +21,9 @@ Claude 部分描述当前分支的原生中转边界。macOS 已通过真实 Des
   受限配置文件中，不复用传输身份密钥。
 - Electron 渲染进程启用 sandbox、context isolation，关闭 Node integration，
   并限制导航和 IPC 来源。
-- Bridge 不申请辅助功能权限、不发送键鼠事件、不自动点菜单，也不读写剪贴板。
-  Claude 通过用户已开启的本机 Node inspector 接入；Codex、Hermes、DSH 的原生接入不变。
+- macOS Bridge 使用辅助功能和 System Events 自动化权限，仅在发现新的 Claude Desktop
+  进程后触发一次原生 Enable Main Process Debugger 菜单；保留原生账号与工作区策略。
+  不发送键鼠事件或读写剪贴板；Codex、Hermes、DSH 的原生接入不变。
 - Claude Desktop 是会话执行、队列和权限的唯一权威。手机提交原生权限请求的答复，
   Bridge 不安装 Host 权限 Hook、不自动批准，也不改写原生会话文件来升级授权。
 - Claude 不再运行 SDK/CLI Host、standalone API Key lane、接管/交还、inbox、lane 或
@@ -83,8 +84,14 @@ adapter 显式声明能力后，通过原生接口修改当前会话的模型、
 
 用户已明确选择常开 `127.0.0.1:9229` Node inspector；本次选择覆盖旧“绝不 CDP / 不附着”
 规则中针对 Claude 的限制。该本机调试端口具有进程求值能力，边界依赖本机访问控制，
-不得映射到公网或 Relay。Bridge 只使用已开启的端口，未开启时显示 Claude 不可用；
-不修改 asar、不签 token、不重启 Desktop、不安装 LaunchAgent，也不用辅助功能点菜单。
+不得映射到公网或 Relay。macOS 后台复用连接监测轮询，以真实 PID、启动时间和精确
+主可执行路径识别新启动，仅触发原生 Enable Main Process Debugger 菜单一次；需要用户
+授予辅助功能与 System Events 自动化权限，原生账号/工作区策略仍由菜单回调执行。
+该回调可能打开 Chrome 调试页。已开放的端口跳过并记录；同进程手动关闭或实际操作失败
+不反复触发，已处理身份和错误写入 Bridge userData 的启动记录，跨后台重启保留。
+菜单尚未构建时等待；开启结果由实际端口扫描确认，失败显示在现有诊断状态中。
+自定义 BRIDGE_CLAUDE_INSPECTOR_URL 时不操作真实菜单。不修改 asar、不签 token、
+不重启 Desktop、不安装 LaunchAgent、不发 SIGUSR1 或修改调试启动参数。
 
 接入从 `http://127.0.0.1:9229/json/list` 动态取得 `webSocketDebuggerUrl`，不固定 WebSocket
 路径。通过 Node inspector 的 `Runtime.evaluate` 调用 `process.mainModule.require('electron')`，

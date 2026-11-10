@@ -130,8 +130,10 @@ import { SlashCommandInput } from "./SlashCommandInput.js";
 import { useSessionCommands } from "../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
 import { SessionRewindDialog } from "./SessionRewindDialog.js";
+import { parseSessionNotice, SessionNoticeCard, type SessionNotice } from "./SessionNoticeCard.js";
 
 interface ConversationItem extends BridgeHistoryItem {
+  sessionNotice?: SessionNotice;
   delivery?: BridgeDeliveryState;
   replyDelivery?: BridgeDeliveryState;
   replyPending?: boolean;
@@ -1097,6 +1099,8 @@ export function conversationItems(
   }
   const sorted = [...items.values()].flatMap((item) => {
     if (item.role !== "user") return [item];
+    const sessionNotice = !item.attachments?.length ? parseSessionNotice(item.text) : undefined;
+    if (sessionNotice) return [{ ...item, sessionNotice }];
     const text = item.text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gu, "");
     if (text === item.text) return [item];
     return text.trim() || item.attachments?.length ? [{ ...item, text: text.trim() }] : [];
@@ -1126,6 +1130,7 @@ export function conversationItems(
   let hasLaterAssistant = false;
   for (let i = sorted.length - 1; i >= 0; i -= 1) {
     const current = sorted[i]!;
+    if (current.sessionNotice) continue;
     const questionResolved = current.interactivePrompt?.kind === "question" && (current.interactivePrompt.toolUseId
       ? resolvedQuestionTools.has(current.interactivePrompt.toolUseId) : latestQuestionResolvedAt >= current.createdAt);
     if (current.interactivePrompt && !current.interactivePrompt.answered) {
@@ -1205,12 +1210,12 @@ export function conversationTimeline(
     let anchorIndex = matchingTurnIndexes.at(-1);
     if (anchorIndex === undefined) {
       const userIndex = items.findIndex((item) => (
-        item.role === "user" && item.id === evidence.turnId
+        item.role === "user" && !item.sessionNotice && item.id === evidence.turnId
       ));
       if (userIndex < 0) continue;
       const nextUserOffset = items
         .slice(userIndex + 1)
-        .findIndex((item) => item.role === "user");
+        .findIndex((item) => item.role === "user" && !item.sessionNotice);
       anchorIndex = nextUserOffset < 0
         ? items.length - 1
         : userIndex + nextUserOffset;
@@ -3277,6 +3282,9 @@ export function MobileWorkspace({
               );
             }
             const item = node.item;
+            if (item.sessionNotice) return (
+              <SessionNoticeCard key={item.id} itemId={item.id} notice={item.sessionNotice} source={item.text} entering={streamEntering(item.id)} />
+            );
             const showDelivery = Boolean(item.delivery);
             const messageQueued = (item.delivery === "queued" || item.delivery === "host-received")
               && item.commandId && selectedSession.pendingCommandIds?.includes(item.commandId);

@@ -10,12 +10,12 @@ Bridge 将电脑上的会话、任务进度、授权提问和工作区文件带�
 
 这是独立维护的 fork，主要围绕 **macOS + Android + Claude** 完善日常使用。安装包与发布状态以本仓库的 [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) 为准。保留上游 Codex、Hermes、DSH 适配器，默认只显示 Claude，其他 Agent 可在设置中启用。
 
-**1.3.0 改用 Claude Desktop 原生接入**：会话执行、队列和权限由 Desktop 管理，Bridge 通过 `LocalSessions` 转发操作，不再启动 Claude SDK/CLI Host 或提供旧的接管/交还入口。新版加入原生 Send now、撤回与回退，改善大历史加载、网络重连、流式阅读和工具显示。macOS 已通过真实 Desktop 的会话与历史验证，更多边界使用隔离夹具验收；完整范围见[重构记录](docs/HOSTING-REFACTOR.md)。
+**1.3.1 改善原生权限同步与连接体验**：修复权限卡的增减、迟到快照和重连恢复，加入协商后的端到端压缩与 Git 项目分组，折叠原生/Fork 通知并同步 Android 系统栏主题。macOS 可在每次发现新的 Claude Desktop 进程后，尝试一次原生调试菜单；需要用户授予辅助功能与自动化权限。会话执行、队列和权限仍由 Desktop 的 `LocalSessions` 管理。完整变化见[更新记录](CHANGELOG.md)，原生验证范围见[重构记录](docs/HOSTING-REFACTOR.md)。
 
 ## 开始使用
 
 1. 从本 fork 的 Releases 下载电脑端和 Android 客户端，尽量使用同一版本。上游安装包不包含本 fork 的全部改进。
-2. 在电脑上运行 Claude Desktop，使用用户自行开启的 Node inspector（`127.0.0.1:9229`），再启动 Bridge。未开启时 Claude 显示不可用；Bridge 不会修改安装包、重启 Desktop 或自动开启 inspector。
+2. 在电脑上运行 Claude Desktop，再启动 Bridge。macOS 后台会在发现新的 Desktop 进程后，通过原生菜单尝试开启一次本机 Node inspector（`127.0.0.1:9229`）；需要开发者模式及辅助功能/自动化权限，详见下文。Bridge 不修改安装包或重启 Desktop。
 3. 在 Android 安装 APK，通过电脑端的一次性二维码或配对链接添加电脑。
 4. 打开手机的会话目录，选择已有会话，或用右上角“+”创建会话。
 5. 在对话中发送文本、图片或文件，查看执行进度，并处理授权与提问。
@@ -97,7 +97,9 @@ Android 系统返回键按页面层级工作：
 
 macOS 电脑端打开“设置 → 诊断与关于 → Claude Desktop 开发者工具”，检查 `Claude` 或 `Claude-3p` 标准配置目录。两个目录都存在时需要选择目标；“一键开启”仅将该目录下 `developer_settings.json` 的 `allowDevTools` 设为 `true`，保留其他字段。检查不写入，已开启不重复改写，JSON 格式错误会显示错误并保留原文件。
 
-修改后需重启 Claude Desktop 才会加载。需要主进程调试时，再手动点击 **Developer → Enable Main Process Debugger**；菜单仍受账号与 workspace 策略限制。此功能不自动重启应用或打开调试端口。
+配置在 Claude Desktop 下一次启动时加载，Bridge 不自动重启它。后台沿现有 3 秒轮询发现新的主进程（PID、启动时间及完整可执行路径），通过原生 **Developer → Enable Main Process Debugger** 菜单尝试开启一次。请按 macOS 提示授予 Bridge“辅助功能”和对 System Events 的“自动化”权限；原生账号与 workspace 策略仍生效，回调可能打开 Chrome 调试页。
+
+端口已开放时跳过操作并记录本进程已处理；菜单尚未构建时继续等待。实际操作或权限失败会在“调试连接监测”显示具体错误，本次进程启动不反复尝试；可以手动使用原生菜单。记录保存在 Bridge 配置目录的 `claude-inspector-startup-v1.json`，同一 Desktop 进程中手动关闭后，即使重启 Bridge 后台也不会重新开启。设置 `BRIDGE_CLAUDE_INSPECTOR_URL` 时禁用真实 Desktop 菜单自动化。
 
 Bridge 后台每 3 秒检查当前用户可见的 9229 TCP 连接，用 macOS `proc_pidpath` 读取连接进程的完整可执行路径。当前 Bridge 应用包、`/Applications/Bridge.app/` 和 `/Applications/Google Chrome.app/` 内的进程属于认可路径；其他位置或路径无法识别时触发系统通知及窗口内告警。设置页显示 PID、完整路径和最近 20 条告警（当前后台运行期间）；同一进程持续连接不重复通知，断开后再次连接会再次提醒。关闭 Bridge 窗口后监测继续，停止后台服务后监测停止。
 
@@ -131,7 +133,7 @@ flowchart LR
 
 本 fork 的日常部署是**本机 Bridge + Android 客户端，服务器只运行中继**，无需向公网部署 WebUI。Web/PWA 保留供开发使用，各运行时的账号和会话保持隔离。
 
-Claude 接入从 `http://127.0.0.1:9229/json/list` 动态取得 WebSocket，通过 `process.mainModule.require('electron')` 找到 `app://localhost` WebContents，再以 `executeJavaScript` 调用 `claude.web.LocalSessions`。用户已选择常开该本机 inspector，本次选择覆盖旧文档“绝不 CDP / 不附着”的 Claude 限制；不改 asar、不签 token、不添加 LaunchAgent、不用辅助功能自动点菜单。Relay 不提供任意 evaluate 入口，也不接收账号凭据。
+Claude 接入从 `http://127.0.0.1:9229/json/list` 动态取得 WebSocket，通过 `process.mainModule.require('electron')` 找到 `app://localhost` WebContents，再以 `executeJavaScript` 调用 `claude.web.LocalSessions`。用户已选择常开该本机 inspector，本次选择覆盖旧文档“绝不 CDP / 不附着”的 Claude 限制；允许每个 Desktop 进程启动后通过辅助功能触发一次原生调试菜单，不改 asar、不签 token、不重启 Desktop、不添加 LaunchAgent，也不使用 SIGUSR1 或调试启动参数。Relay 不提供任意 evaluate 入口，也不接收账号凭据。
 
 | 文档 | 内容 |
 | --- | --- |

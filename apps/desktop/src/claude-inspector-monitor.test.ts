@@ -96,6 +96,23 @@ describe("background inspector monitor", () => {
     expect(onUpdate).not.toHaveBeenCalled();
   });
 
+  it("publishes persistent startup errors alongside socket and client alerts", async () => {
+    vi.useFakeTimers();
+    const onUpdate = vi.fn();
+    const onAlert = vi.fn(() => undefined);
+    const startup = vi.fn(async () => "本进程自动开启失败：辅助功能权限不足");
+    const monitor = new ClaudeInspectorMonitor({
+      scan: async () => ({ listening: false, clients: [client] }), startup, onAlert, onUpdate, platform: "darwin",
+    });
+    try {
+      await monitor.start();
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(startup).toHaveBeenCalledTimes(3);
+      expect(onUpdate.mock.lastCall?.[0]).toMatchObject({ state: "closed", error: "本进程自动开启失败：辅助功能权限不足" });
+      expect(onAlert).toHaveBeenCalledOnce();
+    } finally { monitor.close(); }
+  });
+
   it("does not run macOS tools on other platforms", async () => {
     const scan = vi.fn();
     const onUpdate = vi.fn();

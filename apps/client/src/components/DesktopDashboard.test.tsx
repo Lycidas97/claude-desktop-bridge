@@ -9,6 +9,7 @@ import { InteractivePromptCard } from "./MobileWorkspace.js";
 import { SlashCommandInput } from "./SlashCommandInput.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
 import { SessionRewindDialog } from "./SessionRewindDialog.js";
+import { SessionNoticeCard } from "./SessionNoticeCard.js";
 
 type HookStore = {
   slots: any[]; index: number; dirty: boolean;
@@ -133,6 +134,22 @@ function questionPermission(requestId: string, question: string, sessionId = "A"
 function textContent(node: ReactNode): string {
   return elements(node).flatMap(element => element.props.children).filter(child => typeof child === "string").join(" ");
 }
+
+describe("session notice presentation", () => {
+  it("uses the shared compact card instead of user rewind controls", async () => {
+    snapshot.host.capabilities.push("session.rewind.v1");
+    const text = "<side-sessions-event>None of the sessions you started is working now; their notes are above.</side-sessions-event>";
+    history = [{ id: "notice", sessionId: "A", role: "user", text, createdAt: 1, origin: "claude-desktop" }];
+    await openSessions();
+    const cards = elements(tree).filter(element => element.type === SessionNoticeCard);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.props.source).toBe(text);
+    expect(cards[0]!.props.itemId).toBe("notice");
+    expect(cards[0]!.props.notice.summary).toBe("当前没有运行中的子会话");
+    expect(elements(tree).filter(element => element.props["aria-label"] === "回退到这条消息之前")).toHaveLength(0);
+    expect(apiRequest).not.toHaveBeenCalled();
+  });
+});
 
 describe("successful rewind completion", () => {
   it.each(["rejects", "pending"])("returns the Native prefill without waiting for a snapshot refresh that %s", async mode => {

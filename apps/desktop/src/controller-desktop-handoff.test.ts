@@ -11,9 +11,10 @@ it("publishes handoff control changes without rebroadcasting an unchanged catalo
     source: "bridge", transport: "bridge-host", ownership: "BRIDGE_IDLE", turnState: "idle", lastActivityAt: 1, pendingCount: 0,
     desktopHandoff: { state: "bridge", canReturn: false },
   };
-  const snapshot = { sessions: [session], latestSeq: 0 };
+  const snapshot = { sessions: [session], permissions: [], latestSeq: 0 };
   const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
     lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
+    lastPublishedPermissions: new Map(), claudePermissions: () => [],
     snapshot: async () => snapshot, broadcast: vi.fn(async () => {}),
     eventLog: { append: vi.fn(async () => undefined) },
   });

@@ -30,6 +30,8 @@ export interface SendOptions {
   crypto?: BridgeCrypto;
   ttlMs?: number;
   temporary?: true;
+  /** Only enable after the recipient declares payload.deflate.v1 support. */
+  compress?: boolean;
 }
 
 export interface DeviceRegistrationOptions {
@@ -87,6 +89,7 @@ export class BridgeSocket {
     timer: ReturnType<typeof setTimeout>;
   }>();
   private chunkedSendTail: Promise<void> = Promise.resolve();
+  private envelopeReceiveTail: Promise<void> = Promise.resolve();
 
   constructor(options: BridgeSocketOptions) {
     this.crypto = options.crypto;
@@ -156,6 +159,7 @@ export class BridgeSocket {
       options.ttlMs,
       options.toDeviceId,
       options.temporary,
+      options.compress,
     );
     await this.sendEnvelope(envelope);
     return envelope.id;
@@ -316,13 +320,13 @@ export class BridgeSocket {
       }
       return;
     }
-    if (frame.type === "envelope-chunk") {
-      const envelope = await this.acceptChunk(frame.chunk);
+    if (frame.type !== "envelope" && frame.type !== "envelope-chunk") return;
+    // Keep payload delivery in arrival order across async digest/decrypt/inflate.
+    this.envelopeReceiveTail = this.envelopeReceiveTail.then(async () => {
+      const envelope = frame.type === "envelope" ? frame.envelope : await this.acceptChunk(frame.chunk);
       if (envelope) await this.deliverEnvelope(envelope);
-      return;
-    }
-    if (frame.type !== "envelope") return;
-    await this.deliverEnvelope(frame.envelope);
+    });
+    await this.envelopeReceiveTail;
   }
 
   private async deliverEnvelope(envelope: EncryptedEnvelope): Promise<void> {

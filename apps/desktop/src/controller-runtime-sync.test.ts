@@ -9,10 +9,14 @@ function fixture() {
     projectId: "synthetic", projectName: "Synthetic", source: "desktop", transport: "claude-desktop-managed",
     ownership: "DESKTOP_OBSERVED", turnState: "idle", pendingCount: 0, lastActivityAt: 1,
   }));
-  const runtime = { state: "ready", detail: "Ready", activeTurns: 0, maxParallelTurns: 2 };
+  const runtime: NonNullable<DesktopControlSnapshot["runtime"]> = {
+    state: "ready", detail: "Ready", activeTurns: 0, maxParallelTurns: 2,
+    desktopIntegration: { state: "not-managed", detail: "Synthetic", enabled: false, canRestart: false },
+  };
   const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
     lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
-    snapshot: vi.fn(async () => ({ sessions: structuredClone(sessions), runtime }) as DesktopControlSnapshot),
+    lastPublishedPermissions: new Map(), claudePermissions: () => [],
+    snapshot: vi.fn(async () => ({ sessions: structuredClone(sessions), runtime, permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions" | "runtime">),
     broadcast: vi.fn(async () => undefined), eventLog: { append: vi.fn(async () => undefined) },
   });
   return { controller, sessions, runtime };

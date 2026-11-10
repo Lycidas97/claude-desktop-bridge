@@ -25,7 +25,8 @@ describe("mobile snapshot publication", () => {
     const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
       lastPublishedSessionKey: "",
       lastPublishedSessions: new Map<string, string>(),
-      snapshot: vi.fn(async () => ({ sessions: [{ ...session }] }) as DesktopControlSnapshot),
+      lastPublishedPermissions: new Map(), claudePermissions: () => [],
+      snapshot: vi.fn(async () => ({ sessions: [{ ...session }], permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions">),
       broadcast: vi.fn(async () => undefined),
       eventLog: { append: vi.fn(async () => undefined) },
     });
@@ -58,7 +59,8 @@ describe("mobile snapshot publication", () => {
     const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
       lastPublishedSessionKey: "",
       lastPublishedSessions: new Map<string, string>(),
-      snapshot: vi.fn(async () => ({ sessions: [{ ...session }] }) as DesktopControlSnapshot),
+      lastPublishedPermissions: new Map(), claudePermissions: () => [],
+      snapshot: vi.fn(async () => ({ sessions: [{ ...session }], permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions">),
       broadcast: vi.fn(async () => undefined),
       eventLog: { append: vi.fn(async () => undefined) },
     });
@@ -86,7 +88,8 @@ describe("mobile snapshot publication", () => {
     const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
       lastPublishedSessionKey: "",
       lastPublishedSessions: new Map<string, string>(),
-      snapshot: vi.fn(async () => ({ sessions: [{ ...session }] }) as DesktopControlSnapshot),
+      lastPublishedPermissions: new Map(), claudePermissions: () => [],
+      snapshot: vi.fn(async () => ({ sessions: [{ ...session }], permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions">),
       broadcast: vi.fn(async () => undefined),
       eventLog: { append: vi.fn(async () => undefined) },
     });
@@ -115,7 +118,8 @@ describe("mobile snapshot publication", () => {
     const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
       lastPublishedSessionKey: "",
       lastPublishedSessions: new Map<string, string>(),
-      snapshot: vi.fn(async () => ({ sessions: [{ ...session }] }) as DesktopControlSnapshot),
+      lastPublishedPermissions: new Map(), claudePermissions: () => [],
+      snapshot: vi.fn(async () => ({ sessions: [{ ...session }], permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions">),
       broadcast: vi.fn(async () => undefined),
       eventLog: { append: vi.fn(async () => undefined) },
     });
@@ -262,7 +266,7 @@ describe("mobile snapshot publication", () => {
     const { controller, sessions } = progressFixture();
     sessions[1]!.runningSubagents = { count: 1, lastUpdatedAt: 10 };
     sessions[1]!.subagentStopScope = "task";
-    controller.snapshot.mockImplementation(async () => ({ sessions: structuredClone(sessions), latestSeq: log.latestSeq() }));
+    controller.snapshot.mockImplementation(async () => ({ sessions: structuredClone(sessions), permissions: [], latestSeq: log.latestSeq() }));
     controller.eventLog = { append: async (draft: Parameters<SessionEventLog["append"]>[0]) => {
       const event = await log.append(draft);
       if (draft.sessionId === "session-0") { entered(); await blocked; }
@@ -350,7 +354,8 @@ function progressFixture() {
   const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
     lastPublishedSessionKey: "",
     lastPublishedSessions: new Map<string, string>(),
-    snapshot: vi.fn(async () => ({ sessions: structuredClone(sessions) }) as DesktopControlSnapshot),
+    lastPublishedPermissions: new Map(), claudePermissions: () => [],
+    snapshot: vi.fn(async () => ({ sessions: structuredClone(sessions), permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions">),
     broadcast: vi.fn(async () => undefined),
     eventLog: { append: vi.fn(async () => undefined) },
   });

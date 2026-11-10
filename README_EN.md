@@ -8,12 +8,12 @@
 
 Bridge brings desktop sessions, task progress, approvals, questions and workspace files to your phone. Continue an existing conversation, queue the next instruction, create a fork, inspect subagents and results, or answer an approval while away from your computer.
 
-This independently maintained fork focuses on **macOS + Android + Claude**. **Version 1.3.0 uses Claude Desktop's native `LocalSessions` API** for sessions, execution, queues and permissions. It adds native Send now, withdrawal and rewind, with improvements to large histories, reconnection, streaming scroll and tool display. See this repository's [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) for installers. Upstream Codex, Hermes and DSH adapters remain available; enable them in settings.
+This independently maintained fork focuses on **macOS + Android + Claude**. **Version 1.3.1 improves native permission synchronization and connectivity**, with negotiated encrypted-body compression, Git project grouping, collapsible native/fork notices and Android system-bar theming. On macOS, it can attempt the native debugger menu once per newly discovered Desktop process, with user-granted Accessibility and Automation permission. Desktop's `LocalSessions` API still owns sessions, execution, queues and permissions. See the [Changelog](CHANGELOG.md) for details and this repository's [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) for installers. Upstream Codex, Hermes and DSH adapters remain available; enable them in settings.
 
 ## Get started
 
 1. Download desktop and Android packages from this fork's Releases, preferably from the same version. Upstream installers do not include all changes in this fork.
-2. Start Claude Desktop and enable its local Node inspector at `127.0.0.1:9229`, then start Bridge. Without the inspector Claude is unavailable; Bridge does not patch or restart Desktop or enable its inspector automatically.
+2. Start Claude Desktop, then Bridge. On macOS, Bridge uses the native **Enable Main Process Debugger** menu once per Desktop process start to open `127.0.0.1:9229`. Enable Desktop developer mode and grant Bridge Accessibility and System Events Automation permission when macOS requests it. Native account/workspace policies still apply; the native callback may open Chrome. An already-open port is skipped. Manual closure and failed attempts are respected across Bridge service restarts; details appear in Settings → Diagnostics and About. Bridge does not patch or restart Desktop.
 3. Install the Android APK and add the computer using its one-time QR code or pairing link.
 4. Open the session directory on your phone. Select an existing session or use “+” to create one.
 5. Send text, images or files, follow execution progress, and respond to approvals and questions.

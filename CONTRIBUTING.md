@@ -9,7 +9,7 @@ Bridge is an npm workspace with four runnable parts:
 
 ```text
 apps/client        React UI shared by desktop and mobile
-apps/desktop       Electron host, session kernel, adapters
+apps/desktop       Electron bridge, native adapters, transport and evidence
 apps/mobile        Capacitor shell for Android/iOS
 apps/relay         Ciphertext relay and push wake
 packages/protocol  Protocol V3, crypto, reliable transports
@@ -67,14 +67,44 @@ See [Testing](docs/testing.md) for suite boundaries, browser setup, and report p
 Keep changes scoped. Bridge intentionally does not merge native sessions, credentials, or
 model settings between runtimes; review proposals that weaken those boundaries carefully.
 
+For the approved Claude refactor, `claude-desktop-bridge.ts` is a thin forwarding layer;
+Claude Desktop alone owns session execution, queues, and permissions. Discover the dynamic
+WebSocket from the user-enabled Node inspector at `http://127.0.0.1:9229/json/list`, use
+`process.mainModule.require('electron')` to locate the `app://localhost` WebContents, and
+call `claude.web.LocalSessions` through `executeJavaScript`. Events use one renderer queue
+and a waiting Promise. Do not restore SDK/CLI Hosts, standalone API Key provider lanes,
+Claude takeover/release, inbox, lanes, or automatic goal continuation. Codex, Hermes, and
+DSH retain their existing native integrations.
+
+Keep pairing, E2EE Relay/WebRTC, request idempotency and receipts, event replay, and passive
+attachment/evidence collection. Use Desktop's native session IDs and transcript APIs directly;
+do not import legacy data, map old logical IDs, offer legacy history fallback, or restore old
+queue entries as drafts. Leave old data untouched and never automatically resend mobile
+`bridgeExecutionRequested` intents. Retired connector cleanup backs up settings before
+removing only Bridge-owned MCP/hooks. Dynamic hooks
+must match the old installer's exact loopback path `/hooks/claude-permission`,
+`X-Bridge-Permission-Host: $BRIDGE_PERMISSION_HOST`, and `allowedEnvVars` marker; preserve
+unrelated hooks and settings. Use isolated fixtures, never real user settings, for tests:
+
+```bash
+npm run ci:run -- test -w @bridge/desktop -- src/connector.test.ts
+```
+
+The new inspector and relay facade have been exercised against the installed macOS
+Desktop: empty session creation, sending, native lifecycle events, transcript history,
+request deduplication, and session retention after Bridge closes. Native permissions and
+individual subagent stopping have contract coverage, but have not been exercised end to
+end against the installed Desktop. See [HOSTING-REFACTOR.md](docs/HOSTING-REFACTOR.md)
+for current verification and its separately marked historical Host acceptance record.
+
 ## Release rules
 
 Releases are controlled by automation on `main`:
 
 1. Code and README changes are committed and pushed normally.
-2. A synchronized version bump across all manifests triggers `release.yml`.
-3. After validation, the workflow creates a draft GitHub Release for that version, then starts the platform asset jobs.
-4. The Release and its tag are published only after the desktop, Android, and iOS asset jobs all succeed.
+2. A successful complete `CI` run on `main` starts `release.yml`, which checks the synchronized version at that run's commit.
+3. If the version is unpublished, the workflow creates or resumes its draft GitHub Release and starts all platform asset jobs at that exact commit.
+4. The Release and its tag are published only after the desktop, Android, and iOS asset jobs all succeed. Failed drafts can be retried; manual retries also require successful CI for the selected commit.
 
 Do not create tags or GitHub Releases manually, and do not bump only one workspace. The
 release workflow validates that `package.json`, every workspace, `package-lock.json`,
@@ -85,7 +115,12 @@ Android `versionName`, and iOS `MARKETING_VERSION` match exactly.
 Security issues should be reported privately through the repository's security policy in
 [SECURITY.md](docs/SECURITY.md) rather than opened as public issues. The security model is a
 core product boundary: do not weaken encryption, add clipboard or accessibility access,
-attach to native windows, or forward credentials to the relay.
+or forward credentials to the relay. The user has explicitly chosen to keep Claude's local
+Node inspector on port 9229 enabled; this supersedes the previous blanket “no CDP / no
+attachment” rule for Claude. It permits the fixed `LocalSessions` integration described
+above, not a Relay-accessible arbitrary evaluate endpoint. Do not patch asar, mint tokens,
+restart Desktop, add a LaunchAgent, or automate its menus. If inspector is unavailable,
+report Claude as unavailable.
 
 ## Code of conduct
 

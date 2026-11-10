@@ -44,6 +44,7 @@ export async function showSessionNotification(
       title,
       body,
       channelId: CHANNEL_ID,
+      isExactNotification: false,
       autoCancel: true,
       extra: target,
     }],

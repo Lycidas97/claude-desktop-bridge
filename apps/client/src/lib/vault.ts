@@ -78,41 +78,6 @@ const PACKAGED_ICE_SERVERS = parseBridgeIceServers(String(
   import.meta.env.VITE_BRIDGE_ICE_SERVERS ?? DEFAULT_BRIDGE_ICE_SERVERS_JSON,
 ));
 
-function isCustomPackagedRelay(): boolean {
-  return Boolean(
-    PACKAGED_PUBLIC_RELAY &&
-    PACKAGED_PUBLIC_RELAY !== UPSTREAM_DEFAULT_RELAY,
-  );
-}
-
-function isDisallowedUpstreamRelay(url: string | undefined): boolean {
-  if (!url || !isCustomPackagedRelay()) return false;
-  return url !== PACKAGED_PUBLIC_RELAY;
-}
-
-function refreshStoredRelayEndpoints(stored: StoredCrypto): BridgeEndpoint[] {
-  if (isCustomPackagedRelay()) {
-    return [bridgeEndpoint(PACKAGED_PUBLIC_RELAY, 10, "public")];
-  }
-  return (stored.relayEndpoints ?? [])
-    .filter((endpoint) => !isDisallowedUpstreamRelay(endpoint.url))
-    .map((endpoint, index) => {
-      if (
-        PACKAGED_PUBLIC_RELAY &&
-        endpoint.kind === "public-relay" &&
-        endpoint.id === "public" &&
-        endpoint.url !== PACKAGED_PUBLIC_RELAY
-      ) {
-        return {
-          ...endpoint,
-          id: `legacy-public-${index}`,
-          priority: Math.max(endpoint.priority, 30),
-        };
-      }
-      return endpoint;
-    });
-}
-
 function serviceOriginForRelay(relayUrl: string): string {
   try {
     const value = new URL(relayUrl);
@@ -143,21 +108,13 @@ function transportForStored(stored: StoredCrypto): {
       iceServers: preferredBridgeIceServers(stored.iceServers, PACKAGED_ICE_SERVERS),
     };
   }
-  const legacyRelayUrl = isDisallowedUpstreamRelay(stored.identity.relayUrl)
-    ? PACKAGED_PUBLIC_RELAY
-    : stored.identity.relayUrl;
-  const relayEndpoints = normalizeBridgeEndpoints([
-    ...(PACKAGED_PUBLIC_RELAY ? [bridgeEndpoint(PACKAGED_PUBLIC_RELAY, 10, "public")] : []),
-    ...refreshStoredRelayEndpoints(stored),
-    bridgeEndpoint(legacyRelayUrl, 100, "legacy"),
-  ]);
-  const active = selectBridgeEndpoint(
-    relayEndpoints,
-    PACKAGED_PUBLIC_RELAY ? "public" : stored.activeEndpoint,
-  );
+  const relayEndpoints = normalizeBridgeEndpoints(stored.relayEndpoints?.length
+    ? stored.relayEndpoints
+    : [bridgeEndpoint(stored.identity.relayUrl || PACKAGED_PUBLIC_RELAY, 10, "public")]);
+  const active = selectBridgeEndpoint(relayEndpoints, stored.activeEndpoint);
   if (!active) throw new Error("No relay endpoint is available");
   return {
-    serviceOrigin: PACKAGED_SERVICE_ORIGIN || stored.serviceOrigin || serviceOriginForRelay(active.url),
+    serviceOrigin: stored.serviceOrigin || serviceOriginForRelay(active.url) || PACKAGED_SERVICE_ORIGIN,
     relayEndpoints,
     activeEndpoint: active.id,
     relayUrl: active.url,
@@ -355,11 +312,7 @@ export class BridgeVault {
       const updatedAt = stored.updatedAt ?? 0;
       if (existing && existing.updatedAt > updatedAt) continue;
       const transport = transportForStored(normalizedStored);
-      const sanitizedDesktopRelayUrl = normalizedStored.relayUrlOverride
-        ? undefined
-        : isDisallowedUpstreamRelay(normalizedStored.desktopRelayUrl)
-          ? PACKAGED_PUBLIC_RELAY
-          : normalizedStored.desktopRelayUrl;
+      const sanitizedDesktopRelayUrl = normalizedStored.relayUrlOverride ? undefined : normalizedStored.desktopRelayUrl;
       const relayMigrationNeeded = (
         normalizedStored.identity.relayUrl !== transport.relayUrl ||
         normalizedStored.serviceOrigin !== transport.serviceOrigin ||
@@ -368,9 +321,7 @@ export class BridgeVault {
         JSON.stringify(normalizedStored.relayEndpoints ?? []) !== JSON.stringify(transport.relayEndpoints)
       );
       if (iceServersChanged(normalizedStored, transport.iceServers) || relayMigrationNeeded) {
-        // Persist this narrow default migration in place. It intentionally
-        // leaves the pairing identity and encrypted cache alone while purging
-        // any disallowed upstream relay references.
+        // Fill legacy transport metadata without changing paired endpoints or encrypted cache.
         store.put({
           ...normalizedStored,
           identity: { ...normalizedStored.identity, relayUrl: transport.relayUrl },
@@ -515,7 +466,6 @@ export class BridgeVault {
    */
   async setDesktopRelay(roomId: string, url: string): Promise<void> {
     if (!url.startsWith("ws://") && !url.startsWith("wss://")) return;
-    if (isDisallowedUpstreamRelay(url)) return;
     const database = await this.open();
     const transaction = database.transaction("identity", "readwrite");
     const store = transaction.objectStore("identity");

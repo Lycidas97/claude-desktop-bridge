@@ -28,31 +28,23 @@ function html(desktopLocal = false, connected = true) {
 }
 
 describe("provider settings independent of sessions", () => {
-  it("separates local readiness from failed model discovery and shows actual configuration source", () => {
-    const markup = html();
-    expect(markup).toContain("Claude-3p");
-    expect(markup).toContain("模型接口读取失败");
-    expect(markup).toContain("固定网关配置");
-    expect(markup).toContain("/fixture/configLibrary/active.json");
-    expect(markup).not.toContain("0 个可用模型");
+  it("hides retired Claude Host lanes and independent Anthropic Key management", () => {
+    for (const desktopLocal of [true, false]) {
+      const markup = html(desktopLocal);
+      expect(markup).not.toContain("Anthropic API");
+      expect(markup).not.toContain("Claude-3p");
+      expect(markup).not.toContain('type="password"');
+      expect(markup).not.toContain("验证并保存");
+    }
   });
-  it("offers Key management only in the local desktop settings even without any session", () => {
-    expect(html(true)).toContain('type="password"');
-    expect(html()).not.toContain('type="password"');
-    expect(html()).toContain("请在电脑端 Bridge 设置");
-  });
-  it("keeps the last detection time and disables refresh while the computer is offline", () => {
-    const markup = html(false, false);
-    expect(markup).toContain("电脑未连接");
-    expect(markup).toContain("最近检测");
-    expect(markup).toMatch(/disabled=""[^>]*>.*重新检测/s);
-  });
-  it("labels the manual Magpie source in detection details", () => {
+  it("keeps quota discovery independent of retired provider profiles", () => {
     const markup = renderToStaticMarkup(createElement(ProviderSettings, {
-      snapshot: { ...snapshot, runtime: { ...snapshot.runtime, detection: { ...snapshot.runtime.detection!, configSource: { type: "manual-gateway", profile: "unknown" } } } },
-      onRefresh: vi.fn(),
+      snapshot: { ...snapshot, providers: [], host: { ...snapshot.host, capabilities: ["plugin.magpie-quota.v1"] } }, onRefresh: vi.fn(),
     }));
-    expect(markup).toContain("手动配置 Magpie");
+    expect(markup).toContain("Magpie 额度");
+  });
+  it("disables refresh while the paired computer is offline", () => {
+    expect(html(false, false)).toMatch(/disabled=""[^>]*>.*重新检测/s);
   });
   it("shows only saved Magpie connection facts on mobile", () => {
     const markup = renderToStaticMarkup(createElement(ProviderSettings, {

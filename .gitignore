@@ -22,3 +22,6 @@ apps/mobile/ios/App/DerivedData/
 deploy/vps-minimal/
 output/
 .bridge-uploads/
+.claude/worktrees/
+.claude/plans/
+.claude/launch.json

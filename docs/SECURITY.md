@@ -1,4 +1,6 @@
-# Bridge 0.6.0 安全模型
+# Bridge 安全模型
+
+Claude 部分描述当前分支的原生中转边界。macOS 已通过真实 Desktop 的创建、发送、事件、历史、请求去重与关闭验证；原生审批和子代理停止尚未对真实 Desktop 做端到端验证，具体验证范围见[重构记录](HOSTING-REFACTOR.md)。
 
 ## 已保护
 
@@ -15,37 +17,26 @@
 - 在线撤销会立即移除 Relay 权限；手机删除主机时同时删除本地密钥和缓存。
 - 主机与设备密钥保存在权限为 `0600` 的本地配置中，不调用系统钥匙串，避免临时
   签名或升级时弹出系统密码框。
-- 证据正文使用独立 AES-256-GCM 主密钥加密为内容寻址 blob；主密钥由 Electron
-  `safeStorage` 保护，不复用传输身份密钥。
+- 证据正文使用独立 AES-256-GCM 主密钥加密为内容寻址 blob；主密钥保存在本机
+  受限配置文件中，不复用传输身份密钥。
 - Electron 渲染进程启用 sandbox、context isolation，关闭 Node integration，
   并限制导航和 IPC 来源。
-- Bridge 不申请辅助功能权限，不发送键鼠事件，不附着、注入或自动操作 Claude、Codex、Hermes
-  的原生窗口，也不读写剪贴板。
-- Bridge 托管任务的“完全授权”由电脑端 `PermissionBroker` 自动批准工具请求，不启用 Agent SDK
-  `bypassPermissions`；Claude 提问和受管策略的明确禁止仍不能被自动批准。
-- 手机创建的 Claude Desktop 会话将所选授权保存到原生会话记录：标准授权对应 `default`，
-  完全授权对应 `bypassPermissions`。运行中的 Desktop 需要重新加载后才读取这些设置，
-  Bridge 会保留待重启状态；不会自动重启 Desktop，也不改变其应用或受管策略。
-- 对运行中的原生会话，手机明确确认“此 Desktop 会话完全授权”后，Bridge 仅向当前
-  PermissionRequest 返回固定的 `setMode / bypassPermissions / session` 补丁；是否应用
-  仍受原生启动选项和受管策略约束，必须取得匹配的原生 Hook 反馈才显示已确认。
-- 手机明确选择由 Bridge 执行时，交接选择绑定具体待发命令并持久化；该消息不先进入
-  Desktop 收件箱。自动交接要求原生主轮真正结束、无运行子代理或后台 Shell，验证唯一 OS
-  执行器并确认其退出后才恢复同一会话。等待提问不视为结束；工具审批模式不会随交接升级。
-  取消授权指令后不能用其他未授权队列替代它，退出失败保留错误并停止自动重试。
-- Desktop 收件箱的接收许可独立于工具授权。已经提交的 `held` 消息仍保持真实接收状态，
-  Bridge 默认完全授权或原生会话模式变更均不代替确认；拒收、禁收和丢弃不会触发自动
-  重发或改走执行器。确认过期后可明确授权同一原命令交接，不创建重复投递。
-- 收件箱图片通过现有上传校验保存到会话 `.bridge-uploads`，新目录为 `0700`、文件为
-  `0600`；在原会话中读取图片仍服从原生工具与系统目录权限，不因附件来自手机自动放行。
-- 第三方 Claude Host 凭据不写入 Bridge 配置，不经 Relay，不出现在诊断或日志中。
-- Anthropic Console API Key 只接受 Desktop 本地 IPC；保存前必须由 Electron
-  `safeStorage` 加密，磁盘格式固定带 `os:` 标记，系统安全存储不可用时拒绝保存，
-  不允许明文、base64 或手机/Relay 降级。
-- `conversation-state-v1.sqlite` 与证据库分离；完整接力包使用独立派生密钥
-  AES-256-GCM 加密，协议事件和手机快照只携带状态、摘要与路由。
-- 0.2 首次启动只备份并移除 Bridge 自己写入的 `claude-bridge` MCP 与 HTTP Hooks；
-  其他 Claude 配置保持不变。
+- Bridge 不申请辅助功能权限、不发送键鼠事件、不自动点菜单，也不读写剪贴板。
+  Claude 通过用户已开启的本机 Node inspector 接入；Codex、Hermes、DSH 的原生接入不变。
+- Claude Desktop 是会话执行、队列和权限的唯一权威。手机提交原生权限请求的答复，
+  Bridge 不安装 Host 权限 Hook、不自动批准，也不改写原生会话文件来升级授权。
+- Claude 不再运行 SDK/CLI Host、standalone API Key lane、接管/交还、inbox、lane 或
+  自动 goal 续跑。旧队列与手机 `bridgeExecutionRequested` 不能触发自动重发或恢复执行。
+- 附件通过现有上传校验保存在会话 `.bridge-uploads`，新目录为 `0700`、文件为
+  `0600`；读取仍服从原生工具与系统目录权限，不因来自手机自动放行。
+- 账号凭据留在各原生应用内，不复制到手机、Relay、日志或诊断；不签发 Desktop token。
+- Claude 直接使用原生会话 ID 与 Desktop 历史，不导入旧数据、不关联旧逻辑 ID，
+  不提供旧只读入口或恢复旧队列草稿；不导入或改写旧会话数据，保留配对身份。
+- 退役旧连接组件时先备份到 `.bridge-backup`，只移除旧 `claude-bridge` MCP、固定
+  `http://127.0.0.1:8790/hooks/claude` HTTP Hook，以及匹配动态
+  `http://127.0.0.1:<port>/hooks/claude-permission` 且同时带有
+  `X-Bridge-Permission-Host: $BRIDGE_PERMISSION_HOST` 和 `allowedEnvVars` 中
+  `BRIDGE_PERMISSION_HOST` 标记的 HTTP Hook；其他 Hook、MCP 和用户设置保留。
 - 诊断导出只包含版本、平台、连接状态和数量统计，不包含正文、密钥或凭据路径。
 
 ## Relay 可见内容
@@ -88,65 +79,43 @@ adapter 显式声明能力后，通过原生接口修改当前会话的模型、
 不提取、不记录或传输凭据，也不执行跨运行时迁移。外部 adapter 的图片附件和其他非共同能力默认关闭，
 只有显式能力声明才能在 Bridge UI 开放。
 
-`TranscriptObserver` 需要只读访问当前用户的 Claude 会话 JSONL 与元数据。
-`ClaudeSessionHost` 以当前用户身份运行，并继承第三方 Host 环境，因此它拥有与
-本机 Claude 工具相同的文件和命令权限。危险工具必须经过 `PermissionBroker`；
-电脑或任一已授权手机的首次有效答复生效。
+### Claude Node inspector
 
-会话目录发现只读取 `~/.claude` 与 Claude 的 Application Support 元数据，不探测
-元数据中记录的项目 `cwd`。CLI 的后台 PATH / 版本发现和模型列表发现也固定避开
-“文稿 / 桌面 / 下载”等受保护目录。只有用户选中某个真实项目并发送任务后，
-`ClaudeSessionHost` 才以该项目为 `cwd` 启动；macOS 因而只会在真实项目首次执行时
-请求相应的 Files & Folders 授权。后续版本必须维持相同的正式签名身份与 Bundle ID，
-系统才能在升级后继续识别这次授权。
+用户已明确选择常开 `127.0.0.1:9229` Node inspector；本次选择覆盖旧“绝不 CDP / 不附着”
+规则中针对 Claude 的限制。该本机调试端口具有进程求值能力，边界依赖本机访问控制，
+不得映射到公网或 Relay。Bridge 只使用已开启的端口，未开启时显示 Claude 不可用；
+不修改 asar、不签 token、不重启 Desktop、不安装 LaunchAgent，也不用辅助功能点菜单。
 
-Bridge 直接新建的会话在首轮可信 JSONL 落盘后，可以向当前 Claude Desktop profile
-写入一份最小会话映射。该能力只接受 Bridge 自身 UUID，动态识别唯一 active profile
-与账号目录，要求现有原生元数据格式可验证，并对 transcript 根目录、`sessionId`、
-`cwd`、目标文件名和最终父目录逐项校验。目标已存在、目录歧义、符号链接或格式未知
-时一律停止；不会覆盖原生会话，不写 LevelDB，也不会把本机路径和哈希发送到手机或
-Relay。
+接入从 `http://127.0.0.1:9229/json/list` 动态取得 `webSocketDebuggerUrl`，不固定 WebSocket
+路径。通过 Node inspector 的 `Runtime.evaluate` 调用 `process.mainModule.require('electron')`，
+定位 `app://localhost` WebContents，再以 `executeJavaScript` 调用 `claude.web.LocalSessions`。
+这是本机受限的原生接口中转；Relay/手机请求只能映射到明确的会话操作，不能提供任意
+JavaScript、任意 evaluate 或任意 WebContents 访问入口，不提取账号凭据。
 
-恢复原生会话时，Bridge 会在启动 Host 和写入用户消息前核对会话元数据来源与当前
-Host 凭据目录。Claude 官方与 Claude-3p profile 不一致时保持原会话未写入并失败
-关闭；不会尝试复制凭据、跨 profile 原始 resume 或自动改走其他执行通道。
+新 `claude-desktop-bridge.ts` 只负责转发。事件与权限订阅在 renderer 使用单队列和等待
+Promise 返回，不启动另一套执行或审批循环。Desktop 决定会话、队列、工具权限与授权模式；
+Bridge 不发送执行器退出信号、不登记侧边栏文件，也不以旧 Host 或 provider lane 兜底。
+请求幂等、收据和事件 replay 用于同步状态；投递不确定不能推导已执行或自动重发。
 
-Bridge 不附加或注入 Claude Desktop 进程。仅打开、聚焦和只读查看会话不会触发
-交接；手机明确确认后，Bridge 等待目标 transcript 到达安全边界，仅向已核验的
-该会话闲置执行器发送退出信号，确认其退出后继续同一 `sessionId`。Claude Desktop
-应用和其他会话保持运行；原执行器仍存活时不启动第二个写入者。
-
-Bridge 为每个 Host 保存外部写入版本基线。只有 transcript 出现无法归因给 Bridge
-的新用户消息时，才确认 Desktop 发生真实写入；检测同时覆盖非终端分支。真实双写
-发生后只关闭 Bridge writer，手机原指令保持持久排队。Desktop 任务仍在执行、目标
-transcript 未完成或状态无法验证时，Bridge 不启动 Host。
+Claude 历史通过 Desktop transcript 接口读取，不以旧 JSONL 或 Bridge eventlog 补页；
+Desktop 不可用时明确显示不可用。附件与成果继续使用现有路径和敏感文件检查，
+证据只被动采集原生事件，不能触发执行。
 
 ## 提供方与接力边界
 
-Claude-3p lane 可以使用第三方 Host Credentials，但不会把凭据复制到 provider
-profile、接力包或移动端。Anthropic API lane 每次建立 Host 计划时都先删除继承的
-`ANTHROPIC_AUTH_TOKEN`、OAuth token、Host 凭据变量、第三方 Base URL、Custom
-Headers 以及 Bedrock/Vertex/Foundry 路由，再仅注入本机解密出的显式 API Key。
-Key 验证调用 Anthropic `GET /v1/models`，模型清单可以进入 profile；Key 和认证头
-不会进入数据库、日志、事件、接力包或 Relay。
+Claude 的 provider 配置和授权由 Desktop 管理，Bridge 不再提供 standalone API Key
+lane、Claude provider lane 切换或接力执行。旧配置、历史与加密接力包不导入新原生会话，
+旧队列及手机 `bridgeExecutionRequested` 不转成新请求或恢复草稿。
 
-Claude 官方 lane 禁止抽取、复制或代理 Pro/Max OAuth。Bridge 只构造公开
-`claude://code/new` Deep Link，并要求用户在 Bridge 电脑上确认目录和发送第一条消息。
-关联前同时校验官方 profile、`realpath` 后的 cwd、不透明 handoff ID、完整首条消息
-SHA-256 与十分钟创建窗口。零匹配不激活；多匹配只返回候选 ID 并等待用户选择。
-激活后 route 为只读，`turn.start/steer/configure` 在入队前失败；旧客户端也不能
-回退到其他 lane。
-
-接力包只包含有界、用户可见且可验证的信息。凭据模式、Bearer/Authorization、
-项目外绝对路径和敏感文件正文会被删除或脱敏；只保留工具摘要和相对产物清单，不
-保留无界输出。失败、取消、超时、崩溃或首条消息投递不确定时，原 lane 继续活动，
-目标 lane 不激活且首条消息禁止自动确认或重发。
+不抽取、复制或代理官方 OAuth、第三方 Host 凭据或 API Key；各运行时会话与账号域
+继续隔离。遗留数据中的敏感内容不进入事件、手机快照或 Relay；收据和 replay 只恢复
+可验证的状态，不自动确认或重发不确定投递。
 
 ## 成果边界
 
-Bridge 任务只快照本轮归因到的变化，不镜像整个项目。Claude Desktop 的事后记录
-只保存 JSONL 中已经出现的工具、命令和路径线索；它不扫描项目目录，也不读取
-`thinking`。用户打开预览或下载时才读取源文件。
+Bridge 任务只快照本轮归因到的变化，不镜像整个项目。Claude 工具、命令和路径线索
+来自 Desktop 原生事件，不为补历史扫描旧 JSONL，也不读取 `thinking`。用户打开
+预览或下载时才读取源文件。
 
 所有远程文件请求只接受服务端生成的 `artifactId`。实际读取前必须通过 `realpath`
 确认目标仍位于该会话项目根目录；路径穿越、项目外绝对路径和符号链接逃逸一律
@@ -161,8 +130,8 @@ Bridge 任务只快照本轮归因到的变化，不镜像整个项目。Claude 
 证据清单长期保留；加密快照和预览在 30 天或总量超过 1 GiB 时按 LRU 清理。缓存
 失效后，只有源文件仍在项目根内且 SHA-256 与清单一致时才允许重建。
 
-V0.6 不展示、存储或推断隐藏 CoT，不附加 Claude Desktop 私有 CDP，不提供远程
-项目浏览、编辑、动态服务启动或大文件绕过。
+Bridge 不展示、存储或推断隐藏 CoT，不提供任意进程求值、远程编辑、动态服务启动
+或大文件绕过。Claude 本机 Node inspector 的使用范围以本节边界为准。
 
 ## 生产要求
 
@@ -175,7 +144,7 @@ V0.6 不展示、存储或推断隐藏 CoT，不附加 Claude Desktop 私有 CDP
 - 配置 macOS notarization、Windows code signing、Android keystore 和 iOS
   provisioning profile。
 - Windows 安装包必须使用 Authenticode 签名；Bridge 的 `safeStorage` 在 Windows
-  由 DPAPI 保护，API Key 仍只经电脑端 IPC 写入，绝不进入 Relay、手机或安装包。
+  由 DPAPI 保护。旧凭据不迁移到手机、Relay 或安装包，Claude 不恢复 standalone API Key lane。
 - 为桌面安装包建立签名自动更新源；升级必须保留设备配置与事件日志。
 - 单机自签只允许存放在 Bridge 专用钥匙串中，信任策略必须限定为 `codeSign`，不得
   复用为 TLS/邮件证书或把私钥、钥匙串密码、`.p12` 放入仓库和发布产物。

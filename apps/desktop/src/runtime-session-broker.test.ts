@@ -254,6 +254,7 @@ describe("RuntimeSessionBroker", () => {
       for (const session of broker.listSessions()) expect(broker.session(session.sessionId)).toEqual(session);
       expect([codex.sessions(), hermes.sessions()]).toEqual(nativeBefore);
       expect(store.loadBrokerState().sessions).toEqual([]);
+      await waitFor(() => ["手机 Codex", "手机 Hermes"].every(title => eventLog.replay().some(event => (event.data.session as { title?: string } | undefined)?.title === title)), "renamed runtime session events");
     } finally { await broker.close(); await eventLog.close(); store.close(); }
   });
 

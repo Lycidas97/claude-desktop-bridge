@@ -17,6 +17,7 @@ module.exports = {
   packagerConfig: {
     asar: {
       unpack: "**/*.node",
+      unpackDir: "dist/native",
     },
     prune: false,
     name: "Bridge",
@@ -63,6 +64,7 @@ module.exports = {
       if (result.platform !== "darwin") return;
       for (const outputPath of result.outputPaths) {
         const appPath = path.join(outputPath, "Bridge.app");
+        const inspectorHelper = path.join(appPath, "Contents/Resources/app.asar.unpacked/dist/native/inspector-process-path");
         const electronResources = path.join(
           appPath,
           "Contents",
@@ -84,6 +86,7 @@ module.exports = {
               "Local macOS signing requires BRIDGE_MAC_SIGN_IDENTITY and BRIDGE_MAC_SIGN_KEYCHAIN.",
             );
           }
+          execFileSync("codesign", ["--force", "--timestamp=none", "--sign", macSignIdentity, "--keychain", macSignKeychain, inspectorHelper], { stdio: "inherit" });
           execFileSync("codesign", [
             "--force",
             "--deep",
@@ -105,6 +108,7 @@ module.exports = {
           process.stderr.write(
             "WARNING: ad-hoc Bridge build; macOS Files & Folders consent will not survive updates.\n",
           );
+          execFileSync("codesign", ["--force", "--sign", "-", inspectorHelper], { stdio: "inherit" });
           execFileSync("codesign", [
             "--force",
             "--deep",
@@ -113,6 +117,7 @@ module.exports = {
             appPath,
           ], { stdio: "inherit" });
         }
+        execFileSync("codesign", ["--verify", "--strict", inspectorHelper], { stdio: "inherit" });
         execFileSync("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath], {
           stdio: "inherit",
         });

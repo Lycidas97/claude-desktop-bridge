@@ -95,7 +95,7 @@ const providerProfiles = [
     kind: "claude-3p",
     name: "Claude-3p",
     status: "ready",
-    detail: "Agent SDK 与 Claude-3p Host Credentials 已就绪。",
+    detail: "旧版提供方配置；当前 Claude 执行由 Desktop 管理。",
     configured: true,
     localOnlyConfiguration: false,
     readOnly: false,

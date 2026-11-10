@@ -1,13 +1,13 @@
 import type { BridgeRequest } from "@bridge/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DesktopController } from "./controller.js";
-import type { SessionBroker } from "./session-broker.js";
+import type { ClaudeDesktopBridge } from "./claude-desktop-bridge.js";
 
 const request: BridgeRequest = {
   kind: "request", requestId: "quota", idempotencyKey: "quota", method: "plugin.magpie-quota.list", params: {},
 };
 
-function controller(gatewayConfig: SessionBroker["gatewayConfig"]) {
+function controller(gatewayConfig: ClaudeDesktopBridge["gatewayConfig"]) {
   const args = Array.from({ length: 8 }, () => ({}));
   args[4] = { gatewayConfig };
   return new (DesktopController as unknown as new (...values: unknown[]) => DesktopController)(...args) as unknown as {

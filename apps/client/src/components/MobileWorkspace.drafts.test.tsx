@@ -1,4 +1,4 @@
-import type { BridgeBackgroundTask, BridgePermissionInfo, BridgeSessionInfo, BridgeSubagentSummary } from "@bridge/protocol";
+import type { BridgeBackgroundTask, BridgeHistoryItem, BridgePermissionInfo, BridgeSessionInfo, BridgeSubagentSummary } from "@bridge/protocol";
 import { BackgroundTaskMarker, BackgroundTasksSheet } from "./BackgroundTasks.js";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,12 +7,12 @@ import { ComposerAttachmentMenu, FileAttachmentPicker } from "./FileAttachmentPi
 import { IconButton } from "./IconButton.js";
 import { MessageCopyButton } from "./MessageCopyButton.js";
 import { TaskPlanCard } from "./TaskPlanCard.js";
-import { DesktopHandoffNotice } from "./DesktopHandoffNotice.js";
 import { SessionCreateDialog } from "./SessionCreateDialog.js";
 import { dispatchMobileBack } from "../lib/mobile-back-navigation.js";
 import { SlashCommandInput } from "./SlashCommandInput.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
 import { SessionConfigurationDialog } from "./SessionConfigurationDialog.js";
+import { SessionRewindDialog } from "./SessionRewindDialog.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 
 const hooks = vi.hoisted(() => ({
@@ -121,12 +121,13 @@ beforeEach(() => {
   });
   const base: BridgeSessionInfo = {
     sessionId: "A", title: "Session A", projectId: "project", projectName: "Project", cwd: "/tmp/project",
-    source: "bridge", ownership: "BRIDGE_IDLE", transport: "bridge-host", turnState: "idle", lastActivityAt: 1, pendingCount: 0,
+    source: "desktop", ownership: "DESKTOP_NATIVE_IDLE", transport: "claude-desktop-native", turnState: "idle", lastActivityAt: 1, pendingCount: 0,
+    allowedActions: { canSend: true, canSteer: true, canInterrupt: true, canConfigure: true, canSwitchProvider: false, canContinueOfficial: false },
   };
   props = {
     activeHostId: "computer-1", desktopName: "Computer", connection: "connected", desktopOnline: true,
     snapshot: {
-      host: { hostId: "computer-1", name: "Computer", capabilities: [], pairingEpoch: 1, relayUrl: "", online: true, lastSeenAt: 1, version: "1.0.2" },
+      host: { hostId: "computer-1", name: "Computer", capabilities: ["claude.native-relay.v1"], pairingEpoch: 1, relayUrl: "", online: true, lastSeenAt: 1, version: "1.0.2" },
       sessions: [base, { ...base, sessionId: "B", title: "Session B" }],
       projects: [{ projectId: "project", name: "Project", cwd: "/tmp/project", sessionCount: 2, runningCount: 0, pendingCount: 0, lastActivityAt: 1 }],
       devices: [], permissions: [], latestSeq: 0,
@@ -146,12 +147,120 @@ beforeEach(() => {
 });
 afterEach(() => { hooks.effects.forEach((e) => e.cleanup?.()); vi.unstubAllGlobals(); });
 
+describe("history pagination on upward scroll", () => {
+  let stream: { scrollTop: number; scrollHeight: number; clientHeight: number; getBoundingClientRect: () => { top: number }; querySelectorAll: () => never[] };
+  function scroll(top: number) {
+    stream.scrollTop = top;
+    elements(tree).find(element => element.props.className === "conversation-stream")!.props.onScroll({ currentTarget: stream });
+  }
+  beforeEach(() => {
+    props = { ...props, histories: { A: { status: "ready", items: [{ id: "recent", sessionId: "A", role: "user", text: "Current history", createdAt: 1, origin: "claude-desktop" }], hasMore: true, nextCursor: "oldest-native-uuid" } } };
+    draw();
+    stream = { scrollTop: 0, scrollHeight: 1200, clientHeight: 400, getBoundingClientRect: () => ({ top: 0 }), querySelectorAll: () => [] };
+    elements(tree).find(element => element.props.className === "conversation-stream")!.props.ref.current = stream;
+  });
+
+  it("loads one older page on upward arrival near the top without sending a message", () => {
+    scroll(800);
+    scroll(400);
+    expect(props.onLoadOlderHistory).not.toHaveBeenCalled();
+    scroll(32);
+    expect(props.onLoadOlderHistory).toHaveBeenCalledExactlyOnceWith("A");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
+  it("loads when already at the top and ignores scrolling away from the threshold", () => {
+    scroll(0);
+    expect(props.onLoadOlderHistory).toHaveBeenCalledExactlyOnceWith("A");
+    scroll(800);
+    scroll(400);
+    scroll(600);
+    expect(props.onLoadOlderHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: "loading" as const, hasMore: true, nextCursor: "older" },
+    { status: "ready" as const, hasMore: false, nextCursor: "older" },
+    { status: "ready" as const, hasMore: true },
+  ])("does not load a page that is loading, exhausted, or lacks a cursor (%j)", history => {
+    props = { ...props, histories: { A: { items: props.histories.A!.items, ...history } } };
+    draw();
+    scroll(800);
+    scroll(0);
+    expect(props.onLoadOlderHistory).not.toHaveBeenCalled();
+  });
+
+  it("shows a pagination failure and waits for an explicit retry", () => {
+    props = { ...props, histories: { A: { ...props.histories.A!, error: "Network unavailable" } } };
+    draw();
+    scroll(800);
+    scroll(0);
+    scroll(40);
+    scroll(0);
+    expect(props.onLoadOlderHistory).not.toHaveBeenCalled();
+    expect(elements(tree).some(element => element.props.children === "Network unavailable")).toBe(true);
+    const button = elements(tree).find(element => element.props.className === "load-older-button")!;
+    expect(elements(button).some(element => Array.isArray(element.props.children) && element.props.children.includes("重试加载更早消息"))).toBe(true);
+    button.props.onClick();
+    expect(props.onLoadOlderHistory).toHaveBeenCalledExactlyOnceWith("A");
+    expect(props.histories.A!.items.map(item => item.id)).toEqual(["recent"]);
+    props = { ...props, histories: { A: { ...props.histories.A!, status: "loading" } } };
+    draw();
+    expect(elements(tree).some(element => element.props.children === "Network unavailable")).toBe(true);
+    expect(elements(tree).find(element => element.props.className === "load-older-button")!.props.disabled).toBe(true);
+    scroll(40);
+    scroll(0);
+    expect(props.onLoadOlderHistory).toHaveBeenCalledTimes(1);
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+});
+
+describe("image selection completeness", () => {
+  it("keeps all five selected images and sends all five", async () => {
+    const picker = elements(tree).find(e => e.type === "input" && e.props.accept?.startsWith("image/"))!;
+    const selecting = picker.props.onChange({ target: { files: Array.from({ length: 5 }, (_, index) => ({ name: `${index + 1}.png`, type: "image/png", size: 8 })) } });
+    hooks.readers.forEach(reader => reader.finish());
+    await selecting; await settle();
+    expect(imageNames()).toEqual(["移除 1.png", "移除 2.png", "移除 3.png", "移除 4.png", "移除 5.png"]);
+    await form().props.onSubmit({ preventDefault() {} });
+    expect(props.onSendTurn).toHaveBeenCalledWith("A", "", expect.arrayContaining(Array.from({ length: 5 }, (_, index) => expect.objectContaining({ name: `${index + 1}.png` }))), false);
+    expect(vi.mocked(props.onSendTurn).mock.calls[0]![2]).toHaveLength(5);
+  });
+});
+
+describe("mobile session deletion confirmation", () => {
+  it.each(["claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop"] as const)("describes the actual deletion target for %s without deleting on review", runtimeId => {
+    props = { ...props, onDeleteSession: vi.fn(), snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({
+      ...session, runtimeId, transport: runtimeId === "claude-desktop" ? "claude-desktop-native" : "bridge-host",
+    })) } };
+    draw();
+    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+    elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick(); draw();
+    const action = elements(tree).find(element => element.props.label === "删除会话")!;
+    action.props.onClick(); draw();
+    const confirmation = elements(tree).find(element => element.type === ConfirmationDialog && element.props.title === "删除会话")!;
+    expect(confirmation.props.open).toBe(true);
+    if (runtimeId === "claude-desktop") {
+      expect(confirmation.props.description).toContain("从 Claude Desktop 中删除「Session A」会话");
+      expect(confirmation.props.description).not.toContain("原生会话与文件不受影响");
+      expect(confirmation.props.description).not.toContain("从 Bridge 列表中删除");
+      expect(action.props.detail).toBe("删除 Claude Desktop 中的会话");
+    } else {
+      expect(confirmation.props.description).toBe("从 Bridge 列表中删除「Session A」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。");
+      expect(action.props.detail).toBe("仅从 Bridge 移除，Desktop 原会话保留");
+    }
+    expect(confirmation.props.description).toContain("此操作不可恢复");
+    confirmation.props.onCancel(); draw();
+    expect(props.onDeleteSession).not.toHaveBeenCalled();
+  });
+});
+
 describe("mobile custom command input", () => {
   it.each([undefined, "claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop"] as const)("only loads Claude commands for runtime %s", async runtimeId => {
     const catalog = { sessionId: "A", commands: [{ name: "review", description: "检查变更" }] };
     const load = vi.fn().mockResolvedValue(catalog);
     props = { ...props, onLoadSessionCommands: load, snapshot: { ...props.snapshot!,
-      host: { ...props.snapshot!.host, capabilities: ["session.commands.v1"] },
+      host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "session.commands.v1"] },
       sessions: props.snapshot!.sessions.map(session => ({ ...session, ...(runtimeId ? { runtimeId } : {}) })),
     } };
     draw();
@@ -177,7 +286,7 @@ describe("mobile custom command input", () => {
   });
 
   it("isolates menu state by host and logical fork session, and omits loaders for old hosts", () => {
-    props = { ...props, onLoadSessionCommands: vi.fn(), snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["session.commands.v1"] } } };
+    props = { ...props, onLoadSessionCommands: vi.fn(), snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "session.commands.v1"] } } };
     draw();
     const originalKey = input().key;
     open("B");
@@ -190,89 +299,28 @@ describe("mobile custom command input", () => {
   });
 });
 
-describe("remote execution confirmation", () => {
-  function nativeSession(capable = true) {
-    props = { ...props, snapshot: { ...props.snapshot!,
-      host: { ...props.snapshot!.host, capabilities: capable ? ["session.remote-execution.v1"] : [] },
-      sessions: props.snapshot!.sessions.map(session => session.sessionId !== "A" ? session : {
-        ...session, source: "desktop", ownership: "DESKTOP_OBSERVED",
-        allowedActions: { canSend: true, canSteer: true, canInterrupt: true, canConfigure: true,
-          canSwitchProvider: true, canContinueOfficial: false, canRequestBridgeExecution: true },
-      }),
-    } };
+describe("native relay composer", () => {
+  it("sends directly without a Host execution flag or handoff confirmation", async () => {
+    text("Native input");
+    await form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Native input", [], false);
+    expect(elements(tree).some(element => element.type === ConfirmationDialog && element.props.title === "由 Bridge 继续执行？")).toBe(false);
+  });
+
+  it("keeps a legacy Claude snapshot read-only even when its old actions claim it can send", async () => {
+    props = { ...props, snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: [] },
+      sessions: props.snapshot!.sessions.map(session => ({ ...session, transport: "bridge-host", ownership: "BRIDGE_IDLE" })) } };
+    draw(); text("Retain draft");
+    expect(input().props.disabled).toBe(true);
+    await form().props.onSubmit({ preventDefault() {} }); await settle();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(input().props.value).toBe("Retain draft");
+    props = { ...props, permissions: [{ requestId: "retired-permission", sessionId: "A", toolUseId: "old-tool", toolName: "Bash", input: {}, createdAt: 1, canAllowAlways: true }] };
     draw();
-  }
-  const confirmation = () => elements(tree).find(element => element.type === ConfirmationDialog && element.props.title === "由 Bridge 继续执行？");
-  async function submit() { form().props.onSubmit({ preventDefault() {} }); await settle(); }
-
-  it("asks before sending and retains text and images when cancelled", async () => {
-    nativeSession(); text("Continue remotely");
-    selectImage(); hooks.readers[0].finish(); await settle();
-    await submit();
-    expect(props.onSendTurn).not.toHaveBeenCalled();
-    expect(input().props.value).toBe("Continue remotely");
-    expect(imageNames()).toEqual(["移除 A.png"]);
-    expect(confirmation()?.props.open).toBe(true);
-    confirmation()!.props.onCancel(); draw();
-    expect(input().props.value).toBe("Continue remotely");
-    expect(imageNames()).toEqual(["移除 A.png"]);
-    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(elements(tree).some(element => element.type === "button" && element.props.className === "permission-dock")).toBe(false);
   });
 
-  it("confirms the original input as an ordinary remote turn", async () => {
-    nativeSession(); text("Continue remotely"); await submit();
-    expect(confirmation()?.props.open).toBe(true);
-    await confirmation()!.props.onConfirm(); await settle();
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Continue remotely", [], false, true);
-    expect(input().props.value).toBe("");
-  });
 
-  it("restores the original draft after a confirmed send fails", async () => {
-    nativeSession(); text("Preserve after failure");
-    props.onSendTurn = vi.fn().mockRejectedValue(new Error("Storage unavailable"));
-    await submit();
-    await confirmation()!.props.onConfirm(); await settle();
-    expect(input().props.value).toBe("Preserve after failure");
-    expect(elements(tree).some(element => element.props.children === "Storage unavailable")).toBe(true);
-  });
-
-  it("does not submit an old dialog after changing sessions", async () => {
-    nativeSession(); text("A draft"); await submit();
-    const dialog = confirmation(); expect(dialog?.props.open).toBe(true);
-    open("B");
-    await dialog!.props.onConfirm(); await settle();
-    expect(props.onSendTurn).not.toHaveBeenCalled();
-    open("A"); expect(input().props.value).toBe("A draft");
-  });
-
-  it("keeps the draft on hosts without remote execution support", async () => {
-    nativeSession(false); text("Upgrade first"); await submit();
-    expect(props.onSendTurn).not.toHaveBeenCalled();
-    expect(confirmation()?.props.open).not.toBe(true);
-    expect(input().props.value).toBe("Upgrade first");
-    expect(elements(tree).some(element => typeof element.props.children === "string" && element.props.children.includes("更新电脑端 Bridge"))).toBe(true);
-  });
-
-  it("does not add a new send behind an unsettled Desktop inbox message", async () => {
-    nativeSession();
-    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId !== "A" ? session : {
-      ...session, desktopHandoff: { state: "desktop-inbox", canReturn: false, inputStatus: "held" }, turnState: "waiting",
-    }) } }; draw();
-    text("Keep the next draft"); await submit();
-    expect(props.onSendTurn).not.toHaveBeenCalled();
-    expect(input().props.value).toBe("Keep the next draft");
-    expect(confirmation()?.props.open).not.toBe(true);
-  });
-
-  it("reuses the confirmed execution choice while handoff is queued", async () => {
-    nativeSession();
-    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId !== "A" ? session : {
-      ...session, pendingCount: 1, desktopHandoff: { state: "close-desktop", canReturn: false, reason: "bridge-execution-requested" }, turnState: "queued",
-    }) } }; draw();
-    text("The next remote input"); await submit();
-    expect(confirmation()?.props.open).not.toBe(true);
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "The next remote input", [], false, true);
-  });
 });
 
 describe("session back navigation", () => {
@@ -321,6 +369,51 @@ describe("background tasks", () => {
   const shell: BridgeBackgroundTask = {
     id: "bash-call", kind: "bash", taskId: "bsh01", toolUseId: "bash-call", description: "Start dev server", state: "completed", startedAt: 1, updatedAt: 2,
   };
+
+  it("loads selected-session task details without putting them in the directory", async () => {
+    props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValue([running, shell]) };
+    draw(); await settle();
+    expect(props.onLoadBackgroundTasks).toHaveBeenCalledExactlyOnceWith("A");
+    expect(trayButton()!.props.label).toBe("后台任务，1 个运行中");
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({ ...session })) } };
+    draw();
+    trayButton()!.props.onClick(); draw();
+    expect(traySheet()!.props.tasks).toEqual([running, shell]);
+    expect(props.snapshot!.sessions.every(session => session.backgroundTasks === undefined)).toBe(true);
+  });
+
+  it("keeps a late task response in its original conversation", async () => {
+    const pending = deferred();
+    props = { ...props, onLoadBackgroundTasks: vi.fn((id: string) => id === "A" ? pending.promise.then(() => [running]) : Promise.resolve([shell])) };
+    draw(); open("B"); await settle();
+    pending.resolve(); await settle();
+    expect(trayButton()!.props.label).toBe("后台任务");
+    trayButton()!.props.onClick(); draw();
+    expect(traySheet()!.props.tasks).toEqual([shell]);
+  });
+
+  it("waits for initial history before loading task details", async () => {
+    props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValue([running]), histories: { ...props.histories, A: { status: "loading", items: [], hasMore: false } } };
+    draw(); await settle();
+    expect(props.onLoadBackgroundTasks).not.toHaveBeenCalled();
+    props = { ...props, histories: { ...props.histories, A: { status: "ready", items: [], hasMore: false } } };
+    draw(); await settle();
+    expect(props.onLoadBackgroundTasks).toHaveBeenCalledExactlyOnceWith("A");
+  });
+
+  it("refreshes task progress only while the selected conversation is visible", async () => {
+    vi.useFakeTimers();
+    try {
+      props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValueOnce([running]).mockResolvedValue([shell]) };
+      draw(); await settle();
+      expect(trayButton()!.props.label).toBe("后台任务，1 个运行中");
+      await vi.advanceTimersByTimeAsync(2_000); await settle();
+      expect(trayButton()!.props.label).toBe("后台任务");
+      props = { ...props, visible: false }; draw();
+      await vi.advanceTimersByTimeAsync(4_000); await settle();
+      expect(props.onLoadBackgroundTasks).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
 
   it.each([0, 1, 4, 8])("shows each of %s subagents as one line instead of an inline card", count => {
     agents(count);
@@ -406,7 +499,7 @@ describe("mobile session creation", () => {
 describe("mobile session renaming", () => {
   function enableRename() {
     props = { ...props, onRenameSession: vi.fn().mockResolvedValue(undefined),
-      snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["session.rename.v1"] } },
+      snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "session.rename.v1"] } },
     };
     draw();
   }
@@ -524,133 +617,253 @@ describe("session update timestamps", () => {
   });
 });
 
-describe("steering a message already queued on the host", () => {
-  function queued(callback = vi.fn().mockResolvedValue(undefined), message = "排队中的指令") {
-    props = { ...props, onSteerQueuedTurn: callback,
+describe("actions on messages already queued in native Desktop", () => {
+  function queued(message = "排队中的指令") {
+    props = { ...props, onSteerQueuedTurn: vi.fn().mockResolvedValue(undefined), onCancelQueuedTurn: vi.fn().mockResolvedValue(undefined),
       snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
-        ? { ...session, ownership: "BRIDGE_RUNNING", turnState: "running", pendingCount: 1, pendingCommandIds: ["queued-command"] } : session) },
+        ? { ...session, pendingCount: 1, pendingCommandIds: ["queued-command"], allowedActions: { ...session.allowedActions!, canSteer: false } } : session) },
       localTurns: [{ requestId: "original-request", idempotencyKey: "original-key", sessionId: "A", text: message,
-        attachments: [{ id: "image", name: "context.png", mimeType: "image/png", size: 7 }], createdAt: 10, delivery: "host-received", commandId: "queued-command" }],
+        attachments: [{ id: "image", name: "context.png", mimeType: "image/png", size: 7 }], createdAt: 10, delivery: "queued", commandId: "queued-command" }],
     };
     draw();
   }
-  const action = () => elements(tree).find(element => element.type === "button" && element.props.className?.includes("queued-steer-button"));
+  const action = (label: string) => elements(tree).find(element => element.type === "button" && element.props.children === label);
+  const actions = () => elements(tree).filter(element => element.type === "button" && /queued-(steer|cancel)-button/u.test(element.props.className ?? ""));
 
-  it("targets the original command, keeps the draft, and never sends a second message", async () => {
-    const callback = vi.fn().mockResolvedValue(undefined);
-    queued(callback);
+  it.each(["Send now", "撤回"])("%s targets the original command while idle, retains the text and image draft, and never resends or interrupts", async label => {
+    queued();
     text("尚未发送的草稿");
-    expect(action()?.props.children).toBe("立即调整");
-    await action()!.props.onClick();
-    draw();
-    expect(callback).toHaveBeenCalledWith("A", "queued-command");
+    const selecting = selectImage(); hooks.readers[0].finish(); await selecting; await settle();
+    const original = props.localTurns[0];
+    expect(actions().map(element => element.props.children)).toEqual(["Send now", "撤回"]);
+    await action(label)!.props.onClick(); draw();
+    expect(label === "Send now" ? props.onSteerQueuedTurn : props.onCancelQueuedTurn).toHaveBeenCalledExactlyOnceWith("A", "queued-command");
+    expect(label === "Send now" ? props.onCancelQueuedTurn : props.onSteerQueuedTurn).not.toHaveBeenCalled();
     expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(props.onInterruptTurn).not.toHaveBeenCalled();
+    expect(props.localTurns[0]).toBe(original);
     expect(input().props.value).toBe("尚未发送的草稿");
-    expect(action()?.props.children).toBe("已调整");
-    expect(action()?.props.disabled).toBe(true);
+    expect(imageNames()).toEqual(["移除 A.png"]);
+    expect(actions().map(element => element.props.disabled)).toEqual([true, label === "撤回"]);
     props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({ ...session, pendingCount: 0, pendingCommandIds: [] })) } };
     draw();
-    expect(action()).toBeUndefined();
+    expect(actions()).toHaveLength(0);
   });
 
-  it("works for an attachment-only queued message", () => {
-    queued(undefined, "");
-    expect(action()).toBeDefined();
+  it.each(["submitted", "session-received"] as const)("shows Send now for a %s native receipt without a queued lifecycle event", async delivery => {
+    queued();
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A" ? { ...session, pendingCount: 0, pendingCommandIds: [], turnState: "running" } : session) }, localTurns: props.localTurns.map(turn => ({ ...turn, messageId: "received-native-uuid", delivery })) };
+    draw();
+    expect(actions().map(element => element.props.children)).toEqual(["Send now", "撤回"]);
+    await action("Send now")!.props.onClick();
+    expect(props.onSteerQueuedTurn).toHaveBeenCalledExactlyOnceWith("A", "queued-command");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(props.onInterruptTurn).not.toHaveBeenCalled();
   });
 
-  it("shows pending state and keeps a failure on the original message after switching sessions", async () => {
+  it.each(["queued", "session-received"] as const)("opens native rewind preview for a %s message while work is running", async delivery => {
+    queued();
+    props = { ...props,
+      onPreviewRewind: vi.fn().mockResolvedValue({ sessionId: "A", messageId: "received-native-uuid", canRewindConversation: true, canRewindFiles: false, filesChanged: [] }),
+      onRewindSession: vi.fn(),
+      snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: [...props.snapshot!.host.capabilities, "session.rewind.v1"] }, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A" ? { ...session, turnState: "running" } : session) },
+      localTurns: props.localTurns.map(turn => ({ ...turn, messageId: "received-native-uuid", delivery })),
+    };
+    draw();
+    const rewind = elements(tree).find(element => element.props["aria-label"] === "回退到这条消息之前");
+    expect(rewind).toBeDefined();
+    expect(rewind!.props.disabled).toBe(false);
+    rewind!.props.onClick(); draw();
+    const dialog = elements(tree).find(element => element.type === SessionRewindDialog)!;
+    expect(dialog.props.initialMessageId).toBe("received-native-uuid");
+    expect(dialog.props.disabled).toBe(false);
+    await dialog.props.onPreview("received-native-uuid");
+    expect(props.onPreviewRewind).toHaveBeenCalledExactlyOnceWith("A", "received-native-uuid");
+    expect(props.onCancelQueuedTurn).not.toHaveBeenCalled();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(props.onInterruptTurn).not.toHaveBeenCalled();
+  });
+
+  it.each(["Send now", "撤回"])("%s works for an attachment-only queued message", async label => {
+    queued("");
+    expect(actions()).toHaveLength(2);
+    await action(label)!.props.onClick();
+    expect(label === "Send now" ? props.onSteerQueuedTurn : props.onCancelQueuedTurn).toHaveBeenCalledWith("A", "queued-command");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(props.onInterruptTurn).not.toHaveBeenCalled();
+  });
+
+  it.each(["Send now", "撤回"])("%s disables both actions while pending, shows failure on the original session, and allows retry", async label => {
+    queued();
     const held = deferred();
-    queued(vi.fn(() => held.promise));
-    const pending = action()!.props.onClick();
+    const callback = vi.fn().mockImplementationOnce(() => held.promise).mockResolvedValue(undefined);
+    props = { ...props, ...(label === "Send now" ? { onSteerQueuedTurn: callback } : { onCancelQueuedTurn: callback }) };
     draw();
-    expect(action()?.props.children).toBe("调整中…");
-    expect(action()?.props.disabled).toBe(true);
+    const pending = action(label)!.props.onClick(); draw();
+    expect(actions().every(element => element.props.disabled)).toBe(true);
+    expect(action(label)!.props["aria-busy"]).toBe(true);
     open("B");
-    held.reject(new Error("电脑响应超时，调整结果尚未确认"));
-    await pending;
-    draw();
-    expect(elements(tree).some(element => element.props.role === "alert" && String(element.props.children).includes("调整结果"))).toBe(false);
+    held.reject(new Error("电脑响应超时，请重试")); await pending; draw();
+    expect(elements(tree).some(element => element.props.role === "alert" && element.props.children === "电脑响应超时，请重试")).toBe(false);
     open("A");
-    expect(action()?.props.disabled).toBe(false);
-    expect(elements(tree).some(element => element.props.role === "alert" && String(element.props.children).includes("调整结果"))).toBe(true);
-    expect(props.localTurns[0]).toMatchObject({ text: "排队中的指令", commandId: "queued-command", delivery: "host-received" });
-    expect(props.localTurns[0]?.attachments).toHaveLength(1);
+    expect(actions().every(element => !element.props.disabled)).toBe(true);
+    expect(elements(tree).some(element => element.props.role === "alert" && element.props.children === "电脑响应超时，请重试")).toBe(true);
+    await action(label)!.props.onClick(); draw();
+    expect(callback).toHaveBeenCalledTimes(2);
+    expect(elements(tree).some(element => element.props.role === "alert" && element.props.children === "电脑响应超时，请重试")).toBe(false);
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(props.onInterruptTurn).not.toHaveBeenCalled();
   });
 
-  it.each(["offline", "disconnected"])("disables the action while %s", status => {
+  it.each(["offline", "disconnected"])("disables both actions while %s", status => {
     queued();
     props = status === "offline" ? { ...props, desktopOnline: false } : { ...props, connection: "closed" };
     draw();
-    expect(action()?.props.disabled).toBe(true);
-    expect(action()?.props.title).toContain("离线");
+    expect(actions()).toHaveLength(2);
+    expect(actions().every(element => element.props.disabled && element.props.title.includes("离线"))).toBe(true);
   });
 
-  it.each(["unsupported-host", "unsupported-runtime", "cannot-steer", "not-queued", "not-received", "no-active-turn"])("hides an inapplicable action: %s", status => {
+  it("offers host-received compatibility only while the command is confirmed pending", () => {
     queued();
-    if (status === "unsupported-host") delete props.onSteerQueuedTurn;
-    if (status === "not-received") props = { ...props, localTurns: props.localTurns.map(turn => ({ ...turn, delivery: "local-saved" })) };
-    if (!["unsupported-host", "not-received"].includes(status)) {
-      props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({ ...session,
-        ...(status === "unsupported-runtime" ? { runtimeId: "codex-desktop" as const } : {}),
-        ...(status === "cannot-steer" ? { allowedActions: { canSend: true, canSteer: false, canInterrupt: true, canSwitchProvider: false, canContinueOfficial: false, canConfigure: true } } : {}),
-        ...(status === "not-queued" ? { pendingCount: 0, pendingCommandIds: [] } : {}),
-        ...(status === "no-active-turn" ? { turnState: "idle" as const } : {}),
-      })) } };
-    }
-    draw();
-    expect(action()).toBeUndefined();
+    props = { ...props, localTurns: props.localTurns.map(turn => ({ ...turn, delivery: "host-received" })) };
+    draw(); expect(actions()).toHaveLength(2);
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({ ...session, pendingCommandIds: [] })) } };
+    draw(); expect(actions()).toHaveLength(0);
   });
-});
 
-describe("explicit Desktop handoff", () => {
-  it("requires closing the queued Desktop executor and preserves refresh and queue cancellation", async () => {
-    const onTakeoverDesktop = vi.fn().mockResolvedValue(undefined);
-    props = { ...props, onTakeoverDesktop, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A" ? {
-      ...session, ownership: "FALLBACK_CONFIRMATION_REQUIRED", turnState: "queued", pendingCount: 1, pendingCommandIds: ["queued"],
-      desktopHandoff: { state: "close-desktop", canReturn: false, canTakeover: true },
-    } : session) } };
-    text("保留草稿");
-    const notices = elements(tree).filter(element => element.type === DesktopHandoffNotice);
-    expect(notices).toHaveLength(1);
-    expect(notices[0]!.props.session.pendingCount).toBe(1);
-    expect(notices[0]!.props.session.desktopHandoff.canTakeover).toBe(true);
-    expect(notices[0]!.props.online).toBe(true);
-    expect(elements(tree).some(element => element.props["aria-label"] === "消息排队状态")).toBe(false);
-    expect(elements(tree).some(element => element.props.children === "正在等待同会话接管")).toBe(false);
-    await notices[0]!.props.onRefresh();
-    expect(props.onRefresh).toHaveBeenCalledWith("A");
-    await notices[0]!.props.onTakeover("A");
-    expect(onTakeoverDesktop).toHaveBeenCalledExactlyOnceWith("A");
-    expect(input().props.value).toBe("保留草稿");
+  it("can withdraw a message that remains queued after Send now succeeds", async () => {
+    queued();
+    await action("Send now")!.props.onClick(); draw();
+    expect(action("撤回")!.props.disabled).toBe(false);
+    await action("撤回")!.props.onClick(); draw();
+    expect(props.onSteerQueuedTurn).toHaveBeenCalledExactlyOnceWith("A", "queued-command");
+    expect(props.onCancelQueuedTurn).toHaveBeenCalledExactlyOnceWith("A", "queued-command");
     expect(props.onSendTurn).not.toHaveBeenCalled();
-    text("");
-    elements(tree).find(element => element.props["aria-label"] === "停止任务")!.props.onClick(); draw();
-    const confirmation = elements(tree).find(element => element.props.open && element.props.title === "停止当前任务？")!;
-    expect(confirmation.props.description).toContain("排在最前面的一条指令会被取消");
-    confirmation.props.onConfirm(); await settle();
-    expect(props.onInterruptTurn).toHaveBeenCalledWith("A");
+    expect(props.onInterruptTurn).not.toHaveBeenCalled();
   });
 
-  it.each(["close-desktop", "bridge", "reopen-desktop"] as const)("passes the selected %s session and return action to its notice", async state => {
-    const onReturnToDesktop = vi.fn().mockResolvedValue(undefined);
-    props = { ...props, onReturnToDesktop, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A" ? {
-      ...session, desktopHandoff: { state, canReturn: state === "bridge" },
-    } : session) } };
+  it("offers history-only queued actions and removes them when its cancellation receipt arrives", async () => {
+    queued();
+    const item: BridgeHistoryItem & { commandId: string } = {
+      id: "history-uuid", sessionId: "A", role: "user", text: "排队中的指令", createdAt: 10, origin: "claude-desktop", delivery: "queued", commandId: "queued-command",
+    };
+    props = { ...props, localTurns: [], histories: { A: { status: "ready", hasMore: false, items: [item] } } };
+    draw(); expect(actions()).toHaveLength(2);
+    await action("撤回")!.props.onClick();
+    props = { ...props, events: [{ eventId: "cancelled", seq: 1, timestamp: 20, sessionId: "A", origin: "claude-desktop", type: "message.delivery",
+      itemId: "history-uuid", data: { commandId: "queued-command", messageId: "history-uuid", delivery: "cancelled" } }] };
+    draw(); expect(actions()).toHaveLength(0);
+    expect(props.onInterruptTurn).not.toHaveBeenCalled();
+  });
+
+  it.each(["Send now", "撤回"])("shows only the supported callback action when %s is missing", missing => {
+    queued();
+    if (missing === "Send now") delete props.onSteerQueuedTurn;
+    else delete props.onCancelQueuedTurn;
     draw();
-    const notice = elements(tree).find(element => element.type === DesktopHandoffNotice)!;
-    expect(notice.props.session).toBe(props.snapshot!.sessions[0]);
-    expect(notice.props.online).toBe(true);
-    await notice.props.onReturn(notice.props.session.sessionId);
-    expect(onReturnToDesktop).toHaveBeenCalledExactlyOnceWith("A");
-    props = { ...props, desktopOnline: false }; draw();
-    expect(elements(tree).find(element => element.type === DesktopHandoffNotice)!.props.online).toBe(false);
+    expect(actions().map(element => element.props.children)).toEqual([missing === "Send now" ? "撤回" : "Send now"]);
+  });
+
+  it.each(["Send now", "撤回"])("keeps %s pending across a connection flap without resubmitting or losing the draft", async label => {
+    queued(); text("连接恢复后仍保留");
+    const held = deferred();
+    const callback = vi.fn(() => held.promise);
+    props = { ...props, ...(label === "Send now" ? { onSteerQueuedTurn: callback } : { onCancelQueuedTurn: callback }) };
+    draw();
+    const pending = action(label)!.props.onClick(); draw();
+    props = { ...props, connection: "closed", desktopOnline: false }; draw();
+    expect(actions().every(button => button.props.disabled)).toBe(true);
+    props = { ...props, connection: "connected", desktopOnline: true }; draw();
+    expect(actions().every(button => button.props.disabled)).toBe(true);
+    expect(callback).toHaveBeenCalledTimes(1);
+    held.reject(new Error("操作结果未确认")); await pending; draw();
+    expect(actions().every(button => !button.props.disabled)).toBe(true);
+    expect(input().props.value).toBe("连接恢复后仍保留");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(props.onInterruptTurn).not.toHaveBeenCalled();
+  });
+
+  it.each(["Send now", "撤回"])("does not attach a pending %s failure to another host with identical session and command IDs", async label => {
+    queued(); text("电脑一草稿");
+    const held = deferred();
+    props = { ...props, ...(label === "Send now" ? { onSteerQueuedTurn: vi.fn(() => held.promise) } : { onCancelQueuedTurn: vi.fn(() => held.promise) }) };
+    draw(); const pending = action(label)!.props.onClick(); draw();
+    props = { ...props, activeHostId: "computer-2", snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, hostId: "computer-2" } } };
+    open("A"); text("电脑二草稿");
+    expect(actions().every(button => !button.props.disabled)).toBe(true);
+    held.reject(new Error("仅电脑一操作失败")); await pending; draw();
+    expect(elements(tree).some(element => element.props.role === "alert" && element.props.children === "仅电脑一操作失败")).toBe(false);
+    expect(input().props.value).toBe("电脑二草稿");
+    props = { ...props, activeHostId: "computer-1", snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, hostId: "computer-1" } } };
+    open("A");
+    expect(elements(tree).some(element => element.props.role === "alert" && element.props.children === "仅电脑一操作失败")).toBe(true);
+    expect(input().props.value).toBe("电脑一草稿");
+  });
+
+  it("keeps two identical queued messages independently actionable while one request is pending", async () => {
+    queued("同文消息");
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+      ? { ...session, pendingCount: 2, pendingCommandIds: ["queued-command", "second-command"] } : session) },
+      localTurns: [...props.localTurns, { ...props.localTurns[0]!, requestId: "second-request", commandId: "second-command", idempotencyKey: "second-key", createdAt: 11 }] };
+    const held = deferred(); props = { ...props, onCancelQueuedTurn: vi.fn().mockImplementationOnce(() => held.promise).mockResolvedValue(undefined) };
+    draw();
+    const articles = elements(tree).filter(element => element.type === "article" && element.props.className.includes("user"));
+    const first = elements(articles[0]).find(button => button.type === "button" && button.props.children === "撤回")!;
+    const pending = first.props.onClick(); draw();
+    const rows = elements(tree).filter(element => element.type === "article" && element.props.className.includes("user"));
+    expect(elements(rows[0]).filter(button => /queued-(steer|cancel)-button/u.test(button.props.className ?? "")).every(button => button.props.disabled)).toBe(true);
+    const second = elements(rows[1]).find(button => button.type === "button" && button.props.children === "撤回")!;
+    expect(second.props.disabled).toBe(false); await second.props.onClick();
+    held.resolve(); await pending; draw();
+    expect(props.onCancelQueuedTurn).toHaveBeenNthCalledWith(1, "A", "queued-command");
+    expect(props.onCancelQueuedTurn).toHaveBeenNthCalledWith(2, "A", "second-command");
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
+  it.each(["running", "completed", "cancelled"] as const)("hides actions when native state becomes %s while a request is pending", async delivery => {
+    queued(); text("保留草稿");
+    const held = deferred(); props = { ...props, onSteerQueuedTurn: vi.fn(() => held.promise) }; draw();
+    const pending = action("Send now")!.props.onClick(); draw();
+    props = { ...props, localTurns: props.localTurns.map(turn => ({ ...turn, delivery })), snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({ ...session, pendingCount: 0, pendingCommandIds: [] })) } };
+    draw(); expect(actions()).toHaveLength(0);
+    held.resolve(); await pending; draw(); expect(actions()).toHaveLength(0);
+    expect(input().props.value).toBe("保留草稿");
+    expect(props.localTurns[0]?.delivery).toBe(delivery);
+    expect(props.onInterruptTurn).not.toHaveBeenCalled();
+  });
+
+  it("preserves command action state when Send now rekeys the bubble", async () => {
+    queued(); props = { ...props, localTurns: props.localTurns.map(turn => ({ ...turn, messageId: "old-queue-uuid" })) }; draw();
+    await action("Send now")!.props.onClick(); draw();
+    props = { ...props, localTurns: props.localTurns.map(turn => ({ ...turn, messageId: "new-queue-uuid" })), events: [{ eventId: "rekey", seq: 1, timestamp: 20, sessionId: "A", origin: "claude-desktop", type: "message.delivery", data: { commandId: "queued-command", previousMessageId: "old-queue-uuid", messageId: "new-queue-uuid", delivery: "queued" } }] };
+    draw(); expect(action("Send now")!.props.disabled).toBe(true); expect(action("撤回")!.props.disabled).toBe(false);
+    expect(elements(tree).filter(element => element.type === "article" && element.props.className.includes("user"))).toHaveLength(1);
+    await action("撤回")!.props.onClick();
+    expect(props.onCancelQueuedTurn).toHaveBeenCalledExactlyOnceWith("A", "queued-command");
+  });
+
+  it.each(["unsupported-host", "unsupported-runtime", "cannot-send", "not-native", "not-queued", "local-saved", "relay-received", "running", "completed"])("hides inapplicable native queue actions: %s", status => {
+    queued();
+    if (["local-saved", "relay-received", "session-received", "running", "completed"].includes(status)) {
+      props = { ...props, localTurns: props.localTurns.map(turn => ({ ...turn, delivery: status as typeof turn.delivery })) };
+    }
+    props = { ...props, snapshot: { ...props.snapshot!,
+      ...(status === "unsupported-host" ? { host: { ...props.snapshot!.host, capabilities: [] } } : {}),
+      sessions: props.snapshot!.sessions.map(session => ({ ...session,
+        ...(status === "unsupported-runtime" ? { runtimeId: "codex-desktop" as const } : {}),
+        ...(status === "cannot-send" ? { allowedActions: { ...session.allowedActions!, canSend: false } } : {}),
+        ...(status === "not-native" ? { transport: "bridge-host" as const } : {}),
+        ...(status === "not-queued" ? { pendingCount: 0, pendingCommandIds: [] } : {}),
+      })),
+    } };
+    draw(); expect(actions()).toHaveLength(0);
   });
 });
 
 describe("native structured approvals", () => {
   function nativePrompt(prompt: NonNullable<ComponentProps<typeof InteractivePromptCard>["prompt"]>, id = "tool:native-question") {
     props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
-      ? { ...session, source: "desktop", transport: "claude-desktop-managed", ownership: "DESKTOP_OBSERVED", runtimeId: "claude-desktop" } : session) },
+      ? { ...session, source: "desktop", transport: "claude-desktop-native", ownership: "DESKTOP_NATIVE_IDLE", runtimeId: "claude-desktop" } : session) },
       histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
         { id, sessionId: "A", role: "assistant", toolName: prompt.kind === "question" ? "AskUserQuestion" : "mcp__ccd_turn__wrap_up", text: "", createdAt: 1, origin: "claude-desktop", interactivePrompt: { ...prompt, toolUseId: "native-question" } },
       ] } } };
@@ -712,23 +925,6 @@ describe("native structured approvals", () => {
     expect(props.onResolvePermission).not.toHaveBeenCalled();
   });
 
-  it("confirms a non-blocking quick reply before handing the native session to Bridge", async () => {
-    nativePrompt({ kind: "wrap-up", blocked: false, ask: "Next?", actions: [{ label: "继续调查", message: "继续调查" }] });
-    props = { ...props, snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["session.remote-execution.v1"] },
-      sessions: props.snapshot!.sessions.map(session => session.sessionId !== "A" ? session : { ...session, allowedActions: {
-        canSend: true, canSteer: true, canInterrupt: true, canConfigure: true, canSwitchProvider: true, canContinueOfficial: false, canRequestBridgeExecution: true,
-      } }),
-    } }; draw();
-    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("继续调查");
-    await settle();
-    expect(props.onSendTurn).not.toHaveBeenCalled();
-    const dialog = elements(tree).find(element => element.type === ConfirmationDialog && element.props.title === "由 Bridge 继续执行？")!;
-    expect(dialog.props.open).toBe(true);
-    await dialog.props.onConfirm(); await settle();
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "继续调查", [], false, true);
-    expect(props.onResolvePermission).not.toHaveBeenCalled();
-  });
-
   it("submits all checkbox answers through the pending question request", async () => {
     const permission: BridgePermissionInfo = { requestId: "multi-request", sessionId: "A", toolUseId: "native-question", toolName: "AskUserQuestion", createdAt: 1, canAllowAlways: false,
       input: { questions: [{ question: "Which checks?", multiSelect: true, options: [{ label: "类型检查" }, { label: "回归测试" }] }] } };
@@ -749,6 +945,10 @@ describe("native structured approvals", () => {
 });
 
 describe("question answer delivery", () => {
+  beforeEach(() => {
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({ ...session, runtimeId: "codex-desktop", transport: "codex-app-server", ownership: "BRIDGE_IDLE" })) } };
+    draw();
+  });
   it.each(["host-received", "submitted", "running"] as const)("labels this card's %s answer accurately without duplicating it or clearing the draft", async delivery => {
     props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
       { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
@@ -1079,7 +1279,7 @@ describe("mobile conversation draft ownership", () => {
       { ...permission, requestId: "other", input: { questions: [{ ...question, question: "Which color?" }] } },
       permission,
     ], histories: { A: { status: "ready", hasMore: false, items: [
-      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-host", interactivePrompt: { kind: "question", questions: [question] } },
+      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-host", interactivePrompt: { kind: "question", toolUseId: "matching-tool", questions: [question] } },
     ] } } };
     draw();
     elements(tree).find((element) => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
@@ -1111,7 +1311,7 @@ describe("sidechat and slash command integration", () => {
     const sidechat = { ...props.snapshot!.sessions[1]!, title: "btw: Side question", parentSessionId: "A", sidechat: true,
       ...(archived ? { archivedAt: 100 } : {}) };
     props = { ...props, snapshot: { ...props.snapshot!, sessions: [props.snapshot!.sessions[0]!, sidechat],
-      host: { ...props.snapshot!.host, capabilities: ["session.commands.v1", "session.command.v1"] } },
+      host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "session.commands.v1", "session.command.v1"] } },
       onLoadSessionCommands: vi.fn(async sessionId => ({ sessionId, commands: [{ name: "help", description: "Help", action: "help" as const }] })),
       onRunSessionCommand: vi.fn(async () => ({ action: "help" as const })),
     };
@@ -1131,7 +1331,7 @@ describe("sidechat and slash command integration", () => {
   it("opens an archived sidechat from /resume with its own history and parent navigation", async () => {
     const sidechat = { ...props.snapshot!.sessions[1]!, title: "btw: Archived", parentSessionId: "A", sidechat: true, archivedAt: 100 };
     props = { ...props, snapshot: { ...props.snapshot!, sessions: [props.snapshot!.sessions[0]!, sidechat],
-      host: { ...props.snapshot!.host, capabilities: ["session.commands.v1", "session.command.v1"] } },
+      host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "session.commands.v1", "session.command.v1"] } },
       onLoadSessionCommands: vi.fn(async sessionId => ({ sessionId, commands: [] })),
       onRunSessionCommand: vi.fn(async () => ({ action: "resume" as const, sessions: [sidechat] })),
     };
@@ -1149,7 +1349,7 @@ describe("sidechat and slash command integration", () => {
     let finish!: (result: { action: "session"; session: BridgeSessionInfo }) => void;
     props = { ...props, snapshot: { ...props.snapshot!,
       sessions: props.snapshot!.sessions.map(session => session.sessionId === "B" ? { ...session, parentSessionId: "A", sidechat: true } : session),
-      host: { ...props.snapshot!.host, capabilities: ["session.commands.v1", "session.command.v1"] } },
+      host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "session.commands.v1", "session.command.v1"] } },
       onLoadSessionCommands: vi.fn(async sessionId => ({ sessionId, commands: [] })),
       onRunSessionCommand: vi.fn(() => new Promise<{ action: "session"; session: BridgeSessionInfo }>(resolve => { finish = resolve; })),
     };
@@ -1167,7 +1367,7 @@ describe("mobile common commands", () => {
   function enable(result: Record<string, unknown>) {
     props = { ...props, onRunSessionCommand: vi.fn().mockResolvedValue(result), onRenameSession: vi.fn(),
       onLoadSessionCommands: vi.fn().mockResolvedValue({ sessionId: "A", commands: [] }),
-      snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["session.commands.v1", "session.command.v1", "session.rename.v1"] } },
+      snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "session.commands.v1", "session.command.v1", "session.rename.v1"] } },
     }; draw();
   }
   it.each(["help", "permissions", "resume"])("dispatches /%s to the shared action UI without sending a model prompt", async action => {
@@ -1182,12 +1382,54 @@ describe("mobile common commands", () => {
       expect(props.onOpenSession).toHaveBeenCalledWith("B");
     }
   });
+  it("opens rewind from the command and restores only its original text to the composer after confirmation", async () => {
+    enable({ action: "rewind" });
+    props = { ...props, snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: [...props.snapshot!.host.capabilities, "session.rewind.v1"] } },
+      onPreviewRewind: vi.fn(), onRewindSession: vi.fn(),
+      histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [{ id: "user-uuid", sessionId: "A", role: "user", text: "Original request", createdAt: 1, origin: "claude-desktop" }] } },
+    }; draw(); text("/rewind"); form().props.onSubmit({ preventDefault() {} }); await settle();
+    const dialog = elements(tree).find(element => element.type === SessionRewindDialog)!;
+    expect(dialog).toBeDefined();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(props.onRewindSession).not.toHaveBeenCalled();
+    dialog.props.onComplete({ sessionId: "A", messageId: "user-uuid", scope: "conversation", prefill: "Original request" }); draw();
+    expect(input().props.value).toBe("Original request");
+    expect(elements(tree).some(element => element.type === SessionRewindDialog)).toBe(false);
+  });
+
+  it.each([
+    { destination: "session", scope: "conversation" }, { destination: "session", scope: "files" },
+    { destination: "host", scope: "conversation" }, { destination: "host", scope: "files" },
+  ] as const)("[boundary] keeps a delayed $scope rewind completion on its original draft after changing $destination", async ({ destination, scope }) => {
+    props = { ...props, onPreviewRewind: vi.fn(), onRewindSession: vi.fn(),
+      snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: [...props.snapshot!.host.capabilities, "session.rewind.v1"] } },
+      histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [{ id: "original-user", sessionId: "A", role: "user", text: "Original request", createdAt: 1, origin: "claude-desktop" }] } },
+    }; draw(); text("A draft");
+    const image = selectImage(); hooks.readers.at(-1).finish(); await image; await settle();
+    elements(tree).find(element => element.props["aria-label"] === "回退到这条消息之前")!.props.onClick(); draw();
+    const originalDialog = elements(tree).find(element => element.type === SessionRewindDialog)!;
+    if (destination === "host") props = { ...props, activeHostId: "computer-2", snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, hostId: "computer-2" } } };
+    open(destination === "host" ? "A" : "B"); text("Other draft");
+    const otherImage = selectImage(); hooks.readers.at(-1).finish(); await otherImage; await settle();
+    originalDialog.props.onComplete({ sessionId: "A", messageId: "original-user", scope, prefill: "Original request" }); draw();
+    expect(input().props.value).toBe("Other draft");
+    expect(imageNames()).toEqual(["移除 A.png"]);
+    if (destination === "host") props = { ...props, activeHostId: "computer-1", snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, hostId: "computer-1" } } };
+    open("A");
+    expect(input().props.value).toBe(scope === "files" ? "A draft" : "Original request");
+    expect(imageNames()).toEqual(scope === "files" ? ["移除 A.png"] : []);
+    expect(props.onSendTurn).not.toHaveBeenCalled(); expect(props.onInterruptTurn).not.toHaveBeenCalled();
+  });
+
   it("opens the existing model picker without configuring anything on selection or cancellation", async () => {
     enable({ action: "model" }); text("/model");
     expect(props.onRunSessionCommand).not.toHaveBeenCalled();
     form().props.onSubmit({ preventDefault() {} }); await settle();
     const dialog = elements(tree).find(element => element.type === SessionConfigurationDialog)!;
-    expect(dialog).toBeDefined(); dialog.props.onClose(); draw();
+    expect(dialog).toBeDefined();
+    const commandDialog = elements(tree).find(element => element.type === SessionCommandDialogs)!;
+    expect(commandDialog.key).not.toBe(dialog.key);
+    dialog.props.onClose(); draw();
     expect(props.onConfigureSession).not.toHaveBeenCalled();
   });
   it("selects the actual returned fork and opens its history", async () => {
@@ -1229,7 +1471,7 @@ describe("mobile slash submission edges", () => {
   function enable() {
     props = { ...props, onRunSessionCommand: vi.fn().mockResolvedValue({ action: "sent" }),
       onLoadSessionCommands: vi.fn().mockResolvedValue({ sessionId: "A", commands: [] }),
-      snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["session.commands.v1", "session.command.v1"] } },
+      snapshot: { ...props.snapshot!, host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "session.commands.v1", "session.command.v1"] } },
     }; draw();
   }
 
@@ -1287,7 +1529,7 @@ describe("older history auto-load", () => {
     };
   }
   function history(ids: string[], status: "ready" | "loading" = "ready") {
-    props = { ...props, histories: { ...props.histories, A: { status, items: ids.map(item), hasMore: true } } };
+    props = { ...props, histories: { ...props.histories, A: { status, items: ids.map(item), hasMore: true, nextCursor: ids[0]! } } };
     draw();
   }
 
@@ -1300,6 +1542,24 @@ describe("older history auto-load", () => {
     expect(props.onLoadOlderHistory).toHaveBeenCalledTimes(1);
     history(["m2", "m3"]);
     expect(props.onLoadOlderHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it("continues after an older page advances the cursor without adding visible messages", () => {
+    place(0);
+    history(["m3"]);
+    expect(props.onLoadOlderHistory).toHaveBeenCalledTimes(1);
+    history(["m3"], "loading");
+    props = { ...props, histories: { ...props.histories, A: { ...props.histories.A!, status: "ready", nextCursor: "older-internal" } } };
+    draw();
+    expect(props.onLoadOlderHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it("continues when the first page contains no visible messages but has older history", () => {
+    place(0);
+    history([], "loading");
+    props = { ...props, histories: { ...props.histories, A: { status: "ready", items: [], hasMore: true, nextCursor: "internal-only" } } };
+    draw();
+    expect(props.onLoadOlderHistory).toHaveBeenCalledExactlyOnceWith("A");
   });
 
   it("loads on scroll only near the top and never while a page is loading", () => {

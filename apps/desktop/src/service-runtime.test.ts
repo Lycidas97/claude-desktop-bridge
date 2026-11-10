@@ -1,19 +1,31 @@
 import { EventEmitter } from "node:events";
 import { beforeEach, expect, it, vi } from "vitest";
+import type { BridgeInspectorAlert, BridgeInspectorStatus } from "@bridge/protocol";
 
 const resources = vi.hoisted(() => {
   const resource = () => ({ initialize: vi.fn(async () => {}), close: vi.fn(async () => {}) });
   return {
-    eventLog: resource(), state: { ...resource(), recordSuccessfulStartup: vi.fn(async () => {}) },
+    eventLog: resource(), state: resource(),
     evidence: resource(), observer: { start: vi.fn(async () => {}), close: vi.fn(async () => {}) },
-    broker: { ...resource(), permissionBroker: {}, runtimeStatus: vi.fn() },
+    broker: resource(), nativeOptions: vi.fn(), legacyConstruct: vi.fn(),
     hook: { start: vi.fn(async () => {}), close: vi.fn(async () => {}) },
-    controller: { ...resource(), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}) },
+    controller: { ...resource(), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
     cleanupRtc: vi.fn(),
+    inspector: { start: vi.fn(async () => {}), close: vi.fn(), notificationFailed: vi.fn() },
+    inspectorOptions: undefined as undefined | { onUpdate(status: BridgeInspectorStatus): void; onAlert(alert: BridgeInspectorAlert): string | undefined },
+    notificationSupported: vi.fn(() => true), showNotification: vi.fn(),
+    notifications: [] as Array<{ options: { title: string; body: string }; emit(event: string, ...args: unknown[]): boolean }>,
   };
 });
-vi.mock("electron", () => ({ app: {}, safeStorage: {}, shell: {}, powerMonitor: new EventEmitter() }));
-vi.mock("node:fs/promises", () => ({ rename: vi.fn(async () => {}) }));
+vi.mock("electron", () => ({
+  app: {}, safeStorage: {}, shell: {}, powerMonitor: new EventEmitter(),
+  Notification: class extends EventEmitter {
+    static isSupported() { return resources.notificationSupported(); }
+    show = resources.showNotification;
+    constructor(public options: { title: string; body: string }) { super(); resources.notifications.push(this); }
+  },
+}));
+vi.mock("./claude-inspector-monitor.js", () => ({ ClaudeInspectorMonitor: class { constructor(options: NonNullable<typeof resources.inspectorOptions>) { resources.inspectorOptions = options; return resources.inspector; } } }));
 vi.mock("./config.js", () => ({
   fileSecretProtector: vi.fn(),
   DesktopConfigRepository: class { async loadOrCreate() { return { evidenceKey: "test-key" }; } },
@@ -29,16 +41,14 @@ vi.mock("./conversation-state-store.js", () => ({ ConversationStateStore: class 
 vi.mock("./evidence-store.js", () => ({ EvidenceStore: class {} }));
 vi.mock("./evidence-manager.js", () => ({ EvidenceManager: class { constructor() { return resources.evidence; } } }));
 vi.mock("./artifact-preview.js", () => ({ ElectronEvidencePreviewRenderer: class {} }));
-vi.mock("./transcript-observer.js", () => ({ TranscriptObserver: class { constructor() { return resources.observer; } } }));
-vi.mock("./session-broker.js", () => ({ SessionBroker: class { constructor() { return resources.broker; } } }));
-vi.mock("./claude-permission-hook.js", () => ({ ClaudePermissionHook: class { constructor() { return resources.hook; } } }));
+vi.mock("./transcript-observer.js", () => ({ TranscriptObserver: class { constructor() { resources.legacyConstruct("TranscriptObserver"); } } }));
+vi.mock("./claude-desktop-bridge.js", () => ({ ClaudeDesktopBridge: class { constructor(options: unknown) { resources.nativeOptions(options); return resources.broker; } } }));
+vi.mock("./claude-permission-hook.js", () => ({ ClaudePermissionHook: class { constructor() { resources.legacyConstruct("ClaudePermissionHook"); } } }));
 vi.mock("./controller.js", () => ({ DesktopController: class { constructor() { return resources.controller; } } }));
-vi.mock("./claude-desktop-session-registrar.js", () => ({ ClaudeDesktopSessionRegistrar: class {} }));
-vi.mock("./provider-registry.js", () => ({ ProviderRegistry: class {} }));
-vi.mock("./provider-runtime-pool.js", () => ({ ProviderRuntimePool: class {} }));
+vi.mock("./claude-desktop-session-registrar.js", () => ({ ClaudeDesktopSessionRegistrar: class { constructor() { resources.legacyConstruct("ClaudeDesktopSessionRegistrar"); } } }));
+vi.mock("./provider-registry.js", () => ({ ProviderRegistry: class { constructor() { resources.legacyConstruct("ProviderRegistry"); } } }));
 vi.mock("./runtime-adapter.js", () => ({ RuntimeAdapterRegistry: class {} }));
 vi.mock("./runtime-session-broker.js", () => ({ RuntimeSessionBroker: class {} }));
-vi.mock("./handoff-service.js", () => ({ HandoffService: class {} }));
 vi.mock("./runtime-handoff-service.js", () => ({ RuntimeHandoffService: class {} }));
 vi.mock("./claude-desktop-lifecycle.js", () => ({ ClaudeDesktopLifecycle: class {} }));
 vi.mock("./codex-app-server-adapter.js", () => ({ CodexAppServerAdapter: class {} }));
@@ -48,6 +58,9 @@ vi.mock("./webrtc-runtime.js", () => ({ loadDesktopPeerConnection: vi.fn(), clea
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resources.notifications.length = 0;
+  resources.inspectorOptions = undefined;
+  resources.notificationSupported.mockReturnValue(true);
   for (const name of ["RELAY", "PUBLIC_RELAY", "PAIRING_BASE", "SERVICE_ORIGIN", "ICE_SERVERS"]) {
     vi.stubGlobal(`__BRIDGE_DEFAULT_${name}__`, "");
   }
@@ -62,7 +75,7 @@ it.each(["eventLog", "state", "evidence", "controller"] as const)("unwinds acqui
   if (stage !== "eventLog") expect(resources.state.close).toHaveBeenCalledOnce();
   if (stage === "evidence" || stage === "controller") expect(resources.evidence.close).toHaveBeenCalledOnce();
   if (stage === "controller") {
-    for (const resource of [resources.hook, resources.controller, resources.broker, resources.observer]) {
+    for (const resource of [resources.controller, resources.broker]) {
       expect(resource.close).toHaveBeenCalledOnce();
     }
     expect(resources.cleanupRtc).toHaveBeenCalledOnce();
@@ -73,12 +86,14 @@ it("shares shutdown completion and closes each resource once", async () => {
   const { createServiceRuntime } = await import("./service-runtime.js");
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
   let finish!: () => void;
-  resources.hook.close.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  resources.broker.close.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
   const first = runtime.close();
   const second = runtime.close();
-  await vi.waitFor(() => expect(resources.hook.close).toHaveBeenCalledOnce());
+  await vi.waitFor(() => expect(resources.broker.close).toHaveBeenCalledOnce());
   try { expect(first).toBe(second); } finally { finish(); await Promise.all([first, second]); }
   expect(resources.controller.close).toHaveBeenCalledOnce();
+  expect(resources.inspector.start).toHaveBeenCalledOnce();
+  expect(resources.inspector.close).toHaveBeenCalledOnce();
 });
 
 it("removes power subscriptions and finishes cleanup after a close failure", async () => {
@@ -87,8 +102,8 @@ it("removes power subscriptions and finishes cleanup after a close failure", asy
   const onStage = vi.fn();
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge", onStage });
   expect(onStage.mock.calls.map(([stage]) => stage)).toEqual([
-    "迁移旧版任务记录", "读取本机配置与配对信息", "打开事件日志", "打开会话数据库",
-    "打开成果数据库", "扫描桌面会话", "安装本机权限回调", "初始化运行时与中继连接", "记录服务启动完成",
+    "读取本机配置与配对信息", "打开事件日志", "打开会话数据库",
+    "打开成果数据库", "初始化运行时与中继连接",
   ]);
   resources.controller.close.mockRejectedValueOnce(new Error("relay close failed"));
   const closed = runtime.close();
@@ -101,15 +116,45 @@ it("removes power subscriptions and finishes cleanup after a close failure", asy
   expect(powerMonitor.listenerCount("resume")).toBe(0);
 });
 
+it("delivers unknown inspector clients as system notifications and exposes notification failures", async () => {
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
+  try {
+    const alert = { pid: 42, name: "node", executablePath: "/other/node", approved: false, detectedAt: 100 };
+    resources.inspectorOptions!.onAlert(alert);
+    expect(resources.showNotification).toHaveBeenCalledOnce();
+    expect(resources.notifications[0]?.options).toMatchObject({ title: "Claude 调试接口出现未认可的连接", body: expect.stringContaining("/other/node") });
+    resources.notifications[0]!.emit("failed", {}, "notification denied");
+    expect(resources.inspector.notificationFailed).toHaveBeenCalledWith("notification denied");
+    resources.notificationSupported.mockReturnValueOnce(false);
+    expect(resources.inspectorOptions!.onAlert(alert)).toContain("系统通知不可用");
+    expect(resources.showNotification).toHaveBeenCalledOnce();
+    const status: BridgeInspectorStatus = { state: "listening", port: 9229, pollIntervalMs: 3_000, clients: [alert], alerts: [alert] };
+    resources.inspectorOptions!.onUpdate(status);
+    expect(resources.controller.updateInspectorStatus).toHaveBeenCalledWith(status);
+  } finally { await runtime.close(); }
+});
+
 it("attempts all cleanup and preserves startup and cleanup failures", async () => {
   const { createServiceRuntime } = await import("./service-runtime.js");
   resources.controller.initialize.mockRejectedValueOnce(new Error("controller initialization failed"));
-  resources.hook.close.mockRejectedValueOnce(new Error("hook removal failed"));
+  resources.broker.close.mockRejectedValueOnce(new Error("native bridge close failed"));
   const error = await createServiceRuntime({ userDataPath: "/test/bridge" }).catch((error: unknown) => error);
   expect(error).toBeInstanceOf(AggregateError);
   expect(String(error)).toContain("controller initialization failed");
-  expect(String(error)).toContain("hook removal failed");
+  expect(String(error)).toContain("native bridge close failed");
   expect(resources.broker.close).toHaveBeenCalledOnce();
   expect(resources.state.close).toHaveBeenCalledOnce();
   expect(resources.cleanupRtc).toHaveBeenCalledOnce();
+});
+
+it("assembles the native facade without legacy Claude execution services", async () => {
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
+  expect(resources.nativeOptions).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    settingsPath: "/test/settings.json",
+    eventLog: resources.eventLog, conversationState: resources.state, evidence: resources.evidence,
+  }));
+  expect(resources.legacyConstruct).not.toHaveBeenCalled();
+  await runtime.close();
 });

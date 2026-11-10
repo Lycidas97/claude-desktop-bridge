@@ -196,6 +196,9 @@ export function App() {
               {...(mobile.state.snapshot?.host.capabilities.includes("turn.queue.steer.v1")
                 ? { onSteerQueuedTurn: mobile.steerQueuedTurn }
                 : {})}
+              {...(mobile.state.snapshot?.host.capabilities.includes("turn.queue.cancel.v1")
+                ? { onCancelQueuedTurn: mobile.cancelQueuedTurn }
+                : {})}
               {...(mobile.state.snapshot?.host.capabilities.includes("subagent.stop.v1")
                 ? { onStopSubagent: mobile.stopSubagent }
                 : {})}
@@ -210,6 +213,7 @@ export function App() {
               onReturnToDesktop={mobile.returnToDesktop}
               onTakeoverDesktop={mobile.takeoverDesktop}
               onLoadSessionConfiguration={mobile.loadSessionConfiguration}
+              {...(snapshot?.host.capabilities.includes("claude.native-relay.v1") ? { onLoadBackgroundTasks: mobile.loadBackgroundTasks } : {})}
               {...(snapshot?.host.capabilities.includes("session.commands.v1")
                 ? { onLoadSessionCommands: mobile.loadSessionCommands }
                 : {})}
@@ -219,6 +223,8 @@ export function App() {
                 onSaveSessionPermissions: mobile.saveSessionPermissions,
               } : {})}
               onConfigureSession={mobile.configureSession}
+              onPreviewRewind={mobile.previewRewind}
+              onRewindSession={mobile.rewindSession}
               {...(mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1")
                 ? { onConfigurePermissionPolicy: mobile.configurePermissionPolicy }
                 : {})}

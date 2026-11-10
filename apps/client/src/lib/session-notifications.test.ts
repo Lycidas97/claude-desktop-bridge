@@ -51,6 +51,7 @@ describe("session notifications", () => {
       title: "Fix tests",
       body: "任务已完成",
       channelId: "bridge-sessions",
+      isExactNotification: false,
       autoCancel: true,
       extra: { hostId: "room", sessionId: "s1" },
     });

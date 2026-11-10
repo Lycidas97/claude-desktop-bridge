@@ -16,6 +16,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
   const [showSource, setShowSource] = useState(false);
   const markdown = target.kind === "text" && textPreviewLanguage(target.name) === "markdown";
   const [pdf, setPdf] = useState<PDFDocumentProxy>();
+  const [pdfProgress, setPdfProgress] = useState<{ loaded: number; total: number }>();
   const [pageNumber, setPageNumber] = useState(1);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
@@ -45,6 +46,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
     let objectUrl: string | undefined;
     setError("");
     setBusy(!target.dataUrl);
+    setPdfProgress(undefined);
     async function load() {
       if (target.dataUrl) return;
       if (target.kind === "image" && target.artifactId && !/\.svg$/iu.test(target.name)) {
@@ -54,7 +56,9 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
         if (!disposed) { setImageUrl(`data:${preview.mimeType};base64,${preview.data}`); setBusy(false); }
         return;
       }
-      transfer = await openMediaTransfer(target, requestRef.current);
+      transfer = await openMediaTransfer(target, requestRef.current, target.kind === "pdf" ? (loaded, total) => {
+        if (!disposed) setPdfProgress({ loaded, total });
+      } : undefined);
       if (disposed) { await transfer.close(); transfer = undefined; return; }
       const source = transfer;
       if (target.kind === "text") {
@@ -168,7 +172,14 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
           </div>}
         </div>
         <div ref={viewportRef} className={`media-viewer-viewport ${target.kind}`}>
-          {busy && <div className="media-viewer-status" role="status"><LoaderCircle className="is-spinning" size={22} /><span>{pdf ? `正在显示第 ${pageNumber} 页…` : "正在加载预览…"}</span></div>}
+          {busy && <div className="media-viewer-status" role="status">
+            <LoaderCircle className="is-spinning" size={22} />
+            <span>{pdf ? `正在${pdfProgress && pdfProgress.loaded === pdfProgress.total ? "渲染" : "加载"}第 ${pageNumber} 页…` : "正在加载预览…"}</span>
+            {pdfProgress && pdfProgress.total > 0 && <>
+              <progress aria-label="PDF文件读取进度" value={pdfProgress.loaded} max={pdfProgress.total} />
+              <small>文件已读取 {(pdfProgress.loaded / 1024 / 1024).toFixed(1)} / {(pdfProgress.total / 1024 / 1024).toFixed(1)} MiB</small>
+            </>}
+          </div>}
           {error && <div className="media-viewer-status" role="alert"><AlertTriangle size={22} /><span>{error}</span><button className="secondary-button" onClick={() => { setPdf(undefined); setAttempt((value) => value + 1); }}>重新加载</button></div>}
           {target.kind === "text" ? (!busy && !error && text !== undefined && <div id="text-preview-content" role={markdown ? "tabpanel" : undefined} aria-labelledby={markdown ? (showSource ? "text-preview-source-tab" : "text-preview-rendered-tab") : undefined} tabIndex={0}>
             <TextPreview text={text} name={target.name} source={showSource} />

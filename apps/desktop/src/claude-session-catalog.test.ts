@@ -1,10 +1,9 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { rm, appendFile, mkdir, mkdtemp, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseWindowsClaudeProcessSessions, projectIdForCwd, scanClaudeCatalog, scanClaudeProcesses, scanClaudeSessionProcesses } from "./claude-session-catalog.js";
-import { SessionBroker } from "./session-broker.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { TranscriptObserver } from "./transcript-observer.js";
 
@@ -108,23 +107,18 @@ describe("Claude session process catalog", () => {
     await writeFile(join(childDirectory, "agent-child.jsonl"), JSON.stringify({ type: "assistant", timestamp, message: { role: "assistant", content: [{ type: "tool_use", id: "read", name: "Read", input: {} }], stop_reason: "tool_use" } }) + "\n");
     const log = new SessionEventLog(join(root, "events.jsonl"));
     const observer = new TranscriptObserver({ paths, eventLog: log, platform: "darwin", pollIntervalMs: 60_000, catalogIntervalMs: 0 });
-    const hostFactory = vi.fn(() => { throw new Error("Native observation must not launch a model host"); });
-    const broker = new SessionBroker({ paths, observer, eventLog: log, sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"), hostFactory, discoverGatewayModels: async () => [], prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/credentials.json", environment: {} }) });
     try {
       mockProcessRows("darwin", processTable);
-      await observer.start(); await broker.initialize();
+      await observer.start();
       expect(observer.isMainTurnBusy(sessionId)).toBe(false);
       expect(observer.runningSubagents(sessionId)).toEqual({ count: 1, lastUpdatedAt: Date.parse(timestamp) });
-      expect(broker.session(sessionId)).toMatchObject({ turnState: "idle", runningSubagents: { count: 1 }, subagentStopScope: "process" });
       await appendFile(join(childDirectory, "agent-child.jsonl"), JSON.stringify({ type: "assistant", timestamp: new Date(Date.parse(timestamp) + 1000).toISOString(), message: { role: "assistant", content: [{ type: "text", text: "Completed review" }], stop_reason: "end_turn" } }) + "\n");
       await utimes(join(childDirectory, "agent-child.jsonl"), new Date(), new Date(Date.parse(timestamp) + 2000));
       mockProcessRows("darwin", processTable);
       await (observer as unknown as { poll(): Promise<void> }).poll();
       expect(observer.runningSubagents(sessionId)).toBeUndefined();
-      expect(broker.session(sessionId)?.turnState).toBe("idle");
-      expect(broker.session(sessionId)?.runningSubagents).toBeUndefined();
-      expect(hostFactory).not.toHaveBeenCalled();
-    } finally { await broker.close(); await observer.close(); await log.close(); }
+      expect(observer.isMainTurnBusy(sessionId)).toBe(false);
+    } finally { await observer.close(); await log.close(); }
   });
 
   it.each(["darwin", "win32"] as const)("binds a verified fork executor to its registered child on %s", async (platform) => {
@@ -197,7 +191,7 @@ describe("Claude session process catalog", () => {
     for (const [index, child] of children.entries()) expect(sessions.get(child)).toEqual([expect.objectContaining({ pid: 700 + index, processAlive: true, entrypoint: "claude-desktop-3p" })]);
   });
 
-  it("publishes fork main-turn status through the observer and Broker while keeping the original owner", async () => {
+  it("publishes fork main-turn status through the observer while keeping the original owner", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-fork-status-"));
     directories.push(root);
     const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [] };
@@ -210,27 +204,24 @@ describe("Claude session process catalog", () => {
     await writeFile(transcript, JSON.stringify({ type: "user", uuid: "fork-user", sessionId: child, cwd: root, message: { role: "user", content: "Continue the fork" } }) + "\n");
     const log = new SessionEventLog(join(root, "events.jsonl"), 1);
     const observer = new TranscriptObserver({ paths, eventLog: log, platform: "darwin", pollIntervalMs: 60_000, catalogIntervalMs: 0 });
-    const hostFactory = vi.fn(() => { throw new Error("The original fork executor must remain the sole owner"); });
-    const broker = new SessionBroker({ paths, observer, eventLog: log, sessionsPath: join(root, "sessions.json"), queuePath: join(root, "queue.json"), hostFactory, discoverGatewayModels: async () => [], prepareRuntime: async () => ({ executablePath: "/fake/claude", credentialPath: "/fake/credentials.json", environment: {} }) });
     try {
       mockProcessRows("darwin", processTable);
-      await observer.start(); await broker.initialize();
+      await observer.start();
       expect(observer.isMainTurnBusy(child)).toBe(true);
-      expect(broker.session(child)?.turnState).toBe("running");
-      expect(broker.session(parent)?.turnState ?? "idle").toBe("idle");
+      expect(observer.isMainTurnBusy(child)).toBe(true);
+      expect(observer.isMainTurnBusy(parent)).toBe(false);
       expect(await observer.canStartBridgeHost(child)).toBe(false);
       await appendFile(transcript, JSON.stringify({ type: "assistant", uuid: "fork-done", parentUuid: "fork-user", sessionId: child, message: { role: "assistant", content: "Done", stop_reason: "end_turn" } }) + "\n");
       await utimes(transcript, new Date(), new Date(transcriptTime + 1_000));
       mockProcessRows("darwin", processTable); await (observer as unknown as { poll(): Promise<void> }).poll();
-      expect(broker.session(child)?.turnState).toBe("idle");
+      expect(observer.isMainTurnBusy(child)).toBe(false);
       expect(await observer.canStartBridgeHost(child)).toBe(false);
       await appendFile(transcript, JSON.stringify({ type: "user", uuid: "fork-next", parentUuid: "fork-done", sessionId: child, message: { role: "user", content: "Next main turn" } }) + "\n");
       await utimes(transcript, new Date(), new Date(transcriptTime + 2_000));
       mockProcessRows("darwin", processTable); await (observer as unknown as { poll(): Promise<void> }).poll();
-      expect(broker.session(child)?.turnState).toBe("running");
+      expect(observer.isMainTurnBusy(child)).toBe(true);
       expect(observer.session(child)?.activeProcesses.filter((process) => process.processAlive)).toEqual([expect.objectContaining({ pid: 700, peerProtocol: 1 })]);
-      expect(hostFactory).not.toHaveBeenCalled();
-    } finally { await broker.close(); await observer.close(); await log.close(); }
+    } finally { await observer.close(); await log.close(); }
   });
 
   it.each(["claude-bridge", "claude-desktop-3p"])("restores verified %s registration after its executor is reparented", async (entrypoint) => {

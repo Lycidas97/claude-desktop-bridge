@@ -32,172 +32,115 @@ try {
     (await window.bridgeDesktop.getSnapshot()).connection === "connected"
   ));
   await page.getByRole("button", { name: "会话", exact: true }).waitFor();
-  await page.waitForFunction(async () => (
-    (await window.bridgeDesktop.getSnapshot()).connection === "connected"
-  ));
   const snapshot = await page.evaluate(() => window.bridgeDesktop.getSnapshot());
   assert.equal(snapshot.host.version, desktopPackage.version);
   assert.ok(Number.isInteger(snapshot.host.pairingEpoch) && snapshot.host.pairingEpoch >= 1);
-  assert.deepEqual(
-    [...snapshot.host.capabilities].sort(),
-    [
-      "artifact.preview.v1",
-      "artifact.text-preview.v1",
-      "artifact.transfer.v1",
-      "conversation.handoff.v1",
-      "conversation.lanes.v1",
-      "directory.browse.v1",
-      "evidence.details.v1",
-      "evidence.v1",
-      "permission.policy.v1",
-      "permission.runtime-defaults.v1",
-      "plugin.magpie-quota.v1",
-      "provider.profile.v1",
-      "runtime.adapter.v1",
-      "runtime.handoff.v1",
-      "session.rename.v1",
-      "session.visibility.v1",
-      "subagent.stop.v1",
-      "turn.queue.steer.v1",
-      "workspace.upload.v1",
-    ],
-  );
-  assert.ok(["standard", "full-access"].includes(snapshot.host.defaultPermissionMode));
+  // Native capabilities include optional runtime features; require the stable
+  // contract without making rewind, rename or external runtime handoff mandatory.
+  for (const capability of [
+    "artifact.preview.v1",
+    "artifact.text-preview.v1",
+    "artifact.transfer.v1",
+    "claude.native-relay.v1",
+    "directory.browse.v1",
+    "evidence.details.v1",
+    "evidence.v1",
+    "permission.policy.v1",
+    "permission.runtime-defaults.v1",
+    "plugin.magpie-quota.v1",
+    "runtime.adapter.v1",
+    "session.command.v1",
+    "session.commands.v1",
+    "session.visibility.v1",
+    "subagent.stop.v1",
+    "turn.queue.cancel.v1",
+    "turn.queue.steer.v1",
+    "workspace.upload.v1",
+  ]) {
+    assert.ok(snapshot.host.capabilities.includes(capability), `Missing Native capability: ${capability}`);
+  }
+  for (const capability of ["provider.profile.v1", "conversation.lanes.v1", "conversation.handoff.v1"]) {
+    assert.equal(snapshot.host.capabilities.includes(capability), false, `Retired capability: ${capability}`);
+  }
+  assert.equal(snapshot.host.defaultPermissionMode, undefined);
+  assert.equal(snapshot.providers, undefined);
   assert.ok(Array.isArray(snapshot.projects));
   assert.ok(Array.isArray(snapshot.sessions));
   assert.ok(Array.isArray(snapshot.devices));
-  assert.ok(Array.isArray(snapshot.providers));
-  // Connection liveness is proven by the waitForFunction above; the field is
-  // volatile under a live relay, so a point-in-time equality check only flakes.
+  assert.ok(Array.isArray(snapshot.permissions));
+  assert.ok(Array.isArray(snapshot.runtimes));
   assert.ok(["ready", "working", "auth-required", "unavailable"].includes(snapshot.runtime.state));
+  assert.equal(snapshot.runtime.maxParallelTurns, 0);
+  assert.equal(snapshot.runtime.desktopIntegration.enabled, true);
+  assert.equal(snapshot.runtime.desktopIntegration.canRestart, false);
+  const nativeRuntime = snapshot.runtimes.find((runtime) => runtime.id === "claude-desktop");
+  assert.ok(nativeRuntime, "Native Claude Desktop runtime was not reported");
+  assert.ok(nativeRuntime.capabilities.includes("session.list"));
+  assert.ok(nativeRuntime.capabilities.includes("session.history"));
+  for (const session of snapshot.sessions.filter((session) => !session.runtimeId || session.runtimeId === "claude-desktop")) {
+    assert.equal(session.transport, "claude-desktop-native");
+    assert.equal(session.source, "desktop");
+  }
 
-  const providerResponse = await page.evaluate(() => window.bridgeDesktop.request({
-    method: "provider.list",
-    params: {},
-  }));
-  assert.equal(providerResponse.ok, true, providerResponse.error?.message);
-  const providers = providerResponse.result.providers;
-  assert.deepEqual(
-    providers.map((provider) => provider.kind).sort(),
-    ["anthropic-api", "claude-3p", "claude-official"],
-  );
-  for (const provider of providers) {
-    assert.equal("apiKey" in provider, false);
-    assert.equal("authorization" in provider, false);
-    assert.equal("headers" in provider, false);
+  const ipcProof = {};
+  for (const [method, field] of [["runtime.list", "runtimes"], ["project.list", "projects"], ["session.list", "sessions"]]) {
+    const response = await page.evaluate((method) => window.bridgeDesktop.request({ method, params: {} }), method);
+    assert.equal(response.ok, true, `${method}: ${response.error?.message}`);
+    assert.ok(Array.isArray(response.result[field]), `${method} did not return ${field}`);
+    if (method === "runtime.list") {
+      assert.ok(response.result.runtimes.some((runtime) => runtime.id === "claude-desktop"));
+    }
+    ipcProof[method] = response.result[field].length;
+  }
+  for (const method of ["provider.list", "conversation.route.get"]) {
+    const response = await page.evaluate((method) => window.bridgeDesktop.request({ method, params: {} }), method);
+    assert.equal(response.ok, false, `${method} must be unsupported for Native relay`);
+    assert.equal(response.error?.code, "UNSUPPORTED", `${method} must return UNSUPPORTED`);
+    ipcProof[method] = response.error.code;
   }
 
   let configurationProof;
   let evidenceProof;
-  let routeProof;
-  // The route/configuration/evidence proofs below are Claude-domain checks;
-  // with the DSH runtime attached, sessions[0] can be a native runtime row.
-  const selectedSession = snapshot.sessions.find((session) => (
-    !session.runtimeId || session.runtimeId === "claude-desktop"
-  ));
+  const selectedSession = snapshot.sessions.find((session) => session.transport === "claude-desktop-native");
   if (selectedSession) {
-    const routeResponse = await page.evaluate(async (sessionId) => (
-      window.bridgeDesktop.request({
-        method: "conversation.route.get",
-        params: { sessionId },
-      })
-    ), selectedSession.sessionId);
-    assert.equal(routeResponse.ok, true, routeResponse.error?.message);
-    const route = routeResponse.result.route;
-    assert.equal(route.conversationId, selectedSession.sessionId);
-    assert.ok(route.lanes.some((lane) => lane.laneId === route.activeLaneId));
-    assert.ok(providers.some((provider) => provider.id === route.activeProviderProfileId));
-    routeProof = {
-      sessionId: selectedSession.sessionId,
-      laneCount: route.lanes.length,
-      activeProviderProfileId: route.activeProviderProfileId,
-      state: route.state,
-    };
+    const configurationResponse = await page.evaluate((sessionId) => window.bridgeDesktop.request({
+      method: "session.configuration", params: { sessionId },
+    }), selectedSession.sessionId);
+    assert.equal(configurationResponse.ok, true, configurationResponse.error?.message);
+    const configuration = configurationResponse.result.configuration;
+    assert.equal(configuration.sessionId, selectedSession.sessionId);
+    assert.equal(configuration.modelSource, "claude-desktop");
+    assert.equal(configuration.effortSource, "claude-desktop");
+    assert.equal(configuration.permissionPolicy, undefined);
+    assert.ok(Array.isArray(configuration.availableModels));
+    assert.ok(configuration.availableEffortLevels.includes("high"));
+    configurationProof = { sessionId: configuration.sessionId, models: configuration.availableModels.length };
 
-    const permissionConfigurationResponse = await page.evaluate(async (sessionId) => (
-      window.bridgeDesktop.request({
-        method: "session.configuration",
-        params: { sessionId },
-      })
-    ), selectedSession.sessionId);
-    assert.equal(
-      permissionConfigurationResponse.ok,
-      true,
-      permissionConfigurationResponse.error?.message,
-    );
-    assert.ok(
-      ["standard", "full-access"].includes(
-        permissionConfigurationResponse.result.configuration.permissionPolicy.effectiveMode,
-      ),
-    );
-
-    const evidenceResponse = await page.evaluate(async (sessionId) => (
-      window.bridgeDesktop.request({
-        method: "evidence.list",
-        params: { sessionId, limit: 30 },
-      })
-    ), selectedSession.sessionId);
+    const evidenceResponse = await page.evaluate((sessionId) => window.bridgeDesktop.request({
+      method: "evidence.list", params: { sessionId, limit: 30 },
+    }), selectedSession.sessionId);
     assert.equal(evidenceResponse.ok, true, evidenceResponse.error?.message);
     assert.equal(evidenceResponse.result.evidence.sessionId, selectedSession.sessionId);
     assert.ok(Array.isArray(evidenceResponse.result.evidence.items));
-    evidenceProof = {
-      sessionId: selectedSession.sessionId,
-      items: evidenceResponse.result.evidence.items.length,
-    };
-  }
-
-  const longContextSession = snapshot.sessions.find((session) => session.model?.includes("[1m]"));
-  if (longContextSession) {
-    const configurationResponse = await page.evaluate(async (sessionId) => (
-      window.bridgeDesktop.request({
-        method: "session.configuration",
-        params: { sessionId },
-      })
-    ), longContextSession.sessionId);
-    assert.equal(configurationResponse.ok, true, configurationResponse.error?.message);
-    const configuration = configurationResponse.result.configuration;
-    assert.equal(configuration.sessionId, longContextSession.sessionId);
-    assert.ok(Array.isArray(configuration.availableModels));
-    assert.ok(configuration.availableModels.length > 0);
-    assert.ok(Array.isArray(configuration.availableEffortLevels));
-    assert.ok(configuration.availableEffortLevels.includes("high"));
-
-    const context = configuration.context;
-    if (context?.totalTokens > 262_144) {
-      assert.ok(context.maxTokens >= 1_000_000);
-      const downgrade = configuration.availableModels.find((model) => !model.value.includes("[1m]"));
-      if (downgrade) {
-        const downgradeResponse = await page.evaluate(async ({ sessionId, model }) => (
-          window.bridgeDesktop.request({
-            method: "session.configure",
-            params: { sessionId, model },
-          })
-        ), { sessionId: longContextSession.sessionId, model: downgrade.value });
-        assert.equal(downgradeResponse.ok, false, "Unsafe context downgrade should be rejected");
-        assert.match(downgradeResponse.error?.message ?? "", /上下文|context/i);
+    evidenceProof = { sessionId: selectedSession.sessionId, items: evidenceResponse.result.evidence.items.length };
+    if (snapshot.sessions[0] === selectedSession) {
+      if (selectedSession.allowedActions?.canConfigure) {
+        await page.getByRole("button", { name: "会话设置", exact: true }).click();
+        const dialog = page.getByRole("dialog");
+        await dialog.waitFor();
+        await dialog.getByRole("button", { name: "关闭", exact: true }).click();
       }
+      await page.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
+      await page.locator(".evidence-panel, .evidence-empty").waitFor();
     }
-    configurationProof = {
-      sessionId: configuration.sessionId,
-      model: configuration.model,
-      effort: configuration.effort,
-      models: configuration.availableModels.length,
-      context,
-    };
   }
-
-  if (selectedSession) {
-    const configurationButton = page.getByRole("button", { name: "模型与运行模式" });
-    await configurationButton.click();
-    const configurationDialog = page.getByRole("dialog");
-    await configurationDialog.waitFor();
-    await configurationDialog.getByText("上下文", { exact: true }).waitFor();
-    await configurationDialog.getByRole("button", { name: "关闭" }).click();
-    await page.locator(".session-view-switch").getByRole("button", { name: /^成果/ }).click();
-    await page.locator(".evidence-panel, .evidence-empty").waitFor();
-  } else {
-    await page.locator(".desktop-sidebar-empty").waitFor();
-  }
+  if (snapshot.sessions.length === 0) await page.locator(".desktop-sidebar-empty").waitFor();
+  await page.getByRole("button", { name: "设备", exact: true }).click();
+  await page.getByRole("heading", { name: "设备", exact: true }).waitFor();
+  await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "连接与设备", exact: true }).click();
+  await page.getByText("原生中转已就绪", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   await page.screenshot({ path: resolve(artifacts, "desktop-evidence.png"), fullPage: true });
   process.stdout.write(`${JSON.stringify({
@@ -208,14 +151,8 @@ try {
     sessions: snapshot.sessions.length,
     devices: snapshot.devices.length,
     runtime: snapshot.runtime.state,
-    providers: providers.map(({ id, kind, status, configured, readOnly }) => ({
-      id,
-      kind,
-      status,
-      configured,
-      readOnly,
-    })),
-    route: routeProof,
+    nativeRuntime: { state: nativeRuntime.state, capabilities: nativeRuntime.capabilities },
+    ipc: ipcProof,
     configuration: configurationProof,
     evidence: evidenceProof,
     screenshot: resolve(artifacts, "desktop-evidence.png"),

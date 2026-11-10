@@ -539,7 +539,7 @@ export function isNonTurnUserRecord(value: Record<string, unknown>, rawText: str
   );
 }
 
-function visibleMessage(value: Record<string, unknown>): Pick<TranscriptNode, "role" | "text"> | undefined {
+export function visibleMessage(value: Record<string, unknown>): Pick<TranscriptNode, "role" | "text"> | undefined {
   if (value.type !== "user" && value.type !== "assistant") return undefined;
   if (!isRecord(value.message)) return undefined;
   if (
@@ -548,7 +548,9 @@ function visibleMessage(value: Record<string, unknown>): Pick<TranscriptNode, "r
       value.toolUseResult !== undefined ||
       value.tool_use_result !== undefined ||
       value.isMeta === true ||
-      value.isCompactSummary === true
+      value.isCompactSummary === true ||
+      value.isSynthetic === true ||
+      value.isVisibleInTranscriptOnly === true
     )
   ) return undefined;
   const text = textFromContent(value.message.content);
@@ -589,7 +591,7 @@ function defaultWrapUpActionLabel(actionKey: string): string {
   return actionKey;
 }
 
-function extractInteractivePrompt(value: Record<string, unknown>): BridgeInteractivePrompt | undefined {
+export function extractInteractivePrompt(value: Record<string, unknown>): BridgeInteractivePrompt | undefined {
   if (value.type !== "assistant" || !isRecord(value.message) || !Array.isArray(value.message.content)) {
     return undefined;
   }
@@ -912,6 +914,31 @@ const transcriptSnapshotCache = new Map<string, {
   branch: NonNullable<ClaudeTranscriptSnapshot["branch"]>;
 }>();
 
+export function updateClaudeTaskPlan(previous: BridgeTaskPlan | undefined, id: string, input: Record<string, unknown>, wrapUp: boolean, at: number): BridgeTaskPlan | undefined {
+  if (wrapUp) return previous ? { ...previous, items: previous.items.map(item => ({ ...item, status: "completed" })), updatedAt: Math.max(at, previous.updatedAt + 1) } : undefined;
+  if ("items" in input) {
+    if (!Array.isArray(input.items) || input.items.length === 0 || !input.items.every(item => isRecord(item) && typeof item.content === "string" && item.content.trim() && typeof item.status === "string" && ["pending", "in_progress", "completed"].includes(item.status))) return previous;
+    const items = input.items.map(item => ({ content: String(item.content).trim(), status: item.status as BridgeTaskPlan["items"][number]["status"] }));
+    const fresh = !previous || input.scope === "new_task" || input.scope === "first_task";
+    return { id: fresh ? id : previous.id, items, updatedAt: fresh ? at : Math.max(at, previous.updatedAt + 1) };
+  }
+  if (!previous) return undefined;
+  const items = previous.items.map(item => ({ ...item }));
+  if (input.advance === true) {
+    const current = items.find(item => item.status === "in_progress");
+    if (current) current.status = "completed";
+    const next = items.find(item => item.status === "pending");
+    if (next) next.status = "in_progress";
+  }
+  for (const index of Array.isArray(input.done) ? input.done : []) if (typeof index === "number" && Number.isInteger(index) && items[index - 1]) items[index - 1]!.status = "completed";
+  if (typeof input.start === "number" && Number.isInteger(input.start) && items[input.start - 1]) {
+    for (const item of items) if (item.status === "in_progress") item.status = "pending";
+    items[input.start - 1]!.status = "in_progress";
+  }
+  return items.some((item, index) => item.status !== previous.items[index]!.status)
+    ? { ...previous, items, updatedAt: Math.max(at, previous.updatedAt + 1) } : previous;
+}
+
 export async function parseClaudeTranscriptSnapshot(
   path: string,
   options: ClaudeHistoryReadOptions = {},
@@ -1194,56 +1221,14 @@ export async function parseClaudeTranscriptSnapshot(
         }
         continue;
       }
-      if (update.wrapUp) {
-        if (planMessage?.taskPlan) {
-          planMessage.taskPlan = {
-            ...planMessage.taskPlan,
-            items: planMessage.taskPlan.items.map((item) => ({ ...item, status: "completed" })),
-            updatedAt: Math.max(node.createdAt, planMessage.taskPlan.updatedAt + 1),
-          };
-          planMessage = undefined;
-        }
-        continue;
-      }
-      const input = update.input;
-      if ("items" in input) {
-        if (!Array.isArray(input.items) || input.items.length === 0 || !input.items.every((item) =>
-          isRecord(item) && typeof item.content === "string" && item.content.trim() &&
-          typeof item.status === "string" && ["pending", "in_progress", "completed"].includes(item.status))) continue;
-        const items = input.items.map((item) => ({ content: item.content.trim() as string, status: item.status as BridgeTaskPlan["items"][number]["status"] }));
-        if (!planMessage || input.scope === "new_task" || input.scope === "first_task") {
-          planMessage = {
-            id: `plan:${update.id}`,
-            role: "assistant",
-            text: "",
-            createdAt: node.createdAt,
-            taskPlan: { id: update.id, items, updatedAt: node.createdAt },
-          };
+      const plan = updateClaudeTaskPlan(planMessage?.taskPlan, update.id, update.input, update.wrapUp, node.createdAt);
+      if (plan) {
+        if (!planMessage || plan.id !== planMessage.taskPlan?.id) {
+          planMessage = { id: `plan:${plan.id}`, role: "assistant", text: "", createdAt: node.createdAt, taskPlan: plan };
           messages.push(planMessage);
-        } else {
-          planMessage.taskPlan = { id: planMessage.taskPlan!.id, items, updatedAt: Math.max(node.createdAt, planMessage.taskPlan!.updatedAt + 1) };
-        }
-        continue;
+        } else planMessage.taskPlan = plan;
       }
-      if (!planMessage?.taskPlan) continue;
-      const previousPlan = planMessage.taskPlan;
-      const items = previousPlan.items.map((item) => ({ ...item }));
-      if (input.advance === true) {
-        const current = items.find((item) => item.status === "in_progress");
-        if (current) current.status = "completed";
-        const next = items.find((item) => item.status === "pending");
-        if (next) next.status = "in_progress";
-      }
-      for (const index of Array.isArray(input.done) ? input.done : []) {
-        if (typeof index === "number" && Number.isInteger(index) && items[index - 1]) items[index - 1]!.status = "completed";
-      }
-      if (typeof input.start === "number" && Number.isInteger(input.start) && items[input.start - 1]) {
-        for (const item of items) if (item.status === "in_progress") item.status = "pending";
-        items[input.start - 1]!.status = "in_progress";
-      }
-      if (items.some((item, index) => item.status !== previousPlan.items[index]!.status)) {
-        planMessage.taskPlan = { ...previousPlan, items, updatedAt: Math.max(node.createdAt, previousPlan.updatedAt + 1) };
-      }
+      if (update.wrapUp) planMessage = undefined;
     }
     if (node.interactivePrompt) {
       const previous = messages.at(-1);
@@ -1812,9 +1797,12 @@ async function parseParentTranscriptSubagents(transcriptPath: string): Promise<P
           });
         }
       }
-      if (!isRecord(value.message)) continue;
-      if (value.type === "assistant" && Array.isArray(value.message.content)) {
-        for (const block of value.message.content) {
+      const message = isRecord(value.message) ? value.message
+        : value.type === "attachment" && isRecord(value.attachment) && value.attachment.type === "queued_command"
+          ? { content: value.attachment.prompt } : undefined;
+      if (!message) continue;
+      if (value.type === "assistant" && Array.isArray(message.content)) {
+        for (const block of message.content) {
           if (!isRecord(block) || block.type !== "tool_use" || typeof block.id !== "string") continue;
           if (block.name === "TaskStop" && isRecord(block.input) && typeof block.input.task_id === "string") {
             stopRequests.set(block.id, block.input.task_id);
@@ -1851,9 +1839,9 @@ async function parseParentTranscriptSubagents(transcriptPath: string): Promise<P
             updatedAt: ts,
           });
         }
-      } else if (value.type === "user") {
-        if (Array.isArray(value.message.content)) {
-          for (const block of value.message.content) {
+      } else if (value.type === "user" || value.type === "attachment") {
+        if (Array.isArray(message.content)) {
+          for (const block of message.content) {
             if (!isRecord(block) || block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
             const stoppedId = stopRequests.get(block.tool_use_id);
             const result = value.toolUseResult;
@@ -1894,7 +1882,7 @@ async function parseParentTranscriptSubagents(transcriptPath: string): Promise<P
             }
           }
         }
-        const rawText = textFromContent(value.message.content);
+        const rawText = textFromContent(message.content);
         if (rawText.trimStart().startsWith("<task-notification>")) {
           const status = /<status>(\w+)<\/status>/u.exec(rawText)?.[1];
           if (status) {

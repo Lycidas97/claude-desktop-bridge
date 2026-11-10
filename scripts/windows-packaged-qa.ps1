@@ -27,6 +27,33 @@ function Invoke-NpmScript {
   if ($LASTEXITCODE -ne 0) { throw "npm run $Name failed with exit code $LASTEXITCODE" }
 }
 
+function Set-QaProfile {
+  param([Parameter(Mandatory = $true)][string]$Root)
+
+  # --user-data-dir does not isolate os.homedir(), connectorPaths(), or the
+  # detached service's BRIDGE_* data-path overrides.
+  $profileRoot = Join-Path $Root "home"
+  $appData = Join-Path $profileRoot "AppData/Roaming"
+  $localAppData = Join-Path $profileRoot "AppData/Local"
+  New-Item -ItemType Directory -Path $appData, $localAppData -Force | Out-Null
+  $profileDrive = [IO.Path]::GetPathRoot($profileRoot).TrimEnd('\')
+  [Environment]::SetEnvironmentVariable("USERPROFILE", $profileRoot, "Process")
+  [Environment]::SetEnvironmentVariable("HOME", $profileRoot, "Process")
+  [Environment]::SetEnvironmentVariable("HOMEDRIVE", $profileDrive, "Process")
+  [Environment]::SetEnvironmentVariable("HOMEPATH", $profileRoot.Substring($profileDrive.Length), "Process")
+  [Environment]::SetEnvironmentVariable("APPDATA", $appData, "Process")
+  [Environment]::SetEnvironmentVariable("LOCALAPPDATA", $localAppData, "Process")
+  [Environment]::SetEnvironmentVariable("CODEX_HOME", (Join-Path $profileRoot ".codex"), "Process")
+  [Environment]::SetEnvironmentVariable("BRIDGE_USER_DATA", $Root, "Process")
+  [Environment]::SetEnvironmentVariable("BRIDGE_SERVICE_DATA_PATH", $Root, "Process")
+  # ClaudeDesktopBridge reads this exact name. Port 1 fails discovery without
+  # attaching to a developer's real Native inspector on 9229.
+  [Environment]::SetEnvironmentVariable("BRIDGE_CLAUDE_INSPECTOR_URL", "http://127.0.0.1:1", "Process")
+  [Environment]::SetEnvironmentVariable("BRIDGE_CODEX_APP_SERVER_PATH", (Join-Path $profileRoot "missing-codex.exe"), "Process")
+  [Environment]::SetEnvironmentVariable("BRIDGE_HERMES_GATEWAY_URL", "ws://127.0.0.1:1", "Process")
+  [Environment]::SetEnvironmentVariable("BRIDGE_DSH_GATEWAY_URL", "http://127.0.0.1:1", "Process")
+}
+
 $installer = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" |
   Select-Object -First 1
 if ($null -eq $installer) {
@@ -47,7 +74,23 @@ $environmentKeys = @(
   "BRIDGE_SERVICE_ORIGIN",
   "BRIDGE_RELAY_DATA",
   "BRIDGE_DESKTOP_CDP",
-  "BRIDGE_E2E_FORCE_RELAY"
+  "BRIDGE_E2E_FORCE_RELAY",
+  "BRIDGE_E2E_RELAY_URL",
+  "BRIDGE_DEV_SERVER_URL",
+  "ELECTRON_RUN_AS_NODE",
+  "USERPROFILE",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "CODEX_HOME",
+  "BRIDGE_USER_DATA",
+  "BRIDGE_SERVICE_DATA_PATH",
+  "BRIDGE_CLAUDE_INSPECTOR_URL",
+  "BRIDGE_CODEX_APP_SERVER_PATH",
+  "BRIDGE_HERMES_GATEWAY_URL",
+  "BRIDGE_DSH_GATEWAY_URL"
 )
 $originalEnvironment = @{}
 foreach ($key in $environmentKeys) {
@@ -82,6 +125,7 @@ try {
   foreach ($key in $environmentKeys) {
     [Environment]::SetEnvironmentVariable($key, $null, "Process")
   }
+  Set-QaProfile -Root $smokeRoot
   $smokeStart = @{
     FilePath = $desktopExecutable.FullName
     ArgumentList = @(
@@ -100,10 +144,11 @@ try {
   & taskkill.exe /PID $smokeProcess.Id /T /F 2>$null | Out-Null
   $smokeProcess = $null
 
+  Set-QaProfile -Root $qaRoot
   $relayUrl = "ws://127.0.0.1:8788/ws"
   [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_HOST", "0.0.0.0", "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_URL", $relayUrl, "Process")
-  [Environment]::SetEnvironmentVariable("BRIDGE_PUBLIC_RELAY_URL", "", "Process")
+  [Environment]::SetEnvironmentVariable("BRIDGE_PUBLIC_RELAY_URL", $relayUrl, "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_PAIRING_BASE_URL", "http://127.0.0.1:8788", "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_SERVICE_ORIGIN", "http://127.0.0.1:8788", "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_DATA", (Join-Path $qaRoot "relay.sqlite"), "Process")

@@ -1,12 +1,14 @@
-# Bridge 1.0 架构
+# Bridge 架构
+
+本文描述当前分支的 Claude 原生接入；旧 Host/lane/所有权流程在对应章节标为历史。macOS 已通过真实 Desktop 的创建、发送、原生事件、历史及关闭 Bridge 后会话保留验证；尚未打包发布，具体验证范围见[重构记录](HOSTING-REFACTOR.md)。
 
 ## 产品边界
 
 Bridge 是独立的多 Desktop 协作产品，不是远程桌面，也不是任何一个 Desktop 输入框
 自动化。它统一手机与桌面上的会话列表、发送、流式输出、工具状态、审批、追问、中断和
 恢复体验；Claude Desktop、Codex Desktop、Hermes Desktop 与 DSH Desktop 的账户、原生
-会话、模型、权限与历史始终各自独立。0.7 新增经用户两次确认的跨 Desktop 串行接力：接力只在运行时
-之间传递有界、脱敏、加密的可见上下文包，目标始终是新建原生会话，仍不构成会话迁移。
+会话、模型、权限与历史始终各自独立。Claude 由 Desktop 原生接口执行，Bridge 不再启动
+第二套 Host，也不接管或交还会话；旧 lane 和接力流程仅保留为历史记录。
 Bridge 只建立出站连接，不要求公网 IP、端口映射或额外组网客户端。
 
 ```mermaid
@@ -18,44 +20,63 @@ flowchart LR
   M -.->|"STUN Binding"| S["STUN"]
   D -.->|"STUN Binding"| S
   D --> RA["RuntimeAdapterRegistry"]
-  RA --> B["Claude SessionBroker"]
+  D --> B["claude-desktop-bridge.ts 薄中转层"]
   RA --> CA["Codex app-server adapter"]
   RA --> HG["Hermes Gateway adapter"]
   RA --> DA["DSH Desktop adapter"]
-  B --> CS[("conversation-state-v1.sqlite")]
-  B --> PR["ProviderRegistry / RuntimePool"]
-  PR --> H["Claude-3p / API SessionHost"]
-  H <-->|"Agent SDK Streaming Input"| C["Claude Host"]
-  PR -->|"公开 Deep Link + 本机确认"| CO["Claude 官方"]
-  O["TranscriptObserver"] -->|"只读 JSONL 与元数据"| B
-  O -->|"严格关联官方首条消息"| CS
-  B --> DR["ClaudeDesktopSessionRegistrar"]
-  DR -->|"单文件会话 ID 映射"| DM["Claude Desktop 本地会话清单"]
-  B --> EM["EvidenceManager"]
-  O -->|"事后工具记录"| EM
+  B <-->|"127.0.0.1:9229 Node inspector"| I["Electron main → app://localhost WebContents"]
+  I <-->|"executeJavaScript"| C["claude.web.LocalSessions"]
+  C -->|"原生事件与权限请求"| EQ["renderer 单队列 + 等待 Promise"]
+  EQ --> B
+  B --> CS[("请求幂等 / 收据")]
+  B --> EM["EvidenceManager 被动收集"]
   EM --> ES[("Evidence SQLite + AES-GCM blobs")]
   EM --> AP["ArtifactPreview"]
-  B --> E[("SessionEventLog JSONL")]
+  B --> E[("SessionEventLog JSONL / replay")]
   R -. "仅见路由元数据与密文" .-> Q[("SQLite WAL 按设备离线队列")]
 ```
 
-Bridge 接管 Claude Desktop 已有会话后，电脑端 Bridge 和手机共享同一会话、同一
-执行进程和同一事件流。Claude Desktop 当前窗口不承诺即时刷新；释放后仍可从相同
-`sessionId` 打开历史。Bridge 直接新建的会话仍由 Agent SDK 独立执行；首轮 JSONL
-落盘后，`ClaudeDesktopSessionRegistrar` 可将同一个 CLI `sessionId` 登记到当前
-Claude Desktop 的本地会话清单。重启 Claude Desktop 后，侧边栏从该映射打开原始
-transcript，不复制历史，也不改变 Bridge 的执行归属。
+## Claude 原生接入
+
+新 `claude-desktop-bridge.ts` 是薄中转层，Claude Desktop 是会话执行、队列和权限的
+唯一权威。Bridge 从用户已开启并选择常开的 `http://127.0.0.1:9229/json/list` 动态
+取得 Node inspector 的 `webSocketDebuggerUrl`，经 `process.mainModule.require('electron')`
+定位 `app://localhost` WebContents，再以 `executeJavaScript` 调用
+`claude.web.LocalSessions`。会话创建、发送、排队、中断和权限答复均走原生接口，
+不再启动 SDK/CLI Host 或 standalone API Key lane，也不使用接管/交还、inbox、Claude
+lane、自动 goal 续跑或侧边栏文件登记。
+
+事件与权限请求订阅进入 renderer 中同一队列；无事件时等待 Promise，收到事件后
+批量返回，由 Bridge 记录事件并向客户端 replay。Bridge 保留配对、E2EE Relay/WebRTC、
+请求幂等与收据、附件传输和证据被动收集，不把事件转发变成第二套会话调度。
+
+用户本次选择覆盖旧“绝不 CDP / 不附着”的 Claude 限制；不改 asar、不签 token、
+不重启 Desktop、不加 LaunchAgent 或辅助功能菜单自动化。inspector 未开启时显示
+不可用；Relay 不暴露任意 evaluate，也不传账号凭据。macOS 已实测空会话创建、发送、
+原生生命周期事件、历史、请求去重与正常关闭；原生审批和子代理停止尚未对真实 Desktop
+做端到端验证。
+
+Claude 直接使用 Desktop 返回的原生会话 ID，历史分页直接调用 Desktop transcript
+接口。旧 Bridge 本地隐藏/归档标记不覆盖原生列表；重命名、归档和删除交由 Desktop，
+删除确认明确说明将删除 Desktop 中的会话与对话记录。不导入旧数据、不映射旧逻辑 ID，
+也不从本地旧历史或 eventlog 回退补页。旧数据
+不碰，不从旧队列恢复草稿；手机缓存的 `bridgeExecutionRequested` 不得自动重发。
+`removeLegacyConnector` 仅用于退役旧连接组件：先写 `.bridge-backup`，再清理旧
+`claude-bridge` MCP、固定
+`BRIDGE_HOOK_URL` 及动态 `http://127.0.0.1:<port>/hooks/claude-permission` 中同时带有
+`X-Bridge-Permission-Host: $BRIDGE_PERMISSION_HOST` 与 `allowedEnvVars` 包含
+`BRIDGE_PERMISSION_HOST` 的 HTTP Hook；无关 Hook、MCP 和设置保留。
 
 ## 0.6 多 Desktop 运行时
 
-Bridge 0.6 的统一对象是操作体验，不是对话本体。每个原生会话以
-`(runtimeId, nativeSessionId)` 作为不可跨运行时的唯一身份；Bridge 对外使用编码后的
-`BridgeSessionInfo.sessionId`，例如 `codex-desktop:<native-id>`。因此 Codex、Hermes
-和 Claude 恰好有相同原生 ID 时仍不会碰撞，也不会被放进同一段上下文。
+统一对象是操作体验，不是对话本体。Claude 对外直接使用 Desktop 返回的原生
+`sessionId`，不建立旧逻辑 ID 的 alias。Codex、Hermes、DSH 保持现有
+`(runtimeId, nativeSessionId)` 身份与编码方式，例如 `codex-desktop:<native-id>`；
+不同运行时的会话不会被放进同一段上下文。
 
 | 运行时 | 本地适配方式 | Bridge 可统一的操作 | 明确边界 |
 |---|---|---|---|
-| Claude Desktop | 既有 `SessionBroker`、Agent SDK 与只读 transcript 观察 | 会话、发送、流、审批、追问、中断、证据 | Claude 内部 lane/handoff 仅属于 Claude 域 |
+| Claude Desktop | 用户已开启的 Node inspector → WebContents → `claude.web.LocalSessions` | 原生会话操作、队列、事件、权限与被动证据（实测范围见重构记录） | Desktop 唯一执行权威；无 Host、lane、接管或自动 goal |
 | Codex Desktop | Bridge 自己启动的本地 `codex app-server --stdio` | 会话、发送、steer、流、工具、审批、追问、中断 | 不附着或篡改已运行 Desktop 进程；不共享 Claude/Hermes 历史或授权 |
 | Hermes Desktop | Bridge 自己启动的仅环回 Hermes Gateway，使用进程级随机令牌 | 会话、发送、steer、流、工具、审批、追问、中断 | 不读取 Desktop token/keychain；不接受非环回 Gateway 地址 |
 | DSH Desktop | 附着正在运行的 DSH 宿主：`/api` 一元 RPC + `events.mux`/`events.host` 双下行流（DSH 自带回环信任栅栏） | 会话、发送、queue/steer、流、工具、审批、追问、中断、模型配置、图片附件 | 只认回环权威（Host 头），不读取 DSH 凭据；`BRIDGE_DSH_GATEWAY_URL` 可显式指定宿主 |
@@ -72,16 +93,16 @@ pending 表：`approval/requested`、`question/requested` 帧携带宿主铸造�
 应答经 `/api/respond` 回投（取消即 `ok:false` 的 client-response）。文本增量按 token
 到达，adapter 聚合后才发往中继；reasoning 与 tool-call 增量永不出站。
 
-1.0 起，原生运行时轮次与 bridge-host 的 Claude 轮次走同一条证据管线：
+原生运行时轮次使用统一的被动证据管线，不为采集证据启动 Claude Host：
 `turn.started` 开立 bundle、`tool.*` 记录真实起止、工作区归因文件变化、
 `turn.completed` 收口并写入运行时上报的聚合 token 用量（DSH 按 step 上报，按轮
 累加）。成果栏因此对所有运行时一致：轮次编号、真实耗时、总览时间轴与工具检查器，
 进行中的记录只显示开始标记，不虚构耗时。
 
 `RuntimeAdapterRegistry` 只注册能力和健康状态，`RuntimeSessionBroker` 只做协议归一化、
-事件落盘与权限路由。跨运行时接力包与接力状态由独立的 `RuntimeHandoffService` 持有；
-Broker 本身仍不执行会话迁移，也不为某个 Desktop 自动故障转移到另一个 Desktop。
-统一会话列表只是索引；打开后始终回到拥有该任务的原生运行时。
+事件落盘与权限路由，不执行会话迁移，也不为某个 Desktop 自动故障转移到另一个 Desktop。
+统一会话列表只是索引；打开后始终回到拥有该任务的原生运行时。Claude 不再参与旧 Host
+接力或 Bridge 自动 goal 续跑；旧流程见下方历史章节。
 
 各 adapter 必须显式声明能力。当前共同基线为 `session.list/create/history`、
 `turn.start/steer/interrupt`、`permission.resolve` 和 `tool.events`；图片附件按 adapter
@@ -95,35 +116,27 @@ Hermes 懒会话只接受创建时返回的临时别名（`prompt.submit`、中�
 走别名），`session.resume` 只认持久化后的 `stored_session_id`，落盘后的 `session.list`
 行也只带 stored id。adapter 因此显式跟踪「未物化线程 / 存活别名」：历史按空返回、首轮
 跳过 resume 直发、刷新时保留原生侧还列不出的会话。Hermes 的公开会话身份始终是 stored
-id——它是 `session.list` 返回的唯一稳定值，Bridge 重启后接力链、goal 与手机端引用
-都不会漂移；别名只在网关进程内做活操作句柄，网关事件按别名映射回 stored id。控制器
+id——它是 `session.list` 返回的唯一稳定值，Bridge 重启后手机端引用不会漂移；别名
+只在网关进程内做活操作句柄，网关事件按别名映射回 stored id。控制器
 按 sessionId 的运行时归属路由，不再依据 adapter 缓存命中，避免瞬时未命中回退到错误
 Broker。
 
 手机端会话列表依赖全量快照：事件增量只更新已存在的会话，不会新增。Bridge 在每次发布
-时比对会话 id 集合，新增/移除会话（接力目标、原生侧新建）都会向已配对设备推送一次
-全量重同步；手机同时通过 `runtime.handoff.*` 事件实时跟进源会话上的计划门槛，通过
-`runtime.goal.updated` 跟进 goal 状态，因此 PC 端可做的接力操作在手机端全部可做。
+时比对会话 id 集合，新增/移除原生会话时向已配对设备推送全量重同步，后续状态通过
+事件与 replay 更新；同步不会恢复旧 Claude 队列、接力或自动 goal 执行。
 
 ## 组件
 
 | 组件 | 职责 |
 |---|---|
-| `ClaudeSessionHost` | Claude-3p / Anthropic API lane 的 Agent SDK 持久输入、流式事件、审批和中断 |
-| `SessionBroker` | 稳定逻辑会话、lane 固定队列、单写入者、所有权、两路并发和幂等 |
-| `RuntimeAdapterRegistry` | Codex/Hermes 本地 adapter 的发现、状态与能力注册 |
-| `RuntimeSessionBroker` | `(runtimeId, nativeSessionId)` 隔离、外部运行时事件与审批的归一化 |
+| `claude-desktop-bridge.ts`（新薄中转层） | 通过本机 inspector 转发 `LocalSessions` 调用、renderer 单队列事件与权限请求 |
+| `RuntimeAdapterRegistry` | 各原生 adapter 的发现、状态与能力注册 |
+| `RuntimeSessionBroker` | `(runtimeId, nativeSessionId)` 隔离、原生事件与审批的归一化 |
 | `CodexAppServerAdapter` | 仅通过 Bridge 自己启动的官方 app-server JSON-RPC 访问 Codex 会话 |
 | `HermesGatewayAdapter` | 仅通过本机环回 Gateway 访问 Hermes 会话，并持有进程级临时令牌 |
-| `ConversationStateStore` | 独立 SQLite 中的 conversations、profiles、lanes、handoffs、queue、receipts 与迁移标记 |
-| `ProviderRegistry` | 三类 profile 状态、Anthropic API Key 验证与模型发现 |
-| `ProviderRuntimePool` | Claude-3p Host 凭据、Anthropic API 显式 Key、Claude 官方只读 adapter |
-| `HandoffService` | 本机加密接力包、状态机、Deep Link、严格关联和原 lane 保留 |
-| `RuntimeHandoffService` | 跨 Desktop 串行接力状态机、三运行时端点、goal 监督与故障恢复 |
-| `TranscriptObserver` | 只读观察 Claude Desktop 会话，并增量恢复事后工具记录 |
-| `ClaudeDesktopSessionRegistrar` | 动态识别 active profile，校验并登记 Bridge 会话 ID 映射 |
-| `SessionEventLog` | 追加式 JSONL、单调 `seq`、delta 合并、history/cursor |
-| `PermissionBroker` | `canUseTool` 与 `AskUserQuestion` 的首次有效答复 |
+| `DshDesktopAdapter` | 通过宿主回环 `/api` 与原生事件流访问 DSH 会话 |
+| `ConversationStateStore` | 保存新原生请求的幂等键与收据，不导入旧数据 |
+| `SessionEventLog` | 追加式事件、单调 `seq`、delta 合并与 replay，不作为 Claude 历史回退源 |
 | `EvidenceManager` | 每轮证据生命周期、工具脱敏、变更归因、预览和传输租约 |
 | `EvidenceStore` | SQLite 清单、加密内容寻址快照、保留策略和按需重建 |
 | `ArtifactPreview` | 图片缩放和隔离、禁网的 HTML 静态截图 |
@@ -133,7 +146,9 @@ Broker。
 | `apps/relay` | 鉴权、SQLite 离线密文、分块、撤销、指标、备份和无正文推送 |
 | `apps/client` | 手机三层导航和电脑轻量控制台 |
 
-## 跨 Desktop 串行接力（0.7）
+## 跨 Desktop 串行接力（0.7，历史）
+
+> 本节保留旧实现说明；涉及 Claude 接力、lane 和 Bridge 自动 goal 续跑的路径已退出当前架构，不作为原生接入或重启恢复规则。Codex、Hermes、DSH 的原生接入保持不变。
 
 跨运行时接力由独立的 `RuntimeHandoffService` 编排，与 Claude 域内 lane 接力并行且
 互不改写。它把「接力」建模为源会话到目标新建会话的**有向链接**，而不是任何意义上的
@@ -185,7 +200,9 @@ stateDiagram-v2
 `runtime.handoff.v1` capability 与 `runtime.handoff.*`/`runtime.goal.*` 方法事件，
 旧客户端忽略并隐藏入口。
 
-## Claude 域内逻辑对话与提供方接力
+## Claude 域内逻辑对话与提供方接力（历史）
+
+> 以下仅记录旧 provider lane 的设计。当前不导入旧数据、不建立逻辑 ID alias，也不提供旧历史入口；直接读取 Desktop 记录，旧文件不碰。
 
 本节只描述 Claude 运行时内的 legacy provider lane。`BridgeSessionInfo.sessionId` 是稳定逻辑对话 ID。每个对话可以保留多个
 `BridgeExecutionLane`，但 `conversations.active_lane_id` 始终只指向一个活动 lane。
@@ -220,10 +237,12 @@ stateDiagram-v2
 序号和完整性哈希；不包含隐藏思维、OAuth/API Key/认证头、敏感正文、项目外内容或
 无界输出。Agent SDK 提示上限 48,000 字符，官方 Deep Link 上限 12,000 字符。
 
-旧 `sessions-v2.json` 与 `turn-queue-v2.json` 通过同一 SQLite 事务幂等导入。迁移
-标记保存源文件摘要；连续两次成功启动后旧文件只改名为 `.migrated`，不删除。
+本次原生重构不导入或改名旧 `sessions-v2.json`、`turn-queue-v2.json`，不恢复其中的
+队列或草稿；旧文件不碰。
 
-## 会话所有权
+## 会话所有权（历史）
+
+> 下方状态机属于旧 SDK/CLI Host 接管流程。当前 Claude 执行、队列与权限始终由 Desktop 持有，Bridge 不启动 writer、不退出原生执行器，也不重新排队自动续跑。
 
 ```mermaid
 stateDiagram-v2
@@ -251,14 +270,17 @@ Host 启动时记录外部写入版本。`TranscriptObserver` 扫描全部近期
 
 ## 历史与事件
 
-`TranscriptObserver` 读取 Claude 标准 JSONL 与桌面会话元数据，但不改写它们。
-Bridge 自身事件写入 `events-v2.jsonl`，最终消息、工具结果、审批和状态全部持久化；
-高频 assistant delta 短时合并。历史默认最近 50 条，向上用 cursor 分页。
+Claude 会话与历史直接通过 `LocalSessions` 原生接口读取，历史默认最近 50 条，
+向上使用 Desktop transcript cursor 分页。原生会话 ID 保持不变；不关联旧逻辑会话，
+也不回退到本地旧 JSONL 或 Bridge eventlog，Desktop 不可用时明确显示不可用。
 
-客户端保存最后 `seq`，重连后调用 `events.resume`。Relay ACK 只表示密文已保存或
-目标设备已收到；`session-received`、`running` 和最终状态只能由 Host 事件产生。
+Bridge 自身事件写入 `events-v2.jsonl`，高频 assistant delta 短时合并。客户端保存
+最后 `seq`，重连后调用 `events.resume`；事件 replay 与原生历史分页分开。Relay ACK
+只表示密文已保存或目标设备已收到；接收、运行和最终状态以 Desktop 原生事件为准。
 
-## Claude Desktop 侧边栏登记
+## Claude Desktop 侧边栏登记（历史）
+
+> 以下文件登记与重启说明仅记录旧方案；当前通过 `LocalSessions` 操作原生会话，不登记文件，不为 Bridge 重启 Desktop。旧“私有 CDP”禁用规则已由本次用户选择在上述本机边界内覆盖。
 
 Bridge 只为自身创建、且已经有可信 JSONL 的会话登记侧边栏。登记器在 macOS 使用
 `ps`、在 Windows 使用 PowerShell，从 Claude 主进程及其 Helper 的
@@ -279,15 +301,14 @@ registered / failed`；多 profile、多账号、未知格式与异常都 fail c
 
 ## 成果证据
 
-Bridge 任务在进入 Agent SDK 前创建证据占位和工作区基线。工具输入、进度、结果、
-退出码和脱敏输出直接来自 SDK 事件；turn 结束后等待文件系统静默一秒，最多五秒，
-再将结构化工具路径、命令提及路径和文件监听结果取并集。任务开始前已有的脏改动
-不归入本轮；同目录并发任务、基线超限或监听不完整时，可信度降为 `partial`。
+证据管线被动接收原生 turn 与工具事件，建立证据占位和工作区基线；工具输入、进度、
+结果和退出码只按实际事件记录，不为补证据启动任务。turn 结束后等待文件系统静默一秒，
+最多五秒，再将结构化工具路径、命令提及路径和文件监听结果取并集。任务开始前已有的
+脏改动不归入本轮；同目录并发任务、基线超限或监听不完整时，可信度降为 `partial`。
 
-`TranscriptObserver` 对已发现的 Claude JSONL 使用 inode、字节偏移量、半行缓冲和
-消息 ID 游标增量解析。它只保留 `tool_use/tool_result`、命令和路径线索，明确忽略
-`thinking`，也不会为了补证据扫描项目目录。此来源固定为 `inferred`；用户打开
-产物时才通过当前项目根目录校验路径、读取文件并缓存当时版本。
+Claude 工具与成果线索来自 Desktop 原生事件，不扫描旧 JSONL 来补历史或证据，
+明确忽略 `thinking`。用户打开产物时才通过当前项目根目录校验路径、读取文件并
+缓存当时版本。
 
 证据清单写入 SQLite WAL。可预览或下载的正文使用由 Electron `safeStorage` 保护的
 主密钥，以 AES-256-GCM 加密为内容寻址 blob。正文达到 30 天或 1 GiB 时按 LRU
@@ -315,10 +336,8 @@ Bridge 任务在进入 Agent SDK 前创建证据占位和工作区基线。工�
 FCM/APNs 只发送 `bridge-wake` 或 `content-available`，不包含会话 ID、消息摘要或
 正文。App 唤醒后再从 Relay 获取并端到端解密。
 
-协议 V3 与配对 schema V4 有意拒绝 V0.3 设备。首次迁移保留稳定 `hostId`、设置、
-会话历史和本地事件，同时提升 `pairingEpoch`，轮换房间、Host 凭据和端到端密钥，
-并清空旧设备授权。手机将旧记录标为“需要重新配对”；新二维码包含相同 `hostId`，
-重配后本地缓存重新挂回该主机。
+协议 V3 与配对 schema V4 继续拒绝 V0.3 设备；这是既有协议版本边界。本次 Claude
+原生接入不迁移会话记录，不轮换 `hostId`、房间或设备密钥，也不改动既有配对。
 
 Relay 端点仍与加密身份解耦，固定公网 WSS 优先，局域网端点作为候选。大信封先
 加密再按 64 KiB 传输分块，Relay 不参与解密；目标端完成 SHA-256 校验、重组和
@@ -333,21 +352,17 @@ ICE 五秒未成功即保持 WSS 路径。ICE 服务器为独立显式配置，�
 
 ## 运行时发现
 
-Claude-3p lane 只使用 Claude Desktop 已经存在的第三方 Host 凭据路径。Anthropic
-API lane 使用相同 Agent SDK 执行内核，但先清除 Host/OAuth、Base URL、Custom
-Headers 与 Bedrock/Vertex/Foundry 路由，再注入由本机 `safeStorage` 解密的显式
-Console API Key。两者都设置准确 `cwd`、`resume` 和 `forkSession:false`；模型来自
-对应 provider profile。Claude-3p 仍从会话元数据继承精确 `model`、`effort` 与
-`[1m]`/ultracode 上下文信号。
-
-Claude 官方 adapter 没有 Host 执行计划，只能生成公开 Deep Link；它不读取、复制或
-代理官方 OAuth。若 Agent SDK 将来不兼容，唯一允许的执行降级是持久
-`stream-json` 进程，不能退回单次 `-p`，也不能偷偷改用其他 provider。
+Claude 仅发现用户已开启的本机 Node inspector 和提供 `claude.web.LocalSessions`
+的 `app://localhost` WebContents；动态 WebSocket 路径每次由 `/json/list` 获取。
+未开启、接口缺失或断连时显示不可用，不启动 CLI/SDK Host、不切换 provider lane，
+也不通过重启 Desktop 或菜单自动化恢复连接。Codex、Hermes、DSH 沿用各自现有的
+原生发现与连接方式。
 
 ## 明确不做
 
-Bridge 不展示、存储或从行为推断隐藏 CoT，不自动故障转移，不代理官方 OAuth，也不
-重新接入 Claude Desktop 私有 CDP。Bridge 0.7 不合并 Claude、Codex 与 Hermes 的
-原生会话、历史、认证、模型或权限，也不在它们之间自动迁移或故障转移；跨 Desktop
-接力永远是用户两次确认的手动串行操作，目标为新建原生会话。V0.7 不提供项目目录树、远程编辑器、动态站点
-直播、自动启动开发服务、PDF 内嵌渲染或超过 20 MiB 的文件传输。
+Bridge 不展示、存储或从行为推断隐藏 CoT，不自动故障转移，不代理官方 OAuth；
+不合并各运行时的原生会话、历史、认证、模型或权限。Claude 本机 Node inspector
+仅按本次用户选择用于明确的原生操作，不向 Relay 暴露任意 evaluate，不改 asar、
+签 token、重启 Desktop 或添加 LaunchAgent/辅助功能菜单自动化；不恢复旧 Host、
+inbox、lane、接管/交还或自动 goal 续跑。不提供远程编辑器、动态站点直播、自动启动
+开发服务或超过 20 MiB 的文件传输。

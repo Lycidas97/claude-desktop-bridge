@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { afterEach, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
-import { PermissionBroker } from "./permission-broker.js";
 import { DesktopServiceClient, connectDesktopService, serveDesktopService, type ServiceController } from "./service-connection.js";
 
 vi.mock("node:http", async (importOriginal) => {
@@ -30,14 +29,16 @@ it("keeps the running task and pending approval alive across UI disconnect and r
   const root = await mkdtemp(join(tmpdir(), "bridge-service-"));
   directories.push(root);
   const addressPath = join(root, "address.json");
-  const permissions = new PermissionBroker();
+  let permissions: Array<{ requestId: string }> = [];
+  let resolveApproval!: (decision: string) => void;
+  const approval = new Promise<string>(resolve => { resolveApproval = resolve; });
   let turns = 0;
   let running = false;
   const controller = Object.assign(new EventEmitter(), {
-    async snapshot() { return { running, turns, permissions: permissions.list() }; },
+    async snapshot() { return { running, turns, permissions }; },
     async dispatchLocal(input: { method: string; params?: Record<string, unknown> }) {
       if (input.method === "turn.start") { turns++; running = true; }
-      if (input.method === "permission.resolve") permissions.resolveRequest(String(input.params?.requestId), "allow-once");
+      if (input.method === "permission.resolve" && permissions.some(request => request.requestId === input.params?.requestId)) { permissions = []; resolveApproval("once"); }
       return { ok: true };
     },
     diagnostics() { return { turns }; },
@@ -49,8 +50,8 @@ it("keeps the running task and pending approval alive across UI disconnect and r
   try {
     await first.connect();
     await first.call("dispatchLocal", { method: "turn.start", idempotencyKey: "task-1" });
-    const approval = permissions.request("session", "Bash", { command: "test" }, { signal: new AbortController().signal, toolUseId: "tool-1" });
-    const requestId = permissions.list()[0]!.requestId;
+    const requestId = "native-approval";
+    permissions = [{ requestId }];
     first.close();
     await second.connect();
     expect(await second.call("snapshot")).toMatchObject({ running: true, turns: 1, permissions: [{ requestId }] });
@@ -58,7 +59,7 @@ it("keeps the running task and pending approval alive across UI disconnect and r
     expect(shutdown).toBe(false);
     expect(await second.call("diagnostics")).toEqual({ turns: 1 });
     await second.call("dispatchLocal", { method: "permission.resolve", params: { requestId } });
-    expect(await approval).toMatchObject({ behavior: "allow" });
+    expect(await approval).toBe("once");
     running = false;
     const completed = new Promise((resolve) => second.once("event", resolve));
     controller.emit("event", { type: "turn.completed", seq: 1 });

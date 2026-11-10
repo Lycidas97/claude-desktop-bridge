@@ -2,6 +2,22 @@ import { expect, it, vi } from "vitest";
 import type { BridgeEvent, BridgeEvidenceBundle, BridgeRequest } from "@bridge/protocol";
 import { DesktopController } from "./controller.js";
 
+it("routes native image refs to transcript bytes and the existing owner-bound transfer table", async () => {
+  const nativeImage = { messageUuid: "user-uuid", imageIndex: 4 };
+  const image = { artifactId: "native-image:user-uuid:4", name: "photo.jpg", mimeType: "image/jpeg", bytes: Buffer.from("native original") };
+  const broker = { readNativeImage: vi.fn().mockResolvedValue(image) };
+  const evidence = { openBytesTransfer: vi.fn().mockReturnValue({ transferId: "transfer" }), openFileTransfer: vi.fn() };
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker, evidence });
+  const request: BridgeRequest = { kind: "request", requestId: "image", idempotencyKey: "image", method: "artifact.transfer.open", params: { sessionId: "native-session", nativeImage } };
+  expect(await controller.handleRequest(request, "mobile", "phone")).toEqual({ transfer: { transferId: "transfer" } });
+  expect(broker.readNativeImage).toHaveBeenCalledWith("native-session", nativeImage);
+  expect(evidence.openBytesTransfer).toHaveBeenCalledWith(image, "phone");
+  expect(evidence.openFileTransfer).not.toHaveBeenCalled();
+  for (const invalid of [{ messageUuid: "user-uuid", imageIndex: -1 }, { messageUuid: "user-uuid", imageIndex: 0.5 }, { messageUuid: "", imageIndex: 0 }]) {
+    await expect(controller.handleRequest({ ...request, params: { sessionId: "native-session", nativeImage: invalid } }, "mobile", "phone")).rejects.toThrow("native image");
+  }
+});
+
 it("keeps a legacy 15076-artifact event below the reconnect page budget", async () => {
   const evidence: BridgeEvidenceBundle = {
     id: "large-evidence", sessionId: "session-1", source: "bridge-host", confidence: "exact",

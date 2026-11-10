@@ -12,6 +12,7 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 | `npm run verify` | Typecheck, five test suites, then the full root build; stops at the first failing stage |
 | `npm run test:infra` | Small fixtures for runner failure propagation and recycle-bin behavior |
 | `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture |
+| `npm run ci:run -- run test:desktop:service` | After a current Desktop build: real compiled Electron UI/service with isolated Native fixture; on macOS also verifies developer settings, real random TCP/lsof/proc_pidpath, ASAR helper, injected warning UI, and completed background scans after window close |
 | `npm run ci:run -- run build -w @bridge/protocol` | Example of wrapping another npm command with Trash-only Node cleanup |
 
 The quota plugin is outside the `apps/*` and `packages/*` workspaces; root test and
@@ -47,17 +48,25 @@ npm run test:browser
 
 Alternatively set `CHROME_PATH` to an installed Chrome/Chromium executable. The
 browser script owns fixture startup and shutdown; no separately running relay is
-required. Eight independent contexts cover list/chat rename, delivery/approval/
-reconnect, and native permission requests in light and dark at 375×812. The actual
-mobile App, hooks, crypto and local relay run normally. The native approval case
-uses a real `ClaudePermissionHook`, `PermissionBroker`, and the controller's
-`permission.resolve` handler, with synthetic native Hook events and temporary
-settings. It verifies allow/deny and single/multiple-choice answers on the waiting
-Hook request, including phone identity and reconnect, without sending a chat turn.
-Transcript-only native confirmations and unmatched questions remain non-actionable.
-Other desktop RPCs and model responses are simulated. These checks do not launch a
-native Desktop executor, an Android WebView or an IME; they do not prove which
-requests a particular installed Desktop version emits.
+required. Seven scenarios run in both themes at 375×812, giving 14 independent
+contexts: list/chat rename, delivery/approval/reconnect, Native approvals, Native
+messages, history pagination, and Native boundaries. The actual mobile App, hooks,
+crypto and local relay run normally. The Native fixture uses the real
+`ClaudeDesktopBridge`, controller and evidence transfers with synthetic LocalSessions,
+including permission IDs, image references, saved model labels and runtime aliases,
+worktree file paths, compact/sidechain filtering and task-plan updates.
+These checks do not attach to real Claude Desktop, launch an Android WebView or
+exercise an IME; they do not establish which events a particular installed Desktop
+version emits.
+
+The service QA uses an owned random-port inspector fixture and passes its origin
+through `BRIDGE_CLAUDE_INSPECTOR_URL` to the background process. On macOS it operates
+only temporary Claude/Claude-3p developer settings, checks real monitor scans after
+window close, and separately measures random TCP connections with lsof/proc_pidpath.
+The warning UI receives that measured status through renderer IPC injection; this
+is component integration evidence, not proof of automatic monitor-to-UI alert
+delivery or real macOS notification authorization. ASAR helper execution is checked
+separately from the signed application package.
 
 `native-phone-approval.integration.test.ts` additionally checks stale IDs, duplicate
 responses, native local answers, lifecycle cancellation, and disconnected Hook

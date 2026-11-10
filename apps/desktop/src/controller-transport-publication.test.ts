@@ -18,6 +18,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LoadedDesktopConfig } from "./config.js";
 import { DesktopController } from "./controller.js";
+
+vi.mock("electron", () => ({ shell: {} }));
 import { SessionEventLog } from "./session-event-log.js";
 
 // Only the WebSocket I/O boundary is replaced. connect(), the transport router,
@@ -86,7 +88,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-async function fixture(withWebRtc = false) {
+async function fixture(withWebRtc = false, claudeUnavailable = false) {
   const relayUrl = "ws://127.0.0.1:18789/ws";
   const host = await BridgeCrypto.createHost(relayUrl, "Synthetic desktop");
   const paired = await BridgeCrypto.createDevicePairing({
@@ -117,6 +119,12 @@ async function fixture(withWebRtc = false) {
   const root = await mkdtemp(join(tmpdir(), "bridge-transport-publication-"));
   const eventLog = new SessionEventLog(join(root, "events.jsonl"));
   // Synthetic business dependencies; initialization, snapshots, event logging and message delivery remain real.
+  const runtimeSessions = Object.assign(new EventEmitter(), {
+    initialize: vi.fn(async () => undefined), setHostPermissionModes: vi.fn(),
+    listSessions: () => [], listProjects: () => [], listPermissions: () => [],
+    runtimes: () => [{ id: "codex-desktop", name: "Codex Desktop", state: "ready", detail: "Connected",
+      capabilities: ["turn.start"], sessionIsolation: "independent", sessionCount: 0, updatedAt: 1 }],
+  });
   const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
     root, config, hostCrypto: host.crypto, relayConnectUrl: relayUrl,
     ...(withWebRtc ? { RTCPeerConnectionImpl: vi.fn() } : {}),
@@ -124,15 +132,16 @@ async function fixture(withWebRtc = false) {
     deviceCryptos: new Map([[paired.pairing.deviceId, paired.desktopCrypto.withSenderDevice(config.hostDeviceId)]]),
     onlineDevices: new Set<string>(), responseCache: new Map(),
     lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
-    sessionVisibility: new Map(), desktopArchiveRequests: new Map(),
+    sessionVisibility: new Map(),
     app: { getVersion: () => "synthetic", getLoginItemSettings: () => ({ openAtLogin: false }) },
     repository: { loadOrCreate: async () => config, save: vi.fn(async () => undefined) },
     broker: Object.assign(new EventEmitter(), {
-      initialize: async () => undefined, setDefaultPermissionMode: vi.fn(),
-      listSessions: () => sessions, listProjects: () => [], runtimeStatus: () => ({ state: "ready" }),
-      permissionBroker: { list: () => [] }, magpieSettings: async () => ({}),
+      initialize: async () => undefined, refreshRuntime: vi.fn(async () => true), setDefaultPermissionMode: vi.fn(),
+      listSessions: () => sessions, listProjects: () => [], runtimeStatus: () => ({ state: claudeUnavailable ? "unavailable" : "ready" }),
+      permissionsList: () => [], capabilities: () => ["session.list", "session.history"], magpieSettings: async () => ({}),
     }),
     eventLog,
+    ...(claudeUnavailable ? { runtimeSessions } : {}),
     claudeDesktop: { status: async () => ({ state: "stopped" }) },
     desktopAppStatuses: async () => [],
   });
@@ -147,10 +156,47 @@ async function fixture(withWebRtc = false) {
   await vi.waitFor(() => expect(ws.sent.filter(frame => frame.type === "envelope")).toHaveLength(1));
   published.mockClear();
   ws.sent.length = 0;
-  return { controller, ws, paired, config, published, sessions };
+  return { controller, ws, paired, config, published, sessions, runtimeSessions };
+}
+
+async function requestSnapshot(ws: LocalWebSocket, paired: Awaited<ReturnType<typeof BridgeCrypto.createDevicePairing>>, hostDeviceId: string): Promise<DesktopControlSnapshot> {
+  const phone = await BridgeCrypto.fromPairing(paired.pairing);
+  const requestId = `snapshot-${Date.now()}`;
+  const envelope = await phone.encrypt({ kind: "request", requestId, idempotencyKey: requestId, method: "snapshot.get", params: {} }, "mobile", "desktop", Date.now(), undefined, hostDeviceId, true);
+  ws.receive({ type: "envelope", envelope });
+  let snapshot: DesktopControlSnapshot | undefined;
+  await vi.waitFor(async () => {
+    for (const frame of ws.sent) {
+      if (frame.type !== "envelope") continue;
+      const { payload } = await phone.decrypt(frame.envelope);
+      if (payload.kind === "response" && payload.requestId === requestId) {
+        expect(payload.ok).toBe(true);
+        snapshot = (payload.result as { snapshot: DesktopControlSnapshot }).snapshot;
+      }
+    }
+    expect(snapshot).toBeDefined();
+  });
+  return snapshot!;
 }
 
 describe("controller transport publication", () => {
+  it.each(["ready", "presence"] as const)("sends one complete snapshot for a phone joining via %s and requesting its catalog", async signal => {
+    const { ws, controller, paired, config } = await fixture();
+    ws.receive(signal === "ready"
+      ? { type: "ready", connectionId: "phone-joining", queued: 0, online: ["desktop", "mobile"], onlineDevices: [{ role: "mobile", deviceId: paired.pairing.deviceId }] }
+      : { type: "presence", role: "mobile", deviceId: paired.pairing.deviceId, online: true });
+    const phone = await BridgeCrypto.fromPairing(paired.pairing);
+    const envelope = await phone.encrypt({ kind: "request", requestId: "join-snapshot", idempotencyKey: "join-snapshot", method: "snapshot.get", params: {} }, "mobile", "desktop", Date.now(), undefined, config.hostDeviceId, true);
+    ws.receive({ type: "envelope", envelope });
+    await vi.waitFor(async () => {
+      const replies = await Promise.all(ws.sent.flatMap(frame => frame.type === "envelope" ? [phone.decrypt(frame.envelope)] : []));
+      expect(replies.some(reply => reply.payload.kind === "response" && reply.payload.requestId === "join-snapshot")).toBe(true);
+    });
+    await vi.advanceTimersByTimeAsync(150);
+    expect(ws.sent.filter(frame => frame.type === "envelope")).toHaveLength(1);
+    expect(controller.onlineDevices.has(paired.pairing.deviceId)).toBe(true);
+  });
+
   it.each<ServerFrame>([
     { type: "stored", ids: ["delivery-1"] },
     { type: "acknowledged", ids: ["delivery-1"], byDeviceId: "synthetic-phone" },
@@ -194,16 +240,14 @@ describe("controller transport publication", () => {
       { role: "desktop", deviceId: "another-desktop" },
     ] });
     await vi.advanceTimersByTimeAsync(150);
-    await vi.waitFor(() => expect(reconnected.sent.some(frame => frame.type === "envelope")).toBe(true));
+    const snapshot = await requestSnapshot(reconnected, paired, controller.config.hostDeviceId);
     // checkRelayHealth still publishes its result immediately; subscription callbacks share the queued publication.
     expect(published).toHaveBeenCalledTimes(2);
     expect(published.mock.calls[0]![0].devices).toEqual([expect.objectContaining({ deviceId: paired.pairing.deviceId, online: true })]);
     expect(controller.onlineDevices).toEqual(new Set([paired.pairing.deviceId]));
     expect(reconnected.sent).toContainEqual(expect.objectContaining({ type: "device-register", deviceId: paired.pairing.deviceId, migrate: true, pairedAt: 1 }));
     expect(reject).toHaveBeenCalledWith("stale-phone");
-    const envelope = reconnected.sent.find(frame => frame.type === "envelope")!;
-    if (envelope.type !== "envelope") throw new Error("Expected initial device snapshot");
-    expect((await paired.desktopCrypto.decrypt(envelope.envelope)).payload).toMatchObject({ kind: "snapshot", snapshot: { sessions: expect.any(Array) } });
+    expect(snapshot).toMatchObject({ sessions: expect.any(Array) });
     expect(controller.repository.save).toHaveBeenCalled();
   });
 
@@ -211,7 +255,7 @@ describe("controller transport publication", () => {
     const { ws, controller, paired, published, config } = await fixture();
     ws.receive({ type: "presence", role: "mobile", deviceId: paired.pairing.deviceId, online: true });
     await vi.advanceTimersByTimeAsync(150);
-    await vi.waitFor(() => expect(ws.sent.some(frame => frame.type === "envelope")).toBe(true));
+    expect(ws.sent.filter(frame => frame.type === "envelope")).toHaveLength(0);
     expect(published).toHaveBeenCalledOnce();
     expect(published.mock.calls[0]![0].devices[0]).toMatchObject({ online: true, lastSeenAt: expect.any(Number) });
     expect(config.devices[0]!.lastSeenAt).toBeDefined();
@@ -312,16 +356,12 @@ describe("controller transport publication", () => {
     reconnected.receive({ type: "ready", connectionId: "runtime-reconnected", queued: 0, online: ["desktop", "mobile"], onlineDevices: [
       { role: "mobile", deviceId: paired.pairing.deviceId },
     ] });
-    await vi.waitFor(() => expect(reconnected.sent.some(frame => frame.type === "envelope")).toBe(true));
-    const snapshotFrame = reconnected.sent.find(frame => frame.type === "envelope")!;
-    if (snapshotFrame.type !== "envelope") throw new Error("Expected reconnect snapshot");
-    const snapshot = (await paired.desktopCrypto.decrypt(snapshotFrame.envelope)).payload;
-    expect(snapshot).toMatchObject({ kind: "snapshot", snapshot: { latestSeq: 2, sessions: expect.arrayContaining(sessions) } });
-    if (snapshot.kind !== "snapshot") throw new Error("Expected complete snapshot");
-    expect(snapshot.snapshot.sessions).toHaveLength(144);
-    expect(snapshot.snapshot.sessions[0]).not.toHaveProperty("mainTurnStopScope");
-    expect(snapshot.snapshot.sessions[0]).not.toHaveProperty("runningSubagents");
-    expect(snapshot.snapshot.sessions[0]).not.toHaveProperty("subagentStopScope");
+    const snapshot = await requestSnapshot(reconnected, paired, controller.config.hostDeviceId);
+    expect(snapshot).toMatchObject({ latestSeq: 2, sessions: expect.arrayContaining(sessions) });
+    expect(snapshot.sessions).toHaveLength(144);
+    expect(snapshot.sessions[0]).not.toHaveProperty("mainTurnStopScope");
+    expect(snapshot.sessions[0]).not.toHaveProperty("runningSubagents");
+    expect(snapshot.sessions[0]).not.toHaveProperty("subagentStopScope");
   });
 
   it("still sends durable events to paired phones while they are offline", async () => {
@@ -358,4 +398,21 @@ describe("controller transport publication", () => {
     await vi.advanceTimersByTimeAsync(150);
     expect(published).not.toHaveBeenCalled();
   });
+});
+
+it("initializes other runtimes when Claude native is unavailable without applying its old full-access policy", async () => {
+  const { controller, runtimeSessions, config } = await fixture(false, true);
+  const snapshot = await controller.snapshot();
+  expect(runtimeSessions.initialize).toHaveBeenCalledOnce();
+  expect(runtimeSessions.setHostPermissionModes).toHaveBeenCalledWith(config.runtimePermissionModes);
+  expect(controller.broker.setDefaultPermissionMode).not.toHaveBeenCalled();
+  expect(snapshot.host.capabilities).toContain("claude.native-relay.v1");
+  expect(snapshot.host.capabilities).not.toContain("conversation.lanes.v1");
+  expect(snapshot.host.capabilities).not.toContain("provider.profile.v1");
+  expect(snapshot.host).not.toHaveProperty("defaultPermissionMode");
+  expect(snapshot.runtimes).toEqual([
+    expect.objectContaining({ id: "claude-desktop", state: "unavailable", capabilities: ["session.list", "session.history"] }),
+    expect.objectContaining({ id: "codex-desktop", state: "ready" }),
+  ]);
+  expect(snapshot.runtimes?.[0]).not.toHaveProperty("defaultPermissionMode");
 });

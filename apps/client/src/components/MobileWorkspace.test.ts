@@ -29,7 +29,6 @@ import {
   stoppableBridgeTask,
   supportsProviderSwitching,
   supportsRuntimeHandoff,
-  usesOfficialComposer,
 } from "./MobileWorkspace.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 
@@ -266,7 +265,7 @@ describe("mobile workspace directory", () => {
     }
   });
 
-  it.each(["queued", "submitted", "held"] as const)("uses only the inbox notice while native input is %s, even after full access is confirmed", (inputStatus) => {
+  it("shows native queue and permission state without Desktop handoff guidance", () => {
     const useState = vi.mocked(React.useState).getMockImplementation()!;
     const stateSpy = vi.mocked(React.useState)
       .mockImplementationOnce(useState)
@@ -274,25 +273,20 @@ describe("mobile workspace directory", () => {
       .mockReturnValueOnce([session.sessionId, vi.fn()]);
     try {
       const html = renderToStaticMarkup(createElement(MobileWorkspace, {
-        ...workspaceProps(), snapshot: { ...snapshot, sessions: [{ ...session, pendingCount: 1,
-          desktopHandoff: { state: "desktop-inbox", canReturn: false, inputStatus },
+        ...workspaceProps(), snapshot: { ...snapshot, host: { ...snapshot.host, capabilities: ["claude.native-relay.v1"] }, sessions: [{ ...session,
+          transport: "claude-desktop-native", ownership: "DESKTOP_NATIVE_RUNNING", pendingCount: 1,
           nativePermissionModeChange: { requestId: "native-request", state: "confirmed" },
         }] },
       }));
       expect(html).toContain("Desktop 已确认本次授权变更");
-      expect(html).toContain('aria-label="Desktop 会话交接"');
-      expect(html).not.toContain('aria-label="消息排队状态"');
-      expect(html).not.toContain("轮到后会自动执行");
+      expect(html).toContain('aria-label="消息排队状态"');
       expect(html).not.toContain("等待关闭此 Desktop 会话");
-      if (inputStatus === "held") {
-        expect(html).toContain("请在电脑端允许接收这条消息");
-        expect(html).toContain("完全授权不会代替此确认");
-      }
+      expect(html).not.toContain("旧会话仅供查看");
     } finally { stateSpy.mockReset(); }
   });
 
   it("offers configuration according to session runtime capabilities", () => {
-    expect(canConfigureSession(session)).toBe(true);
+    expect(canConfigureSession(session)).toBe(false);
     expect(canConfigureSession({ ...session, allowedActions: { canConfigure: false } as NonNullable<BridgeSessionInfo["allowedActions"]> })).toBe(false);
     expect(canConfigureSession({ ...session, runtimeId: "codex-desktop" })).toBe(false);
     expect(canConfigureSession({ ...session, runtimeId: "codex-desktop", allowedActions: { canConfigure: true } as NonNullable<BridgeSessionInfo["allowedActions"]> })).toBe(true);
@@ -425,6 +419,75 @@ describe("native Desktop permission actions", () => {
   });
 });
 
+describe("native user image attachments", () => {
+  const attachments = Array.from({ length: 5 }, (_, imageIndex) => ({
+    id: `native-image:user-uuid:${imageIndex}`, name: `${imageIndex + 1}.png`, mimeType: "image/png" as const, size: 8,
+    nativeImage: { messageUuid: "user-uuid", imageIndex },
+  }));
+  const historyItem: BridgeHistoryItem = { id: "user-uuid", sessionId: "session", role: "user", text: "[图片] 这是我手写的文字", origin: "claude-desktop", createdAt: 2, attachments };
+  const local: LocalTurn = { requestId: "request", idempotencyKey: "key", sessionId: "session", text: historyItem.text,
+    attachments: attachments.map((attachment, index) => ({ ...attachment, id: `local-${index}`, data: btoa(`image-${index}`) })), createdAt: 1, delivery: "submitted" };
+  const accepted: BridgeEvent = { eventId: "accepted", seq: 2, timestamp: 2, sessionId: "session", itemId: historyItem.id,
+    origin: "claude-desktop", type: "user.message.accepted", data: { requestId: local.requestId, text: historyItem.text, attachments } };
+
+  it("retains all local previews on the accepted canonical UUID", () => {
+    const items = conversationItems("session", undefined, [accepted], [local]);
+    expect(items).toHaveLength(1);
+    expect(items[0]?.attachments?.map(attachment => attachment.data)).toEqual(local.attachments.map(attachment => attachment.data));
+    expect(items[0]?.attachments?.map(attachment => attachment.nativeImage)).toEqual(attachments.map(attachment => attachment.nativeImage));
+    expect(items[0]?.text).toBe(historyItem.text);
+  });
+
+  it("restores all five stable references with no original bytes after reopening", () => {
+    const items = conversationItems("session", { status: "ready", hasMore: false, items: [historyItem] }, [], []);
+    expect(items[0]?.attachments).toEqual(attachments);
+    expect(items[0]?.attachments?.every(attachment => !attachment.data)).toBe(true);
+    expect(items[0]?.text).toBe(historyItem.text);
+  });
+});
+
+describe("native transcript delivery recovery", () => {
+  const users: BridgeHistoryItem[] = ["one", "two"].map((id, index) => ({
+    id: `uuid-${id}`, sessionId: "session", role: "user", text: "相同正文", createdAt: index,
+    origin: "claude-desktop", delivery: "session-received",
+  }));
+  const history = { status: "ready" as const, items: users, hasMore: false };
+  const stage = (type: BridgeEvent["type"], seq: number, turnId?: string): BridgeEvent => ({
+    eventId: `stage-${seq}`, seq, timestamp: seq, sessionId: "session", origin: "claude-desktop", type, ...(turnId ? { turnId } : {}), data: {},
+  });
+
+  it("recovers saved history stages with no local turns or event replay", () => {
+    const deliveries = ["submitted", "session-received", "queued", "running", "completed", "failed", "cancelled"] as const;
+    const items = deliveries.map((delivery, index) => ({ ...users[0]!, id: `uuid-${index}`, delivery }));
+    expect(conversationItems("session", { ...history, items }, [], []).map(item => item.delivery)).toEqual(deliveries);
+  });
+
+  it("advances history users by UUID without needing a local request", () => {
+    const items = conversationItems("session", history, [stage("turn.queued", 2, "uuid-one"), stage("turn.started", 3, "uuid-two"), stage("turn.completed", 4)], []);
+    expect(items.map(item => item.delivery)).toEqual(["queued", "running"]);
+  });
+
+  it("corrects completed to failed from a later result for the same UUID without local turns", () => {
+    const queued = { ...history, items: [{ ...users[0]!, delivery: "queued" as const }] };
+    const items = conversationItems("session", queued, [stage("turn.completed", 2, "uuid-one"), stage("turn.failed", 3, "uuid-one")], []);
+    expect(items.find(item => item.role === "user")).toMatchObject({ id: "uuid-one", delivery: "failed" });
+  });
+
+  it.each(["completed", "failed", "cancelled"] as const)("keeps restored %s when accepted receipt arrives late", delivery => {
+    const restored = { ...history, items: [{ ...users[0]!, delivery }] };
+    const accepted: BridgeEvent = { ...stage("user.message.accepted", 3), itemId: "uuid-one", data: { text: "相同正文", delivery: "session-received" } };
+    expect(conversationItems("session", restored, [accepted], []).find(item => item.role === "user")?.delivery).toBe(delivery);
+  });
+
+  it("keeps started when receipt arrives later and consumes accepted delivery", () => {
+    const accepted = (id: string, delivery: string, seq: number): BridgeEvent => ({
+      ...stage("user.message.accepted", seq), itemId: id, data: { text: "相同正文", delivery },
+    });
+    const items = conversationItems("session", history, [stage("turn.started", 2, "uuid-one"), accepted("uuid-one", "session-received", 3), accepted("uuid-two", "queued", 4)], []);
+    expect(items.map(item => [item.id, item.delivery])).toEqual([["uuid-one", "running"], ["uuid-two", "queued"]]);
+  });
+});
+
 describe("mobile message delivery receipts", () => {
   const accepted: BridgeEvent = {
     eventId: "accepted", seq: 2, timestamp: 200, sessionId: "session-1", turnId: "turn-1", itemId: "message-1",
@@ -464,6 +527,132 @@ describe("mobile message delivery receipts", () => {
   it("does not apply another turn's terminal receipt to an accepted message", () => {
     const other: BridgeEvent = { ...accepted, eventId: "other", type: "turn.completed", turnId: "turn-2", data: { commandId: "command-2" } };
     expect(conversationItems("session-1", undefined, [accepted, other], [])[0]?.delivery).toBe("session-received");
+  });
+});
+
+describe("native queued delivery and message rekeying", () => {
+  const user: BridgeHistoryItem & { commandId: string } = {
+    id: "old-uuid", sessionId: "session-1", role: "user" as const, text: "相同正文", createdAt: 100,
+    origin: "claude-desktop" as const, delivery: "queued" as const, commandId: "stable-command",
+    attachments: [{ id: "image", name: "context.png", mimeType: "image/png", size: 7 }],
+  };
+  const receipt: BridgeEvent = {
+    eventId: "cancelled", seq: 5, timestamp: 150, sessionId: "session-1", origin: "claude-desktop",
+    type: "message.delivery", turnId: "old-uuid", itemId: "old-uuid",
+    data: { requestId: "stable-request", commandId: "stable-command", messageId: "old-uuid", delivery: "cancelled" },
+  };
+
+  it.each(["messageId", "commandId", "requestId"] as const)("cancels a history-only queued user by %s with no local cache", identity => {
+    const item = { ...user, requestId: "stable-request" };
+    const data = { delivery: "cancelled", [identity]: receipt.data[identity] };
+    const { itemId: _itemId, turnId: _turnId, ...event } = receipt;
+    expect(conversationItems("session-1", { status: "ready", hasMore: false, items: [item] }, [
+      { ...event, data },
+    ], [])).toEqual([expect.objectContaining({ id: "old-uuid", delivery: "cancelled", commandId: "stable-command" })]);
+  });
+
+  it("orders queue cancellation and turn stages by event sequence, independent of array order", () => {
+    const started: BridgeEvent = { ...receipt, eventId: "started", seq: 3, type: "turn.started", data: { commandId: "stable-command" } };
+    const queued: BridgeEvent = { ...receipt, eventId: "queued", seq: 2, type: "message.delivery", data: { ...receipt.data, delivery: "queued" } };
+    expect(conversationItems("session-1", { status: "ready", hasMore: false, items: [user] }, [receipt, started, queued], [])
+      .find(item => item.role === "user")).toMatchObject({ delivery: "cancelled" });
+  });
+
+  it.each(["history", "accepted", "local"])("updates native image references after rekeying a %s message", source => {
+    const attachment = { ...user.attachments![0]!, nativeImage: { messageUuid: "old-uuid", imageIndex: 0 } };
+    const rekey: BridgeEvent = { ...receipt, seq: 2, itemId: "new-uuid", turnId: "new-uuid", data: { commandId: "stable-command", previousMessageId: "old-uuid", messageId: "new-uuid", delivery: "queued" } };
+    const accepted: BridgeEvent = { ...receipt, seq: 1, type: "user.message.accepted", data: { text: user.text, commandId: "stable-command", attachments: [attachment] } };
+    const items = conversationItems("session-1", source === "history" ? { status: "ready", hasMore: false, items: [{ ...user, attachments: [attachment] }] } : undefined,
+      source === "accepted" ? [accepted, rekey] : [rekey], source === "local" ? [{ requestId: "stable-request", idempotencyKey: "key", sessionId: "session-1", messageId: "old-uuid", commandId: "stable-command", text: user.text, attachments: [attachment], createdAt: 100, delivery: "queued" }] : []);
+    expect(items.find(item => item.role === "user")).toMatchObject({ id: "new-uuid", attachments: [{ nativeImage: { messageUuid: "new-uuid", imageIndex: 0 } }] });
+    expect(attachment.nativeImage.messageUuid).toBe("old-uuid");
+  });
+
+  it("follows a multi-hop rekey chain with shuffled duplicate events and all image indices", () => {
+    const attachments = [0, 1, 2, 3, 4].map(imageIndex => ({ ...user.attachments![0]!, id: `image-${imageIndex}`, nativeImage: { messageUuid: "old-uuid", imageIndex } }));
+    const first: BridgeEvent = { ...receipt, seq: 1, eventId: "first-rekey", data: { commandId: "stable-command", previousMessageId: "old-uuid", messageId: "middle-uuid", delivery: "queued" } };
+    const second: BridgeEvent = { ...receipt, seq: 2, eventId: "second-rekey", data: { commandId: "stable-command", previousMessageId: "middle-uuid", messageId: "final-uuid", delivery: "queued" } };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [{ ...user, attachments }, { ...user, id: "unrelated-uuid", commandId: "other-command" }] }, [second, first, second], []);
+    expect(items).toHaveLength(2);
+    expect(items.find(item => item.commandId === "stable-command")).toMatchObject({ id: "final-uuid", attachments: attachments.map((attachment, imageIndex) => ({ nativeImage: { messageUuid: "final-uuid", imageIndex } })) });
+    expect(items.find(item => item.id === "unrelated-uuid")).toMatchObject({ text: user.text, commandId: "other-command" });
+    expect(attachments.every(attachment => attachment.nativeImage.messageUuid === "old-uuid")).toBe(true);
+  });
+
+  it.each([false, true])("reconciles fresh rekeyed history with cached old identity when the rekey event is unavailable (old echo=%s)", oldEcho => {
+    const current = { ...user, id: "current-native-uuid", requestId: "stable-request" };
+    const local: LocalTurn = { requestId: "stable-request", idempotencyKey: "stable-key", sessionId: "session-1", commandId: "stable-command", messageId: "old-uuid", text: user.text, attachments: user.attachments!, createdAt: 100, delivery: "queued" };
+    const accepted: BridgeEvent = { ...receipt, seq: 1, type: "user.message.accepted", data: { commandId: "stable-command", requestId: "stable-request", messageId: "old-uuid", text: user.text, delivery: "queued" } };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [current] }, oldEcho ? [accepted] : [], [local]);
+    expect(items.filter(item => item.role === "user")).toEqual([expect.objectContaining({ id: "current-native-uuid", commandId: "stable-command", requestId: "stable-request", delivery: "queued" })]);
+  });
+
+  it.each(["commandId", "requestId"] as const)("merges missing-rekey history by %s and updates cached image references", identity => {
+    const attachment = { ...user.attachments![0]!, nativeImage: { messageUuid: "old-uuid", imageIndex: 0 } };
+    const { commandId: _commandId, ...bareUser } = user;
+    const historyItem: BridgeHistoryItem = { ...bareUser, id: "current-native-uuid", [identity]: identity === "commandId" ? "stable-command" : "stable-request" };
+    const local: LocalTurn = { requestId: "stable-request", idempotencyKey: "stable-key", sessionId: "session-1", commandId: "stable-command", messageId: "old-uuid", text: user.text, attachments: [attachment], createdAt: 100, delivery: "queued" };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [{ ...historyItem, attachments: [attachment] }] }, [], [local]);
+    expect(items).toEqual([expect.objectContaining({ id: "current-native-uuid", attachments: [expect.objectContaining({ nativeImage: { messageUuid: "current-native-uuid", imageIndex: 0 } })] })]);
+    expect(attachment.nativeImage.messageUuid).toBe("old-uuid");
+  });
+
+  it.each(["completed", "failed", "cancelled"] as const)("keeps fresh history's %s after merging its old queued local receipt", delivery => {
+    const local: LocalTurn = { requestId: "stable-request", idempotencyKey: "stable-key", sessionId: "session-1", commandId: "stable-command", messageId: "old-uuid", text: user.text, attachments: [], createdAt: 100, delivery: "queued" };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [{ ...user, id: "current-native-uuid", requestId: "stable-request", delivery }] }, [], [local]);
+    expect(items).toEqual([expect.objectContaining({ id: "current-native-uuid", delivery })]);
+  });
+
+  it("keeps an explicit later rekey ahead of the history UUID when linking a receipt", () => {
+    const rekey: BridgeEvent = { ...receipt, data: { ...receipt.data, previousMessageId: "old-uuid", messageId: "newest-uuid", delivery: "queued" } };
+    const local: LocalTurn = { requestId: "stable-request", idempotencyKey: "stable-key", sessionId: "session-1", commandId: "stable-command", messageId: "old-uuid", text: user.text, attachments: [], createdAt: 100, delivery: "queued" };
+    expect(conversationItems("session-1", { status: "ready", hasMore: false, items: [{ ...user, requestId: "stable-request" }] }, [rekey], [local]))
+      .toEqual([expect.objectContaining({ id: "newest-uuid", commandId: "stable-command" })]);
+  });
+
+  it("keeps same-text messages with different receipts distinct without rekey events", () => {
+    const historyItems = ["first", "second"].map(key => ({ ...user, id: `current-${key}`, commandId: `command-${key}`, requestId: `request-${key}` }));
+    const local: LocalTurn[] = ["first", "second"].map(key => ({ requestId: `request-${key}`, idempotencyKey: `key-${key}`, sessionId: "session-1", commandId: `command-${key}`, messageId: `old-${key}`, text: user.text, attachments: [], createdAt: 100, delivery: "queued" }));
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: historyItems }, [], local);
+    expect(items.map(item => item.id)).toEqual(["current-first", "current-second"]);
+    expect(items.map(item => item.commandId)).toEqual(["command-first", "command-second"]);
+  });
+
+  it("does not rekey a same-UUID image using a different session's event", () => {
+    const attachment = { ...user.attachments![0]!, nativeImage: { messageUuid: "old-uuid", imageIndex: 0 } };
+    const foreign: BridgeEvent = { ...receipt, sessionId: "foreign-session", data: { commandId: "stable-command", previousMessageId: "old-uuid", messageId: "foreign-uuid", delivery: "queued" } };
+    expect(conversationItems("session-1", { status: "ready", hasMore: false, items: [{ ...user, attachments: [attachment] }] }, [foreign], [])).toEqual([expect.objectContaining({ id: "old-uuid", attachments: [attachment], delivery: "queued" })]);
+  });
+
+  it.each([undefined, "old-uuid", "new-uuid"])("canonicalizes explicitly rekeyed history, acceptance, echo and local message %s without text deduplication", messageId => {
+    const rekey: BridgeEvent = {
+      ...receipt, eventId: "rekey", seq: 4, itemId: "new-uuid", turnId: "new-uuid",
+      data: { requestId: "stable-request", commandId: "stable-command", previousMessageId: "old-uuid", messageId: "new-uuid", delivery: "queued" },
+    };
+    const accepted: BridgeEvent = {
+      ...receipt, eventId: "accepted-old", seq: 1, itemId: "old-uuid", turnId: "old-uuid", type: "user.message.accepted",
+      data: { text: user.text, commandId: "stable-command", delivery: "queued" },
+    };
+    const echo: BridgeEvent = {
+      ...receipt, eventId: "echo-new", seq: 6, timestamp: 160, itemId: "new-uuid", turnId: "new-uuid", type: "session.observed",
+      data: { role: "user", text: user.text },
+    };
+    const local: LocalTurn = {
+      requestId: "stable-request", idempotencyKey: "key", sessionId: "session-1", commandId: "stable-command",
+      ...(messageId ? { messageId } : {}), text: user.text, attachments: user.attachments!, createdAt: 100, delivery: "queued",
+    };
+    const history = { status: "ready" as const, hasMore: false, items: [
+      { ...user, id: "new-uuid" }, user, { ...user, id: "unrelated-uuid", commandId: "unrelated-command" },
+    ] };
+    const items = conversationItems("session-1", history, [echo, rekey, accepted], [local]);
+    expect(items.filter(item => item.role === "user")).toHaveLength(2);
+    expect(items.find(item => item.id === "new-uuid")).toMatchObject({
+      requestId: "stable-request", commandId: "stable-command", turnId: "new-uuid", delivery: "queued", attachments: user.attachments,
+    });
+    expect(items.find(item => item.id === "unrelated-uuid")).toMatchObject({ text: user.text, commandId: "unrelated-command" });
+    expect(conversationItems("session-1", history, [echo, rekey, accepted, {
+      ...receipt, seq: 7, itemId: "new-uuid", turnId: "new-uuid", data: { ...receipt.data, messageId: "new-uuid" },
+    }], [local]).find(item => item.id === "new-uuid")?.delivery).toBe("cancelled");
   });
 });
 
@@ -535,6 +724,23 @@ describe("submitted mobile message identity", () => {
     }] }, [], saved).filter(item => item.role === "user")).toHaveLength(1);
   });
 
+  it.each([false, true])("preserves a native user echo after earlier submission stages are replayed (cached=%s)", cached => {
+    const events: BridgeEvent[] = [
+      { ...submitted, eventId: "host", seq: 1, origin: "claude-desktop", data: { ...submitted.data, delivery: "host-received", text: local.text } },
+      { ...submitted, origin: "claude-desktop" },
+      { ...accepted, origin: "claude-desktop", data: { ...submitted.data, text: local.text, delivery: "session-received" } },
+    ];
+    const saved = events.reduce<LocalTurn[]>((turns, event) => applyEventToTurns(turns, event), [local]);
+    expect(saved[0]?.delivery).toBe("session-received");
+    const history = cached ? { status: "ready" as const, hasMore: false, items: [{
+      id: "message-1", sessionId: "session-1", role: "user" as const, text: local.text,
+      createdAt: 130, origin: "claude-desktop" as const, delivery: "session-received" as const,
+      commandId: "command-1", requestId: local.requestId,
+    }] } : undefined;
+    expect(conversationItems("session-1", history, events, saved).filter(item => item.role === "user"))
+      .toEqual([expect.objectContaining({ id: "message-1", delivery: "session-received", commandId: local.commandId })]);
+  });
+
   it("merges a submitted local message with its cached transcript row", () => {
     const historyItem: BridgeHistoryItem = {
       id: "message-1", sessionId: "session-1", role: "user", text: local.text, createdAt: 130, origin: "claude-desktop",
@@ -566,6 +772,23 @@ describe("submitted mobile message identity", () => {
     expect(items.filter((item) => item.role === "user").map((item) => [item.id, item.requestId, item.text, item.delivery])).toEqual([
       ["message-1", "request-1", local.text, "submitted"], ["message-2", "request-2", other.text, "submitted"],
     ]);
+  });
+});
+
+describe("native tool completion identity", () => {
+  const completed: BridgeEvent = { eventId: "result-only", seq: 1, timestamp: 200, sessionId: "session-1", itemId: "read-call", origin: "claude-desktop", type: "tool.completed", data: { output: "file contents" } };
+
+  it("does not invent an anonymous tool row for a cached native result with no call definition", () => {
+    expect(conversationItems("session-1", undefined, [completed], [])).toEqual([]);
+  });
+
+  it("recovers a cached result's real name and input when its native history call is loaded", () => {
+    const history: BridgeHistoryItem = { id: "read-call", sessionId: "session-1", role: "tool", toolName: "Read", text: '{"file_path":"/fixture/source.ts"}', createdAt: 100, origin: "claude-desktop" };
+    expect(conversationItems("session-1", { status: "ready", hasMore: false, items: [history] }, [completed], [])).toEqual([expect.objectContaining({ id: "tool:read-call", toolName: "Read", text: history.text, state: "completed" })]);
+  });
+
+  it("renders a named native completion without requiring the earlier start event", () => {
+    expect(conversationItems("session-1", undefined, [{ ...completed, data: { ...completed.data, toolName: "Read", text: '{"file_path":"/fixture/source.ts"}' } }], [])).toEqual([expect.objectContaining({ id: "tool:read-call", toolName: "Read", text: '{"file_path":"/fixture/source.ts"}', state: "completed" })]);
   });
 });
 
@@ -788,59 +1011,15 @@ describe("ownershipLabel", () => {
   });
 });
 
-describe("canStopBridgeTask", () => {
-  const session = (overrides: Partial<BridgeSessionInfo>): BridgeSessionInfo => ({
-    sessionId: "session-1",
-    projectId: "project-1",
-    projectName: "Project",
-    cwd: "/tmp/project",
-    title: "Task",
-    source: "desktop",
-    ownership: "DESKTOP_OBSERVED",
-    transport: "bridge-host",
-    turnState: "idle",
-    lastActivityAt: 1,
-    pendingCount: 0,
-    ...overrides,
-  });
-
-  it("keeps stop available for queued and uncertain Bridge work", () => {
-    expect(canStopBridgeTask(session({
-      turnState: "queued",
-      pendingCount: 1,
-    }))).toBe(true);
-    expect(canStopBridgeTask(session({
-      ownership: "DESKTOP_MANAGED_RUNNING",
-      transport: "claude-desktop-managed",
-      turnState: "waiting",
-      pendingCount: 1,
-    }))).toBe(true);
-  });
-
-  it("does not offer Bridge stop for an idle or native observed Desktop turn", () => {
-    expect(canStopBridgeTask(session({}))).toBe(false);
-    expect(canStopBridgeTask(session({
-      ownership: "DESKTOP_OBSERVED",
-      turnState: "running",
-    }))).toBe(false);
-  });
-
-  it("finds a recovered blocker even when a native Desktop turn is selected", () => {
-    const native = session({
-      sessionId: "desktop-current",
-      ownership: "DESKTOP_OBSERVED",
-      turnState: "running",
-    });
-    const recovered = session({
-      sessionId: "recovered-queue",
-      source: "bridge",
-      ownership: "BRIDGE_IDLE",
-      turnState: "queued",
-      pendingCount: 1,
-    });
-
-    expect(stoppableBridgeTask([native, recovered], native.sessionId)?.sessionId)
-      .toBe(recovered.sessionId);
+describe("native Claude stop controls", () => {
+  it("includes DESKTOP_NATIVE_RUNNING and follows Desktop interrupt capability", () => {
+    const session = { sessionId: "native", runtimeId: "claude-desktop", transport: "claude-desktop-native", ownership: "DESKTOP_NATIVE_RUNNING", turnState: "running", pendingCount: 0,
+      allowedActions: { canInterrupt: true } } as BridgeSessionInfo;
+    expect(canStopBridgeTask(session)).toBe(true);
+    expect(canStopBridgeTask({ ...session, allowedActions: { ...session.allowedActions!, canInterrupt: false } })).toBe(false);
+    expect(canStopBridgeTask({ ...session, transport: "bridge-host", pendingCount: 1 })).toBe(false);
+    expect(stoppableBridgeTask([session], session.sessionId)).toBe(session);
+    expect(canStopBridgeTask({ ...session, runtimeId: "codex-desktop", transport: "codex-app-server", ownership: "BRIDGE_RUNNING" })).toBe(true);
   });
 });
 
@@ -871,7 +1050,7 @@ describe("provider switching presentation", () => {
     } as unknown as BridgeHostSnapshot;
 
     expect(supportsProviderSwitching(legacy)).toBe(false);
-    expect(supportsProviderSwitching(current)).toBe(true);
+    expect(supportsProviderSwitching(current)).toBe(false);
   });
 
   it("gates the runtime relay entry on the host capability and labels goal states", () => {
@@ -949,19 +1128,7 @@ describe("provider switching presentation", () => {
     expect(aggregateFileChanges(items.filter((item) => item.role !== "tool"))).toBeUndefined();
   });
 
-  it("replaces the writable composer for a Claude official lane", () => {
-    expect(usesOfficialComposer(session, [{
-      id: "claude-official",
-      kind: "claude-official",
-      name: "Claude 官方",
-      status: "ready",
-      detail: "Read-only",
-      configured: true,
-      localOnlyConfiguration: false,
-      readOnly: true,
-      models: [],
-    }])).toBe(true);
-  });
+
 });
 
 describe("conversationTimeline", () => {
@@ -1067,6 +1234,64 @@ describe("task plan conversation items", () => {
     expect(conversationTimeline(items, [])).toEqual([{ kind: "message", item }]);
   });
 
+  it.each(["live", "reconnect"] as const)("shows a native plan-only assistant completion through %s and merges by item ID", source => {
+    const nativeItem = { ...item, id: "native-plan-item" };
+    const completed: BridgeEvent = { ...event, itemId: nativeItem.id, type: "assistant.completed", data: { text: "", taskPlan: plan, taskPlanSource: "native-main" } };
+    const items = conversationItems("session-1", source === "reconnect" ? { status: "ready", hasMore: false, items: [nativeItem] } : undefined,
+      [completed], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: nativeItem.id, role: "assistant", text: "", taskPlan: plan });
+    expect(conversationTimeline(items, [])).toEqual([{ kind: "message", item: items[0] }]);
+  });
+
+  it("updates the existing plan's status from a native plan-only assistant completion", () => {
+    const updated: BridgeTaskPlan = { ...plan, updatedAt: 200, items: [
+      { ...plan.items[0]!, status: "completed" }, { ...plan.items[1]!, status: "in_progress" },
+    ] };
+    const completed: BridgeEvent = { ...event, eventId: "plan-completed", seq: 2, timestamp: 200,
+      type: "assistant.completed", data: { text: "", taskPlan: updated, taskPlanSource: "native-main" } };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [item] }, [completed], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: item.id, createdAt: item.createdAt, taskPlan: updated });
+  });
+
+  it("keeps two native plans with identical task text when new_task gives the next plan a different ID", () => {
+    const nextPlan: BridgeTaskPlan = { ...plan, id: "plan:task-2", updatedAt: 200 };
+    const completed: BridgeEvent = { ...event, eventId: "next-task-plan", seq: 2, timestamp: 200, itemId: nextPlan.id,
+      type: "assistant.completed", data: { text: "", taskPlan: nextPlan, taskPlanSource: "native-main" } };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [item] }, [completed], []);
+    expect(items.map(candidate => ({ id: candidate.id, taskPlan: candidate.taskPlan }))).toEqual([
+      { id: item.id, taskPlan: plan }, { id: nextPlan.id, taskPlan: nextPlan },
+    ]);
+    expect(conversationTimeline(items, [])).toEqual(items.map(item => ({ kind: "message", item })));
+  });
+
+  it("does not revive an unmarked cached native sidechain plan beside fresh main-plan history", () => {
+    const sidechainPlan = { ...plan, id: "plan:legacy-sidechain" };
+    const cached: BridgeEvent = { ...event, itemId: sidechainPlan.id, type: "assistant.completed",
+      data: { text: "", taskPlan: sidechainPlan } };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [item] }, [cached], []);
+    expect(items).toEqual([item]);
+    expect(conversationTimeline(items, [])).toEqual([{ kind: "message", item }]);
+  });
+
+  it("keeps normal answer text from an unmarked native completion without importing its cached plan", () => {
+    const cached: BridgeEvent = { ...event, itemId: "legacy-answer", timestamp: 200, type: "assistant.completed",
+      data: { text: "主会话的正常回答", taskPlan: { ...plan, id: "plan:legacy-sidechain" } } };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [item] }, [cached], []);
+    expect(items).toHaveLength(2);
+    expect(items.filter(candidate => candidate.taskPlan)).toEqual([item]);
+    expect(items.find(candidate => candidate.id === "legacy-answer")).toMatchObject({ role: "assistant", text: "主会话的正常回答" });
+    expect(items.find(candidate => candidate.id === "legacy-answer")).not.toHaveProperty("taskPlan");
+  });
+
+  it.each(["claude-host", "codex-host"] as const)("keeps unmarked %s completion plans independent of the native contract", origin => {
+    const completed: BridgeEvent = { ...event, origin, type: "assistant.completed", data: { text: "", taskPlan: plan } };
+    const items = conversationItems("session-1", undefined, [completed], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: item.id, text: "", taskPlan: plan });
+  });
+
   it("updates one card in place despite duplicate events and out-of-order replay", () => {
     const updated: BridgeTaskPlan = { ...plan, updatedAt: 200, items: plan.items.map((task) => ({ ...task, status: "completed" })) };
     const revision = { ...event, eventId: "revision", seq: 2, timestamp: 200, data: { ...event.data, taskPlan: updated } };
@@ -1120,6 +1345,19 @@ describe("task plan conversation items", () => {
 });
 
 describe("conversationItems", () => {
+  it("does not resurrect discarded messages when pre-rewind events are replayed after refreshed history", () => {
+    const retained = { id: "retained", sessionId: "session-1", role: "assistant" as const, text: "Before the checkpoint", createdAt: 1, origin: "claude-desktop" as const };
+    const events: BridgeEvent[] = [
+      { eventId: "old-user", itemId: "target", sessionId: "session-1", seq: 2, timestamp: 2, origin: "claude-desktop", type: "session.observed", data: { role: "user", text: "Discard this branch" } },
+      { eventId: "old-answer", itemId: "answer", sessionId: "session-1", seq: 3, timestamp: 3, origin: "claude-desktop", type: "assistant.completed", data: { text: "Discard this answer" } },
+      { eventId: "rewound", sessionId: "session-1", seq: 4, timestamp: 4, origin: "claude-desktop", type: "session.rewound", data: { messageId: "target", scope: "conversation" } },
+      { eventId: "new-answer", itemId: "new", sessionId: "session-1", seq: 5, timestamp: 5, origin: "claude-desktop", type: "assistant.completed", data: { text: "New branch" } },
+    ];
+    const history = { status: "ready" as const, hasMore: false, items: [retained] };
+    expect(conversationItems("session-1", history, events, []).map(item => item.text)).toEqual(["Before the checkpoint", "New branch"]);
+    expect(conversationItems("session-1", history, [...events].reverse(), []).map(item => item.text)).toEqual(["Before the checkpoint", "New branch"]);
+  });
+
   it("hides injected system reminders from cached history, live events, and pending user messages", () => {
     const reminder = "<system-reminder>\nThis conversation is now continuing in the Claude desktop app.\n</system-reminder>";
     const raw = `${reminder}\n\n真正的用户输入\n\n${reminder}`;
@@ -1195,6 +1433,23 @@ describe("conversationItems", () => {
       data: { subagent: { ...subagent, reportText: "开头\n\n[内容较长，已省略中间部分]\n\n结尾" } },
     }], []);
     expect(items[0]?.subagent?.reportText).toBe(reportText);
+  });
+
+  it.each(["assistant.completed", "session.observed"] as const)("finishes native item-ID streams via %s without a turn ID", type => {
+    const delta: BridgeEvent = { eventId: "delta", sessionId: "session-1", itemId: "assistant-uuid", seq: 1, timestamp: 1,
+      origin: "claude-desktop", type: "assistant.delta", data: { text: "旧的局部文本" } };
+    const final: BridgeEvent = { ...delta, eventId: "final", seq: 2, timestamp: 2, type, data: { role: "assistant", text: "最终完整回答" } };
+    const items = conversationItems("session-1", undefined, [delta, final, { ...delta, eventId: "late-delta", seq: 3 }], []);
+    expect(items).toEqual([expect.objectContaining({ id: "assistant-uuid", text: "最终完整回答" })]);
+    expect(items[0]?.live).not.toBe(true);
+  });
+
+  it("does not overwrite final loaded history with old native item-ID deltas", () => {
+    const item: BridgeHistoryItem = { id: "assistant-uuid", sessionId: "session-1", role: "assistant", text: "最终完整回答", createdAt: 2, origin: "claude-desktop" };
+    const delta: BridgeEvent = { eventId: "delta", sessionId: "session-1", itemId: item.id, seq: 1, timestamp: 1,
+      origin: "claude-desktop", type: "assistant.delta", data: { text: "旧的局部文本" } };
+    const items = conversationItems("session-1", { status: "ready", items: [item], hasMore: false }, [delta], []);
+    expect(items).toEqual([item]);
   });
 
   it("merges streamed assistant chunks from one turn even when their provider item ids differ", () => {

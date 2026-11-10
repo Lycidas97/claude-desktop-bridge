@@ -4,8 +4,10 @@ const mocks = vi.hoisted(() => ({
   runtime: vi.fn(), server: vi.fn(), connect: vi.fn(),
   runtimeClose: vi.fn(async () => {}), serverClose: vi.fn(async () => {}),
   spawn: vi.fn(), logOpen: vi.fn(), logClose: vi.fn(async () => {}),
+  developerSettings: vi.fn(),
   windows: [] as Array<{ loadURL: ReturnType<typeof vi.fn>; show: ReturnType<typeof vi.fn>; webContents: { executeJavaScript: ReturnType<typeof vi.fn> } }>,
 }));
+vi.mock("./claude-desktop-developer-settings.js", () => ({ claudeDesktopDeveloperSettings: mocks.developerSettings }));
 vi.mock("./service-runtime.js", () => ({ createServiceRuntime: mocks.runtime }));
 vi.mock("./service-connection.js", () => ({ serveDesktopService: mocks.server, connectDesktopService: mocks.connect }));
 vi.mock("node:fs", () => ({ mkdirSync: vi.fn() }));
@@ -93,6 +95,30 @@ it("exposes the native directory picker only through trusted local renderer IPC"
   expect(() => choose({ senderFrame: { url: "https://untrusted.invalid" } } as Electron.IpcMainInvokeEvent, "/initial")).toThrow("Untrusted renderer");
   await expect(choose(event, 42)).rejects.toThrow("initialPath must be a string");
   expect(dialog.showOpenDialog).toHaveBeenCalledTimes(2);
+});
+
+it("checks and enables developer settings through trusted local IPC without calling the background service", async () => {
+  process.argv = originalArgv;
+  const { EventEmitter } = await import("node:events");
+  const { ipcMain } = await import("electron");
+  const call = vi.fn(async () => ({ launchAtLogin: false, sessions: [] }));
+  mocks.connect.mockResolvedValueOnce(Object.assign(new EventEmitter(), { call, close: vi.fn() }));
+  mocks.developerSettings.mockResolvedValue({ supported: true, profiles: [], enabled: true });
+  await import("./main.js");
+  await vi.waitFor(() => expect(ipcMain.handle).toHaveBeenCalledWith("bridge:enable-claude-developer-settings", expect.any(Function)));
+  const check = vi.mocked(ipcMain.handle).mock.calls.find(([channel]) => channel === "bridge:check-claude-developer-settings")![1];
+  const enable = vi.mocked(ipcMain.handle).mock.calls.find(([channel]) => channel === "bridge:enable-claude-developer-settings")![1];
+  const event = { senderFrame: { url: process.env.BRIDGE_DEV_SERVER_URL || "file:///bridge/index.html" } } as Electron.IpcMainInvokeEvent;
+  const serviceCalls = call.mock.calls.length;
+  await check(event);
+  expect(mocks.developerSettings).toHaveBeenLastCalledWith({ profile: undefined });
+  await expect(enable(event, "Claude-3p")).resolves.toMatchObject({ enabled: true });
+  expect(mocks.developerSettings).toHaveBeenLastCalledWith({ profile: "Claude-3p", enable: true });
+  expect(call).toHaveBeenCalledTimes(serviceCalls);
+  for (const handler of [check, enable]) {
+    expect(() => handler({ senderFrame: { url: "https://untrusted.invalid" } } as Electron.IpcMainInvokeEvent, "Claude-3p")).toThrow("Untrusted renderer");
+  }
+  expect(mocks.developerSettings).toHaveBeenCalledTimes(2);
 });
 
 it("closes the runtime if starting the local listener fails", async () => {

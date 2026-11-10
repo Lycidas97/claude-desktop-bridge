@@ -157,14 +157,11 @@ describe("configureHostPermission", () => {
     expect(harness.state.snapshot.providers).toEqual([{ id: "B-only" }]);
   });
 
-  it("saves Claude host defaults without a session or configuration response", async () => {
+  it("does not save retired Claude host defaults", async () => {
     const bridge = useMobileBridge();
-    harness.result = { defaultPermissionMode: "full-access" };
-    await expect(bridge.configureHostPermission("claude-desktop", "full-access", "codex-desktop:first"))
-      .resolves.toBeUndefined();
-    expect(harness.requests[0]).toMatchObject({ method: "permission.policy.configure", params: { scope: "host", mode: "full-access" } });
-    expect(harness.requests[0]!.params).not.toHaveProperty("sessionId");
-    expect(harness.state.snapshot.host.defaultPermissionMode).toBe("full-access");
+    await expect(bridge.configureHostPermission("claude-desktop", "full-access")).rejects.toThrow("Desktop 管理");
+    expect(harness.requests).toEqual([]);
+    expect(harness.state.snapshot.host.defaultPermissionMode).toBe("standard");
   });
 
   it("targets one external app and preserves Claude's snapshot default", async () => {
@@ -188,11 +185,11 @@ describe("configureHostPermission", () => {
 
   it("keeps the existing session policy method's configuration return contract", async () => {
     const bridge = useMobileBridge();
-    const configuration = { sessionId: "session-1", permissionPolicy: { hostMode: "standard", source: "host", effectiveMode: "standard" } };
+    const configuration = { sessionId: "codex-desktop:first", permissionPolicy: { hostMode: "standard", source: "host", effectiveMode: "standard" } };
     harness.result = { configuration };
-    await expect(bridge.configurePermissionPolicy("session-1", "session", null)).resolves.toEqual(configuration);
+    await expect(bridge.configurePermissionPolicy("codex-desktop:first", "session", null)).resolves.toEqual(configuration);
     expect(harness.requests[0]).toMatchObject({
-      method: "permission.policy.configure", params: { sessionId: "session-1", scope: "session", mode: null },
+      method: "permission.policy.configure", params: { sessionId: "codex-desktop:first", scope: "session", mode: null },
     });
   });
 });

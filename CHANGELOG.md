@@ -1,3 +1,35 @@
+## 1.3.0
+
+- Use Claude Desktop's native `LocalSessions` API as the authority for Claude
+  sessions, execution, queues, models and permissions. Retire the Claude SDK/CLI
+  Host, takeover/release, inbox and standalone execution lanes while preserving
+  paired devices, encrypted transports and the other runtime adapters.
+- Add native Send now and withdrawal for eligible submitted, received and queued
+  messages. Keep original command identities, attachments and terminal receipts
+  through UUID rekeys, restarts and reconnects without resubmitting input.
+- Add conversation and file rewind previews with native eligibility checks.
+  Conversation rewind stops active work and restores the original text to the
+  composer; a readback disconnect after Native success no longer loses that result.
+- Forward live native permissions and structured question/plan approvals; keep
+  completed requests synchronized without treating historical cards as approvals.
+- Surface background tasks, workflow progress, /btw side chats and online mobile
+  notifications for completed work and pending approvals.
+- Reduce repeated large-history and reconnect loads, retain paged history and
+  encrypted chunked transfers, and keep drafts and media isolated by computer
+  and session.
+- Pause stream following while reading earlier messages, restore following at
+  the bottom, and preserve tool names and inputs across completion and replay.
+- Apply the selected model when creating sessions and retain Magpie quota
+  information in the model picker and quota dashboard.
+- Add Claude Desktop developer-settings diagnostics and macOS inspector
+  connection monitoring without changing or restarting Desktop automatically.
+- Refresh CI, packaged validation and Windows installer checks for the native
+  architecture, with system recycle-bin cleanup and local relay pairing tests.
+- Publish all platform assets from the same commit after complete CI succeeds;
+  retain failed drafts for retry and include source and SHA-256 manifests.
+- Update Capacitor Android, iOS and shared Core to 8.4.3 to fix
+  GHSA-rvm3-566m-v7fv without changing the mobile signing identity.
+
 ## 1.2.1
 
 - Add desktop Magpie gateway settings with automatic discovery or manual URL,

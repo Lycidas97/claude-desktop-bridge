@@ -214,6 +214,22 @@ describe("background shells and agents", () => {
     expect((await tasks(run.transcript))[0]).toMatchObject({ state: "failed", updatedAt: Date.parse(at(30)) });
   });
 
+  it("ends shells and agents delivered as queued notification attachments", async () => {
+    const run = await session([
+      ...shellLaunch,
+      toolUse(20, "agent-call", "Agent", { description: "Audit the parser", prompt: "Audit" }),
+      toolResult(21, "agent-call", "Async agent launched successfully. agentId: ag01", {}),
+      { type: "attachment", timestamp: at(30), attachment: {
+        type: "queued_command", commandMode: "task-notification",
+        origin: { kind: "task-notification", producer: "session-task" },
+        prompt: "<task-notification>\n<task-id>bsh01</task-id>\n<task-id>ag01</task-id>\n<status>completed</status>\n</task-notification>",
+      } },
+    ]);
+    expect((await tasks(run.transcript)).map(task => [task.kind, task.state])).toEqual([
+      ["subagent", "completed"], ["bash", "completed"],
+    ]);
+  });
+
   it("ends a shell stopped through TaskStop", async () => {
     const run = await session([
       ...shellLaunch,

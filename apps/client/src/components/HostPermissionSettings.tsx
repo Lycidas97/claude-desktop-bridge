@@ -53,7 +53,7 @@ export function PermissionModeControls({
 }
 
 const RUNTIME_IDS: BridgeDesktopRuntimeId[] = [
-  "claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop",
+  "codex-desktop", "hermes-desktop", "dsh-desktop",
 ];
 
 export function HostPermissionSettings({
@@ -71,7 +71,7 @@ export function HostPermissionSettings({
     sessionId?: string,
   ): Promise<BridgePermissionMode | void>;
 }) {
-  const [runtimeId, setRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
+  const [runtimeId, setRuntimeId] = useState<BridgeDesktopRuntimeId>("codex-desktop");
   const [mode, setMode] = useState<BridgePermissionMode>("standard");
   const [savedMode, setSavedMode] = useState<BridgePermissionMode>();
   const [loading, setLoading] = useState(false);
@@ -84,7 +84,6 @@ export function HostPermissionSettings({
     .filter((session) => session.runtimeId === runtimeId && session.sessionId.startsWith(`${runtimeId}:`))
     .sort((left, right) => right.lastActivityAt - left.lastActivityAt)[0]?.sessionId;
   const hostId = snapshot?.host.hostId;
-  const claudeMode = snapshot?.host.defaultPermissionMode ?? "standard";
   const runtimeDefaults = snapshot?.host.capabilities.includes("permission.runtime-defaults.v1") ?? false;
   const runtimeMode = snapshot?.runtimes?.find((runtime) => runtime.id === runtimeId)?.defaultPermissionMode;
 
@@ -94,11 +93,6 @@ export function HostPermissionSettings({
     setSavedMode(undefined);
     setLoading(false);
     if (!supported) return;
-    if (runtimeId === "claude-desktop") {
-      setMode(claudeMode);
-      setSavedMode(claudeMode);
-      return;
-    }
     if (runtimeDefaults) {
       if (runtimeMode !== undefined) {
         setMode(runtimeMode);
@@ -123,7 +117,7 @@ export function HostPermissionSettings({
         if (active) setLoading(false);
       });
     return () => { active = false; };
-  }, [hostId, runtimeId, sessionId, claudeMode, runtimeMode, runtimeDefaults, supported, onLoadSessionConfiguration]);
+  }, [hostId, runtimeId, sessionId, runtimeMode, runtimeDefaults, supported, onLoadSessionConfiguration]);
 
   useEffect(() => {
     if (!confirmFullAccess) return;
@@ -138,8 +132,8 @@ export function HostPermissionSettings({
     setSaving(true);
     setError(undefined);
     try {
-      const confirmed = await onConfigureHostPermission(runtimeId, mode, runtimeDefaults || runtimeId === "claude-desktop" ? undefined : sessionId);
-      if (runtimeDefaults || runtimeId === "claude-desktop") {
+      const confirmed = await onConfigureHostPermission(runtimeId, mode, runtimeDefaults ? undefined : sessionId);
+      if (runtimeDefaults) {
         setMode(confirmed ?? mode);
         setSavedMode(confirmed ?? mode);
       } else {
@@ -156,16 +150,21 @@ export function HostPermissionSettings({
     }
   }
 
-  const runtimeIds = snapshot ? RUNTIME_IDS.filter((id) => id === "claude-desktop"
-    || snapshot.runtimes?.some((runtime) => runtime.id === id)
+  const runtimeIds = snapshot ? RUNTIME_IDS.filter((id) => snapshot.runtimes?.some((runtime) => runtime.id === id)
     || snapshot.desktopApps?.some((app) => app.id === id)
     || snapshot.sessions.some((session) => session.runtimeId === id)) : [];
+
+  useEffect(() => {
+    if (runtimeIds.length && !runtimeIds.includes(runtimeId)) setRuntimeId(runtimeIds[0]!);
+  }, [runtimeId, runtimeIds.join(",")]);
 
   return (
     <section className="mobile-settings-group host-permission-settings" aria-labelledby="host-permission-title">
       <h2 id="host-permission-title">电脑默认授权</h2>
       {!snapshot ? (
         <p className="mobile-settings-row">连接电脑后可设置默认授权。</p>
+      ) : !runtimeIds.length ? (
+        <p className="mobile-settings-row">Claude 授权由 Claude Desktop 管理。</p>
       ) : !supported ? (
         <p className="mobile-settings-row">这台电脑暂不支持默认授权设置，请更新电脑端 Bridge。</p>
       ) : (
@@ -193,7 +192,7 @@ export function HostPermissionSettings({
             </span>
           </div>
           {!connected && <p className="mobile-settings-row" role="status">电脑未连接，显示上次确认的默认授权。</p>}
-          {runtimeId !== "claude-desktop" && !runtimeDefaults && !sessionId ? (
+          {!runtimeDefaults && !sessionId ? (
             <p className="mobile-settings-row">需要先在这台电脑上创建或同步一个 {runtimeName} 会话，才能读取和修改该应用的默认授权。更新电脑端 Bridge 后可直接设置。</p>
           ) : loading ? (
             <p className="mobile-settings-row" role="status"><LoaderCircle className="is-spinning" size={15} />正在读取 {runtimeName} 默认授权</p>
@@ -220,7 +219,7 @@ export function HostPermissionSettings({
           )}
         </>
       )}
-      <p>每个应用单独设置默认授权。会话内的授权设置会覆盖所属应用的默认值。</p>
+      <p>Codex、Hermes 和 DSH 单独设置默认授权；Claude 授权由 Claude Desktop 管理。</p>
       {error && <p className="inline-error" role="alert">{error}</p>}
       <ConfirmationDialog
         open={confirmFullAccess}

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { rm, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BridgeSessionInfo } from "@bridge/protocol";
@@ -8,6 +8,8 @@ import { writeDesktopArchiveState } from "./claude-desktop-archive.js";
 import { listClaudeDesktopSessionState } from "./claude-desktop-sessions.js";
 import type { DesktopArchiveRequest } from "./conversation-state-store.js";
 import { DesktopController } from "./controller.js";
+
+vi.mock("electron", () => ({ shell: {} }));
 
 const PARENT = "10000000-0000-4000-8000-000000000001";
 const CHILD = "10000000-0000-4000-8000-000000000002";
@@ -91,126 +93,106 @@ describe("Claude Desktop archive records", () => {
   });
 });
 
-describe("Bridge archive changes reach Claude Desktop", () => {
-  async function harness(records: Record<string, unknown>[], archived: string[] = [], visibility: [string, "archived" | "deleted"][] = []) {
-    const dir = await desktopDir(records, archived);
-    let state = await listClaudeDesktopSessionState([join(dir, "..", "..")]);
-    const desktop = { state: "running" as "running" | "stopped" };
-    const stored = new Map<string, DesktopArchiveRequest>();
-    const toSession = (session: (typeof state.sessions)[number], archivedAt?: number): BridgeSessionInfo => ({
+describe("Bridge archives through Claude Desktop native RPC", () => {
+  async function harness(records: Record<string, unknown>[]) {
+    const dir = await desktopDir(records);
+    const state = await listClaudeDesktopSessionState([join(dir, "..", "..")]);
+    const sessions: BridgeSessionInfo[] = [...state.sessions, ...state.archivedSessions].map(session => ({
       sessionId: session.cliSessionId, desktopSessionId: session.sessionId, title: session.title ?? "", cwd: session.cwd,
-      projectId: "project", projectName: "project", source: "desktop", transport: "bridge-host", ownership: "DESKTOP_OBSERVED",
-      turnState: "idle", pendingCount: 0, lastActivityAt: session.lastActivityAt,
+      runtimeId: "claude-desktop", projectId: "project", projectName: "project", source: "desktop",
+      transport: "claude-desktop-native", ownership: "DESKTOP_NATIVE_IDLE", turnState: "idle", pendingCount: 0,
+      lastActivityAt: session.lastActivityAt,
       ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
-      ...(archivedAt ? { archivedAt } : {}),
+      ...("archivedAt" in session && typeof session.archivedAt === "number" ? { archivedAt: session.archivedAt } : {}),
+    }));
+    const archive = vi.fn(async (sessionId: string, archived: boolean) => {
+      const session = sessions.find(candidate => candidate.sessionId === sessionId)!;
+      if (archived) session.archivedAt = Date.now();
+      else delete session.archivedAt;
+      return session;
+    });
+    const deleteSession = vi.fn(async (sessionId: string) => {
+      sessions.splice(sessions.findIndex(session => session.sessionId === sessionId), 1);
     });
     const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-      sessionVisibility: new Map(visibility.map(([sessionId, value]) => [sessionId, { visibility: value, updatedAt: 5 }])),
-      desktopArchiveRequests: new Map<string, DesktopArchiveRequest>(),
-      desktopArchiveSync: undefined,
+      sessionVisibility: new Map(),
       eventLog: { append: vi.fn(async () => undefined) },
-      claudeDesktop: { status: vi.fn(async () => ({ state: desktop.state })) },
-      conversationState: {
-        setSessionVisibility: vi.fn(),
-        setDesktopArchiveRequest: (request: DesktopArchiveRequest) => stored.set(request.sessionId, request),
-        deleteDesktopArchiveRequest: (sessionId: string) => stored.delete(sessionId),
-      },
-      broker: {
-        listSessions: () => [
-          ...state.sessions.map((session) => toSession(session)),
-          ...state.archivedSessions.map((session) => toSession(session, session.archivedAt)),
-        ],
-        removeSessionRecords: vi.fn(async () => undefined),
-        desktopArchiveRecord: (sessionId: string) => {
-          const active = state.sessions.find((session) => session.cliSessionId === sessionId);
-          const found = active ?? state.archivedSessions.find((session) => session.cliSessionId === sessionId);
-          return found && { desktopSessionId: found.sessionId, metadataPath: state.metadataPaths.get(sessionId)!, archived: !active };
-        },
-      },
+      claudeDesktop: { status: vi.fn(() => { throw new Error("Archive must not require stopping Desktop"); }) },
+      conversationState: { setSessionVisibility: vi.fn() },
+      broker: { listSessions: () => sessions, archive, deleteSession },
     });
     return {
-      dir, desktop, stored, controller,
+      dir, archive, deleteSession, controller,
       request: (method: string, params: Record<string, unknown>) => controller.handleRequest(
         { kind: "request", requestId: "request", idempotencyKey: "key", method, params }, "mobile",
       ),
-      /** One catalog refresh: Bridge rescans Desktop's records, then reconciles. */
-      refresh: async () => {
-        await controller.desktopArchiveSync;
-        state = await listClaudeDesktopSessionState([join(dir, "..", "..")]);
-        controller.syncDesktopArchives();
-        await controller.desktopArchiveSync;
-      },
       session: (sessionId: string): BridgeSessionInfo | undefined => controller.allSessions()
         .find((candidate: BridgeSessionInfo) => candidate.sessionId === sessionId),
     };
   }
 
-  it("waits for Desktop to stop, writes the archive, then follows Desktop's own record", async () => {
-    const run = await harness([record(PARENT), record(CHILD, { forkedFromSessionId: `local_${PARENT}` })]);
+  it("archives the session and its active children with native calls without writing metadata", async () => {
+    const run = await harness([
+      record(PARENT), record(CHILD, { forkedFromSessionId: `local_${PARENT}` }),
+      record(OLD_CHILD, { isArchived: true, forkedFromSessionId: `local_${PARENT}` }),
+    ]);
+    const metadata = await readFile(join(run.dir, `local_${PARENT}.json`), "utf8");
+    const index = await readFile(join(run.dir, "archived-sessions.idx"), "utf8");
     await run.request("session.archive", { sessionId: PARENT, archived: true });
-    await run.refresh();
-    // Desktop is running: nothing is written, and Bridge shows the archive as pending.
-    expect((await readJson(join(run.dir, `local_${PARENT}.json`))).isArchived).toBe(false);
-    expect(run.session(PARENT)).toMatchObject({ archivedAt: expect.any(Number), desktopArchivePending: true });
-    expect(run.session(CHILD)).toMatchObject({ archivedAt: expect.any(Number), desktopArchivePending: true });
-    expect([...run.stored.keys()].sort()).toEqual([PARENT, CHILD].sort());
-
-    run.desktop.state = "stopped";
-    await run.refresh();
-    await run.refresh();
-    for (const id of [PARENT, CHILD]) {
-      expect((await readJson(join(run.dir, `local_${id}.json`))).isArchived).toBe(true);
-      expect(run.session(id)).toMatchObject({ archivedAt: expect.any(Number) });
-      expect(run.session(id)).not.toHaveProperty("desktopArchivePending");
-    }
-    expect(run.stored.size).toBe(0);
+    expect(run.archive.mock.calls).toEqual([[PARENT, true], [CHILD, true]]);
+    expect(run.session(PARENT)).toMatchObject({ archivedAt: expect.any(Number) });
+    expect(run.session(CHILD)).toMatchObject({ archivedAt: expect.any(Number) });
+    expect(run.session(PARENT)).not.toHaveProperty("desktopArchivePending");
+    expect(await readFile(join(run.dir, `local_${PARENT}.json`), "utf8")).toBe(metadata);
+    expect(await readFile(join(run.dir, "archived-sessions.idx"), "utf8")).toBe(index);
+    expect(run.controller.claudeDesktop.status).not.toHaveBeenCalled();
   });
 
-  it("restores only the chosen session, leaving separately archived children archived", async () => {
+  it("restores only the chosen native session", async () => {
     const run = await harness([
       record(PARENT, { isArchived: true }),
       record(OLD_CHILD, { isArchived: true, forkedFromSessionId: `local_${PARENT}` }),
-    ], [`local_${PARENT}`, `local_${OLD_CHILD}`]);
-    run.desktop.state = "stopped";
+    ]);
+    run.controller.sessionVisibility.set(PARENT, { visibility: "archived", updatedAt: 10 });
     await run.request("session.archive", { sessionId: PARENT, archived: false });
-    await run.refresh();
-    await run.refresh();
-    expect((await readJson(join(run.dir, `local_${PARENT}.json`))).isArchived).toBe(false);
-    expect(await readJson(join(run.dir, "archived-sessions.idx"))).toEqual({ v: 1, archived: [`local_${OLD_CHILD}`] });
+    expect(run.archive.mock.calls).toEqual([[PARENT, false]]);
     expect(run.session(PARENT)).not.toHaveProperty("archivedAt");
-    expect(run.session(OLD_CHILD)).toMatchObject({ archivedAt: expect.any(Number) });
+    expect(run.session(OLD_CHILD)).toHaveProperty("archivedAt");
+    expect(run.controller.sessionVisibility.get(PARENT)).toEqual({ visibility: "archived", updatedAt: 10 });
+    expect(run.controller.conversationState.setSessionVisibility).not.toHaveBeenCalled();
   });
 
-  it("drops a pending change that the person also made in Desktop", async () => {
+  it("ignores old Bridge visibility without changing native archive state or old records", async () => {
+    const run = await harness([record(PARENT), record(CHILD), record(OLD_CHILD, { isArchived: true })]);
+    const nativeArchiveTime = run.session(OLD_CHILD)!.archivedAt;
+    run.controller.sessionVisibility.set(PARENT, { visibility: "deleted", updatedAt: 10 });
+    run.controller.sessionVisibility.set(CHILD, { visibility: "archived", updatedAt: 11 });
+    run.controller.sessionVisibility.set(OLD_CHILD, { visibility: "archived", updatedAt: 12 });
+    const oldVisibility = new Map(run.controller.sessionVisibility);
+    expect(run.session(PARENT)).toBeDefined();
+    expect(run.session(CHILD)).not.toHaveProperty("archivedAt");
+    expect(run.session(OLD_CHILD)?.archivedAt).toBe(nativeArchiveTime);
+    expect(run.controller.sessionVisibility).toEqual(oldVisibility);
+    expect(run.controller.conversationState.setSessionVisibility).not.toHaveBeenCalled();
+  });
+
+  it("deletes through Desktop without first archiving or writing a local tombstone", async () => {
     const run = await harness([record(PARENT)]);
-    await run.request("session.archive", { sessionId: PARENT, archived: true });
-    await writeFile(join(run.dir, `local_${PARENT}.json`), JSON.stringify(record(PARENT, { isArchived: true })));
-    await run.refresh();
-    expect(run.stored.size).toBe(0);
-    expect(run.desktop.state).toBe("running");
-  });
-
-  it("hands sessions archived or deleted in earlier Bridge releases to Desktop", async () => {
-    const run = await harness([record(PARENT), record(CHILD)], [], [[PARENT, "archived"], [CHILD, "deleted"]]);
-    await run.refresh();
-    expect(run.session(PARENT)).toMatchObject({ archivedAt: 5, desktopArchivePending: true });
-    expect(run.session(CHILD)).toBeUndefined();
-    run.desktop.state = "stopped";
-    await run.refresh();
-    await run.refresh();
-    expect((await readJson(join(run.dir, `local_${PARENT}.json`))).isArchived).toBe(true);
-    expect((await readJson(join(run.dir, `local_${CHILD}.json`))).isArchived).toBe(true);
-    expect(run.stored.size).toBe(0);
-    expect(run.controller.sessionVisibility.has(PARENT)).toBe(false);
-    expect(run.controller.sessionVisibility.get(CHILD)?.visibility).toBe("deleted");
-  });
-
-  it("archives a session in Desktop when it is deleted in Bridge", async () => {
-    const run = await harness([record(PARENT)]);
-    run.desktop.state = "stopped";
     await run.request("session.delete", { sessionId: PARENT });
-    await run.refresh();
-    expect((await readJson(join(run.dir, `local_${PARENT}.json`))).isArchived).toBe(true);
+    expect(run.archive).not.toHaveBeenCalled();
+    expect(run.deleteSession).toHaveBeenCalledExactlyOnceWith(PARENT);
     expect(run.session(PARENT)).toBeUndefined();
+    expect(run.controller.conversationState.setSessionVisibility).not.toHaveBeenCalled();
+    expect((await readJson(join(run.dir, `local_${PARENT}.json`))).isArchived).toBe(false);
+  });
+
+  it("surfaces native deletion failure without hiding or archiving the session", async () => {
+    const run = await harness([record(PARENT)]);
+    run.deleteSession.mockRejectedValueOnce(new Error("Native delete unavailable"));
+    await expect(run.request("session.delete", { sessionId: PARENT })).rejects.toThrow("Native delete unavailable");
+    expect(run.archive).not.toHaveBeenCalled();
+    expect(run.controller.eventLog.append).not.toHaveBeenCalled();
+    expect(run.controller.conversationState.setSessionVisibility).not.toHaveBeenCalled();
+    expect(run.session(PARENT)).not.toHaveProperty("archivedAt");
   });
 });

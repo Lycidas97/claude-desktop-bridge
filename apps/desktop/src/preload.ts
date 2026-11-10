@@ -40,6 +40,12 @@ contextBridge.exposeInMainWorld("bridgeDesktop", {
   request: (request: LocalBridgeRequest) => (
     ipcRenderer.invoke("bridge:request", request) as Promise<BridgeResponse>
   ),
+  checkClaudeDesktopDeveloperSettings: (profile?: string) => (
+    ipcRenderer.invoke("bridge:check-claude-developer-settings", profile)
+  ),
+  enableClaudeDesktopDeveloperSettings: (profile: string) => (
+    ipcRenderer.invoke("bridge:enable-claude-developer-settings", profile)
+  ),
   exportDiagnostics: () => (
     ipcRenderer.invoke("bridge:export-diagnostics") as Promise<{ saved: boolean; path?: string }>
   ),

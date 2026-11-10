@@ -8,12 +8,12 @@
 
 Bridge brings desktop sessions, task progress, approvals, questions and workspace files to your phone. Continue an existing conversation, queue the next instruction, create a fork, inspect subagents and results, or answer an approval while away from your computer.
 
-This independently maintained fork focuses on **macOS + Android + Claude**. This guide describes **v1.2.1** source, including Magpie connection settings, structured phone approvals, inbox recovery and fork boundary fixes. See this repository's [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) for available installers and publication status. Upstream Codex, Hermes and DSH adapters remain available. Only Claude is shown by default; enable other Agents in settings.
+This independently maintained fork focuses on **macOS + Android + Claude**. **Version 1.3.0 uses Claude Desktop's native `LocalSessions` API** for sessions, execution, queues and permissions. It adds native Send now, withdrawal and rewind, with improvements to large histories, reconnection, streaming scroll and tool display. See this repository's [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) for installers. Upstream Codex, Hermes and DSH adapters remain available; enable them in settings.
 
 ## Get started
 
 1. Download desktop and Android packages from this fork's Releases, preferably from the same version. Upstream installers do not include all changes in this fork.
-2. Set up a working Claude Desktop / Claude-3p host environment on your computer and start Bridge.
+2. Start Claude Desktop and enable its local Node inspector at `127.0.0.1:9229`, then start Bridge. Without the inspector Claude is unavailable; Bridge does not patch or restart Desktop or enable its inspector automatically.
 3. Install the Android APK and add the computer using its one-time QR code or pairing link.
 4. Open the session directory on your phone. Select an existing session or use “+” to create one.
 5. Send text, images or files, follow execution progress, and respond to approvals and questions.
@@ -26,31 +26,37 @@ Saved relay settings override packaged defaults. Upgrades preserve pairing ident
 
 ### Continue existing work
 
-- Browse native Desktop and Bridge-managed sessions, with Markdown, tool calls, task plans, subagent progress and complete reports.
-- On supported macOS Claude Desktop environments, deliver input to the verified original executor and track acceptance and completion by input UUID. Uncertain delivery retains its state instead of automatically resending or starting a second executor.
+- Browse native Desktop sessions and history, with Markdown, tool calls, task plans, subagent progress and complete reports.
+- Submit Claude input through Desktop's `LocalSessions` API and track acceptance and completion by native message UUID. Uncertain delivery retains its state instead of automatically resending or starting a second executor.
 - Distinguish the main turn, pending approvals, background Agent / Bash work and process liveness. Background tasks and forked child processes no longer incorrectly keep a parent session marked busy.
 - Queue another instruction while a turn is running, or adjust the current task where the execution source supports it. Preserve queue entries, attachments and message receipts across reconnects.
 - Synchronize approvals and `AskUserQuestion` between phone and computer, dismissing requests once handled. Stopping work and deleting sessions retain confirmation steps.
 
-A background service owns Bridge's connections, queues and tasks. Reopening the desktop window reconnects to that service. **Closing the window and stopping the background service are separate actions.**
+Bridge's background service forwards connections and events; Claude Desktop owns Claude execution and queues. Reopening the desktop window reconnects to the service. **Closing the window and stopping the background service are separate actions.**
 
 ### Organize and create sessions
 
 - Browse projects, search and archive sessions. Expand forks by their immediate parent/child relationships, including deeper forks. Active descendants remain accessible after a parent is archived.
-- Fork from a complete turn boundary on the selected parent chain. The unfinished turn is excluded, and parent tasks do not become live child tasks. Forks share the working directory; creating a fork does not roll back files.
-- Rename from the session list or conversation actions. Bridge persists the display name across restarts without rewriting native Claude Desktop titles or transcript files.
+- Create Claude forks through Desktop's native API; Desktop determines the history boundary. Forks share the working directory and do not roll back files.
+- Rename from the session list or conversation actions. Claude title changes are submitted to Desktop's native API.
 - Choose a recent working folder or browse the computer through one session-creation entry point. Enter a subdirectory before confirming it; choose the project group separately from the actual working directory.
 - Preserve unsent drafts when returning to the directory and reopening a session. The session-creation form retains entered values while browsing folders, canceling folder selection, or returning from the folder picker.
 
 ### Models, context and large histories
 
-- Read model names and advertised context capacity from the current Gateway, retain model and effort settings, and recognize compaction records and post-compaction token information.
+- Read or set Claude models, effort and context usage through Desktop's native API, according to the capabilities exposed by the installed Desktop.
 - Fold long replies with access to the full text, preserving history across compaction and complete subagent reports.
 - Load directories, history and evidence on demand. Page older content, defer media loading and coalesce frequent progress updates to reduce repeated work on large transcripts, responses and reconnects.
 
-Context capacity, immediate steering and when model settings take effect depend on the execution source. Existing Claude Desktop processes may need a restart to load settings written only to disk. Native windows and sidebars do not necessarily reflect all Bridge changes immediately.
+Context capacity, immediate steering and model-setting behavior depend on the native runtime. Claude permissions and question answers use Desktop's native channel. Bridge does not install permission Hooks or make approval decisions on Desktop's behalf; historical questions cannot be submitted as live approvals.
 
-Inbox input to the original Desktop executor remains a peer message. A session receipt confirms delivery, not authorization. The phone submits allow/deny decisions and question answers only against a live, correlated request. Blocking confirmations and historical questions without a native response path explicitly require action on the computer. Native approval coverage depends on the Desktop version emitting the corresponding Hook event.
+### Queued input and rewind
+
+Use **Send now** or withdraw an eligible submitted, received or queued message through its original native command. Desktop decides whether the operation is still valid. Rewind previews conversation and file eligibility separately: conversation rewind stops active work and removes the selected message and later conversation, while file restoration remains subject to Desktop's checkpoints and busy state. Original text returns to the composer; attachments must be added again.
+
+Scrolling up pauses automatic following during output. Returning to the bottom resumes it. Older history loads near the top while preserving the reading position. Native tool names and inputs remain visible across completion-only updates and history replay.
+
+Claude now uses native Desktop session IDs and history directly, without importing legacy data or replaying retired Bridge execution requests. Pairing identities and existing data are preserved.
 
 ## Mobile navigation
 
@@ -87,7 +93,7 @@ Oversized, binary and invalid UTF-8 text produces an explicit error instead of a
 
 ## Magpie connection and quota
 
-On the computer, open Settings → Providers → Magpie connection to reuse the Claude/Claude-3p configuration or enter a Gateway URL, authentication method (Bearer / x-api-key) and Magpie Key. Test connection checks the model and quota endpoints without saving. Save Magpie configuration validates the model catalog and encrypts the Key in local system storage. Model discovery, quota reads and subsequently started Bridge executors use the selected connection; running executors retain their existing configuration. The phone shows the current source and connection status without receiving the Key. Switching back to automatic configuration restores Claude/Claude-3p discovery.
+The Magpie quota plugin remains available. Claude accounts, models and execution configuration are managed by Desktop; retired Host executor settings and standalone API-key lanes no longer execute Claude requests. Existing configuration is preserved, and credentials are not sent to the phone or relay.
 
 With a compatible Magpie Gateway, open Settings → Magpie quota to view accounts, plans, quota windows, balances and reset times. Session model settings also show the corresponding quota information.
 
@@ -168,7 +174,7 @@ Development mode starts a local relay (`ws://127.0.0.1:8788/ws`), React client (
 | `npm run verify` | All typechecks, five regression suites and the full build |
 | `npm test` | Desktop, client, protocol, relay and Magpie plugin regressions |
 | `npm run test:infra` | Runner behavior, failure propagation and recycle-bin contracts |
-| `npm run test:browser` | Six isolated browser scenarios using the actual App, crypto and a local relay |
+| `npm run test:browser` | Eight scenarios in both themes using the actual App, crypto and a local relay |
 | `npm run ci:run -- run build:android:debug` | Build an Android APK and check native plugin registration and every DEX |
 | `npm run ci:run -- run make:adhoc -w @bridge/desktop` | Build a macOS ad-hoc test installer |
 

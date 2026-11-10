@@ -5,6 +5,7 @@ import { dispatchMobileBack, registerMobileBackHandler } from "../lib/mobile-bac
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { HostPermissionSettings, PermissionModeControls } from "./HostPermissionSettings.js";
 import { SessionConfigurationDialog } from "./SessionConfigurationDialog.js";
+import { SessionRewindDialog } from "./SessionRewindDialog.js";
 import { MagpieModelQuota } from "../../../../plugins/magpie-quota/client.js";
 
 // These components have no DOM test dependency; drive their hooks and public
@@ -89,10 +90,13 @@ beforeEach(() => {
   hooks.pending = [];
   hooks.context = undefined;
 });
-afterEach(() => hooks.effects.forEach((effect) => effect.cleanup?.()));
+afterEach(() => {
+  hooks.effects.forEach((effect) => effect.cleanup?.());
+  vi.unstubAllGlobals();
+});
 
 const session = {
-  sessionId: "session-1", title: "Task", runtimeId: "claude-desktop", turnState: "idle",
+  sessionId: "session-1", title: "Task", runtimeId: "codex-desktop", turnState: "idle",
 } as BridgeSessionInfo;
 const configuration: BridgeSessionConfiguration = {
   sessionId: session.sessionId,
@@ -142,7 +146,7 @@ describe("session effort", () => {
     expect(textContent(tree)).toContain("这个模型不支持「极高」");
     button(tree, "保存配置").props.onClick();
     await settle();
-    expect(props.onSave).toHaveBeenCalledWith({ model: "gemini[1m]", effort: "high" });
+    expect(props.onSave).toHaveBeenCalledWith({ model: "gemini[1m]", reasoningEffort: "high" });
 
     elements(tree).find((element) => element.type === "select" && element.props.value === "gemini[1m]")!
       .props.onChange({ target: { value: "claude" } });
@@ -151,55 +155,189 @@ describe("session effort", () => {
   });
 });
 
-describe("Magpie quota in the session form", () => {
-  const gatewayModels = {
-    ...configuration,
-    model: "claude/claude-opus-5-5",
-    availableModels: [
-      { value: "claude/claude-opus-5-5", displayName: "Claude Opus 5.5" },
-      { value: "deepseek/deepseek-flash", displayName: "DeepSeek Flash" },
-    ],
-  } as BridgeSessionConfiguration;
-  function quota() {
-    return {
-      snapshot: { status: "available", fetchedAt: 1, accounts: [{ provider: "claude", windows: [{ name: "5 hours", remaining: 40 }] }] },
-      loading: false, error: undefined, enabled: true, refresh: vi.fn(), request: vi.fn(() => () => undefined),
+describe("native Claude session configuration", () => {
+  it("loads and displays quota for the selected native Claude model without changing its execution ID", async () => {
+    const model = { value: "mythos-magpie-1234567890", displayName: "Opus", resolvedModel: "claude/claude-opus-5-5" };
+    const request = vi.fn().mockReturnValue(vi.fn());
+    hooks.context = {
+      enabled: true, loading: false, request, refresh: vi.fn(),
+      snapshot: { status: "available", fetchedAt: 1_000, accounts: [{ provider: "claude", windows: [{ name: "5 hours", remaining: 80 }] }] },
     };
-  }
-  async function open(dialogSession: BridgeSessionInfo) {
-    const props = { session: dialogSession, onLoad: vi.fn().mockResolvedValue(gatewayModels), onSave: vi.fn(), onClose: vi.fn() };
+    const native = { ...configuration, model: model.value, availableModels: [model], availableEffortLevels: [] };
+    const props = { session: { ...session, runtimeId: "claude-desktop" as const, transport: "claude-desktop-native" as const },
+      onLoad: vi.fn().mockResolvedValue(native), onSave: vi.fn().mockResolvedValue(native), onClose: vi.fn() };
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
-    draw();
-    await settle();
+    draw(); await settle();
     const tree = draw();
-    return {
-      options: elements(tree).filter((element) => element.type === "option").map((element) => textContent(element.props.children)),
-      detail: elements(tree).find((element) => element.type === MagpieModelQuota),
-    };
-  }
-
-  it("labels models with quota and shows the selected model's accounts", async () => {
-    const state = quota();
-    hooks.context = state;
-    const { options, detail } = await open(session);
-    expect(options).toEqual(["Claude Opus 5.5 · 单账号最高可用 40%", "DeepSeek Flash"]);
-    expect(detail?.props.model).toMatchObject({ value: "claude/claude-opus-5-5" });
-    expect(state.request).toHaveBeenCalled();
+    expect(request).toHaveBeenCalledOnce();
+    expect(textContent(tree)).toContain("单账号最高可用 80%");
+    expect(elements(tree).find(element => element.type === MagpieModelQuota)?.props.model).toEqual(model);
+    button(tree, "保存配置").props.onClick(); await settle();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ model: model.value });
   });
 
-  it("adds nothing to native runtimes, which do not route through Magpie", async () => {
-    const state = quota();
-    hooks.context = state;
-    const { options, detail } = await open({ ...session, runtimeId: "codex-desktop" } as BridgeSessionInfo);
-    expect(options).toEqual(["Claude Opus 5.5", "DeepSeek Flash"]);
-    expect(detail).toBeUndefined();
-    expect(state.request).not.toHaveBeenCalled();
+  it("saves native permissionMode through session.configure and confirms bypassPermissions", async () => {
+    const native = { ...configuration, nativePermissionMode: "default", availableModels: [], availableEffortLevels: [] } as BridgeSessionConfiguration;
+    const props = { session: { ...session, runtimeId: "claude-desktop" as const, transport: "claude-desktop-native" as const },
+      onLoad: vi.fn().mockResolvedValue(native), onSave: vi.fn().mockResolvedValue(native), onConfigurePermission: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle();
+    let tree = draw();
+    const select = elements(tree).find(element => element.props["aria-label"] === "Desktop 授权模式")!;
+    select.props.onChange({ target: { value: "bypassPermissions" } }); tree = draw();
+    button(tree, "保存配置").props.onClick(); tree = draw();
+    expect(confirmation(tree).props.open).toBe(true);
+    expect(props.onSave).not.toHaveBeenCalled();
+    confirmation(tree).props.onConfirm(); await settle();
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ permissionMode: "bypassPermissions" });
+    expect(props.onConfigurePermission).not.toHaveBeenCalled();
   });
 
-  it("works unchanged where no quota provider is mounted", async () => {
-    const { options, detail } = await open(session);
-    expect(options).toEqual(["Claude Opus 5.5", "DeepSeek Flash"]);
-    expect(detail).toBeUndefined();
+  it("shows only native configuration options and ignores legacy Bridge permission policies", async () => {
+    const props = { session: { ...session, runtimeId: "claude-desktop" as const, transport: "claude-desktop-native" as const },
+      onLoad: vi.fn().mockResolvedValue({ ...configuration, availableModels: [], availableEffortLevels: [], supportsFastMode: false }),
+      onSave: vi.fn(), onConfigurePermission: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+    draw(); await settle();
+    const tree = draw();
+    expect(control(tree)).toBeUndefined();
+    expect(elements(tree).some(element => element.type === "select")).toBe(false);
+    expect(button(tree, "保存配置").props.disabled).toBe(true);
+    expect(textContent(tree)).not.toContain("Host");
+    expect(elements(tree).some(element => element.type === MagpieModelQuota)).toBe(false);
+    expect(props.onConfigurePermission).not.toHaveBeenCalled();
+  });
+});
+
+describe("session rewind confirmation", () => {
+  beforeEach(() => vi.stubGlobal("document", { addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+  const messages = [{ id: "user-uuid", sessionId: "session-1", role: "user" as const, text: "Rewrite this request", createdAt: 1, origin: "claude-desktop" as const }];
+  const preview = { sessionId: "session-1", messageId: "user-uuid", canRewindConversation: true, canRewindFiles: true, filesChanged: ["src/app.ts"] };
+
+  it("previews without changing anything and executes the exact target and chosen scope only after confirmation", async () => {
+    const result = { sessionId: "session-1", messageId: "user-uuid", scope: "both" as const, prefill: "Rewrite this request" };
+    const props = { messages, disabled: false, onPreview: vi.fn().mockResolvedValue(preview), onRewind: vi.fn().mockResolvedValue(result), onComplete: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionRewindDialog {...props} />);
+    draw(); await settle(); let tree = draw();
+    expect(props.onPreview).toHaveBeenCalledExactlyOnceWith("user-uuid");
+    expect(props.onRewind).not.toHaveBeenCalled();
+    elements(tree).find(element => element.props["aria-label"] === "回退范围")!.props.onChange({ target: { value: "both" } });
+    tree = draw();
+    expect(textContent(tree)).toContain("src/app.ts");
+    expect(textContent(tree)).toContain("附件需重新添加");
+    button(tree, "确认回退").props.onClick(); await settle();
+    expect(props.onRewind).toHaveBeenCalledExactlyOnceWith("user-uuid", "both");
+    expect(props.onComplete).toHaveBeenCalledExactlyOnceWith(result);
+  });
+
+  it("allows file restoration when native Desktop rejects conversation rewind", async () => {
+    const props = { messages, disabled: false, onPreview: vi.fn().mockResolvedValue({ ...preview, canRewindConversation: false }), onRewind: vi.fn(), onComplete: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionRewindDialog {...props} />);
+    draw(); await settle(); const tree = draw();
+    expect(elements(tree).find(element => element.props["aria-label"] === "回退范围")?.props.value).toBe("files");
+    expect(elements(tree).find(element => element.type === "option" && element.props.value === "conversation")?.props.disabled).toBe(true);
+    expect(button(tree, "确认回退").props.disabled).toBe(false);
+    button(tree, "取消").props.onClick();
+    expect(props.onClose).toHaveBeenCalledOnce();
+    expect(props.onRewind).not.toHaveBeenCalled();
+  });
+
+  it("[boundary] ignores an older preview after switching the selected native target", async () => {
+    let finishFirst!: (value: typeof preview) => void;
+    const first = new Promise<typeof preview>(resolve => { finishFirst = resolve; });
+    const next = { ...messages[0]!, id: "second-user", text: "Second request" };
+    const props = { messages: [...messages, next], initialMessageId: "user-uuid", disabled: false,
+      onPreview: vi.fn((id: string) => id === "user-uuid" ? first : Promise.resolve({ ...preview, messageId: id, canRewindFiles: false })),
+      onRewind: vi.fn().mockResolvedValue({ sessionId: "session-1", messageId: next.id, scope: "conversation" }), onComplete: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionRewindDialog {...props} />);
+    draw();
+    elements(draw()).find(element => element.props["aria-label"] === "回退目标消息")!.props.onChange({ target: { value: next.id } });
+    draw(); await settle();
+    finishFirst({ ...preview, canRewindConversation: false }); await settle();
+    const tree = draw();
+    expect(elements(tree).find(element => element.props["aria-label"] === "回退范围")!.props.value).toBe("conversation");
+    expect(button(tree, "确认回退").props.disabled).toBe(false);
+    button(tree, "确认回退").props.onClick(); await settle();
+    expect(props.onRewind).toHaveBeenCalledExactlyOnceWith(next.id, "conversation");
+  });
+
+  it("[boundary] discards a preview completed while disconnected and checks again after reconnect", async () => {
+    let finish!: (value: typeof preview) => void;
+    const held = new Promise<typeof preview>(resolve => { finish = resolve; });
+    const props = { messages, disabled: false, onPreview: vi.fn().mockReturnValueOnce(held).mockResolvedValue({ ...preview, canRewindConversation: false, canRewindFiles: false }),
+      onRewind: vi.fn(), onComplete: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionRewindDialog {...props} />);
+    draw(); props.disabled = true; draw();
+    finish(preview); await settle();
+    let tree = draw(); expect(button(tree, "确认回退").props.disabled).toBe(true);
+    button(tree, "确认回退").props.onClick(); expect(props.onRewind).not.toHaveBeenCalled();
+    props.disabled = false; draw(); await settle(); tree = draw();
+    expect(props.onPreview).toHaveBeenCalledTimes(2);
+    expect(button(tree, "确认回退").props.disabled).toBe(true);
+    expect(textContent(tree)).toContain("Desktop 无法回退");
+    expect(props.onRewind).not.toHaveBeenCalled();
+  });
+
+  it("[boundary] rejects confirmation while Native has neither a conversation anchor nor available files", async () => {
+    const props = { messages, disabled: false, onPreview: vi.fn().mockResolvedValue({ ...preview, canRewindConversation: false, canRewindFiles: false, filesChanged: [], fileError: "Session is busy" }),
+      onRewind: vi.fn(), onComplete: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionRewindDialog {...props} />);
+    draw(); await settle(); const tree = draw();
+    expect(button(tree, "确认回退").props.disabled).toBe(true);
+    button(tree, "确认回退").props.onClick(); await settle();
+    expect(textContent(tree)).toContain("Session is busy");
+    expect(props.onRewind).not.toHaveBeenCalled();
+  });
+
+  it("[boundary] sends one rewind while pending and blocks back navigation until Native returns", async () => {
+    const result = { sessionId: "session-1", messageId: "user-uuid", scope: "conversation" as const, prefill: "Original" };
+    let finish!: (value: typeof result) => void;
+    const props = { messages, disabled: false, onPreview: vi.fn().mockResolvedValue(preview), onRewind: vi.fn(() => new Promise<typeof result>(resolve => { finish = resolve; })), onComplete: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionRewindDialog {...props} />);
+    draw(); await settle(); button(draw(), "确认回退").props.onClick();
+    const tree = draw();
+    expect(button(tree, "正在回退").props.disabled).toBe(true);
+    expect(elements(tree).filter(element => element.type === "select").every(element => element.props.disabled)).toBe(true);
+    button(tree, "正在回退").props.onClick();
+    expect(dispatchMobileBack()).toBe(true);
+    expect(props.onClose).not.toHaveBeenCalled(); expect(props.onRewind).toHaveBeenCalledTimes(1);
+    finish(result); await settle(); draw();
+    expect(props.onComplete).toHaveBeenCalledExactlyOnceWith(result);
+    dispatchMobileBack(); expect(props.onClose).toHaveBeenCalledOnce();
+  });
+
+  it("[boundary] lets the user retry a rejected rewind without treating the first attempt as completed", async () => {
+    const result = { sessionId: "session-1", messageId: "user-uuid", scope: "conversation" as const, prefill: "Original" };
+    const props = { messages, disabled: false, onPreview: vi.fn().mockResolvedValue(preview), onRewind: vi.fn().mockRejectedValueOnce(new Error("Checkpoint changed")).mockResolvedValue(result), onComplete: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionRewindDialog {...props} />);
+    draw(); await settle(); button(draw(), "确认回退").props.onClick(); await settle();
+    let tree = draw(); expect(textContent(tree)).toContain("Checkpoint changed");
+    expect(props.onComplete).not.toHaveBeenCalled(); expect(props.onClose).not.toHaveBeenCalled();
+    expect(button(tree, "确认回退").props.disabled).toBe(false);
+    button(tree, "确认回退").props.onClick(); await settle(); tree = draw();
+    expect(props.onRewind.mock.calls).toEqual([["user-uuid", "conversation"], ["user-uuid", "conversation"]]);
+    expect(props.onComplete).toHaveBeenCalledExactlyOnceWith(result);
+    expect(textContent(tree)).not.toContain("Checkpoint changed");
+  });
+
+  it("[boundary] never previews or rewinds a local-only or synthetic queued placeholder", async () => {
+    const props = { messages: ["local:request", "queued:command"].map(id => ({ ...messages[0]!, id })), disabled: false,
+      onPreview: vi.fn(), onRewind: vi.fn(), onComplete: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionRewindDialog {...props} />);
+    draw(); await settle(); const tree = draw();
+    expect(textContent(tree)).toContain("当前没有可选择的已发送消息");
+    expect(button(tree, "确认回退").props.disabled).toBe(true);
+    button(tree, "确认回退").props.onClick();
+    expect(props.onPreview).not.toHaveBeenCalled(); expect(props.onRewind).not.toHaveBeenCalled();
+  });
+
+  it("shows native execution failures and keeps the confirmation open", async () => {
+    const props = { messages, disabled: false, onPreview: vi.fn().mockResolvedValue(preview), onRewind: vi.fn().mockRejectedValue(new Error("Native rewind refused")), onComplete: vi.fn(), onClose: vi.fn() };
+    const draw = () => render(() => <SessionRewindDialog {...props} />);
+    draw(); await settle(); button(draw(), "确认回退").props.onClick(); await settle();
+    expect(textContent(draw())).toContain("Native rewind refused");
+    expect(props.onComplete).not.toHaveBeenCalled();
+    expect(props.onClose).not.toHaveBeenCalled();
   });
 });
 
@@ -216,12 +354,6 @@ describe("session authorization scope", () => {
     expect(elements(tree).find((element) => element.type === "select")?.props.value).toBe("remote-model");
   });
 
-  it("explains that an observed Desktop executor uses saved Bridge settings after takeover", async () => {
-    const props = { session: { ...session, desktopHandoff: { state: "close-desktop", canReturn: false } } as BridgeSessionInfo, onLoad: vi.fn().mockResolvedValue(configuration), onSave: vi.fn(), onClose: vi.fn() };
-    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
-    draw(); await settle();
-    expect(textContent(draw())).toContain("接管后生效");
-  });
   it("keeps mobile scope on the session through loading, inherit, and save", async () => {
     const onConfigurePermission = vi.fn().mockResolvedValue(configuration);
     const props = {
@@ -313,10 +445,9 @@ describe("host default authorization", () => {
       onConfigureHostPermission: vi.fn().mockResolvedValue("standard"),
     };
     const draw = () => render(() => <HostPermissionSettings {...props} />);
-    let tree = draw();
-    button(tree, "DSH").props.onClick();
     draw();
-    tree = draw();
+    draw();
+    let tree = draw();
     expect(control(tree)?.props.value).toBe("full-access");
     control(tree).props.onChange("standard");
     tree = draw();
@@ -328,46 +459,25 @@ describe("host default authorization", () => {
     expect(control(tree).props.value).toBe("standard");
   });
 
-  it("disables remote defaults while offline without losing the last confirmed mode", () => {
-    const props = { snapshot: snapshot(), connected: false, onLoadSessionConfiguration: vi.fn(), onConfigureHostPermission: vi.fn() };
+  it("disables remote defaults while offline without losing the last confirmed mode", async () => {
+    const props = { snapshot: snapshot(), connected: false, onLoadSessionConfiguration: vi.fn().mockResolvedValue({ ...configuration, permissionPolicy: { hostMode: "standard", effectiveMode: "standard", source: "host" } }), onConfigureHostPermission: vi.fn() };
     const draw = () => render(() => <HostPermissionSettings {...props} />);
     draw();
+    await settle();
     const tree = draw();
     expect(control(tree).props.disabled).toBe(true);
     expect(control(tree).props.value).toBe("standard");
     expect(textContent(tree)).toContain("电脑未连接");
   });
-  it("saves Claude without a session, requires confirmation, and handles back first", async () => {
-    const props = {
-      snapshot: snapshot(), onLoadSessionConfiguration: vi.fn(),
-      onConfigureHostPermission: vi.fn().mockResolvedValue(undefined),
-    };
-    const workspaceBack = vi.fn(() => true);
-    const removeWorkspace = registerMobileBackHandler(workspaceBack, 100);
-    try {
-      const draw = () => render(() => <HostPermissionSettings {...props} />);
-      draw();
-      let tree = draw();
-      expect(control(tree).props.value).toBe("standard");
-      control(tree).props.onChange("full-access");
-      tree = draw();
-      button(tree, "保存 Claude 默认授权").props.onClick();
-      tree = draw();
-      expect(confirmation(tree).props.open).toBe(true);
-      expect(props.onConfigureHostPermission).not.toHaveBeenCalled();
-      dispatchMobileBack();
-      expect(workspaceBack).not.toHaveBeenCalled();
-      tree = draw();
-      expect(confirmation(tree).props.open).toBe(false);
-      button(tree, "保存 Claude 默认授权").props.onClick();
-      tree = draw();
-      confirmation(tree).props.onConfirm();
-      await settle();
-      expect(props.onConfigureHostPermission).toHaveBeenCalledWith("claude-desktop", "full-access", undefined);
-      expect(props.onLoadSessionConfiguration).not.toHaveBeenCalled();
-    } finally {
-      removeWorkspace();
-    }
+  it("does not offer Claude Bridge default authorization even on an old policy-capable host", async () => {
+    const props = { snapshot: snapshot(), onLoadSessionConfiguration: vi.fn().mockResolvedValue(configuration), onConfigureHostPermission: vi.fn() };
+    const draw = () => render(() => <HostPermissionSettings {...props} />);
+    draw(); await settle();
+    const tree = draw();
+    expect(button(tree, "Claude")).toBeUndefined();
+    expect(button(tree, "保存 Claude 默认授权")).toBeUndefined();
+    expect(textContent(tree)).toContain("Claude 授权由 Claude Desktop 管理");
+    expect(props.onConfigureHostPermission).not.toHaveBeenCalled();
   });
 
   it("loads each app's host default and reloads that app after saving", async () => {

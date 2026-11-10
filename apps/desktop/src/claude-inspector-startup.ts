@@ -12,7 +12,7 @@ type MenuResult = "waiting" | "ready" | "enabled" | "clicked";
 
 export function parseInspectorDesktopProcesses(
   output: string,
-  executables = desktopAppPathCandidates(CLAUDE_DESKTOP_APP)
+  executables = desktopAppPathCandidates(CLAUDE_DESKTOP_APP, undefined, undefined, "darwin")
     .map(bundle => `${bundle}/Contents/MacOS/Claude`),
 ): InspectorDesktopProcess[] {
   return output.split("\n").flatMap(line => {

@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeInspectorStartup, parseInspectorDesktopProcesses } from "./claude-inspector-startup.js";
 
 const directories: string[] = [];
-afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })));
+});
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "bridge-inspector-startup-"));
   directories.push(directory);
@@ -90,7 +93,8 @@ describe("one native inspector action per Desktop process start", () => {
   });
 });
 
-it("reads actual PID, launch time, and exact main executable, excluding helpers and other apps", () => {
+it.each(["darwin", "linux", "win32"] as const)("parses macOS PID, launch time, and exact main executable on %s hosts, excluding helpers and other apps", platform => {
+  vi.stubGlobal("process", { ...process, platform });
   expect(parseInspectorDesktopProcesses([
     " 42 Tue Nov 10 11:25:09 2026 /Applications/Claude.app/Contents/MacOS/Claude",
     " 43 Tue Nov 10 11:25:09 2026 /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper",

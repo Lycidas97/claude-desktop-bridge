@@ -97,7 +97,10 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
     assert.ok(result.requests.includes(method), `${method} was not verified`);
   }
   assert.ok(result.ui.includes(".desktop-sidebar-empty"));
-  assert.ok(result.ui.includes("原生中转已就绪"));
+  assert.ok(result.ui.includes("连接与启动"));
+  assert.ok(result.ui.includes("诊断与关于"));
+  assert.ok(result.ui.includes('dt:text-is("原生中转") + dd'));
+  assert.ok(result.ui.includes("已就绪"));
 });
 
 test("packaged QA keeps Native configuration/evidence checks with optional runtime capabilities", async () => {

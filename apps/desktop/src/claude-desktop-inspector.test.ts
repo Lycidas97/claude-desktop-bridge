@@ -45,8 +45,11 @@ async function fixture() {
         : { id: "empty" }) }] };
     },
   };
+  const sidebarFactory = function () {
+    return Object.assign(sidebar, { serverName: "ccd_sidebar", handleToolCall: sidebar.handleToolCall });
+  };
   const cache: Record<string, { filename: string; exports: Record<string, unknown> }> = {
-    factory: { filename: "/fixture/index.chunk-Ca27adTf.js", exports: { $n: () => sidebar } },
+    factory: { filename: "/fixture/index.chunk-Ca27adTf.js", exports: { $n: sidebarFactory } },
     manager: { filename: "/fixture/index.chunk-Cy6fdnz-.js", exports: { claudeCodeSessionManager: {
       listCustomGroups: () => sidebar.groups,
       getSessionCustomGroup: (id: string) => id === "local-native" ? sidebar.groups[0] : undefined,
@@ -101,6 +104,23 @@ describe("native Desktop inspector", () => {
       expect(f.calls).toEqual([]);
       expect(f.events.size).toBe(1);
       expect(f.permissions.size).toBe(1);
+    } finally { await f.close(); }
+  });
+
+  it("discovers sections across Desktop 5.1231.2 chunk hashes and minified export names", async () => {
+    const f = await fixture();
+    try {
+      const factoryFn = f.cache.factory!.exports.$n;
+      const managerObj = f.cache.manager!.exports.claudeCodeSessionManager;
+      delete f.cache.factory;
+      delete f.cache.manager;
+      f.cache.winFactory = { filename: "C:\\Program Files\\WindowsApps\\Claude_5.1231.2.0_x64__pzs8sxrjxfjjc\\app\\resources\\app.asar\\.vite\\build\\index.chunk-BsvZMF6W.js", exports: { Tn: factoryFn } };
+      f.cache.winManager = { filename: "C:\\Program Files\\WindowsApps\\Claude_5.1231.2.0_x64__pzs8sxrjxfjjc\\app\\resources\\app.asar\\.vite\\build\\index.chunk-DII0hfnr.js", exports: { claudeCodeSessionManager: managerObj } };
+      await f.inspector.connect();
+      expect(await f.inspector.sections(["local-native"])).toEqual({
+        sections: [{ id: "empty", name: "<Research>", order: 0 }],
+        assignments: { "local-native": "empty" },
+      });
     } finally { await f.close(); }
   });
 

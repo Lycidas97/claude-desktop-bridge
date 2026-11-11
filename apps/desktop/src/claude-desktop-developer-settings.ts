@@ -1,22 +1,24 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
-import type { ClaudeDesktopDeveloperSettings, ClaudeDesktopProfile } from "../../client/src/runtime/desktop.js";
-import { connectorPaths } from "./platform.js";
+import { join } from "node:path";
+import type { ClaudeDesktopDeveloperSettings } from "../../client/src/runtime/desktop.js";
+import { claudeDesktopProfileDirectories, supportsClaudeDesktop } from "./platform.js";
 
 export async function claudeDesktopDeveloperSettings({
   profile,
   enable = false,
   platform = process.platform,
+  environment = process.env,
   home = homedir(),
 }: {
   profile?: unknown;
   enable?: boolean;
   platform?: NodeJS.Platform;
+  environment?: NodeJS.ProcessEnv;
   home?: string;
 } = {}): Promise<ClaudeDesktopDeveloperSettings> {
-  if (platform !== "darwin") {
-    if (enable) throw new Error("目前仅支持 macOS 的 Claude Desktop 开发者工具配置");
+  if (!supportsClaudeDesktop(platform)) {
+    if (enable) throw new Error("目前仅支持 macOS 与 Windows 的 Claude Desktop 开发者工具配置");
     return { supported: false, profiles: [] };
   }
   if (profile !== undefined && profile !== "Claude" && profile !== "Claude-3p") {
@@ -24,17 +26,18 @@ export async function claudeDesktopDeveloperSettings({
   }
   if (enable && profile === undefined) throw new Error("请先选择 Claude Desktop 配置目录");
 
+  const candidates = claudeDesktopProfileDirectories(platform, environment, home);
   const profiles: ClaudeDesktopDeveloperSettings["profiles"] = [];
-  for (const configPath of connectorPaths(platform, process.env, home).claudeDesktop) {
-    try {
-      if ((await stat(dirname(configPath))).isDirectory()) {
-        profiles.push({
-          id: basename(dirname(configPath)) as ClaudeDesktopProfile,
-          path: join(dirname(configPath), "developer_settings.json"),
-        });
+  for (const id of ["Claude", "Claude-3p"] as const) {
+    for (const dir of candidates[id]) {
+      try {
+        if ((await stat(dir)).isDirectory()) {
+          profiles.push({ id, path: join(dir, "developer_settings.json") });
+          break;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
   const selected = profile ?? (profiles.length === 1 ? profiles[0]!.id : undefined);

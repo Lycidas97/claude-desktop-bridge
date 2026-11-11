@@ -1,9 +1,25 @@
-import { describe, expect, it, vi } from "vitest";
+import { accessSync } from "node:fs";
+import { access } from "node:fs/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeDesktopLifecycle,
   findClaudeDesktopExecutable,
   parseClaudeDesktopTasklist,
 } from "./claude-desktop-lifecycle.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, accessSync: vi.fn(fs.accessSync) };
+});
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...fs, access: vi.fn(fs.access) };
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("Claude Desktop lifecycle", () => {
   it("launches the installed app and reports its running state", async () => {
@@ -90,14 +106,44 @@ describe("Claude Desktop lifecycle", () => {
     ].join("\r\n"))).toEqual([9136]);
   });
 
-  it("resolves the per-user Windows Claude Desktop install", () => {
-    expect(findClaudeDesktopExecutable({
+  it("resolves per-user and MSIX Windows Claude Desktop installs by probing candidates", async () => {
+    const env = {
       LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local",
       ProgramFiles: "C:\\Program Files",
       "ProgramFiles(x86)": "C:\\Program Files (x86)",
-    }, "C:\\Users\\me", "win32")).toBe(
-      "C:\\Users\\me\\AppData\\Local\\Programs\\Claude\\Claude.exe",
-    );
+    };
+    const perUser = "C:\\Users\\me\\AppData\\Local\\Programs\\Claude\\Claude.exe";
+    const msixAlias = "C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\claude-desktop.exe";
+
+    vi.mocked(accessSync).mockImplementation((candidate) => {
+      if (String(candidate) !== perUser) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    expect(findClaudeDesktopExecutable(env, "C:\\Users\\me", "win32")).toBe(perUser);
+
+    vi.mocked(accessSync).mockImplementation((candidate) => {
+      if (String(candidate) !== msixAlias) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    expect(findClaudeDesktopExecutable(env, "C:\\Users\\me", "win32")).toBe(msixAlias);
+
+    vi.mocked(access).mockImplementation(async (candidate) => {
+      if (String(candidate) !== msixAlias) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    const lifecycle = new ClaudeDesktopLifecycle({
+      platform: "win32",
+      environment: env,
+      listMainProcessIds: async () => [4242],
+      cacheTtlMs: 0,
+    });
+    await expect(lifecycle.status()).resolves.toMatchObject({
+      state: "running",
+      canLaunch: false,
+      canQuit: true,
+    });
+
+    vi.mocked(accessSync).mockImplementation(() => {
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    expect(findClaudeDesktopExecutable(env, "C:\\Users\\me", "win32")).toBeUndefined();
   });
 
   it("does not expose controls when Claude Desktop is unavailable", async () => {

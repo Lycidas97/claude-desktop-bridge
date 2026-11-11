@@ -1,6 +1,7 @@
 import { execFile as execFileCallback, spawn, spawnSync } from "node:child_process";
+import { accessSync } from "node:fs";
 import { access } from "node:fs/promises";
-import { basename } from "node:path";
+import { win32 as windowsPath } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import type { ClaudeDesktopAppStatus } from "@bridge/protocol";
@@ -47,7 +48,35 @@ export function findClaudeDesktopExecutable(
   home = homedir(),
   platform: NodeJS.Platform = process.platform,
 ): string | undefined {
-  return desktopAppPathCandidates(CLAUDE_DESKTOP_APP, environment, home, platform)[0];
+  for (const candidate of desktopAppPathCandidates(CLAUDE_DESKTOP_APP, environment, home, platform)) {
+    try {
+      accessSync(candidate);
+      return candidate;
+    } catch {
+      // Continue through supported install locations.
+    }
+  }
+  return undefined;
+}
+
+async function resolveInstalledTarget(
+  definition: DesktopAppDefinition,
+  platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+  executablePath?: string,
+): Promise<string | undefined> {
+  const candidates = executablePath
+    ? [executablePath]
+    : desktopAppPathCandidates(definition, environment, homedir(), platform);
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Continue through supported install locations.
+    }
+  }
+  return undefined;
 }
 
 async function applicationInstalled(
@@ -56,26 +85,7 @@ async function applicationInstalled(
   environment: NodeJS.ProcessEnv = process.env,
   executablePath?: string,
 ): Promise<boolean> {
-  const candidate = platform === "win32"
-    ? executablePath ?? desktopAppPathCandidates(definition, environment, homedir(), platform)[0]
-    : undefined;
-  if (candidate) {
-    try {
-      await access(candidate);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  for (const bundle of desktopAppPathCandidates(definition, environment, homedir(), platform)) {
-    try {
-      await access(bundle);
-      return true;
-    } catch {
-      // Continue through the supported macOS bundle names.
-    }
-  }
-  return false;
+  return (await resolveInstalledTarget(definition, platform, environment, executablePath)) !== undefined;
 }
 
 function parseWindowsTasklist(stdout: string, executableName = "Claude.exe"): number[] {
@@ -98,7 +108,7 @@ async function listMainProcessIds(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<number[]> {
   if (platform === "win32") {
-    const executableName = basename(executablePath ?? definition.win32ExecutableName);
+    const executableName = windowsPath.basename(executablePath ?? definition.win32ExecutableName);
     const { stdout } = await execFile(
       "tasklist",
       ["/FI", `IMAGENAME eq ${executableName}`, "/FO", "CSV", "/NH"],
@@ -125,11 +135,15 @@ async function launchApplication(
   environment: NodeJS.ProcessEnv = process.env,
   executablePath?: string,
 ): Promise<void> {
+  const target = await resolveInstalledTarget(definition, platform, environment, executablePath);
+  if (!target) {
+    throw new Error(platform === "win32"
+      ? `未找到 ${definition.displayName} 可执行文件。`
+      : `未找到 ${definition.displayName} 应用。`);
+  }
   if (platform === "win32") {
-    const executable = executablePath ?? desktopAppPathCandidates(definition, environment, homedir(), platform)[0];
-    if (!executable) throw new Error(`未找到 ${definition.displayName} 可执行文件。`);
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(executable, [], {
+      const child = spawn(target, [], {
         detached: true,
         stdio: "ignore",
         windowsHide: true,
@@ -143,16 +157,7 @@ async function launchApplication(
     });
     return;
   }
-  for (const bundle of desktopAppPathCandidates(definition, environment, homedir(), platform)) {
-    try {
-      await access(bundle);
-      await execFile("/usr/bin/open", [bundle], { encoding: "utf8" });
-      return;
-    } catch {
-      // Continue through supported bundle names before reporting a launch failure.
-    }
-  }
-  throw new Error(`未找到 ${definition.displayName} 应用。`);
+  await execFile("/usr/bin/open", [target], { encoding: "utf8" });
 }
 
 export function signalProcess(

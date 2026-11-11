@@ -75,7 +75,7 @@ function parseEffort(value: unknown): ClaudeSessionEffort | undefined {
 export function claudeDesktopProfileForPath(path: string): ClaudeDesktopProfile {
   const normalized = path.replaceAll("\\", "/");
   if (/(?:^|\/)Claude-3p(?:\/|$)/iu.test(normalized)) return "claude-3p";
-  if (/(?:^|\/)Claude(?:\/|$)/iu.test(normalized)) return "claude";
+  if (/(?:^|\/)(?:Claude|Claude-Data)(?:\/|$)/iu.test(normalized)) return "claude";
   return "unknown";
 }
 

@@ -42,6 +42,7 @@ export const CLAUDE_DESKTOP_APP: DesktopAppDefinition = {
       windowsPath.join(localAppData, "Programs", "Claude", "Claude.exe"),
       windowsPath.join(localAppData, "Claude", "Claude.exe"),
       windowsPath.join(localAppData, "AnthropicClaude", "Claude.exe"),
+      windowsPath.join(localAppData, "Microsoft", "WindowsApps", "claude-desktop.exe"),
       windowsPath.join(localAppData, "Microsoft", "WindowsApps", "Claude.exe"),
       ...programFiles.map((root) => windowsPath.join(root, "Claude", "Claude.exe")),
     ]);

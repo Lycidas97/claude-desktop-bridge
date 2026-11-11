@@ -14,17 +14,44 @@ export interface NativeSectionCatalog {
   assignments: Record<string, string>;
 }
 
-// Verified against Desktop 4.23118.1. Use only already-loaded modules from this
-// build; a different export layout remains unsupported until verified.
+// Verified against Desktop 4.23118.1 and 5.1231.2: discover already-loaded
+// ccd_sidebar and claudeCodeSessionManager exports by structural contract.
 const SIDEBAR_RUNTIME = `
   const modules = Object.values(process.mainModule.require('module')._cache);
-  const basename = process.mainModule.require('path').basename;
-  const factory = modules.find(m => basename(m.filename) === 'index.chunk-Ca27adTf.js')?.exports?.$n;
-  const manager = modules.find(m => basename(m.filename) === 'index.chunk-Cy6fdnz-.js')?.exports?.claudeCodeSessionManager;
-  const sidebar = typeof factory === 'function' ? factory() : undefined;
-  const available = sidebar?.serverName === 'ccd_sidebar' && sidebar.isEnabled({ sessionType: 'ccd' })
-    && ['list_sections', 'create_section', 'move_sessions'].every(name => sidebar.tools.some(tool => tool.name === name))
-    && manager && typeof manager.listCustomGroups === 'function' && typeof manager.getSessionCustomGroup === 'function';
+  let sidebar;
+  let manager;
+  for (const mod of modules) {
+    const exports = mod?.exports;
+    if (!exports || (typeof exports !== 'object' && typeof exports !== 'function')) continue;
+    if (!manager && exports.claudeCodeSessionManager) {
+      const candidate = exports.claudeCodeSessionManager;
+      if (typeof candidate.listCustomGroups === 'function' && typeof candidate.getSessionCustomGroup === 'function') {
+        manager = candidate;
+      }
+    }
+    if (!sidebar) {
+      for (const key of Object.keys(exports)) {
+        let value;
+        try { value = exports[key]; } catch { continue; }
+        let candidate = value;
+        if (typeof value === 'function' && value.length === 0 && /\\bserverName\\b/.test(String(value)) && /\\bhandleToolCall\\b/.test(String(value))) {
+          try { candidate = value(); } catch { continue; }
+        }
+        if (candidate?.serverName === 'ccd_sidebar') {
+          sidebar = candidate;
+          break;
+        }
+      }
+    }
+    if (sidebar && manager) break;
+  }
+  const available = sidebar?.serverName === 'ccd_sidebar'
+    && typeof sidebar.isEnabled === 'function'
+    && typeof sidebar.handleToolCall === 'function'
+    && Array.isArray(sidebar.tools)
+    && sidebar.isEnabled({ sessionType: 'ccd' })
+    && ['list_sections', 'create_section', 'move_sessions'].every(name => sidebar.tools.some(tool => tool?.name === name))
+    && Boolean(manager);
 `;
 
 export class NativeCallError extends Error {}

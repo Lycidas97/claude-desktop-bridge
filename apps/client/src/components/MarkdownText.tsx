@@ -51,8 +51,10 @@ export function extractDownloadableFilePath(raw: string, allowSpaces = false): s
   const trimmed = raw.trim();
   if (!trimmed || trimmed.length > 320 || /[\r\n]/u.test(trimmed) || (!allowSpaces && /\s/u.test(trimmed))) return undefined;
   if (trimmed.startsWith("#") || trimmed.startsWith("-")) return undefined;
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) return undefined;
-  if (/^[^/\\]+:[/\\]/.test(trimmed)) return undefined;
+  if (!/^[a-zA-Z]:[/\\]/u.test(trimmed)) {
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(trimmed)) return undefined;
+    if (/^[^/\\]+:[/\\]/u.test(trimmed)) return undefined;
+  }
   const withoutLine = trimmed.replace(/:\d+(?::\d+)?$/u, "");
   if (!withoutLine || withoutLine === "." || withoutLine === "..") return undefined;
   if (!DOWNLOADABLE_FILE_EXT_RE.test(withoutLine) && !mediaKind(withoutLine)) return undefined;

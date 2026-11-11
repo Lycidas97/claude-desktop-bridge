@@ -38,11 +38,12 @@ npm run audit:runtime
 
 ## GitHub 发布流程
 
-1. 在发布分支整理源码、版本与发布说明，创建指向本 fork `main` 的 PR。
-2. 完成 Quality gate，包括各平台适用的测试、打包与 Windows 安装/配对验收。
-3. 合并发布提交后，由 `.github/workflows/release.yml` 和 `release-assets.yml` 创建或恢复该版本的 Release 草稿，并构建全部平台资产。
-4. 所有平台使用相同提交。任一必要 job 失败时保留草稿，不公开残缺发布；修复后通过工作流重跑。
-5. 全部资产成功后由工作流发布。不要绕过版本校验、单独手动创建 tag，或把先前版本的安装包改名上传。
+1. 在独立工作树发布分支整理源码、同步版本号与 `CHANGELOG.md`，创建指向本 fork（`Lycidas97/claude-desktop-bridge`）`main` 的 PR（严禁推送到 `origin`）。
+2. 完成 PR 的 `Quality gate`（全部 7 个平台/测试 job 成功），确认审查无误后使用 `gh pr merge --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>` 合并。
+3. `ci.yml` 仅对 `pull_request` 自动取消旧运行（`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`），每次 `main` 分支的 `push` CI 均完整运行到底。
+4. 目标发布提交在 `main` 上的 `CI`（`push`）必须满足 `status == "completed"` 且 `conclusion == "success"`（被取消或未完成的运行一律无效）。`release.yml` 与 `release-assets.yml` 均强制校验该条件后才创建/恢复 Release 草稿并构建全部平台资产。
+5. 所有平台使用相同提交。任一必要 job 失败时保留草稿，不公开残缺发布；修复后通过工作流重跑。
+6. 全部资产成功后由工作流发布。不要绕过版本校验、单独手动创建 tag，或把先前版本的安装包改名上传。
 
 具体 job 结果、构建提交与产物哈希以 GitHub Actions 为准。无签名或未签名设备包必须在文件名和发布说明中保留 `ci`、`adhoc` 或 `unsigned` 标记。
 

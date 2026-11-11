@@ -9,6 +9,6 @@
 - @LESSONS.md — verified mistake & retro log (read before implementing or reviewing changes).
 
 ## Hard Guardrails
-- **Remote & PR boundary**: NEVER push branches, tags, or PRs to `origin` (`czhmartinez/claude-desktop-bridge`). Push branches and open/merge Issues & PRs **ONLY** on `fork` (`Lycidas97/claude-desktop-bridge`).
+- **Remote & PR boundary**: NEVER push branches, tags, or PRs to `upstream` (`czhmartinez/claude-desktop-bridge`). Push branches and open/merge Issues & PRs **ONLY** on `origin` (`Lycidas97/claude-desktop-bridge`).
 - **Recycle-bin-only deletion**: NEVER use `rm`, `/bin/rm`, or permanent deletion in shell, Python, or Node. Move deleted paths to the OS Recycle Bin (`/usr/bin/trash` on macOS, `trash-put` on Linux, and `scripts/recycle-cleanup.cjs` via `npm run ci:run -- ...` in Node scripts/tests).
 - **Quarantined legacy code**: NEVER reintroduce SDK/CLI Hosts, provider lanes, or wire new features into `apps/desktop/src/legacy/`.

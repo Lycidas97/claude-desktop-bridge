@@ -173,11 +173,6 @@ export function MobileHostDetails({
             <span>待发送消息</span><span className="mobile-settings-value">{pendingOutbound}</span>
           </div>
         )}
-        {snapshot?.host.version && (
-          <div className="mobile-settings-row">
-            <span>电脑端版本</span><span className="mobile-settings-value">{snapshot.host.version}</span>
-          </div>
-        )}
         {connectionIssue && <p className="inline-error" role="alert">{connectionIssue.message}</p>}
         <div className="mobile-settings-row mobile-settings-actions">
           <button type="button" className="secondary-button" disabled={Boolean(connectionAction) || removing} onClick={() => void runConnectionAction("retry")}>
@@ -234,6 +229,11 @@ export function MobileHostDetails({
       </section>
 
       {permissionSettings}
+
+      {snapshot?.host.version && <section className="mobile-settings-group" aria-labelledby="host-about-title">
+        <h2 id="host-about-title">电脑信息</h2>
+        <div className="mobile-settings-row"><span>电脑端版本</span><span className="mobile-settings-value">{snapshot.host.version}</span></div>
+      </section>}
 
       <section className="mobile-settings-group" aria-label="移除电脑">
         <button type="button" className="mobile-settings-row danger" disabled={removing} onClick={() => setRemoveOpen(true)}>

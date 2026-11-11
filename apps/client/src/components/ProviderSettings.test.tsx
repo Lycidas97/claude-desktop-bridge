@@ -37,11 +37,11 @@ describe("provider settings independent of sessions", () => {
       expect(markup).not.toContain("验证并保存");
     }
   });
-  it("keeps quota discovery independent of retired provider profiles", () => {
+  it.each([true, false])("keeps the inline quota entry only on desktop: %s", desktopLocal => {
     const markup = renderToStaticMarkup(createElement(ProviderSettings, {
-      snapshot: { ...snapshot, providers: [], host: { ...snapshot.host, capabilities: ["plugin.magpie-quota.v1"] } }, onRefresh: vi.fn(),
+      snapshot: { ...snapshot, providers: [], host: { ...snapshot.host, capabilities: ["plugin.magpie-quota.v1"] } }, desktopLocal, onRefresh: vi.fn(),
     }));
-    expect(markup).toContain("Magpie 额度");
+    expect(markup.includes("Magpie 额度")).toBe(desktopLocal);
   });
   it("disables refresh while the paired computer is offline", () => {
     expect(html(false, false)).toMatch(/disabled=""[^>]*>.*重新检测/s);

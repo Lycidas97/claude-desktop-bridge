@@ -63,11 +63,16 @@ async function eventually(read, expected, message, timeout = 15_000) {
 }
 
 async function syncNativeSections(host) {
-  const { capable, projects, sessions } = await host.nativeApproval.sectionCatalog();
+  const { capable, moveCapable, runtimeCapabilities, projects, sessions } = await host.nativeApproval.sectionCatalog();
   host.snapshot.projects = projects;
   host.snapshot.sessions = sessions;
-  host.snapshot.host.capabilities = host.snapshot.host.capabilities.filter(value => value !== "section.create.v1");
+  host.snapshot.host.capabilities = host.snapshot.host.capabilities.filter(
+    value => !["section.create.v1", "section.move.v1", "directory.browse.v1", "directory.mkdir.v1"].includes(value),
+  );
+  host.snapshot.host.capabilities.push("directory.browse.v1", "directory.mkdir.v1");
   if (capable) host.snapshot.host.capabilities.push("section.create.v1");
+  if (moveCapable) host.snapshot.host.capabilities.push("section.move.v1");
+  if (host.snapshot.runtimes?.[0]) host.snapshot.runtimes[0].capabilities = runtimeCapabilities;
 }
 
 async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false) {
@@ -417,11 +422,19 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           if (sectionCreatePreview) await syncNativeSections(host);
           result = { snapshot }; break;
         case "section.create":
+        case "section.move":
+        case "session.create":
           try {
-            result = await host.nativeApproval.createSection(request);
+            result = await host.nativeApproval.controllerRequest(request);
             await syncNativeSections(host);
             await host.send({ kind: "snapshot", snapshot });
           } catch (failure) { error = { code: "NATIVE_SECTION_REJECTED", message: failure.message }; }
+          break;
+        case "directory.list":
+        case "directory.mkdir":
+          try {
+            result = await host.nativeApproval.controllerRequest(request);
+          } catch (failure) { error = { code: "DIRECTORY_REJECTED", message: failure.message }; }
           break;
         case "events.resume": {
           const resumed = events.filter((event) => event.seq > request.params.afterSeq);
@@ -1808,9 +1821,10 @@ try {
                 await syncNativeSections(previewHost);
                 if (!["offline", "connected"].includes(url.searchParams.get("connection"))) await previewHost.send({ kind: "snapshot", snapshot: previewHost.snapshot });
               }
-              result = { projects: previewHost.snapshot.projects, calls: fixture.calls, scope: fixture.scope,
+              result = { projects: previewHost.snapshot.projects, sessions: previewHost.snapshot.sessions,
+                miscRoot: previewHost.nativeApproval.miscRoot, calls: fixture.calls, scope: fixture.scope,
                 persisted: JSON.parse(await readFile(fixture.profile, "utf8")),
-                sectionRequests: previewHost.requests.filter(request => request.method === "section.create").map(({ method, params }) => ({ method, params })),
+                sectionRequests: previewHost.requests.filter(request => ["section.create", "section.move", "directory.mkdir", "session.create"].includes(request.method)).map(({ method, params }) => ({ method, params })),
                 errors: infrastructureErrors };
             } else if (remotePreview && request.method === "GET" && url.pathname === "/remote/state") {
               result = previewHost.remoteState();

@@ -35,6 +35,7 @@ class NativeDesktop extends EventEmitter {
   normalizeModel: ((model: string) => string) | undefined;
   sentModels: unknown[] = [];
   canRewind = true;
+  contextUsage: Record<string, unknown> | null = null;
   filesPreview: Record<string, unknown> | null = { canRewind: true, filesChanged: ["src/native.ts"], insertions: 4, deletions: 2 };
   filesRestore: Record<string, unknown> | null = { canRewind: true };
   filesPreviewError: Error | undefined;
@@ -51,6 +52,7 @@ class NativeDesktop extends EventEmitter {
     if (method === "delete") this.sessions = this.sessions.filter(session => session.sessionId !== args[0]);
     const session = this.sessions.find(session => session.sessionId === args[0]);
     if (method === "getSession") return structuredClone(session);
+    if (method === "getContextUsage") return structuredClone(this.contextUsage);
     if (method === "getTranscriptPage") return this.pages.get(String(args[1] ?? "")) ?? this.page;
     if (method === "getTranscript") return this.page.messages;
     if (method === "canRewindTo") return this.canRewind;
@@ -213,7 +215,50 @@ describe("native Sections", () => {
       sections.supported = false;
       await f.bridge.refreshRuntime();
       expect(f.bridge.capabilities()).not.toContain("section.create");
+      expect(f.bridge.capabilities()).not.toContain("section.move");
       expect(f.native.calls.every(call => call.method !== "start")).toBe(true);
+    } finally { await f.close(); }
+  });
+
+  it("moves existing sessions into, between and out of native Sections while preserving cwd and eligibility gates", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions.push(
+        { sessionId: "local-archived", cwd: "/archived", title: "Archived", isArchived: true, turnRunning: false },
+        { sessionId: "local-scheduled", cwd: "/scheduled", title: "Scheduled", scheduledTaskId: "task-1", turnRunning: false },
+      );
+      await expect(f.bridge.moveSessionSection("local-native", null)).rejects.toThrow("does not support Sections");
+      const sections = await createNativeSectionFixture(f.directory);
+      Object.assign(f.native, { sections: sections.sections, createSection: sections.createSection, assignSection: sections.assignSection });
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.capabilities()).toContain("section.move");
+      expect(f.bridge.session("local-native")?.allowedActions?.canMoveSection).toBe(true);
+      expect(f.bridge.session("local-archived")?.allowedActions?.canMoveSection).toBeUndefined();
+      expect(f.bridge.session("local-scheduled")?.allowedActions?.canMoveSection).toBeUndefined();
+
+      const zahuo = await f.bridge.createSection("杂活");
+      const research = await f.bridge.createSection("Research");
+      const originalProjectId = f.bridge.session("local-native")!.projectId;
+      const originalCwd = f.bridge.session("local-native")!.cwd;
+
+      const inZahuo = await f.bridge.moveSessionSection("local-native", zahuo.projectId);
+      expect(inZahuo).toMatchObject({ projectId: zahuo.projectId, projectName: "杂活", cwd: originalCwd });
+      expect(f.bridge.listProjects().find(value => value.projectId === zahuo.projectId)).toMatchObject({ sessionCount: 1 });
+
+      const inResearch = await f.bridge.moveSessionSection("local-native", research.projectId);
+      expect(inResearch).toMatchObject({ projectId: research.projectId, projectName: "Research", cwd: originalCwd });
+      expect(f.bridge.listProjects().find(value => value.projectId === zahuo.projectId)).toMatchObject({ sessionCount: 0 });
+      expect(f.bridge.listProjects().find(value => value.projectId === research.projectId)).toMatchObject({ sessionCount: 1 });
+
+      const ungrouped = await f.bridge.moveSessionSection("local-native", null);
+      expect(sections.calls.at(-1)).toEqual({ method: "move_sessions", scope: "account-a/org-a", sessionId: "local-native", sectionId: "sessions" });
+      expect(ungrouped).toMatchObject({ projectId: originalProjectId, cwd: originalCwd });
+      expect(f.bridge.listProjects().find(value => value.projectId === research.projectId)).toMatchObject({ sessionCount: 0 });
+      expect(f.bridge.listProjects().some(value => value.projectId === originalProjectId)).toBe(true);
+
+      await expect(f.bridge.moveSessionSection("local-archived", zahuo.projectId)).rejects.toThrow("cannot be moved");
+      await expect(f.bridge.moveSessionSection("local-scheduled", zahuo.projectId)).rejects.toThrow("cannot be moved");
+      await expect(f.bridge.moveSessionSection("local-native", originalProjectId)).rejects.toThrow("no longer available");
     } finally { await f.close(); }
   });
 });
@@ -2861,5 +2906,168 @@ describe("Claude native relay", () => {
     const items = nativeHistoryItems("native", [{ type: "user", uuid: "hidden", message: { content: "[Request interrupted by user]" } }, { type: "assistant", uuid: "question", message: { content: [{ type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }] } }] } }]);
     expect(items.some(item => item.text.includes("Request interrupted"))).toBe(false);
     expect(items.find(item => item.interactivePrompt)?.interactivePrompt?.kind).toBe("question");
+  });
+
+  it("prioritizes live getContextUsage and falls back to single-turn main-chain transcript usage across known, [1m], and unknown models", async () => {
+    const f = await fixture();
+    try {
+      expect(f.bridge.session("local-native")?.contextUsage).toBeUndefined();
+
+      f.native.sessions[0]!.model = "claude-opus-5-5";
+      f.native.contextUsage = { totalTokens: 64_200, rawMaxTokens: 1_000_000, model: "claude-opus-5-5" };
+      f.native.page = {
+        messages: [{
+          type: "assistant",
+          uuid: "older-turn",
+          message: { id: "msg_1", model: "claude-opus-5-5", content: "hi", usage: { input_tokens: 12_000, output_tokens: 400 } },
+        }],
+        hasMore: false,
+      };
+      const controller = Object.assign(Object.create(DesktopController.prototype), {
+        broker: f.bridge,
+        eventLog: f.eventLog,
+        allSessions: () => f.bridge.listSessions(),
+      });
+      const openedLive = await controller.handleRequest({
+        kind: "request", requestId: "open-live", idempotencyKey: "open-live", method: "session.open", params: { sessionId: "local-native" },
+      }, "mobile", "phone");
+      expect(openedLive.session?.contextUsage).toEqual({
+        totalTokens: 64_200,
+        maxTokens: 1_000_000,
+        percentage: 6.4,
+        model: "claude-opus-5-5",
+        estimated: false,
+      });
+
+      // Idle fallback: getContextUsage returns null, sidechain messages > 50 do not hide or pollute main-chain usage.
+      f.native.contextUsage = null;
+      f.native.sessions[0]!.model = "claude-sonnet-4-5";
+      await f.bridge.refreshRuntime();
+      const trailingSidechains = Array.from({ length: 50 }, (_, index) => ({
+        type: "assistant",
+        uuid: `side-${index}`,
+        isSidechain: true,
+        message: { id: `sub_${index}`, model: "claude-haiku-4-5", content: "sub", usage: { input_tokens: 150_000, output_tokens: 1_000 } },
+      }));
+      f.native.pages.set("", { messages: trailingSidechains, hasMore: true });
+      f.native.pages.set("side-0", {
+        messages: [
+          { type: "assistant", uuid: "main-1", message: { id: "m1", model: "claude-sonnet-4-5", content: "first", usage: { input_tokens: 18_000, output_tokens: 500 } } },
+          { type: "assistant", uuid: "main-2", message: { id: "m2", model: "claude-sonnet-4-5", content: "second", usage: { input_tokens: 10_000, cache_read_input_tokens: 30_000, output_tokens: 800 } } },
+        ],
+        hasMore: false,
+      });
+      await f.bridge.history("local-native", undefined, 50);
+      expect(f.bridge.session("local-native")?.contextUsage).toEqual({
+        totalTokens: 40_800,
+        maxTokens: 200_000,
+        percentage: 20.4,
+        model: "claude-sonnet-4-5",
+        estimated: true,
+      });
+
+      // Explicit [1m] suffix upgrades capacity to 1,000,000; custom third-party model omits unknown capacity.
+      f.native.codeModels = ["claude-sonnet-4-5[1m]", "antigravity/gemini-3-pro"];
+      await f.bridge.configureSession({ sessionId: "local-native", model: "claude-sonnet-4-5[1m]" });
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({
+        totalTokens: 40_800,
+        maxTokens: 1_000_000,
+        percentage: 4.1,
+      });
+
+      await f.bridge.configureSession({ sessionId: "local-native", model: "antigravity/gemini-3-pro" });
+      expect(f.bridge.session("local-native")?.contextUsage).toEqual({
+        totalTokens: 40_800,
+        model: "antigravity/gemini-3-pro",
+        estimated: true,
+      });
+    } finally { await f.close(); }
+  });
+
+  it("tracks streaming growth, ignores sidechains, and updates or clears context usage across /compact and rewind", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.model = "claude-opus-5-5";
+      await f.bridge.refreshRuntime();
+
+      await f.message({
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: { id: "msg_live", model: "claude-opus-5-5", usage: { input_tokens: 5_000, cache_read_input_tokens: 45_000, output_tokens: 20 } },
+        },
+      });
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 50_020, maxTokens: 1_000_000, percentage: 5 });
+
+      await f.message({
+        type: "stream_event",
+        event: { type: "message_delta", usage: { output_tokens: 480 } },
+      });
+      expect(f.bridge.session("local-native")?.contextUsage?.totalTokens).toBe(50_480);
+
+      // Subagent sidechain stream_event and assistant messages must not overwrite main-chain context usage.
+      await f.message({
+        type: "assistant",
+        uuid: "sub-msg",
+        parent_tool_use_id: "toolu_sub",
+        message: { id: "msg_sub", model: "claude-haiku-4-5", content: "subagent", usage: { input_tokens: 190_000, output_tokens: 2_000 } },
+      });
+      expect(f.bridge.session("local-native")?.contextUsage?.totalTokens).toBe(50_480);
+
+      await f.message({
+        type: "assistant",
+        uuid: "main-msg",
+        message: { id: "msg_live", model: "claude-opus-5-5", content: "done", usage: { input_tokens: 5_000, cache_read_input_tokens: 45_000, output_tokens: 500 } },
+      });
+      await f.message({
+        type: "result",
+        uuid: "res-1",
+        modelUsage: {
+          "claude-haiku-4-5": { contextWindow: 200_000 },
+          "claude-opus-5-5": { contextWindow: 1_000_000 },
+        },
+      });
+      expect(f.bridge.session("local-native")?.contextUsage).toEqual({
+        totalTokens: 50_500,
+        maxTokens: 1_000_000,
+        percentage: 5.1,
+        model: "claude-opus-5-5",
+        estimated: false,
+      });
+
+      // /compact with postTokens adopts compacted token count and ignores preserved pre-compact assistant replay.
+      await f.message({
+        type: "system",
+        subtype: "compact_boundary",
+        uuid: "compact-1",
+        compactMetadata: { preTokens: 50_500, postTokens: 9_200, preservedSegment: { headUuid: "u1", tailUuid: "main-msg" } },
+      });
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 9_200, maxTokens: 1_000_000, percentage: 0.9, estimated: true });
+
+      await f.message({
+        type: "assistant",
+        uuid: "main-msg",
+        message: { id: "msg_live", model: "claude-opus-5-5", content: "replayed", usage: { input_tokens: 50_000, output_tokens: 500 } },
+      });
+      expect(f.bridge.session("local-native")?.contextUsage?.totalTokens).toBe(9_200);
+
+      // Rewind clears stale context even if post-rewind readback disconnects.
+      f.native.page = {
+        messages: [
+          { type: "user", uuid: "rewind-user", message: { role: "user", content: "Initial prompt" } },
+          { type: "assistant", uuid: "post-compact-reply", message: { id: "msg_after", model: "claude-opus-5-5", content: "Reply", usage: { input_tokens: 14_000, output_tokens: 300 } } },
+        ],
+        hasMore: false,
+      };
+      const originalCall = f.native.call.bind(f.native);
+      vi.spyOn(f.native, "call").mockImplementation((method, args) => {
+        if (method === "getSession" && f.native.calls.some(call => call.method === "rewindV2")) {
+          return Promise.reject(new InspectorDisconnectedError("Disconnected after rewindV2"));
+        }
+        return originalCall(method, args);
+      });
+      await f.bridge.rewindSession("local-native", "rewind-user", "conversation");
+      expect(f.bridge.session("local-native")?.contextUsage).toBeUndefined();
+    } finally { await f.close(); }
   });
 });

@@ -227,14 +227,20 @@ describe("Magpie connection settings", () => {
   });
 });
 
+function desktopProvider(settingsProps: ComponentProps<typeof DesktopSettings>) {
+  const wrapper = DesktopSettings(settingsProps);
+  elements(wrapper).find(element => element.type === "button" && text(element.props.children) === "模型与网关")!.props.onClick();
+  hooks.index = 0;
+  return elements(DesktopSettings(settingsProps)).find(element => element.type === ProviderSettings)!;
+}
+
 describe("desktop Magpie API wiring", () => {
   it("passes the optional methods through and publishes the saved snapshot", async () => {
     hooks.slots = []; hooks.index = 0;
     const saved = { ...host, magpie: { mode: "auto", keyConfigured: false } } as DesktopControlSnapshot;
     const api = { testMagpieConnection: vi.fn().mockResolvedValue(ready), saveMagpieConnection: vi.fn().mockResolvedValue(saved) };
     const onSnapshot = vi.fn();
-    const wrapper = DesktopSettings({ snapshot: host as DesktopControlSnapshot, api, onSnapshot } as unknown as ComponentProps<typeof DesktopSettings>);
-    const provider = elements(wrapper).find((element) => element.type === ProviderSettings)!;
+    const provider = desktopProvider({ snapshot: host as DesktopControlSnapshot, api, onSnapshot } as unknown as ComponentProps<typeof DesktopSettings>);
     const input = { mode: "auto" } as const;
     expect(await provider.props.onTestMagpieConnection(input)).toBe(ready);
     expect(onSnapshot).not.toHaveBeenCalled();
@@ -246,8 +252,7 @@ describe("desktop Magpie API wiring", () => {
 
   it("omits the edit callbacks on an older desktop host", () => {
     hooks.slots = []; hooks.index = 0;
-    const wrapper = DesktopSettings({ snapshot: host as DesktopControlSnapshot, api: {} } as unknown as ComponentProps<typeof DesktopSettings>);
-    const provider = elements(wrapper).find((element) => element.type === ProviderSettings)!;
+    const provider = desktopProvider({ snapshot: host as DesktopControlSnapshot, api: {} } as unknown as ComponentProps<typeof DesktopSettings>);
     expect(provider.props.onTestMagpieConnection).toBeUndefined();
     expect(provider.props.onSaveMagpieConnection).toBeUndefined();
   });

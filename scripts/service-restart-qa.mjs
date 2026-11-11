@@ -280,7 +280,7 @@ try {
   if (inspectorCheck) {
     const page = ui.page;
     await page.getByRole('button', { name: '设置', exact: true }).click();
-    await page.getByRole('button', { name: '诊断与关于', exact: true }).click();
+    await page.getByRole('button', { name: 'Claude 接入', exact: true }).click();
     const card = page.getByRole('region', { name: 'Claude Desktop 开发者工具' });
     const enable = card.getByRole('button', { name: '一键开启', exact: true });
     const check = card.getByRole('button', { name: '重新检查', exact: true });
@@ -302,7 +302,9 @@ try {
     await writeFile(targetPath, '{broken');
     await check.click();
     await card.getByRole('alert').waitFor();
-    assert.equal(await enable.isDisabled(), true);
+    assert.equal(await enable.isEnabled(), true, 'A failed check must not lock the action');
+    await enable.click();
+    await card.getByRole('alert').filter({ hasText: '不是有效 JSON' }).waitFor();
     assert.equal(await readFile(targetPath, 'utf8'), '{broken');
     await page.screenshot({ path: join(root, 'developer-invalid-json.png'), fullPage: true });
     await card.getByLabel('配置目录').selectOption('Claude');
@@ -316,7 +318,7 @@ try {
       for (const contents of webContents.getAllWebContents()) if (contents.getURL().startsWith('file:')) contents.send('bridge:snapshot', next);
     }, { ...snapshot, claudeInspector: inspectorCheck.status });
     await page.getByText('Claude 调试接口存在未认可的进程连接', { exact: true }).waitFor();
-    const monitorRegion = card.getByRole('region', { name: '调试连接监测' });
+    const monitorRegion = page.getByRole('region', { name: '调试连接监测' });
     await monitorRegion.getByText(`PID ${process.pid} · node · 未认可路径`, { exact: true }).waitFor();
     assert.ok((await monitorRegion.textContent()).includes(inspectorCheck.proof.fullNodePath));
     await page.screenshot({ path: join(root, 'inspector-banner.png'), fullPage: true });

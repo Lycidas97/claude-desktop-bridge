@@ -35,7 +35,8 @@ describe("Magpie quota entry in settings", () => {
   it("leads settings with the dashboard entry for a computer that declares the plugin", () => {
     const html = render({ desktopName: "Studio Mac", onOpen: vi.fn() });
     expect(html).toContain("Magpie 额度");
-    expect(html).toContain("Studio Mac · 各账号剩余额度与重置时间");
+    expect(html).toContain("当前电脑 · Studio Mac");
+    expect(html).toContain("各账号剩余额度与重置时间");
     expect(html.indexOf("Magpie 额度")).toBeLessThan(html.indexOf("外观"));
   });
 

@@ -49,6 +49,8 @@ import {
   ChevronsUp,
   CircleStop,
   FilePenLine,
+  Folder,
+  FolderOpen,
   FolderPlus,
   Forward,
   GitFork,
@@ -120,7 +122,7 @@ import {
 } from "./ProviderSwitchDialog.js";
 import { SessionCreateDialog } from "./SessionCreateDialog.js";
 import "./section-create.css";
-import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
+import { SessionActivityIndicator, SessionContextUsageBar } from "./SessionActivityIndicator.js";
 import { TaskPlanCard } from "./TaskPlanCard.js";
 import { SlashCommandInput } from "./SlashCommandInput.js";
 import { useSessionCommands } from "../hooks/useSessionCommands.js";
@@ -1718,7 +1720,9 @@ export function MobileWorkspace({
   onResolvePermission,
   onCreateSession,
   onCreateSection,
+  onMoveSessionSection,
   onBrowseDirectory,
+  onCreateDirectory,
   onForkSession,
   onLoadBackgroundTasks,
   onLoadSessionConfiguration,
@@ -1780,7 +1784,9 @@ export function MobileWorkspace({
     mode?: BridgeNativePermissionMode,
   ): Promise<void>;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
+  onCreateDirectory?(parentPath: string, name: string): Promise<string>;
   onCreateSection?(name: string): Promise<BridgeProjectInfo | undefined>;
+  onMoveSessionSection?(sessionId: string, sectionId: string | null): Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] }>;
   onCreateSession(
     cwd: string,
     title?: string,
@@ -1883,6 +1889,7 @@ export function MobileWorkspace({
   const [refreshing, setRefreshing] = useState(false);
   const [syncFlash, setSyncFlash] = useState(false);
   const [menuSessionId, setMenuSessionId] = useState<string>();
+  const [moveMenuSessionId, setMoveMenuSessionId] = useState<string>();
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
   const [deleteSessionConfirmOpen, setDeleteSessionConfirmOpen] = useState(false);
@@ -2034,6 +2041,17 @@ export function MobileWorkspace({
     Boolean(session.archivedAt)
   ))), [sessions]);
   const menuSession = menuSessionId ? sessions.find((session) => session.sessionId === menuSessionId) : undefined;
+  const moveMenuOpen = Boolean(menuSession && moveMenuSessionId === menuSession.sessionId);
+  const manualSections = useMemo(
+    () => (snapshot?.projects ?? []).filter((project) => project.kind === "desktop-group"),
+    [snapshot?.projects],
+  );
+  const currentMenuSection = menuSession ? manualSections.find((project) => project.projectId === menuSession.projectId) : undefined;
+  const menuSupportsMoveSection = Boolean(
+    onMoveSessionSection
+    && snapshot?.host.capabilities.includes("section.move.v1")
+    && menuSession?.allowedActions?.canMoveSection,
+  );
   const menuSupportsRename = Boolean(onRenameSession && snapshot?.host.capabilities.includes("session.rename.v1"));
   const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== menuSession?.title && !sessionActionBusy);
   const menuSupportsFork = Boolean(menuSession && onForkSession && desktopRuntimeId(menuSession) === "claude-desktop");
@@ -2082,6 +2100,14 @@ export function MobileWorkspace({
     if (restorableSessionId(selectedSessionId, sessions)) return;
     setSelectedSessionId(undefined);
   }, [activeHostId, selectedSessionId, sessions, snapshot]);
+
+  useEffect(() => {
+    if (!snapshot || !activeProjectId || activeProjectId === "__archived__") return;
+    if (!snapshot.projects.some((project) => project.projectId === activeProjectId)) {
+      setProjectSearch("");
+      setActiveProjectId(undefined);
+    }
+  }, [activeProjectId, snapshot]);
 
   const autoRetriedSessionRef = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -2141,7 +2167,10 @@ export function MobileWorkspace({
         return true;
       }
       if (menuSessionId) {
-        setMenuSessionId(undefined);
+        if (!sessionActionBusy) {
+          if (moveMenuSessionId === menuSessionId) setMoveMenuSessionId(undefined);
+          else setMenuSessionId(undefined);
+        }
         return true;
       }
       if (projectOrderOpen) {
@@ -2179,6 +2208,7 @@ export function MobileWorkspace({
     projectOrderOpen,
     fileDownloadBusy,
     menuSessionId,
+    moveMenuSessionId,
     pendingFileDownload,
     stopSubagentTarget,
     subagentStopBusy,
@@ -2510,6 +2540,25 @@ export function MobileWorkspace({
     }
   }
 
+  async function moveSessionToSection(sessionId: string, sectionId: string | null): Promise<void> {
+    if (!onMoveSessionSection || sessionActionBusy || connection !== "connected" || !desktopOnline) return;
+    setSessionActionBusy(true);
+    setSessionActionError(undefined);
+    try {
+      const updated = await onMoveSessionSection(sessionId, sectionId);
+      const targetProjectId = sectionId ?? updated.session?.projectId;
+      if (targetProjectId) {
+        setCollapsedProjectIds((current) => expandProject(current, targetProjectId));
+      }
+      setMoveMenuSessionId(undefined);
+      setMenuSessionId(undefined);
+    } catch (error) {
+      setSessionActionError(error instanceof Error ? error.message : "移动分组失败");
+    } finally {
+      setSessionActionBusy(false);
+    }
+  }
+
   function closeRename(): void {
     if (sessionActionBusy) return;
     setRenameOpen(false);
@@ -2628,11 +2677,61 @@ export function MobileWorkspace({
       />}
       {menuSession && !renameOpen && (
         <MobileSheet
-          eyebrow={`${menuSession.projectName} · ${desktopRuntimeName(desktopRuntimeId(menuSession))}`}
-          title={menuSession.title}
+          eyebrow={moveMenuOpen ? menuSession.title : `${menuSession.projectName} · ${desktopRuntimeName(desktopRuntimeId(menuSession))}`}
+          title={moveMenuOpen ? "移动到分组" : menuSession.title}
           busy={sessionActionBusy}
-          onClose={() => setMenuSessionId(undefined)}
+          onClose={() => {
+            setMoveMenuSessionId(undefined);
+            setMenuSessionId(undefined);
+          }}
+          {...(moveMenuOpen ? {
+            footer: (
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={sessionActionBusy}
+                onClick={() => {
+                  setSessionActionError(undefined);
+                  setMoveMenuSessionId(undefined);
+                }}
+              >
+                返回
+              </button>
+            ),
+          } : {})}
         >
+          {moveMenuOpen ? (
+            <>
+              {manualSections.length > 0 && (
+                <div className="m-group">
+                  {manualSections.map((section) => {
+                    const isCurrent = currentMenuSection?.projectId === section.projectId;
+                    return (
+                      <SheetAction
+                        key={section.projectId}
+                        icon={isCurrent ? <Check size={19} /> : <Folder size={19} />}
+                        label={section.name}
+                        detail={isCurrent ? "当前所在分组" : undefined}
+                        disabled={sessionActionBusy || connection !== "connected" || !desktopOnline || isCurrent}
+                        onClick={() => void moveSessionToSection(menuSession.sessionId, section.projectId)}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+              {currentMenuSection && (
+                <div className="m-group">
+                  <SheetAction
+                    icon={<FolderOpen size={19} />}
+                    label="移出分组"
+                    disabled={sessionActionBusy || connection !== "connected" || !desktopOnline}
+                    onClick={() => void moveSessionToSection(menuSession.sessionId, null)}
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
           {menuSession === selectedSession && (
             <div className="m-group">
               <SheetAction
@@ -2679,6 +2778,18 @@ export function MobileWorkspace({
                   setRenameTitle(menuSession.title);
                   setSessionActionError(undefined);
                   setRenameOpen(true);
+                }}
+              />
+            )}
+            {menuSupportsMoveSection && (
+              <SheetAction
+                icon={<Folder size={19} />}
+                label="移动到分组"
+                detail={currentMenuSection ? currentMenuSection.name : manualSections.length > 0 ? "未分组" : "暂无可用分组"}
+                disabled={sessionActionBusy || connection !== "connected" || !desktopOnline || (!currentMenuSection && manualSections.length === 0)}
+                onClick={() => {
+                  setSessionActionError(undefined);
+                  setMoveMenuSessionId(menuSession.sessionId);
                 }}
               />
             )}
@@ -2740,6 +2851,8 @@ export function MobileWorkspace({
                 />
               )}
             </div>
+          )}
+            </>
           )}
           {sessionActionBusy && <p className="m-sheet-note" role="status"><LoaderCircle className="is-spinning" size={15} />正在处理…</p>}
           {sessionActionError && <p className="m-sheet-note is-error" role="alert">{sessionActionError}</p>}
@@ -2906,6 +3019,7 @@ export function MobileWorkspace({
               )}
               <IconButton label="会话操作" onClick={() => {
                 setSessionActionError(undefined);
+                setMoveMenuSessionId(undefined);
                 setMenuSessionId(selectedSession.sessionId);
               }}><MoreHorizontal size={22} /></IconButton>
             </>
@@ -3300,6 +3414,7 @@ export function MobileWorkspace({
         {sessionView === "conversation" && (
         <>
         <SessionActivityIndicator activity={activity} />
+        <SessionContextUsageBar usage={selectedSession.contextUsage} />
         <section className="mobile-composer">
           {connectionIssue && (
             <button type="button" className="composer-connection" onClick={() => void onRetry()}>
@@ -3459,7 +3574,7 @@ export function MobileWorkspace({
   const activeGroupQuery = projectSearch.trim().toLocaleLowerCase();
   const activeGroupSessions = activeGroupQuery
     ? activeGroupSessionsAll.filter((session) => (
-        `${session.title}\n${session.currentSummary ?? ""}\n${desktopRuntimeName(desktopRuntimeId(session))}`
+        `${session.title}\n${session.currentSummary ?? ""}\n${session.cwd}\n${desktopRuntimeName(desktopRuntimeId(session))}`
           .toLocaleLowerCase()
           .includes(activeGroupQuery)
       ))
@@ -3498,6 +3613,13 @@ export function MobileWorkspace({
     const forksExpanded = expandedForkParents.has(session.sessionId);
     const badgeLabel = session.sidechat ? "/btw" : (session.forkLabel || "fork");
     const badgeClassName = `session-fork-badge${session.sidechat ? " is-sidechat" : ""}`;
+    const sessionProject = !isArchivedRow
+      ? snapshot?.projects.find((candidate) => candidate.projectId === session.projectId)
+      : undefined;
+    const sessionFolder = session.cwd.replace(/[\\/]+$/u, "").split(/[\\/]/u).at(-1) || "";
+    const subfolderLabel = sessionProject?.kind === "desktop-group" && sessionFolder && sessionFolder !== sessionProject.name
+      ? sessionFolder
+      : "";
     return (
       <div className="mobile-session-family" key={session.sessionId}>
         <div className={`session-row-v2 ${isForkChild ? "is-fork-child" : ""}`} data-session-id={session.sessionId}>
@@ -3516,6 +3638,7 @@ export function MobileWorkspace({
                 )}
               </strong>
               <small>
+                {subfolderLabel ? `${subfolderLabel} · ` : ""}
                 {relativeTime(session.lastActivityAt)}
                 {!isArchivedRow && session.currentSummary ? ` · ${session.currentSummary}` : ""}
               </small>
@@ -3531,6 +3654,7 @@ export function MobileWorkspace({
               className="session-row-action"
               onClick={() => {
                 setSessionActionError(undefined);
+                setMoveMenuSessionId(undefined);
                 setMenuSessionId(session.sessionId);
               }}
             >
@@ -3818,6 +3942,7 @@ export function MobileWorkspace({
           connected={connection === "connected" && desktopOnline}
           initialProjectId={createProjectId}
           {...(onBrowseDirectory ? { onBrowseDirectory } : {})}
+          {...(onCreateDirectory ? { onCreateDirectory } : {})}
           onCreate={onCreateSession}
           onCreated={(created) => {
             setCollapsedProjectIds((current) => expandProject(current, created.projectId));

@@ -58,8 +58,13 @@ describe("isBridgePayload", () => {
     expect(isBridgePayload({ kind: "request", requestId: "return", idempotencyKey: "return", method: "session.return_to_desktop", params: { sessionId: "session" } })).toBe(true);
   });
 
-  it("accepts native section creation on the paired channel", () => {
+  it("accepts native section creation and movement on the paired channel", () => {
     expect(isBridgePayload({ kind: "request", requestId: "section", idempotencyKey: "section", method: "section.create", params: { name: "Research" } })).toBe(true);
+    expect(isBridgePayload({ kind: "request", requestId: "move", idempotencyKey: "move", method: "section.move", params: { sessionId: "local_1", sectionId: null } })).toBe(true);
+  });
+
+  it("accepts controlled directory creation on the paired channel", () => {
+    expect(isBridgePayload({ kind: "request", requestId: "mkdir", idempotencyKey: "mkdir", method: "directory.mkdir", params: { parentPath: "/tmp", name: "demo" } })).toBe(true);
   });
 
   it("still rejects unknown methods", () => {

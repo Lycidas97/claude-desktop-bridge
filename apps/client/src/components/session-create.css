@@ -82,6 +82,37 @@
 .session-create-dialog .session-create-folder-row > input { min-width: 0; width: 0; flex: 1; }
 .session-create-folder-row > button { flex: none; }
 .session-create-path-editor { margin: 12px 0 18px; }
+.session-create-mkdir-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 2px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: calc(14px * var(--font-scale, 1));
+  font-weight: 600;
+  text-align: left;
+}
+.session-create-mkdir-trigger:disabled { color: var(--muted); opacity: 0.55; }
+.session-create-mkdir-trigger:hover:not(:disabled) { background: var(--surface-2); }
+.session-create-mkdir-trigger > svg { flex: none; }
+.session-create-mkdir-box {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+.session-create-mkdir-box label { display: grid; gap: 8px; font-size: calc(13px * var(--font-scale, 1)); }
+.session-create-mkdir-box input { width: 100%; font-size: calc(15px * var(--font-scale, 1)); }
+.session-create-mkdir-box .session-create-error { margin: 0; font-size: calc(13px * var(--font-scale, 1)); }
+.session-create-mkdir-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.session-create-mkdir-actions > button { min-height: 44px; font-size: calc(14px * var(--font-scale, 1)); }
+.session-create-mkdir-actions > .is-confirm { color: var(--accent-ink); border-color: var(--line-strong); font-weight: 600; }
 .session-create-status,
 .session-create-error { margin: 12px 0; color: var(--muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .session-create-status { display: flex; align-items: center; gap: 8px; }
@@ -113,6 +144,7 @@
   .session-create-dialog .session-create-tabs { margin-inline: 20px; }
   .session-create-dialog form input,
   .session-create-dialog form select { font-size: 16px; }
+  .session-create-mkdir-box input { font-size: calc(16px * var(--font-scale, 1)); }
   .session-create-dialog .session-create-actions { padding: 14px max(20px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); }
   .session-create-actions > button { min-height: 48px; }
   .session-create-dialog .icon-button,

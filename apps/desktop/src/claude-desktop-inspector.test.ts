@@ -96,10 +96,12 @@ describe("native Desktop inspector", () => {
       });
       expect(await f.inspector.createSection("<Research>")).toBe("empty");
       await f.inspector.assignSection("local-native", "empty");
+      await f.inspector.assignSection("local-native", "sessions");
       expect(f.sidebar.calls).toEqual([
         { method: "list_sections", params: {} },
         { method: "create_section", params: { name: "<Research>" }, context: {} },
         { method: "move_sessions", params: { session_ids: ["local-native"], section_id: "empty" }, context: { sessionId: "local-native" } },
+        { method: "move_sessions", params: { session_ids: ["local-native"], section_id: "sessions" }, context: { sessionId: "local-native" } },
       ]);
       expect(f.calls).toEqual([]);
       expect(f.events.size).toBe(1);

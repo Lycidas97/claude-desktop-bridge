@@ -105,7 +105,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       online: true,
       lastSeenAt: now,
       version: "1.1.1",
-      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1"] : [])],
+      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1"] : [])],
     },
     projects: [{
       projectId: session.projectId, name: session.projectName, cwd: session.cwd,
@@ -1194,9 +1194,13 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   assert.equal((await stream.innerText()).includes("INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN"), false);
   assert.equal((await stream.innerText()).includes("子代理内部计划"), false);
   for (const label of ["相对报告", "绝对报告"]) {
+    const requestStart = host.requests.length;
     await stream.getByRole("button", { name: label, exact: true }).click();
     const content = page.locator("#text-preview-content");
     await content.waitFor();
+    const opens = host.requests.slice(requestStart).filter(request => request.method === "artifact.transfer.open");
+    assert.equal(opens[0]?.params.purpose, "stat", "File links check metadata before opening the text transfer");
+    assert.ok(opens.length >= 2 && opens.slice(1).every(request => request.params.purpose === "text-preview"), "Content transfers follow the file size check");
     assert.ok((await content.innerText()).includes("worktree"), "The original project-root namesake must not be read");
     assert.equal((await content.innerText()).includes("wrong project root"), false);
     assert.equal(await page.locator(".media-viewer [role=alert]").count(), 0);

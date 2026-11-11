@@ -35,13 +35,12 @@ import {
   type BridgeHandoff,
   type BridgeNativePermissionMode,
   type BridgePermissionInfo,
-  type BridgePermissionMode,
   type BridgeProviderProfile,
+  type BridgeProjectInfo,
   type BridgeRequest,
   type BridgeResponse,
   type BridgeRuntimeGoalInfo,
   type BridgeRuntimeHandoff,
-  type BridgeRuntimeHandoffPreview,
   type BridgeSessionCommandResult,
   type BridgeSessionRewindPreview,
   type BridgeSessionRewindResult,
@@ -944,6 +943,32 @@ function applyEventToSession(
       turnState: "waiting",
     };
   }
+  if (event.type === "session.rewound") {
+    const { contextUsage: _dropped, ...rest } = session;
+    return rest;
+  }
+  if (event.type === "session.compacted") {
+    const postTokens = typeof event.data.postTokens === "number" && Number.isFinite(event.data.postTokens) && event.data.postTokens > 0
+      ? Math.round(event.data.postTokens)
+      : undefined;
+    if (!postTokens) {
+      const { contextUsage: _dropped, ...rest } = session;
+      return rest;
+    }
+    const maxTokens = session.contextUsage?.maxTokens;
+    return {
+      ...session,
+      contextUsage: {
+        totalTokens: postTokens,
+        ...(typeof maxTokens === "number" && maxTokens > 0 ? {
+          maxTokens,
+          percentage: Math.min(100, Math.max(0, Math.round((postTokens / maxTokens) * 1000) / 10)),
+        } : {}),
+        ...(session.contextUsage?.model ? { model: session.contextUsage.model } : {}),
+        estimated: true,
+      },
+    };
+  }
   if (event.type === "runtime.goal.updated") {
     const goal = event.data.goal as BridgeRuntimeGoalInfo | undefined;
     if (goal && typeof goal.objective === "string") return { ...session, goal };
@@ -1241,6 +1266,7 @@ export function useMobileBridge() {
   const sendAttemptedAtRef = useRef<number | undefined>(undefined);
   const nativeRelayCapabilityRef = useRef<boolean | undefined>(undefined);
   const payloadDeflateRef = useRef(false);
+  const pendingCompletionNotificationsRef = useRef(new Set<string>());
 
   const updateHostCache = useCallback((
     roomId: string,
@@ -1482,6 +1508,33 @@ export function useMobileBridge() {
     return responsePromise;
   }, []);
 
+  const notifyCompletedTurns = useCallback((events: BridgeEvent[], crypto: BridgeCrypto) => {
+    const completed = events.filter((event) => event.type === "turn.completed" || event.type === "turn.failed");
+    if (completed.length === 0) return;
+    const seen = new Set(stateRef.current.events.map((event) => event.eventId));
+    const pending = pendingCompletionNotificationsRef.current;
+    // The state event list owns committed IDs. Keep only IDs awaiting a React
+    // commit so queued delivery and resume cannot notify twice in the same batch.
+    for (const id of pending) if (seen.has(id)) pending.delete(id);
+    for (const event of completed) {
+      if (seen.has(event.eventId) || pending.has(event.eventId)) continue;
+      pending.add(event.eventId);
+      if (document.visibilityState === "visible") continue;
+      const title = stateRef.current.snapshot?.sessions.find((session) => session.sessionId === event.sessionId)?.title
+        ?? crypto.identity.desktopName;
+      const body = event.type === "turn.completed" ? "任务已完成" : "任务失败";
+      if (Capacitor.isNativePlatform()) {
+        void showSessionNotification(
+          { hostId: crypto.identity.roomId, ...(event.sessionId ? { sessionId: event.sessionId } : {}) },
+          title,
+          body,
+        );
+      } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        new Notification(title, { body, icon: "/icon-192.png", tag: event.eventId });
+      }
+    }
+  }, []);
+
   const resumeEvents = useCallback(async (bootstrap = false, fromSeq?: number) => {
     const crypto = cryptoRef.current;
     const socket = socketRef.current;
@@ -1514,6 +1567,7 @@ export function useMobileBridge() {
         const latestSeq = typeof result.latestSeq === "number" ? result.latestSeq : cursor;
         if (result.hasMore !== true || cursor >= latestSeq) break;
       }
+      if (crypto) notifyCompletedTurns(events, crypto);
       setState((current) => {
         if (!isCurrent()) return current;
         let turns = current.localTurns;
@@ -1554,7 +1608,7 @@ export function useMobileBridge() {
     } catch {
       // The next reconnect retries from the same cursor.
     }
-  }, [sendRequest]);
+  }, [notifyCompletedTurns, sendRequest]);
 
   const refreshSessionList = useCallback(async (): Promise<boolean> => {
     const crypto = cryptoRef.current;
@@ -1637,6 +1691,7 @@ export function useMobileBridge() {
     socketRef.current?.close();
     socketRef.current = undefined;
     cryptoRef.current = crypto;
+    pendingCompletionNotificationsRef.current.clear();
     linkGateRef.current = () => true;
     desktopHomeRef.current = undefined;
     sendAttemptedAtRef.current = undefined;
@@ -2165,6 +2220,7 @@ export function useMobileBridge() {
         payloadDeflateRef.current = message.payload.snapshot.host.capabilities.includes(PAYLOAD_DEFLATE_CAPABILITY);
         void flushOutbox();
       }
+      if (event) notifyCompletedTurns([event], crypto);
       handlePayload(message.payload, encrypted, crypto);
       if (isNewPermission && document.visibilityState === "visible") {
         navigator.vibrate?.([120, 60, 120]);
@@ -2179,31 +2235,15 @@ export function useMobileBridge() {
               "Claude 正在等待你处理",
             );
           }
-          // assistant.completed fires per message; a turn ends with turn.completed.
-          if (event && (event.type === "turn.completed" || event.type === "turn.failed")) {
-            void showSessionNotification(
-              { hostId: roomId, ...(event.sessionId ? { sessionId: event.sessionId } : {}) },
-              stateRef.current.snapshot?.sessions.find((session) => session.sessionId === event.sessionId)?.title
-                ?? crypto.identity.desktopName,
-              event.type === "turn.completed" ? "任务已完成" : "任务失败",
-            );
-          }
         }
       } else if (
         document.visibilityState !== "visible" &&
         typeof Notification !== "undefined" &&
         Notification.permission === "granted" &&
-        event && (
-          event.type === "assistant.completed" ||
-          event.type === "permission.requested" ||
-          event.type === "question.requested" ||
-          event.type === "turn.failed"
-        )
+        event && (event.type === "permission.requested" || event.type === "question.requested")
       ) {
         new Notification(crypto.identity.desktopName, {
-          body: event.type === "permission.requested" || event.type === "question.requested"
-            ? "Claude 正在等待你处理"
-            : "Bridge 有新的会话动态",
+          body: "Claude 正在等待你处理",
           icon: "/icon-192.png",
           tag: encrypted.id,
         });
@@ -2262,7 +2302,7 @@ export function useMobileBridge() {
         },
       }));
     }, Math.max(12_000, relayEndpoints.length * 8_000 + 2_000));
-  }, [handlePayload, refreshSessionList, refreshSnapshot, resumeEvents, updateHostCache]);
+  }, [handlePayload, notifyCompletedTurns, refreshSessionList, refreshSnapshot, resumeEvents, updateHostCache]);
 
   useEffect(() => {
     setDiagBridgeStateSummary({
@@ -2494,6 +2534,7 @@ export function useMobileBridge() {
       await resumeEvents(true);
       setState((current) => advancePairingSync(current, crypto.identity.roomId, "syncing", 80));
       setState((current) => advancePairingSync(current, crypto.identity.roomId, "ready", 100));
+      void ensureSessionNotificationPermission();
       void nativePushRegistration().then((push) => {
         if (push && cryptoRef.current === crypto && socketRef.current?.state === "connected") {
           socketRef.current.registerPushToken(push.platform, push.token);
@@ -3064,6 +3105,38 @@ export function useMobileBridge() {
     });
   }, [resumeEvents, sendRequest]);
 
+  const createSection = useCallback(async (name: string): Promise<BridgeProjectInfo | undefined> => {
+    const response = await sendRequest("section.create", { name }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "Section 创建失败");
+    const { project } = response.result as { project?: BridgeProjectInfo };
+    if (project) setState(current => current.snapshot ? {
+      ...current, snapshot: { ...current.snapshot, projects: [project, ...current.snapshot.projects.filter(item => item.projectId !== project.projectId)] },
+    } : current);
+    return project;
+  }, [sendRequest]);
+
+  const moveSessionSection = useCallback(async (
+    sessionId: string,
+    sectionId: string | null,
+  ): Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] }> => {
+    const response = await sendRequest("section.move", { sessionId, sectionId }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "移动分组失败");
+    const result = response.result as { session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] };
+    setState((current) => {
+      if (!current.snapshot) return current;
+      const withSession = applySessionToSnapshot(current.snapshot, result.session)!;
+      const snapshot = Array.isArray(result.projects) ? { ...withSession, projects: result.projects } : withSession;
+      return {
+        ...current,
+        snapshot,
+        hosts: current.hosts.map((host) => host.roomId === current.activeHostId
+          ? hostWithRuntimeState(host, snapshot, current.permissions)
+          : host),
+      };
+    });
+    return result;
+  }, [sendRequest]);
+
   const createSession = useCallback(async (
     cwd: string,
     title?: string,
@@ -3209,76 +3282,6 @@ export function useMobileBridge() {
     return result.configuration;
   }, [sendRequest]);
 
-  const configureHostPermission = useCallback(async (
-    runtimeId: BridgeDesktopRuntimeId,
-    mode: BridgePermissionMode,
-    sessionId?: string,
-  ): Promise<BridgePermissionMode | void> => {
-    if (runtimeId === "claude-desktop") throw new Error("Claude 授权由 Desktop 管理。");
-    const crypto = cryptoRef.current;
-    const socket = socketRef.current;
-    const runtimeDefaults = stateRef.current.snapshot?.host.capabilities?.includes("permission.runtime-defaults.v1");
-    if (!runtimeDefaults && (!sessionId
-      || !stateRef.current.snapshot?.sessions.some((session) => session.sessionId === sessionId
-        && session.runtimeId === runtimeId && sessionId.startsWith(`${runtimeId}:`)))) {
-      throw new Error("请先选择该应用的有效会话，再设置默认授权");
-    }
-    const response = await sendRequest("permission.policy.configure", {
-      scope: "host", mode,
-      ...(runtimeDefaults ? { runtimeId } : { sessionId }),
-    }, { wait: true, allowOffline: false, timeoutMs: 45_000 });
-    if (cryptoRef.current !== crypto || socketRef.current !== socket) throw new Error("已切换电脑，请在原电脑查看保存结果");
-    if (!response?.ok) throw new Error(response?.error?.message ?? "默认授权保存失败");
-    const result = response.result as { defaultPermissionMode?: BridgePermissionMode };
-    if (runtimeDefaults && !result.defaultPermissionMode) throw new Error("电脑未返回默认授权确认值");
-    if (result.defaultPermissionMode) {
-      setState((current) => current.snapshot ? {
-        ...current,
-        snapshot: {
-          ...current.snapshot,
-          host: current.snapshot.host,
-          ...(runtimeDefaults ? { runtimes: current.snapshot.runtimes?.map((runtime) => runtime.id === runtimeId ? { ...runtime, defaultPermissionMode: result.defaultPermissionMode! } : runtime) ?? [] } : {}),
-        },
-      } : current);
-    }
-    await resumeEvents();
-    if (runtimeDefaults) return result.defaultPermissionMode;
-  }, [resumeEvents, sendRequest]);
-
-  const configurePermissionPolicy = useCallback(async (
-    sessionId: string,
-    scope: "host" | "session",
-    mode: BridgePermissionMode | null,
-  ): Promise<BridgeSessionConfiguration> => {
-    const session = stateRef.current.snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
-    if (!session?.runtimeId || session.runtimeId === "claude-desktop") throw new Error("Claude 授权由 Desktop 管理。");
-    const response = await sendRequest("permission.policy.configure", {
-      sessionId,
-      scope,
-      mode,
-    }, { wait: true, timeoutMs: 45_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "授权模式保存失败");
-    const result = response.result as {
-      configuration?: BridgeSessionConfiguration;
-      defaultPermissionMode?: BridgePermissionMode;
-    };
-    if (!result.configuration) throw new Error("电脑未返回授权配置");
-    setState((current) => current.snapshot ? {
-      ...current,
-      snapshot: {
-        ...current.snapshot,
-        host: {
-          ...current.snapshot.host,
-          ...(result.defaultPermissionMode
-            ? { defaultPermissionMode: result.defaultPermissionMode }
-            : {}),
-        },
-      },
-    } : current);
-    await resumeEvents();
-    return result.configuration;
-  }, [resumeEvents, sendRequest]);
-
   const previewProviderSwitch = useCallback(async (_sessionId: string, _targetProviderProfileId: string, _model?: string): Promise<never> => {
     throw new Error("Claude 提供方由 Desktop 管理。");
   }, []);
@@ -3295,6 +3298,12 @@ export function useMobileBridge() {
     const response = await sendRequest("directory.list", path ? { path } : {}, { wait: true, allowOffline: false });
     if (!response?.ok) throw new Error(response?.error?.message ?? "文件夹读取失败");
     return (response.result as { listing: BridgeDirectoryListing }).listing;
+  }, [sendRequest]);
+
+  const createDirectory = useCallback(async (parentPath: string, name: string): Promise<string> => {
+    const response = await sendRequest("directory.mkdir", { parentPath, name }, { wait: true, allowOffline: false });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "新建文件夹失败");
+    return (response.result as { path: string }).path;
   }, [sendRequest]);
 
   const redetectProviders = useCallback(async (): Promise<void> => {
@@ -3489,82 +3498,6 @@ export function useMobileBridge() {
     if (crypto) await start(crypto);
   }, [start]);
 
-  const previewRuntimeHandoff = useCallback(async (
-    sessionId: string,
-    targetRuntimeId: BridgeDesktopRuntimeId,
-  ): Promise<BridgeRuntimeHandoffPreview> => {
-    const response = await sendRequest("runtime.handoff.preview", {
-      sessionId,
-      targetRuntimeId,
-    }, { wait: true, timeoutMs: 60_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "跨 Desktop 接力预览失败");
-    const result = response.result as { preview?: BridgeRuntimeHandoffPreview };
-    if (!result.preview?.handoff) throw new Error("电脑未返回完整接力预览");
-    return result.preview;
-  }, [sendRequest]);
-
-  const commitRuntimeHandoff = useCallback(async (handoffId: string) => {
-    const response = await sendRequest("runtime.handoff.commit", {
-      handoffId,
-    }, { wait: true, timeoutMs: 60_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "跨 Desktop 接力失败");
-    const result = response.result as { handoff?: BridgeRuntimeHandoff };
-    if (!result.handoff) throw new Error("电脑未返回接力状态");
-    return result.handoff;
-  }, [sendRequest]);
-
-  const confirmRuntimeHandoff = useCallback(async (handoffId: string, objective?: string) => {
-    const response = await sendRequest("runtime.handoff.confirm", {
-      handoffId,
-      ...(objective?.trim() ? { objective: objective.trim() } : {}),
-    }, { wait: true, timeoutMs: 60_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "确认执行失败");
-    const result = response.result as { handoff?: BridgeRuntimeHandoff; goal?: BridgeRuntimeGoalInfo };
-    if (!result.handoff) throw new Error("电脑未返回接力状态");
-    return { handoff: result.handoff, ...(result.goal ? { goal: result.goal } : {}) };
-  }, [sendRequest]);
-
-  const cancelRuntimeHandoff = useCallback(async (handoffId: string) => {
-    const response = await sendRequest("runtime.handoff.cancel", {
-      handoffId,
-    }, { wait: true, timeoutMs: 45_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "取消接力失败");
-    const result = response.result as { handoff?: BridgeRuntimeHandoff };
-    return result.handoff;
-  }, [sendRequest]);
-
-  const getRuntimeHandoff = useCallback(async (handoffId: string) => {
-    const response = await sendRequest("runtime.handoff.get", {
-      handoffId,
-    }, { wait: true, timeoutMs: 30_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "读取接力状态失败");
-    const result = response.result as { handoff?: BridgeRuntimeHandoff };
-    if (!result.handoff) throw new Error("电脑未返回接力状态");
-    return result.handoff;
-  }, [sendRequest]);
-
-  const pauseRuntimeGoal = useCallback(async (sessionId: string) => {
-    const response = await sendRequest("runtime.goal.pause", {
-      sessionId,
-    }, { wait: true, timeoutMs: 30_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "暂停目标失败");
-  }, [sendRequest]);
-
-  const resumeRuntimeGoal = useCallback(async (sessionId: string) => {
-    const response = await sendRequest("runtime.goal.resume", {
-      sessionId,
-    }, { wait: true, timeoutMs: 30_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "恢复目标失败");
-  }, [sendRequest]);
-
-  const openRuntimeFile = useCallback(async (sessionId: string, filePath: string) => {
-    const response = await sendRequest("runtime.file.open", {
-      sessionId,
-      path: filePath,
-    }, { wait: true, timeoutMs: 30_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "打开文件失败");
-  }, [sendRequest]);
-
   const archiveSession = useCallback(async (sessionId: string, archived: boolean) => {
     const response = await sendRequest("session.archive", {
       sessionId,
@@ -3612,6 +3545,7 @@ export function useMobileBridge() {
     previewArtifact,
     requestMedia: sendRequest,
     browseDirectory,
+    createDirectory,
     redetectProviders,
     uploadFile,
     downloadArtifact,
@@ -3624,6 +3558,8 @@ export function useMobileBridge() {
     resolveUncertainDelivery,
     resolvePermission,
     createSession,
+    createSection,
+    moveSessionSection,
     forkSession,
     returnToDesktop,
     takeoverDesktop,
@@ -3636,22 +3572,12 @@ export function useMobileBridge() {
     previewRewind,
     rewindSession,
     configureSession,
-    configureHostPermission,
-    configurePermissionPolicy,
     previewProviderSwitch,
     commitProviderSwitch,
     cancelProviderSwitch,
-    previewRuntimeHandoff,
-    commitRuntimeHandoff,
-    confirmRuntimeHandoff,
-    cancelRuntimeHandoff,
-    getRuntimeHandoff,
-    pauseRuntimeGoal,
-    resumeRuntimeGoal,
     archiveSession,
     renameSession,
     deleteSession,
-    openRuntimeFile,
     refreshProviders,
     launchClaudeDesktop,
     controlDesktopApp,

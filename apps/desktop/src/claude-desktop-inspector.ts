@@ -9,6 +9,51 @@ const METHODS = new Set([
   "canRewindTo", "rewindV2", "rewindFiles",
 ]);
 
+export interface NativeSectionCatalog {
+  sections: Array<{ id: string; name: string; order: number }>;
+  assignments: Record<string, string>;
+}
+
+// Verified against Desktop 4.23118.1 and 5.1231.2: discover already-loaded
+// ccd_sidebar and claudeCodeSessionManager exports by structural contract.
+const SIDEBAR_RUNTIME = `
+  const modules = Object.values(process.mainModule.require('module')._cache);
+  let sidebar;
+  let manager;
+  for (const mod of modules) {
+    const exports = mod?.exports;
+    if (!exports || (typeof exports !== 'object' && typeof exports !== 'function')) continue;
+    if (!manager && exports.claudeCodeSessionManager) {
+      const candidate = exports.claudeCodeSessionManager;
+      if (typeof candidate.listCustomGroups === 'function' && typeof candidate.getSessionCustomGroup === 'function') {
+        manager = candidate;
+      }
+    }
+    if (!sidebar) {
+      for (const key of Object.keys(exports)) {
+        let value;
+        try { value = exports[key]; } catch { continue; }
+        let candidate = value;
+        if (typeof value === 'function' && value.length === 0 && /\\bserverName\\b/.test(String(value)) && /\\bhandleToolCall\\b/.test(String(value))) {
+          try { candidate = value(); } catch { continue; }
+        }
+        if (candidate?.serverName === 'ccd_sidebar') {
+          sidebar = candidate;
+          break;
+        }
+      }
+    }
+    if (sidebar && manager) break;
+  }
+  const available = sidebar?.serverName === 'ccd_sidebar'
+    && typeof sidebar.isEnabled === 'function'
+    && typeof sidebar.handleToolCall === 'function'
+    && Array.isArray(sidebar.tools)
+    && sidebar.isEnabled({ sessionType: 'ccd' })
+    && ['list_sections', 'create_section', 'move_sessions'].every(name => sidebar.tools.some(tool => tool?.name === name))
+    && Boolean(manager);
+`;
+
 export class NativeCallError extends Error {}
 export class InspectorDisconnectedError extends Error {}
 
@@ -122,6 +167,47 @@ export class ClaudeDesktopInspector extends EventEmitter {
       if (!globalThis[${JSON.stringify(STREAM)}]) throw new Error('BRIDGE_RENDERER_RELOADED');
       return globalThis['claude.web'].LocalSessions[${JSON.stringify(method)}](${Array.from(args, arg => arg === undefined ? "undefined" : JSON.stringify(arg)).join(",")});
     })()`);
+  }
+
+  async sections(sessionIds: string[]): Promise<NativeSectionCatalog | undefined> {
+    if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected");
+    return this.evaluate(`(async () => {
+      ${SIDEBAR_RUNTIME}
+      if (!available) return;
+      const reply = await sidebar.handleToolCall('list_sections', {});
+      if (reply.isError) return;
+      const sections = JSON.parse(reply.content.filter(item => item.type === 'text').map(item => item.text).join('\\n'));
+      const groups = manager.listCustomGroups();
+      if (!groups) return;
+      const shown = new Set(sections.filter(section => section.kind === 'manual' && section.shown !== false).map(section => section.id));
+      return {
+        sections: groups.filter(group => shown.has(group.id)).map(({ id, name, order }) => ({ id, name, order })),
+        assignments: Object.fromEntries(${JSON.stringify(sessionIds)}.flatMap(id => {
+          const group = manager.getSessionCustomGroup(id);
+          return group && shown.has(group.id) ? [[id, group.id]] : [];
+        })),
+      };
+    })()`) as Promise<NativeSectionCatalog | undefined>;
+  }
+
+  private async sidebarTool(method: "create_section" | "move_sessions", params: Record<string, unknown>, sessionId?: string): Promise<string> {
+    if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected");
+    const reply = await this.evaluate(`(async () => {
+      ${SIDEBAR_RUNTIME}
+      if (!available) throw new Error('This Claude Desktop version does not support Sections');
+      return sidebar.handleToolCall(${JSON.stringify(method)}, ${JSON.stringify(params)}, ${JSON.stringify({ sessionId })});
+    })()`) as { isError?: boolean; content: Array<{ type: string; text?: string }> };
+    const text = reply.content.filter(item => item.type === "text").map(item => item.text).join("\n");
+    if (reply.isError) throw new NativeCallError(text);
+    return text;
+  }
+
+  async createSection(name: string): Promise<string> {
+    return (JSON.parse(await this.sidebarTool("create_section", { name })) as { id: string }).id;
+  }
+
+  async assignSection(sessionId: string, sectionId: string): Promise<void> {
+    await this.sidebarTool("move_sessions", { session_ids: [sessionId], section_id: sectionId }, sessionId);
   }
 
   async availableCodeModels(): Promise<string[]> {

@@ -4,7 +4,7 @@ import type {
   BridgeHostSnapshot,
   BridgeSessionInfo,
 } from "@bridge/protocol";
-import { ArrowUp, Check, ChevronLeft, ChevronRight, Folder, FolderOpen, LoaderCircle, Monitor, Pencil, X } from "lucide-react";
+import { ArrowUp, Check, ChevronLeft, ChevronRight, Folder, FolderOpen, FolderPlus, LoaderCircle, Monitor, Pencil, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../lib/runtime-labels.js";
@@ -14,9 +14,9 @@ import "./session-create.css";
 export interface SessionCreateDialogProps {
   snapshot: BridgeHostSnapshot;
   initialProjectId?: string;
-  initialRuntimeId?: BridgeDesktopRuntimeId;
   connected: boolean;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
+  onCreateDirectory?(parentPath: string, name: string): Promise<string>;
   onChooseDirectory?(initialPath?: string): Promise<string | undefined>;
   onCreate(cwd: string, title?: string, runtimeId?: BridgeDesktopRuntimeId, projectId?: string): Promise<BridgeSessionInfo | undefined>;
   onCreated(session: BridgeSessionInfo): void;
@@ -28,13 +28,14 @@ function folderName(path: string): string {
 }
 
 /** Mount with the host ID as key so each computer owns its creation draft. */
-export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntimeId, connected, onBrowseDirectory, onChooseDirectory, onCreate, onCreated, onClose }: SessionCreateDialogProps) {
+export function SessionCreateDialog({ snapshot, initialProjectId, connected, onBrowseDirectory, onCreateDirectory, onChooseDirectory, onCreate, onCreated, onClose }: SessionCreateDialogProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLElement>(null);
-  const initialProject = snapshot.projects.find((project) => project.projectId === initialProjectId);
-  const [runtimeId, setRuntimeId] = useState<BridgeDesktopRuntimeId>(initialRuntimeId ?? initialProject?.runtimeId ?? "claude-desktop");
-  const [cwd, setCwd] = useState((initialProject?.runtimeId ?? "claude-desktop") === runtimeId ? initialProject?.cwd ?? "" : "");
-  const [projectId, setProjectId] = useState(runtimeId === "claude-desktop" && initialProject?.kind === "desktop-group" ? initialProject.projectId : "");
+  const runtimeId = "claude-desktop";
+  const projects = snapshot.projects.filter((project) => (project.runtimeId ?? "claude-desktop") === runtimeId);
+  const initialProject = projects.find((project) => project.projectId === initialProjectId);
+  const [cwd, setCwd] = useState(initialProject?.cwd ?? "");
+  const [projectId, setProjectId] = useState(initialProject?.kind === "desktop-group" ? initialProject.projectId : "");
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [choosing, setChoosing] = useState(false);
@@ -46,40 +47,52 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntime
   const [browseLoading, setBrowseLoading] = useState(false);
   const [browseError, setBrowseError] = useState("");
   const [pathEditing, setPathEditing] = useState(false);
+  const [mkdirOpen, setMkdirOpen] = useState(false);
+  const [mkdirName, setMkdirName] = useState("");
+  const [mkdirBusy, setMkdirBusy] = useState(false);
+  const [mkdirError, setMkdirError] = useState("");
 
   const runtime = snapshot.runtimes?.find((candidate) => candidate.id === runtimeId);
   const runtimeAvailable = snapshot.runtimes
     ? runtime?.state === "ready" && runtime.capabilities.includes("session.create")
     : runtimeId === "claude-desktop" && (snapshot.runtime.state === "ready" || snapshot.runtime.state === "working");
-  const runtimeIds = snapshot.runtimes?.map((candidate) => candidate.id) ?? ["claude-desktop" as const];
-  if (!runtimeIds.includes(runtimeId)) runtimeIds.push(runtimeId);
-  const projects = snapshot.projects.filter((project) => (project.runtimeId ?? "claude-desktop") === runtimeId);
-  const groups = runtimeId === "claude-desktop" ? projects.filter((project) => project.kind === "desktop-group") : [];
+  const groups = projects.filter((project) => project.kind === "desktop-group");
   const recentPaths = [...new Set([
     ...[...projects].sort((left, right) => right.lastActivityAt - left.lastActivityAt).map((project) => project.cwd),
     ...(listing?.recentPaths ?? []),
-  ])];
-  const locked = busy || choosing;
+  ])].filter(Boolean);
+  const locked = busy || choosing || mkdirBusy;
   const groupUnavailable = Boolean(projectId && !groups.some((project) => project.projectId === projectId));
   const canCreate = connected && runtimeAvailable && Boolean(cwd.trim()) && !groupUnavailable && !locked;
-  const canSelectFolder = connected && !browseLoading && (onBrowseDirectory
+  const canSelectFolder = connected && !browseLoading && !mkdirBusy && (onBrowseDirectory
     ? Boolean(listing && browseInput.trim() === listing.path)
     : Boolean(browseInput.trim()));
 
+  function resetMkdir(): void {
+    setMkdirOpen(false);
+    setMkdirName("");
+    setMkdirError("");
+  }
+
   function back(): void {
     if (locked) return;
+    if (view === "browse" && mkdirOpen) {
+      resetMkdir();
+      return;
+    }
     if (view === "form") onClose();
     else {
+      resetMkdir();
       setView("form");
       setBrowseTarget(undefined);
     }
   }
 
-  useEffect(() => registerMobileBackHandler(() => { back(); return true; }, 150), [view, locked, onClose]);
+  useEffect(() => registerMobileBackHandler(() => { back(); return true; }, 150), [view, mkdirOpen, locked, onClose]);
 
   useEffect(() => {
     if (!dialogRef.current?.contains(document.activeElement)) dialogRef.current?.focus();
-  }, [view, pathEditing, browseLoading]);
+  }, [view, pathEditing, mkdirOpen, browseLoading]);
 
   useEffect(() => {
     if (!browseTarget || !onBrowseDirectory) return;
@@ -100,6 +113,7 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntime
   }, [browseTarget, runtimeId, snapshot.host.hostId, connected, onBrowseDirectory]);
 
   function openDirectory(path?: string): void {
+    resetMkdir();
     setBrowseInput(path ?? "");
     setListing(undefined);
     setBrowseError("");
@@ -108,11 +122,31 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntime
   }
 
   function selectFolder(path: string): void {
+    resetMkdir();
     setCwd(path);
     setView("form");
     setBrowseTarget(undefined);
     setPathEditing(false);
     setError("");
+  }
+
+  async function createSubdirectory(): Promise<void> {
+    const trimmed = mkdirName.trim();
+    if (!onCreateDirectory || !listing || !connected || browseLoading || mkdirBusy || !trimmed) return;
+    if (trimmed === "." || trimmed === ".." || /[\\/\0]/u.test(trimmed) || trimmed.length > 255) {
+      setMkdirError("请输入合法的单层文件夹名称");
+      return;
+    }
+    setMkdirBusy(true);
+    setMkdirError("");
+    try {
+      const createdPath = await onCreateDirectory(listing.path, trimmed);
+      openDirectory(createdPath);
+    } catch (reason) {
+      setMkdirError(reason instanceof Error ? reason.message : "新建文件夹失败");
+    } finally {
+      setMkdirBusy(false);
+    }
   }
 
   async function chooseDirectory(): Promise<void> {
@@ -164,11 +198,12 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntime
           event.preventDefault();
           if (view === "form") void createSession();
           else if (view === "browse" && pathEditing && connected && !browseLoading && onBrowseDirectory) openDirectory(browseInput.trim() || undefined);
+          else if (view === "browse" && mkdirOpen) void createSubdirectory();
         }}>
           {view !== "form" && (
             <nav className="session-create-tabs" aria-label="文件夹来源">
-              <button type="button" aria-pressed={view === "recent"} onClick={() => setView("recent")}>最近使用</button>
-              <button type="button" aria-pressed={view === "browse"} onClick={() => setView("browse")}>{onBrowseDirectory ? "浏览电脑" : "输入路径"}</button>
+              <button type="button" aria-pressed={view === "recent"} disabled={mkdirBusy} onClick={() => { resetMkdir(); setView("recent"); }}>最近使用</button>
+              <button type="button" aria-pressed={view === "browse"} disabled={mkdirBusy} onClick={() => setView("browse")}>{onBrowseDirectory ? "浏览电脑" : "输入路径"}</button>
             </nav>
           )}
           <div className="session-create-body">
@@ -198,17 +233,49 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntime
                   </label>
                 ) : (
                   <div className="session-create-location">
-                    <button type="button" className="session-create-parent" aria-label="上级目录" title="上级目录" disabled={!connected || browseLoading || !listing?.parentPath} onClick={() => openDirectory(listing!.parentPath)}><ArrowUp size={19} /></button>
+                    <button type="button" className="session-create-parent" aria-label="上级目录" title="上级目录" disabled={!connected || browseLoading || mkdirBusy || !listing?.parentPath} onClick={() => openDirectory(listing!.parentPath)}><ArrowUp size={19} /></button>
                     <span className="session-create-location-path">{listing?.path ?? (browseInput || "电脑主目录")}</span>
-                    <button type="button" className="session-create-edit-path" aria-label="输入路径" title="输入路径" disabled={browseLoading} onClick={() => setPathEditing(true)}><Pencil size={17} /></button>
+                    <button type="button" className="session-create-edit-path" aria-label="输入路径" title="输入路径" disabled={browseLoading || mkdirBusy} onClick={() => { resetMkdir(); setPathEditing(true); }}><Pencil size={17} /></button>
                   </div>
                 )}
+                {!pathEditing && onBrowseDirectory && onCreateDirectory && listing && !browseLoading && (
+                  mkdirOpen ? (
+                    <div className="session-create-mkdir-box">
+                      <label>
+                        <span>在「{folderName(listing.path)}」下新建文件夹</span>
+                        <input
+                          aria-label="新文件夹名称"
+                          value={mkdirName}
+                          autoFocus
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          maxLength={255}
+                          disabled={mkdirBusy}
+                          placeholder="单层文件夹名称"
+                          onChange={(event) => { setMkdirName(event.target.value); setMkdirError(""); }}
+                        />
+                      </label>
+                      {mkdirError && <p className="session-create-error" role="alert">{mkdirError}</p>}
+                      <div className="session-create-mkdir-actions">
+                        <button type="button" className="secondary-button" disabled={mkdirBusy} onClick={resetMkdir}>取消</button>
+                        <button type="submit" className="secondary-button is-confirm" disabled={!connected || mkdirBusy || !mkdirName.trim()}>
+                          {mkdirBusy && <LoaderCircle className="is-spinning" size={15} />}创建并进入
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button type="button" className="session-create-mkdir-trigger" disabled={!connected} onClick={() => { setMkdirOpen(true); setMkdirName(""); setMkdirError(""); }}>
+                      <FolderPlus size={18} /><span>新建文件夹</span>
+                    </button>
+                  )
+                )}
                 {browseLoading && <div className="session-create-status" role="status"><LoaderCircle className="is-spinning" size={16} />正在读取文件夹</div>}
-                {browseError && <div className="session-create-browse-error"><p className="session-create-error" role="alert">{browseError}</p><button type="button" className="secondary-button" disabled={!connected || browseLoading} onClick={() => openDirectory(browseInput.trim() || undefined)}>重试</button></div>}
+                {browseError && <div className="session-create-browse-error"><p className="session-create-error" role="alert">{browseError}</p><button type="button" className="secondary-button" disabled={!connected || browseLoading || mkdirBusy} onClick={() => openDirectory(browseInput.trim() || undefined)}>重试</button></div>}
                 {listing && !browseLoading && (
                   <ul className="session-create-directories" aria-label="子文件夹">
                     {listing.directories.map((directory) => (
-                      <li key={directory.path}><button type="button" aria-label={`打开 ${directory.name}`} disabled={!connected} onClick={() => openDirectory(directory.path)}><Folder size={20} /><span>{directory.name}</span><ChevronRight size={17} /></button></li>
+                      <li key={directory.path}><button type="button" aria-label={`打开 ${directory.name}`} disabled={!connected || mkdirBusy} onClick={() => openDirectory(directory.path)}><Folder size={20} /><span>{directory.name}</span><ChevronRight size={17} /></button></li>
                     ))}
                     {!listing.directories.length && <li className="session-create-no-children">没有子文件夹，可直接使用当前文件夹</li>}
                   </ul>
@@ -216,15 +283,6 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntime
               </>
             ) : (
               <>
-                <label><span>运行时</span><select aria-label="运行时" value={runtimeId} disabled={locked} onChange={(event) => {
-                  setRuntimeId(event.target.value as BridgeDesktopRuntimeId); setCwd(""); setProjectId(""); setError(""); setBrowseTarget(undefined); setListing(undefined);
-                }}>
-                  {runtimeIds.map((id) => {
-                    const candidate = snapshot.runtimes?.find((item) => item.id === id);
-                    const available = snapshot.runtimes ? candidate?.state === "ready" && candidate.capabilities.includes("session.create") : runtimeAvailable;
-                    return <option key={id} value={id} disabled={!available}>{desktopRuntimeName(id)}{available ? "" : "（不可用）"}</option>;
-                  })}
-                </select></label>
                 <div className="session-create-folder">
                   <span className="session-create-field-label">工作文件夹</span>
                   <button type="button" className={`session-create-folder-trigger${cwd ? " has-folder" : ""}`} aria-label="选择文件夹" aria-describedby={`${titleId}-folder`} disabled={!connected || locked} onClick={() => void chooseDirectory()}>
@@ -250,9 +308,9 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntime
           {!connected && <p className="session-create-status session-create-offline" role="status">电脑已离线，连接后可创建会话。</p>}
           <footer className="dialog-actions session-create-actions">
             {view === "form" ? (
-              <><button type="button" className="secondary-button" disabled={locked} onClick={onClose}>取消</button><button type="submit" className="primary-button" disabled={!canCreate}>{busy && <LoaderCircle className="is-spinning" size={16} />}创建会话</button></>
+              <><button type="button" className="secondary-button" disabled={locked} onClick={onClose}>取消</button><button key="create-session" type="submit" className="primary-button" disabled={!canCreate}>{busy && <LoaderCircle className="is-spinning" size={16} />}创建会话</button></>
             ) : (
-              <><button type="button" className="secondary-button" onClick={back}>取消选择</button>{view === "browse" ? <button type="button" className="primary-button" disabled={!canSelectFolder} onClick={() => selectFolder(onBrowseDirectory ? listing!.path : browseInput.trim())}>使用此文件夹</button> : <button type="button" className="primary-button" onClick={() => setView("browse")}>{onBrowseDirectory ? "浏览电脑文件夹" : "输入文件夹路径"}</button>}</>
+              <><button type="button" className="secondary-button" onClick={back}>取消选择</button>{view === "browse" ? <button key="use-folder" type="button" className="primary-button" disabled={!canSelectFolder} onClick={() => selectFolder(onBrowseDirectory ? listing!.path : browseInput.trim())}>使用此文件夹</button> : <button key="open-browse" type="button" className="primary-button" onClick={() => setView("browse")}>{onBrowseDirectory ? "浏览电脑文件夹" : "输入文件夹路径"}</button>}</>
             )}
           </footer>
         </form>

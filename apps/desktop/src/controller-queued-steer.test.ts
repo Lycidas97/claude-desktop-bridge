@@ -12,11 +12,10 @@ it.each([
   const interruptTurn = vi.fn();
   const controller = Object.assign(Object.create(DesktopController.prototype), {
     broker: { steerQueuedTurn: operation, cancelQueuedTurn: operation, startTurn, interruptTurn },
-    routesToExternalRuntime: () => external,
   }) as { handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown> };
-  const request: BridgeRequest = { kind: "request", method, requestId: "queue-action", idempotencyKey: "queue-action", params: { sessionId: "session", commandId: "queued-command" } };
+  const request: BridgeRequest = { kind: "request", method, requestId: "queue-action", idempotencyKey: "queue-action", params: { sessionId: external ? "codex-desktop:saved" : "session", commandId: "queued-command" } };
   if (external) {
-    await expect(controller.handleRequest(request, "mobile")).rejects.toThrow("不支持调整已排队消息");
+    await expect(controller.handleRequest(request, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
     expect(operation).not.toHaveBeenCalled();
   } else {
     await expect(controller.handleRequest(request, "mobile")).resolves.toEqual({ commandId: "queued-command", state });

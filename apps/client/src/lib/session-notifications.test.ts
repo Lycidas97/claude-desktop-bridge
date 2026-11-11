@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const native = vi.hoisted(() => ({
   enabled: true,
@@ -18,7 +18,10 @@ async function load() {
   return import("./session-notifications.js");
 }
 
+afterEach(() => vi.unstubAllGlobals());
+
 beforeEach(() => {
+  vi.stubGlobal("document", { visibilityState: "visible" });
   vi.clearAllMocks();
   native.enabled = true;
   native.plugin.checkPermissions.mockResolvedValue({ display: "prompt" });
@@ -66,6 +69,28 @@ describe("session notifications", () => {
     await notifications.showSessionNotification({ hostId: "room", sessionId: "s1" }, "Title", "Body");
     expect(native.plugin.createChannel).not.toHaveBeenCalled();
     expect(native.plugin.schedule).not.toHaveBeenCalled();
+  });
+
+  it("recognizes a permission granted in Settings after an earlier denial", async () => {
+    native.plugin.checkPermissions.mockResolvedValue({ display: "denied" });
+    const notifications = await load();
+    await notifications.showSessionNotification({ hostId: "room", sessionId: "s1" }, "Task", "任务已完成");
+    expect(native.plugin.schedule).not.toHaveBeenCalled();
+    native.plugin.checkPermissions.mockResolvedValue({ display: "granted" });
+    await notifications.showSessionNotification({ hostId: "room", sessionId: "s1" }, "Task", "任务已完成");
+    expect(native.plugin.schedule).toHaveBeenCalledOnce();
+    expect(native.plugin.requestPermissions).not.toHaveBeenCalled();
+  });
+
+  it("waits until the foreground to request permission after a background completion", async () => {
+    vi.stubGlobal("document", { visibilityState: "hidden" });
+    const notifications = await load();
+    await notifications.showSessionNotification({ hostId: "room", sessionId: "s1" }, "Task", "任务已完成");
+    expect(native.plugin.requestPermissions).not.toHaveBeenCalled();
+    expect(native.plugin.schedule).not.toHaveBeenCalled();
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    expect(await notifications.ensureSessionNotificationPermission()).toBe(true);
+    expect(native.plugin.requestPermissions).toHaveBeenCalledOnce();
   });
 
   it("hands the tapped notification's target to the listener", async () => {

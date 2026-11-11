@@ -5,11 +5,11 @@ import type {
   BridgeAttachment, BridgeBackgroundTask, BridgeEffort, BridgeHistoryAttachment, BridgeHistoryItem, BridgeHistoryPage, BridgeModelInfo, BridgeNativeImageRef, BridgeNativePermissionMode, BridgeNativePermissionModeChange, BridgeOrigin,
   BridgePermissionDecision, BridgePermissionInfo, BridgeProjectInfo, BridgeRuntimeCapability,
   BridgeRuntimeStatus, BridgeSDKPermissionMode, BridgeSessionCommandResult,
-  BridgeSessionConfiguration, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeTaskPlan, BridgeSubagentSummary,
+  BridgeSessionConfiguration, BridgeSessionContextUsage, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeTaskPlan, BridgeSubagentSummary,
 } from "@bridge/protocol";
-import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError } from "./claude-desktop-inspector.js";
+import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "./conversation-state-store.js";
-import { extractInteractivePrompt, readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, updateClaudeTaskPlan, visibleMessage } from "./claude-history.js";
+import { extractInteractivePrompt, readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, scanClaudeContextFromMessages, updateClaudeTaskPlan, visibleMessage } from "./claude-history.js";
 import { claudeRuntimePaths } from "./platform.js";
 import type { SessionEventLog, BridgeEventDraft } from "./session-event-log.js";
 import type { EvidenceManager, ObservedDesktopTool } from "./evidence-manager.js";
@@ -29,6 +29,7 @@ interface NativeSession {
   isRunning?: boolean;
   turnRunning?: boolean;
   isArchived?: boolean;
+  scheduledTaskId?: string | null;
   lastActivityAt?: number;
   createdAt?: number;
   forkedFromSessionId?: string;
@@ -47,6 +48,9 @@ interface InspectorTransport {
   close(): Promise<void>;
   call(method: string, args?: unknown[]): Promise<unknown>;
   availableCodeModels(): Promise<string[]>;
+  sections?(sessionIds: string[]): Promise<NativeSectionCatalog | undefined>;
+  createSection?(name: string): Promise<string>;
+  assignSection?(sessionId: string, sectionId: string): Promise<void>;
   on(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
@@ -74,6 +78,51 @@ interface NativeMessageProjection {
   plan?: BridgeTaskPlan;
   planObserved?: boolean;
   tasks?: Map<string, BridgeSubagentSummary>;
+}
+
+interface NativeContextState {
+  totalTokens: number;
+  rawMaxTokens?: number;
+  model?: string;
+  estimated: boolean;
+  hydrated: boolean;
+  seenAssistantUuids: Set<string>;
+  preCompactUuids: Set<string>;
+  lastMessageId?: string;
+  lastMessageUsage?: { input: number; cacheRead: number; cacheCreation: number; output: number };
+  stream?: { messageId?: string; input: number; cacheRead: number; cacheCreation: number; output: number; model?: string };
+}
+
+function nonNegativeTokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function realUsageModel(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() && value.trim() !== "<synthetic>" ? value.trim() : undefined;
+}
+
+function knownClaudeModelWindow(rawModel: string): number | undefined {
+  const trimmed = rawModel.trim();
+  if (!trimmed) return undefined;
+  if (/\[1m\]$/iu.test(trimmed)) return 1_000_000;
+  const slashIndex = trimmed.indexOf("/");
+  let id = trimmed;
+  if (slashIndex >= 0) {
+    const provider = trimmed.slice(0, slashIndex).toLowerCase();
+    if (provider !== "claude" && provider !== "anthropic") return undefined;
+    id = trimmed.slice(slashIndex + 1);
+  }
+  id = id.toLowerCase()
+    .replace(/^(?:us|eu|apac|au|global)\.anthropic\./u, "")
+    .replace(/-v\d+:\d+$/u, "")
+    .replace(/-(?:20\d{6}|latest)$/u, "");
+  if (/^claude-(?:opus-(?:4-[678]|5(?:-5)?)|sonnet-(?:4-6|5(?:-5)?)|fable-5(?:-[12])?|haiku-5-5)$/u.test(id)) {
+    return 1_000_000;
+  }
+  if (/^claude-(?:haiku-4-5|opus-4(?:-[015])?|sonnet-4(?:-[05])?|3-[57]-(?:sonnet|haiku)|3-(?:opus|sonnet|haiku))$/u.test(id)) {
+    return 200_000;
+  }
+  return undefined;
 }
 
 function nativePlanMessages(messages: unknown[]) {
@@ -106,6 +155,7 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
       const toolUseId = typeof message.tool_use_id === "string" ? message.tool_use_id : previous?.toolUseId;
       const task: BridgeSubagentSummary = {
         agentId: message.task_id, ...(toolUseId ? { toolUseId } : {}), state,
+        ...(previous?.model ? { model: previous.model } : {}),
         description: typeof message.description === "string" ? message.description : previous?.description ?? "Agent",
         startedAt: previous?.startedAt ?? createdAt, updatedAt: createdAt,
         toolCount: typeof record(message.usage).tool_uses === "number" ? Number(record(message.usage).tool_uses) : previous?.toolCount ?? 0,
@@ -168,11 +218,13 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
 export class ClaudeDesktopBridge extends EventEmitter {
   private readonly inspector: InspectorTransport;
   private readonly native = new Map<string, NativeSession>();
+  private sectionCatalog: NativeSectionCatalog | undefined;
   private readonly projectDirectories = new Map<string, ClaudeProjectDirectory>();
   private readonly sessions = new Map<string, BridgeSessionInfo>();
   private readonly permissions = new Map<string, BridgePermissionInfo>();
   private readonly receipts = new Map<string, NativeDesktopReceipt>();
   private readonly messageProjection = new Map<string, NativeMessageProjection>();
+  private readonly contextStates = new Map<string, NativeContextState>();
   private readonly backgroundTasks = new Map<string, BridgeBackgroundTask[]>();
   private readonly permissionModeChanges = new Map<string, BridgeNativePermissionModeChange>();
   private readonly streams = new Map<string, string>();
@@ -232,6 +284,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const result = await this.inspector.call("getAll");
       if (!Array.isArray(result)) throw new NativeCallError("Desktop getAll did not return a session list");
       const sessions = result.map(nativeSession);
+      this.sectionCatalog = await this.inspector.sections?.(sessions.map(session => session.sessionId));
       this.models = await readClaudeModelOptions(this.options.settingsPath);
       this.native.clear();
       for (const session of sessions) await this.observeNativeSession(session);
@@ -259,6 +312,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
     ];
     for (const [method, capability] of methods) if (this.inspector.supports(method)) capabilities.push(capability);
     if (["canRewindTo", "rewindV2", "rewindFiles"].every(method => this.inspector.supports(method))) capabilities.push("session.rewind");
+    if (this.sectionCatalog && this.inspector.createSection && this.inspector.assignSection) capabilities.push("section.create");
+    if (this.sectionCatalog && this.inspector.assignSection) capabilities.push("section.move");
     capabilities.push("tool.events");
     return capabilities;
   }
@@ -300,6 +355,123 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return [...this.projectDirectories].find(([original, candidate]) => original === candidate.cwd && candidate.realCwd === project.realCwd)?.[0] ?? project.cwd;
   }
 
+  private ensureContextState(sessionId: string): NativeContextState {
+    let state = this.contextStates.get(sessionId);
+    if (!state) {
+      state = {
+        totalTokens: 0,
+        estimated: true,
+        hydrated: false,
+        seenAssistantUuids: new Set<string>(),
+        preCompactUuids: new Set<string>(),
+      };
+      this.contextStates.set(sessionId, state);
+    }
+    return state;
+  }
+
+  private resolveContextMaxTokens(sessionModel?: string, usageModel?: string): number | undefined {
+    const fromCandidate = (candidate: string | undefined): number | undefined => {
+      if (!candidate) return undefined;
+      const saved = this.savedModel(candidate);
+      if (saved?.maxInputTokens && saved.maxInputTokens > 0) return saved.maxInputTokens;
+      return (saved ? knownClaudeModelWindow(saved.value) : undefined) ?? knownClaudeModelWindow(candidate);
+    };
+    const trimmed = sessionModel?.trim();
+    if (!trimmed || trimmed.toLowerCase() === "default") return fromCandidate(usageModel);
+    if (["opus", "sonnet", "haiku", "fable"].includes(trimmed.toLowerCase())) {
+      return fromCandidate(usageModel) ?? 1_000_000;
+    }
+    const saved = this.savedModel(trimmed);
+    if (saved) {
+      if (saved.maxInputTokens && saved.maxInputTokens > 0) return saved.maxInputTokens;
+      return knownClaudeModelWindow(saved.value) ?? knownClaudeModelWindow(trimmed);
+    }
+    if (parseMagpieSyntheticModelId(trimmed)) {
+      return knownClaudeModelWindow(trimmed) ?? fromCandidate(usageModel);
+    }
+    return knownClaudeModelWindow(trimmed);
+  }
+
+  private projectedContextUsage(sessionId: string, sessionModel?: string): BridgeSessionContextUsage | undefined {
+    const state = this.contextStates.get(sessionId);
+    if (!state || state.totalTokens <= 0) return undefined;
+    let maxTokens = !state.estimated && state.rawMaxTokens && state.rawMaxTokens > 0
+      ? state.rawMaxTokens
+      : this.resolveContextMaxTokens(sessionModel, state.model);
+    if (state.estimated && maxTokens !== undefined && maxTokens < state.totalTokens) maxTokens = undefined;
+    const percentage = maxTokens && maxTokens > 0
+      ? Math.min(100, Math.max(0, Math.round((state.totalTokens / maxTokens) * 1000) / 10))
+      : undefined;
+    const model = (sessionModel ? this.savedModel(sessionModel)?.value ?? sessionModel : undefined) ?? state.model;
+    return {
+      totalTokens: state.totalTokens,
+      ...(maxTokens !== undefined ? { maxTokens, percentage: percentage! } : {}),
+      ...(model ? { model } : {}),
+      estimated: state.estimated,
+    };
+  }
+
+  private async readLiveContextUsage(id: string): Promise<{ totalTokens: number; rawMaxTokens?: number; model?: string } | undefined> {
+    if (!this.inspector.ready || !this.inspector.supports("getContextUsage")) return undefined;
+    const native = this.native.get(id);
+    if (native && !native.isRunning && !native.turnRunning) return undefined;
+    try {
+      const raw = record(await this.inspector.call("getContextUsage", [id]));
+      const totalTokens = nonNegativeTokenCount(raw.totalTokens);
+      if (totalTokens <= 0) return undefined;
+      const rawMax = [raw.rawMaxTokens, raw.maxTokens]
+        .find((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+      const model = realUsageModel(raw.model);
+      return {
+        totalTokens: Math.round(totalTokens),
+        ...(rawMax ? { rawMaxTokens: Math.round(rawMax) } : {}),
+        ...(model ? { model } : {}),
+      };
+    } catch (error) {
+      if (error instanceof InspectorDisconnectedError) return undefined;
+      throw error;
+    }
+  }
+
+  private applyLiveContextUsage(sessionId: string, live: { totalTokens: number; rawMaxTokens?: number; model?: string }): void {
+    const state = this.ensureContextState(sessionId);
+    state.totalTokens = live.totalTokens;
+    if (live.rawMaxTokens) state.rawMaxTokens = live.rawMaxTokens;
+    else delete state.rawMaxTokens;
+    if (live.model) state.model = live.model;
+    state.estimated = false;
+    state.hydrated = true;
+    delete state.stream;
+  }
+
+  private applyTranscriptContextMessages(sessionId: string, messages: readonly unknown[]): void {
+    const scan = scanClaudeContextFromMessages(messages);
+    const seenAssistantUuids = new Set<string>();
+    const preCompactUuids = new Set<string>();
+    for (const raw of messages) {
+      const entry = record(raw);
+      if (entry.isSidechain === true || entry.parent_tool_use_id) continue;
+      if (entry.type === "assistant" && typeof entry.uuid === "string" && entry.uuid) seenAssistantUuids.add(entry.uuid);
+      if (entry.type === "system" && entry.subtype === "compact_boundary") {
+        for (const id of seenAssistantUuids) preCompactUuids.add(id);
+        const meta = record(entry.compactMetadata ?? entry.compact_metadata);
+        const preserved = record(meta.preservedSegment ?? meta.preserved_segment);
+        for (const key of ["headUuid", "tailUuid", "head_uuid", "tail_uuid"] as const) {
+          if (typeof preserved[key] === "string" && preserved[key]) preCompactUuids.add(preserved[key]);
+        }
+      }
+    }
+    this.contextStates.set(sessionId, {
+      totalTokens: scan.estimate?.totalTokens ?? 0,
+      ...(scan.estimate?.model ? { model: scan.estimate.model } : {}),
+      estimated: true,
+      hydrated: true,
+      seenAssistantUuids,
+      preCompactUuids,
+    });
+  }
+
   private projectSessions(): void {
     this.sessions.clear();
     const ready = this.inspector.ready;
@@ -310,16 +482,19 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const running = native.turnRunning === true;
       const pendingCommandIds = [...this.receipts.values()].filter(receipt => receipt.sessionId === sessionId && receipt.state === "queued").map(receipt => receipt.commandId);
       const modeChange = this.permissionModeChanges.get(sessionId);
+      const contextUsage = this.projectedContextUsage(sessionId, native.model);
       const parentSessionId = native.forkedFromSessionId ?? native.spawnedFrom?.sessionId;
       const projectCwd = this.projectCwd(native.cwd);
+      const section = this.sectionCatalog?.sections.find(section => section.id === this.sectionCatalog?.assignments[sessionId]);
       this.sessions.set(sessionId, {
         sessionId, nativeSessionId: native.sessionId, desktopSessionId: native.sessionId, runtimeId: "claude-desktop",
-        projectId: projectIdForCwd(projectCwd), projectName: basename(projectCwd) || projectCwd, cwd: native.cwd,
+        projectId: section?.id ?? projectIdForCwd(projectCwd), projectName: section?.name ?? (basename(projectCwd) || projectCwd), cwd: native.cwd,
         title: native.title || "Claude 会话", source: "desktop", transport: "claude-desktop-native",
         ownership: running ? "DESKTOP_NATIVE_RUNNING" : "DESKTOP_NATIVE_IDLE",
         turnState: waiting ? "waiting" : running ? "running" : "idle",
         lastActivityAt: native.lastActivityAt ?? native.createdAt ?? 0, pendingCount: pendingCommandIds.length, pendingCommandIds,
         ...(native.model ? { model: native.model, modelDisplayName: this.savedModel(native.model)?.displayName ?? native.model } : {}), ...(native.effort ? { effort: native.effort } : {}),
+        ...(contextUsage ? { contextUsage } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(native.spawnedFrom?.btw === true && native.lineageDetached !== true ? { sidechat: true } : {}),
         ...(native.isArchived ? { archivedAt: native.lastActivityAt ?? native.createdAt ?? 1 } : {}),
@@ -333,6 +508,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
           canInterrupt: ready && this.inspector.supports("interrupt") && (running || native.hasBackgroundWork === true),
           canSwitchProvider: false, canContinueOfficial: false, canRelay: false,
           canConfigure: ready && this.inspector.supports("setModel"),
+          ...(ready && this.sectionCatalog && this.inspector.assignSection && !native.isArchived && !native.scheduledTaskId ? { canMoveSection: true } : {}),
           ...(!ready ? { reason: "Claude Desktop inspector 已断开" } : {}),
         },
       });
@@ -346,9 +522,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return session?.harnessCwd ?? session?.cwd;
   }
   listProjects(): BridgeProjectInfo[] {
-    const projects = new Map<string, BridgeProjectInfo>();
+    const projects = new Map<string, BridgeProjectInfo>((this.sectionCatalog?.sections ?? []).map(section => [section.id, {
+      projectId: section.id, name: section.name, kind: "desktop-group", cwd: "", runtimeId: "claude-desktop", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0,
+    }]));
     for (const session of this.sessions.values()) {
       const project = projects.get(session.projectId) ?? { projectId: session.projectId, name: session.projectName, cwd: this.projectCwd(session.cwd), runtimeId: "claude-desktop", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 };
+      if (!project.cwd) project.cwd = this.projectCwd(session.cwd);
       project.sessionCount++;
       project.runningCount += session.turnState === "running" ? 1 : 0;
       project.pendingCount += session.pendingCount;
@@ -363,9 +542,36 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return sessionId;
   }
 
-  async createSession(cwd: string, title?: string, _projectId?: string): Promise<BridgeSessionInfo> {
+  async createSection(name: string): Promise<BridgeProjectInfo> {
+    if (!this.capabilities().includes("section.create")) throw new NativeCallError("This Claude Desktop version does not support Sections");
+    const id = await this.inspector.createSection!(name);
+    if (!await this.refreshRuntime()) throw new NativeCallError(this.lastError);
+    const project = this.listProjects().find(project => project.kind === "desktop-group" && project.projectId === id);
+    if (!project) throw new NativeCallError("Desktop has not published the created Section; refresh the directory before retrying");
+    return project;
+  }
+
+  async moveSessionSection(sessionId: string, sectionId: string | null): Promise<BridgeSessionInfo> {
+    if (!this.capabilities().includes("section.move")) throw new NativeCallError("This Claude Desktop version does not support Sections");
+    const native = this.native.get(this.desktopId(sessionId))!;
+    if (native.isArchived || native.scheduledTaskId) throw new NativeCallError("This session cannot be moved between Sections");
+    if (sectionId !== null && !this.sectionCatalog?.sections.some(section => section.id === sectionId)) {
+      throw new NativeCallError("Selected Desktop Section is no longer available");
+    }
+    await this.inspector.assignSection!(sessionId, sectionId ?? "sessions");
+    if (!await this.refreshRuntime()) throw new NativeCallError(this.lastError);
+    const session = this.session(sessionId);
+    if (!session) throw new NativeCallError("Moved Desktop session is no longer available");
+    return session;
+  }
+
+  async createSession(cwd: string, title?: string, projectId?: string): Promise<BridgeSessionInfo> {
+    if (projectId && !await this.refreshRuntime()) throw new NativeCallError(this.lastError);
+    const project = projectId ? this.listProjects().find(project => project.projectId === projectId) : undefined;
+    if (projectId && !project) throw new NativeCallError("Selected Desktop project is no longer available");
     const result = record(await this.inspector.call("start", [{ cwd, title, sessionId: `local_${randomUUID()}`, withoutFirstMessage: true, message: "" }]));
     if (typeof result.sessionId !== "string") throw new NativeCallError("Desktop did not return a session ID");
+    if (project?.kind === "desktop-group") await this.inspector.assignSection!(result.sessionId, project.projectId);
     await this.refreshRuntime();
     const session = this.session(result.sessionId);
     if (!session) throw new NativeCallError("Created Desktop session is not yet available");
@@ -394,22 +600,42 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async deleteSession(sessionId: string): Promise<void> {
     await this.inspector.call("delete", [this.desktopId(sessionId)]);
+    this.contextStates.delete(sessionId);
     await this.refreshRuntime();
   }
 
   async refreshDesktopConfiguration(sessionId: string): Promise<void> { await this.configuration(sessionId); }
 
-  async backgroundTaskDetails(sessionId: string): Promise<BridgeBackgroundTask[]> {
+  private async transcriptSubagents(sessionId: string) {
     const id = this.desktopId(sessionId);
     const observed = (await (this.options.scanCatalog?.() ?? scanClaudeCatalog(claudeRuntimePaths())))
       .sessions.find(session => session.desktopSessionId === id);
+    if (!observed?.transcriptPath) return undefined;
+    const liveSince = oldestLiveProcessStart(observed.activeProcesses);
+    return { transcriptPath: observed.transcriptPath, liveSince, subagents: await readClaudeTranscriptSubagents(observed.transcriptPath, liveSince) };
+  }
+
+  private async enrichSubagentItems(sessionId: string, items: BridgeHistoryItem[]): Promise<void> {
+    const agents = items.filter(item => item.subagent || item.toolName === "Agent" || item.toolName === "Task");
+    if (!agents.length) return;
+    const local = await this.transcriptSubagents(sessionId);
+    for (const item of agents) {
+      const child = local?.subagents.find(agent => agent.toolUseId === item.id || agent.agentId === item.subagent?.agentId);
+      if (child?.model) {
+        if (item.subagent) item.subagent.model = child.model;
+        else item.subagent = child;
+      }
+    }
+  }
+
+  async backgroundTaskDetails(sessionId: string): Promise<BridgeBackgroundTask[]> {
+    const id = this.desktopId(sessionId);
+    const local = await this.transcriptSubagents(sessionId);
     let tasks: BridgeBackgroundTask[] = [];
-    if (observed?.transcriptPath) {
-      const liveSince = oldestLiveProcessStart(observed.activeProcesses);
-      const subagents = await readClaudeTranscriptSubagents(observed.transcriptPath, liveSince);
-      tasks = await readClaudeTranscriptBackgroundTasks(observed.transcriptPath, subagents, liveSince);
+    if (local) {
+      tasks = await readClaudeTranscriptBackgroundTasks(local.transcriptPath, local.subagents, local.liveSince);
       const projection = this.messageProjection.get(id) ?? {};
-      projection.tasks = new Map(subagents.map(task => [task.agentId, task]));
+      projection.tasks = new Map(local.subagents.map(task => [task.agentId, task]));
       this.messageProjection.set(id, projection);
     }
     this.backgroundTasks.set(id, tasks);
@@ -477,6 +703,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       await this.options.eventLog.flushDeltas(sessionId);
       await this.record({ sessionId, origin: "claude-desktop", type: "session.rewound", data: { messageId, scope } });
       this.messageProjection.delete(sessionId);
+      this.contextStates.delete(sessionId);
       this.backgroundTasks.delete(sessionId);
       this.streams.delete(sessionId);
     }
@@ -495,16 +722,19 @@ export class ClaudeDesktopBridge extends EventEmitter {
   async history(sessionId: string, cursor?: string, limit = 50): Promise<BridgeHistoryPage> {
     const id = this.desktopId(sessionId);
     if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop history is unavailable while inspector is disconnected");
+    const previousUsage = !cursor ? JSON.stringify(this.session(sessionId)?.contextUsage) : undefined;
     const page = record(await this.inspector.call("getTranscriptPage", [id, cursor ?? "", limit, { window: "accept" }]));
     if (!Array.isArray(page.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
     const nextCursor = page.hasMore === true && typeof record(page.messages[0]).uuid === "string" ? String(record(page.messages[0]).uuid) : undefined;
     const firstPlan = nativePlanMessages(page.messages)[0]?.message.content[0];
     let boundaryFound = firstPlan?.name === "mcp__ccd_turn__update_plan" && ["first_task", "new_task"].includes(String(record(firstPlan.input).scope));
     const context: unknown[] = [];
+    const olderPages: unknown[][] = [];
     let before = nextCursor;
     while (!boundaryFound && before) {
       const older = record(await this.inspector.call("getTranscriptPage", [id, before, limit, { window: "accept" }]));
       if (!Array.isArray(older.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
+      olderPages.unshift(older.messages);
       for (const message of nativePlanMessages(older.messages).reverse()) {
         const block = message.message.content[0]!;
         context.unshift(message);
@@ -518,6 +748,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const projection: NativeMessageProjection = {};
     nativeHistoryItems(sessionId, context, projection);
     const items = nativeHistoryItems(sessionId, page.messages, projection);
+    await this.enrichSubagentItems(sessionId, items);
     if (!cursor) {
       const liveProjection = this.messageProjection.get(sessionId) ?? {};
       if (!liveProjection.planObserved && projection.planObserved) {
@@ -526,6 +757,25 @@ export class ClaudeDesktopBridge extends EventEmitter {
         liveProjection.planObserved = true;
         this.messageProjection.set(sessionId, liveProjection);
       }
+      const live = await this.readLiveContextUsage(id);
+      if (live) {
+        this.applyLiveContextUsage(sessionId, live);
+      } else {
+        let combined: unknown[] = [...olderPages.flat(), ...page.messages];
+        let scan = scanClaudeContextFromMessages(combined);
+        for (let hop = 0; !scan.anchored && before && page.messages.length >= limit && limit >= 20 && hop < 8; hop += 1) {
+          const older = record(await this.inspector.call("getTranscriptPage", [id, before, Math.max(limit, 100), { window: "accept" }]));
+          if (!Array.isArray(older.messages)) break;
+          combined = [...older.messages, ...combined];
+          scan = scanClaudeContextFromMessages(combined);
+          before = older.hasMore === true && typeof record(older.messages[0]).uuid === "string"
+            ? String(record(older.messages[0]).uuid)
+            : undefined;
+        }
+        this.applyTranscriptContextMessages(sessionId, combined);
+      }
+      this.projectSessions();
+      if (JSON.stringify(this.session(sessionId)?.contextUsage) !== previousUsage) this.emit("changed");
     }
     for (const item of items) {
       const receipt = item.role === "user" ? [...this.receipts.values()].find(receipt => receipt.sessionId === sessionId && receipt.messageId === item.id) : undefined;
@@ -592,10 +842,18 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   async configuration(sessionId: string): Promise<BridgeSessionConfiguration> {
-    const native = nativeSession(await this.inspector.call("getSession", [this.desktopId(sessionId)]));
+    const id = this.desktopId(sessionId);
+    const previousUsage = JSON.stringify(this.session(sessionId)?.contextUsage);
+    const native = nativeSession(await this.inspector.call("getSession", [id]));
     this.models = await readClaudeModelOptions(this.options.settingsPath);
     await this.observeNativeSession(native);
+    if (native.turnRunning === true) {
+      const live = await this.readLiveContextUsage(id);
+      if (live) this.applyLiveContextUsage(sessionId, live);
+    }
     this.projectSessions();
+    const context = this.session(sessionId)?.contextUsage;
+    if (JSON.stringify(context) !== previousUsage) this.emit("changed");
     const model = native.model ? this.savedModel(native.model) : undefined;
     return {
       sessionId, ...(native.model ? { model: model?.value ?? native.model, modelDisplayName: model?.displayName ?? native.model } : {}), ...(native.effort ? { effort: native.effort } : {}),
@@ -605,6 +863,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         : native.model ? [{ value: native.model, displayName: native.model }] : [],
       availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
       modelsComplete: this.models !== undefined, appliesAfterTurn: native.turnRunning === true,
+      ...(context ? { context } : {}),
     };
   }
 
@@ -633,6 +892,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
         }
       }
       await this.inspector.call("setModel", [id, nativeModel]);
+      const existing = this.contextStates.get(input.sessionId);
+      if (existing) {
+        delete existing.rawMaxTokens;
+        existing.estimated = true;
+      }
     }
     if (input.effort !== undefined) await this.inspector.call("setEffort", [id, input.effort]);
     if (input.permissionMode !== undefined) await this.inspector.call("setPermissionMode", [id, input.permissionMode]);
@@ -813,15 +1077,52 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
     for (const delivery of deliveries) await this.record(delivery);
     const message = record(event.message);
-    if (message.isSidechain === true || (message.parent_tool_use_id && (message.type === "assistant" || message.type === "user"))) {
+    if (message.isSidechain === true || (message.parent_tool_use_id && (message.type === "assistant" || message.type === "user" || message.type === "system" || message.type === "stream_event"))) {
       this.emit("changed");
       return;
     }
     const stream = record(message.event);
     if (message.type === "stream_event" && !message.parent_tool_use_id) {
       if (stream.type === "message_start") {
-        const id = record(stream.message).id;
+        const streamMessage = record(stream.message);
+        const id = streamMessage.id;
         if (typeof id === "string") this.streams.set(sessionId, id);
+        if (message.isSynthetic !== true && streamMessage.model !== "<synthetic>" && typeof streamMessage.usage === "object" && streamMessage.usage !== null && !Array.isArray(streamMessage.usage)) {
+          const usage = record(streamMessage.usage);
+          const input = nonNegativeTokenCount(usage.input_tokens);
+          const cacheRead = nonNegativeTokenCount(usage.cache_read_input_tokens);
+          const cacheCreation = nonNegativeTokenCount(usage.cache_creation_input_tokens);
+          const output = nonNegativeTokenCount(usage.output_tokens);
+          const model = realUsageModel(streamMessage.model);
+          const state = this.ensureContextState(sessionId);
+          state.stream = { ...(typeof id === "string" ? { messageId: id } : {}), input, cacheRead, cacheCreation, output, ...(model ? { model } : {}) };
+          if (input + cacheRead + cacheCreation > 0) {
+            state.totalTokens = Math.round(input + cacheRead + cacheCreation + output);
+            state.estimated = true;
+            state.hydrated = true;
+            delete state.rawMaxTokens;
+            if (model) state.model = model;
+          }
+        }
+      } else if (stream.type === "message_delta" && typeof stream.usage === "object" && stream.usage !== null && !Array.isArray(stream.usage)) {
+        const usage = record(stream.usage);
+        const state = this.ensureContextState(sessionId);
+        const prev = state.stream ?? { input: 0, cacheRead: 0, cacheCreation: 0, output: 0 };
+        const next = {
+          ...prev,
+          input: Math.max(prev.input, nonNegativeTokenCount(usage.input_tokens)),
+          cacheRead: Math.max(prev.cacheRead, nonNegativeTokenCount(usage.cache_read_input_tokens)),
+          cacheCreation: Math.max(prev.cacheCreation, nonNegativeTokenCount(usage.cache_creation_input_tokens)),
+          output: Math.max(prev.output, nonNegativeTokenCount(usage.output_tokens)),
+        };
+        state.stream = next;
+        const promptTokens = next.input + next.cacheRead + next.cacheCreation;
+        if (promptTokens > 0) {
+          state.totalTokens = Math.round(promptTokens + next.output);
+          state.estimated = true;
+          state.hydrated = true;
+          delete state.rawMaxTokens;
+        }
       }
       const delta = record(stream.delta);
       if (delta.type === "text_delta" && typeof delta.text === "string") this.options.eventLog.appendCoalescedDelta({ sessionId, origin: "claude-desktop", type: "assistant.delta", ...(this.streams.has(sessionId) ? { itemId: this.streams.get(sessionId)! } : {}) }, delta.text);
@@ -853,6 +1154,67 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
     if (event.message) {
       const body = record(message.message);
+      if (message.type === "system" && message.subtype === "compact_boundary") {
+        const state = this.ensureContextState(sessionId);
+        for (const id of state.seenAssistantUuids) state.preCompactUuids.add(id);
+        const meta = record(message.compactMetadata ?? message.compact_metadata);
+        const preserved = record(meta.preservedSegment ?? meta.preserved_segment);
+        for (const key of ["headUuid", "tailUuid", "head_uuid", "tail_uuid"] as const) {
+          if (typeof preserved[key] === "string" && preserved[key]) state.preCompactUuids.add(preserved[key]);
+        }
+        const postTokens = nonNegativeTokenCount(meta.postTokens ?? meta.post_tokens);
+        state.totalTokens = postTokens > 0 ? Math.round(postTokens) : 0;
+        state.estimated = true;
+        state.hydrated = true;
+        delete state.rawMaxTokens;
+        delete state.stream;
+        delete state.lastMessageId;
+        delete state.lastMessageUsage;
+        await this.record({
+          sessionId,
+          ...(typeof message.uuid === "string" ? { itemId: message.uuid } : {}),
+          origin: "claude-desktop",
+          type: "session.compacted",
+          data: { ...(state.totalTokens > 0 ? { postTokens: state.totalTokens } : {}) },
+        });
+      }
+      if (message.type === "assistant" && message.isSynthetic !== true && body.model !== "<synthetic>") {
+        const state = this.ensureContextState(sessionId);
+        const uuid = typeof message.uuid === "string" && message.uuid ? message.uuid : undefined;
+        if (!uuid || !state.preCompactUuids.has(uuid)) {
+          if (uuid) state.seenAssistantUuids.add(uuid);
+          if (typeof body.usage === "object" && body.usage !== null && !Array.isArray(body.usage)) {
+            const usage = record(body.usage);
+            const input = nonNegativeTokenCount(usage.input_tokens);
+            const cacheRead = nonNegativeTokenCount(usage.cache_read_input_tokens);
+            const cacheCreation = nonNegativeTokenCount(usage.cache_creation_input_tokens);
+            const output = nonNegativeTokenCount(usage.output_tokens);
+            const messageId = typeof body.id === "string" && body.id ? body.id : undefined;
+            const merged = messageId && messageId === state.lastMessageId && state.lastMessageUsage
+              ? {
+                input: Math.max(state.lastMessageUsage.input, input),
+                cacheRead: Math.max(state.lastMessageUsage.cacheRead, cacheRead),
+                cacheCreation: Math.max(state.lastMessageUsage.cacheCreation, cacheCreation),
+                output: Math.max(state.lastMessageUsage.output, output),
+              }
+              : input + cacheRead + cacheCreation > 0
+                ? { input, cacheRead, cacheCreation, output }
+                : undefined;
+            if (merged) {
+              if (messageId) state.lastMessageId = messageId;
+              else delete state.lastMessageId;
+              state.lastMessageUsage = merged;
+              state.totalTokens = Math.round(merged.input + merged.cacheRead + merged.cacheCreation + merged.output);
+              state.estimated = true;
+              state.hydrated = true;
+              delete state.rawMaxTokens;
+              delete state.stream;
+              const model = realUsageModel(body.model);
+              if (model) state.model = model;
+            }
+          }
+        }
+      }
       if (Array.isArray(body.content)) for (const rawBlock of body.content) {
         const block = record(rawBlock);
         if (block.type === "tool_use" && typeof block.id === "string" && typeof block.name === "string") this.tools.set(block.id, { id: block.id, toolName: block.name, input: block.input, startedAt: Date.now() });
@@ -860,6 +1222,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const projection = this.messageProjection.get(sessionId) ?? {};
       this.messageProjection.set(sessionId, projection);
       const items = nativeHistoryItems(sessionId, [event.message], projection);
+      await this.enrichSubagentItems(sessionId, items);
       if (message.type === "system") this.projectSessions();
       for (const item of items) {
         const receipt = item.role === "user" ? [...this.receipts.values()].find(receipt => receipt.sessionId === sessionId && receipt.messageId === message.uuid) : undefined;
@@ -883,7 +1246,19 @@ export class ClaudeDesktopBridge extends EventEmitter {
           }
         }
       }
-      if (message.type === "result" && !indexedResult) await this.record({ sessionId, ...(typeof message.uuid === "string" ? { itemId: message.uuid } : {}), origin: "claude-desktop", type: message.is_error === true ? "turn.failed" : "turn.completed", data: { ...(message.is_error === true ? { error: message.result ?? message.errors } : {}) } });
+      if (message.type === "result") {
+        const state = this.contextStates.get(sessionId);
+        if (state && state.totalTokens > 0) {
+          const modelUsage = record(message.modelUsage ?? message.model_usage);
+          const entry = state.model ? record(modelUsage[state.model]) : undefined;
+          const contextWindow = nonNegativeTokenCount(entry?.contextWindow ?? entry?.context_window);
+          if (contextWindow >= state.totalTokens) {
+            state.rawMaxTokens = Math.round(contextWindow);
+            state.estimated = false;
+          }
+        }
+        if (!indexedResult) await this.record({ sessionId, ...(typeof message.uuid === "string" ? { itemId: message.uuid } : {}), origin: "claude-desktop", type: message.is_error === true ? "turn.failed" : "turn.completed", data: { ...(message.is_error === true ? { error: message.result ?? message.errors } : {}) } });
+      }
     }
     if (event.type === "error") await this.record({ sessionId, origin: "claude-desktop", type: "turn.failed", data: { error: event.error } });
     this.projectSessions();

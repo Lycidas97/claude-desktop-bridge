@@ -32,12 +32,6 @@ import {
 } from "./webrtc-runtime.js";
 import { ConversationStateStore } from "./conversation-state-store.js";
 import { MagpieConnectionRepository } from "./magpie-connection.js";
-import { CodexAppServerAdapter } from "./codex-app-server-adapter.js";
-import { HermesGatewayAdapter } from "./hermes-gateway-adapter.js";
-import { DshDesktopAdapter } from "./dsh-desktop-adapter.js";
-import { RuntimeAdapterRegistry } from "./runtime-adapter.js";
-import { RuntimeSessionBroker } from "./runtime-session-broker.js";
-import { RuntimeHandoffService } from "./runtime-handoff-service.js";
 import { ServiceResources } from "./service-resources.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
@@ -143,18 +137,6 @@ export async function createServiceRuntime(options: { userDataPath: string; onSt
       evidence,
     });
     resources.defer("Claude Desktop bridge", () => broker.close());
-    const runtimeRegistry = new RuntimeAdapterRegistry([
-      new CodexAppServerAdapter(),
-      new HermesGatewayAdapter(),
-      new DshDesktopAdapter(),
-    ]);
-    const runtimeSessions = new RuntimeSessionBroker(runtimeRegistry, eventLog, conversationState, { evidence });
-    const runtimeHandoffs = new RuntimeHandoffService({
-      state: conversationState,
-      eventLog,
-      runtimeRegistry,
-      runtimeSessions,
-    });
     const claudeDesktop = new ClaudeDesktopLifecycle();
     const desktopAppControls = new Map(
       DESKTOP_APP_DEFINITIONS.map((definition) => [
@@ -182,13 +164,11 @@ export async function createServiceRuntime(options: { userDataPath: string; onSt
       evidence,
       claudeDesktop,
       RTCPeerConnectionImpl,
-      runtimeSessions,
       desktopAppControls,
-      runtimeHandoffs,
       conversationState,
     );
 
-    // Controller owns runtime sessions and handoffs; the service owns the broker.
+    // The service owns the Claude broker and controller.
     resources.defer("Desktop controller", () => controller.close());
     options.onStage?.("初始化运行时与中继连接");
     await controller.initialize();

@@ -42,19 +42,19 @@ it("lists one directory level and recents for local and paired requests", async 
   await expect(c.handleRequest(request("directory.list", { path: "relative" }), "mobile")).rejects.toThrow(/absolute/u);
 });
 
-it("writes runtime defaults without a session and broadcasts through publish", async () => {
+it("rejects retired defaults without writing configuration or broadcasting", async () => {
   const setHostPermissionMode = vi.fn(async () => 0), publish = vi.fn(async () => {});
   const config = { runtimePermissionModes: {}, defaultPermissionMode: "standard", devices: [] };
   const c = controller({ config, repository: { save: vi.fn(async () => {}) }, eventLog: { append: vi.fn(async () => {}) },
     runtimeSessions: { setHostPermissionMode }, publish });
-  expect(await c.handleRequest(request("permission.policy.configure", { scope: "host", runtimeId: "codex-desktop", mode: "full-access" }), "mobile"))
-    .toMatchObject({ runtimeId: "codex-desktop", defaultPermissionMode: "full-access" });
-  expect(config.runtimePermissionModes).toEqual({ "codex-desktop": "full-access" });
-  expect(setHostPermissionMode).toHaveBeenCalledWith("codex-desktop", "full-access"); expect(publish).toHaveBeenCalled();
+  await expect(c.handleRequest(request("permission.policy.configure", { scope: "host", runtimeId: "codex-desktop", mode: "full-access" }), "mobile"))
+    .rejects.toMatchObject({ code: "UNSUPPORTED" });
+  expect(config.runtimePermissionModes).toEqual({});
+  expect(setHostPermissionMode).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled();
 });
 
-it("broadcasts changed runtime defaults even when the session set is unchanged", async () => {
-  const snapshot = { sessions: [], permissions: [], host: { defaultPermissionMode: "standard" }, runtimes: [{ id: "codex-desktop", defaultPermissionMode: "standard" }] };
+it("broadcasts changed Claude runtime status even when the session set is unchanged", async () => {
+  const snapshot = { sessions: [], permissions: [], host: {}, runtime: { state: "unavailable" }, runtimes: [{ id: "claude-desktop" }] };
   const broadcast = vi.fn(async () => {});
   const c = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
     snapshot: async () => snapshot, broadcast, eventLog: { append: vi.fn() },
@@ -63,7 +63,7 @@ it("broadcasts changed runtime defaults even when the session set is unchanged",
   });
   await c.publish();
   broadcast.mockClear();
-  snapshot.runtimes[0]!.defaultPermissionMode = "full-access";
+  snapshot.runtime.state = "ready";
   await c.publish();
   expect(broadcast).toHaveBeenCalledWith({ kind: "snapshot", snapshot }, true);
   expect(c.eventLog.append).not.toHaveBeenCalled();
@@ -85,9 +85,9 @@ it("broadcasts changed Magpie settings without depending on a changed session or
   expect(c.eventLog.append).not.toHaveBeenCalled();
 });
 
-it("rejects permission runtime and session mismatch", async () => {
+it("rejects retired runtime policy requests", async () => {
   const c = controller({ config: { devices: [] } });
   await expect(c.handleRequest(request("permission.policy.configure", {
     scope: "host", runtimeId: "hermes-desktop", sessionId: "codex-desktop:task", mode: "full-access",
-  }), "desktop")).rejects.toThrow(/does not match the session runtime/u);
+  }), "desktop")).rejects.toMatchObject({ code: "UNSUPPORTED" });
 });

@@ -1,6 +1,6 @@
 {
   "name": "claude-bridge",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -32,7 +32,6 @@
     "test:desktop:pairing": "node scripts/desktop-pairing-e2e.mjs",
     "test:android:installed": "node scripts/android-installed-e2e.mjs",
     "probe:relay": "node scripts/relay-contract-probe.mjs",
-    "probe:dsh": "node scripts/dsh-gateway-probe.mjs",
     "audit:runtime": "npm audit --omit=dev --audit-level=high",
     "migrate:relay-store": "node scripts/migrate-relay-json-to-sqlite.mjs",
     "typecheck": "npm run typecheck -ws --if-present && npm --prefix plugins/magpie-quota run typecheck",

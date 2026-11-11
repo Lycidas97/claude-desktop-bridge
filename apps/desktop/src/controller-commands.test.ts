@@ -8,7 +8,7 @@ it("routes discovery by logical session and ignores caller-supplied directories"
   const commands = vi.fn(async () => catalog);
   const configuration = vi.fn(() => { throw new Error("Listing must not initialize a query"); });
   const controller = Object.assign(Object.create(DesktopController.prototype), {
-    broker: { commands, configuration }, routesToExternalRuntime: () => false,
+    broker: { commands, configuration },
   });
   await expect(controller.handleRequest({ kind: "request", method: "session.commands", requestId: "commands", idempotencyKey: "commands",
     params: { sessionId: "fork", cwd: "/unapproved", claudeRoot: "/unapproved" } }, "mobile")).resolves.toEqual({ catalog });
@@ -22,7 +22,7 @@ it("routes paired mobile rewind preview and execution with exact response contra
   const previewRewind = vi.fn(async () => preview), rewindSession = vi.fn(async () => rewind);
   const session = { sessionId: "native", turnState: "idle" };
   const controller = Object.assign(Object.create(DesktopController.prototype), {
-    broker: { previewRewind, rewindSession, session: () => session }, routesToExternalRuntime: () => false,
+    broker: { previewRewind, rewindSession, session: () => session },
   });
   const request = { kind: "request", requestId: "rewind", idempotencyKey: "rewind", params: { sessionId: "native", messageId: "raw-uuid", scope: "conversation" } };
   await expect(controller.handleRequest({ ...request, method: "session.rewind.preview" }, "mobile", "phone")).resolves.toEqual({ rewind: preview });
@@ -33,7 +33,7 @@ it("routes paired mobile rewind preview and execution with exact response contra
 
 it.each(["conversation", "files", "both"])("accepts native rewind scope %s", async scope => {
   const rewindSession = vi.fn(async () => ({ scope }));
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { rewindSession, session: () => undefined }, routesToExternalRuntime: () => false });
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { rewindSession, session: () => undefined } });
   await controller.handleRequest({ kind: "request", method: "session.rewind", requestId: "rewind", idempotencyKey: "rewind", params: { sessionId: "native", messageId: "raw", scope } }, "mobile");
   expect(rewindSession).toHaveBeenCalledExactlyOnceWith("native", "raw", scope);
 });
@@ -48,15 +48,15 @@ it.each([
   { sessionId: "native", messageId: "raw" },
 ])("rejects malformed rewind params %j at the controller boundary", async params => {
   const rewindSession = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { rewindSession }, routesToExternalRuntime: () => false });
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { rewindSession } });
   await expect(controller.handleRequest({ kind: "request", method: "session.rewind", requestId: "rewind", idempotencyKey: "rewind", params }, "mobile")).rejects.toThrow();
   expect(rewindSession).not.toHaveBeenCalled();
 });
 
 it.each(["session.rewind.preview", "session.rewind"])("rejects external runtime rewind through %s", async method => {
   const previewRewind = vi.fn(), rewindSession = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { previewRewind, rewindSession }, routesToExternalRuntime: () => true });
-  await expect(controller.handleRequest({ kind: "request", method, requestId: "rewind", idempotencyKey: "rewind", params: { sessionId: "external", messageId: "raw", scope: "both" } }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { previewRewind, rewindSession } });
+  await expect(controller.handleRequest({ kind: "request", method, requestId: "rewind", idempotencyKey: "rewind", params: { sessionId: "codex-desktop:saved", messageId: "raw", scope: "both" } }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
   expect(previewRewind).not.toHaveBeenCalled();
   expect(rewindSession).not.toHaveBeenCalled();
 });
@@ -74,16 +74,16 @@ it.each([false, true])("advertises native rewind only when the broker supports i
 it("never substitutes Claude commands for an external runtime", async () => {
   const commands = vi.fn();
   const controller = Object.assign(Object.create(DesktopController.prototype), {
-    broker: { commands }, routesToExternalRuntime: () => true,
+    broker: { commands },
   });
   await expect(controller.handleRequest({ kind: "request", method: "session.commands", requestId: "external", idempotencyKey: "external",
-    params: { sessionId: "hermes-session" } }, "mobile")).resolves.toEqual({ catalog: { sessionId: "hermes-session", commands: [] } });
+    params: { sessionId: "hermes-desktop:saved" } }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
   expect(commands).not.toHaveBeenCalled();
 });
 
 it("routes explicit command execution with its original request identity", async () => {
   const runCommand = vi.fn(async () => ({ action: "sent" }));
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { runCommand }, routesToExternalRuntime: () => false });
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { runCommand } });
   await expect(controller.handleRequest({ kind: "request", method: "session.command", requestId: "request", idempotencyKey: "key", params: { sessionId: "fork", text: "/compact preserve names", cwd: "/unapproved" } }, "mobile", "phone")).resolves.toEqual({ command: { action: "sent" } });
   expect(runCommand).toHaveBeenCalledExactlyOnceWith({ sessionId: "fork", text: "/compact preserve names", requestId: "request", idempotencyKey: "key", origin: "mobile", sourceDeviceId: "phone" });
 });
@@ -102,7 +102,7 @@ it.each([
 it.each(["turn.start", "turn.steer"])("relays %s with original identity and preserves the native acknowledgement", async method => {
   const startTurn = vi.fn(async () => ({ commandId: "command", state: "queued" }));
   const steerTurn = vi.fn(async () => ({ commandId: "command", state: "queued" }));
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { startTurn, steerTurn }, routesToExternalRuntime: () => false });
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { startTurn, steerTurn } });
   await expect(controller.handleRequest({ kind: "request", method, requestId: "remote", idempotencyKey: "key",
     params: { sessionId: "native", text: "Continue" } }, "mobile", "phone")).resolves.toEqual({ commandId: "command", state: "queued" });
   expect(method === "turn.start" ? startTurn : steerTurn).toHaveBeenCalledExactlyOnceWith({ sessionId: "native", text: "Continue", attachments: [],
@@ -111,7 +111,7 @@ it.each(["turn.start", "turn.steer"])("relays %s with original identity and pres
 
 it.each(["turn.start", "turn.steer"])("rejects legacy Bridge execution through %s", async method => {
   const startTurn = vi.fn(), steerTurn = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { startTurn, steerTurn }, routesToExternalRuntime: () => false });
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { startTurn, steerTurn } });
   await expect(controller.handleRequest({ kind: "request", method, requestId: "remote", idempotencyKey: "key",
     params: { sessionId: "native", text: "Continue", bridgeExecutionRequested: true } }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
   expect(startTurn).not.toHaveBeenCalled();
@@ -120,7 +120,7 @@ it.each(["turn.start", "turn.steer"])("rejects legacy Bridge execution through %
 
 it.each(["true", null, 1])("rejects invalid remote choice %j before creating a turn", async bridgeExecutionRequested => {
   const startTurn = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { startTurn }, routesToExternalRuntime: () => false });
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { startTurn } });
   await expect(controller.handleRequest({ kind: "request", method: "turn.start", requestId: "invalid", idempotencyKey: "key",
     params: { sessionId: "native", text: "Continue", bridgeExecutionRequested } }, "mobile")).rejects.toThrow("Invalid bridgeExecutionRequested");
   expect(startTurn).not.toHaveBeenCalled();
@@ -164,7 +164,7 @@ it.each(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto
   const configuration = { nativePermissionMode: permissionMode };
   const configureSession = vi.fn(async () => configuration);
   const controller = Object.assign(Object.create(DesktopController.prototype), {
-    broker: { configureSession, session: () => ({ sessionId: "native" }) }, routesToExternalRuntime: () => false,
+    broker: { configureSession, session: () => ({ sessionId: "native" }) },
   });
   await expect(controller.handleRequest({ kind: "request", method: "session.configure", requestId: "configure", idempotencyKey: "configure",
     params: { sessionId: "native", permissionMode } }, "mobile")).resolves.toEqual({ configuration, session: { sessionId: "native" } });
@@ -173,13 +173,13 @@ it.each(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto
 
 it.each(["full-access", "unknown", "", null, 1])("rejects invalid native session permission mode %j", async permissionMode => {
   const configureSession = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { configureSession }, routesToExternalRuntime: () => false });
+  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { configureSession } });
   await expect(controller.handleRequest({ kind: "request", method: "session.configure", requestId: "configure", idempotencyKey: "configure",
     params: { sessionId: "native", permissionMode } }, "mobile")).rejects.toThrow();
   expect(configureSession).not.toHaveBeenCalled();
 });
 
-it("keeps host permission defaults working for other runtimes", async () => {
+it("rejects retired host permission defaults without changing saved values", async () => {
   const setHostPermissionMode = vi.fn(async () => 2), publish = vi.fn(async () => undefined);
   const config = { runtimePermissionModes: {}, devices: [], defaultPermissionMode: "standard" };
   const controller = Object.assign(Object.create(DesktopController.prototype), {
@@ -187,8 +187,8 @@ it("keeps host permission defaults working for other runtimes", async () => {
     runtimeSessions: { setHostPermissionMode }, publish,
   });
   await expect(controller.handleRequest({ kind: "request", method: "permission.policy.configure", requestId: "policy", idempotencyKey: "policy",
-    params: { scope: "host", runtimeId: "codex-desktop", mode: "full-access" } }, "mobile")).resolves.toMatchObject({ runtimeId: "codex-desktop", resolvedPending: 2 });
-  expect(setHostPermissionMode).toHaveBeenCalledExactlyOnceWith("codex-desktop", "full-access");
-  expect(config.runtimePermissionModes).toEqual({ "codex-desktop": "full-access" });
+    params: { scope: "host", runtimeId: "codex-desktop", mode: "full-access" } }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
+  expect(setHostPermissionMode).not.toHaveBeenCalled();
+  expect(config.runtimePermissionModes).toEqual({});
   expect(config.defaultPermissionMode).toBe("standard");
 });

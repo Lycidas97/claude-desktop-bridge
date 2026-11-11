@@ -3,7 +3,7 @@ export const PAIRING_SCHEMA_VERSION = 4 as const;
 export const ENVELOPE_CHUNK_BYTES = 64 * 1024;
 export const MAX_ENVELOPE_CHUNKS = 384;
 export const ARTIFACT_MAX_BYTES = 20 * 1024 * 1024;
-export const TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
+export const FILE_PREVIEW_CONFIRM_BYTES = 1024 * 1024;
 export const ARTIFACT_TRANSFER_CHUNK_BYTES = 256 * 1024;
 export const ARTIFACT_TRANSFER_TTL_MS = 10 * 60 * 1000;
 
@@ -96,6 +96,8 @@ export type BridgeDesktopRuntimeState = "ready" | "starting" | "unavailable" | "
 export type BridgeRuntimeCapability =
   | "session.list"
   | "session.create"
+  | "section.create"
+  | "section.move"
   | "session.fork"
   | "session.history"
   | "session.configure"
@@ -185,6 +187,7 @@ export type BridgeCapability =
   | "evidence.details.v1"
   | "artifact.preview.v1"
   | "artifact.transfer.v1"
+  | "artifact.transfer.stat.v1"
   | "artifact.text-preview.v1"
   | "workspace.upload.v1"
   | "provider.profile.v1"
@@ -193,10 +196,13 @@ export type BridgeCapability =
   | "permission.policy.v1"
   | "permission.runtime-defaults.v1"
   | "directory.browse.v1"
+  | "directory.mkdir.v1"
   | "runtime.adapter.v1"
   | "runtime.handoff.v1"
   | "session.visibility.v1"
   | "session.rename.v1"
+  | "section.create.v1"
+  | "section.move.v1"
   | "session.commands.v1"
   | "session.command.v1"
   | "session.rewind.v1"
@@ -350,6 +356,7 @@ export interface BridgeSessionAllowedActions {
   canSwitchProvider: boolean;
   canContinueOfficial: boolean;
   canConfigure: boolean;
+  canMoveSection?: boolean;
   /** Cross-Desktop relay to another runtime (0.7+). */
   canRelay?: boolean;
   /** A live Desktop executor must be handed over before Bridge can execute remotely. */
@@ -563,9 +570,15 @@ export type BridgeHistoryAttachment = Omit<BridgeAttachment, "data"> & {
   nativeImage?: BridgeNativeImageRef;
 };
 
+export interface BridgeArtifactTransferMetadata {
+  name: string;
+  mimeType: string;
+  size: number;
+}
+
 export type BridgeArtifactTransferOpenParams =
-  | { artifactId: string; purpose?: "text-preview" }
-  | { sessionId: string; path: string; purpose?: "text-preview" }
+  | { artifactId: string; purpose?: "text-preview" | "stat" }
+  | { sessionId: string; path: string; purpose?: "text-preview" | "stat" }
   | { sessionId: string; nativeImage: BridgeNativeImageRef };
 
 export interface BridgeDirectoryListing {
@@ -645,6 +658,8 @@ export interface BridgeSessionInfo {
   /** Native runtime fast/priority mode for Codex/Hermes. */
   fast?: boolean;
   configurationPending?: boolean;
+  /** Current main-session context window watermark, when observed. */
+  contextUsage?: BridgeSessionContextUsage;
   nativePermissionModeChange?: BridgeNativePermissionModeChange;
   fallbackConfirmed?: boolean;
   desktopRegistration?: BridgeDesktopRegistrationInfo;
@@ -707,8 +722,8 @@ export interface BridgeRuntimeProviderInfo {
 
 export interface BridgeSessionContextUsage {
   totalTokens: number;
-  maxTokens: number;
-  percentage: number;
+  maxTokens?: number;
+  percentage?: number;
   model?: string;
   estimated: boolean;
 }
@@ -814,6 +829,8 @@ export interface BridgeSubagentSummary {
   agentId: string;
   toolUseId?: string;
   agentType?: string;
+  /** Latest actual child assistant response model ID; omitted until observed. */
+  model?: string;
   description: string;
   state: "running" | "completed" | "failed" | "stopped" | "unknown";
   toolCount: number;
@@ -1140,9 +1157,12 @@ export type BridgeMethod =
   | "runtime.refresh"
   | "project.list"
   | "directory.list"
+  | "directory.mkdir"
   | "session.list"
   | "session.open"
   | "session.create"
+  | "section.create"
+  | "section.move"
   | "session.fork"
   | "session.rename"
   | "session.history"

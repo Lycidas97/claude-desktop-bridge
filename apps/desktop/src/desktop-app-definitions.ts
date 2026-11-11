@@ -42,80 +42,14 @@ export const CLAUDE_DESKTOP_APP: DesktopAppDefinition = {
       windowsPath.join(localAppData, "Programs", "Claude", "Claude.exe"),
       windowsPath.join(localAppData, "Claude", "Claude.exe"),
       windowsPath.join(localAppData, "AnthropicClaude", "Claude.exe"),
+      windowsPath.join(localAppData, "Microsoft", "WindowsApps", "claude-desktop.exe"),
       windowsPath.join(localAppData, "Microsoft", "WindowsApps", "Claude.exe"),
       ...programFiles.map((root) => windowsPath.join(root, "Claude", "Claude.exe")),
     ]);
   },
 };
 
-export const CODEX_DESKTOP_APP: DesktopAppDefinition = {
-  id: "codex-desktop",
-  displayName: "Codex（ChatGPT）",
-  darwinBundle: "/Applications/ChatGPT.app",
-  darwinBundleCandidates: ["/Applications/Codex.app"],
-  darwinExecutableName: "ChatGPT",
-  darwinExecutableCandidates: ["Codex"],
-  win32ExecutableName: "Codex.exe",
-  envPathOverride: "BRIDGE_CODEX_DESKTOP_PATH",
-  win32PathCandidates: (environment, home) => {
-    const { localAppData, programFiles } = win32Roots(environment, home);
-    return unique([
-      environment.BRIDGE_CODEX_DESKTOP_PATH,
-      windowsPath.join(localAppData, "Programs", "Codex", "Codex.exe"),
-      windowsPath.join(localAppData, "Codex", "Codex.exe"),
-      ...programFiles.map((root) => windowsPath.join(root, "Codex", "Codex.exe")),
-    ]);
-  },
-};
-
-export const HERMES_DESKTOP_APP: DesktopAppDefinition = {
-  id: "hermes-desktop",
-  displayName: "Hermes",
-  darwinBundle: "/Applications/Hermes.app",
-  darwinPathCandidates: (home) => [
-    posix.join(home, ".hermes", "hermes-agent", "apps", "desktop", "release", "mac-arm64", "Hermes.app"),
-    posix.join(home, ".hermes", "hermes-agent", "apps", "desktop", "release", "mac-x64", "Hermes.app"),
-  ],
-  win32ExecutableName: "Hermes.exe",
-  envPathOverride: "BRIDGE_HERMES_DESKTOP_PATH",
-  win32PathCandidates: (environment, home) => {
-    const { localAppData, programFiles } = win32Roots(environment, home);
-    return unique([
-      environment.BRIDGE_HERMES_DESKTOP_PATH,
-      windowsPath.join(localAppData, "Programs", "Hermes", "Hermes.exe"),
-      windowsPath.join(localAppData, "Hermes", "Hermes.exe"),
-      ...programFiles.map((root) => windowsPath.join(root, "Hermes", "Hermes.exe")),
-    ]);
-  },
-};
-
-export const DSH_DESKTOP_APP: DesktopAppDefinition = {
-  id: "dsh-desktop",
-  displayName: "DSH Desktop",
-  darwinBundle: "/Applications/DSH Desktop.app",
-  darwinPathCandidates: (home) => [
-    posix.join(home, "Applications", "DSH Desktop.app"),
-  ],
-  darwinExecutableName: "DSH Desktop",
-  win32ExecutableName: "DSH Desktop.exe",
-  envPathOverride: "BRIDGE_DSH_DESKTOP_PATH",
-  win32PathCandidates: (environment, home) => {
-    const { localAppData, programFiles } = win32Roots(environment, home);
-    return unique([
-      environment.BRIDGE_DSH_DESKTOP_PATH,
-      windowsPath.join(localAppData, "Programs", "DSH Desktop", "DSH Desktop.exe"),
-      windowsPath.join(localAppData, "DSH Desktop", "DSH Desktop.exe"),
-      ...programFiles.map((root) => windowsPath.join(root, "DSH Desktop", "DSH Desktop.exe")),
-    ]);
-  },
-};
-
-export const DESKTOP_APP_DEFINITIONS: DesktopAppDefinition[] = [
-  CLAUDE_DESKTOP_APP,
-  CODEX_DESKTOP_APP,
-  HERMES_DESKTOP_APP,
-  DSH_DESKTOP_APP,
-];
+export const DESKTOP_APP_DEFINITIONS: DesktopAppDefinition[] = [CLAUDE_DESKTOP_APP];
 
 /** Ordered executable candidates for the app; the first hit wins. */
 export function desktopAppPathCandidates(

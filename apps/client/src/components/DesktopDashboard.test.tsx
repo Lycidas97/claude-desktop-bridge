@@ -2,6 +2,7 @@ import type { BridgeHistoryItem, BridgePermissionInfo, BridgeSessionInfo, Deskto
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopDashboard } from "./DesktopDashboard.js";
+import { MediaPreviewProvider } from "./MediaPreviewProvider.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./FileAttachmentPicker.js";
 import { IconButton } from "./IconButton.js";
@@ -47,7 +48,7 @@ vi.mock("react", async (original) => ({
     });
   },
 }));
-vi.mock("./MediaPreviewProvider.js", () => ({ useMediaPreview: () => vi.fn() }));
+vi.mock("./MediaPreviewProvider.js", async original => ({ ...await original<typeof import("./MediaPreviewProvider.js")>(), useMediaPreview: () => vi.fn() }));
 vi.mock("../lib/file-upload.js", async (original) => ({
   ...await original<typeof import("../lib/file-upload.js")>(),
   uploadSessionFile: vi.fn(),
@@ -134,6 +135,15 @@ function questionPermission(requestId: string, question: string, sessionId = "A"
 function textContent(node: ReactNode): string {
   return elements(node).flatMap(element => element.props.children).filter(child => typeof child === "string").join(" ");
 }
+
+describe("desktop file stat capability", () => {
+  it.each([false, true])("uses the snapshot capability when supported=%s regardless of version", async supported => {
+    snapshot.host.version = "1.3.1";
+    if (supported) snapshot.host.capabilities.push("artifact.transfer.stat.v1");
+    await openSessions();
+    expect(elements(dashboard.draw()).find(element => element.type === MediaPreviewProvider)!.props.supportsFileStat).toBe(supported);
+  });
+});
 
 describe("session notice presentation", () => {
   it("uses the shared compact card instead of user rewind controls", async () => {
@@ -423,4 +433,20 @@ it("[edge] keeps an old session's slash failure out of the new draft and pending
   expect(elements(tree).find(element => element.type === "button" && element.props["aria-label"] === "发送")!.props.disabled).toBe(true);
   finishB({ kind: "response", requestId: "B", ok: true, result: { command: { action: "sent" } } }); await settle(); tree = sessions.draw();
   expect(apiRequest.mock.calls.filter(call => call[0].method === "session.command").map(call => call[0].params)).toEqual([{ sessionId: "A", text: "/context" }, { sessionId: "B", text: "/compact" }]);
+});
+
+it("renders composer context usage only when present and degrades cleanly for unknown model capacity", async () => {
+  await openSessions();
+  expect(elements(tree).some(element => typeof element.props.className === "string" && element.props.className.includes("session-context-bar"))).toBe(false);
+
+  snapshot.sessions[0]!.contextUsage = { totalTokens: 42_000, maxTokens: 1_000_000, percentage: 4.2, model: "claude-opus-5-5", estimated: false };
+  tree = sessions.draw({ ...sessionsProps, snapshot });
+  expect(elements(tree).some(element => typeof element.type === "function" && element.type.name === "SessionContextUsageBar")).toBe(true);
+
+  snapshot.sessions[0]!.contextUsage = { totalTokens: 29_500, model: "custom/unknown-window", estimated: true };
+  tree = sessions.draw({ ...sessionsProps, snapshot });
+  const bar = elements(tree).find(element => typeof element.type === "function" && element.type.name === "SessionContextUsageBar")!;
+  const rendered = (bar.type as (props: Record<string, unknown>) => ReactNode)(bar.props);
+  expect(JSON.stringify(rendered)).toContain("30K");
+  expect(JSON.stringify(rendered)).not.toContain("undefined");
 });

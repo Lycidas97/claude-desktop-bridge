@@ -1,9 +1,6 @@
 import type { BridgeDesktopRuntime, BridgeDesktopRuntimeId, BridgeHostSnapshot } from "@bridge/protocol";
-import { describe, expect, it, vi } from "vitest";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { AgentSettings } from "../components/AgentSettings.js";
-import { visibleAgentSnapshot } from "./useAgentVisibility.js";
+import { describe, expect, it } from "vitest";
+import { claudeSnapshot } from "./claude-snapshot.js";
 
 function snapshot(): BridgeHostSnapshot {
   const ids: BridgeDesktopRuntimeId[] = ["claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop"];
@@ -19,10 +16,10 @@ function snapshot(): BridgeHostSnapshot {
   };
 }
 
-describe("Agent visibility", () => {
+describe("Claude-only saved snapshots", () => {
   it("keeps only Claude by default across sessions, projects, apps, runtimes and permissions", () => {
     const original = snapshot();
-    const visible = visibleAgentSnapshot(original, ["claude-desktop"]);
+    const visible = claudeSnapshot(original);
     expect(visible.sessions.map((session) => session.runtimeId)).toEqual(["claude-desktop"]);
     expect(visible.projects.map((project) => project.runtimeId)).toEqual(["claude-desktop"]);
     expect(visible.desktopApps?.map((app) => app.id)).toEqual(["claude-desktop"]);
@@ -32,35 +29,15 @@ describe("Agent visibility", () => {
     expect(original.runtimes).toHaveLength(4);
   });
 
-  it("shows an enabled ready Agent while hiding enabled unavailable and failed Agents", () => {
-    const original = snapshot();
-    const enabled: BridgeDesktopRuntimeId[] = ["claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop"];
-    expect(visibleAgentSnapshot(original, enabled).runtimes?.map((runtime) => runtime.id)).toEqual(["claude-desktop", "codex-desktop"]);
-    original.runtimes![1]!.state = "starting";
-    expect(visibleAgentSnapshot(original, enabled).sessions.map((session) => session.runtimeId)).toEqual(["claude-desktop"]);
-    original.runtimes![1]!.state = "ready";
-    expect(visibleAgentSnapshot(original, enabled).sessions.map((session) => session.runtimeId)).toEqual(["claude-desktop", "codex-desktop"]);
-  });
-
   it("retains Claude and legacy sessions when the host omits runtime information", () => {
     const { runtimes: _runtimes, desktopApps: _apps, ...legacy } = snapshot();
     const { runtimeId: _sessionRuntime, ...session } = legacy.sessions[0]!;
     const { runtimeId: _projectRuntime, ...project } = legacy.projects[0]!;
     legacy.sessions = [session];
     legacy.projects = [project];
-    const visible = visibleAgentSnapshot(legacy, []);
+    const visible = claudeSnapshot(legacy);
     expect(visible.sessions).toHaveLength(1);
     expect(visible.projects).toHaveLength(1);
     expect(visible).not.toHaveProperty("runtimes");
-  });
-
-  it("keeps hidden Agents available as unchecked settings and Claude always selected", () => {
-    const html = renderToStaticMarkup(createElement(AgentSettings, {
-      control: { enabled: ["claude-desktop"], setEnabled: vi.fn() }, snapshot: snapshot(),
-    }));
-    expect(html).toContain('aria-label="显示 Claude" disabled="" checked=""');
-    expect(html).toContain('aria-label="显示 Codex"');
-    expect(html.match(/checked=""/g)).toHaveLength(1);
-    expect(html).toContain("未连接或未就绪，主界面隐藏");
   });
 });

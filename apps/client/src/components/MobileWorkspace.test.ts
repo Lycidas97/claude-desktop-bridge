@@ -21,14 +21,12 @@ import {
   canStopBridgeTask,
   conversationItems,
   conversationTimeline,
-  goalStatusLabel,
   ownershipLabel,
   permissionPresentation,
   restorableSessionId,
   sessionProfile,
   stoppableBridgeTask,
   supportsProviderSwitching,
-  supportsRuntimeHandoff,
 } from "./MobileWorkspace.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 
@@ -89,8 +87,8 @@ describe("mobile workspace directory", () => {
       onOpenSession: vi.fn(), onLoadOlderHistory: vi.fn(), onLoadOlderEvidence: vi.fn(), onPreviewArtifact: vi.fn(), onDownloadArtifact: vi.fn(),
       onSendTurn: vi.fn(), onInterruptTurn: vi.fn(), onResolveUncertain: vi.fn(), onResolvePermission: vi.fn(), onCreateSession: vi.fn(),
       onLoadSessionConfiguration: vi.fn(), onConfigureSession: vi.fn(), onPreviewProviderSwitch: vi.fn(), onCommitProviderSwitch: vi.fn(), onCancelProviderSwitch: vi.fn(),
-      onRefreshProviders: vi.fn(), onPreviewRuntimeHandoff: vi.fn(), onCommitRuntimeHandoff: vi.fn(), onConfirmRuntimeHandoff: vi.fn(), onCancelRuntimeHandoff: vi.fn(), onGetRuntimeHandoff: vi.fn(),
-      onPauseRuntimeGoal: vi.fn(), onResumeRuntimeGoal: vi.fn(), onDesktopAppAction: vi.fn(), onRefresh: vi.fn(), onBackToHosts: vi.fn(), onRetry: vi.fn(),
+      onRefreshProviders: vi.fn(),
+    onDesktopAppAction: vi.fn(), onRefresh: vi.fn(), onBackToHosts: vi.fn(), onRetry: vi.fn(),
     };
   }
 
@@ -289,7 +287,7 @@ describe("mobile workspace directory", () => {
     expect(canConfigureSession(session)).toBe(false);
     expect(canConfigureSession({ ...session, allowedActions: { canConfigure: false } as NonNullable<BridgeSessionInfo["allowedActions"]> })).toBe(false);
     expect(canConfigureSession({ ...session, runtimeId: "codex-desktop" })).toBe(false);
-    expect(canConfigureSession({ ...session, runtimeId: "codex-desktop", allowedActions: { canConfigure: true } as NonNullable<BridgeSessionInfo["allowedActions"]> })).toBe(true);
+    expect(canConfigureSession({ ...session, runtimeId: "codex-desktop", allowedActions: { canConfigure: true } as NonNullable<BridgeSessionInfo["allowedActions"]> })).toBe(false);
   });
 });
 
@@ -311,58 +309,45 @@ describe("native Desktop permission actions", () => {
   ])("requires capability %s and a native callback %s to show the native button", (capability, callback, visible) => {
     const html = renderToStaticMarkup(createElement(PermissionPrompt, {
       permission: { ...permission, canSetNativeFullAccess: capability }, onResolve: vi.fn(),
-      onEnableFullAccess: vi.fn(),
       ...(callback ? { onEnableNativeFullAccess: vi.fn() } : {}),
     }));
     expect(html.includes("此 Desktop 会话完全授权")).toBe(visible);
-    expect(html).toContain("Bridge 默认完全授权");
+    expect(html).not.toContain("Bridge 默认完全授权");
     expect(html).not.toContain("电脑默认完全授权");
   });
 
   it("does not offer either upgrade action on AskUserQuestion", () => {
     const html = renderToStaticMarkup(createElement(PermissionPrompt, {
       permission: { ...permission, toolName: "AskUserQuestion", input: { questions: [{ question: "选择环境？", options: [{ label: "测试" }] }] } },
-      onResolve: vi.fn(), onEnableFullAccess: vi.fn(), onEnableNativeFullAccess: vi.fn(),
+      onResolve: vi.fn(), onEnableNativeFullAccess: vi.fn(),
     }));
     expect(html).toContain("选择环境？");
     expect(html).not.toContain("此 Desktop 会话完全授权");
     expect(html).not.toContain("Bridge 默认完全授权");
   });
 
-  it.each(["native", "host"] as const)("keeps the %s confirmation and callback independent", async (mode) => {
+  it("requires explicit confirmation before changing the native session mode", async () => {
     const onResolve = vi.fn().mockResolvedValue(undefined);
-    const onEnableFullAccess = vi.fn().mockResolvedValue(undefined);
     const onEnableNativeFullAccess = vi.fn().mockResolvedValue(undefined);
     vi.mocked(React.useState)
       .mockReturnValueOnce([false, vi.fn()])
       .mockReturnValueOnce([undefined, vi.fn()])
-      .mockReturnValueOnce([mode, vi.fn()])
+      .mockReturnValueOnce([true, vi.fn()])
       .mockReturnValueOnce([undefined, vi.fn()]);
     vi.mocked(React.useEffect).mockImplementationOnce(() => undefined);
-    const child = PermissionPrompt({ permission, onResolve, onEnableFullAccess, onEnableNativeFullAccess });
+    const child = PermissionPrompt({ permission, onResolve, onEnableNativeFullAccess });
     const tree = (child.type as (props: typeof child.props) => ReactNode)(child.props);
     const confirmation = elements(tree).find(element => element.type === ConfirmationDialog)!;
     expect(confirmation.props.open).toBe(true);
+    expect(confirmation.props.title).toBe("此 Desktop 会话完全授权");
+    expect(confirmation.props.description).toContain("允许当前工具");
+    expect(confirmation.props.description).toContain("需等待 Desktop 确认");
     expect(confirmation.props.description).toContain("提问和强制确认仍需响应");
-    if (mode === "native") {
-      expect(confirmation.props.title).toBe("此 Desktop 会话完全授权");
-      expect(confirmation.props.description).toContain("允许当前工具");
-      expect(confirmation.props.description).toContain("当前 Desktop 会话");
-      expect(confirmation.props.description).toContain("需等待 Desktop 确认");
-      expect(confirmation.props.description).toContain("收件箱接收许可仍需在电脑端确认");
-    } else {
-      expect(confirmation.props.title).toBe("更改 Bridge 默认授权模式");
-      expect(confirmation.props.description).toContain("Bridge 默认授权");
-    }
+    expect(confirmation.props.description).toContain("收件箱接收许可仍需在电脑端确认");
+    expect(onEnableNativeFullAccess).not.toHaveBeenCalled();
     confirmation.props.onConfirm();
     await Promise.resolve();
-    if (mode === "native") {
-      expect(onEnableNativeFullAccess).toHaveBeenCalledWith(permission.requestId);
-      expect(onEnableFullAccess).not.toHaveBeenCalled();
-    } else {
-      expect(onEnableFullAccess).toHaveBeenCalledWith(permission.sessionId);
-      expect(onEnableNativeFullAccess).not.toHaveBeenCalled();
-    }
+    expect(onEnableNativeFullAccess).toHaveBeenCalledWith(permission.requestId);
     expect(onResolve).not.toHaveBeenCalled();
   });
 
@@ -1019,7 +1004,7 @@ describe("native Claude stop controls", () => {
     expect(canStopBridgeTask({ ...session, allowedActions: { ...session.allowedActions!, canInterrupt: false } })).toBe(false);
     expect(canStopBridgeTask({ ...session, transport: "bridge-host", pendingCount: 1 })).toBe(false);
     expect(stoppableBridgeTask([session], session.sessionId)).toBe(session);
-    expect(canStopBridgeTask({ ...session, runtimeId: "codex-desktop", transport: "codex-app-server", ownership: "BRIDGE_RUNNING" })).toBe(true);
+    expect(canStopBridgeTask({ ...session, runtimeId: "codex-desktop", transport: "codex-app-server", ownership: "BRIDGE_RUNNING" })).toBe(false);
   });
 });
 
@@ -1051,20 +1036,6 @@ describe("provider switching presentation", () => {
 
     expect(supportsProviderSwitching(legacy)).toBe(false);
     expect(supportsProviderSwitching(current)).toBe(false);
-  });
-
-  it("gates the runtime relay entry on the host capability and labels goal states", () => {
-    expect(supportsRuntimeHandoff(undefined)).toBe(false);
-    expect(supportsRuntimeHandoff({
-      host: { capabilities: [] },
-    } as never)).toBe(false);
-    expect(supportsRuntimeHandoff({
-      host: { capabilities: ["runtime.handoff.v1"] },
-    } as never)).toBe(true);
-    expect(goalStatusLabel("active")).toBe("goal 执行中");
-    expect(goalStatusLabel("paused")).toBe("goal 已暂停");
-    expect(goalStatusLabel("blocked")).toBe("goal 受阻");
-    expect(goalStatusLabel("complete")).toBe("goal 已完成");
   });
 
   it("aggregates file changes and keeps File change cards out of the timeline", () => {
@@ -1127,7 +1098,6 @@ describe("provider switching presentation", () => {
     ))).toBe(true);
     expect(aggregateFileChanges(items.filter((item) => item.role !== "tool"))).toBeUndefined();
   });
-
 
 });
 
@@ -1739,6 +1709,26 @@ describe("conversationItems", () => {
     expect(items[0]?.subagent).toMatchObject({ agentId: "sdk-task", toolUseId: "tool-1", updatedAt: 300 });
   });
 
+  it.each(["running", "completed", "unknown"] as const)("shows the full actual model on %s cards and omits absent models", (state) => {
+    const subagent = { agentId: "child", description: "Inspect", state, toolCount: 2, startedAt: 100, updatedAt: 300 };
+    const item = { id: "task", sessionId: "session-1", role: "tool" as const, origin: "claude-desktop" as const, createdAt: 100, text: "Inspect", subagent };
+    const model = "provider/a-very-long-actual-model-version-id-with-a-date-20261111";
+    const html = renderToStaticMarkup(createElement(SubagentCard, { item: { ...item, subagent: { ...subagent, model } } }));
+    expect(html).toContain(`class="subagent-card-model" aria-label="模型：${model}">${model}</span>`);
+    expect(html).toContain("2 步");
+    expect(renderToStaticMarkup(createElement(SubagentCard, { item }))).not.toContain("subagent-card-model");
+  });
+
+  it("retains an observed actual model through a later model-free completion event", () => {
+    const subagent = { agentId: "task", toolUseId: "tool", description: "Inspect", state: "running" as const, toolCount: 1, startedAt: 100, updatedAt: 200, model: "codex/gpt-6.1-sol" };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false,
+      items: [{ id: "tool", sessionId: "session-1", role: "tool", origin: "claude-desktop", createdAt: 100, text: "Inspect", subagent }],
+    }, [{ eventId: "done", seq: 1, timestamp: 300, sessionId: "session-1", itemId: "tool", origin: "claude-desktop", type: "tool.completed", data: {
+      subagent: { agentId: "task", toolUseId: "tool", description: "Inspect", state: "completed", toolCount: 1, startedAt: 100, updatedAt: 300 },
+    } }], []);
+    expect(items[0]?.subagent).toMatchObject({ model: "codex/gpt-6.1-sol", state: "completed" });
+  });
+
   it("shows unknown task state without terminal styling or a stop action", () => {
     const html = renderToStaticMarkup(createElement(SubagentCard, {
       item: { id: "task", sessionId: "session-1", role: "tool", origin: "claude-host", createdAt: 100, text: "Check",
@@ -1919,7 +1909,6 @@ describe("permissionPresentation", () => {
     ]);
   });
 });
-
 
 describe("SDK command output history", () => {
   it("renders local command output once across live replay and saved history, with no assistant response", () => {

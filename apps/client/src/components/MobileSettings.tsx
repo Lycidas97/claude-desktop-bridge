@@ -1,9 +1,6 @@
 import { Activity, ChevronRight, Gauge, Moon, Settings2, Sun } from "lucide-react";
-import type { ThemeControl } from "../hooks/useTheme.js";
+import { FONT_SIZES, type ThemeControl } from "../hooks/useTheme.js";
 import { setDiagDialogOpen } from "../lib/diagnostics.js";
-import type { BridgeHostSnapshot } from "@bridge/protocol";
-import type { AgentVisibilityControl } from "../hooks/useAgentVisibility.js";
-import { AgentSettings } from "./AgentSettings.js";
 import { MobilePageHeader } from "./MobilePageHeader.js";
 
 export function AppearanceSettings({ themeControl }: { themeControl: ThemeControl }) {
@@ -17,27 +14,26 @@ export function AppearanceSettings({ themeControl }: { themeControl: ThemeContro
       <button type="button" className={themeControl.family === "sunstone" ? "active" : ""} aria-pressed={themeControl.family === "sunstone"} onClick={() => themeControl.setFamily("sunstone")}>Sunstone</button>
       <button type="button" className={themeControl.family === "apple" ? "active" : ""} aria-pressed={themeControl.family === "apple"} onClick={() => themeControl.setFamily("apple")}>Apple</button>
     </div></div>
+    <div className="mobile-settings-row font-size-settings-row"><span>字号</span><div className="segmented" role="group" aria-label="字号">
+      {FONT_SIZES.map(size => <button type="button" key={size} className={(themeControl.fontSize ?? "standard") === size ? "active" : ""} aria-pressed={(themeControl.fontSize ?? "standard") === size} onClick={() => themeControl.setFontSize?.(size)}>{({ small: "小", standard: "标准", large: "大", larger: "更大" })[size]}</button>)}
+    </div></div>
   </section>;
 }
 
-export function MobileSettings({ themeControl, agentVisibility, snapshot, quota, providers }: {
+export function MobileSettings({ themeControl, quota, providers }: {
   themeControl: ThemeControl;
-  agentVisibility: AgentVisibilityControl;
-  snapshot?: BridgeHostSnapshot;
   quota?: { desktopName: string; onOpen(): void };
   providers?: { desktopName: string; onOpen(): void };
 }) {
   return <main className="mobile-workspace mobile-settings-page">
     <MobilePageHeader title="设置" />
     <div className="mobile-settings-content">
-      {providers && <section className="mobile-settings-group">
-        <h2>提供方</h2><button type="button" className="mobile-settings-row" onClick={providers.onOpen}><Settings2 size={18} aria-hidden="true" /><div><strong>提供方与检测</strong><small>{providers.desktopName}</small></div><ChevronRight size={18} aria-hidden="true" /></button>
-      </section>}
-      {quota && <section className="mobile-settings-group" aria-labelledby="mobile-quota-title">
-        <h2 id="mobile-quota-title">额度</h2><button type="button" className="mobile-settings-row" onClick={quota.onOpen}><Gauge size={18} aria-hidden="true" /><div><strong>Magpie 额度</strong><small>{quota.desktopName} · 各账号剩余额度与重置时间</small></div><ChevronRight size={18} aria-hidden="true" /></button>
+      {(providers || quota) && <section className="mobile-settings-group" aria-labelledby="mobile-computer-settings-title">
+        <h2 id="mobile-computer-settings-title">当前电脑 · {providers?.desktopName ?? quota?.desktopName}</h2>
+        {providers && <button type="button" className="mobile-settings-row" onClick={providers.onOpen}><Settings2 size={18} aria-hidden="true" /><div><strong>模型与网关</strong></div><ChevronRight size={18} aria-hidden="true" /></button>}
+        {quota && <button type="button" className="mobile-settings-row" onClick={quota.onOpen}><Gauge size={18} aria-hidden="true" /><div><strong>Magpie 额度</strong><small>各账号剩余额度与重置时间</small></div><ChevronRight size={18} aria-hidden="true" /></button>}
       </section>}
       <AppearanceSettings themeControl={themeControl} />
-      <AgentSettings control={agentVisibility} {...(snapshot ? { snapshot } : {})} />
       <section className="mobile-settings-group" aria-labelledby="mobile-support-title">
         <h2 id="mobile-support-title">诊断与支持</h2>
         <button type="button" className="mobile-settings-row" onClick={() => setDiagDialogOpen(true)}><Activity size={18} aria-hidden="true" /><div><strong>连接诊断与日志</strong><small>检查连接，记录和导出诊断日志</small></div><ChevronRight size={18} aria-hidden="true" /></button>

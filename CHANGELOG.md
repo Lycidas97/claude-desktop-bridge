@@ -1,3 +1,41 @@
+## 1.3.2
+
+- Focus Bridge on Claude Desktop and Claude-3p. Retire independent Codex, Hermes
+  and DSH adapters while preserving saved data and the models and quota features
+  available inside Claude Desktop.
+- Deliver task completion notifications through the existing notification paths.
+- Preview files larger than 1 MiB after confirming their size and download cost.
+  Read metadata before confirmation, retain the existing 20 MiB transfer limit,
+  and keep cached previews available offline. Update the desktop Bridge to enable
+  size checks from a new client.
+- Keep connection status visible when a computer name is too long for the mobile
+  header; truncate the name first.
+- Show the model reported by a child assistant response in subagent and workflow
+  details when a readable local transcript provides it.
+- Create native Claude Desktop Sections from the mobile session directory on
+  supported Desktop versions. Preserve empty Sections and allow new sessions to
+  use them; hide creation when native support is unavailable and disable it offline.
+- Move existing native sessions into, between or out of Desktop Sections from the
+  mobile session menu, label distinct subfolder names inside multi-folder Sections,
+  and allow optional single-level folder creation explicitly from the Browse
+  Computer directory picker without changing default session creation.
+- Show current main-session context usage above the composer on mobile and desktop
+  from live `LocalSessions.getContextUsage` or the latest active-branch turn
+  watermark, omit capacity and percentage when a custom model's window is unknown,
+  and synchronize across `/compact` and rewind.
+- Keep macOS `developer_settings.json` one-click enablement clickable when
+  directory access is restricted, request local directory access on demand while
+  preserving existing JSON fields, and reorganize desktop and mobile Settings by
+  task flow without duplicating Magpie quota views.
+- Add four font sizes to Appearance on mobile and desktop. Apply changes
+  immediately to reading and input text, and remember the selection on each
+  device without scaling icons or touch targets.
+- Support Windows 11 MSIX `claude-desktop.exe` execution aliases and relocated
+  `Claude-Data` / `Packages` profile directories without duplicate entries,
+  recognize single-letter Windows drive paths in Markdown file links, and
+  discover `ccd_sidebar` / `claudeCodeSessionManager` by structural contract
+  across Claude Desktop builds.
+
 ## 1.3.1
 
 - Keep native permission cards synchronized as requests appear and disappear.

@@ -41,10 +41,10 @@ const artifacts = [
   { id: "pdf", name: "Research report.pdf", relativePath: "output/Research report.pdf", kind: "pdf", mimeType: "application/pdf", previewMode: "none" },
   { id: "image", name: "Figure.png", relativePath: "output/Figure.png", kind: "image", mimeType: "image/png", previewMode: "image" },
   { id: "svg", name: "Diagram.svg", relativePath: "output/Diagram.svg", kind: "binary", mimeType: "application/octet-stream", previewMode: "none" },
-].map((file) => ({ ...file, evidenceId: "media-evidence", changeKind: "created", size: 1024, availability: "snapshot", downloadAllowed: true }));
+].map((file) => ({ ...file, evidenceId: "media-evidence", changeKind: "created", size: file.id === "pdf" ? Buffer.from(pdf, "base64").length : 1024, availability: "snapshot", downloadAllowed: true }));
 const evidence = { sessionId: session.sessionId, items: [{ id: "media-evidence", sessionId: session.sessionId, turnId: "media-turn", source: "claude-desktop", confidence: "exact", state: "ready", startedAt: now - 1000, completedAt: now, toolCount: 1, changeCount: 2, artifactCount: 2, tools: [], artifacts, warnings: [] }], hasMore: false };
 const history = { sessionId: session.sessionId, items: [{ id: "question", role: "user", text: "Show the report and image.", createdAt: now - 1000, turnId: "media-turn" }, { id: "answer", role: "assistant", text: "Created [Research report](<output/Research report.pdf>) and [Figure](output/Figure.png).", createdAt: now, turnId: "media-turn" }], hasMore: false };
-const snapshot = { host: { hostId: "qa", pairingEpoch: 1, name: "Preview Mac", relayUrl: "ws://127.0.0.1:8788/ws", online: true, lastSeenAt: now, version: "1.0.2", capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1"] }, projects: [{ projectId: session.projectId, name: "Reports", cwd: session.cwd, sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: now }], sessions: [session], devices: [], permissions: [], providers: [], runtime: { state: "ready", detail: "Ready", activeTurns: 0, pendingTurns: 0 }, latestSeq: 0, connection: "connected", launchAtLogin: false, managedDesktopEnabled: false, claudeDesktop: { state: "running", canLaunch: false, canQuit: true, detail: "Running" } };
+const snapshot = { host: { hostId: "qa", pairingEpoch: 1, name: "Preview Mac", relayUrl: "ws://127.0.0.1:8788/ws", online: true, lastSeenAt: now, version: "1.0.2", capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1", "artifact.transfer.stat.v1"] }, projects: [{ projectId: session.projectId, name: "Reports", cwd: session.cwd, sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: now }], sessions: [session], devices: [], permissions: [], providers: [], runtime: { state: "ready", detail: "Ready", activeTurns: 0, pendingTurns: 0 }, latestSeq: 0, connection: "connected", launchAtLogin: false, managedDesktopEnabled: false, claudeDesktop: { state: "running", canLaunch: false, canQuit: true, detail: "Running" } };
 const packaged = process.argv.includes("--electron");
 const mobile = process.argv.includes("--mobile");
 const mobileModule = mobile ? await (await fetch("http://127.0.0.1:5188/src/components/MobileWorkspace.tsx")).text() : "";
@@ -81,6 +81,11 @@ try {
           if (method === "session.open") return response({ session: snapshot.sessions[0], history });
           if (method === "evidence.list") return response({ evidence });
           if (method === "artifact.preview") return response({ preview: { artifactId: "image", mode: "image", mimeType: "image/svg+xml", encoding: "base64", data: btoa('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500"><rect width="800" height="500" fill="#dce8ef"/><circle cx="400" cy="210" r="100" fill="#245778"/><text x="270" y="410" font-size="32">Research figure</text></svg>'), truncated: false, generatedAt: Date.now() } });
+          if (method === "artifact.transfer.open" && params.purpose === "stat") {
+            const isSvg = params.artifactId === "svg" || params.path?.endsWith(".svg");
+            const isImage = params.artifactId === "image" || params.path?.endsWith(".png");
+            return response({ metadata: { name: isSvg ? "Diagram.svg" : isImage ? "Figure.png" : "Research report.pdf", mimeType: isSvg ? "image/svg+xml" : isImage ? "image/png" : "application/pdf", size: isSvg ? svg.length : isImage ? 1024 : bytes.length } });
+          }
           if (method === "artifact.transfer.open") {
             const isSvg = params.artifactId === "svg" || params.path?.endsWith(".svg");
             const data = isSvg ? svg : bytes;
@@ -119,6 +124,7 @@ try {
         window.__mobileBack = dispatchMobileBack;
         ReactDOMClient.createRoot(document.getElementById("root")).render(React.createElement(MediaPreviewProvider, {
           request: (method, params) => window.bridgeDesktop.request({ method, params }),
+          supportsFileStat: snapshot.host.capabilities.includes("artifact.transfer.stat.v1"),
         }, React.createElement(MobileWorkspace, {
           activeHostId: "qa", desktopName: "Preview Mac", connection: "connected", desktopOnline: true,
           snapshot, permissions: [], histories: { "media-session": { ...history, status: "ready" } },
@@ -129,9 +135,7 @@ try {
           onPreviewArtifact: noop, onDownloadArtifact: noop, onSendTurn: noop, onInterruptTurn: noop,
           onResolveUncertain: noop, onResolvePermission: noop, onCreateSession: noop, onLoadSessionConfiguration: noop,
           onConfigureSession: noop, onPreviewProviderSwitch: noop, onCommitProviderSwitch: noop,
-          onCancelProviderSwitch: noop, onRefreshProviders: noop, onPreviewRuntimeHandoff: noop,
-          onCommitRuntimeHandoff: noop, onConfirmRuntimeHandoff: noop, onCancelRuntimeHandoff: noop,
-          onGetRuntimeHandoff: noop, onPauseRuntimeGoal: noop, onResumeRuntimeGoal: noop,
+          onCancelProviderSwitch: noop, onRefreshProviders: noop,
           onDesktopAppAction: noop, onRefresh: async () => true, onBackToHosts: noop, onRetry: noop,
         })));
       ` }));
@@ -146,6 +150,11 @@ try {
     const before = await page.evaluate(() => window.__mediaRequests.filter((r) => r.method.startsWith("artifact.")).length);
     if (before !== 0) throw new Error("Media bodies were loaded before user interaction");
     await page.locator(".media-file.pdf").first().click();
+    await page.getByRole("alertdialog").waitFor();
+    if (await page.evaluate(() => window.__mediaRequests.some((r) => r.method === "artifact.transfer.read" || (r.method === "artifact.transfer.open" && r.params.purpose !== "stat")))) throw new Error("PDF content opened before confirmation");
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+    await page.locator(".media-file.pdf").first().click();
+    await page.getByRole("button", { name: "下载并预览", exact: true }).click();
     await page.locator(".media-viewer canvas:visible").waitFor({ timeout: 15_000 }).catch(async (error) => {
       await page.screenshot({ path: `${output}/media-failure.png` });
       console.error(JSON.stringify({ errors, body: await page.locator("body").innerText(), requests: await page.evaluate(() => window.__mediaRequests) }));
@@ -182,6 +191,7 @@ try {
     if (await page.getByRole("alert").count()) throw new Error("SVG transfer preview failed to render");
     await page.getByRole("button", { name: "关闭查看器" }).click();
     await page.locator(".markdown-file-link").filter({ hasText: "Research report" }).click();
+    await page.getByRole("button", { name: "下载并预览", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector(".media-viewer canvas")?.width > 0);
     await page.keyboard.press("Escape");
     await page.locator(".media-viewer").waitFor({ state: "detached" });
@@ -191,6 +201,7 @@ try {
       if (!first?.includes("media-gallery")) throw new Error("Media gallery is not first in mobile outputs");
       await page.screenshot({ path: `${output}/mobile-media-gallery.png` });
       await page.locator(".mobile-evidence-view .media-file.pdf").click();
+      await page.getByRole("button", { name: "下载并预览", exact: true }).click();
       await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector(".media-viewer canvas")?.width > 0);
       await page.evaluate(() => window.__mobileBack());
       await page.locator(".media-viewer").waitFor({ state: "detached" });

@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { createContext, runInContext } from "node:vm";
 import { once } from "node:events";
+import { basename } from "node:path";
 import { WebSocketServer } from "ws";
 import { describe, expect, it } from "vitest";
 import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError } from "./claude-desktop-inspector.js";
@@ -30,10 +31,34 @@ async function fixture() {
   let pageAvailable = true;
   const connection = { rejectHandshake: false };
   const page = { id: 42, getURL: () => "app://localhost/epitaxy/local-native", executeJavaScript: (source: string) => runInContext(source, context) };
-  const main = createContext({ process: { mainModule: { require: () => ({ webContents: {
+  const sidebar = {
+    enabled: true, error: "", legacy: false,
+    groups: [{ id: "empty", name: "<Research>", order: 0 }, { id: "hidden", name: "Hidden", order: 1 }],
+    calls: [] as Array<{ method: string; params: Record<string, unknown>; context?: unknown }>,
+    serverName: "ccd_sidebar", tools: ["list_sections", "create_section", "move_sessions"].map(name => ({ name })),
+    isEnabled: ({ sessionType }: { sessionType: string }) => sidebar.enabled && sessionType === "ccd",
+    async handleToolCall(method: string, params: Record<string, unknown>, context?: unknown) {
+      sidebar.calls.push({ method, params, context });
+      const error = sidebar.error || (sidebar.legacy ? "This app version doesn't know that command." : "");
+      return { ...(error ? { isError: true } : {}), content: [{ type: "text", text: error || JSON.stringify(method === "list_sections"
+        ? sidebar.groups.map(group => ({ ...group, name: group.name.replaceAll("<", "&lt;"), kind: "manual", shown: group.id !== "hidden" }))
+        : { id: "empty" }) }] };
+    },
+  };
+  const sidebarFactory = function () {
+    return Object.assign(sidebar, { serverName: "ccd_sidebar", handleToolCall: sidebar.handleToolCall });
+  };
+  const cache: Record<string, { filename: string; exports: Record<string, unknown> }> = {
+    factory: { filename: "/fixture/index.chunk-Ca27adTf.js", exports: { $n: sidebarFactory } },
+    manager: { filename: "/fixture/index.chunk-Cy6fdnz-.js", exports: { claudeCodeSessionManager: {
+      listCustomGroups: () => sidebar.groups,
+      getSessionCustomGroup: (id: string) => id === "local-native" ? sidebar.groups[0] : undefined,
+    } } },
+  };
+  const main = createContext({ process: { mainModule: { require: (name: string) => name === "module" ? { _cache: cache } : name === "path" ? { basename } : { webContents: {
     getAllWebContents: () => [{ id: 1, getURL: () => "about:blank" }, ...(pageAvailable ? [page] : [])],
     fromId: (id: number) => id === 42 && pageAvailable ? page : undefined,
-  } }) } } });
+  } } } } });
   const server = createServer((_, response) => {
     response.setHeader("Content-Type", "application/json");
     response.end(JSON.stringify([{ type: "node", webSocketDebuggerUrl: `ws://127.0.0.1:${port}/dynamic-id` }]));
@@ -53,7 +78,7 @@ async function fixture() {
   const port = (server.address() as { port: number }).port;
   const inspector = new ClaudeDesktopInspector({ origin: `http://127.0.0.1:${port}`, rpcTimeoutMs: 300 });
   return {
-    inspector, calls, events, permissions, api, connection, bootstrap, fetches,
+    inspector, calls, events, permissions, api, connection, bootstrap, fetches, sidebar, cache,
     setPageAvailable(available: boolean) { pageAvailable = available; },
     reload() { events.clear(); permissions.clear(); context = createContext({ "claude.web": { LocalSessions: api }, fetch }); },
     drop() { for (const socket of sockets.clients) socket.terminate(); },
@@ -62,6 +87,71 @@ async function fixture() {
 }
 
 describe("native Desktop inspector", () => {
+  it("reads raw empty section names and assignments through the verified loaded factory and manager", async () => {
+    const f = await fixture();
+    try {
+      await f.inspector.connect();
+      expect(await f.inspector.sections(["local-native", "unknown"])).toEqual({
+        sections: [{ id: "empty", name: "<Research>", order: 0 }], assignments: { "local-native": "empty" },
+      });
+      expect(await f.inspector.createSection("<Research>")).toBe("empty");
+      await f.inspector.assignSection("local-native", "empty");
+      await f.inspector.assignSection("local-native", "sessions");
+      expect(f.sidebar.calls).toEqual([
+        { method: "list_sections", params: {} },
+        { method: "create_section", params: { name: "<Research>" }, context: {} },
+        { method: "move_sessions", params: { session_ids: ["local-native"], section_id: "empty" }, context: { sessionId: "local-native" } },
+        { method: "move_sessions", params: { session_ids: ["local-native"], section_id: "sessions" }, context: { sessionId: "local-native" } },
+      ]);
+      expect(f.calls).toEqual([]);
+      expect(f.events.size).toBe(1);
+      expect(f.permissions.size).toBe(1);
+    } finally { await f.close(); }
+  });
+
+  it("discovers sections across Desktop 5.1231.2 chunk hashes and minified export names", async () => {
+    const f = await fixture();
+    try {
+      const factoryFn = f.cache.factory!.exports.$n;
+      const managerObj = f.cache.manager!.exports.claudeCodeSessionManager;
+      delete f.cache.factory;
+      delete f.cache.manager;
+      f.cache.winFactory = { filename: "C:\\Program Files\\WindowsApps\\Claude_5.1231.2.0_x64__pzs8sxrjxfjjc\\app\\resources\\app.asar\\.vite\\build\\index.chunk-BsvZMF6W.js", exports: { Tn: factoryFn } };
+      f.cache.winManager = { filename: "C:\\Program Files\\WindowsApps\\Claude_5.1231.2.0_x64__pzs8sxrjxfjjc\\app\\resources\\app.asar\\.vite\\build\\index.chunk-DII0hfnr.js", exports: { claudeCodeSessionManager: managerObj } };
+      await f.inspector.connect();
+      expect(await f.inspector.sections(["local-native"])).toEqual({
+        sections: [{ id: "empty", name: "<Research>", order: 0 }],
+        assignments: { "local-native": "empty" },
+      });
+    } finally { await f.close(); }
+  });
+
+  it.each(["missing-factory", "missing-manager", "flag-off", "legacy-window"])("does not advertise or mutate sections for %s", async reason => {
+    const f = await fixture();
+    try {
+      await f.inspector.connect();
+      if (reason === "missing-factory") delete f.cache.factory;
+      if (reason === "missing-manager") delete f.cache.manager;
+      if (reason === "flag-off") f.sidebar.enabled = false;
+      if (reason === "legacy-window") f.sidebar.legacy = true;
+      expect(await f.inspector.sections([])).toBeUndefined();
+      if (reason !== "legacy-window") await expect(f.inspector.createSection("Research")).rejects.toThrow("does not support Sections");
+      expect(f.sidebar.calls.every(call => call.method === "list_sections")).toBe(true);
+      expect(f.calls).toEqual([]);
+    } finally { await f.close(); }
+  });
+
+  it("preserves native creation errors and rejects disconnected writes", async () => {
+    const f = await fixture();
+    try {
+      await f.inspector.connect();
+      f.sidebar.error = "The sidebar isn't signed in to an account yet.";
+      await expect(f.inspector.createSection("Research")).rejects.toThrow(f.sidebar.error);
+      await f.inspector.close();
+      await expect(f.inspector.createSection("Research")).rejects.toBeInstanceOf(InspectorDisconnectedError);
+    } finally { await f.close(); }
+  });
+
   it("discovers the renderer, receives both streams and unsubscribes on close", async () => {
     const f = await fixture();
     try {

@@ -117,6 +117,60 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
+describe("actual subagent models", () => {
+  it.each([
+    [undefined, undefined],
+    ["", undefined],
+    ["   ", undefined],
+    [42, undefined],
+    ["<synthetic>", undefined],
+    ["codex/gpt-6.1-sol", "codex/gpt-6.1-sol"],
+  ])("uses only a real child response model (%j)", async (model, expected) => {
+    const run = await session([
+      { ...toolUse(1, "agent-call", "Agent", { description: "Inspect", model: "haiku" }), message: {
+        model: "parent-model", content: [{ type: "tool_use", id: "agent-call", name: "Agent", input: { description: "Inspect", model: "haiku" } }],
+      } },
+    ]);
+    const childDir = join(run.root, "session", "subagents");
+    await mkdir(childDir, { recursive: true });
+    await writeFile(join(childDir, "agent-child.meta.json"), JSON.stringify({ toolUseId: "agent-call", model: "requested-model" }));
+    await writeFile(join(childDir, "agent-child.jsonl"), jsonl([
+      { type: "assistant", timestamp: at(2), message: { model, content: [], stop_reason: "tool_use" } },
+    ]));
+    const [child] = await readClaudeTranscriptSubagents(run.transcript, 0);
+    expect(child).toMatchObject({ agentId: "child", state: "running" });
+    if (expected === undefined) expect(child).not.toHaveProperty("model");
+    else expect(child).toHaveProperty("model", expected);
+  });
+
+  it("updates the cached model to the latest actual response through completion and synthetic errors", async () => {
+    const run = await session([]);
+    const childDir = join(run.root, "session", "subagents");
+    await mkdir(childDir, { recursive: true });
+    const file = join(childDir, "agent-child.jsonl");
+    await writeFile(file, jsonl([{ type: "assistant", timestamp: at(1), message: { model: "codex/gpt-6.1-sol", content: [], stop_reason: "tool_use" } }]));
+    expect((await tasks(run.transcript))[0]?.subagent).toMatchObject({ model: "codex/gpt-6.1-sol", state: "running" });
+    await appendFile(file, jsonl([
+      { type: "assistant", timestamp: at(2), message: { model: "antigravity/gemini-4-carbon", content: [], stop_reason: "end_turn" } },
+      { type: "assistant", timestamp: at(3), isSynthetic: true, message: { model: "error-model", content: [], stop_reason: "end_turn" } },
+      { type: "assistant", timestamp: at(4), message: { model: "<synthetic>", content: [], stop_reason: "end_turn" } },
+      { type: "assistant", timestamp: at(5), message: { content: [], stop_reason: "end_turn" } },
+    ]));
+    expect((await tasks(run.transcript))[0]?.subagent).toMatchObject({ model: "antigravity/gemini-4-carbon", state: "completed" });
+  });
+
+  it("preserves actual models for journal members and file-only Workflow members", async () => {
+    const run = await session(workflowLaunch);
+    await writeWorkflowAgents(run.runDir);
+    await appendFile(join(run.runDir, "agent-a1.jsonl"), jsonl([{ type: "assistant", timestamp: at(9), message: { model: "claude/claude-opus-5-5", content: [], stop_reason: "end_turn" } }]));
+    await writeFile(join(run.runDir, "agent-a4.jsonl"), jsonl([{ type: "assistant", timestamp: at(10), message: { model: "codex/gpt-6.1-sol", content: [], stop_reason: "tool_use" } }]));
+    const [task] = await tasks(run.transcript);
+    expect(task?.workflow?.agents.find((child) => child.agentId === "a1")).toMatchObject({ model: "claude/claude-opus-5-5", state: "completed" });
+    expect(task?.workflow?.agents.find((child) => child.agentId === "a4")).toMatchObject({ model: "codex/gpt-6.1-sol", state: "running" });
+    expect(task?.workflow?.agents.find((child) => child.agentId === "a2")).not.toHaveProperty("model");
+  });
+});
+
 describe("workflow runs", () => {
   it("keeps the run directory and phase on workflow agents", async () => {
     const run = await session(workflowLaunch);

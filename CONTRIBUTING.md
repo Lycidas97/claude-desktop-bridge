@@ -64,8 +64,8 @@ See [Testing](docs/testing.md) for suite boundaries, browser setup, and report p
 - Documentation updates when a capability, permission, or protocol contract changes.
 - No unrelated refactors, formatting churn, or generated file changes.
 
-Keep changes scoped. Bridge intentionally does not merge native sessions, credentials, or
-model settings between runtimes; review proposals that weaken those boundaries carefully.
+Keep changes scoped. This branch adapts Claude Desktop, including Claude-3p. Native sessions, credentials,
+models, queues and permissions remain under Desktop control.
 
 For the approved Claude refactor, `claude-desktop-bridge.ts` is a thin forwarding layer;
 Claude Desktop alone owns session execution, queues, and permissions. Discover the dynamic
@@ -73,8 +73,10 @@ WebSocket from the user-authorized Node inspector at `http://127.0.0.1:9229/json
 `process.mainModule.require('electron')` to locate the `app://localhost` WebContents, and
 call `claude.web.LocalSessions` through `executeJavaScript`. Events use one renderer queue
 and a waiting Promise. Do not restore SDK/CLI Hosts, standalone API Key provider lanes,
-Claude takeover/release, inbox, lanes, or automatic goal continuation. Codex, Hermes, and
-DSH retain their existing native integrations.
+Claude takeover/release, inbox, lanes, or automatic goal continuation. Independent Codex,
+Hermes and DSH integrations and cross-Agent handoff are retired. Preserve their saved
+configuration and history without starting adapters or replaying old requests. Claude
+Desktop model providers such as Gemini, Antigravity and Magpie remain in scope.
 
 Keep pairing, E2EE Relay/WebRTC, request idempotency and receipts, event replay, and passive
 attachment/evidence collection. Use Desktop's native session IDs and transcript APIs directly;

@@ -49,11 +49,11 @@ describe("session.rename", () => {
     expect(await controller.handleRequest({ method: "session.open", params: { sessionId: session.sessionId } }, "mobile")).toMatchObject({ session: { ...session, title: "手机显示名" } });
   });
 
-  it.each(["codex-desktop:native-1", "hermes-desktop:native-1"])("uses full external runtime identity for %s", async id => {
+  it.each(["codex-desktop:native-1", "hermes-desktop:native-1"])("rejects saved external runtime identity for %s", async id => {
     const { controller, session, rename } = fixture("running", id);
-    expect(await rename("外部显示名")).toEqual({ session: { ...session, title: "外部显示名" } });
-    expect(controller.conversationState.setSessionTitle).toHaveBeenCalledWith(id, "外部显示名");
-    expect(await controller.handleRequest({ method: "session.open", params: { sessionId: id } }, "mobile")).toMatchObject({ session: { title: "外部显示名" } });
+    await expect(rename("外部显示名")).rejects.toMatchObject({ code: "UNSUPPORTED" });
+    expect(controller.conversationState.setSessionTitle).not.toHaveBeenCalled();
+    expect(controller.broker.rename).not.toHaveBeenCalled();
   });
 
   it.each(["", " \n\t ", null, 42, undefined])("rejects invalid title %j before writing", async title => {

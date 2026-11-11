@@ -10,11 +10,51 @@ import { DesktopController } from "./controller.js";
 import { SessionEventLog } from "./session-event-log.js";
 
 describe("mobile snapshot publication", () => {
+  it("broadcasts empty Section additions, renames and removals without session changes", async () => {
+    const { controller } = progressFixture();
+    const projects: DesktopControlSnapshot["projects"] = [];
+    controller.snapshot.mockImplementation(async () => ({ sessions: [], permissions: [], projects: structuredClone(projects) }));
+    await controller.publish();
+    controller.broadcast.mockClear();
+    projects.push({ projectId: "section-1", name: "Research", kind: "desktop-group", cwd: "", runtimeId: "claude-desktop", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 });
+    await controller.publish();
+    expect(controller.broadcast).toHaveBeenCalledExactlyOnceWith({ kind: "snapshot", snapshot: { sessions: [], permissions: [], projects } }, true);
+    controller.broadcast.mockClear();
+    await controller.publish();
+    expect(controller.broadcast).not.toHaveBeenCalled();
+    projects[0]!.name = "Renamed";
+    await controller.publish();
+    expect(controller.broadcast).toHaveBeenCalledOnce();
+    controller.broadcast.mockClear();
+    projects.splice(0);
+    await controller.publish();
+    expect(controller.broadcast).toHaveBeenCalledExactlyOnceWith({ kind: "snapshot", snapshot: { sessions: [], permissions: [], projects: [] } }, true);
+    expect(controller.eventLog.append).not.toHaveBeenCalled();
+  });
+
+  it("broadcasts host capability changes even when sessions and projects are unchanged", async () => {
+    const { controller } = progressFixture();
+    let capabilities: DesktopControlSnapshot["host"]["capabilities"] = ["directory.browse.v1"];
+    controller.snapshot.mockImplementation(async () => ({
+      host: { capabilities: [...capabilities] } as DesktopControlSnapshot["host"],
+      sessions: [],
+      permissions: [],
+      projects: [],
+    }));
+    await controller.publish();
+    controller.broadcast.mockClear();
+    capabilities = ["directory.browse.v1", "directory.mkdir.v1", "section.move.v1"];
+    await controller.publish();
+    expect(controller.broadcast).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { runningSubagents: { count: 2, lastUpdatedAt: 10 } },
     { subagentStopScope: "task" as const },
     { executionStage: "submitted" as const },
     { ownership: "DESKTOP_OBSERVED" as const, turnState: "running" as const, mainTurnStopScope: "process" as const },
+    { contextUsage: { totalTokens: 42_000, maxTokens: 1_000_000, percentage: 4.2, model: "claude-opus-5-5", estimated: false } },
+    { contextUsage: { totalTokens: 18_500, model: "antigravity/gemini-3-pro", estimated: true } },
   ])("publishes runtime session changes %j as a replacement without a metadata change", async (change) => {
     const session: BridgeSessionInfo = {
       sessionId: "session-1", title: "Session", cwd: "/tmp/project",

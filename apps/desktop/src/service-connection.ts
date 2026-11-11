@@ -76,7 +76,7 @@ export async function serveDesktopService(options: {
             } else if (method === "setLaunchAtLogin") {
               if (args.length !== 1 || typeof args[0] !== "boolean") throw new Error("Expected one boolean");
             } else if (method === "launchDesktopApp" || method === "quitDesktopApp") {
-              if (args.length !== 1 || !["claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop"].includes(args[0])) throw new Error("Unknown Desktop runtime");
+              if (args.length !== 1 || args[0] !== "claude-desktop") throw new Error("Unknown Desktop runtime");
             } else if (method === "dispatchLocal") {
               if (args.length !== 1 || !args[0] || typeof args[0] !== "object" || typeof args[0].method !== "string" ||
                 (args[0].params !== undefined && (!args[0].params || typeof args[0].params !== "object" || Array.isArray(args[0].params))) ||

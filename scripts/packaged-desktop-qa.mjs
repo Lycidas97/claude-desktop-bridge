@@ -35,8 +35,7 @@ try {
   const snapshot = await page.evaluate(() => window.bridgeDesktop.getSnapshot());
   assert.equal(snapshot.host.version, desktopPackage.version);
   assert.ok(Number.isInteger(snapshot.host.pairingEpoch) && snapshot.host.pairingEpoch >= 1);
-  // Native capabilities include optional runtime features; require the stable
-  // contract without making rewind, rename or external runtime handoff mandatory.
+  // Require the stable Native contract; rewind and rename depend on availability.
   for (const capability of [
     "artifact.preview.v1",
     "artifact.text-preview.v1",
@@ -45,8 +44,6 @@ try {
     "directory.browse.v1",
     "evidence.details.v1",
     "evidence.v1",
-    "permission.policy.v1",
-    "permission.runtime-defaults.v1",
     "plugin.magpie-quota.v1",
     "runtime.adapter.v1",
     "session.command.v1",
@@ -59,7 +56,7 @@ try {
   ]) {
     assert.ok(snapshot.host.capabilities.includes(capability), `Missing Native capability: ${capability}`);
   }
-  for (const capability of ["provider.profile.v1", "conversation.lanes.v1", "conversation.handoff.v1"]) {
+  for (const capability of ["provider.profile.v1", "conversation.lanes.v1", "conversation.handoff.v1", "permission.policy.v1", "permission.runtime-defaults.v1", "runtime.handoff.v1"]) {
     assert.equal(snapshot.host.capabilities.includes(capability), false, `Retired capability: ${capability}`);
   }
   assert.equal(snapshot.host.defaultPermissionMode, undefined);
@@ -69,6 +66,7 @@ try {
   assert.ok(Array.isArray(snapshot.devices));
   assert.ok(Array.isArray(snapshot.permissions));
   assert.ok(Array.isArray(snapshot.runtimes));
+  assert.deepEqual(snapshot.runtimes.map(runtime => runtime.id), ["claude-desktop"]);
   assert.ok(["ready", "working", "auth-required", "unavailable"].includes(snapshot.runtime.state));
   assert.equal(snapshot.runtime.maxParallelTurns, 0);
   assert.equal(snapshot.runtime.desktopIntegration.enabled, true);
@@ -139,8 +137,10 @@ try {
   await page.getByRole("heading", { name: "设备", exact: true }).waitFor();
   await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();
   await page.getByRole("button", { name: "设置", exact: true }).click();
-  await page.getByRole("button", { name: "连接与设备", exact: true }).click();
-  await page.getByText("原生中转已就绪", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "连接与启动", exact: true }).click();
+  await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
+  await page.getByRole("button", { name: "诊断与关于", exact: true }).click();
+  await page.locator('dt:text-is("原生中转") + dd').getByText("已就绪", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   await page.screenshot({ path: resolve(artifacts, "desktop-evidence.png"), fullPage: true });
   process.stdout.write(`${JSON.stringify({

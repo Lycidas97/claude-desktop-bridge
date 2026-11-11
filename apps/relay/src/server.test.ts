@@ -580,11 +580,11 @@ describe("relay v3", () => {
     expect(await error).toMatchObject({ type: "error", code: "DEVICE_REVOKED" });
   });
 
-  it("requests a content-free wake when a targeted phone is offline", async () => {
+  it.each(["host.presence", "turn.completed", "turn.failed"] as const)("queues offline %s, requests a content-free wake and delivers until ACK", async type => {
     const wakes: string[] = [];
+    const store = new MemoryRelayStore();
     const relay = await startRelayServer({
-      port: 0,
-      store: new MemoryRelayStore(),
+      port: 0, store,
       pushDispatcher: {
         async wake(device: DeviceRecord) {
           wakes.push(device.deviceId);
@@ -595,27 +595,29 @@ describe("relay v3", () => {
     });
     relays.push(relay);
     const pair = await connectedPair(relay.url);
-    pair.mobileSocket.registerPushToken("android", "test-push-token-1234567890");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    pair.mobileSocket.registerPushToken("android", "synthetic-push-token");
+    await vi.waitFor(() => expect(store.getDevice(pair.host.crypto.identity.roomId, pair.device.pairing.deviceId)?.pushPlatform).toBe("android"));
+    const offline = waitForFrame(pair.desktopSocket, frame => frame.type === "presence" && !frame.online);
     pair.mobileSocket.close();
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    await pair.desktopSocket.send({
-      kind: "event",
-      event: {
-        eventId: "wake-event",
-        seq: 2,
-        timestamp: Date.now(),
-        origin: "system",
-        type: "host.presence",
-        data: {},
-      },
-    }, "mobile", {
-      toDeviceId: pair.device.pairing.deviceId,
-      crypto: pair.desktopDeviceCrypto,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await offline;
+    const payload: BridgePayload = { kind: "event", event: { eventId: "wake-event", seq: 2, timestamp: Date.now(), origin: "system", type, sessionId: "synthetic-session", data: {} } };
+    const stored = waitForFrame(pair.desktopSocket, frame => frame.type === "stored");
+    await pair.desktopSocket.send(payload, "mobile", { toDeviceId: pair.device.pairing.deviceId, crypto: pair.desktopDeviceCrypto });
+    await stored;
+    await vi.waitFor(() => expect(wakes).toEqual([pair.device.pairing.deviceId]));
+    expect(store.stats().queuedFrames).toBe(1);
 
-    expect(wakes).toEqual([pair.device.pairing.deviceId]);
+    const reconnected = new BridgeSocket({ crypto: pair.mobileCrypto, role: "mobile", reconnect: false });
+    sockets.push(reconnected);
+    const replay = nextMessage(reconnected);
+    reconnected.connect();
+    await waitForState(reconnected);
+    const received = await replay;
+    expect(received.payload).toEqual(payload);
+    const acknowledged = waitForFrame(pair.desktopSocket, frame => frame.type === "acknowledged");
+    reconnected.ack([received.header.id]);
+    await acknowledged;
+    await vi.waitFor(() => expect(store.stats().queuedFrames).toBe(0));
   });
 
   it("moves an already paired device to a new public relay without a new secret", async () => {

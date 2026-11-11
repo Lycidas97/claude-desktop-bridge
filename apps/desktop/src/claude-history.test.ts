@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ClaudeTranscriptEvidenceCursor,
+  estimateClaudeContextFromMessages,
   findClaudeTranscriptFile,
   isClaudeTranscriptAtTurnBoundary,
   parseClaudeTranscript,
@@ -13,6 +14,7 @@ import {
   readClaudeSessionHistory,
   readClaudeTranscriptSubagents,
   readClaudeTranscriptUserMessages,
+  scanClaudeContextFromMessages,
 } from "./claude-history.js";
 
 const directories: string[] = [];
@@ -1643,5 +1645,72 @@ describe("Claude transcript history", () => {
     await expect(isClaudeTranscriptAtTurnBoundary(transcript)).resolves.toBe(true);
     const parsed = await parseClaudeTranscript(transcript);
     expect(parsed.messages.map((m) => m.id)).toEqual(["u-1", "a-1"]);
+  });
+
+  it("uses single-turn context occupancy, merges split message.id records, and excludes sidechain and synthetic messages", () => {
+    const messages = [
+      {
+        type: "assistant",
+        uuid: "turn-1",
+        message: {
+          id: "msg_turn_1",
+          model: "claude-opus-5-5",
+          usage: { input_tokens: 4_000, cache_read_input_tokens: 10_000, cache_creation_input_tokens: 1_000, output_tokens: 300 },
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "turn-2-part-a",
+        message: {
+          id: "msg_turn_2",
+          model: "claude-opus-5-5",
+          usage: { input_tokens: 2_000, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 8_000, output_tokens: 25 },
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "turn-2-part-b",
+        message: {
+          id: "msg_turn_2",
+          model: "claude-opus-5-5",
+          usage: { input_tokens: 2_000, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 8_000, output_tokens: 620 },
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "subagent-sidechain",
+        isSidechain: true,
+        message: {
+          id: "msg_sub_1",
+          model: "claude-haiku-4-5",
+          usage: { input_tokens: 95_000, cache_read_input_tokens: 90_000, output_tokens: 5_000 },
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "subagent-parent-tool",
+        parent_tool_use_id: "toolu_agent_1",
+        message: {
+          id: "msg_sub_2",
+          model: "claude-sonnet-5-5",
+          usage: { input_tokens: 120_000, output_tokens: 4_000 },
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "synthetic-error",
+        isSynthetic: true,
+        message: {
+          id: "msg_syn",
+          model: "<synthetic>",
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      },
+    ];
+    expect(estimateClaudeContextFromMessages(messages)).toEqual({
+      totalTokens: 40_620,
+      model: "claude-opus-5-5",
+    });
+    expect(scanClaudeContextFromMessages(messages.slice(3))).toEqual({ anchored: false });
   });
 });

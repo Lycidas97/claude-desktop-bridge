@@ -86,25 +86,24 @@ async function manual(input: SessionCreateDialogProps, path: string): Promise<Re
 }
 
 describe("runtime and draft preservation", () => {
-  it("filters history by runtime and never falls back to the old runtime folder", async () => {
+  it("offers only Claude folders and creates Claude without a runtime selector", async () => {
     const codex = { ...directory, projectId: "codex", cwd: "/codex", runtimeId: "codex-desktop" as const };
     const input = { ...props(snapshot([group, codex])), initialProjectId: group.projectId };
-    change(render(input), "运行时", "codex-desktop");
-    expect(text(field(render(input), "工作文件夹"))).not.toContain(group.cwd);
-    expect(field(render(input), "项目分组（可选）")).toBeUndefined();
+    expect(field(render(input), "运行时")).toBeUndefined();
     let tree = await click(input, "选择文件夹");
-    expect(button(tree, `选择 ${group.cwd}`)).toBeUndefined();
-    tree = await click(input, "选择 /codex"); submit(tree); await settle();
-    expect(input.onCreate).toHaveBeenCalledWith("/codex", undefined, "codex-desktop", undefined);
+    expect(button(tree, "选择 /codex")).toBeUndefined();
+    tree = await click(input, `选择 ${group.cwd}`); submit(tree); await settle();
+    expect(input.onCreate).toHaveBeenCalledWith(group.cwd, undefined, "claude-desktop", group.projectId);
   });
-  it("leaves the folder empty when the new runtime has no history", () => {
-    const input = { ...props(snapshot([group])), initialProjectId: group.projectId };
-    change(render(input), "运行时", "codex-desktop");
+  it("leaves the folder empty when only retired Agent history exists", () => {
+    const codex = { ...directory, projectId: "codex", cwd: "/codex", runtimeId: "codex-desktop" as const };
+    const input = props(snapshot([codex]));
     expect(button(render(input), "创建会话").props.disabled).toBe(true);
     expect(text(field(render(input), "工作文件夹"))).toContain("选择工作文件夹");
   });
-  it("does not apply an initial project from a different runtime", () => {
-    const input = { ...props(snapshot([group])), initialProjectId: group.projectId, initialRuntimeId: "codex-desktop" as const };
+  it("does not apply an initial project from a retired Agent", () => {
+    const codex = { ...group, runtimeId: "codex-desktop" as const };
+    const input = { ...props(snapshot([codex])), initialProjectId: codex.projectId };
     expect(field(render(input), "项目分组（可选）")).toBeUndefined();
     expect(button(render(input), "创建会话").props.disabled).toBe(true);
   });
@@ -151,6 +150,14 @@ describe("runtime and draft preservation", () => {
 });
 
 describe("folder navigation", () => {
+  it("keeps an empty native Section selectable without an empty recent folder", async () => {
+    const empty = { ...group, cwd: "", sessionCount: 0 };
+    const input = props(snapshot([empty]));
+    expect(text(field(render(input), "项目分组（可选）"))).toContain("Research");
+    const tree = await click(input, "选择文件夹");
+    expect(button(tree, "选择 ")).toBeUndefined();
+    expect(text(tree)).toContain("还没有最近使用的文件夹");
+  });
   it("deduplicates recent directories and displays the folder name rather than group names", async () => {
     const input = { ...props(snapshot([group, directory])), onBrowseDirectory: vi.fn().mockResolvedValue({ ...listing, recentPaths: [directory.cwd, "/recent"] }) };
     const tree = await click(input, "选择文件夹");
@@ -217,11 +224,11 @@ describe("folder navigation", () => {
     tree = await click(input, "选择文件夹"); expect(text(field(tree, "工作文件夹"))).toContain("/native/new");
     expect(input.onChooseDirectory).toHaveBeenNthCalledWith(1, group.cwd); expect(input.onBrowseDirectory).not.toHaveBeenCalled();
   });
-  it("ignores an outstanding browse result after returning and switching runtime", async () => {
+  it("ignores an outstanding browse result after returning to the form", async () => {
     let resolve!: (value: BridgeDirectoryListing) => void;
     const input = { ...props(), onBrowseDirectory: vi.fn(() => new Promise<BridgeDirectoryListing>((done) => { resolve = done; })) };
     await click(input, "选择文件夹"); await click(input, "取消选择");
-    change(render(input), "运行时", "codex-desktop"); render(input); resolve(listing); await settle();
+    render(input); resolve(listing); await settle();
     const tree = await click(input, "选择文件夹");
     expect(button(tree, "使用此文件夹").props.disabled).toBe(true);
     expect(text(tree)).not.toContain("/recent"); expect(input.onClose).not.toHaveBeenCalled();
@@ -238,6 +245,87 @@ describe("folder navigation", () => {
       expect(input.onClose).not.toHaveBeenCalled(); expect(workspaceBack).not.toHaveBeenCalled();
       dispatchMobileBack(); expect(input.onClose).toHaveBeenCalledOnce();
     } finally { remove(); }
+  });
+});
+
+describe("strict browse-only directory creation", () => {
+  it("never shows mkdir or creates a directory automatically in form or recent views", async () => {
+    const onCreateDirectory = vi.fn();
+    const input = { ...props(snapshot([group, directory])), initialProjectId: group.projectId, onBrowseDirectory: vi.fn().mockResolvedValue(listing), onCreateDirectory };
+    let tree = render(input);
+    expect(button(tree, "新建文件夹")).toBeUndefined();
+    submit(tree); await settle();
+    expect(onCreateDirectory).not.toHaveBeenCalled();
+    expect(input.onCreate).toHaveBeenCalledWith(group.cwd, undefined, "claude-desktop", group.projectId);
+    tree = await click(input, "选择文件夹");
+    expect(button(tree, "新建文件夹")).toBeUndefined();
+    expect(onCreateDirectory).not.toHaveBeenCalled();
+  });
+
+  it("hides mkdir on legacy hosts without onCreateDirectory and while editing manual paths", async () => {
+    const legacy = { ...props(), onBrowseDirectory: vi.fn().mockResolvedValue(listing) };
+    let tree = await click(legacy, "选择文件夹");
+    expect(button(tree, "新建文件夹")).toBeUndefined();
+
+    const capable = { ...legacy, onCreateDirectory: vi.fn().mockResolvedValue("/work/sub") };
+    hooks.states = []; hooks.effects = []; hooks.pending = [];
+    tree = await click(capable, "选择文件夹");
+    expect(button(tree, "新建文件夹")).toBeDefined();
+    tree = await click(capable, "输入路径");
+    expect(button(tree, "新建文件夹")).toBeUndefined();
+  });
+
+  it("disables mkdir trigger when disconnected", async () => {
+    const input = { ...props(), onBrowseDirectory: vi.fn().mockResolvedValue(listing), onCreateDirectory: vi.fn() };
+    await click(input, "选择文件夹");
+    input.connected = false;
+    expect(button(render(input), "新建文件夹").props.disabled).toBe(true);
+  });
+
+  it.each([".", "..", "nested/dir", "nested\\dir", "a".repeat(256)])("rejects invalid single-level folder name %j before RPC", async (invalidName) => {
+    const onCreateDirectory = vi.fn();
+    const input = { ...props(), onBrowseDirectory: vi.fn().mockResolvedValue(listing), onCreateDirectory };
+    await click(input, "选择文件夹");
+    let tree = await click(input, "新建文件夹");
+    change(tree, "新文件夹名称", invalidName);
+    submit(render(input)); await settle();
+    tree = render(input);
+    expect(text(tree)).toContain("请输入合法的单层文件夹名称");
+    expect(onCreateDirectory).not.toHaveBeenCalled();
+  });
+
+  it("creates a subdirectory on demand, refreshes into it, and closes only the mkdir box on back", async () => {
+    const onBrowseDirectory = vi.fn(async (path?: string) => ({
+      ...listing,
+      path: path ?? "/work/杂活",
+      parentPath: "/work",
+      directories: path === "/work/杂活/colab-connect" ? [] : listing.directories,
+    }));
+    const onCreateDirectory = vi.fn().mockRejectedValueOnce(new Error("同名文件已存在")).mockResolvedValueOnce("/work/杂活/colab-connect");
+    const input = { ...props(), onBrowseDirectory, onCreateDirectory };
+    await click(input, "选择文件夹");
+    let tree = await click(input, "新建文件夹");
+    expect(dispatchMobileBack()).toBe(true);
+    tree = render(input);
+    expect(field(tree, "新文件夹名称")).toBeUndefined();
+    expect(button(tree, "新建文件夹")).toBeDefined();
+
+    tree = await click(input, "新建文件夹");
+    change(tree, "新文件夹名称", "  colab-connect  ");
+    submit(render(input)); await settle();
+    tree = render(input);
+    expect(text(tree)).toContain("同名文件已存在");
+    expect(button(tree, "创建并进入").props.type).toBe("submit");
+
+    submit(render(input)); await settle(); render(input); await settle();
+    tree = render(input);
+    expect(onCreateDirectory).toHaveBeenLastCalledWith("/work/杂活", "colab-connect");
+    expect(onBrowseDirectory).toHaveBeenLastCalledWith("/work/杂活/colab-connect");
+    expect(field(tree, "新文件夹名称")).toBeUndefined();
+    expect(button(tree, "使用此文件夹").props.disabled).toBe(false);
+    tree = await click(input, "使用此文件夹");
+    expect(text(field(tree, "工作文件夹"))).toContain("/work/杂活/colab-connect");
+    expect(input.onCreate).not.toHaveBeenCalled();
   });
 });
 
@@ -267,5 +355,13 @@ describe("creation contract", () => {
     change(render(input), "项目分组（可选）", group.projectId);
     expect(text(field(render(input), "工作文件夹"))).toContain("选择工作文件夹");
     expect(button(render(input), "创建会话").props.disabled).toBe(true);
+  });
+  it("keys primary footer buttons distinctly so confirming a folder never mutates into a submit button mid-click", async () => {
+    const input = { ...props(snapshot([directory])), onBrowseDirectory: vi.fn().mockResolvedValue({ path: "/work/existing", directories: [] }) };
+    expect(button(render(input), "创建会话").key).toBe("create-session");
+    const recentTree = await click(input, "选择文件夹");
+    expect(button(recentTree, "浏览电脑文件夹").key).toBe("open-browse");
+    const browseTree = await click(input, "浏览电脑文件夹");
+    expect(button(browseTree, "使用此文件夹").key).toBe("use-folder");
   });
 });

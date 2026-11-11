@@ -955,26 +955,15 @@ try {
   await mobile.getByRole("heading", { name: "项目与会话" }).waitFor({ timeout: 10_000 });
   const waitingSessionRow = mobile.locator(".session-row-v2").filter({ hasText: "Bridge 0.6 Windows 安装目录选择" });
   await waitingSessionRow.waitFor();
-  if (await mobile.locator(".session-row-v2").count() !== 6) {
-    errors.push("mobile catalog: expected six expanded session rows");
+  if (await mobile.locator(".session-row-v2").count() !== 3) {
+    errors.push("mobile catalog: expected three expanded Claude session rows");
   }
-  const mobileRuntimeFilter = mobile.getByRole("navigation", { name: "Desktop 运行时筛选" });
-  await mobileRuntimeFilter.getByRole("button", { name: "Codex", exact: true }).click();
-  await mobile.getByText("Codex Desktop 独立任务", { exact: true }).waitFor();
-  if (await mobile.locator(".session-row-v2").count() !== 1) {
-    errors.push("mobile runtime filter: Codex should show one isolated session");
+  if (await mobile.getByRole("navigation", { name: "Desktop 运行时筛选" }).count()) {
+    errors.push("mobile catalog: retired runtime selector is visible");
   }
-  await mobileRuntimeFilter.getByRole("button", { name: "Hermes", exact: true }).click();
-  await mobile.getByText("Hermes Desktop 独立任务", { exact: true }).waitFor();
-  if (await mobile.locator(".session-row-v2").count() !== 1) {
-    errors.push("mobile runtime filter: Hermes should show one isolated session");
+  for (const name of ["Codex Desktop 独立任务", "Hermes Desktop 独立任务", "DSH Desktop 独立任务"]) {
+    if (await mobile.getByText(name, { exact: true }).count()) errors.push(`mobile catalog: retired Agent session visible: ${name}`);
   }
-  await mobileRuntimeFilter.getByRole("button", { name: "DSH", exact: true }).click();
-  await mobile.getByText("DSH Desktop 独立任务", { exact: true }).waitFor();
-  if (await mobile.locator(".session-row-v2").count() !== 1) {
-    errors.push("mobile runtime filter: DSH should show one isolated session");
-  }
-  await mobileRuntimeFilter.getByRole("button", { name: "全部", exact: true }).click();
   await mobile.getByRole("button", { name: "全部折叠" }).click();
   if (await mobile.locator(".session-row-v2").count() !== 0) {
     errors.push("mobile catalog: collapse all did not hide every session row");
@@ -1358,8 +1347,8 @@ try {
   if (!registrationRestarted) {
     errors.push("desktop registration: restart and registration request were not completed");
   }
-  if (await desktop.locator(".desktop-session-row").count() !== 7) {
-    errors.push("desktop sessions: expected seven expanded session rows");
+  if (await desktop.locator(".desktop-session-row").count() !== 4) {
+    errors.push("desktop sessions: expected four expanded Claude session rows");
   }
   await desktop.getByRole("button", { name: "全部折叠" }).click();
   if (await desktop.locator(".desktop-session-row").count() !== 0) {
@@ -1367,24 +1356,12 @@ try {
   }
   await desktop.getByRole("button", { name: "全部展开" }).click();
   await desktop.locator(".desktop-session-row").first().waitFor();
-  const desktopRuntimeFilter = desktop.locator(".desktop-runtime-filter");
-  await desktopRuntimeFilter.getByRole("button", { name: "Codex", exact: true }).click();
-  await desktop.getByText("Codex Desktop 独立任务", { exact: true }).waitFor();
-  if (await desktop.locator(".desktop-session-row").count() !== 1) {
-    errors.push("desktop runtime filter: Codex should show one isolated session");
+  if (await desktop.locator(".desktop-runtime-filter").count()) {
+    errors.push("desktop sessions: retired runtime selector is visible");
   }
-  await desktopRuntimeFilter.getByRole("button", { name: "Hermes", exact: true }).click();
-  await desktop.getByText("Hermes Desktop 独立任务", { exact: true }).waitFor();
-  if (await desktop.locator(".desktop-session-row").count() !== 1) {
-    errors.push("desktop runtime filter: Hermes should show one isolated session");
+  for (const name of ["Codex Desktop 独立任务", "Hermes Desktop 独立任务", "DSH Desktop 独立任务"]) {
+    if (await desktop.getByText(name, { exact: true }).count()) errors.push(`desktop sessions: retired Agent session visible: ${name}`);
   }
-  await desktopRuntimeFilter.getByRole("button", { name: "DSH", exact: true }).click();
-  await desktop.getByText("DSH Desktop 独立任务", { exact: true }).waitFor();
-  if (await desktop.locator(".desktop-session-row").count() !== 1) {
-    errors.push("desktop runtime filter: DSH should show one isolated session");
-  }
-  await desktopRuntimeFilter.getByRole("button", { name: "全部", exact: true }).click();
-  await desktop.locator(".desktop-session-row").first().waitFor();
   await checkPage(desktop, "desktop sessions");
   await desktop.screenshot({ path: resolve(artifactDir, "desktop-sessions-1200x800.png"), fullPage: true });
   await desktop.getByRole("button", { name: "主题与外观" }).click();

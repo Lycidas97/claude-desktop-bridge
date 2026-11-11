@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  readFile,
   rm,
   symlink,
   writeFile,
@@ -15,6 +16,11 @@ import { EvidenceManager } from "./evidence-manager.js";
 import { EvidenceStore } from "./evidence-store.js";
 import { FileUploadManager } from "./file-upload.js";
 import { SessionEventLog } from "./session-event-log.js";
+
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
 
 const directories: string[] = [];
 
@@ -426,7 +432,51 @@ describe("EvidenceManager", () => {
     await manager.close();
   });
 
-  it("enforces the 1 MiB text-preview limit before and after an artifact download is cached", async () => {
+  it("queries actual file and snapshot sizes without reading or caching content", async () => {
+    const { directory, manager, store } = await managerFixture();
+    const bytes = Buffer.alloc(1048577, 0x61);
+    await writeFile(join(directory, "large.txt"), bytes);
+    const evidence = await manager.upsertDesktopEvidence({ id: "preview_metadata", sessionId: "preview_session", cwd: directory, startedAt: 1, completedAt: 2, tools: [], paths: ["large.txt"] });
+    const artifact = evidence.artifacts[0]!;
+    expect(artifact.size).toBe(0);
+    const readArtifact = vi.spyOn(store, "readArtifact");
+    const readPreview = vi.spyOn(store, "readPreview");
+    const cacheArtifact = vi.spyOn(store, "cacheArtifact");
+    vi.mocked(readFile).mockClear();
+    expect(await manager.fileTransferMetadata(directory, "large.txt:10:2")).toMatchObject({ name: "large.txt", size: bytes.length });
+    expect(await manager.artifactTransferMetadata(artifact.id)).toMatchObject({ size: bytes.length });
+    expect(readFile).not.toHaveBeenCalled();
+    expect(readArtifact).not.toHaveBeenCalled();
+    expect(readPreview).not.toHaveBeenCalled();
+    expect(cacheArtifact).not.toHaveBeenCalled();
+
+    const transfer = await manager.openTransfer(artifact.id, "preview_phone", true);
+    expect(transfer.size).toBe(bytes.length);
+    expect(Buffer.concat(Array.from({ length: transfer.totalChunks }, (_, index) => Buffer.from(manager.readTransfer(transfer.transferId, index, "preview_phone").data, "base64")))).toEqual(bytes);
+    await store.replaceArtifacts(evidence.id, [{ manifest: { ...artifact, size: 123 }, rootPath: directory, snapshot: bytes }]);
+    await rm(join(directory, "large.txt"));
+    vi.mocked(readFile).mockClear(); readArtifact.mockClear(); cacheArtifact.mockClear();
+    expect(await manager.artifactTransferMetadata(artifact.id)).toMatchObject({ size: bytes.length });
+    expect(readFile).not.toHaveBeenCalled(); expect(readArtifact).not.toHaveBeenCalled(); expect(cacheArtifact).not.toHaveBeenCalled();
+    await manager.close();
+  });
+
+  it("preserves path, worktree and download boundaries during metadata queries", async () => {
+    const { directory, manager } = await managerFixture();
+    await mkdir(join(directory, "worktree"));
+    await writeFile(join(directory, "worktree", "file.txt"), "worktree body");
+    await writeFile(join(directory, ".env"), "SECRET=fixture");
+    await symlink(tmpdir(), join(directory, "escape"));
+    const large = await open(join(directory, "large.bin"), "w");
+    await large.truncate(20 * 1024 * 1024 + 1); await large.close();
+    vi.mocked(readFile).mockClear();
+    expect(await manager.fileTransferMetadata(directory, "file.txt", join(directory, "worktree"))).toMatchObject({ size: 13 });
+    for (const path of [".env", "escape", "large.bin", "../outside.txt"]) await expect(manager.fileTransferMetadata(directory, path)).rejects.toThrow();
+    expect(readFile).not.toHaveBeenCalled();
+    await manager.close();
+  });
+
+  it("allows large text previews before and after an artifact download is cached", async () => {
     const { directory, manager, store } = await managerFixture();
     const bytes = Buffer.alloc(1024 * 1024 + 1, 0x61);
     await writeFile(join(directory, "large.txt"), bytes);
@@ -441,23 +491,27 @@ describe("EvidenceManager", () => {
     });
     const artifact = evidence.artifacts[0]!;
     expect(artifact.size).toBe(0);
-    await expect(manager.openTransfer(artifact.id, "phone-1", true)).rejects.toThrow("1 MB");
+    const preview = await manager.openTransfer(artifact.id, "phone-1", true);
+    expect(preview.size).toBe(bytes.length);
+    manager.closeTransfer(preview.transferId, "phone-1");
     const download = await manager.openTransfer(artifact.id, "phone-1");
     expect(download.size).toBe(bytes.length);
-    await expect(manager.openTransfer(artifact.id, "phone-1", true)).rejects.toThrow("1 MB");
+    const cachedPreview = await manager.openTransfer(artifact.id, "phone-1", true);
+    expect(cachedPreview.size).toBe(bytes.length);
+    manager.closeTransfer(cachedPreview.transferId, "phone-1");
 
-    // A cached body must also enforce the limit when its manifest has an old size.
+    // Cached bytes remain previewable when the manifest has an old size.
     const record = store.artifact(artifact.id)!;
     await store.replaceArtifacts(evidence.id, [{
       manifest: { ...record.manifest, size: 0 },
       rootPath: directory,
       snapshot: bytes,
     }]);
-    await expect(manager.openTransfer(artifact.id, "phone-2", true)).rejects.toThrow("1 MB");
+    expect(await manager.openTransfer(artifact.id, "phone-2", true)).toMatchObject({ size: bytes.length });
     await manager.close();
   });
 
-  it("accepts exactly 1 MiB for text previews and rejects larger direct-file previews after downloading", async () => {
+  it("accepts exactly 1 MiB and larger direct-file text previews", async () => {
     const { directory, manager } = await managerFixture();
     const bytes = Buffer.alloc(1024 * 1024, 0x61);
     await writeFile(join(directory, "boundary.txt"), bytes);
@@ -476,7 +530,7 @@ describe("EvidenceManager", () => {
     await writeFile(join(directory, "boundary.txt"), Buffer.alloc(bytes.length + 1, 0x62));
     const download = await manager.openFileTransfer(directory, "boundary.txt", "phone-1");
     expect(download.size).toBe(bytes.length + 1);
-    await expect(manager.openFileTransfer(directory, "boundary.txt", "phone-1", true)).rejects.toThrow("1 MB");
+    expect(await manager.openFileTransfer(directory, "boundary.txt", "phone-1", true)).toMatchObject({ size: bytes.length + 1 });
     expect(manager.readTransfer(download.transferId, 0, "phone-1").data).not.toBe("");
     await manager.close();
   });

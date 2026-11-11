@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname, networkInterfaces } from "node:os";
 import { join } from "node:path";
@@ -58,38 +59,66 @@ export function networkReachableUrl(value: string): string {
   return url.toString();
 }
 
+function matchingSubdirectories(root: string, pattern: RegExp): string[] {
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && pattern.test(entry.name))
+      .map((entry) => join(root, entry.name))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** Ordered userData candidate directories per Claude Desktop profile. */
+export function claudeDesktopProfileDirectories(
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+): Record<"Claude" | "Claude-3p", string[]> {
+  if (platform === "darwin") {
+    return {
+      Claude: [join(home, "Library", "Application Support", "Claude")],
+      "Claude-3p": [join(home, "Library", "Application Support", "Claude-3p")],
+    };
+  }
+  if (platform === "win32") {
+    const appData = environment.APPDATA ?? join(home, "AppData", "Roaming");
+    const localAppData = environment.LOCALAPPDATA ?? join(home, "AppData", "Local");
+    const claudeDataDirs = matchingSubdirectories(join(localAppData, "Claude-Data"), /^claude_/iu);
+    const packageDirs = matchingSubdirectories(join(localAppData, "Packages"), /^Claude_/iu);
+    return {
+      Claude: [...new Set([
+        ...claudeDataDirs,
+        join(appData, "Claude"),
+        ...packageDirs.map((pkg) => join(pkg, "LocalCache", "Roaming", "Claude")),
+        join(localAppData, "Claude"),
+        ...packageDirs.map((pkg) => join(pkg, "LocalCache", "Local", "Claude")),
+      ])],
+      "Claude-3p": [...new Set([
+        join(localAppData, "Claude-3p"),
+        ...packageDirs.map((pkg) => join(pkg, "LocalCache", "Local", "Claude-3p")),
+        join(appData, "Claude-3p"),
+        ...packageDirs.map((pkg) => join(pkg, "LocalCache", "Roaming", "Claude-3p")),
+      ])],
+    };
+  }
+  const configHome = environment.XDG_CONFIG_HOME ?? join(home, ".config");
+  return {
+    Claude: [join(configHome, "Claude")],
+    "Claude-3p": [join(configHome, "Claude-3p")],
+  };
+}
+
 export function connectorPaths(
   platform: NodeJS.Platform = process.platform,
   environment: NodeJS.ProcessEnv = process.env,
   home = homedir(),
 ): ConnectorPaths {
-  if (platform === "darwin") {
-    return {
-      claudeDesktop: [
-        join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
-        join(home, "Library", "Application Support", "Claude-3p", "claude_desktop_config.json"),
-      ],
-      claudeCode: join(home, ".claude.json"),
-      claudeSettings: join(home, ".claude", "settings.json"),
-    };
-  }
-  if (platform === "win32") {
-    const appData = environment.APPDATA ?? join(home, "AppData", "Roaming");
-    return {
-      claudeDesktop: [
-        join(appData, "Claude", "claude_desktop_config.json"),
-        join(appData, "Claude-3p", "claude_desktop_config.json"),
-      ],
-      claudeCode: join(home, ".claude.json"),
-      claudeSettings: join(home, ".claude", "settings.json"),
-    };
-  }
-  const configHome = environment.XDG_CONFIG_HOME ?? join(home, ".config");
+  const dirs = claudeDesktopProfileDirectories(platform, environment, home);
+  const desktopDirs = [...new Set([...dirs.Claude, ...dirs["Claude-3p"]])];
   return {
-    claudeDesktop: [
-      join(configHome, "Claude", "claude_desktop_config.json"),
-      join(configHome, "Claude-3p", "claude_desktop_config.json"),
-    ],
+    claudeDesktop: desktopDirs.map((dir) => join(dir, "claude_desktop_config.json")),
     claudeCode: join(home, ".claude.json"),
     claudeSettings: join(home, ".claude", "settings.json"),
   };
@@ -108,38 +137,13 @@ export function claudeRuntimePaths(
   home = homedir(),
 ): ClaudeRuntimePaths {
   const root = join(home, ".claude");
-  if (platform === "darwin") {
-    return {
-      sessions: join(root, "sessions"),
-      tasks: join(root, "tasks"),
-      projects: join(root, "projects"),
-      desktopSessions: [
-        join(home, "Library", "Application Support", "Claude", "claude-code-sessions"),
-        join(home, "Library", "Application Support", "Claude-3p", "claude-code-sessions"),
-      ],
-    };
-  }
-  if (platform === "win32") {
-    const appData = environment.APPDATA ?? join(home, "AppData", "Roaming");
-    return {
-      sessions: join(root, "sessions"),
-      tasks: join(root, "tasks"),
-      projects: join(root, "projects"),
-      desktopSessions: [
-        join(appData, "Claude", "claude-code-sessions"),
-        join(appData, "Claude-3p", "claude-code-sessions"),
-      ],
-    };
-  }
-  const configHome = environment.XDG_CONFIG_HOME ?? join(home, ".config");
+  const dirs = claudeDesktopProfileDirectories(platform, environment, home);
+  const desktopDirs = [...new Set([...dirs.Claude, ...dirs["Claude-3p"]])];
   return {
     sessions: join(root, "sessions"),
     tasks: join(root, "tasks"),
     projects: join(root, "projects"),
-    desktopSessions: [
-      join(configHome, "Claude", "claude-code-sessions"),
-      join(configHome, "Claude-3p", "claude-code-sessions"),
-    ],
+    desktopSessions: desktopDirs.map((dir) => join(dir, "claude-code-sessions")),
   };
 }
 

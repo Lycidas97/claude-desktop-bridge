@@ -20,7 +20,7 @@ function nativeSnapshot() {
       capabilities: [
         "evidence.v1", "evidence.details.v1", "artifact.preview.v1",
         "artifact.transfer.v1", "artifact.text-preview.v1", "workspace.upload.v1",
-        "claude.native-relay.v1", "permission.policy.v1", "permission.runtime-defaults.v1",
+        "claude.native-relay.v1",
         "directory.browse.v1", "runtime.adapter.v1", "session.visibility.v1",
         "session.commands.v1", "session.command.v1", "subagent.stop.v1",
         "turn.queue.steer.v1", "turn.queue.cancel.v1", "plugin.magpie-quota.v1",
@@ -97,12 +97,15 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
     assert.ok(result.requests.includes(method), `${method} was not verified`);
   }
   assert.ok(result.ui.includes(".desktop-sidebar-empty"));
-  assert.ok(result.ui.includes("原生中转已就绪"));
+  assert.ok(result.ui.includes("连接与启动"));
+  assert.ok(result.ui.includes("诊断与关于"));
+  assert.ok(result.ui.includes('dt:text-is("原生中转") + dd'));
+  assert.ok(result.ui.includes("已就绪"));
 });
 
 test("packaged QA keeps Native configuration/evidence checks with optional runtime capabilities", async () => {
   const snapshot = nativeSnapshot();
-  snapshot.host.capabilities.push("session.rewind.v1", "session.rename.v1", "runtime.handoff.v1");
+  snapshot.host.capabilities.push("session.rewind.v1", "session.rename.v1");
   snapshot.runtime.state = "ready";
   snapshot.runtime.desktopIntegration.state = "ready";
   snapshot.runtimes[0].state = "ready";
@@ -178,5 +181,6 @@ test("Windows QA keeps the local public relay and isolates both app launches", (
   assert.match(windowsSource, /Set-QaProfile -Root \$smokeRoot[\s\S]*?Start-Process @smokeStart/u);
   assert.match(windowsSource, /Set-QaProfile -Root \$qaRoot[\s\S]*?Start-Process @desktopStart/u);
   assert.match(windowsSource, /finally\s*\{[\s\S]*?SetEnvironmentVariable\(\$key, \$originalEnvironment\[\$key\], "Process"\)/u);
+  assert.match(windowsSource, /Get-ChildItem -LiteralPath \$installRoot -Filter "Uninstall\*\.exe"[\s\S]*?-ArgumentList @\("\/currentuser", "\/S"\)[\s\S]*?-Wait[\s\S]*?recycle-cleanup\.cjs/u);
   assert.match(windowsSource, /Invoke-NpmScript -Name "test:desktop:pairing"/u);
 });

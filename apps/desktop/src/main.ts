@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, open, writeFile } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { BridgeDesktopRuntimeId, BridgeEvent, DesktopControlSnapshot } from "@bridge/protocol";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell, Tray } from "electron";
 import type { LocalBridgeRequest } from "./controller.js";
@@ -175,14 +175,12 @@ async function desktopMain(): Promise<void> {
       });
     };
     function isDesktopRuntimeId(value: string): value is BridgeDesktopRuntimeId {
-      return ["claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop"].includes(value);
+      return value === "claude-desktop";
     }
     async function quitDesktopAppWithConfirmation(runtimeId: BridgeDesktopRuntimeId) {
-      const displayName = { "claude-desktop": "Claude Desktop", "codex-desktop": "Codex（ChatGPT）", "hermes-desktop": "Hermes", "dsh-desktop": "DSH Desktop" }[runtimeId];
+      const displayName = "Claude Desktop";
       const snapshot = await controller.call("snapshot");
-      const desktopTurnRunning = runtimeId === "claude-desktop"
-        ? snapshot.sessions.some((session) => session.turnState === "running" && ["DESKTOP_OBSERVED", "DESKTOP_MANAGED_RUNNING", "OWNERSHIP_CONFLICT"].includes(session.ownership))
-        : snapshot.sessions.some((session) => session.runtimeId === runtimeId && session.turnState === "running");
+      const desktopTurnRunning = snapshot.sessions.some((session) => session.turnState === "running" && ["DESKTOP_OBSERVED", "DESKTOP_MANAGED_RUNNING", "OWNERSHIP_CONFLICT"].includes(session.ownership));
       if (desktopTurnRunning) {
         const options: Electron.MessageBoxOptions = {
           type: "warning", title: `退出 ${displayName}`, message: `${displayName} 仍有会话正在运行`,
@@ -197,7 +195,18 @@ async function desktopMain(): Promise<void> {
 
     handle("bridge:get-snapshot", () => controller.call("snapshot"));
     handle("bridge:check-claude-developer-settings", (profile?: unknown) => claudeDesktopDeveloperSettings({ profile }));
-    handle("bridge:enable-claude-developer-settings", (profile: unknown) => claudeDesktopDeveloperSettings({ profile, enable: true }));
+    handle("bridge:enable-claude-developer-settings", (profile: unknown) => claudeDesktopDeveloperSettings({
+      profile, enable: true,
+      requestAccess: async (directory) => {
+        const options: Electron.OpenDialogOptions = {
+          title: "允许 Bridge 访问 Claude 配置", message: "请选择此配置目录，Bridge 将保留原配置并开启开发者工具。",
+          defaultPath: directory, buttonLabel: "允许访问并开启", properties: ["openDirectory", "showHiddenFiles"],
+        };
+        const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+        if (result.canceled || !result.filePaths[0]) throw new Error("已取消授权，原配置未修改。可再次点击开启。");
+        if (resolve(result.filePaths[0]) !== resolve(directory)) throw new Error(`请选择 ${directory}，原配置未修改。`);
+      },
+    }));
     handle("bridge:create-pairing", () => controller.call("createPairing"));
     handle("bridge:choose-directory", async (initialPath?: string) => {
       if (initialPath !== undefined && typeof initialPath !== "string") throw new Error("initialPath must be a string");

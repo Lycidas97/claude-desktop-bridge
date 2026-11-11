@@ -19,7 +19,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serve = process.argv.includes("--serve");
 const remotePreview = serve && process.argv.includes("--remote-execution-preview");
 const projectGroupingPreview = serve && !remotePreview && process.argv.includes("--project-grouping-preview");
-const nativePreview = serve && !remotePreview && (projectGroupingPreview || process.argv.includes("--native-permissions-preview"));
+const sectionCreatePreview = serve && !remotePreview && process.argv.includes("--section-create-preview");
+const nativePreview = serve && !remotePreview && (sectionCreatePreview || projectGroupingPreview || process.argv.includes("--native-permissions-preview"));
 let previewHost;
 let previewApproval;
 const port = serve ? Number(process.env.BRIDGE_E2E_PORT ?? 0) : 0;
@@ -61,6 +62,19 @@ async function eventually(read, expected, message, timeout = 15_000) {
   assert.deepEqual(actual, expected, message);
 }
 
+async function syncNativeSections(host) {
+  const { capable, moveCapable, runtimeCapabilities, projects, sessions } = await host.nativeApproval.sectionCatalog();
+  host.snapshot.projects = projects;
+  host.snapshot.sessions = sessions;
+  host.snapshot.host.capabilities = host.snapshot.host.capabilities.filter(
+    value => !["section.create.v1", "section.move.v1", "directory.browse.v1", "directory.mkdir.v1"].includes(value),
+  );
+  host.snapshot.host.capabilities.push("directory.browse.v1", "directory.mkdir.v1");
+  if (capable) host.snapshot.host.capabilities.push("section.create.v1");
+  if (moveCapable) host.snapshot.host.capabilities.push("section.move.v1");
+  if (host.snapshot.runtimes?.[0]) host.snapshot.runtimes[0].capabilities = runtimeCapabilities;
+}
+
 async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false) {
   const now = Date.now();
   const clientRelayUrl = `${baseUrl.replace("http:", "ws:")}/ws`;
@@ -96,7 +110,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       online: true,
       lastSeenAt: now,
       version: "1.1.1",
-      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1"] : [])],
+      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1"] : [])],
     },
     projects: [{
       projectId: session.projectId, name: session.projectName, cwd: session.cwd,
@@ -354,7 +368,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     const directory = resolve(runDir, "native-fixtures", String(++nativeFixtureSequence));
     await mkdir(directory, { recursive: true });
     host.nativeApproval = await startNativeApprovalHost({
-      directory, sessionId, title: originalTitle, deviceId: pairing.deviceId,
+      directory, sessionId, title: originalTitle, deviceId: pairing.deviceId, sections: sectionCreatePreview,
       onRequested(request) {
         snapshot.permissions.push(request);
         session.turnState = "waiting";
@@ -404,7 +418,24 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       let remoteCommand;
       let remoteCommandCreated = false;
       switch (request.method) {
-        case "snapshot.get": result = { snapshot }; break;
+        case "snapshot.get":
+          if (sectionCreatePreview) await syncNativeSections(host);
+          result = { snapshot }; break;
+        case "section.create":
+        case "section.move":
+        case "session.create":
+          try {
+            result = await host.nativeApproval.controllerRequest(request);
+            await syncNativeSections(host);
+            await host.send({ kind: "snapshot", snapshot });
+          } catch (failure) { error = { code: "NATIVE_SECTION_REJECTED", message: failure.message }; }
+          break;
+        case "directory.list":
+        case "directory.mkdir":
+          try {
+            result = await host.nativeApproval.controllerRequest(request);
+          } catch (failure) { error = { code: "DIRECTORY_REJECTED", message: failure.message }; }
+          break;
         case "events.resume": {
           const resumed = events.filter((event) => event.seq > request.params.afterSeq);
           resumeBatches.push(resumed.map((event) => event.eventId));
@@ -1176,9 +1207,13 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   assert.equal((await stream.innerText()).includes("INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN"), false);
   assert.equal((await stream.innerText()).includes("子代理内部计划"), false);
   for (const label of ["相对报告", "绝对报告"]) {
+    const requestStart = host.requests.length;
     await stream.getByRole("button", { name: label, exact: true }).click();
     const content = page.locator("#text-preview-content");
     await content.waitFor();
+    const opens = host.requests.slice(requestStart).filter(request => request.method === "artifact.transfer.open");
+    assert.equal(opens[0]?.params.purpose, "stat", "File links check metadata before opening the text transfer");
+    assert.ok(opens.length >= 2 && opens.slice(1).every(request => request.params.purpose === "text-preview"), "Content transfers follow the file size check");
     assert.ok((await content.innerText()).includes("worktree"), "The original project-root namesake must not be read");
     assert.equal((await content.innerText()).includes("wrong project root"), false);
     assert.equal(await page.locator(".media-viewer [role=alert]").count(), 0);
@@ -1774,6 +1809,23 @@ try {
             let result;
             if (request.method === "GET" && url.pathname === "/pairing") {
               result = { url: buildPairingUrl(baseUrl, previewHost.pairing) };
+            } else if (sectionCreatePreview && url.pathname === "/sections") {
+              const fixture = previewHost.nativeApproval.sections;
+              if (request.method === "POST") {
+                if (url.searchParams.has("failure")) fixture.failure = url.searchParams.get("failure") === "true" ? "Native section limit reached" : "";
+                if (url.searchParams.has("supported")) fixture.supported = url.searchParams.get("supported") !== "false";
+                if (url.searchParams.has("scope")) fixture.scope = url.searchParams.get("scope");
+                if (url.searchParams.get("connection") === "offline") previewHost.socket.close();
+                if (url.searchParams.get("connection") === "connected") previewHost.socket.connect();
+                await fixture.reread();
+                await syncNativeSections(previewHost);
+                if (!["offline", "connected"].includes(url.searchParams.get("connection"))) await previewHost.send({ kind: "snapshot", snapshot: previewHost.snapshot });
+              }
+              result = { projects: previewHost.snapshot.projects, sessions: previewHost.snapshot.sessions,
+                miscRoot: previewHost.nativeApproval.miscRoot, calls: fixture.calls, scope: fixture.scope,
+                persisted: JSON.parse(await readFile(fixture.profile, "utf8")),
+                sectionRequests: previewHost.requests.filter(request => ["section.create", "section.move", "directory.mkdir", "session.create"].includes(request.method)).map(({ method, params }) => ({ method, params })),
+                errors: infrastructureErrors };
             } else if (remotePreview && request.method === "GET" && url.pathname === "/remote/state") {
               result = previewHost.remoteState();
             } else if (remotePreview && request.method === "POST" && url.pathname === "/remote/finish") {
@@ -1866,7 +1918,8 @@ try {
     const host = await createMockHost(!nativePreview && !remotePreview, false, infrastructureErrors, nativePreview, nativePreview);
     previewHost = host;
     if (projectGroupingPreview) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
-    if (nativePreview && !projectGroupingPreview) {
+    if (sectionCreatePreview) await syncNativeSections(host);
+    if (nativePreview && !projectGroupingPreview && !sectionCreatePreview) {
       for (const [index, message] of [
         { type: "user", uuid: "preview-first", message: { content: "检查模型和额度" } },
         { type: "assistant", uuid: "preview-checkpoint", message: { content: [{ type: "text", text: "已建立回退检查点。" }] } },

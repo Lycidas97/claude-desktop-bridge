@@ -233,15 +233,26 @@ describe("desktop configuration", () => {
     const created = await repository.loadOrCreate();
     expect(created.runtimePermissionModes).toEqual({});
 
-    created.runtimePermissionModes = { "codex-desktop": "full-access" };
+    created.runtimePermissionModes = {
+      "codex-desktop": "full-access", "hermes-desktop": "standard", "dsh-desktop": "full-access",
+    };
+    created.devices.push({
+      deviceId: "saved-phone", name: "Phone", platform: "android", secret: "synthetic-phone-secret",
+      createdAt: 1_000, expiresAt: 2_000, pairedAt: 1_100,
+    });
     await repository.save(created);
 
-    expect((await repository.load())?.runtimePermissionModes).toEqual({
-      "codex-desktop": "full-access",
+    const loaded = await repository.loadOrCreate();
+    expect(loaded).toMatchObject({
+      runtimePermissionModes: created.runtimePermissionModes,
+      roomId: created.roomId, hostDeviceId: created.hostDeviceId, hostSecret: created.hostSecret,
+      evidenceKey: created.evidenceKey, pairingEpoch: created.pairingEpoch, devices: created.devices,
     });
+    await repository.save(loaded);
+    expect(await repository.loadOrCreate()).toEqual(loaded);
     expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
       version: 4,
-      runtimePermissionModes: { "codex-desktop": "full-access" },
+      runtimePermissionModes: created.runtimePermissionModes,
     });
   });
 

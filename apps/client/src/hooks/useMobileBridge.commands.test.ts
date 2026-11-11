@@ -1,4 +1,4 @@
-import type { BridgeRequest, BridgeSlashCommandCatalog } from "@bridge/protocol";
+import type { BridgeProjectInfo, BridgeRequest, BridgeSessionInfo, BridgeSlashCommandCatalog } from "@bridge/protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useMobileBridge } from "./useMobileBridge.js";
 
@@ -40,6 +40,31 @@ beforeEach(() => {
   harness.encrypt.mockReset().mockImplementation(async (request: BridgeRequest) => ({ id: request.requestId, sentAt: 1, request }));
 });
 
+describe("createSection", () => {
+  it("waits for the native result without persisting an offline creation", async () => {
+    const project: BridgeProjectInfo = { projectId: "native-section", name: "Research", kind: "desktop-group", cwd: "", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 };
+    harness.response = { project };
+    await expect(useMobileBridge().createSection("Research")).resolves.toEqual(project);
+    expect(harness.requests).toHaveLength(1);
+    expect(harness.requests[0]).toMatchObject({ method: "section.create", params: { name: "Research" } });
+    expect(harness.encrypt.mock.calls[0]![6]).toBe(true);
+  });
+
+  it("preserves a native creation error", async () => {
+    harness.error = { code: "REQUEST_FAILED", message: "The sidebar isn't signed in to an account yet." };
+    await expect(useMobileBridge().createSection("Research")).rejects.toThrow(harness.error.message);
+    expect(harness.requests.map(request => request.method)).toEqual(["section.create"]);
+  });
+
+  it("rejects offline before encrypting or queuing a native creation", async () => {
+    const bridge = useMobileBridge();
+    harness.refs[3]!.current.state = "closed";
+    await expect(bridge.createSection("Research")).rejects.toThrow("电脑当前离线");
+    expect(harness.encrypt).not.toHaveBeenCalled();
+    expect(harness.requests).toEqual([]);
+  });
+});
+
 describe("loadSessionCommands", () => {
   it("uses the read-only command request, waits for its catalog, and does not persist an outbox envelope", async () => {
     const catalog: BridgeSlashCommandCatalog = { sessionId: "fork-A", commands: [{ name: "review", description: "检查变更" }], warnings: ["部分目录不可读"] };
@@ -60,6 +85,73 @@ describe("loadSessionCommands", () => {
     const bridge = useMobileBridge();
     harness.refs[3]!.current.state = "closed";
     await expect(bridge.loadSessionCommands("A")).rejects.toThrow("电脑当前离线");
+    expect(harness.encrypt).not.toHaveBeenCalled();
+    expect(harness.requests).toEqual([]);
+  });
+});
+
+describe("moveSessionSection", () => {
+  const movedSession: BridgeSessionInfo = {
+    sessionId: "desktop-1",
+    projectId: "sec-misc",
+    projectName: "杂活",
+    cwd: "/work/杂活/colab-connect",
+    title: "Colab task",
+    source: "desktop",
+    ownership: "DESKTOP_NATIVE_IDLE",
+    transport: "claude-desktop-native",
+    turnState: "idle",
+    lastActivityAt: 10,
+    pendingCount: 0,
+  };
+  const projects: BridgeProjectInfo[] = [
+    { projectId: "sec-misc", name: "杂活", kind: "desktop-group", cwd: "/work/杂活/colab-connect", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 10 },
+  ];
+
+  it("sends section.move without offline persistence and supports both section IDs and null ungrouping", async () => {
+    harness.response = { session: movedSession, projects };
+    await expect(useMobileBridge().moveSessionSection("desktop-1", "sec-misc")).resolves.toEqual({ session: movedSession, projects });
+    expect(harness.requests[0]).toMatchObject({ method: "section.move", params: { sessionId: "desktop-1", sectionId: "sec-misc" } });
+    expect(harness.encrypt.mock.calls[0]![6]).toBe(true);
+
+    harness.refs = []; harness.requests = [];
+    harness.response = { session: { ...movedSession, projectId: "dir-colab", projectName: "colab-connect" }, projects: [] };
+    await useMobileBridge().moveSessionSection("desktop-1", null);
+    expect(harness.requests[0]).toMatchObject({ method: "section.move", params: { sessionId: "desktop-1", sectionId: null } });
+  });
+
+  it("propagates native move errors and rejects offline before encrypting", async () => {
+    harness.error = { code: "REQUEST_FAILED", message: "This session cannot be moved between Sections" };
+    await expect(useMobileBridge().moveSessionSection("desktop-1", "sec-misc")).rejects.toThrow("This session cannot be moved between Sections");
+
+    harness.refs = []; harness.requests = []; harness.error = undefined;
+    harness.encrypt.mockClear();
+    const bridge = useMobileBridge();
+    harness.refs[3]!.current.state = "closed";
+    await expect(bridge.moveSessionSection("desktop-1", "sec-misc")).rejects.toThrow("电脑当前离线");
+    expect(harness.encrypt).not.toHaveBeenCalled();
+    expect(harness.requests).toEqual([]);
+  });
+});
+
+describe("createDirectory", () => {
+  it("sends directory.mkdir without offline persistence and returns the created path", async () => {
+    harness.response = { path: "/work/杂活/colab-connect" };
+    await expect(useMobileBridge().createDirectory("/work/杂活", "colab-connect")).resolves.toBe("/work/杂活/colab-connect");
+    expect(harness.requests).toHaveLength(1);
+    expect(harness.requests[0]).toMatchObject({ method: "directory.mkdir", params: { parentPath: "/work/杂活", name: "colab-connect" } });
+    expect(harness.encrypt.mock.calls[0]![6]).toBe(true);
+  });
+
+  it("propagates mkdir validation errors and rejects offline before encrypting", async () => {
+    harness.error = { code: "INVALID_PARAMS", message: "Folder name must be a single directory name" };
+    await expect(useMobileBridge().createDirectory("/work/杂活", "a/b")).rejects.toThrow("Folder name must be a single directory name");
+
+    harness.refs = []; harness.requests = []; harness.error = undefined;
+    harness.encrypt.mockClear();
+    const bridge = useMobileBridge();
+    harness.refs[3]!.current.state = "closed";
+    await expect(bridge.createDirectory("/work/杂活", "sub")).rejects.toThrow("电脑当前离线");
     expect(harness.encrypt).not.toHaveBeenCalled();
     expect(harness.requests).toEqual([]);
   });

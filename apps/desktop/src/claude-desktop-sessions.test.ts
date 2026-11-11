@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findClaudeDesktopSessionId, listClaudeDesktopSessions, listClaudeDesktopSessionState } from "./claude-desktop-sessions.js";
+import { claudeDesktopProfileForPath, findClaudeDesktopSessionId, listClaudeDesktopSessions, listClaudeDesktopSessionState } from "./claude-desktop-sessions.js";
 
 const directories: string[] = [];
 
@@ -81,6 +81,8 @@ describe("Claude Desktop session catalog", () => {
       }),
     ]);
     expect(JSON.stringify(sessions)).not.toContain(root);
+    expect(claudeDesktopProfileForPath("C:\\Users\\test\\AppData\\Local\\Claude-Data\\claude_pzs8sxrjxfjjc\\claude-code-sessions\\local_1.json")).toBe("claude");
+    expect(claudeDesktopProfileForPath("C:\\Users\\test\\AppData\\Local\\Claude-3p\\claude-code-sessions\\local_2.json")).toBe("claude-3p");
   });
 
   it.each(["flag", "index"])("keeps active nested forks visible when their intermediate parent is archived by %s", async (archiveSource) => {

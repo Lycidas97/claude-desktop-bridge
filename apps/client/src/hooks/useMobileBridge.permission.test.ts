@@ -127,69 +127,18 @@ describe("resolvePermission", () => {
   });
 });
 
-describe("configureHostPermission", () => {
-  it("sets an explicit runtime default with no session and applies the confirmed value only to that runtime", async () => {
-    harness.state.snapshot.host.capabilities = ["permission.policy.v1", "permission.runtime-defaults.v1"];
-    harness.state.snapshot.sessions = [];
-    harness.state.snapshot.runtimes = [{ id: "codex-desktop", defaultPermissionMode: "standard" }];
+describe("provider detection", () => {
+  it("does not apply a delayed detection response from computer A after switching to B", async () => {
     const bridge = useMobileBridge();
-    harness.result = { runtimeId: "codex-desktop", defaultPermissionMode: "full-access" };
-    await expect(bridge.configureHostPermission("codex-desktop", "full-access")).resolves.toBe("full-access");
-    expect(harness.requests[0]).toMatchObject({ method: "permission.policy.configure", params: { scope: "host", runtimeId: "codex-desktop", mode: "full-access" } });
-    expect(harness.requests[0]!.params).not.toHaveProperty("sessionId");
-    expect(harness.state.snapshot.host.defaultPermissionMode).toBe("standard");
-    expect(harness.state.snapshot.runtimes[0].defaultPermissionMode).toBe("full-access");
-  });
-  it.each(["permission", "detection"])("does not apply a delayed %s response from computer A after switching to B", async (operation) => {
-    harness.state.snapshot.host.capabilities = ["permission.runtime-defaults.v1"];
-    harness.state.snapshot.runtimes = [{ id: "codex-desktop", defaultPermissionMode: "standard" }];
-    const bridge = useMobileBridge();
-    harness.result = operation === "permission" ? { runtimeId: "codex-desktop", defaultPermissionMode: "full-access" } : { runtime: { state: "ready", detail: "Computer A" }, providers: [{ id: "A-only" }] };
+    harness.result = { runtime: { state: "ready", detail: "Computer A" }, providers: [{ id: "A-only" }] };
     harness.beforeReply = () => {
       harness.state = { ...harness.state, snapshot: { ...harness.state.snapshot, host: { ...harness.state.snapshot.host, hostId: "computer-B" }, runtime: { state: "ready", detail: "Computer B" }, providers: [{ id: "B-only" }] } };
       harness.refs[0]!.current = harness.state;
       harness.refs[1]!.current = { ...harness.refs[1]!.current };
     };
-    await (operation === "permission" ? bridge.configureHostPermission("codex-desktop", "full-access") : bridge.redetectProviders()).catch(() => undefined);
+    await bridge.redetectProviders().catch(() => undefined);
     expect(harness.state.snapshot.host.hostId).toBe("computer-B");
-    expect(harness.state.snapshot.runtimes[0].defaultPermissionMode).toBe("standard");
     expect(harness.state.snapshot.runtime.detail).toBe("Computer B");
     expect(harness.state.snapshot.providers).toEqual([{ id: "B-only" }]);
-  });
-
-  it("does not save retired Claude host defaults", async () => {
-    const bridge = useMobileBridge();
-    await expect(bridge.configureHostPermission("claude-desktop", "full-access")).rejects.toThrow("Desktop 管理");
-    expect(harness.requests).toEqual([]);
-    expect(harness.state.snapshot.host.defaultPermissionMode).toBe("standard");
-  });
-
-  it("targets one external app and preserves Claude's snapshot default", async () => {
-    const bridge = useMobileBridge();
-    harness.result = { runtimeId: "codex-desktop", runtimePermissionMode: "full-access" };
-    await expect(bridge.configureHostPermission("codex-desktop", "full-access", "codex-desktop:first"))
-      .resolves.toBeUndefined();
-    expect(harness.requests[0]).toMatchObject({
-      method: "permission.policy.configure",
-      params: { scope: "host", mode: "full-access", sessionId: "codex-desktop:first" },
-    });
-    expect(harness.state.snapshot.host.defaultPermissionMode).toBe("standard");
-  });
-
-  it("rejects missing or another app's session before sending a host request", async () => {
-    const bridge = useMobileBridge();
-    await expect(bridge.configureHostPermission("codex-desktop", "full-access")).rejects.toThrow("有效会话");
-    await expect(bridge.configureHostPermission("codex-desktop", "full-access", "hermes-desktop:first")).rejects.toThrow("有效会话");
-    expect(harness.requests).toEqual([]);
-  });
-
-  it("keeps the existing session policy method's configuration return contract", async () => {
-    const bridge = useMobileBridge();
-    const configuration = { sessionId: "codex-desktop:first", permissionPolicy: { hostMode: "standard", source: "host", effectiveMode: "standard" } };
-    harness.result = { configuration };
-    await expect(bridge.configurePermissionPolicy("codex-desktop:first", "session", null)).resolves.toEqual(configuration);
-    expect(harness.requests[0]).toMatchObject({
-      method: "permission.policy.configure", params: { sessionId: "codex-desktop:first", scope: "session", mode: null },
-    });
   });
 });

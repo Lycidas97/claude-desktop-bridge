@@ -315,7 +315,7 @@ describe("SessionEventLog", () => {
     }
     await first.append({ sessionId: "session-1", turnId: "unconfirmed", itemId: "unconfirmed-user", type: "message.delivery", origin: "claude-host", data: { commandId: "unconfirmed-command", delivery: "submitted" } });
     await first.append({ sessionId: "session-1", turnId: "pending", itemId: "pending-user", type: "message.delivery", origin: "claude-host", data: { commandId: "pending-command", delivery: "submitted" } });
-    await first.append({ sessionId: "session-1", turnId: "pending", itemId: "task-1", type: "tool.progress", origin: "claude-host", data: { toolName: "Agent", generation: "generation-1", task: { taskId: "task-1", toolUseId: "task-1", state: "running" }, text: "OMIT_FULL_PROGRESS_PAYLOAD", subagent: { agentId: "agent-1", description: "Background task", state: "running", toolCount: 3, startedAt: 1, updatedAt: 2, latestText: "OMIT_FULL_REPORT_PAYLOAD" } } });
+    await first.append({ sessionId: "session-1", turnId: "pending", itemId: "task-1", type: "tool.progress", origin: "claude-host", data: { toolName: "Agent", generation: "generation-1", task: { taskId: "task-1", toolUseId: "task-1", state: "running" }, text: "OMIT_FULL_PROGRESS_PAYLOAD", subagent: { agentId: "agent-1", description: "Background task", model: "codex/gpt-6.1-sol", state: "running", toolCount: 3, startedAt: 1, updatedAt: 2, latestText: "OMIT_FULL_REPORT_PAYLOAD" } } });
     for (let index = 0; index < 8; index += 1) {
       await first.append({ sessionId: "other", type: "session.observed", origin: "claude-desktop", itemId: `noise-${index}`, data: { role: "assistant", text: "Unrelated" } });
     }
@@ -335,7 +335,7 @@ describe("SessionEventLog", () => {
       expect(reopened.turnEvidence({ sessionId: "session-1", turnId: "pending" })).toEqual({ submitted: true, accepted: true, messageId: "pending-user" });
       expect(reopened.isUserMessageSettled("session-1", "pending-user")).toBe(false);
       expect(reopened.hasItem("session-1", "tool.progress", "task-1")).toBe(true);
-      expect(reopened.latestItem("session-1", "tool.progress", "task-1")).toMatchObject({ data: { toolName: "Agent", subagent: { agentId: "agent-1", state: "running", toolCount: 3 } } });
+      expect(reopened.latestItem("session-1", "tool.progress", "task-1")).toMatchObject({ data: { toolName: "Agent", subagent: { agentId: "agent-1", model: "codex/gpt-6.1-sol", state: "running", toolCount: 3 } } });
       expect(reopened.latestTaskEvents("session-1")).toMatchObject([{ itemId: "task-1", type: "tool.progress", data: { generation: "generation-1", task: { taskId: "task-1", state: "running" } } }]);
       expect(reopened.latestSeq()).toBe(lastSeq);
       expect(reopened.replay()).toHaveLength(2);

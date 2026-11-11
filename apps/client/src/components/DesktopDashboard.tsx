@@ -8,14 +8,10 @@ import type {
   BridgeEvidencePage,
   BridgeEvent,
   BridgeHistoryPage,
-  BridgeDesktopAppStatus,
   BridgeDesktopRuntimeId,
   BridgeNativePermissionMode,
-  BridgePermissionMode,
   BridgeProviderProfile,
   BridgeResponse,
-  BridgeRuntimeHandoff,
-  BridgeRuntimeHandoffPreview,
   BridgeSessionCommandResult,
   BridgeSessionRewindPreview,
   BridgeSessionRewindResult,
@@ -29,23 +25,18 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
-  ArrowRightLeft,
   Clipboard,
   ChevronDown,
   ChevronRight,
   ChevronsDown,
   ChevronsUp,
   CircleStop,
-  Download,
   Forward,
   GitFork,
-  Goal,
   Laptop,
   LoaderCircle,
   MessageSquare,
-  Play,
   Plus,
-  Power,
   QrCode,
   RefreshCw,
   Send,
@@ -78,12 +69,12 @@ import { FileChangesCard } from "./FileChangesCard.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker, useFileAttachments } from "./FileAttachmentPicker.js";
 import { appendUploadedFilePaths, uploadSessionFile } from "../lib/file-upload.js";
 import { MediaGallery } from "./MediaGallery.js";
-import { useMediaPreview } from "./MediaPreviewProvider.js";
+import { MediaPreviewProvider, useMediaPreview } from "./MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
-import { RelaySettings } from "./RelaySettings.js";
 import { IconButton } from "./IconButton.js";
 import { MarkdownText } from "./MarkdownText.js";
 import { ThemeMenu } from "./ThemeMenu.js";
+import { DiagnosticFloatingEntry } from "./DiagnosticLogDialog.js";
 import {
   aggregateFileChanges,
   conversationItems,
@@ -91,22 +82,17 @@ import {
   desktopRuntimeId,
   desktopRuntimeName,
   fileToAttachment,
-  goalStatusLabel,
   InteractivePromptCard,
-  isNativeRuntimeId,
   matchingQuestionPermission,
   ownershipLabel,
   canSendSession,
   canConfigureSession,
   PermissionPrompt,
-  runtimeProviderLabel,
   sessionProfile,
   stoppableBridgeTask,
   SubagentCard,
-  supportsRuntimeHandoff,
 } from "./MobileWorkspace.js";
-import { RuntimeHandoffDialog } from "./RuntimeHandoffDialog.js";
-import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
+import { SessionActivityIndicator, SessionContextUsageBar } from "./SessionActivityIndicator.js";
 import { SlashCommandInput } from "./SlashCommandInput.js";
 import { useSessionCommands } from "../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
@@ -118,7 +104,7 @@ import {
   type SessionConfigurationChange,
 } from "./SessionConfigurationDialog.js";
 
-import { visibleAgentSnapshot, type AgentVisibilityControl } from "../hooks/useAgentVisibility.js";
+import { claudeSnapshot } from "../lib/claude-snapshot.js";
 import { DesktopSettings } from "./DesktopSettings.js";
 import { SessionCreateDialog } from "./SessionCreateDialog.js";
 import { MAGPIE_QUOTA_METHOD, type QuotaSnapshot } from "../../../../plugins/magpie-quota/contract.js";
@@ -165,7 +151,6 @@ function sessionState(session: BridgeSessionInfo): string {
   if (session.turnState === "queued") return bridgeCreated ? "Bridge 排队中" : "排队中";
   if (bridgeCreated) return "Bridge 待机";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
-  if (session.runtimeId && session.runtimeId !== "claude-desktop") return `${desktopRuntimeName(session.runtimeId)} 待机`;
   if (session.ownership === "DESKTOP_OBSERVED") return "桌面待机";
   return "待机";
 }
@@ -175,9 +160,6 @@ function transportLabel(session: BridgeSessionInfo): string {
   if (!session.runtimeId || session.runtimeId === "claude-desktop") return "Claude Desktop";
   if (session.desktopHandoff) return "手动交接";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
-  if (isNativeRuntimeId(session.runtimeId)) {
-    return `${desktopRuntimeName(session.runtimeId)} 原生会话`;
-  }
   if (session.source === "bridge") {
     if (session.desktopRegistration?.state === "registered") return "Claude Desktop 已登记";
     if (session.desktopRegistration?.state === "restart-required") return "等待 Desktop 重启";
@@ -216,18 +198,12 @@ function DesktopSessions({
   const [createOpen, setCreateOpen] = useState(false);
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const [rewindTarget, setRewindTarget] = useState<{ sessionId: string; messageId?: string }>();
-  const [relayOpen, setRelayOpen] = useState(false);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [deleteSessionOpen, setDeleteSessionOpen] = useState(false);
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const [sessionActionError, setSessionActionError] = useState<string>();
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
-  const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
-  const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
-  useEffect(() => {
-    if (runtimeFilter !== "all" && !snapshot.runtimes?.some((runtime) => runtime.id === runtimeFilter)) setRuntimeFilter("all");
-  }, [runtimeFilter, snapshot.runtimes]);
   const handledCommandEvents = useRef(new Set<string>());
   useEffect(() => {
     for (const event of events) {
@@ -287,7 +263,6 @@ function DesktopSessions({
   const canConfigure = Boolean(selected && canConfigureSession(selected, snapshot));
   const rewindAvailable = selected?.transport === "claude-desktop-native" && snapshot.host.capabilities.includes("session.rewind.v1");
   const rewindDisabled = selected?.turnState === "running" || selected?.turnState === "waiting" || Boolean(selected?.pendingCount);
-  const runtimeHandoffAvailable = supportsRuntimeHandoff(snapshot);
   const selectedEvidence = selectedId ? evidence[selectedId] : undefined;
   const bridgeRunning = selected?.turnState === "running" && (
     selected.ownership === "BRIDGE_RUNNING" ||
@@ -318,22 +293,21 @@ function DesktopSessions({
     const map = new Map<string, BridgeSessionInfo[]>();
     for (const session of snapshot.sessions.filter((candidate) => (
       (!candidate.archivedAt || Boolean(candidate.sidechat && candidate.parentSessionId && activeParentProjects.get(candidate.parentSessionId) === candidate.projectId))
-      && (runtimeFilter === "all" || desktopRuntimeId(candidate) === runtimeFilter)
+
     ))) {
       const list = map.get(session.projectId) ?? [];
       list.push(session);
       map.set(session.projectId, list);
     }
     return [...map.entries()];
-  }, [runtimeFilter, snapshot.sessions]);
+  }, [snapshot.sessions]);
   const visibilityAvailable = snapshot.host.capabilities.includes("session.visibility.v1");
   const archivedSessions = useMemo(() => snapshot.sessions.filter((candidate) => (
-    Boolean(candidate.archivedAt) && (runtimeFilter === "all" || desktopRuntimeId(candidate) === runtimeFilter)
-  )), [runtimeFilter, snapshot.sessions]);
+    Boolean(candidate.archivedAt)
+  )), [snapshot.sessions]);
   const selectedBusy = Boolean(selected && (
     selected.turnState === "running" || selected.turnState === "queued" || selected.turnState === "waiting"
   ));
-  const selectedRelaying = Boolean(selected?.pendingRuntimeHandoff);
   const groupedProjectIds = useMemo(
     () => grouped.map(([groupProjectId]) => groupProjectId),
     [grouped],
@@ -673,65 +647,6 @@ function DesktopSessions({
     }
   }
 
-  async function previewRuntimeHandoff(
-    targetRuntimeId: BridgeDesktopRuntimeId,
-  ): Promise<BridgeRuntimeHandoffPreview> {
-    if (!selected) throw new Error("Session not found");
-    const result = unwrap<{ preview: BridgeRuntimeHandoffPreview }>(await apiRequest({
-      method: "runtime.handoff.preview",
-      params: { sessionId: selected.sessionId, targetRuntimeId },
-    }));
-    return result.preview;
-  }
-
-  async function commitRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff> {
-    const result = unwrap<{ handoff: BridgeRuntimeHandoff }>(await apiRequest({
-      method: "runtime.handoff.commit",
-      params: { handoffId },
-    }));
-    await onRefreshSnapshot();
-    return result.handoff;
-  }
-
-  async function confirmRuntimeHandoff(
-    handoffId: string,
-    objective?: string,
-  ): Promise<{ handoff: BridgeRuntimeHandoff }> {
-    const result = unwrap<{ handoff: BridgeRuntimeHandoff }>(await apiRequest({
-      method: "runtime.handoff.confirm",
-      params: { handoffId, ...(objective?.trim() ? { objective: objective.trim() } : {}) },
-    }));
-    await onRefreshSnapshot();
-    return { handoff: result.handoff };
-  }
-
-  async function cancelRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff | undefined> {
-    const result = unwrap<{ handoff?: BridgeRuntimeHandoff }>(await apiRequest({
-      method: "runtime.handoff.cancel",
-      params: { handoffId },
-    }));
-    await onRefreshSnapshot();
-    return result.handoff;
-  }
-
-  async function getRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff> {
-    const result = unwrap<{ handoff: BridgeRuntimeHandoff }>(await apiRequest({
-      method: "runtime.handoff.get",
-      params: { handoffId },
-    }));
-    return result.handoff;
-  }
-
-  async function pauseRuntimeGoal(sessionId: string): Promise<void> {
-    unwrap(await apiRequest({ method: "runtime.goal.pause", params: { sessionId } }));
-    await onRefreshSnapshot();
-  }
-
-  async function resumeRuntimeGoal(sessionId: string): Promise<void> {
-    unwrap(await apiRequest({ method: "runtime.goal.resume", params: { sessionId } }));
-    await onRefreshSnapshot();
-  }
-
   async function refreshProviders(): Promise<void> {
     unwrap<{ providers: BridgeProviderProfile[] }>(await apiRequest({
       method: "provider.refresh",
@@ -804,19 +719,6 @@ function DesktopSessions({
       method: "session.configure",
       params: { sessionId: selected.sessionId, ...change },
     })).configuration;
-  }
-
-  async function savePermissionPolicy(
-    scope: "host" | "session",
-    mode: BridgePermissionMode | null,
-  ): Promise<BridgeSessionConfiguration> {
-    if (!selected) throw new Error("Session not found");
-    const result = unwrap<{ configuration: BridgeSessionConfiguration }>(await apiRequest({
-      method: "permission.policy.configure",
-      params: { sessionId: selected.sessionId, scope, mode },
-    }));
-    await onRefreshSnapshot();
-    return result.configuration;
   }
 
   async function archiveSelected(archived: boolean): Promise<void> {
@@ -961,33 +863,12 @@ function DesktopSessions({
             <IconButton
               label="新建会话"
               onClick={() => {
-                const runtimeId = runtimeFilter === "all"
-                  ? snapshot.runtimes?.find((runtime) => (
-                      runtime.state === "ready" && runtime.capabilities.includes("session.create")
-                    ))?.id ?? "claude-desktop"
-                  : runtimeFilter;
-                setCreateRuntimeId(runtimeId);
                 setCreateOpen(true);
               }}
             ><Plus size={18} /></IconButton>
           </div>
         </div>
-        {(snapshot.runtimes?.length ?? 0) > 0 && (
-          <nav className="runtime-filter desktop-runtime-filter" aria-label="Desktop 运行时筛选">
-            {snapshot.runtimes!.length > 1 && <button type="button" className={runtimeFilter === "all" ? "active" : ""} onClick={() => setRuntimeFilter("all")}>全部</button>}
-            {snapshot.runtimes!.map((runtime) => (
-              <button
-                type="button"
-                key={runtime.id}
-                className={runtimeFilter === runtime.id || snapshot.runtimes!.length === 1 ? "active" : ""}
-                disabled={runtime.state !== "ready" && runtime.sessionCount === 0}
-                onClick={() => setRuntimeFilter(runtime.id)}
-              >
-                {desktopRuntimeName(runtime.id)}
-              </button>
-            ))}
-          </nav>
-        )}
+
         <div className="desktop-project-list">
           {grouped.map(([groupProjectId, sessions]) => {
             const expanded = !collapsedProjectIds.has(groupProjectId);
@@ -1052,26 +933,7 @@ function DesktopSessions({
                 <span>{selectedRuntimeName} · {selected.projectName} · {sessionState(selected)} · {transportLabel(selected)}</span>
               </div>
               <div className="desktop-conversation-heading-actions">
-                {runtimeHandoffAvailable && selected.allowedActions?.canRelay !== false && (
-                  <button
-                    type="button"
-                    className="session-provider-trigger"
-                    aria-label="接力到其他 Desktop"
-                    onClick={() => setRelayOpen(true)}
-                  >
-                    <Forward size={15} />
-                    <span>接力</span>
-                  </button>
-                )}
-                {!runtimeHandoffAvailable && selectedRuntime !== "claude-desktop" && (
-                  <span
-                    className="session-provider-trigger is-static"
-                    title={`${selectedRuntimeName} 是独立的会话域，不提供跨 Desktop 接力`}
-                  >
-                    <ArrowRightLeft size={15} />
-                    <span>{runtimeProviderLabel(selectedRuntime)}</span>
-                  </span>
-                )}
+
                 {canConfigure && (
                   <button
                     type="button"
@@ -1083,15 +945,7 @@ function DesktopSessions({
                     <span>{sessionProfile(selected)}</span>
                   </button>
                 )}
-                {!canConfigure && selectedRuntime !== "claude-desktop" && (
-                  <span
-                    className="session-profile-trigger is-static"
-                    title="会话设置由对应 Desktop 管理"
-                  >
-                    <Settings2 size={15} />
-                    <span>{sessionProfile(selected)}</span>
-                  </span>
-                )}
+
                 {canStop && (
                   <IconButton
                     label={stopping ? "正在停止 Bridge 任务" : stoppingBlocker ? "停止阻塞的 Bridge 任务" : "停止当前 Bridge 任务"}
@@ -1123,8 +977,8 @@ function DesktopSessions({
                       </IconButton>
                     )}
                     <IconButton
-                      label={selectedBusy || selectedRelaying ? "任务或接力进行中，先停止再删除" : "删除会话"}
-                      disabled={sessionActionBusy || selectedBusy || selectedRelaying}
+                      label={selectedBusy ? "任务进行中，先停止再删除" : "删除会话"}
+                      disabled={sessionActionBusy || selectedBusy}
                       onClick={() => setDeleteSessionOpen(true)}
                     >
                       <Trash2 size={16} />
@@ -1145,71 +999,9 @@ function DesktopSessions({
                 <span><strong>会话操作失败</strong>{sessionActionError}</span>
               </div>
             )}
-            {selectedRuntime !== "claude-desktop" && !selected.desktopHandoff && selected.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && (
-              <div className="desktop-channel-banner">
-                <AlertTriangle size={18} />
-                <span><strong>正在等待同会话接管</strong>Claude Desktop 当前任务结束后，Bridge 会自动恢复这条会话。</span>
-              </div>
-            )}
-            {selectedRuntime !== "claude-desktop" && selected.ownership === "OWNERSHIP_CONFLICT" && (
-              <div className="desktop-channel-banner danger">
-                <AlertTriangle size={18} />
-                <span><strong>检测到重复写入</strong>Bridge 已停止重叠写入并会自动复查；持续冲突时再结束重复进程。</span>
-              </div>
-            )}
-            {selected.goal && (
-              <div className={`desktop-channel-banner goal-status ${selected.goal.status}`}>
-                <Goal size={18} />
-                <span>
-                  <strong>{goalStatusLabel(selected.goal.status)}</strong>
-                  {selected.goal.objective}
-                  {selected.goal.detail ? ` · ${selected.goal.detail}` : ""}
-                  {selected.goal.continuations > 0 ? ` · 已续跑 ${selected.goal.continuations} 轮` : ""}
-                </span>
-                {selected.goal.status === "active" ? (
-                  <button
-                    type="button"
-                    className="secondary-button goal-action"
-                    onClick={() => void pauseRuntimeGoal(selected.sessionId).catch(() => undefined)}
-                  >
-                    暂停目标
-                  </button>
-                ) : selected.goal.status !== "complete" ? (
-                  <button
-                    type="button"
-                    className="secondary-button goal-action"
-                    onClick={() => void resumeRuntimeGoal(selected.sessionId).catch(() => undefined)}
-                  >
-                    继续目标
-                  </button>
-                ) : null}
-              </div>
-            )}
-            {(selected.relay?.inbound || selected.relay?.outbound?.length) && (
-              <div className="desktop-channel-banner relay-chain-bar">
-                {selected.relay.inbound && (
-                  <button
-                    type="button"
-                    className="relay-chain-link"
-                    onClick={() => setSelectedId(selected.relay!.inbound!.sessionId)}
-                  >
-                    <Forward size={14} />
-                    {`接力自 ${selected.relay.inbound.title}`}
-                  </button>
-                )}
-                {selected.relay.outbound?.map((link) => (
-                  <button
-                    type="button"
-                    className="relay-chain-link outbound"
-                    key={link.handoffId}
-                    onClick={() => setSelectedId(link.sessionId)}
-                  >
-                    <Forward size={14} />
-                    {`接力至 ${link.title}`}
-                  </button>
-                ))}
-              </div>
-            )}
+
+
+
             {(() => {
               const parentSession = selected.parentSessionId
                 ? snapshot.sessions.find((candidate) => candidate.sessionId === selected.parentSessionId)
@@ -1302,7 +1094,6 @@ function DesktopSessions({
                       <MarkdownText text={entry.item.text} collapsible={!entry.item.live} onFileClick={(filePath) => {
                         const kind = mediaKind(filePath);
                         if (kind) openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selected.sessionId, path: filePath });
-                        else void apiRequest({ method: "runtime.file.open", params: { sessionId: selected.sessionId, path: filePath } });
                       }} />
                     ) : (
                       <div className="conversation-text">{entry.item.text}</div>
@@ -1354,7 +1145,7 @@ function DesktopSessions({
                 </article>
               ))}
               {snapshot.permissions
-                .filter((permission) => permission.sessionId === selected.sessionId && (selectedRuntime !== "claude-desktop" || (isClaudeNativeRelay(snapshot) && selected.transport === "claude-desktop-native")))
+                .filter((permission) => permission.sessionId === selected.sessionId && (isClaudeNativeRelay(snapshot) && selected.transport === "claude-desktop-native"))
                 .map((permission) => (
                   <PermissionPrompt
                     key={permission.requestId}
@@ -1392,10 +1183,6 @@ function DesktopSessions({
                       const kind = mediaKind(filePath);
                       if (kind) openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selected.sessionId, path: filePath });
                     }}
-                    onOpenFile={(filePath) => void apiRequest({
-                      method: "runtime.file.open",
-                      params: { sessionId: selected.sessionId, path: filePath },
-                    }).then(unwrap).catch((failure) => setSessionActionError(failure instanceof Error ? failure.message : String(failure)))}
                   />
                 )}
                 <EvidencePanel
@@ -1414,6 +1201,7 @@ function DesktopSessions({
             {sessionView === "conversation" && (
             <>
             <SessionActivityIndicator activity={activity} />
+            <SessionContextUsageBar usage={selected.contextUsage} />
             <div className="desktop-composer">
               {commandError && <div className="composer-error" role="alert">{commandError}</div>}
               <FileAttachmentPicker state={fileUploads} />
@@ -1470,7 +1258,6 @@ function DesktopSessions({
           key={snapshot.host.hostId}
           snapshot={snapshot}
           connected
-          initialRuntimeId={createRuntimeId}
           {...(window.bridgeDesktop?.chooseDirectory ? { onChooseDirectory: (path?: string) => window.bridgeDesktop!.chooseDirectory!(path) } : {})}
           onCreate={createSession}
           onCreated={(created) => {
@@ -1512,27 +1299,13 @@ function DesktopSessions({
       {configurationOpen && selected && canConfigure && (
         <SessionConfigurationDialog
           session={selected}
-          permissionScope="session"
           revision={events.filter((event) => ((event.type === "session.configuration" || event.type === "session.compacted") && event.sessionId === selected.sessionId) || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === selected.sessionId))).at(-1)?.seq ?? 0}
           onLoad={loadConfiguration}
           onSave={saveConfiguration}
-          {...(selectedRuntime !== "claude-desktop" ? { onConfigurePermission: savePermissionPolicy } : {})}
           onClose={() => setConfigurationOpen(false)}
         />
       )}
-      {relayOpen && selected && runtimeHandoffAvailable && (
-        <RuntimeHandoffDialog
-          session={selected}
-          runtimes={snapshot.runtimes ?? []}
-          onPreview={previewRuntimeHandoff}
-          onCommit={commitRuntimeHandoff}
-          onConfirm={confirmRuntimeHandoff}
-          onCancel={cancelRuntimeHandoff}
-          onGet={getRuntimeHandoff}
-          onOpenSession={(sessionId) => setSelectedId(sessionId)}
-          onClose={() => setRelayOpen(false)}
-        />
-      )}
+
       <ConfirmationDialog
         open={deleteSessionOpen && Boolean(selected)}
         title="删除会话"
@@ -1624,139 +1397,12 @@ function DesktopDevices({
   );
 }
 
-function DesktopStatus({
-  snapshot: rawSnapshot,
-  agentVisibility,
-  onSetRelayUrl,
-  onLaunchChange,
-  onDesktopAppAction,
-  onExport,
-}: {
-  snapshot: DesktopControlSnapshot;
-  agentVisibility: AgentVisibilityControl;
-  onSetRelayUrl(url: string): Promise<void>;
-  onLaunchChange(enabled: boolean): Promise<void>;
-  onDesktopAppAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<void>;
-  onExport(): Promise<void>;
-}) {
-  const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
-  const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
-  const snapshot = visibleAgentSnapshot(rawSnapshot, agentVisibility.enabled);
-  const nativeRelay = isClaudeNativeRelay(snapshot);
-  const desktopApps: BridgeDesktopAppStatus[] = snapshot.desktopApps ?? [{
-    id: "claude-desktop",
-    name: "Claude Desktop",
-    ...snapshot.claudeDesktop,
-  }];
-  async function runDesktopAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<void> {
-    setDesktopAction({ runtimeId, action });
-    setDesktopActionError(undefined);
-    try {
-      await onDesktopAppAction(runtimeId, action);
-    } catch (error) {
-      setDesktopActionError({
-        runtimeId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setDesktopAction(undefined);
-    }
-  }
-  return (
-    <section className="desktop-page">
-      <header className="desktop-page-heading">
-        <div><span>运行诊断</span><h1>状态</h1></div>
-        <button type="button" className="secondary-button" onClick={() => void onExport()}><Download size={17} />导出诊断</button>
-      </header>
-      <div className="status-grid-v2">
-        <section className={`managed-status-card ${nativeRelay ? "ready" : "disconnected"}`}>
-          <span>Claude Desktop 中转</span>
-          <strong>{nativeRelay ? "原生中转已就绪" : "请更新电脑端 Bridge"}</strong>
-          <p>Claude 的执行与授权由 Desktop 管理。</p>
-        </section>
-        <section>
-          <span>Claude 通道</span>
-          <strong>{snapshot.runtime.state === "ready" ? "已就绪" : snapshot.runtime.state === "working" ? "运行中" : "需要处理"}</strong>
-          <p>{snapshot.runtime.detail}</p>
-          {snapshot.runtime.version && <small>Claude {snapshot.runtime.version}</small>}
-        </section>
-        <section>
-          <span>连接路径</span>
-          <strong>{connectionLabel(snapshot)}</strong>
-          <p>
-            {snapshot.transport?.rttMs !== undefined
-              ? `${Math.round(snapshot.transport.rttMs)} ms 延迟`
-              : "正在测量延迟"}
-            {" · "}{snapshot.transport?.pendingCount ?? 0} 条待发送
-          </p>
-          <small>
-            {snapshot.transport?.relayHealthy ? "Relay 状态正常" : "Relay 健康检查未响应"}
-            {" · "}端到端加密
-          </small>
-        </section>
-        <section>
-          <span>活动会话</span>
-          <strong>{snapshot.runtime.activeTurns} / {snapshot.runtime.maxParallelTurns}</strong>
-          <p>{snapshot.sessions.filter((session) => session.pendingCount > 0).reduce((sum, session) => sum + session.pendingCount, 0)} 条指令排队</p>
-          <small>每台主机最多并行两个 turn</small>
-        </section>
-        <section>
-          <span>待处理</span>
-          <strong>{snapshot.permissions.length}</strong>
-          <p>{snapshot.permissions.length ? "Claude 正在等待审批或回答" : "没有待处理事项"}</p>
-          <small>首次有效答复生效</small>
-        </section>
-      </div>
-      <section className="status-settings">
-        <RelaySettings relayUrl={snapshot.host.relayUrl} onSave={onSetRelayUrl} />
-        {desktopApps.map((desktopApp) => (
-          <div className="desktop-app-control" key={desktopApp.id}>
-            <span>
-              <strong>{desktopApp.name}</strong>
-              <small className={desktopActionError?.runtimeId === desktopApp.id ? "desktop-app-error" : undefined}>
-                {desktopActionError?.runtimeId === desktopApp.id ? desktopActionError.message : desktopApp.detail}
-              </small>
-            </span>
-            <div className="desktop-app-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={Boolean(desktopAction) || !desktopApp.canLaunch}
-                onClick={() => void runDesktopAction(desktopApp.id, "launch")}
-              >
-                <Play size={15} />
-                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "launch" ? "启动中" : "启动"}
-              </button>
-              <button
-                type="button"
-                className="danger-button"
-                disabled={Boolean(desktopAction) || !desktopApp.canQuit}
-                onClick={() => void runDesktopAction(desktopApp.id, "quit")}
-              >
-                <Power size={15} />
-                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "quit" ? "退出中" : "退出"}
-              </button>
-            </div>
-          </div>
-        ))}
-        <label className="toggle-row">
-          <span><strong>开机自动运行</strong><small>登录系统后 Bridge 自动待机</small></span>
-          <input type="checkbox" checked={snapshot.launchAtLogin} onChange={(event) => void onLaunchChange(event.target.checked)} />
-          <i aria-hidden="true" />
-        </label>
-        <div><span>Bridge 版本</span><strong>{snapshot.host.version}</strong></div>
-        <div><span>事件游标</span><strong>{snapshot.latestSeq}</strong></div>
-      </section>
-    </section>
-  );
-}
-
-export function DesktopDashboard({ themeControl, agentVisibility }: { themeControl: ThemeControl; agentVisibility: AgentVisibilityControl }) {
+export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl }) {
   const api = window.bridgeDesktop;
   const [snapshot, setSnapshot] = useState<DesktopControlSnapshot>();
   const [events, setEvents] = useState<BridgeEvent[]>([]);
   const [tab, setTab] = useState<DesktopTab>("sessions");
-  const visibleSnapshot = useMemo(() => snapshot ? visibleAgentSnapshot(snapshot, agentVisibility.enabled) : undefined, [snapshot, agentVisibility.enabled]);
+  const visibleSnapshot = useMemo(() => snapshot ? claudeSnapshot(snapshot) : undefined, [snapshot]);
 
   useEffect(() => {
     if (!api) return;
@@ -1784,6 +1430,7 @@ export function DesktopDashboard({ themeControl, agentVisibility }: { themeContr
   }
 
   return (
+    <MediaPreviewProvider request={(method, params) => request({ method, params })} supportsFileStat={snapshot.host.capabilities.includes("artifact.transfer.stat.v1")}>
     <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={snapshot.runtime.detection?.refreshedAt ?? 0}>
     <main className="desktop-shell-v2">
       <aside className="desktop-nav-v2">
@@ -1823,21 +1470,12 @@ export function DesktopDashboard({ themeControl, agentVisibility }: { themeContr
           />
         )}
         {tab === "settings" && (
-          <DesktopSettings snapshot={snapshot} api={api} onSnapshot={setSnapshot} themeControl={themeControl} agentVisibility={agentVisibility} connections={<DesktopStatus
-            snapshot={snapshot}
-            agentVisibility={agentVisibility}
-            onSetRelayUrl={async (url) => setSnapshot(await api.setRelayUrl(url))}
-            onLaunchChange={async (enabled) => setSnapshot(await api.setLaunchAtLogin(enabled))}
-            onDesktopAppAction={async (runtimeId, action) => setSnapshot(
-              action === "launch"
-                ? await api.launchDesktopApp(runtimeId)
-                : await api.quitDesktopApp(runtimeId),
-            )}
-            onExport={async () => { await api.exportDiagnostics(); }}
-          />} />
+          <DesktopSettings snapshot={snapshot} api={api} onSnapshot={setSnapshot} themeControl={themeControl} />
         )}
       </section>
+      <DiagnosticFloatingEntry desktopSnapshot={snapshot} />
     </main>
     </MagpieQuotaProvider>
+    </MediaPreviewProvider>
   );
 }

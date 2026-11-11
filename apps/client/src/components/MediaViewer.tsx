@@ -185,7 +185,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
             <TextPreview text={text} name={target.name} source={showSource} />
           </div>) : target.kind === "pdf" ? <canvas ref={canvasRef} aria-label={`${target.name} 第 ${pageNumber} 页`} style={{ visibility: busy || error ? "hidden" : "visible" }} /> : imageUrl && <img src={imageUrl} alt={target.name} style={{ width: zoom === 1 ? "auto" : `${zoom * 100}%`, maxWidth: zoom === 1 ? "100%" : "none", maxHeight: zoom === 1 ? "100%" : "none" }} onError={() => { setError("图片无法显示，请重新加载"); setBusy(false); }} />}
         </div>
-        <footer>{target.kind === "text" ? (text === "" && !busy && !error ? "空文件 · UTF-8" : "全文预览 · UTF-8 · 最大 1 MiB") : target.kind === "pdf" ? "按需读取页面内容" : "滚动查看图片 · 使用上方按钮缩放"}</footer>
+        <footer>{target.kind === "text" ? (text === "" && !busy && !error ? "空文件 · UTF-8" : "全文预览 · UTF-8") : target.kind === "pdf" ? "按需读取页面内容" : "滚动查看图片 · 使用上方按钮缩放"}</footer>
       </div>
     </dialog>
   );

@@ -6,154 +6,160 @@
 
 **Continue your computer's Claude work from an Android phone.**
 
-Bridge brings desktop sessions, task progress, approvals, questions and workspace files to your phone. Continue an existing conversation, queue the next instruction, create a fork, inspect subagents and results, or answer an approval while away from your computer.
+Bridge brings local Claude Desktop Code sessions to your phone: continue a conversation, queue the next instruction, answer approvals and questions, follow subagents, and view workspace files. Tasks still run on your computer.
 
-This independently maintained fork focuses on **macOS + Android + Claude**. **Version 1.3.1 improves native permission synchronization and connectivity**, with negotiated encrypted-body compression, Git project grouping, collapsible native/fork notices and Android system-bar theming. On macOS, it can attempt the native debugger menu once per newly discovered Desktop process, with user-granted Accessibility and Automation permission. Desktop's `LocalSessions` API still owns sessions, execution, queues and permissions. See the [Changelog](CHANGELOG.md) for details and this repository's [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) for installers. Upstream Codex, Hermes and DSH adapters remain available; enable them in settings.
+This independently maintained fork primarily targets **macOS + Android + Claude Desktop, including Claude-3p**. It depends on Desktop's local `LocalSessions` interface. Available operations depend on the installed Desktop version and account/workspace policies; ordinary web chat history is outside this integration.
 
-## Get started
+## Versions and downloads
 
-1. Download desktop and Android packages from this fork's Releases, preferably from the same version. Upstream installers do not include all changes in this fork.
-2. Start Claude Desktop, then Bridge. On macOS, Bridge uses the native **Enable Main Process Debugger** menu once per Desktop process start to open `127.0.0.1:9229`. Enable Desktop developer mode and grant Bridge Accessibility and System Events Automation permission when macOS requests it. Native account/workspace policies still apply; the native callback may open Chrome. An already-open port is skipped. Manual closure and failed attempts are respected across Bridge service restarts; details appear in Settings → Diagnostics and About. Bridge does not patch or restart Desktop.
-3. Install the Android APK and add the computer using its one-time QR code or pairing link.
-4. Open the session directory on your phone. Select an existing session or use “+” to create one.
-5. Send text, images or files, follow execution progress, and respond to approvals and questions.
+**The current public release is [v1.3.1](https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.1). The setup steps below describe that release.** Download desktop and mobile packages from this fork, preferably from the same version.
 
-For access across networks, configure the same reachable relay on both devices. Change it in desktop Status or mobile Computers → connection and computer settings. This is a WebSocket relay address supporting `ws://`, `wss://`, ports and paths.
+| Platform | v1.3.1 download | Installation and validation |
+| --- | --- | --- |
+| macOS | [Desktop ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-macos-adhoc.zip) | Extract and use the enclosed installer. Ad-hoc signed, without Apple notarization; the main desktop validation platform |
+| Android 8.0+ | [APK](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-android-debug.apk) | Uses the repository's fixed debug signing key; allow installation from the app used to download it |
+| Windows | [Installer ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-windows-installer-ci.zip) | CI build; see the included `windows-release-evidence.json` for signing status. Native connectivity has not completed live-device validation |
+| Linux | [Installer ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-linux-installers-ci.zip) | CI build; this alone does not establish a usable native Claude Desktop environment |
+| iOS | [Simulator](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-ios-simulator.zip) / [unsigned device app](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-ios-device-unsigned.zip) | Development artifacts; the device app needs signing and is not a directly installable IPA |
 
-Saved relay settings override packaged defaults. Upgrades preserve pairing identities and explicit settings. Keep the computer running and connected; moving the phone app into the background does not stop desktop tasks.
+The release also includes `SHA256SUMS.txt` and `SOURCE_COMMIT.txt`. Successful builds do not establish live-device validation on every platform. Android system back navigation has been tested in an Android 16 emulator.
 
-## Sessions and tasks
+The source is preparing a **1.3.2 candidate**: focusing on Claude Desktop only, fixing task completion notifications, confirming size before previews larger than 1 MiB, keeping connection status visible beside long computer names, showing actual subagent response models, displaying live session context usage, remembering font size, creating and moving native Sections from mobile (plus optional folder creation inside the Browse Computer picker), and fixing the disabled Mac configuration button while reorganizing desktop and mobile Settings by task. These changes are not in the 1.3.1 packages; file-size checks, Section moves and directory creation also require a desktop update. Version 1.3.1 still contains independent Codex / Hermes / DSH adapters, which are outside this recommended setup path. Gemini, Antigravity and Magpie models and quota features inside Claude Desktop belong to the Desktop integration, rather than those independent agents.
 
-### Continue existing work
+Until 1.3.2 is tagged, the steps below retain the controls of the published 1.3.1 packages (the candidate reorganizes desktop Settings under **Claude Integration / Connection and Startup**) alongside the manual setup fallback. See the [Changelog](CHANGELOG.md) for details. Technical documents track the source and may describe candidate changes.
 
-- Browse native Desktop sessions and history, with Markdown, tool calls, task plans, subagent progress and complete reports.
-- Submit Claude input through Desktop's `LocalSessions` API and track acceptance and completion by native message UUID. Uncertain delivery retains its state instead of automatically resending or starting a second executor.
-- Distinguish the main turn, pending approvals, background Agent / Bash work and process liveness. Background tasks and forked child processes no longer incorrectly keep a parent session marked busy.
-- Queue another instruction while a turn is running, or adjust the current task where the execution source supports it. Preserve queue entries, attachments and message receipts across reconnects.
-- Synchronize approvals and `AskUserQuestion` between phone and computer, dismissing requests once handled. Stopping work and deleting sessions retain confirmation steps.
+## What you need
 
-Bridge's background service forwards connections and events; Claude Desktop owns Claude execution and queues. Reopening the desktop window reconnects to the service. **Closing the window and stopping the background service are separate actions.**
-
-### Organize and create sessions
-
-- Browse projects, search and archive sessions. Expand forks by their immediate parent/child relationships, including deeper forks. Active descendants remain accessible after a parent is archived.
-- Create Claude forks through Desktop's native API; Desktop determines the history boundary. Forks share the working directory and do not roll back files.
-- Rename from the session list or conversation actions. Claude title changes are submitted to Desktop's native API.
-- Choose a recent working folder or browse the computer through one session-creation entry point. Enter a subdirectory before confirming it; choose the project group separately from the actual working directory.
-- Preserve unsent drafts when returning to the directory and reopening a session. The session-creation form retains entered values while browsing folders, canceling folder selection, or returning from the folder picker.
-
-### Models, context and large histories
-
-- Read or set Claude models, effort and context usage through Desktop's native API, according to the capabilities exposed by the installed Desktop.
-- Fold long replies with access to the full text, preserving history across compaction and complete subagent reports.
-- Load directories, history and evidence on demand. Page older content, defer media loading and coalesce frequent progress updates to reduce repeated work on large transcripts, responses and reconnects.
-
-Context capacity, immediate steering and model-setting behavior depend on the native runtime. Claude permissions and question answers use Desktop's native channel. Bridge does not install permission Hooks or make approval decisions on Desktop's behalf; historical questions cannot be submitted as live approvals.
-
-### Queued input and rewind
-
-Use **Send now** or withdraw an eligible submitted, received or queued message through its original native command. Desktop decides whether the operation is still valid. Rewind previews conversation and file eligibility separately: conversation rewind stops active work and removes the selected message and later conversation, while file restoration remains subject to Desktop's checkpoints and busy state. Original text returns to the composer; attachments must be added again.
-
-Scrolling up pauses automatic following during output. Returning to the bottom resumes it. Older history loads near the top while preserving the reading position. Native tool names and inputs remain visible across completion-only updates and history replay.
-
-Claude now uses native Desktop session IDs and history directly, without importing legacy data or replaying retired Bridge execution requests. Pairing identities and existing data are preserved.
-
-## Mobile navigation
-
-The three main pages are **Sessions, Computers and Settings**, selected through the top-left header menu. Opening a computer or choosing Sessions opens the directory; a conversation opens when you select a session.
-
-| Action | Location |
+| Location | Role and prerequisites |
 | --- | --- |
-| Create a session and choose a working folder | “+” in the session directory |
-| Rename, configure a model, fork or archive | “⋯” on a session row or conversation header |
-| View evidence and file changes | Evidence entry in conversation “⋯” |
-| Switch computers, edit connections and manage pairing | Computers and each computer's “⋯” |
-| Appearance, Agent visibility, Magpie quota and diagnostics | Settings |
+| Computer | Install and sign in to Claude Desktop or Claude-3p, and confirm a local Code session works on the computer. Install Bridge and keep the computer awake, online and running Desktop |
+| Phone | Install Android Bridge to control a paired computer; no model API key is needed on the phone |
+| Relay | Both devices must reach the same WebSocket relay for pairing, connectivity and fallback when direct connections fail. Use an existing trusted relay or [host your own](docs/RELAY-REDEPLOY.md) |
 
-Android system back follows the current page hierarchy:
+The packaged apps do not need a separate Node.js, npm or Android SDK installation. A server only needs the relay, without a public WebUI. Tasks continue when the phone leaves the foreground; computer sleep, network loss or quitting Desktop affects connectivity and work.
 
-- The system dismisses an open keyboard first; menus, dialogs and sheets close before their underlying page.
-- Evidence returns to the conversation, which returns to its directory or project list. Project and archive lists return to the session directory.
-- Computer details return to the computer list; Computers and Settings return to the session directory.
-- Back from the root session directory moves the app into the background. Reopen it to continue.
+## First connection
 
-Back navigation and page changes neither send drafts nor stop desktop tasks. See the [mobile navigation guide](docs/MOBILE-NAVIGATION.md) for the full layout and interaction rules.
+The app's current controls use Chinese labels, included below to help you find them.
 
-## Previews and file transfer
+### 1. Install and open the desktop app
 
-| Type | Support |
+Download Bridge above, extract it and use the enclosed installer. On macOS, place Bridge in Applications and open it. If macOS blocks the unnotarized app, verify its source and use the system's Open Anyway option where available.
+
+Launch Claude Desktop / Claude-3p at least once and finish signing in, then open Bridge. Its **Status (状态)** page separates the **Claude channel (Claude 通道)** from the **connection path (连接路径)**: the first connects to Desktop, while the second connects to the phone and relay. Check both.
+
+### 2. Enable Desktop's local connection on macOS
+
+This requires two settings: allowing Desktop developer tools, then enabling its main-process debugger.
+
+1. In Bridge, open **Settings → Diagnostics and About → Claude Desktop developer tools (设置 → 诊断与关于 → Claude Desktop 开发者工具)**. If both `Claude` and `Claude-3p` are detected, select the profile you actually use.
+2. Check whether `allowDevTools` is `true` in `developer_settings.json`. **Enable (一键开启)** only writes this field; **it does not open the inspector or guarantee a macOS permission prompt**. If the button is disabled or the check fails, use the manual instructions below.
+3. Desktop loads the changed configuration on its next launch. Wait for active tasks to finish, then quit and reopen Claude Desktop / Claude-3p. Bridge does not restart it for you.
+4. In Desktop's native menu, choose **Developer → Enable Main Process Debugger**. The default local address is `127.0.0.1:9229`. Account/workspace policies may restrict the menu, and the native action may open a Chrome debugger page.
+5. In Bridge's Status page, check that the Claude channel is **Ready (已就绪)** or **Running (运行中)**, and inspect errors under **Diagnostics and About → Debug connection monitoring (调试连接监测)**. An open port alone does not establish a working `LocalSessions` connection.
+
+<details>
+<summary>Manually configure developer_settings.json if the button is unavailable</summary>
+
+Use the file belonging to the application you run:
+
+- Claude: `~/Library/Application Support/Claude/developer_settings.json`
+- Claude-3p: `~/Library/Application Support/Claude-3p/developer_settings.json`
+
+Launch that application once so its configuration directory exists. After tasks finish, quit Desktop, back up the existing file, and use a text editor to set `allowDevTools` to `true` in its JSON object, preserving other fields. If the file does not exist, create it in the existing configuration directory:
+
+```json
+{
+  "allowDevTools": true
+}
+```
+
+Check that the JSON is valid, reopen Desktop, then enable the main-process debugger from its native menu. Do not overwrite `claude_desktop_config.json` with this content; that is a different configuration file. Resolve any file permission or JSON errors first. Rechecking the button does not repair the file.
+
+</details>
+
+**Automatic attempt in 1.3.1:** on macOS, the background service attempts the same native menu once per newly discovered Desktop process. Grant Bridge access under **System Settings → Privacy & Security → Accessibility**, and allow Bridge to control System Events under **Automation**, if that entry appears. These permissions concern menu automation and are separate from JSON file access. An already-open port is skipped. After an actual action fails, or you close the debugger manually, Bridge does not repeat the attempt within that Desktop process, even if Bridge restarts. You can still use Desktop's native menu directly. First-time permission prompts and a full restart cycle have not completed installed-app end-to-end validation.
+
+**Keep port 9229 local.** This debugger can evaluate code in the process. It is not the phone's connection address and must not be forwarded to the internet or exposed through the relay. Connection monitoring provides alerts; it does not block other local processes.
+
+### 3. Check the relay address
+
+In desktop Bridge, check **Status → Relay address (状态 → 中继地址)**. To use your own relay or change servers, enter the full WebSocket address, such as `wss://relay.example.com/ws`, then save and reconnect. Use plaintext `ws://` only on a trusted local network.
+
+Initial pairing passes the computer's connection information to the phone. To change the address for an existing pairing, also update **Computers → computer row “⋯” → Connection and computer settings → Relay address (电脑 → 连接与电脑设置 → 中继地址)** on the phone to the same address.
+
+**Explicitly saved relay addresses override packaged defaults.** An upgrade does not overwrite manual settings or recreate pairing identities. For a LAN relay, the phone must reach the computer or server's LAN address; `127.0.0.1` cannot address another device. Access across networks needs a relay reachable from both ends. If WebRTC direct connectivity is unavailable, Bridge falls back to the encrypted relay.
+
+### 4. Pair your phone and open a session
+
+1. In desktop Bridge, open **Devices → Add phone (设备 → 添加手机)** to generate a one-time QR code.
+2. On first launch, choose **Scan QR code (扫描二维码)** on the phone, allow camera access and scan it. Alternatively, paste the pairing link copied on the computer. To add another computer later, use “+” on the phone's Computers page.
+3. The QR code is valid for ten minutes and binds to the first phone installation that uses it. Generate another code after expiry or for another phone. Pairing links contain device authorization information; do not share them publicly.
+4. After pairing, select an existing desktop Code session in the session directory. Confirm that its history loads before sending an instruction.
+5. To start new work, use “+” in the session directory, enter a title and choose a working folder on the computer. Browse into the folder before confirming it; project grouping and the actual working directory are separate choices.
+
+The top-left menu switches between **Sessions (会话), Computers (电脑) and Settings (设置)**. Computers manages connections and pairings, Sessions is for work, and Settings contains appearance, quota and diagnostics.
+
+## Everyday use
+
+| Task | Operation and limits |
 | --- | --- |
-| Images | Preview in conversations and evidence, with scaled mobile previews |
-| PDF | View inside the client through encrypted chunked transfers |
-| Text and code | Complete UTF-8 files up to **1 MiB**; rendered/source Markdown and syntax highlighting for common languages |
-| Downloads | Evidence and workspace paths from conversations, up to **20 MiB** per file, with workspace and sensitive-path checks |
-| Uploads | Images and ordinary files, up to **20 MiB** per file, with progress, encrypted **256 KiB** chunks and SHA-256 verification |
+| Continue a conversation | Send text, images or files in a native session. Desktop executes the work; Bridge synchronizes progress, tool calls, plans and subagent reports |
+| Prepare the next instruction | Queue input during a task, or steer it immediately when Desktop supports that operation. Use **Send now** or withdraw eligible native messages before processing starts; Desktop decides whether an action is still valid |
+| Answer questions and approvals | Respond through the session's live question or approval controls. Single choice, multiple selection, text and approval options depend on the request. Resolved requests are dismissed across devices; historical cards cannot be resubmitted as live approvals |
+| Change model or effort | Session row or conversation header “⋯” → Session settings (会话设置). Models, context capacity and how changes take effect come from Desktop |
+| Rewind a conversation or files | Choose Rewind (回退) beside a sent message, preview and select the scope. Conversation rewind stops active work, removes the selected message and later conversation, and returns the text to the composer; add attachments again. Conversation-only rewind keeps current files. File restoration depends on Desktop checkpoints and busy state, and overwrites the files listed in the preview |
+| Create a branch | Session “⋯” → Fork. Desktop decides the history boundary. **Branches share the working directory; a fork does not copy or roll back project files** |
+| View files and results | Open Evidence (成果) from conversation “⋯”, or a workspace path in a message. Preview and download limits are listed below |
+| Organize sessions | Search, browse projects, expand forks, rename or archive. Git project grouping recognizes worktrees. Deletion applies to the native Desktop session and records; read the confirmation |
+| Read earlier content | Scrolling up pauses following; returning to the bottom resumes it. Returning to the directory preserves unsent drafts. Navigation neither sends drafts nor stops tasks |
 
-Oversized, binary and invalid UTF-8 text produces an explicit error instead of a truncated preview. Uploads are stored under `.bridge-uploads/<uploadId>/<filename>` in the session's working directory, and sending appends relative paths. Files can be sent without additional text. Removing an attachment from the composer does not delete the saved file on the computer.
+Desktop owns Claude tasks, queues and approvals. Bridge does not start another Claude SDK / CLI executor. Uncertain delivery is not automatically resent. Check session history and status before deciding what to do next, to avoid duplicate instructions.
 
-## Magpie connection and quota
+Closing the Bridge window leaves background connectivity running, so the phone can still connect. Stopping the Bridge service disconnects the phone; Desktop still controls native Claude task lifecycles. After a desktop upgrade, wait for tasks to finish, choose **Stop background service and quit… (停止后台服务并退出…)** from the tray, then reopen Bridge to update the background code too. See [Background service](docs/BACKGROUND-SERVICE.md).
 
-The Magpie quota plugin remains available. Claude accounts, models and execution configuration are managed by Desktop; retired Host executor settings and standalone API-key lanes no longer execute Claude requests. Existing configuration is preserved, and credentials are not sent to the phone or relay.
+## Files and quota
 
-With a compatible Magpie Gateway, open Settings → Magpie quota to view accounts, plans, quota windows, balances and reset times. Session model settings also show the corresponding quota information.
-
-- Read on demand and share readings between the dashboard and model settings, without background polling.
-- Explicit refresh requests new readings for visible local accounts on the current Gateway. Remote-source readings retain their samples and status; local credentials are not forwarded to other sources.
-- Distinguish Bridge fetch time from upstream sample time. Show cooldowns, retained readings and failures; a successful HTTP response does not guarantee a new sample.
-- Do not replay active refresh after disconnecting or leaving the page. Refreshing quota does not change accounts, models or routing.
-
-See the [plugin documentation](plugins/magpie-quota/README.md).
-
-## Connections and data boundaries
-
-```mermaid
-flowchart LR
-  Phone[Android client] <-->|WebRTC| Host[Local Bridge]
-  Phone <-->|WS / WSS| Relay[Self-hosted relay]
-  Host <-->|WS / WSS| Relay
-  Host --> Runtime[Claude Desktop / local runtime]
-```
-
-Phone-to-Bridge payloads use per-device AES-256-GCM end-to-end encryption. The relay can see connection, routing, ciphertext and queue metadata. WebRTC direct connections and relay fallback depend on network reachability and ICE configuration.
-
-This fork's everyday deployment uses **a local desktop host and Android client, with only the relay on the server**. A public WebUI is not required. Web/PWA support remains available for development. Model credentials stay on the computer, runtime accounts and sessions remain isolated, and cross-runtime handoff requires explicit confirmation.
-
-| Document | Contents |
+| Type | Support in 1.3.1 |
 | --- | --- |
-| [Architecture](docs/ARCHITECTURE.md) | Host, protocol, runtimes and data flow |
-| [Security](docs/SECURITY.md) | Encryption, pairing, permissions and file boundaries |
-| [Relay deployment](docs/RELAY-REDEPLOY.md) | Self-hosting and migration |
-| [Background service](docs/BACKGROUND-SERVICE.md) | Desktop windows, background processes and state recovery |
+| Images | Previews in conversations and evidence, including scaled images |
+| PDF | Embedded viewer using encrypted chunked transfers |
+| Text / code | Complete, valid UTF-8 files up to **1 MiB**. Rendered/source Markdown and highlighting for common languages; download oversized or binary files instead |
+| Upload / download | Up to **20 MiB** per file, transferred in encrypted **256 KiB** chunks; complete-file hash verification before saving or sharing downloads |
 
-## Self-host a relay
+Remote reads are subject to workspace and sensitive-path checks. Pairing does not grant access to files outside the workspace, `.env` files or private keys. Uploads are stored in `.bridge-uploads/<uploadId>/<filename>` under the session's working directory, and sending includes relative paths. Files can be sent without text. Removing an attachment from the composer does not delete the uploaded copy on the computer.
 
-Use Docker Engine and Docker Compose to build the relay from this fork's `main` source. The standalone [relay-only Compose](deploy/relay-only.compose.yml) and [automatic TLS configuration](deploy/relay-only.Caddyfile) run only Relay and Caddy. Public TCP ports are 80 and 443; Relay port 8788 stays inside the Docker network. The HTTPS root and `/metrics` return 404.
+With a compatible Magpie Gateway, open **Settings → Magpie quota (设置 → Magpie 额度)** on the phone to view accounts, plans, balances, quota windows and reset times. Model settings also show relevant readings. Explicit refresh requests new samples from the gateway; retained samples, cooldowns and failures are identified separately. Refresh does not switch accounts or models. Claude accounts and model execution settings remain managed by Desktop. See the [Magpie plugin guide](plugins/magpie-quota/README.md) for connection settings and requirements.
 
-From the root of your cloned repository, create the configuration:
+## Troubleshooting
 
-```bash
-cp deploy/relay-only.env.example .env
-```
+| Symptom | Check first |
+| --- | --- |
+| Enable (一键开启) stays disabled on Mac | Has the matching Desktop app launched once? Is the right `Claude` / `Claude-3p` profile selected? Is it already enabled, or is there a read/JSON error? Use manual setup above. A disabled button does not mean the app is waiting for system approval |
+| No Developer menu, or debugger cannot be enabled | Quit and reopen Desktop after changing `allowDevTools`; check account/workspace policies. Use the native menu after a failed automatic attempt. Bridge does not bypass native restrictions |
+| Port is open, but sessions or actions are unavailable | Read the Claude channel error on Status. Check that Desktop is running, the Code session exists, and that Desktop build exposes the required `LocalSessions` methods. Ordinary web chats are not imported |
+| Pairing fails or QR code expires | Generate a fresh code and confirm desktop Bridge is connected to a reachable relay. Paste the link if scanning is unavailable |
+| Phone shows the computer offline | Check computer sleep, network access, the Bridge background service, matching saved relay addresses, TLS and the `/ws` path |
+| Updated window still shows old capabilities | The old background service may still be running. Wait for tasks to finish, stop it and reopen Bridge. Prefer matching versions on both devices |
+| Message remains queued or delivery is unconfirmed | Check Desktop's active task, pending approvals, native queue and history before resending after a network timeout |
+| File preview fails | Check that the file is still readable in the workspace, is not a sensitive path, and fits the 1 MiB text-preview or 20 MiB transfer limit |
+| No immediate notification while locked | Check system notification permission. Online local notifications are separate from background push. FCM / APNs require application and service credentials; the minimal relay setup does not guarantee immediate lock-screen wakeups |
 
-Set `BRIDGE_DOMAIN` in `.env` to your own domain, point DNS at the server and make ports 80 / 443 reachable. Then build and start:
+For further investigation, export diagnostics from desktop Status or **Settings → Diagnostics and About**. On mobile, open **Settings → Connection diagnostics and logs (设置 → 连接诊断与日志)**. Include versions, platform, steps and the exact error when reporting a problem; leave out pairing links, keys and conversation content. Report reproducible issues in [this fork's issue tracker](https://github.com/Lycidas97/claude-desktop-bridge/issues).
 
-```bash
-docker compose --env-file .env -f deploy/relay-only.compose.yml up -d --build
-```
+## Deployment, internals and development
 
-Set both clients to `wss://your-domain/ws`. Database data, backups and TLS certificates use persistent volumes. See the [self-hosting guide](docs/RELAY-REDEPLOY.md) for initial setup, WSS probes, client settings, backups and upgrades. If you already have a reverse proxy or relay deployment, check existing ports and data volumes before migrating.
+Phone-to-computer payloads use per-device AES-256-GCM end-to-end encryption. The relay forwards ciphertext and can see connection, routing, size and queue metadata; account credentials are not sent to the phone or relay. WebRTC and relay connections use the same pairing identity, without exposing the computer's inspector to the phone.
 
-## Development and validation
+| Document | When to read it |
+| --- | --- |
+| [Self-host a relay](docs/RELAY-REDEPLOY.md) · [Deployment configuration](deploy/README.md) | Set up WSS, migrate, back up or upgrade. Includes a minimal Relay + Caddy setup |
+| [Security model](docs/SECURITY.md) | Understand pairing, debugger access, file access and data boundaries |
+| [Architecture](docs/ARCHITECTURE.md) · [Native integration validation](docs/HOSTING-REFACTOR.md) | Inspect `LocalSessions`, data flow and actual validation coverage; historical implementations are marked separately |
+| [Background service](docs/BACKGROUND-SERVICE.md) | Distinguish windows from the service and investigate startup, disconnections or upgrades |
+| [Contributing](CONTRIBUTING.md) · [Testing](docs/testing.md) | Develop, build and validate from source |
 
-Development and CI use **Node.js 26 LTS** and npm, selected by [.nvmrc](.nvmrc). With nvm installed, run `nvm install` and `nvm use` first. The minimum compatible version remains Node.js 22.13. Electron uses its bundled Node.js runtime. Android builds also need JDK 21 and the Android SDK. Desktop and iOS builds need the corresponding platform toolchains.
-
-```bash
-git clone https://github.com/Lycidas97/claude-desktop-bridge.git
-```
-
-```bash
-cd claude-desktop-bridge
-```
+Development and CI use **Node.js 26 LTS**, selected by [.nvmrc](.nvmrc), and npm. Clone this fork, then run these commands in the repository root:
 
 ```bash
 npm ci
@@ -167,33 +173,6 @@ npm run build -w @bridge/protocol
 npm run dev:desktop
 ```
 
-Development mode starts a local relay (`ws://127.0.0.1:8788/ws`), React client (`http://localhost:5188`) and Electron host. See [.env.example](.env.example) for packaged connection defaults; installed-app settings take priority.
-
-| Command | Purpose |
-| --- | --- |
-| `npm run verify` | All typechecks, five regression suites and the full build |
-| `npm test` | Desktop, client, protocol, relay and Magpie plugin regressions |
-| `npm run test:infra` | Runner behavior, failure propagation and recycle-bin contracts |
-| `npm run test:browser` | Eight scenarios in both themes using the actual App, crypto and a local relay |
-| `npm run ci:run -- run build:android:debug` | Build an Android APK and check native plugin registration and every DEX |
-| `npm run ci:run -- run make:adhoc -w @bridge/desktop` | Build a macOS ad-hoc test installer |
-
-Validation entry points send Node temporary files to the system recycle bin; Linux requires `trash-cli`. Browser fixtures simulate desktop responses and model output without accessing production sessions. See [Testing](docs/testing.md) for browser setup, reports and coverage boundaries.
-
-Validation primarily targets macOS and Android. Android system back has been exercised on an Android 16 emulator. Windows, Linux and iOS retain build and CI entry points, but a successful build does not establish physical-device acceptance on each platform. macOS ad-hoc packages are not Apple-notarized; unsigned iOS builds are not directly installable IPAs.
-
-A synchronized version update on `main` creates a Release draft automatically. Publication waits for every platform asset job to succeed. See the [release rules](CONTRIBUTING.md#release-rules) and [Changelog](CHANGELOG.md).
-
-## Repository layout and attribution
-
-| Directory | Contents |
-| --- | --- |
-| `apps/client` | Shared mobile and desktop React UI |
-| `apps/desktop` | Electron host, background service, sessions and file transfer |
-| `apps/mobile` | Android / iOS Capacitor shells |
-| `apps/relay` | Ciphertext relay and push wake |
-| `packages/protocol` | Protocol, pairing, encryption and reliable transport |
-| `plugins/magpie-quota` | Quota reading, active refresh and presentation |
-| `scripts` / `deploy` / `docs` | Validation, builds, deployment and technical documentation |
+Development mode starts a local relay, React client and Electron Bridge. A phone cannot reach the computer's services through its own `127.0.0.1`. See [.env.example](.env.example) for build defaults; saved manual connection settings take priority. Android / iOS packaging also needs the corresponding platform toolchains. See Contributing for tests and release rules.
 
 Built on [czhmartinez/claude-desktop-bridge](https://github.com/czhmartinez/claude-desktop-bridge). This fork retains the **MIT** license; see [LICENSE](LICENSE).

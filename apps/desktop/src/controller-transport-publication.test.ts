@@ -417,13 +417,13 @@ describe("controller transport publication", () => {
     expect(snapshot.sessions[0]).not.toHaveProperty("subagentStopScope");
   });
 
-  it("leaves external-runtime permission publication with its owning runtime", async () => {
+  it("does not publish saved external-runtime permissions", async () => {
     const { controller, eventLog } = await fixture(false, true);
     const external: BridgePermissionInfo = { requestId: "external-owned", sessionId: "codex-desktop:external-session",
       toolUseId: "external-tool", toolName: "Bash", input: { command: "synthetic --never-executed" }, createdAt: 1, canAllowAlways: false };
     let permissions = [external];
     controller.runtimeSessions.listPermissions = () => permissions;
-    expect((await controller.publish()).permissions).toEqual([external]);
+    expect((await controller.publish()).permissions).toEqual([]);
     const before = eventLog.latestSeq();
     permissions = [];
     await controller.publish();
@@ -556,6 +556,28 @@ describe("controller transport publication", () => {
     }
   });
 
+  it.each(["turn.completed", "turn.failed"] as const)("persists %s from the event log for an offline phone", async type => {
+    const { ws, controller, paired, eventLog } = await fixture();
+    expect(controller.onlineDevices.size).toBe(0);
+    const event = await eventLog.append({ type, origin: "claude-desktop", sessionId: "synthetic-0", data: {} });
+    await vi.waitFor(() => expect(ws.sent.some(frame => frame.type === "envelope")).toBe(true));
+    const frame = ws.sent.find(frame => frame.type === "envelope")!;
+    if (frame.type !== "envelope") throw new Error("Expected completion envelope");
+    expect(frame.envelope.temporary).toBeUndefined();
+    expect((await paired.desktopCrypto.decrypt(frame.envelope)).payload).toEqual({ kind: "event", event });
+  });
+
+  it.each(["assistant.delta", "tool.progress"] as const)("keeps %s temporary", async type => {
+    const { ws, paired, eventLog } = await fixture();
+    ws.receive({ type: "presence", role: "mobile", deviceId: paired.pairing.deviceId, online: true });
+    ws.sent.length = 0;
+    await eventLog.append({ type, origin: "claude-desktop", sessionId: "synthetic-0", data: { text: "Synthetic progress" } });
+    await vi.waitFor(() => expect(ws.sent.some(frame => frame.type === "envelope")).toBe(true));
+    const frame = ws.sent.find(frame => frame.type === "envelope")!;
+    if (frame.type !== "envelope") throw new Error("Expected progress envelope");
+    expect(frame.envelope.temporary).toBe(true);
+  });
+
   it("still sends durable events to paired phones while they are offline", async () => {
     const { ws, controller, paired, published } = await fixture();
     expect(controller.onlineDevices.size).toBe(0);
@@ -592,11 +614,11 @@ describe("controller transport publication", () => {
   });
 });
 
-it("initializes other runtimes when Claude native is unavailable without applying its old full-access policy", async () => {
+it("keeps only Claude when unavailable and leaves retired saved defaults unused", async () => {
   const { controller, runtimeSessions, config } = await fixture(false, true);
   const snapshot = await controller.snapshot();
-  expect(runtimeSessions.initialize).toHaveBeenCalledOnce();
-  expect(runtimeSessions.setHostPermissionModes).toHaveBeenCalledWith(config.runtimePermissionModes);
+  expect(runtimeSessions.initialize).not.toHaveBeenCalled();
+  expect(runtimeSessions.setHostPermissionModes).not.toHaveBeenCalled();
   expect(controller.broker.setDefaultPermissionMode).not.toHaveBeenCalled();
   expect(snapshot.host.capabilities).toContain("claude.native-relay.v1");
   expect(snapshot.host.capabilities).not.toContain("conversation.lanes.v1");
@@ -604,7 +626,6 @@ it("initializes other runtimes when Claude native is unavailable without applyin
   expect(snapshot.host).not.toHaveProperty("defaultPermissionMode");
   expect(snapshot.runtimes).toEqual([
     expect.objectContaining({ id: "claude-desktop", state: "unavailable", capabilities: ["session.list", "session.history"] }),
-    expect.objectContaining({ id: "codex-desktop", state: "ready" }),
   ]);
   expect(snapshot.runtimes?.[0]).not.toHaveProperty("defaultPermissionMode");
 });

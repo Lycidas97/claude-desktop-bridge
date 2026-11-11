@@ -11,59 +11,29 @@ const I18N = {
     en: "Open source \u00B7 MIT \u00B7 End-to-end encrypted",
     zh: "开源 \u00B7 MIT \u00B7 端到端加密"
   },
-  "hero.lede": {
-    en: "One encrypted remote for Claude, Codex, Hermes, and DSH Desktop.",
-    zh: "一个加密遥控，接管 Claude、Codex、Hermes 和 DSH Desktop。"
-  },
-  "hero.text": {
-    en: "Control desktop AI agents from your phone, keep every native session, account, model, and permission separate, and hand work between desktops only when you explicitly approve it.",
-    zh: "在手机上控制桌面 AI Agent，同时保持每个原生会话、账号、模型和权限相互独立；只有你明确确认后，才把任务交给另一台桌面接手。"
-  },
+  "hero.lede": { en: "An encrypted remote for Claude Desktop.", zh: "Claude Desktop 的加密手机遥控。" },
+  "hero.text": { en: "Continue native sessions, queue instructions, review results and answer approvals from your phone. Claude Desktop manages execution and permissions.", zh: "在手机上继续原生会话、排队发送指令、查看成果并处理授权。执行和权限由 Claude Desktop 管理。" },
   "hero.download": { en: "Download", zh: "下载" },
   "hero.github": { en: "View on GitHub", zh: "查看 GitHub" },
-  "hero.alt": {
-    en: "Bridge remote control for Claude, Codex, Hermes, and DSH Desktop",
-    zh: "Bridge：Claude、Codex、Hermes 和 DSH Desktop 的加密遥控"
-  },
+  "hero.alt": { en: "Bridge remote control for Claude Desktop", zh: "Bridge：Claude Desktop 的加密遥控" },
   "features.eyebrow": { en: "What it does", zh: "它能做什么" },
-  "features.title": {
-    en: "Unified control. Separate native worlds.",
-    zh: "统一控制，各自独立。"
-  },
-  "features.subtitle": {
-    en: "Bridge is not a remote desktop and not an input automator. It is a protocol and host layer that gives one consistent interface to three desktop runtimes.",
-    zh: "Bridge 不是远程桌面，也不是输入自动化工具。它是一层协议和 Host，为三种桌面运行时提供一致的接口。"
-  },
+  "features.title": { en: "Your Claude work, on your phone.", zh: "把 Claude 工作带到手机。" },
+  "features.subtitle": { en: "Bridge forwards native Claude Desktop sessions through an encrypted connection.", zh: "Bridge 通过加密连接同步 Claude Desktop 原生会话。" },
   "features.one.title": { en: "One session surface", zh: "统一的会话界面" },
-  "features.one.text": {
-    en: "Send, stream, approve, ask, steer, and stop Claude, Codex, Hermes, and DSH sessions from desktop or mobile.",
-    zh: "在桌面或手机发送、流式输出、审批、追问、调整和停止 Claude、Codex、Hermes、DSH 会话。"
-  },
+  "features.one.text": { en: "Send, stream, approve, answer questions and stop native Claude sessions from desktop or mobile.", zh: "在桌面或手机发送、查看流式输出、审批、回答提问和停止 Claude 原生会话。" },
   "features.two.title": { en: "End-to-end encryption", zh: "端到端加密" },
   "features.two.text": {
     en: "Per-device AES-256-GCM keys, WebRTC direct connections, and an encrypted WSS relay that never sees message content.",
     zh: "每台设备独立 AES-256-GCM 密钥，优先 WebRTC 直连，回退到永远看不到消息内容的加密 WSS 中继。"
   },
-  "features.three.title": { en: "Cross-desktop relay", zh: "跨 Desktop 接力" },
-  "features.three.text": {
-    en: "Hand a bounded, redacted, encrypted task context to another runtime after two human confirmations and a read-only plan.",
-    zh: "经过两次人工确认和只读计划后，把有界、脱敏、加密的任务上下文交给另一个运行时。"
-  },
-  "features.four.title": { en: "Local-first adapters", zh: "本地优先适配器" },
-  "features.four.text": {
-    en: "Claude Agent SDK, official Codex app-server over stdio, a loopback-only Hermes Gateway with process-scoped tokens, and DSH's own loopback /api contract.",
-    zh: "Claude 使用 Agent SDK，Codex 使用官方 app-server stdio 接口，Hermes 使用仅环回、带进程级令牌的 Gateway，DSH 使用自带的回环 /api 契约。"
-  },
+  "features.three.title": { en: "Native queues and forks", zh: "原生队列与 Fork" },
+  "features.three.text": { en: "Queue the next instruction, withdraw eligible queued messages, or create a fork through Desktop.", zh: "通过 Desktop 排队下一条指令、撤回可操作的队列消息，或创建 Fork。" },
+  "features.four.title": { en: "Claude Desktop integration", zh: "Claude Desktop 原生接入" },
+  "features.four.text": { en: "A local Node inspector forwards explicit LocalSessions calls. Desktop owns sessions, execution and permissions.", zh: "本机 Node inspector 转发明确的 LocalSessions 调用，会话、执行和权限由 Desktop 管理。" },
   "features.five.title": { en: "Real evidence", zh: "真实成果" },
-  "features.five.text": {
-    en: "Image attachments, file-change summaries, artifact previews, and host-side file opening render as actual content, not paths.",
-    zh: "图片附件、文件变更摘要、成果预览和主机端文件打开都以真实内容呈现，而不是一串路径。"
-  },
+  "features.five.text": { en: "View image attachments, file-change summaries and artifact previews, and download workspace files.", zh: "查看图片附件、文件变更摘要和成果预览，并下载工作区文件。" },
   "features.six.title": { en: "Built to recover", zh: "为恢复而设计" },
-  "features.six.text": {
-    en: "Offline queues, event replay, push wake, fast reconnect, session archive, delete, and crash-safe relay recovery.",
-    zh: "离线队列、事件重放、推送唤醒、快速重连、会话归档/删除，以及崩溃安全的接力恢复。"
-  },
+  "features.six.text": { en: "Event replay, message receipts, push wake, reconnect, session archive and delete.", zh: "事件重放、消息收据、推送唤醒、重连，以及会话归档与删除。" },
   "architecture.eyebrow": { en: "Architecture", zh: "架构" },
   "architecture.title": {
     en: "Phone, desktop host, and relay.",
@@ -73,14 +43,8 @@ const I18N = {
     en: "Devices prefer a direct WebRTC data channel. When they cannot connect directly, traffic falls back to a self-hostable relay that stores only ciphertext and routing metadata.",
     zh: "设备优先建立 WebRTC 直连；无法直连时，流量回退到可自托管的中继，中继只保存密文和路由元数据。"
   },
-  "architecture.diagram.aria": {
-    en: "Architecture diagram showing mobile clients connecting to Bridge Desktop through WebRTC or an encrypted relay, with adapters for Claude, Codex, Hermes, and DSH",
-    zh: "架构图：移动端通过 WebRTC 或加密中继连接 Bridge Desktop，并接入 Claude、Codex、Hermes、DSH 适配器"
-  },
-  "architecture.note": {
-    en: 'Read the full <a href="https://github.com/czhmartinez/claude-desktop-bridge/blob/main/docs/ARCHITECTURE.md">architecture document</a> for adapter contracts, ownership states, and the relay state machine.',
-    zh: '查看完整 <a href="https://github.com/czhmartinez/claude-desktop-bridge/blob/main/docs/ARCHITECTURE.md">架构文档</a>，了解 adapter 契约、会话所有权和接力状态机。'
-  },
+  "architecture.diagram.aria": { en: "Mobile clients connect to Bridge through WebRTC or an encrypted relay; Bridge forwards Claude Desktop LocalSessions calls.", zh: "移动端通过 WebRTC 或加密中继连接 Bridge，再转发 Claude Desktop LocalSessions 调用。" },
+  "architecture.note": { en: "Read the <a href=\"https://github.com/Lycidas97/claude-desktop-bridge/blob/main/docs/ARCHITECTURE.md\">architecture document</a> for native calls, events and transport.", zh: "查看<a href=\"https://github.com/Lycidas97/claude-desktop-bridge/blob/main/docs/ARCHITECTURE.md\">架构文档</a>，了解原生调用、事件与传输。" },
   "security.eyebrow": { en: "Security", zh: "安全" },
   "security.title": {
     en: "Safe boundaries are a product feature.",
@@ -90,21 +54,12 @@ const I18N = {
     en: "Bridge deliberately refuses the shortcuts that make agent remotes risky.",
     zh: "Bridge 刻意拒绝那些让 Agent 远程控制变得危险的捷径。"
   },
-  "security.one.title": { en: "No accessibility access", zh: "不使用辅助功能权限" },
-  "security.one.text": {
-    en: "No synthetic clicks, keyboard events, or clipboard reads.",
-    zh: "不做模拟点击、键鼠事件或剪贴板读取。"
-  },
-  "security.two.title": { en: "No private CDP", zh: "不使用私有 CDP" },
-  "security.two.text": {
-    en: "Bridge uses public interfaces and read-only transcript observation.",
-    zh: "Bridge 只使用公开接口和只读 transcript 观察。"
-  },
+  "security.one.title": { en: "Explicit debugger setup", zh: "明确的调试连接设置" },
+  "security.one.text": { en: "On macOS, Accessibility and Automation access can open the native debugger menu once per Desktop process.", zh: "macOS 可用辅助功能与自动化权限，在每次 Desktop 进程启动后尝试一次原生调试菜单。" },
+  "security.two.title": { en: "Local inspector only", zh: "仅使用本机 inspector" },
+  "security.two.text": { en: "The local Node inspector forwards explicit native operations. Relay requests cannot evaluate arbitrary code.", zh: "本机 Node inspector 只转发明确的原生操作，中继请求不能任意执行代码。" },
   "security.three.title": { en: "No OAuth extraction", zh: "不提取 OAuth" },
-  "security.three.text": {
-    en: "Credentials stay inside each desktop runtime.",
-    zh: "凭据始终留在各自的桌面运行时内。"
-  },
+  "security.three.text": { en: "Account credentials remain in Claude Desktop.", zh: "账号凭据留在 Claude Desktop 内。" },
   "security.four.title": {
     en: "No hidden chain-of-thought",
     zh: "不读取隐藏思考过程"
@@ -114,15 +69,9 @@ const I18N = {
     zh: "只有有界、用户可见的上下文才会在设备间传输。"
   },
   "security.five.title": { en: "No automatic failover", zh: "不自动故障转移" },
-  "security.five.text": {
-    en: "Cross-desktop relay always waits for explicit human approval.",
-    zh: "跨 Desktop 接力始终等待用户明确确认。"
-  },
+  "security.five.text": { en: "Unavailable Claude sessions remain unavailable; Bridge does not start another executor.", zh: "Claude 不可用时明确显示不可用，Bridge 不启动其他执行器。" },
   "security.six.title": { en: "No credential migration", zh: "不迁移凭据" },
-  "security.six.text": {
-    en: "Relay packages never contain keys, OAuth tokens, or API secrets.",
-    zh: "接力包永远不包含密钥、OAuth token 或 API 密钥。"
-  },
+  "security.six.text": { en: "Desktop account credentials are not copied to the phone or relay.", zh: "Desktop 账号凭据不复制到手机或中继。" },
   "security.note": {
     en: 'Full details in the <a href="https://github.com/czhmartinez/claude-desktop-bridge/blob/main/docs/SECURITY.md">security model</a>.',
     zh: '完整细节见<a href="https://github.com/czhmartinez/claude-desktop-bridge/blob/main/docs/SECURITY.md">安全模型</a>。'
@@ -157,14 +106,8 @@ const I18N = {
     zh: "MIT 协议开源。为想让桌面 Agent 跟着自己走的人而建。"
   },
   "footer.releases": { en: "Releases", zh: "发布" },
-  "page.title": {
-    en: "Bridge - Encrypted remote control for Claude, Codex, and Hermes Desktop",
-    zh: "Bridge - Claude、Codex 和 Hermes Desktop 的加密遥控"
-  },
-  "page.description": {
-    en: "Bridge is an open-source, end-to-end encrypted remote and collaboration layer for Claude Desktop, Codex Desktop, and Hermes Desktop.",
-    zh: "Bridge 是一个开源、端到端加密的远程与协作层，为 Claude Desktop、Codex Desktop 和 Hermes Desktop 提供统一遥控。"
-  }
+  "page.title": { en: "Bridge - Encrypted remote control for Claude Desktop", zh: "Bridge - Claude Desktop 的加密遥控" },
+  "page.description": { en: "Bridge is an open-source, end-to-end encrypted phone remote for Claude Desktop.", zh: "Bridge 是开源、端到端加密的 Claude Desktop 手机遥控。" }
 };
 
 function setLanguage(lang) {

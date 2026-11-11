@@ -146,8 +146,8 @@ beforeEach(() => {
     onOpenSession: vi.fn(), onLoadOlderHistory: vi.fn(), onLoadOlderEvidence: vi.fn(), onPreviewArtifact: vi.fn(), onDownloadArtifact: vi.fn(),
     onSendTurn: vi.fn().mockResolvedValue(undefined), onInterruptTurn: vi.fn(), onResolveUncertain: vi.fn(), onResolvePermission: vi.fn(), onCreateSession: vi.fn(),
     onLoadSessionConfiguration: vi.fn(), onConfigureSession: vi.fn(), onPreviewProviderSwitch: vi.fn(), onCommitProviderSwitch: vi.fn(), onCancelProviderSwitch: vi.fn(),
-    onRefreshProviders: vi.fn(), onPreviewRuntimeHandoff: vi.fn(), onCommitRuntimeHandoff: vi.fn(), onConfirmRuntimeHandoff: vi.fn(), onCancelRuntimeHandoff: vi.fn(), onGetRuntimeHandoff: vi.fn(),
-    onPauseRuntimeGoal: vi.fn(), onResumeRuntimeGoal: vi.fn(), onDesktopAppAction: vi.fn(), onRefresh: vi.fn(), onBackToHosts: vi.fn(), onRetry: vi.fn(),
+    onRefreshProviders: vi.fn(),
+    onDesktopAppAction: vi.fn(), onRefresh: vi.fn(), onBackToHosts: vi.fn(), onRetry: vi.fn(),
   };
   open("A");
 });
@@ -326,7 +326,6 @@ describe("native relay composer", () => {
     expect(elements(tree).some(element => element.type === "button" && element.props.className === "permission-dock")).toBe(false);
   });
 
-
 });
 
 describe("session back navigation", () => {
@@ -499,6 +498,94 @@ describe("mobile session creation", () => {
     await dialog.props.onCreate("/tmp/project", "Created", "claude-desktop", "project-2");
     expect(props.onCreateSession).toHaveBeenCalledOnce();
     expect(props.onCreateSession).toHaveBeenCalledWith("/tmp/project", "Created", "claude-desktop", "project-2");
+  });
+});
+
+describe("mobile section creation", () => {
+  let create: ReturnType<typeof vi.fn>;
+  const createAction = () => elements(tree).find(element => element.props.label === "新建 Section");
+  const dialog = () => elements(tree).find(element => element.props.role === "dialog" && element.props["aria-label"] === "新建 Section");
+  const nameInput = () => elements(dialog()).find(element => element.type === "input")!;
+  const submitButton = () => elements(dialog()).find(element => element.type === "button" && element.props.type === "submit")!;
+  function enable(capable = true) {
+    create = vi.fn().mockResolvedValue({ ...props.snapshot!.projects[0], projectId: "new-section", name: "Research", kind: "desktop-group", sessionCount: 0 });
+    props = Object.assign({ ...props, snapshot: { ...props.snapshot!, host: {
+      ...props.snapshot!.host, capabilities: ["claude.native-relay.v1" as const, ...(capable ? ["section.create.v1" as const] : [])],
+    } } }, { onCreateSection: create });
+    draw();
+    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
+    const header = elements(tree).find(element => element.props.title === "会话" && element.props.actions)!;
+    elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "目录选项")!.props.onClick(); draw();
+  }
+  function openCreate() { enable(); createAction()!.props.onClick(); draw(); }
+  function editName(value: string) { nameInput().props.onChange({ target: { value } }); draw(); }
+  async function submit() {
+    elements(dialog()).find(element => element.type === "form")!.props.onSubmit({ preventDefault() {} });
+    await settle();
+  }
+
+  it("offers native section creation in the catalog menu", () => {
+    enable();
+    expect(createAction()).toBeDefined();
+  });
+  it("submits a trimmed name and closes after native success", async () => {
+    openCreate(); editName("  Research  ");
+    await submit();
+    expect(create).toHaveBeenCalledOnce();
+    expect(create.mock.calls[0]![0]).toBe("Research");
+    expect(dialog()).toBeUndefined();
+  });
+  it("keeps blank names disabled without a native write", async () => {
+    openCreate(); editName("   ");
+    expect(submitButton().props.disabled).toBe(true);
+    await submit();
+    expect(create).not.toHaveBeenCalled();
+    expect(dialog()).toBeDefined();
+  });
+  it("cancels the name draft without a native write", () => {
+    openCreate(); editName("Cancelled");
+    elements(dialog()).find(element => element.type === "button" && element.props.children === "取消")!.props.onClick(); draw();
+    expect(create).not.toHaveBeenCalled();
+    expect(dialog()).toBeUndefined();
+  });
+  it("preserves the name and displays a native failure", async () => {
+    openCreate(); editName("Research"); create.mockRejectedValue(new Error("原生分组创建失败"));
+    await submit();
+    expect(nameInput().props.value).toBe("Research");
+    expect(elements(dialog()).find(element => element.props.role === "alert")!.props.children).toBe("原生分组创建失败");
+  });
+  it("disables submission if the computer disconnects while editing", async () => {
+    openCreate(); editName("Research");
+    props = { ...props, connection: "reconnecting", desktopOnline: false }; draw();
+    expect(submitButton().props.disabled).toBe(true);
+    await submit();
+    expect(create).not.toHaveBeenCalled();
+  });
+  it("omits creation for older hosts without the capability", () => {
+    enable(false);
+    expect(createAction()).toBeUndefined();
+    expect(create).not.toHaveBeenCalled();
+  });
+  it("shows an empty native section on a computer without sessions", () => {
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: [], projects: [{
+      ...props.snapshot!.projects[0]!, projectId: "empty-section", name: "Research", cwd: "", kind: "desktop-group", sessionCount: 0,
+    }] } };
+    draw();
+    expect(elements(tree).some(element => element.type === "strong" && element.props.children === "Research")).toBe(true);
+    expect(elements(tree).some(element => element.props.children === "暂未发现 Desktop 会话")).toBe(false);
+  });
+  it("searches empty native sections by name without exposing empty directories", () => {
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: [], projects: [
+      { ...props.snapshot!.projects[0]!, projectId: "empty-section", name: "Research", cwd: "", kind: "desktop-group", sessionCount: 0 },
+      { ...props.snapshot!.projects[0]!, projectId: "empty-directory", name: "Empty directory", kind: "directory", sessionCount: 0 },
+    ] } };
+    draw();
+    const search = () => elements(tree).find(element => element.type === "input" && element.props.placeholder === "搜索项目或会话")!;
+    search().props.onChange({ target: { value: "rese" } }); draw();
+    expect(elements(tree).some(element => element.type === "strong" && element.props.children === "Research")).toBe(true);
+    search().props.onChange({ target: { value: "empty" } }); draw();
+    expect(elements(tree).some(element => element.type === "strong" && element.props.children === "Research")).toBe(false);
+    expect(elements(tree).some(element => element.type === "strong" && element.props.children === "Empty directory")).toBe(false);
   });
 });
 
@@ -1136,106 +1223,6 @@ describe("automatic native question disappearance", () => {
   });
 });
 
-describe("question answer delivery", () => {
-  beforeEach(() => {
-    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({ ...session, runtimeId: "codex-desktop", transport: "codex-app-server", ownership: "BRIDGE_IDLE" })) } };
-    draw();
-  });
-  it.each(["host-received", "submitted", "running"] as const)("labels this card's %s answer accurately without duplicating it or clearing the draft", async delivery => {
-    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
-      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
-        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } },
-    ] } } };
-    vi.mocked(props.onSendTurn).mockResolvedValueOnce({ requestId: "answer" });
-    text("保留草稿");
-    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
-    await settle();
-    props = { ...props, localTurns: [{ requestId: "answer", idempotencyKey: "answer-key", commandId: "queued", sessionId: "A", text: "Main", attachments: [], createdAt: 2, delivery }] };
-    draw();
-    const card = elements(tree).find(element => element.type === InteractivePromptCard)!;
-    expect(card.props.replyDelivery).toBe(delivery);
-    const rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
-    const status = elements(rendered).find(element => element.props.className === "interactive-prompt-status")!;
-    expect(status.props.children).toBe(delivery === "running" ? "已回复" : "回复已排队");
-    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
-    expect(elements(tree).filter(element => element.props.className === "conversation-bubble")).toHaveLength(1);
-    expect(input().props.value).toBe("保留草稿");
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Main", [], false);
-  });
-
-  it.each(["history-and-assistant", "history", "resolution", "assistant"])("keeps a confirmed reply complete after its receipt leaves memory (%s)", async confirmation => {
-    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
-      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
-        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } },
-    ] } } };
-    const question = props.histories.A!.items[0]!;
-    vi.mocked(props.onSendTurn).mockResolvedValueOnce({ requestId: "answer" });
-    draw();
-    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
-    await settle();
-    props = { ...props, localTurns: [{ requestId: "answer", idempotencyKey: "answer-key", commandId: "queued", sessionId: "A", text: "Main", attachments: [], createdAt: 2, delivery: "host-received" }] };
-    draw();
-    let card = elements(tree).find(element => element.type === InteractivePromptCard)!;
-    let rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
-    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")!.props.children).toBe("回复已排队");
-
-    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
-      { ...question, interactivePrompt: { ...question.interactivePrompt!, answered: confirmation.includes("history") } },
-      ...(confirmation.includes("assistant") ? [{ id: "continuation", sessionId: "A", role: "assistant" as const, text: "已收到回答继续执行", createdAt: 3, origin: "claude-desktop" as const }] : []),
-    ] } }, events: confirmation === "resolution" ? [
-      { eventId: "resolved", seq: 1, timestamp: 3, sessionId: "A", origin: "system", type: "question.resolved",
-        data: { requestId: "permission", toolName: "AskUserQuestion", input: { questions: question.interactivePrompt!.questions }, decision: "allow-once" } },
-    ] : [], localTurns: [{ requestId: "new-task", idempotencyKey: "new-key", commandId: "new-command", sessionId: "A", text: "处理新的无关任务", attachments: [], createdAt: 4, delivery: "host-received" }] };
-    draw();
-    card = elements(tree).find(element => element.type === InteractivePromptCard)!;
-    rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
-    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")!.props.children).toBe("已回复");
-    expect(card.props.replyDelivery).toBeUndefined();
-    expect(card.props.replyPending).not.toBe(true);
-    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Main", [], false);
-  });
-
-  it("keeps the prompt receipt with its session and computer across navigation", async () => {
-    props = { ...props, histories: Object.fromEntries(["A", "B"].map(sessionId => [sessionId, {
-      status: "ready", hasMore: false, items: [{ id: "question", sessionId, role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
-        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } }],
-    }])) };
-    vi.mocked(props.onSendTurn).mockResolvedValueOnce({ requestId: "answer" });
-    draw();
-    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
-    await settle();
-    const answer = { requestId: "answer", idempotencyKey: "answer-key", sessionId: "A", text: "Main", attachments: [], createdAt: 2, delivery: "host-received" as const };
-    props = { ...props, localTurns: [answer, { ...answer, sessionId: "B", delivery: "failed" }] };
-    open("B");
-    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBeUndefined();
-    open("A");
-    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBe("host-received");
-    props = { ...props, activeHostId: "computer-2", localTurns: [{ ...answer, delivery: "failed" }] };
-    draw();
-    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBeUndefined();
-    props = { ...props, activeHostId: "computer-1", localTurns: [answer] };
-    draw();
-    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBe("host-received");
-    expect(props.onSendTurn).toHaveBeenCalledOnce();
-  });
-
-  it("keeps a legacy quick reply pending when its callback supplies no receipt", async () => {
-    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
-      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
-        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } },
-    ] } } };
-    draw();
-    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
-    await settle();
-    const card = elements(tree).find(element => element.type === InteractivePromptCard)!;
-    const rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
-    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")!.props.children).toBe("已提交，等待处理");
-    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Main", [], false);
-  });
-});
-
 describe("mobile task plan cards", () => {
   it("renders one stable card through live updates, reconnect history, and session navigation", () => {
     const plan = { id: "plan:task-1", updatedAt: 100, items: [{ content: "Implement sync", status: "in_progress" as const }] };
@@ -1503,7 +1490,6 @@ describe("mobile conversation draft ownership", () => {
   });
 });
 
-
 describe("sidechat and slash command integration", () => {
   it.each([false, true])("keeps command discovery and execution on the selected sidechat (archived=%s)", async archived => {
     const sidechat = { ...props.snapshot!.sessions[1]!, title: "btw: Side question", parentSessionId: "A", sidechat: true,
@@ -1655,7 +1641,6 @@ describe("mobile common commands", () => {
   });
 });
 
-
 it("follows session.reset only while the old session is selected and loads the new empty context", async () => {
   props = { ...props, events: [{ eventId: "reset-A", seq: 1, timestamp: 1, sessionId: "A", origin: "claude-host", type: "session.reset",
     data: { sessionId: "B", previousSessionId: "A", nativeSessionId: "new-native" } }] };
@@ -1663,7 +1648,6 @@ it("follows session.reset only while the old session is selected and loads the n
   expect(props.onOpenSession).toHaveBeenLastCalledWith("B");
   expect(input().props.value).toBe("");
 });
-
 
 describe("mobile slash submission edges", () => {
   function enable() {
@@ -1772,5 +1756,177 @@ describe("older history auto-load", () => {
     history(["m3"], "loading");
     stream().props.onScroll();
     expect(props.onLoadOlderHistory).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("mobile section movement and subfolder labels", () => {
+  const flatText = (node: ReactNode): string => {
+    if (typeof node === "string" || typeof node === "number") return String(node);
+    if (Array.isArray(node)) return node.map(flatText).join("");
+    return node && typeof node === "object" && "props" in node
+      ? flatText((node as ReactElement<{ children?: ReactNode }>).props.children)
+      : "";
+  };
+
+  function toDirectory() {
+    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表");
+    if (header) { header.props.onBack(); draw(); }
+  }
+
+  function openHeaderSessionMenu() {
+    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+    elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    draw();
+  }
+
+  it("moves sessions into, between, and out of native Sections with capability and offline gating", async () => {
+    const miscGroup = { projectId: "sec-misc", name: "杂活", cwd: "/Users/lycidas/work/杂活", kind: "desktop-group" as const, sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 2 };
+    const researchGroup = { projectId: "sec-research", name: "Research", cwd: "/Users/lycidas/work/research", kind: "desktop-group" as const, sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 1 };
+    const onMoveSessionSection = vi.fn().mockResolvedValue({});
+    props = {
+      ...props,
+      onMoveSessionSection,
+      snapshot: {
+        ...props.snapshot!,
+        host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "section.move.v1"] },
+        projects: [props.snapshot!.projects[0]!, miscGroup, researchGroup],
+        sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+          ? { ...session, allowedActions: { ...session.allowedActions!, canMoveSection: true } }
+          : session),
+      },
+    };
+    draw();
+
+    // Session B lacks canMoveSection -> menu hides "移动到分组"
+    open("B");
+    openHeaderSessionMenu();
+    expect(elements(tree).some(element => element.props.label === "移动到分组")).toBe(false);
+    expect(dispatchMobileBack()).toBe(true);
+    draw();
+
+    // Session A is eligible -> offline disables "移动到分组" while keeping it visible
+    open("A");
+    props = { ...props, desktopOnline: false };
+    draw();
+    openHeaderSessionMenu();
+    const offlineMove = elements(tree).find(element => element.props.label === "移动到分组")!;
+    expect(offlineMove.props.detail).toBe("未分组");
+    expect(offlineMove.props.disabled).toBe(true);
+
+    // Back online -> open "移动到分组" step, test mobile back to main menu, then move into "杂活"
+    props = { ...props, desktopOnline: true };
+    draw();
+    elements(tree).find(element => element.props.label === "移动到分组")!.props.onClick();
+    draw();
+    expect(elements(tree).some(element => element.props.title === "移动到分组")).toBe(true);
+    expect(elements(tree).some(element => element.props.label === "移出分组")).toBe(false);
+    expect(dispatchMobileBack()).toBe(true);
+    draw();
+    expect(elements(tree).some(element => element.props.title === "Session A")).toBe(true);
+
+    elements(tree).find(element => element.props.label === "移动到分组")!.props.onClick();
+    draw();
+    await elements(tree).find(element => element.props.label === "杂活")!.props.onClick();
+    await settle();
+    expect(onMoveSessionSection).toHaveBeenCalledWith("A", "sec-misc");
+    expect(elements(tree).some(element => element.props.title === "移动到分组")).toBe(false);
+
+    // Session A now inside "杂活": directory row menu shows current section, marks it disabled, and supports moving out to Ungrouped
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+          ? { ...session, projectId: "sec-misc", projectName: "杂活" }
+          : session),
+      },
+    };
+    toDirectory();
+    const rowA = elements(tree).find(element => element.props["data-session-id"] === "A")!;
+    elements(rowA).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    draw();
+    const inGroupMove = elements(tree).find(element => element.props.label === "移动到分组")!;
+    expect(inGroupMove.props.detail).toBe("杂活");
+    inGroupMove.props.onClick();
+    draw();
+    const currentItem = elements(tree).find(element => element.props.label === "杂活")!;
+    expect(currentItem.props.detail).toBe("当前所在分组");
+    expect(currentItem.props.disabled).toBe(true);
+    await elements(tree).find(element => element.props.label === "移出分组")!.props.onClick();
+    await settle();
+    expect(onMoveSessionSection).toHaveBeenLastCalledWith("A", null);
+  });
+
+  it("returns from an emptied directory group page when its project disappears after moving", () => {
+    const base = props.snapshot!.sessions[0]!;
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        projects: [{ projectId: "project", name: "Project", cwd: "/tmp/project", sessionCount: 6, runningCount: 0, pendingCount: 0, lastActivityAt: 6 }],
+        sessions: Array.from({ length: 6 }, (_, index) => ({ ...base, sessionId: `S-${index}`, title: `Session ${index}`, lastActivityAt: index + 1 })),
+      },
+    };
+    toDirectory();
+    elements(tree).find(element => element.props.className === "project-group-more-button")!.props.onClick();
+    draw();
+    expect(elements(tree).some(element => element.props.className === "host-detail project-detail-view")).toBe(true);
+
+    // Remove "project" from snapshot.projects (simulating all sessions moved into a Section)
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        projects: [{ projectId: "sec-misc", name: "杂活", cwd: "/work/杂活", kind: "desktop-group", sessionCount: 6, runningCount: 0, pendingCount: 0, lastActivityAt: 6 }],
+        sessions: props.snapshot!.sessions.map(session => ({ ...session, projectId: "sec-misc", projectName: "杂活" })),
+      },
+    };
+    draw();
+    expect(elements(tree).some(element => element.props.className === "host-detail project-detail-view")).toBe(false);
+    expect(elements(tree).some(element => element.props.title === "会话")).toBe(true);
+  });
+
+  it("shows subfolder name only for desktop-group sessions whose folder differs from the group name", () => {
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        projects: [
+          { projectId: "sec-misc", name: "杂活", cwd: "/Users/lycidas/work/杂活", kind: "desktop-group", sessionCount: 2, runningCount: 0, pendingCount: 0, lastActivityAt: 2 },
+          { projectId: "dir-plain", name: "plain-repo", cwd: "/Users/lycidas/work/plain-repo", kind: "directory", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 },
+        ],
+        sessions: [
+          { ...props.snapshot!.sessions[0]!, sessionId: "sub", title: "Colab task", projectId: "sec-misc", projectName: "杂活", cwd: "/Users/lycidas/work/杂活/colab-connect" },
+          { ...props.snapshot!.sessions[0]!, sessionId: "same", title: "Root task", projectId: "sec-misc", projectName: "杂活", cwd: "/Users/lycidas/work/杂活" },
+          { ...props.snapshot!.sessions[1]!, sessionId: "plain", title: "Plain task", projectId: "dir-plain", projectName: "plain-repo", cwd: "/Users/lycidas/work/plain-repo" },
+        ],
+      },
+    };
+    toDirectory();
+    const rowSmall = (id: string) => {
+      const row = elements(tree).find(element => element.props["data-session-id"] === id)!;
+      return flatText(elements(row).find(element => element.type === "small"));
+    };
+    expect(rowSmall("sub")).toMatch(/^colab-connect · /u);
+    expect(rowSmall("same")).not.toContain("杂活 ·");
+    expect(rowSmall("plain")).not.toContain("plain-repo ·");
+
+    // Also verify projectSearch inside a desktop-group matches subfolder names
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        sessions: [
+          ...props.snapshot!.sessions,
+          ...Array.from({ length: 4 }, (_, index) => ({ ...props.snapshot!.sessions[1]!, sessionId: `extra-${index}`, title: `Extra ${index}`, lastActivityAt: index })),
+        ],
+      },
+    };
+    draw();
+    elements(tree).find(element => element.props.className === "project-group-more-button")!.props.onClick();
+    draw();
+    elements(tree).find(element => element.type === "input" && element.props.placeholder === "搜索「杂活」")!.props.onChange({ target: { value: "colab-connect" } });
+    draw();
+    expect(elements(tree).filter(element => element.props["data-session-id"]).map(element => element.props["data-session-id"])).toEqual(["sub"]);
   });
 });

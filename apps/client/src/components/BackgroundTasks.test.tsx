@@ -93,6 +93,57 @@ describe("background task tray", () => {
   });
 });
 
+describe("subagent actual model rendering", () => {
+  it("shows the raw model in markers and keeps it in the accessible name", () => {
+    const html = renderToStaticMarkup(createElement(BackgroundTaskMarker, {
+      item: item(agent("ag01", { toolUseId: "agent-call", model: "codex/gpt-6.1-sol" })), task: reviewer, onOpen: vi.fn(),
+    }));
+    expect(html).toContain('class="subagent-model"');
+    expect(html).toContain("模型：codex/gpt-6.1-sol");
+    expect(html).not.toContain("默认模型");
+  });
+
+  it("uses a newer stream observation ahead of a stale tray model", () => {
+    const html = renderToStaticMarkup(createElement(BackgroundTaskMarker, {
+      item: item(agent("ag01", { model: "new-model", updatedAt: 20 })),
+      task: { ...reviewer, subagent: { ...reviewer.subagent!, model: "old-model", updatedAt: 10 } }, onOpen: vi.fn(),
+    }));
+    expect(html).toContain("模型：new-model");
+    expect(html).not.toContain("old-model");
+  });
+
+  it("omits the model when unknown and on Workflow aggregate markers", () => {
+    const missing = renderToStaticMarkup(createElement(BackgroundTaskMarker, { item: item(agent("x")), onOpen: vi.fn() }));
+    const aggregate = renderToStaticMarkup(createElement(BackgroundTaskMarker, {
+      item: item(agent("a1", { workflowRunId: "wf_1", model: "claude/claude-opus-5-5" })), task: workflow, onOpen: vi.fn(),
+    }));
+    expect(missing).not.toContain('class="subagent-model"');
+    expect(aggregate).not.toContain("claude/claude-opus-5-5");
+  });
+
+  it("keeps the latest tray model when merging an older full stream report", () => {
+    const stream = item(agent("ag01", { toolUseId: "agent-call", updatedAt: 1, model: "old-model", reportText: "Full report" }));
+    const updated: BridgeBackgroundTask = { ...reviewer, subagent: { ...reviewer.subagent!, model: "codex/gpt-6.1-sol", updatedAt: 10 } };
+    const render = vi.fn((_entry: BridgeHistoryItem) => null);
+    const html = renderToStaticMarkup(createElement(BackgroundTasksSheet, {
+      sessionId: "A", tasks: [updated], items: [stream], focus: stream, onClose: vi.fn(), renderSubagent: render,
+    }));
+    expect(html).toContain("codex/gpt-6.1-sol");
+    expect(render.mock.calls[0]?.[0].subagent).toMatchObject({ model: "codex/gpt-6.1-sol", reportText: "Full report" });
+  });
+
+  it("shows each Workflow member's model without labelling the aggregate", () => {
+    const models = ["codex/gpt-6.1-sol", "claude/claude-opus-5-5", undefined];
+    const run = { ...workflow, workflow: { ...workflow.workflow!, agents: workflow.workflow!.agents.map((child, index) => ({ ...child, ...(models[index] ? { model: models[index] } : {}) })) } };
+    const html = renderToStaticMarkup(createElement(BackgroundTasksSheet, {
+      sessionId: "A", tasks: [run], items: [], focus: item(agent("a1", { workflowRunId: "wf_1" })), onClose: vi.fn(), renderSubagent: () => null,
+    }));
+    expect(html.match(/class="subagent-model"/gu)).toHaveLength(2);
+    expect(html).toContain("codex/gpt-6.1-sol");
+    expect(html).toContain("claude/claude-opus-5-5");
+  });
+});
+
 describe("background task markers", () => {
   it("labels a workflow member line with its run", () => {
     const html = renderToStaticMarkup(createElement(BackgroundTaskMarker, {

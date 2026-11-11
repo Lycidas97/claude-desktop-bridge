@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useAgentVisibility, visibleAgentSnapshot } from "./hooks/useAgentVisibility.js";
+import { claudeSnapshot } from "./lib/claude-snapshot.js";
 import { useTheme } from "./hooks/useTheme.js";
 import { useMobileBridge } from "./hooks/useMobileBridge.js";
 import {
@@ -19,7 +19,6 @@ import { MobileHostDetails } from "./components/MobileHostDetails.js";
 import { MobilePageHeader } from "./components/MobilePageHeader.js";
 import { MobileQuotaPage } from "./components/MobileQuotaPage.js";
 import { MobileSettings } from "./components/MobileSettings.js";
-import { HostPermissionSettings } from "./components/HostPermissionSettings.js";
 import { ProviderSettings } from "./components/ProviderSettings.js";
 import { MAGPIE_QUOTA_METHOD, type QuotaLoader, type QuotaSnapshot } from "../../../plugins/magpie-quota/contract.js";
 import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
@@ -27,10 +26,9 @@ import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
 export function App() {
   const themeControl = useTheme();
   const mobile = useMobileBridge();
-  const agentVisibility = useAgentVisibility();
   const snapshot = useMemo(() => mobile.state.snapshot
-    ? visibleAgentSnapshot(mobile.state.snapshot, agentVisibility.enabled)
-    : undefined, [mobile.state.snapshot, agentVisibility.enabled]);
+    ? claudeSnapshot(mobile.state.snapshot)
+    : undefined, [mobile.state.snapshot]);
   const [pairingOpen, setPairingOpen] = useState(false);
   const [tab, setTab] = useState<MobileTab>("sessions");
   const [computerDetailsHostId, setComputerDetailsHostId] = useState<string>();
@@ -105,11 +103,7 @@ export function App() {
     tab,
   ]);
 
-  if (window.bridgeDesktop) return (
-    <MediaPreviewProvider request={(method, params) => window.bridgeDesktop!.request({ method, params })}>
-      <DesktopDashboard themeControl={themeControl} agentVisibility={agentVisibility} />
-    </MediaPreviewProvider>
-  );
+  if (window.bridgeDesktop) return <DesktopDashboard themeControl={themeControl} />;
   if (mobile.state.pairingSync) {
     return (
       <>
@@ -159,7 +153,7 @@ export function App() {
       <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled} sourceKey={snapshot?.runtime.detection?.refreshedAt ?? 0}>
       {mobile.state.activeHostId ? (
         <div className="mobile-tab-page" hidden={tab !== "sessions"}>
-          <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia}>
+          <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia} supportsFileStat={snapshot?.host.capabilities.includes("artifact.transfer.stat.v1") ?? false}>
             <MobileWorkspace
               visible={tab === "sessions"}
               {...(focusRequest ? { focusRequest } : {})}
@@ -205,7 +199,10 @@ export function App() {
               onResolveUncertain={mobile.resolveUncertainDelivery}
               onResolvePermission={mobile.resolvePermission}
               onCreateSession={mobile.createSession}
+              {...(snapshot?.host.capabilities.includes("section.create.v1") ? { onCreateSection: mobile.createSection } : {})}
+              {...(snapshot?.host.capabilities.includes("section.move.v1") ? { onMoveSessionSection: mobile.moveSessionSection } : {})}
               {...(snapshot?.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: mobile.browseDirectory } : {})}
+              {...(snapshot?.host.capabilities.includes("directory.mkdir.v1") ? { onCreateDirectory: mobile.createDirectory } : {})}
               onForkSession={mobile.forkSession}
               {...(snapshot?.host.capabilities.includes("session.rename.v1")
                 ? { onRenameSession: mobile.renameSession }
@@ -225,24 +222,13 @@ export function App() {
               onConfigureSession={mobile.configureSession}
               onPreviewRewind={mobile.previewRewind}
               onRewindSession={mobile.rewindSession}
-              {...(mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1")
-                ? { onConfigurePermissionPolicy: mobile.configurePermissionPolicy }
-                : {})}
               onPreviewProviderSwitch={mobile.previewProviderSwitch}
               onCommitProviderSwitch={mobile.commitProviderSwitch}
               onCancelProviderSwitch={mobile.cancelProviderSwitch}
-              onPreviewRuntimeHandoff={mobile.previewRuntimeHandoff}
-              onCommitRuntimeHandoff={mobile.commitRuntimeHandoff}
-              onConfirmRuntimeHandoff={mobile.confirmRuntimeHandoff}
-              onCancelRuntimeHandoff={mobile.cancelRuntimeHandoff}
-              onGetRuntimeHandoff={mobile.getRuntimeHandoff}
-              onPauseRuntimeGoal={mobile.pauseRuntimeGoal}
-              onResumeRuntimeGoal={mobile.resumeRuntimeGoal}
               {...(mobile.state.snapshot?.host.capabilities.includes("session.visibility.v1")
                 ? {
                     onArchiveSession: mobile.archiveSession,
                     onDeleteSession: mobile.deleteSession,
-                    onOpenRuntimeFile: mobile.openRuntimeFile,
                   }
                 : {})}
               onRefreshProviders={mobile.refreshProviders}
@@ -288,15 +274,6 @@ export function App() {
             setComputerDetailsHostId(undefined);
           }}
           onBack={() => setComputerDetailsHostId(undefined)}
-          permissionSettings={mobile.state.snapshot?.host.capabilities.includes("permission.policy.v1") ? (
-            <HostPermissionSettings
-              key={mobile.state.activeHostId}
-              connected={mobile.state.connection === "connected" && mobile.state.desktopOnline}
-              {...(mobile.state.snapshot ? { snapshot: mobile.state.snapshot } : {})}
-              onLoadSessionConfiguration={mobile.loadSessionConfiguration}
-              onConfigureHostPermission={mobile.configureHostPermission}
-            />
-          ) : undefined}
         />
       ) : (
         <HostBrowser
@@ -315,7 +292,7 @@ export function App() {
       ))}
       {tab === "settings" && (providersOpen ? (
         <main className="mobile-workspace mobile-settings-page">
-          <MobilePageHeader title="提供方" onBack={() => setProvidersOpen(false)} />
+          <MobilePageHeader title="模型与网关" onBack={() => setProvidersOpen(false)} />
           <div className="mobile-settings-content"><section className="mobile-settings-group mobile-provider-settings"><ProviderSettings key={mobile.state.activeHostId} {...(snapshot ? { snapshot } : {})} connected={mobile.state.connection === "connected" && mobile.state.desktopOnline} onRefresh={mobile.redetectProviders} /></section></div>
         </main>
       ) : quotaOpen && quotaDeclared ? (
@@ -323,9 +300,8 @@ export function App() {
       ) : (
         <MobileSettings
           themeControl={themeControl}
-          agentVisibility={agentVisibility}
+
           {...(mobile.state.activeHostId ? { providers: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setProvidersOpen(true) } } : {})}
-          {...(mobile.state.snapshot ? { snapshot: mobile.state.snapshot } : {})}
           {...(quotaDeclared ? { quota: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setQuotaOpen(true) } } : {})}
         />
       ))}

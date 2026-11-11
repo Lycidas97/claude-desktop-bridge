@@ -1,4 +1,3 @@
-import { TEXT_PREVIEW_MAX_BYTES } from "@bridge/protocol";
 import type {
   BridgeArtifactManifest,
   BridgeArtifactTransferChunk,
@@ -23,6 +22,12 @@ export interface MediaTarget {
   path?: string;
   dataUrl?: string;
   nativeImage?: BridgeNativeImageRef;
+}
+
+export function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function mediaKind(path: string): MediaTarget["kind"] | undefined {
@@ -55,7 +60,6 @@ export function textPreviewLanguage(path: string): string | undefined {
 }
 
 export async function readTextPreview(source: { transfer: Pick<BridgeArtifactTransferInfo, "size">; read(begin: number, end: number): Promise<Uint8Array> }): Promise<string> {
-  if (source.transfer.size > TEXT_PREVIEW_MAX_BYTES) throw new Error("文本预览仅支持 1 MiB 以内的文件，请下载查看全文");
   const bytes = await source.read(0, source.transfer.size);
   if (bytes.includes(0)) throw new Error("文件包含二进制内容，无法作为文本预览，请下载查看");
   try {
@@ -67,7 +71,7 @@ export async function readTextPreview(source: { transfer: Pick<BridgeArtifactTra
 
 export function artifactMediaTarget(artifact: BridgeArtifactManifest): MediaTarget | undefined {
   const kind = artifact.kind === "image" || artifact.kind === "pdf"
-    ? artifact.kind : mediaKind(artifact.name);
+    ? artifact.kind : mediaKind(artifact.name) ?? (artifact.previewMode === "text" || artifact.previewMode === "diff" ? "text" : undefined);
   if (!kind || artifact.changeKind === "deleted" || artifact.availability === "blocked"
     || artifact.availability === "expired") return undefined;
   return { name: artifact.name, kind, artifactId: artifact.id, path: artifact.relativePath };

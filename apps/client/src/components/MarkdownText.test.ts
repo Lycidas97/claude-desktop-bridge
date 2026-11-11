@@ -6,11 +6,20 @@ describe("extractDownloadableFilePath", () => {
     expect(extractDownloadableFilePath(path)).toBe(path.replace(/:\d+(?::\d+)?$/u, ""));
   });
 
-  it("keeps download-only paths and rejects URLs or unsupported suffixes", () => {
+  it("keeps download-only and Windows drive paths while rejecting URLs or unsupported suffixes", () => {
     expect(extractDownloadableFilePath("build/app.apk")).toBe("build/app.apk");
     expect(extractDownloadableFilePath("output/archive.zip")).toBe("output/archive.zip");
+    expect(extractDownloadableFilePath("C:\\foo\\bar.json")).toBe("C:\\foo\\bar.json");
+    expect(extractDownloadableFilePath("D:/work/report.json:12:3")).toBe("D:/work/report.json");
+    expect(extractDownloadableFilePath("C:\\work\\final report.pdf", true)).toBe("C:\\work\\final report.pdf");
     expect(extractDownloadableFilePath("https://example.com/guide.md")).toBeUndefined();
+    expect(extractDownloadableFilePath("http://example.com/guide.md")).toBeUndefined();
+    expect(extractDownloadableFilePath("file:///C:/work/report.json")).toBeUndefined();
+    expect(extractDownloadableFilePath("data:text/plain,hello.txt")).toBeUndefined();
+    expect(extractDownloadableFilePath("vbscript:msgbox.vbs")).toBeUndefined();
     expect(extractDownloadableFilePath("javascript:main.py")).toBeUndefined();
+    expect(extractDownloadableFilePath("javascript:/evil.js")).toBeUndefined();
+    expect(extractDownloadableFilePath("C:relative.json")).toBeUndefined();
     expect(extractDownloadableFilePath("output/image.png.exe")).toBeUndefined();
     expect(extractDownloadableFilePath("docs/my guide.markdown")).toBeUndefined();
     expect(extractDownloadableFilePath("docs/my guide.markdown", true)).toBe("docs/my guide.markdown");

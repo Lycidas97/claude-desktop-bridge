@@ -6,171 +6,158 @@
 
 **在 Android 手机上继续电脑里的 Claude 工作。**
 
-Bridge 将电脑上的会话、任务进度、授权提问和工作区文件带到手机。你可以继续已有会话、排队发送下一条指令、创建 Fork、查看子代理和成果，也可以在离开电脑后处理等待中的授权。
+Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队发送下一条指令、回答授权与提问、查看子代理进度和工作区文件。任务仍在你的电脑上运行。
 
-这是独立维护的 fork，主要围绕 **macOS + Android + Claude** 完善日常使用。安装包与发布状态以本仓库的 [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) 为准。保留上游 Codex、Hermes、DSH 适配器，默认只显示 Claude，其他 Agent 可在设置中启用。
+这是独立维护的 fork，日常使用与验证主要围绕 **macOS + Android + Claude Desktop（含 Claude-3p）**。它依赖 Desktop 的本地 `LocalSessions` 接口，具体操作取决于已安装的 Desktop 版本与账号 / 工作区策略；普通网页聊天记录不属于这条接入路径。
 
-**1.3.1 改善原生权限同步与连接体验**：修复权限卡的增减、迟到快照和重连恢复，加入协商后的端到端压缩与 Git 项目分组，折叠原生/Fork 通知并同步 Android 系统栏主题。macOS 可在每次发现新的 Claude Desktop 进程后，尝试一次原生调试菜单；需要用户授予辅助功能与自动化权限。会话执行、队列和权限仍由 Desktop 的 `LocalSessions` 管理。完整变化见[更新记录](CHANGELOG.md)，原生验证范围见[重构记录](docs/HOSTING-REFACTOR.md)。
+## 版本与下载
 
-## 开始使用
+**当前正式版是 [v1.3.1](https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.1)，下方上手步骤以该版为准。** 请从本 fork 下载电脑端和手机端，尽量使用同一版本。
 
-1. 从本 fork 的 Releases 下载电脑端和 Android 客户端，尽量使用同一版本。上游安装包不包含本 fork 的全部改进。
-2. 在电脑上运行 Claude Desktop，再启动 Bridge。macOS 后台会在发现新的 Desktop 进程后，通过原生菜单尝试开启一次本机 Node inspector（`127.0.0.1:9229`）；需要开发者模式及辅助功能/自动化权限，详见下文。Bridge 不修改安装包或重启 Desktop。
-3. 在 Android 安装 APK，通过电脑端的一次性二维码或配对链接添加电脑。
-4. 打开手机的会话目录，选择已有会话，或用右上角“+”创建会话。
-5. 在对话中发送文本、图片或文件，查看执行进度，并处理授权与提问。
+| 平台 | v1.3.1 下载 | 安装与验证范围 |
+| --- | --- | --- |
+| macOS | [电脑端 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-macos-adhoc.zip) | 解压后使用内含安装包。ad-hoc 签名，未经 Apple 公证；主要验证平台 |
+| Android 8.0+ | [APK](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-android-debug.apk) | 使用仓库固定 debug 签名；需允许当前下载来源安装应用 |
+| Windows | [安装包 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-windows-installer-ci.zip) | CI 构建；签名状态见包内 `windows-release-evidence.json`，原生连接未完成实机验收 |
+| Linux | [安装包 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-linux-installers-ci.zip) | CI 构建；不能据此推断已具备可用的 Claude Desktop 原生环境 |
+| iOS | [模拟器](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-ios-simulator.zip) / [未签名真机应用](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-ios-device-unsigned.zip) | 开发产物；真机版须自行签名，不是可直接安装的 IPA |
 
-跨网络连接时，两端需要使用相同的可达中继。可在电脑端“状态”和手机端“电脑 → 连接与电脑设置”修改中继地址；它是 WebSocket 中继地址，支持 `ws://`、`wss://`、端口和路径。
+发布页同时提供 `SHA256SUMS.txt` 与 `SOURCE_COMMIT.txt`。构建成功不代表所有平台均完成实机验证；Android 系统返回流程已在 Android 16 模拟器中验证。
 
-已保存的中继设置优先于安装包默认值，升级保留配对身份和手动配置。电脑端需保持运行并联网；手机退到后台不会停止电脑上的任务。
+当前源码正在准备 **1.3.2 候选版**：收敛为仅适配 Claude Desktop、修复任务完成通知、增加大于 1 MiB 文件预览前的大小确认、长电脑名下的连接状态展示、子代理实际响应模型、会话实时上下文水位展示、保存字号、手机端新建与移动原生 Section（含浏览电脑目录时按需新建文件夹），以及修复 Mac 新用户配置按钮置灰并按任务归类重排桌面 / 手机设置。这些还不是 1.3.1 发布包的能力；其中文件大小检查、Section 移动与按需新建文件夹需要同时升级电脑端。1.3.1 仍含独立 Codex / Hermes / DSH 适配器，本文不将其作为推荐上手路径。Claude Desktop 内部的 Gemini、Antigravity、Magpie 模型与额度功能属于 Desktop 接入，不等同于这些独立 Agent。
 
-## 会话与任务
+在 1.3.2 正式发布前，下方上手步骤仍保留已发布 1.3.1 的界面入口（候选版桌面设置已归入“设置 → Claude 接入 / 连接与启动”等分组）与手动回退方式。完整变更见 [Changelog](CHANGELOG.md)；技术文档随源码维护，可能描述候选版。
 
-### 继续已有工作
+## 开始前准备什么
 
-- 直接浏览 Desktop 的原生会话与历史，使用 Desktop 返回的会话 ID，查看 Markdown、工具调用、任务计划、子代理进度和完整报告。
-- Claude 输入通过 Desktop 的 `claude.web.LocalSessions` 原生接口提交；接收与完成分别记录，投递结果不确定时保留状态，不自动重发或另起执行器。
-- 区分主轮执行、等待授权、后台 Agent / Bash 与进程存活，避免把后台任务或 Fork 子进程误算为父会话一直忙碌。
-- 运行中可通过原生接口排队下一条指令；支持的运行时还可立即调整当前任务。Claude 队列由 Desktop 管理，Bridge 保留请求幂等、附件身份、收据和事件 replay。旧 Bridge 队列与手机缓存的 `bridgeExecutionRequested` 不会自动重发。
-- 授权与 `AskUserQuestion` 在手机和电脑之间同步，已处理的请求及时收起。停止任务、删除会话等操作保留确认。
-
-Bridge 的后台服务负责连接和事件转发；Claude 任务和队列由 Desktop 执行。关闭再打开 Bridge 窗口会重新连接服务；**关闭窗口与停止后台服务是不同的操作**。
-
-### 排队与回退
-
-- 对尚未开始处理的已提交、已接收或排队消息，使用 **Send now** 或撤回；操作始终指向原生消息，由 Desktop 判断是否仍可执行。
-- 消息旁的回退入口分别预览对话和文件资格。确认对话回退会停止当前任务，移除所选消息及之后的对话；文件恢复仍受原生检查点和忙碌状态限制。原文回填输入框，附件需重新添加。
-- 输出期间上翻会暂停跟随，回到底部后恢复；顶部补页保留阅读位置。工具完成和历史重放保留调用名称与参数。
-
-### 整理与创建会话
-
-- 按项目浏览、搜索和归档会话；Fork 按直接父子关系逐层展开，支持从分支继续创建分支。父会话归档后，活跃后代仍可查看。
-- Claude Fork 通过 Desktop 原生接口创建，历史边界由 Desktop 决定；分支共享工作目录，创建分支不会回滚文件。
-- 在会话列表或对话操作中重命名；Claude 会话更新通过 Desktop 原生接口提交。
-- 新建会话时，在同一入口选择最近工作文件夹或浏览电脑目录。点击子目录先进入，确认当前目录后才选中；项目分组与实际工作目录分别设置。
-- 返回目录再打开会话时保留未发送草稿。新建表单在浏览目录、取消文件夹选择和从文件夹选择返回时保留已填内容。
-
-### 模型、上下文与大会话
-
-- Claude 模型、思考强度和上下文用量通过 Desktop 原生接口读取或设置，能力以当前 Desktop 实际提供的接口为准。
-- 长回复可折叠并展开全文，保留压缩前后的历史与子代理报告。
-- 目录、历史和成果按需加载；逐步补页、延迟加载媒体，并合并频繁进度更新，减少大 JSONL、大回复与重连时的重复读取和传输。
-
-实际上下文容量、立即调整和模型设置生效方式取决于各原生运行时。Claude 权限请求与回答通过 Desktop 原生通道转发，Bridge 不安装 Host 权限 Hook，也不替 Desktop 作审批决定；历史问答不能作为实时审批提交。
-
-Claude 历史直接读取 Desktop 记录，不迁移旧数据、不关联旧逻辑 ID，也不提供旧历史入口或从旧队列恢复草稿；既有数据与配对 identity 不碰。退役旧连接组件时先写 `.bridge-backup`，只清理旧 `claude-bridge` MCP、固定 Bridge URL，以及带专有 header/env 标记的动态权限 Hook；无关 Hook、MCP 和用户设置保持原样。
-
-## 手机端怎么操作
-
-一级页面为**会话、电脑、设置**，通过顶栏左上角菜单切换。进入电脑或从菜单选择“会话”时打开会话目录，选择具体会话后才进入对话。
-
-| 要做的事 | 入口 |
+| 位置 | 职责与前置条件 |
 | --- | --- |
-| 新建会话、选择工作文件夹 | 会话目录右上角“+” |
-| 重命名、模型与会话设置、Fork、归档 | 会话行或对话顶栏“⋯” |
-| 查看成果与文件变化 | 对话“⋯”中的成果入口 |
-| 切换电脑、修改连接、管理配对 | 电脑页与电脑行“⋯” |
-| 外观、Agent 显示、Magpie 额度、诊断 | 设置页 |
+| 电脑 | 安装并登录 Claude Desktop 或 Claude-3p，确认能在电脑上正常使用本地 Code 会话；安装 Bridge，保持电脑开机、联网且 Desktop 运行 |
+| 手机 | 安装 Android Bridge，作为已配对电脑的操作界面；无需在手机配置模型 API Key |
+| 中继 | 两端能访问同一个 WebSocket 中继，用于配对、连接与直连失败时的转发；可以使用已有可信中继或[自行部署](docs/RELAY-REDEPLOY.md) |
 
-Android 系统返回键按页面层级工作：
+使用安装包不需要另外安装 Node.js、npm 或 Android SDK。服务器只需运行中继，不需要部署公网 WebUI。手机离开前台后，电脑任务继续；电脑休眠、断网或退出 Desktop 会影响连接与工作。
 
-- 软键盘显示时，先由系统收起键盘；菜单、弹窗和底部面板先关闭。
-- 成果返回对话，对话返回原目录或项目列表；项目和归档列表返回会话目录。
-- 电脑详情返回电脑列表，电脑和设置返回会话目录。
-- 会话目录根页再返回，应用退到后台；再次打开可以继续工作。
+## 第一次连接
 
-返回和切页不发送草稿，也不停止电脑端任务。完整页面规范见 [手机导航](docs/MOBILE-NAVIGATION.md)。
+### 1. 安装并打开电脑端
 
-## 预览与文件传输
+从上方下载 Bridge，解压并按包内安装方式安装。macOS 将 Bridge 放入“应用程序”后打开；若系统拦截未经公证的应用，请在核对来源后使用系统提供的“仍要打开”等入口。
 
-| 类型 | 支持范围 |
+先启动一次 Claude Desktop / Claude-3p 并完成登录，再打开 Bridge。Bridge 的“状态”页会分别显示 **Claude 通道**和**连接路径**：前者连接 Desktop，后者连接手机与中继，需要分别检查。
+
+### 2. 开启 Claude Desktop 的本机连接（macOS）
+
+这一步包含两个设置：允许 Desktop 显示开发者工具，以及开启主进程调试端口。
+
+1. 在 Bridge 打开 **设置 → 诊断与关于 → Claude Desktop 开发者工具**。如果同时检测到 `Claude` 与 `Claude-3p`，选择实际使用的配置目录。
+2. 检查 `developer_settings.json` 中的 `allowDevTools` 是否为 `true`。“一键开启”只负责写入这个字段；**它不等于开启 inspector，也不保证弹出 macOS 权限请求**。按钮置灰或检查失败时，按下方手动配置。
+3. 配置变更需要在 Desktop 下一次启动时加载。等当前任务结束，退出并重新打开 Claude Desktop / Claude-3p；Bridge 不会替你重启它。
+4. 在 Desktop 的原生菜单选择 **Developer → Enable Main Process Debugger**。默认连接地址为本机 `127.0.0.1:9229`。菜单可能受账号 / 工作区策略限制，原生操作也可能打开 Chrome 调试页。
+5. 回到 Bridge 检查“状态”中的 Claude 通道是否“已就绪”或“运行中”，并查看“诊断与关于 → 调试连接监测”的错误。端口开放本身不代表 `LocalSessions` 已可用。
+
+<details>
+<summary>按钮不可用时，手动配置 developer_settings.json</summary>
+
+使用与你运行的应用对应的文件：
+
+- Claude：`~/Library/Application Support/Claude/developer_settings.json`
+- Claude-3p：`~/Library/Application Support/Claude-3p/developer_settings.json`
+
+先启动一次对应应用，让它创建配置目录。等任务结束并退出 Desktop，备份现有文件，再用文本编辑器将 JSON 对象中的 `allowDevTools` 设为 `true`，保留其他字段。若文件不存在，在已有配置目录中新建：
+
+```json
+{
+  "allowDevTools": true
+}
+```
+
+确保文件是有效 JSON，再重新打开 Desktop，并从原生菜单开启主进程调试。不要将这段内容覆盖到 `claude_desktop_config.json`，那是另一份配置。出现文件权限或 JSON 错误时先处理具体错误，重新检查按钮不会代替修复文件。
+
+</details>
+
+**1.3.1 的自动开启尝试：** macOS 后台发现新的 Desktop 进程后，会尝试通过同一个原生菜单开启一次 inspector。它需要你在 **系统设置 → 隐私与安全性 → 辅助功能**中允许 Bridge，并在**自动化**中允许 Bridge 控制 System Events（若系统显示了此项）。这些是菜单自动化权限，与 JSON 文件写入分开。已开放的端口会跳过；实际操作失败或你手动关闭后，同一个 Desktop 进程中不会反复尝试，重启 Bridge 也不会重试。此时可直接使用 Desktop 原生菜单。首次授权弹窗与完整重启流程尚未完成已安装应用的端到端验收。
+
+**请保持 9229 仅供本机访问。** 它是有进程求值能力的调试端口，不应作为手机连接地址、转发到公网或暴露给中继。连接监测只提供提醒，不会阻止其他本机进程连接。
+
+### 3. 确认中继地址
+
+在电脑 Bridge 的 **状态 → 中继地址**检查当前值。如果需要自建或切换中继，填入完整的 WebSocket 地址，例如 `wss://relay.example.com/ws`，保存并重连；仅在可信局域网中使用明文 `ws://`。
+
+首次配对会把电脑的连接信息交给手机。已有配对要切换地址时，也在手机 **电脑 → 电脑行“⋯” → 连接与电脑设置 → 中继地址**修改为相同地址。
+
+**显式保存的中继地址优先于安装包默认值。** 升级不会自动覆盖手动设置，也不会自动重建配对身份。使用局域网中继时，手机必须能访问那台电脑或服务器的局域网地址，`127.0.0.1` 不能指向另一台设备。跨网络使用需要两端都可达的中继；WebRTC 直连不可用时会回退到加密中继。
+
+### 4. 配对手机并打开会话
+
+1. 电脑 Bridge 打开 **设备 → 添加手机**，生成一次性二维码。
+2. 手机首次启动选择“扫描二维码”，允许相机访问并扫描；也可将电脑复制的配对链接粘贴到手机。已有电脑时，从手机“电脑”页右上角“+”添加。
+3. 二维码十分钟内有效，并绑定首次使用它的手机安装；过期或换手机时重新生成。配对链接包含设备授权信息，请勿公开分享。
+4. 配对成功后进入会话目录，选择电脑上已有的 Code 会话。确认能加载历史，再发送一条指令。
+5. 需要新工作时，点会话目录右上角“+”，填写名称并选择电脑上的工作文件夹。浏览目录后确认当前目录，项目分组与实际工作目录分别选择。
+
+手机左上角菜单切换**会话、电脑、设置**。电脑列表负责切换与管理配对，会话页负责工作，设置页负责外观、额度与诊断。
+
+## 日常怎么用
+
+| 要做的事 | 操作与边界 |
 | --- | --- |
-| 图片 | 对话和成果内预览，手机端使用缩放图像减少等待 |
+| 继续对话 | 打开原生会话发送文本、图片或文件；Desktop 负责执行，Bridge 同步进度、工具调用、任务计划和子代理报告 |
+| 提前写下一步 | 任务运行中可排队发送，或在 Desktop 支持时“立即调整”；对尚未开始处理的原生消息，可用 **Send now** 或撤回，是否仍可操作由 Desktop 判断 |
+| 回答提问与授权 | 在会话的实时提问或授权入口答复；单选、多选、文本与可用的授权选项依请求而定，已处理请求会同步收起。历史卡片不能重新作为实时授权提交 |
+| 换模型或思考强度 | 会话行或对话顶栏“⋯” → 会话设置；可用模型、上下文容量和设置生效方式由 Desktop 提供 |
+| 回退对话或文件 | 已发送消息旁点“回退”，先预览并选择范围。对话回退会停止当前任务、移除所选消息及之后的对话，原文回填输入框、附件需重新添加；仅对话回退保留当前文件，文件恢复则受 Desktop 检查点与忙碌状态限制，会覆盖预览列出的文件 |
+| 开一个分支 | 会话“⋯” → Fork；历史边界由 Desktop 决定。**分支共享工作目录，Fork 不复制或回滚项目文件** |
+| 查看文件与成果 | 对话“⋯”中的成果入口，或消息里的工作区路径；支持预览和下载，限制见下表 |
+| 整理会话 | 搜索、按项目浏览、展开 Fork、重命名或归档；Git 项目分组可识别 worktree。删除会话会作用于 Desktop 原生会话与记录，请看清确认框 |
+| 阅读较早内容 | 上翻暂停自动跟随，回到底部恢复；返回目录保留未发送草稿，切页不发送草稿或停止任务 |
+
+Claude 的任务、队列和审批由 Desktop 管理，Bridge 不另起 Claude SDK / CLI 执行器。投递状态不确定时不会自动重发；先核对会话历史与状态，再决定下一步，避免重复指令。
+
+关闭 Bridge 窗口不会停止后台连接，手机仍可访问；停止 Bridge 后台服务会断开手机，Claude 原生任务的生命周期仍由 Desktop 管理。升级桌面端后，等任务结束，从托盘选择 **停止后台服务并退出…**，再打开新版，使后台代码也更新。详见[后台服务](docs/BACKGROUND-SERVICE.md)。
+
+## 文件与额度
+
+| 类型 | 1.3.1 支持范围 |
+| --- | --- |
+| 图片 | 对话与成果内预览，可使用缩放图像 |
 | PDF | 客户端内嵌查看，通过加密分块通道读取 |
-| 文本与代码 | 完整 UTF-8 文件，最大 **1 MiB**；Markdown 支持渲染 / 源码切换，常见代码支持高亮 |
-| 文件下载 | 从成果或对话中的工作区路径下载，单文件最大 **20 MiB**，保留工作区和敏感路径检查 |
-| 文件上传 | 图片和普通文件，单文件最大 **20 MiB**；显示进度，按 **256 KiB** 分块加密传输并核验 SHA-256 |
+| 文本 / 代码 | 完整、有效 UTF-8 文件，最大 **1 MiB**；Markdown 渲染 / 源码切换，常见语言高亮；超限或二进制文件请下载查看 |
+| 上传 / 下载 | 单文件最大 **20 MiB**，按 **256 KiB** 分块加密传输；下载 / 分享前校验完整文件哈希 |
 
-超限、二进制或无效 UTF-8 文本会明确报错，不以截断内容代替全文。上传文件保存在会话工作目录的 `.bridge-uploads/<uploadId>/<filename>`，发送时附上相对路径；可以只发送文件。从输入区移除附件不会删除已保存在电脑上的文件。
+远程文件读取受工作区与敏感路径检查约束，项目外文件、`.env`、私钥等不会因配对而开放。上传文件保存在会话工作目录的 `.bridge-uploads/<uploadId>/<filename>`，发送时附上相对路径；可以只发送文件。从输入框移除附件不会删除电脑上已上传的副本。
 
-## Claude Desktop 开发者工具
+使用兼容 Magpie Gateway 时，手机 **设置 → Magpie 额度**可查看账号、套餐、余额、额度窗口与重置时间，模型设置中也会显示相关读数。主动刷新会请求网关重新采样；旧读数、冷却和失败会单独显示，刷新不会切换账号或模型。Claude 的账号与模型执行配置仍在 Desktop 管理。连接配置与插件要求见 [Magpie 插件说明](plugins/magpie-quota/README.md)。
 
-macOS 电脑端打开“设置 → 诊断与关于 → Claude Desktop 开发者工具”，检查 `Claude` 或 `Claude-3p` 标准配置目录。两个目录都存在时需要选择目标；“一键开启”仅将该目录下 `developer_settings.json` 的 `allowDevTools` 设为 `true`，保留其他字段。检查不写入，已开启不重复改写，JSON 格式错误会显示错误并保留原文件。
+## 常见问题
 
-配置在 Claude Desktop 下一次启动时加载，Bridge 不自动重启它。后台沿现有 3 秒轮询发现新的主进程（PID、启动时间及完整可执行路径），通过原生 **Developer → Enable Main Process Debugger** 菜单尝试开启一次。请按 macOS 提示授予 Bridge“辅助功能”和对 System Events 的“自动化”权限；原生账号与 workspace 策略仍生效，回调可能打开 Chrome 调试页。
-
-端口已开放时跳过操作并记录本进程已处理；菜单尚未构建时继续等待。实际操作或权限失败会在“调试连接监测”显示具体错误，本次进程启动不反复尝试；可以手动使用原生菜单。记录保存在 Bridge 配置目录的 `claude-inspector-startup-v1.json`，同一 Desktop 进程中手动关闭后，即使重启 Bridge 后台也不会重新开启。设置 `BRIDGE_CLAUDE_INSPECTOR_URL` 时禁用真实 Desktop 菜单自动化。
-
-Bridge 后台每 3 秒检查当前用户可见的 9229 TCP 连接，用 macOS `proc_pidpath` 读取连接进程的完整可执行路径。当前 Bridge 应用包、`/Applications/Bridge.app/` 和 `/Applications/Google Chrome.app/` 内的进程属于认可路径；其他位置或路径无法识别时触发系统通知及窗口内告警。设置页显示 PID、完整路径和最近 20 条告警（当前后台运行期间）；同一进程持续连接不重复通知，断开后再次连接会再次提醒。关闭 Bridge 窗口后监测继续，停止后台服务后监测停止。
-
-这是按路径提醒的轮询监测，短连接可能漏检，不会阻止其他进程连接，也不会自动关闭调试端口。升级到带监测的版本时，需要在任务结束后停止旧后台服务再打开新版 Bridge；设置页会提示后台尚未提供监测状态。
-
-## Magpie 接入与额度
-
-Magpie 额度插件保留，Claude 的账号、模型与执行配置由 Desktop 管理。旧“提供方 → Magpie 连接”中的 Host 执行器配置与 standalone API Key lane 不再用于 Claude 执行；已有配置保留，凭据不会发送到手机或 Relay。
-
-使用兼容的 Magpie Gateway 时，可在“设置 → Magpie 额度”查看账号、套餐、各额度窗口、余额和重置时间；会话模型选择中也会显示相应额度信息。
-
-- 按需读取，看板和模型设置共用读数；没有后台定时轮询。
-- 点击刷新会主动请求当前网关可见的本机账号重新采样。远端来源保留原采样并标明状态，不转发本机认证。
-- 区分 Bridge 读取时间和上游采样时间；冷却、旧读数和失败都有对应提示，HTTP 成功不等于取得了新采样。
-- 断线或离开页面后不自动重放主动刷新。刷新额度不会切换账号、模型或路由。
-
-详见 [插件说明](plugins/magpie-quota/README.md)。
-
-## 连接与数据边界
-
-```mermaid
-flowchart LR
-  Phone[Android 客户端] <-->|WebRTC| Host[本机 Bridge]
-  Phone <-->|WS / WSS| Relay[自托管中继]
-  Host <-->|WS / WSS| Relay
-  Host -->|本机 Node inspector| Claude[Claude Desktop LocalSessions]
-  Host --> Runtime[Codex / Hermes / DSH 原生接入]
-```
-
-手机与 Bridge 之间的业务正文使用每设备 AES-256-GCM 端到端加密。中继可见连接、路由、密文与队列元数据。支持 WebRTC 直连和中继回退，实际连接方式取决于网络与 ICE 配置。
-
-本 fork 的日常部署是**本机 Bridge + Android 客户端，服务器只运行中继**，无需向公网部署 WebUI。Web/PWA 保留供开发使用，各运行时的账号和会话保持隔离。
-
-Claude 接入从 `http://127.0.0.1:9229/json/list` 动态取得 WebSocket，通过 `process.mainModule.require('electron')` 找到 `app://localhost` WebContents，再以 `executeJavaScript` 调用 `claude.web.LocalSessions`。用户已选择常开该本机 inspector，本次选择覆盖旧文档“绝不 CDP / 不附着”的 Claude 限制；允许每个 Desktop 进程启动后通过辅助功能触发一次原生调试菜单，不改 asar、不签 token、不重启 Desktop、不添加 LaunchAgent，也不使用 SIGUSR1 或调试启动参数。Relay 不提供任意 evaluate 入口，也不接收账号凭据。
-
-| 文档 | 内容 |
+| 现象 | 先检查 |
 | --- | --- |
-| [架构](docs/ARCHITECTURE.md) | Host、协议、运行时与数据流 |
-| [安全模型](docs/SECURITY.md) | 加密、配对、权限与文件边界 |
-| [中继部署](docs/RELAY-REDEPLOY.md) | 自托管中继与迁移 |
-| [后台服务](docs/BACKGROUND-SERVICE.md) | 窗口、后台进程与状态恢复 |
+| Mac 的“一键开启”一直置灰 | 是否先启动过对应 Desktop、选对 `Claude` / `Claude-3p` 目录、已经开启，或存在具体读取 / JSON 错误；使用上方手动配置路径。不要把按钮置灰当成等待系统授权 |
+| 没有 Developer 菜单，或无法开启调试 | `allowDevTools` 修改后是否完整退出并重开 Desktop；查看账号 / 工作区策略。自动尝试失败后可手动使用菜单，Bridge 不会绕过原生限制 |
+| 端口开了但没有会话 / 无法操作 | 查看“状态 → Claude 通道”的具体错误；Desktop 是否仍运行、对应 Code 会话是否存在、当前构建是否提供所需 `LocalSessions` 方法。普通网页聊天不会从这里导入 |
+| 配对失败或二维码过期 | 重新生成二维码，确认电脑 Bridge 已连上可达中继；扫描不可用时粘贴链接 |
+| 手机显示电脑离线 | 电脑是否休眠 / 断网，Bridge 后台是否运行，两端保存的中继地址是否一致且可达，TLS 与 `/ws` 路径是否正确 |
+| 更新了窗口，仍显示旧能力 | 旧后台服务可能仍在运行；等任务结束后停止后台并重新打开 Bridge，两端尽量同版 |
+| 消息一直排队或投递未确认 | 先看 Desktop 的当前任务、授权等待和原生队列，再核对历史；不要因为网络超时重复发送 |
+| 文件预览失败 | 文件是否在工作区、仍存在且可读；是否触及敏感路径、1 MiB 文本预览或 20 MiB 传输限制 |
+| 锁屏后收不到即时通知 | 先检查系统通知权限；在线本地提醒不等于后台推送。FCM / APNs 需要另配应用与服务凭据，最小中继部署不提供锁屏即时唤醒保证 |
 
-## 自建中继
+继续排查时，电脑可在“状态”或“设置 → 诊断与关于”导出诊断；手机在 **设置 → 连接诊断与日志**查看连接问题。反馈版本、平台、出错步骤与具体提示，勿附配对链接、密钥或聊天正文。可以在[本 fork 的 Issues](https://github.com/Lycidas97/claude-desktop-bridge/issues)反馈可复现问题。
 
-服务器使用 Docker Engine 与 Docker Compose，从本 fork 的 `main` 源码构建中继镜像。提供独立的 [仅中继 Compose](deploy/relay-only.compose.yml) 和 [自动 TLS 配置](deploy/relay-only.Caddyfile)：只有 Relay 与 Caddy，公网 TCP 80 / 443，Relay 的 8788 只在 Docker 网络内使用。HTTPS 根路径和 `/metrics` 返回 404。
+## 部署、原理与开发
 
-在已克隆的仓库根目录创建配置：
+手机与电脑之间的业务正文使用每设备 AES-256-GCM 端到端加密。Relay 转发密文，可见连接、路由、大小和队列元数据；账号凭据不发送到手机或 Relay。WebRTC 与中继使用同一配对身份，电脑无需将 inspector 暴露给手机。
 
-```bash
-cp deploy/relay-only.env.example .env
-```
+| 文档 | 适合什么时候看 |
+| --- | --- |
+| [自建中继](docs/RELAY-REDEPLOY.md) · [部署配置](deploy/README.md) | 首次部署 WSS、迁移地址、备份或升级；提供 Relay + Caddy 的最小方案 |
+| [安全模型](docs/SECURITY.md) | 理解配对、调试端口、文件访问与数据边界 |
+| [架构](docs/ARCHITECTURE.md) · [原生接入验收记录](docs/HOSTING-REFACTOR.md) | 了解 `LocalSessions`、数据流和实际验证范围；历史实现另有标记 |
+| [后台服务](docs/BACKGROUND-SERVICE.md) | 区分窗口与服务，排查启动、断线和更新 |
+| [贡献指南](CONTRIBUTING.md) · [测试说明](docs/testing.md) | 从源码开发、构建与验证 |
 
-将 `.env` 中的 `BRIDGE_DOMAIN` 改为自己的域名，确保 DNS 指向服务器、80 / 443 可达，再构建并启动：
-
-```bash
-docker compose --env-file .env -f deploy/relay-only.compose.yml up -d --build
-```
-
-两端中继地址均填写 `wss://你的域名/ws`。数据库、备份与 TLS 证书使用持久化卷。完整的首次安装、WSS 探测、两端配置、备份与升级步骤见 [自建中继指南](docs/RELAY-REDEPLOY.md)。已有反向代理或旧中继部署时，先按指南确认端口与原数据卷。
-
-## 开发与验证
-
-开发与 CI 使用 **Node.js 26 LTS** 和 npm，版本选择见 [.nvmrc](.nvmrc)；安装了 nvm 时，可先运行 `nvm install` 和 `nvm use`。最低兼容版本仍为 Node.js 22.13。Electron 使用其自带的 Node.js 运行时。Android 构建另需 JDK 21 与 Android SDK，桌面和 iOS 构建需要对应平台工具链。
-
-```bash
-git clone https://github.com/Lycidas97/claude-desktop-bridge.git
-```
-
-```bash
-cd claude-desktop-bridge
-```
+开发与 CI 使用 [.nvmrc](.nvmrc) 指定的 **Node.js 26 LTS** 和 npm。克隆本 fork 后，在仓库根目录依次运行：
 
 ```bash
 npm ci
@@ -184,33 +171,6 @@ npm run build -w @bridge/protocol
 npm run dev:desktop
 ```
 
-开发模式启动本地 Relay（`ws://127.0.0.1:8788/ws`）、React 客户端（`http://localhost:5188`）和 Electron Host。构建默认连接参数见 [.env.example](.env.example)，安装后的手动设置优先。
+开发模式启动本地 Relay、React 客户端和 Electron Bridge；手机不能通过自己的 `127.0.0.1` 访问电脑服务。构建默认参数见 [.env.example](.env.example)，安装后的手动连接设置优先。Android / iOS 打包还需要对应平台工具链；测试与发布规则见贡献指南。
 
-| 命令 | 用途 |
-| --- | --- |
-| `npm run verify` | 全部类型检查、五组回归测试和完整构建 |
-| `npm test` | 桌面、客户端、协议、中继、Magpie 插件回归 |
-| `npm run test:infra` | 测试入口、失败传播与回收站清理约定 |
-| `npm run test:browser` | 实际 App、加密协议和本地中继上的八个场景，分别验证明暗主题 |
-| `npm run ci:run -- run build:android:debug` | 构建 Android APK，并检查原生插件注册和全部 DEX |
-| `npm run ci:run -- run make:adhoc -w @bridge/desktop` | 构建 macOS ad-hoc 测试安装包 |
-
-验证入口通过系统回收站清理 Node 临时文件；Linux 需安装 `trash-cli`。浏览器测试的桌面响应和模型输出为模拟数据，不访问生产会话。浏览器准备、报告位置与覆盖范围见 [测试说明](docs/testing.md)。
-
-本 fork 主要在 macOS + Android 上验证。Android 系统返回已在 Android 16 模拟器中验收；Windows、Linux、iOS 保留构建和 CI 入口，但构建通过不代表各平台实机体验已完成验收。macOS ad-hoc 包未经 Apple 公证，iOS 无签名构建也不等于可直接安装的 IPA。
-
-版本统一后由 `main` 自动创建 Release 草稿，平台产物任务全部成功才公开发布。完整规则见 [贡献指南](CONTRIBUTING.md#release-rules)，历次功能与修复见 [Changelog](CHANGELOG.md)。
-
-## 目录与来源
-
-| 目录 | 内容 |
-| --- | --- |
-| `apps/client` | 手机与桌面共享 React 界面 |
-| `apps/desktop` | Electron Host、后台服务、会话与文件传输 |
-| `apps/mobile` | Android / iOS Capacitor 壳 |
-| `apps/relay` | 密文中继与推送唤醒 |
-| `packages/protocol` | 协议、配对、加密与可靠传输 |
-| `plugins/magpie-quota` | 额度读取、主动刷新与展示 |
-| `scripts` / `deploy` / `docs` | 验证、构建、部署与技术文档 |
-
-感谢 [czhmartinez/claude-desktop-bridge](https://github.com/czhmartinez/claude-desktop-bridge) 的原始项目与多运行时基础。本 fork 保留 **MIT** 许可证，见 [LICENSE](LICENSE)。
+感谢 [czhmartinez/claude-desktop-bridge](https://github.com/czhmartinez/claude-desktop-bridge) 的原始项目。本 fork 保留 **MIT** 许可证，见 [LICENSE](LICENSE)。

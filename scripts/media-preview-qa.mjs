@@ -129,9 +129,7 @@ try {
           onPreviewArtifact: noop, onDownloadArtifact: noop, onSendTurn: noop, onInterruptTurn: noop,
           onResolveUncertain: noop, onResolvePermission: noop, onCreateSession: noop, onLoadSessionConfiguration: noop,
           onConfigureSession: noop, onPreviewProviderSwitch: noop, onCommitProviderSwitch: noop,
-          onCancelProviderSwitch: noop, onRefreshProviders: noop, onPreviewRuntimeHandoff: noop,
-          onCommitRuntimeHandoff: noop, onConfirmRuntimeHandoff: noop, onCancelRuntimeHandoff: noop,
-          onGetRuntimeHandoff: noop, onPauseRuntimeGoal: noop, onResumeRuntimeGoal: noop,
+          onCancelProviderSwitch: noop, onRefreshProviders: noop,
           onDesktopAppAction: noop, onRefresh: async () => true, onBackToHosts: noop, onRetry: noop,
         })));
       ` }));

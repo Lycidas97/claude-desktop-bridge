@@ -8,7 +8,7 @@
 
 Bridge 将电脑上的会话、任务进度、授权提问和工作区文件带到手机。你可以继续已有会话、排队发送下一条指令、创建 Fork、查看子代理和成果，也可以在离开电脑后处理等待中的授权。
 
-这是独立维护的 fork，主要围绕 **macOS + Android + Claude** 完善日常使用。安装包与发布状态以本仓库的 [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) 为准。保留上游 Codex、Hermes、DSH 适配器，默认只显示 Claude，其他 Agent 可在设置中启用。
+这是独立维护的 fork，主要围绕 **macOS + Android + Claude** 完善日常使用。安装包与发布状态以本仓库的 [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) 为准。当前仅适配 Claude Desktop（含 Claude-3p）；Codex、Hermes、DSH 独立 Agent 适配与跨 Agent 接力已下线。旧配置及已存历史数据保留，Claude Desktop 内部的 Gemini、Antigravity、Magpie 等模型与额度功能继续可用。
 
 **1.3.1 改善原生权限同步与连接体验**：修复权限卡的增减、迟到快照和重连恢复，加入协商后的端到端压缩与 Git 项目分组，折叠原生/Fork 通知并同步 Android 系统栏主题。macOS 可在每次发现新的 Claude Desktop 进程后，尝试一次原生调试菜单；需要用户授予辅助功能与自动化权限。会话执行、队列和权限仍由 Desktop 的 `LocalSessions` 管理。完整变化见[更新记录](CHANGELOG.md)，原生验证范围见[重构记录](docs/HOSTING-REFACTOR.md)。
 
@@ -31,7 +31,7 @@ Bridge 将电脑上的会话、任务进度、授权提问和工作区文件带�
 - 直接浏览 Desktop 的原生会话与历史，使用 Desktop 返回的会话 ID，查看 Markdown、工具调用、任务计划、子代理进度和完整报告。
 - Claude 输入通过 Desktop 的 `claude.web.LocalSessions` 原生接口提交；接收与完成分别记录，投递结果不确定时保留状态，不自动重发或另起执行器。
 - 区分主轮执行、等待授权、后台 Agent / Bash 与进程存活，避免把后台任务或 Fork 子进程误算为父会话一直忙碌。
-- 运行中可通过原生接口排队下一条指令；支持的运行时还可立即调整当前任务。Claude 队列由 Desktop 管理，Bridge 保留请求幂等、附件身份、收据和事件 replay。旧 Bridge 队列与手机缓存的 `bridgeExecutionRequested` 不会自动重发。
+- 运行中可通过 Claude Desktop 原生接口排队下一条指令；立即调整是否可用由 Desktop 决定。Claude 队列由 Desktop 管理，Bridge 保留请求幂等、附件身份、收据和事件 replay。旧 Bridge 队列与手机缓存的 `bridgeExecutionRequested` 不会自动重发。
 - 授权与 `AskUserQuestion` 在手机和电脑之间同步，已处理的请求及时收起。停止任务、删除会话等操作保留确认。
 
 Bridge 的后台服务负责连接和事件转发；Claude 任务和队列由 Desktop 执行。关闭再打开 Bridge 窗口会重新连接服务；**关闭窗口与停止后台服务是不同的操作**。
@@ -56,7 +56,7 @@ Bridge 的后台服务负责连接和事件转发；Claude 任务和队列由 De
 - 长回复可折叠并展开全文，保留压缩前后的历史与子代理报告。
 - 目录、历史和成果按需加载；逐步补页、延迟加载媒体，并合并频繁进度更新，减少大 JSONL、大回复与重连时的重复读取和传输。
 
-实际上下文容量、立即调整和模型设置生效方式取决于各原生运行时。Claude 权限请求与回答通过 Desktop 原生通道转发，Bridge 不安装 Host 权限 Hook，也不替 Desktop 作审批决定；历史问答不能作为实时审批提交。
+实际上下文容量、立即调整和模型设置生效方式取决于 Claude Desktop。Claude 权限请求与回答通过 Desktop 原生通道转发，Bridge 不安装 Host 权限 Hook，也不替 Desktop 作审批决定；历史问答不能作为实时审批提交。
 
 Claude 历史直接读取 Desktop 记录，不迁移旧数据、不关联旧逻辑 ID，也不提供旧历史入口或从旧队列恢复草稿；既有数据与配对 identity 不碰。退役旧连接组件时先写 `.bridge-backup`，只清理旧 `claude-bridge` MCP、固定 Bridge URL，以及带专有 header/env 标记的动态权限 Hook；无关 Hook、MCP 和用户设置保持原样。
 
@@ -126,12 +126,11 @@ flowchart LR
   Phone <-->|WS / WSS| Relay[自托管中继]
   Host <-->|WS / WSS| Relay
   Host -->|本机 Node inspector| Claude[Claude Desktop LocalSessions]
-  Host --> Runtime[Codex / Hermes / DSH 原生接入]
 ```
 
 手机与 Bridge 之间的业务正文使用每设备 AES-256-GCM 端到端加密。中继可见连接、路由、密文与队列元数据。支持 WebRTC 直连和中继回退，实际连接方式取决于网络与 ICE 配置。
 
-本 fork 的日常部署是**本机 Bridge + Android 客户端，服务器只运行中继**，无需向公网部署 WebUI。Web/PWA 保留供开发使用，各运行时的账号和会话保持隔离。
+本 fork 的日常部署是**本机 Bridge + Android 客户端，服务器只运行中继**，无需向公网部署 WebUI。Web/PWA 保留供开发使用，账号、会话执行和权限由 Claude Desktop 管理。
 
 Claude 接入从 `http://127.0.0.1:9229/json/list` 动态取得 WebSocket，通过 `process.mainModule.require('electron')` 找到 `app://localhost` WebContents，再以 `executeJavaScript` 调用 `claude.web.LocalSessions`。用户已选择常开该本机 inspector，本次选择覆盖旧文档“绝不 CDP / 不附着”的 Claude 限制；允许每个 Desktop 进程启动后通过辅助功能触发一次原生调试菜单，不改 asar、不签 token、不重启 Desktop、不添加 LaunchAgent，也不使用 SIGUSR1 或调试启动参数。Relay 不提供任意 evaluate 入口，也不接收账号凭据。
 

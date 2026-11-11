@@ -20,7 +20,7 @@ function nativeSnapshot() {
       capabilities: [
         "evidence.v1", "evidence.details.v1", "artifact.preview.v1",
         "artifact.transfer.v1", "artifact.text-preview.v1", "workspace.upload.v1",
-        "claude.native-relay.v1", "permission.policy.v1", "permission.runtime-defaults.v1",
+        "claude.native-relay.v1",
         "directory.browse.v1", "runtime.adapter.v1", "session.visibility.v1",
         "session.commands.v1", "session.command.v1", "subagent.stop.v1",
         "turn.queue.steer.v1", "turn.queue.cancel.v1", "plugin.magpie-quota.v1",
@@ -102,7 +102,7 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
 
 test("packaged QA keeps Native configuration/evidence checks with optional runtime capabilities", async () => {
   const snapshot = nativeSnapshot();
-  snapshot.host.capabilities.push("session.rewind.v1", "session.rename.v1", "runtime.handoff.v1");
+  snapshot.host.capabilities.push("session.rewind.v1", "session.rename.v1");
   snapshot.runtime.state = "ready";
   snapshot.runtime.desktopIntegration.state = "ready";
   snapshot.runtimes[0].state = "ready";

@@ -3,7 +3,6 @@ import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchMobileBack, registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
-import { HostPermissionSettings, PermissionModeControls } from "./HostPermissionSettings.js";
 import { SessionConfigurationDialog } from "./SessionConfigurationDialog.js";
 import { SessionRewindDialog } from "./SessionRewindDialog.js";
 import { MagpieModelQuota } from "../../../../plugins/magpie-quota/client.js";
@@ -72,10 +71,6 @@ function button(tree: ReactElement, text: string): ReactElement<Record<string, a
   return elements(tree).find((element) => element.type === "button" && textContent(element.props.children).trim() === text)!;
 }
 
-function control(tree: ReactElement): ReactElement<Record<string, any>> {
-  return elements(tree).find((element) => element.type === PermissionModeControls)!;
-}
-
 function confirmation(tree: ReactElement): ReactElement<Record<string, any>> {
   return elements(tree).find((element) => element.type === ConfirmationDialog)!;
 }
@@ -96,7 +91,7 @@ afterEach(() => {
 });
 
 const session = {
-  sessionId: "session-1", title: "Task", runtimeId: "codex-desktop", turnState: "idle",
+  sessionId: "session-1", title: "Task", runtimeId: "claude-desktop", transport: "claude-desktop-native", turnState: "idle",
 } as BridgeSessionInfo;
 const configuration: BridgeSessionConfiguration = {
   sessionId: session.sessionId,
@@ -109,17 +104,6 @@ const configuration: BridgeSessionConfiguration = {
   appliesAfterTurn: false,
   permissionPolicy: { hostMode: "full-access", effectiveMode: "full-access", source: "host" },
 };
-
-function snapshot(): BridgeHostSnapshot {
-  return {
-    host: { hostId: "computer", capabilities: ["permission.policy.v1"], defaultPermissionMode: "standard" },
-    sessions: [
-      { sessionId: "codex-desktop:first", runtimeId: "codex-desktop", lastActivityAt: 2 },
-      { sessionId: "hermes-desktop:first", runtimeId: "hermes-desktop", lastActivityAt: 1 },
-    ],
-    runtimes: [{ id: "codex-desktop" }, { id: "hermes-desktop" }, { id: "dsh-desktop" }],
-  } as BridgeHostSnapshot;
-}
 
 describe("session effort", () => {
   it("shows and saves the nearest level the model supports instead of an unsupported current effort", async () => {
@@ -134,8 +118,7 @@ describe("session effort", () => {
       availableEffortLevels: ["low", "medium", "high"] as const,
     } as BridgeSessionConfiguration;
     const props = {
-      session, onLoad: vi.fn().mockResolvedValue(gemini), onSave: vi.fn().mockResolvedValue(gemini),
-      onConfigurePermission: vi.fn(), onClose: vi.fn(),
+      session, onLoad: vi.fn().mockResolvedValue(gemini), onSave: vi.fn().mockResolvedValue(gemini), onClose: vi.fn(),
     };
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
     draw();
@@ -179,7 +162,7 @@ describe("native Claude session configuration", () => {
   it("saves native permissionMode through session.configure and confirms bypassPermissions", async () => {
     const native = { ...configuration, nativePermissionMode: "default", availableModels: [], availableEffortLevels: [] } as BridgeSessionConfiguration;
     const props = { session: { ...session, runtimeId: "claude-desktop" as const, transport: "claude-desktop-native" as const },
-      onLoad: vi.fn().mockResolvedValue(native), onSave: vi.fn().mockResolvedValue(native), onConfigurePermission: vi.fn(), onClose: vi.fn() };
+      onLoad: vi.fn().mockResolvedValue(native), onSave: vi.fn().mockResolvedValue(native), onClose: vi.fn() };
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
     draw(); await settle();
     let tree = draw();
@@ -190,22 +173,51 @@ describe("native Claude session configuration", () => {
     expect(props.onSave).not.toHaveBeenCalled();
     confirmation(tree).props.onConfirm(); await settle();
     expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ permissionMode: "bypassPermissions" });
-    expect(props.onConfigurePermission).not.toHaveBeenCalled();
+  });
+
+  it("closes native full-access confirmation before the workspace on mobile back and keeps the draft", async () => {
+    const native = { ...configuration, nativePermissionMode: "default", availableModels: [], availableEffortLevels: [] } as BridgeSessionConfiguration;
+    const props = { session, onLoad: vi.fn().mockResolvedValue(native), onSave: vi.fn(), onClose: vi.fn() };
+    const workspaceBack = vi.fn(() => true);
+    const removeWorkspace = registerMobileBackHandler(workspaceBack, 100);
+    try {
+      const draw = () => render(() => <SessionConfigurationDialog {...props} />);
+      draw(); await settle();
+      let tree = draw();
+      elements(tree).find(element => element.props["aria-label"] === "Desktop 授权模式")!
+        .props.onChange({ target: { value: "bypassPermissions" } });
+      tree = draw();
+      button(tree, "保存配置").props.onClick();
+      tree = draw();
+      expect(confirmation(tree).props.open).toBe(true);
+      expect(dispatchMobileBack()).toBe(true);
+      expect(workspaceBack).not.toHaveBeenCalled();
+      tree = draw();
+      expect(confirmation(tree).props.open).toBe(false);
+      expect(elements(tree).find(element => element.props["aria-label"] === "Desktop 授权模式")!.props.value).toBe("bypassPermissions");
+      expect(props.onSave).not.toHaveBeenCalled();
+      expect(props.onClose).not.toHaveBeenCalled();
+      expect(dispatchMobileBack()).toBe(true);
+      expect(workspaceBack).toHaveBeenCalledOnce();
+      expect(props.onSave).not.toHaveBeenCalled();
+      expect(props.onClose).not.toHaveBeenCalled();
+    } finally {
+      removeWorkspace();
+    }
   });
 
   it("shows only native configuration options and ignores legacy Bridge permission policies", async () => {
     const props = { session: { ...session, runtimeId: "claude-desktop" as const, transport: "claude-desktop-native" as const },
       onLoad: vi.fn().mockResolvedValue({ ...configuration, availableModels: [], availableEffortLevels: [], supportsFastMode: false }),
-      onSave: vi.fn(), onConfigurePermission: vi.fn(), onClose: vi.fn() };
+      onSave: vi.fn(), onClose: vi.fn() };
     const draw = () => render(() => <SessionConfigurationDialog {...props} />);
     draw(); await settle();
     const tree = draw();
-    expect(control(tree)).toBeUndefined();
+    expect(elements(tree).some(element => element.props["aria-label"] === "授权等级")).toBe(false);
     expect(elements(tree).some(element => element.type === "select")).toBe(false);
     expect(button(tree, "保存配置").props.disabled).toBe(true);
     expect(textContent(tree)).not.toContain("Host");
     expect(elements(tree).some(element => element.type === MagpieModelQuota)).toBe(false);
-    expect(props.onConfigurePermission).not.toHaveBeenCalled();
   });
 });
 
@@ -338,196 +350,5 @@ describe("session rewind confirmation", () => {
     expect(textContent(draw())).toContain("Native rewind refused");
     expect(props.onComplete).not.toHaveBeenCalled();
     expect(props.onClose).not.toHaveBeenCalled();
-  });
-});
-
-describe("session authorization scope", () => {
-  it("reloads an open form after the other end confirms a settings change", async () => {
-    const props = { session, revision: 1, onLoad: vi.fn().mockResolvedValue(configuration), onSave: vi.fn(), onClose: vi.fn() };
-    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
-    draw(); await settle(); draw();
-    props.onLoad.mockResolvedValue({ ...configuration, model: "remote-model", availableModels: [{ value: "remote-model", displayName: "Remote" }] });
-    props.revision = 2;
-    draw(); await settle();
-    const tree = draw();
-    expect(props.onLoad).toHaveBeenCalledTimes(2);
-    expect(elements(tree).find((element) => element.type === "select")?.props.value).toBe("remote-model");
-  });
-
-  it("keeps mobile scope on the session through loading, inherit, and save", async () => {
-    const onConfigurePermission = vi.fn().mockResolvedValue(configuration);
-    const props = {
-      session, permissionScope: "session" as const,
-      onLoad: vi.fn().mockResolvedValue(configuration),
-      onSave: vi.fn(), onConfigurePermission, onClose: vi.fn(),
-    };
-    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
-    draw();
-    await settle();
-    let tree = draw();
-    expect(control(tree).props).toMatchObject({ scope: "session", value: "inherit" });
-    expect(button(tree, "整台电脑")).toBeUndefined();
-    button(tree, "保存授权模式").props.onClick();
-    await settle();
-    expect(onConfigurePermission).toHaveBeenCalledWith("session", null);
-
-    props.onLoad.mockResolvedValue({
-      ...configuration,
-      permissionPolicy: { ...configuration.permissionPolicy, sessionMode: "standard", effectiveMode: "standard", source: "session" },
-    });
-    props.session = { ...session, sessionId: "session-2" };
-    draw();
-    await settle();
-    tree = draw();
-    expect(control(tree).props).toMatchObject({ scope: "session", value: "standard" });
-    control(tree).props.onInherit();
-    tree = draw();
-    expect(control(tree).props.value).toBe("inherit");
-  });
-
-  it("defaults desktop configuration to the current session and cannot change host scope", async () => {
-    const props = {
-      session, onLoad: vi.fn().mockResolvedValue(configuration), onSave: vi.fn(),
-      onConfigurePermission: vi.fn().mockResolvedValue(configuration), onClose: vi.fn(),
-    };
-    const draw = () => render(() => <SessionConfigurationDialog {...props} />);
-    draw();
-    await settle();
-    const tree = draw();
-    expect(control(tree).props).toMatchObject({ scope: "session", value: "inherit" });
-    expect(button(tree, "整台电脑")).toBeUndefined();
-    button(tree, "保存授权模式").props.onClick();
-    await settle();
-    expect(props.onConfigurePermission).toHaveBeenCalledWith("session", null);
-  });
-
-  it("closes full-access confirmation before the workspace on mobile back", async () => {
-    const props = {
-      session, permissionScope: "session" as const,
-      onLoad: vi.fn().mockResolvedValue(configuration), onSave: vi.fn(),
-      onConfigurePermission: vi.fn().mockResolvedValue(configuration), onClose: vi.fn(),
-    };
-    const workspaceBack = vi.fn(() => true);
-    const removeWorkspace = registerMobileBackHandler(workspaceBack, 100);
-    try {
-      const draw = () => render(() => <SessionConfigurationDialog {...props} />);
-      draw();
-      await settle();
-      let tree = draw();
-      control(tree).props.onChange("full-access");
-      tree = draw();
-      button(tree, "保存授权模式").props.onClick();
-      tree = draw();
-      expect(confirmation(tree).props.open).toBe(true);
-      expect(props.onConfigurePermission).not.toHaveBeenCalled();
-      expect(dispatchMobileBack()).toBe(true);
-      expect(workspaceBack).not.toHaveBeenCalled();
-      tree = draw();
-      expect(confirmation(tree).props.open).toBe(false);
-      expect(props.onClose).not.toHaveBeenCalled();
-      dispatchMobileBack();
-      expect(workspaceBack).toHaveBeenCalledOnce();
-    } finally {
-      removeWorkspace();
-    }
-  });
-});
-
-describe("host default authorization", () => {
-  it("configures a runtime default before any native session exists", async () => {
-    const host = snapshot();
-    host.host.capabilities.push("permission.runtime-defaults.v1");
-    host.sessions = [];
-    host.runtimes = [{ id: "dsh-desktop", defaultPermissionMode: "full-access" }] as NonNullable<BridgeHostSnapshot["runtimes"]>;
-    const props = {
-      snapshot: host,
-      onLoadSessionConfiguration: vi.fn(),
-      onConfigureHostPermission: vi.fn().mockResolvedValue("standard"),
-    };
-    const draw = () => render(() => <HostPermissionSettings {...props} />);
-    draw();
-    draw();
-    let tree = draw();
-    expect(control(tree)?.props.value).toBe("full-access");
-    control(tree).props.onChange("standard");
-    tree = draw();
-    button(tree, "保存 DSH 默认授权").props.onClick();
-    await settle();
-    tree = draw();
-    expect(props.onConfigureHostPermission).toHaveBeenCalledWith("dsh-desktop", "standard", undefined);
-    expect(props.onLoadSessionConfiguration).not.toHaveBeenCalled();
-    expect(control(tree).props.value).toBe("standard");
-  });
-
-  it("disables remote defaults while offline without losing the last confirmed mode", async () => {
-    const props = { snapshot: snapshot(), connected: false, onLoadSessionConfiguration: vi.fn().mockResolvedValue({ ...configuration, permissionPolicy: { hostMode: "standard", effectiveMode: "standard", source: "host" } }), onConfigureHostPermission: vi.fn() };
-    const draw = () => render(() => <HostPermissionSettings {...props} />);
-    draw();
-    await settle();
-    const tree = draw();
-    expect(control(tree).props.disabled).toBe(true);
-    expect(control(tree).props.value).toBe("standard");
-    expect(textContent(tree)).toContain("电脑未连接");
-  });
-  it("does not offer Claude Bridge default authorization even on an old policy-capable host", async () => {
-    const props = { snapshot: snapshot(), onLoadSessionConfiguration: vi.fn().mockResolvedValue(configuration), onConfigureHostPermission: vi.fn() };
-    const draw = () => render(() => <HostPermissionSettings {...props} />);
-    draw(); await settle();
-    const tree = draw();
-    expect(button(tree, "Claude")).toBeUndefined();
-    expect(button(tree, "保存 Claude 默认授权")).toBeUndefined();
-    expect(textContent(tree)).toContain("Claude 授权由 Claude Desktop 管理");
-    expect(props.onConfigureHostPermission).not.toHaveBeenCalled();
-  });
-
-  it("loads each app's host default and reloads that app after saving", async () => {
-    const props = {
-      snapshot: snapshot(),
-      onLoadSessionConfiguration: vi.fn().mockResolvedValue({
-        ...configuration,
-        permissionPolicy: { hostMode: "full-access", sessionMode: "standard", effectiveMode: "standard", source: "session" },
-      }),
-      onConfigureHostPermission: vi.fn().mockResolvedValue(undefined),
-    };
-    const draw = () => render(() => <HostPermissionSettings {...props} />);
-    let tree = draw();
-    button(tree, "Codex").props.onClick();
-    draw();
-    await settle();
-    tree = draw();
-    expect(props.onLoadSessionConfiguration).toHaveBeenCalledWith("codex-desktop:first");
-    expect(control(tree).props.value).toBe("full-access");
-    control(tree).props.onChange("standard");
-    tree = draw();
-    props.onLoadSessionConfiguration.mockResolvedValue({ ...configuration, permissionPolicy: {
-      hostMode: "standard", effectiveMode: "standard", source: "host",
-    } });
-    button(tree, "保存 Codex 默认授权").props.onClick();
-    await settle();
-    tree = draw();
-    expect(props.onConfigureHostPermission).toHaveBeenCalledWith("codex-desktop", "standard", "codex-desktop:first");
-    expect(props.onLoadSessionConfiguration).toHaveBeenCalledTimes(2);
-    expect(control(tree).props.value).toBe("standard");
-    button(tree, "Hermes").props.onClick();
-    draw();
-    await settle();
-    expect(props.onLoadSessionConfiguration).toHaveBeenLastCalledWith("hermes-desktop:first");
-  });
-
-  it("shows the external session limit and prevents saving a malformed runtime reference", async () => {
-    const host = snapshot();
-    host.sessions = [{ sessionId: "unscoped-id", runtimeId: "dsh-desktop" } as BridgeSessionInfo];
-    const props = { snapshot: host, onLoadSessionConfiguration: vi.fn(), onConfigureHostPermission: vi.fn() };
-    const draw = () => render(() => <HostPermissionSettings {...props} />);
-    let tree = draw();
-    button(tree, "DSH").props.onClick();
-    draw();
-    tree = draw();
-    expect(elements(tree).some((element) => element.type === "p"
-      && element.props.children?.includes?.("需要先在这台电脑上创建或同步一个 "))).toBe(true);
-    expect(button(tree, "保存 DSH 默认授权")).toBeUndefined();
-    expect(control(tree)).toBeUndefined();
-    expect(props.onLoadSessionConfiguration).not.toHaveBeenCalled();
-    expect(props.onConfigureHostPermission).not.toHaveBeenCalled();
   });
 });

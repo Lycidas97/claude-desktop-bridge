@@ -417,13 +417,13 @@ describe("controller transport publication", () => {
     expect(snapshot.sessions[0]).not.toHaveProperty("subagentStopScope");
   });
 
-  it("leaves external-runtime permission publication with its owning runtime", async () => {
+  it("does not publish saved external-runtime permissions", async () => {
     const { controller, eventLog } = await fixture(false, true);
     const external: BridgePermissionInfo = { requestId: "external-owned", sessionId: "codex-desktop:external-session",
       toolUseId: "external-tool", toolName: "Bash", input: { command: "synthetic --never-executed" }, createdAt: 1, canAllowAlways: false };
     let permissions = [external];
     controller.runtimeSessions.listPermissions = () => permissions;
-    expect((await controller.publish()).permissions).toEqual([external]);
+    expect((await controller.publish()).permissions).toEqual([]);
     const before = eventLog.latestSeq();
     permissions = [];
     await controller.publish();
@@ -592,11 +592,11 @@ describe("controller transport publication", () => {
   });
 });
 
-it("initializes other runtimes when Claude native is unavailable without applying its old full-access policy", async () => {
+it("keeps only Claude when unavailable and leaves retired saved defaults unused", async () => {
   const { controller, runtimeSessions, config } = await fixture(false, true);
   const snapshot = await controller.snapshot();
-  expect(runtimeSessions.initialize).toHaveBeenCalledOnce();
-  expect(runtimeSessions.setHostPermissionModes).toHaveBeenCalledWith(config.runtimePermissionModes);
+  expect(runtimeSessions.initialize).not.toHaveBeenCalled();
+  expect(runtimeSessions.setHostPermissionModes).not.toHaveBeenCalled();
   expect(controller.broker.setDefaultPermissionMode).not.toHaveBeenCalled();
   expect(snapshot.host.capabilities).toContain("claude.native-relay.v1");
   expect(snapshot.host.capabilities).not.toContain("conversation.lanes.v1");
@@ -604,7 +604,6 @@ it("initializes other runtimes when Claude native is unavailable without applyin
   expect(snapshot.host).not.toHaveProperty("defaultPermissionMode");
   expect(snapshot.runtimes).toEqual([
     expect.objectContaining({ id: "claude-desktop", state: "unavailable", capabilities: ["session.list", "session.history"] }),
-    expect.objectContaining({ id: "codex-desktop", state: "ready" }),
   ]);
   expect(snapshot.runtimes?.[0]).not.toHaveProperty("defaultPermissionMode");
 });

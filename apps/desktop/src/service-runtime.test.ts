@@ -47,13 +47,7 @@ vi.mock("./claude-permission-hook.js", () => ({ ClaudePermissionHook: class { co
 vi.mock("./controller.js", () => ({ DesktopController: class { constructor() { return resources.controller; } } }));
 vi.mock("./claude-desktop-session-registrar.js", () => ({ ClaudeDesktopSessionRegistrar: class { constructor() { resources.legacyConstruct("ClaudeDesktopSessionRegistrar"); } } }));
 vi.mock("./provider-registry.js", () => ({ ProviderRegistry: class { constructor() { resources.legacyConstruct("ProviderRegistry"); } } }));
-vi.mock("./runtime-adapter.js", () => ({ RuntimeAdapterRegistry: class {} }));
-vi.mock("./runtime-session-broker.js", () => ({ RuntimeSessionBroker: class {} }));
-vi.mock("./runtime-handoff-service.js", () => ({ RuntimeHandoffService: class {} }));
 vi.mock("./claude-desktop-lifecycle.js", () => ({ ClaudeDesktopLifecycle: class {} }));
-vi.mock("./codex-app-server-adapter.js", () => ({ CodexAppServerAdapter: class {} }));
-vi.mock("./hermes-gateway-adapter.js", () => ({ HermesGatewayAdapter: class {} }));
-vi.mock("./dsh-desktop-adapter.js", () => ({ DshDesktopAdapter: class {} }));
 vi.mock("./webrtc-runtime.js", () => ({ loadDesktopPeerConnection: vi.fn(), cleanupDesktopPeerConnection: resources.cleanupRtc }));
 
 beforeEach(() => {

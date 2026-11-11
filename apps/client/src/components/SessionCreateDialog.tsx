@@ -14,7 +14,6 @@ import "./session-create.css";
 export interface SessionCreateDialogProps {
   snapshot: BridgeHostSnapshot;
   initialProjectId?: string;
-  initialRuntimeId?: BridgeDesktopRuntimeId;
   connected: boolean;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
   onChooseDirectory?(initialPath?: string): Promise<string | undefined>;
@@ -28,13 +27,14 @@ function folderName(path: string): string {
 }
 
 /** Mount with the host ID as key so each computer owns its creation draft. */
-export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntimeId, connected, onBrowseDirectory, onChooseDirectory, onCreate, onCreated, onClose }: SessionCreateDialogProps) {
+export function SessionCreateDialog({ snapshot, initialProjectId, connected, onBrowseDirectory, onChooseDirectory, onCreate, onCreated, onClose }: SessionCreateDialogProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLElement>(null);
-  const initialProject = snapshot.projects.find((project) => project.projectId === initialProjectId);
-  const [runtimeId, setRuntimeId] = useState<BridgeDesktopRuntimeId>(initialRuntimeId ?? initialProject?.runtimeId ?? "claude-desktop");
-  const [cwd, setCwd] = useState((initialProject?.runtimeId ?? "claude-desktop") === runtimeId ? initialProject?.cwd ?? "" : "");
-  const [projectId, setProjectId] = useState(runtimeId === "claude-desktop" && initialProject?.kind === "desktop-group" ? initialProject.projectId : "");
+  const runtimeId = "claude-desktop";
+  const projects = snapshot.projects.filter((project) => (project.runtimeId ?? "claude-desktop") === runtimeId);
+  const initialProject = projects.find((project) => project.projectId === initialProjectId);
+  const [cwd, setCwd] = useState(initialProject?.cwd ?? "");
+  const [projectId, setProjectId] = useState(initialProject?.kind === "desktop-group" ? initialProject.projectId : "");
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [choosing, setChoosing] = useState(false);
@@ -51,10 +51,7 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntime
   const runtimeAvailable = snapshot.runtimes
     ? runtime?.state === "ready" && runtime.capabilities.includes("session.create")
     : runtimeId === "claude-desktop" && (snapshot.runtime.state === "ready" || snapshot.runtime.state === "working");
-  const runtimeIds = snapshot.runtimes?.map((candidate) => candidate.id) ?? ["claude-desktop" as const];
-  if (!runtimeIds.includes(runtimeId)) runtimeIds.push(runtimeId);
-  const projects = snapshot.projects.filter((project) => (project.runtimeId ?? "claude-desktop") === runtimeId);
-  const groups = runtimeId === "claude-desktop" ? projects.filter((project) => project.kind === "desktop-group") : [];
+  const groups = projects.filter((project) => project.kind === "desktop-group");
   const recentPaths = [...new Set([
     ...[...projects].sort((left, right) => right.lastActivityAt - left.lastActivityAt).map((project) => project.cwd),
     ...(listing?.recentPaths ?? []),
@@ -216,15 +213,6 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialRuntime
               </>
             ) : (
               <>
-                <label><span>运行时</span><select aria-label="运行时" value={runtimeId} disabled={locked} onChange={(event) => {
-                  setRuntimeId(event.target.value as BridgeDesktopRuntimeId); setCwd(""); setProjectId(""); setError(""); setBrowseTarget(undefined); setListing(undefined);
-                }}>
-                  {runtimeIds.map((id) => {
-                    const candidate = snapshot.runtimes?.find((item) => item.id === id);
-                    const available = snapshot.runtimes ? candidate?.state === "ready" && candidate.capabilities.includes("session.create") : runtimeAvailable;
-                    return <option key={id} value={id} disabled={!available}>{desktopRuntimeName(id)}{available ? "" : "（不可用）"}</option>;
-                  })}
-                </select></label>
                 <div className="session-create-folder">
                   <span className="session-create-field-label">工作文件夹</span>
                   <button type="button" className={`session-create-folder-trigger${cwd ? " has-folder" : ""}`} aria-label="选择文件夹" aria-describedby={`${titleId}-folder`} disabled={!connected || locked} onClick={() => void chooseDirectory()}>

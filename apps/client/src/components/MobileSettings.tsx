@@ -1,9 +1,6 @@
 import { Activity, ChevronRight, Gauge, Moon, Settings2, Sun } from "lucide-react";
 import type { ThemeControl } from "../hooks/useTheme.js";
 import { setDiagDialogOpen } from "../lib/diagnostics.js";
-import type { BridgeHostSnapshot } from "@bridge/protocol";
-import type { AgentVisibilityControl } from "../hooks/useAgentVisibility.js";
-import { AgentSettings } from "./AgentSettings.js";
 import { MobilePageHeader } from "./MobilePageHeader.js";
 
 export function AppearanceSettings({ themeControl }: { themeControl: ThemeControl }) {
@@ -20,10 +17,8 @@ export function AppearanceSettings({ themeControl }: { themeControl: ThemeContro
   </section>;
 }
 
-export function MobileSettings({ themeControl, agentVisibility, snapshot, quota, providers }: {
+export function MobileSettings({ themeControl, quota, providers }: {
   themeControl: ThemeControl;
-  agentVisibility: AgentVisibilityControl;
-  snapshot?: BridgeHostSnapshot;
   quota?: { desktopName: string; onOpen(): void };
   providers?: { desktopName: string; onOpen(): void };
 }) {
@@ -37,7 +32,6 @@ export function MobileSettings({ themeControl, agentVisibility, snapshot, quota,
         <h2 id="mobile-quota-title">额度</h2><button type="button" className="mobile-settings-row" onClick={quota.onOpen}><Gauge size={18} aria-hidden="true" /><div><strong>Magpie 额度</strong><small>{quota.desktopName} · 各账号剩余额度与重置时间</small></div><ChevronRight size={18} aria-hidden="true" /></button>
       </section>}
       <AppearanceSettings themeControl={themeControl} />
-      <AgentSettings control={agentVisibility} {...(snapshot ? { snapshot } : {})} />
       <section className="mobile-settings-group" aria-labelledby="mobile-support-title">
         <h2 id="mobile-support-title">诊断与支持</h2>
         <button type="button" className="mobile-settings-row" onClick={() => setDiagDialogOpen(true)}><Activity size={18} aria-hidden="true" /><div><strong>连接诊断与日志</strong><small>检查连接，记录和导出诊断日志</small></div><ChevronRight size={18} aria-hidden="true" /></button>

@@ -5,17 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Bridge is an open-source, end-to-end encrypted remote and collaboration layer for Claude Desktop, Codex Desktop, and Hermes Desktop."
+      content="Bridge is an open-source, end-to-end encrypted phone remote for Claude Desktop."
     />
     <meta property="og:title" content="Bridge" />
     <meta
       property="og:description"
-      content="One encrypted remote for Claude, Codex, and Hermes Desktop."
+      content="An encrypted remote for Claude Desktop."
     />
     <meta property="og:image" content="assets/social-preview.png" />
     <link rel="icon" href="assets/bridge-mark.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="styles.css" />
-    <title>Bridge - Encrypted remote control for Claude, Codex, and Hermes Desktop</title>
+    <title>Bridge - Encrypted remote control for Claude Desktop</title>
   </head>
   <body>
     <header class="site-header">
@@ -41,12 +41,8 @@
         <div class="hero-copy">
           <p class="eyebrow" data-i18n="hero.eyebrow">Open source &middot; MIT &middot; End-to-end encrypted</p>
           <h1>Bridge</h1>
-          <p class="lede" data-i18n="hero.lede">One encrypted remote for Claude, Codex, and Hermes Desktop.</p>
-          <p class="hero-text" data-i18n="hero.text">
-            Control desktop AI agents from your phone, keep every native session,
-            account, model, and permission separate, and hand work between desktops
-            only when you explicitly approve it.
-          </p>
+          <p class="lede" data-i18n="hero.lede">An encrypted remote for Claude Desktop.</p>
+          <p class="hero-text" data-i18n="hero.text">Continue native sessions, queue instructions, review results and answer approvals from your phone. Claude Desktop manages execution and permissions.</p>
           <div class="hero-actions">
             <a class="button button-primary" href="#download" data-i18n="hero.download">Download</a>
             <a class="button button-secondary" href="https://github.com/czhmartinez/claude-desktop-bridge" data-i18n="hero.github">View on GitHub</a>
@@ -56,7 +52,7 @@
           <img
             src="assets/product-mobile.png"
             data-i18n-alt="hero.alt"
-            alt="Bridge remote control for Claude, Codex, and Hermes Desktop"
+            alt="Bridge remote control for Claude Desktop"
           />
         </div>
       </section>
@@ -64,16 +60,12 @@
       <div class="marquee" aria-hidden="true">
         <div class="marquee-track">
           <span>Claude Desktop</span>
-          <span>Codex Desktop</span>
-          <span>Hermes Desktop</span>
           <span>WebRTC Direct</span>
           <span>AES-256-GCM</span>
           <span>Encrypted WSS Relay</span>
           <span>QR Pairing</span>
           <span>MIT Licensed</span>
           <span>Claude Desktop</span>
-          <span>Codex Desktop</span>
-          <span>Hermes Desktop</span>
           <span>WebRTC Direct</span>
           <span>AES-256-GCM</span>
           <span>Encrypted WSS Relay</span>
@@ -85,36 +77,33 @@
       <section class="section" id="features">
         <div class="section-heading">
           <p class="eyebrow" data-i18n="features.eyebrow">What it does</p>
-          <h2 data-i18n="features.title">Unified control. Separate native worlds.</h2>
-          <p data-i18n="features.subtitle">
-            Bridge is not a remote desktop and not an input automator. It is a protocol
-            and host layer that gives one consistent interface to three desktop runtimes.
-          </p>
+          <h2 data-i18n="features.title">Your Claude work, on your phone.</h2>
+          <p data-i18n="features.subtitle">Bridge forwards native Claude Desktop sessions through an encrypted connection.</p>
         </div>
         <div class="feature-grid">
           <article class="feature-card">
             <h3 data-i18n="features.one.title">One session surface</h3>
-            <p data-i18n="features.one.text">Send, stream, approve, ask, steer, and stop Claude, Codex, and Hermes sessions from desktop or mobile.</p>
+            <p data-i18n="features.one.text">Send, stream, approve, answer questions and stop native Claude sessions from desktop or mobile.</p>
           </article>
           <article class="feature-card">
             <h3 data-i18n="features.two.title">End-to-end encryption</h3>
             <p data-i18n="features.two.text">Per-device AES-256-GCM keys, WebRTC direct connections, and an encrypted WSS relay that never sees message content.</p>
           </article>
           <article class="feature-card">
-            <h3 data-i18n="features.three.title">Cross-desktop relay</h3>
-            <p data-i18n="features.three.text">Hand a bounded, redacted, encrypted task context to another runtime after two human confirmations and a read-only plan.</p>
+            <h3 data-i18n="features.three.title">Native queues and forks</h3>
+            <p data-i18n="features.three.text">Queue the next instruction, withdraw eligible queued messages, or create a fork through Desktop.</p>
           </article>
           <article class="feature-card">
-            <h3 data-i18n="features.four.title">Local-first adapters</h3>
-            <p data-i18n="features.four.text">Claude Agent SDK, official Codex app-server over stdio, and a loopback-only Hermes Gateway with process-scoped tokens.</p>
+            <h3 data-i18n="features.four.title">Claude Desktop integration</h3>
+            <p data-i18n="features.four.text">A local Node inspector forwards explicit LocalSessions calls. Desktop owns sessions, execution and permissions.</p>
           </article>
           <article class="feature-card">
             <h3 data-i18n="features.five.title">Real evidence</h3>
-            <p data-i18n="features.five.text">Image attachments, file-change summaries, artifact previews, and host-side file opening render as actual content, not paths.</p>
+            <p data-i18n="features.five.text">View image attachments, file-change summaries and artifact previews, and download workspace files.</p>
           </article>
           <article class="feature-card">
             <h3 data-i18n="features.six.title">Built to recover</h3>
-            <p data-i18n="features.six.text">Offline queues, event replay, push wake, fast reconnect, session archive, delete, and crash-safe relay recovery.</p>
+            <p data-i18n="features.six.text">Event replay, message receipts, push wake, reconnect, session archive and delete.</p>
           </article>
         </div>
       </section>
@@ -132,7 +121,7 @@
           class="diagram"
           role="img"
           data-i18n-aria-label="architecture.diagram.aria"
-          aria-label="Architecture diagram showing mobile clients connecting to Bridge Desktop through WebRTC or an encrypted relay, with adapters for Claude, Codex, and Hermes"
+          aria-label="Mobile clients connect to Bridge through WebRTC or an encrypted relay; Bridge forwards Claude Desktop LocalSessions calls."
         >
           <svg viewBox="0 0 960 360" xmlns="http://www.w3.org/2000/svg" role="presentation">
             <g font-family="Helvetica, Arial, sans-serif" font-size="14" font-weight="600">
@@ -152,9 +141,9 @@
               <text x="480" y="272" fill="#b8b0a6" text-anchor="middle">STUN</text>
 
               <rect x="680" y="230" width="270" height="104" rx="8" fill="#0d0a08" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
-              <text x="815" y="254" fill="#9aa8a0" text-anchor="middle" font-weight="400">Runtime adapters</text>
-              <text x="815" y="280" fill="#f2ece4" text-anchor="middle">Claude &middot; Codex &middot; Hermes</text>
-              <text x="815" y="304" fill="#8d8071" text-anchor="middle" font-weight="400">native boundaries stay intact</text>
+              <text x="815" y="254" fill="#9aa8a0" text-anchor="middle" font-weight="400">Native integration</text>
+              <text x="815" y="280" fill="#f2ece4" text-anchor="middle">Claude Desktop</text>
+              <text x="815" y="304" fill="#8d8071" text-anchor="middle" font-weight="400">LocalSessions</text>
             </g>
             <g stroke="#4a3f36" stroke-width="2" fill="none">
               <path d="M240 76h130"/>
@@ -177,7 +166,7 @@
         <p class="section-note" data-i18n-html="architecture.note">
           Read the full
           <a href="https://github.com/czhmartinez/claude-desktop-bridge/blob/main/docs/ARCHITECTURE.md">architecture document</a>
-          for adapter contracts, ownership states, and the relay state machine.
+          for native calls, events and transport.
         </p>
       </section>
 
@@ -189,16 +178,16 @@
         </div>
         <div class="security-grid">
           <div class="security-item">
-            <strong data-i18n="security.one.title">No accessibility access</strong>
-            <span data-i18n="security.one.text">No synthetic clicks, keyboard events, or clipboard reads.</span>
+            <strong data-i18n="security.one.title">Explicit debugger setup</strong>
+            <span data-i18n="security.one.text">On macOS, Accessibility and Automation access can open the native debugger menu once per Desktop process.</span>
           </div>
           <div class="security-item">
-            <strong data-i18n="security.two.title">No private CDP</strong>
-            <span data-i18n="security.two.text">Bridge uses public interfaces and read-only transcript observation.</span>
+            <strong data-i18n="security.two.title">Local inspector only</strong>
+            <span data-i18n="security.two.text">The local Node inspector forwards explicit native operations. Relay requests cannot evaluate arbitrary code.</span>
           </div>
           <div class="security-item">
             <strong data-i18n="security.three.title">No OAuth extraction</strong>
-            <span data-i18n="security.three.text">Credentials stay inside each desktop runtime.</span>
+            <span data-i18n="security.three.text">Account credentials remain in Claude Desktop.</span>
           </div>
           <div class="security-item">
             <strong data-i18n="security.four.title">No hidden chain-of-thought</strong>
@@ -206,11 +195,11 @@
           </div>
           <div class="security-item">
             <strong data-i18n="security.five.title">No automatic failover</strong>
-            <span data-i18n="security.five.text">Cross-desktop relay always waits for explicit human approval.</span>
+            <span data-i18n="security.five.text">Unavailable Claude sessions remain unavailable; Bridge does not start another executor.</span>
           </div>
           <div class="security-item">
             <strong data-i18n="security.six.title">No credential migration</strong>
-            <span data-i18n="security.six.text">Relay packages never contain keys, OAuth tokens, or API secrets.</span>
+            <span data-i18n="security.six.text">Desktop account credentials are not copied to the phone or relay.</span>
           </div>
         </div>
         <p class="section-note" data-i18n-html="security.note">

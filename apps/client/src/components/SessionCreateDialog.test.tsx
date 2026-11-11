@@ -86,25 +86,24 @@ async function manual(input: SessionCreateDialogProps, path: string): Promise<Re
 }
 
 describe("runtime and draft preservation", () => {
-  it("filters history by runtime and never falls back to the old runtime folder", async () => {
+  it("offers only Claude folders and creates Claude without a runtime selector", async () => {
     const codex = { ...directory, projectId: "codex", cwd: "/codex", runtimeId: "codex-desktop" as const };
     const input = { ...props(snapshot([group, codex])), initialProjectId: group.projectId };
-    change(render(input), "运行时", "codex-desktop");
-    expect(text(field(render(input), "工作文件夹"))).not.toContain(group.cwd);
-    expect(field(render(input), "项目分组（可选）")).toBeUndefined();
+    expect(field(render(input), "运行时")).toBeUndefined();
     let tree = await click(input, "选择文件夹");
-    expect(button(tree, `选择 ${group.cwd}`)).toBeUndefined();
-    tree = await click(input, "选择 /codex"); submit(tree); await settle();
-    expect(input.onCreate).toHaveBeenCalledWith("/codex", undefined, "codex-desktop", undefined);
+    expect(button(tree, "选择 /codex")).toBeUndefined();
+    tree = await click(input, `选择 ${group.cwd}`); submit(tree); await settle();
+    expect(input.onCreate).toHaveBeenCalledWith(group.cwd, undefined, "claude-desktop", group.projectId);
   });
-  it("leaves the folder empty when the new runtime has no history", () => {
-    const input = { ...props(snapshot([group])), initialProjectId: group.projectId };
-    change(render(input), "运行时", "codex-desktop");
+  it("leaves the folder empty when only retired Agent history exists", () => {
+    const codex = { ...directory, projectId: "codex", cwd: "/codex", runtimeId: "codex-desktop" as const };
+    const input = props(snapshot([codex]));
     expect(button(render(input), "创建会话").props.disabled).toBe(true);
     expect(text(field(render(input), "工作文件夹"))).toContain("选择工作文件夹");
   });
-  it("does not apply an initial project from a different runtime", () => {
-    const input = { ...props(snapshot([group])), initialProjectId: group.projectId, initialRuntimeId: "codex-desktop" as const };
+  it("does not apply an initial project from a retired Agent", () => {
+    const codex = { ...group, runtimeId: "codex-desktop" as const };
+    const input = { ...props(snapshot([codex])), initialProjectId: codex.projectId };
     expect(field(render(input), "项目分组（可选）")).toBeUndefined();
     expect(button(render(input), "创建会话").props.disabled).toBe(true);
   });
@@ -217,11 +216,11 @@ describe("folder navigation", () => {
     tree = await click(input, "选择文件夹"); expect(text(field(tree, "工作文件夹"))).toContain("/native/new");
     expect(input.onChooseDirectory).toHaveBeenNthCalledWith(1, group.cwd); expect(input.onBrowseDirectory).not.toHaveBeenCalled();
   });
-  it("ignores an outstanding browse result after returning and switching runtime", async () => {
+  it("ignores an outstanding browse result after returning to the form", async () => {
     let resolve!: (value: BridgeDirectoryListing) => void;
     const input = { ...props(), onBrowseDirectory: vi.fn(() => new Promise<BridgeDirectoryListing>((done) => { resolve = done; })) };
     await click(input, "选择文件夹"); await click(input, "取消选择");
-    change(render(input), "运行时", "codex-desktop"); render(input); resolve(listing); await settle();
+    render(input); resolve(listing); await settle();
     const tree = await click(input, "选择文件夹");
     expect(button(tree, "使用此文件夹").props.disabled).toBe(true);
     expect(text(tree)).not.toContain("/recent"); expect(input.onClose).not.toHaveBeenCalled();

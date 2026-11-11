@@ -1,100 +1,44 @@
 # Bridge 推广手册
 
-## 一、定位一句话
+## 定位
 
-一个开源、端到端加密的“手机遥控 + 跨 Desktop 协作层”，把 Claude Desktop、Codex
-Desktop、Hermes Desktop 统一成一套会话体验，但不合并任何原生账号、模型、权限与历史。
+Bridge 是开源、端到端加密的 Claude Desktop 手机遥控。当前分支专注
+macOS + Android + Claude Desktop（含 Claude-3p），会话执行、队列和权限由 Desktop 管理。
+独立 Codex、Hermes、DSH 适配及跨 Agent 接力已下线。
 
-## 二、目标人群
+## 目标人群
 
-- Claude Desktop / Codex Desktop / Hermes Desktop 的重度用户
-- 床上、通勤、会议中想继续控制电脑 Agent 的人
-- 自托管优先的隐私敏感用户
-- 关注 AI Agent 生态和跨平台工作流的技术写作者
+- 离开电脑后仍需继续 Claude 会话、查看任务和处理授权的人。
+- 希望自行托管中继，并保留本机账号与工作区设置的人。
+- 使用 Claude Desktop 内部模型和 Magpie 额度功能的人。
 
-## 三、内容支柱
+## 演示内容
 
-1. **痛点**：Agent 工作锁死在电脑上，官方 Remote Control 覆盖有限。
-2. **方案**：手机与电脑端同步、WebRTC 直连优先、WSS Relay 回退、二维码配对。
-3. **边界**：不合并账号/模型/历史，不做自动故障转移，不迁移凭据。
-4. **安全**：AES-256-GCM、无辅助功能权限、无剪贴板、无私有 CDP、不读取隐藏思考。
-5. **可验证**：CI、真实配对测试、打包 QA、架构与安全文档、自动 Release。
+1. 手机扫描电脑二维码，建立加密配对。
+2. 打开已有会话、查看原生历史和任务状态。
+3. 排队下一条指令，或使用原生 Fork 继续分支工作。
+4. 处理授权与提问，查看成果和附件。
+5. 展示断线重连、收据和事件恢复；不自动重发不确定的输入。
 
-## 四、GitHub 阵地
+## 对外描述草稿
 
-- 落地页（已部署）：https://czhmartinez.github.io/claude-desktop-bridge/
-- 仓库主页：已指向落地页
-- 社区入口：已创建 Announcements 欢迎帖
-- 仓库描述建议：
-  `Open-source, end-to-end encrypted remote control and cross-desktop relay for Claude, Codex, and Hermes Desktop`
-- Topics：`claude-desktop`、`codex`、`hermes`、`electron`、`android`、`ios`、`capacitor`、
-  `webrtc`、`end-to-end-encryption`、`remote-control`、`typescript`、`selfhosted`
-- README 首屏：徽章 + 一句话价值 + 架构图 + 快速开始 + Release 下载。
-- Social Preview：使用 `assets/social-preview.png`，1280x640。
+**中文**：在 Android 手机上继续电脑里的 Claude 工作。
 
-## 五、英文发布渠道草稿
+**英文**：Open-source, end-to-end encrypted phone remote for Claude Desktop.
 
-### Hacker News（Show HN）
+仓库与下载：https://github.com/Lycidas97/claude-desktop-bridge
 
-Title: Show HN: Bridge - encrypted phone remote for Claude, Codex, and Hermes Desktop
+建议 Topics：`claude-desktop`、`electron`、`android`、`webrtc`、
+`end-to-end-encryption`、`remote-control`、`typescript`、`selfhosted`。
 
-Body:
+可发布到 Claude、Android 和自托管相关社区。配 15–30 秒演示，链接到本 fork 的
+README、Releases、架构和安全文档。历史 OpenAI 申请材料另见
+[归档草稿](OPENAI-OPEN-SOURCE.md)，其中旧多 Agent 能力不代表当前支持范围。
 
-Desktop agents now hold real work: repositories, tools, approvals, and long-running goals.
-They are still locked to one machine. Bridge gives phones a unified, end-to-end encrypted
-remote for Claude Desktop, Codex Desktop, and Hermes Desktop without merging native
-accounts, models, permissions, or history.
+## 必须准确表达的边界
 
-Highlights:
-- WebRTC direct connection with encrypted WSS relay fallback; relay only sees ciphertext.
-- QR pairing, offline queues, event replay, push wake, and fast reconnect.
-- Cross-desktop relay: two confirmations, read-only plan, then execution. No auto failover,
-  no credential migration.
-- No accessibility permissions, no synthetic clicks, no clipboard access, no private CDP.
-- MIT, TypeScript monorepo, CI, real packaging QA, and docs.
-
-Repo: https://github.com/czhmartinez/claude-desktop-bridge
-
-### Reddit
-
-- r/ClaudeAI: “I made an open-source encrypted phone remote for Claude Desktop”
-- r/CodexAI: “Control Codex Desktop from your phone; also supports cross-desktop relay”
-- r/selfhosted: “Self-hosted, end-to-end encrypted relay for controlling desktop AI agents”
-- r/androidapps: “Open-source Android companion for Claude/Codex/Hermes Desktop”
-
-发帖时贴 15-30 秒演示 GIF，标题只讲一个核心场景，正文给架构图和安装命令。
-
-### X / Twitter 线程
-
-1. 一句痛点：Agent 跑在电脑上，人却不在电脑前。
-2. 一张手机遥控截图/短视频。
-3. 强调 E2EE 与无自动迁移的安全边界。
-4. 强调 Codex Desktop 是 first-class runtime。
-5. 附仓库链接和 Release 下载。
-
-## 六、博客 / 长文
-
-- 标题候选：《I built an encrypted phone remote for Claude, Codex, and Hermes Desktop》
-- 结构：问题 -> 现有方案为什么不满足 -> 设计边界 -> 加密与协议 -> 跨 Desktop 接力 ->
-  踩坑 -> 路线图。
-- 发布：个人博客、Dev.to、Medium、掘金、少数派。
-
-## 七、产品与社区动作
-
-- Product Hunt 发布页：演示视频 + GitHub 链接 + 安装包。
-- GitHub Discussions 开启后放 Q&A 和 Roadmap。
-- 每周处理 issue/PR，保证“持续维护”证据。
-- 邀请 2-3 位不同平台用户做真实跨网络测试并写成使用反馈。
-
-## 八、指标与节奏
-
-建议按周检查：
-
-- Stars、Forks、Watchers
-- Release 下载数
-- Open issues 回复时长
-- 外部 PR / 测试反馈数量
-- 演示视频播放与点击来源
-
-前两周聚焦：英文 README、演示 GIF、HN + 3 个 Reddit + X 线程；第二个月再做长文和
-Product Hunt，避免一次性铺开导致后续维护跟不上。
+- Claude Desktop 是执行权威，Bridge 转发原生操作和事件。
+- 手机与电脑间正文端到端加密；Relay 可见路由元数据与密文。
+- macOS 可通过辅助功能和 System Events 自动化权限，按 Desktop 进程尝试一次原生调试菜单；需要本机 Node inspector。
+- 不提取账号 OAuth，不复制凭据，不合并历史，不启动第二套执行器。
+- 验证覆盖以本仓库报告为准；不要把合成测试写成真实模型执行验收。

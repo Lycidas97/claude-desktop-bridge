@@ -30,7 +30,7 @@ vi.mock("react", async original => ({
 }));
 vi.mock("./hooks/useMobileBridge.js", () => ({ useMobileBridge: () => hooks.mobile }));
 vi.mock("./hooks/useTheme.js", () => ({ useTheme: () => ({ theme: "light", family: "apple" }) }));
-vi.mock("./hooks/useAgentVisibility.js", () => ({ useAgentVisibility: () => ({ enabled: true }), visibleAgentSnapshot: (snapshot: unknown) => snapshot }));
+vi.mock("./lib/claude-snapshot.js", () => ({ claudeSnapshot: (snapshot: unknown) => snapshot }));
 
 function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   if (Array.isArray(node)) return node.flatMap(elements);

@@ -8,7 +8,7 @@
 
 Bridge brings desktop sessions, task progress, approvals, questions and workspace files to your phone. Continue an existing conversation, queue the next instruction, create a fork, inspect subagents and results, or answer an approval while away from your computer.
 
-This independently maintained fork focuses on **macOS + Android + Claude**. **Version 1.3.1 improves native permission synchronization and connectivity**, with negotiated encrypted-body compression, Git project grouping, collapsible native/fork notices and Android system-bar theming. On macOS, it can attempt the native debugger menu once per newly discovered Desktop process, with user-granted Accessibility and Automation permission. Desktop's `LocalSessions` API still owns sessions, execution, queues and permissions. See the [Changelog](CHANGELOG.md) for details and this repository's [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) for installers. Upstream Codex, Hermes and DSH adapters remain available; enable them in settings.
+This independently maintained fork focuses on **macOS + Android + Claude**. **Version 1.3.1 improves native permission synchronization and connectivity**, with negotiated encrypted-body compression, Git project grouping, collapsible native/fork notices and Android system-bar theming. On macOS, it can attempt the native debugger menu once per newly discovered Desktop process, with user-granted Accessibility and Automation permission. Desktop's `LocalSessions` API still owns sessions, execution, queues and permissions. See the [Changelog](CHANGELOG.md) for details and this repository's [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) for installers. This branch supports Claude Desktop, including Claude-3p. Independent Codex, Hermes and DSH adapters and cross-Agent handoff are retired. Saved configuration and history remain on disk. Models and quota features inside Claude Desktop, including Gemini, Antigravity and Magpie, remain available.
 
 ## Get started
 
@@ -48,7 +48,7 @@ Bridge's background service forwards connections and events; Claude Desktop owns
 - Fold long replies with access to the full text, preserving history across compaction and complete subagent reports.
 - Load directories, history and evidence on demand. Page older content, defer media loading and coalesce frequent progress updates to reduce repeated work on large transcripts, responses and reconnects.
 
-Context capacity, immediate steering and model-setting behavior depend on the native runtime. Claude permissions and question answers use Desktop's native channel. Bridge does not install permission Hooks or make approval decisions on Desktop's behalf; historical questions cannot be submitted as live approvals.
+Context capacity, immediate steering and model-setting behavior depend on Claude Desktop. Claude permissions and question answers use Desktop's native channel. Bridge does not install permission Hooks or make approval decisions on Desktop's behalf; historical questions cannot be submitted as live approvals.
 
 ### Queued input and rewind
 

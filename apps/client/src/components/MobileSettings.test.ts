@@ -6,7 +6,6 @@ import { MobileSettings } from "./MobileSettings.js";
 function render(quota?: { desktopName: string; onOpen(): void }) {
   return renderToStaticMarkup(createElement(MobileSettings, {
     themeControl: { theme: "light", family: "sunstone", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
-    agentVisibility: { enabled: ["claude-desktop"], setEnabled: vi.fn() },
     ...(quota ? { quota } : {}),
   }));
 }

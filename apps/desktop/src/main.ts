@@ -175,14 +175,12 @@ async function desktopMain(): Promise<void> {
       });
     };
     function isDesktopRuntimeId(value: string): value is BridgeDesktopRuntimeId {
-      return ["claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop"].includes(value);
+      return value === "claude-desktop";
     }
     async function quitDesktopAppWithConfirmation(runtimeId: BridgeDesktopRuntimeId) {
-      const displayName = { "claude-desktop": "Claude Desktop", "codex-desktop": "Codex（ChatGPT）", "hermes-desktop": "Hermes", "dsh-desktop": "DSH Desktop" }[runtimeId];
+      const displayName = "Claude Desktop";
       const snapshot = await controller.call("snapshot");
-      const desktopTurnRunning = runtimeId === "claude-desktop"
-        ? snapshot.sessions.some((session) => session.turnState === "running" && ["DESKTOP_OBSERVED", "DESKTOP_MANAGED_RUNNING", "OWNERSHIP_CONFLICT"].includes(session.ownership))
-        : snapshot.sessions.some((session) => session.runtimeId === runtimeId && session.turnState === "running");
+      const desktopTurnRunning = snapshot.sessions.some((session) => session.turnState === "running" && ["DESKTOP_OBSERVED", "DESKTOP_MANAGED_RUNNING", "OWNERSHIP_CONFLICT"].includes(session.ownership));
       if (desktopTurnRunning) {
         const options: Electron.MessageBoxOptions = {
           type: "warning", title: `退出 ${displayName}`, message: `${displayName} 仍有会话正在运行`,

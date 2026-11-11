@@ -511,7 +511,6 @@ describe("retired Claude Host actions", () => {
     await expect(bridge.takeoverDesktop("target")).rejects.toThrow("不再支持 Bridge 接管");
     await expect(bridge.returnToDesktop("target")).rejects.toThrow("无需交还");
     await expect(bridge.previewProviderSwitch("target", "api")).rejects.toThrow("Desktop 管理");
-    await expect(bridge.configureHostPermission("claude-desktop", "full-access")).rejects.toThrow("Desktop 管理");
     expect(harness.requests).toEqual([]);
     expect(harness.addOutbox).not.toHaveBeenCalled();
   });
@@ -1408,7 +1407,6 @@ describe("host-bound synchronization", () => {
   });
 });
 
-
 describe("mobile history pagination", () => {
   const recent = { id: "recent-uuid", sessionId: "shared-session", role: "user", text: "Current history", createdAt: 2, origin: "claude-desktop" };
   const older = { ...recent, id: "older-uuid", text: "Older history", createdAt: 1 };
@@ -1538,7 +1536,6 @@ describe("session command control RPCs", () => {
     expect(harness.addOutbox).not.toHaveBeenCalled();
   });
 });
-
 
 it("keeps a completed command's returned session on its original computer after switching hosts", async () => {
   const result = deferred<Record<string, unknown>>();

@@ -146,8 +146,8 @@ beforeEach(() => {
     onOpenSession: vi.fn(), onLoadOlderHistory: vi.fn(), onLoadOlderEvidence: vi.fn(), onPreviewArtifact: vi.fn(), onDownloadArtifact: vi.fn(),
     onSendTurn: vi.fn().mockResolvedValue(undefined), onInterruptTurn: vi.fn(), onResolveUncertain: vi.fn(), onResolvePermission: vi.fn(), onCreateSession: vi.fn(),
     onLoadSessionConfiguration: vi.fn(), onConfigureSession: vi.fn(), onPreviewProviderSwitch: vi.fn(), onCommitProviderSwitch: vi.fn(), onCancelProviderSwitch: vi.fn(),
-    onRefreshProviders: vi.fn(), onPreviewRuntimeHandoff: vi.fn(), onCommitRuntimeHandoff: vi.fn(), onConfirmRuntimeHandoff: vi.fn(), onCancelRuntimeHandoff: vi.fn(), onGetRuntimeHandoff: vi.fn(),
-    onPauseRuntimeGoal: vi.fn(), onResumeRuntimeGoal: vi.fn(), onDesktopAppAction: vi.fn(), onRefresh: vi.fn(), onBackToHosts: vi.fn(), onRetry: vi.fn(),
+    onRefreshProviders: vi.fn(),
+    onDesktopAppAction: vi.fn(), onRefresh: vi.fn(), onBackToHosts: vi.fn(), onRetry: vi.fn(),
   };
   open("A");
 });
@@ -325,7 +325,6 @@ describe("native relay composer", () => {
     draw();
     expect(elements(tree).some(element => element.type === "button" && element.props.className === "permission-dock")).toBe(false);
   });
-
 
 });
 
@@ -1136,106 +1135,6 @@ describe("automatic native question disappearance", () => {
   });
 });
 
-describe("question answer delivery", () => {
-  beforeEach(() => {
-    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(session => ({ ...session, runtimeId: "codex-desktop", transport: "codex-app-server", ownership: "BRIDGE_IDLE" })) } };
-    draw();
-  });
-  it.each(["host-received", "submitted", "running"] as const)("labels this card's %s answer accurately without duplicating it or clearing the draft", async delivery => {
-    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
-      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
-        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } },
-    ] } } };
-    vi.mocked(props.onSendTurn).mockResolvedValueOnce({ requestId: "answer" });
-    text("保留草稿");
-    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
-    await settle();
-    props = { ...props, localTurns: [{ requestId: "answer", idempotencyKey: "answer-key", commandId: "queued", sessionId: "A", text: "Main", attachments: [], createdAt: 2, delivery }] };
-    draw();
-    const card = elements(tree).find(element => element.type === InteractivePromptCard)!;
-    expect(card.props.replyDelivery).toBe(delivery);
-    const rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
-    const status = elements(rendered).find(element => element.props.className === "interactive-prompt-status")!;
-    expect(status.props.children).toBe(delivery === "running" ? "已回复" : "回复已排队");
-    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
-    expect(elements(tree).filter(element => element.props.className === "conversation-bubble")).toHaveLength(1);
-    expect(input().props.value).toBe("保留草稿");
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Main", [], false);
-  });
-
-  it.each(["history-and-assistant", "history", "resolution", "assistant"])("keeps a confirmed reply complete after its receipt leaves memory (%s)", async confirmation => {
-    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
-      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
-        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } },
-    ] } } };
-    const question = props.histories.A!.items[0]!;
-    vi.mocked(props.onSendTurn).mockResolvedValueOnce({ requestId: "answer" });
-    draw();
-    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
-    await settle();
-    props = { ...props, localTurns: [{ requestId: "answer", idempotencyKey: "answer-key", commandId: "queued", sessionId: "A", text: "Main", attachments: [], createdAt: 2, delivery: "host-received" }] };
-    draw();
-    let card = elements(tree).find(element => element.type === InteractivePromptCard)!;
-    let rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
-    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")!.props.children).toBe("回复已排队");
-
-    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
-      { ...question, interactivePrompt: { ...question.interactivePrompt!, answered: confirmation.includes("history") } },
-      ...(confirmation.includes("assistant") ? [{ id: "continuation", sessionId: "A", role: "assistant" as const, text: "已收到回答继续执行", createdAt: 3, origin: "claude-desktop" as const }] : []),
-    ] } }, events: confirmation === "resolution" ? [
-      { eventId: "resolved", seq: 1, timestamp: 3, sessionId: "A", origin: "system", type: "question.resolved",
-        data: { requestId: "permission", toolName: "AskUserQuestion", input: { questions: question.interactivePrompt!.questions }, decision: "allow-once" } },
-    ] : [], localTurns: [{ requestId: "new-task", idempotencyKey: "new-key", commandId: "new-command", sessionId: "A", text: "处理新的无关任务", attachments: [], createdAt: 4, delivery: "host-received" }] };
-    draw();
-    card = elements(tree).find(element => element.type === InteractivePromptCard)!;
-    rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
-    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")!.props.children).toBe("已回复");
-    expect(card.props.replyDelivery).toBeUndefined();
-    expect(card.props.replyPending).not.toBe(true);
-    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Main", [], false);
-  });
-
-  it("keeps the prompt receipt with its session and computer across navigation", async () => {
-    props = { ...props, histories: Object.fromEntries(["A", "B"].map(sessionId => [sessionId, {
-      status: "ready", hasMore: false, items: [{ id: "question", sessionId, role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
-        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } }],
-    }])) };
-    vi.mocked(props.onSendTurn).mockResolvedValueOnce({ requestId: "answer" });
-    draw();
-    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
-    await settle();
-    const answer = { requestId: "answer", idempotencyKey: "answer-key", sessionId: "A", text: "Main", attachments: [], createdAt: 2, delivery: "host-received" as const };
-    props = { ...props, localTurns: [answer, { ...answer, sessionId: "B", delivery: "failed" }] };
-    open("B");
-    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBeUndefined();
-    open("A");
-    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBe("host-received");
-    props = { ...props, activeHostId: "computer-2", localTurns: [{ ...answer, delivery: "failed" }] };
-    draw();
-    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBeUndefined();
-    props = { ...props, activeHostId: "computer-1", localTurns: [answer] };
-    draw();
-    expect(elements(tree).find(element => element.type === InteractivePromptCard)!.props.replyDelivery).toBe("host-received");
-    expect(props.onSendTurn).toHaveBeenCalledOnce();
-  });
-
-  it("keeps a legacy quick reply pending when its callback supplies no receipt", async () => {
-    props = { ...props, histories: { ...props.histories, A: { status: "ready", hasMore: false, items: [
-      { id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
-        interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } },
-    ] } } };
-    draw();
-    elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
-    await settle();
-    const card = elements(tree).find(element => element.type === InteractivePromptCard)!;
-    const rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
-    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")!.props.children).toBe("已提交，等待处理");
-    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Main", [], false);
-  });
-});
-
 describe("mobile task plan cards", () => {
   it("renders one stable card through live updates, reconnect history, and session navigation", () => {
     const plan = { id: "plan:task-1", updatedAt: 100, items: [{ content: "Implement sync", status: "in_progress" as const }] };
@@ -1503,7 +1402,6 @@ describe("mobile conversation draft ownership", () => {
   });
 });
 
-
 describe("sidechat and slash command integration", () => {
   it.each([false, true])("keeps command discovery and execution on the selected sidechat (archived=%s)", async archived => {
     const sidechat = { ...props.snapshot!.sessions[1]!, title: "btw: Side question", parentSessionId: "A", sidechat: true,
@@ -1655,7 +1553,6 @@ describe("mobile common commands", () => {
   });
 });
 
-
 it("follows session.reset only while the old session is selected and loads the new empty context", async () => {
   props = { ...props, events: [{ eventId: "reset-A", seq: 1, timestamp: 1, sessionId: "A", origin: "claude-host", type: "session.reset",
     data: { sessionId: "B", previousSessionId: "A", nativeSessionId: "new-native" } }] };
@@ -1663,7 +1560,6 @@ it("follows session.reset only while the old session is selected and loads the n
   expect(props.onOpenSession).toHaveBeenLastCalledWith("B");
   expect(input().props.value).toBe("");
 });
-
 
 describe("mobile slash submission edges", () => {
   function enable() {

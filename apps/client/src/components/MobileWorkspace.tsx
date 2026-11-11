@@ -16,10 +16,6 @@ import type {
   BridgeInteractivePrompt,
   BridgeNativePermissionMode,
   BridgePermissionInfo,
-  BridgePermissionMode,
-  BridgeRuntimeGoalStatus,
-  BridgeRuntimeHandoff,
-  BridgeRuntimeHandoffPreview,
   BridgeSessionCommandResult,
   BridgeSessionRewindPreview,
   BridgeSessionRewindResult,
@@ -42,7 +38,6 @@ import {
   Archive,
   ArchiveRestore,
   ArrowDown,
-  ArrowRightLeft,
   ArrowUp,
   ArrowUpDown,
   ArrowUpToLine,
@@ -55,7 +50,6 @@ import {
   FilePenLine,
   Forward,
   GitFork,
-  Goal,
   Layers,
   LoaderCircle,
   MessageSquare,
@@ -96,7 +90,7 @@ import {
   type SessionFamily,
 } from "../lib/project-groups.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
-import { desktopRuntimeId, desktopRuntimeName, isNativeRuntimeId, runtimeProviderLabel } from "../lib/runtime-labels.js";
+import { desktopRuntimeId, desktopRuntimeName } from "../lib/runtime-labels.js";
 import { useStreamEntrance } from "../lib/stream-entrance.js";
 import { backgroundSubagentBadge, formatElapsed, sessionActivity, sessionQueueLabel, subagentStalledSeconds } from "../lib/session-activity.js";
 import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "./BackgroundTasks.js";
@@ -122,7 +116,6 @@ import {
   type ProviderSwitchPreview,
   type ProviderSwitchResult,
 } from "./ProviderSwitchDialog.js";
-import { RuntimeHandoffDialog } from "./RuntimeHandoffDialog.js";
 import { SessionCreateDialog } from "./SessionCreateDialog.js";
 import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
 import { TaskPlanCard } from "./TaskPlanCard.js";
@@ -200,12 +193,9 @@ function formatSessionModelLabel(session: BridgeSessionInfo): string {
 
 export function sessionProfile(session: BridgeSessionInfo): string {
   const model = formatSessionModelLabel(session);
-  const native = isNativeRuntimeId(session.runtimeId);
   return [
-    native && session.provider ? session.provider : undefined,
     model || "默认模型",
-    (native ? session.reasoningEffort : session.effort)?.toLocaleUpperCase(),
-    native && session.fast !== undefined ? (session.fast ? "快速" : "标准") : undefined,
+    session.effort?.toLocaleUpperCase(),
   ].filter(Boolean).join(" · ");
 }
 
@@ -228,7 +218,6 @@ export function ownershipLabel(session: BridgeSessionInfo): string {
   if (session.turnState === "waiting") return "需处理";
   if (bridgeCreated || session.desktopHandoff?.state === "bridge") return "Bridge 待机";
   if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
-  if (session.runtimeId && session.runtimeId !== "claude-desktop") return `${desktopRuntimeName(session.runtimeId)} 待机`;
   if (session.ownership === "DESKTOP_OBSERVED") return "桌面待机";
   return "待机";
 }
@@ -258,7 +247,7 @@ function conciseModelName(session: BridgeSessionInfo): string {
 function conciseSessionSubtitle(session: BridgeSessionInfo): string {
   const active = activeSessionBadgeLabel(session);
   const model = conciseModelName(session);
-  const effort = (isNativeRuntimeId(session.runtimeId) ? session.reasoningEffort : session.effort)?.toLocaleUpperCase();
+  const effort = session.effort?.toLocaleUpperCase();
   const modelPart = effort ? `${model} · ${effort}` : model;
   return active ? `${active} · ${modelPart}` : modelPart;
 }
@@ -598,8 +587,6 @@ export function InteractivePromptCard({
 export {
   desktopRuntimeId,
   desktopRuntimeName,
-  isNativeRuntimeId,
-  runtimeProviderLabel,
 } from "../lib/runtime-labels.js";
 
 function runtimeSupports(
@@ -612,7 +599,7 @@ function runtimeSupports(
 }
 
 export function canSendSession(session: BridgeSessionInfo, snapshot: BridgeHostSnapshot | undefined): boolean {
-  if (desktopRuntimeId(session) !== "claude-desktop") return session.allowedActions?.canSend !== false;
+  if (desktopRuntimeId(session) !== "claude-desktop") return false;
   return isClaudeNativeRelay(snapshot) && session.transport === "claude-desktop-native" && session.allowedActions?.canSend === true;
 }
 
@@ -620,7 +607,7 @@ export function canConfigureSession(session: BridgeSessionInfo, snapshot?: Bridg
   if (desktopRuntimeId(session) === "claude-desktop") {
     return isClaudeNativeRelay(snapshot) && session.transport === "claude-desktop-native" && session.allowedActions?.canConfigure === true;
   }
-  return session.allowedActions?.canConfigure === true;
+  return false;
 }
 
 export function canStopBridgeTask(session: BridgeSessionInfo): boolean {
@@ -628,29 +615,13 @@ export function canStopBridgeTask(session: BridgeSessionInfo): boolean {
     return session.transport === "claude-desktop-native" && session.allowedActions?.canInterrupt === true
       && (session.ownership === "DESKTOP_NATIVE_RUNNING" || session.pendingCount > 0 || session.turnState === "running" || session.turnState === "waiting");
   }
-  if (session.pendingCount > 0 || session.turnState === "queued") return true;
-  if (session.turnState !== "running" && session.turnState !== "waiting") return false;
-  return session.ownership === "BRIDGE_RUNNING"
-    || session.ownership === "DESKTOP_MANAGED_RUNNING";
+  return false;
 }
 
 export function supportsProviderSwitching(
   snapshot: BridgeHostSnapshot | undefined,
 ): boolean {
   return false;
-}
-
-export function supportsRuntimeHandoff(
-  snapshot: BridgeHostSnapshot | undefined,
-): boolean {
-  return Boolean(snapshot?.host.capabilities.includes("runtime.handoff.v1"));
-}
-
-export function goalStatusLabel(status: BridgeRuntimeGoalStatus): string {
-  if (status === "active") return "goal 执行中";
-  if (status === "paused") return "goal 已暂停";
-  if (status === "blocked") return "goal 受阻";
-  return "goal 已完成";
 }
 
 export function stoppableBridgeTask(
@@ -1506,7 +1477,6 @@ const NATIVE_MODE_LABELS: Record<BridgeNativePermissionMode, string> = {
 function ToolPermissionPrompt({
   permission,
   onResolve,
-  onEnableFullAccess,
   onEnableNativeFullAccess,
 }: {
   permission: BridgePermissionInfo;
@@ -1517,13 +1487,12 @@ function ToolPermissionPrompt({
     updatedInput?: Record<string, unknown>,
     mode?: BridgeNativePermissionMode,
   ): Promise<void>;
-  onEnableFullAccess?(sessionId: string): Promise<void>;
   onEnableNativeFullAccess?(requestId: string): Promise<void>;
 }) {
   const presentation = permissionPresentation(permission);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const [confirmFullAccess, setConfirmFullAccess] = useState<"host" | "native">();
+  const [confirmFullAccess, setConfirmFullAccess] = useState(false);
   // Defined while the deny-with-feedback composer is open.
   const [feedback, setFeedback] = useState<string>();
   const composing = feedback !== undefined;
@@ -1533,7 +1502,7 @@ function ToolPermissionPrompt({
     if (!confirmFullAccess && !composing) return;
     return registerMobileBackHandler(() => {
       if (busy) return true;
-      if (confirmFullAccess) setConfirmFullAccess(undefined);
+      if (confirmFullAccess) setConfirmFullAccess(false);
       else setFeedback(undefined);
       return true;
     }, 150);
@@ -1561,13 +1530,12 @@ function ToolPermissionPrompt({
     setBusy(true);
     setError(undefined);
     try {
-      if (confirmFullAccess === "native") await onEnableNativeFullAccess?.(permission.requestId);
-      else await onEnableFullAccess?.(permission.sessionId);
+      await onEnableNativeFullAccess?.(permission.requestId);
     } catch (resolveError) {
       setError(resolveError instanceof Error ? resolveError.message : "完全授权设置失败");
     } finally {
       setBusy(false);
-      setConfirmFullAccess(undefined);
+      setConfirmFullAccess(false);
     }
   }
 
@@ -1644,7 +1612,7 @@ function ToolPermissionPrompt({
             </button>
           )}
           {permission.canSetNativeFullAccess && onEnableNativeFullAccess && (
-            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("native")}>
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess(true)}>
               <ShieldCheck size={15} />是，完全授权
             </button>
           )}
@@ -1660,27 +1628,21 @@ function ToolPermissionPrompt({
             <button type="button" className="secondary-button" disabled={busy} onClick={() => void decide("allow-always")}>始终允许</button>
           )}
           {permission.canSetNativeFullAccess && onEnableNativeFullAccess && (
-            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("native")}>
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess(true)}>
               <ShieldCheck size={15} />此 Desktop 会话完全授权
             </button>
           )}
-          {onEnableFullAccess && (
-            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmFullAccess("host")}>
-              <ShieldCheck size={15} />Bridge 默认完全授权
-            </button>
-          )}
+
         </div>
       )}
     </section>
     <ConfirmationDialog
       open={Boolean(confirmFullAccess)}
-      title={confirmFullAccess === "native" ? "此 Desktop 会话完全授权" : "更改 Bridge 默认授权模式"}
-      description={confirmFullAccess === "native"
-        ? "这会允许当前工具，并请求将当前 Desktop 会话切换为完全授权，需等待 Desktop 确认；提问和强制确认仍需响应。收件箱接收许可仍需在电脑端确认。"
-        : `这会将当前电脑上 ${desktopRuntimeName(permission.sessionId.includes(":") ? permission.sessionId.split(":")[0] as BridgeDesktopRuntimeId : "claude-desktop")} 的 Bridge 默认授权设为完全授权，自动批准使用此默认值的工具请求，并处理积压授权；提问和强制确认仍需响应。`}
-      confirmLabel={confirmFullAccess === "native" ? "确认完全授权" : "启用 Bridge 默认完全授权"}
+      title="此 Desktop 会话完全授权"
+      description="这会允许当前工具，并请求将当前 Desktop 会话切换为完全授权，需等待 Desktop 确认；提问和强制确认仍需响应。收件箱接收许可仍需在电脑端确认。"
+      confirmLabel="确认完全授权"
       busy={busy}
-      onCancel={() => setConfirmFullAccess(undefined)}
+      onCancel={() => setConfirmFullAccess(false)}
       onConfirm={() => void enableFullAccess()}
     />
     </>
@@ -1690,7 +1652,6 @@ function ToolPermissionPrompt({
 export function PermissionPrompt({
   permission,
   onResolve,
-  onEnableFullAccess,
   onEnableNativeFullAccess,
 }: {
   permission: BridgePermissionInfo;
@@ -1701,7 +1662,6 @@ export function PermissionPrompt({
     updatedInput?: Record<string, unknown>,
     mode?: BridgeNativePermissionMode,
   ): Promise<void>;
-  onEnableFullAccess?(sessionId: string): Promise<void>;
   onEnableNativeFullAccess?(requestId: string): Promise<void>;
 }) {
   return permission.toolName === "AskUserQuestion"
@@ -1710,7 +1670,6 @@ export function PermissionPrompt({
       <ToolPermissionPrompt
         permission={permission}
         onResolve={onResolve}
-        {...(onEnableFullAccess ? { onEnableFullAccess } : {})}
         {...(onEnableNativeFullAccess ? { onEnableNativeFullAccess } : {})}
       />
     );
@@ -1765,18 +1724,9 @@ export function MobileWorkspace({
   onConfigureSession,
   onPreviewRewind,
   onRewindSession,
-  onConfigurePermissionPolicy,
-  onPreviewRuntimeHandoff,
-  onCommitRuntimeHandoff,
-  onConfirmRuntimeHandoff,
-  onCancelRuntimeHandoff,
-  onGetRuntimeHandoff,
-  onPauseRuntimeGoal,
-  onResumeRuntimeGoal,
   onArchiveSession,
   onRenameSession,
   onDeleteSession,
-  onOpenRuntimeFile,
   onDesktopAppAction,
   onRefresh,
   onBackToHosts,
@@ -1849,11 +1799,6 @@ export function MobileWorkspace({
     sessionId: string,
     change: SessionConfigurationChange,
   ): Promise<BridgeSessionConfiguration>;
-  onConfigurePermissionPolicy?(
-    sessionId: string,
-    scope: "host" | "session",
-    mode: BridgePermissionMode | null,
-  ): Promise<BridgeSessionConfiguration>;
   onPreviewProviderSwitch(
     sessionId: string,
     targetProviderProfileId: string,
@@ -1866,21 +1811,7 @@ export function MobileWorkspace({
   ): Promise<ProviderSwitchResult>;
   onCancelProviderSwitch(handoffId: string): Promise<void>;
   onRefreshProviders(): Promise<void>;
-  onPreviewRuntimeHandoff(
-    sessionId: string,
-    targetRuntimeId: BridgeDesktopRuntimeId,
-  ): Promise<BridgeRuntimeHandoffPreview>;
-  onCommitRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff>;
-  onConfirmRuntimeHandoff(
-    handoffId: string,
-    objective?: string,
-  ): Promise<{ handoff: BridgeRuntimeHandoff }>;
-  onCancelRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff | undefined>;
-  onGetRuntimeHandoff(handoffId: string): Promise<BridgeRuntimeHandoff>;
-  onPauseRuntimeGoal(sessionId: string): Promise<void>;
-  onResumeRuntimeGoal(sessionId: string): Promise<void>;
   onArchiveSession?(sessionId: string, archived: boolean): Promise<void>;
-  onOpenRuntimeFile?(sessionId: string, filePath: string): Promise<void>;
   onRenameSession?(sessionId: string, title: string): Promise<void>;
   onDeleteSession?(sessionId: string): Promise<void>;
   onDesktopAppAction(
@@ -1912,11 +1843,8 @@ export function MobileWorkspace({
   }
   const [createOpen, setCreateOpen] = useState(false);
   const [createProjectId, setCreateProjectId] = useState("");
-  const [createRuntimeId, setCreateRuntimeId] = useState<BridgeDesktopRuntimeId>("claude-desktop");
   const [configurationSessionId, setConfigurationSessionId] = useState<string>();
   const [rewindTarget, setRewindTarget] = useState<{ sessionId: string; messageId?: string }>();
-  const [actionSessionId, setActionSessionId] = useState<string>();
-  const [relayOpen, setRelayOpen] = useState(false);
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
   const [stopError, setStopError] = useState<string>();
   const [stopSubagentTarget, setStopSubagentTarget] = useState<{
@@ -1954,10 +1882,6 @@ export function MobileWorkspace({
   activeDraftKey.current = draftKey;
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [projectSearch, setProjectSearch] = useState("");
-  const [runtimeFilter, setRuntimeFilter] = useState<BridgeDesktopRuntimeId | "all">("all");
-  useEffect(() => {
-    if (runtimeFilter !== "all" && !snapshot?.runtimes?.some((runtime) => runtime.id === runtimeFilter)) setRuntimeFilter("all");
-  }, [runtimeFilter, snapshot?.runtimes]);
   const openMedia = useMediaPreview();
   const [pendingFileDownload, setPendingFileDownload] = useState<string>();
   const [fileDownloadBusy, setFileDownloadBusy] = useState(false);
@@ -2004,8 +1928,6 @@ export function MobileWorkspace({
   });
   const commandDraft = commands.recognizes(text.trim());
   const configurationSession = sessions.find((session) => session.sessionId === configurationSessionId);
-  const actionSession = sessions.find((session) => session.sessionId === actionSessionId);
-  const runtimeHandoffAvailable = supportsRuntimeHandoff(snapshot);
   const rewindAvailable = Boolean(selectedSession?.transport === "claude-desktop-native" && snapshot?.host.capabilities.includes("session.rewind.v1") && onPreviewRewind && onRewindSession);
   const rewindDisabled = connection !== "connected" || !desktopOnline;
   const selectedHistory = selectedSessionId ? histories[selectedSessionId] : undefined;
@@ -2069,7 +1991,7 @@ export function MobileWorkspace({
     const query = search.trim().toLocaleLowerCase();
     const filtered = sessions.filter((session) => (
       (!session.archivedAt || Boolean(session.sidechat && session.parentSessionId && activeParentProjects.get(session.parentSessionId) === session.projectId))
-      && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
+
       && (!query || `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query))
     ));
     const groups = new Map<string, BridgeSessionInfo[]>();
@@ -2082,15 +2004,14 @@ export function MobileWorkspace({
       project: snapshot?.projects.find((project) => project.projectId === projectId),
       sessions: sortProjectSessionsByRecent(groups.get(projectId)!),
     }));
-  }, [activeParentProjects, projectOrder, runtimeFilter, search, sessions, snapshot?.projects]);
+  }, [activeParentProjects, projectOrder, search, sessions, snapshot?.projects]);
   const archivedSessions = useMemo(() => sortProjectSessionsByRecent(sessions.filter((session) => (
-    Boolean(session.archivedAt) && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
-  ))), [runtimeFilter, sessions]);
+    Boolean(session.archivedAt)
+  ))), [sessions]);
   const menuSession = menuSessionId ? sessions.find((session) => session.sessionId === menuSessionId) : undefined;
   const menuSupportsRename = Boolean(onRenameSession && snapshot?.host.capabilities.includes("session.rename.v1"));
   const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== menuSession?.title && !sessionActionBusy);
   const menuSupportsFork = Boolean(menuSession && onForkSession && desktopRuntimeId(menuSession) === "claude-desktop");
-  const menuSupportsRuntimeHandoff = Boolean(menuSession && runtimeHandoffAvailable && menuSession.allowedActions?.canRelay !== false);
   const menuSessionBusy = Boolean(menuSession && (
     menuSession.turnState === "running"
     || menuSession.turnState === "queued"
@@ -2158,10 +2079,6 @@ export function MobileWorkspace({
   useEffect(() => {
     if (!visible) return;
     return registerMobileBackHandler(() => {
-      if (relayOpen) {
-        setRelayOpen(false);
-        return true;
-      }
       if (permissionOpen) {
         setPermissionOpen(false);
         return true;
@@ -2237,7 +2154,6 @@ export function MobileWorkspace({
     subagentStopBusy,
     backgroundTasksOpen,
     permissionOpen,
-    relayOpen,
     selectedSessionId,
     sessionView,
     visible,
@@ -2365,7 +2281,6 @@ export function MobileWorkspace({
     setConfigurationSessionId(undefined);
     setMenuSessionId(undefined);
     setDirectoryMenuOpen(false);
-    setRelayOpen(false);
     setPermissionOpen(false);
     setCreateOpen(false);
     setRenameOpen(false);
@@ -2470,13 +2385,6 @@ export function MobileWorkspace({
     const targetProject = targetProjectId
       ? snapshot?.projects.find((project) => project.projectId === targetProjectId)
       : undefined;
-    const runtimeId = targetProject?.runtimeId
-      ?? (runtimeFilter === "all"
-        ? snapshot?.runtimes?.find((runtime) => (
-            runtime.state === "ready" && runtime.capabilities.includes("session.create")
-          ))?.id ?? "claude-desktop"
-        : runtimeFilter);
-    setCreateRuntimeId(runtimeId);
     setCreateProjectId(
       targetProject?.projectId ?? "",
     );
@@ -2764,7 +2672,7 @@ export function MobileWorkspace({
               onClick={() => void runRefresh(menuSession.sessionId)}
             />
           </div>
-          {(menuSupportsFork || menuSupportsRuntimeHandoff) && (
+          {menuSupportsFork && (
             <div className="m-group">
               {menuSupportsFork && (
                 <SheetAction
@@ -2775,19 +2683,7 @@ export function MobileWorkspace({
                   onClick={() => void forkSessionById(menuSession.sessionId)}
                 />
               )}
-              {menuSupportsRuntimeHandoff && (
-                <SheetAction
-                  icon={<Forward size={19} />}
-                  label="交给其他桌面应用"
-                  detail="由另一个 Desktop 接着完成"
-                  disabled={sessionActionBusy}
-                  onClick={() => {
-                    setActionSessionId(menuSession.sessionId);
-                    setRelayOpen(true);
-                    setMenuSessionId(undefined);
-                  }}
-                />
-              )}
+
             </div>
           )}
           {(onArchiveSession || onDeleteSession) && (
@@ -2805,11 +2701,11 @@ export function MobileWorkspace({
                 <SheetAction
                   icon={<Trash2 size={19} />}
                   label="删除会话"
-                  detail={menuSessionBusy || menuSession.pendingRuntimeHandoff
-                    ? "任务或接力进行中，先停止再删除"
+                  detail={menuSessionBusy
+                    ? "任务进行中，先停止再删除"
                     : menuSession.transport === "claude-desktop-native" ? "删除 Claude Desktop 中的会话" : "仅从 Bridge 移除，Desktop 原会话保留"}
                   danger
-                  disabled={sessionActionBusy || menuSessionBusy || Boolean(menuSession.pendingRuntimeHandoff)}
+                  disabled={sessionActionBusy || menuSessionBusy}
                   onClick={() => setDeleteSessionConfirmOpen(true)}
                 />
               )}
@@ -2872,35 +2768,13 @@ export function MobileWorkspace({
         <SessionConfigurationDialog
           key={`configuration:${configurationSession.sessionId}`}
           session={configurationSession}
-          permissionScope="session"
           revision={events.filter((event) => ((event.type === "session.configuration" || event.type === "session.compacted") && event.sessionId === configurationSession.sessionId) || (event.type === "permission.policy.changed" && (!event.sessionId || event.sessionId === configurationSession.sessionId))).at(-1)?.seq ?? 0}
           onLoad={() => onLoadSessionConfiguration(configurationSession.sessionId)}
           onSave={(change) => onConfigureSession(configurationSession.sessionId, change)}
-          {...(desktopRuntimeId(configurationSession) !== "claude-desktop" && onConfigurePermissionPolicy ? {
-            onConfigurePermission: (scope: "host" | "session", mode: BridgePermissionMode | null) => (
-              onConfigurePermissionPolicy(configurationSession.sessionId, scope, mode)
-            ),
-          } : {})}
           onClose={() => setConfigurationSessionId(undefined)}
         />
       )}
-      {relayOpen && actionSession && runtimeHandoffAvailable && (
-        <RuntimeHandoffDialog
-          key={`handoff:${actionSession.sessionId}`}
-          session={actionSession}
-          runtimes={snapshot?.runtimes ?? []}
-          onPreview={(targetRuntimeId) => onPreviewRuntimeHandoff(actionSession.sessionId, targetRuntimeId)}
-          onCommit={onCommitRuntimeHandoff}
-          onConfirm={onConfirmRuntimeHandoff}
-          onCancel={onCancelRuntimeHandoff}
-          onGet={onGetRuntimeHandoff}
-          onOpenSession={(sessionId) => {
-            setRelayOpen(false);
-            void selectSession(sessionId);
-          }}
-          onClose={() => setRelayOpen(false)}
-        />
-      )}
+
     </>
   );
 
@@ -2920,13 +2794,10 @@ export function MobileWorkspace({
       || selectedSession.turnState === "running"
       || selectedSession.turnState === "queued"
       || selectedSession.turnState === "waiting";
-    const processStop = desktopRuntimeId(selectedSession) !== "claude-desktop" && selectedBusy && selectedSession.mainTurnStopScope === "process";
-    const stopTarget = processStop
-      ? selectedSession
-      : selectedBusy ? stoppableBridgeTask(sessions, selectedSession.sessionId) : undefined;
+    const stopTarget = selectedBusy ? stoppableBridgeTask(sessions, selectedSession.sessionId) : undefined;
     const stopping = stoppingSessionId === stopTarget?.sessionId;
     const hasDraft = Boolean(text.trim()) || (canAttachImages && attachments.length > 0) || fileUploads.files.length > 0;
-    const sessionPermissions = desktopRuntimeId(selectedSession) !== "claude-desktop" || (isClaudeNativeRelay(snapshot) && selectedSession.transport === "claude-desktop-native")
+    const sessionPermissions = isClaudeNativeRelay(snapshot) && selectedSession.transport === "claude-desktop-native"
       ? permissions.filter(permission => permission.sessionId === selectedSession.sessionId) : [];
     const sessionQuestions = sessionPermissions.filter(permission => permission.toolName === "AskUserQuestion");
     const toolPermissions = sessionPermissions.filter(permission => permission.toolName !== "AskUserQuestion");
@@ -2934,7 +2805,7 @@ export function MobileWorkspace({
     const otherPermission = permissions.find(permission => {
       if (permission.sessionId === selectedSession.sessionId) return false;
       const session = sessions.find(candidate => candidate.sessionId === permission.sessionId);
-      return session && (desktopRuntimeId(session) !== "claude-desktop" || (isClaudeNativeRelay(snapshot) && session.transport === "claude-desktop-native"));
+      return session && (isClaudeNativeRelay(snapshot) && session.transport === "claude-desktop-native");
     });
     const otherPermissionSession = otherPermission
       ? sessions.find((session) => session.sessionId === otherPermission.sessionId)
@@ -3036,71 +2907,9 @@ export function MobileWorkspace({
               onClick={() => runRefresh(selectedSession.sessionId)}>{refreshing ? "同步中" : "同步状态"}</button>
           </div>
         )}
-        {desktopRuntimeId(selectedSession) !== "claude-desktop" && !selectedSession.desktopHandoff && selectedSession.ownership === "FALLBACK_CONFIRMATION_REQUIRED" && selectedSession.pendingCount === 0 && (
-          <div className="session-channel-warning">
-            <AlertTriangle size={17} />
-            <span><strong>正在等待同会话接管</strong>电脑端当前任务结束后会自动发送，无需额外操作。</span>
-          </div>
-        )}
-        {desktopRuntimeId(selectedSession) !== "claude-desktop" && selectedSession.ownership === "OWNERSHIP_CONFLICT" && (
-          <div className="session-channel-warning danger">
-            <AlertTriangle size={17} />
-            <span><strong>检测到重复写入</strong>Bridge 已停止重叠写入并会自动复查；当前指令保留排队，无需重复发送。</span>
-          </div>
-        )}
-        {selectedSession.goal && (
-          <div className={`session-channel-warning goal-status ${selectedSession.goal.status}`}>
-            <Goal size={17} />
-            <span>
-              <strong>{goalStatusLabel(selectedSession.goal.status)}</strong>
-              {selectedSession.goal.objective}
-              {selectedSession.goal.detail ? ` · ${selectedSession.goal.detail}` : ""}
-              {selectedSession.goal.continuations > 0 ? ` · 已续跑 ${selectedSession.goal.continuations} 轮` : ""}
-            </span>
-            {selectedSession.goal.status === "active" ? (
-              <button
-                type="button"
-                className="secondary-button goal-action"
-                onClick={() => void onPauseRuntimeGoal(selectedSession.sessionId).catch(() => undefined)}
-              >
-                暂停目标
-              </button>
-            ) : selectedSession.goal.status !== "complete" ? (
-              <button
-                type="button"
-                className="secondary-button goal-action"
-                onClick={() => void onResumeRuntimeGoal(selectedSession.sessionId).catch(() => undefined)}
-              >
-                继续目标
-              </button>
-            ) : null}
-          </div>
-        )}
-        {(selectedSession.relay?.inbound || selectedSession.relay?.outbound?.length) && (
-          <div className="relay-chain-bar">
-            {selectedSession.relay.inbound && (
-              <button
-                type="button"
-                className="relay-chain-link"
-                onClick={() => void selectSession(selectedSession.relay!.inbound!.sessionId)}
-              >
-                <Forward size={14} />
-                {`接力自 ${selectedSession.relay.inbound.title}`}
-              </button>
-            )}
-            {selectedSession.relay.outbound?.map((link) => (
-              <button
-                type="button"
-                className="relay-chain-link outbound"
-                key={link.handoffId}
-                onClick={() => void selectSession(link.sessionId)}
-              >
-                <Forward size={14} />
-                {`接力至 ${link.title}`}
-              </button>
-            ))}
-          </div>
-        )}
+
+
+
         {forkChainOpen && relatedForkCount > 0 && (
           <div className="relay-chain-bar fork-chain-bar">
             {parentSession && (
@@ -3137,17 +2946,13 @@ export function MobileWorkspace({
         )}
         <ConfirmationDialog
           open={stopConfirmOpen && Boolean(stopTarget)}
-          title={processStop
-            ? "结束这个会话的 Claude 进程？"
-            : stopTarget && stopTarget.sessionId !== selectedSession.sessionId ? "停止阻塞任务？" : "停止当前任务？"}
-          description={processStop
-            ? "这个会话由 Claude Desktop 运行，Bridge 无法只中断当前回复。确认后会结束它在电脑上的 Claude 进程，运行中的子代理和后台任务都会停止。已产生的对话记录会保留。"
-            : `${stopTarget && stopTarget.sessionId !== selectedSession.sessionId ? `这个会话正在等待「${stopTarget.title}」。` : ""}${
+          title={stopTarget && stopTarget.sessionId !== selectedSession.sessionId ? "停止阻塞任务？" : "停止当前任务？"}
+          description={`${stopTarget && stopTarget.sessionId !== selectedSession.sessionId ? `这个会话正在等待「${stopTarget.title}」。` : ""}${
                 stopTarget?.turnState === "running" || stopTarget?.turnState === "waiting"
                   ? "正在生成的回复会中断，已产生的对话记录会保留。"
                   : "排在最前面的一条指令会被取消。"
               }`}
-          confirmLabel={processStop ? "结束进程" : "停止"}
+          confirmLabel="停止"
           danger
           busy={stopping}
           onCancel={() => setStopConfirmOpen(false)}
@@ -3418,9 +3223,6 @@ export function MobileWorkspace({
                 onPreviewFile={openSessionFile}
                 transfers={artifactTransfers}
                 online={connection === "connected" && desktopOnline}
-                {...(onOpenRuntimeFile && isNativeRuntimeId(selectedSession.runtimeId) ? {
-                  onOpenFile: (filePath) => void onOpenRuntimeFile(selectedSession.sessionId, filePath),
-                } : {})}
                 {...(onDownloadSessionFile ? {
                   onDownloadFile: (filePath) => {
                     setFileDownloadError(undefined);
@@ -3572,11 +3374,6 @@ export function MobileWorkspace({
               permission={activePermission}
               onResolve={onResolvePermission}
               onEnableNativeFullAccess={(requestId) => onResolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions")}
-              {...(desktopRuntimeId(selectedSession) !== "claude-desktop" && onConfigurePermissionPolicy ? {
-                onEnableFullAccess: (sessionId: string) => (
-                  onConfigurePermissionPolicy(sessionId, "host", "full-access").then(() => undefined)
-                ),
-              } : {})}
             />
           </MobileSheet>
         )}
@@ -3616,8 +3413,6 @@ export function MobileWorkspace({
     );
   }
 
-  const populatedRuntimeCount = new Set(sessions.map((session) => desktopRuntimeId(session))).size;
-  const showRuntimeFilter = populatedRuntimeCount > 1 && (snapshot?.runtimes?.length ?? 0) > 1;
   const isArchivedGroupPage = activeProjectId === "__archived__";
   const activeGroupProject = activeProjectId && !isArchivedGroupPage
     ? snapshot?.projects.find((project) => project.projectId === activeProjectId)
@@ -3628,7 +3423,7 @@ export function MobileWorkspace({
       : sortProjectSessionsByRecent(sessions.filter((session) => (
           (!session.archivedAt || Boolean(session.sidechat && session.parentSessionId && activeParentProjects.get(session.parentSessionId) === session.projectId))
           && session.projectId === activeProjectId
-          && (runtimeFilter === "all" || desktopRuntimeId(session) === runtimeFilter)
+
         )))
     : [];
   const activeGroupQuery = projectSearch.trim().toLocaleLowerCase();
@@ -3691,7 +3486,6 @@ export function MobileWorkspace({
                 )}
               </strong>
               <small>
-                {!isForkChild && populatedRuntimeCount > 1 ? `${desktopRuntimeName(desktopRuntimeId(session))} · ` : ""}
                 {relativeTime(session.lastActivityAt)}
                 {!isArchivedRow && session.currentSummary ? ` · ${session.currentSummary}` : ""}
               </small>
@@ -3742,23 +3536,6 @@ export function MobileWorkspace({
     );
   }
 
-  const runtimeFilterNav = showRuntimeFilter && (
-    <nav className="runtime-filter" aria-label="Desktop 运行时筛选">
-      <button type="button" className={runtimeFilter === "all" ? "active" : ""} onClick={() => setRuntimeFilter("all")}>全部</button>
-      {snapshot!.runtimes!.map((runtime) => (
-        <button
-          type="button"
-          key={runtime.id}
-          className={runtimeFilter === runtime.id ? "active" : ""}
-          disabled={runtime.state !== "ready" && runtime.sessionCount === 0}
-          onClick={() => setRuntimeFilter(runtime.id)}
-        >
-          {desktopRuntimeName(runtime.id)}
-        </button>
-      ))}
-    </nav>
-  );
-
   return (
     <main className="mobile-workspace host-detail-workspace">
       <MobilePageHeader
@@ -3798,7 +3575,6 @@ export function MobileWorkspace({
               placeholder={`搜索「${activeGroupName}」`}
             />
           </label>
-          {runtimeFilterNav}
           {activeGroupFamilies.length === 0 ? (
             <div className="session-catalog-loading">
               <strong>{projectSearch ? "没有匹配的会话" : isArchivedGroupPage ? "暂无已归档会话" : "此分组暂无会话"}</strong>
@@ -3816,7 +3592,6 @@ export function MobileWorkspace({
           <Search size={17} />
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索项目或会话" />
         </label>
-        {runtimeFilterNav}
         {!search && projectOrder.length > 1 && (
           <div className="project-order-bar">
             <span>项目顺序已固定</span>
@@ -3984,7 +3759,6 @@ export function MobileWorkspace({
           snapshot={snapshot}
           connected={connection === "connected" && desktopOnline}
           initialProjectId={createProjectId}
-          initialRuntimeId={createRuntimeId}
           {...(onBrowseDirectory ? { onBrowseDirectory } : {})}
           onCreate={onCreateSession}
           onCreated={(created) => {

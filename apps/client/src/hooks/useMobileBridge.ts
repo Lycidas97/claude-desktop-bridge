@@ -35,13 +35,11 @@ import {
   type BridgeHandoff,
   type BridgeNativePermissionMode,
   type BridgePermissionInfo,
-  type BridgePermissionMode,
   type BridgeProviderProfile,
   type BridgeRequest,
   type BridgeResponse,
   type BridgeRuntimeGoalInfo,
   type BridgeRuntimeHandoff,
-  type BridgeRuntimeHandoffPreview,
   type BridgeSessionCommandResult,
   type BridgeSessionRewindPreview,
   type BridgeSessionRewindResult,
@@ -3209,76 +3207,6 @@ export function useMobileBridge() {
     return result.configuration;
   }, [sendRequest]);
 
-  const configureHostPermission = useCallback(async (
-    runtimeId: BridgeDesktopRuntimeId,
-    mode: BridgePermissionMode,
-    sessionId?: string,
-  ): Promise<BridgePermissionMode | void> => {
-    if (runtimeId === "claude-desktop") throw new Error("Claude 授权由 Desktop 管理。");
-    const crypto = cryptoRef.current;
-    const socket = socketRef.current;
-    const runtimeDefaults = stateRef.current.snapshot?.host.capabilities?.includes("permission.runtime-defaults.v1");
-    if (!runtimeDefaults && (!sessionId
-      || !stateRef.current.snapshot?.sessions.some((session) => session.sessionId === sessionId
-        && session.runtimeId === runtimeId && sessionId.startsWith(`${runtimeId}:`)))) {
-      throw new Error("请先选择该应用的有效会话，再设置默认授权");
-    }
-    const response = await sendRequest("permission.policy.configure", {
-      scope: "host", mode,
-      ...(runtimeDefaults ? { runtimeId } : { sessionId }),
-    }, { wait: true, allowOffline: false, timeoutMs: 45_000 });
-    if (cryptoRef.current !== crypto || socketRef.current !== socket) throw new Error("已切换电脑，请在原电脑查看保存结果");
-    if (!response?.ok) throw new Error(response?.error?.message ?? "默认授权保存失败");
-    const result = response.result as { defaultPermissionMode?: BridgePermissionMode };
-    if (runtimeDefaults && !result.defaultPermissionMode) throw new Error("电脑未返回默认授权确认值");
-    if (result.defaultPermissionMode) {
-      setState((current) => current.snapshot ? {
-        ...current,
-        snapshot: {
-          ...current.snapshot,
-          host: current.snapshot.host,
-          ...(runtimeDefaults ? { runtimes: current.snapshot.runtimes?.map((runtime) => runtime.id === runtimeId ? { ...runtime, defaultPermissionMode: result.defaultPermissionMode! } : runtime) ?? [] } : {}),
-        },
-      } : current);
-    }
-    await resumeEvents();
-    if (runtimeDefaults) return result.defaultPermissionMode;
-  }, [resumeEvents, sendRequest]);
-
-  const configurePermissionPolicy = useCallback(async (
-    sessionId: string,
-    scope: "host" | "session",
-    mode: BridgePermissionMode | null,
-  ): Promise<BridgeSessionConfiguration> => {
-    const session = stateRef.current.snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
-    if (!session?.runtimeId || session.runtimeId === "claude-desktop") throw new Error("Claude 授权由 Desktop 管理。");
-    const response = await sendRequest("permission.policy.configure", {
-      sessionId,
-      scope,
-      mode,
-    }, { wait: true, timeoutMs: 45_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "授权模式保存失败");
-    const result = response.result as {
-      configuration?: BridgeSessionConfiguration;
-      defaultPermissionMode?: BridgePermissionMode;
-    };
-    if (!result.configuration) throw new Error("电脑未返回授权配置");
-    setState((current) => current.snapshot ? {
-      ...current,
-      snapshot: {
-        ...current.snapshot,
-        host: {
-          ...current.snapshot.host,
-          ...(result.defaultPermissionMode
-            ? { defaultPermissionMode: result.defaultPermissionMode }
-            : {}),
-        },
-      },
-    } : current);
-    await resumeEvents();
-    return result.configuration;
-  }, [resumeEvents, sendRequest]);
-
   const previewProviderSwitch = useCallback(async (_sessionId: string, _targetProviderProfileId: string, _model?: string): Promise<never> => {
     throw new Error("Claude 提供方由 Desktop 管理。");
   }, []);
@@ -3489,82 +3417,6 @@ export function useMobileBridge() {
     if (crypto) await start(crypto);
   }, [start]);
 
-  const previewRuntimeHandoff = useCallback(async (
-    sessionId: string,
-    targetRuntimeId: BridgeDesktopRuntimeId,
-  ): Promise<BridgeRuntimeHandoffPreview> => {
-    const response = await sendRequest("runtime.handoff.preview", {
-      sessionId,
-      targetRuntimeId,
-    }, { wait: true, timeoutMs: 60_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "跨 Desktop 接力预览失败");
-    const result = response.result as { preview?: BridgeRuntimeHandoffPreview };
-    if (!result.preview?.handoff) throw new Error("电脑未返回完整接力预览");
-    return result.preview;
-  }, [sendRequest]);
-
-  const commitRuntimeHandoff = useCallback(async (handoffId: string) => {
-    const response = await sendRequest("runtime.handoff.commit", {
-      handoffId,
-    }, { wait: true, timeoutMs: 60_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "跨 Desktop 接力失败");
-    const result = response.result as { handoff?: BridgeRuntimeHandoff };
-    if (!result.handoff) throw new Error("电脑未返回接力状态");
-    return result.handoff;
-  }, [sendRequest]);
-
-  const confirmRuntimeHandoff = useCallback(async (handoffId: string, objective?: string) => {
-    const response = await sendRequest("runtime.handoff.confirm", {
-      handoffId,
-      ...(objective?.trim() ? { objective: objective.trim() } : {}),
-    }, { wait: true, timeoutMs: 60_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "确认执行失败");
-    const result = response.result as { handoff?: BridgeRuntimeHandoff; goal?: BridgeRuntimeGoalInfo };
-    if (!result.handoff) throw new Error("电脑未返回接力状态");
-    return { handoff: result.handoff, ...(result.goal ? { goal: result.goal } : {}) };
-  }, [sendRequest]);
-
-  const cancelRuntimeHandoff = useCallback(async (handoffId: string) => {
-    const response = await sendRequest("runtime.handoff.cancel", {
-      handoffId,
-    }, { wait: true, timeoutMs: 45_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "取消接力失败");
-    const result = response.result as { handoff?: BridgeRuntimeHandoff };
-    return result.handoff;
-  }, [sendRequest]);
-
-  const getRuntimeHandoff = useCallback(async (handoffId: string) => {
-    const response = await sendRequest("runtime.handoff.get", {
-      handoffId,
-    }, { wait: true, timeoutMs: 30_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "读取接力状态失败");
-    const result = response.result as { handoff?: BridgeRuntimeHandoff };
-    if (!result.handoff) throw new Error("电脑未返回接力状态");
-    return result.handoff;
-  }, [sendRequest]);
-
-  const pauseRuntimeGoal = useCallback(async (sessionId: string) => {
-    const response = await sendRequest("runtime.goal.pause", {
-      sessionId,
-    }, { wait: true, timeoutMs: 30_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "暂停目标失败");
-  }, [sendRequest]);
-
-  const resumeRuntimeGoal = useCallback(async (sessionId: string) => {
-    const response = await sendRequest("runtime.goal.resume", {
-      sessionId,
-    }, { wait: true, timeoutMs: 30_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "恢复目标失败");
-  }, [sendRequest]);
-
-  const openRuntimeFile = useCallback(async (sessionId: string, filePath: string) => {
-    const response = await sendRequest("runtime.file.open", {
-      sessionId,
-      path: filePath,
-    }, { wait: true, timeoutMs: 30_000 });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "打开文件失败");
-  }, [sendRequest]);
-
   const archiveSession = useCallback(async (sessionId: string, archived: boolean) => {
     const response = await sendRequest("session.archive", {
       sessionId,
@@ -3636,22 +3488,12 @@ export function useMobileBridge() {
     previewRewind,
     rewindSession,
     configureSession,
-    configureHostPermission,
-    configurePermissionPolicy,
     previewProviderSwitch,
     commitProviderSwitch,
     cancelProviderSwitch,
-    previewRuntimeHandoff,
-    commitRuntimeHandoff,
-    confirmRuntimeHandoff,
-    cancelRuntimeHandoff,
-    getRuntimeHandoff,
-    pauseRuntimeGoal,
-    resumeRuntimeGoal,
     archiveSession,
     renameSession,
     deleteSession,
-    openRuntimeFile,
     refreshProviders,
     launchClaudeDesktop,
     controlDesktopApp,

@@ -23,7 +23,7 @@ Claude 部分描述当前分支的原生中转边界。macOS 已通过真实 Des
   并限制导航和 IPC 来源。
 - macOS Bridge 使用辅助功能和 System Events 自动化权限，仅在发现新的 Claude Desktop
   进程后触发一次原生 Enable Main Process Debugger 菜单；保留原生账号与工作区策略。
-  不发送键鼠事件或读写剪贴板；Codex、Hermes、DSH 的原生接入不变。
+  不发送键鼠事件或读写剪贴板。独立 Codex、Hermes、DSH 适配已下线。
 - Claude Desktop 是会话执行、队列和权限的唯一权威。手机提交原生权限请求的答复，
   Bridge 不安装 Host 权限 Hook、不自动批准，也不改写原生会话文件来升级授权。
 - Claude 不再运行 SDK/CLI Host、standalone API Key lane、接管/交还、inbox、lane 或
@@ -63,22 +63,12 @@ STUN 能看到发起 Binding 的公网 IP 和端口，但不接收 Claude 指令
 
 ## 本机边界
 
-### 多 Desktop adapter
+### 退役的独立 Agent
 
-Bridge 0.6 统一操作体验，不合并原生会话域。每个会话的本机身份是
-`(runtimeId, nativeSessionId)`；运行时相同的原生 ID 不会相互覆盖，Bridge 也不会在
-Claude、Codex、Hermes 间复制历史、认证、模型选择、权限规则或自动故障转移。
-
-`CodexAppServerAdapter` 只启动 Bridge 自己拥有的官方 `codex app-server --stdio` 子进程，
-不附着已有 app-server 或 Codex Desktop 进程。`HermesGatewayAdapter` 只连接 `localhost` /
-`127.0.0.1` / `::1` WebSocket；未配置 Gateway 时由 Bridge 启动 Hermes sidecar，并为该进程
-生成随机会话令牌。Bridge 不读取 Hermes Desktop 的 token、keychain 或远端 Gateway 地址。DSH Desktop 经其宿主自带的回环 /api 契约接入（Host 头信任栅栏），Bridge 不读取 DSH 的凭据文件。
-adapter 启动超时、关闭或重试时必须关闭其自有子进程，不能保留后台访问通道。
-
-Codex/Hermes 的账号、凭据、token、keychain 和全局配置只在相应 Desktop 内管理。Bridge 可以在
-adapter 显式声明能力后，通过原生接口修改当前会话的模型、provider、思考强度和快速模式；这类操作
-不提取、不记录或传输凭据，也不执行跨运行时迁移。外部 adapter 的图片附件和其他非共同能力默认关闭，
-只有显式能力声明才能在 Bridge UI 开放。
+当前只接入 Claude Desktop（含 Claude-3p）。Codex、Hermes、DSH 的启动、连接、探测、
+轮询和执行代码已移除，跨 Agent 接力和 goal 续跑已停用；旧请求明确返回 `UNSUPPORTED`。
+旧配置、SQLite 历史和配对身份保留，不清空用户磁盘数据，也不把旧任务送到 Claude 执行。
+Claude Desktop 内部的 Gemini、Antigravity、Magpie 等模型与额度设置不属于退役范围。
 
 ### Claude Node inspector
 

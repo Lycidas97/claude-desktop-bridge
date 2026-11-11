@@ -209,6 +209,7 @@
   white-space: nowrap;
 }
 
+.m-host-chip > .m-host-status { flex: none; }
 .m-host-chip > svg { flex: none; color: var(--faint); }
 
 .m-status-dot {

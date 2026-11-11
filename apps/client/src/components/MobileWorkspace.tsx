@@ -3544,7 +3544,8 @@ export function MobileWorkspace({
         subtitle={activeProjectId ? activeGroupCwd : (
           <button type="button" className="m-host-chip" onClick={onBackToHosts} aria-label={`当前电脑：${desktopName}，查看电脑`}>
             <i className={`m-status-dot${desktopOnline ? " is-online" : ""}`} />
-            <span>{desktopName} · {hostStatusText}</span>
+            <span className="m-host-name">{desktopName}</span>
+            <span className="m-host-status">· {hostStatusText}</span>
             <ChevronRight size={14} />
           </button>
         )}

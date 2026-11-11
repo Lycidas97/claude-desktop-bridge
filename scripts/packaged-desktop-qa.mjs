@@ -137,8 +137,10 @@ try {
   await page.getByRole("heading", { name: "设备", exact: true }).waitFor();
   await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();
   await page.getByRole("button", { name: "设置", exact: true }).click();
-  await page.getByRole("button", { name: "连接与设备", exact: true }).click();
-  await page.getByText("原生中转已就绪", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "连接与启动", exact: true }).click();
+  await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
+  await page.getByRole("button", { name: "诊断与关于", exact: true }).click();
+  await page.locator('dt:text-is("原生中转") + dd').getByText("已就绪", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   await page.screenshot({ path: resolve(artifacts, "desktop-evidence.png"), fullPage: true });
   process.stdout.write(`${JSON.stringify({

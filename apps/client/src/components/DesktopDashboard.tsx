@@ -73,7 +73,7 @@ import { FileChangesCard } from "./FileChangesCard.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker, useFileAttachments } from "./FileAttachmentPicker.js";
 import { appendUploadedFilePaths, uploadSessionFile } from "../lib/file-upload.js";
 import { MediaGallery } from "./MediaGallery.js";
-import { useMediaPreview } from "./MediaPreviewProvider.js";
+import { MediaPreviewProvider, useMediaPreview } from "./MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
 import { RelaySettings } from "./RelaySettings.js";
 import { IconButton } from "./IconButton.js";
@@ -1558,6 +1558,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
   }
 
   return (
+    <MediaPreviewProvider request={(method, params) => request({ method, params })} supportsFileStat={snapshot.host.capabilities.includes("artifact.transfer.stat.v1")}>
     <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={snapshot.runtime.detection?.refreshedAt ?? 0}>
     <main className="desktop-shell-v2">
       <aside className="desktop-nav-v2">
@@ -1613,5 +1614,6 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
       </section>
     </main>
     </MagpieQuotaProvider>
+    </MediaPreviewProvider>
   );
 }

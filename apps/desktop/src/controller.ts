@@ -355,6 +355,7 @@ export class DesktopController extends EventEmitter {
           "evidence.details.v1",
           "artifact.preview.v1",
           "artifact.transfer.v1",
+          "artifact.transfer.stat.v1",
           "artifact.text-preview.v1",
           "workspace.upload.v1",
           "claude.native-relay.v1",
@@ -1310,6 +1311,7 @@ export class DesktopController extends EventEmitter {
       }
       const artifactId = stringParam(params, "artifactId", false);
       if (artifactId) {
+        if (params.purpose === "stat") return { metadata: await this.evidence.artifactTransferMetadata(artifactId) };
         return {
           transfer: await this.evidence.openTransfer(
             artifactId,
@@ -1322,6 +1324,9 @@ export class DesktopController extends EventEmitter {
       const filePath = stringParam(params, "path")!;
       const session = this.allSessions().find((candidate) => candidate.sessionId === sessionId);
       if (!session) throw new Error("Session not found");
+      if (params.purpose === "stat") {
+        return { metadata: await this.evidence.fileTransferMetadata(session.cwd, filePath, this.broker.executionCwd(sessionId)) };
+      }
       return {
         transfer: await this.evidence.openFileTransfer(
           session.cwd,

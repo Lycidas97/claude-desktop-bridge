@@ -2,6 +2,7 @@ import type { BridgeHistoryItem, BridgePermissionInfo, BridgeSessionInfo, Deskto
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopDashboard } from "./DesktopDashboard.js";
+import { MediaPreviewProvider } from "./MediaPreviewProvider.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./FileAttachmentPicker.js";
 import { IconButton } from "./IconButton.js";
@@ -47,7 +48,7 @@ vi.mock("react", async (original) => ({
     });
   },
 }));
-vi.mock("./MediaPreviewProvider.js", () => ({ useMediaPreview: () => vi.fn() }));
+vi.mock("./MediaPreviewProvider.js", async original => ({ ...await original<typeof import("./MediaPreviewProvider.js")>(), useMediaPreview: () => vi.fn() }));
 vi.mock("../lib/file-upload.js", async (original) => ({
   ...await original<typeof import("../lib/file-upload.js")>(),
   uploadSessionFile: vi.fn(),
@@ -134,6 +135,15 @@ function questionPermission(requestId: string, question: string, sessionId = "A"
 function textContent(node: ReactNode): string {
   return elements(node).flatMap(element => element.props.children).filter(child => typeof child === "string").join(" ");
 }
+
+describe("desktop file stat capability", () => {
+  it.each([false, true])("uses the snapshot capability when supported=%s regardless of version", async supported => {
+    snapshot.host.version = "1.3.1";
+    if (supported) snapshot.host.capabilities.push("artifact.transfer.stat.v1");
+    await openSessions();
+    expect(elements(dashboard.draw()).find(element => element.type === MediaPreviewProvider)!.props.supportsFileStat).toBe(supported);
+  });
+});
 
 describe("session notice presentation", () => {
   it("uses the shared compact card instead of user rewind controls", async () => {

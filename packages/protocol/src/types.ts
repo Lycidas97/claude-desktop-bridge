@@ -3,7 +3,7 @@ export const PAIRING_SCHEMA_VERSION = 4 as const;
 export const ENVELOPE_CHUNK_BYTES = 64 * 1024;
 export const MAX_ENVELOPE_CHUNKS = 384;
 export const ARTIFACT_MAX_BYTES = 20 * 1024 * 1024;
-export const TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
+export const FILE_PREVIEW_CONFIRM_BYTES = 1024 * 1024;
 export const ARTIFACT_TRANSFER_CHUNK_BYTES = 256 * 1024;
 export const ARTIFACT_TRANSFER_TTL_MS = 10 * 60 * 1000;
 
@@ -185,6 +185,7 @@ export type BridgeCapability =
   | "evidence.details.v1"
   | "artifact.preview.v1"
   | "artifact.transfer.v1"
+  | "artifact.transfer.stat.v1"
   | "artifact.text-preview.v1"
   | "workspace.upload.v1"
   | "provider.profile.v1"
@@ -563,9 +564,15 @@ export type BridgeHistoryAttachment = Omit<BridgeAttachment, "data"> & {
   nativeImage?: BridgeNativeImageRef;
 };
 
+export interface BridgeArtifactTransferMetadata {
+  name: string;
+  mimeType: string;
+  size: number;
+}
+
 export type BridgeArtifactTransferOpenParams =
-  | { artifactId: string; purpose?: "text-preview" }
-  | { sessionId: string; path: string; purpose?: "text-preview" }
+  | { artifactId: string; purpose?: "text-preview" | "stat" }
+  | { sessionId: string; path: string; purpose?: "text-preview" | "stat" }
   | { sessionId: string; nativeImage: BridgeNativeImageRef };
 
 export interface BridgeDirectoryListing {

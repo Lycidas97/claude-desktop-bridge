@@ -32,9 +32,9 @@ import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../lib/runtime-labels.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
-import { artifactMediaTarget, mediaArtifacts } from "../lib/media-preview.js";
+import { artifactMediaTarget, formatBytes, mediaArtifacts } from "../lib/media-preview.js";
 import { MediaGallery } from "./MediaGallery.js";
-import { useMediaPreview } from "./MediaPreviewProvider.js";
+import { useFilePreviewConfirmation, useMediaPreview } from "./MediaPreviewProvider.js";
 
 function confidenceLabel(value: BridgeEvidenceBundle["confidence"]): string {
   if (value === "exact") return "精确";
@@ -90,12 +90,6 @@ function usageLabel(usage: BridgeTokenUsage): string {
   if (input > 0) parts.unshift(`输入 ${formatTokens(input)}`);
   if ((usage.reasoningTokens ?? 0) > 0) parts.push(`推理 ${formatTokens(usage.reasoningTokens!)}`);
   return parts.join(" · ");
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function artifactIcon(artifact: BridgeArtifactManifest) {
@@ -673,6 +667,7 @@ export function EvidencePanel({
   onDownload(artifact: BridgeArtifactManifest): Promise<void>;
 }) {
   const openMedia = useMediaPreview();
+  const confirmPreview = useFilePreviewConfirmation();
   const [selectedArtifact, setSelectedArtifact] = useState<BridgeArtifactManifest>();
   const [previewBusy, setPreviewBusy] = useState<string>();
   const [pendingDownload, setPendingDownload] = useState<BridgeArtifactManifest>();
@@ -703,23 +698,17 @@ export function EvidencePanel({
     }, 200);
   }, [selectedArtifact]);
 
-  async function openPreview(artifact: BridgeArtifactManifest): Promise<void> {
+  function openPreview(artifact: BridgeArtifactManifest): void {
+    setError("");
+    if (previews[artifact.id]) { setSelectedArtifact(artifact); return; }
     const media = artifactMediaTarget(artifact);
     if (media) { openMedia(media); return; }
-    setError("");
-    if (previews[artifact.id]) {
-      setSelectedArtifact(artifact);
-      return;
-    }
-    setPreviewBusy(artifact.id);
-    try {
-      await onPreview(artifact.id);
-      setSelectedArtifact(artifact);
-    } catch (previewError) {
-      setError(previewError instanceof Error ? previewError.message : "成果预览失败");
-    } finally {
-      setPreviewBusy(undefined);
-    }
+    confirmPreview({ name: artifact.name, artifactId: artifact.id }, () => {
+      setPreviewBusy(artifact.id);
+      void onPreview(artifact.id).then(() => setSelectedArtifact(artifact)).catch((previewError: unknown) => {
+        setError(previewError instanceof Error ? previewError.message : "成果预览失败");
+      }).finally(() => setPreviewBusy(undefined));
+    });
   }
 
   async function download(artifact: BridgeArtifactManifest): Promise<void> {

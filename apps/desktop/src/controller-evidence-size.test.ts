@@ -18,6 +18,25 @@ it("routes native image refs to transcript bytes and the existing owner-bound tr
   }
 });
 
+it("routes metadata-only preview requests without opening a content transfer", async () => {
+  const metadata = { name: "large.txt", mimeType: "text/plain", size: 1048577 };
+  const evidence = {
+    artifactTransferMetadata: vi.fn().mockResolvedValue(metadata),
+    fileTransferMetadata: vi.fn().mockResolvedValue(metadata),
+    openTransfer: vi.fn(), openFileTransfer: vi.fn(), openBytesTransfer: vi.fn(),
+  };
+  const broker = { executionCwd: vi.fn(() => "/preview/project/worktree") };
+  const controller = Object.assign(Object.create(DesktopController.prototype), {
+    broker, evidence, allSessions: () => [{ sessionId: "preview_session", cwd: "/preview/project" }],
+  });
+  const request: BridgeRequest = { kind: "request", requestId: "preview", idempotencyKey: "preview", method: "artifact.transfer.open", params: { artifactId: "preview_artifact", purpose: "stat" } };
+  expect(await controller.handleRequest(request, "mobile", "phone")).toEqual({ metadata });
+  expect(evidence.artifactTransferMetadata).toHaveBeenCalledWith("preview_artifact");
+  expect(await controller.handleRequest({ ...request, params: { sessionId: "preview_session", path: "large.txt", purpose: "stat" } }, "mobile", "phone")).toEqual({ metadata });
+  expect(evidence.fileTransferMetadata).toHaveBeenCalledWith("/preview/project", "large.txt", "/preview/project/worktree");
+  expect(evidence.openTransfer).not.toHaveBeenCalled(); expect(evidence.openFileTransfer).not.toHaveBeenCalled(); expect(evidence.openBytesTransfer).not.toHaveBeenCalled();
+});
+
 it("keeps a legacy 15076-artifact event below the reconnect page budget", async () => {
   const evidence: BridgeEvidenceBundle = {
     id: "large-evidence", sessionId: "session-1", source: "bridge-host", confidence: "exact",

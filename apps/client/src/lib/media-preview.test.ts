@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BridgeArtifactManifest, BridgeEvidenceBundle, BridgeResponse } from "@bridge/protocol";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -36,6 +36,13 @@ describe("media previews", () => {
     expect(artifactMediaTarget(artifact)).toEqual({ name: "notes.md", kind: "text", artifactId: "text", path: "docs/notes.md" });
     expect(mediaArtifacts([{ startedAt: 1, artifacts: [artifact] } as BridgeEvidenceBundle])).toEqual([]);
     expect(artifactMediaTarget({ ...artifact, availability: "blocked" })).toBeUndefined();
+  });
+
+  it("uses full text previews for artifacts explicitly marked as text or diff", () => {
+    for (const previewMode of ["text", "diff"] as const) {
+      expect(artifactMediaTarget({ id: "custom", name: "output.custom", previewMode } as BridgeArtifactManifest)).toMatchObject({ kind: "text", artifactId: "custom" });
+    }
+    expect(artifactMediaTarget({ id: "custom", name: "output.custom", previewMode: "none" } as BridgeArtifactManifest)).toBeUndefined();
   });
 
   it("uses the newest version and hides deleted or blocked media", () => {
@@ -156,17 +163,15 @@ describe("media previews", () => {
     await source.close();
   });
 
-  it("accepts exactly 1 MiB of complete text and rejects larger files before reading", async () => {
-    const text = "x".repeat(1024 * 1024 - 1) + "Z";
+  it.each([1024 * 1024, 1024 * 1024 + 1])("decodes the complete %i-byte text after the preview is allowed", async (size) => {
+    const text = "x".repeat(size - 1) + "Z";
     const bytes = new TextEncoder().encode(text);
-    let reads = 0;
-    const source = {
-      transfer: { size: bytes.length },
-      async read(begin: number, end: number) { reads += 1; expect([begin, end]).toEqual([0, bytes.length]); return bytes; },
-    };
-    expect(await readTextPreview(source)).toBe(text);
-    await expect(readTextPreview({ ...source, transfer: { ...source.transfer, size: bytes.length + 1 } })).rejects.toThrow("1 MiB");
-    expect(reads).toBe(1);
+    const read = vi.fn(async (begin: number, end: number) => {
+      expect([begin, end]).toEqual([0, bytes.length]);
+      return bytes;
+    });
+    expect(await readTextPreview({ transfer: { size }, read })).toBe(text);
+    expect(read).toHaveBeenCalledOnce();
   });
 
   it("handles an empty UTF-8 file and strips only the UTF-8 BOM", async () => {

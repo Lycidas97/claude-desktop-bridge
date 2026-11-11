@@ -12,6 +12,7 @@ type HookStore = {
   effectIndex: number; pending: Array<() => void>;
 };
 const hooks = vi.hoisted(() => ({ current: undefined as HookStore | undefined }));
+const media = vi.hoisted(() => ({ open: vi.fn(), confirm: vi.fn<(_target: unknown, open: () => void) => void>((_target, open) => open()) }));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useState(initial: any) {
@@ -42,7 +43,7 @@ vi.mock("react", async (original) => ({
     });
   },
 }));
-vi.mock("./MediaPreviewProvider.js", () => ({ useMediaPreview: () => vi.fn() }));
+vi.mock("./MediaPreviewProvider.js", async original => ({ ...await original<typeof import("./MediaPreviewProvider.js")>(), useMediaPreview: () => media.open, useFilePreviewConfirmation: () => media.confirm }));
 vi.mock("../lib/mobile-back-navigation.js", () => ({ registerMobileBackHandler: () => () => undefined }));
 
 const stores = new Map<string, HookStore>();
@@ -114,7 +115,7 @@ function bundle(): BridgeEvidenceBundle {
 }
 const loadDetails = vi.fn<(id: string, kind: "tools" | "artifacts", cursor?: string) => Promise<BridgeEvidenceDetailPage>>();
 beforeEach(() => {
-  stores.clear(); loadDetails.mockReset();
+  stores.clear(); loadDetails.mockReset(); media.open.mockClear(); media.confirm.mockReset().mockImplementation((_target, open) => open());
   loadDetails.mockImplementation(async (evidenceId, kind, cursor) => ({
     evidenceId, kind, items: kind === "tools"
       ? Array.from({ length: 30 }, (_, i) => tool(`tool-${cursor ?? "first"}-${i}`))
@@ -197,18 +198,27 @@ describe("on-demand evidence details", () => {
     loadDetails.mockResolvedValueOnce({ evidenceId: "evidence", kind: "tools", items: [], hasMore: false })
       .mockResolvedValueOnce({ evidenceId: "evidence", kind: "artifacts", items: [previewFile], hasMore: true, nextCursor: "second" });
     draw(); toggle(true); await settle();
-    const preview = { artifactId: "preview-file", mode: "text" as const, mimeType: "text/plain", encoding: "utf8" as const, data: "preview contents", truncated: false, generatedAt: 3 };
-    vi.mocked(props.onPreview).mockResolvedValue(preview);
     elements().find((element) => element.type === IconButton && element.props.label === "预览 output.custom")!.props.onClick(); await settle();
-    expect(props.onPreview).toHaveBeenCalledWith("preview-file");
-    props = { ...props, previews: { "preview-file": preview } }; draw();
-    expect(elements().some((element) => element.props.role === "dialog")).toBe(true);
-    expect(text()).toContain("preview contents");
+    expect(media.open).toHaveBeenCalledWith({ name: "output.custom", kind: "text", artifactId: "preview-file", path: "output.custom" });
+    expect(props.onPreview).not.toHaveBeenCalled();
     click("文件与产物下一页"); await settle();
-    expect(text()).toContain("preview contents");
     elements().find((element) => element.type === IconButton && element.props.label === "下载 file-second-0.txt")!.props.onClick(); draw();
     elements().find((element) => element.type === ConfirmationDialog)!.props.onConfirm(); await settle();
     expect(props.onDownload).toHaveBeenCalledWith(artifact("file-second-0"));
+  });
+
+  it("waits for file confirmation before requesting a legacy screenshot preview", async () => {
+    const file: BridgeArtifactManifest = { ...artifact("screenshot"), name: "output.custom", kind: "html", previewMode: "html-screenshot" };
+    loadDetails.mockResolvedValueOnce({ evidenceId: "evidence", kind: "tools", items: [], hasMore: false })
+      .mockResolvedValueOnce({ evidenceId: "evidence", kind: "artifacts", items: [file], hasMore: false });
+    media.confirm.mockImplementationOnce(() => undefined);
+    vi.mocked(props.onPreview).mockResolvedValue({ artifactId: file.id, mode: "html-screenshot", mimeType: "image/png", encoding: "base64", data: "preview", truncated: false, generatedAt: 3 });
+    draw(); toggle(true); await settle();
+    elements().find((element) => element.type === IconButton && element.props.label === "预览 output.custom")!.props.onClick(); await settle();
+    expect(media.confirm).toHaveBeenCalledWith({ name: file.name, artifactId: file.id }, expect.any(Function));
+    expect(props.onPreview).not.toHaveBeenCalled();
+    media.confirm.mock.calls[0]![1](); await settle();
+    expect(props.onPreview).toHaveBeenCalledWith(file.id);
   });
 
   it("keeps legacy desktop events and lists as summaries and pages via evidence.get", async () => {

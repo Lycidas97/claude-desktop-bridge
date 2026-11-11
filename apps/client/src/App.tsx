@@ -103,11 +103,7 @@ export function App() {
     tab,
   ]);
 
-  if (window.bridgeDesktop) return (
-    <MediaPreviewProvider request={(method, params) => window.bridgeDesktop!.request({ method, params })}>
-      <DesktopDashboard themeControl={themeControl} />
-    </MediaPreviewProvider>
-  );
+  if (window.bridgeDesktop) return <DesktopDashboard themeControl={themeControl} />;
   if (mobile.state.pairingSync) {
     return (
       <>
@@ -157,7 +153,7 @@ export function App() {
       <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled} sourceKey={snapshot?.runtime.detection?.refreshedAt ?? 0}>
       {mobile.state.activeHostId ? (
         <div className="mobile-tab-page" hidden={tab !== "sessions"}>
-          <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia}>
+          <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia} supportsFileStat={snapshot?.host.capabilities.includes("artifact.transfer.stat.v1") ?? false}>
             <MobileWorkspace
               visible={tab === "sessions"}
               {...(focusRequest ? { focusRequest } : {})}

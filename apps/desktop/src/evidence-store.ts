@@ -443,6 +443,15 @@ export class EvidenceStore {
     };
   }
 
+  artifactSize(artifactId: string): number | undefined {
+    const row = this.db.prepare(`
+      SELECT evidence_blobs.byte_size FROM evidence_artifacts
+      JOIN evidence_blobs ON evidence_blobs.key = evidence_artifacts.blob_key
+      WHERE evidence_artifacts.id = ?
+    `).get(artifactId) as SqlRow | undefined;
+    return row ? Number(row.byte_size) : undefined;
+  }
+
   async readArtifact(artifactId: string): Promise<Buffer | undefined> {
     const artifact = this.artifact(artifactId);
     if (!artifact?.blobKey) return undefined;

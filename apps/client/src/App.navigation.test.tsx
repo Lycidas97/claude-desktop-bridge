@@ -6,6 +6,7 @@ import { MobileAppShell } from "./components/MobileAppShell.js";
 import { MobileHostDetails } from "./components/MobileHostDetails.js";
 import { MobileSettings } from "./components/MobileSettings.js";
 import { MobileWorkspace } from "./components/MobileWorkspace.js";
+import { MediaPreviewProvider } from "./components/MediaPreviewProvider.js";
 import { dispatchMobileBack } from "./lib/mobile-back-navigation.js";
 
 const hooks = vi.hoisted(() => ({
@@ -62,6 +63,17 @@ beforeEach(() => {
   draw();
 });
 afterEach(() => { hooks.effects.forEach(effect => effect.cleanup?.()); vi.unstubAllGlobals(); });
+
+describe("mobile file stat capability", () => {
+  it.each([false, true])("uses explicit host support=%s for the same desktop version", supported => {
+    hooks.mobile.state.snapshot.host.version = "1.3.1";
+    hooks.mobile.state.snapshot.host.capabilities = supported ? ["artifact.transfer.stat.v1"] : ["artifact.transfer.v1"];
+    draw();
+    expect(component(MediaPreviewProvider)!.props.supportsFileStat).toBe(supported);
+    hooks.mobile.state.snapshot = undefined; draw();
+    expect(component(MediaPreviewProvider)!.props.supportsFileStat).toBe(false);
+  });
+});
 
 describe("mobile app parent navigation", () => {
   it("releases back at the session directory so Android can leave the app", () => {

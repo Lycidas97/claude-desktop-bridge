@@ -1,13 +1,13 @@
-import { execFile } from "node:child_process";
-import { mkdtemp, stat, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { mkdtemp, rm as recycle, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type { BridgeProjectInfo, BridgeRequest, BridgeSessionInfo } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { DesktopController } from "./controller.js";
 
-const execFileAsync = promisify(execFile);
+// Reuse the repository's Trash-only cleanup on all CI platforms.
+createRequire(import.meta.url)("../../../scripts/recycle-cleanup.cjs");
 
 describe("section.create", () => {
   const project: BridgeProjectInfo = { projectId: "native-group", name: "Research", kind: "desktop-group", cwd: "", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 };
@@ -146,7 +146,7 @@ describe("directory.mkdir", () => {
       const idempotent = await controller.handleRequest(request(root, "colab-connect"), "mobile");
       expect(idempotent.path).toBe(created.path);
     } finally {
-      await execFileAsync("/usr/bin/trash", [root]);
+      await recycle(root, { recursive: true, force: true });
     }
   });
 
@@ -156,7 +156,7 @@ describe("directory.mkdir", () => {
       const controller = Object.create(DesktopController.prototype) as { handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown> };
       await expect(controller.handleRequest(request(root, name), "mobile")).rejects.toThrow();
     } finally {
-      await execFileAsync("/usr/bin/trash", [root]);
+      await recycle(root, { recursive: true, force: true });
     }
   });
 
@@ -174,7 +174,7 @@ describe("directory.mkdir", () => {
       await symlink(realSub.path, join(root, "linked-dir"));
       await expect(controller.handleRequest(request(root, "linked-dir"), "mobile")).rejects.toThrow("非目录项");
     } finally {
-      await execFileAsync("/usr/bin/trash", [root]);
+      await recycle(root, { recursive: true, force: true });
     }
   });
 });

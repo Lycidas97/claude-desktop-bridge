@@ -2118,15 +2118,14 @@ export function MobileWorkspace({
     }
     if (
       !selectedHistory ||
-      (selectedHistory.status === "error" && selectedHistory.items.length === 0) ||
-      (selectedSession && !selectedSession.contextUsage && selectedHistory.status === "ready" && selectedHistory.items.some((item) => item.role === "assistant"))
+      (selectedHistory.status === "error" && selectedHistory.items.length === 0)
     ) {
       const retryKey = `${selectedSessionId}:${connection}`;
       if (autoRetriedSessionRef.current === retryKey) return;
       autoRetriedSessionRef.current = retryKey;
       void onOpenSession(selectedSessionId);
     }
-  }, [connection, onOpenSession, selectedHistory, selectedSession, selectedSessionId, visible]);
+  }, [connection, onOpenSession, selectedHistory, selectedSessionId, visible]);
 
   useEffect(() => {
     if (!visible) return;

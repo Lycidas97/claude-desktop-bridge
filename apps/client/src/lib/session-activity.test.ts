@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { formatContextPercentage, formatContextTokens, SessionContextUsageBar } from "../components/SessionActivityIndicator.js";
 import { backgroundSubagentBadge, formatElapsed, sessionActivity, sessionQueueLabel, subagentStalledSeconds } from "./session-activity.js";
 
 describe("sessionActivity", () => {
@@ -130,5 +131,41 @@ describe("background subagent badge", () => {
   it("reports how long a subagent has been quiet", () => {
     expect(subagentStalledSeconds(now - 60_000, now)).toBeUndefined();
     expect(subagentStalledSeconds(now - 7 * 3_600_000, now)).toBe(7 * 3_600);
+  });
+});
+
+describe("SessionContextUsageBar", () => {
+  it("formats compact token and percentage labels without rounding 999.6K to 1000K or positive ratios to 0%", () => {
+    expect(formatContextTokens(450)).toBe("450");
+    expect(formatContextTokens(4_250)).toBe("4.3K");
+    expect(formatContextTokens(42_100)).toBe("42K");
+    expect(formatContextTokens(200_000)).toBe("200K");
+    expect(formatContextTokens(999_600)).toBe("1M");
+    expect(formatContextTokens(1_000_000)).toBe("1M");
+    expect(formatContextPercentage(0.4)).toBe("<1%");
+    expect(formatContextPercentage(18.6)).toBe("19%");
+  });
+
+  it("hides empty usage, renders progress bar for known windows, and omits denominator for unknown custom models", () => {
+    expect(SessionContextUsageBar({ usage: undefined })).toBeNull();
+    expect(SessionContextUsageBar({ usage: { totalTokens: 0, maxTokens: 200_000, percentage: 0, estimated: true } })).toBeNull();
+
+    const known = SessionContextUsageBar({
+      usage: { totalTokens: 184_000, maxTokens: 200_000, percentage: 92, model: "claude-sonnet-4-5", estimated: false },
+    })!;
+    expect(known.props.className).toContain("is-critical");
+    expect(JSON.stringify(known)).toContain("184K");
+    expect(JSON.stringify(known)).toContain("200K");
+    expect(JSON.stringify(known)).toContain("92%");
+    expect(JSON.stringify(known)).toContain("progressbar");
+
+    const unknown = SessionContextUsageBar({
+      usage: { totalTokens: 38_400, model: "antigravity/gemini-3-pro", estimated: true },
+    })!;
+    const serialized = JSON.stringify(unknown);
+    expect(serialized).toContain("38K");
+    expect(serialized).not.toContain("undefined");
+    expect(serialized).not.toContain("NaN");
+    expect(serialized).not.toContain("progressbar");
   });
 });

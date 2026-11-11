@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { DesktopControlSnapshot } from "@bridge/protocol";
 import {
   BUILD_DIAG_TAG,
   buildDiagnosticReportText,
@@ -32,7 +33,7 @@ function copyTextFallback(text: string): boolean {
   }
 }
 
-export function DiagnosticFloatingEntry() {
+export function DiagnosticFloatingEntry({ desktopSnapshot }: { desktopSnapshot?: DesktopControlSnapshot } = {}) {
   const { entries, bridgeState, enabled, dialogOpen } = useDiagnosticLogs();
   const [reportText, setReportText] = useState("");
   const [idbInfo, setIdbInfo] = useState<Record<string, unknown>>({});
@@ -59,25 +60,27 @@ export function DiagnosticFloatingEntry() {
   }, [dialogOpen, repairConfirmOpen, repairing]);
 
   const errorCount = entries.filter((e) => e.level === "error").length;
-  const conn = String(bridgeState.connection ?? "idle");
-  const desktopOnline = Boolean(bridgeState.desktopOnline);
+  const conn = desktopSnapshot?.connection ?? String(bridgeState.connection ?? "idle");
+  const desktopOnline = desktopSnapshot?.host.online ?? Boolean(bridgeState.desktopOnline);
 
   useEffect(() => {
     if (!dialogOpen) return;
     let active = true;
-    void inspectIndexedDbSummary().then((summary) => {
-      if (active) setIdbInfo(summary);
-    });
-    void buildDiagnosticReportText().then((text) => {
+    if (!desktopSnapshot) {
+      void inspectIndexedDbSummary().then((summary) => {
+        if (active) setIdbInfo(summary);
+      });
+    }
+    void buildDiagnosticReportText(desktopSnapshot).then((text) => {
       if (active) setReportText(text);
     });
     return () => {
       active = false;
     };
-  }, [dialogOpen, entries.length, bridgeState, enabled]);
+  }, [dialogOpen, entries.length, bridgeState, enabled, desktopSnapshot]);
 
   async function handleCopy(): Promise<void> {
-    const text = await buildDiagnosticReportText();
+    const text = await buildDiagnosticReportText(desktopSnapshot);
     setReportText(text);
     let copied = false;
     try {
@@ -95,7 +98,7 @@ export function DiagnosticFloatingEntry() {
   }
 
   async function handleExportFile(): Promise<void> {
-    const text = await buildDiagnosticReportText();
+    const text = await buildDiagnosticReportText(desktopSnapshot);
     setReportText(text);
     const filename = `bridge-diag-${new Date().toISOString().replace(/[:.]/gu, "-")}.log`;
     try {
@@ -134,8 +137,8 @@ export function DiagnosticFloatingEntry() {
     setProbing(true);
     setStatusNotice("正在探测中继连通性...");
     try {
-      await runRelayConnectivityProbe();
-      const text = await buildDiagnosticReportText();
+      await runRelayConnectivityProbe(desktopSnapshot?.host.relayUrl);
+      const text = await buildDiagnosticReportText(desktopSnapshot);
       setReportText(text);
       setStatusNotice("探测完成，结果已追加至底部日志");
     } finally {
@@ -253,7 +256,8 @@ export function DiagnosticFloatingEntry() {
               <div>
                 <div style={{ fontSize: "14px", fontWeight: 700 }}>连接诊断与按需日志</div>
                 <div style={{ fontSize: "11px", color: "#94a3b8" }}>
-                  {BUILD_DIAG_TAG} · 状态: {conn} / 电脑{desktopOnline ? "在线" : "未就绪"} · 缓存消息: {String(idbInfo.messagesCount ?? "?")}
+                  {BUILD_DIAG_TAG} · 状态: {conn} / 电脑{desktopOnline ? "在线" : "未就绪"}
+                  {!desktopSnapshot && <> · 缓存消息: {String(idbInfo.messagesCount ?? "?")}</>}
                 </div>
               </div>
               <button
@@ -365,7 +369,7 @@ export function DiagnosticFloatingEntry() {
               </button>
             </div>
 
-            <details style={{ padding: "10px 12px", borderBottom: "1px solid rgba(148, 163, 184, 0.16)", fontSize: "12px" }}>
+            {!desktopSnapshot && <details style={{ padding: "10px 12px", borderBottom: "1px solid rgba(148, 163, 184, 0.16)", fontSize: "12px" }}>
               <summary style={{ cursor: "pointer", color: "#fbbf24" }}>高级修复</summary>
               <p style={{ color: "#cbd5e1", lineHeight: 1.6 }}>
                 此操作影响手机保存的所有电脑：清空全部缓存消息和待发送消息，重置所有电脑的中继连接路由，并重新加载应用。
@@ -378,7 +382,7 @@ export function DiagnosticFloatingEntry() {
               >
                 {repairing ? "修复中..." : "清理所有电脑缓存并重连…"}
               </button>
-            </details>
+            </details>}
 
             {statusNotice && (
               <div

@@ -8,7 +8,6 @@ import type {
   BridgeEvidencePage,
   BridgeEvent,
   BridgeHistoryPage,
-  BridgeDesktopAppStatus,
   BridgeDesktopRuntimeId,
   BridgeNativePermissionMode,
   BridgeProviderProfile,
@@ -32,15 +31,12 @@ import {
   ChevronsDown,
   ChevronsUp,
   CircleStop,
-  Download,
   Forward,
   GitFork,
   Laptop,
   LoaderCircle,
   MessageSquare,
-  Play,
   Plus,
-  Power,
   QrCode,
   RefreshCw,
   Send,
@@ -75,10 +71,10 @@ import { appendUploadedFilePaths, uploadSessionFile } from "../lib/file-upload.j
 import { MediaGallery } from "./MediaGallery.js";
 import { MediaPreviewProvider, useMediaPreview } from "./MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
-import { RelaySettings } from "./RelaySettings.js";
 import { IconButton } from "./IconButton.js";
 import { MarkdownText } from "./MarkdownText.js";
 import { ThemeMenu } from "./ThemeMenu.js";
+import { DiagnosticFloatingEntry } from "./DiagnosticLogDialog.js";
 import {
   aggregateFileChanges,
   conversationItems,
@@ -96,7 +92,7 @@ import {
   stoppableBridgeTask,
   SubagentCard,
 } from "./MobileWorkspace.js";
-import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
+import { SessionActivityIndicator, SessionContextUsageBar } from "./SessionActivityIndicator.js";
 import { SlashCommandInput } from "./SlashCommandInput.js";
 import { useSessionCommands } from "../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
@@ -1205,6 +1201,7 @@ function DesktopSessions({
             {sessionView === "conversation" && (
             <>
             <SessionActivityIndicator activity={activity} />
+            <SessionContextUsageBar usage={selected.contextUsage} />
             <div className="desktop-composer">
               {commandError && <div className="composer-error" role="alert">{commandError}</div>}
               <FileAttachmentPicker state={fileUploads} />
@@ -1400,131 +1397,6 @@ function DesktopDevices({
   );
 }
 
-function DesktopStatus({
-  snapshot: rawSnapshot,
-  onSetRelayUrl,
-  onLaunchChange,
-  onDesktopAppAction,
-  onExport,
-}: {
-  snapshot: DesktopControlSnapshot;
-  onSetRelayUrl(url: string): Promise<void>;
-  onLaunchChange(enabled: boolean): Promise<void>;
-  onDesktopAppAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<void>;
-  onExport(): Promise<void>;
-}) {
-  const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
-  const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
-  const snapshot = claudeSnapshot(rawSnapshot);
-  const nativeRelay = isClaudeNativeRelay(snapshot);
-  const desktopApps: BridgeDesktopAppStatus[] = snapshot.desktopApps ?? [{
-    id: "claude-desktop",
-    name: "Claude Desktop",
-    ...snapshot.claudeDesktop,
-  }];
-  async function runDesktopAction(runtimeId: BridgeDesktopRuntimeId, action: "launch" | "quit"): Promise<void> {
-    setDesktopAction({ runtimeId, action });
-    setDesktopActionError(undefined);
-    try {
-      await onDesktopAppAction(runtimeId, action);
-    } catch (error) {
-      setDesktopActionError({
-        runtimeId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setDesktopAction(undefined);
-    }
-  }
-  return (
-    <section className="desktop-page">
-      <header className="desktop-page-heading">
-        <div><span>运行诊断</span><h1>状态</h1></div>
-        <button type="button" className="secondary-button" onClick={() => void onExport()}><Download size={17} />导出诊断</button>
-      </header>
-      <div className="status-grid-v2">
-        <section className={`managed-status-card ${nativeRelay ? "ready" : "disconnected"}`}>
-          <span>Claude Desktop 中转</span>
-          <strong>{nativeRelay ? "原生中转已就绪" : "请更新电脑端 Bridge"}</strong>
-          <p>Claude 的执行与授权由 Desktop 管理。</p>
-        </section>
-        <section>
-          <span>Claude 通道</span>
-          <strong>{snapshot.runtime.state === "ready" ? "已就绪" : snapshot.runtime.state === "working" ? "运行中" : "需要处理"}</strong>
-          <p>{snapshot.runtime.detail}</p>
-          {snapshot.runtime.version && <small>Claude {snapshot.runtime.version}</small>}
-        </section>
-        <section>
-          <span>连接路径</span>
-          <strong>{connectionLabel(snapshot)}</strong>
-          <p>
-            {snapshot.transport?.rttMs !== undefined
-              ? `${Math.round(snapshot.transport.rttMs)} ms 延迟`
-              : "正在测量延迟"}
-            {" · "}{snapshot.transport?.pendingCount ?? 0} 条待发送
-          </p>
-          <small>
-            {snapshot.transport?.relayHealthy ? "Relay 状态正常" : "Relay 健康检查未响应"}
-            {" · "}端到端加密
-          </small>
-        </section>
-        <section>
-          <span>活动会话</span>
-          <strong>{snapshot.runtime.activeTurns} / {snapshot.runtime.maxParallelTurns}</strong>
-          <p>{snapshot.sessions.filter((session) => session.pendingCount > 0).reduce((sum, session) => sum + session.pendingCount, 0)} 条指令排队</p>
-          <small>每台主机最多并行两个 turn</small>
-        </section>
-        <section>
-          <span>待处理</span>
-          <strong>{snapshot.permissions.length}</strong>
-          <p>{snapshot.permissions.length ? "Claude 正在等待审批或回答" : "没有待处理事项"}</p>
-          <small>首次有效答复生效</small>
-        </section>
-      </div>
-      <section className="status-settings">
-        <RelaySettings relayUrl={snapshot.host.relayUrl} onSave={onSetRelayUrl} />
-        {desktopApps.map((desktopApp) => (
-          <div className="desktop-app-control" key={desktopApp.id}>
-            <span>
-              <strong>{desktopApp.name}</strong>
-              <small className={desktopActionError?.runtimeId === desktopApp.id ? "desktop-app-error" : undefined}>
-                {desktopActionError?.runtimeId === desktopApp.id ? desktopActionError.message : desktopApp.detail}
-              </small>
-            </span>
-            <div className="desktop-app-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={Boolean(desktopAction) || !desktopApp.canLaunch}
-                onClick={() => void runDesktopAction(desktopApp.id, "launch")}
-              >
-                <Play size={15} />
-                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "launch" ? "启动中" : "启动"}
-              </button>
-              <button
-                type="button"
-                className="danger-button"
-                disabled={Boolean(desktopAction) || !desktopApp.canQuit}
-                onClick={() => void runDesktopAction(desktopApp.id, "quit")}
-              >
-                <Power size={15} />
-                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "quit" ? "退出中" : "退出"}
-              </button>
-            </div>
-          </div>
-        ))}
-        <label className="toggle-row">
-          <span><strong>开机自动运行</strong><small>登录系统后 Bridge 自动待机</small></span>
-          <input type="checkbox" checked={snapshot.launchAtLogin} onChange={(event) => void onLaunchChange(event.target.checked)} />
-          <i aria-hidden="true" />
-        </label>
-        <div><span>Bridge 版本</span><strong>{snapshot.host.version}</strong></div>
-        <div><span>事件游标</span><strong>{snapshot.latestSeq}</strong></div>
-      </section>
-    </section>
-  );
-}
-
 export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl }) {
   const api = window.bridgeDesktop;
   const [snapshot, setSnapshot] = useState<DesktopControlSnapshot>();
@@ -1598,20 +1470,10 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
           />
         )}
         {tab === "settings" && (
-          <DesktopSettings snapshot={snapshot} api={api} onSnapshot={setSnapshot} themeControl={themeControl} connections={<DesktopStatus
-            snapshot={snapshot}
-
-            onSetRelayUrl={async (url) => setSnapshot(await api.setRelayUrl(url))}
-            onLaunchChange={async (enabled) => setSnapshot(await api.setLaunchAtLogin(enabled))}
-            onDesktopAppAction={async (runtimeId, action) => setSnapshot(
-              action === "launch"
-                ? await api.launchDesktopApp(runtimeId)
-                : await api.quitDesktopApp(runtimeId),
-            )}
-            onExport={async () => { await api.exportDiagnostics(); }}
-          />} />
+          <DesktopSettings snapshot={snapshot} api={api} onSnapshot={setSnapshot} themeControl={themeControl} />
         )}
       </section>
+      <DiagnosticFloatingEntry desktopSnapshot={snapshot} />
     </main>
     </MagpieQuotaProvider>
     </MediaPreviewProvider>

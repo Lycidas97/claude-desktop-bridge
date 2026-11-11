@@ -20,7 +20,8 @@ export type ClaudeDesktopProfile = "Claude" | "Claude-3p";
 
 export interface ClaudeDesktopDeveloperSettings {
   supported: boolean;
-  profiles: Array<{ id: ClaudeDesktopProfile; path: string }>;
+  profiles: Array<{ id: ClaudeDesktopProfile; path: string; accessRequired?: boolean }>;
+  accessRequired?: boolean;
   profile?: ClaudeDesktopProfile;
   path?: string;
   enabled?: boolean;

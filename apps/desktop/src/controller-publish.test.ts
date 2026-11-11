@@ -32,11 +32,29 @@ describe("mobile snapshot publication", () => {
     expect(controller.eventLog.append).not.toHaveBeenCalled();
   });
 
+  it("broadcasts host capability changes even when sessions and projects are unchanged", async () => {
+    const { controller } = progressFixture();
+    let capabilities: DesktopControlSnapshot["host"]["capabilities"] = ["directory.browse.v1"];
+    controller.snapshot.mockImplementation(async () => ({
+      host: { capabilities: [...capabilities] } as DesktopControlSnapshot["host"],
+      sessions: [],
+      permissions: [],
+      projects: [],
+    }));
+    await controller.publish();
+    controller.broadcast.mockClear();
+    capabilities = ["directory.browse.v1", "directory.mkdir.v1", "section.move.v1"];
+    await controller.publish();
+    expect(controller.broadcast).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { runningSubagents: { count: 2, lastUpdatedAt: 10 } },
     { subagentStopScope: "task" as const },
     { executionStage: "submitted" as const },
     { ownership: "DESKTOP_OBSERVED" as const, turnState: "running" as const, mainTurnStopScope: "process" as const },
+    { contextUsage: { totalTokens: 42_000, maxTokens: 1_000_000, percentage: 4.2, model: "claude-opus-5-5", estimated: false } },
+    { contextUsage: { totalTokens: 18_500, model: "antigravity/gemini-3-pro", estimated: true } },
   ])("publishes runtime session changes %j as a replacement without a metadata change", async (change) => {
     const session: BridgeSessionInfo = {
       sessionId: "session-1", title: "Session", cwd: "/tmp/project",

@@ -943,6 +943,32 @@ function applyEventToSession(
       turnState: "waiting",
     };
   }
+  if (event.type === "session.rewound") {
+    const { contextUsage: _dropped, ...rest } = session;
+    return rest;
+  }
+  if (event.type === "session.compacted") {
+    const postTokens = typeof event.data.postTokens === "number" && Number.isFinite(event.data.postTokens) && event.data.postTokens > 0
+      ? Math.round(event.data.postTokens)
+      : undefined;
+    if (!postTokens) {
+      const { contextUsage: _dropped, ...rest } = session;
+      return rest;
+    }
+    const maxTokens = session.contextUsage?.maxTokens;
+    return {
+      ...session,
+      contextUsage: {
+        totalTokens: postTokens,
+        ...(typeof maxTokens === "number" && maxTokens > 0 ? {
+          maxTokens,
+          percentage: Math.min(100, Math.max(0, Math.round((postTokens / maxTokens) * 1000) / 10)),
+        } : {}),
+        ...(session.contextUsage?.model ? { model: session.contextUsage.model } : {}),
+        estimated: true,
+      },
+    };
+  }
   if (event.type === "runtime.goal.updated") {
     const goal = event.data.goal as BridgeRuntimeGoalInfo | undefined;
     if (goal && typeof goal.objective === "string") return { ...session, goal };
@@ -3089,6 +3115,28 @@ export function useMobileBridge() {
     return project;
   }, [sendRequest]);
 
+  const moveSessionSection = useCallback(async (
+    sessionId: string,
+    sectionId: string | null,
+  ): Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] }> => {
+    const response = await sendRequest("section.move", { sessionId, sectionId }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "移动分组失败");
+    const result = response.result as { session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] };
+    setState((current) => {
+      if (!current.snapshot) return current;
+      const withSession = applySessionToSnapshot(current.snapshot, result.session)!;
+      const snapshot = Array.isArray(result.projects) ? { ...withSession, projects: result.projects } : withSession;
+      return {
+        ...current,
+        snapshot,
+        hosts: current.hosts.map((host) => host.roomId === current.activeHostId
+          ? hostWithRuntimeState(host, snapshot, current.permissions)
+          : host),
+      };
+    });
+    return result;
+  }, [sendRequest]);
+
   const createSession = useCallback(async (
     cwd: string,
     title?: string,
@@ -3250,6 +3298,12 @@ export function useMobileBridge() {
     const response = await sendRequest("directory.list", path ? { path } : {}, { wait: true, allowOffline: false });
     if (!response?.ok) throw new Error(response?.error?.message ?? "文件夹读取失败");
     return (response.result as { listing: BridgeDirectoryListing }).listing;
+  }, [sendRequest]);
+
+  const createDirectory = useCallback(async (parentPath: string, name: string): Promise<string> => {
+    const response = await sendRequest("directory.mkdir", { parentPath, name }, { wait: true, allowOffline: false });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "新建文件夹失败");
+    return (response.result as { path: string }).path;
   }, [sendRequest]);
 
   const redetectProviders = useCallback(async (): Promise<void> => {
@@ -3491,6 +3545,7 @@ export function useMobileBridge() {
     previewArtifact,
     requestMedia: sendRequest,
     browseDirectory,
+    createDirectory,
     redetectProviders,
     uploadFile,
     downloadArtifact,
@@ -3504,6 +3559,7 @@ export function useMobileBridge() {
     resolvePermission,
     createSession,
     createSection,
+    moveSessionSection,
     forkSession,
     returnToDesktop,
     takeoverDesktop,

@@ -10,6 +10,7 @@ import { modelQuotaLabel } from "../../../../plugins/magpie-quota/presentation.j
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "./ConfirmationDialog.js";
 import { IconButton } from "./IconButton.js";
+import { formatContextPercentage, formatContextTokens } from "./SessionActivityIndicator.js";
 
 const EFFORT_LABELS: Record<string, string> = {
   none: "关闭",
@@ -33,12 +34,6 @@ function supportedEffort(effort: string, levels: readonly string[]): string {
   if (levels.includes(effort)) return effort;
   const rank = EFFORT_ORDER.indexOf(effort);
   return levels.filter((level) => EFFORT_ORDER.indexOf(level) <= rank).at(-1) ?? levels[0] ?? effort;
-}
-
-function formatTokens(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value % 1_000_000 ? 1 : 0)}M`;
-  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
-  return String(value);
 }
 
 export interface SessionConfigurationChange {
@@ -206,28 +201,36 @@ export function SessionConfigurationDialog({
           </div>
         ) : (
           <>
-            {configuration?.context && (
-              <div className="session-context-usage">
-                <div>
-                  <span>上下文</span>
-                  <strong>
-                    {formatTokens(configuration.context.totalTokens)}
-                    <small> / {formatTokens(configuration.context.maxTokens)}</small>
-                  </strong>
+            {configuration?.context && configuration.context.totalTokens > 0 && (() => {
+              const context = configuration.context;
+              const hasCapacity = typeof context.maxTokens === "number" && context.maxTokens > 0
+                && typeof context.percentage === "number" && Number.isFinite(context.percentage);
+              return (
+                <div className="session-context-usage">
+                  <div>
+                    <span>上下文</span>
+                    <strong>
+                      {formatContextTokens(context.totalTokens)}
+                      {hasCapacity && (
+                        <small> / {formatContextTokens(context.maxTokens!)} · {formatContextPercentage(context.percentage!)}</small>
+                      )}
+                    </strong>
+                  </div>
+                  {hasCapacity && (
+                    <div
+                      className="session-context-track"
+                      role="progressbar"
+                      aria-label="上下文使用量"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.round(context.percentage!)}
+                    >
+                      <i style={{ width: `${Math.min(100, Math.max(0, context.percentage!))}%` }} />
+                    </div>
+                  )}
                 </div>
-                <div
-                  className="session-context-track"
-                  role="progressbar"
-                  aria-label="上下文使用量"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={Math.round(configuration.context.percentage)}
-                >
-                  <i style={{ width: `${Math.min(100, configuration.context.percentage)}%` }} />
-                </div>
-                <small>{configuration.context.estimated ? "基于最近一次会话用量" : "Claude Desktop 用量"}</small>
-              </div>
-            )}
+              );
+            })()}
 
             {configuration?.availableProviders?.length ? (
               <label className="session-model-field">

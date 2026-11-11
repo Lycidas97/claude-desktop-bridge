@@ -7,7 +7,7 @@ import { claudeDesktopDeveloperSettings } from "./claude-desktop-developer-setti
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...fs, writeFile: vi.fn(fs.writeFile) };
+  return { ...fs, stat: vi.fn(fs.stat), readFile: vi.fn(fs.readFile), writeFile: vi.fn(fs.writeFile) };
 });
 
 // Reuse the repository's Trash-only cleanup on all CI platforms.
@@ -95,6 +95,63 @@ describe("Claude Desktop developer settings", () => {
     await expect(claudeDesktopDeveloperSettings({ home, platform: "darwin", profile: "Claude", enable: true })).rejects.toThrow("未找到 Claude");
     await mkdir(join(claude, "developer_settings.json"), { recursive: true });
     await expect(claudeDesktopDeveloperSettings({ home, platform: "darwin", profile: "Claude", enable: true })).rejects.toThrow();
+  });
+
+  it.each(["EPERM", "EACCES"])("keeps a permission-blocked profile actionable after a passive read: %s", async (code) => {
+    await mkdir(claude, { recursive: true });
+    const path = join(claude, "developer_settings.json");
+    const original = '{"other":{"theme":"dark"}}';
+    await writeFile(path, original);
+    vi.mocked(readFile).mockRejectedValueOnce(Object.assign(new Error("access denied"), { code }));
+    await expect(claudeDesktopDeveloperSettings({ home, platform: "darwin" })).resolves.toMatchObject({
+      supported: true, profile: "Claude", path, accessRequired: true,
+    });
+    expect(await readFile(path, "utf8")).toBe(original);
+  });
+
+  it("retains a profile whose directory cannot be inspected without asking for access", async () => {
+    await mkdir(claude, { recursive: true });
+    vi.mocked(stat).mockRejectedValueOnce(Object.assign(new Error("access denied"), { code: "EPERM" }));
+    expect(await claudeDesktopDeveloperSettings({ home, platform: "darwin" })).toMatchObject({
+      profiles: [{ id: "Claude" }], profile: "Claude", accessRequired: true,
+    });
+    await expect(stat(join(claude, "developer_settings.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["read", "write"])("requests access once after %s is denied and merges the original JSON", async (operation) => {
+    await mkdir(claude, { recursive: true });
+    const path = join(claude, "developer_settings.json");
+    await writeFile(path, '{"other":{"theme":"dark"}}');
+    vi.mocked(operation === "read" ? readFile : writeFile).mockRejectedValueOnce(Object.assign(new Error("access denied"), { code: "EPERM" }));
+    const requestAccess = vi.fn(async () => {});
+    expect(await claudeDesktopDeveloperSettings({ home, platform: "darwin", profile: "Claude", enable: true, requestAccess }))
+      .toMatchObject({ enabled: true, changed: true });
+    expect(requestAccess).toHaveBeenCalledExactlyOnceWith(claude);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ allowDevTools: true, other: { theme: "dark" } });
+  });
+
+  it("does not write after the access request is canceled", async () => {
+    await mkdir(claude, { recursive: true });
+    const path = join(claude, "developer_settings.json");
+    const original = '{"extra":42}';
+    await writeFile(path, original);
+    vi.mocked(readFile).mockRejectedValueOnce(Object.assign(new Error("access denied"), { code: "EPERM" }));
+    await expect(claudeDesktopDeveloperSettings({ home, platform: "darwin", profile: "Claude", enable: true,
+      requestAccess: async () => { throw new Error("已取消授权，原配置未修改"); },
+    })).rejects.toThrow("已取消授权");
+    expect(await readFile(path, "utf8")).toBe(original);
+  });
+
+  it("stops after a refused retry without requesting access repeatedly", async () => {
+    await mkdir(claude, { recursive: true });
+    const path = join(claude, "developer_settings.json");
+    const original = '{"extra":42}';
+    await writeFile(path, original);
+    for (let i = 0; i < 2; i++) vi.mocked(readFile).mockRejectedValueOnce(Object.assign(new Error("access denied"), { code: "EACCES" }));
+    const requestAccess = vi.fn(async () => {});
+    await expect(claudeDesktopDeveloperSettings({ home, platform: "darwin", profile: "Claude", enable: true, requestAccess })).rejects.toThrow("仍无法访问");
+    expect(requestAccess).toHaveBeenCalledOnce();
+    expect(await readFile(path, "utf8")).toBe(original);
   });
 
   it("surfaces write failures", async () => {

@@ -1,7 +1,8 @@
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
 import clientPackage from "../../package.json";
-import { BUILD_DIAG_TAG, inspectIndexedDbSummary } from "./diagnostics.js";
+import { BUILD_DIAG_TAG, buildDiagnosticReportText, inspectIndexedDbSummary } from "./diagnostics.js";
+import type { DesktopControlSnapshot } from "@bridge/protocol";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -31,6 +32,20 @@ it("inspects an existing v4 vault without downgrading, clearing messages, or cle
   expect(summary).toMatchObject({ version: 4, messagesCount: 1, outboxCount: 1, identities: [expect.objectContaining({ roomId: "synthetic", deviceId: "phone" })] });
   expect(summary).not.toHaveProperty("error");
   expect(await inspectIndexedDbSummary()).toEqual(summary);
+});
+
+it("reports the desktop connection without inspecting the phone vault", async () => {
+  const open = vi.fn(() => { throw new Error("phone vault must not be opened"); });
+  vi.stubGlobal("indexedDB", { open });
+  const report = await buildDiagnosticReportText({
+    host: { name: "Fixture Mac", online: true }, connection: "connected", latestSeq: 17,
+    runtime: { state: "ready" }, transport: { path: "direct", rttMs: 4 },
+  } as DesktopControlSnapshot);
+  expect(report).toContain("Bridge Desktop Diagnostic Report");
+  expect(report).toContain('"connection": "connected"');
+  expect(report).toContain('"desktopName": "Fixture Mac"');
+  expect(report).not.toContain("indexedDb");
+  expect(open).not.toHaveBeenCalled();
 });
 
 it("reports the package version rather than a stale hard-coded diagnostic tag", () => {

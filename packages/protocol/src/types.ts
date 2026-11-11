@@ -97,6 +97,7 @@ export type BridgeRuntimeCapability =
   | "session.list"
   | "session.create"
   | "section.create"
+  | "section.move"
   | "session.fork"
   | "session.history"
   | "session.configure"
@@ -195,11 +196,13 @@ export type BridgeCapability =
   | "permission.policy.v1"
   | "permission.runtime-defaults.v1"
   | "directory.browse.v1"
+  | "directory.mkdir.v1"
   | "runtime.adapter.v1"
   | "runtime.handoff.v1"
   | "session.visibility.v1"
   | "session.rename.v1"
   | "section.create.v1"
+  | "section.move.v1"
   | "session.commands.v1"
   | "session.command.v1"
   | "session.rewind.v1"
@@ -353,6 +356,7 @@ export interface BridgeSessionAllowedActions {
   canSwitchProvider: boolean;
   canContinueOfficial: boolean;
   canConfigure: boolean;
+  canMoveSection?: boolean;
   /** Cross-Desktop relay to another runtime (0.7+). */
   canRelay?: boolean;
   /** A live Desktop executor must be handed over before Bridge can execute remotely. */
@@ -654,6 +658,8 @@ export interface BridgeSessionInfo {
   /** Native runtime fast/priority mode for Codex/Hermes. */
   fast?: boolean;
   configurationPending?: boolean;
+  /** Current main-session context window watermark, when observed. */
+  contextUsage?: BridgeSessionContextUsage;
   nativePermissionModeChange?: BridgeNativePermissionModeChange;
   fallbackConfirmed?: boolean;
   desktopRegistration?: BridgeDesktopRegistrationInfo;
@@ -716,8 +722,8 @@ export interface BridgeRuntimeProviderInfo {
 
 export interface BridgeSessionContextUsage {
   totalTokens: number;
-  maxTokens: number;
-  percentage: number;
+  maxTokens?: number;
+  percentage?: number;
   model?: string;
   estimated: boolean;
 }
@@ -1151,10 +1157,12 @@ export type BridgeMethod =
   | "runtime.refresh"
   | "project.list"
   | "directory.list"
+  | "directory.mkdir"
   | "session.list"
   | "session.open"
   | "session.create"
   | "section.create"
+  | "section.move"
   | "session.fork"
   | "session.rename"
   | "session.history"

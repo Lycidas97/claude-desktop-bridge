@@ -200,7 +200,9 @@ export function App() {
               onResolvePermission={mobile.resolvePermission}
               onCreateSession={mobile.createSession}
               {...(snapshot?.host.capabilities.includes("section.create.v1") ? { onCreateSection: mobile.createSection } : {})}
+              {...(snapshot?.host.capabilities.includes("section.move.v1") ? { onMoveSessionSection: mobile.moveSessionSection } : {})}
               {...(snapshot?.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: mobile.browseDirectory } : {})}
+              {...(snapshot?.host.capabilities.includes("directory.mkdir.v1") ? { onCreateDirectory: mobile.createDirectory } : {})}
               onForkSession={mobile.forkSession}
               {...(snapshot?.host.capabilities.includes("session.rename.v1")
                 ? { onRenameSession: mobile.renameSession }
@@ -290,7 +292,7 @@ export function App() {
       ))}
       {tab === "settings" && (providersOpen ? (
         <main className="mobile-workspace mobile-settings-page">
-          <MobilePageHeader title="提供方" onBack={() => setProvidersOpen(false)} />
+          <MobilePageHeader title="模型与网关" onBack={() => setProvidersOpen(false)} />
           <div className="mobile-settings-content"><section className="mobile-settings-group mobile-provider-settings"><ProviderSettings key={mobile.state.activeHostId} {...(snapshot ? { snapshot } : {})} connected={mobile.state.connection === "connected" && mobile.state.desktopOnline} onRefresh={mobile.redetectProviders} /></section></div>
         </main>
       ) : quotaOpen && quotaDeclared ? (

@@ -84,6 +84,17 @@ describe("mobile app parent navigation", () => {
     draw();
     expect(component(MobileWorkspace)!.props.onCreateSection).toBe(hooks.mobile.createSection);
   });
+  it("wires Section move and browse mkdir only when the host declares each capability", () => {
+    hooks.mobile.moveSessionSection = vi.fn();
+    hooks.mobile.createDirectory = vi.fn();
+    draw();
+    expect(component(MobileWorkspace)!.props.onMoveSessionSection).toBeUndefined();
+    expect(component(MobileWorkspace)!.props.onCreateDirectory).toBeUndefined();
+    hooks.mobile.state.snapshot.host.capabilities.push("section.move.v1", "directory.mkdir.v1");
+    draw();
+    expect(component(MobileWorkspace)!.props.onMoveSessionSection).toBe(hooks.mobile.moveSessionSection);
+    expect(component(MobileWorkspace)!.props.onCreateDirectory).toBe(hooks.mobile.createDirectory);
+  });
   it("releases back at the session directory so Android can leave the app", () => {
     expect(component(MobileAppShell)!.props.tab).toBe("sessions");
     expect(back()).toBe(false);

@@ -314,7 +314,8 @@ export class DesktopController extends EventEmitter {
         this.queuePublish();
         return;
       }
-      const persistOffline = event.type === "permission.requested" || event.type === "question.requested";
+      const persistOffline = event.type === "permission.requested" || event.type === "question.requested" ||
+        event.type === "turn.completed" || event.type === "turn.failed";
       void this.broadcast({ kind: "event", event }, !persistOffline);
       if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") this.queuePublish();
     });

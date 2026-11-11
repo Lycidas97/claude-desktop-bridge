@@ -1239,6 +1239,7 @@ export function useMobileBridge() {
   const sendAttemptedAtRef = useRef<number | undefined>(undefined);
   const nativeRelayCapabilityRef = useRef<boolean | undefined>(undefined);
   const payloadDeflateRef = useRef(false);
+  const pendingCompletionNotificationsRef = useRef(new Set<string>());
 
   const updateHostCache = useCallback((
     roomId: string,
@@ -1480,6 +1481,33 @@ export function useMobileBridge() {
     return responsePromise;
   }, []);
 
+  const notifyCompletedTurns = useCallback((events: BridgeEvent[], crypto: BridgeCrypto) => {
+    const completed = events.filter((event) => event.type === "turn.completed" || event.type === "turn.failed");
+    if (completed.length === 0) return;
+    const seen = new Set(stateRef.current.events.map((event) => event.eventId));
+    const pending = pendingCompletionNotificationsRef.current;
+    // The state event list owns committed IDs. Keep only IDs awaiting a React
+    // commit so queued delivery and resume cannot notify twice in the same batch.
+    for (const id of pending) if (seen.has(id)) pending.delete(id);
+    for (const event of completed) {
+      if (seen.has(event.eventId) || pending.has(event.eventId)) continue;
+      pending.add(event.eventId);
+      if (document.visibilityState === "visible") continue;
+      const title = stateRef.current.snapshot?.sessions.find((session) => session.sessionId === event.sessionId)?.title
+        ?? crypto.identity.desktopName;
+      const body = event.type === "turn.completed" ? "任务已完成" : "任务失败";
+      if (Capacitor.isNativePlatform()) {
+        void showSessionNotification(
+          { hostId: crypto.identity.roomId, ...(event.sessionId ? { sessionId: event.sessionId } : {}) },
+          title,
+          body,
+        );
+      } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        new Notification(title, { body, icon: "/icon-192.png", tag: event.eventId });
+      }
+    }
+  }, []);
+
   const resumeEvents = useCallback(async (bootstrap = false, fromSeq?: number) => {
     const crypto = cryptoRef.current;
     const socket = socketRef.current;
@@ -1512,6 +1540,7 @@ export function useMobileBridge() {
         const latestSeq = typeof result.latestSeq === "number" ? result.latestSeq : cursor;
         if (result.hasMore !== true || cursor >= latestSeq) break;
       }
+      if (crypto) notifyCompletedTurns(events, crypto);
       setState((current) => {
         if (!isCurrent()) return current;
         let turns = current.localTurns;
@@ -1552,7 +1581,7 @@ export function useMobileBridge() {
     } catch {
       // The next reconnect retries from the same cursor.
     }
-  }, [sendRequest]);
+  }, [notifyCompletedTurns, sendRequest]);
 
   const refreshSessionList = useCallback(async (): Promise<boolean> => {
     const crypto = cryptoRef.current;
@@ -1635,6 +1664,7 @@ export function useMobileBridge() {
     socketRef.current?.close();
     socketRef.current = undefined;
     cryptoRef.current = crypto;
+    pendingCompletionNotificationsRef.current.clear();
     linkGateRef.current = () => true;
     desktopHomeRef.current = undefined;
     sendAttemptedAtRef.current = undefined;
@@ -2163,6 +2193,7 @@ export function useMobileBridge() {
         payloadDeflateRef.current = message.payload.snapshot.host.capabilities.includes(PAYLOAD_DEFLATE_CAPABILITY);
         void flushOutbox();
       }
+      if (event) notifyCompletedTurns([event], crypto);
       handlePayload(message.payload, encrypted, crypto);
       if (isNewPermission && document.visibilityState === "visible") {
         navigator.vibrate?.([120, 60, 120]);
@@ -2177,31 +2208,15 @@ export function useMobileBridge() {
               "Claude 正在等待你处理",
             );
           }
-          // assistant.completed fires per message; a turn ends with turn.completed.
-          if (event && (event.type === "turn.completed" || event.type === "turn.failed")) {
-            void showSessionNotification(
-              { hostId: roomId, ...(event.sessionId ? { sessionId: event.sessionId } : {}) },
-              stateRef.current.snapshot?.sessions.find((session) => session.sessionId === event.sessionId)?.title
-                ?? crypto.identity.desktopName,
-              event.type === "turn.completed" ? "任务已完成" : "任务失败",
-            );
-          }
         }
       } else if (
         document.visibilityState !== "visible" &&
         typeof Notification !== "undefined" &&
         Notification.permission === "granted" &&
-        event && (
-          event.type === "assistant.completed" ||
-          event.type === "permission.requested" ||
-          event.type === "question.requested" ||
-          event.type === "turn.failed"
-        )
+        event && (event.type === "permission.requested" || event.type === "question.requested")
       ) {
         new Notification(crypto.identity.desktopName, {
-          body: event.type === "permission.requested" || event.type === "question.requested"
-            ? "Claude 正在等待你处理"
-            : "Bridge 有新的会话动态",
+          body: "Claude 正在等待你处理",
           icon: "/icon-192.png",
           tag: encrypted.id,
         });
@@ -2260,7 +2275,7 @@ export function useMobileBridge() {
         },
       }));
     }, Math.max(12_000, relayEndpoints.length * 8_000 + 2_000));
-  }, [handlePayload, refreshSessionList, refreshSnapshot, resumeEvents, updateHostCache]);
+  }, [handlePayload, notifyCompletedTurns, refreshSessionList, refreshSnapshot, resumeEvents, updateHostCache]);
 
   useEffect(() => {
     setDiagBridgeStateSummary({
@@ -2492,6 +2507,7 @@ export function useMobileBridge() {
       await resumeEvents(true);
       setState((current) => advancePairingSync(current, crypto.identity.roomId, "syncing", 80));
       setState((current) => advancePairingSync(current, crypto.identity.roomId, "ready", 100));
+      void ensureSessionNotificationPermission();
       void nativePushRegistration().then((push) => {
         if (push && cryptoRef.current === crypto && socketRef.current?.state === "connected") {
           socketRef.current.registerPushToken(push.platform, push.token);

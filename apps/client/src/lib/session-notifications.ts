@@ -10,17 +10,20 @@ const CHANNEL_ID = "bridge-sessions";
 let permissionPromise: Promise<boolean> | undefined;
 
 /**
- * Asks once per launch, while the app is in the foreground. Android 13+ shows
- * the POST_NOTIFICATIONS prompt; earlier versions grant it at install time.
+ * Requests permission in the foreground and reuses a successful grant/channel.
+ * An earlier denial must not hide a later grant from Android Settings.
  */
 export function ensureSessionNotificationPermission(): Promise<boolean> {
   if (!Capacitor.isNativePlatform()) return Promise.resolve(false);
   permissionPromise ??= (async () => {
     let status = await LocalNotifications.checkPermissions();
-    if (status.display === "prompt" || status.display === "prompt-with-rationale") {
+    if (document.visibilityState === "visible" && (status.display === "prompt" || status.display === "prompt-with-rationale")) {
       status = await LocalNotifications.requestPermissions();
     }
-    if (status.display !== "granted") return false;
+    if (status.display !== "granted") {
+      permissionPromise = undefined;
+      return false;
+    }
     if (Capacitor.getPlatform() === "android") {
       await LocalNotifications.createChannel({ id: CHANNEL_ID, name: "会话动态", importance: 4 });
     }

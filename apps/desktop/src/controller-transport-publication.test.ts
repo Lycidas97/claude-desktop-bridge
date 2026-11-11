@@ -556,6 +556,28 @@ describe("controller transport publication", () => {
     }
   });
 
+  it.each(["turn.completed", "turn.failed"] as const)("persists %s from the event log for an offline phone", async type => {
+    const { ws, controller, paired, eventLog } = await fixture();
+    expect(controller.onlineDevices.size).toBe(0);
+    const event = await eventLog.append({ type, origin: "claude-desktop", sessionId: "synthetic-0", data: {} });
+    await vi.waitFor(() => expect(ws.sent.some(frame => frame.type === "envelope")).toBe(true));
+    const frame = ws.sent.find(frame => frame.type === "envelope")!;
+    if (frame.type !== "envelope") throw new Error("Expected completion envelope");
+    expect(frame.envelope.temporary).toBeUndefined();
+    expect((await paired.desktopCrypto.decrypt(frame.envelope)).payload).toEqual({ kind: "event", event });
+  });
+
+  it.each(["assistant.delta", "tool.progress"] as const)("keeps %s temporary", async type => {
+    const { ws, paired, eventLog } = await fixture();
+    ws.receive({ type: "presence", role: "mobile", deviceId: paired.pairing.deviceId, online: true });
+    ws.sent.length = 0;
+    await eventLog.append({ type, origin: "claude-desktop", sessionId: "synthetic-0", data: { text: "Synthetic progress" } });
+    await vi.waitFor(() => expect(ws.sent.some(frame => frame.type === "envelope")).toBe(true));
+    const frame = ws.sent.find(frame => frame.type === "envelope")!;
+    if (frame.type !== "envelope") throw new Error("Expected progress envelope");
+    expect(frame.envelope.temporary).toBe(true);
+  });
+
   it("still sends durable events to paired phones while they are offline", async () => {
     const { ws, controller, paired, published } = await fixture();
     expect(controller.onlineDevices.size).toBe(0);

@@ -1,4 +1,5 @@
 import { Capacitor } from "@capacitor/core";
+import type { DesktopControlSnapshot } from "@bridge/protocol";
 import { useEffect, useState } from "react";
 import clientPackage from "../../package.json";
 
@@ -570,8 +571,8 @@ function formatTimestamp(ms: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
-export async function buildDiagnosticReportText(): Promise<string> {
-  const idbSummary = await inspectIndexedDbSummary();
+export async function buildDiagnosticReportText(desktopSnapshot?: DesktopControlSnapshot): Promise<string> {
+  const idbSummary = desktopSnapshot ? undefined : await inspectIndexedDbSummary();
   const header = {
     generatedAt: new Date().toISOString(),
     buildTag: BUILD_DIAG_TAG,
@@ -582,8 +583,11 @@ export async function buildDiagnosticReportText(): Promise<string> {
     onLine: typeof navigator !== "undefined" ? navigator.onLine : undefined,
     visibilityState: typeof document !== "undefined" ? document.visibilityState : undefined,
     userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
-    bridgeState: latestBridgeStateSummary,
-    indexedDb: idbSummary,
+    bridgeState: desktopSnapshot ? {
+      connection: desktopSnapshot.connection, desktopName: desktopSnapshot.host.name, desktopOnline: desktopSnapshot.host.online,
+      latestSeq: desktopSnapshot.latestSeq, runtime: desktopSnapshot.runtime, transportMetrics: desktopSnapshot.transport,
+    } : latestBridgeStateSummary,
+    ...(idbSummary ? { indexedDb: idbSummary } : {}),
   };
 
   const logLines = entries.map((e) => (
@@ -591,7 +595,7 @@ export async function buildDiagnosticReportText(): Promise<string> {
   ));
 
   return [
-    "=== Claude Desktop Bridge Mobile Diagnostic Report ===",
+    desktopSnapshot ? "=== Bridge Desktop Diagnostic Report ===" : "=== Claude Desktop Bridge Mobile Diagnostic Report ===",
     JSON.stringify(header, null, 2),
     "",
     `=== Event Log (${entries.length} entries, on-demand recording: ${diagEnabled ? "ON" : "OFF"}) ===`,

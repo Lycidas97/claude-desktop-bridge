@@ -1,6 +1,6 @@
 # Bridge 架构
 
-本文描述当前分支的 Claude 原生接入；旧 Host/lane/所有权流程在对应章节标为历史。macOS 已通过真实 Desktop 的创建、发送、原生事件、历史及关闭 Bridge 后会话保留验证；尚未打包发布，具体验证范围见[重构记录](HOSTING-REFACTOR.md)。
+本文描述当前源码的 Claude 原生接入与适配范围；旧 Host/lane/所有权流程在对应章节标为历史。原生接入已随 1.3.0 发布，但本文的独立 Agent 退役等候选变更不代表 1.3.1 发布包，版本边界见[首页](../README.md#版本与下载)。macOS 已通过真实 Desktop 的创建、发送、原生事件、历史及关闭 Bridge 后会话保留验证，具体验证范围见[重构记录](HOSTING-REFACTOR.md)。
 
 ## 产品边界
 
@@ -257,9 +257,9 @@ Claude 工具与成果线索来自 Desktop 原生事件，不扫描旧 JSONL 来
 明确忽略 `thinking`。用户打开产物时才通过当前项目根目录校验路径、读取文件并
 缓存当时版本。
 
-证据清单写入 SQLite WAL。可预览或下载的正文使用由 Electron `safeStorage` 保护的
-主密钥，以 AES-256-GCM 加密为内容寻址 blob。正文达到 30 天或 1 GiB 时按 LRU
-清理，清单继续保留；只有源文件哈希仍一致时才能重建失效快照。
+证据清单写入 SQLite WAL。可预览或下载的正文以 AES-256-GCM 加密为内容寻址 blob；
+主密钥保存在权限受限的本地配置文件中，不由 Electron `safeStorage` 加密。正文达到
+30 天或 1 GiB 时按 LRU 清理，清单继续保留；只有源文件哈希仍一致时才能重建失效快照。
 
 事件 `evidence.started/updated/ready/failed` 只携带摘要和清单。`artifact.preview`
 按需返回有界预览；`artifact.transfer.open/read/close` 使用 256 KiB 分块、十分钟

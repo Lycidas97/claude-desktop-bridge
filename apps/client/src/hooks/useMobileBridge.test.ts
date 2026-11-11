@@ -1476,4 +1476,72 @@ describe("provider route events", () => {
     expect(batch.snapshot?.sessions).toEqual(sequential.sessions);
     expect(batch.permissions).toEqual(sequentialPermissions);
   });
+
+  it("updates and clears session contextUsage across runtime.updated, session.compacted, and session.rewound events", () => {
+    const snapshot: BridgeHostSnapshot = {
+      host: {
+        hostId: "desktop-1",
+        pairingEpoch: 1,
+        name: "Test Mac",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        lastSeenAt: 1,
+        version: "1.3.2",
+        capabilities: ["claude.native-relay.v1"],
+      },
+      projects: [],
+      sessions: [{
+        sessionId: "session-1",
+        projectId: "project-1",
+        projectName: "project",
+        cwd: "/tmp/project",
+        title: "Context session",
+        source: "desktop",
+        transport: "claude-desktop-native",
+        ownership: "DESKTOP_NATIVE_IDLE",
+        turnState: "idle",
+        lastActivityAt: 1,
+        pendingCount: 0,
+        contextUsage: { totalTokens: 160_000, maxTokens: 1_000_000, percentage: 16, model: "claude-opus-5-5", estimated: false },
+      }],
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "Ready",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: { state: "not-managed", detail: "未启用", enabled: false, canRestart: true },
+      },
+      permissions: [],
+      latestSeq: 1,
+    };
+
+    const compactedWithTokens = applyEventToSnapshot(snapshot, {
+      eventId: "compact-1",
+      seq: 2,
+      timestamp: 2,
+      origin: "claude-desktop",
+      type: "session.compacted",
+      sessionId: "session-1",
+      data: { postTokens: 12_000 },
+    }, []);
+    expect(compactedWithTokens?.sessions[0]?.contextUsage).toEqual({
+      totalTokens: 12_000,
+      maxTokens: 1_000_000,
+      percentage: 1.2,
+      model: "claude-opus-5-5",
+      estimated: true,
+    });
+
+    const rewound = applyEventToSnapshot(compactedWithTokens, {
+      eventId: "rewind-1",
+      seq: 3,
+      timestamp: 3,
+      origin: "claude-desktop",
+      type: "session.rewound",
+      sessionId: "session-1",
+      data: { messageId: "user-1", scope: "conversation" },
+    }, []);
+    expect(rewound?.sessions[0]?.contextUsage).toBeUndefined();
+  });
 });

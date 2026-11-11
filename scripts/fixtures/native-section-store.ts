@@ -30,7 +30,10 @@ export async function createNativeSectionFixture(directory: string) {
     },
     async assignSection(sessionId: string, sectionId: string): Promise<void> {
       fixture.calls.push({ method: "move_sessions", scope: fixture.scope, sessionId, sectionId });
-      scopes[fixture.scope]!.assignments[sessionId] = sectionId;
+      if (fixture.failure) throw new Error(fixture.failure);
+      const catalog = scopes[fixture.scope] ??= { sections: [], assignments: {} };
+      if (sectionId === "sessions") delete catalog.assignments[sessionId];
+      else catalog.assignments[sessionId] = sectionId;
       await writeFile(profile, JSON.stringify(scopes));
     },
     async reread(): Promise<void> { scopes = JSON.parse(await readFile(profile, "utf8")); },

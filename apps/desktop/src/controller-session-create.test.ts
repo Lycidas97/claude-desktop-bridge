@@ -1,6 +1,13 @@
-import type { BridgeProjectInfo, BridgeRequest } from "@bridge/protocol";
+import { execFile } from "node:child_process";
+import { mkdtemp, stat, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import type { BridgeProjectInfo, BridgeRequest, BridgeSessionInfo } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { DesktopController } from "./controller.js";
+
+const execFileAsync = promisify(execFile);
 
 describe("section.create", () => {
   const project: BridgeProjectInfo = { projectId: "native-group", name: "Research", kind: "desktop-group", cwd: "", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 };
@@ -67,5 +74,107 @@ describe("session.create project identity", () => {
       params: { cwd: "/shared", projectId },
     }, "mobile")).rejects.toThrow(/projectId/u);
     expect(createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("section.move", () => {
+  const section: BridgeProjectInfo = { projectId: "section-zahuo", name: "杂活", kind: "desktop-group", cwd: "", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 };
+  const moved: BridgeSessionInfo = {
+    sessionId: "local-1", title: "Subproject", cwd: "/work/杂活/colab-connect",
+    projectId: section.projectId, projectName: section.name, source: "desktop",
+    transport: "claude-desktop-native", ownership: "DESKTOP_NATIVE_IDLE", turnState: "idle",
+    pendingCount: 0, lastActivityAt: 1,
+  };
+  const request = (params: Record<string, unknown>): BridgeRequest => ({
+    kind: "request", method: "section.move", requestId: "move-section", idempotencyKey: "move-section", params,
+  });
+
+  it.each(["section-zahuo", null])("moves a session to %s, publishes and returns authoritative projects", async sectionId => {
+    const moveSessionSection = vi.fn().mockResolvedValue(moved);
+    const publish = vi.fn().mockResolvedValue({});
+    const controller = Object.assign(Object.create(DesktopController.prototype), {
+      broker: { capabilities: () => ["section.move"], moveSessionSection, listProjects: () => [section] },
+      allSessions: () => [moved],
+      publish,
+    });
+    await expect(controller.handleRequest(request({ sessionId: "local-1", sectionId }), "mobile")).resolves.toEqual({
+      session: moved,
+      projects: [section],
+    });
+    expect(moveSessionSection).toHaveBeenCalledExactlyOnceWith("local-1", sectionId);
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {},
+    { sessionId: "local-1" },
+    { sessionId: "local-1", sectionId: "" },
+    { sessionId: "local-1", sectionId: "   " },
+    { sessionId: "local-1", sectionId: 42 },
+  ])("rejects invalid move parameters before touching broker (%j)", async params => {
+    const moveSessionSection = vi.fn();
+    const controller = Object.assign(Object.create(DesktopController.prototype), {
+      broker: { capabilities: () => ["section.move"], moveSessionSection },
+    });
+    await expect(controller.handleRequest(request(params), "mobile")).rejects.toThrow();
+    expect(moveSessionSection).not.toHaveBeenCalled();
+  });
+
+  it("rejects section.move when the desktop lacks section.move capability", async () => {
+    const moveSessionSection = vi.fn();
+    const controller = Object.assign(Object.create(DesktopController.prototype), {
+      broker: { capabilities: () => [], moveSessionSection },
+    });
+    await expect(controller.handleRequest(request({ sessionId: "local-1", sectionId: null }), "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
+    expect(moveSessionSection).not.toHaveBeenCalled();
+  });
+});
+
+describe("directory.mkdir", () => {
+  const request = (parentPath: unknown, name: unknown): BridgeRequest => ({
+    kind: "request", method: "directory.mkdir", requestId: "mkdir", idempotencyKey: "mkdir", params: { parentPath, name },
+  });
+
+  it("creates a single-level subdirectory inside an accessible parent and enters an existing real directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-mkdir-"));
+    try {
+      const controller = Object.create(DesktopController.prototype) as { handleRequest(request: BridgeRequest, origin: "mobile"): Promise<{ path: string }> };
+      const created = await controller.handleRequest(request(root, "  colab-connect  "), "mobile");
+      expect(created.path).toBe(join(root, "colab-connect"));
+      expect((await stat(created.path)).isDirectory()).toBe(true);
+
+      const idempotent = await controller.handleRequest(request(root, "colab-connect"), "mobile");
+      expect(idempotent.path).toBe(created.path);
+    } finally {
+      await execFileAsync("/usr/bin/trash", [root]);
+    }
+  });
+
+  it.each(["", "   ", ".", "..", "a/b", "a\\b", "bad\0name", "x".repeat(256)])("rejects illegal single-level folder name (%j)", async name => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-mkdir-invalid-"));
+    try {
+      const controller = Object.create(DesktopController.prototype) as { handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown> };
+      await expect(controller.handleRequest(request(root, name), "mobile")).rejects.toThrow();
+    } finally {
+      await execFileAsync("/usr/bin/trash", [root]);
+    }
+  });
+
+  it("rejects inaccessible or relative parents and existing non-directory entries (files and symlinks)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-mkdir-conflict-"));
+    try {
+      const controller = Object.create(DesktopController.prototype) as { handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown> };
+      await expect(controller.handleRequest(request("relative/parent", "demo"), "mobile")).rejects.toThrow("absolute");
+      await expect(controller.handleRequest(request(join(root, "missing"), "demo"), "mobile")).rejects.toThrow();
+
+      await writeFile(join(root, "README.md"), "file");
+      await expect(controller.handleRequest(request(root, "README.md"), "mobile")).rejects.toThrow("非目录项");
+
+      const realSub = await controller.handleRequest(request(root, "real-dir"), "mobile") as { path: string };
+      await symlink(realSub.path, join(root, "linked-dir"));
+      await expect(controller.handleRequest(request(root, "linked-dir"), "mobile")).rejects.toThrow("非目录项");
+    } finally {
+      await execFileAsync("/usr/bin/trash", [root]);
+    }
   });
 });

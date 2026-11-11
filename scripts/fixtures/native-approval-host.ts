@@ -65,7 +65,19 @@ export async function startNativeApprovalHost(options: {
       sessionId: string; requestId: string; cliToolUseId: string; toolName: string; input: Record<string, unknown>; requestedAt: number;
     }>,
   };
-  const nativeSessions: Array<typeof native & { forkedFromSessionId?: string }> = [native];
+  const miscRoot = join(options.directory, "work", "杂活");
+  const miscSubdir = join(miscRoot, "existing-tool");
+  if (options.sections) {
+    await mkdir(miscSubdir, { recursive: true });
+    await writeFile(join(miscRoot, "conflict-file"), "not a directory\n");
+  }
+  const nativeSessions: Array<typeof native & { forkedFromSessionId?: string }> = [
+    native,
+    ...(options.sections ? [
+      { ...native, sessionId: "browser-e2e-misc-sub", cwd: miscSubdir, harnessCwd: miscSubdir, title: "同步现有脚本配置" },
+      { ...native, sessionId: "browser-e2e-misc-root", cwd: miscRoot, harnessCwd: miscRoot, title: "整理杂活根目录说明" },
+    ] : []),
+  ];
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const messages: Record<string, unknown>[] = [];
   const pending = new Map<string, (reply: NativeApprovalResult) => void>();
@@ -79,7 +91,7 @@ export async function startNativeApprovalHost(options: {
   const failedRewindReadbacks: string[] = [];
   const inspector = Object.assign(new EventEmitter(), {
     ready: true,
-    supports: (method: string) => ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt"].includes(method),
+    supports: (method: string) => ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", ...(options.sections ? ["start"] : [])].includes(method),
     async availableCodeModels() { return [...new Set(nativeModelIds.map(id => id.replace(/\[1m\]$/iu, "")))]; },
     async connect() {},
     async close() {},
@@ -91,6 +103,22 @@ export async function startNativeApprovalHost(options: {
       }
       if (method === "getAll" || method === "getSession") {
         return structuredClone(method === "getAll" ? nativeSessions : nativeSessions.find(session => session.sessionId === args[0]));
+      }
+      if (method === "start") {
+        const input = args[0] as { cwd: string; title?: string; sessionId?: string };
+        const now = Date.now();
+        const created = {
+          ...native,
+          sessionId: input.sessionId ?? `local_${randomUUID()}`,
+          cwd: input.cwd,
+          harnessCwd: input.cwd,
+          title: input.title?.trim() || "新建会话",
+          createdAt: now,
+          lastActivityAt: now,
+          pendingToolPermissions: [],
+        };
+        nativeSessions.unshift(created);
+        return structuredClone(created);
       }
       if (method === "sendMessage") {
         assert.equal(args[0], options.sessionId);
@@ -186,17 +214,25 @@ export async function startNativeApprovalHost(options: {
   await evidence.initialize();
   const controller = Object.assign(Object.create(DesktopController.prototype), {
     routesToExternalRuntime: () => false,
-    broker, evidence, allSessions: () => broker.listSessions(), publish: async () => {},
+    broker, evidence, allSessions: () => broker.listSessions(), allProjects: () => broker.listProjects(), publish: async () => {},
     config: { hostDeviceId: "synthetic-desktop", desktopName: "隔离电脑", devices: [{ deviceId: options.deviceId, name: "隔离手机", platform: "android", pairedAt: 1 }] },
   }) as { handleRequest(request: BridgeRequest, origin: "mobile", deviceId: string): Promise<unknown> };
   let sequence = 0;
   return {
-    cwd: commandCwd, harnessCwd, calls, failedRewindReadbacks, sections,
+    cwd: commandCwd, harnessCwd, miscRoot, calls, failedRewindReadbacks, sections,
     async sectionCatalog() {
       await broker.refreshRuntime();
-      return { projects: broker.listProjects(), sessions: broker.listSessions(), capable: broker.capabilities().includes("section.create") };
+      const caps = broker.capabilities();
+      return {
+        projects: broker.listProjects(),
+        sessions: broker.listSessions(),
+        capable: caps.includes("section.create"),
+        moveCapable: caps.includes("section.move"),
+        runtimeCapabilities: caps,
+      };
     },
     createSection: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
+    controllerRequest: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
     failRewindReadback(method: "getSession" | "getTranscriptPage") { rewindReadbackFailure = method; rewindCompleted = false; },
     profile() {
       const session = broker.session(options.sessionId)!;

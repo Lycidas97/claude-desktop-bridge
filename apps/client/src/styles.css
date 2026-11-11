@@ -165,7 +165,8 @@
 .val,
 .num,
 time,
-.session-activity-elapsed {
+.session-activity-elapsed,
+.session-context-bar-value {
   font-family: var(--font-num);
   font-variant-numeric: tabular-nums lining-nums slashed-zero;
   letter-spacing: -0.01em;
@@ -2684,19 +2685,19 @@ button:disabled {
   justify-content: space-between;
   gap: 16px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .session-context-usage strong {
   color: var(--text);
-  font-size: 15px;
+  font-size: calc(15px * var(--font-scale));
   font-variant-numeric: tabular-nums;
 }
 
 .session-context-usage strong small,
 .session-context-usage > small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 500;
 }
 
@@ -4442,6 +4443,63 @@ button:disabled {
     opacity: 1;
     transform: translateY(-2px);
   }
+}
+
+.session-context-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px 2px;
+  color: var(--muted);
+  font-size: calc(11px * var(--font-scale));
+  line-height: 1.35;
+}
+
+.desktop-conversation .session-context-bar {
+  padding: 4px 20px 2px;
+}
+
+.session-context-bar-label {
+  flex: none;
+}
+
+.session-context-bar-track {
+  flex: 0 1 40px;
+  min-width: 24px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+}
+
+.session-context-bar-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--t-fast) var(--ease-out);
+}
+
+.session-context-bar.is-high .session-context-bar-track i {
+  background: var(--warm);
+}
+
+.session-context-bar.is-critical .session-context-bar-track i {
+  background: var(--danger);
+}
+
+.session-context-bar-value {
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.session-context-bar.is-high .session-context-bar-value {
+  color: var(--warm-ink);
+}
+
+.session-context-bar.is-critical .session-context-bar-value {
+  color: var(--danger-ink);
 }
 
 .conversation-item.user {

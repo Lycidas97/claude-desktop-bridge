@@ -1758,3 +1758,175 @@ describe("older history auto-load", () => {
     expect(props.onLoadOlderHistory).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("mobile section movement and subfolder labels", () => {
+  const flatText = (node: ReactNode): string => {
+    if (typeof node === "string" || typeof node === "number") return String(node);
+    if (Array.isArray(node)) return node.map(flatText).join("");
+    return node && typeof node === "object" && "props" in node
+      ? flatText((node as ReactElement<{ children?: ReactNode }>).props.children)
+      : "";
+  };
+
+  function toDirectory() {
+    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表");
+    if (header) { header.props.onBack(); draw(); }
+  }
+
+  function openHeaderSessionMenu() {
+    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+    elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    draw();
+  }
+
+  it("moves sessions into, between, and out of native Sections with capability and offline gating", async () => {
+    const miscGroup = { projectId: "sec-misc", name: "杂活", cwd: "/Users/lycidas/work/杂活", kind: "desktop-group" as const, sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 2 };
+    const researchGroup = { projectId: "sec-research", name: "Research", cwd: "/Users/lycidas/work/research", kind: "desktop-group" as const, sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 1 };
+    const onMoveSessionSection = vi.fn().mockResolvedValue({});
+    props = {
+      ...props,
+      onMoveSessionSection,
+      snapshot: {
+        ...props.snapshot!,
+        host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "section.move.v1"] },
+        projects: [props.snapshot!.projects[0]!, miscGroup, researchGroup],
+        sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+          ? { ...session, allowedActions: { ...session.allowedActions!, canMoveSection: true } }
+          : session),
+      },
+    };
+    draw();
+
+    // Session B lacks canMoveSection -> menu hides "移动到分组"
+    open("B");
+    openHeaderSessionMenu();
+    expect(elements(tree).some(element => element.props.label === "移动到分组")).toBe(false);
+    expect(dispatchMobileBack()).toBe(true);
+    draw();
+
+    // Session A is eligible -> offline disables "移动到分组" while keeping it visible
+    open("A");
+    props = { ...props, desktopOnline: false };
+    draw();
+    openHeaderSessionMenu();
+    const offlineMove = elements(tree).find(element => element.props.label === "移动到分组")!;
+    expect(offlineMove.props.detail).toBe("未分组");
+    expect(offlineMove.props.disabled).toBe(true);
+
+    // Back online -> open "移动到分组" step, test mobile back to main menu, then move into "杂活"
+    props = { ...props, desktopOnline: true };
+    draw();
+    elements(tree).find(element => element.props.label === "移动到分组")!.props.onClick();
+    draw();
+    expect(elements(tree).some(element => element.props.title === "移动到分组")).toBe(true);
+    expect(elements(tree).some(element => element.props.label === "移出分组")).toBe(false);
+    expect(dispatchMobileBack()).toBe(true);
+    draw();
+    expect(elements(tree).some(element => element.props.title === "Session A")).toBe(true);
+
+    elements(tree).find(element => element.props.label === "移动到分组")!.props.onClick();
+    draw();
+    await elements(tree).find(element => element.props.label === "杂活")!.props.onClick();
+    await settle();
+    expect(onMoveSessionSection).toHaveBeenCalledWith("A", "sec-misc");
+    expect(elements(tree).some(element => element.props.title === "移动到分组")).toBe(false);
+
+    // Session A now inside "杂活": directory row menu shows current section, marks it disabled, and supports moving out to Ungrouped
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        sessions: props.snapshot!.sessions.map(session => session.sessionId === "A"
+          ? { ...session, projectId: "sec-misc", projectName: "杂活" }
+          : session),
+      },
+    };
+    toDirectory();
+    const rowA = elements(tree).find(element => element.props["data-session-id"] === "A")!;
+    elements(rowA).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    draw();
+    const inGroupMove = elements(tree).find(element => element.props.label === "移动到分组")!;
+    expect(inGroupMove.props.detail).toBe("杂活");
+    inGroupMove.props.onClick();
+    draw();
+    const currentItem = elements(tree).find(element => element.props.label === "杂活")!;
+    expect(currentItem.props.detail).toBe("当前所在分组");
+    expect(currentItem.props.disabled).toBe(true);
+    await elements(tree).find(element => element.props.label === "移出分组")!.props.onClick();
+    await settle();
+    expect(onMoveSessionSection).toHaveBeenLastCalledWith("A", null);
+  });
+
+  it("returns from an emptied directory group page when its project disappears after moving", () => {
+    const base = props.snapshot!.sessions[0]!;
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        projects: [{ projectId: "project", name: "Project", cwd: "/tmp/project", sessionCount: 6, runningCount: 0, pendingCount: 0, lastActivityAt: 6 }],
+        sessions: Array.from({ length: 6 }, (_, index) => ({ ...base, sessionId: `S-${index}`, title: `Session ${index}`, lastActivityAt: index + 1 })),
+      },
+    };
+    toDirectory();
+    elements(tree).find(element => element.props.className === "project-group-more-button")!.props.onClick();
+    draw();
+    expect(elements(tree).some(element => element.props.className === "host-detail project-detail-view")).toBe(true);
+
+    // Remove "project" from snapshot.projects (simulating all sessions moved into a Section)
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        projects: [{ projectId: "sec-misc", name: "杂活", cwd: "/work/杂活", kind: "desktop-group", sessionCount: 6, runningCount: 0, pendingCount: 0, lastActivityAt: 6 }],
+        sessions: props.snapshot!.sessions.map(session => ({ ...session, projectId: "sec-misc", projectName: "杂活" })),
+      },
+    };
+    draw();
+    expect(elements(tree).some(element => element.props.className === "host-detail project-detail-view")).toBe(false);
+    expect(elements(tree).some(element => element.props.title === "会话")).toBe(true);
+  });
+
+  it("shows subfolder name only for desktop-group sessions whose folder differs from the group name", () => {
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        projects: [
+          { projectId: "sec-misc", name: "杂活", cwd: "/Users/lycidas/work/杂活", kind: "desktop-group", sessionCount: 2, runningCount: 0, pendingCount: 0, lastActivityAt: 2 },
+          { projectId: "dir-plain", name: "plain-repo", cwd: "/Users/lycidas/work/plain-repo", kind: "directory", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 },
+        ],
+        sessions: [
+          { ...props.snapshot!.sessions[0]!, sessionId: "sub", title: "Colab task", projectId: "sec-misc", projectName: "杂活", cwd: "/Users/lycidas/work/杂活/colab-connect" },
+          { ...props.snapshot!.sessions[0]!, sessionId: "same", title: "Root task", projectId: "sec-misc", projectName: "杂活", cwd: "/Users/lycidas/work/杂活" },
+          { ...props.snapshot!.sessions[1]!, sessionId: "plain", title: "Plain task", projectId: "dir-plain", projectName: "plain-repo", cwd: "/Users/lycidas/work/plain-repo" },
+        ],
+      },
+    };
+    toDirectory();
+    const rowSmall = (id: string) => {
+      const row = elements(tree).find(element => element.props["data-session-id"] === id)!;
+      return flatText(elements(row).find(element => element.type === "small"));
+    };
+    expect(rowSmall("sub")).toMatch(/^colab-connect · /u);
+    expect(rowSmall("same")).not.toContain("杂活 ·");
+    expect(rowSmall("plain")).not.toContain("plain-repo ·");
+
+    // Also verify projectSearch inside a desktop-group matches subfolder names
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        sessions: [
+          ...props.snapshot!.sessions,
+          ...Array.from({ length: 4 }, (_, index) => ({ ...props.snapshot!.sessions[1]!, sessionId: `extra-${index}`, title: `Extra ${index}`, lastActivityAt: index })),
+        ],
+      },
+    };
+    draw();
+    elements(tree).find(element => element.props.className === "project-group-more-button")!.props.onClick();
+    draw();
+    elements(tree).find(element => element.type === "input" && element.props.placeholder === "搜索「杂活」")!.props.onChange({ target: { value: "colab-connect" } });
+    draw();
+    expect(elements(tree).filter(element => element.props["data-session-id"]).map(element => element.props["data-session-id"])).toEqual(["sub"]);
+  });
+});

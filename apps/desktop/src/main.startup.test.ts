@@ -113,12 +113,38 @@ it("checks and enables developer settings through trusted local IPC without call
   await check(event);
   expect(mocks.developerSettings).toHaveBeenLastCalledWith({ profile: undefined });
   await expect(enable(event, "Claude-3p")).resolves.toMatchObject({ enabled: true });
-  expect(mocks.developerSettings).toHaveBeenLastCalledWith({ profile: "Claude-3p", enable: true });
+  expect(mocks.developerSettings).toHaveBeenLastCalledWith({ profile: "Claude-3p", enable: true, requestAccess: expect.any(Function) });
   expect(call).toHaveBeenCalledTimes(serviceCalls);
   for (const handler of [check, enable]) {
     expect(() => handler({ senderFrame: { url: "https://untrusted.invalid" } } as Electron.IpcMainInvokeEvent, "Claude-3p")).toThrow("Untrusted renderer");
   }
   expect(mocks.developerSettings).toHaveBeenCalledTimes(2);
+});
+
+it.each(["confirm", "cancel", "wrong directory"])("uses a local directory access dialog for developer settings: %s", async (choice) => {
+  process.argv = originalArgv;
+  const { EventEmitter } = await import("node:events");
+  const { dialog, ipcMain } = await import("electron");
+  mocks.connect.mockResolvedValueOnce(Object.assign(new EventEmitter(), { call: vi.fn(async () => ({ launchAtLogin: false, sessions: [] })), close: vi.fn() }));
+  const write = vi.fn();
+  mocks.developerSettings.mockImplementationOnce(async (options) => {
+    await options.requestAccess("/fixture/Claude");
+    write();
+    return { supported: true, profiles: [], enabled: true };
+  });
+  vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: choice === "cancel", filePaths: choice === "cancel" ? [] : [choice === "confirm" ? "/fixture/Claude" : "/fixture/other"] });
+  await import("./main.js");
+  await vi.waitFor(() => expect(ipcMain.handle).toHaveBeenCalledWith("bridge:enable-claude-developer-settings", expect.any(Function)));
+  const enable = vi.mocked(ipcMain.handle).mock.calls.find(([channel]) => channel === "bridge:enable-claude-developer-settings")![1];
+  const event = { senderFrame: { url: process.env.BRIDGE_DEV_SERVER_URL || "file:///bridge/index.html" } } as Electron.IpcMainInvokeEvent;
+  if (choice === "confirm") {
+    await expect(enable(event, "Claude")).resolves.toMatchObject({ enabled: true });
+    expect(write).toHaveBeenCalledOnce();
+  } else {
+    await expect(enable(event, "Claude")).rejects.toThrow(choice === "cancel" ? "已取消授权" : "请选择");
+    expect(write).not.toHaveBeenCalled();
+  }
+  expect(dialog.showOpenDialog).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({ defaultPath: "/fixture/Claude", properties: ["openDirectory", "showHiddenFiles"] }));
 });
 
 it("closes the runtime if starting the local listener fails", async () => {

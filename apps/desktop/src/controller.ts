@@ -46,7 +46,7 @@ import {
   type PairingBundle,
   type SocketState,
 } from "@bridge/protocol";
-import { readdir } from "node:fs/promises";
+import { lstat, mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { accessibleDirectory } from "./working-directory.js";
 import { dirname, isAbsolute, join } from "node:path";
@@ -360,6 +360,7 @@ export class DesktopController extends EventEmitter {
           "workspace.upload.v1",
           "claude.native-relay.v1",
           "directory.browse.v1",
+          "directory.mkdir.v1",
           "runtime.adapter.v1",
           "session.visibility.v1",
           "session.commands.v1",
@@ -367,6 +368,7 @@ export class DesktopController extends EventEmitter {
           ...(runtimes.some(runtime => runtime.id === "claude-desktop" && runtime.capabilities.includes("session.rewind")) ? ["session.rewind.v1" as const] : []),
           ...(this.conversationState ? ["session.rename.v1" as const] : []),
           ...(runtimes.some(runtime => runtime.capabilities.includes("section.create")) ? ["section.create.v1" as const] : []),
+          ...(runtimes.some(runtime => runtime.capabilities.includes("section.move")) ? ["section.move.v1" as const] : []),
           "subagent.stop.v1",
           "turn.queue.steer.v1",
           "turn.queue.cancel.v1",
@@ -907,6 +909,24 @@ export class DesktopController extends EventEmitter {
       };
       return { listing };
     }
+    if (request.method === "directory.mkdir") {
+      const parent = await accessibleDirectory(stringParam(params, "parentPath")!);
+      const name = stringParam(params, "name")!.trim();
+      if (name === "." || name === ".." || /[\\/\0]/u.test(name) || name.length > 255) {
+        throw new Error("请输入合法的单层文件夹名称");
+      }
+      const target = join(parent, name);
+      try {
+        await mkdir(target);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST" || !(await lstat(target)).isDirectory()) {
+          throw (error as NodeJS.ErrnoException).code === "EEXIST"
+            ? new Error("已存在同名非目录项，无法创建文件夹")
+            : error;
+        }
+      }
+      return { path: await accessibleDirectory(target) };
+    }
     if (
       request.method === "provider.list" || request.method === "provider.refresh" ||
       request.method === "conversation.route.get" || request.method === "conversation.switch.preview" ||
@@ -930,9 +950,10 @@ export class DesktopController extends EventEmitter {
       await this.broker.refreshDesktopConfiguration(sessionId);
       const session = this.broker.session(sessionId);
       if (!session) throw new Error("Session not found");
+      const history = await this.broker.history(sessionId, undefined, numberParam(params, "limit", 18));
       return {
-        session,
-        history: await this.broker.history(sessionId, undefined, numberParam(params, "limit", 18)),
+        session: this.broker.session(sessionId) ?? session,
+        history,
         latestSeq: this.eventLog.latestSeq(),
       };
     }
@@ -954,6 +975,15 @@ export class DesktopController extends EventEmitter {
       const project = await this.broker.createSection(name);
       await this.publish();
       return { project };
+    }
+    if (request.method === "section.move") {
+      if (!this.broker.capabilities().includes("section.move")) throw new BridgeRequestError("UNSUPPORTED", "当前 Claude Desktop 不支持移动会话分组。");
+      const sessionId = stringParam(params, "sessionId")!;
+      const sectionId = nullableStringParam(params, "sectionId");
+      if (sectionId === undefined) throw new Error("sectionId is required");
+      const session = await this.broker.moveSessionSection(sessionId, sectionId);
+      await this.publish();
+      return { session, projects: this.allProjects() };
     }
     if (request.method === "session.create") {
       runtimeIdParam(params, "runtimeId");
@@ -1518,6 +1548,7 @@ export class DesktopController extends EventEmitter {
     // Catalog metadata and global runtime changes need a complete snapshot.
     // Session runtime changes use the existing coalesced event channel.
     const sessionKey = JSON.stringify({
+      capabilities: snapshot.host?.capabilities,
       defaultPermissionMode: snapshot.host?.defaultPermissionMode,
       runtimeDefaults: snapshot.runtimes?.map(runtime => [runtime.id, runtime.defaultPermissionMode]),
       detection: snapshot.runtime?.detection,

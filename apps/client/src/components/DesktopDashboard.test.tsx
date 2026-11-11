@@ -434,3 +434,19 @@ it("[edge] keeps an old session's slash failure out of the new draft and pending
   finishB({ kind: "response", requestId: "B", ok: true, result: { command: { action: "sent" } } }); await settle(); tree = sessions.draw();
   expect(apiRequest.mock.calls.filter(call => call[0].method === "session.command").map(call => call[0].params)).toEqual([{ sessionId: "A", text: "/context" }, { sessionId: "B", text: "/compact" }]);
 });
+
+it("renders composer context usage only when present and degrades cleanly for unknown model capacity", async () => {
+  await openSessions();
+  expect(elements(tree).some(element => typeof element.props.className === "string" && element.props.className.includes("session-context-bar"))).toBe(false);
+
+  snapshot.sessions[0]!.contextUsage = { totalTokens: 42_000, maxTokens: 1_000_000, percentage: 4.2, model: "claude-opus-5-5", estimated: false };
+  tree = sessions.draw({ ...sessionsProps, snapshot });
+  expect(elements(tree).some(element => typeof element.type === "function" && element.type.name === "SessionContextUsageBar")).toBe(true);
+
+  snapshot.sessions[0]!.contextUsage = { totalTokens: 29_500, model: "custom/unknown-window", estimated: true };
+  tree = sessions.draw({ ...sessionsProps, snapshot });
+  const bar = elements(tree).find(element => typeof element.type === "function" && element.type.name === "SessionContextUsageBar")!;
+  const rendered = (bar.type as (props: Record<string, unknown>) => ReactNode)(bar.props);
+  expect(JSON.stringify(rendered)).toContain("30K");
+  expect(JSON.stringify(rendered)).not.toContain("undefined");
+});

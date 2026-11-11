@@ -86,7 +86,7 @@ export function ProviderSettings({ snapshot, connected = true, desktopLocal = fa
 
   return <section className="provider-settings" aria-label="提供方设置" aria-busy={busy}>
     <header className="settings-section-heading">
-      <div><h2>提供方</h2>{snapshot && <span>{snapshot.host.name}</span>}</div>
+      <div><h2>模型与网关</h2>{snapshot && <span>{snapshot.host.name}</span>}</div>
       <button type="button" className="secondary-button" disabled={!snapshot || !connected || busy} onClick={() => void run(onRefresh)}>
         {busy ? <LoaderCircle className="is-spinning" size={16} /> : <RefreshCw size={16} />}重新检测
       </button>
@@ -129,7 +129,7 @@ export function ProviderSettings({ snapshot, connected = true, desktopLocal = fa
           {magpieError && <p role="alert" className="inline-error">{magpieError}</p>}
         </div> : <p className="settings-notice">{desktopLocal ? "这台电脑暂不支持编辑 Magpie 连接，请更新电脑端 Bridge。" : "请在这台电脑的 Bridge 设置中管理 Magpie 连接。"}</p>}
       </section>}
-      {quotaDeclared && <section className="provider-settings-profile" aria-label="Magpie 额度">
+      {desktopLocal && quotaDeclared && <section className="provider-settings-profile" aria-label="Magpie 额度">
         <button type="button" className="secondary-button provider-quota-toggle" aria-expanded={quotaOpen} onClick={() => setQuotaOpen(!quotaOpen)}><Gauge size={16} />Magpie 额度</button>
         {quotaOpen && <MagpieQuotaDashboard />}
       </section>}

@@ -161,10 +161,48 @@ describe("Claude Desktop developer settings", () => {
     await expect(stat(join(claude, "developer_settings.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it.each(["linux", "win32"] as const)("does not write on %s", async (platform) => {
+  it("supports Windows MSIX and non-virtualized profile directories without listing duplicates", async () => {
+    const appData = join(home, "AppData", "Roaming");
+    const localAppData = join(home, "AppData", "Local");
+    const relocatedClaude = join(localAppData, "Claude-Data", "claude_pzs8sxrjxfjjc");
+    const hostThirdParty = join(localAppData, "Claude-3p");
+    const vfsThirdParty = join(localAppData, "Packages", "Claude_pzs8sxrjxfjjc", "LocalCache", "Local", "Claude-3p");
+    await mkdir(relocatedClaude, { recursive: true });
+    await mkdir(join(appData, "Claude"), { recursive: true });
+    await mkdir(hostThirdParty, { recursive: true });
+    await mkdir(vfsThirdParty, { recursive: true });
+    const env = { APPDATA: appData, LOCALAPPDATA: localAppData };
+
+    const check = await claudeDesktopDeveloperSettings({ home, platform: "win32", environment: env });
+    expect(check).toEqual({
+      supported: true,
+      profiles: [
+        { id: "Claude", path: join(relocatedClaude, "developer_settings.json") },
+        { id: "Claude-3p", path: join(hostThirdParty, "developer_settings.json") },
+      ],
+    });
+    const enabled = await claudeDesktopDeveloperSettings({
+      home,
+      platform: "win32",
+      environment: env,
+      profile: "Claude-3p",
+      enable: true,
+    });
+    expect(enabled).toMatchObject({
+      supported: true,
+      profile: "Claude-3p",
+      path: join(hostThirdParty, "developer_settings.json"),
+      enabled: true,
+      changed: true,
+    });
+    expect(JSON.parse(await readFile(join(hostThirdParty, "developer_settings.json"), "utf8"))).toEqual({ allowDevTools: true });
+    await expect(stat(join(vfsThirdParty, "developer_settings.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not write on linux", async () => {
     await mkdir(claude, { recursive: true });
-    expect(await claudeDesktopDeveloperSettings({ home, platform })).toEqual({ supported: false, profiles: [] });
-    await expect(claudeDesktopDeveloperSettings({ home, platform, profile: "Claude", enable: true })).rejects.toThrow("仅支持 macOS");
+    expect(await claudeDesktopDeveloperSettings({ home, platform: "linux" })).toEqual({ supported: false, profiles: [] });
+    await expect(claudeDesktopDeveloperSettings({ home, platform: "linux", profile: "Claude", enable: true })).rejects.toThrow("仅支持 macOS 与 Windows");
     await expect(stat(join(claude, "developer_settings.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

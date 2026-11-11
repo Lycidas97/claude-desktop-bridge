@@ -12,12 +12,17 @@ describe("desktop app definitions", () => {
       .toEqual(["/Applications/Claude.app"]);
   });
 
-  it("retains the Claude Windows path override", () => {
-    expect(desktopAppPathCandidates(
+  it("retains the Claude Windows path override and includes the MSIX execution alias", () => {
+    const candidates = desktopAppPathCandidates(
       CLAUDE_DESKTOP_APP,
-      { BRIDGE_CLAUDE_DESKTOP_PATH: "D:\\Tools\\Claude.exe" },
+      {
+        BRIDGE_CLAUDE_DESKTOP_PATH: "D:\\Tools\\Claude.exe",
+        LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local",
+      },
       "C:\\Users\\test",
       "win32",
-    )[0]).toBe("D:\\Tools\\Claude.exe");
+    );
+    expect(candidates[0]).toBe("D:\\Tools\\Claude.exe");
+    expect(candidates).toContain("C:\\Users\\test\\AppData\\Local\\Microsoft\\WindowsApps\\claude-desktop.exe");
   });
 });

@@ -30,6 +30,11 @@
 - Add four font sizes to Appearance on mobile and desktop. Apply changes
   immediately to reading and input text, and remember the selection on each
   device without scaling icons or touch targets.
+- Support Windows 11 MSIX `claude-desktop.exe` execution aliases and relocated
+  `Claude-Data` / `Packages` profile directories without duplicate entries,
+  recognize single-letter Windows drive paths in Markdown file links, and
+  discover `ccd_sidebar` / `claudeCodeSessionManager` by structural contract
+  across Claude Desktop builds.
 
 ## 1.3.1
 

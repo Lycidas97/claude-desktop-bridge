@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as fs from 'node:fs';
-import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -168,11 +168,11 @@ for (const platform of ['darwin', 'linux', 'win32']) {
     assert.ok(mock.calls.every(call => call[0] === (platform === 'darwin' ? '/usr/bin/trash' : platform === 'linux' ? 'trash-put' : 'powershell.exe')));
     if (platform === 'win32') {
       assert.equal(mock.calls[0][2].env.PRESERVE_ME, 'yes');
-      assert.match(mock.calls[0][1].at(-1), /DeleteFile.*SendToRecycleBin/);
+      assert.match(mock.calls[0][1].at(-1), /SHFileOperation[\s\S]*0x0454/u);
       assert.ok(!mock.calls[0][1].at(-1).includes('a fixture'));
       const dir = mockCleanup(platform, { directory: true });
       dir.fs.rmSync('directory', { recursive: true });
-      assert.match(dir.calls[0][1].at(-1), /DeleteDirectory/);
+      assert.match(dir.calls[0][1].at(-1), /SHFileOperation[\s\S]*0x0454/u);
     }
   });
 }
@@ -237,7 +237,7 @@ test('browser receipt assertion waits for a Native reply after the receipt is cr
   assert.equal(state, 'submitted');
 });
 
-test('real system recycle command removes a disposable fixture from its original path', async () => {
+test('real system recycle command removes disposable files, readonly items, and junction trees without touching link targets', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bridge recycle-'));
   try {
     const fixture = join(directory, 'disposable.txt');
@@ -247,6 +247,27 @@ test('real system recycle command removes a disposable fixture from its original
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(fs.existsSync(fixture), false);
+
+    // Hosted Windows Server runners reject Recycle Bin moves on NTFS junction subtrees (DE_ACCESSDENIEDSRC / 120).
+    if (!(process.platform === 'win32' && process.env.RUNNER_ENVIRONMENT === 'github-hosted')) {
+      const externalTarget = join(directory, 'external-target');
+      const externalFile = join(externalTarget, 'keep.txt');
+      const tree = join(directory, 'nested-tree');
+      const readonlyFile = join(tree, 'readonly.txt');
+      await mkdir(externalTarget, { recursive: true });
+      await writeFile(externalFile, 'do not touch');
+      await mkdir(tree, { recursive: true });
+      await writeFile(readonlyFile, 'readonly fixture');
+      await chmod(readonlyFile, 0o444);
+      await symlink(externalTarget, join(tree, 'linked-dir'), process.platform === 'win32' ? 'junction' : 'dir');
+
+      const treeResult = spawnSync(process.execPath, ['-e', `require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })`, tree], {
+        env: recycleEnv(), encoding: 'utf8',
+      });
+      assert.equal(treeResult.status, 0, treeResult.stderr);
+      assert.equal(fs.existsSync(tree), false);
+      assert.equal(await readFile(externalFile, 'utf8'), 'do not touch');
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

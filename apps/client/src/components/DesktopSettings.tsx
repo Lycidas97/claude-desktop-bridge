@@ -77,7 +77,7 @@ export function DesktopSettings({ snapshot, api, onSnapshot, themeControl }: {
         {desktopError && <p role="alert" className="inline-error">{desktopError}</p>}
         <section className="provider-settings-profile" aria-label="Claude Desktop 开发者工具">
           <h3>开发者工具</h3>
-          {developerSettings?.supported === false ? <p className="settings-notice">配置助手目前仅支持 macOS。</p> : <>
+          {developerSettings?.supported === false ? <p className="settings-notice">配置助手目前仅支持 macOS 与 Windows。</p> : <>
             {((developerSettings?.profiles.length ?? 0) > 1 || (!developerSettings && developerError)) && <div className="provider-key-settings">
               <label htmlFor="claude-developer-profile"><span>配置目录</span><select id="claude-developer-profile" value={developerProfile} disabled={developerBusy} onChange={(event) => {
                 const profile = event.target.value as ClaudeDesktopProfile;

@@ -181,5 +181,6 @@ test("Windows QA keeps the local public relay and isolates both app launches", (
   assert.match(windowsSource, /Set-QaProfile -Root \$smokeRoot[\s\S]*?Start-Process @smokeStart/u);
   assert.match(windowsSource, /Set-QaProfile -Root \$qaRoot[\s\S]*?Start-Process @desktopStart/u);
   assert.match(windowsSource, /finally\s*\{[\s\S]*?SetEnvironmentVariable\(\$key, \$originalEnvironment\[\$key\], "Process"\)/u);
+  assert.match(windowsSource, /Get-ChildItem -LiteralPath \$installRoot -Filter "Uninstall\*\.exe"[\s\S]*?-ArgumentList @\("\/currentuser", "\/S"\)[\s\S]*?-Wait[\s\S]*?recycle-cleanup\.cjs/u);
   assert.match(windowsSource, /Invoke-NpmScript -Name "test:desktop:pairing"/u);
 });

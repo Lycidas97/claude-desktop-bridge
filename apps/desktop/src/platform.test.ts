@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { App } from "electron";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  claudeDesktopProfileDirectories,
   claudeRuntimePaths,
   connectorPaths,
   firstNonEmpty,
@@ -49,12 +52,15 @@ describe("Windows Claude paths", () => {
     expect(supportsClaudeDesktop("linux")).toBe(false);
   });
 
-  it("uses roaming AppData for connector configuration", () => {
+  it("includes roaming and local AppData paths for Windows connector configuration", () => {
     const home = "/tmp/bridge-windows-home";
     const appData = "/tmp/bridge-windows-appdata";
-    expect(connectorPaths("win32", { APPDATA: appData }, home)).toEqual({
+    const localAppData = "/tmp/bridge-windows-localappdata";
+    expect(connectorPaths("win32", { APPDATA: appData, LOCALAPPDATA: localAppData }, home)).toEqual({
       claudeDesktop: [
         join(appData, "Claude", "claude_desktop_config.json"),
+        join(localAppData, "Claude", "claude_desktop_config.json"),
+        join(localAppData, "Claude-3p", "claude_desktop_config.json"),
         join(appData, "Claude-3p", "claude_desktop_config.json"),
       ],
       claudeCode: join(home, ".claude.json"),
@@ -62,17 +68,39 @@ describe("Windows Claude paths", () => {
     });
   });
 
-  it("keeps Claude Code state in the user profile and Desktop sessions in AppData", () => {
-    const home = "/tmp/bridge-windows-home";
-    const appData = "/tmp/bridge-windows-appdata";
-    expect(claudeRuntimePaths("win32", { APPDATA: appData }, home)).toEqual({
-      sessions: join(home, ".claude", "sessions"),
-      tasks: join(home, ".claude", "tasks"),
-      projects: join(home, ".claude", "projects"),
-      desktopSessions: [
-        join(appData, "Claude", "claude-code-sessions"),
-        join(appData, "Claude-3p", "claude-code-sessions"),
-      ],
-    });
+  it("keeps Claude Code state in the user profile and Desktop sessions across Windows profiles", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-win-paths-"));
+    try {
+      const appData = join(root, "Roaming");
+      const localAppData = join(root, "Local");
+      const relocated = join(localAppData, "Claude-Data", "claude_pzs8sxrjxfjjc");
+      const msixPkg = join(localAppData, "Packages", "Claude_pzs8sxrjxfjjc");
+      await mkdir(relocated, { recursive: true });
+      await mkdir(join(msixPkg, "LocalCache", "Local", "Claude-3p"), { recursive: true });
+      const profiles = claudeDesktopProfileDirectories("win32", { APPDATA: appData, LOCALAPPDATA: localAppData }, root);
+      expect(profiles.Claude[0]).toBe(relocated);
+      expect(profiles["Claude-3p"].slice(0, 2)).toEqual([
+        join(localAppData, "Claude-3p"),
+        join(msixPkg, "LocalCache", "Local", "Claude-3p"),
+      ]);
+      expect(claudeRuntimePaths("win32", { APPDATA: appData, LOCALAPPDATA: localAppData }, root)).toEqual({
+        sessions: join(root, ".claude", "sessions"),
+        tasks: join(root, ".claude", "tasks"),
+        projects: join(root, ".claude", "projects"),
+        desktopSessions: [
+          join(relocated, "claude-code-sessions"),
+          join(appData, "Claude", "claude-code-sessions"),
+          join(msixPkg, "LocalCache", "Roaming", "Claude", "claude-code-sessions"),
+          join(localAppData, "Claude", "claude-code-sessions"),
+          join(msixPkg, "LocalCache", "Local", "Claude", "claude-code-sessions"),
+          join(localAppData, "Claude-3p", "claude-code-sessions"),
+          join(msixPkg, "LocalCache", "Local", "Claude-3p", "claude-code-sessions"),
+          join(appData, "Claude-3p", "claude-code-sessions"),
+          join(msixPkg, "LocalCache", "Roaming", "Claude-3p", "claude-code-sessions"),
+        ],
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

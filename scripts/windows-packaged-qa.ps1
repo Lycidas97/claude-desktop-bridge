@@ -194,6 +194,21 @@ try {
   foreach ($key in $environmentKeys) {
     [Environment]::SetEnvironmentVariable($key, $originalEnvironment[$key], "Process")
   }
+  $uninstaller = if (Test-Path -LiteralPath $installRoot) {
+    Get-ChildItem -LiteralPath $installRoot -Filter "Uninstall*.exe" -File -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+  } else {
+    $null
+  }
+  if ($null -ne $uninstaller) {
+    $uninstallResult = Start-Process -FilePath $uninstaller.FullName `
+      -ArgumentList @("/currentuser", "/S") `
+      -Wait `
+      -PassThru
+    if ($uninstallResult.ExitCode -ne 0) {
+      throw "Windows uninstaller failed with exit code $($uninstallResult.ExitCode)."
+    }
+  }
   if ($env:RUNNER_ENVIRONMENT -eq "github-hosted") {
     # Hosted Windows runners can reject recycle-bin directory operations.
     # Retain isolated QA data rather than substitute permanent deletion.

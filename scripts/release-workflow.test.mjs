@@ -191,3 +191,55 @@ test('release and release-assets CI gates accept only completed successful runs 
     await recycle(directory, { recursive: true, force: true });
   }
 });
+
+test('CI Quality gate enforces full 8-job success on main push and tiered Ubuntu checks on pull_request', {
+  skip: process.platform === 'win32',
+}, () => {
+  const gateScript = shellStep(ci, 'Require every job to succeed');
+  const allSuccess = {
+    changes: { result: 'success' },
+    verify: { result: 'success' },
+    'desktop-windows': { result: 'success' },
+    'desktop-linux': { result: 'success' },
+    'android-debug': { result: 'success' },
+    ios: { result: 'success' },
+    'macos-unit': { result: 'success' },
+    'browser-e2e': { result: 'success' },
+  };
+  const prCodeJobs = {
+    changes: { result: 'success' },
+    verify: { result: 'success' },
+    'desktop-windows': { result: 'skipped' },
+    'desktop-linux': { result: 'skipped' },
+    'android-debug': { result: 'skipped' },
+    ios: { result: 'skipped' },
+    'macos-unit': { result: 'skipped' },
+    'browser-e2e': { result: 'success' },
+  };
+  const prDocsJobs = {
+    ...prCodeJobs,
+    'browser-e2e': { result: 'skipped' },
+  };
+
+  const cases = [
+    { label: 'push all success', env: { EVENT_NAME: 'push', DOCS_ONLY: 'false', IOS_CHANGED: 'true', JOB_RESULTS: JSON.stringify(allSuccess) }, pass: true },
+    { label: 'push rejects skipped platform job', env: { EVENT_NAME: 'push', DOCS_ONLY: 'false', IOS_CHANGED: 'false', JOB_RESULTS: JSON.stringify(prCodeJobs) }, pass: false },
+    { label: 'workflow_dispatch rejects skipped platform job', env: { EVENT_NAME: 'workflow_dispatch', DOCS_ONLY: 'false', IOS_CHANGED: 'false', JOB_RESULTS: JSON.stringify(prCodeJobs) }, pass: false },
+    { label: 'PR regular code passes with verify+browser-e2e', env: { EVENT_NAME: 'pull_request', DOCS_ONLY: 'false', IOS_CHANGED: 'false', JOB_RESULTS: JSON.stringify(prCodeJobs) }, pass: true },
+    { label: 'PR regular code rejects skipped browser-e2e', env: { EVENT_NAME: 'pull_request', DOCS_ONLY: 'false', IOS_CHANGED: 'false', JOB_RESULTS: JSON.stringify(prDocsJobs) }, pass: false },
+    { label: 'PR docs-only passes with verify only', env: { EVENT_NAME: 'pull_request', DOCS_ONLY: 'true', IOS_CHANGED: 'false', JOB_RESULTS: JSON.stringify(prDocsJobs) }, pass: true },
+    { label: 'PR iOS change requires ios success', env: { EVENT_NAME: 'pull_request', DOCS_ONLY: 'false', IOS_CHANGED: 'true', JOB_RESULTS: JSON.stringify(prCodeJobs) }, pass: false },
+    { label: 'PR iOS change passes when ios succeeds', env: { EVENT_NAME: 'pull_request', DOCS_ONLY: 'false', IOS_CHANGED: 'true', JOB_RESULTS: JSON.stringify({ ...prCodeJobs, ios: { result: 'success' } }) }, pass: true },
+    { label: 'PR rejects cancelled optional job', env: { EVENT_NAME: 'pull_request', DOCS_ONLY: 'false', IOS_CHANGED: 'false', JOB_RESULTS: JSON.stringify({ ...prCodeJobs, 'desktop-windows': { result: 'cancelled' } }) }, pass: false },
+  ];
+
+  for (const { label, env, pass } of cases) {
+    const result = spawnSync('bash', ['-c', gateScript], {
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    });
+    if (pass) assert.equal(result.status, 0, `Expected pass (${label}): ${result.stderr}`);
+    else assert.notEqual(result.status, 0, `Expected failure (${label})`);
+  }
+});
+

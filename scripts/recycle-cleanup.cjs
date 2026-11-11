@@ -7,12 +7,14 @@ const { resolve } = require('node:path');
 const { syncBuiltinESMExports } = require('node:module');
 const run = promisify(execFile);
 const platform = process.platform;
+const winRecycleExe = platform === 'win32' ? process.env.BRIDGE_WIN_RECYCLE_EXE : undefined;
 const normalize = value => resolve(value instanceof URL ? fileURLToPath(value) : Buffer.isBuffer(value) ? value.toString() : value);
 
 function command(path) {
   if (platform === 'darwin') return ['/usr/bin/trash', [path], {}];
   if (platform === 'linux') return ['trash-put', [path], {}];
   if (platform === 'win32') {
+    if (winRecycleExe) return [winRecycleExe, [path], {}];
     // SHFileOperation with FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI (0x0454)
     // moves regular files, ReadOnly items, and directories containing NTFS junctions to the Recycle Bin.
     return ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',

@@ -14,7 +14,7 @@ import { recycleEnv } from './ci-run.mjs';
 const require = createRequire(import.meta.url);
 const preload = await readFile(new URL('./recycle-cleanup.cjs', import.meta.url), 'utf8');
 
-function mockCleanup(platform, { missing = false, failure = false, directory = false } = {}) {
+function mockCleanup(platform, { missing = false, failure = false, directory = false, extraEnv = {} } = {}) {
   const calls = [];
   const check = () => {
     if (missing) throw Object.assign(new Error('missing fixture'), { code: 'ENOENT' });
@@ -25,7 +25,7 @@ function mockCleanup(platform, { missing = false, failure = false, directory = f
     calls.push(args);
     if (failure) throw Object.assign(new Error('trash command failed'), { code: 'ENOENT' });
   };
-  const mockProcess = { platform, env: { PRESERVE_ME: 'yes' } };
+  const mockProcess = { platform, env: { PRESERVE_ME: 'yes', ...extraEnv } };
   vm.runInNewContext(preload, {
     Buffer, URL, process: mockProcess,
     require(name) {
@@ -173,6 +173,10 @@ for (const platform of ['darwin', 'linux', 'win32']) {
       const dir = mockCleanup(platform, { directory: true });
       dir.fs.rmSync('directory', { recursive: true });
       assert.match(dir.calls[0][1].at(-1), /SHFileOperation[\s\S]*0x0454/u);
+      const compiled = mockCleanup(platform, { extraEnv: { BRIDGE_WIN_RECYCLE_EXE: 'D:\\work\\cache\\bridge-recycle.exe' } });
+      compiled.fs.rmSync('a fixture');
+      assert.equal(compiled.calls[0][0], 'D:\\work\\cache\\bridge-recycle.exe');
+      assert.equal(compiled.calls[0][1].length, 1);
     }
   });
 }

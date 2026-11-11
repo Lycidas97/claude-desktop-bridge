@@ -4,13 +4,14 @@
 - `.github/workflows/`
   - `ci.yml`, `release.yml`, `release-assets.yml`
 - `scripts/`
-  - Cleanup & runners: `recycle-cleanup.cjs`, `ci-run.mjs`, `test.mjs`, `clean.mjs`
+  - Cleanup & runners: `recycle-cleanup.cjs`, `win-recycle.cs`, `ci-run.mjs`, `local-ci.mjs`, `win-local-ci.ps1`, `test.mjs`, `clean.mjs`
   - Infrastructure contract suites: `ci-infrastructure.test.mjs`, `windows-native-qa-contract.test.mjs`, `release-workflow.test.mjs`
   - Synthetic Native fixtures: `fixtures/native-approval-host.ts`, `fixtures/native-section-store.ts`, `fixtures/inspector-startup-host.cjs`, `fixtures/fake-claude.mjs`
   - E2E & packaged QA scripts: `browser-e2e.mjs`, `packaged-desktop-qa.mjs`, `windows-packaged-qa.ps1`, `desktop-pairing-e2e.mjs`, `service-restart-qa.mjs`, `claude-inspector-startup-qa.mjs`, `html-preview-qa.mjs`, `media-preview-qa.mjs`, `visual-qa.mjs`, `android-installed-e2e.mjs`, `verify-android-dex.py`
 
 ## Responsibilities
-- Enforces the 7-job CI matrix (`verify`, `desktop-windows`, `desktop-linux`, `android-debug`, `ios`, `macos-unit`, `browser-e2e`) gated by the `Quality gate` job in `.github/workflows/ci.yml`.
+- Runs tiered GitHub Actions CI in `.github/workflows/ci.yml`: fast Ubuntu checks on `pull_request` (`test:infra` for docs-only PRs; `verify` + `browser-e2e` for code PRs, plus `ios` when `apps/mobile/ios/` changes), and the full 8-job matrix (`changes`, `verify`, `desktop-windows`, `desktop-linux`, `android-debug`, `ios`, `macos-unit`, `browser-e2e`) on `main` `push` / `workflow_dispatch`, gated by `Quality gate`.
+- Runs full multi-platform pre-PR verification locally via `npm run ci:local` (`scripts/local-ci.mjs` + `scripts/win-local-ci.ps1`): Mac M4 (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`, plus optional Xcode iOS) in parallel with `ssh win` (`D:\work\ci-worktree` via `scp` git bundle: Windows tests + NSIS installer + packaged QA + Android SDK 36 APK/DEX/cert + WHPX headless emulator WebView E2EE pairing smoke + WSL2 `Ubuntu-24.04` `.deb`/`.rpm`/`.zip`). Never attach `self-hosted` GitHub Actions runners to the public repository.
 - Orchestrates immutable single-revision draft creation and multi-platform release publishing across `.github/workflows/release.yml` and `.github/workflows/release-assets.yml`.
 - Enforces Trash-only file removal in Node processes (`recycle-cleanup.cjs`) and isolates all automated QA from real user profiles, production relays, and live Claude Desktop sessions.
 

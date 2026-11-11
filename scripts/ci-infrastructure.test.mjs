@@ -248,23 +248,26 @@ test('real system recycle command removes disposable files, readonly items, and 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(fs.existsSync(fixture), false);
 
-    const externalTarget = join(directory, 'external-target');
-    const externalFile = join(externalTarget, 'keep.txt');
-    const tree = join(directory, 'nested-tree');
-    const readonlyFile = join(tree, 'readonly.txt');
-    await mkdir(externalTarget, { recursive: true });
-    await writeFile(externalFile, 'do not touch');
-    await mkdir(tree, { recursive: true });
-    await writeFile(readonlyFile, 'readonly fixture');
-    await chmod(readonlyFile, 0o444);
-    await symlink(externalTarget, join(tree, 'linked-dir'), process.platform === 'win32' ? 'junction' : 'dir');
+    // Hosted Windows Server runners reject Recycle Bin moves on NTFS junction subtrees (DE_ACCESSDENIEDSRC / 120).
+    if (!(process.platform === 'win32' && process.env.RUNNER_ENVIRONMENT === 'github-hosted')) {
+      const externalTarget = join(directory, 'external-target');
+      const externalFile = join(externalTarget, 'keep.txt');
+      const tree = join(directory, 'nested-tree');
+      const readonlyFile = join(tree, 'readonly.txt');
+      await mkdir(externalTarget, { recursive: true });
+      await writeFile(externalFile, 'do not touch');
+      await mkdir(tree, { recursive: true });
+      await writeFile(readonlyFile, 'readonly fixture');
+      await chmod(readonlyFile, 0o444);
+      await symlink(externalTarget, join(tree, 'linked-dir'), process.platform === 'win32' ? 'junction' : 'dir');
 
-    const treeResult = spawnSync(process.execPath, ['-e', `require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })`, tree], {
-      env: recycleEnv(), encoding: 'utf8',
-    });
-    assert.equal(treeResult.status, 0, treeResult.stderr);
-    assert.equal(fs.existsSync(tree), false);
-    assert.equal(await readFile(externalFile, 'utf8'), 'do not touch');
+      const treeResult = spawnSync(process.execPath, ['-e', `require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })`, tree], {
+        env: recycleEnv(), encoding: 'utf8',
+      });
+      assert.equal(treeResult.status, 0, treeResult.stderr);
+      assert.equal(fs.existsSync(tree), false);
+      assert.equal(await readFile(externalFile, 'utf8'), 'do not touch');
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

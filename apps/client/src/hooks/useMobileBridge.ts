@@ -1,5 +1,7 @@
 import {
   BridgeCrypto,
+  PAYLOAD_DEFLATE_CAPABILITY,
+  PAYLOAD_DEFLATE_SUPPORTED,
   RelayTransport,
   TransportRouter,
   WebRtcTransport,
@@ -183,6 +185,7 @@ interface MobileBridgeState {
   connection: SocketState;
   desktopOnline: boolean;
   snapshot: BridgeHostSnapshot | undefined;
+  snapshotSeq: number;
   permissions: BridgePermissionInfo[];
   focusSessionId: string | undefined;
   histories: Record<string, SessionHistoryState>;
@@ -207,6 +210,7 @@ const INITIAL_STATE: MobileBridgeState = {
   connection: "idle",
   desktopOnline: false,
   snapshot: undefined,
+  snapshotSeq: 0,
   permissions: [],
   focusSessionId: undefined,
   histories: {},
@@ -644,6 +648,27 @@ export function applyPermissionEvent(
   return current;
 }
 
+function applyUnseenPermissionEvents(
+  permissions: BridgePermissionInfo[],
+  incoming: BridgeEvent[],
+  seen: BridgeEvent[],
+  snapshotSeq: number,
+): BridgePermissionInfo[] {
+  const seenIds = new Set(seen.map((event) => event.eventId));
+  const latest = new Map<string, number>();
+  for (const event of [...seen, ...incoming]) {
+    if (/^(permission|question)\.(requested|resolved)$/u.test(event.type) && typeof event.data.requestId === "string") {
+      latest.set(event.data.requestId, Math.max(latest.get(event.data.requestId) ?? 0, event.seq));
+    }
+  }
+  for (const event of incoming) {
+    if (event.seq > snapshotSeq && !seenIds.has(event.eventId) && latest.get(event.data.requestId as string) === event.seq) {
+      permissions = applyPermissionEvent(permissions, event);
+    }
+  }
+  return permissions;
+}
+
 function snapshotWithPermissions(
   snapshot: BridgeHostSnapshot | undefined,
   permissions: BridgePermissionInfo[],
@@ -672,6 +697,7 @@ function snapshotWithPermissions(
 export function rebaseSnapshot(
   snapshot: BridgeHostSnapshot,
   events: BridgeEvent[],
+  currentPermissions?: BridgePermissionInfo[],
 ): {
   snapshot: BridgeHostSnapshot;
   permissions: BridgePermissionInfo[];
@@ -681,10 +707,15 @@ export function rebaseSnapshot(
     .filter((event) => event.seq > snapshot.latestSeq)
     .sort((left, right) => left.seq - right.seq);
   const applied = applyEventsToSnapshot(snapshot, replay, snapshot.permissions);
-  const rebased = applied.snapshot ?? snapshot;
+  // A confirmed local answer removes the prompt before its resolved event can arrive.
+  // Replaying an already seen request must preserve that removal.
+  const permissions = currentPermissions ? applied.permissions.filter((permission) =>
+    currentPermissions.some((current) => current.requestId === permission.requestId) ||
+    !events.some((event) => (event.type === "permission.requested" || event.type === "question.requested") &&
+      event.data.requestId === permission.requestId)) : applied.permissions;
   return {
-    snapshot: rebased,
-    permissions: applied.permissions,
+    snapshot: snapshotWithPermissions(applied.snapshot ?? snapshot, permissions)!,
+    permissions,
     latestSeq: Math.max(snapshot.latestSeq, ...events.map((event) => event.seq), 0),
   };
 }
@@ -1008,6 +1039,7 @@ async function readStoredHostState(
   storedEnvelopes?: EncryptedEnvelope[],
 ): Promise<{
   snapshot?: BridgeHostSnapshot;
+  snapshotSeq: number;
   permissions: BridgePermissionInfo[];
   events: BridgeEvent[];
   evidence: Record<string, SessionEvidenceState>;
@@ -1030,7 +1062,9 @@ async function readStoredHostState(
     slicedEnvelopes: envelopes.length,
     decryptedMessages: messages.length,
   });
-  const snapshot = [...messages].reverse().find((message) => message.payload.kind === "snapshot")?.payload;
+  const snapshot = messages.reduce<Extract<BridgePayload, { kind: "snapshot" }> | undefined>((latest, message) =>
+    message.payload.kind === "snapshot" && (!latest || message.payload.snapshot.latestSeq >= latest.snapshot.latestSeq)
+      ? message.payload : latest, undefined);
   const events = mergeBridgeEvents(
     [],
     messages.flatMap((message) => message.payload.kind === "event" ? [message.payload.event] : []),
@@ -1134,6 +1168,7 @@ async function readStoredHostState(
   }
   return {
     ...(storedSnapshot ? { snapshot: storedSnapshot } : {}),
+    snapshotSeq,
     permissions,
     events,
     evidence,
@@ -1143,11 +1178,12 @@ async function readStoredHostState(
   };
 }
 
-function clientMetadata(): Record<string, string> {
+function clientMetadata(): Record<string, string | string[]> {
   const platform = Capacitor.getPlatform();
   return {
     platform: platform === "android" || platform === "ios" ? platform : "web",
     name: platform === "android" ? "Android 手机" : platform === "ios" ? "iPhone" : "Web 客户端",
+    capabilities: PAYLOAD_DEFLATE_SUPPORTED ? [PAYLOAD_DEFLATE_CAPABILITY] : [],
   };
 }
 
@@ -1204,6 +1240,7 @@ export function useMobileBridge() {
   const linkGateRef = useRef<() => boolean>(() => true);
   const sendAttemptedAtRef = useRef<number | undefined>(undefined);
   const nativeRelayCapabilityRef = useRef<boolean | undefined>(undefined);
+  const payloadDeflateRef = useRef(false);
 
   const updateHostCache = useCallback((
     roomId: string,
@@ -1233,30 +1270,36 @@ export function useMobileBridge() {
     crypto: BridgeCrypto,
   ) => {
     if (payload.kind === "snapshot") {
-      const rebased = rebaseSnapshot(payload.snapshot, stateRef.current.events);
-      const { snapshot, permissions } = rebased;
-      diagLog("info", "permission", `snapshot latestSeq=${rebased.latestSeq} permissions=${permissions.length}`, permissions.map((permission) => ({
+      if (payload.snapshot.latestSeq < stateRef.current.snapshotSeq) return;
+      diagLog("info", "permission", `snapshot latestSeq=${payload.snapshot.latestSeq} permissions=${payload.snapshot.permissions.length}`, payload.snapshot.permissions.map((permission) => ({
         requestId: permission.requestId,
         sessionId: permission.sessionId,
         toolName: permission.toolName,
       })));
       // Receiving it already marked the desktop online. Its host.online can be stale: a restarting
       // desktop builds the snapshot before its relay state reads "connected" and sends it after.
-      setState((current) => ({
-        ...current,
-        snapshot,
-        permissions,
-        desktopName: snapshot.host.name,
-        latestSeq: rebased.latestSeq,
-      }));
-      updateHostCache(crypto.identity.roomId, snapshot, permissions);
-      applyLanRelayAdvertisement(crypto.identity.roomId, snapshot);
+      setState((current) => {
+        if (payload.snapshot.latestSeq < current.snapshotSeq) return current;
+        const rebased = rebaseSnapshot(payload.snapshot, current.events, current.permissions);
+        return {
+          ...current,
+          snapshot: rebased.snapshot,
+          snapshotSeq: payload.snapshot.latestSeq,
+          permissions: rebased.permissions,
+          desktopName: rebased.snapshot.host.name,
+          latestSeq: rebased.latestSeq,
+          hosts: current.hosts.map((host) => host.roomId === crypto.identity.roomId
+            ? hostWithRuntimeState(host, rebased.snapshot, rebased.permissions)
+            : host),
+        };
+      });
+      applyLanRelayAdvertisement(crypto.identity.roomId, payload.snapshot);
       return;
     }
     if (payload.kind === "event") {
       const { event } = payload;
       if (/^(permission|question)\.(requested|resolved)$/u.test(event.type)) {
-        const snapshotSeq = stateRef.current.snapshot?.latestSeq ?? 0;
+        const snapshotSeq = stateRef.current.snapshotSeq;
         const dropped = event.seq <= snapshotSeq;
         diagLog(dropped ? "warn" : "info", "permission", `${event.type} seq=${event.seq} snapshotSeq=${snapshotSeq}${dropped ? " 已忽略" : ""}`, {
           requestId: event.data.requestId,
@@ -1264,10 +1307,8 @@ export function useMobileBridge() {
         }, dropped);
       }
       setState((current) => {
-        const permissions = payload.event.seq <= (current.snapshot?.latestSeq ?? 0)
-          ? current.permissions
-          : applyPermissionEvent(current.permissions, payload.event);
-        const snapshot = applyEventToSnapshot(current.snapshot, payload.event, permissions);
+        const permissions = applyUnseenPermissionEvents(current.permissions, [event], current.events, current.snapshotSeq);
+        const snapshot = snapshotWithPermissions(applyEventToSnapshot(current.snapshot, event, permissions), permissions);
         const evidenceItem = evidenceFromEvent(payload.event);
         const evidence = evidenceItem ? {
           ...current.evidence,
@@ -1335,7 +1376,7 @@ export function useMobileBridge() {
       pending.resolve(payload);
     }
     void encrypted;
-  }, [updateHostCache]);
+  }, [applyLanRelayAdvertisement]);
 
   const sendRequest = useCallback(async (
     method: BridgeRequest["method"],
@@ -1366,6 +1407,7 @@ export function useMobileBridge() {
       undefined,
       undefined,
       persistOutbox ? undefined : true,
+      method !== "snapshot.get" && payloadDeflateRef.current,
     );
     envelopeRequestsRef.current.set(envelope.id, request.requestId);
     if (persistOutbox) {
@@ -1494,8 +1536,8 @@ export function useMobileBridge() {
           }
         }
         const applied = applyEventsToSnapshot(current.snapshot, events, current.permissions);
-        const snapshot = applied.snapshot;
-        const permissions = applied.permissions;
+        const permissions = applyUnseenPermissionEvents(current.permissions, events, current.events, current.snapshotSeq);
+        const snapshot = snapshotWithPermissions(applied.snapshot, permissions);
         return {
           ...current,
           snapshot,
@@ -1549,10 +1591,10 @@ export function useMobileBridge() {
       verifiedSnapshot = result.snapshot;
     }
     const roomId = crypto.identity.roomId;
-    const initial = rebaseSnapshot(verifiedSnapshot, stateRef.current.events);
+    if (verifiedSnapshot.latestSeq < stateRef.current.snapshotSeq) return true;
     const cacheCrypto = crypto.withSenderDevice(crypto.identity.hostId ?? crypto.identity.deviceId);
     const cachedEnvelope = await cacheCrypto.encrypt(
-      { kind: "snapshot", snapshot: initial.snapshot },
+      { kind: "snapshot", snapshot: verifiedSnapshot },
       "desktop",
       "mobile",
       Date.now(),
@@ -1564,11 +1606,12 @@ export function useMobileBridge() {
     if (!isCurrent()) return false;
     applyLanRelayAdvertisement(roomId, verifiedSnapshot);
     setState((current) => {
-      if (!isCurrent()) return current;
-      const rebased = rebaseSnapshot(verifiedSnapshot, current.events);
+      if (!isCurrent() || verifiedSnapshot.latestSeq < current.snapshotSeq) return current;
+      const rebased = rebaseSnapshot(verifiedSnapshot, current.events, current.permissions);
       return {
         ...current,
         snapshot: rebased.snapshot,
+        snapshotSeq: verifiedSnapshot.latestSeq,
         permissions: rebased.permissions,
         desktopName: rebased.snapshot.host.name,
         // The answer itself shows the desktop online; its host.online can be stale (see handlePayload).
@@ -1620,6 +1663,7 @@ export function useMobileBridge() {
       connection: "connecting",
       desktopOnline: false,
       snapshot: undefined,
+      snapshotSeq: 0,
       permissions: [],
       focusSessionId,
       histories: {},
@@ -1658,6 +1702,7 @@ export function useMobileBridge() {
     setState((current) => ({
       ...current,
       snapshot: stored.snapshot,
+      snapshotSeq: stored.snapshotSeq,
       permissions: stored.permissions,
       events: stored.events,
       evidence: stored.evidence,
@@ -1718,6 +1763,7 @@ export function useMobileBridge() {
       : relay;
     socketRef.current = socket;
     nativeRelayCapabilityRef.current = undefined;
+    payloadDeflateRef.current = false;
     let bootstrapPending = bootstrap;
     let authenticatedDesktop = false;
     let authenticationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1856,6 +1902,7 @@ export function useMobileBridge() {
       if (connection !== "connected") {
         linkHasDesktop = false;
         nativeRelayCapabilityRef.current = undefined;
+        payloadDeflateRef.current = false;
       }
       setState((current) => ({
         ...current,
@@ -2040,6 +2087,7 @@ export function useMobileBridge() {
             connection: "closed",
             desktopOnline: false,
             snapshot: undefined,
+            snapshotSeq: 0,
             permissions: [],
             focusSessionId: undefined,
             histories: {},
@@ -2108,11 +2156,13 @@ export function useMobileBridge() {
         const snapshot = (message.payload.result as { snapshot?: BridgeHostSnapshot } | undefined)?.snapshot;
         if (snapshot) {
           nativeRelayCapabilityRef.current = isClaudeNativeRelay(snapshot);
+          payloadDeflateRef.current = snapshot.host.capabilities.includes(PAYLOAD_DEFLATE_CAPABILITY);
           void flushOutbox();
         }
       }
       if (message.payload.kind === "snapshot") {
         nativeRelayCapabilityRef.current = isClaudeNativeRelay(message.payload.snapshot);
+        payloadDeflateRef.current = message.payload.snapshot.host.capabilities.includes(PAYLOAD_DEFLATE_CAPABILITY);
         void flushOutbox();
       }
       handlePayload(message.payload, encrypted, crypto);
@@ -2406,7 +2456,7 @@ export function useMobileBridge() {
       clearPendingPairingInstanceId(pairing.roomId, pairing.deviceId);
       cryptoByRoomRef.current.set(crypto.identity.roomId, crypto);
       pairingPhase.provisional = false;
-      const verifiedState = rebaseSnapshot(verifiedSnapshot, stateRef.current.events);
+      const verifiedState = rebaseSnapshot(verifiedSnapshot, stateRef.current.events, stateRef.current.permissions);
       const nextHost = hostSummary({
         hostId: pairing.hostId,
         pairingEpoch: pairing.pairingEpoch,
@@ -2429,6 +2479,7 @@ export function useMobileBridge() {
           ...current.hosts.filter((host) => host.hostId !== nextHost.hostId),
         ],
         snapshot: verifiedState.snapshot,
+        snapshotSeq: verifiedSnapshot.latestSeq,
         permissions: verifiedState.permissions,
         desktopName: verifiedState.snapshot.host.name,
         desktopOnline: true,
@@ -2479,6 +2530,7 @@ export function useMobileBridge() {
         connection: "closed",
         desktopOnline: false,
         snapshot: undefined,
+        snapshotSeq: 0,
         permissions: [],
         connectionIssue: undefined,
         transportMetrics: undefined,
@@ -2525,6 +2577,7 @@ export function useMobileBridge() {
       connection: "idle",
       desktopOnline: false,
       snapshot: undefined,
+      snapshotSeq: 0,
       permissions: [],
       focusSessionId: undefined,
       histories: {},
@@ -3403,6 +3456,7 @@ export function useMobileBridge() {
         connection: "idle" as const,
         desktopOnline: false,
         snapshot: undefined,
+        snapshotSeq: 0,
         permissions: [],
         focusSessionId: undefined,
         histories: {},

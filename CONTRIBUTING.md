@@ -69,7 +69,7 @@ model settings between runtimes; review proposals that weaken those boundaries c
 
 For the approved Claude refactor, `claude-desktop-bridge.ts` is a thin forwarding layer;
 Claude Desktop alone owns session execution, queues, and permissions. Discover the dynamic
-WebSocket from the user-enabled Node inspector at `http://127.0.0.1:9229/json/list`, use
+WebSocket from the user-authorized Node inspector at `http://127.0.0.1:9229/json/list`, use
 `process.mainModule.require('electron')` to locate the `app://localhost` WebContents, and
 call `claude.web.LocalSessions` through `executeJavaScript`. Events use one renderer queue
 and a waiting Promise. Do not restore SDK/CLI Hosts, standalone API Key provider lanes,
@@ -114,13 +114,19 @@ Android `versionName`, and iOS `MARKETING_VERSION` match exactly.
 
 Security issues should be reported privately through the repository's security policy in
 [SECURITY.md](docs/SECURITY.md) rather than opened as public issues. The security model is a
-core product boundary: do not weaken encryption, add clipboard or accessibility access,
-or forward credentials to the relay. The user has explicitly chosen to keep Claude's local
-Node inspector on port 9229 enabled; this supersedes the previous blanket “no CDP / no
+core product boundary: do not weaken encryption, add clipboard access, or forward
+credentials to the relay. The user has explicitly chosen to keep Claude's local Node
+inspector on port 9229 enabled; this supersedes the previous blanket “no CDP / no
 attachment” rule for Claude. It permits the fixed `LocalSessions` integration described
-above, not a Relay-accessible arbitrary evaluate endpoint. Do not patch asar, mint tokens,
-restart Desktop, add a LaunchAgent, or automate its menus. If inspector is unavailable,
-report Claude as unavailable.
+above, not a Relay-accessible arbitrary evaluate endpoint. On macOS, Accessibility and
+System Events Automation access is limited to the native Enable Main Process Debugger
+menu once per newly discovered Desktop process, respecting native account/workspace
+policies. Skip already-open ports and custom inspector origins; persist attempts and
+failures across Bridge service restarts, respect manual closure, and show failures in
+diagnostics. The user must grant the required macOS permissions. Do not automate other
+menus, send keyboard/mouse events, patch asar, mint tokens, restart Desktop, add a
+LaunchAgent, send SIGUSR1, or change debugging launch arguments. If inspector remains
+unavailable, report Claude as unavailable.
 
 ## Code of conduct
 

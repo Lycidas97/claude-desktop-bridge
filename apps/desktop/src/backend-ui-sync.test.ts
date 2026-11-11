@@ -54,11 +54,12 @@ it("writes runtime defaults without a session and broadcasts through publish", a
 });
 
 it("broadcasts changed runtime defaults even when the session set is unchanged", async () => {
-  const snapshot = { sessions: [], host: { defaultPermissionMode: "standard" }, runtimes: [{ id: "codex-desktop", defaultPermissionMode: "standard" }] };
+  const snapshot = { sessions: [], permissions: [], host: { defaultPermissionMode: "standard" }, runtimes: [{ id: "codex-desktop", defaultPermissionMode: "standard" }] };
   const broadcast = vi.fn(async () => {});
   const c = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
     snapshot: async () => snapshot, broadcast, eventLog: { append: vi.fn() },
     lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
+    lastPublishedPermissions: new Map(), claudePermissions: () => [],
   });
   await c.publish();
   broadcast.mockClear();
@@ -69,11 +70,12 @@ it("broadcasts changed runtime defaults even when the session set is unchanged",
 });
 
 it("broadcasts changed Magpie settings without depending on a changed session or detection timestamp", async () => {
-  const snapshot = { sessions: [], magpie: { mode: "auto", keyConfigured: true } };
+  const snapshot = { sessions: [], permissions: [], magpie: { mode: "auto", keyConfigured: true } };
   const broadcast = vi.fn(async () => {});
   const c = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
     snapshot: async () => snapshot, broadcast, eventLog: { append: vi.fn() },
     lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
+    lastPublishedPermissions: new Map(), claudePermissions: () => [],
   });
   await c.publish();
   broadcast.mockClear();

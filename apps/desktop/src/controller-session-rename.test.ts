@@ -23,10 +23,11 @@ function fixture(turnState: BridgeTurnState = "running", sessionId = "native-1")
     conversationState: { setSessionTitle: vi.fn((id: string, title: string) => titles.set(id, title)) },
     sessionVisibility: new Map(), desktopArchiveRequests: new Map(),
     lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
+    lastPublishedPermissions: new Map(), claudePermissions: () => [],
     eventLog: { latestSeq: () => 7, append: vi.fn() },
     broadcast: vi.fn(async () => undefined),
   });
-  controller.snapshot = async () => ({ sessions: controller.allSessions() });
+  controller.snapshot = async () => ({ sessions: controller.allSessions(), permissions: [] });
   const rename = (title: unknown, id = sessionId) => controller.handleRequest({
     kind: "request", method: "session.rename", requestId: "rename-1", idempotencyKey: "rename-1", params: { sessionId: id, title },
   } as BridgeRequest, "mobile");
@@ -41,7 +42,7 @@ describe("session.rename", () => {
     expect(await rename("  手机显示名  ")).toEqual({ session: { ...session, title: "手机显示名" } });
     expect(controller.broker.rename).toHaveBeenCalledExactlyOnceWith(session.sessionId, "手机显示名");
     expect(controller.conversationState.setSessionTitle).toHaveBeenCalledExactlyOnceWith(session.sessionId, "手机显示名");
-    expect(controller.broadcast).toHaveBeenCalledExactlyOnceWith({ kind: "snapshot", snapshot: { sessions: [{ ...session, title: "手机显示名" }] } }, true);
+    expect(controller.broadcast).toHaveBeenCalledExactlyOnceWith({ kind: "snapshot", snapshot: { sessions: [{ ...session, title: "手机显示名" }], permissions: [] } }, true);
     expect(controller.eventLog.append).not.toHaveBeenCalled();
     expect(await controller.handleRequest({ method: "session.list", params: { search: "手机显示名" } }, "mobile")).toEqual({ sessions: [{ ...session, title: "手机显示名" }] });
     expect(await controller.handleRequest({ method: "session.list", params: { search: "原生标题" } }, "mobile")).toEqual({ sessions: [] });

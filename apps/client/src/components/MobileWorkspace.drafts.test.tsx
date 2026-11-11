@@ -1,8 +1,14 @@
-import type { BridgeBackgroundTask, BridgeHistoryItem, BridgePermissionInfo, BridgeSessionInfo, BridgeSubagentSummary } from "@bridge/protocol";
+import { execFileSync } from "node:child_process";
+import { appendFile, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { BridgeBackgroundTask, BridgeEvent, BridgeHistoryItem, BridgePermissionInfo, BridgeSessionInfo, BridgeSubagentSummary } from "@bridge/protocol";
+import { readClaudeSessionHistoryPage } from "../../../desktop/src/claude-history.js";
 import { BackgroundTaskMarker, BackgroundTasksSheet } from "./BackgroundTasks.js";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { InteractivePromptCard, MobileWorkspace, PermissionPrompt, SubagentCard } from "./MobileWorkspace.js";
+import { conversationItems, InteractivePromptCard, MobileWorkspace, PermissionPrompt, SubagentCard } from "./MobileWorkspace.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./FileAttachmentPicker.js";
 import { IconButton } from "./IconButton.js";
 import { MessageCopyButton } from "./MessageCopyButton.js";
@@ -1044,6 +1050,89 @@ describe("native structured approvals", () => {
     elements(rendered).find(element => element.props.className === "primary-button")!.props.onClick();
     await Promise.resolve();
     expect(onResolve).toHaveBeenCalledExactlyOnceWith("multi-request", "allow-once", undefined, { ...permission.input, answers: { "Which checks?": "类型检查, 回归测试" } });
+  });
+});
+
+describe("automatic native question disappearance", () => {
+  const question = { question: "Which branch?", options: [{ label: "Main" }, { label: "Feature" }] };
+  const permission: BridgePermissionInfo = {
+    requestId: "candidate3-request", sessionId: "A", toolUseId: "T", toolName: "AskUserQuestion",
+    input: { questions: [question] }, createdAt: 100, canAllowAlways: false,
+  };
+  // Exact automatic disappearance shape from DesktopController.publish().
+  const automatic: BridgeEvent = {
+    eventId: "candidate3-disappeared", seq: 2, timestamp: 200, sessionId: "A", itemId: "T",
+    origin: "claude-desktop", type: "question.resolved",
+    data: { requestId: "candidate3-request", automatic: true },
+  };
+  let directory: string;
+
+  beforeEach(async () => {
+    directory = await mkdtemp(join(tmpdir(), "bridge-candidate3-question-"));
+    await writeFile(join(directory, "A.jsonl"), [
+      { type: "user", uuid: "candidate3-user", parentUuid: null, timestamp: new Date(50).toISOString(),
+        message: { role: "user", content: "Choose a branch." } },
+      { type: "assistant", uuid: "candidate3-question", parentUuid: "candidate3-user", timestamp: new Date(100).toISOString(),
+        message: { role: "assistant", content: [{ type: "tool_use", id: "T", name: "AskUserQuestion", input: permission.input }], stop_reason: "tool_use" } },
+    ].map(record => JSON.stringify(record)).join("\n") + "\n", "utf8");
+    const page = await readClaudeSessionHistoryPage(directory, "A");
+    expect(page.items.map(item => item.id)).toEqual(["candidate3-user", "candidate3-question"]);
+    expect(page.items[1]!.interactivePrompt).toMatchObject({ kind: "question", toolUseId: "T" });
+    props = { ...props, permissions: [permission],
+      snapshot: { ...props.snapshot!, permissions: [permission] },
+      histories: { ...props.histories, A: { ...page, status: "ready" } },
+      events: [{ eventId: "candidate3-requested", seq: 1, timestamp: 100, sessionId: "A", itemId: "T",
+        origin: "claude-desktop", type: "question.requested", data: { ...permission } }],
+    };
+    draw();
+    expect(elements(tree).filter(element => element.type === PermissionPrompt && element.props.permission.toolUseId === "T")).toHaveLength(1);
+    expect(elements(tree).some(element => element.type === InteractivePromptCard)).toBe(false);
+  });
+
+  afterEach(() => {
+    // ci:run supplies recycle-cleanup.cjs through inherited NODE_OPTIONS.
+    execFileSync(process.execPath, [fileURLToPath(new URL("../../../../scripts/clean.mjs", import.meta.url)), directory]);
+  });
+
+  function disappear() {
+    props = { ...props, permissions: [], snapshot: { ...props.snapshot!, permissions: [] }, events: [...props.events, automatic] };
+    draw();
+    return elements(tree).find(element => element.type === InteractivePromptCard)!;
+  }
+
+  it("reproduces an unavailable unanswered card after external disappearance without inventing an answer or actor", () => {
+    const card = disappear();
+    expect(elements(tree).some(element => element.type === PermissionPrompt)).toBe(false);
+    expect(card.props.prompt.toolUseId).toBe("T");
+    expect(card.props.prompt.answered).not.toBe(true);
+    expect(card.props.prompt.questions).toEqual([question]);
+    expect(card.props.replyDelivery).toBeUndefined();
+    expect(card.props.replyPending).not.toBe(true);
+    const rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
+    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")!.props.children).toBe("提问已不在待回答列表");
+    expect(elements(rendered).filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
+    expect(conversationItems("A", props.histories.A, props.events, []).filter(item => item.role === "system")).toEqual([]);
+    expect(props.onResolvePermission).not.toHaveBeenCalled();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
+  it("recognizes an external answer only once the real transcript records the matching tool result", async () => {
+    await appendFile(join(directory, "A.jsonl"), JSON.stringify({
+      type: "user", uuid: "candidate3-answer", parentUuid: "candidate3-question", timestamp: new Date(150).toISOString(),
+      toolUseResult: { questions: [question], answers: { "Which branch?": "Main" } },
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "T", content: 'User has answered your questions: "Which branch?"="Main".' }] },
+    }) + "\n", "utf8");
+    const page = await readClaudeSessionHistoryPage(directory, "A");
+    props = { ...props, histories: { ...props.histories, A: { ...page, status: "ready" } } };
+    const card = disappear();
+    expect(card.props.prompt).toMatchObject({ toolUseId: "T", answered: true, questions: [{
+      question: "Which branch?", answer: "Main", options: [{ label: "Main", selected: true }, { label: "Feature" }],
+    }] });
+    const rendered = InteractivePromptCard(card.props as ComponentProps<typeof InteractivePromptCard>);
+    expect(elements(rendered).find(element => element.props.className === "interactive-prompt-status")!.props.children).toBe("已回复");
+    expect(conversationItems("A", props.histories.A, props.events, []).filter(item => item.role === "system")).toEqual([]);
+    expect(props.onResolvePermission).not.toHaveBeenCalled();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
   });
 });
 

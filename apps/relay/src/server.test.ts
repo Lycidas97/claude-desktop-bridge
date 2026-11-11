@@ -8,6 +8,7 @@ import {
   type ServerFrame,
 } from "@bridge/protocol";
 import { once } from "node:events";
+import { createHash, randomBytes } from "node:crypto";
 import { IncomingMessage } from "node:http";
 import { Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -127,6 +128,103 @@ async function connectedPair(relayUrl: string) {
 }
 
 describe("relay v3", () => {
+  it.each([false, true])("negotiates PMD only when both peers enable it (server=%s)", async perMessageDeflate => {
+    const relay = await startRelayServer({ port: 0, perMessageDeflate, logger: { info() {}, warn() {}, error() {} } });
+    relays.push(relay);
+    for (const enabled of [false, true]) {
+      const socket = new WebSocket(relay.url, { perMessageDeflate: enabled });
+      await once(socket, "open");
+      expect(socket.extensions).toBe(enabled && perMessageDeflate ? "permessage-deflate" : "");
+      const closed = once(socket, "close");
+      socket.close();
+      await closed;
+    }
+  });
+
+  it.each([false, true])("preserves compressed history, attachment chunks, exact replay and ACKs (PMD=%s)", async perMessageDeflate => {
+    const store = new CountingRelayStore();
+    const relay = await startRelayServer({ port: 0, store, perMessageDeflate, logger: { info() {}, warn() {}, error() {} } });
+    relays.push(relay);
+    const pair = await connectedPair(relay.url);
+    const history: BridgePayload = { kind: "response", requestId: "synthetic-history", ok: true, result: { history: {
+      items: Array.from({ length: 50 }, (_, seq) => ({ seq, text: "合成历史 😀\n".repeat(200) })), nextCursor: "before:50", hasMore: true,
+    } } };
+    const receivedHistory = nextMessage(pair.mobileSocket);
+    const storedHistory = waitForFrame(pair.desktopSocket, frame => frame.type === "stored");
+    await pair.desktopSocket.send(history, "mobile", { crypto: pair.desktopDeviceCrypto, toDeviceId: pair.device.pairing.deviceId, compress: true });
+    const deliveredHistory = await receivedHistory;
+    expect(deliveredHistory.payload).toEqual(history);
+    await storedHistory;
+    expect(store.enqueuedFrames).toBe(1);
+    const historyAck = waitForFrame(pair.desktopSocket, frame => frame.type === "acknowledged");
+    pair.mobileSocket.ack([deliveredHistory.header.id]);
+    await historyAck;
+
+    const original = randomBytes(256 * 1024);
+    const attachment: BridgePayload = { kind: "response", requestId: "synthetic-attachment", ok: true, result: { chunk: { transferId: "synthetic-transfer", index: 2, data: original.toString("base64") } } };
+    const envelope = await pair.desktopDeviceCrypto.encrypt(attachment, "desktop", "mobile", Date.now(), undefined, pair.device.pairing.deviceId, undefined, true);
+    const wire = (pair.desktopSocket as unknown as { ws: { send(data: string): void } }).ws;
+    const send = wire.send.bind(wire);
+    const chunkIndexes: number[] = [];
+    let dropped = false;
+    const sendSpy = vi.spyOn(wire, "send").mockImplementation(data => {
+      const frame = JSON.parse(data) as { type: string; chunk?: { index: number } };
+      if (frame.type === "envelope-chunk") {
+        chunkIndexes.push(frame.chunk!.index);
+        if (frame.chunk!.index === 1 && !dropped) { dropped = true; return; }
+      }
+      send(data);
+    });
+    const receivedAttachment = nextMessage(pair.mobileSocket);
+    const storedAttachment = waitForFrame(pair.desktopSocket, frame => frame.type === "stored");
+    const beforeChunks = store.enqueuedFrames;
+    await pair.desktopSocket.sendEnvelope(envelope);
+    await vi.waitFor(() => expect(store.enqueuedFrames).toBe(beforeChunks + chunkIndexes.length - 1));
+    expect(dropped).toBe(true);
+    chunkIndexes.length = 0;
+    await pair.desktopSocket.sendEnvelope(envelope);
+    expect(chunkIndexes).toEqual([1]);
+    sendSpy.mockRestore();
+    expect((await receivedAttachment).payload).toEqual(attachment);
+    await storedAttachment;
+    expect(store.enqueuedFrames).toBeGreaterThan(2);
+    const initialFrames = store.enqueuedFrames;
+    const retried = waitForFrame(pair.desktopSocket, frame => frame.type === "stored");
+    await pair.desktopSocket.sendEnvelope(envelope);
+    await retried;
+    expect(store.enqueuedFrames).toBe(initialFrames);
+
+    const offline = waitForFrame(pair.desktopSocket, frame => frame.type === "presence" && !frame.online);
+    pair.mobileSocket.close();
+    await offline;
+    const reconnected = new BridgeSocket({ crypto: pair.mobileCrypto, role: "mobile", reconnect: false });
+    sockets.push(reconnected);
+    const replayedEnvelopes: Array<typeof envelope> = [];
+    reconnected.onMessage((_message, encrypted) => replayedEnvelopes.push(encrypted));
+    const replay = nextMessage(reconnected);
+    reconnected.connect();
+    await waitForState(reconnected);
+    const replayed = await replay;
+    expect(replayed.header.id).toBe(envelope.id);
+    expect(replayedEnvelopes).toEqual([envelope]);
+    expect(replayed.payload).toEqual(attachment);
+    const chunk = (replayed.payload as { result: { chunk: { data: string } } }).result.chunk;
+    const restored = Buffer.from(chunk.data, "base64");
+    expect(restored).toEqual(original);
+    expect(createHash("sha256").update(restored).digest("hex")).toBe(createHash("sha256").update(original).digest("hex"));
+    const acknowledged = waitForFrame(pair.desktopSocket, frame => frame.type === "acknowledged");
+    reconnected.ack([envelope.id]);
+    expect(await acknowledged).toMatchObject({ ids: [envelope.id], byDeviceId: pair.device.pairing.deviceId });
+    await vi.waitFor(() => expect(store.stats().queuedFrames).toBe(0));
+
+    const temporary = await pair.desktopDeviceCrypto.encrypt(attachment, "desktop", "mobile", Date.now(), undefined, pair.device.pairing.deviceId, true, true);
+    const temporaryMessage = nextMessage(reconnected);
+    await pair.desktopSocket.sendEnvelope(temporary);
+    expect((await temporaryMessage).payload).toEqual(attachment);
+    expect(store.enqueuedFrames).toBe(initialFrames);
+    expect(store.stats().queuedFrames).toBe(0);
+  });
+
   it("publishes liveness, readiness and content-free operational metrics", async () => {
     const relay = await startRelayServer({
       port: 0,

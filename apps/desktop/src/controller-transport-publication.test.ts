@@ -8,6 +8,10 @@ import {
   BridgeCrypto,
   PROTOCOL_VERSION,
   WebRtcTransport,
+  fromBase64Url,
+  serializeHeader,
+  type EncryptedEnvelope,
+  type BridgePermissionInfo,
   toBase64Url,
   utf8,
   type BridgeSessionInfo,
@@ -130,8 +134,8 @@ async function fixture(withWebRtc = false, claudeUnavailable = false) {
     ...(withWebRtc ? { RTCPeerConnectionImpl: vi.fn() } : {}),
     connection: "idle", relayHealthy: false, lastSeenAt: 1,
     deviceCryptos: new Map([[paired.pairing.deviceId, paired.desktopCrypto.withSenderDevice(config.hostDeviceId)]]),
-    onlineDevices: new Set<string>(), responseCache: new Map(),
-    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
+    onlineDevices: new Set<string>(), deflateDevices: new Set<string>(), responseCache: new Map(),
+    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(), lastPublishedPermissions: new Map(),
     sessionVisibility: new Map(),
     app: { getVersion: () => "synthetic", getLoginItemSettings: () => ({ openAtLogin: false }) },
     repository: { loadOrCreate: async () => config, save: vi.fn(async () => undefined) },
@@ -156,7 +160,7 @@ async function fixture(withWebRtc = false, claudeUnavailable = false) {
   await vi.waitFor(() => expect(ws.sent.filter(frame => frame.type === "envelope")).toHaveLength(1));
   published.mockClear();
   ws.sent.length = 0;
-  return { controller, ws, paired, config, published, sessions, runtimeSessions };
+  return { controller, ws, paired, config, published, sessions, runtimeSessions, eventLog };
 }
 
 async function requestSnapshot(ws: LocalWebSocket, paired: Awaited<ReturnType<typeof BridgeCrypto.createDevicePairing>>, hostDeviceId: string): Promise<DesktopControlSnapshot> {
@@ -180,6 +184,55 @@ async function requestSnapshot(ws: LocalWebSocket, paired: Awaited<ReturnType<ty
 }
 
 describe("controller transport publication", () => {
+  it("keeps the 1.3 catalog bootstrap and cached replies JSON, then compresses only for declared devices", async () => {
+    const { controller, ws, paired, config } = await fixture();
+    const phone = await BridgeCrypto.fromPairing(paired.pairing);
+    const plaintext = async (envelope: EncryptedEnvelope) => {
+      const { nonce, ciphertext, ...header } = envelope;
+      return new Uint8Array(await crypto.subtle.decrypt({
+        name: "AES-GCM", iv: fromBase64Url(nonce), additionalData: serializeHeader(header), tagLength: 128,
+      }, phone.encryptionKey, fromBase64Url(ciphertext)));
+    };
+    await controller.broadcast({ kind: "snapshot", snapshot: await controller.snapshot() }, true);
+    const request = { kind: "request" as const, requestId: "compression-bootstrap", idempotencyKey: "bootstrap", method: "snapshot.get" as const,
+      params: { client: { capabilities: ["payload.deflate.v1"] } } };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const encrypted = await phone.encrypt(request, "mobile", "desktop", Date.now(), undefined, config.hostDeviceId, true);
+      await controller.receiveMessage(await controller.deviceCryptos.get(paired.pairing.deviceId).decrypt(encrypted), encrypted);
+    }
+    const bootstrap = ws.sent.filter(frame => frame.type === "envelope");
+    expect(bootstrap).toHaveLength(3);
+    for (const frame of bootstrap) {
+      if (frame.type !== "envelope") throw new Error("Expected envelope");
+      expect(JSON.parse(new TextDecoder().decode(await plaintext(frame.envelope)))).toHaveProperty("kind");
+    }
+    expect((await controller.snapshot()).host.capabilities).toContain("payload.deflate.v1");
+    expect((await controller.snapshot()).host.capabilities).toContain("claude.native-relay.v1");
+
+    ws.sent.length = 0;
+    const response = { kind: "response" as const, requestId: "history", ok: true, result: { text: "中文 😀 history\n".repeat(300) } };
+    await controller.sendToDevice(response, paired.pairing.deviceId);
+    const compressed = ws.sent.find(frame => frame.type === "envelope")!;
+    if (compressed.type !== "envelope") throw new Error("Expected envelope");
+    expect((await plaintext(compressed.envelope))[0]).toBe(1);
+    expect((await phone.decrypt(compressed.envelope)).payload).toEqual(response);
+
+    const legacy = await BridgeCrypto.createDevicePairing({ roomId: config.roomId, relayUrl: paired.pairing.relayUrl, desktopName: "Legacy", deviceId: "legacy-phone" });
+    config.devices.push({ ...config.devices[0]!, deviceId: legacy.pairing.deviceId, secret: legacy.pairing.secret });
+    controller.deviceCryptos.set(legacy.pairing.deviceId, legacy.desktopCrypto.withSenderDevice(config.hostDeviceId));
+    await controller.rememberDevice(legacy.pairing.deviceId, { client: { name: "Old phone", platform: "web" } });
+    ws.sent.length = 0;
+    await controller.sendToDevice(response, legacy.pairing.deviceId);
+    const legacyFrame = ws.sent.find(frame => frame.type === "envelope")!;
+    if (legacyFrame.type !== "envelope") throw new Error("Expected envelope");
+    const { nonce, ciphertext, ...header } = legacyFrame.envelope;
+    const legacyBody = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64Url(nonce), additionalData: serializeHeader(header), tagLength: 128 }, legacy.desktopCrypto.encryptionKey, fromBase64Url(ciphertext));
+    expect(JSON.parse(new TextDecoder().decode(legacyBody))).toEqual(response);
+
+    ws.receive({ type: "presence", role: "mobile", deviceId: paired.pairing.deviceId, online: false });
+    expect(controller.deflateDevices.has(paired.pairing.deviceId)).toBe(false);
+  });
+
   it.each(["ready", "presence"] as const)("sends one complete snapshot for a phone joining via %s and requesting its catalog", async signal => {
     const { ws, controller, paired, config } = await fixture();
     ws.receive(signal === "ready"
@@ -362,6 +415,145 @@ describe("controller transport publication", () => {
     expect(snapshot.sessions[0]).not.toHaveProperty("mainTurnStopScope");
     expect(snapshot.sessions[0]).not.toHaveProperty("runningSubagents");
     expect(snapshot.sessions[0]).not.toHaveProperty("subagentStopScope");
+  });
+
+  it("leaves external-runtime permission publication with its owning runtime", async () => {
+    const { controller, eventLog } = await fixture(false, true);
+    const external: BridgePermissionInfo = { requestId: "external-owned", sessionId: "codex-desktop:external-session",
+      toolUseId: "external-tool", toolName: "Bash", input: { command: "synthetic --never-executed" }, createdAt: 1, canAllowAlways: false };
+    let permissions = [external];
+    controller.runtimeSessions.listPermissions = () => permissions;
+    expect((await controller.publish()).permissions).toEqual([external]);
+    const before = eventLog.latestSeq();
+    permissions = [];
+    await controller.publish();
+    expect(eventLog.replay(before).filter(event => /^(permission|question)\.(requested|resolved)$/u.test(event.type))).toEqual([]);
+  });
+
+  it("keeps the Native publication baseline tied to its captured snapshot during overlapping catalog updates", async () => {
+    const { ws, controller, paired, sessions, eventLog } = await fixture();
+    const permissions: BridgePermissionInfo[] = [];
+    controller.broker.permissionsList = () => permissions;
+    controller.broker.runtimeStatus = () => ({ state: "working", activeTurns: 1 });
+    sessions[0]!.turnState = "running";
+    await controller.publish();
+    ws.sent.length = 0;
+    let capturedFirst!: () => void, capturedSecond!: () => void;
+    let releaseFirst!: () => void, releaseSecond!: () => void;
+    const firstCaptured = new Promise<void>(resolve => { capturedFirst = resolve; });
+    const secondCaptured = new Promise<void>(resolve => { capturedSecond = resolve; });
+    const firstStatus = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const secondStatus = new Promise<void>(resolve => { releaseSecond = resolve; });
+    controller.claudeDesktop.status = vi.fn()
+      .mockImplementationOnce(async () => { capturedFirst(); await firstStatus; return { state: "stopped" }; })
+      .mockImplementationOnce(async () => { capturedSecond(); await secondStatus; return { state: "stopped" }; })
+      .mockResolvedValue({ state: "stopped" });
+    sessions[0]!.title = "Changed catalog title";
+    const first = controller.publish();
+    await firstCaptured;
+    const permission: BridgePermissionInfo = { requestId: "native-during-status", sessionId: sessions[0]!.sessionId,
+      toolUseId: "native-during-status-tool", toolName: "Bash", input: { command: "synthetic --never-executed" }, createdAt: 1, canAllowAlways: false };
+    permissions.push(permission);
+    sessions[0]!.turnState = "waiting";
+    const second = controller.publish();
+    await secondCaptured;
+    releaseFirst();
+    await first;
+    releaseSecond();
+    await second;
+    await controller.publish();
+    expect(eventLog.replay().filter(event => event.type === "permission.requested" && event.data.requestId === permission.requestId)).toHaveLength(1);
+    await vi.waitFor(() => expect(ws.sent.filter(frame => frame.type === "envelope")).toHaveLength(2));
+    const payloads = await Promise.all(ws.sent.filter(frame => frame.type === "envelope").map(async frame => {
+      if (frame.type !== "envelope") throw new Error("Expected publication envelope");
+      return (await paired.desktopCrypto.decrypt(frame.envelope)).payload;
+    }));
+    expect(payloads.filter(payload => payload.kind === "snapshot")).toHaveLength(1);
+    expect(payloads).toContainEqual(expect.objectContaining({ kind: "snapshot", snapshot: expect.objectContaining({ permissions: [] }) }));
+    expect(payloads).toContainEqual(expect.objectContaining({ kind: "event", event: expect.objectContaining({
+      type: "permission.requested", data: permission,
+    }) }));
+  });
+
+  it.each(["Bash", "AskUserQuestion"])("publishes a new Native %s request without a full snapshot while its turn stays running", async (toolName) => {
+    const { ws, controller, paired, sessions, eventLog } = await fixture();
+    const permissions: BridgePermissionInfo[] = [];
+    controller.broker.permissionsList = () => permissions;
+    controller.broker.runtimeStatus = () => ({ state: "working", activeTurns: 1 });
+    sessions[0]!.turnState = "running";
+    await controller.publish();
+    ws.sent.length = 0;
+    const permission: BridgePermissionInfo = { requestId: "native-new", sessionId: sessions[0]!.sessionId,
+      toolUseId: "native-tool", toolName, input: { command: "synthetic --never-executed" }, createdAt: 1, canAllowAlways: false };
+    permissions.push(permission);
+    sessions[0]!.turnState = "waiting";
+    controller.broker.emit("changed");
+    await vi.waitFor(() => expect(eventLog.replay().some(event => event.type === (toolName === "AskUserQuestion" ? "question.requested" : "permission.requested"))).toBe(true));
+    await vi.waitFor(() => expect(ws.sent.filter(frame => frame.type === "envelope")).toHaveLength(2));
+    const payloads = await Promise.all(ws.sent.filter(frame => frame.type === "envelope").map(async frame => {
+      if (frame.type !== "envelope") throw new Error("Expected Native permission envelope");
+      return (await paired.desktopCrypto.decrypt(frame.envelope)).payload;
+    }));
+    expect(payloads.every(payload => payload.kind !== "snapshot")).toBe(true);
+    expect(payloads).toContainEqual(expect.objectContaining({ kind: "event", event: expect.objectContaining({
+      type: toolName === "AskUserQuestion" ? "question.requested" : "permission.requested", sessionId: permission.sessionId, data: permission,
+    }) }));
+    controller.broker.emit("changed");
+    await vi.advanceTimersByTimeAsync(150);
+    expect(eventLog.replay().filter(event => event.data.requestId === permission.requestId)).toHaveLength(1);
+  });
+
+  it("publishes Native request membership changes while the session remains waiting", async () => {
+    const { ws, controller, paired, sessions, eventLog } = await fixture();
+    const first: BridgePermissionInfo = { requestId: "native-first", sessionId: sessions[0]!.sessionId,
+      toolUseId: "first-tool", toolName: "Bash", input: { command: "synthetic --never-executed" }, createdAt: 1, canAllowAlways: false };
+    const second = { ...first, requestId: "native-second", toolUseId: "second-tool" };
+    const replacement = { ...first, requestId: "native-replacement", toolUseId: "replacement-tool" };
+    let permissions = [first];
+    controller.broker.permissionsList = () => permissions;
+    controller.broker.runtimeStatus = () => ({ state: "working", activeTurns: 1 });
+    sessions[0]!.turnState = "waiting";
+    await controller.publish();
+    ws.sent.length = 0;
+    const before = controller.eventLog.latestSeq();
+    for (const next of [[first, second], [second], [replacement]]) {
+      permissions = next;
+      await controller.publish();
+    }
+    await vi.waitFor(() => expect(ws.sent.filter(frame => frame.type === "envelope")).toHaveLength(4));
+    const changes = eventLog.replay(before);
+    expect(changes.map(event => [event.type, event.data.requestId])).toEqual([
+      ["permission.requested", second.requestId], ["permission.resolved", first.requestId],
+      ["permission.requested", replacement.requestId], ["permission.resolved", second.requestId],
+    ]);
+    for (const event of changes.filter(event => event.type === "permission.resolved")) {
+      expect(event.data).toEqual({ requestId: event.data.requestId, automatic: true });
+    }
+    for (const frame of ws.sent) if (frame.type === "envelope") {
+      expect((await paired.desktopCrypto.decrypt(frame.envelope)).payload.kind).toBe("event");
+    }
+  });
+
+  it.each(["Bash", "AskUserQuestion"])("silently clears an externally removed Native %s request without inventing a decision", async (toolName) => {
+    const { ws, controller, paired, sessions, eventLog } = await fixture();
+    let permissions: BridgePermissionInfo[] = [{ requestId: "native-external", sessionId: sessions[0]!.sessionId,
+      toolUseId: "native-tool", toolName, input: {}, createdAt: 1, canAllowAlways: false }];
+    controller.broker.permissionsList = () => permissions;
+    controller.broker.runtimeStatus = () => ({ state: "working", activeTurns: 1 });
+    sessions[0]!.turnState = "waiting";
+    await controller.publish();
+    ws.sent.length = 0;
+    permissions = [];
+    sessions[0]!.turnState = "running";
+    controller.broker.emit("changed");
+    const type = toolName === "AskUserQuestion" ? "question.resolved" : "permission.resolved";
+    await vi.waitFor(() => expect(eventLog.replay().some(event => event.type === type)).toBe(true));
+    await vi.waitFor(() => expect(ws.sent.filter(frame => frame.type === "envelope")).toHaveLength(2));
+    const resolved = eventLog.replay().find(event => event.type === type)!;
+    expect(resolved.data).toEqual({ requestId: "native-external", automatic: true });
+    for (const frame of ws.sent) if (frame.type === "envelope") {
+      expect((await paired.desktopCrypto.decrypt(frame.envelope)).payload.kind).toBe("event");
+    }
   });
 
   it("still sends durable events to paired phones while they are offline", async () => {

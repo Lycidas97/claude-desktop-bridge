@@ -68,6 +68,23 @@ is component integration evidence, not proof of automatic monitor-to-UI alert
 delivery or real macOS notification authorization. ASAR helper execution is checked
 separately from the signed application package.
 
+On macOS, the inspector startup QA exercises the real System Events menu path in
+an isolated Electron app with a random inspector port and synthetic LocalSessions:
+
+```bash
+npm run ci:run -- exec -- node scripts/claude-inspector-startup-qa.mjs output/inspector-startup-qa
+```
+
+The launching host needs Accessibility and System Events Automation permission.
+It checks late menu construction, one actual checkbox action, real Node discovery,
+fixture LocalSessions access, checked-menu protection, manual closure across a
+recreated startup object, a new process, native policy rejection, already-open
+skip behavior, and persistent errors from a disabled native menu. Permission rejection is covered by unit injection; the QA does not
+revoke system consent or approve dialogs. Evidence is `result.json` plus per-process
+Electron logs. It never targets real Claude Desktop, port 9229, or its event stream.
+The fixture validates the native automation path in the current host context;
+it does not establish installed Bridge TCC authorization or formal notarized signing.
+
 `native-phone-approval.integration.test.ts` additionally checks stale IDs, duplicate
 responses, native local answers, lifecycle cancellation, and disconnected Hook
 requests. Native manual-only requests remain pending through full-access policy

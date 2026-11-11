@@ -111,6 +111,7 @@ import { SlashCommandInput } from "./SlashCommandInput.js";
 import { useSessionCommands } from "../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
 import { SessionRewindDialog } from "./SessionRewindDialog.js";
+import { SessionNoticeCard } from "./SessionNoticeCard.js";
 import { sessionActivity } from "../lib/session-activity.js";
 import {
   SessionConfigurationDialog,
@@ -1275,6 +1276,14 @@ function DesktopSessions({
                   key={`evidence:${entry.evidence.id}`}
                   entering={streamEntering(`evidence:${entry.evidence.id}`)}
                   onOpen={() => setSessionView("evidence")}
+                />
+              ) : entry.item.sessionNotice ? (
+                <SessionNoticeCard
+                  key={entry.item.id}
+                  itemId={entry.item.id}
+                  notice={entry.item.sessionNotice}
+                  source={entry.item.text}
+                  entering={streamEntering(entry.item.id)}
                 />
               ) : entry.item.subagent ? (
                 <SubagentCard

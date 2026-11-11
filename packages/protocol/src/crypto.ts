@@ -31,6 +31,19 @@ import { normalizeBridgeIceServers } from "./ice.js";
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PAIRING_TTL_MS = 10 * 60 * 1000;
+
+export const PAYLOAD_DEFLATE_CAPABILITY = "payload.deflate.v1";
+export const PAYLOAD_DEFLATE_SUPPORTED = (() => {
+  if (typeof CompressionStream === "undefined" || typeof DecompressionStream === "undefined") return false;
+  try {
+    new CompressionStream("deflate");
+    new DecompressionStream("deflate");
+    return true;
+  } catch (error) {
+    if (error instanceof TypeError) return false;
+    throw error;
+  }
+})();
 // Pairing QR codes use this compact tuple; legacy pairing objects are intentionally rejected.
 const COMPACT_PAIRING_MARKER = "b4";
 
@@ -452,6 +465,7 @@ export class BridgeCrypto {
     ttlMs = DEFAULT_TTL_MS,
     toDeviceId?: string,
     temporary?: true,
+    compress = false,
   ): Promise<EncryptedEnvelope> {
     const header: EnvelopeHeader = {
       version: this.identity.version,
@@ -466,7 +480,19 @@ export class BridgeCrypto {
       ...(temporary ? { temporary } : {}),
     };
     const nonce = randomBytes(12);
-    const plaintext = utf8(JSON.stringify(payload));
+    let plaintext = utf8(JSON.stringify(payload));
+    if (compress && PAYLOAD_DEFLATE_SUPPORTED && plaintext.byteLength >= 1024) {
+      const compressed = new Uint8Array(await new Response(
+        new Blob([plaintext]).stream().pipeThrough(new CompressionStream("deflate")),
+      ).arrayBuffer());
+      // 0x01 + zlib-wrapped deflate, inside the authenticated ciphertext.
+      // Uncompressed messages retain their original JSON bytes for older peers.
+      if (compressed.byteLength + 1 < plaintext.byteLength) {
+        plaintext = new Uint8Array(compressed.byteLength + 1);
+        plaintext[0] = 1;
+        plaintext.set(compressed, 1);
+      }
+    }
     const ciphertext = await crypto.subtle.encrypt(
       { name: "AES-GCM", iv: nonce, additionalData: serializeHeader(header), tagLength: 128 },
       this.encryptionKey,
@@ -497,7 +523,13 @@ export class BridgeCrypto {
       this.encryptionKey,
       fromBase64Url(ciphertext),
     );
-    return { header, payload: JSON.parse(decodeUtf8(plaintext)) as BridgePayload };
+    let decoded = new Uint8Array(plaintext);
+    if (decoded[0] === 1) {
+      decoded = new Uint8Array(await new Response(
+        new Blob([decoded.subarray(1)]).stream().pipeThrough(new DecompressionStream("deflate")),
+      ).arrayBuffer());
+    }
+    return { header, payload: JSON.parse(decodeUtf8(decoded)) as BridgePayload };
   }
 }
 

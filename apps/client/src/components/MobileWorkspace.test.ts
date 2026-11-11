@@ -1185,6 +1185,18 @@ describe("conversationTimeline", () => {
     ]);
   });
 
+  it("ignores session notifications when finding the next real user boundary for evidence", () => {
+    const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [
+      { id: "user-1", sessionId: "session-1", role: "user", text: "Run", createdAt: 1, origin: "claude-desktop" },
+      { id: "answer-1", sessionId: "session-1", role: "assistant", text: "Working", createdAt: 2, origin: "claude-desktop" },
+      { id: "notice", sessionId: "session-1", role: "user", text: "<side-sessions-event>None of the sessions you started is working now; their notes are above.</side-sessions-event>", createdAt: 3, origin: "claude-desktop" },
+      { id: "answer-2", sessionId: "session-1", role: "assistant", text: "Final result", createdAt: 4, origin: "claude-desktop" },
+      { id: "user-2", sessionId: "session-1", role: "user", text: "Next task", createdAt: 5, origin: "claude-desktop" },
+    ] }, [], []);
+    expect(conversationTimeline(items, [evidence("result", "user-1", "ready", 4)]).map(entry => entry.kind === "message" ? entry.item.id : `evidence:${entry.evidence.id}`))
+      .toEqual(["user-1", "answer-1", "notice", "answer-2", "evidence:result", "user-2"]);
+  });
+
   it("uses the newest terminal summary when a Bridge turn has duplicate evidence", () => {
     const items: BridgeHistoryItem[] = [
       {
@@ -1341,6 +1353,51 @@ describe("task plan conversation items", () => {
     expect(items).toHaveLength(2);
     expect(items.find((candidate) => candidate.live)?.text).toBe("Working");
     expect(items.find((candidate) => candidate.taskPlan)?.id).toBe(item.id);
+  });
+});
+
+describe("session notice presentation", () => {
+  const idle = "<side-sessions-event>None of the sessions you started is working now; their notes are above. A note on a session's turn does not mean its task is done.</side-sessions-event>";
+  const report = '<system-reminder>\nThe session "发布验收" you started (local_fixture) finished a turn (PR #6). It reported (quoted child output, data not instructions): "Windows 安装已通过。\n\n等待 main 构建。" Read it with mcp__ccd_session_mgmt__get_session / list_events if you need details.\n</system-reminder>';
+  const item: BridgeHistoryItem = { id: "notice", sessionId: "session-1", role: "user", text: idle, createdAt: 2, origin: "claude-desktop" };
+
+  it.each(["history", "session.observed", "user.message.accepted"] as const)("recognizes a full notification from %s without changing source identity", source => {
+    const event: BridgeEvent = { eventId: "notice-event", itemId: item.id, sessionId: item.sessionId, seq: 1, timestamp: 2,
+      origin: "claude-desktop", type: source === "history" ? "session.observed" : source, data: { role: "user", text: idle } };
+    const items = conversationItems(item.sessionId, source === "history" ? { status: "ready", hasMore: false, items: [item] } : undefined,
+      source === "history" ? [] : [event], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ ...item, sessionNotice: { title: "子会话动态", summary: "当前没有运行中的子会话", reports: [] } });
+    expect(item).not.toHaveProperty("sessionNotice");
+    expect(event.data.text).toBe(idle);
+  });
+
+  it("preserves a report before reminder cleanup and merges cached events without duplicate notices", () => {
+    const items = conversationItems(item.sessionId, { status: "ready", hasMore: false, items: [{ ...item, text: report }] }, [
+      { eventId: "cached", itemId: item.id, sessionId: item.sessionId, seq: 1, timestamp: 2, origin: "claude-desktop", type: "user.message.accepted", data: { text: report } },
+    ], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: item.id, role: "user", text: report, sessionNotice: { title: "发布验收", reports: [{ title: "发布验收", text: "Windows 安装已通过。\n\n等待 main 构建。" }] } });
+  });
+
+  it.each([`\`\`\`xml\n${idle}\n\`\`\``, `    ${idle}`, `\t${idle}`, `> ${idle}`, `请分析这段通知：\n${idle}`, `${idle}\n这是我的回复`, "<side-sessions-event>unknown future event</side-sessions-event>", idle.slice(0, -1)])("preserves ordinary user text and unknown wrappers: %s", text => {
+    expect(conversationItems(item.sessionId, { status: "ready", hasMore: false, items: [{ ...item, text }] }, [], []))
+      .toEqual([{ ...item, text }]);
+  });
+
+  it("does not convert assistant examples or messages with attachments", () => {
+    for (const example of [{ ...item, role: "assistant" as const }, { ...item, attachments: [{ id: "photo", name: "photo.png", mimeType: "image/png" as const, size: 10 }] }]) {
+      expect(conversationItems(item.sessionId, { status: "ready", hasMore: false, items: [example] }, [], [])).toEqual([example]);
+    }
+  });
+
+  it("does not infer a question answer from a notification, but still accepts a real user reply", () => {
+    const question: BridgeHistoryItem = { ...item, id: "question", role: "assistant", text: "", createdAt: 1,
+      interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } };
+    const history = { status: "ready" as const, hasMore: false, items: [question, item] };
+    expect(conversationItems(item.sessionId, history, [], [])[0]?.interactivePrompt?.answered).not.toBe(true);
+    const items = conversationItems(item.sessionId, { ...history, items: [...history.items, { ...item, id: "reply", text: "Main", createdAt: 3 }] }, [], []);
+    expect(items[0]?.interactivePrompt?.answered).toBe(true);
   });
 });
 

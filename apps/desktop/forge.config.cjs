@@ -26,6 +26,7 @@ module.exports = {
     appCategoryType: "public.app-category.productivity",
     icon: platformIcon,
     usageDescription: {
+      AppleEvents: "Bridge uses System Events to enable Claude Desktop's native main-process debugger once per Desktop launch.",
       DocumentsFolder: "Bridge only accesses Documents when you send a task to a project stored there.",
       DesktopFolder: "Bridge only accesses Desktop when you send a task to a project stored there.",
       DownloadsFolder: "Bridge only accesses Downloads when you send a task to a project stored there.",
@@ -41,6 +42,9 @@ module.exports = {
             // the exact identity hash here.
             identityValidation: false,
             hardenedRuntime: true,
+            optionsForFile: (filePath) => path.basename(filePath) === "Bridge.app"
+              ? { entitlements: path.join(__dirname, "entitlements.mac.plist") }
+              : {},
             continueOnError: false,
             ...(macSignKeychain ? { keychain: macSignKeychain } : {}),
             ...(macSignTimestamp ? { timestamp: macSignTimestamp } : {}),

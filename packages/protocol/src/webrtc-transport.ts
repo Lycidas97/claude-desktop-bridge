@@ -70,6 +70,7 @@ interface PeerSession {
   openedAt?: number;
   rttMs?: number;
   sendQueue: Promise<void>;
+  receiveQueue: Promise<void>;
 }
 
 interface IncomingTransfer {
@@ -270,6 +271,7 @@ export class WebRtcTransport implements BridgeTransport {
       options.ttlMs,
       options.toDeviceId,
       options.temporary,
+      options.compress,
     );
     await this.sendEnvelope(envelope);
     return envelope.id;
@@ -475,6 +477,7 @@ export class WebRtcTransport implements BridgeTransport {
       disconnectTimer: undefined,
       heartbeat: undefined,
       sendQueue: Promise.resolve(),
+      receiveQueue: Promise.resolve(),
     };
     this.orphanCandidates.delete(`${deviceId}:${connectionId}`);
     this.peers.set(deviceId, peer);
@@ -539,7 +542,7 @@ export class WebRtcTransport implements BridgeTransport {
       this.emitMetrics();
     };
     channel.onmessage = (event) => {
-      void directMessageText(event.data)
+      peer.receiveQueue = peer.receiveQueue.then(() => directMessageText(event.data))
         .then((raw) => {
           if (raw !== undefined) return this.handleDirectFrame(peer, raw);
           return undefined;

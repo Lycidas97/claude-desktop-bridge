@@ -1898,6 +1898,7 @@ button:disabled {
 
   /* 入场/浮层/错落：位移托起统一降级为 200ms 纯淡入 */
   .conversation-item.is-entering,
+  .session-notice.is-entering,
   .evidence-inline-summary.is-entering,
   .permission-prompt,
   .desktop-channel-banner,
@@ -4347,6 +4348,7 @@ button:disabled {
 }
 
 .conversation-item.is-entering,
+.session-notice.is-entering,
 .evidence-inline-summary.is-entering {
   animation: stream-item-in var(--t-enter) var(--ease-out);
 }
@@ -4517,6 +4519,57 @@ button:disabled {
   color: var(--muted);
   font-size: 11px;
 }
+
+.session-notice {
+  width: min(100%, 680px);
+  min-width: 0;
+  margin-bottom: 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--card-fill);
+}
+
+.session-notice > summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  padding: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.session-notice > summary::-webkit-details-marker { display: none; }
+.session-notice > summary > svg { flex-shrink: 0; margin-top: 2px; color: var(--muted); }
+.session-notice-heading { display: grid; min-width: 0; gap: 4px; flex: 1; }
+.session-notice-heading strong { font-size: 13px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.session-notice-excerpt {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.session-notice-chevron { transition: transform var(--transition); }
+.session-notice[open] > summary .session-notice-chevron { transform: rotate(180deg); }
+.session-notice[open] .session-notice-excerpt { display: none; }
+.session-notice-content { padding: 12px; border-top: 1px solid var(--line); }
+.session-notice-content > section + section { margin-top: 14px; }
+.session-notice-content > section > strong { font-size: 13px; }
+.session-notice-content pre {
+  max-width: 100%;
+  margin: 0;
+  color: var(--muted);
+  font: 11px/1.65 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.session-notice-source { margin-top: 12px; }
+.session-notice-source > summary { color: var(--muted); font-size: 11px; cursor: pointer; }
+.session-notice-source > pre { margin-top: 8px; }
 
 .conversation-item-meta {
   display: flex;

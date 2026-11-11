@@ -1,3 +1,33 @@
+## 1.3.1
+
+- Keep native permission cards synchronized as requests appear and disappear.
+  Establish the baseline from snapshots and retain later permission events across
+  delayed snapshots, reconnects and cached mobile state without reviving resolved
+  requests. Use the snapshot sequence and each request's lifecycle to accept unseen
+  permission events delayed by chunked delivery.
+- Compress supported message bodies before AES-GCM encryption after both ends
+  advertise support, and enable negotiated Relay WebSocket compression. Preserve
+  arrival order during asynchronous frame processing, chunk assembly, decryption
+  and inflation. This does not guarantee global event-sequence delivery order.
+  Keep legacy bootstrap and unadvertised clients compatible with Protocol V3 and
+  the existing pairing format.
+- Group native sessions using Git project metadata, including worktrees, instead
+  of relying only on their current working directory.
+- Make native and fork notices collapsible, align Android system bars with the
+  selected theme, and normalize valid Gemini Argon 1M model identifiers.
+- On macOS, attempt the native Enable Main Process Debugger menu once per newly
+  discovered Claude Desktop process. Respect native account/workspace policies,
+  already-open ports and manual closure; retain attempts and failures across
+  Bridge service restarts, show failures in diagnostics, and skip menu automation
+  for custom inspector origins. This requires Bridge Accessibility and System
+  Events Automation permission granted by the user. The menu callback may open
+  Chrome; Bridge does not patch or restart Desktop.
+- Extend isolated regression and browser fixtures for permission projection,
+  transport ordering and inspector startup. Installed macOS validation covered
+  the already-open inspector path; installed-app permission prompts, a real
+  Desktop restart cycle, native approval actions and other platforms' live
+  runtime behavior remain outside that validation.
+
 ## 1.3.0
 
 - Use Claude Desktop's native `LocalSessions` API as the authority for Claude

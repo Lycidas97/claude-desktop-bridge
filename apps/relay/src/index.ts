@@ -24,6 +24,7 @@ const relay = await startRelayServer({
   port,
   store,
   trustProxy: process.env.BRIDGE_TRUST_PROXY === "1",
+  perMessageDeflate: process.env.BRIDGE_RELAY_PERMESSAGE_DEFLATE !== "0",
   maxFramesPerMinute: Number.isFinite(maxFramesPerMinute) && maxFramesPerMinute > 0
     ? maxFramesPerMinute
     : 6000,

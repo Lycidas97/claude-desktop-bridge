@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { access, readdir, readFile, stat } from "node:fs/promises";
+import { access, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -10,6 +10,35 @@ const execFileAsync = promisify(execFile);
 const GATEWAY_EFFORT_LEVELS = new Set<BridgeEffort>(["low", "medium", "high", "xhigh", "max"]);
 const GATEWAY_LONG_CONTEXT_TOKENS = 1_000_000;
 const GATEWAY_MODELS_TIMEOUT_MS = 4_000;
+
+export interface ClaudeProjectDirectory {
+  cwd: string;
+  realCwd: string;
+}
+
+/** Project grouping only; the Native execution directory stays unchanged. */
+export async function discoverClaudeProjectDirectory(cwd: string): Promise<ClaudeProjectDirectory> {
+  let projectCwd = cwd;
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], { windowsHide: true });
+    const [gitDir, commonDir] = stdout.replace(/\r?\n$/u, "").split(/\r?\n/u);
+    if (gitDir && commonDir && gitDir !== commonDir) {
+      const { stdout: worktrees } = await execFileAsync("git", ["-C", cwd, "worktree", "list", "--porcelain", "-z"], { windowsHide: true });
+      const primary = worktrees.split("\0\0")[0]!.split("\0");
+      if (primary[0]?.startsWith("worktree ") && !primary.includes("bare")) projectCwd = primary[0].slice("worktree ".length);
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (typeof code !== "number" && !["ENOENT", "ENOTDIR", "EACCES", "EPERM"].includes(code ?? "")) throw error;
+  }
+  return {
+    cwd: projectCwd,
+    realCwd: await realpath(projectCwd).catch((error: NodeJS.ErrnoException) => {
+      if (!["ENOENT", "ENOTDIR", "EACCES", "EPERM"].includes(error.code ?? "")) throw error;
+      return projectCwd;
+    }),
+  };
+}
 
 function pathIsWithin(root: string, candidate: string): boolean {
   const relation = relative(resolve(root), resolve(candidate));

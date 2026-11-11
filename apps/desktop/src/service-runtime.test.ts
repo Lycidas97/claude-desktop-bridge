@@ -12,7 +12,7 @@ const resources = vi.hoisted(() => {
     controller: { ...resource(), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
     cleanupRtc: vi.fn(),
     inspector: { start: vi.fn(async () => {}), close: vi.fn(), notificationFailed: vi.fn() },
-    inspectorOptions: undefined as undefined | { onUpdate(status: BridgeInspectorStatus): void; onAlert(alert: BridgeInspectorAlert): string | undefined },
+    inspectorOptions: undefined as undefined | { onUpdate(status: BridgeInspectorStatus): void; onAlert(alert: BridgeInspectorAlert): string | undefined; startup?: (listening: boolean) => Promise<string | undefined> },
     notificationSupported: vi.fn(() => true), showNotification: vi.fn(),
     notifications: [] as Array<{ options: { title: string; body: string }; emit(event: string, ...args: unknown[]): boolean }>,
   };
@@ -146,6 +146,14 @@ it("attempts all cleanup and preserves startup and cleanup failures", async () =
   expect(resources.broker.close).toHaveBeenCalledOnce();
   expect(resources.state.close).toHaveBeenCalledOnce();
   expect(resources.cleanupRtc).toHaveBeenCalledOnce();
+});
+
+it("disables real Native menu automation for a custom inspector origin", async () => {
+  vi.stubEnv("BRIDGE_CLAUDE_INSPECTOR_URL", "http://127.0.0.1:19321");
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
+  try { expect(resources.inspectorOptions!.startup).toBeUndefined(); }
+  finally { await runtime.close(); vi.unstubAllEnvs(); }
 });
 
 it("assembles the native facade without legacy Claude execution services", async () => {

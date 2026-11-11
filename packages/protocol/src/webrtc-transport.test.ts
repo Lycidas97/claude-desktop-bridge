@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BridgeCrypto,
   DEFAULT_BRIDGE_ICE_SERVERS,
   WebRtcTransport,
   bridgeIceServers,
   parseBridgeIceServers,
+  type BridgeEvent,
   type BridgePayload,
   type BridgeTransport,
   type BridgeTransportMetrics,
@@ -375,7 +376,7 @@ async function transportPair(directTimeoutMs = 100, iceServers?: RTCIceServer[])
     retryDelayMs: 50,
     ...(iceServers ? { iceServers } : {}),
   });
-  return { desktop, mobile, network };
+  return { desktop, mobile, network, mobileRelay, mobileCrypto, desktopDeviceCrypto };
 }
 
 describe("WebRtcTransport", () => {
@@ -387,7 +388,7 @@ describe("WebRtcTransport", () => {
     FakeDataChannel.instances = [];
   });
 
-  it("upgrades to a direct encrypted channel and acknowledges without relaying payloads", async () => {
+  it.each([false, true])("upgrades to a direct encrypted channel and acknowledges without relaying payloads (compress=%s)", async compress => {
     const { desktop, mobile, network } = await transportPair();
     const received: Array<{ message: DecryptedEnvelope; encrypted: EncryptedEnvelope }> = [];
     const mobileFrames: ServerFrame[] = [];
@@ -405,7 +406,7 @@ describe("WebRtcTransport", () => {
       method: "turn.start",
       params: { sessionId: "session-1", text: "x".repeat(180_000) },
     };
-    const id = await mobile.send(payload, "desktop");
+    const id = await mobile.send(payload, "desktop", { compress });
     await waitFor(() => received.length === 1);
     desktop.ack([received[0]!.encrypted.id]);
     await waitFor(() => mobileFrames.some((frame) => (
@@ -413,10 +414,57 @@ describe("WebRtcTransport", () => {
     )));
 
     expect(received[0]!.message.payload).toEqual(payload);
+    if (compress) expect(received[0]!.encrypted.ciphertext.length).toBeLessThan(1000);
     expect(network.businessEnvelopeCount).toBe(0);
     expect(mobile.endpoint).toBe("webrtc://peer");
     desktop.close();
     mobile.close();
+  });
+
+  it.each([false, true])("preserves event order on an ordered channel while inflating (compress=%s)", async compress => {
+    const { desktop, mobile, desktopDeviceCrypto, mobileCrypto } = await transportPair();
+    const received: number[] = [];
+    mobile.onMessage(message => { if (message.payload.kind === "event") received.push(message.payload.event.seq); });
+    desktop.connect();
+    mobile.connect();
+    await waitFor(() => desktop.path === "direct" && mobile.path === "direct");
+    const events: BridgeEvent[] = [
+      { eventId: "permission", seq: 1, timestamp: Date.now(), origin: "system", type: "permission.requested", sessionId: "session-A",
+        data: { requestId: "permission-A", toolUseId: "tool-A", toolName: "Edit", input: { new_string: "document content\n".repeat(200) } } },
+      { eventId: "unrelated-delta", seq: 2, timestamp: Date.now(), origin: "system", type: "assistant.delta", sessionId: "session-B", data: { text: "next" } },
+    ];
+    const envelopes: EncryptedEnvelope[] = [];
+    for (const event of events) envelopes.push(await desktopDeviceCrypto.encrypt({ kind: "event", event }, "desktop", "mobile", Date.now(), undefined, mobileCrypto.identity.deviceId, true, compress));
+    try {
+      for (const envelope of envelopes) await desktop.sendEnvelope(envelope);
+      await waitFor(() => received.length === 2);
+      expect(received).toEqual([1, 2]);
+    } finally { desktop.close(); mobile.close(); }
+  });
+
+  it("falls back with the same compressed envelope when a direct send fails", async () => {
+    const { desktop, mobile, mobileRelay, mobileCrypto } = await transportPair();
+    const received: Array<{ message: DecryptedEnvelope; encrypted: EncryptedEnvelope }> = [];
+    desktop.onMessage((message, encrypted) => received.push({ message, encrypted }));
+    desktop.connect();
+    mobile.connect();
+    await waitFor(() => mobile.path === "direct");
+    for (const channel of FakeDataChannel.instances) {
+      vi.spyOn(channel, "send").mockImplementation(() => { throw new Error("Synthetic channel failure"); });
+    }
+    const encrypted = vi.spyOn(mobileCrypto, "encrypt");
+    const relayed = vi.spyOn(mobileRelay, "sendEnvelope");
+    const payload: BridgePayload = { kind: "request", requestId: "compressed-fallback", idempotencyKey: "compressed-fallback", method: "turn.start", params: { text: "fallback 中文\n".repeat(1000) } };
+    try {
+      await mobile.send(payload, "desktop", { compress: true });
+      await waitFor(() => received.length === 1);
+      const envelope = await encrypted.mock.results[0]!.value;
+      expect(encrypted).toHaveBeenCalledOnce();
+      expect(relayed).toHaveBeenCalledWith(envelope);
+      expect(received[0]!.encrypted).toEqual(envelope);
+      expect(received[0]!.message.payload).toEqual(payload);
+      expect(envelope.ciphertext.length).toBeLessThan(1000);
+    } finally { desktop.close(); mobile.close(); }
   });
 
   it("keeps Relay as the data path when ICE does not connect within five seconds", async () => {
@@ -461,8 +509,8 @@ describe("WebRtcTransport", () => {
       requestId: "request-ack-fallback",
       idempotencyKey: "request-ack-fallback",
       method: "project.list",
-      params: {},
-    }, "desktop");
+      params: { text: "compressed acknowledgement".repeat(1000) },
+    }, "desktop", { compress: true });
     await waitFor(() => received.length === 1);
 
     FakeDataChannel.instances.find((channel) => channel.readyState === "open")?.close();

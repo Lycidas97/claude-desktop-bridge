@@ -1,11 +1,11 @@
 import { EventEmitter, once } from "node:events";
-import { rm, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { rm, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { BridgeCrypto, isEncryptedEnvelope } from "@bridge/protocol";
 import { EvidenceManager } from "./evidence-manager.js";
 import { EvidenceStore } from "./evidence-store.js";
 import { DesktopController } from "./controller.js";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { ClaudeDesktopBridge, nativeHistoryItems } from "./claude-desktop-bridge.js";
 import { InspectorDisconnectedError, NativeCallError } from "./claude-desktop-inspector.js";
@@ -31,6 +31,7 @@ class NativeDesktop extends EventEmitter {
   btwResult: Record<string, unknown> = { status: "started", sessionId: "local-child" };
   codeModels: string[] = [];
   applyModel = true;
+  normalizeModel: ((model: string) => string) | undefined;
   sentModels: unknown[] = [];
   canRewind = true;
   filesPreview: Record<string, unknown> | null = { canRewind: true, filesChanged: ["src/native.ts"], insertions: 4, deletions: 2 };
@@ -68,7 +69,7 @@ class NativeDesktop extends EventEmitter {
     }
     if (["promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage"].includes(method)) return this.queueResult;
     if (method === "getAvailableCodeModels") return this.codeModels;
-    if (method === "setModel" && session && this.applyModel) session.model = this.codeModels.length && !this.codeModels.some(model => model.replace(/\[1m\]$/iu, "") === String(args[1]).replace(/\[1m\]$/iu, "")) ? "default" : args[1];
+    if (method === "setModel" && session && this.applyModel) session.model = this.codeModels.length && !this.codeModels.some(model => model.replace(/\[1m\]$/iu, "") === String(args[1]).replace(/\[1m\]$/iu, "")) ? "default" : this.normalizeModel?.(String(args[1])) ?? args[1];
     if (method === "setPermissionMode" && session) {
       if (this.permissionModeResult && this.applyPermissionMode) session.permissionMode = args[1];
       return this.permissionModeResult;
@@ -775,6 +776,84 @@ describe("Claude native relay", () => {
     } finally { await evidence.close(); await f.close(); }
   }, 30_000);
 
+  it.each(["embedded", "external", "nested", "fork", "live", "worktree-only", "worktree-first", "alias"])("groups a linked worktree with its repository while retaining its execution cwd and native identity (%s)", async layout => {
+    const f = await fixture();
+    try {
+      const directory = join(f.options.settingsPath, "..");
+      const physicalProject = join(directory, "repo");
+      const project = layout === "alias" ? join(directory, "repo-alias") : physicalProject;
+      if (layout === "alias") {
+        await mkdir(physicalProject, { recursive: true });
+        await symlink(physicalProject, project, "junction");
+      }
+      const worktree = layout === "external" ? join(directory, "outside-worktree") : join(physicalProject, ".claude", "worktrees", "adoring-khayyam");
+      const cwd = layout === "nested" ? join(worktree, "src") : worktree;
+      const gitDir = join(physicalProject, ".git", "worktrees", "adoring-khayyam");
+      await Promise.all([
+        mkdir(join(project, ".git", "objects"), { recursive: true }),
+        mkdir(join(project, ".git", "refs"), { recursive: true }),
+        mkdir(gitDir, { recursive: true }),
+        mkdir(cwd, { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(join(project, ".git", "HEAD"), "ref: refs/heads/main\n"),
+        writeFile(join(gitDir, "HEAD"), "ref: refs/heads/task\n"),
+        writeFile(join(gitDir, "commondir"), "../..\n"),
+        writeFile(join(gitDir, "gitdir"), join(worktree, ".git") + "\n"),
+        writeFile(join(worktree, ".git"), `gitdir: ${gitDir}\n`),
+      ]);
+      Object.assign(f.native.sessions[0]!, { cwd: project });
+      await f.bridge.refreshRuntime();
+      const original = f.bridge.session("local-native")!;
+      const child = { ...f.native.sessions[0]!, sessionId: "worktree-native", cwd, title: "Compression implementation", ...(layout === "fork" ? { forkedFromSessionId: "local-native" } : {}) };
+      if (layout === "worktree-only") f.native.sessions = [child];
+      else if (layout === "worktree-first") f.native.sessions.unshift(child);
+      else f.native.sessions.push(child);
+      if (layout === "live") {
+        const changed = once(f.bridge, "changed");
+        f.native.emit("event", { type: "session", sessionId: child.sessionId, session: child });
+        await changed;
+      } else await f.bridge.refreshRuntime();
+      expect(f.bridge.session("worktree-native")).toMatchObject({
+        sessionId: "worktree-native", cwd,
+        projectId: original.projectId, projectName: original.projectName,
+      });
+      expect(f.bridge.executionCwd("worktree-native")).toBe(cwd);
+      expect(f.bridge.session("worktree-native")?.parentSessionId).toBe(layout === "fork" ? "local-native" : undefined);
+      expect(f.bridge.listProjects()).toEqual([expect.objectContaining({ projectId: original.projectId, name: original.projectName, cwd: project, sessionCount: layout === "worktree-only" ? 1 : 2 })]);
+      await f.bridge.configuration("worktree-native");
+      expect(f.bridge.session("worktree-native")?.projectId).toBe(original.projectId);
+      f.native.emit("disconnected");
+      expect(f.bridge.session("worktree-native")?.projectId).toBe(original.projectId);
+      expect(f.native.calls.every(call => ["getAll", "getAvailableCodeModels", "getSession"].includes(call.method))).toBe(true);
+    } finally { await f.close(); }
+  });
+
+  it.each(["plain", "lookalike", "nested-repository", "submodule", "primary-subdirectory", "broken-git-file"])("keeps unrelated directory projects distinct (%s)", async layout => {
+    const f = await fixture();
+    try {
+      const directory = join(f.options.settingsPath, "..");
+      const project = join(directory, "repo");
+      const cwd = layout === "plain" ? join(directory, "plain") : layout === "primary-subdirectory" ? join(project, "packages", "client") : join(project, ".claude", "worktrees", "independent");
+      await Promise.all([mkdir(join(project, ".git", "objects"), { recursive: true }), mkdir(join(project, ".git", "refs"), { recursive: true }), mkdir(cwd, { recursive: true })]);
+      await writeFile(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
+      if (layout === "nested-repository" || layout === "submodule") {
+        const gitDir = layout === "submodule" ? join(project, ".git", "modules", "independent") : join(cwd, ".git");
+        await Promise.all([mkdir(join(gitDir, "objects"), { recursive: true }), mkdir(join(gitDir, "refs"), { recursive: true })]);
+        await writeFile(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+        if (layout === "submodule") await writeFile(join(cwd, ".git"), `gitdir: ${gitDir}\n`);
+      }
+      if (layout === "broken-git-file") await writeFile(join(cwd, ".git"), "gitdir: missing-directory\n");
+      Object.assign(f.native.sessions[0]!, { cwd: project });
+      f.native.sessions.push({ ...f.native.sessions[0]!, sessionId: "separate-native", cwd });
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("separate-native")).toMatchObject({ cwd, projectName: basename(cwd) });
+      expect(f.bridge.session("separate-native")?.projectId).not.toBe(f.bridge.session("local-native")?.projectId);
+      expect(f.bridge.listProjects()).toHaveLength(2);
+      expect(f.bridge.listProjects().map(project => project.cwd)).toEqual([project, cwd]);
+    } finally { await f.close(); }
+  });
+
   it.each(["worktree-only", "same-name", "plain"])("previews native files from the execution directory without changing the project (%s)", async mode => {
     const f = await fixture();
     const directory = join(f.options.settingsPath, "..");
@@ -939,6 +1018,56 @@ describe("Claude native relay", () => {
       f.native.codeModels = [];
       expect(await f.bridge.configureSession({ sessionId: "local-native", model: "fixture-provider/model-alpha" })).toMatchObject({ model: "fixture-provider/model-alpha" });
       expect(f.native.calls.find(call => call.method === "setModel")?.args).toEqual(["local-native", "fixture-provider/model-alpha"]);
+    } finally { await f.close(); }
+  });
+
+  it("reports Native preferred 1M normalization as the actual Gemini selection", async () => {
+    const f = await fixture();
+    try {
+      const model = ["antigravity", "gemini-4-argon"].join("/");
+      expect(magpieModelIdHash(model)).toBe("1052229916");
+      const alias = `mythos-magpie-${magpieModelIdHash(model)}`;
+      f.native.codeModels = [alias];
+      // Installed Desktop's modelIdForCli can add [1m] before validation.
+      f.native.normalizeModel = value => value === alias ? `${alias}[1m]` : value;
+      await writeFile(f.options.settingsPath, JSON.stringify({ modelPicker: { options: [{ model, label: "Gemini 4 Argon · Antigravity" }] } }));
+      const selected = await f.bridge.configureSession({ sessionId: "local-native", model });
+      expect(f.native.calls.find(call => call.method === "setModel")?.args).toEqual(["local-native", alias]);
+      expect(selected).toMatchObject({ model: `${model}[1m]`, modelDisplayName: "Gemini 4 Argon · Antigravity · 1M" });
+      expect(selected.availableModels).toContainEqual({ value: `${model}[1m]`, displayName: "Gemini 4 Argon · Antigravity · 1M" });
+      expect(f.bridge.session("local-native")).toMatchObject({ model: `${alias}[1m]`, modelDisplayName: selected.modelDisplayName });
+      expect((await f.bridge.configuration("local-native")).model).toBe(`${model}[1m]`);
+    } finally { await f.close(); }
+  });
+
+  it.each(["canonical", "synthetic"])("keeps the only registered %s 1M target when the saved picker has a base model", async kind => {
+    const f = await fixture();
+    try {
+      const model = "fixture-provider/model-alpha";
+      const target = `${kind === "synthetic" ? `mythos-magpie-${magpieModelIdHash(model)}` : model}[1m]`;
+      f.native.codeModels = [target];
+      await writeFile(f.options.settingsPath, JSON.stringify({ modelPicker: { options: [{ model, label: "Selected model" }] } }));
+      expect(await f.bridge.configureSession({ sessionId: "local-native", model })).toMatchObject({ model: `${model}[1m]`, modelDisplayName: "Selected model · 1M" });
+      expect(f.native.calls.find(call => call.method === "setModel")?.args).toEqual(["local-native", target]);
+    } finally { await f.close(); }
+  });
+
+  it("does not accept a Native context downgrade or a different normalized model", async () => {
+    const f = await fixture();
+    try {
+      const model = "fixture-provider/model-alpha";
+      const alias = `mythos-magpie-${magpieModelIdHash(model)}`;
+      const other = "fixture-provider/model-beta";
+      f.native.codeModels = [alias, `${alias}[1m]`];
+      await writeFile(f.options.settingsPath, JSON.stringify({ modelPicker: { options: [
+        { model, label: "Standard" }, { model: `${model}[1m]`, label: "Long context" }, { model: `${other}[1m]`, label: "Other model" },
+      ] } }));
+      f.native.normalizeModel = () => `${alias}[1m]`;
+      await expect(f.bridge.configureSession({ sessionId: "local-native", model })).rejects.toThrow(/did not apply/iu);
+      f.native.normalizeModel = () => alias;
+      await expect(f.bridge.configureSession({ sessionId: "local-native", model: `${model}[1m]` })).rejects.toThrow(/did not apply/iu);
+      f.native.normalizeModel = () => `mythos-magpie-${magpieModelIdHash(other)}[1m]`;
+      await expect(f.bridge.configureSession({ sessionId: "local-native", model })).rejects.toThrow(/did not apply/iu);
     } finally { await f.close(); }
   });
 

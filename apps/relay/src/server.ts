@@ -60,6 +60,7 @@ export interface RelayServerOptions {
   maxFramesPerMinute?: number;
   trustProxy?: boolean;
   heartbeatIntervalMs?: number;
+  perMessageDeflate?: boolean;
 }
 
 export interface RunningRelay {
@@ -191,7 +192,16 @@ export async function startRelayServer(options: RelayServerOptions = {}): Promis
     response.end(JSON.stringify({ error: "not_found" }));
   });
 
-  const wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
+  const wsServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_FRAME_BYTES,
+    perMessageDeflate: options.perMessageDeflate === false ? false : {
+      serverNoContextTakeover: true,
+      clientNoContextTakeover: true,
+      threshold: 1024,
+      zlibDeflateOptions: { level: 6 },
+    },
+  });
   const states = new Map<WebSocket, ClientState>();
 
   function roomClients(

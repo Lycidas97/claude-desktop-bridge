@@ -47,6 +47,7 @@ export async function startNativeApprovalHost(options: {
     { model: "synthetic-model", label: "隔离模型 · 标准", description: "Private fixture metadata" },
     { model: "synthetic-model-large[1m]", label: "隔离模型 · 长上下文" },
     { model: "claude/claude-opus-5-5", label: "Magpie 额度模型" },
+    { model: ["antigravity", "gemini-4-argon"].join("/"), label: "Gemini 4 Argon · Antigravity" },
   ];
   const nativeModelIds = savedModels.map(option => `mythos-magpie-${magpieModelIdHash(option.model)}${/\[1m\]$/iu.test(option.model) ? "[1m]" : ""}`);
   await writeFile(settingsPath, JSON.stringify({ modelPicker: { options: savedModels } }));
@@ -62,6 +63,7 @@ export async function startNativeApprovalHost(options: {
       sessionId: string; requestId: string; cliToolUseId: string; toolName: string; input: Record<string, unknown>; requestedAt: number;
     }>,
   };
+  const nativeSessions: Array<typeof native & { forkedFromSessionId?: string }> = [native];
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const messages: Record<string, unknown>[] = [];
   const pending = new Map<string, (reply: NativeApprovalResult) => void>();
@@ -86,8 +88,7 @@ export async function startNativeApprovalHost(options: {
         throw new InspectorDisconnectedError(`Synthetic ${method} disconnected after successful rewind`);
       }
       if (method === "getAll" || method === "getSession") {
-        const session = structuredClone(native);
-        return method === "getAll" ? [session] : session;
+        return structuredClone(method === "getAll" ? nativeSessions : nativeSessions.find(session => session.sessionId === args[0]));
       }
       if (method === "sendMessage") {
         assert.equal(args[0], options.sessionId);
@@ -135,9 +136,12 @@ export async function startNativeApprovalHost(options: {
         return { prefill: target.content, assistantUuid };
       }
       if (method === "setModel") {
-        if (!nativeModelIds.includes(String(args[1]))) throw new Error("Native fixture rejects canonical model IDs");
+        const index = nativeModelIds.findIndex(id => id.replace(/\[1m\]$/iu, "") === String(args[1]).replace(/\[1m\]$/iu, ""));
+        if (index < 0) throw new Error("Native fixture rejects canonical model IDs");
         native.model = args[1] as string;
-        options.onModelChanged?.(savedModels[nativeModelIds.indexOf(native.model)]!.model);
+        // Reproduce Desktop's modelIdForCli preferred-context normalization.
+        if (savedModels[index]!.label === "Gemini 4 Argon · Antigravity" && !/\[1m\]$/iu.test(native.model)) native.model += "[1m]";
+        options.onModelChanged?.(savedModels[index]!.model);
         return;
       }
       if (method === "setEffort") return;
@@ -188,6 +192,36 @@ export async function startNativeApprovalHost(options: {
     profile() {
       const session = broker.session(options.sessionId)!;
       return { model: session.model, modelDisplayName: session.modelDisplayName };
+    },
+    async projectCatalog() {
+      const project = join(options.directory, "claude-desktop-bridge");
+      const worktree = join(project, ".claude", "worktrees", "fixture-worktree-7a2f");
+      const gitDir = join(project, ".git", "worktrees", "fixture-worktree-7a2f");
+      const otherProject = join(options.directory, "other-project");
+      await Promise.all([
+        mkdir(join(project, ".git", "objects"), { recursive: true }),
+        mkdir(join(project, ".git", "refs"), { recursive: true }),
+        mkdir(gitDir, { recursive: true }), mkdir(worktree, { recursive: true }),
+        mkdir(join(otherProject, ".git", "objects"), { recursive: true }),
+        mkdir(join(otherProject, ".git", "refs"), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(join(project, ".git", "HEAD"), "ref: refs/heads/main\n"),
+        writeFile(join(otherProject, ".git", "HEAD"), "ref: refs/heads/main\n"),
+        writeFile(join(gitDir, "HEAD"), "ref: refs/heads/task\n"),
+        writeFile(join(gitDir, "commondir"), "../..\n"),
+        writeFile(join(gitDir, "gitdir"), join(worktree, ".git") + "\n"),
+        writeFile(join(worktree, ".git"), `gitdir: ${gitDir}\n`),
+      ]);
+      Object.assign(native, { cwd: worktree, harnessCwd: worktree, title: "实现并验证中继链路压缩" });
+      nativeSessions.splice(0, nativeSessions.length,
+        { ...native, sessionId: "browser-e2e-parent", cwd: project, harnessCwd: project, title: "主会话" },
+        native,
+        { ...native, sessionId: "browser-e2e-fork", title: "真实 Fork 会话", forkedFromSessionId: "browser-e2e-parent" },
+        { ...native, sessionId: "browser-e2e-other", cwd: otherProject, harnessCwd: otherProject, title: "其他项目会话" },
+      );
+      await broker.refreshRuntime();
+      return { projects: broker.listProjects(), sessions: broker.listSessions() };
     },
     files: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
     history: () => broker.history(options.sessionId),

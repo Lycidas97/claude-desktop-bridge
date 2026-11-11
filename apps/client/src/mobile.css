@@ -6,13 +6,13 @@
 
 :root {
   --m-gutter: 16px;
-  --m-fs-large-title: 26px;
-  --m-fs-title: 17px;
-  --m-fs-body: 15px;
-  --m-fs-callout: 14px;
-  --m-fs-subhead: 13px;
-  --m-fs-footnote: 12px;
-  --m-fs-caption: 11px;
+  --m-fs-large-title: calc(26px * var(--font-scale));
+  --m-fs-title: calc(17px * var(--font-scale));
+  --m-fs-body: calc(15px * var(--font-scale));
+  --m-fs-callout: calc(14px * var(--font-scale));
+  --m-fs-subhead: calc(13px * var(--font-scale));
+  --m-fs-footnote: calc(12px * var(--font-scale));
+  --m-fs-caption: calc(11px * var(--font-scale));
   --m-touch: 44px;
   --m-row: 56px;
   --m-r-control: 10px;
@@ -480,7 +480,7 @@
   background: var(--card-fill);
   color: var(--text);
   font: inherit;
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale));
 }
 
 .m-field input:focus,
@@ -647,6 +647,10 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 .mobile-settings-row > svg:last-child { flex: none; color: var(--faint); }
 .mobile-settings-row .segmented { flex: 1; }
 .mobile-settings-row .segmented button { min-height: var(--m-touch); }
+.font-size-settings-row { flex-wrap: wrap; }
+.mobile-settings-row.font-size-settings-row > span { flex: 0 0 100%; }
+.font-size-settings-row .segmented { min-width: 0; }
+.font-size-settings-row .segmented button { padding: 0 8px; white-space: nowrap; }
 .mobile-settings-row.danger,
 .mobile-settings-row.is-danger,
 .mobile-settings-row.danger > svg:first-child { color: var(--danger-ink); }
@@ -685,7 +689,7 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 
 .mobile-app-shell .relay-settings { padding: 20px 0; }
 .mobile-app-shell .relay-settings strong { padding-left: 4px; color: var(--muted); font-size: var(--m-fs-subhead); font-weight: 600; }
-.mobile-app-shell .relay-settings input { min-height: 48px; border-radius: var(--m-r-control); font-size: 16px; }
+.mobile-app-shell .relay-settings input { min-height: 48px; border-radius: var(--m-r-control); font-size: calc(16px * var(--font-scale)); }
 .mobile-app-shell .relay-settings button { justify-self: stretch; min-height: var(--m-touch); border-radius: var(--m-r-control); }
 
 .mobile-app-shell .session-permission-field > p { margin: 0 0 12px; color: var(--muted); font-size: var(--m-fs-footnote); font-weight: 400; line-height: 1.6; }
@@ -790,7 +794,7 @@ button.mobile-settings-row:active { background: var(--surface-2); }
   background: var(--card-fill);
 }
 
-.mobile-app-shell .session-search input { font-size: 16px; }
+.mobile-app-shell .session-search input { font-size: calc(16px * var(--font-scale)); }
 .mobile-app-shell .session-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
 .mobile-app-shell .runtime-filter { gap: 8px; margin: -2px 0 14px; }

@@ -13,6 +13,7 @@
   --font-sans: "DM Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
   --font-num: "Inter", "DM Sans", "PingFang SC", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-scale: 1;
 
   /* 浅色：暖象牙轴（Sunstone light），不落冷灰 */
   --bg: #f6f4f0;
@@ -86,6 +87,11 @@
   --t-base: 200ms;
   --t-enter: 220ms;
 }
+
+/* Text only: layout, touch targets and SVG icons keep their own dimensions. */
+:root[data-font-size="small"] { --font-scale: 0.9; }
+:root[data-font-size="large"] { --font-scale: 1.15; }
+:root[data-font-size="larger"] { --font-scale: 1.3; }
 
 [data-theme="dark"] {
   color-scheme: dark;
@@ -186,6 +192,7 @@ body,
 }
 
 body {
+  font-size: calc(16px * var(--font-scale));
   min-height: 100vh;
   min-height: 100dvh;
   overflow-x: hidden;
@@ -287,7 +294,7 @@ button:disabled {
   padding: 0 16px;
   border: 1px solid transparent;
   border-radius: var(--r-btn);
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 650;
   cursor: pointer;
   transition: background var(--t-fast) ease, border-color var(--t-fast) ease, color var(--t-fast) ease, transform var(--t-fast) var(--ease-out), box-shadow var(--t-fast) ease;
@@ -950,15 +957,15 @@ button:disabled {
   white-space: nowrap;
 }
 
-.host-row-copy strong { font-size: 14px; }
-.host-row-copy small { color: var(--muted); font-size: 11px; }
+.host-row-copy strong { font-size: calc(14px * var(--font-scale)); }
+.host-row-copy small { color: var(--muted); font-size: calc(11px * var(--font-scale)); }
 
 .host-row-state {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   white-space: nowrap;
 }
 
@@ -1066,8 +1073,8 @@ button:disabled {
   white-space: nowrap;
 }
 
-.session-row-copy strong { font-size: 14px; }
-.session-row-copy small { color: var(--muted); font-size: 11px; }
+.session-row-copy strong { font-size: calc(14px * var(--font-scale)); }
+.session-row-copy small { color: var(--muted); font-size: calc(11px * var(--font-scale)); }
 
 .session-row-meta {
   display: flex;
@@ -1077,11 +1084,11 @@ button:disabled {
   gap: 4px;
 }
 
-.session-row-meta time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.session-row-meta time { color: var(--muted); font-size: calc(10px * var(--font-scale)); font-variant-numeric: tabular-nums; }
 
 .session-row-meta em {
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-style: normal;
   white-space: nowrap;
 }
@@ -1091,7 +1098,7 @@ button:disabled {
 .session-row-progress {
   min-width: 34px;
   color: var(--accent-ink);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   text-align: right;
@@ -1127,7 +1134,7 @@ button:disabled {
   margin-top: 20px;
 }
 .empty-session-actions .secondary-button,
-.empty-session-actions .danger-button { min-height: 38px; font-size: 12px; }
+.empty-session-actions .danger-button { min-height: 38px; font-size: calc(12px * var(--font-scale)); }
 
 .timeline {
   display: flex;
@@ -2806,7 +2813,7 @@ button:disabled {
   border-radius: 5px;
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   cursor: pointer;
 }
 
@@ -3103,7 +3110,7 @@ button:disabled {
 .mobile-desktop-control-actions .danger-button {
   min-height: 34px;
   padding: 0 10px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .session-search {
@@ -3247,7 +3254,7 @@ button:disabled {
 
 .project-group-toggle-copy strong {
   overflow: hidden;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3255,7 +3262,7 @@ button:disabled {
 .project-group-toggle-copy b,
 .project-group-toggle-copy small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 500;
 }
 
@@ -3297,7 +3304,7 @@ button:disabled {
   border-top: 1px dashed var(--line);
   background: color-mix(in srgb, var(--surface-2) 60%, var(--surface));
   color: var(--accent-ink);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 650;
   text-align: left;
   cursor: pointer;
@@ -3380,17 +3387,17 @@ button:disabled {
 }
 
 .session-row-copy strong {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
 }
 
 .session-row-copy small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
 }
 
 .session-row-status {
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   white-space: nowrap;
 }
 
@@ -3525,7 +3532,7 @@ button:disabled {
 .permission-dock strong,
 .host-permission-alert strong {
   overflow: hidden;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3534,7 +3541,7 @@ button:disabled {
 .host-permission-alert small {
   overflow: hidden;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3542,7 +3549,7 @@ button:disabled {
 .permission-dock b,
 .host-permission-alert b {
   color: var(--warm-ink);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   white-space: nowrap;
 }
 
@@ -4317,7 +4324,7 @@ button:disabled {
   justify-content: center;
   gap: 9px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   text-align: center;
 }
 
@@ -4457,7 +4464,7 @@ button:disabled {
 }
 
 .conversation-item.assistant .conversation-text {
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   line-height: 1.75;
 }
 
@@ -4487,7 +4494,7 @@ button:disabled {
   border-radius: 8px;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   cursor: pointer;
 }
 
@@ -4517,7 +4524,7 @@ button:disabled {
   padding: 8px 11px;
   background: var(--surface-2);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .session-notice {
@@ -4580,12 +4587,12 @@ button:disabled {
 }
 
 .conversation-item-meta strong {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .conversation-item-meta time {
   color: var(--muted);
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
 }
 
 .conversation-text {
@@ -4593,7 +4600,7 @@ button:disabled {
   max-width: 100%;
   overflow-wrap: anywhere;
   word-break: break-word;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   line-height: 1.62;
   white-space: pre-wrap;
 }
@@ -4628,7 +4635,7 @@ button:disabled {
   background: none;
   color: var(--accent);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   cursor: pointer;
 }
 
@@ -4659,25 +4666,25 @@ button:disabled {
 }
 
 .markdown-h1 {
-  font-size: 17.5px;
+  font-size: calc(17.5px * var(--font-scale));
   padding-bottom: 4px;
   border-bottom: 1px solid var(--line);
 }
 
 .markdown-h2 {
-  font-size: 15.5px;
+  font-size: calc(15.5px * var(--font-scale));
   padding-bottom: 3px;
   border-bottom: 1px solid var(--line);
 }
 
 .markdown-h3 {
-  font-size: 14.5px;
+  font-size: calc(14.5px * var(--font-scale));
 }
 
 .markdown-h4,
 .markdown-h5,
 .markdown-h6 {
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--font-scale));
 }
 
 .markdown-body strong {
@@ -4720,7 +4727,7 @@ button:disabled {
   background: var(--surface-3);
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .markdown-code-lang {
@@ -4738,7 +4745,7 @@ button:disabled {
   background: var(--surface);
   color: var(--muted);
   font-family: var(--font-sans);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   line-height: 1.3;
   cursor: pointer;
 }
@@ -4753,7 +4760,7 @@ button:disabled {
   padding: 10px 12px;
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   line-height: 1.58;
   white-space: pre;
   tab-size: 2;
@@ -4840,7 +4847,7 @@ button:disabled {
 .markdown-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--font-scale));
   line-height: 1.5;
 }
 
@@ -4909,7 +4916,7 @@ button:disabled {
 
 .conversation-item.tool .conversation-text {
   grid-column: 2;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .conversation-attachments {
@@ -4955,7 +4962,7 @@ button:disabled {
   min-height: 120px;
   align-content: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .attachment-chip {
@@ -4992,7 +4999,7 @@ button:disabled {
   border-radius: 5px;
   background: color-mix(in srgb, var(--surface) 74%, transparent);
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
 }
 
 .composer-attachments > span {
@@ -5037,7 +5044,7 @@ button:disabled {
 .conversation-error-detail {
   max-width: 300px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -5062,7 +5069,7 @@ button:disabled {
 .uncertain-delivery-actions .secondary-button {
   min-height: 30px;
   padding: 0 9px;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
 }
 
 .permission-prompt {
@@ -5084,7 +5091,7 @@ button:disabled {
   border-radius: 6px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
 }
 
 .permission-risk.mutating {
@@ -5112,7 +5119,7 @@ button:disabled {
 
 .permission-facts dt {
   color: var(--muted);
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
 }
 
 .permission-facts dd {
@@ -5120,7 +5127,7 @@ button:disabled {
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--text);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   line-height: 1.5;
   white-space: pre-wrap;
 }
@@ -5143,7 +5150,7 @@ button:disabled {
   gap: 7px;
   padding: 0 9px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   cursor: pointer;
 }
 
@@ -5188,7 +5195,7 @@ button:disabled {
   border-radius: 6px;
   background: var(--danger-soft);
   color: var(--danger);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   line-height: 1.45;
 }
 
@@ -5202,7 +5209,7 @@ button:disabled {
   border-left: 3px solid var(--warm);
   background: var(--warm-soft);
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
 }
 
 .permission-title {
@@ -5211,12 +5218,12 @@ button:disabled {
 }
 
 .permission-title strong {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
 }
 
 .permission-title span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   line-height: 1.5;
 }
 
@@ -5229,7 +5236,7 @@ button:disabled {
   border-radius: 5px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
   white-space: pre-wrap;
 }
 
@@ -5245,7 +5252,7 @@ button:disabled {
 .permission-actions .secondary-button {
   min-height: 34px;
   padding: 0 11px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .question-prompt fieldset {
@@ -5258,7 +5265,7 @@ button:disabled {
 
 .question-prompt legend {
   margin-bottom: 7px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 650;
 }
 
@@ -5279,12 +5286,12 @@ button:disabled {
 }
 
 .question-option strong {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .question-option small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
   line-height: 1.4;
 }
 
@@ -5292,7 +5299,7 @@ button:disabled {
   display: grid;
   gap: 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .question-freeform input {
@@ -5319,14 +5326,14 @@ button:disabled {
   border: 0;
   background: var(--warm-soft);
   color: var(--muted);
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
   text-align: left;
 }
 
 .composer-error {
   padding: 5px 8px;
   color: var(--danger);
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
 }
 
 .composer-mode {
@@ -5345,7 +5352,7 @@ button:disabled {
   border-radius: var(--r-pill);
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 600;
   cursor: pointer;
   transition: background var(--t-fast) ease, color var(--t-fast) ease, box-shadow var(--t-fast) ease;
@@ -5502,7 +5509,7 @@ button:disabled {
 .slash-command-heading {
   padding: 6px 9px 8px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 600;
 }
 
@@ -5548,14 +5555,14 @@ button:disabled {
 }
 
 .slash-command-name strong {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 600;
 }
 
 .slash-command-name small,
 .slash-command-description {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   line-height: 1.5;
 }
 
@@ -5572,7 +5579,7 @@ button:disabled {
   padding: 9px;
   overflow-wrap: anywhere;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   line-height: 1.5;
 }
 
@@ -5585,7 +5592,7 @@ button:disabled {
   display: -webkit-box;
   flex-shrink: 0;
   max-height: 3.5em;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
@@ -5602,15 +5609,15 @@ button:disabled {
   outline: none;
   background: transparent;
   color: var(--text);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   line-height: 1.5;
 }
 
 .mobile-composer textarea {
   max-height: 128px;
   overflow-y: auto;
-  font-size: 16px;
-  line-height: 22px;
+  font-size: calc(16px * var(--font-scale));
+  line-height: 1.375;
 }
 
 .mobile-composer textarea:focus,
@@ -5678,7 +5685,7 @@ button:disabled {
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   cursor: pointer;
 }
 
@@ -5759,14 +5766,14 @@ button:disabled {
 .desktop-sidebar-heading span,
 .desktop-page-heading > div > span {
   color: var(--accent-ink);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 750;
 }
 
 .desktop-sidebar-heading h1,
 .desktop-page-heading h1 {
   margin: 2px 0 0;
-  font-size: 23px;
+  font-size: calc(23px * var(--font-scale));
 }
 
 .desktop-sidebar-actions {
@@ -5837,13 +5844,13 @@ button:disabled {
 
 .desktop-project-toggle strong {
   overflow: hidden;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .desktop-project-toggle span {
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
 }
 
 .desktop-session-row {
@@ -5880,12 +5887,12 @@ button:disabled {
 }
 
 .desktop-session-row strong {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .desktop-session-row small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
 }
 
 .desktop-session-row b {
@@ -5897,13 +5904,13 @@ button:disabled {
   place-items: center;
   background: var(--warm-soft);
   color: var(--warm);
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
 }
 
 .desktop-sidebar-empty {
   padding: 40px 12px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   text-align: center;
 }
 
@@ -5947,12 +5954,12 @@ button:disabled {
 
 .desktop-conversation-heading h2 {
   margin: 0 0 3px;
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale));
 }
 
 .desktop-conversation-heading span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
 }
 
 .desktop-conversation-heading-actions {
@@ -5988,7 +5995,7 @@ button:disabled {
   border-radius: 6px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   cursor: pointer;
 }
 
@@ -6421,7 +6428,7 @@ button:disabled {
 .desktop-app-actions .danger-button {
   min-height: 34px;
   padding: 0 12px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 @media (max-width: 720px) {
@@ -6810,7 +6817,7 @@ button:disabled {
   border-radius: var(--r-btn);
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 560;
   cursor: pointer;
   transition: background var(--t-fast) ease, color var(--t-fast) ease, box-shadow var(--t-fast) ease;
@@ -7146,7 +7153,7 @@ button:disabled {
   border-radius: 999px;
   background: var(--surface-2);
   color: var(--muted);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 600;
 }
 
@@ -7175,7 +7182,7 @@ button:disabled {
   border-radius: 8px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .conversation-tool-group > summary {
@@ -7214,7 +7221,7 @@ button:disabled {
   padding: 6px 10px 8px;
   border-top: 1px solid var(--line);
   background: var(--surface-2);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .conversation-tool-row {
@@ -7227,7 +7234,7 @@ button:disabled {
 .conversation-tool-row strong {
   flex: none;
   color: var(--text);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .conversation-tool-row span {
@@ -7709,7 +7716,7 @@ button:disabled {
 }
 
 .subagent-report-section .conversation-text {
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--font-scale));
   line-height: 1.6;
 }
 
@@ -7749,7 +7756,7 @@ button:disabled {
   gap: 4px;
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--font-scale));
   font-weight: 650;
 }
 
@@ -7765,14 +7772,14 @@ button:disabled {
 
 .interactive-prompt-status {
   color: var(--muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 550;
 }
 
 .interactive-prompt-recap {
   min-width: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   line-height: 1.58;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -7786,7 +7793,7 @@ button:disabled {
   min-width: 0;
   gap: 6px;
   color: var(--text);
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--font-scale));
   font-weight: 650;
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -7799,7 +7806,7 @@ button:disabled {
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--accent-ink);
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--font-scale));
   font-weight: 650;
 }
 
@@ -7871,7 +7878,7 @@ button:disabled {
 .interactive-option-label {
   min-width: 0;
   color: var(--text);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 650;
   line-height: 1.4;
   overflow-wrap: anywhere;
@@ -7885,7 +7892,7 @@ button:disabled {
   gap: 3px;
   padding: 1px 6px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 650;
 }
 
@@ -7902,7 +7909,7 @@ button:disabled {
 .interactive-option-detail {
   min-width: 0;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

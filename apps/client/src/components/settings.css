@@ -7,22 +7,22 @@
 .settings-section-content > .desktop-page { padding: 0; }
 .settings-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 .settings-section-heading h2 { margin: 0 0 4px; }
-.settings-section-heading span { color: var(--muted); font-size: 13px; }
+.settings-section-heading span { color: var(--muted); font-size: calc(13px * var(--font-scale)); }
 .provider-settings-profile { border-top: 1px solid var(--line); padding: 18px 0; min-width: 0; }
 .provider-settings-profile > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.provider-settings-profile h3 { margin: 0; font-size: 16px; }
-.provider-status { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.provider-settings-profile h3 { margin: 0; font-size: calc(16px * var(--font-scale)); }
+.provider-status { color: var(--muted); font-size: calc(13px * var(--font-scale)); white-space: nowrap; }
 .settings-facts { display: grid; gap: 12px; margin: 16px 0; }
-.settings-facts > div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 12px; font-size: 14px; }
+.settings-facts > div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 12px; font-size: calc(14px * var(--font-scale)); }
 .settings-facts dt { color: var(--muted); }
 .settings-facts dd { margin: 0; overflow-wrap: anywhere; }
-.settings-detection, .settings-model-list { margin: 12px 0; font-size: 14px; }
+.settings-detection, .settings-model-list { margin: 12px 0; font-size: calc(14px * var(--font-scale)); }
 .settings-detection > summary, .settings-model-list > summary { color: var(--muted); cursor: pointer; padding: 6px 0; }
 .settings-model-list ul { padding-left: 20px; max-height: 240px; overflow-y: auto; overflow-wrap: anywhere; }
-.settings-notice { color: var(--muted); font-size: 13px; line-height: 1.55; }
+.settings-notice { color: var(--muted); font-size: calc(13px * var(--font-scale)); line-height: 1.55; }
 .provider-quota-toggle { margin: 8px 0; }
 .provider-key-settings { display: grid; gap: 12px; max-width: 520px; margin-top: 16px; }
-.provider-key-settings label { display: grid; gap: 8px; font-size: 14px; }
+.provider-key-settings label { display: grid; gap: 8px; font-size: calc(14px * var(--font-scale)); }
 .provider-key-settings input, .provider-key-settings select { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-input); background: var(--surface); color: var(--text); font: inherit; }
 .provider-magpie-settings .settings-notice { margin: 0; }
 .provider-magpie-settings [role="status"]:empty { display: none; }
@@ -30,12 +30,12 @@
 .settings-inline-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .mobile-provider-settings { padding: 16px; }
 .inspector-connections { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 16px; }
-.inspector-connections h4 { margin: 0; font-size: 14px; }
+.inspector-connections h4 { margin: 0; font-size: calc(14px * var(--font-scale)); }
 .inspector-process-list { list-style: none; padding: 0; display: grid; gap: 12px; }
-.inspector-process-list li { display: grid; gap: 4px; font-size: 13px; overflow-wrap: anywhere; }
+.inspector-process-list li { display: grid; gap: 4px; font-size: calc(13px * var(--font-scale)); overflow-wrap: anywhere; }
 .inspector-process-list span { color: var(--muted); }
 .inspector-process-unknown strong { color: var(--danger-ink); }
-.inspector-warning { display: flex; gap: 10px; align-items: flex-start; padding: 12px 20px; background: var(--danger-soft); color: var(--danger-ink); border-bottom: 1px solid var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+.inspector-warning { display: flex; gap: 10px; align-items: flex-start; padding: 12px 20px; background: var(--danger-soft); color: var(--danger-ink); border-bottom: 1px solid var(--danger); font-size: calc(13px * var(--font-scale)); overflow-wrap: anywhere; }
 .desktop-content-v2:has(> .inspector-warning) { display: flex; flex-direction: column; }
 .desktop-content-v2:has(> .inspector-warning) > :not(.inspector-warning) { flex: 1; min-height: 0; }
 .inspector-warning { flex: none; }

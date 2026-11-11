@@ -38,7 +38,7 @@ npm run audit:runtime
 
 ## GitHub 发布流程
 
-1. 在独立工作树发布分支整理源码、同步版本号与 `CHANGELOG.md`，创建指向本 fork（`Lycidas97/claude-desktop-bridge`）`main` 的 PR（严禁推送到 `origin`）。
+1. 在独立工作树发布分支整理源码、同步版本号与 `CHANGELOG.md`，推送到 `origin`（`Lycidas97/claude-desktop-bridge`）并创建指向 `main` 的 PR（严禁推送到 `upstream` `czhmartinez/claude-desktop-bridge`）。
 2. 完成 PR 的 `Quality gate`（全部 7 个平台/测试 job 成功），确认审查无误后使用 `gh pr merge --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>` 合并。
 3. `ci.yml` 仅对 `pull_request` 自动取消旧运行（`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`），每次 `main` 分支的 `push` CI 均完整运行到底。
 4. 目标发布提交在 `main` 上的 `CI`（`push`）必须满足 `status == "completed"` 且 `conclusion == "success"`（被取消或未完成的运行一律无效）。`release.yml` 与 `release-assets.yml` 均强制校验该条件后才创建/恢复 Release 草稿并构建全部平台资产。

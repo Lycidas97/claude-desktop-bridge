@@ -10,7 +10,7 @@ Bridge 将电脑上的会话、任务进度、授权提问和工作区文件带�
 
 这是独立维护的 fork，主要围绕 **macOS + Android + Claude** 完善日常使用。安装包与发布状态以本仓库的 [Releases](https://github.com/Lycidas97/claude-desktop-bridge/releases) 为准。当前仅适配 Claude Desktop（含 Claude-3p）；Codex、Hermes、DSH 独立 Agent 适配与跨 Agent 接力已下线。旧配置及已存历史数据保留，Claude Desktop 内部的 Gemini、Antigravity、Magpie 等模型与额度功能继续可用。
 
-**1.3.1 改善原生权限同步与连接体验**：修复权限卡的增减、迟到快照和重连恢复，加入协商后的端到端压缩与 Git 项目分组，折叠原生/Fork 通知并同步 Android 系统栏主题。macOS 可在每次发现新的 Claude Desktop 进程后，尝试一次原生调试菜单；需要用户授予辅助功能与自动化权限。会话执行、队列和权限仍由 Desktop 的 `LocalSessions` 管理。完整变化见[更新记录](CHANGELOG.md)，原生验证范围见[重构记录](docs/HOSTING-REFACTOR.md)。
+**1.3.2 完善文件预览、阅读和任务状态**：大于 1 MiB 的文件确认后再下载预览，长电脑名优先为连接状态让出空间，子代理显示实际响应模型，并支持在外观设置中调整和保存字号。本版也包含任务完成通知修复。会话执行、队列和权限仍由 Desktop 的 `LocalSessions` 管理。完整变化见[更新记录](CHANGELOG.md)，原生验证范围见[重构记录](docs/HOSTING-REFACTOR.md)。
 
 ## 开始使用
 

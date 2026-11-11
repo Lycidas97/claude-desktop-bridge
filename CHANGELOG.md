@@ -1,3 +1,21 @@
+## 1.3.2
+
+- Focus Bridge on Claude Desktop and Claude-3p. Retire independent Codex, Hermes
+  and DSH adapters while preserving saved data and the models and quota features
+  available inside Claude Desktop.
+- Deliver task completion notifications through the existing notification paths.
+- Preview files larger than 1 MiB after confirming their size and download cost.
+  Read metadata before confirmation, retain the existing 20 MiB transfer limit,
+  and keep cached previews available offline. Update the desktop Bridge to enable
+  size checks from a new client.
+- Keep connection status visible when a computer name is too long for the mobile
+  header; truncate the name first.
+- Show the model reported by a child assistant response in subagent and workflow
+  details when a readable local transcript provides it.
+- Add four font sizes to Appearance on mobile and desktop. Apply changes
+  immediately to reading and input text, and remember the selection on each
+  device without scaling icons or touch targets.
+
 ## 1.3.1
 
 - Keep native permission cards synchronized as requests appear and disappear.

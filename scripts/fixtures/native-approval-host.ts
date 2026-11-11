@@ -6,15 +6,15 @@ import { join } from "node:path";
 import type {
   BridgePermissionInfo, BridgePermissionResolution, BridgeRequest, BridgeSDKPermissionMode,
 } from "../../packages/protocol/src/index.js";
-import { ClaudeDesktopBridge } from "../../apps/desktop/src/claude-desktop-bridge.js";
-import { InspectorDisconnectedError } from "../../apps/desktop/src/claude-desktop-inspector.js";
-import { ConversationStateStore } from "../../apps/desktop/src/conversation-state-store.js";
-import { DesktopController } from "../../apps/desktop/src/controller.js";
-import { SessionEventLog } from "../../apps/desktop/src/session-event-log.js";
-import { EvidenceManager } from "../../apps/desktop/src/evidence-manager.js";
-import { EvidenceStore } from "../../apps/desktop/src/evidence-store.js";
-import { discoverSlashCommands } from "../../apps/desktop/src/slash-command-catalog.js";
-import { magpieModelIdHash } from "../../apps/desktop/src/claude-runtime-discovery.js";
+import { ClaudeDesktopBridge } from "../../apps/desktop/src/claude/claude-desktop-bridge.js";
+import { InspectorDisconnectedError } from "../../apps/desktop/src/claude/claude-desktop-inspector.js";
+import { ConversationStateStore } from "../../apps/desktop/src/controller/conversation-state-store.js";
+import { DesktopController } from "../../apps/desktop/src/controller/controller.js";
+import { SessionEventLog } from "../../apps/desktop/src/controller/session-event-log.js";
+import { EvidenceManager } from "../../apps/desktop/src/evidence/evidence-manager.js";
+import { EvidenceStore } from "../../apps/desktop/src/evidence/evidence-store.js";
+import { discoverSlashCommands } from "../../apps/desktop/src/claude/slash-command-catalog.js";
+import { magpieModelIdHash } from "../../apps/desktop/src/claude/claude-runtime-discovery.js";
 import { createNativeSectionFixture } from "./native-section-store.js";
 
 interface NativeApprovalResult {

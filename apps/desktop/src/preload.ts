@@ -1,6 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { BridgeEvent, BridgeResponse, DesktopControlSnapshot } from "@bridge/protocol";
-import type { LocalBridgeRequest } from "./controller.js";
+import type { BridgeEvent, BridgeResponse, DesktopControlSnapshot, LocalBridgeRequest } from "@bridge/protocol";
 
 contextBridge.exposeInMainWorld("bridgeDesktop", {
   getSnapshot: () => ipcRenderer.invoke("bridge:get-snapshot") as Promise<DesktopControlSnapshot>,

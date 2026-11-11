@@ -18,7 +18,7 @@ const { createServer } = require("node:http");
 const { writeFile } = require("node:fs/promises");
 const { app, BrowserWindow, nativeImage, protocol } = require("electron");
 const { ElectronEvidencePreviewRenderer } = require(
-  ${JSON.stringify(resolve(root, "apps/desktop/src/artifact-preview.ts"))}
+  ${JSON.stringify(resolve(root, "apps/desktop/src/evidence/artifact-preview.ts"))}
 );
 
 protocol.registerSchemesAsPrivileged([{

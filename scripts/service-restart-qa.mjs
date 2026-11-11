@@ -122,6 +122,7 @@ async function nativeDesktopFixture() {
   const renderer = createContext({ 'claude.web': { LocalSessions: api } });
   const page = { id: 42, getURL: () => 'app://localhost/epitaxy/native-service-qa', executeJavaScript: source => runInContext(source, renderer) };
   const main = createContext({ process: { mainModule: { require: name => {
+    if (name === 'module') return { _cache: {} };
     assert.equal(name, 'electron');
     return { webContents: { getAllWebContents: () => [page], fromId: id => id === page.id ? page : undefined } };
   } } } });

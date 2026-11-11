@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { BridgeArtifactManifest, BridgeEvidenceBundle, BridgeResponse } from "@bridge/protocol";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TextPreview } from "../components/TextPreview.js";
+import { TextPreview } from "../components/evidence/TextPreview.js";
 import { artifactMediaTarget, mediaArtifacts, mediaKind, openMediaTransfer, readTextPreview, textPreviewLanguage } from "./media-preview.js";
 
 const response = (result: unknown): BridgeResponse => ({ kind: "response", requestId: "test", ok: true, result });

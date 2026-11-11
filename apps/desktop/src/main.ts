@@ -2,13 +2,12 @@ import { spawn } from "node:child_process";
 import { mkdir, open, writeFile } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { BridgeDesktopRuntimeId, BridgeEvent, DesktopControlSnapshot } from "@bridge/protocol";
+import type { BridgeDesktopRuntimeId, BridgeEvent, DesktopControlSnapshot, LocalBridgeRequest } from "@bridge/protocol";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell, Tray } from "electron";
-import type { LocalBridgeRequest } from "./controller.js";
-import { connectDesktopService, serveDesktopService } from "./service-connection.js";
-import { createServiceRuntime } from "./service-runtime.js";
-import { ServiceResources } from "./service-resources.js";
-import { claudeDesktopDeveloperSettings } from "./claude-desktop-developer-settings.js";
+import { connectDesktopService, serveDesktopService } from "./app/service-connection.js";
+import { createServiceRuntime } from "./app/service-runtime.js";
+import { ServiceResources } from "./app/service-resources.js";
+import { claudeDesktopDeveloperSettings } from "./app/claude-desktop-developer-settings.js";
 
 protocol.registerSchemesAsPrivileged([{
   scheme: "bridge-artifact",

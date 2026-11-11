@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { NativeSectionCatalog } from "../../apps/desktop/src/claude-desktop-inspector.js";
+import type { NativeSectionCatalog } from "../../apps/desktop/src/claude/claude-desktop-inspector.js";
 
 /** Synthetic active-account sidebar boundary. Writes only to its caller's temp profile. */
 export async function createNativeSectionFixture(directory: string) {

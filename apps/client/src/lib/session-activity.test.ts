@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatContextPercentage, formatContextTokens, SessionContextUsageBar } from "../components/SessionActivityIndicator.js";
+import { formatContextPercentage, formatContextTokens, SessionContextUsageBar } from "../components/conversation/SessionActivityIndicator.js";
 import { backgroundSubagentBadge, formatElapsed, sessionActivity, sessionQueueLabel, subagentStalledSeconds } from "./session-activity.js";
 
 describe("sessionActivity", () => {

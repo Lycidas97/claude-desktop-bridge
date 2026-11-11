@@ -7,9 +7,9 @@ const mocks = vi.hoisted(() => ({
   developerSettings: vi.fn(),
   windows: [] as Array<{ loadURL: ReturnType<typeof vi.fn>; show: ReturnType<typeof vi.fn>; webContents: { executeJavaScript: ReturnType<typeof vi.fn> } }>,
 }));
-vi.mock("./claude-desktop-developer-settings.js", () => ({ claudeDesktopDeveloperSettings: mocks.developerSettings }));
-vi.mock("./service-runtime.js", () => ({ createServiceRuntime: mocks.runtime }));
-vi.mock("./service-connection.js", () => ({ serveDesktopService: mocks.server, connectDesktopService: mocks.connect }));
+vi.mock("./app/claude-desktop-developer-settings.js", () => ({ claudeDesktopDeveloperSettings: mocks.developerSettings }));
+vi.mock("./app/service-runtime.js", () => ({ createServiceRuntime: mocks.runtime }));
+vi.mock("./app/service-connection.js", () => ({ serveDesktopService: mocks.server, connectDesktopService: mocks.connect }));
 vi.mock("node:fs", () => ({ mkdirSync: vi.fn() }));
 vi.mock("node:fs/promises", () => ({ mkdir: vi.fn(async () => {}), writeFile: vi.fn(), open: mocks.logOpen }));
 vi.mock("node:child_process", () => ({ spawn: mocks.spawn }));

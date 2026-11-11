@@ -79,19 +79,18 @@ Claude 原生事件继续进入现有被动证据管线：记录轮次、工具�
 
 ## 组件
 
+各子系统的详细目录边界、耦合约束与最小验证命令见 [`AGENTS.md`](../AGENTS.md) 与 `docs/subsystems/*.md`。
+
 | 组件 | 职责 |
 |---|---|
-| `claude-desktop-bridge.ts`（新薄中转层） | 通过本机 inspector 转发 `LocalSessions` 调用、renderer 单队列事件与权限请求 |
-| `ConversationStateStore` | 保存新原生请求的幂等键与收据，不导入旧数据 |
-| `SessionEventLog` | 追加式事件、单调 `seq`、delta 合并与 replay，不作为 Claude 历史回退源 |
-| `EvidenceManager` | 每轮证据生命周期、工具脱敏、变更归因、预览和传输租约 |
-| `EvidenceStore` | SQLite 清单、加密内容寻址快照、保留策略和按需重建 |
-| `ArtifactPreview` | 图片缩放和隔离、禁网的 HTML 静态截图 |
-| `packages/protocol` | 请求/响应/事件/证据/快照、AES-GCM、设备定向 ACK |
-| `BridgeTransport` | 公网与局域网使用同一 Envelope、ACK、幂等和事件 cursor |
-| `WebRtcTransport` | 加密信令、五秒直连竞争、DataChannel 分块、ACK 与无缝回退 |
-| `apps/relay` | 鉴权、SQLite 离线密文、分块、撤销、指标、备份和无正文推送 |
-| `apps/client` | 手机三层导航和电脑轻量控制台 |
+| `apps/desktop/src/claude/`（`claude-desktop-bridge.ts` 等） | 通过本机 inspector 转发 `LocalSessions` 调用、renderer 单队列事件与权限请求；旧连接退役模块隔离在 `apps/desktop/src/legacy/` |
+| `apps/desktop/src/app/` | Electron 主进程/preload 入口、独立后台服务 IPC、跨平台路径与 `developer_settings.json` 授权 |
+| `apps/desktop/src/transcript/` | JSONL 对话历史、DAG 分支与 fork 边界、主会话上下文 token 估算及子代理扫描 |
+| `apps/desktop/src/controller/`（`ConversationStateStore` / `SessionEventLog`） | `DesktopController` 快照编排、无状态 RPC 分发、原生请求幂等收据与单调 `seq` 事件重放（不作为 Claude 历史回退源） |
+| `apps/desktop/src/evidence/`（`EvidenceManager` / `EvidenceStore` / `ArtifactPreview`） | 被动轮次证据采集、SQLite 清单与 AES-GCM 内容寻址快照、禁网隔离的 HTML/图片预览及分块传输 |
+| `packages/protocol/src/` | 协议 V3 请求/响应/事件/快照、AES-256-GCM、64 KiB 分帧压缩、`BridgeTransport` / `WebRtcTransport` 及桌面 IPC 契约（`desktop-ipc.ts`） |
+| `apps/relay/src/` | 零明文 WebSocket 路由、SQLite 离线密文队列、分块转发、设备撤销、备份和无正文推送唤醒 |
+| `apps/client/src/` | 手机三层工作台、电脑轻量控制台（`components/` + `lib/conversation-timeline.ts`）及端到端加密状态机与本地保险库（`hooks/` + `lib/vault.ts`） |
 
 ## 跨 Desktop 串行接力（0.7，历史）
 

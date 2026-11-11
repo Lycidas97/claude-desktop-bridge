@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm as recycle, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+createRequire(import.meta.url)('./recycle-cleanup.cjs');
+
+const ci = (await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')).replace(/\r\n/gu, '\n');
 const release = (await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8')).replace(/\r\n/gu, '\n');
 const assets = (await readFile(new URL('../.github/workflows/release-assets.yml', import.meta.url), 'utf8')).replace(/\r\n/gu, '\n');
 
@@ -35,10 +39,18 @@ for (const state of ['missing', 'draft', 'published']) {
       assert.equal(result.status, 0, result.stderr);
       assert.match(await readFile(output, 'utf8'), new RegExp(`version=1.3.0\\nshould_release=${state !== 'published'}\\n`));
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await recycle(directory, { recursive: true, force: true });
     }
   });
 }
+
+test('CI cancels stale PR runs without cancelling pushes to main', () => {
+  assert.match(
+    ci,
+    /concurrency:\n  group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.head_ref \|\| github\.ref_name \}\}\n  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/u,
+  );
+  assert.doesNotMatch(ci, /cancel-in-progress:\s*true/u);
+});
 
 test('release automation waits for full main CI and sends its immutable revision', () => {
   assert.match(release, /workflow_run:\n    workflows: \[CI\]\n    types: \[completed\]\n    branches: \[main\]/u);
@@ -46,7 +58,11 @@ test('release automation waits for full main CI and sends its immutable revision
   assert.match(release, /workflow_run\.event == 'push'/u);
   assert.match(release, /workflow_run\.head_repository\.full_name == github\.repository/u);
   assert.match(release, /RELEASE_REVISION: \$\{\{ github\.event\.workflow_run\.head_sha \|\| github\.sha \}\}/u);
-  assert.match(shellStep(release, 'Require successful CI for manual retry'), /--commit "\$RELEASE_REVISION" --event push --status success/u);
+  const retryGate = shellStep(release, 'Require successful CI for manual retry');
+  assert.match(retryGate, /--repo "\$GITHUB_REPOSITORY" --workflow ci\.yml/u);
+  assert.match(retryGate, /--branch main --commit "\$RELEASE_REVISION" --event push --status success --limit 20/u);
+  assert.match(retryGate, /--json headSha,status,conclusion/u);
+  assert.match(retryGate, /jq --arg rev "\$RELEASE_REVISION" 'any\(\.\[\]; \.headSha == \$rev and \.status == "completed" and \.conclusion == "success"\)'/u);
   assert.match(shellStep(release, 'Dispatch platform asset builds for the verified revision'), /--ref main -f "tag=v\$\{VERSION\}" -f "revision=\$RELEASE_REVISION"/u);
   assert.match(shellStep(release, 'Create or resume draft GitHub Release'), /gh release edit[\s\S]*--target "\$RELEASE_REVISION"/u);
 });
@@ -60,10 +76,118 @@ test('every platform and publisher uses the same resolved source; all platforms 
   }
   const source = shellStep(assets, 'Resolve source and require successful CI before publication');
   assert.match(source, /"\$REQUESTED_REVISION" != "\$REVISION"/u);
-  assert.match(source, /--commit "\$REVISION" --event push --status success/u);
+  assert.match(source, /--repo "\$GITHUB_REPOSITORY" --workflow ci\.yml/u);
+  assert.match(source, /--branch main --commit "\$REVISION" --event push --status success --limit 20/u);
+  assert.match(source, /--json headSha,status,conclusion/u);
+  assert.match(source, /jq --arg rev "\$REVISION" 'any\(\.\[\]; \.headSha == \$rev and \.status == "completed" and \.conclusion == "success"\)'/u);
   assert.match(source, /"\$TAG" == "v\$\(jq -er '\.version' package\.json\)"/u);
   assert.match(shellStep(assets, 'Generate release notes'), /git tag --merged "\$RELEASE_REVISION"/u);
   assert.doesNotMatch(shellStep(assets, 'Publish GitHub Release with platform assets'), /\$GITHUB_SHA/u);
   assert.match(shellStep(assets, 'Publish GitHub Release with platform assets'), /--target "\$RELEASE_REVISION"/u);
   assert.match(shellStep(assets, 'Stage platform assets'), /sha256sum Bridge-\* > SHA256SUMS\.txt/u);
+});
+
+test('release and release-assets CI gates accept only completed successful runs for the exact SHA', {
+  skip: process.platform === 'win32', // Production gate jobs run on Ubuntu with bash + jq.
+}, async () => {
+  const targetSha = 'a'.repeat(40);
+  const otherSha = 'b'.repeat(40);
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-ci-gate-'));
+  try {
+    const argsLog = join(directory, 'gh-args.json');
+    await writeFile(join(directory, 'package.json'), JSON.stringify({ version: '1.3.2' }));
+    await writeFile(
+      join(directory, 'git'),
+      `#!${process.execPath}\nconsole.log(${JSON.stringify(targetSha)});\n`,
+      { mode: 0o755 },
+    );
+    await writeFile(
+      join(directory, 'gh'),
+      `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(argsLog)}, JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write(process.env.MOCK_GH_RUNS ?? '[]');\n`,
+      { mode: 0o755 },
+    );
+
+    const cases = [
+      {
+        label: 'completed+success for target SHA',
+        runs: [{ headSha: targetSha, status: 'completed', conclusion: 'success' }],
+        expectPass: true,
+      },
+      {
+        label: 'mismatched headSha',
+        runs: [{ headSha: otherSha, status: 'completed', conclusion: 'success' }],
+        expectPass: false,
+      },
+      {
+        label: 'in_progress status',
+        runs: [{ headSha: targetSha, status: 'in_progress', conclusion: 'success' }],
+        expectPass: false,
+      },
+      {
+        label: 'cancelled conclusion',
+        runs: [{ headSha: targetSha, status: 'completed', conclusion: 'cancelled' }],
+        expectPass: false,
+      },
+      {
+        label: 'failure conclusion',
+        runs: [{ headSha: targetSha, status: 'completed', conclusion: 'failure' }],
+        expectPass: false,
+      },
+      {
+        label: 'empty run list',
+        runs: [],
+        expectPass: false,
+      },
+    ];
+
+    const releaseGate = shellStep(release, 'Require successful CI for manual retry');
+    const assetsGate = shellStep(assets, 'Resolve source and require successful CI before publication');
+
+    for (const { label, runs, expectPass } of cases) {
+      const output = join(directory, 'github-output');
+      await writeFile(output, '');
+      const baseEnv = {
+        ...process.env,
+        PATH: `${directory}:${process.env.PATH}`,
+        GITHUB_REPOSITORY: 'fixture/bridge',
+        MOCK_GH_RUNS: JSON.stringify(runs),
+      };
+
+      const releaseResult = spawnSync('bash', ['-c', releaseGate], {
+        cwd: directory,
+        encoding: 'utf8',
+        env: { ...baseEnv, RELEASE_REVISION: targetSha },
+      });
+      if (expectPass) {
+        assert.equal(releaseResult.status, 0, `release.yml gate failed (${label}): ${releaseResult.stderr}`);
+        assert.deepEqual(JSON.parse(await readFile(argsLog, 'utf8')), [
+          'run', 'list', '--repo', 'fixture/bridge', '--workflow', 'ci.yml',
+          '--branch', 'main', '--commit', targetSha, '--event', 'push',
+          '--status', 'success', '--limit', '20', '--json', 'headSha,status,conclusion',
+        ]);
+      } else {
+        assert.notEqual(releaseResult.status, 0, `release.yml gate unexpectedly passed (${label})`);
+      }
+
+      const assetsResult = spawnSync('bash', ['-c', assetsGate], {
+        cwd: directory,
+        encoding: 'utf8',
+        env: {
+          ...baseEnv,
+          GITHUB_OUTPUT: output,
+          GITHUB_EVENT_NAME: 'workflow_dispatch',
+          TAG: 'v1.3.2',
+          REQUESTED_REVISION: targetSha,
+        },
+      });
+      if (expectPass) {
+        assert.equal(assetsResult.status, 0, `release-assets.yml gate failed (${label}): ${assetsResult.stderr}`);
+        assert.equal(await readFile(output, 'utf8'), `revision=${targetSha}\n`);
+      } else {
+        assert.notEqual(assetsResult.status, 0, `release-assets.yml gate unexpectedly passed (${label})`);
+      }
+    }
+  } finally {
+    await recycle(directory, { recursive: true, force: true });
+  }
 });

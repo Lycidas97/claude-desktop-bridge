@@ -1,0 +1,915 @@
+import type {
+  BridgeArtifactManifest,
+  BridgeArtifactPreview,
+  BridgeEvidenceBundle,
+  BridgeEvidenceDetailPage,
+  BridgeTokenUsage,
+  BridgeToolEvidence,
+} from "@bridge/protocol";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Code2,
+  Download,
+  Eye,
+  File,
+  FileCode2,
+  FileDiff,
+  FileImage,
+  FileText,
+  LoaderCircle,
+  MoreHorizontal,
+  Terminal,
+  Wrench,
+  X,
+  ZoomOut,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { SessionEvidenceState } from "../../hooks/useMobileBridge.js";
+import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
+import { desktopRuntimeName } from "../../lib/runtime-labels.js";
+import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
+import { IconButton } from "../common/IconButton.js";
+import { artifactMediaTarget, formatBytes, mediaArtifacts } from "../../lib/media-preview.js";
+import { MediaGallery } from "./MediaGallery.js";
+import { useFilePreviewConfirmation, useMediaPreview } from "./MediaPreviewProvider.js";
+
+function confidenceLabel(value: BridgeEvidenceBundle["confidence"]): string {
+  if (value === "exact") return "精确";
+  if (value === "inferred") return "事后恢复";
+  return "部分";
+}
+
+function stateLabel(value: BridgeEvidenceBundle["state"]): string {
+  if (value === "collecting") return "正在归档";
+  if (value === "failed") return "归档失败";
+  return "已归档";
+}
+
+function formatTime(value: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
+}
+
+function formatClock(value: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(value);
+}
+
+/** Real elapsed time; callers must never pass a fabricated end for running records. */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} 秒`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  if (minutes < 60) return seconds ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} 时 ${minutes % 60} 分`;
+}
+
+function formatTokens(value: number): string {
+  if (value < 1000) return String(value);
+  if (value < 10_000) return `${(value / 1000).toFixed(1)}k`;
+  return `${(value / 10_000).toFixed(1)} 万`;
+}
+
+function usageLabel(usage: BridgeTokenUsage): string {
+  const output = usage.outputTokens ?? 0;
+  const input = (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0);
+  const parts = [`输出 ${formatTokens(output)}`];
+  if (input > 0) parts.unshift(`输入 ${formatTokens(input)}`);
+  if ((usage.reasoningTokens ?? 0) > 0) parts.push(`推理 ${formatTokens(usage.reasoningTokens!)}`);
+  return parts.join(" · ");
+}
+
+function artifactIcon(artifact: BridgeArtifactManifest) {
+  if (artifact.kind === "image") return <FileImage size={18} />;
+  if (artifact.kind === "html") return <FileCode2 size={18} />;
+  if (artifact.kind === "code") return <Code2 size={18} />;
+  if (artifact.kind === "diff") return <FileDiff size={18} />;
+  if (artifact.kind === "text" || artifact.kind === "log") return <FileText size={18} />;
+  return <File size={18} />;
+}
+
+function changeLabel(value: BridgeArtifactManifest["changeKind"]): string {
+  if (value === "created") return "新增";
+  if (value === "modified") return "修改";
+  if (value === "deleted") return "删除";
+  if (value === "renamed") return "重命名";
+  return "发现";
+}
+
+function bundleSourceLabel(bundle: BridgeEvidenceBundle): string {
+  if (bundle.source === "runtime-host") {
+    return bundle.runtimeId ? `${desktopRuntimeName(bundle.runtimeId)} 任务` : "运行时任务";
+  }
+  return bundle.source === "bridge-host" ? "Bridge 任务" : "Claude Desktop";
+}
+
+interface TimelineSelection {
+  from: number;
+  to: number;
+}
+
+/**
+ * 轨迹式总览条：钉在成果列表上方，把每一轮的真实开始时间与耗时按时间轴
+ * 从左到右投影。进行中的轮次只画开始标记，绝不虚构跨度。滚轮缩放时间域，
+ * 拖选区间过滤下方列表，右键清除选择；仍有更早成果时左端保留省略号入口。
+ */
+function EvidenceTimeline({
+  bundles,
+  hasMore,
+  loading,
+  selection,
+  onSelect,
+  onLoadMore,
+}: {
+  bundles: BridgeEvidenceBundle[];
+  hasMore: boolean;
+  loading: boolean;
+  selection: TimelineSelection | undefined;
+  onSelect(selection: TimelineSelection | undefined): void;
+  onLoadMore(): Promise<void>;
+}) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const [draft, setDraft] = useState<TimelineSelection>();
+  const [zoom, setZoom] = useState<{ from: number; to: number }>();
+
+  const domain = useMemo(() => {
+    let from = Number.POSITIVE_INFINITY;
+    let to = Number.NEGATIVE_INFINITY;
+    for (const bundle of bundles) {
+      from = Math.min(from, bundle.startedAt);
+      // Running bundles contribute only their start tick: the domain never
+      // pretends a span that has not been recorded yet.
+      to = Math.max(to, bundle.completedAt ?? bundle.startedAt);
+    }
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return undefined;
+    if (to - from < 1_000) {
+      from -= 30_000;
+      to += 30_000;
+    }
+    return { from, to };
+  }, [bundles]);
+
+  // Reset the zoom window when the loaded range changes materially.
+  useEffect(() => {
+    setZoom(undefined);
+  }, [domain?.from, domain?.to]);
+
+  const view = zoom ?? domain;
+
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track || !domain) return undefined;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = track.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      setZoom((current) => {
+        const base = current ?? domain;
+        const span = base.to - base.from;
+        const factor = event.deltaY > 0 ? 1.25 : 0.8;
+        const nextSpan = Math.min(domain.to - domain.from, Math.max(500, span * factor));
+        const anchor = base.from + span * ratio;
+        let from = anchor - nextSpan * ratio;
+        let to = from + nextSpan;
+        if (from < domain.from) {
+          from = domain.from;
+          to = from + nextSpan;
+        }
+        if (to > domain.to) {
+          to = domain.to;
+          from = to - nextSpan;
+        }
+        if (nextSpan >= domain.to - domain.from) return undefined;
+        return { from, to };
+      });
+    };
+    track.addEventListener("wheel", onWheel, { passive: false });
+    return () => track.removeEventListener("wheel", onWheel);
+  }, [domain]);
+
+  if (!domain || !view || bundles.length === 0) return null;
+  const span = Math.max(1, view.to - view.from);
+  const position = (at: number) => `${Math.min(100, Math.max(0, ((at - view.from) / span) * 100))}%`;
+  const width = (from: number, to: number) => `${Math.max(0.6, ((to - from) / span) * 100)}%`;
+
+  function commitDraft(next: TimelineSelection | undefined): void {
+    setDraft(undefined);
+    if (!next) return;
+    const from = Math.min(next.from, next.to);
+    const to = Math.max(next.from, next.to);
+    if (to - from < span * 0.01) return;
+    onSelect({ from, to });
+  }
+
+  const timestampAt = (clientX: number): number => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return view.from;
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return view.from + span * ratio;
+  };
+
+  const active = draft ?? selection;
+
+  return (
+    <section className="evidence-timeline" aria-label="成果时间轴总览">
+      <header>
+        <strong>总览</strong>
+        <span className="evidence-timeline-range">
+          {formatTime(view.from)} – {formatTime(view.to)}
+        </span>
+        <span className="evidence-timeline-actions">
+          {hasMore && (
+            <button
+              type="button"
+              className="evidence-timeline-more"
+              disabled={loading}
+              title="仍有更早成果未加载，点击补一页"
+              onClick={() => void onLoadMore()}
+            >
+              {loading ? <LoaderCircle className="is-spinning" size={13} /> : <MoreHorizontal size={13} />}
+              更早
+            </button>
+          )}
+          {zoom && (
+            <IconButton label="重置缩放" onClick={() => setZoom(undefined)}>
+              <ZoomOut size={13} />
+            </IconButton>
+          )}
+          {selection && (
+            <button type="button" className="evidence-timeline-clear" onClick={() => onSelect(undefined)}>
+              <X size={12} />
+              清除区间
+            </button>
+          )}
+        </span>
+      </header>
+      <div
+        className="evidence-timeline-track"
+        ref={trackRef}
+        role="presentation"
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          const at = timestampAt(event.clientX);
+          setDraft({ from: at, to: at });
+        }}
+        onPointerMove={(event) => {
+          setDraft((current) => current ? { from: current.from, to: timestampAt(event.clientX) } : current);
+        }}
+        onPointerUp={(event) => {
+          const at = timestampAt(event.clientX);
+          commitDraft(draft ? { from: draft.from, to: at } : undefined);
+        }}
+        onPointerCancel={() => setDraft(undefined)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onSelect(undefined);
+        }}
+      >
+        {bundles.map((bundle) => {
+          const running = bundle.state === "collecting";
+          return (
+            <div
+              key={bundle.id}
+              className={`evidence-timeline-bar ${bundle.state} confidence-${bundle.confidence}`}
+              style={running
+                ? { left: position(bundle.startedAt), width: "5px" }
+                : { left: position(bundle.startedAt), width: width(bundle.startedAt, bundle.completedAt ?? bundle.startedAt) }}
+              title={running
+                ? `${formatTime(bundle.startedAt)} 开始 · 进行中（耗时以实际完成为准）`
+                : `${formatTime(bundle.startedAt)} · 耗时 ${formatDuration((bundle.completedAt ?? bundle.startedAt) - bundle.startedAt)}`}
+            >
+              {!running && bundle.tools.map((tool) => (
+                <i
+                  key={tool.id}
+                  className={`evidence-timeline-tick ${tool.status}`}
+                  style={{ left: position(tool.startedAt) }}
+                />
+              ))}
+            </div>
+          );
+        })}
+        {active && (
+          <div
+            className={`evidence-timeline-selection${draft ? " is-draft" : ""}`}
+            style={{
+              left: position(Math.min(active.from, active.to)),
+              width: width(Math.min(active.from, active.to), Math.max(active.from, active.to)),
+            }}
+          />
+        )}
+      </div>
+      {selection && (
+        <p className="evidence-timeline-hint">
+          聚焦 {formatClock(selection.from)} – {formatClock(selection.to)} · 仅显示与该区间有重叠的轮次
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** 单条工具记录：行内检查器给出真实计时、退出码、输入与输出。 */
+function EvidenceToolRow({ tool }: { tool: BridgeToolEvidence }) {
+  const [open, setOpen] = useState(false);
+  const duration = tool.completedAt !== undefined ? tool.completedAt - tool.startedAt : undefined;
+  return (
+    <article className={`evidence-tool ${tool.status}${open ? " is-open" : ""}`}>
+      <button
+        type="button"
+        className="evidence-tool-main"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="evidence-tool-icon"><Terminal size={16} /></span>
+        <span className="evidence-tool-copy">
+          <strong>{tool.toolName}</strong>
+          <small>{tool.summary}</small>
+        </span>
+        <span className="evidence-tool-status">
+          {tool.exitCode !== undefined ? `退出 ${tool.exitCode}` : tool.status === "running" ? "运行中" : tool.status === "failed" ? "失败" : "完成"}
+          {duration !== undefined && <b>{formatDuration(duration)}</b>}
+          {tool.truncated && <i>已截断</i>}
+        </span>
+        <ChevronDown className="evidence-tool-chevron" size={14} />
+      </button>
+      {open && (
+        <div className="evidence-tool-inspector">
+          <div className="evidence-tool-meta">
+            <span>开始 <b>{formatClock(tool.startedAt)}</b></span>
+            {duration !== undefined
+              ? <span>耗时 <b>{formatDuration(duration)}</b></span>
+              : <span>进行中 · 不预估耗时</span>}
+            {tool.exitCode !== undefined && <span>退出码 <b>{tool.exitCode}</b></span>}
+          </div>
+          {tool.input && (
+            <div className="evidence-tool-detail">
+              <header>输入</header>
+              <pre>{tool.input}</pre>
+            </div>
+          )}
+          {tool.outputSummary && (
+            <div className="evidence-tool-detail">
+              <header>输出</header>
+              <pre>{tool.outputSummary}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+const COLLAPSED_ARTIFACT_LIMIT = 8;
+const ARTIFACT_PAGE_STEP = 30;
+
+function EvidenceArtifactSection({
+  artifacts,
+  previews,
+  transfers,
+  online,
+  previewBusy,
+  onOpenPreview,
+  onRequestDownload,
+  paged = false,
+}: {
+  artifacts: BridgeArtifactManifest[];
+  paged?: boolean;
+  previews: Record<string, BridgeArtifactPreview>;
+  transfers: Record<string, number>;
+  online: boolean;
+  previewBusy: string | undefined;
+  onOpenPreview(artifact: BridgeArtifactManifest): void;
+  onRequestDownload(artifact: BridgeArtifactManifest): void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(COLLAPSED_ARTIFACT_LIMIT);
+  const shown = paged ? artifacts : artifacts.slice(0, visibleCount);
+  const hiddenCount = Math.max(0, artifacts.length - shown.length);
+  return (
+    <section className="evidence-section">
+      <header>
+        <FileDiff size={16} />
+        <strong>{paged ? "文件与产物" : `文件与产物 (${artifacts.length})`}</strong>
+        {artifacts.length > 1 && (
+          <button
+            type="button"
+            className="media-gallery-toggle"
+            aria-expanded={!collapsed}
+            onClick={() => setCollapsed((current) => !current)}
+          >
+            {collapsed ? <>展开 <ChevronDown size={13} /></> : <>收起 <ChevronUp size={13} /></>}
+          </button>
+        )}
+      </header>
+      {!collapsed && (
+        <>
+          <div className="evidence-artifact-list">
+            {shown.map((artifact) => {
+              const cached = Boolean(previews[artifact.id]);
+              const previewable = Boolean(artifactMediaTarget(artifact)) || (artifact.previewMode !== "none"
+                && artifact.availability !== "blocked");
+              const progress = transfers[artifact.id];
+              return (
+                <article className={`evidence-artifact ${artifact.availability}`} key={artifact.id}>
+                  <span className="evidence-artifact-icon">{artifactIcon(artifact)}</span>
+                  <span className="evidence-artifact-copy">
+                    <strong>{artifact.name}</strong>
+                    <small title={artifact.relativePath}>
+                      {changeLabel(artifact.changeKind)} · {
+                        artifact.changeKind === "observed" &&
+                        artifact.availability === "current-file" &&
+                        artifact.size === 0
+                          ? "打开时校验"
+                          : formatBytes(artifact.size)
+                      } · {artifact.relativePath}
+                    </small>
+                    {artifact.blockedReason && <i>{artifact.blockedReason}</i>}
+                    {progress !== undefined && (
+                      <span className="evidence-transfer-progress">
+                        <i style={{ width: `${Math.round(progress * 100)}%` }} />
+                      </span>
+                    )}
+                  </span>
+                  <span className="evidence-artifact-actions">
+                    {previewable && (
+                      <IconButton
+                        label={cached ? `打开 ${artifact.name} 的缓存预览` : `预览 ${artifact.name}`}
+                        disabled={Boolean(previewBusy) || (!online && !cached)}
+                        onClick={() => onOpenPreview(artifact)}
+                      >
+                        {previewBusy === artifact.id
+                          ? <LoaderCircle className="is-spinning" size={17} />
+                          : <Eye size={17} />}
+                      </IconButton>
+                    )}
+                    {artifact.downloadAllowed && (
+                      <IconButton
+                        label={`下载 ${artifact.name}`}
+                        disabled={!online || progress !== undefined}
+                        onClick={() => onRequestDownload(artifact)}
+                      >
+                        {progress !== undefined
+                          ? <LoaderCircle className="is-spinning" size={17} />
+                          : <Download size={17} />}
+                      </IconButton>
+                    )}
+                  </span>
+                </article>
+              );
+            })}
+          </div>
+          {!paged && (hiddenCount > 0 || visibleCount > COLLAPSED_ARTIFACT_LIMIT) && (
+            <div className="media-gallery-actions">
+              {hiddenCount > 0 && (
+                <button
+                  type="button"
+                  className="file-changes-more"
+                  onClick={() => setVisibleCount((current) => Math.min(artifacts.length, current + ARTIFACT_PAGE_STEP))}
+                >
+                  再显示 {Math.min(hiddenCount, ARTIFACT_PAGE_STEP)} 个（剩余 {hiddenCount} 个） <ChevronDown size={14} />
+                </button>
+              )}
+              {visibleCount > COLLAPSED_ARTIFACT_LIMIT && (
+                <button
+                  type="button"
+                  className="file-changes-more"
+                  onClick={() => setVisibleCount(COLLAPSED_ARTIFACT_LIMIT)}
+                >
+                  收起至前 {COLLAPSED_ARTIFACT_LIMIT} 个 <ChevronUp size={14} />
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+type EvidenceDetailsLoader = (
+  evidenceId: string, kind: "tools" | "artifacts", cursor?: string,
+) => Promise<BridgeEvidenceDetailPage>;
+
+/** Mounted only while its bundle is open; stores one detail page per kind. */
+function EvidenceDetailSection({
+  evidenceId, kind, total, online, onLoadDetails,
+  previews, transfers, previewBusy, onOpenPreview, onRequestDownload,
+}: {
+  evidenceId: string;
+  kind: "tools" | "artifacts";
+  total: number;
+  online: boolean;
+  onLoadDetails: EvidenceDetailsLoader;
+  previews: Record<string, BridgeArtifactPreview>;
+  transfers: Record<string, number>;
+  previewBusy: string | undefined;
+  onOpenPreview(artifact: BridgeArtifactManifest): void;
+  onRequestDownload(artifact: BridgeArtifactManifest): void;
+}) {
+  const [page, setPage] = useState<BridgeEvidenceDetailPage>();
+  const [pageIndex, setPageIndex] = useState(0);
+  // Retain only cursor strings for back navigation, never earlier page items.
+  const [cursors, setCursors] = useState<Array<string | undefined>>([undefined]);
+  const [loading, setLoading] = useState(false);
+  const [failure, setFailure] = useState<{ message: string; index: number; cursors: Array<string | undefined> }>();
+  const label = kind === "tools" ? "工具与命令" : "文件与产物";
+
+  async function load(index: number, nextCursors = cursors): Promise<void> {
+    setLoading(true);
+    setFailure(undefined);
+    try {
+      setPage(await onLoadDetails(evidenceId, kind, nextCursors[index]));
+      setPageIndex(index);
+      setCursors(nextCursors);
+    } catch (error) {
+      setFailure({ message: error instanceof Error ? error.message : "成果详情加载失败", index, cursors: nextCursors });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (online && !page && !failure) void load(0);
+    // Summary updates and changing callback identities must not move the reader.
+    // Reconnection only starts an initial load if this section opened offline.
+  }, [evidenceId, kind, online]);
+
+  return (
+    <section className="evidence-section" aria-label={label} aria-busy={loading}>
+      {kind === "tools" && <header><Wrench size={16} /><strong>{label}</strong></header>}
+      {kind === "artifacts" && !page && <header><FileDiff size={16} /><strong>{label}</strong></header>}
+      {page?.kind === "tools" && (
+        <div className="evidence-tool-list">
+          {page.items.map((tool) => <EvidenceToolRow tool={tool} key={tool.id} />)}
+        </div>
+      )}
+      {page?.kind === "artifacts" && (
+        <EvidenceArtifactSection
+          artifacts={page.items}
+          paged
+          previews={previews}
+          transfers={transfers}
+          online={online}
+          previewBusy={previewBusy}
+          onOpenPreview={onOpenPreview}
+          onRequestDownload={onRequestDownload}
+        />
+      )}
+      {page?.items.length === 0 && <div className="evidence-bundle-empty">本页没有{label}</div>}
+      {!page && !online && <div className="evidence-offline">连接主机后可加载{label}</div>}
+      {failure && <div className="evidence-error" role="alert"><AlertTriangle size={16} />{failure.message}</div>}
+      <div className="media-gallery-actions">
+        <span>{page ? `共 ${total} 项 · 第 ${pageIndex + 1} 页` : `共 ${total} 项`}</span>
+        {loading && <span><LoaderCircle className="is-spinning" size={14} />正在加载</span>}
+        <button
+          type="button" className="file-changes-more" aria-label={`${label}上一页`}
+          disabled={!online || loading || !page || pageIndex === 0}
+          onClick={() => void load(pageIndex - 1)}
+        >上一页</button>
+        <button
+          type="button" className="file-changes-more" aria-label={`${label}下一页`}
+          disabled={!online || loading || !page?.hasMore}
+          onClick={() => void load(pageIndex + 1, [...cursors.slice(0, pageIndex + 1), page!.nextCursor])}
+        >下一页</button>
+        {failure ? (
+          <button
+            type="button" className="file-changes-more" aria-label={`重试${label}`}
+            disabled={!online || loading}
+            onClick={() => void load(failure.index, failure.cursors)}
+          >重试</button>
+        ) : (
+          <button
+            type="button" className="file-changes-more" aria-label={`刷新${label}`}
+            disabled={!online || loading}
+            onClick={() => void load(pageIndex)}
+          >刷新</button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+export function EvidenceInlineSummary({
+  evidence,
+  onOpen,
+  entering = false,
+}: {
+  evidence: BridgeEvidenceBundle;
+  onOpen(): void;
+  entering?: boolean;
+}) {
+  if (
+    evidence.state !== "failed"
+    && evidence.changeCount === 0
+    && evidence.artifactCount === 0
+  ) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (evidence.changeCount > 0) parts.push(`${evidence.changeCount} 处文件变更`);
+  if (evidence.artifactCount > 0) parts.push(`${evidence.artifactCount} 个产物`);
+  if (evidence.toolCount > 0) parts.push(`${evidence.toolCount} 次工具调用`);
+  if (parts.length === 0) parts.push("本轮执行记录");
+
+  return (
+    <div className="evidence-inline-output" data-stream-key={`evidence:${evidence.id}`}>
+      <MediaGallery artifacts={mediaArtifacts([evidence])} />
+    <button type="button" className={`evidence-inline-summary ${evidence.confidence}${entering ? " is-entering" : ""}`} onClick={onOpen}>
+      <span className="evidence-inline-icon">
+        {evidence.state === "collecting"
+          ? <LoaderCircle className="is-spinning" size={15} />
+          : evidence.state === "failed"
+            ? <AlertTriangle size={15} />
+            : <CheckCircle2 size={15} />}
+      </span>
+      <span className="evidence-inline-copy">
+        <strong>{parts.join(" · ")}</strong>
+      </span>
+      <b>查看</b>
+    </button>
+    </div>
+  );
+}
+
+export function EvidencePanel({
+  state,
+  previews,
+  transfers,
+  online,
+  suppressEmpty = false,
+  onLoadMore,
+  onLoadDetails,
+  onPreview,
+  onDownload,
+}: {
+  state: SessionEvidenceState | undefined;
+  previews: Record<string, BridgeArtifactPreview>;
+  transfers: Record<string, number>;
+  online: boolean;
+  /** The aggregated file-changes card already covers the empty state. */
+  suppressEmpty?: boolean;
+  onLoadMore(): Promise<void>;
+  onLoadDetails?: EvidenceDetailsLoader;
+  onPreview(artifactId: string): Promise<BridgeArtifactPreview>;
+  onDownload(artifact: BridgeArtifactManifest): Promise<void>;
+}) {
+  const openMedia = useMediaPreview();
+  const confirmPreview = useFilePreviewConfirmation();
+  const [selectedArtifact, setSelectedArtifact] = useState<BridgeArtifactManifest>();
+  const [previewBusy, setPreviewBusy] = useState<string>();
+  const [pendingDownload, setPendingDownload] = useState<BridgeArtifactManifest>();
+  const [error, setError] = useState("");
+  const [selection, setSelection] = useState<TimelineSelection>();
+  // Full legacy bundles keep their initial open state; summaries wait for a click.
+  const initialOpenId = useRef<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const selectedPreview = selectedArtifact ? previews[selectedArtifact.id] : undefined;
+
+  const items = state?.items ?? [];
+  if (initialOpenId.current === null && items.length > 0) {
+    initialOpenId.current = items[0]?.id ?? null;
+  }
+  const visibleItems = useMemo(() => {
+    if (!selection) return items;
+    return items.filter((bundle) => {
+      const end = bundle.completedAt ?? Date.now();
+      return bundle.startedAt <= selection.to && end >= selection.from;
+    });
+  }, [items, selection]);
+
+  useEffect(() => {
+    if (!selectedArtifact) return undefined;
+    return registerMobileBackHandler(() => {
+      setSelectedArtifact(undefined);
+      return true;
+    }, 200);
+  }, [selectedArtifact]);
+
+  function openPreview(artifact: BridgeArtifactManifest): void {
+    setError("");
+    if (previews[artifact.id]) { setSelectedArtifact(artifact); return; }
+    const media = artifactMediaTarget(artifact);
+    if (media) { openMedia(media); return; }
+    confirmPreview({ name: artifact.name, artifactId: artifact.id }, () => {
+      setPreviewBusy(artifact.id);
+      void onPreview(artifact.id).then(() => setSelectedArtifact(artifact)).catch((previewError: unknown) => {
+        setError(previewError instanceof Error ? previewError.message : "成果预览失败");
+      }).finally(() => setPreviewBusy(undefined));
+    });
+  }
+
+  async function download(artifact: BridgeArtifactManifest): Promise<void> {
+    setError("");
+    try {
+      await onDownload(artifact);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : "成果下载失败");
+    }
+  }
+
+  if (state?.status === "loading" && state.items.length === 0) {
+    return <div className="evidence-empty"><LoaderCircle className="is-spinning" size={20} /><strong>正在读取成果证据</strong></div>;
+  }
+  if (state?.status === "error" && state.items.length === 0) {
+    return <div className="evidence-empty"><AlertTriangle size={20} /><strong>成果清单暂时无法读取</strong></div>;
+  }
+  if (!state || state.items.length === 0) {
+    if (suppressEmpty) return null;
+    return <div className="evidence-empty"><FileDiff size={22} /><strong>这个会话还没有成果证据</strong></div>;
+  }
+
+  return (
+    <section className="evidence-panel">
+      {error && <div className="evidence-error"><AlertTriangle size={16} />{error}</div>}
+      {!online && <div className="evidence-offline">主机离线 · 已缓存预览仍可打开</div>}
+      <EvidenceTimeline
+        bundles={items}
+        hasMore={state.hasMore}
+        loading={state.status === "loading"}
+        selection={selection}
+        onSelect={setSelection}
+        onLoadMore={onLoadMore}
+      />
+      <div className="evidence-bundles">
+        {visibleItems.length === 0 && (
+          <div className="evidence-bundle-empty evidence-filtered-empty">
+            所选区间没有覆盖任何轮次
+            <button type="button" className="secondary-button" onClick={() => setSelection(undefined)}>清除区间</button>
+          </div>
+        )}
+        {visibleItems.map((bundle) => {
+          // items arrive newest-first; numbering is absolute only once the
+          // full history is loaded (prefix pages would renumber everything).
+          const turnNumber = state.hasMore ? undefined : items.length - items.indexOf(bundle);
+          const duration = bundle.completedAt !== undefined ? bundle.completedAt - bundle.startedAt : undefined;
+          const open = expanded[bundle.id] ?? (!bundle.detailsAvailable && bundle.id === initialOpenId.current);
+          return (
+            <details
+              className={`evidence-bundle ${bundle.confidence}`}
+              open={open}
+              key={bundle.id}
+              onToggle={(event) => {
+                const next = event.currentTarget.open;
+                setExpanded((current) => current[bundle.id] === next ? current : { ...current, [bundle.id]: next });
+              }}
+            >
+              <summary>
+                <span className="evidence-state-icon">
+                  {bundle.state === "collecting"
+                    ? <LoaderCircle className="is-spinning" size={17} />
+                    : bundle.state === "failed"
+                      ? <AlertTriangle size={17} />
+                      : <CheckCircle2 size={17} />}
+                </span>
+                <span className="evidence-bundle-title">
+                  <strong>{turnNumber !== undefined ? `第 ${turnNumber} 轮 · ` : ""}{formatTime(bundle.startedAt)}</strong>
+                  <small>{bundleSourceLabel(bundle)} · {stateLabel(bundle.state)}</small>
+                </span>
+                <span className="evidence-counts">
+                  <b>{bundle.toolCount}</b> 工具
+                  <b>{bundle.changeCount}</b> 变化
+                  <b>{bundle.artifactCount}</b> 产物
+                </span>
+                {bundle.usage && (
+                  <span className="evidence-usage" title={usageLabel(bundle.usage)}>
+                    {formatTokens(
+                      (bundle.usage.inputTokens ?? 0) +
+                      (bundle.usage.cacheReadTokens ?? 0) +
+                      (bundle.usage.outputTokens ?? 0),
+                    )} tok
+                  </span>
+                )}
+                {duration !== undefined && (
+                  <span className="evidence-duration">{formatDuration(duration)}</span>
+                )}
+                <span className={`evidence-confidence ${bundle.confidence}`}>{confidenceLabel(bundle.confidence)}</span>
+                <ChevronDown className="evidence-chevron" size={17} />
+              </summary>
+              {open && <div className="evidence-bundle-body">
+                {bundle.warnings.length > 0 && (
+                  <div className="evidence-warnings">
+                    {bundle.warnings.map((warning) => <span key={warning}><AlertTriangle size={14} />{warning}</span>)}
+                  </div>
+                )}
+                {bundle.usage && (
+                  <div className="evidence-usage-detail">
+                    <span>Token 用量</span>
+                    <strong>{usageLabel(bundle.usage)}</strong>
+                  </div>
+                )}
+                {bundle.detailsAvailable ? (onLoadDetails ? (
+                  <>
+                    {(["tools", "artifacts"] as const).map((kind) => (
+                      <EvidenceDetailSection
+                        key={`${bundle.id}:${kind}`}
+                        evidenceId={bundle.id}
+                        kind={kind}
+                        total={kind === "tools" ? bundle.toolCount : bundle.artifactCount}
+                        online={online}
+                        onLoadDetails={onLoadDetails}
+                        previews={previews}
+                        transfers={transfers}
+                        previewBusy={previewBusy}
+                        onOpenPreview={(artifact) => void openPreview(artifact)}
+                        onRequestDownload={setPendingDownload}
+                      />
+                    ))}
+                  </>
+                ) : <div className="evidence-bundle-empty">当前连接暂不支持读取成果详情</div>) : <>
+                {bundle.tools.length > 0 && (
+                  <section className="evidence-section">
+                    <header><Wrench size={16} /><strong>工具与命令</strong></header>
+                    <div className="evidence-tool-list">
+                      {bundle.tools.map((tool) => <EvidenceToolRow tool={tool} key={tool.id} />)}
+                    </div>
+                  </section>
+                )}
+                {bundle.artifacts.length > 0 && (
+                  <EvidenceArtifactSection
+                    artifacts={bundle.artifacts}
+                    previews={previews}
+                    transfers={transfers}
+                    online={online}
+                    previewBusy={previewBusy}
+                    onOpenPreview={(artifact) => void openPreview(artifact)}
+                    onRequestDownload={(artifact) => setPendingDownload(artifact)}
+                  />
+                )}
+                {bundle.tools.length === 0 && bundle.artifacts.length === 0 && (
+                  <div className="evidence-bundle-empty">本轮没有可恢复的工具或文件成果</div>
+                )}
+                </>}
+              </div>}
+            </details>
+          );
+        })}
+      </div>
+      {state.hasMore && (
+        <button type="button" className="load-older-button" disabled={state.status === "loading"} onClick={() => void onLoadMore()}>
+          {state.status === "loading" && <LoaderCircle className="is-spinning" size={15} />}
+          加载更早成果
+        </button>
+      )}
+      {selectedArtifact && selectedPreview && (
+        <div className="artifact-preview-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setSelectedArtifact(undefined);
+        }}>
+          <section className="artifact-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="artifact-preview-title">
+            <header>
+              <div>
+                <span>{selectedArtifact.relativePath}</span>
+                <h2 id="artifact-preview-title">{selectedArtifact.name}</h2>
+              </div>
+              <IconButton label="关闭预览" onClick={() => setSelectedArtifact(undefined)}><X size={19} /></IconButton>
+            </header>
+            <div className={`artifact-preview-content ${selectedPreview.mode}`}>
+              {selectedPreview.encoding === "base64" ? (
+                <img
+                  alt={selectedArtifact.name}
+                  src={`data:${selectedPreview.mimeType};base64,${selectedPreview.data}`}
+                />
+              ) : (
+                <pre>{selectedPreview.data}</pre>
+              )}
+            </div>
+            <footer>
+              <span>{selectedPreview.truncated ? "预览已截断" : formatBytes(selectedArtifact.size)}</span>
+              {selectedArtifact.downloadAllowed && (
+                <button type="button" className="secondary-button" disabled={!online} onClick={() => setPendingDownload(selectedArtifact)}>
+                  <Download size={16} />下载
+                </button>
+              )}
+            </footer>
+          </section>
+        </div>
+      )}
+      <ConfirmationDialog
+        open={Boolean(pendingDownload)}
+        title="确认下载文件到手机？"
+        description={pendingDownload
+          ? `即将从电脑下载「${pendingDownload.name}」（${pendingDownload.relativePath}${pendingDownload.size > 0 ? ` · ${formatBytes(pendingDownload.size)}` : ""}）到当前设备。`
+          : ""}
+        confirmLabel="确认下载"
+        onCancel={() => setPendingDownload(undefined)}
+        onConfirm={() => {
+          const target = pendingDownload;
+          setPendingDownload(undefined);
+          if (target) void download(target);
+        }}
+      />
+    </section>
+  );
+}

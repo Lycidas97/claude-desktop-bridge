@@ -1,0 +1,570 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  DesktopConfigRepository,
+  fileSecretProtector,
+  safeStorageSecretProtector,
+  type SecretProtector,
+} from "./config.js";
+import { DEFAULT_BRIDGE_ICE_SERVERS } from "@bridge/protocol";
+import { removeLegacyConnector } from "../claude/connector.js";
+import { localNetworkAddress } from "../app/platform.js";
+
+const directories: string[] = [];
+const protector: SecretProtector = {
+  available: () => true,
+  protect: (value) => `test:${Buffer.from(value).toString("base64")}`,
+  unprotect: (value) => Buffer.from(value.slice(5), "base64").toString("utf8"),
+};
+
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+describe("desktop configuration", () => {
+  it.each([
+    ["wss://manual.example:9443/custom/ws?region=west", "https://manual.example:9443"],
+    ["ws://192.168.99.99:8788/custom/ws?region=west", "http://192.168.99.99:8788"],
+  ])("preserves manual relay override %s across saves and packaged default changes", async (url, origin) => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-override-"));
+    try {
+      const path = join(directory, "bridge-config.json");
+      const original = new DesktopConfigRepository(path, protector, {
+        relayUrl: "wss://old.example/ws",
+        publicRelayUrl: "wss://old.example/ws",
+        desktopName: "Test PC",
+        iceServers: [{ urls: "stun:custom.example:3478" }],
+      });
+      const created = await original.loadOrCreate();
+      created.devices.push({
+        deviceId: "phone-override", name: "Phone", platform: "android", secret: "phone-secret",
+        createdAt: 1_000, expiresAt: 2_000, pairedAt: 1_100,
+      });
+      await original.save({ ...created, relayUrlOverride: `  ${url}  ` });
+      const persisted = JSON.parse(await readFile(path, "utf8"));
+      expect(persisted).toMatchObject({ version: 4, protocolVersion: 3, relayUrlOverride: url });
+      expect(persisted.relayEndpoints).toEqual([{
+        id: "manual", kind: url.startsWith("ws:") ? "lan-relay" : "public-relay", url, priority: 0,
+      }]);
+
+      const updated = new DesktopConfigRepository(path, protector, {
+        relayUrl: "ws://10.0.0.2:8788/ws",
+        publicRelayUrl: "wss://new.example/ws",
+        serviceOrigin: "https://new.example",
+        desktopName: "Test PC",
+      });
+      const loaded = await updated.load();
+      expect(loaded).toMatchObject({
+        relayUrlOverride: url, relayUrl: url, serviceOrigin: origin, activeEndpoint: "manual",
+        roomId: created.roomId, hostDeviceId: created.hostDeviceId,
+        hostSecret: created.hostSecret, evidenceKey: created.evidenceKey,
+        pairingEpoch: created.pairingEpoch, devices: created.devices, iceServers: created.iceServers,
+      });
+      expect(loaded?.relayEndpoints).toEqual(persisted.relayEndpoints);
+      await updated.save(loaded!);
+      expect(await updated.load()).toEqual(loaded);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("honors an additive manual override before refreshing old endpoint selections", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-override-"));
+    try {
+      const path = join(directory, "bridge-config.json");
+      const repository = new DesktopConfigRepository(path, protector, {
+        relayUrl: "wss://packaged.example/ws", publicRelayUrl: "wss://packaged.example/ws",
+        desktopName: "Test PC",
+      });
+      const created = await repository.loadOrCreate();
+      const stored = JSON.parse(await readFile(path, "utf8"));
+      stored.relayUrlOverride = "ws://192.168.99.99:8788/chosen?route=one";
+      await writeFile(path, JSON.stringify(stored));
+      const loaded = await repository.load();
+      expect(loaded).toMatchObject({
+        relayUrl: stored.relayUrlOverride, relayUrlOverride: stored.relayUrlOverride,
+        activeEndpoint: "manual", serviceOrigin: "http://192.168.99.99:8788",
+        roomId: created.roomId, hostSecret: created.hostSecret, evidenceKey: created.evidenceKey,
+      });
+      expect(loaded?.relayEndpoints).toHaveLength(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("heals fossil private-IPv4 LAN relay endpoints to the current address on load", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(
+      path,
+      fileSecretProtector(),
+      { relayUrl: "wss://relay.example/ws", desktopName: "Test PC" },
+    );
+    await repository.loadOrCreate();
+    const stored = JSON.parse(await readFile(path, "utf8")) as {
+      relayEndpoints: Array<{ id: string; kind: string; url: string; priority: number }>;
+    };
+    stored.relayEndpoints.push({
+      id: "lan",
+      kind: "lan-relay",
+      url: "ws://192.168.99.99:8788/ws",
+      priority: 20,
+    });
+    await writeFile(path, JSON.stringify(stored));
+
+    const loaded = await repository.load();
+    const lan = loaded?.relayEndpoints.find((endpoint) => endpoint.kind === "lan-relay");
+    expect(lan?.url).toBe(`ws://${localNetworkAddress()}:8788/ws`);
+    const persisted = JSON.parse(await readFile(path, "utf8")) as typeof stored;
+    expect(persisted.relayEndpoints.find((endpoint) => endpoint.kind === "lan-relay")?.url)
+      .toBe(`ws://${localNetworkAddress()}:8788/ws`);
+  });
+
+  it("uses a protected mode-0600 file fallback without plaintext secrets", () => {
+    const fileProtector = fileSecretProtector();
+    const protectedValue = fileProtector.protect("host-secret");
+
+    expect(protectedValue).toMatch(/^file:/u);
+    expect(protectedValue).not.toContain("host-secret");
+    expect(fileProtector.unprotect(protectedValue)).toBe("host-secret");
+  });
+
+  it("uses Electron safeStorage for the evidence key when available", () => {
+    const storage = {
+      isEncryptionAvailable: () => true,
+      encryptString: (value: string) => Buffer.from(`sealed:${value}`, "utf8"),
+      decryptString: (value: Buffer) => value.toString("utf8").slice("sealed:".length),
+    };
+    const safeProtector = safeStorageSecretProtector(storage);
+    const protectedValue = safeProtector.protect("evidence-master-key");
+
+    expect(protectedValue).toMatch(/^os:/u);
+    expect(protectedValue).not.toContain("evidence-master-key");
+    expect(safeProtector.unprotect(protectedValue)).toBe("evidence-master-key");
+  });
+
+  it("keeps transport identities in the mode-0600 config and seals only the evidence key", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const evidenceProtector = safeStorageSecretProtector({
+      isEncryptionAvailable: () => true,
+      encryptString: (value: string) => Buffer.from(`sealed:${value}`, "utf8"),
+      decryptString: (value: Buffer) => value.toString("utf8").slice("sealed:".length),
+    });
+    const repository = new DesktopConfigRepository(
+      path,
+      fileSecretProtector(),
+      {
+        relayUrl: "wss://relay.example/ws",
+        desktopName: "Test PC",
+      },
+      evidenceProtector,
+    );
+    await repository.loadOrCreate();
+    const stored = JSON.parse(await readFile(path, "utf8")) as {
+      protectedHostSecret: string;
+      protectedEvidenceKey: string;
+    };
+
+    expect(stored.protectedHostSecret).toMatch(/^file:/u);
+    expect(stored.protectedEvidenceKey).toMatch(/^os:/u);
+    await expect(repository.load()).resolves.toBeTruthy();
+  });
+
+  it("persists the host secret and independent device secrets in protected form", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const created = await repository.loadOrCreate();
+    created.devices.push({
+      deviceId: "phone-1",
+      name: "Android",
+      platform: "android",
+      secret: "independent-device-secret",
+      createdAt: 1_000,
+      expiresAt: 2_000,
+    });
+    await repository.save(created);
+    const raw = await readFile(path, "utf8");
+
+    expect(raw).not.toContain(created.hostSecret);
+    expect(raw).not.toContain(created.evidenceKey);
+    expect(raw).not.toContain("independent-device-secret");
+    expect((await repository.load())?.devices[0]?.secret).toBe("independent-device-secret");
+  });
+
+  it("persists the computer permission mode across restarts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const created = await repository.loadOrCreate();
+    expect(created.defaultPermissionMode).toBe("standard");
+
+    created.defaultPermissionMode = "full-access";
+    await repository.save(created);
+
+    expect((await repository.load())?.defaultPermissionMode).toBe("full-access");
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+      version: 4,
+      defaultPermissionMode: "full-access",
+    });
+  });
+
+  it("persists per-runtime permission modes across restarts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const created = await repository.loadOrCreate();
+    expect(created.runtimePermissionModes).toEqual({});
+
+    created.runtimePermissionModes = {
+      "codex-desktop": "full-access", "hermes-desktop": "standard", "dsh-desktop": "full-access",
+    };
+    created.devices.push({
+      deviceId: "saved-phone", name: "Phone", platform: "android", secret: "synthetic-phone-secret",
+      createdAt: 1_000, expiresAt: 2_000, pairedAt: 1_100,
+    });
+    await repository.save(created);
+
+    const loaded = await repository.loadOrCreate();
+    expect(loaded).toMatchObject({
+      runtimePermissionModes: created.runtimePermissionModes,
+      roomId: created.roomId, hostDeviceId: created.hostDeviceId, hostSecret: created.hostSecret,
+      evidenceKey: created.evidenceKey, pairingEpoch: created.pairingEpoch, devices: created.devices,
+    });
+    await repository.save(loaded);
+    expect(await repository.loadOrCreate()).toEqual(loaded);
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+      version: 4,
+      runtimePermissionModes: created.runtimePermissionModes,
+    });
+  });
+
+  it("refreshes a stale LAN relay address without rotating pairing secrets", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const original = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://192.168.1.32:8788/ws",
+      desktopName: "Test PC",
+    });
+    const created = await original.loadOrCreate();
+    await original.save(created);
+
+    const movedNetwork = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://10.245.46.37:8788/ws",
+      desktopName: "Test PC",
+    });
+    const loaded = await movedNetwork.load();
+
+    expect(loaded?.relayUrl).toBe("ws://10.245.46.37:8788/ws");
+    expect(loaded?.roomId).toBe(created.roomId);
+    expect(loaded?.hostSecret).toBe(created.hostSecret);
+  });
+
+  it("does not replace an explicit remote relay with the packaged default", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const remote = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const created = await remote.loadOrCreate();
+    await remote.save(created);
+
+    const localDefault = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://10.245.46.37:8788/ws",
+      desktopName: "Test PC",
+    });
+
+    expect((await localDefault.load())?.relayUrl).toBe("wss://relay.example/ws");
+  });
+
+  it("preserves a paired custom public relay when an update ships the upstream default", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-custom-relay-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const custom = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      publicRelayUrl: "wss://relay.example/ws",
+      serviceOrigin: "https://relay.example",
+      desktopName: "Test PC",
+    });
+    const created = await custom.loadOrCreate();
+    created.devices.push({ deviceId: "phone-1", name: "Android", platform: "android", secret: "phone-secret", createdAt: 1_000, expiresAt: 2_000, pairedAt: 1_100 });
+    await custom.save(created);
+    const genericUpdate = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.alioxis.com/ws",
+      publicRelayUrl: "wss://relay.alioxis.com/ws",
+      serviceOrigin: "https://relay.alioxis.com",
+      desktopName: "Test PC",
+    });
+    await expect(genericUpdate.load()).resolves.toMatchObject({
+      relayUrl: "wss://relay.example/ws",
+      serviceOrigin: "https://relay.example",
+      roomId: created.roomId,
+      hostSecret: created.hostSecret,
+      devices: [expect.objectContaining({ deviceId: "phone-1", secret: "phone-secret" })],
+      relayEndpoints: [expect.objectContaining({ id: "public", url: "wss://relay.example/ws" })],
+    });
+  });
+
+  it("migrates v2 to pairing schema v4 while preserving host identity and rotating credentials", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    await writeFile(path, JSON.stringify({
+      version: 2,
+      protocolVersion: 2,
+      roomId: "room-legacy-12345678",
+      relayUrl: "ws://192.168.1.32:8788/ws",
+      desktopName: "Test PC",
+      hostDeviceId: "desktop-1",
+      protectedHostSecret: protector.protect("host-secret"),
+      createdAt: 1_000,
+      launchAtLogin: false,
+      devices: [{
+        deviceId: "phone-1",
+        name: "Android",
+        platform: "android",
+        protectedSecret: protector.protect("phone-secret"),
+        createdAt: 1_100,
+        expiresAt: 601_100,
+        pairedAt: 2_000,
+      }],
+    }));
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://10.0.0.8:8788/ws",
+      publicRelayUrl: "wss://bridge.example/ws",
+      serviceOrigin: "https://bridge.example",
+      iceServers: [{ urls: "stun:stun.example:3478" }],
+      desktopName: "Test PC",
+    });
+
+    const loaded = await repository.loadOrCreate();
+    expect(loaded).toMatchObject({
+      configVersion: 4,
+      protocolVersion: 3,
+      pairingEpoch: 1,
+      hostDeviceId: "desktop-1",
+      relayUrl: "wss://bridge.example/ws",
+      activeEndpoint: "public",
+      serviceOrigin: "https://bridge.example",
+      iceServers: [{ urls: "stun:stun.example:3478" }],
+    });
+    expect(loaded.roomId).not.toBe("room-legacy-12345678");
+    expect(loaded.hostSecret).not.toBe("host-secret");
+    expect(loaded.evidenceKey).toBeTruthy();
+    expect(loaded.devices).toEqual([]);
+    expect(loaded.relayEndpoints).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "public", kind: "public-relay" }),
+      expect.objectContaining({ kind: "lan-relay", url: "ws://10.0.0.8:8788/ws" }),
+    ]));
+
+    await repository.save(loaded);
+    const persisted = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    expect(persisted.version).toBe(4);
+    expect(persisted.protocolVersion).toBe(3);
+    expect(persisted).not.toHaveProperty("relayUrl");
+    expect(JSON.stringify(persisted)).not.toContain("host-secret");
+    expect(JSON.stringify(persisted)).not.toContain("phone-secret");
+    expect(JSON.stringify(persisted)).not.toContain(loaded.evidenceKey);
+  });
+
+  it("migrates an existing public relay when the build explicitly supplies a new custom relay", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const legacy = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.alioxis.uk/ws",
+      desktopName: "Test PC",
+    });
+    const created = await legacy.loadOrCreate();
+    await legacy.save(created);
+
+    const publicBuild = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://192.168.1.32:8788/ws",
+      publicRelayUrl: "wss://new-relay.example/ws",
+      serviceOrigin: "https://new-relay.example",
+      iceServers: [...DEFAULT_BRIDGE_ICE_SERVERS],
+      desktopName: "Test PC",
+    });
+    const loaded = await publicBuild.load();
+
+    expect(loaded).toMatchObject({
+      roomId: created.roomId,
+      hostSecret: created.hostSecret,
+      relayUrl: "wss://new-relay.example/ws",
+      serviceOrigin: "https://new-relay.example",
+      iceServers: DEFAULT_BRIDGE_ICE_SERVERS,
+    });
+    expect(loaded?.relayEndpoints).toEqual(expect.arrayContaining([
+      {
+        id: "public",
+        kind: "public-relay",
+        url: "wss://new-relay.example/ws",
+        priority: 10,
+      },
+      {
+        id: "legacy-public-0",
+        kind: "public-relay",
+        url: "wss://relay.alioxis.uk/ws",
+        priority: 30,
+      },
+    ]));
+
+    await publicBuild.save(loaded!);
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+      activeEndpoint: "public",
+      serviceOrigin: "https://new-relay.example",
+      relayEndpoints: expect.arrayContaining([
+        expect.objectContaining({ id: "legacy-public-0", url: "wss://relay.alioxis.uk/ws" }),
+      ]),
+    });
+  });
+
+  it("upgrades only the historical Cloudflare-only ICE default without rotating a pairing", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const oldDefault = [{ urls: "stun:stun.cloudflare.com:3478" }];
+    const oldRepository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      iceServers: oldDefault,
+      desktopName: "Test PC",
+    });
+    const created = await oldRepository.loadOrCreate();
+    created.devices.push({
+      deviceId: "phone-1",
+      name: "Android",
+      platform: "android",
+      secret: "phone-secret",
+      createdAt: 1_000,
+      expiresAt: 2_000,
+    });
+    await oldRepository.save(created);
+
+    const upgradedRepository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      iceServers: [...DEFAULT_BRIDGE_ICE_SERVERS],
+      desktopName: "Test PC",
+    });
+    const upgraded = await upgradedRepository.load();
+
+    expect(upgraded).toMatchObject({
+      roomId: created.roomId,
+      hostSecret: created.hostSecret,
+      iceServers: DEFAULT_BRIDGE_ICE_SERVERS,
+      devices: [expect.objectContaining({ deviceId: "phone-1", secret: "phone-secret" })],
+    });
+  });
+
+  it("keeps an explicit ICE configuration when the packaged default changes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const customIce = [{ urls: "stun:stun.example.net:3478" }];
+    const original = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      iceServers: customIce,
+      desktopName: "Test PC",
+    });
+    await original.loadOrCreate();
+
+    const upgraded = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      iceServers: [...DEFAULT_BRIDGE_ICE_SERVERS],
+      desktopName: "Test PC",
+    });
+    expect((await upgraded.load())?.iceServers).toEqual(customIce);
+  });
+
+  it("disables the retired managed Desktop experiment during upgrade", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const created = await repository.loadOrCreate();
+    created.managedDesktopEnabled = true;
+    await repository.save(created);
+
+    expect((await repository.load())?.managedDesktopEnabled).toBe(false);
+  });
+
+  it("archives a v1 config and requires one-time re-pairing", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    await writeFile(path, JSON.stringify({ version: 1, pairing: {} }));
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const created = await repository.loadOrCreate();
+
+    expect(created.protocolVersion).toBe(3);
+    expect(created.configVersion).toBe(4);
+    expect(created.devices).toEqual([]);
+    expect((await import("node:fs/promises").then(({ readdir }) => readdir(directory))))
+      .toEqual(expect.arrayContaining([expect.stringMatching(/^bridge-config\.json\.v1-archive-/u)]));
+  });
+
+  it("only removes Bridge-owned MCP and HTTP hook entries", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-connector-"));
+    directories.push(directory);
+    const desktop = join(directory, "desktop.json");
+    const code = join(directory, "code.json");
+    const settings = join(directory, "settings.json");
+    await writeFile(desktop, JSON.stringify({
+      preferences: { theme: "dark" },
+      mcpServers: { "claude-bridge": { command: "Bridge" }, keep: { command: "keep" } },
+    }));
+    await writeFile(code, JSON.stringify({ mcpServers: { "claude-bridge": { command: "Bridge" } } }));
+    await writeFile(settings, JSON.stringify({
+      hooks: {
+        SessionStart: [{
+          hooks: [
+            { type: "http", url: "http://127.0.0.1:8790/hooks/claude" },
+            { type: "command", command: "keep-me" },
+          ],
+        }],
+        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "also-keep" }] }],
+      },
+    }));
+    const changed = await removeLegacyConnector({
+      claudeDesktop: [desktop],
+      claudeCode: code,
+      claudeSettings: settings,
+    });
+    const desktopConfig = JSON.parse(await readFile(desktop, "utf8")) as Record<string, unknown>;
+    const settingsConfig = JSON.parse(await readFile(settings, "utf8")) as {
+      hooks: Record<string, Array<{ hooks: Array<Record<string, unknown>> }>>;
+    };
+
+    expect(changed).toBe(true);
+    expect((desktopConfig.mcpServers as Record<string, unknown>).keep).toBeDefined();
+    expect((desktopConfig.mcpServers as Record<string, unknown>)["claude-bridge"]).toBeUndefined();
+    expect(settingsConfig.hooks.SessionStart?.[0]?.hooks).toEqual([{ type: "command", command: "keep-me" }]);
+    expect(settingsConfig.hooks.PreToolUse?.[0]?.hooks).toEqual([{ type: "command", command: "also-keep" }]);
+  });
+});

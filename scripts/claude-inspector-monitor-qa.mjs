@@ -12,7 +12,7 @@ import { build } from "esbuild";
 export async function verifyInspectorMonitor(root) {
   const repo = resolve(import.meta.dirname, "..");
   const modulePath = join(root, "inspector-monitor.mjs");
-  await build({ entryPoints: [join(repo, "apps/desktop/src/claude-inspector-monitor.ts")], outfile: modulePath, bundle: true, platform: "node", format: "esm" });
+  await build({ entryPoints: [join(repo, "apps/desktop/src/claude/claude-inspector-monitor.ts")], outfile: modulePath, bundle: true, platform: "node", format: "esm" });
   const { ClaudeInspectorMonitor, readInspectorConnections } = await import(modulePath);
   const accepted = new Set();
   const server = createServer((socket) => { accepted.add(socket); socket.on("close", () => accepted.delete(socket)); });

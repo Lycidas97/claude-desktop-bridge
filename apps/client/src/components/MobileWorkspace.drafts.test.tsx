@@ -4,22 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BridgeBackgroundTask, BridgeEvent, BridgeHistoryItem, BridgePermissionInfo, BridgeSessionInfo, BridgeSubagentSummary } from "@bridge/protocol";
-import { readClaudeSessionHistoryPage } from "../../../desktop/src/claude-history.js";
-import { BackgroundTaskMarker, BackgroundTasksSheet } from "./BackgroundTasks.js";
+import { readClaudeSessionHistoryPage } from "../../../desktop/src/transcript/claude-history.js";
+import { BackgroundTaskMarker, BackgroundTasksSheet } from "./conversation/BackgroundTasks.js";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { conversationItems, InteractivePromptCard, MobileWorkspace, PermissionPrompt, SubagentCard } from "./MobileWorkspace.js";
-import { ComposerAttachmentMenu, FileAttachmentPicker } from "./FileAttachmentPicker.js";
-import { IconButton } from "./IconButton.js";
-import { MessageCopyButton } from "./MessageCopyButton.js";
-import { TaskPlanCard } from "./TaskPlanCard.js";
-import { SessionCreateDialog } from "./SessionCreateDialog.js";
+import { conversationItems } from "../lib/conversation-timeline.js";
+import { InteractivePromptCard, PermissionPrompt } from "./conversation/PermissionPrompts.js";
+import { SubagentCard } from "./conversation/SubagentCard.js";
+import { MobileWorkspace } from "./MobileWorkspace.js";
+import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAttachmentPicker.js";
+import { IconButton } from "./common/IconButton.js";
+import { MessageCopyButton } from "./common/MessageCopyButton.js";
+import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
+import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
 import { dispatchMobileBack } from "../lib/mobile-back-navigation.js";
-import { SlashCommandInput } from "./SlashCommandInput.js";
-import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
-import { SessionConfigurationDialog } from "./SessionConfigurationDialog.js";
-import { SessionRewindDialog } from "./SessionRewindDialog.js";
-import { ConfirmationDialog } from "./ConfirmationDialog.js";
+import { SlashCommandInput } from "./conversation/SlashCommandInput.js";
+import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
+import { SessionConfigurationDialog } from "./session/SessionConfigurationDialog.js";
+import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
+import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 
 const hooks = vi.hoisted(() => ({
   slots: [] as any[], index: 0, dirty: false,
@@ -58,7 +61,7 @@ vi.mock("react", async (original) => ({
   useLayoutEffect: () => undefined,
 }));
 
-vi.mock("./MediaPreviewProvider.js", () => ({ useMediaPreview: () => vi.fn() }));
+vi.mock("./evidence/MediaPreviewProvider.js", () => ({ useMediaPreview: () => vi.fn() }));
 
 class DeferredFileReader {
   result = "data:image/png;base64,cGljdHVyZQ==";

@@ -25,7 +25,7 @@
     "test:coverage": "npm run test:coverage -ws --if-present",
     "test:visual": "node scripts/visual-qa.mjs",
     "test:html-preview": "node scripts/html-preview-qa.mjs",
-    "test:webrtc:native": "cross-env BRIDGE_WEBRTC_REAL=1 npm test -w @bridge/desktop -- --run src/webrtc-runtime.test.ts",
+    "test:webrtc:native": "cross-env BRIDGE_WEBRTC_REAL=1 npm test -w @bridge/desktop -- --run src/transport/webrtc-runtime.test.ts",
     "test:desktop:packaged": "node scripts/packaged-desktop-qa.mjs",
     "test:desktop:service": "node scripts/service-restart-qa.mjs",
     "test:desktop:packaged:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-packaged-qa.ps1",

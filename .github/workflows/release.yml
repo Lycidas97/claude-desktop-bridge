@@ -50,8 +50,10 @@ jobs:
         run: |
           set -euo pipefail
           gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
-            --branch main --commit "$RELEASE_REVISION" --event push --status success \
-            --json headSha --jq 'any(.[]; .headSha == env.RELEASE_REVISION)' | grep -qx true
+            --branch main --commit "$RELEASE_REVISION" --event push --status success --limit 20 \
+            --json headSha,status,conclusion \
+            | jq --arg rev "$RELEASE_REVISION" 'any(.[]; .headSha == $rev and .status == "completed" and .conclusion == "success")' \
+            | grep -qx true
 
       - name: Inspect release version
         id: version

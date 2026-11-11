@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { DesktopApi } from "./runtime/desktop.js";
+import type { DesktopApi } from "@bridge/protocol";
 
 declare global {
   interface Window {

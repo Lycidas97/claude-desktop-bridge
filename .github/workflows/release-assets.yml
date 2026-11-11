@@ -47,8 +47,10 @@ jobs:
             fi
             [[ "$TAG" == "v$(jq -er '.version' package.json)" ]]
             gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
-              --branch main --commit "$REVISION" --event push --status success \
-              --json headSha --jq 'length > 0' | grep -qx true
+              --branch main --commit "$REVISION" --event push --status success --limit 20 \
+              --json headSha,status,conclusion \
+              | jq --arg rev "$REVISION" 'any(.[]; .headSha == $rev and .status == "completed" and .conclusion == "success")' \
+              | grep -qx true
           fi
 
   desktop:

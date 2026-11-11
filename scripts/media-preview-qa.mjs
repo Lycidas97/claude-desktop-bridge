@@ -48,7 +48,7 @@ const snapshot = { host: { hostId: "qa", pairingEpoch: 1, name: "Preview Mac", r
 const packaged = process.argv.includes("--electron");
 const mobile = process.argv.includes("--mobile");
 const mobileModule = mobile ? await (await fetch("http://127.0.0.1:5188/src/components/MobileWorkspace.tsx")).text() : "";
-const providerModule = mobileModule.match(/from "([^"]*MediaPreviewProvider\.tsx[^"]*)"/u)?.[1];
+const providerModule = mobileModule.match(/from "([^"]*MediaPreviewProvider\.tsx[^"]*)"/u)?.[1] ?? "/src/components/evidence/MediaPreviewProvider.tsx";
 const browser = packaged
   ? await _electron.launch({ ...(process.env.BRIDGE_ELECTRON_PATH ? { executablePath: process.env.BRIDGE_ELECTRON_PATH } : {}), args: [resolve(output, "electron-media-main.cjs")] })
   : await chromium.launch({ channel: "chrome", headless: true });

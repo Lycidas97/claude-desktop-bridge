@@ -2,15 +2,15 @@ import type { BridgeHistoryItem, BridgePermissionInfo, BridgeSessionInfo, Deskto
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopDashboard } from "./DesktopDashboard.js";
-import { MediaPreviewProvider } from "./MediaPreviewProvider.js";
-import { ConfirmationDialog } from "./ConfirmationDialog.js";
-import { ComposerAttachmentMenu, FileAttachmentPicker } from "./FileAttachmentPicker.js";
-import { IconButton } from "./IconButton.js";
-import { InteractivePromptCard } from "./MobileWorkspace.js";
-import { SlashCommandInput } from "./SlashCommandInput.js";
-import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
-import { SessionRewindDialog } from "./SessionRewindDialog.js";
-import { SessionNoticeCard } from "./SessionNoticeCard.js";
+import { MediaPreviewProvider } from "./evidence/MediaPreviewProvider.js";
+import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
+import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAttachmentPicker.js";
+import { IconButton } from "./common/IconButton.js";
+import { InteractivePromptCard } from "./conversation/PermissionPrompts.js";
+import { SlashCommandInput } from "./conversation/SlashCommandInput.js";
+import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
+import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
+import { SessionNoticeCard } from "./conversation/SessionNoticeCard.js";
 
 type HookStore = {
   slots: any[]; index: number; dirty: boolean;
@@ -48,7 +48,7 @@ vi.mock("react", async (original) => ({
     });
   },
 }));
-vi.mock("./MediaPreviewProvider.js", async original => ({ ...await original<typeof import("./MediaPreviewProvider.js")>(), useMediaPreview: () => vi.fn() }));
+vi.mock("./evidence/MediaPreviewProvider.js", async original => ({ ...await original<typeof import("./evidence/MediaPreviewProvider.js")>(), useMediaPreview: () => vi.fn() }));
 vi.mock("../lib/file-upload.js", async (original) => ({
   ...await original<typeof import("../lib/file-upload.js")>(),
   uploadSessionFile: vi.fn(),

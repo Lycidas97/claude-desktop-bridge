@@ -1,12 +1,12 @@
 import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App.js";
-import { HostBrowser } from "./components/HostBrowser.js";
-import { MobileAppShell } from "./components/MobileAppShell.js";
-import { MobileHostDetails } from "./components/MobileHostDetails.js";
-import { MobileSettings } from "./components/MobileSettings.js";
+import { HostBrowser } from "./components/pairing/HostBrowser.js";
+import { MobileAppShell } from "./components/mobile/MobileAppShell.js";
+import { MobileHostDetails } from "./components/pairing/MobileHostDetails.js";
+import { MobileSettings } from "./components/mobile/MobileSettings.js";
 import { MobileWorkspace } from "./components/MobileWorkspace.js";
-import { MediaPreviewProvider } from "./components/MediaPreviewProvider.js";
+import { MediaPreviewProvider } from "./components/evidence/MediaPreviewProvider.js";
 import { dispatchMobileBack } from "./lib/mobile-back-navigation.js";
 
 const hooks = vi.hoisted(() => ({

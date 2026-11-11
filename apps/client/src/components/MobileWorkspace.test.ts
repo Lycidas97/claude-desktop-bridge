@@ -13,22 +13,21 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyEventToTurns, mergeBridgeEvents, type LocalTurn } from "../hooks/useMobileBridge.js";
 import {
-  MobileWorkspace,
-  PermissionPrompt,
-  SubagentCard,
   aggregateFileChanges,
   canConfigureSession,
   canStopBridgeTask,
   conversationItems,
   conversationTimeline,
   ownershipLabel,
-  permissionPresentation,
   restorableSessionId,
   sessionProfile,
   stoppableBridgeTask,
   supportsProviderSwitching,
-} from "./MobileWorkspace.js";
-import { ConfirmationDialog } from "./ConfirmationDialog.js";
+} from "../lib/conversation-timeline.js";
+import { MobileWorkspace } from "./MobileWorkspace.js";
+import { PermissionPrompt, permissionPresentation } from "./conversation/PermissionPrompts.js";
+import { SubagentCard } from "./conversation/SubagentCard.js";
+import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 
 vi.mock("react", async (original) => {
   const actual = await original<typeof import("react")>();

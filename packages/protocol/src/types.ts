@@ -821,6 +821,8 @@ export interface BridgeSubagentSummary {
   agentId: string;
   toolUseId?: string;
   agentType?: string;
+  /** Latest actual child assistant response model ID; omitted until observed. */
+  model?: string;
   description: string;
   state: "running" | "completed" | "failed" | "stopped" | "unknown";
   toolCount: number;

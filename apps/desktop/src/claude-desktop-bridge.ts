@@ -106,6 +106,7 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
       const toolUseId = typeof message.tool_use_id === "string" ? message.tool_use_id : previous?.toolUseId;
       const task: BridgeSubagentSummary = {
         agentId: message.task_id, ...(toolUseId ? { toolUseId } : {}), state,
+        ...(previous?.model ? { model: previous.model } : {}),
         description: typeof message.description === "string" ? message.description : previous?.description ?? "Agent",
         startedAt: previous?.startedAt ?? createdAt, updatedAt: createdAt,
         toolCount: typeof record(message.usage).tool_uses === "number" ? Number(record(message.usage).tool_uses) : previous?.toolCount ?? 0,
@@ -399,17 +400,36 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async refreshDesktopConfiguration(sessionId: string): Promise<void> { await this.configuration(sessionId); }
 
-  async backgroundTaskDetails(sessionId: string): Promise<BridgeBackgroundTask[]> {
+  private async transcriptSubagents(sessionId: string) {
     const id = this.desktopId(sessionId);
     const observed = (await (this.options.scanCatalog?.() ?? scanClaudeCatalog(claudeRuntimePaths())))
       .sessions.find(session => session.desktopSessionId === id);
+    if (!observed?.transcriptPath) return undefined;
+    const liveSince = oldestLiveProcessStart(observed.activeProcesses);
+    return { transcriptPath: observed.transcriptPath, liveSince, subagents: await readClaudeTranscriptSubagents(observed.transcriptPath, liveSince) };
+  }
+
+  private async enrichSubagentItems(sessionId: string, items: BridgeHistoryItem[]): Promise<void> {
+    const agents = items.filter(item => item.subagent || item.toolName === "Agent" || item.toolName === "Task");
+    if (!agents.length) return;
+    const local = await this.transcriptSubagents(sessionId);
+    for (const item of agents) {
+      const child = local?.subagents.find(agent => agent.toolUseId === item.id || agent.agentId === item.subagent?.agentId);
+      if (child?.model) {
+        if (item.subagent) item.subagent.model = child.model;
+        else item.subagent = child;
+      }
+    }
+  }
+
+  async backgroundTaskDetails(sessionId: string): Promise<BridgeBackgroundTask[]> {
+    const id = this.desktopId(sessionId);
+    const local = await this.transcriptSubagents(sessionId);
     let tasks: BridgeBackgroundTask[] = [];
-    if (observed?.transcriptPath) {
-      const liveSince = oldestLiveProcessStart(observed.activeProcesses);
-      const subagents = await readClaudeTranscriptSubagents(observed.transcriptPath, liveSince);
-      tasks = await readClaudeTranscriptBackgroundTasks(observed.transcriptPath, subagents, liveSince);
+    if (local) {
+      tasks = await readClaudeTranscriptBackgroundTasks(local.transcriptPath, local.subagents, local.liveSince);
       const projection = this.messageProjection.get(id) ?? {};
-      projection.tasks = new Map(subagents.map(task => [task.agentId, task]));
+      projection.tasks = new Map(local.subagents.map(task => [task.agentId, task]));
       this.messageProjection.set(id, projection);
     }
     this.backgroundTasks.set(id, tasks);
@@ -518,6 +538,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const projection: NativeMessageProjection = {};
     nativeHistoryItems(sessionId, context, projection);
     const items = nativeHistoryItems(sessionId, page.messages, projection);
+    await this.enrichSubagentItems(sessionId, items);
     if (!cursor) {
       const liveProjection = this.messageProjection.get(sessionId) ?? {};
       if (!liveProjection.planObserved && projection.planObserved) {
@@ -860,6 +881,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const projection = this.messageProjection.get(sessionId) ?? {};
       this.messageProjection.set(sessionId, projection);
       const items = nativeHistoryItems(sessionId, [event.message], projection);
+      await this.enrichSubagentItems(sessionId, items);
       if (message.type === "system") this.projectSessions();
       for (const item of items) {
         const receipt = item.role === "user" ? [...this.receipts.values()].find(receipt => receipt.sessionId === sessionId && receipt.messageId === message.uuid) : undefined;

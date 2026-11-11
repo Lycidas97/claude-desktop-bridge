@@ -7545,6 +7545,29 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+.subagent-model,
+.background-task-row > .subagent-model {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 44%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.background-task-row[aria-expanded="true"] > .subagent-model { display: none; }
+
+.subagent-card-model {
+  flex: 0 0 100%;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .subagent-state-label.running {
   color: var(--accent-ink);
   font-weight: 650;

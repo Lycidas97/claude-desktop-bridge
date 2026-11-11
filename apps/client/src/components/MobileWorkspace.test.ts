@@ -1709,6 +1709,26 @@ describe("conversationItems", () => {
     expect(items[0]?.subagent).toMatchObject({ agentId: "sdk-task", toolUseId: "tool-1", updatedAt: 300 });
   });
 
+  it.each(["running", "completed", "unknown"] as const)("shows the full actual model on %s cards and omits absent models", (state) => {
+    const subagent = { agentId: "child", description: "Inspect", state, toolCount: 2, startedAt: 100, updatedAt: 300 };
+    const item = { id: "task", sessionId: "session-1", role: "tool" as const, origin: "claude-desktop" as const, createdAt: 100, text: "Inspect", subagent };
+    const model = "provider/a-very-long-actual-model-version-id-with-a-date-20261111";
+    const html = renderToStaticMarkup(createElement(SubagentCard, { item: { ...item, subagent: { ...subagent, model } } }));
+    expect(html).toContain(`class="subagent-card-model" aria-label="模型：${model}">${model}</span>`);
+    expect(html).toContain("2 步");
+    expect(renderToStaticMarkup(createElement(SubagentCard, { item }))).not.toContain("subagent-card-model");
+  });
+
+  it("retains an observed actual model through a later model-free completion event", () => {
+    const subagent = { agentId: "task", toolUseId: "tool", description: "Inspect", state: "running" as const, toolCount: 1, startedAt: 100, updatedAt: 200, model: "codex/gpt-6.1-sol" };
+    const items = conversationItems("session-1", { status: "ready", hasMore: false,
+      items: [{ id: "tool", sessionId: "session-1", role: "tool", origin: "claude-desktop", createdAt: 100, text: "Inspect", subagent }],
+    }, [{ eventId: "done", seq: 1, timestamp: 300, sessionId: "session-1", itemId: "tool", origin: "claude-desktop", type: "tool.completed", data: {
+      subagent: { agentId: "task", toolUseId: "tool", description: "Inspect", state: "completed", toolCount: 1, startedAt: 100, updatedAt: 300 },
+    } }], []);
+    expect(items[0]?.subagent).toMatchObject({ model: "codex/gpt-6.1-sol", state: "completed" });
+  });
+
   it("shows unknown task state without terminal styling or a stop action", () => {
     const html = renderToStaticMarkup(createElement(SubagentCard, {
       item: { id: "task", sessionId: "session-1", role: "tool", origin: "claude-host", createdAt: 100, text: "Check",

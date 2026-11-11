@@ -1673,6 +1673,42 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it.each([undefined, "older-page"])("adds local actual child models to native history (%s), events and tray", async (cursor) => {
+    const f = await fixture();
+    try {
+      const transcript = join(f.options.settingsPath, "..", "model-session.jsonl");
+      await writeFile(transcript, "");
+      const childDir = join(transcript.replace(/\.jsonl$/u, ""), "subagents");
+      await mkdir(childDir, { recursive: true });
+      const child = join(childDir, "agent-child-task.jsonl");
+      await writeFile(join(childDir, "agent-child-task.meta.json"), JSON.stringify({ toolUseId: "agent-call" }));
+      await writeFile(child, JSON.stringify({ type: "assistant", timestamp: new Date(1000).toISOString(), message: { model: "codex/gpt-6.1-sol", content: [], stop_reason: "tool_use" } }) + "\n");
+      f.options.scanCatalog.mockResolvedValue({ projects: [], sessions: [{
+        ...f.bridge.session("local-native")!, sessionId: "model-session", desktopSessionId: "local-native", transcriptPath: transcript,
+        transcriptMtimeMs: 0, processAlive: true, desktopProcessAlive: true, bridgeProcessAlive: false, processOverlap: false, activeTask: false,
+        activeProcesses: [{ startedAt: 1, processAlive: true, entrypoint: "claude-desktop-3p", source: "process" }],
+      }], observedAt: 0 });
+      const started = { type: "system", subtype: "task_started", task_id: "child-task", tool_use_id: "agent-call", description: "Inspect sources", timestamp: 1000 };
+      const call = { type: "assistant", uuid: "call", message: { model: "parent-model", content: [{ type: "tool_use", id: "agent-call", name: "Agent", input: { model: "haiku" } }] } };
+      f.native.page.messages = [call, started];
+      expect((await f.bridge.history("local-native", cursor)).items.find(item => item.id === "agent-call")?.subagent).toMatchObject({ model: "codex/gpt-6.1-sol", state: "running" });
+      // A page containing just the launch tool can still associate the child file by toolUseId.
+      f.native.page.messages = [call];
+      expect((await f.bridge.history("local-native", cursor)).items.find(item => item.id === "agent-call")?.subagent?.model).toBe("codex/gpt-6.1-sol");
+      await f.message(started);
+      expect(f.eventLog.latestItem("local-native", "tool.progress", "agent-call")?.data.subagent).toMatchObject({ model: "codex/gpt-6.1-sol", state: "running" });
+      await writeFile(child, JSON.stringify({ type: "assistant", timestamp: new Date(2000).toISOString(), message: { model: "antigravity/gemini-4-carbon", content: [], stop_reason: "end_turn" } }) + "\n");
+      await f.message({ type: "system", subtype: "task_notification", task_id: "child-task", status: "completed", summary: "Done", timestamp: 2000 });
+      expect(f.eventLog.latestItem("local-native", "tool.completed", "agent-call")?.data.subagent).toMatchObject({ model: "antigravity/gemini-4-carbon", state: "completed" });
+      expect((await f.bridge.backgroundTaskDetails("local-native"))[0]?.subagent).toMatchObject({ model: "antigravity/gemini-4-carbon", state: "completed" });
+      // Once observed, subsequent native progress without a child file keeps the actual model.
+      f.options.scanCatalog.mockResolvedValue({ projects: [], sessions: [], observedAt: 0 });
+      await f.message({ type: "system", subtype: "task_notification", task_id: "child-task", status: "completed", timestamp: 3000 });
+      expect(f.eventLog.latestItem("local-native", "tool.completed", "agent-call")?.data.subagent).toMatchObject({ model: "antigravity/gemini-4-carbon", state: "completed" });
+      expect(f.native.calls.some(call => ["sendMessage", "subscribeToSession", "stopTask"].includes(call.method))).toBe(false);
+    } finally { await f.close(); }
+  });
+
   it("keeps native task IDs for individual task stopping", async () => {
     const f = await fixture();
     try {

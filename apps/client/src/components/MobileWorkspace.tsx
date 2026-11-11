@@ -346,6 +346,7 @@ export function SubagentCard({
             {SUBAGENT_STATE_LABELS[subagent.state]}
           </span>
         </div>
+        {subagent.model && <span className="subagent-card-model" aria-label={`模型：${subagent.model}`}>{subagent.model}</span>}
       </div>
 
       {isRunning && (subagent.latestText || recentTools.length > 0) && (

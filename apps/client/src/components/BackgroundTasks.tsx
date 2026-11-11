@@ -51,6 +51,12 @@ export function findBackgroundTask(
     ?? tasks.find((task) => task.taskId === subagent.agentId);
 }
 
+function latestSubagentModel(stream: BridgeSubagentSummary, tray?: BridgeSubagentSummary): string | undefined {
+  return tray && tray.updatedAt >= stream.updatedAt
+    ? tray.model ?? stream.model
+    : stream.model ?? tray?.model;
+}
+
 /** One line in the conversation for an Agent, Workflow run or background command. */
 export function BackgroundTaskMarker({
   item,
@@ -70,16 +76,18 @@ export function BackgroundTaskMarker({
     ? task?.workflow?.name ?? task?.description ?? KIND_TITLES.workflow
     : task?.description ?? subagent.description;
   const state = task?.state ?? subagent.state;
+  const model = kind === "subagent" ? latestSubagentModel(subagent, task?.subagent) : undefined;
   return (
     <button
       type="button"
       className={`background-task-marker is-${state}${entering ? " is-entering" : ""}`}
       data-stream-key={item.id}
-      aria-label={`${KIND_TITLES[kind]}：${description}，${STATE_LABELS[state]}`}
+      aria-label={`${KIND_TITLES[kind]}：${description}，${STATE_LABELS[state]}${model ? `，模型：${model}` : ""}`}
       onClick={onOpen}
     >
       <Icon size={15} aria-hidden="true" />
       <span className="background-task-marker-text">{description}</span>
+      {model && <small className="subagent-model" title={model}>{model}</small>}
       <StateGlyph state={state} />
       <ChevronRight size={15} className="background-task-marker-chevron" aria-hidden="true" />
     </button>
@@ -91,8 +99,9 @@ function subagentItem(sessionId: string, subagent: BridgeSubagentSummary, items:
   const streamItem = items.find((item) => item.subagent && (
     (subagent.toolUseId && item.subagent.toolUseId === subagent.toolUseId) || item.subagent.agentId === subagent.agentId
   ));
+  const model = latestSubagentModel(streamItem?.subagent ?? subagent, subagent);
   return streamItem?.subagent
-    ? { ...streamItem, subagent: { ...subagent, ...streamItem.subagent, state: subagent.state } }
+    ? { ...streamItem, subagent: { ...subagent, ...streamItem.subagent, ...(model ? { model } : {}), state: subagent.state } }
     : {
         id: subagent.toolUseId ?? `subagent:${subagent.agentId}`,
         sessionId, role: "tool", toolName: "Agent", text: subagent.description,
@@ -142,6 +151,7 @@ function WorkflowTimeline({
                     >
                       <StateGlyph state={agent.state} />
                       <span className="background-task-row-text">{agent.description}</span>
+                      {agent.model && <small className="subagent-model" title={agent.model}>{agent.model}</small>}
                       {agent.toolCount > 0 && <small>{agent.toolCount} 步</small>}
                     </button>
                     {openAgentId === agent.agentId && renderSubagent(subagentItem(sessionId, agent, items))}
@@ -203,6 +213,7 @@ export function BackgroundTasksSheet({
                   <Icon size={16} aria-hidden="true" />
                   <span className="background-task-row-text">{task.workflow?.name ?? task.description}</span>
                   {task.workflow && <small>{done}/{task.workflow.agents.length}</small>}
+                  {task.subagent?.model && <small className="subagent-model" title={task.subagent.model}>{task.subagent.model}</small>}
                   {task.subagent && task.subagent.toolCount > 0 && <small>{task.subagent.toolCount} 步</small>}
                   <StateGlyph state={task.state} />
                 </button>

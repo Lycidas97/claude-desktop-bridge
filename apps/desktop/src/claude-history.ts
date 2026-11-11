@@ -1589,6 +1589,7 @@ async function parseSingleSubagentFile(
   let startedAt = 0;
   let updatedAt = 0;
   let lastStopReason: string | undefined;
+  let model: string | undefined;
   const structuredOutputIds = new Set<string>();
 
   try {
@@ -1609,6 +1610,10 @@ async function parseSingleSubagentFile(
       if (Number.isFinite(parsedAt) && parsedAt > 0) {
         if (!startedAt) startedAt = parsedAt;
         if (parsedAt > updatedAt) updatedAt = parsedAt;
+      }
+      if (value.type === "assistant" && value.isSynthetic !== true && isRecord(value.message)
+        && typeof value.message.model === "string" && value.message.model.trim() && value.message.model !== "<synthetic>") {
+        model = value.message.model;
       }
       if (value.type === "assistant" && isRecord(value.message) && Array.isArray(value.message.content)) {
         lastStopReason = typeof value.message.stop_reason === "string" ? value.message.stop_reason : undefined;
@@ -1676,6 +1681,7 @@ async function parseSingleSubagentFile(
     agentId,
     ...(toolUseId ? { toolUseId } : {}),
     ...(agentType ? { agentType } : {}),
+    ...(model ? { model } : {}),
     description,
     state,
     toolCount,
@@ -2077,6 +2083,7 @@ async function readClaudeWorkflowRun(
       startedAt: file?.startedAt ?? 0,
       updatedAt: file?.updatedAt ?? 0,
       workflowRunId: runId,
+      ...(file?.model ? { model: file.model } : {}),
       ...(phase ? { workflowPhase: phase } : {}),
     });
   }
@@ -2084,7 +2091,7 @@ async function readClaudeWorkflowRun(
   for (const file of files.values()) {
     if (agents.has(file.agentId)) continue;
     const { agentId, description, state, toolCount, startedAt, updatedAt, workflowPhase } = file;
-    agents.set(agentId, { agentId, description, state, toolCount, startedAt, updatedAt, workflowRunId: runId, ...(workflowPhase ? { workflowPhase } : {}) });
+    agents.set(agentId, { agentId, description, state, toolCount, startedAt, updatedAt, workflowRunId: runId, ...(file.model ? { model: file.model } : {}), ...(workflowPhase ? { workflowPhase } : {}) });
   }
   for (const agent of agents.values()) {
     if (agent.workflowPhase && !phases.includes(agent.workflowPhase)) phases.push(agent.workflowPhase);

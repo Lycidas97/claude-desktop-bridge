@@ -150,6 +150,14 @@ describe("runtime and draft preservation", () => {
 });
 
 describe("folder navigation", () => {
+  it("keeps an empty native Section selectable without an empty recent folder", async () => {
+    const empty = { ...group, cwd: "", sessionCount: 0 };
+    const input = props(snapshot([empty]));
+    expect(text(field(render(input), "项目分组（可选）"))).toContain("Research");
+    const tree = await click(input, "选择文件夹");
+    expect(button(tree, "选择 ")).toBeUndefined();
+    expect(text(tree)).toContain("还没有最近使用的文件夹");
+  });
   it("deduplicates recent directories and displays the folder name rather than group names", async () => {
     const input = { ...props(snapshot([group, directory])), onBrowseDirectory: vi.fn().mockResolvedValue({ ...listing, recentPaths: [directory.cwd, "/recent"] }) };
     const tree = await click(input, "选择文件夹");

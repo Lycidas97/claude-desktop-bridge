@@ -1,4 +1,4 @@
-import type { BridgeRequest, BridgeSlashCommandCatalog } from "@bridge/protocol";
+import type { BridgeProjectInfo, BridgeRequest, BridgeSlashCommandCatalog } from "@bridge/protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useMobileBridge } from "./useMobileBridge.js";
 
@@ -38,6 +38,31 @@ vi.mock("react", async (original) => ({
 beforeEach(() => {
   harness.refs = []; harness.requests = []; harness.response = {}; harness.error = undefined;
   harness.encrypt.mockReset().mockImplementation(async (request: BridgeRequest) => ({ id: request.requestId, sentAt: 1, request }));
+});
+
+describe("createSection", () => {
+  it("waits for the native result without persisting an offline creation", async () => {
+    const project: BridgeProjectInfo = { projectId: "native-section", name: "Research", kind: "desktop-group", cwd: "", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 };
+    harness.response = { project };
+    await expect(useMobileBridge().createSection("Research")).resolves.toEqual(project);
+    expect(harness.requests).toHaveLength(1);
+    expect(harness.requests[0]).toMatchObject({ method: "section.create", params: { name: "Research" } });
+    expect(harness.encrypt.mock.calls[0]![6]).toBe(true);
+  });
+
+  it("preserves a native creation error", async () => {
+    harness.error = { code: "REQUEST_FAILED", message: "The sidebar isn't signed in to an account yet." };
+    await expect(useMobileBridge().createSection("Research")).rejects.toThrow(harness.error.message);
+    expect(harness.requests.map(request => request.method)).toEqual(["section.create"]);
+  });
+
+  it("rejects offline before encrypting or queuing a native creation", async () => {
+    const bridge = useMobileBridge();
+    harness.refs[3]!.current.state = "closed";
+    await expect(bridge.createSection("Research")).rejects.toThrow("电脑当前离线");
+    expect(harness.encrypt).not.toHaveBeenCalled();
+    expect(harness.requests).toEqual([]);
+  });
 });
 
 describe("loadSessionCommands", () => {

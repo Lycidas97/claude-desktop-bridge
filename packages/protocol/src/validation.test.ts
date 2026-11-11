@@ -58,6 +58,10 @@ describe("isBridgePayload", () => {
     expect(isBridgePayload({ kind: "request", requestId: "return", idempotencyKey: "return", method: "session.return_to_desktop", params: { sessionId: "session" } })).toBe(true);
   });
 
+  it("accepts native section creation on the paired channel", () => {
+    expect(isBridgePayload({ kind: "request", requestId: "section", idempotencyKey: "section", method: "section.create", params: { name: "Research" } })).toBe(true);
+  });
+
   it("still rejects unknown methods", () => {
     expect(isBridgePayload({
       kind: "request",

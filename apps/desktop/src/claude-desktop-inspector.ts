@@ -9,6 +9,24 @@ const METHODS = new Set([
   "canRewindTo", "rewindV2", "rewindFiles",
 ]);
 
+export interface NativeSectionCatalog {
+  sections: Array<{ id: string; name: string; order: number }>;
+  assignments: Record<string, string>;
+}
+
+// Verified against Desktop 4.23118.1. Use only already-loaded modules from this
+// build; a different export layout remains unsupported until verified.
+const SIDEBAR_RUNTIME = `
+  const modules = Object.values(process.mainModule.require('module')._cache);
+  const basename = process.mainModule.require('path').basename;
+  const factory = modules.find(m => basename(m.filename) === 'index.chunk-Ca27adTf.js')?.exports?.$n;
+  const manager = modules.find(m => basename(m.filename) === 'index.chunk-Cy6fdnz-.js')?.exports?.claudeCodeSessionManager;
+  const sidebar = typeof factory === 'function' ? factory() : undefined;
+  const available = sidebar?.serverName === 'ccd_sidebar' && sidebar.isEnabled({ sessionType: 'ccd' })
+    && ['list_sections', 'create_section', 'move_sessions'].every(name => sidebar.tools.some(tool => tool.name === name))
+    && manager && typeof manager.listCustomGroups === 'function' && typeof manager.getSessionCustomGroup === 'function';
+`;
+
 export class NativeCallError extends Error {}
 export class InspectorDisconnectedError extends Error {}
 
@@ -122,6 +140,47 @@ export class ClaudeDesktopInspector extends EventEmitter {
       if (!globalThis[${JSON.stringify(STREAM)}]) throw new Error('BRIDGE_RENDERER_RELOADED');
       return globalThis['claude.web'].LocalSessions[${JSON.stringify(method)}](${Array.from(args, arg => arg === undefined ? "undefined" : JSON.stringify(arg)).join(",")});
     })()`);
+  }
+
+  async sections(sessionIds: string[]): Promise<NativeSectionCatalog | undefined> {
+    if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected");
+    return this.evaluate(`(async () => {
+      ${SIDEBAR_RUNTIME}
+      if (!available) return;
+      const reply = await sidebar.handleToolCall('list_sections', {});
+      if (reply.isError) return;
+      const sections = JSON.parse(reply.content.filter(item => item.type === 'text').map(item => item.text).join('\\n'));
+      const groups = manager.listCustomGroups();
+      if (!groups) return;
+      const shown = new Set(sections.filter(section => section.kind === 'manual' && section.shown !== false).map(section => section.id));
+      return {
+        sections: groups.filter(group => shown.has(group.id)).map(({ id, name, order }) => ({ id, name, order })),
+        assignments: Object.fromEntries(${JSON.stringify(sessionIds)}.flatMap(id => {
+          const group = manager.getSessionCustomGroup(id);
+          return group && shown.has(group.id) ? [[id, group.id]] : [];
+        })),
+      };
+    })()`) as Promise<NativeSectionCatalog | undefined>;
+  }
+
+  private async sidebarTool(method: "create_section" | "move_sessions", params: Record<string, unknown>, sessionId?: string): Promise<string> {
+    if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected");
+    const reply = await this.evaluate(`(async () => {
+      ${SIDEBAR_RUNTIME}
+      if (!available) throw new Error('This Claude Desktop version does not support Sections');
+      return sidebar.handleToolCall(${JSON.stringify(method)}, ${JSON.stringify(params)}, ${JSON.stringify({ sessionId })});
+    })()`) as { isError?: boolean; content: Array<{ type: string; text?: string }> };
+    const text = reply.content.filter(item => item.type === "text").map(item => item.text).join("\n");
+    if (reply.isError) throw new NativeCallError(text);
+    return text;
+  }
+
+  async createSection(name: string): Promise<string> {
+    return (JSON.parse(await this.sidebarTool("create_section", { name })) as { id: string }).id;
+  }
+
+  async assignSection(sessionId: string, sectionId: string): Promise<void> {
+    await this.sidebarTool("move_sessions", { session_ids: [sessionId], section_id: sectionId }, sessionId);
   }
 
   async availableCodeModels(): Promise<string[]> {

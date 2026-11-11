@@ -1,0 +1,11 @@
+.section-create-dialog .session-create-body { gap: 12px; }
+.section-create-dialog .session-create-body > p { margin: 0; }
+.section-create-dialog form input { width: 100%; font-size: calc(15px * var(--font-scale)); }
+.section-create-dialog .session-create-header h2 { margin: 0; font-size: calc(20px * var(--font-scale)); }
+.section-create-dialog form label,
+.section-create-dialog .session-create-error,
+.section-create-dialog .session-create-status { font-size: calc(13px * var(--font-scale)); }
+
+@media (max-width: 639px) {
+  .section-create-dialog form input { font-size: calc(16px * var(--font-scale)); }
+}

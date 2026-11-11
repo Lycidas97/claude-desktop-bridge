@@ -366,6 +366,7 @@ export class DesktopController extends EventEmitter {
           "session.command.v1",
           ...(runtimes.some(runtime => runtime.id === "claude-desktop" && runtime.capabilities.includes("session.rewind")) ? ["session.rewind.v1" as const] : []),
           ...(this.conversationState ? ["session.rename.v1" as const] : []),
+          ...(runtimes.some(runtime => runtime.capabilities.includes("section.create")) ? ["section.create.v1" as const] : []),
           "subagent.stop.v1",
           "turn.queue.steer.v1",
           "turn.queue.cancel.v1",
@@ -643,7 +644,7 @@ export class DesktopController extends EventEmitter {
   private allProjects() {
     const visibleProjectIds = new Set(this.allSessions().map((session) => session.projectId));
     return this.broker.listProjects()
-      .filter((project) => visibleProjectIds.has(project.projectId))
+      .filter((project) => project.kind === "desktop-group" || visibleProjectIds.has(project.projectId))
       .sort((left, right) => right.lastActivityAt - left.lastActivityAt || left.projectId.localeCompare(right.projectId));
   }
 
@@ -945,6 +946,14 @@ export class DesktopController extends EventEmitter {
       await this.broker.rename(sessionId, title);
       const snapshot = await this.publish();
       return { session: snapshot.sessions.find((candidate) => candidate.sessionId === sessionId) };
+    }
+    if (request.method === "section.create") {
+      if (!this.broker.capabilities().includes("section.create")) throw new BridgeRequestError("UNSUPPORTED", "当前 Claude Desktop 不支持创建 Section。");
+      const name = stringParam(params, "name")!.trim();
+      if (!name || name.length > 200) throw new Error("name must contain 1–200 characters");
+      const project = await this.broker.createSection(name);
+      await this.publish();
+      return { project };
     }
     if (request.method === "session.create") {
       runtimeIdParam(params, "runtimeId");
@@ -1515,6 +1524,8 @@ export class DesktopController extends EventEmitter {
       runtime: [snapshot.runtime?.state, snapshot.runtime?.activeTurns, snapshot.runtime?.maxParallelTurns],
       providers: snapshot.providers,
       magpie: snapshot.magpie,
+      projects: snapshot.projects?.map(project => ({ projectId: project.projectId, name: project.name, kind: project.kind, cwd: project.cwd, runtimeId: project.runtimeId }))
+        .sort((a, b) => a.projectId.localeCompare(b.projectId)),
     }) + "\n" + snapshot.sessions
       .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.forkLabel ?? ""}\t${session.sidechat ? "1" : ""}\t${session.archivedAt ?? ""}\t${session.desktopArchivePending ? "1" : ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${JSON.stringify(session.desktopHandoff ?? null)}\t${JSON.stringify(session.nativePermissionModeChange ?? null)}`)
       .sort()

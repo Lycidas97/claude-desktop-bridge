@@ -19,7 +19,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serve = process.argv.includes("--serve");
 const remotePreview = serve && process.argv.includes("--remote-execution-preview");
 const projectGroupingPreview = serve && !remotePreview && process.argv.includes("--project-grouping-preview");
-const nativePreview = serve && !remotePreview && (projectGroupingPreview || process.argv.includes("--native-permissions-preview"));
+const sectionCreatePreview = serve && !remotePreview && process.argv.includes("--section-create-preview");
+const nativePreview = serve && !remotePreview && (sectionCreatePreview || projectGroupingPreview || process.argv.includes("--native-permissions-preview"));
 let previewHost;
 let previewApproval;
 const port = serve ? Number(process.env.BRIDGE_E2E_PORT ?? 0) : 0;
@@ -59,6 +60,14 @@ async function eventually(read, expected, message, timeout = 15_000) {
     await delay(50);
   } while (Date.now() < deadline);
   assert.deepEqual(actual, expected, message);
+}
+
+async function syncNativeSections(host) {
+  const { capable, projects, sessions } = await host.nativeApproval.sectionCatalog();
+  host.snapshot.projects = projects;
+  host.snapshot.sessions = sessions;
+  host.snapshot.host.capabilities = host.snapshot.host.capabilities.filter(value => value !== "section.create.v1");
+  if (capable) host.snapshot.host.capabilities.push("section.create.v1");
 }
 
 async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false) {
@@ -354,7 +363,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     const directory = resolve(runDir, "native-fixtures", String(++nativeFixtureSequence));
     await mkdir(directory, { recursive: true });
     host.nativeApproval = await startNativeApprovalHost({
-      directory, sessionId, title: originalTitle, deviceId: pairing.deviceId,
+      directory, sessionId, title: originalTitle, deviceId: pairing.deviceId, sections: sectionCreatePreview,
       onRequested(request) {
         snapshot.permissions.push(request);
         session.turnState = "waiting";
@@ -404,7 +413,16 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       let remoteCommand;
       let remoteCommandCreated = false;
       switch (request.method) {
-        case "snapshot.get": result = { snapshot }; break;
+        case "snapshot.get":
+          if (sectionCreatePreview) await syncNativeSections(host);
+          result = { snapshot }; break;
+        case "section.create":
+          try {
+            result = await host.nativeApproval.createSection(request);
+            await syncNativeSections(host);
+            await host.send({ kind: "snapshot", snapshot });
+          } catch (failure) { error = { code: "NATIVE_SECTION_REJECTED", message: failure.message }; }
+          break;
         case "events.resume": {
           const resumed = events.filter((event) => event.seq > request.params.afterSeq);
           resumeBatches.push(resumed.map((event) => event.eventId));
@@ -1774,6 +1792,22 @@ try {
             let result;
             if (request.method === "GET" && url.pathname === "/pairing") {
               result = { url: buildPairingUrl(baseUrl, previewHost.pairing) };
+            } else if (sectionCreatePreview && url.pathname === "/sections") {
+              const fixture = previewHost.nativeApproval.sections;
+              if (request.method === "POST") {
+                if (url.searchParams.has("failure")) fixture.failure = url.searchParams.get("failure") === "true" ? "Native section limit reached" : "";
+                if (url.searchParams.has("supported")) fixture.supported = url.searchParams.get("supported") !== "false";
+                if (url.searchParams.has("scope")) fixture.scope = url.searchParams.get("scope");
+                if (url.searchParams.get("connection") === "offline") previewHost.socket.close();
+                if (url.searchParams.get("connection") === "connected") previewHost.socket.connect();
+                await fixture.reread();
+                await syncNativeSections(previewHost);
+                if (!["offline", "connected"].includes(url.searchParams.get("connection"))) await previewHost.send({ kind: "snapshot", snapshot: previewHost.snapshot });
+              }
+              result = { projects: previewHost.snapshot.projects, calls: fixture.calls, scope: fixture.scope,
+                persisted: JSON.parse(await readFile(fixture.profile, "utf8")),
+                sectionRequests: previewHost.requests.filter(request => request.method === "section.create").map(({ method, params }) => ({ method, params })),
+                errors: infrastructureErrors };
             } else if (remotePreview && request.method === "GET" && url.pathname === "/remote/state") {
               result = previewHost.remoteState();
             } else if (remotePreview && request.method === "POST" && url.pathname === "/remote/finish") {
@@ -1866,7 +1900,8 @@ try {
     const host = await createMockHost(!nativePreview && !remotePreview, false, infrastructureErrors, nativePreview, nativePreview);
     previewHost = host;
     if (projectGroupingPreview) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
-    if (nativePreview && !projectGroupingPreview) {
+    if (sectionCreatePreview) await syncNativeSections(host);
+    if (nativePreview && !projectGroupingPreview && !sectionCreatePreview) {
       for (const [index, message] of [
         { type: "user", uuid: "preview-first", message: { content: "检查模型和额度" } },
         { type: "assistant", uuid: "preview-checkpoint", message: { content: [{ type: "text", text: "已建立回退检查点。" }] } },

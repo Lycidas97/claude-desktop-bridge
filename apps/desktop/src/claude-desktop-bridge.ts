@@ -7,7 +7,7 @@ import type {
   BridgeRuntimeStatus, BridgeSDKPermissionMode, BridgeSessionCommandResult,
   BridgeSessionConfiguration, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeTaskPlan, BridgeSubagentSummary,
 } from "@bridge/protocol";
-import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError } from "./claude-desktop-inspector.js";
+import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "./conversation-state-store.js";
 import { extractInteractivePrompt, readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, updateClaudeTaskPlan, visibleMessage } from "./claude-history.js";
 import { claudeRuntimePaths } from "./platform.js";
@@ -47,6 +47,9 @@ interface InspectorTransport {
   close(): Promise<void>;
   call(method: string, args?: unknown[]): Promise<unknown>;
   availableCodeModels(): Promise<string[]>;
+  sections?(sessionIds: string[]): Promise<NativeSectionCatalog | undefined>;
+  createSection?(name: string): Promise<string>;
+  assignSection?(sessionId: string, sectionId: string): Promise<void>;
   on(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
@@ -169,6 +172,7 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
 export class ClaudeDesktopBridge extends EventEmitter {
   private readonly inspector: InspectorTransport;
   private readonly native = new Map<string, NativeSession>();
+  private sectionCatalog: NativeSectionCatalog | undefined;
   private readonly projectDirectories = new Map<string, ClaudeProjectDirectory>();
   private readonly sessions = new Map<string, BridgeSessionInfo>();
   private readonly permissions = new Map<string, BridgePermissionInfo>();
@@ -233,6 +237,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const result = await this.inspector.call("getAll");
       if (!Array.isArray(result)) throw new NativeCallError("Desktop getAll did not return a session list");
       const sessions = result.map(nativeSession);
+      this.sectionCatalog = await this.inspector.sections?.(sessions.map(session => session.sessionId));
       this.models = await readClaudeModelOptions(this.options.settingsPath);
       this.native.clear();
       for (const session of sessions) await this.observeNativeSession(session);
@@ -260,6 +265,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     ];
     for (const [method, capability] of methods) if (this.inspector.supports(method)) capabilities.push(capability);
     if (["canRewindTo", "rewindV2", "rewindFiles"].every(method => this.inspector.supports(method))) capabilities.push("session.rewind");
+    if (this.sectionCatalog && this.inspector.createSection && this.inspector.assignSection) capabilities.push("section.create");
     capabilities.push("tool.events");
     return capabilities;
   }
@@ -313,9 +319,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const modeChange = this.permissionModeChanges.get(sessionId);
       const parentSessionId = native.forkedFromSessionId ?? native.spawnedFrom?.sessionId;
       const projectCwd = this.projectCwd(native.cwd);
+      const section = this.sectionCatalog?.sections.find(section => section.id === this.sectionCatalog?.assignments[sessionId]);
       this.sessions.set(sessionId, {
         sessionId, nativeSessionId: native.sessionId, desktopSessionId: native.sessionId, runtimeId: "claude-desktop",
-        projectId: projectIdForCwd(projectCwd), projectName: basename(projectCwd) || projectCwd, cwd: native.cwd,
+        projectId: section?.id ?? projectIdForCwd(projectCwd), projectName: section?.name ?? (basename(projectCwd) || projectCwd), cwd: native.cwd,
         title: native.title || "Claude 会话", source: "desktop", transport: "claude-desktop-native",
         ownership: running ? "DESKTOP_NATIVE_RUNNING" : "DESKTOP_NATIVE_IDLE",
         turnState: waiting ? "waiting" : running ? "running" : "idle",
@@ -347,9 +354,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return session?.harnessCwd ?? session?.cwd;
   }
   listProjects(): BridgeProjectInfo[] {
-    const projects = new Map<string, BridgeProjectInfo>();
+    const projects = new Map<string, BridgeProjectInfo>((this.sectionCatalog?.sections ?? []).map(section => [section.id, {
+      projectId: section.id, name: section.name, kind: "desktop-group", cwd: "", runtimeId: "claude-desktop", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0,
+    }]));
     for (const session of this.sessions.values()) {
       const project = projects.get(session.projectId) ?? { projectId: session.projectId, name: session.projectName, cwd: this.projectCwd(session.cwd), runtimeId: "claude-desktop", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 };
+      if (!project.cwd) project.cwd = this.projectCwd(session.cwd);
       project.sessionCount++;
       project.runningCount += session.turnState === "running" ? 1 : 0;
       project.pendingCount += session.pendingCount;
@@ -364,9 +374,22 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return sessionId;
   }
 
-  async createSession(cwd: string, title?: string, _projectId?: string): Promise<BridgeSessionInfo> {
+  async createSection(name: string): Promise<BridgeProjectInfo> {
+    if (!this.capabilities().includes("section.create")) throw new NativeCallError("This Claude Desktop version does not support Sections");
+    const id = await this.inspector.createSection!(name);
+    if (!await this.refreshRuntime()) throw new NativeCallError(this.lastError);
+    const project = this.listProjects().find(project => project.kind === "desktop-group" && project.projectId === id);
+    if (!project) throw new NativeCallError("Desktop has not published the created Section; refresh the directory before retrying");
+    return project;
+  }
+
+  async createSession(cwd: string, title?: string, projectId?: string): Promise<BridgeSessionInfo> {
+    if (projectId && !await this.refreshRuntime()) throw new NativeCallError(this.lastError);
+    const project = projectId ? this.listProjects().find(project => project.projectId === projectId) : undefined;
+    if (projectId && !project) throw new NativeCallError("Selected Desktop project is no longer available");
     const result = record(await this.inspector.call("start", [{ cwd, title, sessionId: `local_${randomUUID()}`, withoutFirstMessage: true, message: "" }]));
     if (typeof result.sessionId !== "string") throw new NativeCallError("Desktop did not return a session ID");
+    if (project?.kind === "desktop-group") await this.inspector.assignSection!(result.sessionId, project.projectId);
     await this.refreshRuntime();
     const session = this.session(result.sessionId);
     if (!session) throw new NativeCallError("Created Desktop session is not yet available");

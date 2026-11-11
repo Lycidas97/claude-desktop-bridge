@@ -16,6 +16,7 @@ import type {
   BridgeInteractivePrompt,
   BridgeNativePermissionMode,
   BridgePermissionInfo,
+  BridgeProjectInfo,
   BridgeSessionCommandResult,
   BridgeSessionRewindPreview,
   BridgeSessionRewindResult,
@@ -48,6 +49,7 @@ import {
   ChevronsUp,
   CircleStop,
   FilePenLine,
+  FolderPlus,
   Forward,
   GitFork,
   Layers,
@@ -117,6 +119,7 @@ import {
   type ProviderSwitchResult,
 } from "./ProviderSwitchDialog.js";
 import { SessionCreateDialog } from "./SessionCreateDialog.js";
+import "./section-create.css";
 import { SessionActivityIndicator } from "./SessionActivityIndicator.js";
 import { TaskPlanCard } from "./TaskPlanCard.js";
 import { SlashCommandInput } from "./SlashCommandInput.js";
@@ -1714,6 +1717,7 @@ export function MobileWorkspace({
   onResolveUncertain,
   onResolvePermission,
   onCreateSession,
+  onCreateSection,
   onBrowseDirectory,
   onForkSession,
   onLoadBackgroundTasks,
@@ -1776,6 +1780,7 @@ export function MobileWorkspace({
     mode?: BridgeNativePermissionMode,
   ): Promise<void>;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
+  onCreateSection?(name: string): Promise<BridgeProjectInfo | undefined>;
   onCreateSession(
     cwd: string,
     title?: string,
@@ -1841,6 +1846,23 @@ export function MobileWorkspace({
   const { text, attachments, sending, steer, imageError } = draft;
   function updateDraft(change: (current: typeof draft) => typeof draft): void {
     setDrafts((current) => ({ ...current, [draftKey]: change(current[draftKey] ?? draft) }));
+  }
+  const [sectionCreate, setSectionCreate] = useState<{ name: string; busy: boolean; error: string }>();
+  const sectionCanCreate = Boolean(onCreateSection && snapshot?.host.capabilities.includes("section.create.v1") && connection === "connected" && desktopOnline && sectionCreate?.name.trim() && !sectionCreate?.busy);
+  function closeSectionCreate(): void { if (!sectionCreate?.busy) setSectionCreate(undefined); }
+  async function createSection(): Promise<void> {
+    if (!sectionCanCreate || !sectionCreate || !onCreateSection) return;
+    setSectionCreate({ ...sectionCreate, busy: true, error: "" });
+    try {
+      const project = await onCreateSection(sectionCreate.name.trim());
+      if (!project) throw new Error("Section 未创建，请重试。");
+      setCollapsedProjectIds(current => expandProject(current, project.projectId));
+      setActiveProjectId(undefined);
+      setSearch("");
+      setSectionCreate(undefined);
+    } catch (reason) {
+      setSectionCreate({ ...sectionCreate, busy: false, error: reason instanceof Error ? reason.message : "Section 创建失败" });
+    }
   }
   const [createOpen, setCreateOpen] = useState(false);
   const [createProjectId, setCreateProjectId] = useState("");
@@ -1971,12 +1993,12 @@ export function MobileWorkspace({
   const streamEntering = useStreamEntrance(selectedSessionId, streamKeys);
   const activity = useMemo(() => sessionActivity(selectedSession, items), [selectedSession, items]);
   const projectsByActivity = useMemo(() => {
-    const latest = new Map<string, number>();
+    const latest = new Map<string, number>((snapshot?.projects ?? []).filter(project => project.kind === "desktop-group").map(project => [project.projectId, 0]));
     for (const session of sessions) {
       if (!session.archivedAt) latest.set(session.projectId, Math.max(latest.get(session.projectId) ?? 0, session.lastActivityAt));
     }
     return [...latest.keys()].sort((left, right) => latest.get(right)! - latest.get(left)!);
-  }, [sessions]);
+  }, [sessions, snapshot?.projects]);
   // Projects keep a fixed order: the user's, with projects not seen before leading.
   const projectOrder = useMemo(() => orderProjects(projectsByActivity, placedProjects), [placedProjects, projectsByActivity]);
   // Pin projects the moment they are first seen, so activity never moves them afterwards.
@@ -1995,7 +2017,9 @@ export function MobileWorkspace({
 
       && (!query || `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query))
     ));
-    const groups = new Map<string, BridgeSessionInfo[]>();
+    const groups = new Map<string, BridgeSessionInfo[]>((snapshot?.projects ?? [])
+      .filter(project => project.kind === "desktop-group" && (!query || `${project.name}\n${project.cwd}`.toLocaleLowerCase().includes(query)))
+      .map(project => [project.projectId, []]));
     for (const session of filtered) {
       const list = groups.get(session.projectId) ?? [];
       list.push(session);
@@ -2088,6 +2112,10 @@ export function MobileWorkspace({
         setConfigurationSessionId(undefined);
         return true;
       }
+      if (sectionCreate) {
+        closeSectionCreate();
+        return true;
+      }
       if (createOpen) {
         setCreateOpen(false);
         return true;
@@ -2142,6 +2170,7 @@ export function MobileWorkspace({
   }, [
     activeProjectId,
     configurationSessionId,
+    sectionCreate,
     createOpen,
     deleteSessionConfirmOpen,
     renameOpen,
@@ -3694,6 +3723,12 @@ export function MobileWorkspace({
       {directoryMenuOpen && (
         <MobileSheet eyebrow={desktopName} title={activeProjectId ? activeGroupName : "会话目录"} onClose={() => setDirectoryMenuOpen(false)}>
           <div className="m-group">
+            {onCreateSection && snapshot?.host.capabilities.includes("section.create.v1") && (
+              <SheetAction icon={<FolderPlus size={19} />} label="新建 Section" disabled={connection !== "connected" || !desktopOnline} onClick={() => {
+                setDirectoryMenuOpen(false);
+                setSectionCreate({ name: "", busy: false, error: "" });
+              }} />
+            )}
             <SheetAction
               icon={refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
               label={refreshing ? "正在同步" : syncFlash ? "已同步" : "同步当前电脑"}
@@ -3754,6 +3789,27 @@ export function MobileWorkspace({
             })}
           </div>
         </MobileSheet>
+      )}
+      {sectionCreate && (
+        <div className="modal-backdrop session-create-backdrop" role="presentation"
+          onMouseDown={event => { if (event.target === event.currentTarget) closeSectionCreate(); }}
+          onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); closeSectionCreate(); } }}>
+          <section className="create-session-dialog session-create-dialog section-create-dialog" role="dialog" aria-modal="true" aria-label="新建 Section">
+            <header className="session-create-header"><h2>新建 Section</h2></header>
+            <form onSubmit={event => { event.preventDefault(); void createSection(); }}>
+              <div className="session-create-body">
+                <label><span>Section 名称</span><input aria-label="Section 名称" value={sectionCreate.name} autoFocus required maxLength={200} disabled={sectionCreate.busy}
+                  onChange={event => setSectionCreate({ ...sectionCreate, name: event.target.value, error: "" })} /></label>
+                {sectionCreate.error && <p className="session-create-error" role="alert">{sectionCreate.error}</p>}
+                {(connection !== "connected" || !desktopOnline) && <p className="session-create-status" role="status">电脑已离线，连接后可创建 Section。</p>}
+              </div>
+              <footer className="dialog-actions session-create-actions">
+                <button type="button" className="secondary-button" disabled={sectionCreate.busy} onClick={closeSectionCreate}>取消</button>
+                <button type="submit" className="primary-button" disabled={!sectionCanCreate}>{sectionCreate.busy ? "正在创建…" : "创建 Section"}</button>
+              </footer>
+            </form>
+          </section>
+        </div>
       )}
       {createOpen && snapshot && (
         <SessionCreateDialog

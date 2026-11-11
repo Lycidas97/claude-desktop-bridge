@@ -76,6 +76,14 @@ describe("mobile file stat capability", () => {
 });
 
 describe("mobile app parent navigation", () => {
+  it("wires Section creation only when the host declares support", () => {
+    hooks.mobile.createSection = vi.fn();
+    draw();
+    expect(component(MobileWorkspace)!.props.onCreateSection).toBeUndefined();
+    hooks.mobile.state.snapshot.host.capabilities.push("section.create.v1");
+    draw();
+    expect(component(MobileWorkspace)!.props.onCreateSection).toBe(hooks.mobile.createSection);
+  });
   it("releases back at the session directory so Android can leave the app", () => {
     expect(component(MobileAppShell)!.props.tab).toBe("sessions");
     expect(back()).toBe(false);

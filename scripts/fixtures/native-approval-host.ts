@@ -15,6 +15,7 @@ import { EvidenceManager } from "../../apps/desktop/src/evidence-manager.js";
 import { EvidenceStore } from "../../apps/desktop/src/evidence-store.js";
 import { discoverSlashCommands } from "../../apps/desktop/src/slash-command-catalog.js";
 import { magpieModelIdHash } from "../../apps/desktop/src/claude-runtime-discovery.js";
+import { createNativeSectionFixture } from "./native-section-store.js";
 
 interface NativeApprovalResult {
   requestId: string;
@@ -32,6 +33,7 @@ export async function startNativeApprovalHost(options: {
   onResolved(request: BridgePermissionInfo, result: NativeApprovalResult, resolution: BridgePermissionResolution): void;
   onModeChanged?(mode: BridgeSDKPermissionMode): void;
   onModelChanged?(model: string): void;
+  sections?: boolean;
 }) {
   const commandCwd = join(options.directory, "command-project");
   const commandHome = join(options.directory, "command-personal");
@@ -164,6 +166,8 @@ export async function startNativeApprovalHost(options: {
       throw new Error(`Unsupported synthetic LocalSessions method: ${method}`);
     },
   });
+  const sections = options.sections ? await createNativeSectionFixture(options.directory) : undefined;
+  if (sections) Object.assign(inspector, { sections: sections.sections, createSection: sections.createSection, assignSection: sections.assignSection });
   const state = new ConversationStateStore({
     databasePath: join(options.directory, "native-state.sqlite"), sessionsPath: join(options.directory, "sessions.json"),
     queuePath: join(options.directory, "queue.json"), masterSecret: "isolated-browser-native-fixture",
@@ -182,12 +186,17 @@ export async function startNativeApprovalHost(options: {
   await evidence.initialize();
   const controller = Object.assign(Object.create(DesktopController.prototype), {
     routesToExternalRuntime: () => false,
-    broker, evidence, allSessions: () => broker.listSessions(),
+    broker, evidence, allSessions: () => broker.listSessions(), publish: async () => {},
     config: { hostDeviceId: "synthetic-desktop", desktopName: "隔离电脑", devices: [{ deviceId: options.deviceId, name: "隔离手机", platform: "android", pairedAt: 1 }] },
   }) as { handleRequest(request: BridgeRequest, origin: "mobile", deviceId: string): Promise<unknown> };
   let sequence = 0;
   return {
-    cwd: commandCwd, harnessCwd, calls, failedRewindReadbacks,
+    cwd: commandCwd, harnessCwd, calls, failedRewindReadbacks, sections,
+    async sectionCatalog() {
+      await broker.refreshRuntime();
+      return { projects: broker.listProjects(), sessions: broker.listSessions(), capable: broker.capabilities().includes("section.create") };
+    },
+    createSection: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
     failRewindReadback(method: "getSession" | "getTranscriptPage") { rewindReadbackFailure = method; rewindCompleted = false; },
     profile() {
       const session = broker.session(options.sessionId)!;

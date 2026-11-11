@@ -199,6 +199,7 @@ export function App() {
               onResolveUncertain={mobile.resolveUncertainDelivery}
               onResolvePermission={mobile.resolvePermission}
               onCreateSession={mobile.createSession}
+              {...(snapshot?.host.capabilities.includes("section.create.v1") ? { onCreateSection: mobile.createSection } : {})}
               {...(snapshot?.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: mobile.browseDirectory } : {})}
               onForkSession={mobile.forkSession}
               {...(snapshot?.host.capabilities.includes("session.rename.v1")

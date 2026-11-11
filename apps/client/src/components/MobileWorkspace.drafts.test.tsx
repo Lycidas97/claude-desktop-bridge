@@ -501,6 +501,94 @@ describe("mobile session creation", () => {
   });
 });
 
+describe("mobile section creation", () => {
+  let create: ReturnType<typeof vi.fn>;
+  const createAction = () => elements(tree).find(element => element.props.label === "新建 Section");
+  const dialog = () => elements(tree).find(element => element.props.role === "dialog" && element.props["aria-label"] === "新建 Section");
+  const nameInput = () => elements(dialog()).find(element => element.type === "input")!;
+  const submitButton = () => elements(dialog()).find(element => element.type === "button" && element.props.type === "submit")!;
+  function enable(capable = true) {
+    create = vi.fn().mockResolvedValue({ ...props.snapshot!.projects[0], projectId: "new-section", name: "Research", kind: "desktop-group", sessionCount: 0 });
+    props = Object.assign({ ...props, snapshot: { ...props.snapshot!, host: {
+      ...props.snapshot!.host, capabilities: ["claude.native-relay.v1" as const, ...(capable ? ["section.create.v1" as const] : [])],
+    } } }, { onCreateSection: create });
+    draw();
+    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
+    const header = elements(tree).find(element => element.props.title === "会话" && element.props.actions)!;
+    elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "目录选项")!.props.onClick(); draw();
+  }
+  function openCreate() { enable(); createAction()!.props.onClick(); draw(); }
+  function editName(value: string) { nameInput().props.onChange({ target: { value } }); draw(); }
+  async function submit() {
+    elements(dialog()).find(element => element.type === "form")!.props.onSubmit({ preventDefault() {} });
+    await settle();
+  }
+
+  it("offers native section creation in the catalog menu", () => {
+    enable();
+    expect(createAction()).toBeDefined();
+  });
+  it("submits a trimmed name and closes after native success", async () => {
+    openCreate(); editName("  Research  ");
+    await submit();
+    expect(create).toHaveBeenCalledOnce();
+    expect(create.mock.calls[0]![0]).toBe("Research");
+    expect(dialog()).toBeUndefined();
+  });
+  it("keeps blank names disabled without a native write", async () => {
+    openCreate(); editName("   ");
+    expect(submitButton().props.disabled).toBe(true);
+    await submit();
+    expect(create).not.toHaveBeenCalled();
+    expect(dialog()).toBeDefined();
+  });
+  it("cancels the name draft without a native write", () => {
+    openCreate(); editName("Cancelled");
+    elements(dialog()).find(element => element.type === "button" && element.props.children === "取消")!.props.onClick(); draw();
+    expect(create).not.toHaveBeenCalled();
+    expect(dialog()).toBeUndefined();
+  });
+  it("preserves the name and displays a native failure", async () => {
+    openCreate(); editName("Research"); create.mockRejectedValue(new Error("原生分组创建失败"));
+    await submit();
+    expect(nameInput().props.value).toBe("Research");
+    expect(elements(dialog()).find(element => element.props.role === "alert")!.props.children).toBe("原生分组创建失败");
+  });
+  it("disables submission if the computer disconnects while editing", async () => {
+    openCreate(); editName("Research");
+    props = { ...props, connection: "reconnecting", desktopOnline: false }; draw();
+    expect(submitButton().props.disabled).toBe(true);
+    await submit();
+    expect(create).not.toHaveBeenCalled();
+  });
+  it("omits creation for older hosts without the capability", () => {
+    enable(false);
+    expect(createAction()).toBeUndefined();
+    expect(create).not.toHaveBeenCalled();
+  });
+  it("shows an empty native section on a computer without sessions", () => {
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: [], projects: [{
+      ...props.snapshot!.projects[0]!, projectId: "empty-section", name: "Research", cwd: "", kind: "desktop-group", sessionCount: 0,
+    }] } };
+    draw();
+    expect(elements(tree).some(element => element.type === "strong" && element.props.children === "Research")).toBe(true);
+    expect(elements(tree).some(element => element.props.children === "暂未发现 Desktop 会话")).toBe(false);
+  });
+  it("searches empty native sections by name without exposing empty directories", () => {
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: [], projects: [
+      { ...props.snapshot!.projects[0]!, projectId: "empty-section", name: "Research", cwd: "", kind: "desktop-group", sessionCount: 0 },
+      { ...props.snapshot!.projects[0]!, projectId: "empty-directory", name: "Empty directory", kind: "directory", sessionCount: 0 },
+    ] } };
+    draw();
+    const search = () => elements(tree).find(element => element.type === "input" && element.props.placeholder === "搜索项目或会话")!;
+    search().props.onChange({ target: { value: "rese" } }); draw();
+    expect(elements(tree).some(element => element.type === "strong" && element.props.children === "Research")).toBe(true);
+    search().props.onChange({ target: { value: "empty" } }); draw();
+    expect(elements(tree).some(element => element.type === "strong" && element.props.children === "Research")).toBe(false);
+    expect(elements(tree).some(element => element.type === "strong" && element.props.children === "Empty directory")).toBe(false);
+  });
+});
+
 describe("mobile session renaming", () => {
   function enableRename() {
     props = { ...props, onRenameSession: vi.fn().mockResolvedValue(undefined),

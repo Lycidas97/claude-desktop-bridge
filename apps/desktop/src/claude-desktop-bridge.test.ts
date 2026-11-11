@@ -13,6 +13,7 @@ import { ConversationStateStore } from "./conversation-state-store.js";
 import { SessionEventLog } from "./session-event-log.js";
 import { magpieModelIdHash } from "./claude-runtime-discovery.js";
 import type { ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
+import { createNativeSectionFixture } from "../../../scripts/fixtures/native-section-store.js";
 
 class NativeDesktop extends EventEmitter {
   ready = false;
@@ -116,7 +117,7 @@ async function fixture(legacy = false, evidence?: ConstructorParameters<typeof C
   const bridge = new ClaudeDesktopBridge(options);
   await bridge.initialize();
   return {
-    bridge, native, state, eventLog, options,
+    bridge, native, state, eventLog, options, directory,
     async message(message: Record<string, unknown>) {
       const changed = once(bridge, "changed");
       native.emit("event", { type: "message", sessionId: "local-native", message });
@@ -127,6 +128,95 @@ async function fixture(legacy = false, evidence?: ConstructorParameters<typeof C
 }
 
 const input = { sessionId: "local-native", text: "hello", requestId: "request", idempotencyKey: "key", origin: "mobile" as const };
+
+describe("native Sections", () => {
+  it("reads back a persisted empty native group, retains it after reconnect/restart, and isolates account/org scopes", async () => {
+    const f = await fixture();
+    let restarted: ClaudeDesktopBridge | undefined;
+    try {
+      const sections = await createNativeSectionFixture(f.directory);
+      Object.assign(f.native, { sections: sections.sections, createSection: sections.createSection, assignSection: sections.assignSection });
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.capabilities()).toContain("section.create");
+      const project = await f.bridge.createSection("Research");
+      expect(project).toMatchObject({ name: "Research", kind: "desktop-group", cwd: "", sessionCount: 0 });
+      const saved = JSON.parse(await readFile(sections.profile, "utf8"));
+      expect(saved["account-a/org-a"].sections).toEqual([{ id: project.projectId, name: "Research", order: 0 }]);
+      expect(await f.bridge.createSection("Research")).toEqual(project);
+      sections.scope = "account-a/org-b";
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.listProjects().some(value => value.projectId === project.projectId)).toBe(false);
+      const other = await f.bridge.createSection("Other org");
+      expect(sections.calls.at(-1)).toMatchObject({ scope: "account-a/org-b", name: "Other org" });
+      sections.scope = "account-b/org-a";
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.listProjects().filter(value => value.kind === "desktop-group")).toEqual([]);
+      sections.scope = "account-a/org-a";
+      await sections.reread();
+      await f.native.close();
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.listProjects().find(value => value.projectId === project.projectId)).toEqual(project);
+      await f.bridge.close();
+      restarted = new ClaudeDesktopBridge(f.options);
+      await restarted.initialize();
+      expect(restarted.listProjects().filter(value => value.kind === "desktop-group")).toEqual([project]);
+      expect(restarted.listProjects().some(value => value.projectId === other.projectId)).toBe(false);
+      expect(f.native.calls.every(call => call.method !== "start")).toBe(true);
+    } finally { await restarted?.close(); await f.close(); }
+  });
+
+  it("assigns a newly created session to its selected native Section and projects native membership", async () => {
+    const f = await fixture();
+    try {
+      const sections = await createNativeSectionFixture(f.directory);
+      Object.assign(f.native, { sections: sections.sections, createSection: sections.createSection, assignSection: sections.assignSection });
+      await f.bridge.refreshRuntime();
+      const project = await f.bridge.createSection("Research");
+      const session = await f.bridge.createSession("/new-project", "New", project.projectId);
+      expect(sections.calls.at(-1)).toEqual({ method: "move_sessions", scope: "account-a/org-a", sessionId: session.sessionId, sectionId: project.projectId });
+      expect(session).toMatchObject({ projectId: project.projectId, projectName: "Research", cwd: "/new-project" });
+      expect(f.bridge.listProjects().find(value => value.projectId === project.projectId)).toMatchObject({ sessionCount: 1 });
+    } finally { await f.close(); }
+  });
+
+  it("rejects a Section deleted after the last refresh before starting any native session", async () => {
+    const f = await fixture();
+    try {
+      const sections = await createNativeSectionFixture(f.directory);
+      const assignSection = vi.fn().mockRejectedValue(new NativeCallError("No section with that id exists"));
+      Object.assign(f.native, { sections: sections.sections, createSection: sections.createSection, assignSection });
+      await f.bridge.refreshRuntime();
+      const project = await f.bridge.createSection("Research");
+      await writeFile(sections.profile, JSON.stringify({ "account-a/org-a": { sections: [], assignments: {} } }));
+      expect(f.bridge.listProjects().some(value => value.projectId === project.projectId)).toBe(true);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(f.bridge.createSession("/new-project", "New", project.projectId)).rejects.toThrow();
+      }
+      expect(f.native.calls.filter(call => call.method === "start")).toEqual([]);
+      expect(assignSection).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+
+  it("rejects legacy capability, native errors and creation without authoritative readback", async () => {
+    const f = await fixture();
+    try {
+      await expect(f.bridge.createSection("Research")).rejects.toThrow("does not support Sections");
+      const sections = await createNativeSectionFixture(f.directory);
+      Object.assign(f.native, { sections: sections.sections, createSection: sections.createSection, assignSection: sections.assignSection });
+      await f.bridge.refreshRuntime();
+      sections.failure = "Native section limit reached";
+      await expect(f.bridge.createSection("Research")).rejects.toThrow(sections.failure);
+      sections.failure = "";
+      sections.publishCreated = false;
+      await expect(f.bridge.createSection("Research")).rejects.toThrow("has not published");
+      expect(f.bridge.listProjects().some(value => value.kind === "desktop-group")).toBe(false);
+      sections.supported = false;
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.capabilities()).not.toContain("section.create");
+      expect(f.native.calls.every(call => call.method !== "start")).toBe(true);
+    } finally { await f.close(); }
+  });
+});
 
 describe("Claude native relay", () => {
   const rewindUser = { type: "user", uuid: "raw-user-uuid", message: { id: "body-id-is-not-the-target", content: "Original draft" } };

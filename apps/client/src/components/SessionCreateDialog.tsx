@@ -55,7 +55,7 @@ export function SessionCreateDialog({ snapshot, initialProjectId, connected, onB
   const recentPaths = [...new Set([
     ...[...projects].sort((left, right) => right.lastActivityAt - left.lastActivityAt).map((project) => project.cwd),
     ...(listing?.recentPaths ?? []),
-  ])];
+  ])].filter(Boolean);
   const locked = busy || choosing;
   const groupUnavailable = Boolean(projectId && !groups.some((project) => project.projectId === projectId));
   const canCreate = connected && runtimeAvailable && Boolean(cwd.trim()) && !groupUnavailable && !locked;

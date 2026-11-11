@@ -12,6 +12,9 @@
   header; truncate the name first.
 - Show the model reported by a child assistant response in subagent and workflow
   details when a readable local transcript provides it.
+- Create native Claude Desktop Sections from the mobile session directory on
+  supported Desktop versions. Preserve empty Sections and allow new sessions to
+  use them; hide creation when native support is unavailable and disable it offline.
 - Add four font sizes to Appearance on mobile and desktop. Apply changes
   immediately to reading and input text, and remember the selection on each
   device without scaling icons or touch targets.

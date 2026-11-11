@@ -36,6 +36,7 @@ import {
   type BridgeNativePermissionMode,
   type BridgePermissionInfo,
   type BridgeProviderProfile,
+  type BridgeProjectInfo,
   type BridgeRequest,
   type BridgeResponse,
   type BridgeRuntimeGoalInfo,
@@ -3078,6 +3079,16 @@ export function useMobileBridge() {
     });
   }, [resumeEvents, sendRequest]);
 
+  const createSection = useCallback(async (name: string): Promise<BridgeProjectInfo | undefined> => {
+    const response = await sendRequest("section.create", { name }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "Section 创建失败");
+    const { project } = response.result as { project?: BridgeProjectInfo };
+    if (project) setState(current => current.snapshot ? {
+      ...current, snapshot: { ...current.snapshot, projects: [project, ...current.snapshot.projects.filter(item => item.projectId !== project.projectId)] },
+    } : current);
+    return project;
+  }, [sendRequest]);
+
   const createSession = useCallback(async (
     cwd: string,
     title?: string,
@@ -3492,6 +3503,7 @@ export function useMobileBridge() {
     resolveUncertainDelivery,
     resolvePermission,
     createSession,
+    createSection,
     forkSession,
     returnToDesktop,
     takeoverDesktop,

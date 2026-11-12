@@ -36,12 +36,18 @@ function elements(node: ReactNode = tree): ReactElement<Record<string, any>>[] {
   if (Array.isArray(node)) return node.flatMap(child => elements(child ?? null));
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Record<string, any>>;
+  if (typeof element.type === "function") return elements((element.type as (p: any) => ReactNode)(element.props));
   return [element, ...elements(element.props.children ?? null)];
 }
 function text(node: ReactNode = tree): string {
   if (Array.isArray(node)) return node.map(child => text(child ?? null)).join("");
   if (!node || typeof node === "boolean") return "";
-  return typeof node === "object" && "props" in node ? text((node as ReactElement<Record<string, any>>).props.children ?? null) : String(node);
+  if (typeof node === "object" && "props" in node) {
+    const element = node as ReactElement<Record<string, any>>;
+    if (typeof element.type === "function") return text((element.type as (p: any) => ReactNode)(element.props));
+    return text(element.props.children ?? null);
+  }
+  return String(node);
 }
 function button(label: string) { return elements().find(e => e.type === "button" && text(e.props.children) === label)!; }
 async function settle() { for (let i = 0; i < 12; i++) await Promise.resolve(); draw(); }
@@ -72,4 +78,33 @@ it("keeps a known selected profile actionable after a later check fails", async 
   button("重新检查").props.onClick(); draw(); await settle();
   expect(text()).toContain("EPERM: access denied");
   expect(button("一键开启").props.disabled).toBe(false);
+});
+
+it("renders desktop updater controls and OS silent-restart boundary in about section", async () => {
+  props.snapshot = {
+    ...props.snapshot,
+    host: { name: "Fixture", version: "1.3.2", capabilities: ["claude.native-relay.v1", "system.update.v1"] },
+    permissions: [],
+    latestSeq: 0,
+    runtimes: [{ id: "claude-desktop", state: "ready", capabilities: ["session.list", "session.history"] }],
+    updater: {
+      platform: "darwin",
+      arch: "arm64",
+      currentVersion: "1.3.2",
+      channel: "stable",
+      autoCheck: true,
+      applyMode: "prompt",
+      canAutoRestart: false,
+      phase: "ready",
+      latestVersion: "1.3.3",
+    },
+  } as unknown as DesktopControlSnapshot;
+  draw();
+  button("诊断与关于").props.onClick();
+  draw();
+  expect(text()).toContain("已就绪");
+  expect(text()).toContain("版本更新");
+  expect(text()).toContain("macOS 未公证/DMG 包不支持后台静默覆盖系统目录");
+  expect(button("空闲静默重启").props.disabled).toBe(true);
+  expect(text()).toContain("打开安装包 (v1.3.3)");
 });

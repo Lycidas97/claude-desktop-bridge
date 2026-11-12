@@ -1,3 +1,5 @@
+import type { BridgeUpdaterSnapshot } from "./updater.js";
+
 export const PROTOCOL_VERSION = 3 as const;
 export const PAIRING_SCHEMA_VERSION = 4 as const;
 export const ENVELOPE_CHUNK_BYTES = 64 * 1024;
@@ -210,7 +212,8 @@ export type BridgeCapability =
   | "subagent.stop.v1"
   | "turn.queue.steer.v1"
   | "turn.queue.cancel.v1"
-  | "plugin.magpie-quota.v1";
+  | "plugin.magpie-quota.v1"
+  | "system.update.v1";
 
 /**
  * Cross-Desktop serial relay (0.7). A handoff moves a task to a brand-new
@@ -1115,6 +1118,7 @@ export interface BridgeHostSnapshot {
   runtimes?: BridgeDesktopRuntime[];
   permissions: BridgePermissionInfo[];
   providers?: BridgeProviderProfile[];
+  updater?: BridgeUpdaterSnapshot;
   latestSeq: number;
 }
 
@@ -1225,7 +1229,8 @@ export type BridgeMethod =
   | "runtime.goal.resume"
   | "device.revoke"
   // Compile-time plugins/magpie-quota; its payload types stay in the plugin.
-  | "plugin.magpie-quota.list";
+  | "plugin.magpie-quota.list"
+  | "system.update";
 
 export interface BridgeRequest {
   kind: "request";

@@ -80,11 +80,17 @@ async function serviceMain(): Promise<void> {
         windowProcess.unref();
       });
       if (stopping) return;
-      const runtime = await createServiceRuntime({ userDataPath, onStage: reportStartup });
+      let uiConnected = () => false;
+      const runtime = await createServiceRuntime({
+        userDataPath,
+        onStage: reportStartup,
+        hasConnectedUi: () => uiConnected(),
+      });
       resources.defer("Service runtime", () => runtime.close());
       if (stopping) return;
       reportStartup("发布本机服务地址");
       const server = await serveDesktopService({ addressPath, controller: runtime.controller, shutdown: () => app.quit() });
+      uiConnected = () => server.hasConnectedClients();
       resources.defer("Service listener", () => server.close());
       reportStartup("后台服务已就绪");
     } catch (error) {
@@ -123,7 +129,11 @@ async function desktopMain(): Promise<void> {
     reportStartup("准备本机服务目录");
     await mkdir(serviceDirectory, { recursive: true, mode: 0o700 });
     const controller = startupClient = await connectDesktopService(addressPath, async () => {
-      const environment: NodeJS.ProcessEnv = { ...process.env, BRIDGE_SERVICE_DATA_PATH: userDataPath };
+      const environment: NodeJS.ProcessEnv = {
+        ...process.env,
+        BRIDGE_SERVICE_DATA_PATH: userDataPath,
+        ...(isolatedPackagedQa && !process.env.BRIDGE_UPDATER_FEED_URL ? { BRIDGE_UPDATER_DISABLE: "1" } : {}),
+      };
       delete environment.ELECTRON_RUN_AS_NODE;
       const log = await open(join(serviceDirectory, "service.log"), "a", 0o600);
       try {
@@ -308,6 +318,10 @@ async function desktopMain(): Promise<void> {
     });
     controller.on("disconnected", () => tray.setToolTip("Bridge · 正在重新连接后台服务"));
     controller.on("snapshot", () => tray.setToolTip("Bridge"));
+    controller.on("quit-for-update", () => {
+      quitting = true;
+      app.quit();
+    });
     const refresh = () => { showWindow(); void controller.call("refreshRuntime").catch((error: unknown) => process.stderr.write(`${String(error)}\n`)); };
     app.on("second-instance", refresh);
     app.on("activate", refresh);

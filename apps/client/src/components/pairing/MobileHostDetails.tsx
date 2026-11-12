@@ -13,6 +13,7 @@ import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
+import { RemoteDesktopUpdaterSection, type RemoteDesktopUpdateControl } from "../updater/UpdaterSections.js";
 import { RelaySettings } from "./RelaySettings.js";
 
 export interface MobileHostDetailsProps {
@@ -32,6 +33,7 @@ export interface MobileHostDetailsProps {
   onRemove(): Promise<void>;
   onBack(): void;
   permissionSettings?: ReactNode;
+  remoteUpdate?: RemoteDesktopUpdateControl | undefined;
 }
 
 export function MobileHostDetails({
@@ -51,6 +53,7 @@ export function MobileHostDetails({
   onRemove,
   onBack,
   permissionSettings,
+  remoteUpdate,
 }: MobileHostDetailsProps) {
   const [connectionAction, setConnectionAction] = useState<"retry" | "refresh">();
   const [notice, setNotice] = useState("");
@@ -230,10 +233,14 @@ export function MobileHostDetails({
 
       {permissionSettings}
 
-      {snapshot?.host.version && <section className="mobile-settings-group" aria-labelledby="host-about-title">
-        <h2 id="host-about-title">电脑信息</h2>
-        <div className="mobile-settings-row"><span>电脑端版本</span><span className="mobile-settings-value">{snapshot.host.version}</span></div>
-      </section>}
+      {remoteUpdate ? (
+        <RemoteDesktopUpdaterSection remote={remoteUpdate} heading="远端桌面状态" />
+      ) : snapshot?.host.version ? (
+        <section className="mobile-settings-group" aria-labelledby="host-about-title">
+          <h2 id="host-about-title">电脑信息</h2>
+          <div className="mobile-settings-row"><span>电脑端版本</span><span className="mobile-settings-value">{snapshot.host.version}</span></div>
+        </section>
+      ) : null}
 
       <section className="mobile-settings-group" aria-label="移除电脑">
         <button type="button" className="mobile-settings-row danger" disabled={removing} onClick={() => setRemoveOpen(true)}>

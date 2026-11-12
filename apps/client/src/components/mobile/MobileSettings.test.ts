@@ -44,3 +44,35 @@ describe("Magpie quota entry in settings", () => {
     expect(render()).not.toContain("Magpie 额度");
   });
 });
+
+describe("mobile client updater and remote desktop updater sections", () => {
+  it("renders persistent client version & graceful Web fallback plus remote desktop update controls", () => {
+    const html = renderToStaticMarkup(createElement(MobileSettings, {
+      themeControl: { theme: "light", family: "sunstone", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
+      remoteDesktop: {
+        hostVersion: "1.3.2",
+        connected: true,
+        supported: true,
+        updater: {
+          platform: "win32",
+          arch: "x64",
+          currentVersion: "1.3.2",
+          channel: "stable",
+          autoCheck: true,
+          applyMode: "prompt",
+          canAutoRestart: true,
+          phase: "available",
+          latestVersion: "1.3.3",
+          assetName: "Bridge-1.3.3-windows-installer-ci.zip",
+        },
+        onInvoke: vi.fn(),
+      },
+    }));
+    expect(html).toContain("远端桌面状态");
+    expect(html).toContain("v1.3.2");
+    expect(html).toContain("发现 v1.3.3");
+    expect(html).toContain("检查并升级桌面端");
+    expect(html).toContain("版本与更新");
+    expect(html).toContain("查看 GitHub Releases");
+  });
+});

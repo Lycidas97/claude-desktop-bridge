@@ -91,6 +91,7 @@ const METHODS = new Set([
   "runtime.goal.resume",
   "device.revoke",
   "plugin.magpie-quota.list",
+  "system.update",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {

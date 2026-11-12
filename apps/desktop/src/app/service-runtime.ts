@@ -32,6 +32,7 @@ import {
 } from "../transport/webrtc-runtime.js";
 import { ConversationStateStore } from "../controller/conversation-state-store.js";
 import { MagpieConnectionRepository } from "../claude/magpie-connection.js";
+import { DesktopUpdater } from "../updater/desktop-updater.js";
 import { ServiceResources } from "./service-resources.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
@@ -74,7 +75,11 @@ function configPath(userDataPath: string): string {
   return join(base, "bridge-config.json");
 }
 
-export async function createServiceRuntime(options: { userDataPath: string; onStage?(stage: string): void }): Promise<{
+export async function createServiceRuntime(options: {
+  userDataPath: string;
+  onStage?(stage: string): void;
+  hasConnectedUi?: () => boolean;
+}): Promise<{
   controller: DesktopController;
   close(): Promise<void>;
 }> {
@@ -172,6 +177,35 @@ export async function createServiceRuntime(options: { userDataPath: string; onSt
     resources.defer("Desktop controller", () => controller.close());
     options.onStage?.("初始化运行时与中继连接");
     await controller.initialize();
+    if (process.platform === "win32" || process.platform === "darwin" || process.platform === "linux") {
+      const updater = new DesktopUpdater({
+        platform: process.platform,
+        arch: process.arch,
+        currentVersion: app.getVersion(),
+        isPackaged: app.isPackaged,
+        execPath: process.execPath,
+        userDataPath,
+        feedUrl: process.env.BRIDGE_UPDATER_FEED_URL,
+        autoCheckAllowed:
+          Boolean(process.env.BRIDGE_UPDATER_FEED_URL) ||
+          (app.isPackaged && process.env.BRIDGE_UPDATER_DISABLE !== "1"),
+        isSystemIdle: () => controller.isIdleForUpdate(),
+        hasConnectedUi: () => options.hasConnectedUi?.() ?? false,
+        requestQuitAll: () => controller.requestQuitForUpdate(),
+        openLocalInstaller: async (filePath, revealOnly) => {
+          if (revealOnly) {
+            shell.showItemInFolder(filePath);
+            return;
+          }
+          const openError = await shell.openPath(filePath);
+          if (openError) throw new Error(openError);
+        },
+        onChanged: () => controller.notifyUpdaterChanged(),
+      });
+      await updater.initialize();
+      resources.defer("Desktop updater", () => updater.close());
+      await controller.attachUpdater(updater);
+    }
     const inspectorStartup = new ClaudeInspectorStartup({ recordPath: join(userDataPath, "claude-inspector-startup-v1.json") });
     const inspector = new ClaudeInspectorMonitor({
       ...(!process.env.BRIDGE_CLAUDE_INSPECTOR_URL ? { startup: (listening: boolean) => inspectorStartup.check(listening) } : {}),

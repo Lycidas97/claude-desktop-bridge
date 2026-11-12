@@ -141,7 +141,7 @@ try {
   if ($smokeProcess.HasExited) {
     throw "Packaged Windows app exited during the default-configuration startup smoke test."
   }
-  & taskkill.exe /PID $smokeProcess.Id /T /F 2>$null | Out-Null
+  & cmd.exe /c "taskkill.exe /PID $($smokeProcess.Id) /T /F >nul 2>nul"
   $smokeProcess = $null
 
   Set-QaProfile -Root $qaRoot
@@ -200,7 +200,7 @@ try {
     $webviewSocket = $null
     $socketDeadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $socketDeadline -and -not $webviewSocket) {
-      $unixSockets = & $adb shell "cat /proc/net/unix" 2>$null
+      $unixSockets = & cmd.exe /c "`"$adb`" shell cat /proc/net/unix 2>nul"
       $match = ($unixSockets | Select-String -Pattern "@(webview_devtools_remote_\d+)" | Select-Object -First 1)
       if ($match) {
         $webviewSocket = $match.Matches[0].Groups[1].Value
@@ -227,15 +227,15 @@ try {
         [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_SMOKE_PAIRING_ONLY", $null, "Process")
       }
     } finally {
-      & $adb forward --remove tcp:9224 2>$null | Out-Null
+      & cmd.exe /c "`"$adb`" forward --remove tcp:9224 >nul 2>nul"
     }
   }
 } finally {
   if ($null -ne $smokeProcess -and -not $smokeProcess.HasExited) {
-    & taskkill.exe /PID $smokeProcess.Id /T /F 2>$null | Out-Null
+    & cmd.exe /c "taskkill.exe /PID $($smokeProcess.Id) /T /F >nul 2>nul"
   }
   if ($null -ne $desktopProcess -and -not $desktopProcess.HasExited) {
-    & taskkill.exe /PID $desktopProcess.Id /T /F 2>$null | Out-Null
+    & cmd.exe /c "taskkill.exe /PID $($desktopProcess.Id) /T /F >nul 2>nul"
   }
   if ($null -ne $relayProcess -and -not $relayProcess.HasExited) {
     Stop-Process -Id $relayProcess.Id -Force -ErrorAction SilentlyContinue

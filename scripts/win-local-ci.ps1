@@ -205,7 +205,10 @@ try {
   $apksigner = Get-ChildItem "$sdkRoot\build-tools\*\apksigner.bat" | Sort-Object FullName | Select-Object -Last 1
   if ($null -eq $apksigner) { throw "apksigner.bat not found under $sdkRoot\build-tools" }
   $expectedCert = "8b4e8a0ed8e506dde6ff65f92b9bd526d2fcaf10d35089d381a02d9ed23a18db"
-  $certOut = (& $apksigner.FullName verify --print-certs $apkPath 2>&1) -join "`n"
+  $certOut = & {
+    $ErrorActionPreference = "Continue"
+    (& $apksigner.FullName verify --print-certs $apkPath 2>&1) -join "`n"
+  }
   if ($certOut -notmatch "certificate SHA-256 digest:\s*([0-9a-fA-F]+)") {
     throw "Failed to parse APK certificate digest: $certOut"
   }
@@ -219,7 +222,7 @@ try {
   $bootDeadline = (Get-Date).AddSeconds(180)
   $booted = $false
   while ((Get-Date) -lt $bootDeadline) {
-    $prop = (& $adb shell getprop sys.boot_completed 2>$null) -join ""
+    $prop = (& cmd.exe /c "`"$adb`" shell getprop sys.boot_completed 2>nul") -join ""
     if ($prop.Trim() -eq "1") {
       $booted = $true
       break
@@ -252,7 +255,7 @@ try {
   }
 } finally {
   if ($startedEmulator) {
-    & $adb emu kill 2>$null | Out-Null
+    & cmd.exe /c "`"$adb`" emu kill >nul 2>nul"
   }
 }
 

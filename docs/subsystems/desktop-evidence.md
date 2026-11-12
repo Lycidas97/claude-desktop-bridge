@@ -2,11 +2,6 @@
 
 ## Owned Paths
 - `apps/desktop/src/evidence/`
-  - Lifecycle & attribution: `evidence-manager.ts`
-  - Encrypted blob & manifest store: `evidence-store.ts`
-  - Git & filesystem diffing: `workspace-evidence.ts`
-  - Sandboxed image/HTML previews: `artifact-preview.ts`
-  - Chunked workspace uploads: `file-upload.ts`
 
 ## Responsibilities
 - Passively tracks native turn lifecycles, tool inputs/results, and workspace git/filesystem changes to build per-turn `BridgeTurnEvidence` manifests (`evidence-manager.ts`, `workspace-evidence.ts`).

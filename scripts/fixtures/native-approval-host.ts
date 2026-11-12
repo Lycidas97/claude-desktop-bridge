@@ -263,6 +263,7 @@ export async function startNativeApprovalHost(options: {
         { ...native, sessionId: "browser-e2e-parent", cwd: project, harnessCwd: project, title: "主会话" },
         native,
         { ...native, sessionId: "browser-e2e-fork", title: "真实 Fork 会话", forkedFromSessionId: "browser-e2e-parent" },
+        { ...native, sessionId: "browser-e2e-btw-archived", cwd: project, harnessCwd: project, title: "btw: 已结束白名单排查", spawnedFrom: { sessionId: "browser-e2e-parent", btw: true }, isArchived: true },
         { ...native, sessionId: "browser-e2e-other", cwd: otherProject, harnessCwd: otherProject, title: "其他项目会话" },
       );
       await broker.refreshRuntime();

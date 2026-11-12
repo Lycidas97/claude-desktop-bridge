@@ -191,7 +191,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     async emit(type, data, options = {}) {
       const event = {
         eventId: `browser-e2e-event-${++snapshot.latestSeq}`,
-        sessionId, seq: snapshot.latestSeq, timestamp: Date.now(), origin: "claude-desktop",
+        sessionId: options.sessionId ?? sessionId, seq: snapshot.latestSeq, timestamp: Date.now(), origin: "claude-desktop",
         type, data,
         ...(options.turnId ? { turnId: options.turnId } : {}),
         ...(options.itemId ? { itemId: options.itemId } : {}),
@@ -1603,13 +1603,24 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.deepEqual(await headers.allTextContents(), ["other-project", "claude-desktop-bridge"]);
   assert.equal(await mainGroup.locator('[data-session-id="browser-e2e-parent"]').count(), 1);
   assert.equal(await mainGroup.locator(".project-count-pill").innerText(), "2");
-  assert.equal(await mainGroup.locator(".mobile-fork-toggle").count(), 1);
+  const primaryForkToggle = mainGroup.locator(".mobile-fork-toggle:not(.is-archived-fold)");
+  const archivedFoldToggle = mainGroup.locator(".mobile-fork-toggle.is-archived-fold");
+  assert.equal(await primaryForkToggle.count(), 1);
+  assert.equal((await primaryForkToggle.innerText()).trim(), "1 个 Fork 分支");
   assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
-  await mainGroup.locator(".mobile-fork-toggle").click();
+  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  await primaryForkToggle.click();
   await mainGroup.locator('[data-session-id="browser-e2e-fork"]').waitFor();
-  assert.equal(await mainGroup.locator(".mobile-fork-toggle").getAttribute("aria-expanded"), "true");
+  assert.equal(await primaryForkToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  assert.equal(await archivedFoldToggle.count(), 1);
+  assert.equal(await archivedFoldToggle.getAttribute("aria-expanded"), "false");
+  assert.equal((await archivedFoldToggle.innerText()).trim(), "1 个已结束侧聊");
+  await archivedFoldToggle.click();
+  await mainGroup.locator('[data-session-id="browser-e2e-btw-archived"]').waitFor();
+  assert.equal(await archivedFoldToggle.getAttribute("aria-expanded"), "true");
   await page.screenshot({ path: resolve(directory, "project-fork-expanded.png"), fullPage: true });
-  steps.push("real Native projection groups linked worktrees under the repository; only the authoritative fork has an expandable parent relationship");
+  steps.push("real Native projection groups linked worktrees under the repository; active fork count excludes archived /btw sidechats while preserving a secondary fold");
 
   const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
   await search.fill(worktree.title);
@@ -1623,6 +1634,28 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.deepEqual(await headers.allTextContents(), ["other-project", "claude-desktop-bridge"]);
   assert.equal(await page.evaluate(key => localStorage.getItem(key), orderKey), savedOrder);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Project list fits the phone viewport");
+
+  await primaryForkToggle.click();
+  await archivedFoldToggle.click();
+  await mainGroup.locator('[data-session-id="browser-e2e-btw-archived"]').getByRole("button").first().click();
+  const parentChainButton = page.locator(".fork-chain-bar").getByRole("button", { name: "主会话：主会话", exact: true });
+  await parentChainButton.waitFor();
+  await parentChainButton.click();
+  await page.getByRole("heading", { name: "主会话", exact: true }).waitFor();
+  await page.getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.getByRole("button", { name: /分支 1/u }).waitFor();
+  await page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+
+  const forkSnapshot = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-fork");
+  forkSnapshot.archivedAt = Date.now();
+  await host.emit("session.archived", { archived: true, archivedAt: forkSnapshot.archivedAt }, { sessionId: "browser-e2e-fork" });
+  await eventually(() => primaryForkToggle.count(), 0, "Archiving the last active fork moves the parent to archived-only fold");
+  assert.equal(await mainGroup.locator(".mobile-fork-group.is-archived-only").count(), 1);
+  assert.equal((await archivedFoldToggle.innerText()).trim(), "2 个已归档分支与侧聊");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Archived-only fold fits the phone viewport");
+
   assert.equal(host.requests.filter(request => request.method.startsWith("turn.")).length, 0);
   await writeFile(resolve(directory, "project-catalog.json"), JSON.stringify({ projects: host.snapshot.projects, sessions: host.snapshot.sessions }, null, 2));
   await page.screenshot({ path: resolve(directory, "project-list.png"), fullPage: true });

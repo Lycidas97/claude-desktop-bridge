@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyEventToTurns, mergeBridgeEvents, type LocalTurn } from "../hooks/useMobileBridge.js";
 import {
   aggregateFileChanges,
+  archivedForkGroupKey,
   canConfigureSession,
   canStopBridgeTask,
   conversationItems,
@@ -24,7 +25,9 @@ import {
   stoppableBridgeTask,
   supportsProviderSwitching,
 } from "../lib/conversation-timeline.js";
+import { groupProjectSessionFamilies } from "../lib/project-groups.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
+import { MobileSessionCatalog } from "./mobile/MobileSessionCatalog.js";
 import { PermissionPrompt, permissionPresentation } from "./conversation/PermissionPrompts.js";
 import { SubagentCard } from "./conversation/SubagentCard.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
@@ -173,7 +176,7 @@ describe("mobile workspace directory", () => {
     expect(html).not.toContain("Nested Fork");
   });
 
-  it("groups active and archived /btw sidechats under their active parent and shows direct parent return in sidechat detail", () => {
+  it("counts only active forks/sidechats by default, tucks archived sidechats/forks into a secondary fold, and shows direct parent return in sidechat detail", () => {
     const sidechatActive: BridgeSessionInfo = {
       ...session,
       sessionId: "btw-active",
@@ -198,13 +201,115 @@ describe("mobile workspace directory", () => {
         sessions: [session, sidechatActive, sidechatArchived],
       },
     }));
-    expect(directoryHtml).toContain("2 个 /btw 侧聊");
+    expect(directoryHtml).toContain("1 个 /btw 侧聊");
+    expect(directoryHtml).not.toContain("2 个 /btw 侧聊");
+    expect(directoryHtml).not.toContain(sidechatArchived.title);
+
+    const archivedOnlyHtml = renderToStaticMarkup(createElement(MobileWorkspace, {
+      ...workspaceProps(),
+      snapshot: {
+        ...snapshot,
+        sessions: [session, sidechatArchived],
+      },
+    }));
+    expect(archivedOnlyHtml).toContain("mobile-fork-group is-archived-only collapsed");
+    expect(archivedOnlyHtml).toContain("1 个已结束侧聊");
+    expect(archivedOnlyHtml).not.toContain("1 个 /btw 侧聊");
+    expect(archivedOnlyHtml).not.toContain(sidechatArchived.title);
+
+    const allMixedSessions: BridgeSessionInfo[] = [
+      session,
+      sidechatActive,
+      sidechatArchived,
+      { ...session, sessionId: "fork-archived", title: "历史实验分支", parentSessionId: session.sessionId, archivedAt: 120, lastActivityAt: 120 },
+    ];
+    const renderCatalog = (expandedForkParents: Set<string>, activeProjectId?: string, catalogSessions = allMixedSessions) => {
+      const activeList = catalogSessions.filter((candidate) => !candidate.archivedAt || Boolean(candidate.sidechat && candidate.parentSessionId === session.sessionId));
+      const archivedList = catalogSessions.filter((candidate) => Boolean(candidate.archivedAt));
+      return renderToStaticMarkup(createElement(MobileSessionCatalog, {
+        desktopName: "My computer",
+        connection: "connected",
+        desktopOnline: true,
+        snapshot: { ...snapshot, sessions: catalogSessions },
+        sessions: catalogSessions,
+        archivedSessions: archivedList,
+        activeParentProjects: new Map([[session.sessionId, session.projectId]]),
+        grouped: [{ project: snapshot.projects[0], sessions: activeList }],
+        groupedProjectIds: [session.projectId],
+        allProjectsCollapsed: false,
+        collapsedProjectIds: new Set<string>(),
+        expandedForkParents,
+        projectOrder: [session.projectId],
+        projectsByActivity: [session.projectId],
+        permissions: [],
+        connectionIssue: undefined,
+        transportMetrics: undefined,
+        pendingOutbound: 0,
+        activeProjectId,
+        search: "",
+        projectSearch: "",
+        directoryRef: { current: null },
+        directoryScrollPositions: { current: new Map() },
+        directoryMenuOpen: false,
+        projectOrderOpen: false,
+        refreshing: false,
+        syncFlash: false,
+        sectionCreate: undefined,
+        sectionCanCreate: false,
+        createOpen: false,
+        createProjectId: "",
+        sessionOverlays: null,
+        onBackToHosts: vi.fn(),
+        onRetry: vi.fn(),
+        onRefresh: vi.fn(),
+        onCreateSection: undefined,
+        onBrowseDirectory: undefined,
+        onCreateDirectory: undefined,
+        onCreateSession: vi.fn(),
+        selectSession: vi.fn(),
+        setSearch: vi.fn(),
+        setProjectSearch: vi.fn(),
+        setDirectoryMenuOpen: vi.fn(),
+        setProjectOrderOpen: vi.fn(),
+        setCollapsedProjectIds: vi.fn(),
+        setSectionCreate: vi.fn(),
+        setCreateOpen: vi.fn(),
+        onOpenSessionActions: vi.fn(),
+        toggleProject: vi.fn(),
+        toggleForkGroup: vi.fn(),
+        openProjectGroup: vi.fn(),
+        closeProjectGroup: vi.fn(),
+        openCreateDialogForProject: vi.fn(),
+        placeProjects: vi.fn(),
+        runRefresh: vi.fn(),
+        closeSectionCreate: vi.fn(),
+        createSection: vi.fn(),
+      }));
+    };
+    const primaryExpandedHtml = renderCatalog(new Set([session.sessionId]));
+    expect(primaryExpandedHtml).toContain(sidechatActive.title);
+    expect(primaryExpandedHtml).toContain("2 个已归档分支与侧聊");
+    expect(primaryExpandedHtml).not.toContain(sidechatArchived.title);
+    expect(primaryExpandedHtml).not.toContain("历史实验分支");
+
+    const bothExpandedHtml = renderCatalog(new Set([session.sessionId, archivedForkGroupKey(session.sessionId)]));
+    expect(bothExpandedHtml).toContain(sidechatActive.title);
+    expect(bothExpandedHtml).toContain(sidechatArchived.title);
+    expect(bothExpandedHtml).toContain("历史实验分支");
+
+    const archivedParent: BridgeSessionInfo = { ...session, sessionId: "archived-parent", title: "已归档父会话", archivedAt: 50 };
+    const archivedChild: BridgeSessionInfo = { ...session, sessionId: "btw-of-archived-parent", title: "btw: 归档父会话的侧聊", parentSessionId: "archived-parent", sidechat: true, archivedAt: 60 };
+    expect(groupProjectSessionFamilies([archivedParent, archivedChild])[0]!.forks).toHaveLength(1);
+    const archivedPageHtml = renderCatalog(new Set(["archived-parent"]), "__archived__", [archivedParent, archivedChild]);
+    expect(archivedPageHtml).toContain("1 个 /btw 侧聊");
+    expect(archivedPageHtml).toContain("btw: 归档父会话的侧聊");
+    expect(archivedPageHtml).not.toContain("is-archived-fold");
 
     const useState = vi.mocked(React.useState).getMockImplementation()!;
     const stateSpy = vi.mocked(React.useState)
       .mockImplementationOnce(useState)
       .mockImplementationOnce(useState)
-      .mockReturnValueOnce(["btw-active", vi.fn()]);
+      .mockReturnValueOnce(["btw-archived", vi.fn()]);
     try {
       const detailHtml = renderToStaticMarkup(createElement(MobileWorkspace, {
         ...workspaceProps(),
@@ -225,14 +330,16 @@ describe("mobile workspace directory", () => {
         sessions: [
           session,
           sidechatActive,
+          sidechatArchived,
           { ...session, sessionId: "fork-regular", title: "普通分支", parentSessionId: session.sessionId, forkLabel: "fork-2" },
-          { ...session, sessionId: "archived-parent", title: "已归档父会话", archivedAt: 50 },
-          { ...session, sessionId: "btw-of-archived-parent", title: "btw: 归档父会话的侧聊", parentSessionId: "archived-parent", sidechat: true, archivedAt: 60 },
+          archivedParent,
+          archivedChild,
           { ...session, sessionId: "btw-wrong-project", title: "btw: 跨项目孤儿保护", parentSessionId: session.sessionId, projectId: "other-project", sidechat: true, archivedAt: 70 },
         ],
       },
     }));
     expect(mixedHtml).toContain("2 个分支与侧聊");
+    expect(mixedHtml).not.toContain("3 个分支与侧聊");
     expect(mixedHtml).not.toContain("btw: 归档父会话的侧聊");
     expect(mixedHtml).not.toContain("btw: 跨项目孤儿保护");
   });

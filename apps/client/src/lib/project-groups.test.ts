@@ -1,4 +1,11 @@
+import type { BridgeSessionInfo } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
+import {
+  archivedForkGroupKey,
+  archivedForkGroupLabel,
+  forkGroupToggleLabel,
+  partitionSessionForks,
+} from "./conversation-timeline.js";
 import {
   collapseProjects,
   expandAllProjects,
@@ -236,5 +243,59 @@ describe("session order inside a project", () => {
       ["opened-on-phone", 900], ["replied", 700],
     ]);
     expect(previewProjectSessionFamilies(sessions, 1, recency).preview[0]!.primary.sessionId).toBe("opened-on-phone");
+  });
+});
+
+describe("partitionSessionForks", () => {
+  const baseParent: BridgeSessionInfo = {
+    sessionId: "parent",
+    projectId: "proj-1",
+    projectName: "Bridge",
+    cwd: "/tmp/bridge",
+    title: "Parent session",
+    source: "desktop",
+    ownership: "DESKTOP_NATIVE_IDLE",
+    transport: "claude-desktop-native",
+    turnState: "idle",
+    lastActivityAt: 1000,
+    pendingCount: 0,
+  };
+
+  it("separates active forks from archived sidechats and supplements same-project archived regular forks", () => {
+    const activeFork: BridgeSessionInfo = { ...baseParent, sessionId: "fork-active", title: "Active fork", parentSessionId: "parent", lastActivityAt: 800 };
+    const archivedSidechat: BridgeSessionInfo = { ...baseParent, sessionId: "btw-archived", title: "btw: archived", parentSessionId: "parent", sidechat: true, archivedAt: 700, lastActivityAt: 700 };
+    const archivedFork: BridgeSessionInfo = { ...baseParent, sessionId: "fork-archived", title: "Archived fork", parentSessionId: "parent", archivedAt: 900, lastActivityAt: 900 };
+    const otherProjectArchivedFork: BridgeSessionInfo = { ...baseParent, sessionId: "fork-other-proj", projectId: "proj-2", title: "Other project fork", parentSessionId: "parent", archivedAt: 950, lastActivityAt: 950 };
+    const [family] = groupProjectSessionFamilies([baseParent, activeFork, archivedSidechat]);
+
+    const partitioned = partitionSessionForks(
+      baseParent,
+      family!.forks,
+      [baseParent, activeFork, archivedSidechat, archivedFork, otherProjectArchivedFork],
+      false,
+    );
+
+    expect(partitioned.activeForks.map((f) => f.primary.sessionId)).toEqual(["fork-active"]);
+    expect(partitioned.archivedForks.map((f) => f.primary.sessionId)).toEqual(["fork-archived", "btw-archived"]);
+    expect(forkGroupToggleLabel(partitioned.activeForks)).toBe("1 个 Fork 分支");
+    expect(archivedForkGroupLabel(partitioned.archivedForks)).toBe("2 个已归档分支与侧聊");
+    expect(archivedForkGroupLabel([partitioned.archivedForks[0]!])).toBe("1 个已归档分支");
+    expect(archivedForkGroupLabel([partitioned.archivedForks[1]!])).toBe("1 个已结束侧聊");
+    expect(archivedForkGroupKey("parent")).toBe("archived:parent");
+  });
+
+  it("keeps archived children inline without a secondary bucket in archived list views and honors search queries", () => {
+    const archivedParent: BridgeSessionInfo = { ...baseParent, archivedAt: 500 };
+    const archivedSidechat: BridgeSessionInfo = { ...baseParent, sessionId: "btw-archived", title: "btw: DNS rule", parentSessionId: "parent", sidechat: true, archivedAt: 700, lastActivityAt: 700 };
+    const archivedFork: BridgeSessionInfo = { ...baseParent, sessionId: "fork-archived", title: "IPv6 routing", parentSessionId: "parent", archivedAt: 900, lastActivityAt: 900 };
+    const [archivedFamily] = groupProjectSessionFamilies([archivedParent, archivedSidechat, archivedFork]);
+
+    const inline = partitionSessionForks(archivedParent, archivedFamily!.forks, [archivedParent, archivedSidechat, archivedFork], true);
+    expect(inline.activeForks.map((f) => f.primary.sessionId)).toEqual(["fork-archived", "btw-archived"]);
+    expect(inline.archivedForks).toEqual([]);
+
+    const filtered = partitionSessionForks(baseParent, [], [baseParent, archivedSidechat, archivedFork], false, "ipv6");
+    expect(filtered.activeForks).toEqual([]);
+    expect(filtered.archivedForks.map((f) => f.primary.sessionId)).toEqual(["fork-archived"]);
   });
 });

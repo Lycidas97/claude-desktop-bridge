@@ -32,7 +32,11 @@ import type { ReactNode, RefObject } from "react";
 import type { MobileConnectionIssue } from "../../hooks/useMobileBridge.js";
 import {
   activeSessionBadgeLabel,
+  archivedForkGroupKey,
+  archivedForkGroupLabel,
+  forkGroupToggleLabel,
   mobileConnectionLabel,
+  partitionSessionForks,
   relativeTime,
 } from "../../lib/conversation-timeline.js";
 import {
@@ -275,31 +279,77 @@ export function MobileSessionCatalog({
               <MoreHorizontal size={18} />
           </IconButton>
         </div>
-        {forks.length > 0 && (
-          <div className={`mobile-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
-            <button
-              type="button"
-              className="mobile-fork-toggle"
-              aria-expanded={forksExpanded}
-              onClick={() => toggleForkGroup(session.sessionId)}
-            >
-              <GitFork size={12} />
-              <span>
-                {forks.every((fork) => fork.primary.sidechat)
-                  ? `${forks.length} 个 /btw 侧聊`
-                  : forks.some((fork) => fork.primary.sidechat)
-                    ? `${forks.length} 个分支与侧聊`
-                    : `${forks.length} 个 Fork 分支`}
-              </span>
-              {forksExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-            </button>
-            {forksExpanded && (
-              <div className="mobile-fork-children">
-                {forks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
+        {(() => {
+          const { activeForks, archivedForks } = partitionSessionForks(
+            session,
+            forks,
+            sessions,
+            isArchivedRow,
+            activeProjectId ? projectSearch : search,
+          );
+          if (activeForks.length === 0 && archivedForks.length === 0) return null;
+          const archivedFoldKey = archivedForkGroupKey(session.sessionId);
+          const archivedExpanded = expandedForkParents.has(archivedFoldKey);
+          if (activeForks.length === 0) {
+            return (
+              <div className={`mobile-fork-group is-archived-only ${archivedExpanded ? "expanded" : "collapsed"}`}>
+                <button
+                  type="button"
+                  className="mobile-fork-toggle is-archived-fold"
+                  aria-expanded={archivedExpanded}
+                  onClick={() => toggleForkGroup(archivedFoldKey)}
+                >
+                  <Archive size={12} />
+                  <span>{archivedForkGroupLabel(archivedForks)}</span>
+                  {archivedExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                </button>
+                {archivedExpanded && (
+                  <div className="mobile-fork-children is-archived-children">
+                    {archivedForks.map((fork) => renderMobileSessionFamily(fork, true, true))}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        )}
+            );
+          }
+          return (
+            <div className={`mobile-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
+              <button
+                type="button"
+                className="mobile-fork-toggle"
+                aria-expanded={forksExpanded}
+                onClick={() => toggleForkGroup(session.sessionId)}
+              >
+                <GitFork size={12} />
+                <span>{forkGroupToggleLabel(activeForks)}</span>
+                {forksExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              </button>
+              {forksExpanded && (
+                <div className="mobile-fork-children">
+                  {activeForks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
+                  {archivedForks.length > 0 && (
+                    <div className={`mobile-fork-archived ${archivedExpanded ? "expanded" : "collapsed"}`}>
+                      <button
+                        type="button"
+                        className="mobile-fork-toggle is-archived-fold"
+                        aria-expanded={archivedExpanded}
+                        onClick={() => toggleForkGroup(archivedFoldKey)}
+                      >
+                        <Archive size={12} />
+                        <span>{archivedForkGroupLabel(archivedForks)}</span>
+                        {archivedExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      </button>
+                      {archivedExpanded && (
+                        <div className="mobile-fork-archived-children">
+                          {archivedForks.map((fork) => renderMobileSessionFamily(fork, true, true))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
     );
   }

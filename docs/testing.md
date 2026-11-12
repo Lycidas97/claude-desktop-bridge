@@ -7,7 +7,7 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 
 | Command | Coverage |
 | --- | --- |
-| `npm test` | Desktop, client, protocol, relay, then `plugins/magpie-quota`; sequential Vitest runs, at most two workers each |
+| `npm test` | Desktop, client, protocol, relay, and `plugins/magpie-quota`; bounded concurrent Vitest runs (2 suites in parallel, at most four workers each) |
 | `npm run typecheck` | All workspace typechecks, then the quota plugin explicitly |
 | `npm run verify` | Typecheck, five test suites, then the full root build; stops at the first failing stage |
 | `npm run test:infra` | Small fixtures for runner failure propagation and recycle-bin behavior |
@@ -33,8 +33,8 @@ stderr, and runner errors), and `summary.json`. The suite names are `desktop`,
 `client`, `protocol`, `relay`, and `quota`. A failed process, launch error, or missing
 or empty JUnit report fails the command. Later suites still run and retain evidence.
 A suite's previous JUnit report is sent to Trash before that suite starts, so it
-cannot satisfy the new run. Logs are replaced and the summary is updated after
-each suite. Reports are local artifacts; avoid including them in source commits.
+cannot satisfy the new run. Logs are replaced and `summary.json` is written in deterministic
+suite order. Reports are local artifacts; avoid including them in source commits.
 
 Browser evidence is written to `artifacts/browser-e2e`. To install the Chromium
 version matching the existing `playwright-core` dependency, run:
@@ -92,7 +92,8 @@ responses, native local answers, lifecycle cancellation, and disconnected Hook
 requests. Native manual-only requests remain pending through full-access policy
 changes. No test changes real Claude settings or calls a model.
 
-Browser failures retain screenshots, HTML, traces, console errors and RPC records;
+Browser failures retain screenshots, HTML, console errors, RPC records, and (when
+`BRIDGE_E2E_TRACE=1`) Playwright traces;
 passing native scenarios also retain screenshots and a correlated request trace.
 
 After the protocol and relay builds exist, a local debug fixture can be kept open:
@@ -125,6 +126,11 @@ recycle command. Missing paths are ignored only with `force: true`. Unsupported
 systems, missing recycle commands, and recycle failures surface as errors; there
 is no permanent-delete fallback. The preload selects the host platform at startup,
 so application tests that mock `process.platform` do not change the recycle command.
+When `BRIDGE_RECYCLE_STAGING` points to a same-volume staging directory (created
+automatically per `npm test` run unless already provided by an outer CI harness),
+preload removals rename disposable paths into that staging tree (falling back to
+the OS recycle command on `EXDEV`) so the parent runner recycles the staged tree
+in a single OS Recycle Bin invocation.
 
 This covers Node processes that inherit `NODE_OPTIONS`. It does not intercept
 native tools, shell deletion commands, browser internals, or processes that discard

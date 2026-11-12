@@ -179,12 +179,14 @@ try {
     $prevPairing = $env:BRIDGE_PAIRING_BASE_URL
     $prevOrigin = $env:BRIDGE_SERVICE_ORIGIN
     $prevIce = $env:BRIDGE_ICE_SERVERS
+    $prevFastInstaller = $env:BRIDGE_FAST_INSTALLER
     try {
       $env:BRIDGE_RELAY_URL = ""
       $env:BRIDGE_PUBLIC_RELAY_URL = ""
       $env:BRIDGE_PAIRING_BASE_URL = ""
       $env:BRIDGE_SERVICE_ORIGIN = ""
       $env:BRIDGE_ICE_SERVERS = ""
+      $env:BRIDGE_FAST_INSTALLER = "1"
       & "$nodeBin\npm.cmd" run ci:run -- run make:windows -w @bridge/desktop
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     } finally {
@@ -193,6 +195,7 @@ try {
       $env:BRIDGE_PAIRING_BASE_URL = $prevPairing
       $env:BRIDGE_SERVICE_ORIGIN = $prevOrigin
       $env:BRIDGE_ICE_SERVERS = $prevIce
+      $env:BRIDGE_FAST_INSTALLER = $prevFastInstaller
     }
   }
 
@@ -201,7 +204,7 @@ try {
 
   # 7. Build Android debug APK + verify DEX + verify pinned debug signature
   Invoke-Checked "Sync Capacitor Android (@bridge/mobile)" {
-    & "$nodeBin\npm.cmd" run ci:run -- run sync -w @bridge/mobile
+    & "$nodeBin\npm.cmd" run ci:run -- run sync:from-client -w @bridge/mobile
   }
 
   Invoke-Checked "Gradle assembleDebug (Android SDK 36)" {
@@ -300,7 +303,7 @@ fi
 npm run test:infra
 npm test
 npm run ci:run -- run build -w @bridge/protocol
-BRIDGE_RELAY_URL="" BRIDGE_PUBLIC_RELAY_URL="" BRIDGE_PAIRING_BASE_URL="" BRIDGE_SERVICE_ORIGIN="" BRIDGE_ICE_SERVERS="" \
+BRIDGE_FAST_INSTALLER="1" BRIDGE_RELAY_URL="" BRIDGE_PUBLIC_RELAY_URL="" BRIDGE_PAIRING_BASE_URL="" BRIDGE_SERVICE_ORIGIN="" BRIDGE_ICE_SERVERS="" \
   npm run ci:run -- run make:linux -w @bridge/desktop
 find apps/desktop/out/make -name "*.deb" -print -quit | grep -q . || { echo "Missing .deb output"; exit 1; }
 find apps/desktop/out/make -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }

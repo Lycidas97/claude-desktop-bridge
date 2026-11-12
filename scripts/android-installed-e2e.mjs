@@ -90,7 +90,7 @@ try {
   pairing.relayEndpoints = [bridgeEndpoint(androidRelay, 10, "android")];
   pairing.activeEndpoint = "android";
 
-  await androidPage.waitFor('Boolean(document.querySelector(\'input[aria-label="配对链接"]\'))', 30_000);
+  await androidPage.waitFor("Boolean(document.querySelector('input[aria-label=\"配对链接\"]'))");
   await androidPage.screenshot(resolve(artifacts, "01-pairing.png"));
   const encodedPairing = encodePairingBundle(pairing);
   await androidPage.evaluate(`(() => {

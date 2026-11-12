@@ -1,3 +1,6 @@
+import assert from "node:assert/strict";
+import { runInNewContext } from "node:vm";
+import { transpileModule } from "typescript";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { mkdtemp, readFile, rm as recycle, writeFile } from "node:fs/promises";
@@ -372,6 +375,45 @@ describe("DesktopUpdater & ZIP extraction", () => {
     updater.notifyIdleStateChanged(true);
     expect(updater.snapshot().phase).toBe("applying");
     expect(helperCalls).toHaveLength(1);
+    updater.close();
+  });
+
+  it("passes real dispatcher responses to the App updater callback and packaged QA", async () => {
+    const updater = new DesktopUpdater({
+      platform: "win32", arch: "x64", currentVersion: "1.3.2", isPackaged: true,
+      execPath: "C:\\Bridge\\bridge.exe", userDataPath: await makeTempDir(),
+      autoCheckAllowed: false, isDirectoryWritable: () => true,
+      isSystemIdle: () => true, hasConnectedUi: () => false,
+      requestQuitAll: () => {}, onChanged: () => {},
+    });
+    const controller: DesktopController = Object.assign(Object.create(DesktopController.prototype), {
+      updater, publish: async () => {},
+    });
+    const appSource = await readFile(new URL("../../../client/src/App.tsx", import.meta.url), "utf8");
+    const callback = appSource.match(/const invokeRemoteUpdate = useCallback\((async [\s\S]*?), \[request\]\);/u);
+    expect(callback).not.toBeNull();
+    // Run the checked-in callback, replacing transport I/O with the real dispatcher.
+    const invoke = new Function("request", `${transpileModule(`const invoke = ${callback![1]};`, {}).outputText}\nreturn invoke;`)(
+      (_method: string, params: Record<string, unknown>) => controller.dispatchLocal({ method: "system.update", params }),
+    );
+    const remoteStatus = await invoke({ action: "status" });
+    expect(remoteStatus.phase).toBe("idle");
+    expect(remoteStatus.currentVersion).toBe("1.3.2");
+    expect(remoteStatus.canAutoRestart).toBe(true);
+
+    const qaSource = await readFile(new URL("../../../../scripts/packaged-desktop-qa.mjs", import.meta.url), "utf8");
+    const qaBlock = qaSource.slice(qaSource.indexOf("  const updaterStatus ="), qaSource.indexOf('  for (const method of ["provider.list"'));
+    expect(qaBlock).toContain("updaterStatus.result.currentVersion");
+    const ipcProof: Record<string, unknown> = {};
+    await new (Object.getPrototypeOf(async function () {}).constructor)("page", "assert", "desktopPackage", "ipcProof", qaBlock)(
+      {
+        evaluate: (body: () => unknown) => runInNewContext(`(${body.toString()})()`, {
+          window: { bridgeDesktop: { request: (input: Parameters<DesktopController["dispatchLocal"]>[0]) => controller.dispatchLocal(input) } },
+        }),
+      },
+      assert, { version: "1.3.2" }, ipcProof,
+    );
+    expect(ipcProof["system.update"]).toBe("idle");
     updater.close();
   });
 

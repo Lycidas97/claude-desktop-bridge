@@ -24,7 +24,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -77,12 +80,13 @@ public class BridgeUpdaterPlugin extends Plugin {
         executor.execute(() -> {
             HttpURLConnection conn = null;
             try {
-                conn = openGetConnection(feedUrl);
-                conn.setRequestProperty("Accept", "application/vnd.github+json");
-                conn.setRequestProperty("X-GitHub-Api-Version", "2022-11-28");
+                Map<String, String> headers = new HashMap<>();
+                headers.put("Accept", "application/vnd.github+json");
+                headers.put("X-GitHub-Api-Version", "2022-11-28");
                 if (etag != null && !etag.isEmpty()) {
-                    conn.setRequestProperty("If-None-Match", etag);
+                    headers.put("If-None-Match", etag);
                 }
+                conn = openGetConnection(feedUrl, headers);
                 int status = conn.getResponseCode();
                 JSObject ret = new JSObject();
                 ret.put("status", status);
@@ -173,7 +177,7 @@ public class BridgeUpdaterPlugin extends Plugin {
                     }
                 }
 
-                conn = openGetConnection(downloadUrl);
+                conn = openGetConnection(downloadUrl, Collections.emptyMap());
                 int status = conn.getResponseCode();
                 if (status < 200 || status >= 300) {
                     call.reject("下载安装包失败（HTTP " + status + "）");
@@ -338,7 +342,7 @@ public class BridgeUpdaterPlugin extends Plugin {
         }
     }
 
-    private HttpURLConnection openGetConnection(String targetUrl) throws Exception {
+    private HttpURLConnection openGetConnection(String targetUrl, Map<String, String> headers) throws Exception {
         String current = targetUrl;
         for (int redirectCount = 0; redirectCount < 5; redirectCount++) {
             URL url = new URL(current);
@@ -348,6 +352,9 @@ public class BridgeUpdaterPlugin extends Plugin {
             conn.setReadTimeout(READ_TIMEOUT_MS);
             conn.setRequestMethod("GET");
             conn.setRequestProperty("User-Agent", "ClaudeDesktopBridge-AndroidUpdater");
+            for (Map.Entry<String, String> header : headers.entrySet()) {
+                conn.setRequestProperty(header.getKey(), header.getValue());
+            }
             int status = conn.getResponseCode();
             if (status == HttpURLConnection.HTTP_MOVED_PERM
                 || status == HttpURLConnection.HTTP_MOVED_TEMP

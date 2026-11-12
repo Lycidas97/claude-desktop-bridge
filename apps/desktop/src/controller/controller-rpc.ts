@@ -726,7 +726,7 @@ export async function dispatchControllerRequest(
     }
     const updater = await host.updater.handleRpc(parseSystemUpdateParams(params), origin);
     await host.publish();
-    return { updater };
+    return updater;
   }
   throw new Error("Unsupported request method");
 }

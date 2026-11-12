@@ -182,6 +182,46 @@ for (const platform of ['darwin', 'linux', 'win32']) {
   });
 }
 
+test('a recycle staging directory turns removals into renames that win-local-ci recycles once per run', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge staging 测试-'));
+  try {
+    const staging = join(directory, 'staging');
+    await mkdir(join(directory, 'tree', 'sub'), { recursive: true });
+    await writeFile(join(directory, 'tree', 'sub', 'a.txt'), 'a');
+    await writeFile(join(directory, 'file.txt'), 'f');
+    await mkdir(staging);
+    const script = `
+      const fs = require('node:fs');
+      fs.rmSync(${JSON.stringify(join(directory, 'tree'))}, { recursive: true });
+      fs.promises.unlink(${JSON.stringify(join(directory, 'file.txt'))}).then(() => fs.rmSync(${JSON.stringify(join(directory, 'gone'))}, { force: true }));
+    `;
+    const result = spawnSync(process.execPath, ['--require', fileURLToPath(new URL('./recycle-cleanup.cjs', import.meta.url)), '-e', script],
+      { env: { ...process.env, BRIDGE_RECYCLE_STAGING: staging }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(!fs.existsSync(join(directory, 'tree')) && !fs.existsSync(join(directory, 'file.txt')));
+    const [processDir, ...others] = fs.readdirSync(staging);
+    assert.equal(others.length, 0);
+    assert.match(processDir, /^\d+-/u);
+    assert.equal(fs.readFileSync(join(staging, processDir, '1', 'sub', 'a.txt'), 'utf8'), 'a');
+    assert.equal(fs.readFileSync(join(staging, processDir, '2'), 'utf8'), 'f');
+
+    const renames = [];
+    const crossVolume = mockCleanup('win32', { extraEnv: { BRIDGE_RECYCLE_STAGING: 'D:\\staging' } });
+    crossVolume.fs.mkdtempSync = prefix => `${prefix}1`;
+    crossVolume.fs.renameSync = (from, to) => {
+      renames.push(to);
+      throw Object.assign(new Error('cross-device'), { code: from.includes('other volume') ? 'EXDEV' : 'EBUSY' });
+    };
+    crossVolume.fs.rmSync('other volume');
+    assert.equal(crossVolume.calls.length, 1);
+    assert.throws(() => crossVolume.fs.rmSync('locked'), { code: 'EBUSY' });
+    assert.equal(crossVolume.calls.length, 1);
+    assert.equal(renames.length, 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('cleanup keeps the physical host platform when application tests mock process.platform', () => {
   const mock = mockCleanup('win32');
   mock.process.platform = 'darwin';
@@ -515,6 +555,7 @@ test('browser E2E binds an ephemeral kernel port via httpServer.listen and local
   assert.match(winCiSource, /"-avd", \$avdName, "-port", "\$emulatorPort"/u);
   assert.match(winCiSource, /\$env:ANDROID_SERIAL = "emulator-\$emulatorPort"/u);
   assert.match(winCiSource, /CI_DIR="\/var\/tmp\/bridge-linux-ci-slot-\$slot"/u);
+  assert.match(winCiSource, /\$recycleStaging = "\$cacheRoot\\recycle-staging-\$slot"[\s\S]*?\$env:BRIDGE_RECYCLE_STAGING = \$recycleStaging[\s\S]*?\} finally \{[\s\S]*?bridge-recycle\.exe" \$recycleStaging/u);
   assert.match(winCiSource, /Invoke-CimMethod -ClassName Win32_Process -MethodName Create[^\n]*start-server/u);
   assert.doesNotMatch(winCiSource, /ci-worktree|refs\/ci\/current|"bridge-ci-api36"/u);
   assert.doesNotMatch(localCiSource, /ci-worktree/u);

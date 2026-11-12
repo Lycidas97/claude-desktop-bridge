@@ -104,6 +104,10 @@ $ciWorktree = "$workRoot\ci-slot-$slot"
 $avdName = "bridge-ci-api36-$slot"
 $emulatorPort = 5560 + 2 * $slot
 $env:ANDROID_SERIAL = "emulator-$emulatorPort"
+# Node removals in this run rename into the slot staging dir, which the finally block recycles as one item
+$recycleStaging = "$cacheRoot\recycle-staging-$slot"
+New-Item -ItemType Directory -Force -Path $recycleStaging | Out-Null
+$env:BRIDGE_RECYCLE_STAGING = $recycleStaging
 
 # 1. Fetch exact commit bundle into the anchor repo under this slot's ref and check out D:\work\ci-slot-<n>
 Invoke-Checked "Sync git bundle ($Revision)" {
@@ -339,6 +343,9 @@ echo "<<< [WSL Ubuntu-24.04] Linux tests + .deb / .rpm / .zip outputs verified"
 Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revision) ==="
 } finally {
   try {
+    if ($slot -ge 0 -and (Test-Path -LiteralPath $recycleStaging)) {
+      Invoke-Checked "Recycle slot $slot staged test removals" { & "$cacheRoot\bridge-recycle.exe" $recycleStaging }
+    }
     if (Test-Path -LiteralPath $BundlePath) {
       Invoke-Checked "Recycle uploaded git bundle" {
         if (Test-Path -LiteralPath "$cacheRoot\bridge-recycle.exe") {

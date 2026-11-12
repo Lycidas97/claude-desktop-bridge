@@ -3,11 +3,17 @@ const fs = require('node:fs');
 const { execFile, execFileSync } = require('node:child_process');
 const { promisify } = require('node:util');
 const { fileURLToPath } = require('node:url');
-const { resolve } = require('node:path');
+const { join, resolve } = require('node:path');
 const { syncBuiltinESMExports } = require('node:module');
 const run = promisify(execFile);
 const platform = process.platform;
 const winRecycleExe = platform === 'win32' ? process.env.BRIDGE_WIN_RECYCLE_EXE : undefined;
+// win-local-ci points this at a per-slot directory it recycles once per run: SHFileOperation serializes every
+// Recycle Bin move system-wide (~0.3 s each, far slower once the bin is large), so per-test moves stall hooks.
+const staging = process.env.BRIDGE_RECYCLE_STAGING;
+let stagingDir;
+let staged = 0;
+const stagedPath = () => join(stagingDir ??= fs.mkdtempSync(join(staging, `${process.pid}-`)), String(++staged));
 const normalize = value => resolve(value instanceof URL ? fileURLToPath(value) : Buffer.isBuffer(value) ? value.toString() : value);
 
 function command(path) {
@@ -41,6 +47,10 @@ function recycleSync(value, options = {}) {
   const path = normalize(value);
   try { fs.lstatSync(path); }
   catch (error) { if (options.force && error.code === 'ENOENT') return; throw error; }
+  if (staging) {
+    try { return fs.renameSync(path, stagedPath()); }
+    catch (error) { if (error.code !== 'EXDEV') throw error; }
+  }
   execFileSync(...command(path));
 }
 
@@ -48,6 +58,10 @@ async function recycle(value, options = {}) {
   const path = normalize(value);
   try { await fs.promises.lstat(path); }
   catch (error) { if (options.force && error.code === 'ENOENT') return; throw error; }
+  if (staging) {
+    try { return await fs.promises.rename(path, stagedPath()); }
+    catch (error) { if (error.code !== 'EXDEV') throw error; }
+  }
   await run(...command(path));
 }
 

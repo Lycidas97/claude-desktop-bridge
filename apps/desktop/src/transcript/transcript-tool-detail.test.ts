@@ -241,6 +241,39 @@ describe("extractToolCallDetailFromMessages", () => {
     expect(cutEmoji).toEqual({ text: "abc", totalBytes: 10, truncated: true });
   });
 
+  it("redacts credential fields at every nesting level while preserving ordinary input structure", () => {
+    const detail = extractToolCallDetailFromMessages({
+      sessionId: "local_1",
+      toolUseId: "toolu_credentials",
+      messages: [{
+        type: "assistant",
+        message: { content: [{
+          type: "tool_use",
+          id: "toolu_credentials",
+          name: "CustomTool",
+          input: {
+            client_secret: "synthetic-client-secret",
+            nested: { access_token: "synthetic-access-token", enabled: true },
+            accounts: [{ "api-key": "synthetic key with spaces", label: "primary" }],
+            headers: { Authorization: 'Bearer "synthetic-quoted-token"' },
+            command: "curl -H 'Authorization: Bearer synthetic-inline-token' https://example.com",
+            count: 2,
+          },
+        }] },
+      }],
+    });
+
+    expect(detail?.input).toEqual({
+      client_secret: "[已隐藏]",
+      nested: { access_token: "[已隐藏]", enabled: true },
+      accounts: [{ "api-key": "[已隐藏]", label: "primary" }],
+      headers: { Authorization: "[已隐藏]" },
+      command: "curl -H 'Authorization: [已隐藏]' https://example.com",
+      count: 2,
+    });
+    expect(JSON.stringify(detail)).not.toContain("synthetic-client-secret");
+  });
+
   it("bounds oversized tool input payloads above 256 KiB via inputText and inputTruncated", () => {
     const hugeContent = "x".repeat(TOOL_DETAIL_MAX_BYTES + 4096);
     const detail = extractToolCallDetailFromMessages({

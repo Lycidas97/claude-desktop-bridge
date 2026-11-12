@@ -84,7 +84,9 @@ function redactInputValue(value: unknown): unknown {
   if (isRecord(value)) {
     const out: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
-      out[key] = redactInputValue(entry);
+      // Check field names against the shared policy without exposing part of a credential value.
+      const field = `${key}: value`;
+      out[key] = redactEvidenceText(field) === field ? redactInputValue(entry) : "[已隐藏]";
     }
     return out;
   }

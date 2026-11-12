@@ -549,7 +549,7 @@ test('Mac CI stages every command per run and recycles its staging before comple
         import { appendFileSync, existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
         import { join } from 'node:path';
         const staging = process.env.BRIDGE_RECYCLE_STAGING;
-        const renderer = join(process.cwd(), 'renderer');
+        const renderer = join(process.cwd(), \`renderer-\${process.pid}\`);
         mkdirSync(renderer);
         writeFileSync(join(renderer, 'index.html'), 'fixture');
         rmSync(renderer, { recursive: true });
@@ -725,6 +725,8 @@ test('BRIDGE_RECYCLE_STAGING stages same-volume removals, falls back on EXDEV, p
 
 test('runSuites runs concurrently while preserving input entries order in summary.json and recycling per-run staging', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bridge suite order-'));
+  const prevStaging = process.env.BRIDGE_RECYCLE_STAGING;
+  delete process.env.BRIDGE_RECYCLE_STAGING;
   try {
     const fixture = join(directory, 'timed-suite.mjs');
     await writeFile(fixture, `
@@ -751,7 +753,6 @@ test('runSuites runs concurrently while preserving input entries order in summar
     assert.equal(fs.existsSync(slow.staging), false, 'per-run staging directory is recycled after runSuites completes');
 
     const outerStaging = await mkdtemp(join(tmpdir(), 'bridge outer stage-'));
-    const prevStaging = process.env.BRIDGE_RECYCLE_STAGING;
     process.env.BRIDGE_RECYCLE_STAGING = outerStaging;
     try {
       const outerOut = join(directory, 'outer');
@@ -760,11 +761,11 @@ test('runSuites runs concurrently while preserving input entries order in summar
       assert.equal(JSON.parse(await readFile(outerMeta, 'utf8')).staging, outerStaging);
       assert.equal(fs.existsSync(outerStaging), true, 'outer BRIDGE_RECYCLE_STAGING remains owned by caller');
     } finally {
-      if (prevStaging === undefined) delete process.env.BRIDGE_RECYCLE_STAGING;
-      else process.env.BRIDGE_RECYCLE_STAGING = prevStaging;
       await rm(outerStaging, { recursive: true, force: true });
     }
   } finally {
+    if (prevStaging === undefined) delete process.env.BRIDGE_RECYCLE_STAGING;
+    else process.env.BRIDGE_RECYCLE_STAGING = prevStaging;
     await rm(directory, { recursive: true, force: true });
   }
 });

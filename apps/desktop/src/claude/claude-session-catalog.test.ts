@@ -1,4 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { rm, appendFile, mkdir, mkdtemp, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -348,7 +349,8 @@ describe("Claude session process catalog", () => {
   it.skipIf(process.platform !== "darwin").each([false, true])("reads the actual macOS executor start time with registration present=%s", async (registered) => {
     const root = await mkdtemp(join(tmpdir(), "bridge-process-start-"));
     directories.push(root);
-    const sessionId = "55555555-5555-4555-8555-555555555555";
+    // scanClaudeSessionProcesses reads the real host process table; a fixed id collides with concurrent worktree runs.
+    const sessionId = randomUUID();
     const before = Date.now() - 1_000;
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--input-format", "stream-json", "--output-format", "stream-json", "--session-id", sessionId]);
     children.push(child);

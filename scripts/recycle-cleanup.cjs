@@ -49,7 +49,7 @@ function recycleSync(value, options = {}) {
   catch (error) { if (options.force && error.code === 'ENOENT') return; throw error; }
   if (staging) {
     try { return fs.renameSync(path, stagedPath()); }
-    catch (error) { if (error.code !== 'EXDEV') throw error; }
+    catch (error) { if (!['EXDEV', 'EBUSY', 'EPERM'].includes(error.code)) throw error; }
   }
   execFileSync(...command(path));
 }
@@ -60,7 +60,7 @@ async function recycle(value, options = {}) {
   catch (error) { if (options.force && error.code === 'ENOENT') return; throw error; }
   if (staging) {
     try { return await fs.promises.rename(path, stagedPath()); }
-    catch (error) { if (error.code !== 'EXDEV') throw error; }
+    catch (error) { if (!['EXDEV', 'EBUSY', 'EPERM'].includes(error.code)) throw error; }
   }
   await run(...command(path));
 }

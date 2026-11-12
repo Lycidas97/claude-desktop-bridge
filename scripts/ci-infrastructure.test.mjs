@@ -205,18 +205,30 @@ test('a recycle staging directory turns removals into renames that win-local-ci 
     assert.equal(fs.readFileSync(join(staging, processDir, '1', 'sub', 'a.txt'), 'utf8'), 'a');
     assert.equal(fs.readFileSync(join(staging, processDir, '2'), 'utf8'), 'f');
 
-    const renames = [];
-    const crossVolume = mockCleanup('win32', { extraEnv: { BRIDGE_RECYCLE_STAGING: 'D:\\staging' } });
-    crossVolume.fs.mkdtempSync = prefix => `${prefix}1`;
-    crossVolume.fs.renameSync = (from, to) => {
-      renames.push(to);
-      throw Object.assign(new Error('cross-device'), { code: from.includes('other volume') ? 'EXDEV' : 'EBUSY' });
+    for (const code of ['EXDEV', 'EBUSY', 'EPERM']) {
+      const fallback = mockCleanup('win32', { extraEnv: { BRIDGE_RECYCLE_STAGING: 'D:\\staging' } });
+      fallback.fs.mkdtempSync = prefix => `${prefix}1`;
+      fallback.fs.renameSync = fallback.fs.promises.rename = () => {
+        throw Object.assign(new Error('staging rename failed'), { code });
+      };
+      fallback.fs.rmSync('fixture');
+      await fallback.fs.promises.rm('fixture');
+      assert.equal(fallback.calls.length, 2, `${code} must use native recycling for sync and async removals`);
+    }
+    const failed = mockCleanup('win32', { failure: true, extraEnv: { BRIDGE_RECYCLE_STAGING: 'D:\\staging' } });
+    failed.fs.mkdtempSync = prefix => `${prefix}1`;
+    failed.fs.renameSync = failed.fs.promises.rename = () => {
+      throw Object.assign(new Error('staging rename failed'), { code: 'EPERM' });
     };
-    crossVolume.fs.rmSync('other volume');
-    assert.equal(crossVolume.calls.length, 1);
-    assert.throws(() => crossVolume.fs.rmSync('locked'), { code: 'EBUSY' });
-    assert.equal(crossVolume.calls.length, 1);
-    assert.equal(renames.length, 2);
+    assert.throws(() => failed.fs.rmSync('fixture'), { code: 'ENOENT' });
+    await assert.rejects(failed.fs.promises.rm('fixture'), { code: 'ENOENT' });
+    assert.equal(failed.calls.length, 2);
+    failed.fs.renameSync = failed.fs.promises.rename = () => {
+      throw Object.assign(new Error('unexpected staging failure'), { code: 'EIO' });
+    };
+    assert.throws(() => failed.fs.rmSync('fixture'), { code: 'EIO' });
+    await assert.rejects(failed.fs.promises.rm('fixture'), { code: 'EIO' });
+    assert.equal(failed.calls.length, 2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

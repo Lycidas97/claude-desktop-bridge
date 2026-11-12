@@ -600,3 +600,30 @@ test('ci-run browser:nobuild invokes browser-e2e.mjs with recycle preload withou
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('win-local-ci parallelizes WSL2 via setsid pipe-EOF, early emulator boot, and make:windows:from-client alongside Android APK', async () => {
+  const desktopPkg = JSON.parse(await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'));
+  assert.equal(desktopPkg.scripts['make:windows:from-client'], 'npm run build:bundle && node scripts/make-windows.mjs');
+
+  const winCi = await readFile(new URL('./win-local-ci.ps1', import.meta.url), 'utf8');
+  const syncIdx = winCi.indexOf('Sync git bundle ($Revision)');
+  const wslStartIdx = winCi.indexOf('setsid bash -c');
+  const emuStartIdx = winCi.indexOf('Starting headless WHPX AVD bridge-ci-api36');
+  const testInfraIdx = winCi.indexOf('Invoke-Checked "npm run test:infra"');
+  const nsisParallelIdx = winCi.indexOf('make:windows:from-client -w @bridge/desktop');
+  const androidSyncIdx = winCi.indexOf('sync:from-client -w @bridge/mobile');
+  const nsisWaitIdx = winCi.indexOf('$nsisProc.WaitForExit()');
+  const wslWaitIdx = winCi.indexOf('$wslProc.WaitForExit()');
+  const recycleBundleIdx = winCi.indexOf('Recycle uploaded git bundle');
+
+  assert.ok(syncIdx !== -1 && wslStartIdx > syncIdx && wslStartIdx < testInfraIdx, 'WSL2 starts immediately after git bundle sync before Windows tests');
+  assert.ok(emuStartIdx !== -1 && emuStartIdx < testInfraIdx, 'Android Emulator boots before Windows test:infra and npm test');
+  assert.ok(nsisParallelIdx !== -1 && androidSyncIdx > nsisParallelIdx && nsisWaitIdx > androidSyncIdx, 'make:windows:from-client runs in parallel with Android sync/Gradle before WaitForExit');
+  assert.ok(wslWaitIdx > nsisWaitIdx, 'WSL2 is joined after Windows + Android QA steps');
+  assert.match(winCi, /RedirectStandardInput\s*=\s*\$true/u);
+  assert.match(winCi, /exec 3<&0 <\/dev\/null;[\s\S]*?cat <&3[\s\S]*?kill -TERM 0/u);
+  assert.match(winCi, /gradlew\.bat"\s+assembleDebug\s+--no-daemon/u);
+  const outerFinally = winCi.slice(winCi.indexOf('=== [WIN] ALL WINDOWS'));
+  assert.ok(outerFinally.indexOf('StandardInput.Close()') !== -1 && outerFinally.indexOf('StandardInput.Close()') < outerFinally.indexOf('Recycle uploaded git bundle'), 'WSL2 stdin pipe closes in outer finally before recycling BundlePath');
+  assert.ok(recycleBundleIdx > wslWaitIdx);
+});

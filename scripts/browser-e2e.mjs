@@ -1666,7 +1666,49 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.equal(host.requests.filter(request => request.method.startsWith("turn.")).length, 0);
   await writeFile(resolve(directory, "project-catalog.json"), JSON.stringify({ projects: host.snapshot.projects, sessions: host.snapshot.sessions }, null, 2));
   await page.screenshot({ path: resolve(directory, "project-list.png"), fullPage: true });
-  steps.push("saved main-project ordering survives search and reload, unrelated projects remain separate, and the 375px layout has no horizontal overflow");
+
+  await page.locator(".project-order-bar button").click();
+  const orderSheet = page.getByRole("dialog", { name: "项目顺序" });
+  await orderSheet.waitFor();
+  await orderSheet.evaluate((el) => Promise.all(el.getAnimations().map((animation) => animation.finished)));
+  const orderRowTitles = orderSheet.locator(".project-order-row strong");
+  assert.deepEqual(await orderRowTitles.allTextContents(), ["other-project", "claude-desktop-bridge"]);
+  assert.equal(await orderSheet.locator(".project-order-handle").count(), 2);
+
+  const firstHandle = orderSheet.getByRole("button", { name: "拖动「other-project」调整顺序" });
+  const secondRow = orderSheet.locator(".project-order-row").nth(1);
+  const handleBox = await firstHandle.boundingBox();
+  const secondBox = await secondRow.boundingBox();
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handleBox.x + handleBox.width / 2, secondBox.y + secondBox.height * 0.75, { steps: 6 });
+  await orderSheet.locator(".project-order-row.is-dragging").waitFor();
+  assert.deepEqual(await orderRowTitles.allTextContents(), ["claude-desktop-bridge", "other-project"]);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Dragging project order row stays within 375px viewport");
+  await page.screenshot({ path: resolve(directory, "project-order-dragging.png"), fullPage: true });
+  await page.mouse.up();
+  await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
+  await eventually(() => headers.allTextContents(), ["claude-desktop-bridge", "other-project"], "Handle drag persists reordered projects");
+
+  await page.locator(".project-order-bar button").click();
+  await orderSheet.waitFor();
+  await orderSheet.evaluate((el) => Promise.all(el.getAnimations().map((animation) => animation.finished)));
+  const targetRowText = orderSheet.locator(".project-order-row").nth(1).locator("strong");
+  const firstRow = orderSheet.locator(".project-order-row").nth(0);
+  const textBox = await targetRowText.boundingBox();
+  const firstBox = await firstRow.boundingBox();
+  await page.mouse.move(textBox.x + 24, textBox.y + textBox.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(260);
+  await orderSheet.locator(".project-order-row.is-dragging").waitFor();
+  await page.mouse.move(textBox.x + 24, firstBox.y + firstBox.height * 0.25, { steps: 6 });
+  assert.deepEqual(await orderRowTitles.allTextContents(), ["other-project", "claude-desktop-bridge"]);
+  await page.mouse.up();
+  await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
+  await eventually(() => headers.allTextContents(), ["other-project", "claude-desktop-bridge"], "Row long-press drag restores saved project order");
+  assert.equal(await page.evaluate(key => localStorage.getItem(key), orderKey), savedOrder);
+
+  steps.push("saved main-project ordering survives search and reload, handle and long-press drag reorder projects cleanly, unrelated projects remain separate, and the 375px layout has no horizontal overflow");
 }
 
 async function runScenario(theme, scenario) {

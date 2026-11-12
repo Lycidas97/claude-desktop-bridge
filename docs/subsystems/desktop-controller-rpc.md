@@ -2,14 +2,7 @@
 
 ## Owned Paths
 - `apps/desktop/src/controller/`
-  - State orchestration & snapshot assembly: `controller.ts`
-  - Stateless RPC dispatch: `controller-rpc.ts`
-  - Request idempotency & receipts: `conversation-state-store.ts`
-  - Monotonic event replay log: `session-event-log.ts`
 - `apps/desktop/src/transport/`
-  - Host identity & config persistence: `config.ts`
-  - Native `node-datachannel` WebRTC adapter: `webrtc-runtime.ts`
-  - Per-device Relay & WebRTC wiring: `controller-transport.ts`
 
 ## Responsibilities
 - Coordinates `DesktopController` runtime state, full `BridgeHostSnapshot` publication, Desktop Sections/project grouping, and capability advertisement.

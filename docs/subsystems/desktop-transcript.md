@@ -2,11 +2,6 @@
 
 ## Owned Paths
 - `apps/desktop/src/transcript/`
-  - History & pagination: `claude-history.ts`
-  - DAG parent-chain & fork boundaries: `transcript-dag.ts`
-  - Passive turn evidence cursor: `transcript-evidence.ts`
-  - Active-branch context token usage: `transcript-context.ts`
-  - Subagent & workflow projection: `transcript-subagents.ts`
 
 ## Responsibilities
 - Parses Claude JSONL transcripts and native `LocalSessions` transcript pages into normalized conversation items, tool executions, task plans, and subagent runs.

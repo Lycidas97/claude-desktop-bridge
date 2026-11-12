@@ -2,10 +2,8 @@
 
 ## Owned Paths
 - `apps/client/src/lib/conversation-timeline.ts`
-- `apps/client/src/components/`
-  - Top-level workspaces: `MobileWorkspace.tsx`, `DesktopDashboard.tsx`
-  - Subdirectories & domain components: `conversation/` (`PermissionPrompts.tsx`, `SubagentCard.tsx`, `TaskPlanCard.tsx`, `BackgroundTasks.tsx`, `SlashCommandInput.tsx`, `SessionCommandDialogs.tsx`, `SessionRewindDialog.tsx`, `SessionNoticeCard.tsx`, `SessionActivityIndicator.tsx`), `mobile/` (`MobileSessionCatalog.tsx`, `MobileComposer.tsx`, `MobileAppShell.tsx`, `MobilePageHeader.tsx`, `MobileSheet.tsx`, `MobileSettings.tsx`, `MobileQuotaPage.tsx`), `desktop/` (`DesktopSessionsPane.tsx`, `DesktopSettings.tsx`), `evidence/` (`EvidencePanel.tsx`, `MediaPreviewProvider.tsx`, `MediaViewer.tsx`, `MediaGallery.tsx`, `TextPreview.tsx`, `FileChangesCard.tsx`, `FileAttachmentPicker.tsx`, `ImageAttachment.tsx`), `session/` (`SessionCreateDialog.tsx`, `SessionConfigurationDialog.tsx`, `ProviderSettings.tsx`, `ProviderSwitchDialog.tsx`), `pairing/`, `common/`
-- Stylesheets: `apps/client/src/styles.css`, `apps/client/src/mobile.css`, `apps/client/src/media-preview.css`, `apps/client/src/components/**/*.css`
+- `apps/client/src/components/` (`MobileWorkspace.tsx`, `DesktopDashboard.tsx`, and subdirectories `conversation/`, `mobile/`, `desktop/`, `evidence/`, `session/`, `pairing/`, `common/`)
+- Stylesheets: `apps/client/src/*.css`, `apps/client/src/components/**/*.css`
 
 ## Responsibilities
 - Projects raw history items, live streaming deltas, tool executions, inline tool permissions/questions, task plans, and subagent runs into a unified renderable timeline (`lib/conversation-timeline.ts`).

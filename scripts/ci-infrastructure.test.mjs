@@ -10,11 +10,12 @@ import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { runSuites } from './test.mjs';
 import { recycleEnv } from './ci-run.mjs';
+import { LOCAL_CI_STATUS_CONTEXT, recordAndPublishLocalCi, validateStatusRepo } from './local-ci.mjs';
 
 const require = createRequire(import.meta.url);
 const preload = await readFile(new URL('./recycle-cleanup.cjs', import.meta.url), 'utf8');
 
-function mockCleanup(platform, { missing = false, failure = false, directory = false } = {}) {
+function mockCleanup(platform, { missing = false, failure = false, directory = false, extraEnv = {} } = {}) {
   const calls = [];
   const check = () => {
     if (missing) throw Object.assign(new Error('missing fixture'), { code: 'ENOENT' });
@@ -25,7 +26,7 @@ function mockCleanup(platform, { missing = false, failure = false, directory = f
     calls.push(args);
     if (failure) throw Object.assign(new Error('trash command failed'), { code: 'ENOENT' });
   };
-  const mockProcess = { platform, env: { PRESERVE_ME: 'yes' } };
+  const mockProcess = { platform, env: { PRESERVE_ME: 'yes', ...extraEnv } };
   vm.runInNewContext(preload, {
     Buffer, URL, process: mockProcess,
     require(name) {
@@ -173,6 +174,10 @@ for (const platform of ['darwin', 'linux', 'win32']) {
       const dir = mockCleanup(platform, { directory: true });
       dir.fs.rmSync('directory', { recursive: true });
       assert.match(dir.calls[0][1].at(-1), /SHFileOperation[\s\S]*0x0454/u);
+      const compiled = mockCleanup(platform, { extraEnv: { BRIDGE_WIN_RECYCLE_EXE: 'D:\\work\\cache\\bridge-recycle.exe' } });
+      compiled.fs.rmSync('a fixture');
+      assert.equal(compiled.calls[0][0], 'D:\\work\\cache\\bridge-recycle.exe');
+      assert.equal(compiled.calls[0][1].length, 1);
     }
   });
 }
@@ -268,6 +273,147 @@ test('real system recycle command removes disposable files, readonly items, and 
       assert.equal(fs.existsSync(tree), false);
       assert.equal(await readFile(externalFile, 'utf8'), 'do not touch');
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('local-ci status writeback enforces origin boundary, full-run qualification, pre-push deferral, and tree promotion', async () => {
+  assert.equal(validateStatusRepo('Lycidas97/claude-desktop-bridge'), 'Lycidas97/claude-desktop-bridge');
+  assert.throws(() => validateStatusRepo('czhmartinez/claude-desktop-bridge'), /Refusing to publish commit status to upstream/);
+  assert.throws(() => validateStatusRepo('invalid-slug'), /Invalid GitHub repository slug/);
+
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-local-ci-status-'));
+  try {
+    const repoDir = join(directory, 'repo');
+    const ghScript = join(directory, 'gh-stub.cjs');
+    const ghLog = join(directory, 'gh-calls.jsonl');
+    await mkdir(repoDir, { recursive: true });
+
+    await writeFile(
+      ghScript,
+      `const fs = require('node:fs');
+fs.appendFileSync(process.env.MOCK_GH_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
+if (process.env.MOCK_GH_MODE === '422') {
+  process.stderr.write('gh: No commit found for SHA: deadbeef (HTTP 422)\\n');
+  process.exit(1);
+}
+if (process.env.MOCK_GH_MODE === '401') {
+  process.stderr.write('gh: Bad credentials (HTTP 401)\\n');
+  process.exit(1);
+}
+process.stdout.write('{"state":"success"}\\n');
+`,
+    );
+
+    const runGit = (...gitArgs) => {
+      const res = spawnSync('git', gitArgs, { cwd: repoDir, encoding: 'utf8' });
+      assert.equal(res.status, 0, res.stderr);
+      return res.stdout.trim();
+    };
+    runGit('init', '-q', '-b', 'feat/test');
+    runGit('config', 'user.name', 'Bridge Test');
+    runGit('config', 'user.email', 'test@example.invalid');
+    await writeFile(join(repoDir, 'file.txt'), 'v1\n');
+    runGit('add', 'file.txt');
+    runGit('commit', '-q', '-m', 'initial');
+    const prSha = runGit('rev-parse', 'HEAD');
+    const prTree = runGit('rev-parse', 'HEAD^{tree}');
+
+    const baseEnv = {
+      ...process.env,
+      BRIDGE_GH_EXEC: ghScript,
+      MOCK_GH_LOG: ghLog,
+      BRIDGE_GITHUB_STATUS_REPO: 'Lycidas97/claude-desktop-bridge',
+    };
+
+    // 1. Partial or dirty runs never write receipts or call gh
+    for (const partial of [
+      { skipWin: true },
+      { skipMac: true },
+      { skipWslLinux: true },
+      { allowDirty: true },
+    ]) {
+      const skipped = await recordAndPublishLocalCi({
+        cwd: repoDir,
+        revision: prSha,
+        tree: prTree,
+        repo: 'Lycidas97/claude-desktop-bridge',
+        env: baseEnv,
+        ...partial,
+      });
+      assert.equal(skipped.qualified, false);
+    }
+    assert.equal(fs.existsSync(ghLog), false);
+
+    // 2. Non-422 gh failure surfaces immediately
+    await assert.rejects(
+      recordAndPublishLocalCi({
+        cwd: repoDir,
+        revision: prSha,
+        tree: prTree,
+        repo: 'Lycidas97/claude-desktop-bridge',
+        env: { ...baseEnv, MOCK_GH_MODE: '401' },
+      }),
+      /Bad credentials/,
+    );
+
+    // 3. Pre-push HTTP 422 saves receipt and defers cleanly
+    await writeFile(ghLog, '');
+    const deferred = await recordAndPublishLocalCi({
+      cwd: repoDir,
+      revision: prSha,
+      tree: prTree,
+      repo: 'Lycidas97/claude-desktop-bridge',
+      env: { ...baseEnv, MOCK_GH_MODE: '422' },
+    });
+    assert.deepEqual(deferred, { qualified: true, published: false, deferred: true });
+
+    // 4. Subsequent --publish CLI call publishes exact SHA status without re-running suites
+    await writeFile(ghLog, '');
+    const localCiCli = fileURLToPath(new URL('./local-ci.mjs', import.meta.url));
+    const pub1 = spawnSync(process.execPath, [localCiCli, '--publish'], {
+      cwd: repoDir,
+      env: recycleEnv({ ...baseEnv, MOCK_GH_MODE: '200' }),
+      encoding: 'utf8',
+    });
+    assert.equal(pub1.status, 0, pub1.stderr);
+    const calls1 = (await readFile(ghLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(calls1.length, 1);
+    assert.equal(calls1[0][1], `repos/Lycidas97/claude-desktop-bridge/statuses/${prSha}`);
+    assert.ok(calls1[0].includes(`context=${LOCAL_CI_STATUS_CONTEXT}`));
+
+    // 5. Squash-merged commit with byte-identical HEAD^{tree} promotes verified receipt
+    runGit('checkout', '--orphan', 'main');
+    runGit('commit', '-q', '-m', 'squash merge (#19)');
+    const mainSha = runGit('rev-parse', 'HEAD');
+    assert.notEqual(mainSha, prSha);
+    assert.equal(runGit('rev-parse', 'HEAD^{tree}'), prTree);
+
+    await writeFile(ghLog, '');
+    const pub2 = spawnSync(process.execPath, [localCiCli, '--publish'], {
+      cwd: repoDir,
+      env: recycleEnv({ ...baseEnv, MOCK_GH_MODE: '200' }),
+      encoding: 'utf8',
+    });
+    assert.equal(pub2.status, 0, pub2.stderr);
+    const calls2 = (await readFile(ghLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(calls2[0][1], `repos/Lycidas97/claude-desktop-bridge/statuses/${mainSha}`);
+    const descArg = calls2[0].find(arg => arg.startsWith('description='));
+    assert.ok(descArg && descArg.slice('description='.length).length <= 140);
+
+    // 6. Unverified modified tree is rejected with zero gh calls
+    await writeFile(join(repoDir, 'file.txt'), 'v2-unverified\n');
+    runGit('add', 'file.txt');
+    runGit('commit', '-q', '-m', 'unverified change');
+    await writeFile(ghLog, '');
+    const pub3 = spawnSync(process.execPath, [localCiCli, '--publish'], {
+      cwd: repoDir,
+      env: recycleEnv({ ...baseEnv, MOCK_GH_MODE: '200' }),
+      encoding: 'utf8',
+    });
+    assert.notEqual(pub3.status, 0);
+    assert.equal(await readFile(ghLog, 'utf8'), '');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

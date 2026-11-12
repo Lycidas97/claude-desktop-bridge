@@ -141,7 +141,7 @@ try {
   if ($smokeProcess.HasExited) {
     throw "Packaged Windows app exited during the default-configuration startup smoke test."
   }
-  & taskkill.exe /PID $smokeProcess.Id /T /F 2>$null | Out-Null
+  & cmd.exe /c "taskkill.exe /PID $($smokeProcess.Id) /T /F >nul 2>nul"
   $smokeProcess = $null
 
   Set-QaProfile -Root $qaRoot
@@ -181,12 +181,61 @@ try {
 
   Invoke-NpmScript -Name "test:desktop:packaged"
   Invoke-NpmScript -Name "test:desktop:pairing"
+
+  if ($env:BRIDGE_WITH_ANDROID_SMOKE -eq "1") {
+    $sdkRoot = if ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { $env:ANDROID_HOME }
+    if (-not $sdkRoot) { throw "ANDROID_SDK_ROOT is required when BRIDGE_WITH_ANDROID_SMOKE=1" }
+    $adb = Join-Path $sdkRoot "platform-tools/adb.exe"
+    $apk = Join-Path $repositoryRoot "apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk"
+    if (-not (Test-Path -LiteralPath $apk)) { throw "Android debug APK was not found at $apk" }
+
+    & $adb wait-for-device
+    if ($LASTEXITCODE -ne 0) { throw "adb wait-for-device failed with exit code $LASTEXITCODE" }
+    & $adb install -r $apk
+    if ($LASTEXITCODE -ne 0) { throw "adb install failed with exit code $LASTEXITCODE" }
+    & $adb shell pm clear com.localbridge.mobile | Out-Null
+    & $adb shell am start -W -n com.localbridge.mobile/.MainActivity | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to launch com.localbridge.mobile/.MainActivity" }
+
+    $webviewSocket = $null
+    $socketDeadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $socketDeadline -and -not $webviewSocket) {
+      $unixSockets = & cmd.exe /c "`"$adb`" shell cat /proc/net/unix 2>nul"
+      $match = ($unixSockets | Select-String -Pattern "@(webview_devtools_remote_\d+)" | Select-Object -First 1)
+      if ($match) {
+        $webviewSocket = $match.Matches[0].Groups[1].Value
+      } else {
+        Start-Sleep -Milliseconds 300
+      }
+    }
+    if (-not $webviewSocket) { throw "Timed out waiting for Android WebView DevTools socket" }
+
+    & $adb forward tcp:9224 "localabstract:$webviewSocket"
+    if ($LASTEXITCODE -ne 0) { throw "adb forward tcp:9224 failed with exit code $LASTEXITCODE" }
+    try {
+      Wait-HttpEndpoint -Url "http://127.0.0.1:9224/json" -TimeoutSeconds 20
+      [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_CDP", "http://127.0.0.1:9224", "Process")
+      [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_SMOKE_PAIRING_ONLY", "1", "Process")
+      try {
+        & $nodeExecutable --require (Join-Path $PSScriptRoot "recycle-cleanup.cjs") `
+          (Join-Path $PSScriptRoot "android-installed-e2e.mjs")
+        if ($LASTEXITCODE -ne 0) {
+          throw "Android installed pairing smoke failed with exit code $LASTEXITCODE"
+        }
+      } finally {
+        [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_CDP", $null, "Process")
+        [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_SMOKE_PAIRING_ONLY", $null, "Process")
+      }
+    } finally {
+      & cmd.exe /c "`"$adb`" forward --remove tcp:9224 >nul 2>nul"
+    }
+  }
 } finally {
   if ($null -ne $smokeProcess -and -not $smokeProcess.HasExited) {
-    & taskkill.exe /PID $smokeProcess.Id /T /F 2>$null | Out-Null
+    & cmd.exe /c "taskkill.exe /PID $($smokeProcess.Id) /T /F >nul 2>nul"
   }
   if ($null -ne $desktopProcess -and -not $desktopProcess.HasExited) {
-    & taskkill.exe /PID $desktopProcess.Id /T /F 2>$null | Out-Null
+    & cmd.exe /c "taskkill.exe /PID $($desktopProcess.Id) /T /F >nul 2>nul"
   }
   if ($null -ne $relayProcess -and -not $relayProcess.HasExited) {
     Stop-Process -Id $relayProcess.Id -Force -ErrorAction SilentlyContinue

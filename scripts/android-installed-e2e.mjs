@@ -7,6 +7,7 @@ import { chromium } from "playwright-core";
 const desktopCdp = process.env.BRIDGE_DESKTOP_CDP ?? "http://127.0.0.1:9223";
 const androidCdp = process.env.BRIDGE_ANDROID_CDP ?? "http://127.0.0.1:9224";
 const androidRelay = process.env.BRIDGE_ANDROID_RELAY ?? "ws://10.0.2.2:8788/ws";
+const smokePairingOnly = process.env.BRIDGE_ANDROID_SMOKE_PAIRING_ONLY === "1";
 const targetSessionTitle = process.env.BRIDGE_E2E_SESSION_TITLE?.trim();
 const marker = `BRIDGE_ANDROID_E2E_${Date.now()}`;
 const command = process.env.BRIDGE_E2E_COMMAND ?? `请只回复这段文本，不要调用工具：${marker}`;
@@ -78,10 +79,11 @@ try {
     .find((page) => page.url().startsWith("file:"));
   assert.ok(desktopPage, "Packaged Bridge renderer was not found");
 
-  const pairingSnapshot = await desktopPage.evaluate(async () => {
+  const pairingSnapshot = await desktopPage.evaluate(async (forceFreshPairing) => {
+    if (forceFreshPairing) return window.bridgeDesktop.createPairing();
     const snapshot = await window.bridgeDesktop.getSnapshot();
     return snapshot.pairingUrl ? snapshot : window.bridgeDesktop.createPairing();
-  });
+  }, smokePairingOnly);
   const pairing = pairingBundleFromUrl(pairingSnapshot.pairingUrl);
   assert.ok(pairing, "Desktop pairing bundle was not available");
   pairing.relayUrl = androidRelay;
@@ -103,6 +105,32 @@ try {
     button.click();
   })()`);
 
+  if (smokePairingOnly) {
+    await androidPage.waitFor(
+      "Boolean(document.querySelector('.m-host-chip .m-status-dot.is-online')) && (document.querySelector('.session-catalog-loading strong')?.textContent?.trim() === '暂未发现 Desktop 会话' || Boolean(document.querySelector('.session-row-v2')))",
+      30_000,
+    );
+    await androidPage.screenshot(resolve(artifacts, "02-paired-smoke.png"));
+    const renderedHostName = await androidPage.evaluate(
+      "document.querySelector('.m-host-name')?.textContent?.trim() ?? ''",
+    );
+    assert.equal(renderedHostName, pairingSnapshot.host.name, "Android WebView must render the paired Desktop host name");
+    const pairedSnapshot = await desktopPage.evaluate(() => window.bridgeDesktop.getSnapshot());
+    const pairedDevice = pairedSnapshot.devices.find((candidate) => candidate.deviceId === pairing.deviceId);
+    assert.ok(pairedDevice, "Desktop must record the paired Android WebView device");
+    assert.equal(pairedDevice.online, true, "Paired Android WebView device must be online on Desktop");
+    assert.equal(pairedDevice.revokedAt, undefined, "Paired Android WebView device must not be revoked");
+    process.stdout.write(`${JSON.stringify({
+      ok: true,
+      mode: "pairing-only",
+      desktopVersion: pairedSnapshot.host.version,
+      hostName: renderedHostName,
+      deviceId: pairedDevice.deviceId,
+      deviceOnline: pairedDevice.online,
+      androidRelay,
+      artifacts,
+    }, null, 2)}\n`);
+  } else {
   await androidPage.waitFor("Boolean(document.querySelector('.session-row-v2'))");
   await androidPage.screenshot(resolve(artifacts, "02-session-list.png"));
   const selectedSession = await androidPage.evaluate(`(() => {
@@ -170,6 +198,7 @@ try {
     completionRenderedOnce: true,
     artifacts,
   }, null, 2)}\n`);
+  }
 } finally {
   androidPage.close();
   await desktopBrowser.close();

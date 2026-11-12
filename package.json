@@ -36,6 +36,7 @@
     "migrate:relay-store": "node scripts/migrate-relay-json-to-sqlite.mjs",
     "typecheck": "npm run typecheck -ws --if-present && npm --prefix plugins/magpie-quota run typecheck",
     "verify": "node scripts/ci-run.mjs verify",
+    "ci:local": "node scripts/local-ci.mjs",
     "clean": "npm run clean -ws --if-present"
   },
   "engines": {

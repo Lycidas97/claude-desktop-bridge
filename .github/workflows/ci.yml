@@ -1,9 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -14,7 +11,52 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      ios_changed: ${{ steps.classify.outputs.ios_changed }}
+    steps:
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Classify pull request scope
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "ios_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED="$(git diff --name-only "$BASE_SHA"...HEAD)"
+          if [[ -z "$CHANGED" ]]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "ios_changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s\n' "$CHANGED"
+          NON_DOC="$(printf '%s\n' "$CHANGED" | grep -vE '^(\.github/pull_request_template\.md|AGENTS\.md|CLAUDE\.md|LESSONS\.md|README.*\.md|CHANGELOG\.md|CONTRIBUTING\.md|LICENSE|docs/|site/|assets/)' || true)"
+          if [[ -n "$NON_DOC" ]]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          fi
+          IOS_FILES="$(printf '%s\n' "$CHANGED" | grep -E '^apps/mobile/ios/' || true)"
+          if [[ -n "$IOS_FILES" ]]; then
+            echo "ios_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ios_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   verify:
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -27,15 +69,18 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y trash-cli
       - run: npm ci
       - run: npm run test:infra
-      - run: npm run audit:runtime
-      - run: npm run verify
+      - if: github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true'
+        run: npm run audit:runtime
+      - if: github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true'
+        run: npm run verify
       - uses: actions/upload-artifact@v7.0.2
-        if: always()
+        if: always() && (github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true')
         with:
           name: tests-linux
           path: artifacts/tests/**
 
   desktop-windows:
+    if: github.event_name != 'pull_request'
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -75,6 +120,7 @@ jobs:
             artifacts/tests/**
 
   desktop-linux:
+    if: github.event_name != 'pull_request'
     # Forge's RPM maker expects the RPM 4.18 build layout shipped by this LTS.
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -115,6 +161,7 @@ jobs:
             artifacts/tests/**
 
   android-debug:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -158,6 +205,8 @@ jobs:
           path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
 
   ios:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.ios_changed == 'true'
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -192,6 +241,7 @@ jobs:
           path: apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app
 
   macos-unit:
+    if: github.event_name != 'pull_request'
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -210,6 +260,8 @@ jobs:
           path: artifacts/tests/**
 
   browser-e2e:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -233,7 +285,7 @@ jobs:
   quality-gate:
     name: Quality gate
     if: always()
-    needs: [verify, desktop-windows, desktop-linux, android-debug, ios, macos-unit, browser-e2e]
+    needs: [changes, verify, desktop-windows, desktop-linux, android-debug, ios, macos-unit, browser-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -243,6 +295,30 @@ jobs:
           package-manager-cache: false
       - name: Require every job to succeed
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          IOS_CHANGED: ${{ needs.changes.outputs.ios_changed }}
           JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
-          node -e 'const jobs = JSON.parse(process.env.JOB_RESULTS); for (const [name, job] of Object.entries(jobs)) console.log(`${name}: ${job.result}`); if (Object.values(jobs).some(job => job.result !== "success")) process.exit(1);'
+          node -e '
+            const jobs = JSON.parse(process.env.JOB_RESULTS);
+            for (const [name, job] of Object.entries(jobs)) console.log(`${name}: ${job.result}`);
+            const fullMatrix = ["changes", "verify", "desktop-windows", "desktop-linux", "android-debug", "ios", "macos-unit", "browser-e2e"];
+            if (process.env.EVENT_NAME !== "pull_request") {
+              if (fullMatrix.some((name) => jobs[name]?.result !== "success")) process.exit(1);
+              process.exit(0);
+            }
+            const docsOnly = process.env.DOCS_ONLY === "true";
+            const iosChanged = process.env.IOS_CHANGED === "true";
+            const required = new Set(["changes", "verify"]);
+            if (!docsOnly) required.add("browser-e2e");
+            if (iosChanged) required.add("ios");
+            for (const name of fullMatrix) {
+              const result = jobs[name]?.result;
+              if (required.has(name)) {
+                if (result !== "success") process.exit(1);
+              } else if (result !== "skipped" && result !== "success") {
+                process.exit(1);
+              }
+            }
+          '

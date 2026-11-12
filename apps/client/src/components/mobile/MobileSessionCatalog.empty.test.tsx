@@ -252,10 +252,6 @@ describe("MobileSessionCatalog empty states", () => {
 
   it.each([
     {
-      label: "Bridge connected while host is offline",
-      override: () => ({ connection: "connected" as const, desktopOnline: false, snapshot: makeSnapshot() }),
-    },
-    {
       label: "Bridge and host online while Claude Desktop inspector is unavailable",
       override: () => ({
         connection: "connected" as const,
@@ -297,6 +293,40 @@ describe("MobileSessionCatalog empty states", () => {
     expect(textContent(inspectButton)).toBe("检查连接");
     inspectButton.props.onClick();
     expect(onInspectConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["ready", "unavailable", "no snapshot"] as const)("reports the Bridge host offline despite Relay connectivity (%s)", state => {
+    props = {
+      ...props,
+      connection: "connected",
+      desktopOnline: false,
+      snapshot: state === "no snapshot" ? undefined : makeSnapshot({
+        runtimes: [{ ...makeSnapshot().runtimes![0]!, state }],
+      }),
+    };
+    draw();
+    const box = emptyStateBox()!;
+    expect(elements(box).find(el => el.type === "strong")?.props.children).toBe("电脑端 Bridge 离线");
+    expect(textContent(box)).not.toContain("请在电脑端打开 Claude Desktop");
+    expect(elements(box).some(el => el.props.className?.includes("primary-button"))).toBe(false);
+    elements(box).find(el => el.type === "button")!.props.onClick();
+    expect(props.onInspectConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("does not promise session creation when the ready runtime lacks session.create (archived=%s)", archived => {
+    props = {
+      ...props,
+      snapshot: makeSnapshot({
+        runtimes: [{ ...makeSnapshot().runtimes![0]!, capabilities: ["session.list", "session.history"] }],
+        sessions: archived ? [{ ...baseSession, archivedAt: 20 }] : [],
+      }),
+    };
+    draw();
+    const box = emptyStateBox()!;
+    expect(elements(box).find(el => el.type === "strong")?.props.children).toBe(archived ? "暂无活跃会话" : "暂无会话");
+    expect(elements(box).some(el => el.type === "button")).toBe(false);
+    expect(textContent(box)).not.toContain("可随时开始新的对话");
+    expect(textContent(box)).not.toContain("可开始新对话");
   });
 
   it.each(["connecting", "reconnecting", "closed"] as const)("shows connection state before the first snapshot (%s)", connection => {

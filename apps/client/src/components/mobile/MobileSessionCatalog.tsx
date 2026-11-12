@@ -405,22 +405,29 @@ export function MobileSessionCatalog({
             );
           }
           if (connection === "connected" && desktopOnline && claudeDesktopReady) {
+            const canCreate = snapshot?.runtimes
+              ? claudeRuntime?.state === "ready" && claudeRuntime.capabilities.includes("session.create")
+              : claudeDesktopReady;
             return (
               <div className="session-catalog-loading">
                 <strong>{archivedSessions.length > 0 ? "暂无活跃会话" : "暂无会话"}</strong>
-                <span>{archivedSessions.length > 0 ? "当前会话均已归档，可开始新对话或查看下方已归档会话。" : "当前电脑上尚未创建会话，可随时开始新的对话。"}</span>
-                <button
-                  type="button"
-                  className="primary-button session-catalog-empty-action"
-                  onClick={() => openCreateDialogForProject()}
-                >
-                  <Plus size={16} />
-                  新建会话
-                </button>
+                <span>{archivedSessions.length > 0
+                  ? canCreate ? "当前会话均已归档，可开始新对话或查看下方已归档会话。" : "当前会话均已归档，可查看下方已归档会话。"
+                  : canCreate ? "当前电脑上尚未创建会话，可随时开始新的对话。" : "当前电脑上尚未创建会话，请在 Claude Desktop 中创建会话。"}</span>
+                {canCreate && (
+                  <button
+                    type="button"
+                    className="primary-button session-catalog-empty-action"
+                    onClick={() => openCreateDialogForProject()}
+                  >
+                    <Plus size={16} />
+                    新建会话
+                  </button>
+                )}
               </div>
             );
           }
-          if (connection === "connected") {
+          if (connection === "connected" && desktopOnline) {
             return (
               <div className="session-catalog-loading">
                 <strong>未检测到 Claude Desktop</strong>
@@ -439,8 +446,8 @@ export function MobileSessionCatalog({
           return (
             <div className="session-catalog-loading">
               {connecting && <LoaderCircle className="is-spinning" size={20} />}
-              <strong>{connecting ? "正在连接电脑" : "当前未连接电脑"}</strong>
-              <span>{connecting ? "连接恢复后将自动同步会话列表。" : "请检查网络或连接设置，连接恢复后将自动同步。"}</span>
+              <strong>{connecting ? "正在连接电脑" : connection === "connected" ? "电脑端 Bridge 离线" : "当前未连接电脑"}</strong>
+              <span>{connecting ? "连接恢复后将自动同步会话列表。" : connection === "connected" ? "请确认电脑端 Bridge 正在运行并已连接网络。" : "请检查网络或连接设置，连接恢复后将自动同步。"}</span>
               <button
                 type="button"
                 className="secondary-button session-catalog-empty-action"

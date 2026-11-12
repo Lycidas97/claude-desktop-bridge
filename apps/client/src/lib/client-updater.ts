@@ -376,15 +376,16 @@ export class ClientUpdaterController {
       platform: "android",
       arch: this.arch,
     });
+    if (this.latestVersion !== latest.version || (this.phase !== "ready" && this.phase !== "awaiting-permission")) {
+      this.phase = "available";
+      this.downloadedBytes = undefined;
+    }
     this.latestVersion = latest.version;
     this.releaseUrl = latest.htmlUrl;
     this.releaseNotes = latest.body || undefined;
     this.matchedAsset = matched;
     this.resolvedSha256 = matched?.asset.sha256;
     this.totalBytes = matched?.asset.size;
-    if (this.phase !== "ready" && this.phase !== "awaiting-permission") {
-      this.phase = "available";
-    }
     this.statusDetail = matched
       ? `发现新版本 v${latest.version}`
       : `发现新版本 v${latest.version}（请前往 GitHub 下载安装包）`;

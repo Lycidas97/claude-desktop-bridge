@@ -139,6 +139,54 @@ describe("ClientUpdaterController", () => {
     expect(updater.getSnapshot().promptOpen).toBe(false);
   });
 
+  it("invalidates the staged APK when the selected update changes while awaiting permission", async () => {
+    let canInstall = false;
+    let stagedVersion: string | undefined;
+    const downloadedVersions: string[] = [];
+    const installedVersions: Array<string | undefined> = [];
+    const plugin: BridgeUpdaterNativePlugin = {
+      getAppInfo: vi.fn(async () => ({
+        versionName: "1.3.2", versionCode: 2, packageName: "com.localbridge.mobile",
+        canInstallPackages: canInstall, arch: "arm64",
+      })),
+      fetchReleasesJson: vi.fn(async ({ url }) => ({
+        status: 200, body: url ? "" : SAMPLE_RELEASES_JSON,
+      })),
+      downloadAndVerifyApk: vi.fn(async ({ version }) => {
+        stagedVersion = version;
+        downloadedVersions.push(version);
+        return { staged: true, sha256: "a".repeat(64), bytes: 100, canInstallPackages: canInstall };
+      }),
+      installStagedApk: vi.fn(async () => {
+        if (canInstall) installedVersions.push(stagedVersion);
+        return { launchedInstaller: canInstall, needsPermission: !canInstall };
+      }),
+      openExternalUrl: vi.fn(),
+      addListener: vi.fn(async () => ({ remove: vi.fn(async () => {}) })),
+    };
+    const updater = new ClientUpdaterController({ platform: "android", initialVersion: "1.3.2", plugin });
+    await updater.initializeStartup();
+    await updater.downloadAndInstall();
+    expect(downloadedVersions).toEqual(["1.3.3"]);
+    expect(updater.getSnapshot().phase).toBe("awaiting-permission");
+
+    // Return without granting permission, dismiss, then select another release.
+    await updater.handleAppResume();
+    updater.dismissPrompt();
+    updater.setChannel("prerelease");
+    await updater.check({ manual: false });
+    expect(updater.getSnapshot().latestVersion).toBe("1.4.0-rc.1");
+    expect.soft(updater.getSnapshot().phase).toBe("available");
+    expect(updater.getSnapshot().downloadedBytes).toBeUndefined();
+
+    canInstall = true;
+    await updater.handleAppResume();
+    expect.soft(installedVersions).toEqual([]);
+    await updater.downloadAndInstall();
+    expect.soft(downloadedVersions).toEqual(["1.3.3", "1.4.0-rc.1"]);
+    expect.soft(installedVersions).toEqual(["1.4.0-rc.1"]);
+  });
+
   it("supports switching between stable and prerelease channels and persists dismissed version", async () => {
     const storage = createMemoryStorage();
     const plugin: BridgeUpdaterNativePlugin = {

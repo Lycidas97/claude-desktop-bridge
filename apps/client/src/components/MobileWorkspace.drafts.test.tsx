@@ -575,7 +575,8 @@ describe("mobile section creation", () => {
     }] } };
     draw();
     expect(elements(tree).some(element => element.type === "strong" && element.props.children === "Research")).toBe(true);
-    expect(elements(tree).some(element => element.props.children === "暂未发现 Desktop 会话")).toBe(false);
+    expect(elements(tree).some(element => element.props.children === "暂无会话")).toBe(false);
+    expect(elements(tree).some(element => element.props.children === "未检测到 Claude Desktop")).toBe(false);
   });
   it("searches empty native sections by name without exposing empty directories", () => {
     props = { ...props, snapshot: { ...props.snapshot!, sessions: [], projects: [

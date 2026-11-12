@@ -727,6 +727,49 @@ async function verifyRename(page, host, entry, steps) {
   assert.deepEqual(host.session, { ...beforeSession, title: renamedTitle }, "Host rename changes only the title");
   assert.equal(host.requests.filter((request) => request.method.startsWith("turn.")).length, 0, "Rename must not alter queued turns");
   steps.push("list/header title updates; activity, order, and existing queue unchanged");
+
+  if (entry === "list") {
+    const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
+    await search.fill("不存在的会话关键词");
+    await page.locator(".session-catalog-loading strong", { hasText: "没有匹配的会话" }).waitFor();
+    await search.fill("");
+
+    await host.send({
+      kind: "snapshot",
+      snapshot: {
+        ...host.snapshot,
+        projects: [],
+        sessions: [],
+        runtime: { ...host.snapshot.runtime, state: "ready" },
+        runtimes: [{ ...host.snapshot.runtimes[0], state: "ready", capabilities: [...host.snapshot.runtimes[0].capabilities, "session.create"], sessionCount: 0 }],
+      },
+    });
+    await page.locator(".session-catalog-loading strong", { hasText: "暂无会话" }).waitFor();
+    await page.locator(".session-catalog-loading span", { hasText: "当前电脑上尚未创建会话，可随时开始新的对话。" }).waitFor();
+    await page.locator(".session-catalog-loading").getByRole("button", { name: "新建会话", exact: true }).click();
+    const createDialog = page.getByRole("dialog", { name: "新建会话" });
+    await createDialog.waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await createDialog.getByRole("button", { name: "关闭", exact: true }).click();
+    await createDialog.waitFor({ state: "hidden" });
+
+    await host.send({
+      kind: "snapshot",
+      snapshot: {
+        ...host.snapshot,
+        projects: [],
+        sessions: [],
+        runtime: { ...host.snapshot.runtime, state: "unavailable" },
+        runtimes: [{ ...host.snapshot.runtimes[0], state: "unavailable", sessionCount: 0 }],
+      },
+    });
+    await page.locator(".session-catalog-loading strong", { hasText: "未检测到 Claude Desktop" }).waitFor();
+    await page.locator(".session-catalog-loading span", { hasText: "请在电脑端打开 Claude Desktop。启动后 Bridge 将自动建立连接。" }).waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.locator(".session-catalog-loading").getByRole("button", { name: "检查连接", exact: true }).click();
+    await page.getByRole("heading", { name: "连接与同步", exact: true }).waitFor();
+    steps.push("empty catalog distinguishes unmatched search, online empty Desktop with create action, and missing Claude Desktop with connection inspection");
+  }
 }
 
 async function verifyDelivery(page, host, steps) {

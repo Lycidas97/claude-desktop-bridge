@@ -581,6 +581,34 @@ test("Wait-HttpEndpoint fails immediately when the monitored process exits early
   assert.match(result.stderr, /exited with code 7 while waiting for http:\/\/127\.0\.0\.1:1\/health/u);
 });
 
+test("reusing a Windows CI slot preserves the previous run's retained staging", { skip: process.platform !== "win32" }, async () => {
+  const source = await readFile(new URL("./win-local-ci.ps1", import.meta.url), "utf8");
+  const allocation = source.match(/^\$recycleStaging = .+$/mu)[0];
+  const directory = await mkdtemp(join(tmpdir(), "bridge-ci-retained-staging-"));
+  try {
+    const fixture = join(directory, "staging.ps1");
+    await writeFile(fixture, `
+      $ErrorActionPreference = "Stop"
+      $cacheRoot = $env:BRIDGE_QA_TEST_ROOT
+      $slot = 0
+      ${allocation}
+      $retained = $recycleStaging
+      New-Item -ItemType Directory -Path $retained | Out-Null
+      Set-Content -LiteralPath (Join-Path $retained "evidence.txt") -Value "retained" -NoNewline
+      ${allocation}
+      if ($retained -eq $recycleStaging) { throw "STAGING_REUSED" }
+      Write-Output $retained
+    `);
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture], {
+      encoding: "utf8", env: { ...process.env, BRIDGE_QA_TEST_ROOT: directory },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(join(result.stdout.trim(), "evidence.txt"), "utf8"), "retained");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("concurrent Windows CI callers each take a free slot and a fifth caller waits for one to release", { skip: process.platform !== "win32" }, async () => {
   const { spawn } = await import("node:child_process");
   const { once } = await import("node:events");

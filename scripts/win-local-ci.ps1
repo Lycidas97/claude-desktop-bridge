@@ -104,7 +104,7 @@ $ciWorktree = "$workRoot\ci-slot-$slot"
 $avdName = "bridge-ci-api36-$slot"
 $emulatorPort = 5560 + 2 * $slot
 $env:ANDROID_SERIAL = "emulator-$emulatorPort"
-$recycleStaging = "$cacheRoot\recycle-staging-$slot"
+$recycleStaging = Join-Path $cacheRoot ("recycle-staging-$slot-" + [Guid]::NewGuid().ToString("N"))
 
 # 1. Fetch exact commit bundle into the anchor repo under this slot's ref and check out D:\work\ci-slot-<n>
 Invoke-Checked "Sync git bundle ($Revision)" {

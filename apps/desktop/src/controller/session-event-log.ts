@@ -263,7 +263,7 @@ export class SessionEventLog extends EventEmitter {
       }
       const event = this.loadRecord(parsed);
       // Oversized logs compact on load; small logs stay resident until the first append trims them.
-      if (event) this.retainEvent(event, Buffer.byteLength(line) + 1, false);
+      if (event) this.retainEvent(event, eventBytes(event), false);
     }
     this.events.sort((left, right) => left.seq - right.seq);
   }
@@ -522,7 +522,7 @@ export class SessionEventLog extends EventEmitter {
     for (const event of [...this.itemReceipts.values(), ...this.windowItems.values()]) {
       if (event.type !== "session.desktop-handoff" || !event.itemId) continue;
       const key = `${event.sessionId ?? ""}\u001f${event.itemId}`;
-      if (event.seq > (handoffs.get(key)?.seq ?? 0)) handoffs.set(key, event);
+      if (event.seq >= (handoffs.get(key)?.seq ?? 0)) handoffs.set(key, event);
     }
     return [...handoffs.values()];
   }
@@ -533,7 +533,7 @@ export class SessionEventLog extends EventEmitter {
       if (event.sessionId !== sessionId || !event.itemId ||
         (event.type !== "tool.progress" && event.type !== "tool.completed") ||
         (!event.data.task && !event.data.subagent)) continue;
-      if (event.seq > (tasks.get(event.itemId)?.seq ?? 0)) tasks.set(event.itemId, event);
+      if (event.seq >= (tasks.get(event.itemId)?.seq ?? 0)) tasks.set(event.itemId, event);
     }
     return [...tasks.values()].sort((left, right) => left.seq - right.seq);
   }

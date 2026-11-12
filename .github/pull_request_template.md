@@ -13,7 +13,7 @@ Fixes #
 - [ ] `npm test`
 - [ ] `npm run test:browser`
 - [ ] `npm run verify`
-- [ ] `npm run ci:local` (`ci/local-distributed` green on reviewed SHA; docs-only PRs skip it and list `ci:local — docs only` under Not Run)
+- [ ] `npm run ci:local` (runs after review converges, on the reviewed SHA; until then list `ci:local — pending review` under Not Run; docs-only PRs skip it and list `ci:local — docs only`)
 
 Commands & results:
 ```text

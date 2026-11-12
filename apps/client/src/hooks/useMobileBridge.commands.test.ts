@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useMobileBridge } from "./useMobileBridge.js";
 
 const harness = vi.hoisted(() => ({
+  state: undefined as any,
+  stateReady: false,
   refs: [] as Array<{ current: any }>,
   requests: [] as BridgeRequest[],
   response: {} as Record<string, unknown>,
@@ -11,7 +13,18 @@ const harness = vi.hoisted(() => ({
 }));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
-  useState: (initial: unknown) => [initial, vi.fn()],
+  useState: (initial: unknown) => {
+    if (!harness.stateReady) {
+      harness.state = initial;
+      harness.stateReady = true;
+    }
+    return [
+      harness.state,
+      (updater: unknown) => {
+        harness.state = typeof updater === "function" ? (updater as (prev: unknown) => unknown)(harness.state) : updater;
+      },
+    ];
+  },
   useRef(initial: unknown) {
     const index = harness.refs.length;
     const ref = { current: initial as any };
@@ -36,6 +49,7 @@ vi.mock("react", async (original) => ({
 }));
 
 beforeEach(() => {
+  harness.state = undefined; harness.stateReady = false;
   harness.refs = []; harness.requests = []; harness.response = {}; harness.error = undefined;
   harness.encrypt.mockReset().mockImplementation(async (request: BridgeRequest) => ({ id: request.requestId, sentAt: 1, request }));
 });
@@ -213,3 +227,47 @@ describe("renameSection and deleteSection", () => {
   });
 });
 
+describe("loadBackgroundTasks", () => {
+  it("syncs returned session runningSubagents into snapshot while stripping backgroundTasks payload", async () => {
+    const baseSession: BridgeSessionInfo = {
+      sessionId: "desktop-1",
+      projectId: "proj-1",
+      projectName: "bridge",
+      cwd: "/work/bridge",
+      title: "CI runner",
+      source: "desktop",
+      ownership: "DESKTOP_NATIVE_IDLE",
+      transport: "claude-desktop-native",
+      turnState: "idle",
+      lastActivityAt: 100,
+      pendingCount: 0,
+    };
+    const bridge = useMobileBridge();
+    harness.state = {
+      ...harness.state,
+      snapshot: {
+        host: { hostId: "h1", name: "Mac", platform: "darwin", version: "1.4.0", lastSeenAt: 100, capabilities: ["claude.native-relay.v1"] },
+        runtime: { state: "ready", detail: "ready", activeTurns: 0, maxParallelTurns: 0 },
+        projects: [],
+        sessions: [baseSession],
+        permissions: [],
+        latestSeq: 1,
+      },
+    };
+    const tasks = [{ id: "agent-1", kind: "subagent" as const, description: "Run local CI", state: "running" as const, startedAt: 90, updatedAt: 120 }];
+    harness.response = {
+      session: {
+        ...baseSession,
+        runningSubagents: { count: 1, lastUpdatedAt: 120 },
+        backgroundTasks: tasks,
+      },
+    };
+    await expect(bridge.loadBackgroundTasks("desktop-1")).resolves.toEqual(tasks);
+    expect(harness.requests[0]).toMatchObject({ method: "session.configuration", params: { sessionId: "desktop-1", includeBackgroundTasks: true } });
+    expect(harness.state.snapshot.sessions[0]).toEqual({
+      ...baseSession,
+      runningSubagents: { count: 1, lastUpdatedAt: 120 },
+    });
+    expect(harness.state.snapshot.sessions[0].backgroundTasks).toBeUndefined();
+  });
+});

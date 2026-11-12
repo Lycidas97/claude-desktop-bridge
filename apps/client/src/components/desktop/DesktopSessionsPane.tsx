@@ -78,6 +78,7 @@ import {
   stoppableBridgeTask,
 } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
+import { backgroundSubagentBadge } from "../../lib/session-activity.js";
 import {
   InteractivePromptCard,
   matchingQuestionPermission,
@@ -752,6 +753,7 @@ export function DesktopSessions({
     isForkChild = false,
   ): ReactNode {
     const forksExpanded = expandedForkParents.has(session.sessionId);
+    const subagentBadge = session.archivedAt || session.turnState !== "idle" ? undefined : backgroundSubagentBadge(session);
     const badgeLabel = session.sidechat ? "/btw" : (session.forkLabel || "fork");
     const badgeClassName = `session-fork-badge${session.sidechat ? " is-sidechat" : ""}`;
     return (
@@ -761,7 +763,7 @@ export function DesktopSessions({
           className={`desktop-session-row ${isForkChild ? "is-fork-child" : ""} ${session.sessionId === selectedId ? "active" : ""}`}
           onClick={() => setSelectedId(session.sessionId)}
         >
-          <span className={`session-state-dot ${session.turnState}`} />
+          <span className={`session-state-dot ${subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState}`} />
           <span>
             <strong>
               {isForkChild && <em className={badgeClassName}>{badgeLabel}</em>}
@@ -772,7 +774,7 @@ export function DesktopSessions({
             </strong>
             <small>
               {!isForkChild && `${desktopRuntimeName(desktopRuntimeId(session))} · `}
-              {session.archivedAt ? "已归档" : sessionState(session)}
+              {session.archivedAt ? "已归档" : subagentBadge?.label ?? sessionState(session)}
             </small>
           </span>
           {session.pendingCount > 0 && <b>{session.pendingCount}</b>}

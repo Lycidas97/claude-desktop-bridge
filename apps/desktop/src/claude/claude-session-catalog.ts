@@ -191,28 +191,6 @@ export function parseWindowsClaudeProcessSessions(stdout: string): Map<string, A
   return indexClaudeProcesses(new Map(parseWindowsProcessRows(stdout).map((row) => [row.pid, row])), "win32").sessions;
 }
 
-/** Whether a pid is a Claude session process right now, not just what a registration file names. */
-export async function isClaudeSessionProcess(pid: number, platform = process.platform): Promise<boolean> {
-  try {
-    if (platform === "win32") {
-      const { stdout } = await execFile("powershell.exe", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        WINDOWS_PROCESS_QUERY,
-      ], { encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-      const row = parseWindowsProcessRows(stdout).find((candidate) => candidate.pid === pid);
-      return Boolean(row && isStreamJsonProcess(row.command));
-    }
-    const { stdout } = await execFile("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
-    return isStreamJsonProcess(stdout);
-  } catch {
-    return false; // ps exits non-zero when the pid no longer exists.
-  }
-}
-
 async function listProcessSessions(platform = process.platform): Promise<ProcessScan | undefined> {
   if ((platform !== "darwin" && platform !== "win32") || process.env.BRIDGE_DISABLE_PROCESS_SCAN === "1") {
     return undefined;

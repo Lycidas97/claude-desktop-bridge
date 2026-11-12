@@ -124,6 +124,9 @@ recycle command. Missing paths are ignored only with `force: true`. Unsupported
 systems, missing recycle commands, and recycle failures surface as errors; there
 is no permanent-delete fallback. The preload selects the host platform at startup,
 so application tests that mock `process.platform` do not change the recycle command.
+When `BRIDGE_RECYCLE_STAGING` names a directory (set per slot by `win-local-ci.ps1`),
+removals rename into a per-process subdirectory there instead (paths on another
+volume still use the recycle command), and the caller recycles that directory once.
 
 This covers Node processes that inherit `NODE_OPTIONS`. It does not intercept
 native tools, shell deletion commands, browser internals, or processes that discard

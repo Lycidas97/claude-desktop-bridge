@@ -104,10 +104,7 @@ $ciWorktree = "$workRoot\ci-slot-$slot"
 $avdName = "bridge-ci-api36-$slot"
 $emulatorPort = 5560 + 2 * $slot
 $env:ANDROID_SERIAL = "emulator-$emulatorPort"
-# Node removals in this run rename into the slot staging dir, which the finally block recycles as one item
 $recycleStaging = "$cacheRoot\recycle-staging-$slot"
-New-Item -ItemType Directory -Force -Path $recycleStaging | Out-Null
-$env:BRIDGE_RECYCLE_STAGING = $recycleStaging
 
 # 1. Fetch exact commit bundle into the anchor repo under this slot's ref and check out D:\work\ci-slot-<n>
 Invoke-Checked "Sync git bundle ($Revision)" {
@@ -147,6 +144,10 @@ if ($recycleHash -ne $cachedRecycleHash -or -not (Test-Path $recycleExe)) {
   Set-Content -Path $recycleStamp -Value $recycleHash -NoNewline
 }
 $env:BRIDGE_WIN_RECYCLE_EXE = $recycleExe
+# Node removals in this run rename into the slot staging dir, which the finally block recycles as one item.
+# Create it only once bridge-recycle.exe exists, so that finally never calls a helper that was never built.
+New-Item -ItemType Directory -Force -Path $recycleStaging | Out-Null
+$env:BRIDGE_RECYCLE_STAGING = $recycleStaging
 
 # 3. Install npm dependencies when package-lock.json changes
 $lockHash = (Get-FileHash -Algorithm SHA256 "package-lock.json").Hash

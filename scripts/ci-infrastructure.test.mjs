@@ -555,7 +555,7 @@ test('browser E2E binds an ephemeral kernel port via httpServer.listen and local
   assert.match(winCiSource, /"-avd", \$avdName, "-port", "\$emulatorPort"/u);
   assert.match(winCiSource, /\$env:ANDROID_SERIAL = "emulator-\$emulatorPort"/u);
   assert.match(winCiSource, /CI_DIR="\/var\/tmp\/bridge-linux-ci-slot-\$slot"/u);
-  assert.match(winCiSource, /\$recycleStaging = "\$cacheRoot\\recycle-staging-\$slot"[\s\S]*?\$env:BRIDGE_RECYCLE_STAGING = \$recycleStaging[\s\S]*?\} finally \{[\s\S]*?bridge-recycle\.exe" \$recycleStaging/u);
+  assert.match(winCiSource, /\$recycleStaging = "\$cacheRoot\\recycle-staging-\$slot"[\s\S]*?\$env:BRIDGE_WIN_RECYCLE_EXE = \$recycleExe[\s\S]*?New-Item -ItemType Directory -Force -Path \$recycleStaging[\s\S]*?\$env:BRIDGE_RECYCLE_STAGING = \$recycleStaging[\s\S]*?\} finally \{[\s\S]*?bridge-recycle\.exe" \$recycleStaging/u);
   assert.match(winCiSource, /Invoke-CimMethod -ClassName Win32_Process -MethodName Create[^\n]*start-server/u);
   assert.doesNotMatch(winCiSource, /ci-worktree|refs\/ci\/current|"bridge-ci-api36"/u);
   assert.doesNotMatch(localCiSource, /ci-worktree/u);

@@ -5,7 +5,7 @@ import type {
   BridgeAttachment, BridgeBackgroundTask, BridgeEffort, BridgeHistoryItem, BridgeHistoryPage, BridgeModelInfo, BridgeNativeImageRef, BridgeNativePermissionMode, BridgeNativePermissionModeChange, BridgeOrigin,
   BridgePermissionDecision, BridgePermissionInfo, BridgeProjectInfo, BridgeRuntimeCapability,
   BridgeRuntimeStatus, BridgeSDKPermissionMode, BridgeSessionCommandResult,
-  BridgeSessionConfiguration, BridgeSessionContextUsage, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeToolCallDetail,
+  BridgeSessionConfiguration, BridgeSessionContextUsage, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeSubagentSummary, BridgeToolCallDetail,
 } from "@bridge/protocol";
 import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "../controller/conversation-state-store.js";
@@ -269,6 +269,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
     for (const native of this.native.values()) {
       const sessionId = native.sessionId;
       const tasks = [...this.messageProjection.get(sessionId)?.tasks?.values() ?? []].filter(task => task.state === "running");
+      const runningSubagents = tasks.length
+        ? { count: tasks.length, lastUpdatedAt: Math.max(...tasks.map(task => task.updatedAt)) }
+        : native.hasBackgroundWork === true
+          ? { count: 1, lastUpdatedAt: native.lastActivityAt ?? native.createdAt ?? 0 }
+          : undefined;
       const waiting = [...this.permissions.values()].some(permission => permission.sessionId === sessionId);
       const running = native.turnRunning === true;
       const pendingCommandIds = [...this.receipts.values()].filter(receipt => receipt.sessionId === sessionId && receipt.state === "queued").map(receipt => receipt.commandId);
@@ -289,7 +294,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(native.spawnedFrom?.btw === true && native.lineageDetached !== true ? { sidechat: true } : {}),
         ...(native.isArchived ? { archivedAt: native.lastActivityAt ?? native.createdAt ?? 1 } : {}),
-        subagentStopScope: "task", ...(tasks.length ? { runningSubagents: { count: tasks.length, lastUpdatedAt: Math.max(...tasks.map(task => task.updatedAt)) } } : {}),
+        subagentStopScope: "task", ...(runningSubagents ? { runningSubagents } : {}),
         ...(modeChange ? { nativePermissionModeChange: {
           ...modeChange,
           ...(modeChange.state !== "requested" ? { state: native.permissionMode === modeChange.mode ? "confirmed" as const : "not-applied" as const, ...(native.permissionMode ? { observedMode: native.permissionMode } : {}) } : {}),
@@ -406,14 +411,16 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return { transcriptPath: observed.transcriptPath, liveSince, subagents: await readClaudeTranscriptSubagents(observed.transcriptPath, liveSince) };
   }
 
-  private async enrichSubagentItems(sessionId: string, items: BridgeHistoryItem[]): Promise<void> {
-    if (!items.some(item => item.subagent || item.toolName === "Agent" || item.toolName === "Task")) return;
+  private async enrichSubagentItems(sessionId: string, items: BridgeHistoryItem[]): Promise<BridgeSubagentSummary[] | undefined> {
+    if (!items.some(item => item.subagent || item.toolName === "Agent" || item.toolName === "Task")) return undefined;
     const local = await this.transcriptSubagents(sessionId);
     enrichNativeSubagentItems(items, local?.subagents);
+    return local?.subagents;
   }
 
   async backgroundTaskDetails(sessionId: string): Promise<BridgeBackgroundTask[]> {
     const id = this.desktopId(sessionId);
+    const previousSession = JSON.stringify(this.session(id));
     const local = await this.transcriptSubagents(sessionId);
     let tasks: BridgeBackgroundTask[] = [];
     if (local) {
@@ -424,6 +431,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
     this.backgroundTasks.set(id, tasks);
     this.projectSessions();
+    if (JSON.stringify(this.session(id)) !== previousSession) this.emit("changed");
     return tasks;
   }
 
@@ -506,7 +514,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   async history(sessionId: string, cursor?: string, limit = 50): Promise<BridgeHistoryPage> {
     const id = this.desktopId(sessionId);
     if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop history is unavailable while inspector is disconnected");
-    const previousUsage = !cursor ? JSON.stringify(this.session(sessionId)?.contextUsage) : undefined;
+    const previousSession = !cursor ? JSON.stringify(this.session(sessionId)) : undefined;
     const page = record(await this.inspector.call("getTranscriptPage", [id, cursor ?? "", limit, { window: "accept" }]));
     if (!Array.isArray(page.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
     const nextCursor = page.hasMore === true && typeof record(page.messages[0]).uuid === "string" ? String(record(page.messages[0]).uuid) : undefined;
@@ -532,13 +540,28 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const projection: NativeMessageProjection = {};
     nativeHistoryItems(sessionId, context, projection);
     const items = nativeHistoryItems(sessionId, page.messages, projection);
-    await this.enrichSubagentItems(sessionId, items);
+    const localSubagents = await this.enrichSubagentItems(sessionId, items);
     if (!cursor) {
       const liveProjection = this.messageProjection.get(sessionId) ?? {};
       if (!liveProjection.planObserved && projection.planObserved) {
         if (projection.plan) liveProjection.plan = projection.plan;
         else delete liveProjection.plan;
         liveProjection.planObserved = true;
+        this.messageProjection.set(sessionId, liveProjection);
+      }
+      if (localSubagents?.length || projection.tasks?.size) {
+        const native = this.native.get(sessionId);
+        const allowRunning = native?.isRunning === true || native?.turnRunning === true || native?.hasBackgroundWork === true;
+        const tasks = liveProjection.tasks ??= new Map();
+        for (const task of localSubagents ?? []) tasks.set(task.agentId, task);
+        for (const [taskId, task] of projection.tasks ?? []) {
+          if (localSubagents?.some(local => local.agentId === taskId || (task.toolUseId && local.toolUseId === task.toolUseId))) continue;
+          if (task.state === "running" && !allowRunning) continue;
+          const current = tasks.get(taskId);
+          if (!current || task.updatedAt >= current.updatedAt || (current.state === "running" && task.state !== "running")) {
+            tasks.set(taskId, { ...(current?.model ? { model: current.model } : {}), ...task });
+          }
+        }
         this.messageProjection.set(sessionId, liveProjection);
       }
       const live = await this.readLiveContextUsage(id);
@@ -559,7 +582,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         this.applyTranscriptContextMessages(sessionId, combined);
       }
       this.projectSessions();
-      if (JSON.stringify(this.session(sessionId)?.contextUsage) !== previousUsage) this.emit("changed");
+      if (JSON.stringify(this.session(sessionId)) !== previousSession) this.emit("changed");
     }
     for (const item of items) {
       const receipt = item.role === "user" ? [...this.receipts.values()].find(receipt => receipt.sessionId === sessionId && receipt.messageId === item.id) : undefined;

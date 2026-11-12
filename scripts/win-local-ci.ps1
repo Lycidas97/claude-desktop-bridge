@@ -147,9 +147,8 @@ if ($lockHash -ne $cachedHash -or -not (Test-Path "node_modules\electron\package
   Set-Content -Path $stampFile -Value $lockHash -NoNewline
 }
 
-# 4. Windows infra + typecheck + unit tests (runs before QEMU cold boot so Vitest gets uncontended CPU/IO)
+# 4. Windows infra + unit tests (typecheck is platform-independent and runs once in macOS verify) (runs before QEMU cold boot so Vitest gets uncontended CPU/IO)
 Invoke-Checked "npm run test:infra" { & "$nodeBin\npm.cmd" run test:infra }
-Invoke-Checked "npm run typecheck" { & "$nodeBin\npm.cmd" run ci:run -- run typecheck }
 Invoke-Checked "npm test (Windows)" { & "$nodeBin\npm.cmd" test }
 
 # 5. Boot headless WHPX Android Emulator in background while Windows NSIS + Gradle APK build run
@@ -299,7 +298,6 @@ if [ ! -f "`$STAMP" ] || [ "`$(cat "`$STAMP")" != "`$LOCK_HASH" ] || [ ! -f "nod
   printf '%s' "`$LOCK_HASH" > "`$STAMP"
 fi
 npm run test:infra
-npm run ci:run -- run typecheck
 npm test
 npm run ci:run -- run build -w @bridge/protocol
 BRIDGE_RELAY_URL="" BRIDGE_PUBLIC_RELAY_URL="" BRIDGE_PAIRING_BASE_URL="" BRIDGE_SERVICE_ORIGIN="" BRIDGE_ICE_SERVERS="" \

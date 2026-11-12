@@ -83,7 +83,7 @@ Claude 原生事件继续进入现有被动证据管线：记录轮次、工具�
 
 | 组件 | 职责 |
 |---|---|
-| `apps/desktop/src/claude/`（`claude-desktop-bridge.ts` 等） | 通过本机 inspector 转发 `LocalSessions` 调用、renderer 单队列事件与权限请求；旧连接退役模块隔离在 `apps/desktop/src/legacy/` |
+| `apps/desktop/src/claude/`（`claude-desktop-bridge.ts` 等） | 通过本机 inspector 转发 `LocalSessions` 调用、renderer 单队列事件与权限请求；`connector.ts` 负责移除 pre-1.3 旧连接配置 |
 | `apps/desktop/src/app/` | Electron 主进程/preload 入口、独立后台服务 IPC、跨平台路径与 `developer_settings.json` 授权 |
 | `apps/desktop/src/transcript/` | JSONL 对话历史、DAG 分支与 fork 边界、主会话上下文 token 估算及子代理扫描 |
 | `apps/desktop/src/controller/`（`ConversationStateStore` / `SessionEventLog`） | `DesktopController` 快照编排、无状态 RPC 分发、原生请求幂等收据与单调 `seq` 事件重放（不作为 Claude 历史回退源） |

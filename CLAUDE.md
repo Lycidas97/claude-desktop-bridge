@@ -5,8 +5,7 @@
 - Relay and WebRTC transports carry **only E2EE ciphertext** (Protocol V3 / Pairing V4); Relay never sees plaintext, keys, or session metadata.
 
 ## Required Pre-Flight Reading
-- @AGENTS.md — subsystem and workflow routing table (read before exploring or editing any path).
-- @LESSONS.md — verified mistake & retro log (read before implementing or reviewing changes).
+- @AGENTS.md — subsystem and workflow routing table (read the routed `docs/subsystems/*.md`, `docs/code-standards.md`, and `LESSONS.md` on demand before editing or reviewing).
 
 ## Hard Guardrails
 - **Remote & PR boundary**: NEVER push branches, tags, or PRs to `upstream` (`czhmartinez/claude-desktop-bridge`). Push branches and open/merge Issues & PRs **ONLY** on `origin` (`Lycidas97/claude-desktop-bridge`).

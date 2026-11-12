@@ -1,13 +1,8 @@
 # Subsystem: Client Bridge State & Vault
 
 ## Owned Paths
-- `apps/client/src/hooks/`
-  - Encrypted mobile bridge state machine: `useMobileBridge.ts`, `useSessionCommands.ts`, `useTheme.ts`
-  - Extracted pure helpers (`hooks/bridge/`): `bridge-reducers.ts`, `bridge-transport.ts`, `bridge-artifacts.ts`
+- `apps/client/src/hooks/` (including `hooks/bridge/`)
 - `apps/client/src/lib/` (excluding `conversation-timeline.ts`)
-  - Storage & outbox: `vault.ts`, `outbox.ts`, `claude-snapshot.ts`
-  - Transfers & media: `artifact-download.ts`, `file-upload.ts`, `media-preview.ts`
-  - Navigation, grouping & notifications: `mobile-back-navigation.ts`, `project-groups.ts`, `session-activity.ts`, `session-notifications.ts`, `push-wake.ts`, `qr-scanner.ts`, `diagnostics.ts`, `runtime-labels.ts`, `stream-entrance.ts`, `specular.ts`
 
 ## Responsibilities
 - Drives the client-side encrypted session, pairing, outbox, event-resume (`events.resume`), and WebRTC/Relay connection state machine (`useMobileBridge.ts`).

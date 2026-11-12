@@ -1,13 +1,9 @@
 # Subsystem: Desktop App & Background Service
 
 ## Owned Paths
-- `apps/desktop/src/main.ts` (`dist/main.cjs`)
-- `apps/desktop/src/preload.ts` (`dist/preload.cjs`)
+- `apps/desktop/src/main.ts` (`dist/main.cjs`) & `apps/desktop/src/preload.ts` (`dist/preload.cjs`)
 - `apps/desktop/src/app/`
-  - Detached service lifecycle & IPC: `service-runtime.ts`, `service-connection.ts`, `service-resources.ts`
-  - OS paths & Claude Desktop discovery: `platform.ts`, `desktop-app-definitions.ts`, `claude-desktop-lifecycle.ts`, `working-directory.ts`
-  - Developer settings authorization: `claude-desktop-developer-settings.ts`
-- Build & packaging scripts: `apps/desktop/scripts/build.mjs`, `apps/desktop/scripts/make-windows.mjs`
+- `apps/desktop/scripts/` (`build.mjs`, `make-windows.mjs`)
 
 ## Responsibilities
 - Boots the Electron UI shell (`main.ts`), exposes the context-isolated `window.bridgeDesktop` preload bridge (`preload.ts` typed via `@bridge/protocol` `desktop-ipc.ts`), and manages system tray and login-item state.

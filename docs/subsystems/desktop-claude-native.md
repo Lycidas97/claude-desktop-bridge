@@ -2,11 +2,7 @@
 
 ## Owned Paths
 - `apps/desktop/src/claude/`
-  - Inspector attachment, macOS startup & connection monitor: `claude-desktop-inspector.ts`, `claude-inspector-startup.ts`, `claude-inspector-monitor.ts`
-  - `LocalSessions` native facade & projections: `claude-desktop-bridge.ts`, `native-context-usage.ts`, `native-history-projection.ts`
-  - Catalog, discovery & retired-connector cleanup: `claude-desktop-sessions.ts`, `claude-session-catalog.ts`, `claude-runtime-discovery.ts`, `slash-command-catalog.ts`, `magpie-connection.ts`, `connector.ts`
 - `apps/desktop/src/legacy/` (**quarantined — read-only / retirement maintenance only**)
-  - `claude-desktop-inbox.ts`, `claude-desktop-archive.ts`, `provider-registry.ts`, `claude-desktop-session-registrar.ts`, `session-desktop-registration.ts`, `transcript-observer.ts`
 
 ## Responsibilities
 - Discovers Claude Desktop's user-authorized local Node inspector (`http://127.0.0.1:9229/json/list`), attaches to the `app://localhost` renderer `WebContents`, and forwards session lifecycle, messaging, queue promotion/steering/cancellation, rewind, configuration, and tool permission calls to `claude.web.LocalSessions`.

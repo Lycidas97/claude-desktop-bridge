@@ -1,13 +1,8 @@
 # Subsystem: CI, Release & Packaged QA
 
 ## Owned Paths
-- `.github/workflows/`
-  - `ci.yml`, `release.yml`, `release-assets.yml`
-- `scripts/`
-  - Cleanup & runners: `recycle-cleanup.cjs`, `win-recycle.cs`, `ci-run.mjs`, `local-ci.mjs`, `win-local-ci.ps1`, `test.mjs`, `clean.mjs`
-  - Infrastructure contract suites: `ci-infrastructure.test.mjs`, `windows-native-qa-contract.test.mjs`, `release-workflow.test.mjs`
-  - Synthetic Native fixtures: `fixtures/native-approval-host.ts`, `fixtures/native-section-store.ts`, `fixtures/inspector-startup-host.cjs`, `fixtures/fake-claude.mjs`
-  - E2E & packaged QA scripts: `browser-e2e.mjs`, `packaged-desktop-qa.mjs`, `windows-packaged-qa.ps1`, `desktop-pairing-e2e.mjs`, `service-restart-qa.mjs`, `claude-inspector-startup-qa.mjs`, `html-preview-qa.mjs`, `media-preview-qa.mjs`, `visual-qa.mjs`, `android-installed-e2e.mjs`, `verify-android-dex.py`
+- `.github/workflows/` (`ci.yml`, `release.yml`, `release-assets.yml`)
+- `scripts/` (including `scripts/fixtures/`)
 
 ## Responsibilities
 - Runs full multi-platform verification locally via `npm run ci:local` (`scripts/local-ci.mjs` + `scripts/win-local-ci.ps1`): Mac M4 (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`, plus optional Xcode iOS) in parallel with `ssh win` (`D:\work\ci-worktree` via `scp` git bundle: Windows tests + NSIS installer + packaged QA + Android SDK 36 APK/DEX/cert + WHPX headless emulator WebView E2EE pairing smoke + WSL2 `Ubuntu-24.04` Linux `test:infra`, `typecheck`, `npm test`, and `.deb`/`.rpm`/`.zip`). Writes `<git-common-dir>/local-ci/` receipts after cleanup succeeds and publishes `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes deferred or tree-identical squash-merged commits). Never attach `self-hosted` GitHub Actions runners to the public repository.

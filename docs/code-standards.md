@@ -27,7 +27,7 @@ Every pull request on `Lycidas97/claude-desktop-bridge` is checked against these
 - Preserve essential labels, units, accessibility roles, error states, and confirmation dialogs for destructive actions (such as native session deletion).
 - Never reverse deliberate product or UI layout decisions without explicit owner direction. When changing Desktop Settings or workspace labels, update `scripts/packaged-desktop-qa.mjs`, `scripts/windows-native-qa-contract.test.mjs`, and `scripts/browser-e2e.mjs` in the same commit.
 
-## 5. Verification & PR Evidence Gates
+## 5. Verification, Memory Hygiene & PR Evidence Gates
 - **Red Check**: For every bug fix, temporarily revert the fix and run the new or updated test to confirm it fails for the **exact broken behavior**. Compile errors, syntax errors, and skipped tests do not satisfy the Red Check. Pure structural refactors and documentation-only PRs must explicitly record `N/A — pure structural refactor` (or `N/A — docs only`).
 - **Real Surface Check**: Reproduce bugs and verify fixes on the runtime surface actually affected:
   - macOS packaged app (`make:local-signed` / `make:adhoc` + `test:desktop:service` / real Claude Desktop Inspector)
@@ -36,6 +36,7 @@ Every pull request on `Lycidas97/claude-desktop-bridge` is checked against these
   - Browser mobile viewport E2E (`npm run test:browser`)
   Never claim synthetic fixture or unit tests prove live Claude Desktop, MSIX, TCC, or mobile WebView behavior.
 - **Explicit `Not Run` accounting**: Every PR body must list unexecuted checks under `## Not Run` with the concrete reason (e.g., `Windows 11 live MSIX check — not touched by client CSS change`). Silent omission is a review blocker.
+- **Lean Subsystem Docs & Verified Memory**: Keep `docs/subsystems/*.md` focused on directory boundaries, cross-file contracts, and non-obvious invariants — never hand-copy static file lists that `glob` provides. Record only empirically verified pitfalls and recipes in `LESSONS.md`, and respect single-writer ownership across parallel forked worktrees.
 - **Head SHA Lock on Merge**: Push branches and open PRs only on `Lycidas97/claude-desktop-bridge`. Merge only after `ci/local-distributed` (or manual `Quality gate`) succeeds on the exact reviewed commit using:
   ```bash
   gh pr merge <pr-number> --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>

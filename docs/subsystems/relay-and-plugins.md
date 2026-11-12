@@ -2,13 +2,7 @@
 
 ## Owned Paths
 - `apps/relay/src/`
-  - Entrypoint & WebSocket router: `index.ts`, `server.ts`
-  - Persistence & backups: `sqlite-store.ts`, `store.ts`, `backup.ts`
-  - Push wake notifications: `push.ts`
 - `plugins/magpie-quota/`
-  - Shared contract & presentation: `contract.ts`, `presentation.ts`
-  - Desktop collector: `desktop.ts`
-  - Client UI: `client.tsx`, `styles.css`
 
 ## Responsibilities
 - `apps/relay`: Zero-plaintext WebSocket relay providing one-time pairing credential claims, device-targeted ciphertext routing, SQLite WAL 7-day offline queues (`sqlite-store.ts`), 64 KiB chunk forwarding, device revocation, metrics/backups, and body-free FCM/APNs push wakeups (`push.ts`).

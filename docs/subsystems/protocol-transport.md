@@ -1,10 +1,7 @@
 # Subsystem: Protocol & Transport
 
 ## Owned Paths
-- `packages/protocol/src/`
-  - Crypto & encoding: `crypto.ts`, `encoding.ts`, `socket.ts`
-  - Transports & endpoints: `transport.ts`, `relay-transport.ts`, `webrtc-transport.ts`, `endpoints.ts`, `ice.ts`
-  - Wire contracts & validation: `types.ts`, `validation.ts`, `evidence.ts`, `transcript.ts`, `desktop-ipc.ts`, `index.ts`
+- `packages/protocol/src/` (use `glob` for current modules; `desktop-ipc.ts` holds the shared Electron preload/renderer contract)
 
 ## Responsibilities
 - Defines Protocol V3 wire envelopes, RPC request/response/event schemas, Pairing Bundle V4 structures, and capability identifiers (`*.v1`).

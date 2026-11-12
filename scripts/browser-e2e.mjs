@@ -45,7 +45,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 
@@ -63,19 +63,21 @@ async function eventually(read, expected, message, timeout = 15_000) {
 }
 
 async function syncNativeSections(host) {
-  const { capable, moveCapable, runtimeCapabilities, projects, sessions } = await host.nativeApproval.sectionCatalog();
+  const { capable, moveCapable, renameCapable, deleteCapable, runtimeCapabilities, projects, sessions } = await host.nativeApproval.sectionCatalog();
   host.snapshot.projects = projects;
   host.snapshot.sessions = sessions;
   host.snapshot.host.capabilities = host.snapshot.host.capabilities.filter(
-    value => !["section.create.v1", "section.move.v1", "directory.browse.v1", "directory.mkdir.v1"].includes(value),
+    value => !["section.create.v1", "section.move.v1", "section.rename.v1", "section.delete.v1", "directory.browse.v1", "directory.mkdir.v1"].includes(value),
   );
   host.snapshot.host.capabilities.push("directory.browse.v1", "directory.mkdir.v1");
   if (capable) host.snapshot.host.capabilities.push("section.create.v1");
   if (moveCapable) host.snapshot.host.capabilities.push("section.move.v1");
+  if (renameCapable) host.snapshot.host.capabilities.push("section.rename.v1");
+  if (deleteCapable) host.snapshot.host.capabilities.push("section.delete.v1");
   if (host.snapshot.runtimes?.[0]) host.snapshot.runtimes[0].capabilities = runtimeCapabilities;
 }
 
-async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false) {
+async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview) {
   const now = Date.now();
   const clientRelayUrl = `${baseUrl.replace("http:", "ws:")}/ws`;
   const { crypto, pairing } = await BridgeCrypto.createDesktop(clientRelayUrl, "Browser E2E 隔离电脑");
@@ -110,7 +112,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       online: true,
       lastSeenAt: now,
       version: "1.1.1",
-      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1"] : [])],
+      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "section.rename.v1", "section.delete.v1"] : [])],
     },
     projects: [{
       projectId: session.projectId, name: session.projectName, cwd: session.cwd,
@@ -367,8 +369,9 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
   if (native) {
     const directory = resolve(runDir, "native-fixtures", String(++nativeFixtureSequence));
     await mkdir(directory, { recursive: true });
+    host.sectionsEnabled = sections;
     host.nativeApproval = await startNativeApprovalHost({
-      directory, sessionId, title: originalTitle, deviceId: pairing.deviceId, sections: sectionCreatePreview,
+      directory, sessionId, title: originalTitle, deviceId: pairing.deviceId, sections,
       onRequested(request) {
         snapshot.permissions.push(request);
         session.turnState = "waiting";
@@ -419,10 +422,12 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       let remoteCommandCreated = false;
       switch (request.method) {
         case "snapshot.get":
-          if (sectionCreatePreview) await syncNativeSections(host);
+          if (host.sectionsEnabled) await syncNativeSections(host);
           result = { snapshot }; break;
         case "section.create":
         case "section.move":
+        case "section.rename":
+        case "section.delete":
         case "session.create":
           try {
             result = await host.nativeApproval.controllerRequest(request);
@@ -1629,6 +1634,129 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   steps.push("saved main-project ordering survives search and reload, unrelated projects remain separate, and the 375px layout has no horizontal overflow");
 }
 
+async function verifySectionManage(page, host, steps, directory) {
+  const groups = page.locator(".project-groups > .project-group:not(.archived-group)");
+  const headers = groups.locator(".project-group-open strong");
+  const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
+
+  async function createSectionFromDirectory(name) {
+    await page.getByRole("button", { name: "目录选项", exact: true }).click();
+    await page.getByRole("button", { name: "新建 Section", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "新建 Section" });
+    await dialog.getByLabel("Section 名称").fill(name);
+    await dialog.getByRole("button", { name: "创建 Section", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+  }
+
+  await createSectionFromDirectory("待办分组");
+  await createSectionFromDirectory("临时空组");
+  await eventually(
+    async () => {
+      const names = await headers.allTextContents();
+      return names.includes("待办分组") && names.includes("临时空组");
+    },
+    true,
+    "Newly created empty sections appear in catalog",
+  );
+
+  // Folder groups do not render custom section management actions; custom sections do.
+  assert.equal(await page.getByRole("button", { name: "管理分组：待办分组", exact: true }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "管理分组：claude-desktop-bridge", exact: true }).count(), 0);
+
+  // Toggle "隐藏空分组（2）" and verify persistence + search + auto-reveal on new section creation.
+  await page.getByRole("button", { name: "目录选项", exact: true }).click();
+  await page.getByRole("button", { name: "隐藏空分组（2）", exact: true }).click();
+  await eventually(
+    async () => {
+      const names = await headers.allTextContents();
+      return !names.includes("待办分组") && !names.includes("临时空组") && names.includes("claude-desktop-bridge");
+    },
+    true,
+    "Hiding empty sections removes empty desktop-group headers while preserving folder groups",
+  );
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  assert.equal((await headers.allTextContents()).includes("临时空组"), false, "Hidden empty sections persist across reload");
+
+  await search.fill("临时空组");
+  await eventually(() => headers.allTextContents(), ["临时空组"], "Search still surfaces matching empty custom sections");
+  await search.fill("");
+  await eventually(() => (headers.allTextContents()).then(names => names.includes("临时空组")), false, "Clearing search hides empty sections again");
+
+  await createSectionFromDirectory("新建即现");
+  await eventually(
+    async () => {
+      const names = await headers.allTextContents();
+      return names.includes("新建即现") && names.includes("待办分组") && names.includes("临时空组");
+    },
+    true,
+    "Creating a new section reveals empty sections automatically",
+  );
+  steps.push("empty custom sections can be hidden per host, remain searchable, persist across reloads, and reveal automatically when creating a new section");
+
+  // 1-tap delete on empty section ("删除空分组") without ConfirmationDialog.
+  await page.getByRole("button", { name: "管理分组：临时空组", exact: true }).click();
+  await page.getByRole("button", { name: "删除空分组", exact: true }).click();
+  assert.equal(await page.getByRole("alertdialog").count(), 0, "Empty section deletion skips confirmation dialog");
+  await eventually(
+    async () => (await headers.allTextContents()).includes("临时空组"),
+    false,
+    "Deleted empty section disappears immediately",
+  );
+
+  // Rename custom section ("待办分组" -> "重点推进").
+  await page.getByRole("button", { name: "管理分组：待办分组", exact: true }).click();
+  await page.getByRole("button", { name: "重命名分组", exact: true }).click();
+  const renameDialog = page.getByRole("dialog", { name: "重命名分组" });
+  await renameDialog.getByLabel("分组名称").fill("重点推进");
+  await renameDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await renameDialog.waitFor({ state: "detached" });
+  await eventually(
+    async () => {
+      const names = await headers.allTextContents();
+      return names.includes("重点推进") && !names.includes("待办分组");
+    },
+    true,
+    "Renamed custom section updates in catalog",
+  );
+  steps.push("empty sections delete in one tap and custom sections rename via native section.rename");
+
+  // Move a session into "重点推进", then verify non-empty delete requires confirmation and returns session to folder.
+  await page.locator('[data-session-id="browser-e2e-misc-sub"]').locator("..").getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.getByRole("button", { name: /移动到分组/u }).click();
+  await page.locator(".m-sheet").getByRole("button", { name: /重点推进/u }).click();
+  await eventually(
+    () => host.snapshot.sessions.find(item => item.sessionId === "browser-e2e-misc-sub")?.projectName,
+    "重点推进",
+    "Session moved into renamed section",
+  );
+
+  await page.getByRole("button", { name: "管理分组：重点推进", exact: true }).click();
+  await page.getByRole("button", { name: "删除分组", exact: true }).click();
+  const confirmDialog = page.getByRole("alertdialog");
+  await confirmDialog.waitFor();
+  assert.match(await confirmDialog.innerText(), /组内 1 个会话不会删除，将移回各自的项目目录/u);
+  await page.screenshot({ path: resolve(directory, "section-delete-confirm.png"), fullPage: true });
+  await confirmDialog.getByRole("button", { name: "删除分组", exact: true }).click();
+  await confirmDialog.waitFor({ state: "detached" });
+
+  await eventually(
+    async () => (await headers.allTextContents()).includes("重点推进"),
+    false,
+    "Confirmed non-empty section deletion removes custom section",
+  );
+  await eventually(
+    () => page.locator('[data-session-id="browser-e2e-misc-sub"]').count(),
+    1,
+    "Session inside deleted section remains intact and returns to its folder group",
+  );
+  assert.equal(host.snapshot.sessions.find(item => item.sessionId === "browser-e2e-misc-sub")?.projectName, "claude-desktop-bridge");
+  assert.equal(host.requests.some(request => request.method === "section.rename"), true);
+  assert.equal(host.requests.filter(request => request.method === "section.delete").length, 2);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Section manage UI fits 375px viewport");
+  steps.push("deleting a non-empty section requires confirmation, calls native delete_section, and safely returns sessions to their folder project");
+}
+
 async function runScenario(theme, scenario) {
   const name = `${theme}-${scenario}`;
   const directory = resolve(runDir, name);
@@ -1643,9 +1771,10 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-messages", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping"].includes(scenario), scenario === "native-queue-actions");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-messages", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
     if (scenario === "native-queue-actions") host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (scenario === "project-grouping") Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
+    if (scenario === "section-manage") await syncNativeSections(host);
     context = await browser.newContext({
       viewport: { width: 375, height: 812 }, colorScheme: theme,
       serviceWorkers: "block",
@@ -1697,7 +1826,7 @@ async function runScenario(theme, scenario) {
     await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
     assert.equal(await page.locator("html").getAttribute("data-theme"), theme);
-    assert.equal(await page.locator("[data-session-id]").count(), scenario === "project-grouping" ? 3 : 2, "Pairing must synchronize the visible session rows");
+    assert.equal(await page.locator("[data-session-id]").count(), ["project-grouping", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the visible session rows");
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
@@ -1708,6 +1837,7 @@ async function runScenario(theme, scenario) {
     else if (scenario === "native-queue-actions") await verifyNativeQueueActions(page, host, steps, directory);
     else if (scenario === "native-session-notices") await verifyNativeSessionNotices(page, host, steps, directory);
     else if (scenario === "project-grouping") await verifyProjectGrouping(page, host, steps, directory);
+    else if (scenario === "section-manage") await verifySectionManage(page, host, steps, directory);
     else if (scenario === "delivery-approval-reconnect") await verifyDelivery(page, host, steps);
     else await verifyRename(page, host, scenario === "rename-list" ? "list" : "chat", steps);
     assert.deepEqual(errors, [], "Browser runtime, console, network isolation, or host errors");
@@ -1769,7 +1899,7 @@ try {
   // Vite must not read a developer's .env or inherit production VITE_* values.
   for (const key of Object.keys(inheritedVite)) delete process.env[key];
   relay = await startRelayServer({
-    host: "127.0.0.1", port: 0,
+    host: "127.0.0.1", port: 0, roomCreationsPerIpPerHour: 1000,
     pushDispatcher: { wake: async () => false },
     logger: { info() {}, warn() {}, error: (...args) => infrastructureErrors.push(args.join(" ")) },
   });
@@ -1814,6 +1944,7 @@ try {
               if (request.method === "POST") {
                 if (url.searchParams.has("failure")) fixture.failure = url.searchParams.get("failure") === "true" ? "Native section limit reached" : "";
                 if (url.searchParams.has("supported")) fixture.supported = url.searchParams.get("supported") !== "false";
+                if (url.searchParams.has("manageSupported")) fixture.manageSupported = url.searchParams.get("manageSupported") !== "false";
                 if (url.searchParams.has("scope")) fixture.scope = url.searchParams.get("scope");
                 if (url.searchParams.get("connection") === "offline") previewHost.socket.close();
                 if (url.searchParams.get("connection") === "connected") previewHost.socket.connect();
@@ -1824,7 +1955,7 @@ try {
               result = { projects: previewHost.snapshot.projects, sessions: previewHost.snapshot.sessions,
                 miscRoot: previewHost.nativeApproval.miscRoot, calls: fixture.calls, scope: fixture.scope,
                 persisted: JSON.parse(await readFile(fixture.profile, "utf8")),
-                sectionRequests: previewHost.requests.filter(request => ["section.create", "section.move", "directory.mkdir", "session.create"].includes(request.method)).map(({ method, params }) => ({ method, params })),
+                sectionRequests: previewHost.requests.filter(request => ["section.create", "section.move", "section.rename", "section.delete", "directory.mkdir", "session.create"].includes(request.method)).map(({ method, params }) => ({ method, params })),
                 errors: infrastructureErrors };
             } else if (remotePreview && request.method === "GET" && url.pathname === "/remote/state") {
               result = previewHost.remoteState();

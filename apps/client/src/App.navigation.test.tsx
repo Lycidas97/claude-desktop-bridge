@@ -95,6 +95,17 @@ describe("mobile app parent navigation", () => {
     expect(component(MobileWorkspace)!.props.onMoveSessionSection).toBe(hooks.mobile.moveSessionSection);
     expect(component(MobileWorkspace)!.props.onCreateDirectory).toBe(hooks.mobile.createDirectory);
   });
+  it("wires Section rename and delete only when the host declares each capability", () => {
+    hooks.mobile.renameSection = vi.fn();
+    hooks.mobile.deleteSection = vi.fn();
+    draw();
+    expect(component(MobileWorkspace)!.props.onRenameSection).toBeUndefined();
+    expect(component(MobileWorkspace)!.props.onDeleteSection).toBeUndefined();
+    hooks.mobile.state.snapshot.host.capabilities.push("section.rename.v1", "section.delete.v1");
+    draw();
+    expect(component(MobileWorkspace)!.props.onRenameSection).toBe(hooks.mobile.renameSection);
+    expect(component(MobileWorkspace)!.props.onDeleteSection).toBe(hooks.mobile.deleteSection);
+  });
   it("releases back at the session directory so Android can leave the app", () => {
     expect(component(MobileAppShell)!.props.tab).toBe("sessions");
     expect(back()).toBe(false);

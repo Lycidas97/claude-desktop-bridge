@@ -120,6 +120,7 @@ import {
   type ProviderSwitchResult,
 } from "./session/ProviderSwitchDialog.js";
 import "./session/section-create.css";
+import { useSectionManage } from "./session/SectionManageDialog.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "./conversation/SessionActivityIndicator.js";
 import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
 import { useSessionCommands } from "../hooks/useSessionCommands.js";
@@ -167,6 +168,8 @@ export function MobileWorkspace({
   onCreateSession,
   onCreateSection,
   onMoveSessionSection,
+  onRenameSection,
+  onDeleteSection,
   onBrowseDirectory,
   onCreateDirectory,
   onForkSession,
@@ -231,8 +234,10 @@ export function MobileWorkspace({
   ): Promise<void>;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
   onCreateDirectory?(parentPath: string, name: string): Promise<string>;
-  onCreateSection?(name: string): Promise<BridgeProjectInfo | undefined>;
-  onMoveSessionSection?(sessionId: string, sectionId: string | null): Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] }>;
+  onCreateSection?: (name: string) => Promise<BridgeProjectInfo | undefined>;
+  onMoveSessionSection?: (sessionId: string, sectionId: string | null) => Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] }>;
+  onRenameSection?: (sectionId: string, name: string) => Promise<{ project?: BridgeProjectInfo; projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] }>;
+  onDeleteSection?: (sectionId: string) => Promise<{ projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] }>;
   onCreateSession(
     cwd: string,
     title?: string,
@@ -308,6 +313,7 @@ export function MobileWorkspace({
     try {
       const project = await onCreateSection(sectionCreate.name.trim());
       if (!project) throw new Error("Section 未创建，请重试。");
+      sectionManage.revealEmptySections();
       setCollapsedProjectIds(current => expandProject(current, project.projectId));
       setActiveProjectId(undefined);
       setSearch("");
@@ -382,6 +388,15 @@ export function MobileWorkspace({
   const announcedPermissionsRef = useRef(new Set<string>());
 
   const sessions = snapshot?.sessions ?? [];
+  const sectionManage = useSectionManage({
+    activeHostId,
+    desktopName,
+    snapshot,
+    connection,
+    desktopOnline,
+    onRenameSection,
+    onDeleteSection,
+  });
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
   const fileUploads = useFileAttachments(selectedSession?.sessionId, onUploadFile);
   const commands = useSessionCommands({
@@ -478,11 +493,18 @@ export function MobileWorkspace({
       list.push(session);
       groups.set(session.projectId, list);
     }
-    return projectOrder.filter((projectId) => groups.has(projectId)).map((projectId) => ({
-      project: snapshot?.projects.find((project) => project.projectId === projectId),
-      sessions: sortProjectSessionsByRecent(groups.get(projectId)!),
-    }));
-  }, [activeParentProjects, projectOrder, search, sessions, snapshot?.projects]);
+    return projectOrder
+      .filter((projectId) => {
+        const groupSessions = groups.get(projectId);
+        if (!groupSessions) return false;
+        const project = snapshot?.projects.find((candidate) => candidate.projectId === projectId);
+        return !sectionManage.shouldHideEmpty(project, groupSessions.length, query);
+      })
+      .map((projectId) => ({
+        project: snapshot?.projects.find((project) => project.projectId === projectId),
+        sessions: sortProjectSessionsByRecent(groups.get(projectId)!),
+      }));
+  }, [activeParentProjects, projectOrder, search, sectionManage.hideEmptySections, sessions, snapshot?.projects]);
   const archivedSessions = useMemo(() => sortProjectSessionsByRecent(sessions.filter((session) => (
     Boolean(session.archivedAt)
   ))), [sessions]);
@@ -1976,6 +1998,7 @@ export function MobileWorkspace({
     syncFlash,
     sectionCreate,
     sectionCanCreate,
+    sectionManage,
     createOpen,
     createProjectId,
     sessionOverlays,

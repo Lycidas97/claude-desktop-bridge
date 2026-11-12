@@ -9,12 +9,13 @@ export async function createNativeSectionFixture(directory: string) {
   let scopes: Record<string, NativeSectionCatalog> = {};
   await writeFile(profile, JSON.stringify(scopes));
   const fixture = {
-    profile, scope: "account-a/org-a", supported: true, failure: "", publishCreated: true,
+    profile, scope: "account-a/org-a", supported: true, manageSupported: true, failure: "", publishCreated: true,
     calls: [] as Array<{ method: string; scope: string; name?: string; sessionId?: string; sectionId?: string }>,
     async sections(): Promise<NativeSectionCatalog | undefined> {
       if (!fixture.supported) return undefined;
       scopes = JSON.parse(await readFile(profile, "utf8"));
-      return structuredClone(scopes[fixture.scope] ?? { sections: [], assignments: {} });
+      const catalog = structuredClone(scopes[fixture.scope] ?? { sections: [], assignments: {} });
+      return fixture.manageSupported ? { ...catalog, canRename: true, canDelete: true } : catalog;
     },
     async createSection(name: string): Promise<string> {
       fixture.calls.push({ method: "create_section", scope: fixture.scope, name });
@@ -34,6 +35,27 @@ export async function createNativeSectionFixture(directory: string) {
       const catalog = scopes[fixture.scope] ??= { sections: [], assignments: {} };
       if (sectionId === "sessions") delete catalog.assignments[sessionId];
       else catalog.assignments[sessionId] = sectionId;
+      await writeFile(profile, JSON.stringify(scopes));
+    },
+    async renameSection(sectionId: string, name: string): Promise<void> {
+      fixture.calls.push({ method: "rename_section", scope: fixture.scope, sectionId, name });
+      if (fixture.failure) throw new Error(fixture.failure);
+      const catalog = scopes[fixture.scope] ??= { sections: [], assignments: {} };
+      const target = catalog.sections.find(section => section.id === sectionId);
+      if (!target) throw new Error("No section with that id exists.");
+      target.name = name;
+      await writeFile(profile, JSON.stringify(scopes));
+    },
+    async deleteSection(sectionId: string): Promise<void> {
+      fixture.calls.push({ method: "delete_section", scope: fixture.scope, sectionId });
+      if (fixture.failure) throw new Error(fixture.failure);
+      const catalog = scopes[fixture.scope] ??= { sections: [], assignments: {} };
+      const index = catalog.sections.findIndex(section => section.id === sectionId);
+      if (index === -1) throw new Error("No section with that id exists.");
+      catalog.sections.splice(index, 1);
+      for (const [assignedSessionId, assignedSectionId] of Object.entries(catalog.assignments)) {
+        if (assignedSectionId === sectionId) delete catalog.assignments[assignedSessionId];
+      }
       await writeFile(profile, JSON.stringify(scopes));
     },
     async reread(): Promise<void> { scopes = JSON.parse(await readFile(profile, "utf8")); },

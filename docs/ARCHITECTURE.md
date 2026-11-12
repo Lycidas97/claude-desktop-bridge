@@ -204,8 +204,11 @@ writer、不检测或仲裁“双写”、不接管或释放会话，也不重�
 （`cancelQueuedMessage`）；已开始处理的消息不可再调整。
 
 每次发送在调用前写入以幂等键为键的收据，同一键重复请求直接返回已有收据。收据状态随
-原生事件推进：`dispatching` → `submitted` / `queued` → `session-received` →
-`running` → `completed` / `failed` / `cancelled`；Desktop 拒收时记为 `failed`，在
+原生事件推进，但不是单一序列：调用返回后由 `dispatching` 进入 `submitted`，
+或在 Desktop 把消息排队时进入 `queued`；transcript 出现该消息后，`dispatching` /
+`submitted` / `uncertain` 进入 `session-received`。`queued` 与 `session-received`
+可按任一顺序出现，排队消息开始处理时直接进入 `running`，最终为 `completed` /
+`failed` / `cancelled`；Desktop 拒收时记为 `failed`，在
 Desktop 端被撤回或随会话关闭撤回时记为 `cancelled`。调用途中 inspector 断开时记为
 `uncertain`，Bridge 不会自动重发：只有在 transcript 中找到该消息 UUID 才确认送达，
 否则需要用户恢复草稿后显式重新发送。

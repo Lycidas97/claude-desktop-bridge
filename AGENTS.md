@@ -8,7 +8,7 @@ Read the routed document **before** exploring or modifying any path or executing
 | --- | --- | --- | --- |
 | Protocol & Transport | `packages/protocol/src/` | `docs/subsystems/protocol-transport.md` | `npm run ci:run -- run build -w @bridge/protocol && npm run ci:run -- test -w @bridge/protocol && npm run typecheck` |
 | Desktop App & Service | `apps/desktop/src/main.ts`, `apps/desktop/src/preload.ts`, `apps/desktop/src/app/` | `docs/subsystems/desktop-app-service.md` | `npm run ci:run -- test -w @bridge/desktop && npm run ci:run -- run build:bundle -w @bridge/desktop` |
-| Desktop Claude Native & Legacy Quarantine | `apps/desktop/src/claude/`, `apps/desktop/src/legacy/` | `docs/subsystems/desktop-claude-native.md` | `npm run ci:run -- test -w @bridge/desktop && npm run test:browser` |
+| Desktop Claude Native | `apps/desktop/src/claude/` | `docs/subsystems/desktop-claude-native.md` | `npm run ci:run -- test -w @bridge/desktop && npm run test:browser` |
 | Desktop Transcript & Context | `apps/desktop/src/transcript/` | `docs/subsystems/desktop-transcript.md` | `npm run ci:run -- test -w @bridge/desktop && npm run test:browser` |
 | Desktop Evidence & Previews | `apps/desktop/src/evidence/` | `docs/subsystems/desktop-evidence.md` | `npm run ci:run -- test -w @bridge/desktop && npm run test:html-preview && npm run test:browser` |
 | Desktop Controller, RPC & Host Transport | `apps/desktop/src/controller/`, `apps/desktop/src/transport/` | `docs/subsystems/desktop-controller-rpc.md` | `npm run ci:run -- test -w @bridge/desktop && npm run test:infra && npm run test:browser` |

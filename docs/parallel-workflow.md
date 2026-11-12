@@ -11,7 +11,7 @@ How the Issue patrol session runs several Issues at once: dispatch, implement, r
 ## Host constraints this workflow is built around
 
 - `start_session` is refused in turns triggered by another session's message or an automated event (`/loop`, task notifications). Every fork **and** reviewer must be started in a turn the owner's own message started.
-- A session's completion note reaches the patrol only after **all** linked sessions are idle. With many forks running, the patrol is never woken by notes; status travels only by explicit `SendMessage`.
+- A session's completion note reaches the patrol only after **all** linked sessions are idle. With many forks running, the patrol is never woken by notes; status travels only by explicit `SendMessage` with `to` set to the target's `local_…` session id (this is what every `SendMessage` below means).
 - `mcp__ccd_pr__set_monitor` is refused for PRs opened with `gh pr create` from a fork. Try it; if refused, do not work around it. Fixes are relayed by `SendMessage`.
 
 ## 1. Dispatch (owner's turn)
@@ -25,7 +25,7 @@ How the Issue patrol session runs several Issues at once: dispatch, implement, r
 
 - Run only local checks: the subsystem's minimum verification from `AGENTS.md`, `typecheck`, and `npm run test:browser` when the client is touched. Do **not** run `ci:local` yet.
 - Do not hand-roll port or CI wait loops and do not write `RUNNING` markers to shared notes. Mac browser E2E uses random ports and the Windows script queues itself.
-- Open the PR (`Fixes #N`, template filled; `ci:local — pending review` under `## Not Run`) and try `set_monitor`.
+- Open the PR (`Fixes #N`, template filled; under `## Not Run` list `ci:local — pending review`, or `ci:local — docs only` for docs-only PRs) and try `set_monitor`.
 
 ## 3. Report (fork → patrol)
 
@@ -51,21 +51,21 @@ From `READY` until told otherwise, the head is frozen: no pushes except requeste
 
 ## 5. Fix (patrol → fork)
 
-- The patrol tells the fork: `Review on #<n> @ <sha> posted; fix it`. The fork reads the review via `gh api`, pushes fixes, and reports `HEAD CHANGED`.
+- CLEAN round: skip to step 6; the step 4 SHA is the reviewed SHA.
+- Round had findings: the patrol tells the fork `Review on #<n> @ <sha> posted; fix it`. The fork reads the review via `gh api`, pushes fixes, and reports `HEAD CHANGED`.
 - Round had a `[BLOCKER]`: the patrol sends the same reviewer the new SHA (back to step 4).
 - NIT-only round: the patrol checks only `git diff <reviewed-sha>..<new-head-sha>`; the new head becomes the reviewed SHA.
-- CLEAN round: the step 4 SHA is the reviewed SHA.
 
 ## 6. CI (fork, after review converges)
 
-- The patrol tells the fork to run `npm run ci:local` on the reviewed SHA. The fork reports the exit code, SHA, and `ci/local-distributed` status.
+- The patrol tells the fork to run `npm run ci:local` on the reviewed SHA. The fork reports the exit code, SHA, and `ci/local-distributed` status, then edits the PR body: the reviewed SHA under `## Reviewed / Verified Commit SHA`, the `ci:local` box checked, and the `pending review` line removed.
 - Docs-only PRs skip this step (see `AGENTS.md` **PR review & merge**).
 - A CI failure that needs a code change sends the PR back to step 5 as a `[BLOCKER]` round (the reviewer re-reviews the fix head), then step 6 re-runs.
 
 ## 7. Merge (patrol)
 
-1. Merge in the planned order: `gh pr merge <n> --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>`.
-2. Tell only forks whose files overlap the merged PR to sync (`mcp__ccd_host__sync_with_base_branch`), push, and report `HEAD CHANGED`. The patrol inspects only the merge resolution (`git show --remerge-diff <new-head-sha>`; empty for a clean merge), the new head becomes the reviewed SHA, and the fork re-runs step 6. Non-overlapping PRs keep their CI status.
+1. Merge in the planned order: `gh pr merge <n> --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>`. Then sync local `main` and, unless the PR was docs-only, run `npm run ci:local -- --publish` when `HEAD^{tree}` matches the verified head (otherwise skip; see `AGENTS.md` Bug fixes step 4).
+2. Tell only forks whose files overlap the merged PR to sync (`mcp__ccd_host__sync_with_base_branch`), push, and report `HEAD CHANGED`. The patrol inspects only the merge resolution (the host sync merges or fast-forwards, never rebases, so `git show --remerge-diff <new-head-sha>` shows only the resolution; empty for a clean merge), the new head becomes the reviewed SHA, and the fork re-runs step 6. Non-overlapping PRs keep their CI status.
 3. Consolidate candidate lessons from forks and reviewers.
 
 ## 8. Patrol checklist
@@ -87,7 +87,7 @@ Implement Issue #<N> (<link>) in this worktree.
 Paths: <subsystem paths from AGENTS.md>. Overlaps: <Issue/PR and files> — merge order: <first → last>.
 Environment: <e.g. CHROME_PATH=..., Playwright cache>.
 Local checks: <minimum verification from AGENTS.md>. Do not run ci:local until the patrol says so.
-Report to the patrol (<patrol session id>) via SendMessage: READY #<pr> <sha> / BLOCKED <reason> / HEAD CHANGED <old> → <new>.
+Report to the patrol (<patrol session id>) via SendMessage: READY #<pr> <sha> / BLOCKED <reason> / HEAD CHANGED #<pr> <old> → <new>.
 Freeze the head after READY except for requested fixes and syncs.
 LESSONS.md, docs/subsystems/*.md, and shared memory are read-only; put 0–2 verified candidate lessons in your READY report.
 ```

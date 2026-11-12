@@ -239,7 +239,7 @@ async function runCli() {
         results.push(`macOS verify: typecheck + 5 Vitest suites + full build (${tVerify}s)`);
 
         const tBrowser = await runPrefixed("MAC", "npm", ["run", "test:browser"], browserEnv);
-        results.push(`macOS test:browser: 20 isolated Chrome mobile E2E scenarios (${tBrowser}s)`);
+        results.push(`macOS test:browser: 10 Chrome mobile E2E scenarios x 2 themes (${tBrowser}s)`);
 
         const tService = await runPrefixed("MAC", "npm", ["run", "ci:run", "--", "run", "test:desktop:service"]);
         results.push(`macOS test:desktop:service: Electron UI + service + native TCP helper (${tService}s)`);

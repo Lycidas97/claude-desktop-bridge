@@ -11,7 +11,7 @@ Every pull request on `Lycidas97/claude-desktop-bridge` is checked against these
 ## 2. Native-Only Runtime Boundary
 - Claude Desktop (`claude.web.LocalSessions` accessed via the user-authorized local Node inspector) is the sole authority for session creation, turns, message queues, permissions, and transcript pagination.
 - Never reintroduce standalone SDK/CLI Hosts, provider execution lanes, session takeover/handoff, automatic goal loops, or legacy history fallbacks.
-- `apps/desktop/src/legacy/` holds quarantined pre-1.3 modules solely for backward-compatible storage schemas and retired-connector cleanup (`removeLegacyConnector`). Never wire new features into `apps/desktop/src/legacy/`.
+- Pre-1.3 modules were retired in #51; the only remaining retirement path is `removeLegacyConnector` in `apps/desktop/src/claude/connector.ts`. Delete code that loses its last production caller together with its tests instead of quarantining it.
 - Never expose arbitrary inspector `evaluate` over Relay or transmit credentials/plaintext through `apps/relay`.
 
 ## 3. Recycle-Bin-Only File Deletion

@@ -13,7 +13,7 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 | `npm run test:infra` | Small fixtures for runner failure propagation and recycle-bin behavior |
 | `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture |
 | `npm run ci:run -- run test:desktop:service` | After a current Desktop build: real compiled Electron UI/service with isolated Native fixture; on macOS also verifies developer settings, real random TCP/lsof/proc_pidpath, ASAR helper, injected warning UI, and completed background scans after window close |
-| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (`D:\work\ci-worktree`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` Linux `test:infra` + `typecheck` + `npm test` + `.deb`/`.rpm`/`.zip`), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
+| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (`D:\work\ci-worktree`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` Linux `test:infra` + `npm test` + `.deb`/`.rpm`/`.zip`), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
 | `npm run ci:run -- run build -w @bridge/protocol` | Example of wrapping another npm command with Trash-only Node cleanup |
 
 The quota plugin is outside the `apps/*` and `packages/*` workspaces; root test and
@@ -49,9 +49,10 @@ npm run test:browser
 
 Alternatively set `CHROME_PATH` to an installed Chrome/Chromium executable. The
 browser script owns fixture startup and shutdown; no separately running relay is
-required. Seven scenarios run in both themes at 375×812, giving 14 independent
+required. Ten scenarios run in both themes at 375×812, giving 20 independent
 contexts: list/chat rename, delivery/approval/reconnect, Native approvals, Native
-messages, history pagination, and Native boundaries. The actual mobile App, hooks,
+messages, history pagination, Native boundaries, Native queue actions, Native
+session notices, and project grouping. The actual mobile App, hooks,
 crypto and local relay run normally. The Native fixture uses the real
 `ClaudeDesktopBridge`, controller and evidence transfers with synthetic LocalSessions,
 including permission IDs, image references, saved model labels and runtime aliases,

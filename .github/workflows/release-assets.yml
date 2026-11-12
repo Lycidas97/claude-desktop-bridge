@@ -18,6 +18,7 @@ on:
 permissions:
   contents: write
   actions: read
+  statuses: read
 
 jobs:
   source:
@@ -46,11 +47,22 @@ jobs:
               exit 1
             fi
             [[ "$TAG" == "v$(jq -er '.version' package.json)" ]]
-            gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
-              --branch main --commit "$REVISION" --event push --status success --limit 20 \
-              --json headSha,status,conclusion \
-              | jq --arg rev "$REVISION" 'any(.[]; .headSha == $rev and .status == "completed" and .conclusion == "success")' \
-              | grep -qx true
+            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            git merge-base --is-ancestor "$REVISION" refs/remotes/origin/main
+            local_ok() {
+              gh api "repos/$GITHUB_REPOSITORY/commits/$1/status?per_page=100" 2>/dev/null \
+                | jq -e --arg rev "$1" '.sha == $rev and any(.statuses[]; .context == "ci/local-distributed" and .state == "success")' >/dev/null
+            }
+            online_ok() {
+              gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+                --branch main --commit "$1" --status success --limit 20 \
+                --json headSha,event,status,conclusion \
+                | jq -e --arg rev "$1" 'any(.[]; .headSha == $rev and (.event == "push" or .event == "workflow_dispatch") and .status == "completed" and .conclusion == "success")' >/dev/null
+            }
+            if ! local_ok "$REVISION" && ! online_ok "$REVISION"; then
+              echo "Commit $REVISION lacks verified ci/local-distributed status or completed main CI run." >&2
+              exit 1
+            fi
           fi
 
   desktop:

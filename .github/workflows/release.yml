@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  status:
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -10,20 +11,25 @@ on:
 permissions:
   contents: read
   actions: read
+  statuses: read
 
 concurrency:
   group: bridge-release
   cancel-in-progress: false
 
 env:
-  RELEASE_REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
+  RELEASE_REVISION: ${{ github.event.sha || github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
   check-version:
     if: >-
+      (github.event_name == 'status' &&
+       github.event.context == 'ci/local-distributed' &&
+       github.event.state == 'success' &&
+       contains(github.event.branches.*.name, 'main')) ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
+       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') &&
        github.event.workflow_run.head_repository.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
@@ -42,18 +48,28 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
-      - name: Require successful CI for manual retry
-        if: github.event_name == 'workflow_dispatch'
+      - name: Require verified CI for release revision
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
-            --branch main --commit "$RELEASE_REVISION" --event push --status success --limit 20 \
-            --json headSha,status,conclusion \
-            | jq --arg rev "$RELEASE_REVISION" 'any(.[]; .headSha == $rev and .status == "completed" and .conclusion == "success")' \
-            | grep -qx true
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$RELEASE_REVISION" refs/remotes/origin/main
+          local_ok() {
+            gh api "repos/$GITHUB_REPOSITORY/commits/$1/status?per_page=100" 2>/dev/null \
+              | jq -e --arg rev "$1" '.sha == $rev and any(.statuses[]; .context == "ci/local-distributed" and .state == "success")' >/dev/null
+          }
+          online_ok() {
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+              --branch main --commit "$1" --status success --limit 20 \
+              --json headSha,event,status,conclusion \
+              | jq -e --arg rev "$1" 'any(.[]; .headSha == $rev and (.event == "push" or .event == "workflow_dispatch") and .status == "completed" and .conclusion == "success")' >/dev/null
+          }
+          if ! local_ok "$RELEASE_REVISION" && ! online_ok "$RELEASE_REVISION"; then
+            echo "Commit $RELEASE_REVISION lacks verified ci/local-distributed status or completed main CI run." >&2
+            exit 1
+          fi
 
       - name: Inspect release version
         id: version

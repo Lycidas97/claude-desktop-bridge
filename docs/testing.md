@@ -13,7 +13,7 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 | `npm run test:infra` | Small fixtures for runner failure propagation and recycle-bin behavior |
 | `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture |
 | `npm run ci:run -- run test:desktop:service` | After a current Desktop build: real compiled Electron UI/service with isolated Native fixture; on macOS also verifies developer settings, real random TCP/lsof/proc_pidpath, ASAR helper, injected warning UI, and completed background scans after window close |
-| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (`D:\work\ci-worktree`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` `.deb`/`.rpm`/`.zip`) |
+| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (`D:\work\ci-worktree`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` Linux `test:infra` + `typecheck` + `npm test` + `.deb`/`.rpm`/`.zip`), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
 | `npm run ci:run -- run build -w @bridge/protocol` | Example of wrapping another npm command with Trash-only Node cleanup |
 
 The quota plugin is outside the `apps/*` and `packages/*` workspaces; root test and
@@ -131,21 +131,23 @@ the environment. Use the operating system's Trash command for manual cleanup.
 
 ## CI
 
-CI runs on pull requests, pushes to `main`, and manual dispatch. Feature branches
-are checked through their pull requests, avoiding duplicate push and PR runs that
-cancel each other for the same commit.
+Routine pull requests and `main` merges are verified locally via `npm run ci:local`,
+which runs the full multi-platform matrix across Mac M4, Windows 11, Android API 36
+WHPX Emulator, and WSL2 `Ubuntu-24.04` without spinning up redundant GitHub-hosted
+runners. Upon a full clean pass (after temporary-directory recycle cleanup completes),
+`local-ci.mjs` records a receipt under `<git-common-dir>/local-ci/` and publishes the
+`ci/local-distributed = success` commit status to `Lycidas97/claude-desktop-bridge`
+(if `ci:local` ran before `git push`, `npm run ci:local -- --publish` publishes that
+receipt immediately after pushing).
 
-CI uses tiered checks on `pull_request` (`test:infra` for docs-only PRs; Ubuntu
-`verify` and `browser-e2e` for code PRs, plus `ios` when `apps/mobile/ios/` changes),
-paired with pre-PR multi-platform local verification via `npm run ci:local`. On pushes
-to `main` and manual dispatch, CI runs the full 8-job matrix (`changes`, Linux `verify`,
-Windows/Linux installers, Android, iOS, macOS unit tests, and browser E2E). Native Desktop unit fixtures explicitly
-simulate macOS while mocking their process and inbox dependencies. POSIX mode-bit
-assertions apply on macOS/Linux; Windows skips the two real child-process tests
-that require POSIX signal reporting in exit events. Test reports and build artifacts upload
-with `if: always()`, including after failures. On `main` pushes and manual dispatch,
-the fixed `Quality gate` check passes only when all eight jobs succeed (failed,
-cancelled, and skipped jobs fail it); on pull requests, it requires every non-skipped
-job in the PR tier to succeed without failures or cancellations.
-Repository administrators can select that check as required after the workflow is
-published. Branch protection and release workflows are configured separately.
+`.github/workflows/ci.yml` is retained as a manual `workflow_dispatch` fallback that
+runs the full 8-job hosted matrix (`changes`, Linux `verify`, Windows/Linux installers,
+Android, iOS, macOS unit tests, and browser E2E) gated by `Quality gate` (all eight
+jobs must succeed; failed, cancelled, or skipped jobs fail the gate). Native Desktop
+unit fixtures explicitly simulate macOS while mocking their process and inbox
+dependencies. POSIX mode-bit assertions apply on macOS/Linux; Windows skips the two
+real child-process tests that require POSIX signal reporting in exit events. Test
+reports and build artifacts upload with `if: always()`, including after failures.
+Release workflows (`release.yml` and `release-assets.yml`) require the target `main`
+commit to be an ancestor of `origin/main` and carry either `ci/local-distributed == "success"`
+or a completed, successful `main` `CI` workflow run for that exact 40-char SHA.

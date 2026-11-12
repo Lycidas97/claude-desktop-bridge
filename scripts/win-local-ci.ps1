@@ -256,7 +256,7 @@ try {
   }
 }
 
-# 9. WSL2 Ubuntu-24.04 Linux .deb / .rpm / .zip packaging
+# 9. WSL2 Ubuntu-24.04 Linux infra + unit tests + .deb / .rpm / .zip packaging
 if (-not $SkipWslLinux) {
   $wslBundlePath = "/mnt/d/work/cache/temp/" + [IO.Path]::GetFileName($BundlePath)
   $wslScript = @"
@@ -277,15 +277,18 @@ if [ ! -f "`$STAMP" ] || [ "`$(cat "`$STAMP")" != "`$LOCK_HASH" ] || [ ! -f "nod
   npm ci
   printf '%s' "`$LOCK_HASH" > "`$STAMP"
 fi
+npm run test:infra
+npm run ci:run -- run typecheck
+npm test
 npm run ci:run -- run build -w @bridge/protocol
 BRIDGE_RELAY_URL="" BRIDGE_PUBLIC_RELAY_URL="" BRIDGE_PAIRING_BASE_URL="" BRIDGE_SERVICE_ORIGIN="" BRIDGE_ICE_SERVERS="" \
   npm run ci:run -- run make:linux -w @bridge/desktop
 find apps/desktop/out/make -name "*.deb" -print -quit | grep -q . || { echo "Missing .deb output"; exit 1; }
 find apps/desktop/out/make -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }
 find apps/desktop/out/make -name "*.zip" -print -quit | grep -q . || { echo "Missing .zip output"; exit 1; }
-echo "<<< [WSL Ubuntu-24.04] Linux .deb / .rpm / .zip outputs verified"
+echo "<<< [WSL Ubuntu-24.04] Linux tests + .deb / .rpm / .zip outputs verified"
 "@
-  Invoke-Checked "WSL2 Ubuntu-24.04 Linux installers (.deb/.rpm/.zip)" {
+  Invoke-Checked "WSL2 Ubuntu-24.04 Linux tests + installers (.deb/.rpm/.zip)" {
     ($wslScript -replace "`r`n", "`n") | wsl.exe -d Ubuntu-24.04 -- bash -s
   }
 }

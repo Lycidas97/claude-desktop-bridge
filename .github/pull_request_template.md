@@ -13,6 +13,7 @@ Fixes #
 - [ ] `npm test`
 - [ ] `npm run test:browser`
 - [ ] `npm run verify`
+- [ ] `npm run ci:local` (`ci/local-distributed` green on reviewed SHA)
 
 Commands & results:
 ```text

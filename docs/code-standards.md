@@ -36,7 +36,7 @@ Every pull request on `Lycidas97/claude-desktop-bridge` is checked against these
   - Browser mobile viewport E2E (`npm run test:browser`)
   Never claim synthetic fixture or unit tests prove live Claude Desktop, MSIX, TCC, or mobile WebView behavior.
 - **Explicit `Not Run` accounting**: Every PR body must list unexecuted checks under `## Not Run` with the concrete reason (e.g., `Windows 11 live MSIX check — not touched by client CSS change`). Silent omission is a review blocker.
-- **Head SHA Lock on Merge**: Push branches and open PRs only on `Lycidas97/claude-desktop-bridge`. Merge only after `Quality gate` succeeds on the exact reviewed commit using:
+- **Head SHA Lock on Merge**: Push branches and open PRs only on `Lycidas97/claude-desktop-bridge`. Merge only after `ci/local-distributed` (or manual `Quality gate`) succeeds on the exact reviewed commit using:
   ```bash
   gh pr merge <pr-number> --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>
   ```

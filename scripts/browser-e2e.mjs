@@ -26,7 +26,7 @@ let previewApproval;
 const port = serve ? Number(process.env.BRIDGE_E2E_PORT ?? 0) : 0;
 assert.ok(Number.isInteger(port) && port >= 0 && port <= 65535, "BRIDGE_E2E_PORT must be a valid loopback port");
 const artifactRoot = resolve(root, "artifacts/browser-e2e");
-const runDir = resolve(artifactRoot, new Date().toISOString().replaceAll(":", "-"));
+const runDir = resolve(artifactRoot, `${new Date().toISOString().replaceAll(":", "-")}-${process.pid}`);
 const sessionId = "browser-e2e-session";
 const originalTitle = remotePreview ? "远程执行交接预览" : "隔离回归会话";
 const renamedTitle = "隔离回归新名称";
@@ -1941,7 +1941,16 @@ try {
       },
     },
   });
-  await vite.listen();
+  // Vite's vite.listen() converts port 0 into 5173 (!configPort fallback).
+  // Calling Vite's wrapped httpServer.listen directly runs initServer(true) and
+  // proxy upgrades while letting the OS kernel assign a true ephemeral port for 0.
+  await new Promise((onListen, onError) => {
+    vite.httpServer.once("error", onError);
+    vite.httpServer.listen(port, "127.0.0.1", () => {
+      vite.httpServer.off("error", onError);
+      onListen();
+    });
+  });
   baseUrl = `http://${nativePreview || remotePreview ? "localhost" : "127.0.0.1"}:${vite.httpServer.address().port}`;
   // Port 0 is allocated at listen time. Set Vite's public environment before
   // the first module is transformed, so probes and pairing use this origin.

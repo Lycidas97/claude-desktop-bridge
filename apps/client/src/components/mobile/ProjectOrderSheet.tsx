@@ -43,6 +43,7 @@ export function ProjectOrderSheet({
   onClose,
 }: ProjectOrderSheetProps) {
   const [drag, setDrag] = useState<{ projectId: string; order: string[] }>();
+  const [positionProjectId, setPositionProjectId] = useState<string>();
   const listRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<DragSession | undefined>(undefined);
   const dragOrderRef = useRef<string[] | undefined>(undefined);
@@ -226,7 +227,7 @@ export function ProjectOrderSheet({
           if (sessionRef.current?.pointerId === event.pointerId) clearSession();
         }}
         onLostPointerCapture={(event) => {
-          if (sessionRef.current?.pointerId === event.pointerId) clearSession();
+          if (event.target === event.currentTarget && sessionRef.current?.pointerId === event.pointerId) clearSession();
         }}
         onPointerLeave={() => {
           if (sessionRef.current && !sessionRef.current.active) clearSession();
@@ -259,6 +260,21 @@ export function ProjectOrderSheet({
               <span>
                 <strong>{name}</strong>
                 <small>{projectSessions.length} 个会话</small>
+                {positionProjectId === projectId && (
+                  <select
+                    aria-label={`移动「${name}」到`}
+                    autoFocus
+                    value={index}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onChange={(event) => {
+                      onPlaceProjects(moveProject(projectOrder, projectId, Number(event.target.value)));
+                    }}
+                  >
+                    {projectOrder.map((id, position) => (
+                      <option key={id} value={position}>第 {position + 1} 位</option>
+                    ))}
+                  </select>
+                )}
               </span>
               <IconButton
                 label={`拖动「${name}」调整顺序`}
@@ -266,6 +282,8 @@ export function ProjectOrderSheet({
                 disabled={projectOrder.length < 2}
                 onPointerDown={(event) => startHandleDrag(projectId, event)}
                 onKeyDown={(event) => handleHandleKeyDown(projectId, index, event)}
+                aria-expanded={positionProjectId === projectId}
+                onClick={() => setPositionProjectId(positionProjectId === projectId ? undefined : projectId)}
               >
                 <GripVertical size={18} />
               </IconButton>

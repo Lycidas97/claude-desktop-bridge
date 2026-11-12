@@ -309,7 +309,9 @@ describe("ProjectOrderSheet", () => {
       expect(renderedIds()).toEqual(["p-beta", "p-gamma", "p-alpha"]);
 
       if (cancel === "pointercancel") list().props.onPointerCancel({ pointerId: 9 });
-      else if (cancel === "lostpointercapture") list().props.onLostPointerCapture({ pointerId: 9 });
+      else if (cancel === "lostpointercapture") list().props.onLostPointerCapture({
+        pointerId: 9, target: list().props.ref.current, currentTarget: list().props.ref.current,
+      });
       else list().props.onKeyDown({ key: "Escape", preventDefault: vi.fn(), stopPropagation: vi.fn() });
       draw();
 
@@ -317,6 +319,38 @@ describe("ProjectOrderSheet", () => {
       expect(list().props.className).not.toContain("is-dragging");
       expect(props.onPlaceProjects).not.toHaveBeenCalled();
     }
+  });
+
+  it("keeps a touch long-press active when child implicit capture transfers to the list", () => {
+    rows()[0]!.props.onPointerDown({ pointerId: 12, pointerType: "touch", button: 0, clientX: 100, clientY: 128 });
+    list().props.onPointerMove({ pointerId: 12, clientX: 101, clientY: 128 });
+    vi.advanceTimersByTime(220);
+    draw();
+    expect(list().props.className).toContain("is-dragging");
+    list().props.onLostPointerCapture({
+      pointerId: 12,
+      target: { tagName: "STRONG" },
+      currentTarget: list().props.ref.current,
+    });
+    draw();
+    expect(list().props.className).toContain("is-dragging");
+    list().props.onPointerMove({ pointerId: 12, clientX: 101, clientY: 250 });
+    draw();
+    list().props.onPointerUp({ pointerId: 12 });
+    expect(props.onPlaceProjects).toHaveBeenCalledExactlyOnceWith(["p-beta", "p-gamma", "p-alpha"]);
+  });
+
+  it("offers native position selection through a screen reader's default click activation", () => {
+    expect(handleFor("Alpha").props.onClick).toBeTypeOf("function");
+    handleFor("Alpha").props.onClick({ detail: 0 });
+    draw();
+    const select = elements(tree).find((el) => el.type === "select")!;
+    expect(select.props["aria-label"]).toBe("移动「Alpha」到");
+    expect(select.props.value).toBe(0);
+    select.props.onChange({ target: { value: "2" } });
+    draw();
+    expect(renderedIds()).toEqual(["p-beta", "p-gamma", "p-alpha"]);
+    expect(props.onPlaceProjects).toHaveBeenCalledExactlyOnceWith(["p-beta", "p-gamma", "p-alpha"]);
   });
 
   it("does not persist when dropped back at the starting position", () => {

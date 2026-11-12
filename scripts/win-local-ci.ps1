@@ -318,6 +318,8 @@ if (-not $SkipWslLinux) {
 set -euo pipefail
 export PATH="/usr/local/bin:`$PATH"
 CI_DIR="/var/tmp/bridge-linux-ci-slot-$slot"
+export TMPDIR="`$CI_DIR-tmp"
+mkdir -p "`$TMPDIR"
 if [ ! -d "`$CI_DIR/.git" ]; then
   mkdir -p "`$CI_DIR"
   git init -q "`$CI_DIR"

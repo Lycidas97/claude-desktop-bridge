@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
+import { fork, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { recycleEnv } from "./ci-run.mjs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -664,6 +666,62 @@ ${acquisition}
   } finally {
     for (const child of children) {
       if (child.exitCode === null) child.kill();
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("WSL slot TMPDIR preserves a Linux packager template when another slot starts", { skip: process.platform !== "linux" }, async (t) => {
+  const source = await readFile(new URL("./win-local-ci.ps1", import.meta.url), "utf8");
+  const initialization = source.match(/\$wslScript = @"\r?\n([\s\S]*?)(?=^if \[ ! -d)/mu)[1];
+  const directory = await mkdtemp(join(tmpdir(), "bridge-packager-overlap-"));
+  const children = [];
+  let output = "";
+  try {
+    const appSource = join(directory, "source");
+    const shared = join(directory, "shared");
+    await mkdir(appSource);
+    await mkdir(shared);
+    await writeFile(join(appSource, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0", main: "index.js" }));
+    await writeFile(join(appSource, "index.js"), "module.exports = 1;");
+    const environments = [0, 1].map(slot => {
+      const result = spawnSync("bash", ["-c", initialization
+        .replaceAll("`$", "$")
+        .replaceAll("/var/tmp/bridge-linux-ci-slot-", `${directory}/slot-`)
+        .replaceAll("$slot", String(slot)) + '\nprintf \'%s\' "$TMPDIR"'], {
+        encoding: "utf8", env: { ...process.env, TMPDIR: shared },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return recycleEnv({ ...process.env, TMPDIR: result.stdout });
+    });
+    const launch = (role, env) => {
+      const child = fork(fileURLToPath(new URL("./fixtures/linux-packager-overlap.cjs", import.meta.url)), [role, appSource], {
+        env, stdio: ["ignore", "pipe", "pipe", "ipc"],
+      });
+      children.push(child);
+      child.stdout.on("data", chunk => { output += chunk; });
+      child.stderr.on("data", chunk => { output += chunk; });
+      return { child, done: once(child, "exit") };
+    };
+    const first = launch("create", environments[0]);
+    const [ready] = await Promise.race([
+      once(first.child, "message"),
+      first.done.then(() => { throw new Error(`First packager exited before creating its template:\n${output}`); }),
+    ]);
+    t.diagnostic(`FIRST_TEMPLATE_READY=${ready.template}`);
+    const second = launch("clear", environments[1]);
+    assert.equal((await second.done)[0], 0, output);
+    t.diagnostic("SECOND_STARTUP_COMPLETED");
+    first.child.send("consume");
+    assert.equal((await first.done)[0], 0, output);
+    assert.match(output, /TEMPLATE_CONSUMED/u);
+    t.diagnostic(output.trim());
+  } finally {
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill();
+        await once(child, "exit");
+      }
     }
     await rm(directory, { recursive: true, force: true });
   }

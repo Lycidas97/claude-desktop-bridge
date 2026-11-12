@@ -622,6 +622,7 @@ test('win-local-ci parallelizes WSL2 via setsid pipe-EOF, early emulator boot, a
   assert.ok(wslWaitIdx > nsisWaitIdx, 'WSL2 is joined after Windows + Android QA steps');
   assert.match(winCi, /RedirectStandardInput\s*=\s*\$true/u);
   assert.match(winCi, /exec 3<&0 <\/dev\/null;[\s\S]*?cat <&3[\s\S]*?kill -TERM 0/u);
+  // Keep --no-daemon: Windows OpenSSH job-object teardown on disconnect kills a shared GRADLE_USER_HOME daemon mid-build for concurrent win-local-ci slots.
   assert.match(winCi, /gradlew\.bat"\s+assembleDebug\s+--no-daemon/u);
   const outerFinally = winCi.slice(winCi.indexOf('=== [WIN] ALL WINDOWS'));
   assert.ok(outerFinally.indexOf('StandardInput.Close()') !== -1 && outerFinally.indexOf('StandardInput.Close()') < outerFinally.indexOf('Recycle uploaded git bundle'), 'WSL2 stdin pipe closes in outer finally before recycling BundlePath');

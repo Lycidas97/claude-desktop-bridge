@@ -253,6 +253,7 @@ try {
   Invoke-Checked "Gradle assembleDebug (Android SDK 36)" {
     Push-Location "apps/mobile/android"
     try {
+      # Keep --no-daemon: Windows OpenSSH tears down a session's job object on disconnect, killing a shared GRADLE_USER_HOME daemon mid-build for concurrent win-local-ci runs.
       & ".\gradlew.bat" assembleDebug --no-daemon
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     } finally {

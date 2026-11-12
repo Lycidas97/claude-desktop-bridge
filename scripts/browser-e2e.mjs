@@ -26,7 +26,7 @@ let previewApproval;
 const port = serve ? Number(process.env.BRIDGE_E2E_PORT ?? 0) : 0;
 assert.ok(Number.isInteger(port) && port >= 0 && port <= 65535, "BRIDGE_E2E_PORT must be a valid loopback port");
 const artifactRoot = resolve(root, "artifacts/browser-e2e");
-const runDir = resolve(artifactRoot, new Date().toISOString().replaceAll(":", "-"));
+const runDir = resolve(artifactRoot, `${new Date().toISOString().replaceAll(":", "-")}-${process.pid}`);
 const sessionId = "browser-e2e-session";
 const originalTitle = remotePreview ? "远程执行交接预览" : "隔离回归会话";
 const renamedTitle = "隔离回归新名称";
@@ -1200,8 +1200,48 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     { type: "assistant", uuid: "boundary-files", timestamp: Date.now(), message: { id: "boundary-files", content: [{ type: "text", text: `[相对报告](report.json) · [绝对报告](<${host.nativeApproval.harnessCwd}/report.json:12:3>) · [说明预览](<说明 notes.md>)` }] } },
   ];
   for (const message of initial) await host.nativeApproval.message(message);
+  const subagentStartAt = Date.now() - 30_000;
+  await host.nativeApproval.message({
+    type: "system",
+    subtype: "task_started",
+    task_id: "boundary-bg-subagent",
+    tool_use_id: "boundary-bg-call",
+    description: "Run full local distributed CI",
+    timestamp: subagentStartAt,
+  });
+  host.session.runningSubagents = host.nativeApproval.session().runningSubagents;
+  assert.deepEqual(host.session.runningSubagents, { count: 1, lastUpdatedAt: subagentStartAt });
+  await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
+  const catalogRow = page.locator(`[data-session-id="${sessionId}"]`);
+  await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Catalog row dot reflects running background subagent when main turn is idle");
+  await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Catalog row badge displays running background subagent");
   host.history.push(...(await host.nativeApproval.history()).items);
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await catalogRow.getByRole("button").first().click();
+  await eventually(async () => (await page.locator(".session-activity-label").innerText()).includes("子代理运行中 · Run full local distributed CI"), true, "Session detail shows running subagent activity");
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Returning from detail keeps catalog row dot running");
+  await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Returning from detail keeps catalog row badge synchronized");
+  host.session.runningSubagents = { count: 1, lastUpdatedAt: Date.now() - 11 * 60_000 };
+  await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
+  await eventually(() => catalogRow.locator(".session-state-dot.queued").count(), 1, "Stalled background subagent switches catalog dot to warning tone");
+  await eventually(() => catalogRow.locator(".session-row-status.queued").innerText(), "子代理无进展", "Stalled background subagent switches catalog badge label");
+  for (const event of await host.nativeApproval.message({
+    type: "system",
+    subtype: "task_notification",
+    task_id: "boundary-bg-subagent",
+    tool_use_id: "boundary-bg-call",
+    status: "completed",
+    summary: "CI green",
+    timestamp: Date.now(),
+  })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  assert.equal(host.nativeApproval.session().runningSubagents, undefined);
+  delete host.session.runningSubagents;
+  await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
+  await eventually(() => catalogRow.locator(".session-state-dot.idle").count(), 1, "Completed background subagent restores idle catalog dot");
+  await eventually(() => catalogRow.locator(".session-row-status").count(), 0, "Completed background subagent clears catalog badge");
+  host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
+  steps.push("session catalog state dot and status badge stay synchronized with active, stalled, and completed background subagents before opening and after returning from detail");
+  await catalogRow.getByRole("button").first().click();
   const stream = page.locator(".conversation-stream");
   await eventually(() => stream.locator(".task-plan-card").count(), 1, "Only the parent native task plan is projected");
   assert.equal((await stream.innerText()).includes("INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN"), false);
@@ -1901,7 +1941,16 @@ try {
       },
     },
   });
-  await vite.listen();
+  // Vite's vite.listen() converts port 0 into 5173 (!configPort fallback).
+  // Calling Vite's wrapped httpServer.listen directly runs initServer(true) and
+  // proxy upgrades while letting the OS kernel assign a true ephemeral port for 0.
+  await new Promise((onListen, onError) => {
+    vite.httpServer.once("error", onError);
+    vite.httpServer.listen(port, "127.0.0.1", () => {
+      vite.httpServer.off("error", onError);
+      onListen();
+    });
+  });
   baseUrl = `http://${nativePreview || remotePreview ? "localhost" : "127.0.0.1"}:${vite.httpServer.address().port}`;
   // Port 0 is allocated at listen time. Set Vite's public environment before
   // the first module is transformed, so probes and pairing use this origin.

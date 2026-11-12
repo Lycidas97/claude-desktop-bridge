@@ -228,6 +228,7 @@ export function MobileSessionCatalog({
     const turnBadge = isArchivedRow ? "已归档" : pendingPermission ? pendingPermission.toolName === "AskUserQuestion" ? "待回答" : "待授权" : activeSessionBadgeLabel(session);
     const subagentBadge = isArchivedRow || turnBadge ? undefined : backgroundSubagentBadge(session);
     const badge = turnBadge ?? subagentBadge?.label;
+    const statusTone = pendingPermission ? "waiting" : subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState;
     const forksExpanded = expandedForkParents.has(session.sessionId);
     const badgeLabel = session.sidechat ? "/btw" : (session.forkLabel || "fork");
     const badgeClassName = `session-fork-badge${session.sidechat ? " is-sidechat" : ""}`;
@@ -246,7 +247,7 @@ export function MobileSessionCatalog({
             className="session-row-hit"
             onClick={() => void selectSession(session.sessionId)}
           >
-            <span className={`session-state-dot ${pendingPermission ? "waiting" : session.turnState}`} />
+            <span className={`session-state-dot ${statusTone}`} />
             <span className="session-row-copy">
               <strong>
                 {isForkChild && <em className={badgeClassName}>{badgeLabel}</em>}
@@ -262,7 +263,7 @@ export function MobileSessionCatalog({
               </small>
             </span>
             {badge && (
-              <span className={`session-row-status ${pendingPermission ? "waiting" : subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState}`}>
+              <span className={`session-row-status ${statusTone}`}>
                 {badge}
               </span>
             )}

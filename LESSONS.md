@@ -27,6 +27,12 @@ During scheduled consolidation (`bridge-tech-debt-patrol`) or pre-release retros
 
 ## Active Entries
 
+**[Pitfall] Never execute production-`appId` NSIS installers or uninstallers during local Windows QA on shared hosts.**
+- Broken in: `b5a2300` / `#28` — `scripts/windows-packaged-qa.ps1` ran `Bridge-*-Setup.exe /S /D=$installRoot` and `Uninstall*.exe /currentuser /S` under the developer's Windows user account; NSIS `uninstallOldVersion` read `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\<appId>`, killed live `D:\Tools\Bridge\Bridge.exe`, and wiped `D:\Tools\Bridge` even with `/D=$installRoot` and isolated `APPDATA`.
+- Fixed in: `#28`
+- Done right: Stage `win-unpacked` into `$installRoot` whenever `$env:RUNNER_ENVIRONMENT -ne "github-hosted"`, restrict NSIS `Setup.exe` / `Uninstall*.exe` execution to ephemeral `github-hosted` VMs, and terminate only `[IO.Path]::GetFullPath($installRoot)\`-prefixed detached processes before Recycle Bin cleanup (`scripts/windows-native-qa-contract.test.mjs`).
+- Seen 1× (2026-11-12)
+
 **[Pitfall] Update packaged Desktop QA selectors and contract tests whenever Desktop Settings section titles or diagnostic labels change.**
 - Broken in: `5f5c76f` — reorganized Desktop Settings sections (`连接与设备` split into `连接与启动` and `诊断与关于`) without updating `scripts/packaged-desktop-qa.mjs` or `scripts/windows-native-qa-contract.test.mjs`, breaking packaged Desktop QA assertions.
 - Fixed in: `c6aa944`

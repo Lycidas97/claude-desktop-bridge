@@ -314,10 +314,29 @@ try {
     const snapshot = await page.evaluate(() => window.bridgeDesktop.getSnapshot());
     assert.ok(snapshot.claudeInspector, 'The service must start the monitor');
     assert.notEqual(snapshot.claudeInspector.state, 'error', snapshot.claudeInspector.error);
-    // Display the independently measured TCP fixture through the actual renderer IPC.
+    // Keep the measured fixture in forwarded snapshots during these UI checks:
+    // the live service continues publishing its own independent monitor status.
+    await ui.instance.evaluate(({ webContents }, status) => {
+      globalThis.qaInspectorStatus = status;
+      const originals = [];
+      for (const contents of webContents.getAllWebContents()) {
+        if (!contents.getURL().startsWith('file:')) continue;
+        const send = contents.send;
+        originals.push(() => { contents.send = send; });
+        contents.send = function (channel, ...args) {
+          if (channel === 'bridge:snapshot') args[0] = { ...args[0], claudeInspector: globalThis.qaInspectorStatus };
+          return send.call(this, channel, ...args);
+        };
+      }
+      globalThis.qaRestoreInspectorSnapshots = () => {
+        for (const restore of originals) restore();
+        delete globalThis.qaInspectorStatus;
+        delete globalThis.qaRestoreInspectorSnapshots;
+      };
+    }, inspectorCheck.status);
     await ui.instance.evaluate(({ webContents }, next) => {
       for (const contents of webContents.getAllWebContents()) if (contents.getURL().startsWith('file:')) contents.send('bridge:snapshot', next);
-    }, { ...snapshot, claudeInspector: inspectorCheck.status });
+    }, snapshot);
     await page.getByText('Claude 调试接口存在未认可的进程连接', { exact: true }).waitFor();
     const monitorRegion = page.getByRole('region', { name: '调试连接监测' });
     await monitorRegion.getByText(`PID ${process.pid} · node · 未认可路径`, { exact: true }).waitFor();
@@ -327,10 +346,12 @@ try {
     await monitorRegion.scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(root, 'inspector-warning.png'), fullPage: true });
     await ui.instance.evaluate(({ webContents }, next) => {
+      globalThis.qaInspectorStatus = next.claudeInspector;
       for (const contents of webContents.getAllWebContents()) if (contents.getURL().startsWith('file:')) contents.send('bridge:snapshot', next);
     }, { ...snapshot, claudeInspector: { ...inspectorCheck.status, clients: [] } });
     await page.waitForFunction(() => !document.querySelector('.inspector-warning'));
     assert.ok((await monitorRegion.textContent()).includes('最近告警'));
+    await ui.instance.evaluate(() => globalThis.qaRestoreInspectorSnapshots());
     Object.assign(developerProof, {
       profileSelection: true, realIpcWrite: true, fieldsPreserved: true, otherProfileUnchanged: true,
       checkIsReadOnly: true, enabledNotRewritten: true, invalidJsonPreserved: true, errorRecovery: true,

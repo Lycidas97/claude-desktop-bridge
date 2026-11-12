@@ -1,12 +1,7 @@
-# Subsystem: Desktop Claude Native & Quarantined Legacy
+# Subsystem: Desktop Claude Native
 
 ## Owned Paths
 - `apps/desktop/src/claude/`
-  - Inspector attachment, macOS startup & connection monitor: `claude-desktop-inspector.ts`, `claude-inspector-startup.ts`, `claude-inspector-monitor.ts`
-  - `LocalSessions` native facade & projections: `claude-desktop-bridge.ts`, `native-context-usage.ts`, `native-history-projection.ts`
-  - Catalog, discovery & retired-connector cleanup: `claude-desktop-sessions.ts`, `claude-session-catalog.ts`, `claude-runtime-discovery.ts`, `slash-command-catalog.ts`, `magpie-connection.ts`, `connector.ts`
-- `apps/desktop/src/legacy/` (**quarantined — read-only / retirement maintenance only**)
-  - `claude-desktop-inbox.ts`, `claude-desktop-archive.ts`, `provider-registry.ts`, `claude-desktop-session-registrar.ts`, `session-desktop-registration.ts`, `transcript-observer.ts`
 
 ## Responsibilities
 - Discovers Claude Desktop's user-authorized local Node inspector (`http://127.0.0.1:9229/json/list`), attaches to the `app://localhost` renderer `WebContents`, and forwards session lifecycle, messaging, queue promotion/steering/cancellation, rewind, configuration, and tool permission calls to `claude.web.LocalSessions`.
@@ -19,7 +14,7 @@
 2. **Sole runtime authority & security boundary**: Never patch `app.asar`, mint auth tokens, send `SIGUSR1`, restart Claude Desktop for Bridge, or expose arbitrary JS `evaluate` to Relay.
 3. **macOS menu startup safety**: `claude-inspector-startup.ts` keys attempts by `(pid, launchTime, executablePath)`, skips already-open ports and custom `BRIDGE_CLAUDE_INSPECTOR_URL` origins, persists attempts/failures in Bridge `userData`, and never re-opens an inspector the user manually closed in the same Desktop process. Always pass explicit `"darwin"` to `desktopAppPathCandidates` in `parseInspectorDesktopProcesses`.
 4. **Avoid mid-stream session re-open**: Do not trigger redundant `LocalSessions` session open/refresh loops while an assistant turn is actively streaming.
-5. **`apps/desktop/src/legacy/` quarantine**: Modules in `legacy/` exist only for legacy schema compatibility and safe removal of pre-1.3 Bridge MCP/hook entries (`connector.ts` writes `.bridge-backup` and removes only hooks matching exact `/hooks/claude-permission` + `X-Bridge-Permission-Host: $BRIDGE_PERMISSION_HOST` + `allowedEnvVars`). **Never wire new features into `apps/desktop/src/legacy/`.**
+5. **Pre-1.3 connector retirement**: `connector.ts` (`removeLegacyConnector`) safely removes pre-1.3 Bridge MCP/hook entries: it writes `.bridge-backup` and removes only hooks matching exact `/hooks/claude-permission` + `X-Bridge-Permission-Host: $BRIDGE_PERMISSION_HOST` + `allowedEnvVars`. The former `legacy/` tree was deleted in #51; do not recreate it.
 
 ## Minimum Verification
 ```bash

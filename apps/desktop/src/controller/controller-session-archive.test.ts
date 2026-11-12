@@ -4,10 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BridgeSessionInfo } from "@bridge/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { writeDesktopArchiveState } from "./claude-desktop-archive.js";
 import { listClaudeDesktopSessionState } from "../claude/claude-desktop-sessions.js";
-import type { DesktopArchiveRequest } from "../controller/conversation-state-store.js";
-import { DesktopController } from "../controller/controller.js";
+import { DesktopController } from "./controller.js";
 
 vi.mock("electron", () => ({ shell: {} }));
 
@@ -61,35 +59,6 @@ describe("Claude Desktop archive records", () => {
     expect(JSON.stringify([...state.sessions, ...state.archivedSessions])).not.toContain(dir);
     expect(child.archivedAt).toBe((await stat(join(dir, `local_${CHILD}.json`))).mtimeMs);
     expect(state.archivedCliSessionIds.has(SIDE_CHAT)).toBe(true);
-  });
-
-  it("archives and restores a record in Desktop's own format and leaves other fields intact", async () => {
-    const dir = await desktopDir([record(PARENT), record(CHILD)], [`local_${OLD_CHILD}`]);
-    const request: DesktopArchiveRequest = {
-      sessionId: PARENT, desktopSessionId: `local_${PARENT}`, metadataPath: join(dir, `local_${PARENT}.json`),
-      archived: true, requestedAt: 10,
-    };
-    await expect(writeDesktopArchiveState(request)).resolves.toBe(true);
-    expect(await readJson(request.metadataPath)).toEqual(record(PARENT, { isArchived: true }));
-    expect(await readFile(join(dir, "archived-sessions.idx"), "utf8"))
-      .toBe(JSON.stringify({ v: 1, archived: [`local_${OLD_CHILD}`, `local_${PARENT}`].sort() }));
-    if (process.platform !== "win32") expect((await stat(request.metadataPath)).mode & 0o777).toBe(0o600);
-
-    await writeDesktopArchiveState({ ...request, archived: false });
-    expect(await readJson(request.metadataPath)).toEqual(record(PARENT));
-    expect(await readJson(join(dir, "archived-sessions.idx"))).toEqual({ v: 1, archived: [`local_${OLD_CHILD}`] });
-  });
-
-  it("drops a request whose record is gone and refuses a record that now names another session", async () => {
-    const dir = await desktopDir([record(PARENT)]);
-    const request: DesktopArchiveRequest = {
-      sessionId: CHILD, desktopSessionId: `local_${CHILD}`, metadataPath: join(dir, `local_${CHILD}.json`),
-      archived: true, requestedAt: 10,
-    };
-    await expect(writeDesktopArchiveState(request)).resolves.toBe(false);
-    await expect(writeDesktopArchiveState({ ...request, metadataPath: join(dir, `local_${PARENT}.json`) }))
-      .rejects.toThrow("其他会话");
-    expect(await readJson(join(dir, `local_${PARENT}.json`))).toEqual(record(PARENT));
   });
 });
 

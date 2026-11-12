@@ -79,6 +79,24 @@ function Invoke-Checked {
   Write-Output ("<<< [WIN] $Label OK ({0:N1}s)" -f $sw.Elapsed.TotalSeconds)
 }
 
+# Serialize concurrent multi-worktree ci:local runs sharing D:\work\ci-worktree, bridge-ci-api36, and WSL2
+$ciMutex = [System.Threading.Mutex]::new($false, "Local\ClaudeDesktopBridgeWinCi")
+$mutexAcquired = $false
+try {
+  try {
+    $mutexAcquired = $ciMutex.WaitOne(0)
+  } catch [System.Threading.AbandonedMutexException] {
+    $mutexAcquired = $true
+  }
+  if (-not $mutexAcquired) {
+    Write-Output ">>> [WIN] Waiting for active win-local-ci run to finish (Local\ClaudeDesktopBridgeWinCi)..."
+    try {
+      $mutexAcquired = $ciMutex.WaitOne()
+    } catch [System.Threading.AbandonedMutexException] {
+      $mutexAcquired = $true
+    }
+  }
+
 # 1. Fetch exact commit bundle into anchor repo and attach/checkout D:\work\ci-worktree
 Invoke-Checked "Sync git bundle ($Revision)" {
   git -C $anchorRepo bundle verify $BundlePath | Out-Null
@@ -129,9 +147,8 @@ if ($lockHash -ne $cachedHash -or -not (Test-Path "node_modules\electron\package
   Set-Content -Path $stampFile -Value $lockHash -NoNewline
 }
 
-# 4. Windows infra + typecheck + unit tests (runs before QEMU cold boot so Vitest gets uncontended CPU/IO)
+# 4. Windows infra + unit tests (typecheck is platform-independent and runs once in macOS verify) (runs before QEMU cold boot so Vitest gets uncontended CPU/IO)
 Invoke-Checked "npm run test:infra" { & "$nodeBin\npm.cmd" run test:infra }
-Invoke-Checked "npm run typecheck" { & "$nodeBin\npm.cmd" run ci:run -- run typecheck }
 Invoke-Checked "npm test (Windows)" { & "$nodeBin\npm.cmd" test }
 
 # 5. Boot headless WHPX Android Emulator in background while Windows NSIS + Gradle APK build run
@@ -281,7 +298,6 @@ if [ ! -f "`$STAMP" ] || [ "`$(cat "`$STAMP")" != "`$LOCK_HASH" ] || [ ! -f "nod
   printf '%s' "`$LOCK_HASH" > "`$STAMP"
 fi
 npm run test:infra
-npm run ci:run -- run typecheck
 npm test
 npm run ci:run -- run build -w @bridge/protocol
 BRIDGE_RELAY_URL="" BRIDGE_PUBLIC_RELAY_URL="" BRIDGE_PAIRING_BASE_URL="" BRIDGE_SERVICE_ORIGIN="" BRIDGE_ICE_SERVERS="" \
@@ -296,10 +312,22 @@ echo "<<< [WSL Ubuntu-24.04] Linux tests + .deb / .rpm / .zip outputs verified"
   }
 }
 
-# Move uploaded git bundle to Windows Recycle Bin
-Invoke-Checked "Recycle uploaded git bundle" {
-  & "$nodeBin\node.exe" --require "$ciWorktree\scripts\recycle-cleanup.cjs" `
-    "$ciWorktree\scripts\clean.mjs" $BundlePath
-}
-
 Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revision) ==="
+} finally {
+  try {
+    if (Test-Path -LiteralPath $BundlePath) {
+      Invoke-Checked "Recycle uploaded git bundle" {
+        if (Test-Path -LiteralPath "$cacheRoot\bridge-recycle.exe") {
+          & "$cacheRoot\bridge-recycle.exe" $BundlePath
+        } else {
+          throw "No Windows Recycle Bin helper available to remove $BundlePath"
+        }
+      }
+    }
+  } finally {
+    if ($mutexAcquired) {
+      $ciMutex.ReleaseMutex()
+    }
+    $ciMutex.Dispose()
+  }
+}

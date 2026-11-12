@@ -207,11 +207,14 @@ try {
     $prevOrigin = $env:BRIDGE_SERVICE_ORIGIN
     $prevIce = $env:BRIDGE_ICE_SERVERS
     try {
-      $env:BRIDGE_RELAY_URL = ""
-      $env:BRIDGE_PUBLIC_RELAY_URL = ""
-      $env:BRIDGE_PAIRING_BASE_URL = ""
-      $env:BRIDGE_SERVICE_ORIGIN = ""
-      $env:BRIDGE_ICE_SERVERS = ""
+      $env:BRIDGE_RELAY_URL = "wss://bis.zju.edu.cn/bridge-relay/ws"
+      $env:BRIDGE_PUBLIC_RELAY_URL = $env:BRIDGE_RELAY_URL
+      $env:BRIDGE_PAIRING_BASE_URL = "https://bis.zju.edu.cn"
+      $env:BRIDGE_SERVICE_ORIGIN = "https://bis.zju.edu.cn"
+      $env:BRIDGE_ICE_SERVERS = '[{"urls":"stun:stun.cloudflare.com:3478"}]'
+      $env:VITE_BRIDGE_PUBLIC_RELAY_URL = $env:BRIDGE_PUBLIC_RELAY_URL
+      $env:VITE_BRIDGE_SERVICE_ORIGIN = "https://bis.zju.edu.cn/bridge-relay"
+      $env:VITE_BRIDGE_ICE_SERVERS = $env:BRIDGE_ICE_SERVERS
       & "$nodeBin\npm.cmd" run ci:run -- run make:windows -w @bridge/desktop
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     } finally {

@@ -20,14 +20,15 @@ const desktopBrowser = await chromium.connectOverCDP(desktopCdp);
 
 async function connectWebView(endpoint) {
   let target;
+  let targets = [];
   const startedAt = Date.now();
   while (Date.now() - startedAt < 20_000) {
-    const targets = await fetch(`${endpoint}/json`).then((response) => response.json());
+    targets = await fetch(`${endpoint}/json`).then((response) => response.json());
     target = targets.find((candidate) => candidate.type === "page" && candidate.url === "https://localhost/");
     if (target?.webSocketDebuggerUrl) break;
     await new Promise((resolveWait) => setTimeout(resolveWait, 200));
   }
-  assert.ok(target?.webSocketDebuggerUrl, "Android Bridge WebView was not found");
+  assert.ok(target?.webSocketDebuggerUrl, `Android Bridge WebView was not found: ${JSON.stringify(targets)}`);
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolveOpen, rejectOpen) => {
     socket.addEventListener("open", resolveOpen, { once: true });

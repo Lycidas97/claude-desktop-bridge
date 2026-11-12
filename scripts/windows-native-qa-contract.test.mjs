@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -137,36 +137,51 @@ test("packaged QA rejects missing Native capability and an accidentally restored
   }), /provider\.list/u);
 });
 
-test("hosted Windows QA retains data while local recycle failures still fail", { skip: process.platform !== "win32" }, async () => {
+test("Windows QA leaves caller-owned staging to its owner and standalone recycle failures still fail", { skip: process.platform !== "win32" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "bridge-qa-retention-"));
   try {
-    for (const name of ["qa", "smoke", "install"]) {
-      await mkdir(join(directory, name));
-      await writeFile(join(directory, name, "retained.txt"), "retained");
-    }
+    const staging = join(directory, "staging");
+    await mkdir(staging);
     const fixture = join(directory, "cleanup.ps1");
     await writeFile(fixture, `
       $ErrorActionPreference = "Stop"
       $environmentKeys = @()
-      $qaRoot = Join-Path $env:BRIDGE_QA_TEST_ROOT "qa"
-      $smokeRoot = Join-Path $env:BRIDGE_QA_TEST_ROOT "smoke"
-      $installRoot = Join-Path $env:BRIDGE_QA_TEST_ROOT "install"
+      $tokens = $null; $parseErrors = $null
+      $ast = [Management.Automation.Language.Parser]::ParseInput((Get-Content -LiteralPath ${JSON.stringify(fileURLToPath(new URL("./windows-packaged-qa.ps1", import.meta.url)))} -Raw), [ref]$tokens, [ref]$parseErrors)
+      if ($parseErrors.Count) { throw "QA_SOURCE_PARSE_FAILED" }
+      $allocation = $ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -in @('$qaParent', '$qaRoot', '$smokeRoot', '$installRoot') }
+      . ([ScriptBlock]::Create(($allocation.Extent.Text -join "\`n")))
+      $roots = @($qaRoot, $smokeRoot, $installRoot)
+      foreach ($root in $roots) {
+        New-Item -ItemType Directory -Path $root | Out-Null
+        Set-Content -LiteralPath (Join-Path $root "retained.txt") -Value "retained" -NoNewline
+      }
+      Write-Output ("ROOTS=" + (ConvertTo-Json -InputObject $roots -Compress))
       function node.exe { throw "RECYCLE_CALLED" }
       try { if ($env:BRIDGE_QA_TEST_FAILURE) { throw $env:BRIDGE_QA_TEST_FAILURE } } finally {
       ${windowsSource.slice(windowsSource.indexOf("  foreach ($key in $environmentKeys) {", windowsSource.search(/^\} finally \{\r?$/mu)))}
     `);
-    for (const [environment, failure] of [["github-hosted", ""], ["self-hosted", ""], ["github-hosted", "QA_ASSERTION_FAILED"]]) {
+    for (const [environment, staged, failure] of [
+      ["github-hosted", false, ""], ["github-hosted", true, ""],
+      ["self-hosted", false, ""], ["self-hosted", true, ""],
+      ["github-hosted", true, "QA_ASSERTION_FAILED"], ["self-hosted", true, "QA_ASSERTION_FAILED"],
+    ]) {
       const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture], {
-        encoding: "utf8", env: { ...process.env, BRIDGE_QA_TEST_ROOT: directory, RUNNER_ENVIRONMENT: environment, BRIDGE_QA_TEST_FAILURE: failure },
+        encoding: "utf8", env: { ...process.env, TEMP: directory, TMP: directory, BRIDGE_RECYCLE_STAGING: staged ? staging : "", RUNNER_ENVIRONMENT: environment, BRIDGE_QA_TEST_FAILURE: failure },
       });
-      if (environment === "github-hosted" && !failure) {
+      const hosted = environment === "github-hosted";
+      if ((hosted || staged) && !failure) {
         assert.equal(result.status, 0, result.stderr);
-        assert.match(result.stdout, /Packaged QA data retained/u);
+        if (hosted) assert.match(result.stdout, /Packaged QA data retained/u);
       } else {
         assert.notEqual(result.status, 0);
         assert.match(result.stderr, new RegExp(failure || "RECYCLE_CALLED", "u"));
       }
-      for (const name of ["qa", "smoke", "install"]) assert.equal(await readFile(join(directory, name, "retained.txt"), "utf8"), "retained");
+      const roots = JSON.parse(/ROOTS=(.+)/u.exec(result.stdout)[1]);
+      for (const root of roots) {
+        assert.equal(dirname(root), staged && !hosted ? staging : directory);
+        assert.equal(await readFile(join(root, "retained.txt"), "utf8"), "retained");
+      }
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -224,6 +239,7 @@ ${stageSlice}
 
     const env = { ...process.env, BRIDGE_QA_TEST_ROOT: directory };
     delete env.RUNNER_ENVIRONMENT;
+    delete env.BRIDGE_RECYCLE_STAGING;
     const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture], {
       encoding: "utf8",
       env,
@@ -274,7 +290,7 @@ test("Windows QA keeps the local public relay, allocates dynamic ports, and isol
   assert.match(windowsSource, /if \(\$env:RUNNER_ENVIRONMENT -eq "github-hosted"\)\s*\{\s*\$installResult = Start-Process -FilePath \$installer\.FullName[\s\S]*?\} else \{[\s\S]*?Join-Path \$installer\.DirectoryName "win-unpacked"[\s\S]*?Copy-Item -LiteralPath \$unpackedDir -Destination \$installRoot -Recurse/u);
   assert.match(windowsSource, /finally\s*\{[\s\S]*?SetEnvironmentVariable\(\$key, \$originalEnvironment\[\$key\], "Process"\)/u);
   assert.match(windowsSource, /\$installPrefix = \[IO\.Path\]::GetFullPath\(\$installRoot\)\.TrimEnd\('\\'\)\s*\+\s*'\\'[\s\S]*?StartsWith\(\$installPrefix,\s*\[StringComparison\]::OrdinalIgnoreCase\)/u);
-  assert.match(windowsSource, /if \(\$env:RUNNER_ENVIRONMENT -eq "github-hosted"\)\s*\{\s*\$uninstaller =[\s\S]*?-ArgumentList @\("\/currentuser", "\/S"\)[\s\S]*?Write-Warning "Packaged QA data retained[\s\S]*?\} else \{[\s\S]*?recycle-cleanup\.cjs/u);
+  assert.match(windowsSource, /if \(\$env:RUNNER_ENVIRONMENT -eq "github-hosted"\)\s*\{\s*\$uninstaller =[\s\S]*?-ArgumentList @\("\/currentuser", "\/S"\)[\s\S]*?Write-Warning "Packaged QA data retained[\s\S]*?\} elseif \(-not \$env:BRIDGE_RECYCLE_STAGING\) \{[\s\S]*?recycle-cleanup\.cjs/u);
   assert.match(windowsSource, /Invoke-NpmScript -Name "test:desktop:pairing"/u);
 });
 

@@ -135,12 +135,17 @@ CI runs on pull requests, pushes to `main`, and manual dispatch. Feature branche
 are checked through their pull requests, avoiding duplicate push and PR runs that
 cancel each other for the same commit.
 
-CI retains Linux verification, Windows/Linux installers, Android, and iOS builds,
-and adds macOS unit tests and browser E2E. Native Desktop unit fixtures explicitly
+CI uses tiered checks on `pull_request` (`test:infra` for docs-only PRs; Ubuntu
+`verify` and `browser-e2e` for code PRs, plus `ios` when `apps/mobile/ios/` changes),
+paired with pre-PR multi-platform local verification via `npm run ci:local`. On pushes
+to `main` and manual dispatch, CI runs the full 8-job matrix (`changes`, Linux `verify`,
+Windows/Linux installers, Android, iOS, macOS unit tests, and browser E2E). Native Desktop unit fixtures explicitly
 simulate macOS while mocking their process and inbox dependencies. POSIX mode-bit
 assertions apply on macOS/Linux; Windows skips the two real child-process tests
 that require POSIX signal reporting in exit events. Test reports and build artifacts upload
-with `if: always()`, including after failures. The fixed `Quality gate` check passes
-only when all seven jobs succeed; failed, cancelled, and skipped jobs fail it.
+with `if: always()`, including after failures. On `main` pushes and manual dispatch,
+the fixed `Quality gate` check passes only when all eight jobs succeed (failed,
+cancelled, and skipped jobs fail it); on pull requests, it requires every non-skipped
+job in the PR tier to succeed without failures or cancellations.
 Repository administrators can select that check as required after the workflow is
 published. Branch protection and release workflows are configured separately.

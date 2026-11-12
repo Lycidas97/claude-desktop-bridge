@@ -125,7 +125,7 @@ try {
       const psArgs = [
         ...sshAlive,
         winHost,
-        `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScript.replaceAll("/", "\\")}" -Revision "${revision}" -BundlePath "${remoteBundle.replaceAll("/", "\\")}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE; if (Test-Path "D:\\work\\cache\\bridge-recycle.exe") { $env:BRIDGE_WIN_RECYCLE_EXE = "D:\\work\\cache\\bridge-recycle.exe" }; if (Test-Path "D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs") { D:\\work\\tools\\node-26\\node.exe --require D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs D:\\work\\ci-worktree\\scripts\\clean.mjs "${remoteScript.replaceAll("/", "\\")}" }; exit $ec`,
+        `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScript.replaceAll("/", "\\")}" -Revision "${revision}" -BundlePath "${remoteBundle.replaceAll("/", "\\")}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE; if (Test-Path "D:\\work\\cache\\bridge-recycle.exe") { $env:BRIDGE_WIN_RECYCLE_EXE = "D:\\work\\cache\\bridge-recycle.exe" }; if (Test-Path "D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs") { D:\\work\\tools\\node-26\\node.exe --require D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs D:\\work\\ci-worktree\\scripts\\clean.mjs "${remoteScript.replaceAll("/", "\\")}"; if ($LASTEXITCODE -ne 0 -and $ec -eq 0) { $ec = $LASTEXITCODE } }; exit $ec`,
       ];
       const tWin = await runPrefixed("WIN", "ssh", psArgs);
       results.push(

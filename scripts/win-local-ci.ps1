@@ -291,7 +291,9 @@ echo "<<< [WSL Ubuntu-24.04] Linux .deb / .rpm / .zip outputs verified"
 }
 
 # Move uploaded git bundle to Windows Recycle Bin
-& "$nodeBin\node.exe" --require "$ciWorktree\scripts\recycle-cleanup.cjs" `
-  "$ciWorktree\scripts\clean.mjs" $BundlePath
+Invoke-Checked "Recycle uploaded git bundle" {
+  & "$nodeBin\node.exe" --require "$ciWorktree\scripts\recycle-cleanup.cjs" `
+    "$ciWorktree\scripts\clean.mjs" $BundlePath
+}
 
 Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revision) ==="

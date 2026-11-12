@@ -38,9 +38,9 @@ npm run audit:runtime
 
 ## GitHub 发布流程
 
-1. 在独立工作树发布分支整理源码、同步版本号与 `CHANGELOG.md`，推送到 `origin`（`Lycidas97/claude-desktop-bridge`）并创建指向 `main` 的 PR（严禁推送到 `upstream` `czhmartinez/claude-desktop-bridge`）。
-2. 完成 PR 的 `Quality gate`（全部 7 个平台/测试 job 成功），确认审查无误后使用 `gh pr merge --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>` 合并。
-3. `ci.yml` 仅对 `pull_request` 自动取消旧运行（`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`），每次 `main` 分支的 `push` CI 均完整运行到底。
+1. 在独立工作树发布分支整理源码、同步版本号与 `CHANGELOG.md`，先在本地通过 `npm run ci:local` 完成跨平台预检，再推送到 `origin`（`Lycidas97/claude-desktop-bridge`）并创建指向 `main` 的 PR（严禁推送到 `upstream` `czhmartinez/claude-desktop-bridge`）。
+2. 完成 PR 的分层 `Quality gate`，确认审查无误后使用 `gh pr merge --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>` 合并。
+3. `ci.yml` 仅对 `pull_request` 自动取消旧运行（`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`），每次 `main` 分支的 `push` CI 均完整运行全部 8 个平台/测试 job 且不允许任何 `skipped`。
 4. 目标发布提交在 `main` 上的 `CI`（`push`）必须满足 `status == "completed"` 且 `conclusion == "success"`（被取消或未完成的运行一律无效）。`release.yml` 与 `release-assets.yml` 均强制校验该条件后才创建/恢复 Release 草稿并构建全部平台资产。
 5. 所有平台使用相同提交。任一必要 job 失败时保留草稿，不公开残缺发布；修复后通过工作流重跑。
 6. 全部资产成功后由工作流发布。不要绕过版本校验、单独手动创建 tag，或把先前版本的安装包改名上传。

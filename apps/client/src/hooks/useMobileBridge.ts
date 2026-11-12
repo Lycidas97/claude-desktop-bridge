@@ -545,7 +545,11 @@ export function useMobileBridge() {
   const loadBackgroundTasks = useCallback(async (sessionId: string): Promise<BridgeBackgroundTask[]> => {
     const response = await sendRequest("session.configuration", { sessionId, includeBackgroundTasks: true }, { wait: true, timeoutMs: 45_000 });
     if (!response?.ok) throw new Error(response?.error?.message ?? "后台任务读取失败");
-    return (response.result as { session?: BridgeSessionInfo }).session?.backgroundTasks ?? [];
+    const session = (response.result as { session?: BridgeSessionInfo }).session;
+    if (!session) return [];
+    const { backgroundTasks = [], ...sessionInfo } = session;
+    setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, sessionInfo) }));
+    return backgroundTasks;
   }, [sendRequest]);
 
   const previewRewind = useCallback(async (sessionId: string, messageId: string): Promise<BridgeSessionRewindPreview> => {

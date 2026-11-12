@@ -39,7 +39,7 @@ npm run audit:runtime
 ## GitHub 发布流程
 
 1. 在独立工作树发布分支整理源码、同步版本号与 `CHANGELOG.md`，在本地通过 `npm run ci:local` 完成全平台预检（Mac + Windows 11 + Android 16 WHPX + WSL2 Ubuntu-24.04 Linux 单测与打包），再推送到 `origin`（`Lycidas97/claude-desktop-bridge`；若先验后推，执行 `npm run ci:local -- --publish` 回写 `ci/local-distributed = success`）并创建指向 `main` 的 PR（严禁推送到 `upstream` `czhmartinez/claude-desktop-bridge`）。
-2. 确认审查与 `ci/local-distributed` 绿勾无误后，使用 `gh pr merge --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>` 合并到 `main`。
+2. 确认审查与 `ci/local-distributed` 绿勾无误后，使用 `gh pr merge <pr-number> --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>` 合并到 `main`。
 3. 检出最新 `main`：若 Squash Merge 后的 `HEAD^{tree}` 与已验证提交一致，可直接运行 `npm run ci:local -- --publish` 将验证状态晋升回写到 `main` 目标提交（否则在 `main` 上重新运行 `npm run ci:local`，或通过 `gh workflow run ci.yml --ref main` 手动运行线上全矩阵兜底 CI）。
 4. `main` 提交获得 `ci/local-distributed == "success"`（或手动 `CI` 工作流 `completed` + `success`）后自动触发 `release.yml`。`release.yml` 与 `release-assets.yml` 均强制校验目标 40 位 SHA 属于 `origin/main` 祖先且具备最新 `ci/local-distributed == "success"` 状态（或已完成的成功 `main` `CI` 运行），被取消、未完成或非 `main` 分支运行一律无效。
 5. 所有平台资产统一在 GitHub Actions 洁净环境中基于同一锁定修订构建。任一必要 job 失败时保留草稿，不公开残缺发布；修复后通过工作流重跑。

@@ -37,7 +37,7 @@ Every pull request on `Lycidas97/claude-desktop-bridge` is checked against these
   Never claim synthetic fixture or unit tests prove live Claude Desktop, MSIX, TCC, or mobile WebView behavior.
 - **Explicit `Not Run` accounting**: Every PR body must list unexecuted checks under `## Not Run` with the concrete reason (e.g., `Windows 11 live MSIX check — not touched by client CSS change`). Silent omission is a review blocker.
 - **Lean Subsystem Docs & Verified Memory**: Keep `docs/subsystems/*.md` focused on directory boundaries, cross-file contracts, and non-obvious invariants — never hand-copy static file lists that `glob` provides. Record only empirically verified pitfalls and recipes in `LESSONS.md`, and respect single-writer ownership across parallel forked worktrees.
-- **Head SHA Lock on Merge**: Push branches and open PRs only on `Lycidas97/claude-desktop-bridge`. Merge only after `ci/local-distributed` (or manual `Quality gate`) succeeds on the exact reviewed commit using:
+- **Head SHA Lock on Merge**: Push branches and open PRs only on `Lycidas97/claude-desktop-bridge`. Merge only after `ci/local-distributed` (or manual `Quality gate`) succeeds on the exact reviewed commit — docs-only PRs (all paths match `docs_only` in `.github/workflows/ci.yml`) skip CI and record `ci:local — docs only` under `## Not Run` — using:
   ```bash
   gh pr merge <pr-number> --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>
   ```

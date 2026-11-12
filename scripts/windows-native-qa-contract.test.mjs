@@ -668,3 +668,25 @@ ${acquisition}
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("WSL script input preserves Bash fail-fast behavior", { skip: process.platform !== "win32" }, async (t) => {
+  const distributions = spawnSync("wsl.exe", ["--list", "--quiet"], { encoding: "utf16le" });
+  if (!distributions.stdout?.includes("Ubuntu-24.04")) return t.skip("Ubuntu-24.04 WSL is not installed");
+  const source = await readFile(new URL("./win-local-ci.ps1", import.meta.url), "utf8");
+  const directory = await mkdtemp(join(tmpdir(), "bridge-wsl-fail-fast-"));
+  try {
+    const fixture = join(directory, "encoding.ps1");
+    await writeFile(fixture, `
+      $ErrorActionPreference = "Stop"
+      ${source.slice(source.indexOf("chcp 65001"), source.indexOf("# Keep Windows"))}
+      "set -euo pipefail\`nfalse\`nprintf 'UNEXPECTED_CONTINUATION\\n'" | wsl.exe -d Ubuntu-24.04 -- bash -s
+      exit $LASTEXITCODE
+    `);
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture], { encoding: "utf8" });
+    assert.equal(result.status, 1, `Bash must stop at false before the final successful command:\n${result.stdout}\n${result.stderr}`);
+    assert.doesNotMatch(result.stdout, /UNEXPECTED_CONTINUATION/u);
+    assert.doesNotMatch(result.stderr, /set: command not found/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

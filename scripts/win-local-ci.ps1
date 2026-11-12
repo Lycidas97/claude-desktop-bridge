@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 chcp 65001 > $null
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
+[Console]::InputEncoding = New-Object Text.UTF8Encoding($false)
 
 # Keep Windows out of Modern Standby (S0 Low Power Idle) for the lifetime of this CI process
 Add-Type -Namespace BridgeCi -Name Power -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint esFlags);'

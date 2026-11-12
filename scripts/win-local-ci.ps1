@@ -262,21 +262,25 @@ try {
   }
   Write-Output "<<< [WIN] Android APK debug signature OK: $actualCert"
 
-  # 8. Wait for Android Emulator boot completion, then run packaged Windows QA + Android WebView pairing smoke
+  # 8. Wait for Android Emulator boot completion and guest network readiness, then run packaged Windows QA + Android WebView pairing smoke
   $bootDeadline = (Get-Date).AddSeconds(180)
   $booted = $false
   while ((Get-Date) -lt $bootDeadline) {
     $prop = (& cmd.exe /c "`"$adb`" shell getprop sys.boot_completed 2>nul") -join ""
     if ($prop.Trim() -eq "1") {
-      $booted = $true
-      break
+      $route = (& cmd.exe /c "`"$adb`" shell ip route 2>nul") -join "`n"
+      $connectivity = (& cmd.exe /c "`"$adb`" shell dumpsys connectivity 2>nul") -join "`n"
+      if ($route -match "10\.0\.2\.0/24" -and $connectivity -match "Active default network:\s*\d+") {
+        $booted = $true
+        break
+      }
     }
     Start-Sleep -Seconds 2
   }
   if (-not $booted) {
-    throw "Timed out waiting for Android Emulator $avdName ($env:ANDROID_SERIAL) to finish booting"
+    throw "Timed out waiting for Android Emulator $avdName ($env:ANDROID_SERIAL) boot and guest network readiness"
   }
-  Write-Output "<<< [WIN] Android Emulator sys.boot_completed=1"
+  Write-Output "<<< [WIN] Android Emulator sys.boot_completed=1, guest network ready"
 
   Invoke-Checked "Packaged Windows QA + Android Emulator WebView Pairing Smoke" {
     $prevSmoke = $env:BRIDGE_WITH_ANDROID_SMOKE

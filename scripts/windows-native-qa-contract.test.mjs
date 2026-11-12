@@ -399,6 +399,160 @@ test("Android installed pairing smoke waits for delayed WebView pairing input mo
   assert.equal(desktopClosed, true);
 });
 
+test("Android installed pairing smoke polls DevTools /json when initial 200 responses have not registered https://localhost/ yet", async () => {
+  let jsonCalls = 0;
+  let report = null;
+
+  class FakeWebSocket {
+    constructor() {
+      this.listeners = new Map();
+      queueMicrotask(() => this.emit("open", {}));
+    }
+    addEventListener(type, listener) {
+      const list = this.listeners.get(type) ?? [];
+      list.push(listener);
+      this.listeners.set(type, list);
+    }
+    emit(type, event) {
+      for (const listener of this.listeners.get(type) ?? []) listener(event);
+    }
+    send(raw) {
+      const { id, method, params } = JSON.parse(raw);
+      let result = {};
+      if (method === "Page.captureScreenshot") {
+        result = { data: Buffer.from("png").toString("base64") };
+      } else if (method === "Runtime.evaluate") {
+        const expr = params.expression;
+        if (expr.includes('Boolean(document.querySelector(\'input[aria-label="配对链接"]\'))') || expr.includes(".m-host-chip .m-status-dot.is-online")) {
+          result = { result: { value: true } };
+        } else if (expr.includes(".m-host-name")) {
+          result = { result: { value: "DESKTOP-CI" } };
+        } else {
+          result = { result: { value: undefined } };
+        }
+      }
+      queueMicrotask(() => this.emit("message", { data: JSON.stringify({ id, result }) }));
+    }
+    close() {}
+  }
+
+  const desktopSnapshot = {
+    pairingUrl: "bridge://pair/fixture",
+    host: { name: "DESKTOP-CI", version: desktopPackage.version },
+    devices: [{ deviceId: "dev-android-1", online: true }],
+    sessions: [],
+  };
+  const desktopWindow = {
+    bridgeDesktop: {
+      async createPairing() { return desktopSnapshot; },
+      async getSnapshot() { return desktopSnapshot; },
+    },
+  };
+  const desktopPage = {
+    url: () => "file:///D:/work/bridge/renderer/index.html",
+    evaluate: async (fn, arg) => new Function("window", `return (${fn.toString()})(arguments[1]);`)(desktopWindow, arg),
+  };
+
+  await new AsyncFunction(
+    "assert", "mkdir", "writeFile", "resolve",
+    "bridgeEndpoint", "encodePairingBundle", "pairingBundleFromUrl",
+    "chromium", "process", "fetch", "WebSocket", "setTimeout",
+    androidE2eSource.replace(/^import .*;\r?\n/gmu, ""),
+  )(
+    assert,
+    async () => {},
+    async () => {},
+    resolve,
+    (url, priority, label) => ({ url, priority, label }),
+    (bundle) => `encoded:${bundle.deviceId}:${bundle.relayUrl}`,
+    () => ({ deviceId: "dev-android-1", relayUrl: "ws://127.0.0.1:8788/ws" }),
+    {
+      async connectOverCDP() {
+        return {
+          contexts: () => [{ pages: () => [desktopPage] }],
+          async close() {},
+        };
+      },
+    },
+    {
+      env: { BRIDGE_ANDROID_SMOKE_PAIRING_ONLY: "1" },
+      stdout: { write(value) { report = JSON.parse(value); } },
+    },
+    async () => {
+      jsonCalls += 1;
+      return {
+        async json() {
+          if (jsonCalls === 1) return [];
+          if (jsonCalls === 2) return [{ type: "page", url: "about:blank", webSocketDebuggerUrl: "ws://127.0.0.1:9224/devtools/page/0" }];
+          return [{ type: "page", url: "https://localhost/", webSocketDebuggerUrl: "ws://127.0.0.1:9224/devtools/page/1" }];
+        },
+      };
+    },
+    FakeWebSocket,
+    (callback) => queueMicrotask(callback),
+  );
+
+  assert.equal(report?.ok, true);
+  assert.ok(jsonCalls >= 3, `Expected connectWebView to poll /json until https://localhost/ registered; got ${jsonCalls} call(s)`);
+});
+
+test("Android emulator readiness gate waits past boot_completed=1 until guest eth0 route and Active default network are up", { skip: process.platform !== "win32" }, async () => {
+  const winCiSource = await readFile(new URL("../scripts/win-local-ci.ps1", import.meta.url), "utf8");
+  const step8Start = winCiSource.indexOf("# 8. Wait for Android Emulator");
+  const step8End = winCiSource.indexOf('Invoke-Checked "Packaged Windows QA');
+  assert.notEqual(step8Start, -1, "Missing step 8 Android Emulator readiness boundary in win-local-ci.ps1");
+  assert.notEqual(step8End, -1, "Missing Packaged Windows QA boundary in win-local-ci.ps1");
+  const readinessSlice = winCiSource.slice(step8Start, step8End).replaceAll("Start-Sleep -Seconds 2", "Start-Sleep -Milliseconds 20");
+
+  const directory = await mkdtemp(join(tmpdir(), "bridge-android-ready-"));
+  try {
+    const stateFile = join(directory, "adb-state.json");
+    const fakeAdbJs = join(directory, "fake-adb.mjs");
+    const fakeAdbCmd = join(directory, "adb.cmd");
+    const gateScript = join(directory, "gate.ps1");
+    await writeFile(stateFile, JSON.stringify({ polls: 0, lastRoute: "", lastNet: "none", calls: [] }));
+    await writeFile(fakeAdbJs, `
+      import { readFileSync, writeFileSync } from "node:fs";
+      const statePath = ${JSON.stringify(stateFile)};
+      const args = process.argv.slice(2).join(" ");
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      state.calls.push(args);
+      if (args.includes("getprop sys.boot_completed")) {
+        state.polls += 1;
+        state.lastRoute = state.polls >= 2 ? "10.0.2.0/24 dev eth0 proto kernel scope link src 10.0.2.15" : "";
+        state.lastNet = state.polls >= 3 ? "100" : "none";
+        writeFileSync(statePath, JSON.stringify(state));
+        process.stdout.write("1\\n");
+      } else if (args.includes("ip route")) {
+        writeFileSync(statePath, JSON.stringify(state));
+        if (state.lastRoute) process.stdout.write(state.lastRoute + "\\n");
+      } else if (args.includes("dumpsys connectivity")) {
+        writeFileSync(statePath, JSON.stringify(state));
+        process.stdout.write("  Active default network: " + state.lastNet + "\\n");
+      }
+    `);
+    await writeFile(fakeAdbCmd, `@"${process.execPath}" "${fakeAdbJs}" %*\r\n`);
+    await writeFile(gateScript, `
+      $ErrorActionPreference = "Stop"
+      $adb = ${JSON.stringify(fakeAdbCmd)}
+      $avdName = "bridge-ci-api36-0"
+      $env:ANDROID_SERIAL = "emulator-5560"
+      ${readinessSlice}
+    `);
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", gateScript], { encoding: "utf8" });
+    assert.equal(result.status, 0, `Step 8 gate script threw unexpectedly:\n${result.stdout}\n${result.stderr}`);
+    const finalState = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.match(finalState.lastRoute, /10\.0\.2\.0\/24/u, `Step 8 readiness gate released with boot_completed=1 while guest eth0 route was still empty (calls=${JSON.stringify(finalState.calls)})`);
+    assert.equal(
+      finalState.lastNet,
+      "100",
+      `Step 8 readiness gate released with boot_completed=1 while guest Active default network=${finalState.lastNet} (calls=${JSON.stringify(finalState.calls)})`,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Wait-HttpEndpoint fails immediately when the monitored process exits early", { skip: process.platform !== "win32" }, () => {
   const waitFnEnd = windowsSource.search(/^function Invoke-NpmScript \{/mu);
   assert.notEqual(waitFnEnd, -1, "Missing Invoke-NpmScript boundary in windows-packaged-qa.ps1");

@@ -21,6 +21,7 @@ async function fixture() {
     cancelQueuedMessage: (...args: unknown[]) => { calls.push(args); return args[1] !== "consumed"; },
     promoteQueuedMessage: (...args: unknown[]) => { calls.push(args); return args[1] !== "consumed"; },
     sendSteeredNow: (...args: unknown[]) => { calls.push(args); return args[1] !== "consumed"; },
+    saveTrust: (...args: unknown[]) => { calls.push(args); },
     onOnEvent: (callback: (value: unknown) => void) => { events.add(callback); return () => events.delete(callback); },
     onOnToolPermissionRequest: (callback: (value: unknown) => void) => { permissions.add(callback); return () => permissions.delete(callback); },
   };
@@ -191,6 +192,21 @@ describe("native Desktop inspector", () => {
       expect(f.inspector.supports("startBtwChild")).toBe(true);
       expect(await f.inspector.call("startBtwChild", ["local-native"])).toEqual({ status: "started", sessionId: "native-child" });
       expect(f.calls).toEqual([["local-native"]]);
+    } finally { await f.close(); }
+  });
+
+  it.each(["D:\\PARA", "/Users/demo/new-workspace"])("detects and forwards saveTrust for %s without advertising absent methods", async cwd => {
+    const f = await fixture();
+    try {
+      await f.inspector.connect();
+      expect(f.inspector.supports("saveTrust")).toBe(true);
+      await f.inspector.call("saveTrust", [cwd]);
+      expect(f.calls).toEqual([[cwd]]);
+      Reflect.deleteProperty(f.api, "saveTrust");
+      await f.inspector.close();
+      f.reload();
+      await f.inspector.connect();
+      expect(f.inspector.supports("saveTrust")).toBe(false);
     } finally { await f.close(); }
   });
 

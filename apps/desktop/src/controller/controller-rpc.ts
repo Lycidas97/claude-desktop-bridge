@@ -23,7 +23,7 @@ import { MAGPIE_QUOTA_METHOD } from "../../../../plugins/magpie-quota/contract.j
 import type { createMagpieQuotaPlugin } from "../../../../plugins/magpie-quota/desktop.js";
 import type { ClaudeDesktopLifecycle } from "../app/claude-desktop-lifecycle.js";
 import { accessibleDirectory } from "../app/working-directory.js";
-import type { ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
+import { WorkspaceTrustRequiredError, type ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
 import type { EvidenceManager } from "../evidence/evidence-manager.js";
 import type { FileUploadManager } from "../evidence/file-upload.js";
 import type { LoadedDesktopConfig } from "../transport/config.js";
@@ -309,13 +309,27 @@ export async function dispatchControllerRequest(
     if (projectId !== undefined && (typeof projectId !== "string" || !projectId.trim())) {
       throw new Error("projectId must be a non-empty string");
     }
-    return {
-      session: await host.broker.createSession(
-        stringParam(params, "cwd")!,
-        stringParam(params, "title", false),
-        typeof projectId === "string" ? projectId.trim() : undefined,
-      ),
-    };
+    if (params.trustWorkspace !== undefined && typeof params.trustWorkspace !== "boolean") {
+      throw new Error("trustWorkspace must be a boolean");
+    }
+    try {
+      return {
+        session: await host.broker.createSession(
+          stringParam(params, "cwd")!,
+          stringParam(params, "title", false),
+          typeof projectId === "string" ? projectId.trim() : undefined,
+          ...(params.trustWorkspace === true ? [true] as const : []),
+        ),
+      };
+    } catch (error) {
+      if (error instanceof WorkspaceTrustRequiredError) {
+        throw new BridgeRequestError(
+          error.manual ? "WORKSPACE_TRUST_MANUAL_REQUIRED" : "WORKSPACE_TRUST_REQUIRED",
+          error.message,
+        );
+      }
+      throw error;
+    }
   }
   if (request.method === "session.fork") {
     const sessionId = stringParam(params, "sessionId")!;

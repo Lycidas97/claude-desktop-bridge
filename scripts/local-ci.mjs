@@ -187,7 +187,7 @@ async function runCli() {
       const startedAt = Date.now();
       const child = spawn(command, commandArgs, {
         cwd: root,
-        env: { ...process.env, ...extraEnv },
+        env: { ...process.env, ...(prefix === "MAC" ? { BRIDGE_RECYCLE_STAGING: join(tempRoot, "mac-recycle") } : {}), ...extraEnv },
         stdio: ["ignore", "pipe", "pipe"],
       });
       activeChildren.add(child);
@@ -219,6 +219,7 @@ async function runCli() {
   }
 
   const tempRoot = await mkdtemp(join(tmpdir(), "bridge-local-ci-"));
+  if (!skipMac) await mkdir(join(tempRoot, "mac-recycle"));
   const results = [];
   const sshAlive = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
   let unfinishedWinRunId = null;

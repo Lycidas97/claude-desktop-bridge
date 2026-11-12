@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as fs from 'node:fs';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -466,6 +466,59 @@ process.stdout.write('{"state":"success"}\\n');
     });
     assert.notEqual(pub3.status, 0);
     assert.equal(await readFile(ghLog, 'utf8'), '');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Mac CI stages every command per run and recycles its staging before completion', { skip: process.platform === 'win32' }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-mac-ci-staging-'));
+  try {
+    const runs = await Promise.all([0, 1].map(async index => {
+      const repoDir = join(directory, `repo-${index}`);
+      const binDir = join(directory, `bin-${index}`);
+      const events = join(directory, `events-${index}.jsonl`);
+      const fixture = join(directory, `npm-${index}.mjs`);
+      await mkdir(join(repoDir, 'scripts'), { recursive: true });
+      await mkdir(binDir);
+      for (const name of ['local-ci.mjs', 'recycle-cleanup.cjs']) {
+        await copyFile(new URL(`./${name}`, import.meta.url), join(repoDir, 'scripts', name));
+      }
+      await writeFile(fixture, `
+        import { appendFileSync, existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
+        import { join } from 'node:path';
+        const staging = process.env.BRIDGE_RECYCLE_STAGING;
+        const renderer = join(process.cwd(), 'renderer');
+        mkdirSync(renderer);
+        writeFileSync(join(renderer, 'index.html'), 'fixture');
+        rmSync(renderer, { recursive: true });
+        appendFileSync(${JSON.stringify(events)}, JSON.stringify({ args: process.argv.slice(2), staging,
+          staged: !!staging && existsSync(staging) && readdirSync(staging).length > 0 }) + '\\n');
+      `);
+      await writeFile(join(binDir, 'npm'), `#!/bin/sh\nexec "${process.execPath}" --require "${join(repoDir, 'scripts/recycle-cleanup.cjs')}" "${fixture}" "$@"\n`, { mode: 0o755 });
+      for (const args of [['init', '-q'], ['add', '.'], ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'fixture']]) {
+        assert.equal(spawnSync('git', args, { cwd: repoDir }).status, 0);
+      }
+      const child = spawn(process.execPath, [join(repoDir, 'scripts/local-ci.mjs'), '--skip-win', '--no-publish'], {
+        cwd: repoDir, env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let output = '';
+      child.stdout.on('data', chunk => { output += chunk; });
+      child.stderr.on('data', chunk => { output += chunk; });
+      const code = await new Promise((resolveExit, rejectExit) => {
+        child.on('error', rejectExit);
+        child.on('close', resolveExit);
+      });
+      return { code, output, records: (await readFile(events, 'utf8')).trim().split('\n').map(line => JSON.parse(line)) };
+    }));
+    for (const run of runs) {
+      assert.equal(run.code, 0, run.output);
+      assert.ok(run.records.some(record => record.args.join(' ') === 'run verify'));
+      assert.ok(run.records.every(record => record.staging && record.staged), 'Every Mac CI command must inherit staging');
+      assert.equal(new Set(run.records.map(record => record.staging)).size, 1);
+      assert.equal(fs.existsSync(run.records[0].staging), false, 'Run staging must be recycled before completion');
+    }
+    assert.notEqual(runs[0].records[0].staging, runs[1].records[0].staging);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

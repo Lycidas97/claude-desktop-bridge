@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm as recycle, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -44,9 +44,14 @@ function postCommitStatus({ repo, revision, description, cwd, env = process.env,
     throw new Error(`Expected 40-char commit SHA, got: ${revision}`);
   }
   const summary = description.slice(0, 140);
+  const ghExec = env.BRIDGE_GH_EXEC;
+  const [ghCmd, ghPrefix] = ghExec && /\.[cm]?js$/iu.test(ghExec)
+    ? [process.execPath, [ghExec]]
+    : [ghExec || "gh", []];
   const result = spawnSync(
-    "gh",
+    ghCmd,
     [
+      ...ghPrefix,
       "api",
       `repos/${validRepo}/statuses/${revision}`,
       "-f",
@@ -301,6 +306,6 @@ async function runCli() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === scriptPath) {
+if (process.argv[1] && realpathSync(process.argv[1]) === scriptPath) {
   await runCli();
 }

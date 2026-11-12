@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
@@ -286,12 +286,10 @@ test('local-ci status writeback enforces origin boundary, full-run qualification
   const directory = await mkdtemp(join(tmpdir(), 'bridge-local-ci-status-'));
   try {
     const repoDir = join(directory, 'repo');
-    const binDir = join(directory, 'bin');
+    const ghScript = join(directory, 'gh-stub.cjs');
     const ghLog = join(directory, 'gh-calls.jsonl');
     await mkdir(repoDir, { recursive: true });
-    await mkdir(binDir, { recursive: true });
 
-    const ghScript = join(binDir, 'gh-stub.cjs');
     await writeFile(
       ghScript,
       `const fs = require('node:fs');
@@ -307,8 +305,6 @@ if (process.env.MOCK_GH_MODE === '401') {
 process.stdout.write('{"state":"success"}\\n');
 `,
     );
-    await writeFile(join(binDir, 'gh'), `#!${process.execPath}\nrequire(${JSON.stringify(ghScript)});\n`, { mode: 0o755 });
-    await writeFile(join(binDir, 'gh.cmd'), `@"${process.execPath}" "${ghScript}" %*\r\n`);
 
     const runGit = (...gitArgs) => {
       const res = spawnSync('git', gitArgs, { cwd: repoDir, encoding: 'utf8' });
@@ -326,7 +322,7 @@ process.stdout.write('{"state":"success"}\\n');
 
     const baseEnv = {
       ...process.env,
-      PATH: `${binDir}${delimiter}${process.env.PATH}`,
+      BRIDGE_GH_EXEC: ghScript,
       MOCK_GH_LOG: ghLog,
       BRIDGE_GITHUB_STATUS_REPO: 'Lycidas97/claude-desktop-bridge',
     };

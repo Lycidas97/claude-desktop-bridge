@@ -228,6 +228,36 @@ describe("SectionManageDialog and useSectionManage", () => {
     expect(controller.state).toBeUndefined();
   });
 
+  it.each(["connection", "desktop"] as const)("disables deletion after %s disconnect while keeping feedback and cancellation", (disconnected) => {
+    let controller = renderController();
+    controller.openMenu("section:busy");
+    controller = renderController();
+    controller.startConfirmDelete();
+    controller = renderController();
+    const buttons = () => elements(<SectionManageDialog controller={controller} />)
+      .filter((element) => element.type === "button");
+    expect(buttons().find((button) => button.props.children === "删除分组")!.props.disabled).toBe(false);
+
+    if (disconnected === "connection") connection = "closed";
+    else desktopOnline = false;
+    controller = renderController();
+    expect(buttons().find((button) => button.props.children === "删除分组")!.props.disabled).toBe(true);
+    expect(renderToStaticMarkup(<SectionManageDialog controller={controller} />)).toContain("电脑已离线，连接后可删除分组。");
+    expect(onDeleteSection).not.toHaveBeenCalled();
+
+    connection = "connected";
+    desktopOnline = true;
+    controller = renderController();
+    expect(buttons().find((button) => button.props.children === "删除分组")!.props.disabled).toBe(false);
+
+    desktopOnline = false;
+    controller = renderController();
+    const cancel = buttons().find((button) => button.props.children === "取消")!;
+    expect(cancel.props.disabled).toBe(false);
+    cancel.props.onClick();
+    expect(renderController().state).toBeUndefined();
+  });
+
   it("trims section names on rename, skips unchanged names, and surfaces rename errors", async () => {
     let controller = renderController();
     controller.openMenu("section:empty");

@@ -355,10 +355,11 @@ export function SectionManageDialog({ controller }: { controller: SectionManageC
       <ConfirmationDialog
         open
         title="删除分组"
-        description={`删除「${targetProject.name}」分组？组内 ${targetProject.sessionCount} 个会话不会删除，将移回各自的项目目录。`}
+        description={`删除「${targetProject.name}」分组？组内 ${targetProject.sessionCount} 个会话不会删除，将移回各自的项目目录。${online ? "" : "电脑已离线，连接后可删除分组。"}`}
         confirmLabel="删除分组"
         danger
         busy={state.busy}
+        confirmDisabled={!online}
         onCancel={controller.close}
         onConfirm={() => void controller.runDelete()}
       />

@@ -254,10 +254,13 @@ async function runCli() {
 
     if (!skipWin) {
       tasks.push((async () => {
-        const bundleLocal = join(tempRoot, `ci-${revision.slice(0, 12)}.bundle`);
+        const runId = `${revision.slice(0, 12)}-${process.pid}-${Date.now()}`;
+        const bundleLocal = join(tempRoot, `ci-${runId}.bundle`);
         const scriptLocal = resolve(root, "scripts/win-local-ci.ps1");
-        const remoteBundle = `D:/work/cache/temp/ci-${revision.slice(0, 12)}.bundle`;
-        const remoteScript = `D:/work/cache/temp/win-local-ci-${revision.slice(0, 12)}.ps1`;
+        const remoteBundle = `D:/work/cache/temp/ci-${runId}.bundle`;
+        const remoteScript = `D:/work/cache/temp/win-local-ci-${runId}.ps1`;
+        const remoteBundleWin = remoteBundle.replaceAll("/", "\\");
+        const remoteScriptWin = remoteScript.replaceAll("/", "\\");
 
         const sshAlive = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
 
@@ -269,7 +272,7 @@ async function runCli() {
         const psArgs = [
           ...sshAlive,
           winHost,
-          `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScript.replaceAll("/", "\\")}" -Revision "${revision}" -BundlePath "${remoteBundle.replaceAll("/", "\\")}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE; if (Test-Path "D:\\work\\cache\\bridge-recycle.exe") { $env:BRIDGE_WIN_RECYCLE_EXE = "D:\\work\\cache\\bridge-recycle.exe" }; if (Test-Path "D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs") { D:\\work\\tools\\node-26\\node.exe --require D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs D:\\work\\ci-worktree\\scripts\\clean.mjs "${remoteScript.replaceAll("/", "\\")}"; if ($LASTEXITCODE -ne 0 -and $ec -eq 0) { $ec = $LASTEXITCODE } }; exit $ec`,
+          `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE; if (Test-Path -LiteralPath "${remoteScriptWin}") { if (Test-Path "D:\\work\\cache\\bridge-recycle.exe") { & "D:\\work\\cache\\bridge-recycle.exe" "${remoteScriptWin}" } elseif (Test-Path "D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs") { D:\\work\\tools\\node-26\\node.exe --require D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs D:\\work\\ci-worktree\\scripts\\clean.mjs "${remoteScriptWin}" }; if ($LASTEXITCODE -ne 0 -and $ec -eq 0) { $ec = $LASTEXITCODE } }; exit $ec`,
         ];
         const tWin = await runPrefixed("WIN", "ssh", psArgs);
         results.push(

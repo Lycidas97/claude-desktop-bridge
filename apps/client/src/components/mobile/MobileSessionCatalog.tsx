@@ -11,10 +11,7 @@ import type {
 import {
   AlertTriangle,
   Archive,
-  ArrowDown,
-  ArrowUp,
   ArrowUpDown,
-  ArrowUpToLine,
   Check,
   ChevronDown,
   ChevronRight,
@@ -41,7 +38,6 @@ import {
   expandAllProjects,
   expandProject,
   groupProjectSessionFamilies,
-  moveProject,
   previewProjectSessionFamilies,
   sortProjectSessionsByRecent,
   type SessionFamily,
@@ -53,6 +49,7 @@ import { SectionManageDialog, type SectionManageController } from "../session/Se
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { MobilePageHeader } from "./MobilePageHeader.js";
 import { MobileSheet, SheetAction } from "./MobileSheet.js";
+import { ProjectOrderSheet } from "./ProjectOrderSheet.js";
 
 export interface MobileSessionCatalogProps {
   desktopName: string;
@@ -495,7 +492,7 @@ export function MobileSessionCatalog({
               <SheetAction
                 icon={<ArrowUpDown size={19} />}
                 label="调整项目顺序"
-                detail="项目顺序固定，可置顶或上下移动"
+                detail="项目顺序固定，可长按或拖动调整"
                 onClick={() => {
                   setDirectoryMenuOpen(false);
                   setProjectOrderOpen(true);
@@ -516,34 +513,15 @@ export function MobileSessionCatalog({
         </MobileSheet>
       )}
       {projectOrderOpen && (
-        <MobileSheet
-          eyebrow={desktopName}
-          title="项目顺序"
+        <ProjectOrderSheet
+          desktopName={desktopName}
+          projectOrder={projectOrder}
+          projectsByActivity={projectsByActivity}
+          projects={snapshot?.projects}
+          sessions={sessions}
+          onPlaceProjects={placeProjects}
           onClose={() => setProjectOrderOpen(false)}
-          footer={(
-            <>
-              <button type="button" className="secondary-button" disabled={projectOrder.join() === projectsByActivity.join()} onClick={() => placeProjects(projectsByActivity)}>按最近活动重排</button>
-              <button type="button" className="primary-button" onClick={() => setProjectOrderOpen(false)}>完成</button>
-            </>
-          )}
-        >
-          <p className="m-sheet-note">项目按这里的顺序固定显示，点开或收到回复都不会移动项目；新出现的项目排在最前。项目内的会话按最近回复或打开的先后排列。</p>
-          <div className="m-group project-order-list">
-            {projectOrder.map((projectId, index) => {
-              const projectSessions = sessions.filter((session) => session.projectId === projectId && !session.archivedAt);
-              const name = snapshot?.projects.find((project) => project.projectId === projectId)?.name ?? projectSessions[0]!.projectName;
-              const last = index === projectOrder.length - 1;
-              return (
-                <div className="project-order-row" key={projectId}>
-                  <span><strong>{name}</strong><small>{projectSessions.length} 个会话</small></span>
-                  <IconButton label={`置顶「${name}」`} disabled={index === 0} onClick={() => placeProjects(moveProject(projectOrder, projectId, 0))}><ArrowUpToLine size={18} /></IconButton>
-                  <IconButton label={`上移「${name}」`} disabled={index === 0} onClick={() => placeProjects(moveProject(projectOrder, projectId, index - 1))}><ArrowUp size={18} /></IconButton>
-                  <IconButton label={`下移「${name}」`} disabled={last} onClick={() => placeProjects(moveProject(projectOrder, projectId, index + 1))}><ArrowDown size={18} /></IconButton>
-                </div>
-              );
-            })}
-          </div>
-        </MobileSheet>
+        />
       )}
       {sectionCreate && (
         <div className="modal-backdrop session-create-backdrop" role="presentation"

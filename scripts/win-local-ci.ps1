@@ -79,6 +79,24 @@ function Invoke-Checked {
   Write-Output ("<<< [WIN] $Label OK ({0:N1}s)" -f $sw.Elapsed.TotalSeconds)
 }
 
+# Serialize concurrent multi-worktree ci:local runs sharing D:\work\ci-worktree, bridge-ci-api36, and WSL2
+$ciMutex = [System.Threading.Mutex]::new($false, "Local\ClaudeDesktopBridgeWinCi")
+$mutexAcquired = $false
+try {
+  try {
+    $mutexAcquired = $ciMutex.WaitOne(0)
+  } catch [System.Threading.AbandonedMutexException] {
+    $mutexAcquired = $true
+  }
+  if (-not $mutexAcquired) {
+    Write-Output ">>> [WIN] Waiting for active win-local-ci run to finish (Local\ClaudeDesktopBridgeWinCi)..."
+    try {
+      $mutexAcquired = $ciMutex.WaitOne()
+    } catch [System.Threading.AbandonedMutexException] {
+      $mutexAcquired = $true
+    }
+  }
+
 # 1. Fetch exact commit bundle into anchor repo and attach/checkout D:\work\ci-worktree
 Invoke-Checked "Sync git bundle ($Revision)" {
   git -C $anchorRepo bundle verify $BundlePath | Out-Null
@@ -296,10 +314,22 @@ echo "<<< [WSL Ubuntu-24.04] Linux tests + .deb / .rpm / .zip outputs verified"
   }
 }
 
-# Move uploaded git bundle to Windows Recycle Bin
-Invoke-Checked "Recycle uploaded git bundle" {
-  & "$nodeBin\node.exe" --require "$ciWorktree\scripts\recycle-cleanup.cjs" `
-    "$ciWorktree\scripts\clean.mjs" $BundlePath
-}
-
 Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revision) ==="
+} finally {
+  try {
+    if (Test-Path -LiteralPath $BundlePath) {
+      Invoke-Checked "Recycle uploaded git bundle" {
+        if (Test-Path -LiteralPath "$cacheRoot\bridge-recycle.exe") {
+          & "$cacheRoot\bridge-recycle.exe" $BundlePath
+        } else {
+          throw "No Windows Recycle Bin helper available to remove $BundlePath"
+        }
+      }
+    }
+  } finally {
+    if ($mutexAcquired) {
+      $ciMutex.ReleaseMutex()
+    }
+    $ciMutex.Dispose()
+  }
+}

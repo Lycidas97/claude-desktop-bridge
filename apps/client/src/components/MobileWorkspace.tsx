@@ -1407,6 +1407,7 @@ export function MobileWorkspace({
         item={item}
         key={item.id}
         entering={streamEntering(item.id)}
+        collapsible={false}
         stopping={subagentStopBusy && stopSubagentTarget?.agentId === item.subagent!.agentId}
         {...(selectedSession.subagentStopScope === "process" && selectedSession.turnState === "running"
           ? { stopBlockedReason: "主对话运行中，需要先停止主对话" }

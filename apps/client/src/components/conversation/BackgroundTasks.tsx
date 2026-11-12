@@ -100,13 +100,17 @@ function subagentItem(sessionId: string, subagent: BridgeSubagentSummary, items:
     (subagent.toolUseId && item.subagent.toolUseId === subagent.toolUseId) || item.subagent.agentId === subagent.agentId
   ));
   const model = latestSubagentModel(streamItem?.subagent ?? subagent, subagent);
-  return streamItem?.subagent
-    ? { ...streamItem, subagent: { ...subagent, ...streamItem.subagent, ...(model ? { model } : {}), state: subagent.state } }
-    : {
-        id: subagent.toolUseId ?? `subagent:${subagent.agentId}`,
-        sessionId, role: "tool", toolName: "Agent", text: subagent.description,
-        createdAt: subagent.startedAt, origin: "claude-desktop", subagent,
-      };
+  if (!streamItem?.subagent) {
+    return {
+      id: subagent.toolUseId ?? `subagent:${subagent.agentId}`,
+      sessionId, role: "tool", toolName: "Agent", text: subagent.description,
+      createdAt: subagent.startedAt, origin: "claude-desktop", subagent,
+    };
+  }
+  const merged = subagent.updatedAt > streamItem.subagent.updatedAt
+    ? { ...streamItem.subagent, ...subagent, ...(streamItem.subagent.reportText ? { reportText: streamItem.subagent.reportText } : {}) }
+    : { ...subagent, ...streamItem.subagent };
+  return { ...streamItem, subagent: { ...merged, ...(model ? { model } : {}), state: subagent.state } };
 }
 
 function WorkflowTimeline({
@@ -166,7 +170,7 @@ function WorkflowTimeline({
   );
 }
 
-/** The session's background tasks, grouped by kind; opened from the header or a stream marker. */
+/** The session's background tasks, grouped by kind from the header or focused on a single stream marker. */
 export function BackgroundTasksSheet({
   sessionId,
   tasks,
@@ -184,15 +188,59 @@ export function BackgroundTasksSheet({
   renderSubagent(item: BridgeHistoryItem): ReactNode;
   onClose(): void;
 }) {
-  const focusTask = focus?.subagent ? findBackgroundTask(tasks, focus.subagent) : undefined;
-  const [openId, setOpenId] = useState(focusTask?.id);
+  const [focused, setFocused] = useState(focus);
+  const [openId, setOpenId] = useState<string>();
+  const streamFocus = focused?.subagent
+    ? items.find((entry) => entry.id === focused.id || Boolean(entry.subagent && (
+        (focused.subagent!.toolUseId && entry.subagent.toolUseId === focused.subagent!.toolUseId)
+        || entry.subagent.agentId === focused.subagent!.agentId
+      ))) ?? focused
+    : undefined;
+  if (streamFocus?.subagent) {
+    const focusSubagent = streamFocus.subagent;
+    const focusTask = findBackgroundTask(tasks, focusSubagent);
+    const kind = focusTask?.kind ?? itemKind(focusSubagent);
+    const title = kind === "workflow" && focusSubagent.workflowRunId
+      ? focusTask?.workflow?.name ?? focusTask?.description ?? KIND_TITLES.workflow
+      : focusTask?.description ?? focusSubagent.description;
+    return (
+      <MobileSheet
+        eyebrow={KIND_TITLES[kind]}
+        title={title}
+        onClose={onClose}
+        {...(tasks.length > 0 ? {
+          footer: (
+            <button type="button" className="secondary-button" onClick={() => setFocused(undefined)}>
+              全部后台任务
+            </button>
+          ),
+        } : {})}
+      >
+        {kind === "workflow" && focusTask?.workflow ? (
+          <WorkflowTimeline task={focusTask} sessionId={sessionId} items={items} renderSubagent={renderSubagent} />
+        ) : kind === "bash" ? (
+          <div className="background-task-entry">
+            <button type="button" className="background-task-row" disabled>
+              <Terminal size={16} aria-hidden="true" />
+              <span className="background-task-row-text">{title}</span>
+              <StateGlyph state={focusTask?.state ?? focusSubagent.state} />
+            </button>
+          </div>
+        ) : (
+          renderSubagent(
+            focusTask?.subagent
+              ? subagentItem(sessionId, focusTask.subagent, items.includes(streamFocus) ? items : [...items, streamFocus])
+              : streamFocus,
+          )
+        )}
+      </MobileSheet>
+    );
+  }
   const groups = (["workflow", "subagent", "bash"] as const)
     .map((kind) => ({ kind, tasks: tasks.filter((task) => task.kind === kind) }))
     .filter((group) => group.tasks.length > 0);
   return (
     <MobileSheet title="后台任务" onClose={onClose}>
-      {/* Finished tasks age out of the tray; the stream item still has its own card. */}
-      {focus?.subagent && !focusTask && renderSubagent(focus)}
       {groups.map((group) => (
         <section className="background-task-group" key={group.kind} aria-label={KIND_TITLES[group.kind]}>
           <h3>{KIND_TITLES[group.kind]}</h3>

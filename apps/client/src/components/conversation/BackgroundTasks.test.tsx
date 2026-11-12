@@ -1,12 +1,43 @@
 import type { BridgeBackgroundTask, BridgeHistoryItem, BridgeSubagentSummary } from "@bridge/protocol";
-import { createElement, type ReactNode } from "react";
+import { createElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "./BackgroundTasks.js";
+import { SubagentCard } from "./SubagentCard.js";
+
+const hooks = vi.hoisted(() => ({ slots: [] as any[], index: 0 }));
+vi.mock("react", async (original) => ({
+  ...await original<typeof import("react")>(),
+  useState(initial: any) {
+    const index = hooks.index++;
+    if (!(index in hooks.slots)) hooks.slots[index] = typeof initial === "function" ? initial() : initial;
+    return [hooks.slots[index], (value: any) => {
+      hooks.slots[index] = typeof value === "function" ? value(hooks.slots[index]) : value;
+    }];
+  },
+}));
 
 vi.mock("../mobile/MobileSheet.js", () => ({
-  MobileSheet: ({ title, children }: { title: string; children: ReactNode }) => createElement("section", { "aria-label": title }, children),
+  MobileSheet: ({ eyebrow, title, onClose, children, footer }: {
+    eyebrow?: ReactNode;
+    title: ReactNode;
+    onClose(): void;
+    children: ReactNode;
+    footer?: ReactNode;
+  }) => createElement("section", { "aria-label": String(title), "data-eyebrow": eyebrow, onClose }, children, footer),
 }));
+
+function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!node || typeof node !== "object" || !("props" in node)) return [];
+  const element = node as ReactElement<Record<string, any>>;
+  return [element, ...elements(element.props.children), ...elements(element.props.footer)];
+}
+
+beforeEach(() => {
+  hooks.slots = [];
+  hooks.index = 0;
+});
 
 function agent(agentId: string, extra: Partial<BridgeSubagentSummary> = {}): BridgeSubagentSummary {
   return { agentId, description: agentId, state: "running", toolCount: 0, startedAt: 1, updatedAt: 2, ...extra };
@@ -36,10 +67,12 @@ const reviewer: BridgeBackgroundTask = {
   subagent: agent("ag01", { toolUseId: "agent-call", description: "Audit the parser", toolCount: 7 }),
 };
 
-function sheet(focus?: BridgeHistoryItem, items: BridgeHistoryItem[] = []) {
+function sheet(focus?: BridgeHistoryItem, items: BridgeHistoryItem[] = [], tasks: BridgeBackgroundTask[] = [workflow, reviewer, shell]) {
+  hooks.slots = [];
+  hooks.index = 0;
   const rendered: BridgeHistoryItem[] = [];
   const html = renderToStaticMarkup(createElement(BackgroundTasksSheet, {
-    sessionId: "A", tasks: [workflow, reviewer, shell], items,
+    sessionId: "A", tasks, items,
     ...(focus ? { focus } : {}),
     renderSubagent: (entry: BridgeHistoryItem) => {
       rendered.push(entry);
@@ -75,14 +108,19 @@ describe("background task tray", () => {
     expect(html).toMatch(/workflow-phase is-running[^]*Draft[^]*1\/2/u);
     expect(html).toMatch(/workflow-phase is-running[^]*Check[^]*0\/1/u);
     expect(html).toMatch(/workflow-phase is-pending[^]*Revise/u);
+    expect(html).not.toContain("Audit the parser");
+    expect(html).not.toContain("Start dev server");
     expect(html).not.toContain("%");
   });
 
-  it("opens a focused subagent with the stream's full report and the tray's state", () => {
+  it("opens a focused subagent directly into its detail view without unrelated task groups", () => {
     const streamItem = item(agent("ag01", { toolUseId: "agent-call", state: "completed", reportText: "Full report" }));
-    const { rendered } = sheet(streamItem, [streamItem]);
+    const { html, rendered } = sheet(streamItem, [streamItem]);
     expect(rendered).toHaveLength(1);
     expect(rendered[0]?.subagent).toMatchObject({ agentId: "ag01", reportText: "Full report", state: "running" });
+    expect(html).not.toContain("figure-review");
+    expect(html).not.toContain("Start dev server");
+    expect(html).toContain("全部后台任务");
   });
 
   it("shows the stream item's own card when its task aged out of the tray", () => {
@@ -90,6 +128,61 @@ describe("background task tray", () => {
     const { html, rendered } = sheet(old);
     expect(rendered).toEqual([old]);
     expect(html).toContain("Earlier");
+    expect(html).not.toContain("figure-review");
+    expect(sheet(old, [old], []).html).not.toContain("全部后台任务");
+  });
+
+  it("opens a focused bash marker directly without listing other background tasks", () => {
+    const bashFocus = item(agent("bsh01", { toolUseId: "bash-call", description: "Start dev server", taskKind: "bash" }));
+    const { html, rendered } = sheet(bashFocus);
+    expect(rendered).toEqual([]);
+    expect(html).toContain("Start dev server");
+    expect(html).not.toContain("figure-review");
+    expect(html).not.toContain("Audit the parser");
+  });
+
+  it("updates a focused subagent live across stream and tray updates, and returns to the full list or closes", () => {
+    const initialFocus = item(agent("ag01", { toolUseId: "agent-call", description: "Audit the parser", updatedAt: 2 }));
+    const onClose = vi.fn();
+    let currentItems: BridgeHistoryItem[] = [initialFocus];
+    let currentTasks: BridgeBackgroundTask[] = [workflow, reviewer, shell];
+    const render = () => {
+      hooks.index = 0;
+      return BackgroundTasksSheet({
+        sessionId: "A",
+        tasks: currentTasks,
+        items: currentItems,
+        focus: initialFocus,
+        renderSubagent: (entry) => createElement("article", { "data-card": entry.subagent?.agentId }, entry.subagent?.reportText ?? ""),
+        onClose,
+      });
+    };
+
+    let tree = render();
+    const firstCard = elements(tree).find((el) => el.props["data-card"] === "ag01")!;
+    expect(firstCard).toBeDefined();
+    expect(elements(tree).some((el) => el.type === "section" && el.props.className === "background-task-group")).toBe(false);
+
+    currentTasks = [
+      workflow,
+      { ...reviewer, state: "completed", subagent: agent("ag01", { toolUseId: "agent-call", description: "Audit the parser", state: "completed", toolCount: 9, recentTools: ["Read parser.ts"], updatedAt: 10 }) },
+      shell,
+    ];
+    currentItems = [item(agent("ag01", { toolUseId: "agent-call", description: "Audit the parser", state: "completed", reportText: "Verified parser invariants", updatedAt: 8 }))];
+    tree = render();
+    const updatedHtml = renderToStaticMarkup(tree);
+    expect(updatedHtml).toContain("Verified parser invariants");
+
+    const backToList = elements(tree).find((el) => el.type === "button" && el.props.children === "全部后台任务")!;
+    backToList.props.onClick();
+    tree = render();
+    const listHtml = renderToStaticMarkup(tree);
+    expect(listHtml).toContain("figure-review");
+    expect(listHtml).toContain("Audit the parser");
+    expect(listHtml).toContain("Start dev server");
+
+    elements(tree)[0]!.props.onClose();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -124,12 +217,12 @@ describe("subagent actual model rendering", () => {
   it("keeps the latest tray model when merging an older full stream report", () => {
     const stream = item(agent("ag01", { toolUseId: "agent-call", updatedAt: 1, model: "old-model", reportText: "Full report" }));
     const updated: BridgeBackgroundTask = { ...reviewer, subagent: { ...reviewer.subagent!, model: "codex/gpt-6.1-sol", updatedAt: 10 } };
-    const render = vi.fn((_entry: BridgeHistoryItem) => null);
+    const render = vi.fn((entry: BridgeHistoryItem) => createElement(SubagentCard, { item: entry }));
     const html = renderToStaticMarkup(createElement(BackgroundTasksSheet, {
       sessionId: "A", tasks: [updated], items: [stream], focus: stream, onClose: vi.fn(), renderSubagent: render,
     }));
     expect(html).toContain("codex/gpt-6.1-sol");
-    expect(render.mock.calls[0]?.[0].subagent).toMatchObject({ model: "codex/gpt-6.1-sol", reportText: "Full report" });
+    expect(render.mock.calls[0]?.[0].subagent).toMatchObject({ model: "codex/gpt-6.1-sol", reportText: "Full report", toolCount: 7 });
   });
 
   it("shows each Workflow member's model without labelling the aggregate", () => {

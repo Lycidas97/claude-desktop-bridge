@@ -290,11 +290,12 @@ async function runCli() {
     }
     if (unfinishedWinRunId) {
       // Windows OpenSSH keeps the remote powershell.exe running after the local ssh client dies, so it would hold
-      // its win-local-ci slot mutex and emulator until it finished on its own. Kill that process tree explicitly.
+      // its win-local-ci slot mutex and emulator until it finished on its own. Kill that process tree and recycle
+      // the uploaded bundle/script its own finally would have removed.
       const stop = spawnSync("ssh", [
         ...sshAlive,
         winHost,
-        `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; exit 0`,
+        `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; foreach ($leftover in @("D:\\work\\cache\\temp\\ci-${unfinishedWinRunId}.bundle", "D:\\work\\cache\\temp\\win-local-ci-${unfinishedWinRunId}.ps1")) { if (Test-Path -LiteralPath $leftover) { & "D:\\work\\cache\\bridge-recycle.exe" $leftover; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } }; exit 0`,
       ], { encoding: "utf8" });
       if (stop.status !== 0) {
         console.error(`[WIN] Failed to stop remote win-local-ci-${unfinishedWinRunId}.ps1; its slot stays held until it exits: ${stop.stderr || stop.error}`);

@@ -454,6 +454,7 @@ test('a failed Mac leg stops the remote Windows leg so its slot is released', { 
     const stop = calls.find(call => call.includes('taskkill') && call.includes(`win-local-ci-${runId}.ps1`));
     assert.ok(stop, `No remote stop for win-local-ci-${runId}.ps1:\n${calls.join('\n')}`);
     assert.match(stop, /win-fixture/u);
+    assert.ok(stop.includes(`ci-${runId}.bundle`) && stop.includes('bridge-recycle.exe'), stop);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

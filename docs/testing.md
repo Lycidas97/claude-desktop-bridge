@@ -13,7 +13,7 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 | `npm run test:infra` | Small fixtures for runner failure propagation and recycle-bin behavior |
 | `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture |
 | `npm run ci:run -- run test:desktop:service` | After a current Desktop build: real compiled Electron UI/service with isolated Native fixture; on macOS also verifies developer settings, real random TCP/lsof/proc_pidpath, ASAR helper, injected warning UI, and completed background scans after window close |
-| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (`D:\work\ci-worktree`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` Linux `test:infra` + `npm test` + `.deb`/`.rpm`/`.zip`), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
+| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (up to 4 parallel isolated slots `D:\work\ci-slot-<n>`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` Linux `test:infra` + `npm test` + `.deb`/`.rpm`/`.zip`), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
 | `npm run ci:run -- run build -w @bridge/protocol` | Example of wrapping another npm command with Trash-only Node cleanup |
 
 The quota plugin is outside the `apps/*` and `packages/*` workspaces; root test and
@@ -125,6 +125,9 @@ recycle command. Missing paths are ignored only with `force: true`. Unsupported
 systems, missing recycle commands, and recycle failures surface as errors; there
 is no permanent-delete fallback. The preload selects the host platform at startup,
 so application tests that mock `process.platform` do not change the recycle command.
+When `BRIDGE_RECYCLE_STAGING` names a directory (set per slot by `win-local-ci.ps1`),
+removals rename into a per-process subdirectory there instead (paths on another
+volume still use the recycle command), and the caller recycles that directory once.
 
 This covers Node processes that inherit `NODE_OPTIONS`. It does not intercept
 native tools, shell deletion commands, browser internals, or processes that discard

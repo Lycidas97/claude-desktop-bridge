@@ -419,6 +419,46 @@ process.stdout.write('{"state":"success"}\\n');
   }
 });
 
+test('a failed Mac leg stops the remote Windows leg so its slot is released', { skip: process.platform === 'win32' }, async () => {
+  // Windows OpenSSH keeps the remote powershell.exe (and its slot mutex) running after the local ssh client is killed.
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-local-ci-stop-'));
+  try {
+    const repoDir = join(directory, 'repo');
+    const binDir = join(directory, 'bin');
+    const sshLog = join(directory, 'ssh.log');
+    const remoteStarted = join(directory, 'remote-started');
+    await mkdir(join(repoDir, 'scripts'), { recursive: true });
+    await mkdir(binDir);
+    await copyFile(new URL('./local-ci.mjs', import.meta.url), join(repoDir, 'scripts', 'local-ci.mjs'));
+    await copyFile(new URL('./recycle-cleanup.cjs', import.meta.url), join(repoDir, 'scripts', 'recycle-cleanup.cjs'));
+    await writeFile(join(repoDir, 'scripts', 'win-local-ci.ps1'), '# fixture\n');
+    const runGit = (...args) => assert.equal(spawnSync('git', args, { cwd: repoDir }).status, 0, `git ${args.join(' ')}`);
+    runGit('init', '-q');
+    runGit('add', '.');
+    runGit('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'fixture');
+    await writeFile(join(binDir, 'ssh'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${sshLog}"\ncase "$*" in *-File*) touch "${remoteStarted}"; exec sleep 30;; esac\n`);
+    await writeFile(join(binDir, 'scp'), '#!/bin/sh\nexit 0\n');
+    await writeFile(join(binDir, 'npm'), `#!/bin/sh\nwhile [ ! -f "${remoteStarted}" ]; do sleep 0.05; done\nexit 1\n`);
+    for (const name of ['ssh', 'scp', 'npm']) await chmod(join(binDir, name), 0o755);
+
+    const result = spawnSync(process.execPath, [join(repoDir, 'scripts', 'local-ci.mjs')], {
+      cwd: repoDir,
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, BRIDGE_WIN_SSH_HOST: 'win-fixture' },
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.equal(result.signal, null, 'local-ci must not hang on the blocked Windows leg');
+    const calls = (await readFile(sshLog, 'utf8')).trim().split('\n');
+    const runId = /win-local-ci-([\w-]+)\.ps1/u.exec(calls.find(call => call.includes('-File')))[1];
+    const stop = calls.find(call => call.includes('taskkill') && call.includes(`win-local-ci-${runId}.ps1`));
+    assert.ok(stop, `No remote stop for win-local-ci-${runId}.ps1:\n${calls.join('\n')}`);
+    assert.match(stop, /win-fixture/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('browser E2E binds an ephemeral kernel port via httpServer.listen and local-ci isolates concurrent Windows runs per slot', async () => {
   const browserSource = await readFile(new URL('../scripts/browser-e2e.mjs', import.meta.url), 'utf8');
   const localCiSource = await readFile(new URL('./local-ci.mjs', import.meta.url), 'utf8');

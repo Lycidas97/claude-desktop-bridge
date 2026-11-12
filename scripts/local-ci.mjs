@@ -220,6 +220,8 @@ async function runCli() {
 
   const tempRoot = await mkdtemp(join(tmpdir(), "bridge-local-ci-"));
   const results = [];
+  const sshAlive = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
+  let unfinishedWinRunId = null;
 
   try {
     const tasks = [];
@@ -262,8 +264,6 @@ async function runCli() {
         const remoteBundleWin = remoteBundle.replaceAll("/", "\\");
         const remoteScriptWin = remoteScript.replaceAll("/", "\\");
 
-        const sshAlive = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
-
         await runPrefixed("WIN-SYNC", "git", ["bundle", "create", bundleLocal, "HEAD"]);
         await runPrefixed("WIN-SYNC", "ssh", [...sshAlive, winHost, 'New-Item -ItemType Directory -Force -Path "D:\\work\\cache\\temp" | Out-Null']);
         await runPrefixed("WIN-SYNC", "scp", ["-q", ...sshAlive, bundleLocal, `${winHost}:${remoteBundle}`]);
@@ -274,7 +274,9 @@ async function runCli() {
           winHost,
           `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE; if (Test-Path -LiteralPath "${remoteScriptWin}") { if (Test-Path "D:\\work\\cache\\bridge-recycle.exe") { & "D:\\work\\cache\\bridge-recycle.exe" "${remoteScriptWin}" } elseif (Test-Path "D:\\work\\claude-desktop-bridge\\scripts\\recycle-cleanup.cjs") { D:\\work\\tools\\node-26\\node.exe --require D:\\work\\claude-desktop-bridge\\scripts\\recycle-cleanup.cjs D:\\work\\claude-desktop-bridge\\scripts\\clean.mjs "${remoteScriptWin}" }; if ($LASTEXITCODE -ne 0 -and $ec -eq 0) { $ec = $LASTEXITCODE } }; exit $ec`,
         ];
+        unfinishedWinRunId = runId;
         const tWin = await runPrefixed("WIN", "ssh", psArgs);
+        unfinishedWinRunId = null;
         results.push(
           `Windows 11 + Android API 36 WHPX Emulator${skipWslLinux ? "" : " + WSL2 Ubuntu-24.04 Linux tests & .deb/.rpm/.zip"} (${tWin}s)`,
         );
@@ -285,6 +287,18 @@ async function runCli() {
   } finally {
     for (const child of activeChildren) {
       child.kill("SIGTERM");
+    }
+    if (unfinishedWinRunId) {
+      // Windows OpenSSH keeps the remote powershell.exe running after the local ssh client dies, so it would hold
+      // its win-local-ci slot mutex and emulator until it finished on its own. Kill that process tree explicitly.
+      const stop = spawnSync("ssh", [
+        ...sshAlive,
+        winHost,
+        `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; exit 0`,
+      ], { encoding: "utf8" });
+      if (stop.status !== 0) {
+        console.error(`[WIN] Failed to stop remote win-local-ci-${unfinishedWinRunId}.ps1; its slot stays held until it exits: ${stop.stderr || stop.error}`);
+      }
     }
     await recycle(tempRoot, { recursive: true, force: true });
   }

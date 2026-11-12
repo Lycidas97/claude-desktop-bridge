@@ -83,7 +83,7 @@ Claude 原生事件继续进入现有被动证据管线：记录轮次、工具�
 
 | 组件 | 职责 |
 |---|---|
-| `apps/desktop/src/claude/`（`claude-desktop-bridge.ts` 等） | 通过本机 inspector 转发 `LocalSessions` 调用、renderer 单队列事件与权限请求；旧连接退役模块隔离在 `apps/desktop/src/legacy/` |
+| `apps/desktop/src/claude/`（`claude-desktop-bridge.ts` 等） | 通过本机 inspector 转发 `LocalSessions` 调用、renderer 单队列事件与权限请求；`connector.ts` 负责移除 pre-1.3 旧连接配置 |
 | `apps/desktop/src/app/` | Electron 主进程/preload 入口、独立后台服务 IPC、跨平台路径与 `developer_settings.json` 授权 |
 | `apps/desktop/src/transcript/` | JSONL 对话历史、DAG 分支与 fork 边界、主会话上下文 token 估算及子代理扫描 |
 | `apps/desktop/src/controller/`（`ConversationStateStore` / `SessionEventLog`） | `DesktopController` 快照编排、无状态 RPC 分发、原生请求幂等收据与单调 `seq` 事件重放（不作为 Claude 历史回退源） |
@@ -186,33 +186,32 @@ stateDiagram-v2
 本次原生重构不导入或改名旧 `sessions-v2.json`、`turn-queue-v2.json`，不恢复其中的
 队列或草稿；旧文件不碰。
 
-## 会话所有权（历史）
+## 会话所有权与并发发送
 
-> 下方状态机属于旧 SDK/CLI Host 接管流程。当前 Claude 执行、队列与权限始终由 Desktop 持有，Bridge 不启动 writer、不退出原生执行器，也不重新排队自动续跑。
+Claude Desktop 是每个会话唯一的执行者和排队方，Bridge 不持有写入权：不启动
+writer、不检测或仲裁“双写”、不接管或释放会话，也不重新排队、自动续跑。手机和
+电脑可以同时向同一会话发消息，先后顺序与排队完全由 Desktop 决定。
 
-```mermaid
-stateDiagram-v2
-  [*] --> DESKTOP_OBSERVED
-  DESKTOP_OBSERVED --> ACQUIRING: "桌面会话空闲且队列非空"
-  ACQUIRING --> BRIDGE_IDLE: "Host 已启动"
-  BRIDGE_IDLE --> BRIDGE_RUNNING: "会话接受消息"
-  BRIDGE_RUNNING --> BRIDGE_IDLE: "turn 完成 / 失败 / 中断"
-  BRIDGE_RUNNING --> OWNERSHIP_CONFLICT: "检测到外部用户写入"
-  OWNERSHIP_CONFLICT --> DESKTOP_OBSERVED: "关闭 Bridge writer，原指令重新排队"
-  BRIDGE_IDLE --> RELEASING: "空闲超时且无队列"
-  RELEASING --> DESKTOP_OBSERVED: "释放既有桌面会话"
-```
+会话快照中的 `ownership` 只取 `DESKTOP_NATIVE_IDLE` 或 `DESKTOP_NATIVE_RUNNING`，
+依据是 `LocalSessions` 报告的 `turnRunning`；有待答权限请求时 `turnState` 为
+`waiting`，否则为 `running` 或 `idle`。协议中其余 `BridgeOwnershipState` 值
+（`DESKTOP_OBSERVED`、`ACQUIRING`、`BRIDGE_*`、`OWNERSHIP_CONFLICT`、`RELEASING` 等）
+属于已移除的 SDK/CLI Host 接管流程，只为兼容保留，当前不会产生。
 
-同一会话只允许一个实际写入者，但 Claude Desktop 的空闲会话进程可以作为只读
-观察者与 Bridge Host 共存。打开、聚焦或查看会话只改变 Desktop 元数据，不会触发
-冲突，也不会导致 Bridge 退出 Claude Desktop。Bridge 启动 Host 前会确认目标
-transcript 已空闲并到达完成边界。
+手机发送统一调用原生 `sendMessage`。会话空闲时直接开始新 turn；会话运行中时，
+普通发送按 `later` 进入 Desktop 原生队列，steer 按 `now` 提交。尚未开始处理的消息
+可以立即发送（`promoteQueuedMessage` / `sendSteeredNow`）或撤回
+（`cancelQueuedMessage`）；已开始处理的消息不可再调整。
 
-Host 启动时记录外部写入版本。`TranscriptObserver` 扫描全部近期用户分支，只有出现
-无法归因给 Bridge 的新用户消息时才确认竞争写入；进程存在、文件句柄和 focus 变化
-都不是写入证据。检测到真实双写时，Bridge writer 会静默关闭，原指令保持排队并在
-所有权清晰后自动续跑。主机最多同时运行两个 Bridge turn。瞬态会话锁仅在消息尚未
-被会话接受时重试，避免重复执行。
+每次发送在调用前写入以幂等键为键的收据，同一键重复请求直接返回已有收据。收据状态随
+原生事件推进，但不是单一序列：调用返回后由 `dispatching` 进入 `submitted`，
+或在 Desktop 把消息排队时进入 `queued`；原生事件中出现这条用户消息后，`dispatching` /
+`submitted` / `uncertain` 进入 `session-received`。`queued` 与 `session-received`
+可按任一顺序出现，排队消息开始处理时直接进入 `running`，最终为 `completed` /
+`failed` / `cancelled`；Desktop 拒收时记为 `failed`，在
+Desktop 端被撤回或随会话关闭撤回时记为 `cancelled`。调用途中 inspector 断开时记为
+`uncertain`，Bridge 不会自动重发：只有在 transcript 中找到该消息 UUID 才确认送达，
+否则需要用户恢复草稿后显式重新发送。
 
 ## 历史与事件
 

@@ -1,4 +1,3 @@
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { BridgeEffort } from "@bridge/protocol";
@@ -172,74 +171,6 @@ async function readDesktopSessionGroups(roots: string[]): Promise<Map<string, { 
     if (name) resolved.set(desktopSessionId, { id: groupId, name });
   }
   return resolved;
-}
-
-/** Apply creation intent once, retaining the profile's existing scopes and other preferences. */
-function desktopGroupTargets(sessionsRoot: string, groupId: string) {
-  const configPath = join(dirname(sessionsRoot), "claude_desktop_config.json");
-  const config: unknown = JSON.parse(readFileSync(configPath, "utf8"));
-  if (!isRecord(config) || !isRecord(config.preferences) || !isRecord(config.preferences.epitaxyPrefs)) {
-    throw new Error("Claude Desktop 分组配置不可用");
-  }
-  const prefs = config.preferences.epitaxyPrefs;
-  const targets: Array<{ scope: string; record: Record<string, unknown>; kind: "assignments" | "members" }> = [];
-  const assigned = new Set<string>();
-  if (isRecord(prefs["dframe-group-scopes"])) {
-    for (const [scope, value] of Object.entries(prefs["dframe-group-scopes"])) {
-      if (!isRecord(value)) continue;
-      if (isRecord(value.assignments)) {
-        for (const [key, id] of Object.entries(value.assignments)) {
-          if (typeof id === "string" && id.trim()) assigned.add(normalizeDesktopAssignmentKey(key));
-        }
-      }
-      if (Array.isArray(value.groups) && value.groups.some(group => (
-        isRecord(group) && group.id === groupId && typeof group.name === "string" && group.name.trim()
-      ))) targets.push({ scope, record: value, kind: "assignments" });
-    }
-  }
-  if (isRecord(prefs["dframe-code-sections"])) {
-    for (const [scope, value] of Object.entries(prefs["dframe-code-sections"])) {
-      if (!isRecord(value) || !Array.isArray(value.sections)) continue;
-      for (const section of value.sections) {
-        if (!isRecord(section) || section.kind !== "manual" || section.shown === false ||
-          typeof section.name !== "string" || !section.name.trim()) continue;
-        if (Array.isArray(section.members)) {
-          for (const member of section.members) if (typeof member === "string") assigned.add(normalizeDesktopAssignmentKey(member));
-        }
-        if (section.id === groupId) targets.push({ scope, record: section, kind: "members" });
-      }
-    }
-  }
-  if (targets.length === 0 || new Set(targets.map(target => target.scope)).size !== 1) {
-    throw new Error("无法唯一定位 Claude Desktop 原生分组");
-  }
-  return { configPath, config, targets, assigned, scope: targets[0]!.scope };
-}
-
-export function claudeDesktopSessionGroupScope(sessionsRoot: string, groupId: string): string {
-  return desktopGroupTargets(sessionsRoot, groupId).scope;
-}
-
-export function assignClaudeDesktopSessionGroup(sessionsRoot: string, desktopSessionId: string, groupId: string, expectedScope?: string): void {
-  const { configPath, config, targets, assigned, scope } = desktopGroupTargets(sessionsRoot, groupId);
-  if (expectedScope !== undefined && expectedScope !== scope) throw new Error("Claude Desktop group scope changed");
-  if (assigned.has(desktopSessionId)) return;
-  for (const target of targets) {
-    if (target.kind === "assignments") {
-      if (target.record.assignments !== undefined && !isRecord(target.record.assignments)) {
-        throw new Error("Claude Desktop 分组 assignments 格式不可用");
-      }
-      target.record.assignments = { ...target.record.assignments as Record<string, unknown> | undefined, [`code:${desktopSessionId}`]: groupId };
-    } else {
-      if (target.record.members !== undefined && !Array.isArray(target.record.members)) {
-        throw new Error("Claude Desktop 分组 members 格式不可用");
-      }
-      target.record.members = [...target.record.members as unknown[] ?? [], `code:${desktopSessionId}`];
-    }
-  }
-  const temporary = `${configPath}.bridge-${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temporary, configPath);
 }
 
 async function collectJsonFiles(root: string, depth = 3): Promise<string[]> {

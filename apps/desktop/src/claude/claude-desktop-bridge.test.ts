@@ -3070,4 +3070,92 @@ describe("Claude native relay", () => {
       expect(f.bridge.session("local-native")?.contextUsage).toBeUndefined();
     } finally { await f.close(); }
   });
+
+  it("projects background subagent state from native hasBackgroundWork, refines on history and backgroundTaskDetails, and ignores orphaned tasks on dead sessions", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions = [
+        { sessionId: "local-native", cwd: "/project", title: "Active background", isRunning: false, turnRunning: false, hasBackgroundWork: true, lastActivityAt: 12_345, permissionMode: "default", model: "native-model", pendingToolPermissions: [] },
+        { sessionId: "dead-native", cwd: "/project", title: "Dead session", isRunning: false, turnRunning: false, hasBackgroundWork: false, lastActivityAt: 5_000, permissionMode: "default", model: "native-model", pendingToolPermissions: [] },
+      ];
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")).toMatchObject({
+        turnState: "idle",
+        runningSubagents: { count: 1, lastUpdatedAt: 12_345 },
+      });
+      expect(f.bridge.session("dead-native")?.runningSubagents).toBeUndefined();
+
+      let changed = 0;
+      f.bridge.on("changed", () => { changed += 1; });
+      f.native.pages.set("", {
+        messages: [
+          { type: "system", subtype: "task_started", task_id: "bg-1", tool_use_id: "call-1", description: "Run local CI", timestamp: 20_000 },
+          { type: "system", subtype: "task_started", task_id: "bg-2", tool_use_id: "call-2", description: "Audit report", timestamp: 25_000 },
+        ],
+        hasMore: false,
+      });
+      await f.bridge.history("local-native");
+      expect(changed).toBe(1);
+      expect(f.bridge.session("local-native")?.runningSubagents).toEqual({ count: 2, lastUpdatedAt: 25_000 });
+
+      // Opening a dead historical session with an orphaned task_started must not revive runningSubagents.
+      await f.bridge.history("dead-native");
+      expect(f.bridge.session("dead-native")?.runningSubagents).toBeUndefined();
+
+      // backgroundTaskDetails emits "changed" when local transcript subagent state changes.
+      const transcript = join(f.options.settingsPath, "..", "bg-session.jsonl");
+      await writeFile(
+        transcript,
+        [
+          { type: "assistant", uuid: "row-0", timestamp: new Date(10_000).toISOString(), isSidechain: false, message: { content: [{ type: "tool_use", id: "call-1", name: "Agent", input: { description: "Run local CI", prompt: "Run" } }] } },
+          { type: "user", uuid: "row-1", parentUuid: "row-0", timestamp: new Date(11_000).toISOString(), isSidechain: false, message: { content: [{ type: "tool_result", tool_use_id: "call-1", content: "Async agent launched successfully. agentId: bg-1" }] } },
+        ].map(row => JSON.stringify(row)).join("\n") + "\n",
+      );
+      f.options.scanCatalog.mockResolvedValue({
+        projects: [],
+        sessions: [{
+          ...f.bridge.session("local-native")!,
+          sessionId: "bg-session",
+          desktopSessionId: "local-native",
+          transcriptPath: transcript,
+          transcriptMtimeMs: 0,
+          processAlive: true,
+          desktopProcessAlive: true,
+          bridgeProcessAlive: false,
+          processOverlap: false,
+          activeTask: false,
+          activeProcesses: [{ startedAt: 1_000, processAlive: true, entrypoint: "claude-desktop-3p", source: "process" }],
+        }],
+        observedAt: 0,
+      });
+      changed = 0;
+      await f.bridge.backgroundTaskDetails("local-native");
+      expect(changed).toBe(1);
+      expect(f.bridge.session("local-native")?.runningSubagents).toEqual({ count: 1, lastUpdatedAt: 10_000 });
+
+      f.native.sessions[0]!.hasBackgroundWork = false;
+      f.options.scanCatalog.mockResolvedValue({
+        projects: [],
+        sessions: [{
+          ...f.bridge.session("local-native")!,
+          sessionId: "bg-session",
+          desktopSessionId: "local-native",
+          transcriptPath: transcript,
+          transcriptMtimeMs: 0,
+          processAlive: false,
+          desktopProcessAlive: false,
+          bridgeProcessAlive: false,
+          processOverlap: false,
+          activeTask: false,
+          activeProcesses: [],
+        }],
+        observedAt: 0,
+      });
+      await f.bridge.refreshRuntime();
+      changed = 0;
+      await f.bridge.backgroundTaskDetails("local-native");
+      expect(changed).toBe(1);
+      expect(f.bridge.session("local-native")?.runningSubagents).toBeUndefined();
+    } finally { await f.close(); }
+  });
 });

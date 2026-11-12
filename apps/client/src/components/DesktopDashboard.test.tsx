@@ -245,6 +245,21 @@ describe("desktop custom command input", () => {
     expect(input().key).not.toBe(secondKey);
   });
 
+  it("shows active and stalled background subagent state dot and label in desktop session rows when main turn is idle", async () => {
+    const now = Date.now();
+    snapshot.sessions[0]!.turnState = "idle";
+    snapshot.sessions[0]!.runningSubagents = { count: 1, lastUpdatedAt: now - 10_000 };
+    await openSessions();
+    const row = () => elements(tree).find(element => element.type === "button" && element.props.className?.includes("desktop-session-row") && textContent(element).includes("Session A"))!;
+    expect(elements(row()).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot running");
+    expect(textContent(row())).toContain("后台子代理");
+
+    snapshot.sessions[0]!.runningSubagents = { count: 1, lastUpdatedAt: now - 11 * 60_000 };
+    tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot, sessions: [...snapshot.sessions] } });
+    expect(elements(row()).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot queued");
+    expect(textContent(row())).toContain("子代理无进展");
+  });
+
   it.each(["old-host", "codex-desktop", "hermes-desktop", "dsh-desktop"] as const)("keeps ordinary text input for %s", async runtime => {
     if (runtime !== "old-host") {
       snapshot.host.capabilities = ["claude.native-relay.v1", "session.commands.v1"];

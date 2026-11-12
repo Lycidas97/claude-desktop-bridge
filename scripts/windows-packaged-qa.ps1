@@ -102,12 +102,20 @@ $desktopProcess = $null
 $smokeProcess = $null
 $desktopExecutable = $null
 try {
-  $installResult = Start-Process -FilePath $installer.FullName `
-    -ArgumentList @("/S", "/D=$installRoot") `
-    -Wait `
-    -PassThru
-  if ($installResult.ExitCode -ne 0) {
-    throw "Windows installer failed with exit code $($installResult.ExitCode)."
+  if ($env:RUNNER_ENVIRONMENT -eq "github-hosted") {
+    $installResult = Start-Process -FilePath $installer.FullName `
+      -ArgumentList @("/S", "/D=$installRoot") `
+      -Wait `
+      -PassThru
+    if ($installResult.ExitCode -ne 0) {
+      throw "Windows installer failed with exit code $($installResult.ExitCode)."
+    }
+  } else {
+    $unpackedDir = Join-Path $installer.DirectoryName "win-unpacked"
+    if (-not (Test-Path -LiteralPath $unpackedDir)) {
+      throw "Unpacked Windows build was not found alongside $($installer.FullName): $unpackedDir"
+    }
+    Copy-Item -LiteralPath $unpackedDir -Destination $installRoot -Recurse
   }
 
   $desktopExecutable = Get-ChildItem -Path $installRoot -Recurse -Filter "bridge.exe" |
@@ -243,22 +251,39 @@ try {
   foreach ($key in $environmentKeys) {
     [Environment]::SetEnvironmentVariable($key, $originalEnvironment[$key], "Process")
   }
-  $uninstaller = if (Test-Path -LiteralPath $installRoot) {
-    Get-ChildItem -LiteralPath $installRoot -Filter "Uninstall*.exe" -File -ErrorAction SilentlyContinue |
-      Select-Object -First 1
-  } else {
-    $null
-  }
-  if ($null -ne $uninstaller) {
-    $uninstallResult = Start-Process -FilePath $uninstaller.FullName `
-      -ArgumentList @("/currentuser", "/S") `
-      -Wait `
-      -PassThru
-    if ($uninstallResult.ExitCode -ne 0) {
-      throw "Windows uninstaller failed with exit code $($uninstallResult.ExitCode)."
+  if (Test-Path -LiteralPath $installRoot) {
+    $installPrefix = [IO.Path]::GetFullPath($installRoot).TrimEnd('\') + '\'
+    $installPids = @(
+      Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.ExecutablePath -and $_.ExecutablePath.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)
+        } |
+        Select-Object -ExpandProperty ProcessId
+    )
+    foreach ($procId in $installPids) {
+      & cmd.exe /c "taskkill.exe /PID $procId /T /F >nul 2>nul"
     }
+    if ($installPids.Count -gt 0) {
+      Wait-Process -Id $installPids -Timeout 5 -ErrorAction SilentlyContinue
+    }
+    $global:LASTEXITCODE = 0
   }
   if ($env:RUNNER_ENVIRONMENT -eq "github-hosted") {
+    $uninstaller = if (Test-Path -LiteralPath $installRoot) {
+      Get-ChildItem -LiteralPath $installRoot -Filter "Uninstall*.exe" -File -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    } else {
+      $null
+    }
+    if ($null -ne $uninstaller) {
+      $uninstallResult = Start-Process -FilePath $uninstaller.FullName `
+        -ArgumentList @("/currentuser", "/S") `
+        -Wait `
+        -PassThru
+      if ($uninstallResult.ExitCode -ne 0) {
+        throw "Windows uninstaller failed with exit code $($uninstallResult.ExitCode)."
+      }
+    }
     # Hosted Windows runners can reject recycle-bin directory operations.
     # Retain isolated QA data rather than substitute permanent deletion.
     Write-Warning "Packaged QA data retained (hosted Windows recycle-bin cleanup is unsupported on some runners): $qaRoot; $smokeRoot; $installRoot"

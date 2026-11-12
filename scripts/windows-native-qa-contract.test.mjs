@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const qaSource = await readFile(new URL("./packaged-desktop-qa.mjs", import.meta.url), "utf8");
@@ -171,6 +172,84 @@ test("hosted Windows QA retains data while local recycle failures still fail", {
   }
 });
 
+test("local Windows QA stages win-unpacked without running NSIS Setup/Uninstall and stops only installRoot processes", { skip: process.platform !== "win32" }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "bridge-qa-local-isolation-"));
+  let hostSimPid = null;
+  try {
+    const makeDir = join(directory, "make");
+    const unpackedDir = join(makeDir, "win-unpacked");
+    const hostDir = join(directory, "host-bridge");
+    await mkdir(unpackedDir, { recursive: true });
+    await mkdir(hostDir, { recursive: true });
+
+    const pingExe = join(process.env.SystemRoot || "C:\\Windows", "System32", "ping.exe");
+    const unpackedBridge = join(unpackedDir, "bridge.exe");
+    const hostBridge = join(hostDir, "bridge.exe");
+    const setupTrap = join(makeDir, "Bridge-1.3.2-Setup.exe");
+    await writeFile(setupTrap, "TRAP_DO_NOT_EXECUTE_NSIS_INSTALLER");
+    await writeFile(unpackedBridge, await readFile(pingExe));
+    await writeFile(hostBridge, await readFile(pingExe));
+
+    const tryStart = windowsSource.search(/^try \{\r?$/mu);
+    const resolvedStageEnd = windowsSource.search(/^  foreach \(\$key in \$environmentKeys\) \{\r?\n    \[Environment\]::SetEnvironmentVariable\(\$key, \$null/mu);
+    assert.notEqual(tryStart, -1, "Missing top-level try block in windows-packaged-qa.ps1");
+    assert.notEqual(resolvedStageEnd, -1, "Missing post-install env reset in windows-packaged-qa.ps1");
+    const stageSlice = windowsSource.slice(windowsSource.indexOf("\n", tryStart) + 1, resolvedStageEnd);
+    const finallySlice = windowsSource.slice(
+      windowsSource.indexOf("  foreach ($key in $environmentKeys) {", windowsSource.indexOf("} finally {")),
+    );
+
+    const fixture = join(directory, "local-isolation.ps1");
+    await writeFile(fixture, `
+      $ErrorActionPreference = "Stop"
+      $PSScriptRoot = ${JSON.stringify(fileURLToPath(new URL(".", import.meta.url)))}
+      $environmentKeys = @()
+      $originalEnvironment = @{}
+      $installer = Get-Item -LiteralPath ${JSON.stringify(setupTrap)}
+      $qaRoot = Join-Path $env:BRIDGE_QA_TEST_ROOT "qa"
+      $smokeRoot = Join-Path $env:BRIDGE_QA_TEST_ROOT "smoke"
+      $installRoot = Join-Path $env:BRIDGE_QA_TEST_ROOT "install"
+      New-Item -ItemType Directory -Path $qaRoot, $smokeRoot | Out-Null
+      $hostProc = Start-Process -FilePath ${JSON.stringify(hostBridge)} -ArgumentList @("-n", "60", "127.0.0.1") -WindowStyle Hidden -PassThru
+      Write-Output "HOST_PID=$($hostProc.Id)"
+      try {
+${stageSlice}
+        Set-Content -LiteralPath (Join-Path $installRoot "Uninstall Bridge.exe") -Value "TRAP_DO_NOT_EXECUTE_NSIS_UNINSTALLER"
+        $detachedService = Start-Process -FilePath $desktopExecutable.FullName -ArgumentList @("-n", "60", "127.0.0.1") -WindowStyle Hidden -PassThru
+        Write-Output "DETACHED_PID=$($detachedService.Id)"
+      } finally {
+      ${finallySlice}
+    `);
+
+    const env = { ...process.env, BRIDGE_QA_TEST_ROOT: directory };
+    delete env.RUNNER_ENVIRONMENT;
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture], {
+      encoding: "utf8",
+      env,
+    });
+    const hostMatch = /HOST_PID=(\d+)/u.exec(result.stdout || "");
+    if (hostMatch) hostSimPid = Number(hostMatch[1]);
+
+    assert.equal(result.status, 0, `Local isolation fixture failed:\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+    const detachedMatch = /DETACHED_PID=(\d+)/u.exec(result.stdout || "");
+    assert.ok(detachedMatch, "Detached service simulation PID was not recorded");
+    assert.ok(hostSimPid, "Host Bridge simulation PID was not recorded");
+
+    const aliveCheck = spawnSync("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-Command",
+      `Write-Output ("HOST=" + [bool](Get-Process -Id ${hostSimPid} -ErrorAction SilentlyContinue)); Write-Output ("DETACHED=" + [bool](Get-Process -Id ${Number(detachedMatch[1])} -ErrorAction SilentlyContinue)); Write-Output ("INSTALL_EXISTS=" + (Test-Path -LiteralPath ${JSON.stringify(join(directory, "install"))}))`,
+    ], { encoding: "utf8" });
+    assert.match(aliveCheck.stdout, /HOST=True/u, "Host Bridge.exe simulation must remain untouched");
+    assert.match(aliveCheck.stdout, /DETACHED=False/u, "Detached --bridge-service inside installRoot must be terminated");
+    assert.match(aliveCheck.stdout, /INSTALL_EXISTS=False/u, "installRoot must be recycled cleanly after stopping detached service");
+  } finally {
+    if (hostSimPid) {
+      spawnSync("cmd.exe", ["/c", `taskkill.exe /PID ${hostSimPid} /T /F >nul 2>nul`]);
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Windows QA keeps the local public relay and isolates both app launches", () => {
   assert.match(windowsSource, /SetEnvironmentVariable\("BRIDGE_PUBLIC_RELAY_URL", \$relayUrl, "Process"\)/u);
   for (const key of ["USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "CODEX_HOME", "BRIDGE_USER_DATA", "BRIDGE_SERVICE_DATA_PATH", "BRIDGE_CLAUDE_INSPECTOR_URL"]) {
@@ -180,7 +259,9 @@ test("Windows QA keeps the local public relay and isolates both app launches", (
   assert.match(windowsSource, /SetEnvironmentVariable\("BRIDGE_CLAUDE_INSPECTOR_URL", "http:\/\/127\.0\.0\.1:1", "Process"\)/u);
   assert.match(windowsSource, /Set-QaProfile -Root \$smokeRoot[\s\S]*?Start-Process @smokeStart/u);
   assert.match(windowsSource, /Set-QaProfile -Root \$qaRoot[\s\S]*?Start-Process @desktopStart/u);
+  assert.match(windowsSource, /if \(\$env:RUNNER_ENVIRONMENT -eq "github-hosted"\)\s*\{\s*\$installResult = Start-Process -FilePath \$installer\.FullName[\s\S]*?\} else \{[\s\S]*?Join-Path \$installer\.DirectoryName "win-unpacked"[\s\S]*?Copy-Item -LiteralPath \$unpackedDir -Destination \$installRoot -Recurse/u);
   assert.match(windowsSource, /finally\s*\{[\s\S]*?SetEnvironmentVariable\(\$key, \$originalEnvironment\[\$key\], "Process"\)/u);
-  assert.match(windowsSource, /Get-ChildItem -LiteralPath \$installRoot -Filter "Uninstall\*\.exe"[\s\S]*?-ArgumentList @\("\/currentuser", "\/S"\)[\s\S]*?-Wait[\s\S]*?recycle-cleanup\.cjs/u);
+  assert.match(windowsSource, /\$installPrefix = \[IO\.Path\]::GetFullPath\(\$installRoot\)\.TrimEnd\('\\'\)\s*\+\s*'\\'[\s\S]*?StartsWith\(\$installPrefix,\s*\[StringComparison\]::OrdinalIgnoreCase\)/u);
+  assert.match(windowsSource, /if \(\$env:RUNNER_ENVIRONMENT -eq "github-hosted"\)\s*\{\s*\$uninstaller =[\s\S]*?-ArgumentList @\("\/currentuser", "\/S"\)[\s\S]*?Write-Warning "Packaged QA data retained[\s\S]*?\} else \{[\s\S]*?recycle-cleanup\.cjs/u);
   assert.match(windowsSource, /Invoke-NpmScript -Name "test:desktop:pairing"/u);
 });

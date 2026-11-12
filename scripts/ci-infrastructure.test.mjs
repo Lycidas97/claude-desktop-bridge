@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as fs from 'node:fs';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
+import { transform } from 'esbuild';
 import { runSuites } from './test.mjs';
 import { recycleEnv } from './ci-run.mjs';
 import { LOCAL_CI_STATUS_CONTEXT, recordAndPublishLocalCi, validateStatusRepo } from './local-ci.mjs';
@@ -200,6 +201,58 @@ for (const platform of ['darwin', 'linux', 'win32']) {
   });
 }
 
+test('a recycle staging directory turns removals into renames that win-local-ci recycles once per run', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge staging 测试-'));
+  try {
+    const staging = join(directory, 'staging');
+    await mkdir(join(directory, 'tree', 'sub'), { recursive: true });
+    await writeFile(join(directory, 'tree', 'sub', 'a.txt'), 'a');
+    await writeFile(join(directory, 'file.txt'), 'f');
+    await mkdir(staging);
+    const script = `
+      const fs = require('node:fs');
+      fs.rmSync(${JSON.stringify(join(directory, 'tree'))}, { recursive: true });
+      fs.promises.unlink(${JSON.stringify(join(directory, 'file.txt'))}).then(() => fs.rmSync(${JSON.stringify(join(directory, 'gone'))}, { force: true }));
+    `;
+    const result = spawnSync(process.execPath, ['--require', fileURLToPath(new URL('./recycle-cleanup.cjs', import.meta.url)), '-e', script],
+      { env: { ...process.env, BRIDGE_RECYCLE_STAGING: staging }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(!fs.existsSync(join(directory, 'tree')) && !fs.existsSync(join(directory, 'file.txt')));
+    const [processDir, ...others] = fs.readdirSync(staging);
+    assert.equal(others.length, 0);
+    assert.match(processDir, /^\d+-/u);
+    assert.equal(fs.readFileSync(join(staging, processDir, '1', 'sub', 'a.txt'), 'utf8'), 'a');
+    assert.equal(fs.readFileSync(join(staging, processDir, '2'), 'utf8'), 'f');
+
+    for (const code of ['EXDEV', 'EBUSY', 'EPERM']) {
+      const fallback = mockCleanup('win32', { extraEnv: { BRIDGE_RECYCLE_STAGING: 'D:\\staging' } });
+      fallback.fs.mkdtempSync = prefix => `${prefix}1`;
+      fallback.fs.renameSync = fallback.fs.promises.rename = () => {
+        throw Object.assign(new Error('staging rename failed'), { code });
+      };
+      fallback.fs.rmSync('fixture');
+      await fallback.fs.promises.rm('fixture');
+      assert.equal(fallback.calls.length, 2, `${code} must use native recycling for sync and async removals`);
+    }
+    const failed = mockCleanup('win32', { failure: true, extraEnv: { BRIDGE_RECYCLE_STAGING: 'D:\\staging' } });
+    failed.fs.mkdtempSync = prefix => `${prefix}1`;
+    failed.fs.renameSync = failed.fs.promises.rename = () => {
+      throw Object.assign(new Error('staging rename failed'), { code: 'EPERM' });
+    };
+    assert.throws(() => failed.fs.rmSync('fixture'), { code: 'ENOENT' });
+    await assert.rejects(failed.fs.promises.rm('fixture'), { code: 'ENOENT' });
+    assert.equal(failed.calls.length, 2);
+    failed.fs.renameSync = failed.fs.promises.rename = () => {
+      throw Object.assign(new Error('unexpected staging failure'), { code: 'EIO' });
+    };
+    assert.throws(() => failed.fs.rmSync('fixture'), { code: 'EIO' });
+    await assert.rejects(failed.fs.promises.rm('fixture'), { code: 'EIO' });
+    assert.equal(failed.calls.length, 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('cleanup keeps the physical host platform when application tests mock process.platform', () => {
   const mock = mockCleanup('win32');
   mock.process.platform = 'darwin';
@@ -243,6 +296,48 @@ test('browser harness records proxy resets without failing intentional disconnec
   ]) logger.error(message, options);
   assert.equal(infrastructureErrors.length, 4);
   assert.equal(logged.length, 6);
+});
+
+test('Desktop startup leaves relay diagnostics to the configured Native connection', async () => {
+  const { code } = await transform(await readFile(new URL('../apps/client/src/main.tsx', import.meta.url), 'utf8'), {
+    loader: 'tsx', jsxFactory: 'jsx',
+  });
+  for (const desktop of [true, false]) {
+    const probes = [], timers = [];
+    vm.runInNewContext(code.replace(/^import .*;\r?\n/gmu, ''), {
+      window: desktop ? { bridgeDesktop: {} } : {}, navigator: {},
+      document: { getElementById: () => ({}) },
+      jsx: () => ({}), StrictMode: {}, App: {}, createRoot: () => ({ render() {} }),
+      installDiagnostics() {}, installSpecularHighlight() {},
+      setTimeout(callback) { timers.push(callback); },
+      runRelayConnectivityProbe(...args) { probes.push(args); return Promise.resolve(); },
+    });
+    for (const callback of timers) await callback();
+    assert.equal(probes.length, desktop ? 0 : 1, desktop
+      ? 'Desktop startup must not probe the compiled public relay'
+      : 'Mobile startup behavior remains unchanged');
+  }
+});
+
+test('scenario cleanup closes the page facade before late ACKs can see OPEN', async () => {
+  const source = await readFile(new URL('./browser-e2e.mjs', import.meta.url), 'utf8');
+  const setup = source.slice(source.indexOf('    await context.routeWebSocket('), source.indexOf('    page = await context.newPage();'));
+  const closeRoutes = source.match(/^      for \(const route of serverRoutes\) await route\.close\(.*$/m)[0];
+  let pageState = 1;
+  let nativeState = 1;
+  const serverRoute = { async close() { nativeState = 2; } };
+  const socket = {
+    url: () => 'ws://127.0.0.1:5811/ws',
+    connectToServer: () => serverRoute,
+    async close() { pageState = 3; await serverRoute.close(); },
+  };
+  await vm.runInNewContext(`(async () => {${setup}\n${closeRoutes}})()`, {
+    URL, serverRoutes: [], errors: [], baseUrl: 'http://127.0.0.1:5811',
+    relay: { url: 'ws://127.0.0.1:5812' },
+    context: { async routeWebSocket(_pattern, handler) { handler(socket); } },
+  });
+  assert.equal(nativeState, 2, 'The fixture starts the owned native close handshake');
+  assert.equal(pageState, 3, 'Late ACKs must not see an OPEN page facade after its native socket starts closing');
 });
 
 test('browser receipt assertion waits for a Native reply after the receipt is created', async () => {
@@ -437,7 +532,101 @@ process.stdout.write('{"state":"success"}\\n');
   }
 });
 
-test('browser E2E binds an ephemeral kernel port via httpServer.listen and local-ci serializes shared Windows runs', async () => {
+test('Mac CI stages every command per run and recycles its staging before completion', { skip: process.platform === 'win32' }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-mac-ci-staging-'));
+  try {
+    const runs = await Promise.all([0, 1].map(async index => {
+      const repoDir = join(directory, `repo-${index}`);
+      const binDir = join(directory, `bin-${index}`);
+      const events = join(directory, `events-${index}.jsonl`);
+      const fixture = join(directory, `npm-${index}.mjs`);
+      await mkdir(join(repoDir, 'scripts'), { recursive: true });
+      await mkdir(binDir);
+      for (const name of ['local-ci.mjs', 'recycle-cleanup.cjs']) {
+        await copyFile(new URL(`./${name}`, import.meta.url), join(repoDir, 'scripts', name));
+      }
+      await writeFile(fixture, `
+        import { appendFileSync, existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
+        import { join } from 'node:path';
+        const staging = process.env.BRIDGE_RECYCLE_STAGING;
+        const renderer = join(process.cwd(), 'renderer');
+        mkdirSync(renderer);
+        writeFileSync(join(renderer, 'index.html'), 'fixture');
+        rmSync(renderer, { recursive: true });
+        appendFileSync(${JSON.stringify(events)}, JSON.stringify({ args: process.argv.slice(2), staging,
+          staged: !!staging && existsSync(staging) && readdirSync(staging).length > 0 }) + '\\n');
+      `);
+      await writeFile(join(binDir, 'npm'), `#!/bin/sh\nexec "${process.execPath}" --require "${join(repoDir, 'scripts/recycle-cleanup.cjs')}" "${fixture}" "$@"\n`, { mode: 0o755 });
+      for (const args of [['init', '-q'], ['add', '.'], ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'fixture']]) {
+        assert.equal(spawnSync('git', args, { cwd: repoDir }).status, 0);
+      }
+      const child = spawn(process.execPath, [join(repoDir, 'scripts/local-ci.mjs'), '--skip-win', '--no-publish'], {
+        cwd: repoDir, env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let output = '';
+      child.stdout.on('data', chunk => { output += chunk; });
+      child.stderr.on('data', chunk => { output += chunk; });
+      const code = await new Promise((resolveExit, rejectExit) => {
+        child.on('error', rejectExit);
+        child.on('close', resolveExit);
+      });
+      return { code, output, records: (await readFile(events, 'utf8')).trim().split('\n').map(line => JSON.parse(line)) };
+    }));
+    for (const run of runs) {
+      assert.equal(run.code, 0, run.output);
+      assert.ok(run.records.some(record => record.args.join(' ') === 'run verify'));
+      assert.ok(run.records.every(record => record.staging && record.staged), 'Every Mac CI command must inherit staging');
+      assert.equal(new Set(run.records.map(record => record.staging)).size, 1);
+      assert.equal(fs.existsSync(run.records[0].staging), false, 'Run staging must be recycled before completion');
+    }
+    assert.notEqual(runs[0].records[0].staging, runs[1].records[0].staging);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a failed Mac leg stops the remote Windows leg so its slot is released', { skip: process.platform === 'win32' }, async () => {
+  // Windows OpenSSH keeps the remote powershell.exe (and its slot mutex) running after the local ssh client is killed.
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-local-ci-stop-'));
+  try {
+    const repoDir = join(directory, 'repo');
+    const binDir = join(directory, 'bin');
+    const sshLog = join(directory, 'ssh.log');
+    const remoteStarted = join(directory, 'remote-started');
+    await mkdir(join(repoDir, 'scripts'), { recursive: true });
+    await mkdir(binDir);
+    await copyFile(new URL('./local-ci.mjs', import.meta.url), join(repoDir, 'scripts', 'local-ci.mjs'));
+    await copyFile(new URL('./recycle-cleanup.cjs', import.meta.url), join(repoDir, 'scripts', 'recycle-cleanup.cjs'));
+    await writeFile(join(repoDir, 'scripts', 'win-local-ci.ps1'), '# fixture\n');
+    const runGit = (...args) => assert.equal(spawnSync('git', args, { cwd: repoDir }).status, 0, `git ${args.join(' ')}`);
+    runGit('init', '-q');
+    runGit('add', '.');
+    runGit('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'fixture');
+    await writeFile(join(binDir, 'ssh'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${sshLog}"\ncase "$*" in *-File*) touch "${remoteStarted}"; exec sleep 30;; esac\n`);
+    await writeFile(join(binDir, 'scp'), '#!/bin/sh\nexit 0\n');
+    await writeFile(join(binDir, 'npm'), `#!/bin/sh\nwhile [ ! -f "${remoteStarted}" ]; do sleep 0.05; done\nexit 1\n`);
+    for (const name of ['ssh', 'scp', 'npm']) await chmod(join(binDir, name), 0o755);
+
+    const result = spawnSync(process.execPath, [join(repoDir, 'scripts', 'local-ci.mjs')], {
+      cwd: repoDir,
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, BRIDGE_WIN_SSH_HOST: 'win-fixture' },
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    assert.notEqual(result.status, 0, result.stdout + result.stderr);
+    assert.equal(result.signal, null, 'local-ci must not hang on the blocked Windows leg');
+    const calls = (await readFile(sshLog, 'utf8')).trim().split('\n');
+    const runId = /win-local-ci-([\w-]+)\.ps1/u.exec(calls.find(call => call.includes('-File')))[1];
+    const stop = calls.find(call => call.includes('taskkill') && call.includes(`win-local-ci-${runId}.ps1`));
+    assert.ok(stop, `No remote stop for win-local-ci-${runId}.ps1:\n${calls.join('\n')}`);
+    assert.match(stop, /win-fixture/u);
+    assert.ok(stop.includes(`ci-${runId}.bundle`) && stop.includes('bridge-recycle.exe'), stop);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('browser E2E binds an ephemeral kernel port via httpServer.listen and local-ci isolates concurrent Windows runs per slot', async () => {
   const browserSource = await readFile(new URL('../scripts/browser-e2e.mjs', import.meta.url), 'utf8');
   const localCiSource = await readFile(new URL('./local-ci.mjs', import.meta.url), 'utf8');
   const winCiSource = await readFile(new URL('../scripts/win-local-ci.ps1', import.meta.url), 'utf8');
@@ -482,9 +671,20 @@ test('browser E2E binds an ephemeral kernel port via httpServer.listen and local
   }
 
   assert.match(localCiSource, /const runId = `\$\{revision\.slice\(0, 12\)\}-\$\{process\.pid\}-\$\{Date\.now\(\)\}`/u);
-  assert.match(winCiSource, /System\.Threading\.Mutex.*Local\\ClaudeDesktopBridgeWinCi/u);
-  assert.match(winCiSource, /AbandonedMutexException/u);
-  assert.match(winCiSource, /ReleaseMutex\(\)/u);
+  assert.match(winCiSource, /System\.Threading\.Mutex.*Local\\ClaudeDesktopBridgeWinCi-\$_/u);
+  assert.match(winCiSource, /WaitHandle\]::WaitAny\(\$slotMutexes\)/u);
+  assert.match(winCiSource, /AbandonedMutexException[\s\S]*?\$slot = \$_\.Exception\.MutexIndex/u);
+  assert.match(winCiSource, /\$slotMutexes\[\$slot\]\.ReleaseMutex\(\)/u);
+  // Every per-run resource is keyed by slot; the shared D:\work\ci-worktree, bridge-ci-api36, and refs/ci/current are gone.
+  assert.match(winCiSource, /\$ciWorktree = "\$workRoot\\ci-slot-\$slot"/u);
+  assert.match(winCiSource, /"HEAD:refs\/ci\/slot-\$slot"/u);
+  assert.match(winCiSource, /"-avd", \$avdName, "-port", "\$emulatorPort"/u);
+  assert.match(winCiSource, /\$env:ANDROID_SERIAL = "emulator-\$emulatorPort"/u);
+  assert.match(winCiSource, /CI_DIR="\/var\/tmp\/bridge-linux-ci-slot-\$slot"/u);
+  assert.match(winCiSource, /\$recycleStaging = .*recycle-staging-\$slot-[\s\S]*?\$env:BRIDGE_WIN_RECYCLE_EXE = \$recycleExe[\s\S]*?New-Item -ItemType Directory -Force -Path \$recycleStaging[\s\S]*?\$env:BRIDGE_RECYCLE_STAGING = \$recycleStaging[\s\S]*?\} finally \{[\s\S]*?bridge-recycle\.exe" \$recycleStaging/u);
+  assert.match(winCiSource, /Invoke-CimMethod -ClassName Win32_Process -MethodName Create[^\n]*start-server/u);
+  assert.doesNotMatch(winCiSource, /ci-worktree|refs\/ci\/current|"bridge-ci-api36"/u);
+  assert.doesNotMatch(localCiSource, /ci-worktree/u);
 });
 
 test('BRIDGE_RECYCLE_STAGING stages same-volume removals, falls back on EXDEV, propagates non-EXDEV errors, and loads idempotently', async () => {
@@ -608,7 +808,7 @@ test('win-local-ci parallelizes WSL2 via setsid pipe-EOF, early emulator boot, a
   const winCi = await readFile(new URL('./win-local-ci.ps1', import.meta.url), 'utf8');
   const syncIdx = winCi.indexOf('Sync git bundle ($Revision)');
   const wslStartIdx = winCi.indexOf('setsid bash -c');
-  const emuStartIdx = winCi.indexOf('Starting headless WHPX AVD bridge-ci-api36');
+  const emuStartIdx = winCi.indexOf('Starting headless WHPX AVD $avdName');
   const testInfraIdx = winCi.indexOf('Invoke-Checked "npm run test:infra"');
   const nsisParallelIdx = winCi.indexOf('make:windows:from-client -w @bridge/desktop');
   const androidSyncIdx = winCi.indexOf('sync:from-client -w @bridge/mobile');

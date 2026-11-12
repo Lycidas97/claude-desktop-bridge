@@ -187,7 +187,7 @@ async function runCli() {
       const startedAt = Date.now();
       const child = spawn(command, commandArgs, {
         cwd: root,
-        env: { ...process.env, ...extraEnv },
+        env: { ...process.env, ...(prefix === "MAC" ? { BRIDGE_RECYCLE_STAGING: join(tempRoot, "mac-recycle") } : {}), ...extraEnv },
         stdio: ["ignore", "pipe", "pipe"],
       });
       activeChildren.add(child);
@@ -219,7 +219,10 @@ async function runCli() {
   }
 
   const tempRoot = await mkdtemp(join(tmpdir(), "bridge-local-ci-"));
+  if (!skipMac) await mkdir(join(tempRoot, "mac-recycle"));
   const results = [];
+  const sshAlive = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
+  let unfinishedWinRunId = null;
 
   try {
     const tasks = [];
@@ -239,7 +242,7 @@ async function runCli() {
         results.push(`macOS verify: typecheck + 5 Vitest suites + full build (${tVerify}s)`);
 
         const [tBrowser, tService] = await Promise.all([
-          runPrefixed("MAC", process.execPath, [resolve(root, "scripts/ci-run.mjs"), "browser:nobuild"], browserEnv),
+          runPrefixed("MAC", "npm", ["run", "test:browser:nobuild"], browserEnv),
           runPrefixed("MAC", "npm", ["run", "ci:run", "--", "run", "test:desktop:service"]),
         ]);
         results.push(`macOS test:browser: 10 Chrome mobile E2E scenarios x 2 themes (${tBrowser}s)`);
@@ -263,8 +266,6 @@ async function runCli() {
         const remoteBundleWin = remoteBundle.replaceAll("/", "\\");
         const remoteScriptWin = remoteScript.replaceAll("/", "\\");
 
-        const sshAlive = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
-
         await runPrefixed("WIN-SYNC", "git", ["bundle", "create", bundleLocal, "HEAD"]);
         await runPrefixed("WIN-SYNC", "ssh", [...sshAlive, winHost, 'New-Item -ItemType Directory -Force -Path "D:\\work\\cache\\temp" | Out-Null']);
         await runPrefixed("WIN-SYNC", "scp", ["-q", ...sshAlive, bundleLocal, `${winHost}:${remoteBundle}`]);
@@ -273,9 +274,11 @@ async function runCli() {
         const psArgs = [
           ...sshAlive,
           winHost,
-          `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE; if (Test-Path -LiteralPath "${remoteScriptWin}") { if (Test-Path "D:\\work\\cache\\bridge-recycle.exe") { & "D:\\work\\cache\\bridge-recycle.exe" "${remoteScriptWin}" } elseif (Test-Path "D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs") { D:\\work\\tools\\node-26\\node.exe --require D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs D:\\work\\ci-worktree\\scripts\\clean.mjs "${remoteScriptWin}" }; if ($LASTEXITCODE -ne 0 -and $ec -eq 0) { $ec = $LASTEXITCODE } }; exit $ec`,
+          `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE; if (Test-Path -LiteralPath "${remoteScriptWin}") { if (Test-Path "D:\\work\\cache\\bridge-recycle.exe") { & "D:\\work\\cache\\bridge-recycle.exe" "${remoteScriptWin}" } elseif (Test-Path "D:\\work\\claude-desktop-bridge\\scripts\\recycle-cleanup.cjs") { D:\\work\\tools\\node-26\\node.exe --require D:\\work\\claude-desktop-bridge\\scripts\\recycle-cleanup.cjs D:\\work\\claude-desktop-bridge\\scripts\\clean.mjs "${remoteScriptWin}" }; if ($LASTEXITCODE -ne 0 -and $ec -eq 0) { $ec = $LASTEXITCODE } }; exit $ec`,
         ];
+        unfinishedWinRunId = runId;
         const tWin = await runPrefixed("WIN", "ssh", psArgs);
+        unfinishedWinRunId = null;
         results.push(
           `Windows 11 + Android API 36 WHPX Emulator${skipWslLinux ? "" : " + WSL2 Ubuntu-24.04 Linux tests & .deb/.rpm/.zip"} (${tWin}s)`,
         );
@@ -286,6 +289,19 @@ async function runCli() {
   } finally {
     for (const child of activeChildren) {
       child.kill("SIGTERM");
+    }
+    if (unfinishedWinRunId) {
+      // Windows OpenSSH keeps the remote powershell.exe running after the local ssh client dies, so it would hold
+      // its win-local-ci slot mutex and emulator until it finished on its own. Kill that process tree and recycle
+      // the uploaded bundle/script its own finally would have removed.
+      const stop = spawnSync("ssh", [
+        ...sshAlive,
+        winHost,
+        `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; foreach ($leftover in @("D:\\work\\cache\\temp\\ci-${unfinishedWinRunId}.bundle", "D:\\work\\cache\\temp\\win-local-ci-${unfinishedWinRunId}.ps1")) { if (Test-Path -LiteralPath $leftover) { & "D:\\work\\cache\\bridge-recycle.exe" $leftover; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } }; exit 0`,
+      ], { encoding: "utf8" });
+      if (stop.status !== 0) {
+        console.error(`[WIN] Failed to stop remote win-local-ci-${unfinishedWinRunId}.ps1; its slot stays held until it exits: ${stop.stderr || stop.error}`);
+      }
     }
     await recycle(tempRoot, { recursive: true, force: true });
   }

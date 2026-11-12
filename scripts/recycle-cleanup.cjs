@@ -11,6 +11,8 @@ if (!fs[INSTALLED]) {
   const run = promisify(execFile);
   const platform = process.platform;
   const winRecycleExe = platform === 'win32' ? process.env.BRIDGE_WIN_RECYCLE_EXE : undefined;
+  // win-local-ci points this at a per-slot directory it recycles once per run: SHFileOperation serializes every
+  // Recycle Bin move system-wide (~0.3 s each, far slower once the bin is large), so per-test moves stall hooks.
   const staging = process.env.BRIDGE_RECYCLE_STAGING;
   let stagingDir;
   let staged = 0;
@@ -50,7 +52,7 @@ if (!fs[INSTALLED]) {
     catch (error) { if (options.force && error.code === 'ENOENT') return; throw error; }
     if (staging) {
       try { return fs.renameSync(path, stagedPath()); }
-      catch (error) { if (error.code !== 'EXDEV') throw error; }
+      catch (error) { if (!['EXDEV', 'EBUSY', 'EPERM'].includes(error.code)) throw error; }
     }
     execFileSync(...command(path));
   }
@@ -61,7 +63,7 @@ if (!fs[INSTALLED]) {
     catch (error) { if (options.force && error.code === 'ENOENT') return; throw error; }
     if (staging) {
       try { return await fs.promises.rename(path, stagedPath()); }
-      catch (error) { if (error.code !== 'EXDEV') throw error; }
+      catch (error) { if (!['EXDEV', 'EBUSY', 'EPERM'].includes(error.code)) throw error; }
     }
     await run(...command(path));
   }

@@ -152,7 +152,7 @@ test("hosted Windows QA retains data while local recycle failures still fail", {
       $installRoot = Join-Path $env:BRIDGE_QA_TEST_ROOT "install"
       function node.exe { throw "RECYCLE_CALLED" }
       try { if ($env:BRIDGE_QA_TEST_FAILURE) { throw $env:BRIDGE_QA_TEST_FAILURE } } finally {
-      ${windowsSource.slice(windowsSource.indexOf("  foreach ($key in $environmentKeys) {", windowsSource.indexOf("} finally {")))}
+      ${windowsSource.slice(windowsSource.indexOf("  foreach ($key in $environmentKeys) {", windowsSource.search(/^\} finally \{\r?$/mu)))}
     `);
     for (const [environment, failure] of [["github-hosted", ""], ["self-hosted", ""], ["github-hosted", "QA_ASSERTION_FAILED"]]) {
       const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture], {
@@ -196,7 +196,7 @@ test("local Windows QA stages win-unpacked without running NSIS Setup/Uninstall 
     assert.notEqual(resolvedStageEnd, -1, "Missing post-install env reset in windows-packaged-qa.ps1");
     const stageSlice = windowsSource.slice(windowsSource.indexOf("\n", tryStart) + 1, resolvedStageEnd);
     const finallySlice = windowsSource.slice(
-      windowsSource.indexOf("  foreach ($key in $environmentKeys) {", windowsSource.indexOf("} finally {")),
+      windowsSource.indexOf("  foreach ($key in $environmentKeys) {", windowsSource.search(/^\} finally \{\r?$/mu)),
     );
 
     const fixture = join(directory, "local-isolation.ps1");
@@ -250,10 +250,21 @@ ${stageSlice}
   }
 });
 
-test("Windows QA keeps the local public relay and isolates both app launches", () => {
+test("Windows QA keeps the local public relay, allocates dynamic ports, and isolates both app launches", () => {
+  assert.doesNotMatch(windowsSource, /\b(?:8788|9223|9224)\b/u, "Windows QA must not hardcode relay or CDP ports");
+  assert.match(windowsSource, /SetEnvironmentVariable\("BRIDGE_RELAY_PORT", "\$relayPort", "Process"\)/u);
   assert.match(windowsSource, /SetEnvironmentVariable\("BRIDGE_PUBLIC_RELAY_URL", \$relayUrl, "Process"\)/u);
-  for (const key of ["USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "CODEX_HOME", "BRIDGE_USER_DATA", "BRIDGE_SERVICE_DATA_PATH", "BRIDGE_CLAUDE_INSPECTOR_URL"]) {
+  assert.match(windowsSource, /SetEnvironmentVariable\("BRIDGE_ANDROID_RELAY", "ws:\/\/10\.0\.2\.2:\$relayPort\/ws", "Process"\)/u);
+  assert.match(windowsSource, /& \$adb forward tcp:0 "localabstract:\$webviewSocket"/u);
+  assert.match(windowsSource, /forward --remove tcp:\$androidPort/u);
+  for (const key of [
+    "BRIDGE_RELAY_PORT", "BRIDGE_ANDROID_CDP", "BRIDGE_ANDROID_RELAY",
+    "USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+    "CODEX_HOME", "BRIDGE_USER_DATA", "BRIDGE_SERVICE_DATA_PATH", "BRIDGE_CLAUDE_INSPECTOR_URL",
+  ]) {
     assert.match(windowsSource, new RegExp(`^  "${key}"[,\\r]?$`, "mu"), `${key} must be saved/restored`);
+  }
+  for (const key of ["USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "CODEX_HOME", "BRIDGE_USER_DATA", "BRIDGE_SERVICE_DATA_PATH", "BRIDGE_CLAUDE_INSPECTOR_URL"]) {
     assert.match(windowsSource, new RegExp(`SetEnvironmentVariable\\("${key}",`), `${key} must be isolated`);
   }
   assert.match(windowsSource, /SetEnvironmentVariable\("BRIDGE_CLAUDE_INSPECTOR_URL", "http:\/\/127\.0\.0\.1:1", "Process"\)/u);
@@ -264,4 +275,71 @@ test("Windows QA keeps the local public relay and isolates both app launches", (
   assert.match(windowsSource, /\$installPrefix = \[IO\.Path\]::GetFullPath\(\$installRoot\)\.TrimEnd\('\\'\)\s*\+\s*'\\'[\s\S]*?StartsWith\(\$installPrefix,\s*\[StringComparison\]::OrdinalIgnoreCase\)/u);
   assert.match(windowsSource, /if \(\$env:RUNNER_ENVIRONMENT -eq "github-hosted"\)\s*\{\s*\$uninstaller =[\s\S]*?-ArgumentList @\("\/currentuser", "\/S"\)[\s\S]*?Write-Warning "Packaged QA data retained[\s\S]*?\} else \{[\s\S]*?recycle-cleanup\.cjs/u);
   assert.match(windowsSource, /Invoke-NpmScript -Name "test:desktop:pairing"/u);
+});
+
+test("Wait-HttpEndpoint fails immediately when the monitored process exits early", { skip: process.platform !== "win32" }, () => {
+  const waitFnEnd = windowsSource.search(/^function Invoke-NpmScript \{/mu);
+  assert.notEqual(waitFnEnd, -1, "Missing Invoke-NpmScript boundary in windows-packaged-qa.ps1");
+  const waitFnSlice = windowsSource.slice(windowsSource.indexOf("function Wait-HttpEndpoint {"), waitFnEnd);
+  const result = spawnSync("powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-Command",
+    `${waitFnSlice}\n$proc = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", "exit 7") -WindowStyle Hidden -Wait -PassThru\nWait-HttpEndpoint -Url "http://127.0.0.1:1/health" -TimeoutSeconds 30 -Process $proc`,
+  ], { encoding: "utf8" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /exited with code 7 while waiting for http:\/\/127\.0\.0\.1:1\/health/u);
+});
+
+test("concurrent Windows CI callers wait before touching the shared worktree", { skip: process.platform !== "win32" }, async () => {
+  const { spawn } = await import("node:child_process");
+  const { once } = await import("node:events");
+  const source = await readFile(new URL("../scripts/win-local-ci.ps1", import.meta.url), "utf8");
+  const acquisition = source.slice(source.indexOf("$ciMutex ="), source.indexOf("# 1. Fetch exact commit")).replaceAll("ClaudeDesktopBridgeWinCi", `ClaudeDesktopBridgeWinCi-Test-${process.pid}`);
+  assert.ok(acquisition.length, "Missing Windows CI acquisition boundary");
+  const directory = await mkdtemp(join(tmpdir(), "bridge-ci-mutex-"));
+  const children = [];
+  try {
+    const fixture = join(directory, "mutex.ps1");
+    await writeFile(fixture, `
+param([string]$Role, [string]$Root)
+$ErrorActionPreference = "Stop"
+${acquisition}
+  Write-Output "$Role acquired"
+  if ($Role -eq "holder") {
+    while (-not (Test-Path (Join-Path $Root "release"))) { Start-Sleep -Milliseconds 50 }
+  }
+} finally {
+  if ($mutexAcquired) { $ciMutex.ReleaseMutex() }
+  $ciMutex.Dispose()
+}
+`);
+    const launch = role => {
+      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture, "-Role", role, "-Root", directory]);
+      children.push(child);
+      let output = "";
+      child.stdout.on("data", chunk => { output += chunk; });
+      return { child, output: () => output, done: once(child, "exit") };
+    };
+    const waitForOutput = async (run, text) => {
+      const deadline = Date.now() + 15_000;
+      while (!run.output().includes(text)) {
+        assert.equal(run.child.exitCode, null, run.output());
+        assert.ok(Date.now() < deadline, `Timed out waiting for ${text}: ${run.output()}`);
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    };
+    const holder = launch("holder");
+    await waitForOutput(holder, "holder acquired");
+    const waiter = launch("waiter");
+    await waitForOutput(waiter, "Waiting for active win-local-ci");
+    assert.ok(!waiter.output().includes("waiter acquired"));
+    await writeFile(join(directory, "release"), "release");
+    assert.equal((await holder.done)[0], 0);
+    assert.equal((await waiter.done)[0], 0);
+    assert.match(waiter.output(), /waiter acquired/u);
+  } finally {
+    for (const child of children) {
+      if (child.exitCode === null) child.kill();
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
 });

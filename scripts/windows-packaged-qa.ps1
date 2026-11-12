@@ -6,11 +6,15 @@ Set-Location $repositoryRoot
 function Wait-HttpEndpoint {
   param(
     [Parameter(Mandatory = $true)][string]$Url,
-    [int]$TimeoutSeconds = 30
+    [int]$TimeoutSeconds = 30,
+    [Diagnostics.Process]$Process = $null
   )
 
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   while ((Get-Date) -lt $deadline) {
+    if ($null -ne $Process -and $Process.HasExited) {
+      throw "Process $($Process.Id) exited with code $($Process.ExitCode) while waiting for $Url"
+    }
     try {
       $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2
       if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) { return }
@@ -19,6 +23,14 @@ function Wait-HttpEndpoint {
     }
   }
   throw "Timed out waiting for $Url"
+}
+
+function Get-FreeLoopbackPort {
+  $listener = [Net.Sockets.TcpListener]::new([IPAddress]::Loopback, 0)
+  $listener.Start()
+  $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+  $listener.Stop()
+  return $port
 }
 
 function Invoke-NpmScript {
@@ -68,12 +80,15 @@ New-Item -ItemType Directory -Path $smokeRoot | Out-Null
 
 $environmentKeys = @(
   "BRIDGE_RELAY_HOST",
+  "BRIDGE_RELAY_PORT",
   "BRIDGE_RELAY_URL",
   "BRIDGE_PUBLIC_RELAY_URL",
   "BRIDGE_PAIRING_BASE_URL",
   "BRIDGE_SERVICE_ORIGIN",
   "BRIDGE_RELAY_DATA",
   "BRIDGE_DESKTOP_CDP",
+  "BRIDGE_ANDROID_CDP",
+  "BRIDGE_ANDROID_RELAY",
   "BRIDGE_E2E_FORCE_RELAY",
   "BRIDGE_E2E_RELAY_URL",
   "BRIDGE_DEV_SERVER_URL",
@@ -134,18 +149,19 @@ try {
     [Environment]::SetEnvironmentVariable($key, $null, "Process")
   }
   Set-QaProfile -Root $smokeRoot
+  $smokePort = Get-FreeLoopbackPort
   $smokeStart = @{
     FilePath = $desktopExecutable.FullName
     ArgumentList = @(
       "--bridge-packaged-qa",
       "--user-data-dir=`"$smokeRoot`"",
-      "--remote-debugging-port=9224"
+      "--remote-debugging-port=$smokePort"
     )
     WorkingDirectory = $desktopExecutable.DirectoryName
     PassThru = $true
   }
   $smokeProcess = Start-Process @smokeStart
-  Wait-HttpEndpoint -Url "http://127.0.0.1:9224/json/version" -TimeoutSeconds 45
+  Wait-HttpEndpoint -Url "http://127.0.0.1:$smokePort/json/version" -TimeoutSeconds 45 -Process $smokeProcess
   if ($smokeProcess.HasExited) {
     throw "Packaged Windows app exited during the default-configuration startup smoke test."
   }
@@ -153,14 +169,17 @@ try {
   $smokeProcess = $null
 
   Set-QaProfile -Root $qaRoot
-  $relayUrl = "ws://127.0.0.1:8788/ws"
+  $relayPort = Get-FreeLoopbackPort
+  $desktopCdpPort = Get-FreeLoopbackPort
+  $relayUrl = "ws://127.0.0.1:$relayPort/ws"
   [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_HOST", "0.0.0.0", "Process")
+  [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_PORT", "$relayPort", "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_URL", $relayUrl, "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_PUBLIC_RELAY_URL", $relayUrl, "Process")
-  [Environment]::SetEnvironmentVariable("BRIDGE_PAIRING_BASE_URL", "http://127.0.0.1:8788", "Process")
-  [Environment]::SetEnvironmentVariable("BRIDGE_SERVICE_ORIGIN", "http://127.0.0.1:8788", "Process")
+  [Environment]::SetEnvironmentVariable("BRIDGE_PAIRING_BASE_URL", "http://127.0.0.1:$relayPort", "Process")
+  [Environment]::SetEnvironmentVariable("BRIDGE_SERVICE_ORIGIN", "http://127.0.0.1:$relayPort", "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_RELAY_DATA", (Join-Path $qaRoot "relay.sqlite"), "Process")
-  [Environment]::SetEnvironmentVariable("BRIDGE_DESKTOP_CDP", "http://127.0.0.1:9223", "Process")
+  [Environment]::SetEnvironmentVariable("BRIDGE_DESKTOP_CDP", "http://127.0.0.1:$desktopCdpPort", "Process")
   [Environment]::SetEnvironmentVariable("BRIDGE_E2E_FORCE_RELAY", "1", "Process")
 
   $nodeExecutable = (Get-Command node.exe).Source
@@ -172,20 +191,20 @@ try {
     PassThru = $true
   }
   $relayProcess = Start-Process @relayStart
-  Wait-HttpEndpoint -Url "http://127.0.0.1:8788/health"
+  Wait-HttpEndpoint -Url "http://127.0.0.1:$relayPort/health" -Process $relayProcess
 
   $desktopStart = @{
     FilePath = $desktopExecutable.FullName
     ArgumentList = @(
       "--bridge-packaged-qa",
       "--user-data-dir=`"$qaRoot`"",
-      "--remote-debugging-port=9223"
+      "--remote-debugging-port=$desktopCdpPort"
     )
     WorkingDirectory = $desktopExecutable.DirectoryName
     PassThru = $true
   }
   $desktopProcess = Start-Process @desktopStart
-  Wait-HttpEndpoint -Url "http://127.0.0.1:9223/json/version" -TimeoutSeconds 45
+  Wait-HttpEndpoint -Url "http://127.0.0.1:$desktopCdpPort/json/version" -TimeoutSeconds 45 -Process $desktopProcess
 
   Invoke-NpmScript -Name "test:desktop:packaged"
   Invoke-NpmScript -Name "test:desktop:pairing"
@@ -218,11 +237,14 @@ try {
     }
     if (-not $webviewSocket) { throw "Timed out waiting for Android WebView DevTools socket" }
 
-    & $adb forward tcp:9224 "localabstract:$webviewSocket"
-    if ($LASTEXITCODE -ne 0) { throw "adb forward tcp:9224 failed with exit code $LASTEXITCODE" }
+    $androidPort = ((& $adb forward tcp:0 "localabstract:$webviewSocket") -join "").Trim()
+    if ($LASTEXITCODE -ne 0 -or $androidPort -notmatch "^\d+$") {
+      throw "adb forward tcp:0 failed with exit code $LASTEXITCODE ($androidPort)"
+    }
     try {
-      Wait-HttpEndpoint -Url "http://127.0.0.1:9224/json" -TimeoutSeconds 20
-      [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_CDP", "http://127.0.0.1:9224", "Process")
+      Wait-HttpEndpoint -Url "http://127.0.0.1:$androidPort/json" -TimeoutSeconds 20
+      [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_CDP", "http://127.0.0.1:$androidPort", "Process")
+      [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_RELAY", "ws://10.0.2.2:$relayPort/ws", "Process")
       [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_SMOKE_PAIRING_ONLY", "1", "Process")
       try {
         & $nodeExecutable --require (Join-Path $PSScriptRoot "recycle-cleanup.cjs") `
@@ -232,10 +254,11 @@ try {
         }
       } finally {
         [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_CDP", $null, "Process")
+        [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_RELAY", $null, "Process")
         [Environment]::SetEnvironmentVariable("BRIDGE_ANDROID_SMOKE_PAIRING_ONLY", $null, "Process")
       }
     } finally {
-      & cmd.exe /c "`"$adb`" forward --remove tcp:9224 >nul 2>nul"
+      & cmd.exe /c "`"$adb`" forward --remove tcp:$androidPort >nul 2>nul"
     }
   }
 } finally {

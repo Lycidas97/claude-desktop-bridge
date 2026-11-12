@@ -436,16 +436,44 @@
 }
 .mobile-app-shell .project-order-bar button:active { background: var(--surface-2); }
 
-/* Project order: one row per project, its name and three move buttons. */
+/* Project order: one row per project with long-press and drag-handle reordering. */
+.project-order-list.is-dragging {
+  overflow: visible;
+  touch-action: none;
+}
 .project-order-row {
+  position: relative;
   display: flex;
   min-height: var(--m-row);
   align-items: center;
-  gap: 2px;
+  gap: 8px;
   padding: 6px 6px 6px 16px;
   border-bottom: 1px solid var(--line);
+  background: var(--card-fill);
+  -webkit-user-select: none;
+  user-select: none;
+  transition:
+    background var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
 }
-.project-order-row:last-child { border-bottom: 0; }
+.project-order-row:first-child {
+  border-top-left-radius: var(--m-r-group);
+  border-top-right-radius: var(--m-r-group);
+}
+.project-order-row:last-child {
+  border-bottom: 0;
+  border-bottom-left-radius: var(--m-r-group);
+  border-bottom-right-radius: var(--m-r-group);
+}
+.project-order-row.is-dragging {
+  z-index: 2;
+  border-bottom-color: transparent;
+  border-radius: var(--m-r-control);
+  background: var(--accent-soft);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.16), inset 0 0 0 1px var(--accent);
+  transform: scale(1.01);
+}
 .project-order-row > span { display: grid; flex: 1; min-width: 0; gap: 2px; }
 .project-order-row strong {
   overflow: hidden;
@@ -455,8 +483,24 @@
   white-space: nowrap;
 }
 .project-order-row small { color: var(--muted); font-size: var(--m-fs-footnote); }
-.project-order-row .icon-button { flex: none; color: var(--muted); }
-.project-order-row .icon-button:disabled { opacity: 0.32; }
+.project-order-row .project-order-handle {
+  flex: none;
+  color: var(--muted);
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.project-order-row.is-dragging .project-order-handle {
+  color: var(--accent-ink);
+  cursor: grabbing;
+}
+.project-order-row .icon-button:disabled { opacity: 0.32; cursor: default; }
+
+@media (prefers-reduced-motion: reduce) {
+  .project-order-row { transition: none; }
+  .project-order-row.is-dragging { transform: none; }
+}
 
 .m-field {
   display: grid;

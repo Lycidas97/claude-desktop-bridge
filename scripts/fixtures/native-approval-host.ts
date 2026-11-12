@@ -271,6 +271,7 @@ export async function startNativeApprovalHost(options: {
     },
     files: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
     history: () => broker.history(options.sessionId),
+    session: () => structuredClone(broker.session(options.sessionId)!),
     receipts: () => state.listNativeDesktopReceipts(),
     queuedReply(enabled: boolean) { reportQueued = enabled; },
     queueResult(method: "promoteQueuedMessage" | "sendSteeredNow" | "cancelQueuedMessage", accepted: boolean) {

@@ -418,3 +418,53 @@ process.stdout.write('{"state":"success"}\\n');
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('browser E2E binds an ephemeral kernel port via httpServer.listen and local-ci serializes shared Windows runs', async () => {
+  const browserSource = await readFile(new URL('../scripts/browser-e2e.mjs', import.meta.url), 'utf8');
+  const localCiSource = await readFile(new URL('./local-ci.mjs', import.meta.url), 'utf8');
+  const winCiSource = await readFile(new URL('../scripts/win-local-ci.ps1', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(browserSource, /await vite\.listen\(\)/u, 'vite.listen() turns port: 0 into 5173');
+  assert.match(browserSource, /vite\.httpServer\.listen\(port,\s*"127\.0\.0\.1"/u);
+
+  const { createServer: createNetServer } = await import('node:net');
+  const { createServer: createViteServer } = await import('vite');
+  const cacheDirectory = await mkdtemp(join(tmpdir(), 'bridge vite port cache-'));
+  const blocker = createNetServer();
+  const occupiedPort = await new Promise((resolve, reject) => {
+    blocker.once('error', reject);
+    blocker.listen(0, '127.0.0.1', () => resolve(blocker.address().port));
+  });
+  let viteA;
+  let viteB;
+  let viteConflict;
+  try {
+    viteA = await createViteServer({ configFile: false, cacheDir: join(cacheDirectory, 'a'), server: { host: '127.0.0.1', port: 0, strictPort: true, open: false } });
+    viteB = await createViteServer({ configFile: false, cacheDir: join(cacheDirectory, 'b'), server: { host: '127.0.0.1', port: 0, strictPort: true, open: false } });
+    await Promise.all([viteA, viteB].map(instance => new Promise((onListen, onError) => {
+      instance.httpServer.once('error', onError);
+      instance.httpServer.listen(0, '127.0.0.1', onListen);
+    })));
+    assert.notEqual(viteA.httpServer.address().port, 5173);
+    assert.notEqual(viteB.httpServer.address().port, 5173);
+    assert.notEqual(viteA.httpServer.address().port, viteB.httpServer.address().port);
+
+    viteConflict = await createViteServer({ configFile: false, cacheDir: join(cacheDirectory, 'conflict'), server: { host: '127.0.0.1', port: occupiedPort, strictPort: true, open: false } });
+    assert.equal(new Set([viteA, viteB, viteConflict].map(instance => instance.config.cacheDir)).size, 3);
+    await assert.rejects(new Promise((onListen, onError) => {
+      viteConflict.httpServer.once('error', onError);
+      viteConflict.httpServer.listen(occupiedPort, '127.0.0.1', onListen);
+    }), /EADDRINUSE/u);
+  } finally {
+    await viteConflict?.close();
+    await viteB?.close();
+    await viteA?.close();
+    await new Promise(resolve => blocker.close(resolve));
+    await rm(cacheDirectory, { recursive: true, force: true });
+  }
+
+  assert.match(localCiSource, /const runId = `\$\{revision\.slice\(0, 12\)\}-\$\{process\.pid\}-\$\{Date\.now\(\)\}`/u);
+  assert.match(winCiSource, /System\.Threading\.Mutex.*Local\\ClaudeDesktopBridgeWinCi/u);
+  assert.match(winCiSource, /AbandonedMutexException/u);
+  assert.match(winCiSource, /ReleaseMutex\(\)/u);
+});

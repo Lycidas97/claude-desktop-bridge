@@ -48,7 +48,13 @@ export function findBackgroundTask(
   if (!tasks) return undefined;
   if (subagent.workflowRunId) return tasks.find((task) => task.workflow?.runId === subagent.workflowRunId);
   return (subagent.toolUseId ? tasks.find((task) => task.toolUseId === subagent.toolUseId) : undefined)
-    ?? tasks.find((task) => task.taskId === subagent.agentId);
+    ?? tasks.find((task) => task.taskId === subagent.agentId && !(task.toolUseId && subagent.toolUseId));
+}
+
+function sameSubagentInvocation(left: BridgeSubagentSummary, right: BridgeSubagentSummary): boolean {
+  return left.toolUseId && right.toolUseId
+    ? left.toolUseId === right.toolUseId
+    : left.agentId === right.agentId;
 }
 
 function latestSubagentModel(stream: BridgeSubagentSummary, tray?: BridgeSubagentSummary): string | undefined {
@@ -96,9 +102,7 @@ export function BackgroundTaskMarker({
 
 function subagentItem(sessionId: string, subagent: BridgeSubagentSummary, items: readonly BridgeHistoryItem[]): BridgeHistoryItem {
   // The stream's item has the full report; the tray copy is compact.
-  const streamItem = items.find((item) => item.subagent && (
-    (subagent.toolUseId && item.subagent.toolUseId === subagent.toolUseId) || item.subagent.agentId === subagent.agentId
-  ));
+  const streamItem = items.find((item) => item.subagent && sameSubagentInvocation(item.subagent, subagent));
   const model = latestSubagentModel(streamItem?.subagent ?? subagent, subagent);
   if (!streamItem?.subagent) {
     return {
@@ -110,7 +114,12 @@ function subagentItem(sessionId: string, subagent: BridgeSubagentSummary, items:
   const merged = subagent.updatedAt > streamItem.subagent.updatedAt
     ? { ...streamItem.subagent, ...subagent, ...(streamItem.subagent.reportText ? { reportText: streamItem.subagent.reportText } : {}) }
     : { ...subagent, ...streamItem.subagent };
-  return { ...streamItem, subagent: { ...merged, ...(model ? { model } : {}), state: subagent.state } };
+  return { ...streamItem, subagent: {
+    ...merged,
+    ...(streamItem.subagent.latestText ? { latestText: streamItem.subagent.latestText } : {}),
+    ...(model ? { model } : {}),
+    state: subagent.state,
+  } };
 }
 
 function WorkflowTimeline({
@@ -191,10 +200,9 @@ export function BackgroundTasksSheet({
   const [focused, setFocused] = useState(focus);
   const [openId, setOpenId] = useState<string>();
   const streamFocus = focused?.subagent
-    ? items.find((entry) => entry.id === focused.id || Boolean(entry.subagent && (
-        (focused.subagent!.toolUseId && entry.subagent.toolUseId === focused.subagent!.toolUseId)
-        || entry.subagent.agentId === focused.subagent!.agentId
-      ))) ?? focused
+    ? items.find((entry) => entry.id === focused.id)
+      ?? items.find((entry) => entry.subagent && sameSubagentInvocation(entry.subagent, focused.subagent!))
+      ?? focused
     : undefined;
   if (streamFocus?.subagent) {
     const focusSubagent = streamFocus.subagent;
@@ -217,7 +225,13 @@ export function BackgroundTasksSheet({
         } : {})}
       >
         {kind === "workflow" && focusTask?.workflow ? (
-          <WorkflowTimeline task={focusTask} sessionId={sessionId} items={items} renderSubagent={renderSubagent} />
+          <>
+            <div className="background-task-state" role="status">
+              <StateGlyph state={focusTask.state} />
+              {STATE_LABELS[focusTask.state]}
+            </div>
+            <WorkflowTimeline task={focusTask} sessionId={sessionId} items={items} renderSubagent={renderSubagent} />
+          </>
         ) : kind === "bash" ? (
           <div className="background-task-entry">
             <button type="button" className="background-task-row" disabled>

@@ -92,6 +92,34 @@ describe("background task tray", () => {
     expect(findBackgroundTask(tasks, agent("missing"))).toBeUndefined();
   });
 
+  it.each([false, true])("keeps reused agent IDs scoped to the clicked invocation (tray: %s)", (withTray) => {
+    const old = item(agent("reused", { toolUseId: "old-tool", reportText: "Old report", state: "completed" }));
+    const current = item(agent("reused", { toolUseId: "new-tool", latestText: "New output" }));
+    const task: BridgeBackgroundTask = { ...reviewer, taskId: "reused", toolUseId: "new-tool", subagent: current.subagent! };
+    const { rendered } = sheet(current, [old, current], withTray ? [task] : []);
+    expect(rendered[0]?.subagent).toMatchObject({ toolUseId: "new-tool", latestText: "New output" });
+    expect(rendered[0]?.subagent?.reportText).toBeUndefined();
+    expect(findBackgroundTask([{ ...task, toolUseId: "old-tool" }], current.subagent!)).toBeUndefined();
+  });
+
+  it("preserves full current output when newer tray progress contains a truncated preview", () => {
+    const fullOutput = "Current output ".repeat(40);
+    const stream = item(agent("ag01", { toolUseId: "agent-call", latestText: fullOutput, updatedAt: 350 }));
+    const task = { ...reviewer, subagent: agent("ag01", {
+      toolUseId: "agent-call", latestText: `${fullOutput.slice(0, 279)}…`, updatedAt: 400, toolCount: 9,
+    }) };
+    const { rendered } = sheet(stream, [stream], [task]);
+    expect(rendered[0]?.subagent).toMatchObject({ latestText: fullOutput, toolCount: 9 });
+  });
+
+  it.each(["failed", "stopped"] as const)("retains workflow overall %s status when every member completed", (state) => {
+    const task = { ...workflow, state, workflow: { ...workflow.workflow!, agents: workflow.workflow!.agents.map(child => ({ ...child, state: "completed" as const })) } };
+    const { html } = sheet(item(agent("a1", { workflowRunId: "wf_1" })), [], [task]);
+    expect(html).toContain(`background-task-state is-${state}`);
+    expect(html).toContain(`aria-label="${state === "failed" ? "失败" : "已停止"}"`);
+    expect(html).toContain("workflow-phase is-completed");
+  });
+
   it("groups tasks by kind, collapsed until opened", () => {
     const { html, rendered } = sheet();
     expect(html.indexOf("工作流")).toBeLessThan(html.indexOf("子代理"));

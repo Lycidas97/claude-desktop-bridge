@@ -1798,6 +1798,18 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("releases completed tool input and keeps raw tool output out of the event log", async () => {
+    const f = await fixture();
+    try {
+      await f.message({ type: "assistant", uuid: "payload-call", message: { content: [{ type: "tool_use", id: "payload-tool", name: "Read", input: { file_path: "/project/payload.ts" } }] } });
+      await f.message({ type: "user", uuid: "payload-result", message: { content: [{ type: "tool_result", tool_use_id: "payload-tool", content: "x".repeat(1_024) }] } });
+      const completed = f.eventLog.latestItem("local-native", "tool.completed", "payload-tool");
+      expect(completed?.data).toMatchObject({ toolName: "Read", text: expect.stringContaining("/project/payload.ts") });
+      expect(completed?.data).not.toHaveProperty("output");
+      expect((f.bridge as unknown as { tools: Map<string, unknown> }).tools.size).toBe(0);
+    } finally { await f.close(); }
+  });
+
   it("collects evidence when tool start and result arrive in the same batch", async () => {
     const upsertDesktopEvidence = vi.fn().mockResolvedValue({});
     const f = await fixture(false, { upsertDesktopEvidence });

@@ -209,14 +209,18 @@ function historyItem(event: BridgeEvent): BridgeHistoryItem | undefined {
   return undefined;
 }
 
+function eventBytes(event: BridgeEvent): number {
+  return Buffer.byteLength(JSON.stringify(event)) + 1;
+}
+
 export class SessionEventLog extends EventEmitter {
   private readonly events: BridgeEvent[] = [];
-  private readonly itemKeys = new Set<string>();
-  private readonly latestItems = new Map<string, BridgeEvent>();
+  private readonly windowItems = new Map<string, BridgeEvent>();
   private readonly itemReceipts = new Map<string, BridgeEvent>();
   private readonly turnReceipts = new Map<string, TurnReceipt>();
   private readonly pendingDeltas = new Map<string, PendingDelta>();
   private writeQueue: Promise<void> = Promise.resolve();
+  private eventsBytes = 0;
   private nextSeq = 1;
   private initialized = false;
   private readonly compactBytes: number;
@@ -258,15 +262,15 @@ export class SessionEventLog extends EventEmitter {
         continue;
       }
       const event = this.loadRecord(parsed);
-      if (event) this.events.push(event);
+      if (event) this.retainEvent(event, Buffer.byteLength(line) + 1, false);
     }
     this.events.sort((left, right) => left.seq - right.seq);
   }
 
-  private loadRecord(value: unknown, compact = false): BridgeEvent | undefined {
+  private loadRecord(value: unknown): BridgeEvent | undefined {
     if (isEvent(value)) {
       this.nextSeq = Math.max(this.nextSeq, value.seq + 1);
-      this.indexEvent(value, compact);
+      this.indexEvent(value);
       return value;
     }
     if (!value || typeof value !== "object") return undefined;
@@ -283,15 +287,14 @@ export class SessionEventLog extends EventEmitter {
       if (receipt.messageId) this.turnReceipts.set(`${receipt.sessionId}\u001fmessage:${receipt.messageId}`, receipt);
     }
     for (const item of index.items) {
-      if (isEvent(item) && RECEIPT_ITEM_TYPES.has(item.type)) this.indexEvent(item, true, true);
+      if (isEvent(item) && RECEIPT_ITEM_TYPES.has(item.type)) this.indexEvent(item, true);
     }
     return undefined;
   }
 
-  private indexEvent(event: BridgeEvent, compact = false, fromReceipt = false): void {
+  private indexEvent(event: BridgeEvent, fromReceipt = false): void {
     if (event.itemId) {
       const key = `${event.sessionId ?? ""}\u001f${event.type}\u001f${event.itemId}`;
-      if (!compact || RECEIPT_ITEM_TYPES.has(event.type)) this.itemKeys.add(key);
       if (RECEIPT_ITEM_TYPES.has(event.type)) {
         // Generic tool heartbeats update progress without replacing the task's SDK facts.
         if (event.type === "tool.progress" && !event.data.task && !event.data.subagent) {
@@ -323,9 +326,6 @@ export class SessionEventLog extends EventEmitter {
         }
         const item = { ...event, data };
         this.itemReceipts.set(key, item);
-        this.latestItems.set(key, compact ? item : event);
-      } else if (!compact) {
-        this.latestItems.set(key, event);
       }
     }
     if (!event.sessionId) return;
@@ -396,7 +396,7 @@ export class SessionEventLog extends EventEmitter {
       } catch {
         continue;
       }
-      const event = this.loadRecord(parsed, true);
+      const event = this.loadRecord(parsed);
       if (!event) continue;
       scanned += 1;
       if (
@@ -440,16 +440,31 @@ export class SessionEventLog extends EventEmitter {
       mode: 0o600,
     });
     await rename(temporary, this.path);
-    this.latestItems.clear();
-    for (const [key, item] of this.itemReceipts) this.latestItems.set(key, item);
-    for (const event of events) {
-      if (event.itemId) this.latestItems.set(`${event.sessionId ?? ""}\u001f${event.type}\u001f${event.itemId}`, event);
-    }
     this.events.push(...events);
+    this.eventsBytes = retainedBytes;
+    this.windowItems.clear();
+    for (const event of events) {
+      if (event.itemId) this.windowItems.set(`${event.sessionId ?? ""}\u001f${event.type}\u001f${event.itemId}`, event);
+    }
     console.warn(
       `[bridge] event log compacted: ${scanned} events / ${Math.round(fileBytes / 1_048_576)} MB`
         + ` -> ${events.length} events`,
     );
+  }
+
+  private retainEvent(event: BridgeEvent, bytes: number, trim: boolean): void {
+    this.events.push(event);
+    this.eventsBytes += bytes;
+    if (event.itemId) this.windowItems.set(`${event.sessionId ?? ""}\u001f${event.type}\u001f${event.itemId}`, event);
+    if (!trim) return;
+    while (this.events.length > 1 && (this.events.length > this.retainEvents || this.eventsBytes > this.retainBytes)) {
+      const removed = this.events.shift()!;
+      this.eventsBytes -= eventBytes(removed);
+      if (removed.itemId) {
+        const key = `${removed.sessionId ?? ""}\u001f${removed.type}\u001f${removed.itemId}`;
+        if (this.windowItems.get(key) === removed) this.windowItems.delete(key);
+      }
+    }
   }
 
   latestSeq(): number {
@@ -457,11 +472,13 @@ export class SessionEventLog extends EventEmitter {
   }
 
   hasItem(sessionId: string, type: BridgeEventType, itemId: string): boolean {
-    return this.itemKeys.has(`${sessionId}\u001f${type}\u001f${itemId}`);
+    const key = `${sessionId}\u001f${type}\u001f${itemId}`;
+    return this.windowItems.has(key) || this.itemReceipts.has(key);
   }
 
   latestItem(sessionId: string, type: BridgeEventType, itemId: string): BridgeEvent | undefined {
-    return this.latestItems.get(`${sessionId}\u001f${type}\u001f${itemId}`);
+    const key = `${sessionId}\u001f${type}\u001f${itemId}`;
+    return this.windowItems.get(key) ?? this.itemReceipts.get(key);
   }
 
   itemMatches(sessionId: string, type: BridgeEventType, itemId: string, data: Record<string, unknown>): boolean {
@@ -496,12 +513,17 @@ export class SessionEventLog extends EventEmitter {
   }
 
   latestDesktopHandoffs(): BridgeEvent[] {
-    return [...this.latestItems.values()].filter((event) => event.type === "session.desktop-handoff");
+    const handoffs = new Map<string, BridgeEvent>();
+    for (const event of [...this.itemReceipts.values(), ...this.windowItems.values()]) {
+      if (event.type !== "session.desktop-handoff" || !event.itemId) continue;
+      if (event.seq > (handoffs.get(event.itemId)?.seq ?? 0)) handoffs.set(event.itemId, event);
+    }
+    return [...handoffs.values()];
   }
 
   latestTaskEvents(sessionId: string): BridgeEvent[] {
     const tasks = new Map<string, BridgeEvent>();
-    for (const event of this.latestItems.values()) {
+    for (const event of [...this.itemReceipts.values(), ...this.windowItems.values()]) {
       if (event.sessionId !== sessionId || !event.itemId ||
         (event.type !== "tool.progress" && event.type !== "tool.completed") ||
         (!event.data.task && !event.data.subagent)) continue;
@@ -539,13 +561,20 @@ export class SessionEventLog extends EventEmitter {
           candidate.sessionId === event.sessionId &&
           candidate.itemId === event.itemId
         ) {
-          this.events.splice(index, 1);
+          const [removed] = this.events.splice(index, 1);
+          if (removed) {
+            this.eventsBytes -= eventBytes(removed);
+            if (removed.itemId) {
+              const key = `${removed.sessionId ?? ""}\u001f${removed.type}\u001f${removed.itemId}`;
+              if (this.windowItems.get(key) === removed) this.windowItems.delete(key);
+            }
+          }
         }
       }
     }
-    this.events.push(event);
     this.indexEvent(event);
     const line = `${JSON.stringify(event)}\n`;
+    this.retainEvent(event, Buffer.byteLength(line), true);
     this.writeQueue = this.writeQueue.catch(() => undefined).then(async () => {
       await mkdir(dirname(this.path), { recursive: true });
       await writeFile(this.path, line, { flag: "a", encoding: "utf8", mode: 0o600 });

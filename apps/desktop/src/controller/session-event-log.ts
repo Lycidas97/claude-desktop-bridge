@@ -262,6 +262,7 @@ export class SessionEventLog extends EventEmitter {
         continue;
       }
       const event = this.loadRecord(parsed);
+      // Oversized logs compact on load; small logs stay resident until the first append trims them.
       if (event) this.retainEvent(event, Buffer.byteLength(line) + 1, false);
     }
     this.events.sort((left, right) => left.seq - right.seq);
@@ -414,15 +415,15 @@ export class SessionEventLog extends EventEmitter {
         ));
         if (previousIndex !== -1) {
           const [removed] = retained.splice(previousIndex, 1);
-          if (removed) retainedBytes -= Buffer.byteLength(JSON.stringify(removed)) + 1;
+          if (removed) retainedBytes -= eventBytes(removed);
         }
       }
       retained.push(event);
-      retainedBytes += Buffer.byteLength(JSON.stringify(event)) + 1;
+      retainedBytes += eventBytes(event);
       while (retained.length > this.retainEvents || retainedBytes > this.retainBytes) {
         const removed = retained.shift();
         if (!removed) break;
-        retainedBytes -= Buffer.byteLength(JSON.stringify(removed)) + 1;
+        retainedBytes -= eventBytes(removed);
       }
     }
     const events = retained.sort((left, right) => left.seq - right.seq);
@@ -452,6 +453,14 @@ export class SessionEventLog extends EventEmitter {
     );
   }
 
+  private forgetEvent(removed: BridgeEvent): void {
+    this.eventsBytes -= eventBytes(removed);
+    if (removed.itemId) {
+      const key = `${removed.sessionId ?? ""}\u001f${removed.type}\u001f${removed.itemId}`;
+      if (this.windowItems.get(key) === removed) this.windowItems.delete(key);
+    }
+  }
+
   private retainEvent(event: BridgeEvent, bytes: number, trim: boolean): void {
     this.events.push(event);
     this.eventsBytes += bytes;
@@ -459,11 +468,7 @@ export class SessionEventLog extends EventEmitter {
     if (!trim) return;
     while (this.events.length > 1 && (this.events.length > this.retainEvents || this.eventsBytes > this.retainBytes)) {
       const removed = this.events.shift()!;
-      this.eventsBytes -= eventBytes(removed);
-      if (removed.itemId) {
-        const key = `${removed.sessionId ?? ""}\u001f${removed.type}\u001f${removed.itemId}`;
-        if (this.windowItems.get(key) === removed) this.windowItems.delete(key);
-      }
+      this.forgetEvent(removed);
     }
   }
 
@@ -516,7 +521,8 @@ export class SessionEventLog extends EventEmitter {
     const handoffs = new Map<string, BridgeEvent>();
     for (const event of [...this.itemReceipts.values(), ...this.windowItems.values()]) {
       if (event.type !== "session.desktop-handoff" || !event.itemId) continue;
-      if (event.seq > (handoffs.get(event.itemId)?.seq ?? 0)) handoffs.set(event.itemId, event);
+      const key = `${event.sessionId ?? ""}\u001f${event.itemId}`;
+      if (event.seq > (handoffs.get(key)?.seq ?? 0)) handoffs.set(key, event);
     }
     return [...handoffs.values()];
   }
@@ -562,13 +568,7 @@ export class SessionEventLog extends EventEmitter {
           candidate.itemId === event.itemId
         ) {
           const [removed] = this.events.splice(index, 1);
-          if (removed) {
-            this.eventsBytes -= eventBytes(removed);
-            if (removed.itemId) {
-              const key = `${removed.sessionId ?? ""}\u001f${removed.type}\u001f${removed.itemId}`;
-              if (this.windowItems.get(key) === removed) this.windowItems.delete(key);
-            }
-          }
+          if (removed) this.forgetEvent(removed);
         }
       }
     }

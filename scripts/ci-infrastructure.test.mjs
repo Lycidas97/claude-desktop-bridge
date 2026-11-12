@@ -470,6 +470,7 @@ test('browser E2E binds an ephemeral kernel port via httpServer.listen and local
 
   const { createServer: createNetServer } = await import('node:net');
   const { createServer: createViteServer } = await import('vite');
+  const cacheDirectory = await mkdtemp(join(tmpdir(), 'bridge vite port cache-'));
   const blocker = createNetServer();
   const occupiedPort = await new Promise((resolve, reject) => {
     blocker.once('error', reject);
@@ -479,8 +480,8 @@ test('browser E2E binds an ephemeral kernel port via httpServer.listen and local
   let viteB;
   let viteConflict;
   try {
-    viteA = await createViteServer({ configFile: false, server: { host: '127.0.0.1', port: 0, strictPort: true, open: false } });
-    viteB = await createViteServer({ configFile: false, server: { host: '127.0.0.1', port: 0, strictPort: true, open: false } });
+    viteA = await createViteServer({ configFile: false, cacheDir: join(cacheDirectory, 'a'), server: { host: '127.0.0.1', port: 0, strictPort: true, open: false } });
+    viteB = await createViteServer({ configFile: false, cacheDir: join(cacheDirectory, 'b'), server: { host: '127.0.0.1', port: 0, strictPort: true, open: false } });
     await Promise.all([viteA, viteB].map(instance => new Promise((onListen, onError) => {
       instance.httpServer.once('error', onError);
       instance.httpServer.listen(0, '127.0.0.1', onListen);
@@ -489,7 +490,8 @@ test('browser E2E binds an ephemeral kernel port via httpServer.listen and local
     assert.notEqual(viteB.httpServer.address().port, 5173);
     assert.notEqual(viteA.httpServer.address().port, viteB.httpServer.address().port);
 
-    viteConflict = await createViteServer({ configFile: false, server: { host: '127.0.0.1', port: occupiedPort, strictPort: true, open: false } });
+    viteConflict = await createViteServer({ configFile: false, cacheDir: join(cacheDirectory, 'conflict'), server: { host: '127.0.0.1', port: occupiedPort, strictPort: true, open: false } });
+    assert.equal(new Set([viteA, viteB, viteConflict].map(instance => instance.config.cacheDir)).size, 3);
     await assert.rejects(new Promise((onListen, onError) => {
       viteConflict.httpServer.once('error', onError);
       viteConflict.httpServer.listen(occupiedPort, '127.0.0.1', onListen);
@@ -499,6 +501,7 @@ test('browser E2E binds an ephemeral kernel port via httpServer.listen and local
     await viteB?.close();
     await viteA?.close();
     await new Promise(resolve => blocker.close(resolve));
+    await rm(cacheDirectory, { recursive: true, force: true });
   }
 
   assert.match(localCiSource, /const runId = `\$\{revision\.slice\(0, 12\)\}-\$\{process\.pid\}-\$\{Date\.now\(\)\}`/u);

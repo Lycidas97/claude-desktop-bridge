@@ -8,6 +8,7 @@ import test from "node:test";
 
 const qaSource = await readFile(new URL("./packaged-desktop-qa.mjs", import.meta.url), "utf8");
 const windowsSource = await readFile(new URL("./windows-packaged-qa.ps1", import.meta.url), "utf8");
+const androidE2eSource = await readFile(new URL("./android-installed-e2e.mjs", import.meta.url), "utf8");
 const desktopPackage = JSON.parse(await readFile(new URL("../apps/desktop/package.json", import.meta.url), "utf8"));
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
@@ -275,6 +276,127 @@ test("Windows QA keeps the local public relay, allocates dynamic ports, and isol
   assert.match(windowsSource, /\$installPrefix = \[IO\.Path\]::GetFullPath\(\$installRoot\)\.TrimEnd\('\\'\)\s*\+\s*'\\'[\s\S]*?StartsWith\(\$installPrefix,\s*\[StringComparison\]::OrdinalIgnoreCase\)/u);
   assert.match(windowsSource, /if \(\$env:RUNNER_ENVIRONMENT -eq "github-hosted"\)\s*\{\s*\$uninstaller =[\s\S]*?-ArgumentList @\("\/currentuser", "\/S"\)[\s\S]*?Write-Warning "Packaged QA data retained[\s\S]*?\} else \{[\s\S]*?recycle-cleanup\.cjs/u);
   assert.match(windowsSource, /Invoke-NpmScript -Name "test:desktop:pairing"/u);
+});
+
+test("Android installed pairing smoke waits for delayed WebView pairing input mount before screenshot and fill", async () => {
+  let mounted = false;
+  let paired = false;
+  let evaluateCalls = 0;
+  let filledValue = null;
+  let socketClosed = false;
+  let desktopClosed = false;
+  let report = null;
+  const screenshots = [];
+
+  class FakeWebSocket {
+    constructor() {
+      this.listeners = new Map();
+      queueMicrotask(() => this.emit("open", {}));
+    }
+    addEventListener(type, listener) {
+      const list = this.listeners.get(type) ?? [];
+      list.push(listener);
+      this.listeners.set(type, list);
+    }
+    emit(type, event) {
+      for (const listener of this.listeners.get(type) ?? []) listener(event);
+    }
+    send(raw) {
+      const { id, method, params } = JSON.parse(raw);
+      let result = {};
+      if (method === "Page.captureScreenshot") {
+        screenshots.push({ path: screenshots.length, mounted });
+        result = { data: Buffer.from("png").toString("base64") };
+      } else if (method === "Runtime.evaluate") {
+        evaluateCalls += 1;
+        const expr = params.expression;
+        if (expr.includes("Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')")) {
+          if (!mounted) {
+            result = { exceptionDetails: { exception: { description: "Error: Pairing input missing" } } };
+          } else {
+            const match = expr.match(/set\.call\(input,\s*("[^"]+")\)/u);
+            filledValue = match ? JSON.parse(match[1]) : "";
+            result = { result: { value: undefined } };
+          }
+        } else if (expr.includes('Boolean(document.querySelector(\'input[aria-label="配对链接"]\'))')) {
+          if (evaluateCalls >= 2) mounted = true;
+          result = { result: { value: mounted } };
+        } else if (expr.includes("连接电脑")) {
+          assert.ok(filledValue, "Pairing input must be filled before clicking connect");
+          paired = true;
+          result = { result: { value: undefined } };
+        } else if (expr.includes(".m-host-chip .m-status-dot.is-online")) {
+          result = { result: { value: paired } };
+        } else if (expr.includes(".m-host-name")) {
+          result = { result: { value: "DESKTOP-CI" } };
+        } else {
+          throw new Error(`Unexpected Android WebView expression: ${expr}`);
+        }
+      }
+      queueMicrotask(() => this.emit("message", { data: JSON.stringify({ id, result }) }));
+    }
+    close() {
+      socketClosed = true;
+    }
+  }
+
+  const desktopSnapshot = {
+    pairingUrl: "bridge://pair/fixture",
+    host: { name: "DESKTOP-CI", version: desktopPackage.version },
+    devices: [{ deviceId: "dev-android-1", online: true }],
+    sessions: [],
+  };
+  const desktopWindow = {
+    bridgeDesktop: {
+      async createPairing() { return desktopSnapshot; },
+      async getSnapshot() { return desktopSnapshot; },
+    },
+  };
+  const desktopPage = {
+    url: () => "file:///D:/work/bridge/renderer/index.html",
+    evaluate: async (fn, arg) => new Function("window", `return (${fn.toString()})(arguments[1]);`)(desktopWindow, arg),
+  };
+
+  await new AsyncFunction(
+    "assert", "mkdir", "writeFile", "resolve",
+    "bridgeEndpoint", "encodePairingBundle", "pairingBundleFromUrl",
+    "chromium", "process", "fetch", "WebSocket", "setTimeout",
+    androidE2eSource.replace(/^import .*;\r?\n/gmu, ""),
+  )(
+    assert,
+    async () => {},
+    async () => {},
+    resolve,
+    (url, priority, label) => ({ url, priority, label }),
+    (bundle) => `encoded:${bundle.deviceId}:${bundle.relayUrl}`,
+    () => ({ deviceId: "dev-android-1", relayUrl: "ws://127.0.0.1:8788/ws" }),
+    {
+      async connectOverCDP() {
+        return {
+          contexts: () => [{ pages: () => [desktopPage] }],
+          async close() { desktopClosed = true; },
+        };
+      },
+    },
+    {
+      env: { BRIDGE_ANDROID_SMOKE_PAIRING_ONLY: "1" },
+      stdout: { write(value) { report = JSON.parse(value); } },
+    },
+    async () => ({
+      async json() {
+        return [{ type: "page", url: "https://localhost/", webSocketDebuggerUrl: "ws://127.0.0.1:9224/devtools/page/1" }];
+      },
+    }),
+    FakeWebSocket,
+    (callback) => queueMicrotask(callback),
+  );
+
+  assert.equal(report?.ok, true);
+  assert.equal(report?.mode, "pairing-only");
+  assert.equal(filledValue, "encoded:dev-android-1:ws://10.0.2.2:8788/ws");
+  assert.equal(screenshots[0]?.mounted, true, "01-pairing.png must be captured after the pairing input mounts");
+  assert.equal(socketClosed, true);
+  assert.equal(desktopClosed, true);
 });
 
 test("Wait-HttpEndpoint fails immediately when the monitored process exits early", { skip: process.platform !== "win32" }, () => {

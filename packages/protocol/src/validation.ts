@@ -32,6 +32,7 @@ const METHODS = new Set([
   "session.fork",
   "session.rename",
   "session.history",
+  "session.tool.detail",
   "session.configuration",
   "session.commands",
   "session.command",

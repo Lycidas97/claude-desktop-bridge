@@ -201,6 +201,7 @@ export class DesktopController extends EventEmitter {
           "subagent.stop.v1",
           "turn.queue.steer.v1",
           "turn.queue.cancel.v1",
+          "transcript.toolDetail.v1",
           "plugin.magpie-quota.v1",
         ],
       },

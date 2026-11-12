@@ -23,6 +23,7 @@ function nativeSnapshot() {
         "claude.native-relay.v1",
         "directory.browse.v1", "runtime.adapter.v1", "session.visibility.v1",
         "session.commands.v1", "session.command.v1", "subagent.stop.v1",
+        "transcript.toolDetail.v1",
         "turn.queue.steer.v1", "turn.queue.cancel.v1", "plugin.magpie-quota.v1",
       ],
     },

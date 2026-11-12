@@ -67,6 +67,16 @@ describe("isBridgePayload", () => {
     expect(isBridgePayload({ kind: "request", requestId: "mkdir", idempotencyKey: "mkdir", method: "directory.mkdir", params: { parentPath: "/tmp", name: "demo" } })).toBe(true);
   });
 
+  it("accepts on-demand tool call detail lookup on the paired channel", () => {
+    expect(isBridgePayload({
+      kind: "request",
+      requestId: "tool-detail",
+      idempotencyKey: "tool-detail",
+      method: "session.tool.detail",
+      params: { sessionId: "local_1", toolUseId: "toolu_123" },
+    })).toBe(true);
+  });
+
   it("still rejects unknown methods", () => {
     expect(isBridgePayload({
       kind: "request",

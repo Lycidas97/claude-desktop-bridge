@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
+import { transform } from 'esbuild';
 import { runSuites } from './test.mjs';
 import { recycleEnv } from './ci-run.mjs';
 import { LOCAL_CI_STATUS_CONTEXT, recordAndPublishLocalCi, validateStatusRepo } from './local-ci.mjs';
@@ -277,6 +278,27 @@ test('browser harness records proxy resets without failing intentional disconnec
   ]) logger.error(message, options);
   assert.equal(infrastructureErrors.length, 4);
   assert.equal(logged.length, 6);
+});
+
+test('Desktop startup leaves relay diagnostics to the configured Native connection', async () => {
+  const { code } = await transform(await readFile(new URL('../apps/client/src/main.tsx', import.meta.url), 'utf8'), {
+    loader: 'tsx', jsxFactory: 'jsx',
+  });
+  for (const desktop of [true, false]) {
+    const probes = [], timers = [];
+    vm.runInNewContext(code.replace(/^import .*;\r?\n/gmu, ''), {
+      window: desktop ? { bridgeDesktop: {} } : {}, navigator: {},
+      document: { getElementById: () => ({}) },
+      jsx: () => ({}), StrictMode: {}, App: {}, createRoot: () => ({ render() {} }),
+      installDiagnostics() {}, installSpecularHighlight() {},
+      setTimeout(callback) { timers.push(callback); },
+      runRelayConnectivityProbe(...args) { probes.push(args); return Promise.resolve(); },
+    });
+    for (const callback of timers) await callback();
+    assert.equal(probes.length, desktop ? 0 : 1, desktop
+      ? 'Desktop startup must not probe the compiled public relay'
+      : 'Mobile startup behavior remains unchanged');
+  }
 });
 
 test('scenario cleanup closes the page facade before late ACKs can see OPEN', async () => {

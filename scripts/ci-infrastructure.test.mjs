@@ -279,6 +279,27 @@ test('browser harness records proxy resets without failing intentional disconnec
   assert.equal(logged.length, 6);
 });
 
+test('scenario cleanup closes the page facade before late ACKs can see OPEN', async () => {
+  const source = await readFile(new URL('./browser-e2e.mjs', import.meta.url), 'utf8');
+  const setup = source.slice(source.indexOf('    await context.routeWebSocket('), source.indexOf('    page = await context.newPage();'));
+  const closeRoutes = source.match(/^      for \(const route of serverRoutes\) await route\.close\(.*$/m)[0];
+  let pageState = 1;
+  let nativeState = 1;
+  const serverRoute = { async close() { nativeState = 2; } };
+  const socket = {
+    url: () => 'ws://127.0.0.1:5811/ws',
+    connectToServer: () => serverRoute,
+    async close() { pageState = 3; await serverRoute.close(); },
+  };
+  await vm.runInNewContext(`(async () => {${setup}\n${closeRoutes}})()`, {
+    URL, serverRoutes: [], errors: [], baseUrl: 'http://127.0.0.1:5811',
+    relay: { url: 'ws://127.0.0.1:5812' },
+    context: { async routeWebSocket(_pattern, handler) { handler(socket); } },
+  });
+  assert.equal(nativeState, 2, 'The fixture starts the owned native close handshake');
+  assert.equal(pageState, 3, 'Late ACKs must not see an OPEN page facade after its native socket starts closing');
+});
+
 test('browser receipt assertion waits for a Native reply after the receipt is created', async () => {
   const source = await readFile(new URL('./browser-e2e.mjs', import.meta.url), 'utf8');
   const start = source.indexOf('  await eventually(() => host.nativeApproval.receipts().length, 4,');

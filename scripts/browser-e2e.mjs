@@ -1755,8 +1755,8 @@ async function runScenario(theme, scenario) {
     await context.routeWebSocket("**/*", (socket) => {
       const url = new URL(socket.url());
       if (url.hostname === "127.0.0.1" && [new URL(baseUrl).port, new URL(relay.url).port].includes(url.port)) {
-        const serverRoute = socket.connectToServer();
-        if (url.pathname === "/ws") serverRoutes.push(serverRoute);
+        socket.connectToServer();
+        if (url.pathname === "/ws") serverRoutes.push(socket);
       } else {
         errors.push(`Blocked non-fixture WebSocket: ${url.href}`);
         socket.close({ code: 1008, reason: "Isolated E2E only permits its loopback servers" });

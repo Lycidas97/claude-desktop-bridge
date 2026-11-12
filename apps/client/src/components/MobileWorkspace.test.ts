@@ -297,6 +297,27 @@ describe("mobile workspace directory", () => {
     expect(bothExpandedHtml).toContain(sidechatArchived.title);
     expect(bothExpandedHtml).toContain("历史实验分支");
 
+    const liveGrandchild: BridgeSessionInfo = {
+      ...session, sessionId: "live-fork", title: "仍在执行的孙分支", parentSessionId: sidechatArchived.sessionId,
+      transport: "claude-desktop-native", ownership: "DESKTOP_NATIVE_RUNNING", turnState: "running",
+    };
+    const threeLevelSessions = [session, sidechatArchived, liveGrandchild];
+    const threeLevelCollapsedHtml = renderCatalog(new Set<string>(), undefined, threeLevelSessions);
+    expect(threeLevelCollapsedHtml).toContain("1 个 Fork 分支");
+    expect(threeLevelCollapsedHtml).not.toContain("is-archived-only");
+    const threeLevelActiveHtml = renderCatalog(new Set([session.sessionId]), undefined, threeLevelSessions);
+    expect(threeLevelActiveHtml).toContain(liveGrandchild.title);
+    expect(threeLevelActiveHtml).toContain("1 个已结束侧聊");
+    expect(threeLevelActiveHtml).not.toContain(sidechatArchived.title);
+    const threeLevelHistoryHtml = renderCatalog(new Set([
+      session.sessionId, archivedForkGroupKey(session.sessionId), sidechatArchived.sessionId,
+    ]), undefined, threeLevelSessions);
+    expect(threeLevelHistoryHtml).toContain(sidechatArchived.title);
+    const liveRow = /data-session-id="live-fork"([\s\S]*?)<\/button>/u.exec(threeLevelHistoryHtml)![1]!;
+    expect(liveRow).toContain("桌面运行中");
+    expect(liveRow).not.toContain("已归档");
+    expect(threeLevelHistoryHtml.match(/data-session-id="live-fork"/gu)).toHaveLength(1);
+
     const archivedParent: BridgeSessionInfo = { ...session, sessionId: "archived-parent", title: "已归档父会话", archivedAt: 50 };
     const archivedChild: BridgeSessionInfo = { ...session, sessionId: "btw-of-archived-parent", title: "btw: 归档父会话的侧聊", parentSessionId: "archived-parent", sidechat: true, archivedAt: 60 };
     expect(groupProjectSessionFamilies([archivedParent, archivedChild])[0]!.forks).toHaveLength(1);

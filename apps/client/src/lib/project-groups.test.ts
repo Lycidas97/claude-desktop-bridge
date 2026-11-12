@@ -284,6 +284,20 @@ describe("partitionSessionForks", () => {
     expect(archivedForkGroupKey("parent")).toBe("archived:parent");
   });
 
+  it("keeps a live fork below an archived sidechat in the active bucket without duplicating it in history", () => {
+    const archivedSidechat: BridgeSessionInfo = { ...baseParent, sessionId: "btw-archived", parentSessionId: "parent", sidechat: true, archivedAt: 700 };
+    const liveFork: BridgeSessionInfo = { ...baseParent, sessionId: "live-fork", parentSessionId: "btw-archived", turnState: "running", lastActivityAt: 1100 };
+    const sessions = [baseParent, archivedSidechat, liveFork];
+    const [family] = groupProjectSessionFamilies(sessions);
+    const partitioned = partitionSessionForks(baseParent, family!.forks, sessions, false);
+
+    expect(partitioned.activeForks.map(fork => fork.primary.sessionId)).toEqual(["live-fork"]);
+    expect(forkGroupToggleLabel(partitioned.activeForks)).toBe("1 个 Fork 分支");
+    expect(partitioned.archivedForks.map(fork => fork.primary.sessionId)).toEqual(["btw-archived"]);
+    expect(partitioned.archivedForks[0]!.forks).toEqual([]);
+    expect(family!.forks[0]!.forks[0]!.primary).toBe(liveFork);
+  });
+
   it("keeps archived children inline without a secondary bucket in archived list views and honors search queries", () => {
     const archivedParent: BridgeSessionInfo = { ...baseParent, archivedAt: 500 };
     const archivedSidechat: BridgeSessionInfo = { ...baseParent, sessionId: "btw-archived", title: "btw: DNS rule", parentSessionId: "parent", sidechat: true, archivedAt: 700, lastActivityAt: 700 };

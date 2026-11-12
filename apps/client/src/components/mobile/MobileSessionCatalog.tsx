@@ -305,7 +305,7 @@ export function MobileSessionCatalog({
                 </button>
                 {archivedExpanded && (
                   <div className="mobile-fork-children is-archived-children">
-                    {archivedForks.map((fork) => renderMobileSessionFamily(fork, true, true))}
+                    {archivedForks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
                   </div>
                 )}
               </div>
@@ -340,7 +340,7 @@ export function MobileSessionCatalog({
                       </button>
                       {archivedExpanded && (
                         <div className="mobile-fork-archived-children">
-                          {archivedForks.map((fork) => renderMobileSessionFamily(fork, true, true))}
+                          {archivedForks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
                         </div>
                       )}
                     </div>

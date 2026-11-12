@@ -903,7 +903,17 @@ export function partitionSessionForks(
   if (includeArchivedInline) {
     return { activeForks: [...forks], archivedForks: [] };
   }
-  const activeForks = forks.filter((fork) => !fork.primary.archivedAt);
+  const activeForks: SessionFamily<BridgeSessionInfo>[] = [];
+  // Archived ancestors stay in history; their live descendants remain reachable
+  // from the active list without requiring the history fold to be opened.
+  function separateArchivedFork(fork: SessionFamily<BridgeSessionInfo>): SessionFamily<BridgeSessionInfo>[] {
+    if (!fork.primary.archivedAt) {
+      activeForks.push(fork);
+      return [];
+    }
+    return [{ ...fork, forks: fork.forks.flatMap(separateArchivedFork) }];
+  }
+  const archivedForks = forks.flatMap(separateArchivedFork);
   const seenIds = new Set(forks.map((fork) => fork.primary.sessionId));
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const supplementalArchived: SessionFamily<BridgeSessionInfo>[] = [];
@@ -930,9 +940,8 @@ export function partitionSessionForks(
       lastActivityAt: candidate.lastActivityAt,
     });
   }
-  const archivedForks = [
-    ...forks.filter((fork) => Boolean(fork.primary.archivedAt)),
-    ...supplementalArchived,
-  ].sort((left, right) => right.lastActivityAt - left.lastActivityAt);
+  activeForks.sort((left, right) => right.lastActivityAt - left.lastActivityAt);
+  archivedForks.push(...supplementalArchived);
+  archivedForks.sort((left, right) => right.lastActivityAt - left.lastActivityAt);
   return { activeForks, archivedForks };
 }

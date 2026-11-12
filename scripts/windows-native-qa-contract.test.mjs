@@ -289,53 +289,58 @@ test("Wait-HttpEndpoint fails immediately when the monitored process exits early
   assert.match(result.stderr, /exited with code 7 while waiting for http:\/\/127\.0\.0\.1:1\/health/u);
 });
 
-test("concurrent Windows CI callers wait before touching the shared worktree", { skip: process.platform !== "win32" }, async () => {
+test("concurrent Windows CI callers each take a free slot and a fifth caller waits for one to release", { skip: process.platform !== "win32" }, async () => {
   const { spawn } = await import("node:child_process");
   const { once } = await import("node:events");
   const source = await readFile(new URL("../scripts/win-local-ci.ps1", import.meta.url), "utf8");
-  const acquisition = source.slice(source.indexOf("$ciMutex ="), source.indexOf("# 1. Fetch exact commit")).replaceAll("ClaudeDesktopBridgeWinCi", `ClaudeDesktopBridgeWinCi-Test-${process.pid}`);
-  assert.ok(acquisition.length, "Missing Windows CI acquisition boundary");
+  const acquisition = source.slice(source.indexOf("$slotCount ="), source.indexOf("$ciWorktree =")).replaceAll("ClaudeDesktopBridgeWinCi", `ClaudeDesktopBridgeWinCi-Test-${process.pid}`);
+  assert.match(acquisition, /Acquired win-local-ci slot/u, "Missing Windows CI slot acquisition boundary");
   const directory = await mkdtemp(join(tmpdir(), "bridge-ci-mutex-"));
   const children = [];
   try {
     const fixture = join(directory, "mutex.ps1");
     await writeFile(fixture, `
-param([string]$Role, [string]$Root)
+param([string]$Root)
 $ErrorActionPreference = "Stop"
 ${acquisition}
-  Write-Output "$Role acquired"
-  if ($Role -eq "holder") {
-    while (-not (Test-Path (Join-Path $Root "release"))) { Start-Sleep -Milliseconds 50 }
-  }
+  while (-not (Test-Path (Join-Path $Root "release-$slot"))) { Start-Sleep -Milliseconds 50 }
 } finally {
-  if ($mutexAcquired) { $ciMutex.ReleaseMutex() }
-  $ciMutex.Dispose()
+  if ($slot -ge 0) { $slotMutexes[$slot].ReleaseMutex() }
+  foreach ($slotMutex in $slotMutexes) { $slotMutex.Dispose() }
 }
 `);
-    const launch = role => {
-      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture, "-Role", role, "-Root", directory]);
+    const launch = () => {
+      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture, "-Root", directory]);
       children.push(child);
       let output = "";
       child.stdout.on("data", chunk => { output += chunk; });
       return { child, output: () => output, done: once(child, "exit") };
     };
-    const waitForOutput = async (run, text) => {
+    const waitForOutput = async (run, pattern) => {
       const deadline = Date.now() + 15_000;
-      while (!run.output().includes(text)) {
+      let match;
+      while (!(match = run.output().match(pattern))) {
         assert.equal(run.child.exitCode, null, run.output());
-        assert.ok(Date.now() < deadline, `Timed out waiting for ${text}: ${run.output()}`);
+        assert.ok(Date.now() < deadline, `Timed out waiting for ${pattern}: ${run.output()}`);
         await new Promise(resolve => setTimeout(resolve, 50));
       }
+      return match;
     };
-    const holder = launch("holder");
-    await waitForOutput(holder, "holder acquired");
-    const waiter = launch("waiter");
-    await waitForOutput(waiter, "Waiting for active win-local-ci");
-    assert.ok(!waiter.output().includes("waiter acquired"));
-    await writeFile(join(directory, "release"), "release");
-    assert.equal((await holder.done)[0], 0);
-    assert.equal((await waiter.done)[0], 0);
-    assert.match(waiter.output(), /waiter acquired/u);
+    const holders = [];
+    for (let index = 0; index < 4; index += 1) {
+      const holder = launch();
+      holder.slot = Number((await waitForOutput(holder, /Acquired win-local-ci slot (\d)/u))[1]);
+      holders.push(holder);
+    }
+    assert.deepEqual(holders.map(holder => holder.slot).sort(), [0, 1, 2, 3]);
+    const waiter = launch();
+    await waitForOutput(waiter, /All 4 win-local-ci slots busy/u);
+    assert.doesNotMatch(waiter.output(), /Acquired win-local-ci slot/u);
+    await writeFile(join(directory, "release-2"), "release");
+    assert.equal((await holders.find(holder => holder.slot === 2).done)[0], 0);
+    assert.equal((await waitForOutput(waiter, /Acquired win-local-ci slot (\d)/u))[1], "2");
+    for (const slot of [0, 1, 3]) await writeFile(join(directory, `release-${slot}`), "release");
+    for (const run of [...holders, waiter]) assert.equal((await run.done)[0], 0, run.output());
   } finally {
     for (const child of children) {
       if (child.exitCode === null) child.kill();

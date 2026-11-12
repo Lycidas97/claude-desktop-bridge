@@ -419,7 +419,7 @@ process.stdout.write('{"state":"success"}\\n');
   }
 });
 
-test('browser E2E binds an ephemeral kernel port via httpServer.listen and local-ci serializes shared Windows runs', async () => {
+test('browser E2E binds an ephemeral kernel port via httpServer.listen and local-ci isolates concurrent Windows runs per slot', async () => {
   const browserSource = await readFile(new URL('../scripts/browser-e2e.mjs', import.meta.url), 'utf8');
   const localCiSource = await readFile(new URL('./local-ci.mjs', import.meta.url), 'utf8');
   const winCiSource = await readFile(new URL('../scripts/win-local-ci.ps1', import.meta.url), 'utf8');
@@ -461,7 +461,17 @@ test('browser E2E binds an ephemeral kernel port via httpServer.listen and local
   }
 
   assert.match(localCiSource, /const runId = `\$\{revision\.slice\(0, 12\)\}-\$\{process\.pid\}-\$\{Date\.now\(\)\}`/u);
-  assert.match(winCiSource, /System\.Threading\.Mutex.*Local\\ClaudeDesktopBridgeWinCi/u);
-  assert.match(winCiSource, /AbandonedMutexException/u);
-  assert.match(winCiSource, /ReleaseMutex\(\)/u);
+  assert.match(winCiSource, /System\.Threading\.Mutex.*Local\\ClaudeDesktopBridgeWinCi-\$_/u);
+  assert.match(winCiSource, /WaitHandle\]::WaitAny\(\$slotMutexes\)/u);
+  assert.match(winCiSource, /AbandonedMutexException[\s\S]*?\$slot = \$_\.Exception\.MutexIndex/u);
+  assert.match(winCiSource, /\$slotMutexes\[\$slot\]\.ReleaseMutex\(\)/u);
+  // Every per-run resource is keyed by slot; the shared D:\work\ci-worktree, bridge-ci-api36, and refs/ci/current are gone.
+  assert.match(winCiSource, /\$ciWorktree = "\$workRoot\\ci-slot-\$slot"/u);
+  assert.match(winCiSource, /"HEAD:refs\/ci\/slot-\$slot"/u);
+  assert.match(winCiSource, /"-avd", \$avdName, "-port", "\$emulatorPort"/u);
+  assert.match(winCiSource, /\$env:ANDROID_SERIAL = "emulator-\$emulatorPort"/u);
+  assert.match(winCiSource, /CI_DIR="\/var\/tmp\/bridge-linux-ci-slot-\$slot"/u);
+  assert.match(winCiSource, /Invoke-CimMethod -ClassName Win32_Process -MethodName Create[^\n]*start-server/u);
+  assert.doesNotMatch(winCiSource, /ci-worktree|refs\/ci\/current|"bridge-ci-api36"/u);
+  assert.doesNotMatch(localCiSource, /ci-worktree/u);
 });

@@ -14,7 +14,6 @@ Add-Type -Namespace BridgeCi -Name Power -MemberDefinition '[DllImport("kernel32
 
 $workRoot = "D:\work"
 $anchorRepo = "$workRoot\claude-desktop-bridge"
-$ciWorktree = "$workRoot\ci-worktree"
 $toolsRoot = "$workRoot\tools"
 $cacheRoot = "$workRoot\cache"
 
@@ -79,37 +78,46 @@ function Invoke-Checked {
   Write-Output ("<<< [WIN] $Label OK ({0:N1}s)" -f $sw.Elapsed.TotalSeconds)
 }
 
-# Serialize concurrent multi-worktree ci:local runs sharing D:\work\ci-worktree, bridge-ci-api36, and WSL2
-$ciMutex = [System.Threading.Mutex]::new($false, "Local\ClaudeDesktopBridgeWinCi")
-$mutexAcquired = $false
+# Up to 4 concurrent ci:local runs; each slot owns its worktree + bundle ref, AVD + ADB port, and WSL2 checkout
+$slotCount = 4
+$slotMutexes = @(0..($slotCount - 1) | ForEach-Object { [System.Threading.Mutex]::new($false, "Local\ClaudeDesktopBridgeWinCi-$_") })
+$slot = -1
 try {
-  try {
-    $mutexAcquired = $ciMutex.WaitOne(0)
-  } catch [System.Threading.AbandonedMutexException] {
-    $mutexAcquired = $true
-  }
-  if (-not $mutexAcquired) {
-    Write-Output ">>> [WIN] Waiting for active win-local-ci run to finish (Local\ClaudeDesktopBridgeWinCi)..."
+  foreach ($index in 0..($slotCount - 1)) {
     try {
-      $mutexAcquired = $ciMutex.WaitOne()
+      if ($slotMutexes[$index].WaitOne(0)) { $slot = $index; break }
     } catch [System.Threading.AbandonedMutexException] {
-      $mutexAcquired = $true
+      $slot = $index; break
     }
   }
+  if ($slot -lt 0) {
+    Write-Output ">>> [WIN] All $slotCount win-local-ci slots busy (Local\ClaudeDesktopBridgeWinCi-*); waiting for one to finish..."
+    try {
+      $slot = [System.Threading.WaitHandle]::WaitAny($slotMutexes)
+    } catch [System.Threading.AbandonedMutexException] {
+      $slot = $_.Exception.MutexIndex
+    }
+  }
+  Write-Output ">>> [WIN] Acquired win-local-ci slot $slot"
 
-# 1. Fetch exact commit bundle into anchor repo and attach/checkout D:\work\ci-worktree
+$ciWorktree = "$workRoot\ci-slot-$slot"
+$avdName = "bridge-ci-api36-$slot"
+$emulatorPort = 5560 + 2 * $slot
+$env:ANDROID_SERIAL = "emulator-$emulatorPort"
+
+# 1. Fetch exact commit bundle into the anchor repo under this slot's ref and check out D:\work\ci-slot-<n>
 Invoke-Checked "Sync git bundle ($Revision)" {
   git -C $anchorRepo bundle verify $BundlePath | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "git bundle verify failed ($LASTEXITCODE)" }
-  git -C $anchorRepo fetch --force $BundlePath "HEAD:refs/ci/current"
+  git -C $anchorRepo fetch --force $BundlePath "HEAD:refs/ci/slot-$slot"
 }
 
 if (-not (Test-Path "$ciWorktree\.git")) {
-  Invoke-Checked "Create D:\work\ci-worktree" {
+  Invoke-Checked "Create $ciWorktree" {
     git -C $anchorRepo worktree add --force --detach $ciWorktree $Revision
   }
 } else {
-  Invoke-Checked "Checkout $Revision in D:\work\ci-worktree" {
+  Invoke-Checked "Checkout $Revision in $ciWorktree" {
     git -C $ciWorktree reset --hard
     if ($LASTEXITCODE -ne 0) { throw "git reset failed ($LASTEXITCODE)" }
     git -C $ciWorktree checkout --force --detach $Revision
@@ -156,12 +164,26 @@ Invoke-Checked "npm test (Windows)" { & "$nodeBin\npm.cmd" test }
 $adb = "$sdkRoot\platform-tools\adb.exe"
 $emulatorExe = "$sdkRoot\emulator\emulator.exe"
 $startedEmulator = $false
-& $adb start-server | Out-Null
-$onlineEmulator = (& $adb devices) | Select-String -Pattern "^emulator-\d+\s+device$"
+# OpenSSH kills every process in a session's job when the session ends, so an adb server spawned by one
+# slot would take down the adb forwards of the other slots. Start the shared server through WMI instead.
+$adbServer = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$adb`" start-server" }
+if ($adbServer.ReturnValue -ne 0) { throw "Failed to launch adb start-server via WMI ($($adbServer.ReturnValue))" }
+Wait-Process -Id $adbServer.ProcessId -ErrorAction SilentlyContinue
+$avdIni = "$avdHome\$avdName.ini"
+if (-not (Test-Path $avdIni)) {
+  Invoke-Checked "Clone AVD bridge-ci-api36 -> $avdName" {
+    $avdDir = "$avdHome\$avdName.avd"
+    New-Item -ItemType Directory -Force -Path $avdDir | Out-Null
+    Copy-Item "$avdHome\bridge-ci-api36.avd\config.ini" "$avdDir\config.ini"
+    $ini = (Get-Content "$avdHome\bridge-ci-api36.ini") -replace "^path=.*", "path=$avdDir"
+    [IO.File]::WriteAllLines($avdIni, $ini, [Text.Encoding]::ASCII)
+  }
+}
+$onlineEmulator = (& $adb devices) | Select-String -Pattern "^$env:ANDROID_SERIAL\s+device$"
 if (-not $onlineEmulator) {
-  Write-Output ">>> [WIN] Starting headless WHPX AVD bridge-ci-api36 in background"
+  Write-Output ">>> [WIN] Starting headless WHPX AVD $avdName on $env:ANDROID_SERIAL in background"
   Start-Process -FilePath $emulatorExe `
-    -ArgumentList @("-avd", "bridge-ci-api36", "-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot-save", "-gpu", "swiftshader_indirect") `
+    -ArgumentList @("-avd", $avdName, "-port", "$emulatorPort", "-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot-save", "-gpu", "swiftshader_indirect") `
     -WindowStyle Hidden | Out-Null
   $startedEmulator = $true
 }
@@ -248,7 +270,7 @@ try {
     Start-Sleep -Seconds 2
   }
   if (-not $booted) {
-    throw "Timed out waiting for Android Emulator bridge-ci-api36 to finish booting"
+    throw "Timed out waiting for Android Emulator $avdName ($env:ANDROID_SERIAL) to finish booting"
   }
   Write-Output "<<< [WIN] Android Emulator sys.boot_completed=1"
 
@@ -283,12 +305,12 @@ if (-not $SkipWslLinux) {
   $wslScript = @"
 set -euo pipefail
 export PATH="/usr/local/bin:`$PATH"
-CI_DIR="/var/tmp/bridge-linux-ci"
+CI_DIR="/var/tmp/bridge-linux-ci-slot-$slot"
 if [ ! -d "`$CI_DIR/.git" ]; then
   mkdir -p "`$CI_DIR"
   git init -q "`$CI_DIR"
 fi
-git -C "`$CI_DIR" fetch --force "$wslBundlePath" "HEAD:refs/ci/current"
+git -C "`$CI_DIR" fetch --force "$wslBundlePath" "HEAD:refs/ci/slot-$slot"
 git -C "`$CI_DIR" reset --hard -q
 git -C "`$CI_DIR" checkout --force --detach -q "$Revision"
 cd "`$CI_DIR"
@@ -327,9 +349,9 @@ Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revisi
       }
     }
   } finally {
-    if ($mutexAcquired) {
-      $ciMutex.ReleaseMutex()
+    if ($slot -ge 0) {
+      $slotMutexes[$slot].ReleaseMutex()
     }
-    $ciMutex.Dispose()
+    foreach ($slotMutex in $slotMutexes) { $slotMutex.Dispose() }
   }
 }

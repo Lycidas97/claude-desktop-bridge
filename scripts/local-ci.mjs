@@ -272,7 +272,7 @@ async function runCli() {
         const psArgs = [
           ...sshAlive,
           winHost,
-          `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE; if (Test-Path -LiteralPath "${remoteScriptWin}") { if (Test-Path "D:\\work\\cache\\bridge-recycle.exe") { & "D:\\work\\cache\\bridge-recycle.exe" "${remoteScriptWin}" } elseif (Test-Path "D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs") { D:\\work\\tools\\node-26\\node.exe --require D:\\work\\ci-worktree\\scripts\\recycle-cleanup.cjs D:\\work\\ci-worktree\\scripts\\clean.mjs "${remoteScriptWin}" }; if ($LASTEXITCODE -ne 0 -and $ec -eq 0) { $ec = $LASTEXITCODE } }; exit $ec`,
+          `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE; if (Test-Path -LiteralPath "${remoteScriptWin}") { if (Test-Path "D:\\work\\cache\\bridge-recycle.exe") { & "D:\\work\\cache\\bridge-recycle.exe" "${remoteScriptWin}" } elseif (Test-Path "D:\\work\\claude-desktop-bridge\\scripts\\recycle-cleanup.cjs") { D:\\work\\tools\\node-26\\node.exe --require D:\\work\\claude-desktop-bridge\\scripts\\recycle-cleanup.cjs D:\\work\\claude-desktop-bridge\\scripts\\clean.mjs "${remoteScriptWin}" }; if ($LASTEXITCODE -ne 0 -and $ec -eq 0) { $ec = $LASTEXITCODE } }; exit $ec`,
         ];
         const tWin = await runPrefixed("WIN", "ssh", psArgs);
         results.push(

@@ -1019,6 +1019,83 @@ describe("native structured approvals", () => {
     expect(elements(clearedRow).some(element => String(element.props.className).startsWith("session-row-status"))).toBe(false);
   });
 
+  it("synchronizes catalog row state dot and badge for active and stalled background subagents when main turn is idle", () => {
+    const now = Date.now();
+    const setRunningSubagents = (runningSubagents?: { count: number; lastUpdatedAt: number }) => {
+      props = {
+        ...props,
+        snapshot: {
+          ...props.snapshot!,
+          sessions: props.snapshot!.sessions.map(session => session.sessionId === "B"
+            ? { ...session, turnState: "idle", ...(runningSubagents ? { runningSubagents } : {}) }
+            : session),
+        },
+        histories: {
+          ...props.histories,
+          B: {
+            status: "ready",
+            hasMore: false,
+            items: runningSubagents
+              ? [{
+                  id: "subagent-item",
+                  sessionId: "B",
+                  role: "tool",
+                  toolName: "Agent",
+                  text: "Run full local distributed CI",
+                  createdAt: runningSubagents.lastUpdatedAt,
+                  origin: "claude-desktop",
+                  subagent: {
+                    agentId: "agent-ci",
+                    toolUseId: "subagent-item",
+                    description: "Run full local distributed CI",
+                    state: "running",
+                    startedAt: now - 60_000,
+                    updatedAt: runningSubagents.lastUpdatedAt,
+                    toolCount: 3,
+                  },
+                }]
+              : [],
+          },
+        },
+      };
+      if (!runningSubagents) {
+        const target = props.snapshot!.sessions.find(session => session.sessionId === "B")!;
+        delete target.runningSubagents;
+      }
+      draw();
+    };
+
+    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
+    setRunningSubagents({ count: 1, lastUpdatedAt: now - 30_000 });
+    const activeRow = elements(tree).find(element => element.props["data-session-id"] === "B")!;
+    expect(elements(activeRow).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot running");
+    const activeBadge = elements(activeRow).find(element => String(element.props.className).startsWith("session-row-status"))!;
+    expect(activeBadge.props.className).toBe("session-row-status running");
+    expect(activeBadge.props.children).toBe("后台子代理");
+
+    // Open session detail, verify detail activity indicator, then return to catalog and confirm sync persists.
+    elements(activeRow).find(element => element.props.className === "session-row-hit")!.props.onClick(); draw();
+    expect(elements(tree).some(element => String(element.props.activity?.label ?? "").includes("子代理运行中 · Run full local distributed CI"))).toBe(true);
+    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
+    const returnedRow = elements(tree).find(element => element.props["data-session-id"] === "B")!;
+    expect(elements(returnedRow).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot running");
+    expect(elements(returnedRow).find(element => String(element.props.className).startsWith("session-row-status"))?.props.children).toBe("后台子代理");
+
+    // Stalled > 10 minutes switches both dot and badge to queued warning tone.
+    setRunningSubagents({ count: 1, lastUpdatedAt: now - 11 * 60_000 });
+    const stalledRow = elements(tree).find(element => element.props["data-session-id"] === "B")!;
+    expect(elements(stalledRow).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot queued");
+    const stalledBadge = elements(stalledRow).find(element => String(element.props.className).startsWith("session-row-status"))!;
+    expect(stalledBadge.props.className).toBe("session-row-status queued");
+    expect(stalledBadge.props.children).toBe("子代理无进展");
+
+    // Clearing runningSubagents restores idle dot and removes badge.
+    setRunningSubagents(undefined);
+    const idleRow = elements(tree).find(element => element.props["data-session-id"] === "B")!;
+    expect(elements(idleRow).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot idle");
+    expect(elements(idleRow).some(element => String(element.props.className).startsWith("session-row-status"))).toBe(false);
+  });
+
   it("keeps a newly arrived question reachable while reading session evidence", () => {
     props = { ...props, histories: { A: { status: "ready", hasMore: false, items: [{ id: "prior-user", sessionId: "A", turnId: "prior-turn", role: "user", text: "之前的工作", createdAt: 1, origin: "claude-desktop" }] } },
       evidence: { A: { status: "ready", hasMore: false, items: [{ id: "prior-evidence", sessionId: "A", turnId: "prior-turn", source: "claude-desktop", confidence: "exact", state: "ready", startedAt: 1, completedAt: 2, toolCount: 0, changeCount: 0, artifactCount: 0, tools: [], artifacts: [], warnings: [] }] } } };

@@ -446,6 +446,7 @@ describe("zero-bloat timeline projection & RPC wiring", () => {
       ).rejects.toThrow("agentId");
     } finally {
       await bridge.close();
+      await eventLog.close();
       state.close();
     }
   });

@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionEventLog } from "./session-event-log.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, writeFile: vi.fn(actual.writeFile) };
+});
 
 const directories: string[] = [];
 
@@ -329,22 +334,22 @@ describe("SessionEventLog", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")("does not persist a receipt when the JSONL append fails, across reopening", async () => {
+  it("does not persist a receipt when the JSONL append fails, across reopening", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-receipt-failed-append-"));
     directories.push(directory);
     const path = join(directory, "events.jsonl");
     const seed = new SessionEventLog(path);
     await seed.append({ origin: "system", type: "host.presence" });
     await seed.close();
-    await chmod(path, 0o400);
     const failed = new SessionEventLog(path);
     const draft = { sessionId: "session-1", itemId: "retry-message", origin: "claude-desktop" as const, type: "session.observed" as const, data: { role: "assistant", text: "Retry this event" } };
     try {
       await failed.initialize();
+      vi.mocked(writeFile).mockRejectedValueOnce(Object.assign(new Error("JSONL append denied"), { code: "EACCES" }));
       await expect(failed.append(draft)).rejects.toMatchObject({ code: "EACCES" });
+      expect(writeFile).toHaveBeenLastCalledWith(path, expect.any(String), { flag: "a", encoding: "utf8", mode: 0o600 });
     } finally {
       await failed.close();
-      await chmod(path, 0o600);
     }
     const reopened = new SessionEventLog(path);
     try {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { DEFAULT_PUBLIC_RELAY_URL, PROTOCOL_VERSION, relayHealthUrl } from "@bridge/protocol";
+import { DEFAULT_PUBLIC_RELAY_URL, relayHealthUrl } from "../packages/protocol/src/endpoints.ts";
+import { PROTOCOL_VERSION } from "../packages/protocol/src/types.ts";
 import { WebSocket } from "ws";
 
 const relayUrl = process.env.BRIDGE_RELAY_URL ?? DEFAULT_PUBLIC_RELAY_URL;

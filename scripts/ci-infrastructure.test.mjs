@@ -835,7 +835,19 @@ test('win-local-ci builds shared client once, overlaps make:windows:from-client 
 test('relay-contract-probe preserves subpath prefix for /health and build/env defaults use BIS + Cloudflare STUN', async () => {
   const { createServer } = await import('node:http');
   const { WebSocketServer } = await import('ws');
-  const { PROTOCOL_VERSION } = await import('../packages/protocol/dist/index.js');
+  const { PROTOCOL_VERSION } = await import('../packages/protocol/src/types.ts');
+  const fixture = await mkdtemp(join(tmpdir(), 'bridge-relay-probe-source-'));
+  await mkdir(join(fixture, 'scripts'), { recursive: true });
+  await mkdir(join(fixture, 'packages/protocol/src'), { recursive: true });
+  await mkdir(join(fixture, 'node_modules'), { recursive: true });
+  await Promise.all([
+    copyFile(new URL('./relay-contract-probe.mjs', import.meta.url), join(fixture, 'scripts/relay-contract-probe.mjs')),
+    ...['endpoints.ts', 'types.ts'].map((name) => copyFile(
+      new URL(`../packages/protocol/src/${name}`, import.meta.url),
+      join(fixture, 'packages/protocol/src', name),
+    )),
+    symlink(fileURLToPath(new URL('../node_modules/ws', import.meta.url)), join(fixture, 'node_modules/ws'), 'junction'),
+  ]);
 
   const seenHttpPaths = [];
   const wss = new WebSocketServer({ noServer: true });
@@ -870,7 +882,7 @@ test('relay-contract-probe preserves subpath prefix for /health and build/env de
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
     const { port } = server.address();
-    const probePath = fileURLToPath(new URL('./relay-contract-probe.mjs', import.meta.url));
+    const probePath = join(fixture, 'scripts/relay-contract-probe.mjs');
     const result = await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [probePath], {
         env: { ...process.env, BRIDGE_RELAY_URL: `ws://127.0.0.1:${port}/bridge-relay/ws` },
@@ -895,6 +907,7 @@ test('relay-contract-probe preserves subpath prefix for /health and build/env de
   } finally {
     await new Promise((resolve) => wss.close(resolve));
     await new Promise((resolve) => server.close(resolve));
+    await rm(fixture, { recursive: true, force: true });
   }
 
   const buildMjs = await readFile(new URL('../apps/desktop/scripts/build.mjs', import.meta.url), 'utf8');

@@ -23,9 +23,11 @@ vi.mock("node:fs/promises", async (original) => {
 });
 
 const directories: string[] = [];
+const eventLogs: SessionEventLog[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  for (const eventLog of eventLogs.splice(0)) await eventLog.close();
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
@@ -38,6 +40,7 @@ async function managerFixture() {
     masterSecret: "manager-test-secret",
   });
   const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+  eventLogs.push(eventLog);
   await eventLog.initialize();
   const manager = new EvidenceManager({ store, eventLog });
   await manager.initialize();

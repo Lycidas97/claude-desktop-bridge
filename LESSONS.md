@@ -27,6 +27,42 @@ During scheduled consolidation (`bridge-tech-debt-patrol`) or pre-release retros
 
 ## Active Entries
 
+**[Pitfall] Import source directly in probes that run before package builds, and test them without package dist.**
+- Broken in: `f6c33d0932a3326eb9cd3ed15ae2836d71b172a2` / `Lycidas97/claude-desktop-bridge#61` — Windows infra ran before the protocol build; stale dist lacked the new export and the relay probe failed with SyntaxError.
+- Fixed in: `dc9563366a0c4f52fdb83deb357c4a77fe1080c8`
+- Done right: `scripts/relay-contract-probe.mjs` imports protocol source. The isolated no-dist HTTP/WS regression failed before the fix and passed afterward; exact-head full CI `ci-local-pr62-1d96688-20261113T112537Z-56909` passed.
+- Seen 1× (2026-11-13)
+
+**[Recipe] Run a short typecheck after merging main, before starting distributed CI, even after a clean textual merge.**
+- Context: PR41's empty remerge diff missed a branch-only test fixture omitting PR37's newly required sectionManage prop; full CI on `f065d81f85338278059aca8046ca4625bc6d49eb` failed with TS2769.
+- Verified in: `c5c898887096c0b48bcef1240dc4ddd2280ae407`
+- Pattern: After syncing main, run Node26 `npm run ci:run -- run typecheck`. The fixture correction at `648a2bd8596607ab2d4f8153499ceda5a6657212` passed independent review and full CI. This is compile-interface evidence, not a runtime Red Check.
+- Seen 1× (2026-11-13)
+
+**[Pitfall] Persist deduplication receipts only after their log write succeeds, and preserve private permissions on new SQLite files.**
+- Broken in: `57e0f197921fee3a9de6d6dbf4d85bba0256012d` / `Lycidas97/claude-desktop-bridge#52` — a failed JSONL append left a durable receipt that suppressed the missing event after reopening; umask022 created DB/WAL/SHM as0644 beside a0600 log.
+- Fixed in: `f42a5a97383cf3fb8e667f19cd45220bbb76b30a`
+- Done right: `session-event-log.ts` performs receipt upsert after successful JSONL write in the existing writeQueue, and creates/tightens the DB to0600 before opening SQLite/WAL. Its portable append-failure regression still fails on the old production code at the reopened ghost-receipt assertion; permissions and exact-head full CI `ci-local-pr63-78003db-20261113T142332Z-4103` passed.
+- Seen 1× (2026-11-13)
+
+**[Pitfall] Close SessionEventLog instances owned by a fixture before recycling their temporary directories.**
+- Broken in: `b9beccde939a81a2a2cf7294f8207a744bd11e5e` / `Lycidas97/claude-desktop-bridge#52` —26 evidence fixtures closed the manager but left externally supplied SQLite logs open; real Windows directory rename failed with EPERM and native recycling returned124, then returned0 after log.close().
+- Fixed in: `f42a5a97383cf3fb8e667f19cd45220bbb76b30a` (fixture correction `4686a8ac5f514b2996accecbf778f12fe0b1725d`)
+- Done right: `evidence-manager.test.ts` records and closes the logs its fixture created before recycling roots. On the same owned Windows clone, old revision failed26/27 and corrected fixture passed27/27; final full CI passed. Production EvidenceManager retains its existing ownership contract.
+- Seen 1× (2026-11-13)
+
+**[Pitfall] Do not use chmod0400 alone to trigger a write failure under privileged CI identities.**
+- Broken in: `4686a8ac5f514b2996accecbf778f12fe0b1725d` / `Lycidas97/claude-desktop-bridge#52` — WSL uid/euid0 with CAP_DAC_OVERRIDE successfully appended to the0400 file, invalidating the test's EACCES premise.
+- Fixed in: `f42a5a97383cf3fb8e667f19cd45220bbb76b30a` (test correction `78003db3986fea5ba7bff1d29320d2a3f1bef87b`)
+- Done right: After real log initialization, inject one EACCES at writeFile, assert its exact JSONL path and append/UTF8/0600 arguments, then close/reopen real SQLite and verify no ghost receipt. The same new test fails on old production code; it executes on Mac, Windows and root WSL without changing the CI identity or skipping the regression. Full CI passed.
+- Seen 1× (2026-11-13)
+
+**[Pitfall] Propagate destination-stream errors from creation onward, and keep the source pending in the regression.**
+- Broken in: `e40ca7e0eff75a47c6e65147d84b4c75fb7c65a2` / `Lycidas97/claude-desktop-bridge#16` — download.part was a directory while the HTTP body stayed pending; createWriteStream emitted uncaught EISDIR and the updater remained downloading.
+- Fixed in: `379078277a9f0228e7228a376a2b50f36798a552`
+- Done right: `desktop-updater.ts` passes the response pipeline and newly created destination stream to pipeline; the real-filesystem regression reaches updater error and cancels the source. Original reviewer returned CLEAN and full CI `ci-local-pr40-retry1-20261113T143356Z-48766` passed; this test does not prove an actual installation or upgrade.
+- Seen 1× (2026-11-13)
+
 **[Pitfall] Never execute production-`appId` NSIS installers or uninstallers during local Windows QA on shared hosts.**
 - Broken in: `b5a2300` / `#28` — `scripts/windows-packaged-qa.ps1` ran `Bridge-*-Setup.exe /S /D=$installRoot` and `Uninstall*.exe /currentuser /S` under the developer's Windows user account; NSIS `uninstallOldVersion` read `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\<appId>`, killed live `D:\Tools\Bridge\Bridge.exe`, and wiped `D:\Tools\Bridge` even with `/D=$installRoot` and isolated `APPDATA`.
 - Fixed in: `#28`
@@ -80,3 +116,15 @@ During scheduled consolidation (`bridge-tech-debt-patrol`) or pre-release retros
 - Fixed in: `2b51a7e`
 - Done right: Set `[Console]::InputEncoding = New-Object Text.UTF8Encoding($false)` before `wsl.exe ... bash -s`. The actual Windows→WSL regression in `scripts/windows-native-qa-contract.test.mjs` pipes `false` followed by a success sentinel: original returns 0 and prints the sentinel; fixed returns 1 before the sentinel. Run `npm run test:infra` on Windows; both red and green execute with zero skips.
 - Seen 1× (2026-11-12)
+
+**[Pitfall] Preserve a root ignore rule when retiring a platform project whose generated files may already exist in developer checkouts.**
+- Broken in: `7214a8e` / `#65` — removing `apps/mobile/ios/.gitignore` left previously ignored DerivedData files untracked after checkout, so the actual `ci:local` clean-tree gate failed before any platform leg started.
+- Fixed in: `354542c1cf11faa89b0bc10ae90ed4dda66aed3b`.
+- Done right: Root `/apps/mobile/ios/` preserves the retired directory's ignored status. The original reviewer verified DerivedData, DerivedData-device, and App/App/public remain present while Git stays clean; no info/exclude patch, product restoration, file removal, or gate bypass.
+- Seen 1× (2026-11-13)
+
+**[Recipe] Use Electron's official executable-path export in standalone Node QA instead of reconstructing its dist path.**
+- Context: Electron43.1.1 has no postinstall lifecycle; its Node entry initializes a missing binary before returning the executable path. The service QA bypassed that entry and failed with spawn ENOENT after fresh npm ci.
+- Verified in: `4098aaa6cad0f6249aebf9a29a2d07586088ae2f`; original review5897066888 and the actual `npm run ci:run -- run test:desktop:service` source Green.
+- Pattern: `scripts/service-restart-qa.mjs` imports the default `electronPath` from `electron` and passes it as Playwright's executablePath. With only the earlier manual-install dist/path.txt products sent to Trash, the original QA directly initialized the official binary and passed all eight lifecycle assertions; infra39 passed/8 platform skips. No separate installer hook, download wrapper, retry, or cache clearing was added. This proves the compiled Electron fixture, not installed Bridge or live Claude Desktop.
+- Seen 1× (2026-11-13)

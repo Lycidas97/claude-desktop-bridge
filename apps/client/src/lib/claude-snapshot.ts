@@ -9,6 +9,7 @@ export function claudeSnapshot<T extends BridgeHostSnapshot>(snapshot: T): T {
     sessions,
     projects: snapshot.projects.filter((project) => (project.runtimeId ?? "claude-desktop") === "claude-desktop"),
     permissions: snapshot.permissions.filter((permission) => sessionIds.has(permission.sessionId)),
+    ...(snapshot.prompts ? { prompts: snapshot.prompts.filter(prompt => sessionIds.has(prompt.sessionId)) } : {}),
     ...(snapshot.runtimes ? { runtimes: snapshot.runtimes.filter((runtime) => runtime.id === "claude-desktop") } : {}),
     ...(snapshot.desktopApps ? { desktopApps: snapshot.desktopApps.filter((app) => app.id === "claude-desktop") } : {}),
   };

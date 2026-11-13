@@ -112,6 +112,8 @@ export type BridgeRuntimeCapability =
   | "turn.steer"
   | "turn.interrupt"
   | "permission.resolve"
+  | "prompt.resolve"
+  | "pr.autofix"
   | "tool.events"
   | "attachment.image"
   | "goal.native";
@@ -204,6 +206,8 @@ export type BridgeCapability =
   | "directory.browse.v1"
   | "directory.mkdir.v1"
   | "workspace.trust.v1"
+  | "prompt.native.v1"
+  | "pr.autofix.v1"
   | "runtime.adapter.v1"
   | "runtime.handoff.v1"
   | "session.visibility.v1"
@@ -672,6 +676,10 @@ export interface BridgeSessionInfo {
   /** Current main-session context window watermark, when observed. */
   contextUsage?: BridgeSessionContextUsage;
   nativePermissionModeChange?: BridgeNativePermissionModeChange;
+  prs?: BridgePullRequest[];
+  /** Last preferences read from Native; absent until requested by the client. */
+  prAutoFix?: { onlyOwnPrs: boolean; nextOwnPrArmed: boolean };
+  autoArchiveOnPrClose?: boolean;
   fallbackConfirmed?: boolean;
   desktopRegistration?: BridgeDesktopRegistrationInfo;
   /** Desktop executor handoff or inbox submission awaiting transcript confirmation. */
@@ -1042,6 +1050,71 @@ export interface BridgePermissionInfo {
   canSetNativeFullAccess?: boolean;
 }
 
+export interface BridgePromptChoice {
+  value: string;
+  label: string;
+}
+
+interface BridgePendingPromptBase {
+  promptId: string;
+  sessionId: string;
+  title: string;
+  message?: string;
+  choices: BridgePromptChoice[];
+  canRespond: boolean;
+}
+
+/** Native application dialogs are separate from tool permissions. */
+export type BridgePendingPrompt = BridgePendingPromptBase & (
+  | { kind: "refusal-fallback" }
+  | { kind: "auto-mode-server-fallback" }
+  | { kind: "lanyard-consent" }
+  | { kind: "violin-bow" }
+  | { kind: "cwd-trust"; directory: string; sources: string[] }
+);
+
+export interface BridgePromptResolution {
+  promptId: string;
+  kind: BridgePendingPrompt["kind"];
+  choice: string;
+  resolvedByDeviceId: string;
+  resolvedByName: string;
+  resolvedAt: number;
+}
+
+export interface BridgePullRequest {
+  repo: string;
+  prNumber: number;
+  url: string;
+  host?: string;
+  branch?: string;
+  state?: string;
+  autoFix?: boolean;
+}
+
+export interface BridgePrCheck {
+  name: string;
+  state: string;
+  url?: string;
+}
+
+export interface BridgePrAutoFixState {
+  sessionId: string;
+  prs: BridgePullRequest[];
+  onlyOwnPrs?: boolean;
+  nextOwnPrArmed?: boolean;
+  capabilities: { bound: boolean; onlyOwnPrs: boolean; nextPr: boolean; checks: boolean };
+  overview?: { title?: string; state?: string; url?: string };
+  overviewUnavailable?: string;
+  checks?: BridgePrCheck[];
+}
+
+export type BridgePrAutoFixUpdate = { sessionId: string; enabled: boolean } & (
+  | { target: "bound"; repo: string; prNumber: number; host?: string }
+  | { target: "own-prs" }
+  | { target: "next-pr" }
+);
+
 export interface BridgePermissionResolution {
   requestId: string;
   decision: BridgePermissionDecision;
@@ -1150,6 +1223,7 @@ export interface BridgeHostSnapshot {
   desktopApps?: BridgeDesktopAppStatus[];
   runtimes?: BridgeDesktopRuntime[];
   permissions: BridgePermissionInfo[];
+  prompts?: BridgePendingPrompt[];
   providers?: BridgeProviderProfile[];
   updater?: BridgeUpdaterSnapshot;
   latestSeq: number;
@@ -1235,6 +1309,10 @@ export type BridgeMethod =
   | "turn.interrupt"
   | "subagent.stop"
   | "permission.resolve"
+  | "prompt.list"
+  | "prompt.resolve"
+  | "pr.autoFix.read"
+  | "pr.autoFix.set"
   | "permission.policy.configure"
   | "events.resume"
   | "evidence.list"
@@ -1315,6 +1393,9 @@ export type BridgeEventType =
   | "tool.completed"
   | "permission.requested"
   | "permission.resolved"
+  | "prompt.requested"
+  | "prompt.resolved"
+  | "pr.autoFix.updated"
   | "permission.policy.changed"
   | "question.requested"
   | "question.resolved"

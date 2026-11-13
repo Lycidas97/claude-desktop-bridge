@@ -10,6 +10,7 @@ import type {
   BridgeHistoryPage,
   BridgeDesktopRuntimeId,
   BridgeNativePermissionMode,
+  BridgePrAutoFixState,
   BridgeProviderProfile,
   BridgeResponse,
   BridgeSessionCommandResult,
@@ -85,6 +86,8 @@ import {
   PermissionPrompt,
 } from "../conversation/PermissionPrompts.js";
 import { SubagentCard } from "../conversation/SubagentCard.js";
+import { NativePromptCard } from "../conversation/NativePromptCard.js";
+import { SessionPrBar } from "../conversation/SessionPrBar.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "../conversation/SessionActivityIndicator.js";
 import { SlashCommandInput } from "../conversation/SlashCommandInput.js";
 import { useSessionCommands } from "../../hooks/useSessionCommands.js";
@@ -198,6 +201,7 @@ export function DesktopSessions({
   const fileRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
   const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
+  const otherNativePromptSession = snapshot.sessions.find(session => session.sessionId !== selectedId && snapshot.prompts?.some(prompt => prompt.sessionId === session.sessionId));
   const fileUploads = useFileAttachments(selected?.sessionId, (sessionId, file, onProgress, signal) =>
     uploadSessionFile(async (method, params) => apiRequest({ method, params }), sessionId, file, onProgress, signal));
   const selectedRuntime = selected ? desktopRuntimeId(selected) : "claude-desktop";
@@ -968,6 +972,30 @@ export function DesktopSessions({
                 )}
               </div>
             </header>
+            {(snapshot.host.capabilities.includes("pr.autofix.v1") || selected.prs?.length) ? (
+              <SessionPrBar
+                key={selected.sessionId}
+                session={selected}
+                events={events}
+                supported={snapshot.host.capabilities.includes("pr.autofix.v1")}
+                online={snapshot.runtime.desktopIntegration.state === "ready"}
+                onRead={async (sessionId, pr, includeChecks) => unwrap<BridgePrAutoFixState>(await apiRequest({
+                  method: "pr.autoFix.read",
+                  params: { sessionId, ...(pr ? { repo: pr.repo, prNumber: pr.prNumber, ...(pr.host ? { host: pr.host } : {}) } : {}), includeChecks },
+                }))}
+                onSet={async update => {
+                  const next = unwrap<BridgePrAutoFixState>(await apiRequest({ method: "pr.autoFix.set", params: update }));
+                  await onRefreshSnapshot();
+                  return next;
+                }}
+              />
+            ) : null}
+            {otherNativePromptSession && (
+              <div className="desktop-channel-banner">
+                <AlertTriangle size={18} />
+                <button type="button" className="relay-chain-link" onClick={() => setSelectedId(otherNativePromptSession.sessionId)}>另一会话待确认：{otherNativePromptSession.title}</button>
+              </div>
+            )}
             {selected.archivedAt && (
               <div className="desktop-channel-banner">
                 <Archive size={18} />
@@ -1137,6 +1165,16 @@ export function DesktopSessions({
                     } : {})}
                   />
                 ))}
+              {snapshot.prompts?.filter(prompt => prompt.sessionId === selected.sessionId).map(prompt => (
+                <NativePromptCard key={prompt.promptId} prompt={prompt}
+                  online={snapshot.runtime.desktopIntegration.state === "ready"}
+                  {...(snapshot.host.capabilities.includes("prompt.native.v1") ? { onResolve: async (sessionId: string, promptId: string, choice: string) => {
+                    const response = await apiRequest({ method: "prompt.resolve", params: { sessionId, promptId, choice } });
+                    if (response.ok || response.error?.code === "ALREADY_RESOLVED") await onRefreshSnapshot();
+                    unwrap(response);
+                  } } : {})}
+                />
+              ))}
               {uncertainDeliveries.map((event) => (
                 <article className="conversation-item system uncertain-delivery" key={event.eventId}>
                   <div className="conversation-item-meta"><strong>发送结果待确认</strong></div>

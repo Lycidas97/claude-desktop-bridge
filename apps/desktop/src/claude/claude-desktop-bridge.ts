@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { basename } from "node:path";
 import type {
   BridgeAttachment, BridgeBackgroundTask, BridgeEffort, BridgeHistoryItem, BridgeHistoryPage, BridgeModelInfo, BridgeNativeImageRef, BridgeNativePermissionMode, BridgeNativePermissionModeChange, BridgeOrigin,
-  BridgePermissionDecision, BridgePermissionInfo, BridgeProjectInfo, BridgeRuntimeCapability,
+  BridgePendingPrompt, BridgePermissionDecision, BridgePermissionInfo, BridgePrAutoFixState, BridgePrAutoFixUpdate, BridgeProjectInfo, BridgePullRequest, BridgeRuntimeCapability,
   BridgeRuntimeStatus, BridgeSDKPermissionMode, BridgeSessionCommandResult,
   BridgeSessionConfiguration, BridgeSessionContextUsage, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeSubagentSummary, BridgeToolCallDetail,
 } from "@bridge/protocol";
@@ -41,6 +41,8 @@ import {
   type NativeMessageProjection,
 } from "./native-history-projection.js";
 
+import { NATIVE_PROMPTS, nativePendingPrompts, nativePullRequests, type NativePromptSession } from "./native-prompts.js";
+
 export { nativeHistoryItems };
 
 export class WorkspaceTrustRequiredError extends NativeCallError {
@@ -59,7 +61,7 @@ function isWorkspaceTrustError(error: unknown): boolean {
   return /\bWorkspaceTrustError\b|\[ccdErrorCategory:trust_required\]/u.test(text);
 }
 
-interface NativeSession {
+interface NativeSession extends NativePromptSession {
   sessionId: string;
   cwd: string;
   harnessCwd?: string;
@@ -79,6 +81,8 @@ interface NativeSession {
   bridgeSessionId?: string;
   bridgeSessionIds?: string[];
   pendingToolPermissions?: unknown[];
+  prs?: BridgePullRequest[];
+  autoArchiveOnPrClose?: boolean;
   hasBackgroundWork?: boolean;
 }
 
@@ -90,6 +94,9 @@ interface InspectorTransport {
   call(method: string, args?: unknown[]): Promise<unknown>;
   availableCodeModels(): Promise<string[]>;
   sections?(sessionIds: string[]): Promise<NativeSectionCatalog | undefined>;
+  prPreferences?(sessionId: string): Promise<{ onlyOwnPrs: boolean; nextOwnPrArmed: boolean } | undefined>;
+  promptChoices?(sessionId: string, promptId: string): Promise<string[] | undefined>;
+  startAutoFixOnNextPr?(sessionId: string, branch: string): Promise<void>;
   createSection?(name: string): Promise<string>;
   assignSection?(sessionId: string, sectionId: string): Promise<void>;
   renameSection?(sectionId: string, name: string): Promise<void>;
@@ -114,7 +121,7 @@ function record(value: unknown): Record<string, unknown> {
 function nativeSession(value: unknown): NativeSession {
   const session = record(value);
   if (typeof session.sessionId !== "string" || typeof session.cwd !== "string") throw new NativeCallError("Desktop returned an invalid session");
-  return session as unknown as NativeSession;
+  return { ...session, prs: nativePullRequests(session.prs) } as unknown as NativeSession;
 }
 
 /** Protocol translation and transport receipts only. Desktop owns every Claude execution. */
@@ -125,6 +132,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private readonly projectDirectories = new Map<string, ClaudeProjectDirectory>();
   private readonly sessions = new Map<string, BridgeSessionInfo>();
   private readonly permissions = new Map<string, BridgePermissionInfo>();
+  private readonly prompts = new Map<string, BridgePendingPrompt>();
+  private readonly prPreferences = new Map<string, { onlyOwnPrs: boolean; nextOwnPrArmed: boolean }>();
   private readonly receipts = new Map<string, NativeDesktopReceipt>();
   private readonly messageProjection = new Map<string, NativeMessageProjection>();
   private readonly contextStates = new Map<string, NativeContextState>();
@@ -191,6 +200,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
       this.models = await readClaudeModelOptions(this.options.settingsPath);
       this.native.clear();
       for (const session of sessions) await this.observeNativeSession(session);
+      for (const [promptId, prompt] of this.prompts) if (!this.native.has(prompt.sessionId)) {
+        this.prompts.delete(promptId);
+        await this.record({ sessionId: prompt.sessionId, itemId: promptId, origin: "claude-desktop", type: "prompt.resolved", data: { promptId, automatic: true } });
+      }
       this.permissions.clear();
       for (const session of sessions) for (const permission of session.pendingToolPermissions ?? []) this.observePermission(permission, session.sessionId);
       this.projectSessions();
@@ -219,6 +232,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (this.sectionCatalog && this.inspector.assignSection) capabilities.push("section.move");
     if (this.sectionCatalog?.canRename && this.inspector.renameSection) capabilities.push("section.rename");
     if (this.sectionCatalog?.canDelete && this.inspector.deleteSection) capabilities.push("section.delete");
+    if (NATIVE_PROMPTS.some(spec => this.inspector.supports(spec.method))) capabilities.push("prompt.resolve");
+    if (["setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getPrOverview", "getPrChecks"].some(method => this.inspector.supports(method))) capabilities.push("pr.autofix");
     capabilities.push("tool.events");
     return capabilities;
   }
@@ -241,6 +256,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private async observeNativeSession(session: NativeSession): Promise<void> {
     if (!this.projectDirectories.has(session.cwd)) this.projectDirectories.set(session.cwd, await discoverClaudeProjectDirectory(session.cwd));
     this.native.set(session.sessionId, session);
+    const previous = this.promptsList(session.sessionId);
+    const current = await nativePendingPrompts(session, this.inspector);
+    for (const prompt of previous) this.prompts.delete(prompt.promptId);
+    for (const prompt of current) {
+      this.prompts.set(prompt.promptId, prompt);
+      if (!previous.some(old => old.promptId === prompt.promptId)) await this.record({ sessionId: session.sessionId, itemId: prompt.promptId, origin: "claude-desktop", type: "prompt.requested", data: { ...prompt } });
+    }
+    for (const prompt of previous) if (!this.prompts.has(prompt.promptId)) await this.record({ sessionId: session.sessionId, itemId: prompt.promptId, origin: "claude-desktop", type: "prompt.resolved", data: { promptId: prompt.promptId, automatic: true } });
   }
 
   private projectCwd(cwd: string): string {
@@ -294,7 +317,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         : native.hasBackgroundWork === true
           ? { count: 1, lastUpdatedAt: native.lastActivityAt ?? native.createdAt ?? 0 }
           : undefined;
-      const waiting = [...this.permissions.values()].some(permission => permission.sessionId === sessionId);
+      const waiting = [...this.permissions.values()].some(permission => permission.sessionId === sessionId) || [...this.prompts.values()].some(prompt => prompt.sessionId === sessionId);
       const running = native.turnRunning === true;
       const pendingCommandIds = [...this.receipts.values()].filter(receipt => receipt.sessionId === sessionId && receipt.state === "queued").map(receipt => receipt.commandId);
       const modeChange = this.permissionModeChanges.get(sessionId);
@@ -311,6 +334,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
         lastActivityAt: native.lastActivityAt ?? native.createdAt ?? 0, pendingCount: pendingCommandIds.length, pendingCommandIds,
         ...(native.model ? { model: native.model, modelDisplayName: this.savedModel(native.model)?.displayName ?? native.model } : {}), ...(native.effort ? { effort: native.effort } : {}),
         ...(contextUsage ? { contextUsage } : {}),
+        prs: native.prs ?? [],
+        ...(this.prPreferences.has(sessionId) ? { prAutoFix: this.prPreferences.get(sessionId)! } : {}),
+        ...(typeof native.autoArchiveOnPrClose === "boolean" ? { autoArchiveOnPrClose: native.autoArchiveOnPrClose } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(native.spawnedFrom?.btw === true && native.lineageDetached !== true ? { sidechat: true } : {}),
         ...(native.isArchived ? { archivedAt: native.lastActivityAt ?? native.createdAt ?? 1 } : {}),
@@ -451,6 +477,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   async deleteSession(sessionId: string): Promise<void> {
     await this.inspector.call("delete", [this.desktopId(sessionId)]);
     this.contextStates.delete(sessionId);
+    this.prPreferences.delete(sessionId);
     await this.refreshRuntime();
   }
 
@@ -881,6 +908,107 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return receipt;
   }
 
+  promptsList(sessionId?: string): BridgePendingPrompt[] {
+    return [...this.prompts.values()].filter(prompt => sessionId === undefined || prompt.sessionId === sessionId)
+      .map(prompt => ({ ...prompt, canRespond: this.inspector.ready && prompt.canRespond }));
+  }
+
+  async resolvePrompt(sessionId: string, promptId: string, choice: string, resolver: { deviceId: string; name: string }): Promise<boolean> {
+    const id = this.desktopId(sessionId);
+    // Re-read the Native pending list before forwarding a response from another device.
+    await this.observeNativeSession(nativeSession(await this.inspector.call("getSession", [id])));
+    const prompt = this.prompts.get(promptId);
+    if (!prompt || prompt.sessionId !== sessionId) { this.projectSessions(); this.emit("changed"); return false; }
+    if (!prompt.canRespond) throw new NativeCallError("当前 Claude Desktop 版本不支持远程处理此提示，请在电脑端处理。");
+    if (!prompt.choices.some(option => option.value === choice)) throw new NativeCallError("Invalid native prompt choice");
+    const spec = NATIVE_PROMPTS.find(spec => spec.kind === prompt.kind)!;
+    const resolved = await this.inspector.call(spec.method, [id, promptId, prompt.kind === "cwd-trust" ? choice === "trust" : choice]);
+    await this.refreshRuntime();
+    if (resolved !== true) return false;
+    await this.record({ sessionId, origin: "claude-desktop", type: "prompt.resolved", data: {
+      promptId, kind: prompt.kind, choice, resolvedByDeviceId: resolver.deviceId, resolvedByName: resolver.name, resolvedAt: Date.now(),
+    } });
+    return true;
+  }
+
+  async readPrAutoFix(sessionId: string, target?: { repo: string; prNumber: number; host?: string; includeChecks?: boolean }): Promise<BridgePrAutoFixState> {
+    const id = this.desktopId(sessionId);
+    await this.observeNativeSession(nativeSession(await this.inspector.call("getSession", [id])));
+    const preferences = await this.inspector.prPreferences?.(id);
+    if (preferences) this.prPreferences.set(sessionId, preferences);
+    else this.prPreferences.delete(sessionId);
+    const state: BridgePrAutoFixState = {
+      sessionId, prs: this.native.get(id)!.prs ?? [], ...preferences,
+      capabilities: {
+        bound: this.inspector.supports("setBoundPrAutoFix"),
+        onlyOwnPrs: preferences !== undefined && this.inspector.supports("setAutoFixOwnPrsWanted"),
+        nextPr: preferences !== undefined && this.inspector.supports("getGitInfo") && this.inspector.supports("armAutoFixOnNextPr") && this.inspector.startAutoFixOnNextPr !== undefined,
+        checks: this.inspector.supports("getPrChecks"),
+      },
+    };
+    if (target?.includeChecks) {
+      const binding = state.prs.find(pr => pr.repo === target.repo && pr.prNumber === target.prNumber && (target.host === undefined || pr.host === target.host));
+      if (!binding) throw new NativeCallError("PR is not bound to this Desktop session");
+      if (!state.capabilities.checks) throw new NativeCallError("当前 Claude Desktop 版本不支持读取 PR 检查。");
+      const cwd = this.executionCwd(sessionId)!;
+      // The public overview API has no host argument; explicit repos resolve to github.com.
+      const overviewSupported = (!binding.host || binding.host.toLowerCase() === "github.com") && this.inspector.supports("getPrOverview");
+      const [overview, checks] = await Promise.all([
+        overviewSupported ? this.inspector.call("getPrOverview", [cwd, binding.prNumber, binding.repo, id, true]).then(record) : undefined,
+        this.inspector.call("getPrChecks", [cwd, binding.prNumber, binding.repo, binding.host]).then(record),
+      ]);
+      if (checks.success !== true) throw new NativeCallError(typeof checks.error === "string" ? checks.error : "Desktop 无法读取 PR 检查。");
+      if (overview?.success === true) {
+        const detail = record(overview.overview);
+        state.overview = {
+          ...(typeof detail.title === "string" ? { title: detail.title } : {}),
+          ...(typeof detail.state === "string" ? { state: detail.state } : {}),
+          ...(typeof detail.url === "string" ? { url: detail.url } : {}),
+        };
+      } else {
+        state.overviewUnavailable = overview ? typeof overview.error === "string" ? overview.error : "Desktop 无法读取 PR 状态。"
+          : binding.host && binding.host.toLowerCase() !== "github.com" ? "当前 Desktop 不支持此 GitHub 主机的 PR 概览。" : "当前 Desktop 不支持 PR 概览。";
+      }
+      if (!Array.isArray(checks.checks)) throw new NativeCallError("Desktop returned invalid PR checks");
+      state.checks = checks.checks.map(raw => {
+        const check = record(raw);
+        if (typeof check.name !== "string") throw new NativeCallError("Desktop returned an invalid PR check");
+        return { name: check.name, state: String(check.bucket ?? "unknown"), ...(typeof check.url === "string" ? { url: check.url } : {}) };
+      });
+    }
+    this.projectSessions(); this.emit("changed");
+    return state;
+  }
+
+  async setPrAutoFix(update: BridgePrAutoFixUpdate, resolver: { deviceId: string; name: string }): Promise<BridgePrAutoFixState> {
+    const before = await this.readPrAutoFix(update.sessionId);
+    const id = this.desktopId(update.sessionId);
+    if (update.target === "bound") {
+      if (!before.capabilities.bound) throw new NativeCallError("Unsupported Claude Desktop method: setBoundPrAutoFix");
+      const binding = before.prs.find(pr => pr.repo === update.repo && pr.prNumber === update.prNumber && (update.host === undefined || pr.host === update.host));
+      if (!binding) throw new NativeCallError("PR is not bound to this Desktop session");
+      // LocalSessions fixes actor="person" internally; its fifth public argument is host.
+      await this.inspector.call("setBoundPrAutoFix", [id, binding.repo, binding.prNumber, update.enabled, binding.host]);
+    } else if (update.target === "own-prs") {
+      if (!before.capabilities.onlyOwnPrs) throw new NativeCallError("当前 Claude Desktop 版本不支持读取或设置我的 PR 偏好。");
+      await this.inspector.call("setAutoFixOwnPrsWanted", [id, update.enabled]);
+    } else {
+      if (!before.capabilities.nextPr) throw new NativeCallError("当前 Claude Desktop 版本不支持下一个 PR 布防。");
+      if (!update.enabled) throw new NativeCallError("当前 Desktop 不支持远程取消布防。");
+      const git = record(await this.inspector.call("getGitInfo", [this.executionCwd(update.sessionId)!]));
+      if (typeof git.branch !== "string" || !git.branch) throw new NativeCallError("Desktop 当前工作目录没有可布防的 Git 分支。");
+      await this.inspector.startAutoFixOnNextPr!(id, git.branch);
+    }
+    const state = await this.readPrAutoFix(update.sessionId);
+    const applied = update.target === "bound" ? state.prs.find(pr => pr.repo === update.repo && pr.prNumber === update.prNumber && (update.host === undefined || pr.host === update.host))?.autoFix === true
+      : update.target === "own-prs" ? state.onlyOwnPrs : state.nextOwnPrArmed;
+    if (applied !== update.enabled) throw new NativeCallError("Desktop 未应用 Auto-fix 设置，请刷新状态。");
+    await this.record({ sessionId: update.sessionId, origin: "claude-desktop", type: "pr.autoFix.updated", data: {
+      ...update, state, resolvedByDeviceId: resolver.deviceId, resolvedByName: resolver.name, resolvedAt: Date.now(),
+    } });
+    return state;
+  }
+
   permissionsList(): BridgePermissionInfo[] { return [...this.permissions.values()]; }
 
   private observePermission(raw: unknown, nativeId?: string): void {
@@ -925,6 +1053,17 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private async handleEvent(raw: unknown): Promise<void> {
     const event = record(raw);
     if (typeof event.sessionId !== "string") return;
+    if (NATIVE_PROMPTS.some(spec => "event" in spec && (event.type === spec.event || event.type === `${spec.event}_resolved`))) {
+      await this.refreshRuntime();
+      return;
+    }
+    if (event.type === "bridge_pr_auto_fix_settled") {
+      const state = await this.readPrAutoFix(event.sessionId);
+      await this.record({ sessionId: event.sessionId, origin: "claude-desktop", type: "pr.autoFix.updated", data: {
+        target: "next-pr", phase: "settled", enabled: event.enabled, state, result: event.result, ...(typeof event.error === "string" ? { error: event.error } : {}),
+      } });
+      return;
+    }
     if (event.session) {
       const session = nativeSession(event.session);
       await this.observeNativeSession(session);

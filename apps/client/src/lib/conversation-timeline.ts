@@ -602,6 +602,18 @@ export function conversationItems(
         state: event.type === "turn.failed" ? "failed" : "interrupted",
       });
     }
+    if ((event.type === "prompt.resolved" || event.type === "pr.autoFix.updated") && event.data.automatic !== true && typeof event.data.resolvedByName === "string") {
+      items.set(event.eventId, {
+        id: event.eventId,
+        sessionId,
+        role: "system",
+        text: event.type === "prompt.resolved"
+          ? `${event.data.resolvedByName}回答了 Desktop 提示`
+          : `${event.data.resolvedByName}${event.data.enabled === true ? "开启" : "关闭"}了${event.data.target === "own-prs" ? "仅我的 PR" : event.data.target === "next-pr" ? "下一个 PR 布防" : "PR Auto-fix"}`,
+        createdAt: event.timestamp,
+        origin: "system",
+      });
+    }
     if (event.type === "permission.resolved" || event.type === "question.resolved") {
       if (event.data.automatic === true) continue;
       const resolver = typeof event.data.resolvedByName === "string"

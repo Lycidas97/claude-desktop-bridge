@@ -556,6 +556,37 @@ export async function dispatchControllerRequest(
     await host.broker.stopSubagent(sessionId, stringParam(params, "agentId")!);
     return { stopped: true };
   }
+  if (request.method === "prompt.list") return { prompts: host.broker.promptsList(stringParam(params, "sessionId", false)) };
+  if (request.method === "pr.autoFix.read") {
+    const repo = stringParam(params, "repo", false);
+    if ((repo === undefined) !== (params.prNumber === undefined)) throw new Error("repo and prNumber must be provided together");
+    if (params.includeChecks !== undefined && typeof params.includeChecks !== "boolean") throw new Error("includeChecks must be a boolean");
+    if (params.includeChecks === true && repo === undefined) throw new Error("PR target is required for checks");
+    const prNumber = repo === undefined ? undefined : integerParam(params, "prNumber");
+    if (prNumber !== undefined && prNumber <= 0) throw new Error("prNumber must be positive");
+    return host.broker.readPrAutoFix(stringParam(params, "sessionId")!, repo === undefined ? undefined : {
+      repo, prNumber: prNumber!, ...(params.host === undefined ? {} : { host: stringParam(params, "host")! }), includeChecks: params.includeChecks === true,
+    });
+  }
+  if (request.method === "prompt.resolve" || request.method === "pr.autoFix.set") {
+    const sessionId = stringParam(params, "sessionId")!;
+    const resolver = origin === "mobile"
+      ? { deviceId: sourceDeviceId ?? "mobile", name: host.config?.devices.find(device => device.deviceId === sourceDeviceId)?.name ?? "手机 Bridge" }
+      : { deviceId: host.config?.hostDeviceId ?? "desktop", name: host.config?.desktopName ?? "电脑端 Bridge" };
+    if (request.method === "prompt.resolve") {
+      if (!await host.broker.resolvePrompt(sessionId, stringParam(params, "promptId")!, stringParam(params, "choice")!, resolver)) throw new BridgeRequestError("ALREADY_RESOLVED", "这项提示已由其他设备处理。");
+      return { resolved: true };
+    }
+    if (typeof params.enabled !== "boolean") throw new Error("enabled must be a boolean");
+    const target = stringParam(params, "target");
+    if (target === "bound") {
+      const prNumber = integerParam(params, "prNumber");
+      if (prNumber <= 0) throw new Error("prNumber must be positive");
+      return host.broker.setPrAutoFix({ sessionId, target, enabled: params.enabled, repo: stringParam(params, "repo")!, prNumber, ...(params.host === undefined ? {} : { host: stringParam(params, "host")! }) }, resolver);
+    }
+    if (target !== "own-prs" && target !== "next-pr") throw new Error("Invalid Auto-fix target");
+    return host.broker.setPrAutoFix({ sessionId, target, enabled: params.enabled }, resolver);
+  }
   if (request.method === "permission.resolve") {
     const decision = stringParam(params, "decision")!;
     if (!["allow-once", "allow-always", "deny"].includes(decision)) throw new Error("Invalid permission decision");

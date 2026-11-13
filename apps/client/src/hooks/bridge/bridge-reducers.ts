@@ -12,7 +12,9 @@ import {
   type BridgeHistoryPage,
   type BridgeHostSnapshot,
   type BridgePayload,
+  type BridgePendingPrompt,
   type BridgePermissionInfo,
+  type BridgePrAutoFixState,
   type BridgeProviderProfile,
   type BridgeResponse,
   type BridgeRuntimeGoalInfo,
@@ -253,7 +255,7 @@ export function hostStatus(
   snapshot: BridgeHostSnapshot | undefined,
   permissions: BridgePermissionInfo[] = snapshot?.permissions ?? [],
 ): PairedHost["status"] {
-  if (permissions.length > 0) return "attention";
+  if (permissions.length > 0 || snapshot?.prompts?.length) return "attention";
   if (!snapshot) return "offline";
   if (
     snapshot.runtime.activeTurns > 0 ||
@@ -282,7 +284,7 @@ export function hostSummary(
     activeTurns: snapshot?.runtime.activeTurns ?? 0,
     path: activeEndpoint?.kind ?? "lan-relay",
     ...(snapshot ? { lastSeenAt: snapshot.host.lastSeenAt } : {}),
-    ...(permissions[0] ? { attentionSessionId: permissions[0].sessionId } : {}),
+    ...((permissions[0] ?? snapshot?.prompts?.[0]) ? { attentionSessionId: (permissions[0] ?? snapshot?.prompts?.[0])!.sessionId } : {}),
   };
 }
 
@@ -303,7 +305,7 @@ export function hostWithRuntimeState(
     status: hostStatus(snapshot, permissions),
     activeTurns: visibleActiveTurns,
     ...(snapshot ? { lastSeenAt: snapshot.host.lastSeenAt } : {}),
-    ...(permissions[0] ? { attentionSessionId: permissions[0].sessionId } : {}),
+    ...((permissions[0] ?? snapshot?.prompts?.[0]) ? { attentionSessionId: (permissions[0] ?? snapshot?.prompts?.[0])!.sessionId } : {}),
   };
 }
 
@@ -559,6 +561,21 @@ export function applyPermissionEvent(
   return current;
 }
 
+export function applyPromptEvent(
+  current: BridgePendingPrompt[] | undefined,
+  event: BridgeEvent,
+): BridgePendingPrompt[] | undefined {
+  if (event.type === "prompt.requested") {
+    const prompt = event.data as unknown as BridgePendingPrompt;
+    return [...(current ?? []).filter(candidate => candidate.promptId !== prompt.promptId || candidate.sessionId !== prompt.sessionId), prompt];
+  }
+  if (event.type === "prompt.resolved") {
+    return current?.filter(prompt => prompt.promptId !== event.data.promptId || prompt.sessionId !== event.sessionId);
+  }
+  if (event.type === "session.deleted") return current?.filter(prompt => prompt.sessionId !== event.sessionId);
+  return current;
+}
+
 export function applyUnseenPermissionEvents(
   permissions: BridgePermissionInfo[],
   incoming: BridgeEvent[],
@@ -670,13 +687,35 @@ export function applySessionToSnapshot(
   };
 }
 
+export function applyPrAutoFixToSnapshot(
+  snapshot: BridgeHostSnapshot | undefined,
+  state: BridgePrAutoFixState,
+): BridgeHostSnapshot | undefined {
+  if (!snapshot) return snapshot;
+  return {
+    ...snapshot,
+    sessions: snapshot.sessions.map(session => {
+      if (session.sessionId !== state.sessionId) return session;
+      const { prAutoFix: _previous, ...current } = session;
+      return {
+        ...current,
+        prs: state.prs,
+        ...(state.onlyOwnPrs !== undefined && state.nextOwnPrArmed !== undefined ? {
+          prAutoFix: { onlyOwnPrs: state.onlyOwnPrs, nextOwnPrArmed: state.nextOwnPrArmed },
+        } : {}),
+      };
+    }),
+  };
+}
+
 export function applyEventToSnapshot(
   snapshot: BridgeHostSnapshot | undefined,
   event: BridgeEvent,
   permissions: BridgePermissionInfo[],
 ): BridgeHostSnapshot | undefined {
   if (!snapshot || event.seq <= snapshot.latestSeq) return snapshot;
-  const current = snapshotWithPermissions({ ...snapshot, latestSeq: event.seq }, permissions)!;
+  const prompts = applyPromptEvent(snapshot.prompts, event);
+  const current = snapshotWithPermissions({ ...snapshot, latestSeq: event.seq, ...(prompts ? { prompts } : {}) }, permissions)!;
   if (event.type === "provider.updated") {
     const profile = event.data.profile as BridgeProviderProfile | undefined;
     if (!profile || typeof profile.id !== "string") return current;
@@ -685,7 +724,8 @@ export function applyEventToSnapshot(
     return { ...current, providers: [...providers.values()] };
   }
   if (!event.sessionId) return current;
-  const hasPendingPermission = permissions.some((permission) => permission.sessionId === event.sessionId);
+  const hasPendingPermission = permissions.some((permission) => permission.sessionId === event.sessionId)
+    || current.prompts?.some(prompt => prompt.sessionId === event.sessionId) === true;
   if (event.type === "session.deleted") {
     return {
       ...current,
@@ -923,6 +963,7 @@ export function applyEventsToSnapshot(
   if (!current || events.length === 0) return { snapshot: current, permissions: currentPermissions };
   const byId = new Map(current.sessions.map((session) => [session.sessionId, session]));
   let providers = current.providers ?? [];
+  let prompts = current.prompts;
   let providersDirty = false;
   let sessionsDirty = false;
   let latestSeq = current.latestSeq;
@@ -930,6 +971,7 @@ export function applyEventsToSnapshot(
     if (event.seq <= latestSeq) continue;
     latestSeq = event.seq;
     currentPermissions = applyPermissionEvent(currentPermissions, event);
+    prompts = applyPromptEvent(prompts, event);
     if (event.type === "provider.updated") {
       const profile = event.data.profile as BridgeProviderProfile | undefined;
       if (profile && typeof profile.id === "string") {
@@ -952,7 +994,7 @@ export function applyEventsToSnapshot(
     if (!existing) continue;
     const hasPendingPermission = currentPermissions.some(
       (permission) => permission.sessionId === event.sessionId,
-    );
+    ) || prompts?.some(prompt => prompt.sessionId === event.sessionId) === true;
     const updated = applyEventToSession(existing, event, hasPendingPermission);
     if (updated !== existing) {
       byId.set(event.sessionId, updated);
@@ -964,6 +1006,7 @@ export function applyEventsToSnapshot(
     latestSeq,
     ...(sessionsDirty ? { sessions: [...byId.values()] } : {}),
     ...(providersDirty ? { providers } : {}),
+    ...(prompts ? { prompts } : {}),
   };
   return {
     snapshot: snapshotWithPermissions(current, currentPermissions),

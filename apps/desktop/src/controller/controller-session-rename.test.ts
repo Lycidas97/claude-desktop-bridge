@@ -108,7 +108,7 @@ describe("session.rename", () => {
       config: { devices: [], relayEndpoints: [], hostDeviceId: "host", desktopName: "test", relayUrl: "ws://localhost:1" },
       app: { getVersion: () => "test" }, conversationState: available ? {} : undefined,
       allProjects: () => [], allSessions: () => [], deviceSnapshots: () => [],
-      broker: { runtimeStatus: () => ({}), magpieSettings: async () => ({}) }, desktopRuntimes: () => [], claudePermissions: () => [],
+      broker: { runtimeStatus: () => ({}), magpieSettings: async () => ({}), promptsList: () => [] }, desktopRuntimes: () => [], claudePermissions: () => [],
       eventLog: { latestSeq: () => 0 }, claudeDesktop: { status: async () => ({}) }, desktopAppStatuses: async () => [],
     });
     const snapshot = await controller.snapshot();

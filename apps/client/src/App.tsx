@@ -235,6 +235,9 @@ export function App() {
                 : {})}
               onResolveUncertain={mobile.resolveUncertainDelivery}
               onResolvePermission={mobile.resolvePermission}
+              onResolvePrompt={mobile.resolvePrompt}
+              onReadPrAutoFix={mobile.readPrAutoFix}
+              onSetPrAutoFix={mobile.setPrAutoFix}
               onCreateSession={mobile.createSession}
               {...(snapshot?.host.capabilities.includes("section.create.v1") ? { onCreateSection: mobile.createSection } : {})}
               {...(snapshot?.host.capabilities.includes("section.move.v1") ? { onMoveSessionSection: mobile.moveSessionSection } : {})}

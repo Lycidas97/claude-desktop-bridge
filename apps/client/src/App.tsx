@@ -138,6 +138,7 @@ export function App() {
     return (
       <>
         <PairingSyncScreen sync={mobile.state.pairingSync} />
+        <MobileClientUpdateDialog updater={clientUpdater} />
         <DiagnosticFloatingEntry />
       </>
     );
@@ -146,6 +147,7 @@ export function App() {
     return (
       <>
         <main className="mobile-loading"><span className="spinner" /><span>正在读取已配对电脑</span></main>
+        <MobileClientUpdateDialog updater={clientUpdater} />
         <DiagnosticFloatingEntry />
       </>
     );
@@ -164,6 +166,7 @@ export function App() {
           }}
           {...(mobile.state.hosts.length > 0 ? { onCancel: () => setPairingOpen(false) } : {})}
         />
+        <MobileClientUpdateDialog updater={clientUpdater} />
         <DiagnosticFloatingEntry />
       </>
     );

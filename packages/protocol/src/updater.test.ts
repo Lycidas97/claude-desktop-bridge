@@ -93,6 +93,16 @@ const SAMPLE_GITHUB_RELEASES = [
 ];
 
 describe("updater protocol helpers", () => {
+  it("selects the Linux wrapper for ZIP installs without selecting an iOS archive", () => {
+    const [release] = parseGitHubReleases([{
+      tag_name: "v1.3.3", assets: [
+        "Bridge-1.3.3-ios-device-unsigned.zip", "Bridge-1.3.3-linux-installers-ci.zip",
+      ].map(name => ({ name, browser_download_url: `https://github.com/fixture/${name}`, size: 100 })),
+    }]);
+    expect(selectReleaseAsset(release!, { platform: "linux", arch: "x64", linuxPackageFormat: "zip" })).toMatchObject({
+      asset: { name: "Bridge-1.3.3-linux-installers-ci.zip" }, wrapperZip: true, innerExtension: ".zip",
+    });
+  });
   it("parses and compares semantic versions including prerelease tags", () => {
     expect(parseSemver("v1.3.2")).toEqual({ major: 1, minor: 3, patch: 2, prerelease: [] });
     expect(normalizeVersionTag("v1.3.3-rc.2+sha.abc")).toBe("1.3.3-rc.2");

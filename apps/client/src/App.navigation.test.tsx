@@ -6,6 +6,7 @@ import { MobileAppShell } from "./components/mobile/MobileAppShell.js";
 import { MobileHostDetails } from "./components/pairing/MobileHostDetails.js";
 import { MobileSettings } from "./components/mobile/MobileSettings.js";
 import { MobileWorkspace } from "./components/MobileWorkspace.js";
+import { MobileClientUpdateDialog } from "./components/updater/UpdaterSections.js";
 import { MediaPreviewProvider } from "./components/evidence/MediaPreviewProvider.js";
 import { dispatchMobileBack } from "./lib/mobile-back-navigation.js";
 
@@ -63,6 +64,16 @@ beforeEach(() => {
   draw();
 });
 afterEach(() => { hooks.effects.forEach(effect => effect.cleanup?.()); vi.unstubAllGlobals(); });
+
+describe("unpaired client updates", () => {
+  it.each(["pairing", "loading", "sync"])("mounts the update dialog on the %s route without paired hosts", route => {
+    hooks.mobile.state.hosts = [];
+    hooks.mobile.state.loading = route === "loading";
+    hooks.mobile.state.pairingSync = route === "sync" ? { phase: "connecting" } : undefined;
+    draw();
+    expect(component(MobileClientUpdateDialog)).toBeDefined();
+  });
+});
 
 describe("mobile file stat capability", () => {
   it.each([false, true])("uses explicit host support=%s for the same desktop version", supported => {

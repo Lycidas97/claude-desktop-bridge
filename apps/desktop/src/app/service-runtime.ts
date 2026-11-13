@@ -34,7 +34,7 @@ import {
 } from "../transport/webrtc-runtime.js";
 import { ConversationStateStore } from "../controller/conversation-state-store.js";
 import { MagpieConnectionRepository } from "../claude/magpie-connection.js";
-import { DesktopUpdater } from "../updater/desktop-updater.js";
+import { DesktopUpdater, probeInstallDirectory } from "../updater/desktop-updater.js";
 import { ServiceResources } from "./service-resources.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
@@ -191,6 +191,7 @@ export async function createServiceRuntime(options: {
         autoCheckAllowed:
           Boolean(process.env.BRIDGE_UPDATER_FEED_URL) ||
           (app.isPackaged && process.env.BRIDGE_UPDATER_DISABLE !== "1"),
+        isDirectoryWritable: (directory) => probeInstallDirectory(directory, (path) => shell.trashItem(path)),
         isSystemIdle: () => controller.isIdleForUpdate(),
         hasConnectedUi: () => options.hasConnectedUi?.() ?? false,
         requestQuitAll: () => controller.requestQuitForUpdate(),

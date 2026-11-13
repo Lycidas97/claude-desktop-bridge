@@ -290,7 +290,9 @@ export function selectReleaseAsset(
   if (platform === "linux") {
     const preferredExt = target.linuxPackageFormat ? `.${target.linuxPackageFormat}` as const : ".deb" as const;
     const directPkg = release.assets.find(
-      (asset) => asset.name.toLowerCase().endsWith(preferredExt) && matchesArchToken(asset.name, arch),
+      (asset) => asset.name.toLowerCase().endsWith(preferredExt)
+        && matchesArchToken(asset.name, arch)
+        && (preferredExt !== ".zip" || (/linux/iu.test(asset.name) && !/linux-installers/iu.test(asset.name))),
     ) ?? release.assets.find(
       (asset) => /\.(?:deb|rpm)$/iu.test(asset.name) && matchesArchToken(asset.name, arch),
     );

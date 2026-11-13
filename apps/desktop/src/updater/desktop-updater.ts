@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { accessSync, constants, createWriteStream, existsSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, join, posix, win32 } from "node:path";
-import { Readable } from "node:stream";
+import { createHash, randomUUID } from "node:crypto";
+import { createWriteStream, existsSync } from "node:fs";
+import { chmod, mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { dirname, extname, join, win32 } from "node:path";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import {
   DEFAULT_GITHUB_RELEASES_URL,
@@ -45,7 +46,7 @@ export interface DesktopUpdaterOptions {
   checkIntervalMs?: number;
   initialDelayMs?: number;
   fetchImpl?: typeof fetch;
-  isDirectoryWritable?: (directory: string) => boolean;
+  isDirectoryWritable?: (directory: string) => boolean | Promise<boolean>;
   isSystemIdle: () => boolean;
   hasConnectedUi: () => boolean;
   requestQuitAll: () => Promise<void> | void;
@@ -64,13 +65,21 @@ const DEFAULT_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_INITIAL_DELAY_MS = 8_000;
 const PROGRESS_THROTTLE_MS = 350;
 
-export function defaultIsDirectoryWritable(directory: string): boolean {
+export async function probeInstallDirectory(
+  directory: string,
+  recyclePath: (path: string) => Promise<void>,
+): Promise<boolean> {
+  const probePath = join(directory, `.bridge-update-probe-${randomUUID()}`);
+  let handle;
   try {
-    accessSync(directory, constants.W_OK);
-    return true;
-  } catch {
-    return false;
+    handle = await open(probePath, "wx", 0o600);
+  } catch (error) {
+    if (["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    throw error;
   }
+  await handle.close();
+  await recyclePath(probePath);
+  return true;
 }
 
 export function detectLinuxPackageFormat(
@@ -139,7 +148,7 @@ export class DesktopUpdater {
   private readonly updatesDir: string;
   private readonly feedUrl: string;
   private readonly fetchImpl: typeof fetch;
-  private readonly canAutoRestart: boolean;
+  private canAutoRestart = false;
   private readonly linuxPackageFormat: "deb" | "rpm" | "zip";
   private channel: BridgeUpdateChannel = "stable";
   private autoCheck = true;
@@ -172,18 +181,13 @@ export class DesktopUpdater {
     this.updatesDir = join(options.userDataPath, "updates");
     this.feedUrl = options.feedUrl?.trim() || DEFAULT_GITHUB_RELEASES_URL;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    const writableCheck = options.isDirectoryWritable ?? defaultIsDirectoryWritable;
-    const execInstallDir = options.platform === "win32"
-      ? win32.dirname(options.execPath)
-      : posix.dirname(options.execPath);
-    this.canAutoRestart =
-      options.platform === "win32" &&
-      options.isPackaged &&
-      writableCheck(execInstallDir);
     this.linuxPackageFormat = options.linuxPackageFormat ?? detectLinuxPackageFormat();
   }
 
   async initialize(): Promise<void> {
+    if (this.options.platform === "win32" && this.options.isPackaged && this.options.isDirectoryWritable) {
+      this.canAutoRestart = await this.options.isDirectoryWritable(win32.dirname(this.options.execPath));
+    }
     await this.loadPreferences();
     this.syncAutoCheckTimers();
   }
@@ -307,7 +311,7 @@ export class DesktopUpdater {
       if (this.closed) return;
       if (this.phase === "available" && this.matchedAsset) {
         this.beginDownloadBackground();
-      } else {
+      } else if (this.phase !== "downloading") {
         this.pendingApplyOrigin = undefined;
       }
     })();
@@ -325,6 +329,7 @@ export class DesktopUpdater {
   }
 
   private async runCheck(): Promise<void> {
+    const previousPhase = this.phase;
     this.phase = "checking";
     this.errorMessage = undefined;
     this.statusDetail = undefined;
@@ -365,7 +370,7 @@ export class DesktopUpdater {
         this.beginDownloadBackground();
       }
     } catch (error) {
-      this.phase = "error";
+      this.phase = previousPhase === "ready" ? "ready" : "error";
       this.pendingApplyOrigin = undefined;
       this.errorMessage = error instanceof Error ? error.message : "检查更新失败";
       this.options.onChanged();
@@ -467,37 +472,31 @@ export class DesktopUpdater {
 
     const partPath = join(this.updatesDir, "download.part");
     const archivePath = join(this.updatesDir, matched.wrapperZip ? "release-bundle.zip" : `installer${extname(matched.asset.name)}`);
-    const writer = createWriteStream(partPath, { mode: 0o600 });
     const hasher = createHash("sha256");
     let bytes = 0;
     let lastProgressEmit = 0;
 
-    const nodeStream = Readable.fromWeb(response.body as unknown as WebReadableStream);
-    for await (const chunk of nodeStream) {
-      if (this.closed) {
-        writer.destroy();
-        return;
-      }
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-      hasher.update(buffer);
-      bytes += buffer.length;
-      if (!writer.write(buffer)) {
-        await new Promise<void>((resolve, reject) => {
-          writer.once("drain", resolve);
-          writer.once("error", reject);
-        });
-      }
-      this.downloadedBytes = bytes;
-      const now = Date.now();
-      if (now - lastProgressEmit >= PROGRESS_THROTTLE_MS) {
-        lastProgressEmit = now;
-        this.options.onChanged();
-      }
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      writer.end((err?: Error | null) => (err ? reject(err) : resolve()));
-    });
+    await pipeline(
+      Readable.fromWeb(response.body as unknown as WebReadableStream),
+      new Transform({
+        transform: (chunk: Buffer, _encoding, callback) => {
+          if (this.closed) {
+            callback(new Error("Bridge 更新下载已关闭"));
+            return;
+          }
+          hasher.update(chunk);
+          bytes += chunk.length;
+          this.downloadedBytes = bytes;
+          const now = Date.now();
+          if (now - lastProgressEmit >= PROGRESS_THROTTLE_MS) {
+            lastProgressEmit = now;
+            this.options.onChanged();
+          }
+          callback(null, chunk);
+        },
+      }),
+      createWriteStream(partPath, { mode: 0o600 }),
+    );
 
     if (matched.asset.size > 0 && bytes !== matched.asset.size) {
       throw new Error(`更新包大小不匹配（预期 ${matched.asset.size} 字节，实际 ${bytes} 字节）`);
@@ -518,7 +517,7 @@ export class DesktopUpdater {
     let finalPath = archivePath;
     if (matched.wrapperZip) {
       const targetExt = matched.innerExtension ?? ".exe";
-      const extractedPath = join(this.updatesDir, `Bridge-${release.version}-staged${targetExt}`);
+      const extractedPath = join(this.updatesDir, `Bridge-staged${targetExt}`);
       await extractZipEntryToFile(
         archivePath,
         (entry) => {
@@ -606,14 +605,14 @@ export class DesktopUpdater {
     if (!this.options.openLocalInstaller) {
       throw new Error("当前环境未配置本地安装器打开能力");
     }
-    const revealOnly = this.options.platform === "linux";
+    const revealOnly = this.options.platform !== "darwin";
     await this.options.openLocalInstaller(this.stagedPath, revealOnly);
     this.phase = "ready";
     this.statusDetail = this.options.platform === "darwin"
       ? "已打开 DMG 安装镜像，请将 Bridge 拖入 Applications 覆盖后重新启动。"
       : this.options.platform === "linux"
         ? `已在文件管理器中定位安装包（${this.stagedPath}），请使用系统包管理器安装后重启服务。`
-        : "已启动安装程序，请按系统提示完成覆盖安装。";
+        : "已在文件管理器中定位安装包，请在本机确认权限后安装。";
     this.options.onChanged();
   }
 

@@ -227,6 +227,7 @@ export class ClientUpdaterController {
 
   async downloadAndInstall(): Promise<ClientUpdaterSnapshot> {
     if (this.platform !== "android") return this.cachedSnapshot;
+    if (this.activeCheck) await this.activeCheck;
     if (this.phase === "ready" || this.phase === "awaiting-permission") {
       return this.installStaged();
     }

@@ -13,12 +13,8 @@ import {
   type useClientUpdater,
 } from "../../lib/client-updater.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
+import { formatBytes } from "../../lib/media-preview.js";
 import "./updater.css";
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function progressPercent(downloaded?: number, total?: number): number | undefined {
   if (downloaded === undefined || !total || total <= 0) return undefined;
@@ -72,7 +68,7 @@ function ProgressBar({ downloadedBytes, totalBytes }: { downloadedBytes?: number
         />
       </div>
       <div className="updater-progress-meta">
-        <span>{downloadedBytes !== undefined ? formatBytes(downloadedBytes) : "0 KB"}{totalBytes ? ` / ${formatBytes(totalBytes)}` : ""}</span>
+        <span>{formatBytes(downloadedBytes ?? 0)}{totalBytes ? ` / ${formatBytes(totalBytes)}` : ""}</span>
         {pct !== undefined && <span>{pct}%</span>}
       </div>
     </div>
@@ -270,15 +266,9 @@ export function RemoteDesktopUpdaterSection({
   heading?: string;
 }) {
   const [busyAction, setBusyAction] = useState<BridgeSystemUpdateParams["action"]>();
-  const [localState, setLocalState] = useState<BridgeUpdaterSnapshot>();
   const [error, setError] = useState("");
   const headingId = "remote-desktop-updater-title";
-
-  useEffect(() => {
-    setLocalState(undefined);
-  }, [remote.updater]);
-
-  const updater = localState ?? remote.updater;
+  const updater = remote.updater;
   const isBusy = Boolean(busyAction) || updater?.phase === "checking" || updater?.phase === "downloading" || updater?.phase === "applying";
 
   async function run(params: BridgeSystemUpdateParams) {
@@ -286,8 +276,7 @@ export function RemoteDesktopUpdaterSection({
     setBusyAction(params.action);
     setError("");
     try {
-      const next = await remote.onInvoke(params);
-      setLocalState(next);
+      await remote.onInvoke(params);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -528,7 +517,7 @@ export function MobileClientUpdateDialog({ updater }: { updater: ClientUpdaterHa
             <button
               type="button"
               className="primary-button"
-              disabled={isDownloading}
+              disabled={isDownloading || state.phase === "checking"}
               onClick={() => void updater.downloadAndInstall()}
             >
               {isDownloading

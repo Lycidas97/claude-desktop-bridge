@@ -139,6 +139,38 @@ describe("ClientUpdaterController", () => {
     expect(updater.getSnapshot().promptOpen).toBe(false);
   });
 
+  it("finishes a channel check before starting the selected APK download", async () => {
+    let finishCheck!: (value: { status: number; body: string }) => void;
+    let finishDownload!: (value: { staged: boolean; sha256: string; bytes: number; canInstallPackages: boolean }) => void;
+    const downloaded: string[] = [];
+    const plugin: BridgeUpdaterNativePlugin = {
+      getAppInfo: vi.fn(async () => ({ versionName: "1.3.2", versionCode: 2, packageName: "fixture", canInstallPackages: true, arch: "arm64" })),
+      fetchReleasesJson: vi.fn(async ({ url }) => url ? { status: 200, body: "" } : { status: 200, body: SAMPLE_RELEASES_JSON }),
+      downloadAndVerifyApk: vi.fn(({ version }) => {
+        downloaded.push(version);
+        return new Promise<Awaited<ReturnType<BridgeUpdaterNativePlugin["downloadAndVerifyApk"]>>>(resolve => { finishDownload = resolve; });
+      }),
+      installStagedApk: vi.fn(async () => ({ launchedInstaller: true, needsPermission: false })),
+      openExternalUrl: vi.fn(), addListener: vi.fn(async () => ({ remove: vi.fn(async () => {}) })),
+    };
+    const updater = new ClientUpdaterController({ platform: "android", plugin });
+    await updater.initializeStartup();
+    vi.mocked(plugin.fetchReleasesJson).mockImplementationOnce(() => new Promise(resolve => { finishCheck = resolve; }));
+    updater.setChannel("prerelease");
+    expect(updater.getSnapshot().phase).toBe("checking");
+    const installing = updater.downloadAndInstall();
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+    expect.soft(downloaded).toEqual([]);
+    finishCheck({ status: 200, body: SAMPLE_RELEASES_JSON.replaceAll("1.4.0-rc.1", "1.4.0-rc.2") });
+    await updater.check({ manual: false });
+    await vi.waitFor(() => expect(downloaded).toHaveLength(1));
+    expect.soft(downloaded).toEqual(["1.4.0-rc.2"]);
+    expect.soft(updater.getSnapshot().phase).toBe("downloading");
+    finishDownload({ staged: true, sha256: "a".repeat(64), bytes: 100, canInstallPackages: true });
+    await installing;
+    expect(plugin.installStagedApk).toHaveBeenCalledOnce();
+  });
+
   it("invalidates the staged APK when the selected update changes while awaiting permission", async () => {
     let canInstall = false;
     let stagedVersion: string | undefined;

@@ -3,16 +3,17 @@ import { runInNewContext } from "node:vm";
 import { transpileModule } from "typescript";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { mkdtemp, readFile, rm as recycle, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm as recycle, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateRawSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DesktopController } from "../controller/controller.js";
 import { BridgeRequestError } from "../controller/controller-rpc.js";
 import {
   DesktopUpdater,
+  probeInstallDirectory,
   buildWindowsSilentUpdateScript,
   type DesktopUpdaterPlatform,
 } from "./desktop-updater.js";
@@ -115,6 +116,117 @@ describe("DesktopUpdater & ZIP extraction", () => {
     tempDirs.push(directory);
     return directory;
   }
+
+  it("probes install write access with a real file and recycles the closed probe", async () => {
+    const directory = await makeTempDir();
+    const recycled: string[] = [];
+    expect(await probeInstallDirectory(directory, async path => {
+      expect((await readFile(path)).length).toBe(0);
+      recycled.push(path);
+      await recycle(path);
+    })).toBe(true);
+    expect(recycled).toHaveLength(1);
+    expect(await readdir(directory)).toEqual([]);
+  });
+
+  async function downloadFixture(writable = true) {
+    const directory = await makeTempDir();
+    const zip = buildTestZip([{ name: "Bridge-Setup.exe", content: Buffer.from("fixture installer") }]);
+    const network = { online: true, version: "1.3.3", download: undefined as Promise<Response> | undefined };
+    const helper = vi.fn();
+    const opener = vi.fn(async () => {});
+    const options = {
+      platform: "win32" as const, arch: "x64", currentVersion: "1.3.2", isPackaged: true,
+      execPath: "C:\\Bridge\\bridge.exe", userDataPath: directory, autoCheckAllowed: false,
+      isDirectoryWritable: () => writable, isSystemIdle: () => true, hasConnectedUi: () => false,
+      requestQuitAll: () => {}, spawnWindowsHelper: helper, openLocalInstaller: opener, onChanged: () => {},
+      fetchImpl: vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+        if (String(input).endsWith(".zip")) return network.download ?? new Response(new Uint8Array(zip));
+        if (!network.online) throw new Error("fixture offline");
+        return Response.json([{
+          tag_name: `v${network.version}`, html_url: "https://github.com/fixture/release", assets: [{
+            name: `Bridge-${network.version}-windows-installer-ci.zip`, size: zip.length,
+            browser_download_url: "https://github.com/fixture/windows-installer.zip", digest: `sha256:${sha256Hex(zip)}`,
+          }],
+        }]);
+      }),
+    };
+    const updater = new DesktopUpdater(options);
+    await updater.initialize();
+    return { directory, network, helper, opener, options, updater, zip };
+  }
+
+  it("continues a first remote apply after its check starts a delayed download", async () => {
+    const fixture = await downloadFixture();
+    let finishDownload!: (value: Response) => void;
+    fixture.network.download = new Promise(resolve => { finishDownload = resolve; });
+    await fixture.updater.handleRpc({ action: "apply" }, "mobile");
+    await vi.waitFor(() => expect(fixture.updater.snapshot().phase).toBe("downloading"));
+    finishDownload(new Response(new Uint8Array(fixture.zip)));
+    await fixture.updater.waitForPendingTasks();
+    expect(fixture.helper).toHaveBeenCalledOnce();
+    fixture.updater.close();
+  });
+
+  it("keeps a verified installer applicable when a later check is offline", async () => {
+    const fixture = await downloadFixture();
+    await fixture.updater.handleRpc({ action: "download" }, "desktop");
+    await fixture.updater.waitForPendingTasks();
+    expect(fixture.updater.snapshot().phase).toBe("ready");
+    fixture.network.online = false;
+    await fixture.updater.handleRpc({ action: "check" }, "desktop");
+    expect.soft(fixture.updater.snapshot().phase).toBe("ready");
+    expect(fixture.updater.snapshot().error).toContain("offline");
+    await fixture.updater.handleRpc({ action: "apply" }, "desktop");
+    expect(fixture.helper).toHaveBeenCalledOnce();
+    fixture.updater.close();
+  });
+
+  it("reveals protected Windows installers instead of launching them", async () => {
+    const fixture = await downloadFixture(false);
+    await fixture.updater.handleRpc({ action: "download" }, "desktop");
+    await fixture.updater.waitForPendingTasks();
+    await fixture.updater.handleRpc({ action: "apply" }, "desktop");
+    expect(fixture.opener).toHaveBeenCalledWith(fixture.updater.snapshot().stagedPath, true);
+    fixture.updater.close();
+  });
+
+  it("reuses one staged installer filename across successive releases", async () => {
+    const fixture = await downloadFixture();
+    await fixture.updater.handleRpc({ action: "download" }, "desktop");
+    await fixture.updater.waitForPendingTasks();
+    const firstPath = fixture.updater.snapshot().stagedPath;
+    fixture.updater.close();
+    fixture.network.version = "1.3.4";
+    const restarted = new DesktopUpdater(fixture.options);
+    await restarted.initialize();
+    await restarted.handleRpc({ action: "download" }, "desktop");
+    await restarted.waitForPendingTasks();
+    expect(restarted.snapshot().stagedPath).toBe(firstPath);
+    expect((await readdir(join(fixture.directory, "updates"))).filter(name => name.includes("staged"))).toHaveLength(1);
+    restarted.close();
+  });
+
+  it("propagates writer open errors while the response body is still pending", async () => {
+    const fixture = await downloadFixture();
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    let cancelled = false;
+    fixture.network.download = Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+      start(controller) { source = controller; controller.enqueue(new Uint8Array([1])); },
+      cancel() { cancelled = true; },
+    })));
+    await mkdir(join(fixture.directory, "updates", "download.part"), { recursive: true });
+    try {
+      await fixture.updater.handleRpc({ action: "download" }, "desktop");
+      await vi.waitFor(() => expect(fixture.updater.snapshot().phase).toBe("error"), { timeout: 1000 });
+      expect(fixture.updater.snapshot().error).toMatch(/EISDIR|EPERM|EACCES/);
+      expect(cancelled).toBe(true);
+    } finally {
+      if (!cancelled) source.close();
+      await fixture.updater.waitForPendingTasks();
+      fixture.updater.close();
+    }
+  });
 
   it("extracts deflated and stored entries from ZIP Central Directory and blocks traversal", async () => {
     const dir = await makeTempDir();
@@ -386,6 +498,7 @@ describe("DesktopUpdater & ZIP extraction", () => {
       isSystemIdle: () => true, hasConnectedUi: () => false,
       requestQuitAll: () => {}, onChanged: () => {},
     });
+    await updater.initialize();
     const controller: DesktopController = Object.assign(Object.create(DesktopController.prototype), {
       updater, publish: async () => {},
     });

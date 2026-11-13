@@ -1072,6 +1072,10 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
     const choice = prompt.choices.find(choice => choice.value === selected[index]);
     assert.ok(choice, "The synthetic Native broker must publish its actual choice value");
     const card = page.getByRole("region", { name: prompt.title, exact: true });
+    if (prompt.kind === "lanyard-consent") {
+      const disclosure = await card.innerText();
+      for (const value of ["此连接会替换原有频道连接。", "原频道：隔离旧频道", "原线程开始于 2026-11-12", "https://example.invalid/owned-old-channel"]) assert.ok(disclosure.includes(value), "Native replacement authorization must be visible before responding");
+    }
     await card.getByRole("button", { name: choice.label, exact: true }).click();
     await card.waitFor({ state: "hidden" });
     await eventually(() => host.nativeApproval.dialogs().events.some(event => event.type === "prompt.resolved" && event.data.promptId === prompt.promptId && event.data.resolvedByDeviceId === host.pairing.deviceId), true, "Remote Native prompt resolution records its phone device");

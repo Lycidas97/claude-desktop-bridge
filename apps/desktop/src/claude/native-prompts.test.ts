@@ -20,6 +20,22 @@ describe("Native consent review regression", () => {
     expect(prompt).toMatchObject({ canRespond: true, choices: [{ value: "native-confirm" }, { value: "native-cancel" }] });
   });
 
+  it("preserves lanyard replacement disclosure and the original channel reference", async () => {
+    const [prompt] = await nativePendingPrompts({ sessionId: "owned-session", pendingLanyardConsent: {
+      promptId: "owned-replacement-prompt", targetKind: "channel", title: "Change connected channel",
+      lead: "Connect the selected channel", bullets: ["Read new channel history"],
+      channelId: "owned-new-channel-id", channelName: "owned-new-channel", workspace: "Owned workspace",
+      permalink: "https://example.invalid/owned-new-channel", postsIntro: "Post as", postsAs: "Owned account",
+      postsLabelled: "AI", pollIntervalSeconds: 60,
+      replaces: { disclosure: "This replaces the existing connection to the old channel.", channelName: "owned-old-channel", threadStarted: "owned-old-thread", permalink: "https://example.invalid/owned-old-channel" },
+    } }, inspector);
+    expect(prompt?.canRespond).toBe(true);
+    for (const disclosure of ["This replaces the existing connection to the old channel.", "owned-old-channel",
+      "owned-old-thread", "https://example.invalid/owned-old-channel", "owned-new-channel", "https://example.invalid/owned-new-channel"]) {
+      expect(prompt?.message).toContain(disclosure);
+    }
+  });
+
   it("preserves violin file operation disclosure from the actual Native payload fields", async () => {
     const [prompt] = await nativePendingPrompts({ sessionId: "owned-session", pendingViolinBowPrompt: {
       promptId: "violin", title: "Confirm operation", kind: "copy",

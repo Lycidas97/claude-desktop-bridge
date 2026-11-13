@@ -350,6 +350,7 @@ export async function startNativeApprovalHost(options: {
               channelId: "owned-channel", channelName: "隔离频道", workspace: "隔离工作区",
               permalink: "https://example.invalid/owned-channel", bullets: ["读取频道历史", "向频道发消息"],
               postsIntro: "发帖身份", postsAs: "隔离账号", postsLabelled: "AI", pollIntervalSeconds: 60,
+              replaces: { disclosure: "此连接会替换原有频道连接。", channelName: "隔离旧频道", threadStarted: "原线程开始于 2026-11-12", permalink: "https://example.invalid/owned-old-channel" },
             } : kind === "violin-bow" ? {
               title: "复制文件", body: "复制选中的文件", detail: "将文件复制到隔离电脑",
               folder: harnessCwd, machineName: "隔离电脑", fileCount: 2, totalBytes: 123,

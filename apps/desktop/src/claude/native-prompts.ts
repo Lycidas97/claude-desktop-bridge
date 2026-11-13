@@ -36,6 +36,7 @@ export async function nativePendingPrompts(session: NativePromptSession, inspect
       : Array.isArray(info.paragraphs) ? info.paragraphs.filter(value => typeof value === "string").join("\n\n")
         : [info.message, info.description, info.reason].find((value): value is string => typeof value === "string" && value.length > 0);
     if (spec.kind === "lanyard-consent") {
+      const replaces = info.replaces !== null && typeof info.replaces === "object" && !Array.isArray(info.replaces) ? info.replaces as Record<string, unknown> : undefined;
       message = [
         info.lead,
         ...(Array.isArray(info.bullets) ? info.bullets : []),
@@ -45,6 +46,9 @@ export async function nativePendingPrompts(session: NativePromptSession, inspect
         info.postsIntro, info.postsAs, info.postsLabelled,
         typeof info.pollIntervalSeconds === "number" && `轮询间隔：${info.pollIntervalSeconds} 秒`,
         info.externallyShared === true && "与工作区外部共享",
+        replaces?.disclosure,
+        typeof replaces?.channelName === "string" && `原频道：${replaces.channelName}`,
+        replaces?.threadStarted, replaces?.permalink,
       ].filter(value => typeof value === "string" && value.length > 0).join("\n\n");
     } else if (spec.kind === "violin-bow") {
       message = [

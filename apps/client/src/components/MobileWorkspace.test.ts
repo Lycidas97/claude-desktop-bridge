@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyEventToTurns, mergeBridgeEvents, type LocalTurn } from "../hooks/useMobileBridge.js";
 import {
   aggregateFileChanges,
+  archivedForkGroupKey,
   canConfigureSession,
   canStopBridgeTask,
   conversationItems,
@@ -24,7 +25,9 @@ import {
   stoppableBridgeTask,
   supportsProviderSwitching,
 } from "../lib/conversation-timeline.js";
+import { groupProjectSessionFamilies } from "../lib/project-groups.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
+import { MobileSessionCatalog } from "./mobile/MobileSessionCatalog.js";
 import { PermissionPrompt, permissionPresentation } from "./conversation/PermissionPrompts.js";
 import { SubagentCard } from "./conversation/SubagentCard.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
@@ -173,7 +176,7 @@ describe("mobile workspace directory", () => {
     expect(html).not.toContain("Nested Fork");
   });
 
-  it("groups active and archived /btw sidechats under their active parent and shows direct parent return in sidechat detail", () => {
+  it("counts only active forks/sidechats by default, tucks archived sidechats/forks into a secondary fold, and shows direct parent return in sidechat detail", () => {
     const sidechatActive: BridgeSessionInfo = {
       ...session,
       sessionId: "btw-active",
@@ -198,13 +201,158 @@ describe("mobile workspace directory", () => {
         sessions: [session, sidechatActive, sidechatArchived],
       },
     }));
-    expect(directoryHtml).toContain("2 个 /btw 侧聊");
+    expect(directoryHtml).toContain("1 个 /btw 侧聊");
+    expect(directoryHtml).not.toContain("2 个 /btw 侧聊");
+    expect(directoryHtml).not.toContain(sidechatArchived.title);
+
+    const archivedOnlyHtml = renderToStaticMarkup(createElement(MobileWorkspace, {
+      ...workspaceProps(),
+      snapshot: {
+        ...snapshot,
+        sessions: [session, sidechatArchived],
+      },
+    }));
+    expect(archivedOnlyHtml).toContain("mobile-fork-group is-archived-only collapsed");
+    expect(archivedOnlyHtml).toContain("1 个已结束侧聊");
+    expect(archivedOnlyHtml).not.toContain("1 个 /btw 侧聊");
+    expect(archivedOnlyHtml).not.toContain(sidechatArchived.title);
+
+    const allMixedSessions: BridgeSessionInfo[] = [
+      session,
+      sidechatActive,
+      sidechatArchived,
+      { ...session, sessionId: "fork-archived", title: "历史实验分支", parentSessionId: session.sessionId, archivedAt: 120, lastActivityAt: 120 },
+    ];
+    const renderCatalog = (expandedForkParents: Set<string>, activeProjectId?: string, catalogSessions = allMixedSessions) => {
+      const activeList = catalogSessions.filter((candidate) => !candidate.archivedAt || Boolean(candidate.sidechat && candidate.parentSessionId === session.sessionId));
+      const archivedList = catalogSessions.filter((candidate) => Boolean(candidate.archivedAt));
+      return renderToStaticMarkup(createElement(MobileSessionCatalog, {
+        desktopName: "My computer",
+        connection: "connected",
+        desktopOnline: true,
+        snapshot: { ...snapshot, sessions: catalogSessions },
+        sessions: catalogSessions,
+        archivedSessions: archivedList,
+        activeParentProjects: new Map([[session.sessionId, session.projectId]]),
+        grouped: [{ project: snapshot.projects[0], sessions: activeList }],
+        groupedProjectIds: [session.projectId],
+        allProjectsCollapsed: false,
+        collapsedProjectIds: new Set<string>(),
+        expandedForkParents,
+        projectOrder: [session.projectId],
+        projectsByActivity: [session.projectId],
+        permissions: [],
+        connectionIssue: undefined,
+        transportMetrics: undefined,
+        pendingOutbound: 0,
+        activeProjectId,
+        search: "",
+        projectSearch: "",
+        directoryRef: { current: null },
+        directoryScrollPositions: { current: new Map() },
+        directoryMenuOpen: false,
+        projectOrderOpen: false,
+        refreshing: false,
+        syncFlash: false,
+        sectionCreate: undefined,
+        sectionCanCreate: false,
+        sectionManage: {
+          desktopName: "My computer",
+          online: true,
+          supportsRename: false,
+          supportsDelete: false,
+          hideEmptySections: false,
+          emptySectionCount: 0,
+          targetProject: undefined,
+          state: undefined,
+          canManage: vi.fn(() => false),
+          shouldHideEmpty: vi.fn(() => false),
+          revealEmptySections: vi.fn(),
+          toggleHideEmptySections: vi.fn(),
+          openMenu: vi.fn(),
+          startRename: vi.fn(),
+          updateName: vi.fn(),
+          submitRename: vi.fn(async () => {}),
+          startConfirmDelete: vi.fn(),
+          runDelete: vi.fn(async () => {}),
+          close: vi.fn(),
+          renderDirectoryActions: vi.fn(() => null),
+        },
+        createOpen: false,
+        createProjectId: "",
+        sessionOverlays: null,
+        onBackToHosts: vi.fn(),
+        onRetry: vi.fn(),
+        onRefresh: vi.fn(),
+        onCreateSection: undefined,
+        onBrowseDirectory: undefined,
+        onCreateDirectory: undefined,
+        onCreateSession: vi.fn(),
+        selectSession: vi.fn(),
+        setSearch: vi.fn(),
+        setProjectSearch: vi.fn(),
+        setDirectoryMenuOpen: vi.fn(),
+        setProjectOrderOpen: vi.fn(),
+        setCollapsedProjectIds: vi.fn(),
+        setSectionCreate: vi.fn(),
+        setCreateOpen: vi.fn(),
+        onOpenSessionActions: vi.fn(),
+        toggleProject: vi.fn(),
+        toggleForkGroup: vi.fn(),
+        openProjectGroup: vi.fn(),
+        closeProjectGroup: vi.fn(),
+        openCreateDialogForProject: vi.fn(),
+        placeProjects: vi.fn(),
+        runRefresh: vi.fn(),
+        closeSectionCreate: vi.fn(),
+        createSection: vi.fn(),
+      }));
+    };
+    const primaryExpandedHtml = renderCatalog(new Set([session.sessionId]));
+    expect(primaryExpandedHtml).toContain(sidechatActive.title);
+    expect(primaryExpandedHtml).toContain("2 个已归档分支与侧聊");
+    expect(primaryExpandedHtml).not.toContain(sidechatArchived.title);
+    expect(primaryExpandedHtml).not.toContain("历史实验分支");
+
+    const bothExpandedHtml = renderCatalog(new Set([session.sessionId, archivedForkGroupKey(session.sessionId)]));
+    expect(bothExpandedHtml).toContain(sidechatActive.title);
+    expect(bothExpandedHtml).toContain(sidechatArchived.title);
+    expect(bothExpandedHtml).toContain("历史实验分支");
+
+    const liveGrandchild: BridgeSessionInfo = {
+      ...session, sessionId: "live-fork", title: "仍在执行的孙分支", parentSessionId: sidechatArchived.sessionId,
+      transport: "claude-desktop-native", ownership: "DESKTOP_NATIVE_RUNNING", turnState: "running",
+    };
+    const threeLevelSessions = [session, sidechatArchived, liveGrandchild];
+    const threeLevelCollapsedHtml = renderCatalog(new Set<string>(), undefined, threeLevelSessions);
+    expect(threeLevelCollapsedHtml).toContain("1 个 Fork 分支");
+    expect(threeLevelCollapsedHtml).not.toContain("is-archived-only");
+    const threeLevelActiveHtml = renderCatalog(new Set([session.sessionId]), undefined, threeLevelSessions);
+    expect(threeLevelActiveHtml).toContain(liveGrandchild.title);
+    expect(threeLevelActiveHtml).toContain("1 个已结束侧聊");
+    expect(threeLevelActiveHtml).not.toContain(sidechatArchived.title);
+    const threeLevelHistoryHtml = renderCatalog(new Set([
+      session.sessionId, archivedForkGroupKey(session.sessionId), sidechatArchived.sessionId,
+    ]), undefined, threeLevelSessions);
+    expect(threeLevelHistoryHtml).toContain(sidechatArchived.title);
+    const liveRow = /data-session-id="live-fork"([\s\S]*?)<\/button>/u.exec(threeLevelHistoryHtml)![1]!;
+    expect(liveRow).toContain("桌面运行中");
+    expect(liveRow).not.toContain("已归档");
+    expect(threeLevelHistoryHtml.match(/data-session-id="live-fork"/gu)).toHaveLength(1);
+
+    const archivedParent: BridgeSessionInfo = { ...session, sessionId: "archived-parent", title: "已归档父会话", archivedAt: 50 };
+    const archivedChild: BridgeSessionInfo = { ...session, sessionId: "btw-of-archived-parent", title: "btw: 归档父会话的侧聊", parentSessionId: "archived-parent", sidechat: true, archivedAt: 60 };
+    expect(groupProjectSessionFamilies([archivedParent, archivedChild])[0]!.forks).toHaveLength(1);
+    const archivedPageHtml = renderCatalog(new Set(["archived-parent"]), "__archived__", [archivedParent, archivedChild]);
+    expect(archivedPageHtml).toContain("1 个 /btw 侧聊");
+    expect(archivedPageHtml).toContain("btw: 归档父会话的侧聊");
+    expect(archivedPageHtml).not.toContain("is-archived-fold");
 
     const useState = vi.mocked(React.useState).getMockImplementation()!;
     const stateSpy = vi.mocked(React.useState)
       .mockImplementationOnce(useState)
       .mockImplementationOnce(useState)
-      .mockReturnValueOnce(["btw-active", vi.fn()]);
+      .mockReturnValueOnce(["btw-archived", vi.fn()]);
     try {
       const detailHtml = renderToStaticMarkup(createElement(MobileWorkspace, {
         ...workspaceProps(),
@@ -225,14 +373,16 @@ describe("mobile workspace directory", () => {
         sessions: [
           session,
           sidechatActive,
+          sidechatArchived,
           { ...session, sessionId: "fork-regular", title: "普通分支", parentSessionId: session.sessionId, forkLabel: "fork-2" },
-          { ...session, sessionId: "archived-parent", title: "已归档父会话", archivedAt: 50 },
-          { ...session, sessionId: "btw-of-archived-parent", title: "btw: 归档父会话的侧聊", parentSessionId: "archived-parent", sidechat: true, archivedAt: 60 },
+          archivedParent,
+          archivedChild,
           { ...session, sessionId: "btw-wrong-project", title: "btw: 跨项目孤儿保护", parentSessionId: session.sessionId, projectId: "other-project", sidechat: true, archivedAt: 70 },
         ],
       },
     }));
     expect(mixedHtml).toContain("2 个分支与侧聊");
+    expect(mixedHtml).not.toContain("3 个分支与侧聊");
     expect(mixedHtml).not.toContain("btw: 归档父会话的侧聊");
     expect(mixedHtml).not.toContain("btw: 跨项目孤儿保护");
   });
@@ -1739,6 +1889,49 @@ describe("conversationItems", () => {
     expect(html).not.toContain("is-completed");
     expect(html).not.toContain("lucide-x");
     expect(html).not.toContain("lucide-check");
+  });
+
+  it("renders SubagentCard expanded without outer details, duplicate live preview, or inner truncation when collapsible is false", () => {
+    const longReport = Array.from({ length: 35 }, (_, idx) => `Line ${idx + 1}: subagent finding detail`).join("\n");
+    const runningItem: BridgeHistoryItem = {
+      id: "task-live",
+      sessionId: "session-1",
+      role: "tool",
+      origin: "claude-desktop",
+      createdAt: 100,
+      text: "Audit",
+      subagent: {
+        agentId: "ag-live",
+        description: "Audit",
+        state: "running",
+        toolCount: 2,
+        recentTools: ["Read a.ts", "Grep bar"],
+        latestText: "Checking edge cases",
+        startedAt: 100,
+        updatedAt: 200,
+      },
+    };
+    const completedItem: BridgeHistoryItem = {
+      ...runningItem,
+      id: "task-done",
+      subagent: { ...runningItem.subagent!, state: "completed", reportText: longReport },
+    };
+
+    const inlineHtml = renderToStaticMarkup(createElement(SubagentCard, { item: completedItem }));
+    expect(inlineHtml).toContain('<details class="subagent-details">');
+    expect(inlineHtml).toContain("展开全文");
+
+    const liveDetailHtml = renderToStaticMarkup(createElement(SubagentCard, { item: runningItem, collapsible: false }));
+    expect(liveDetailHtml).not.toContain("<details");
+    expect(liveDetailHtml).not.toContain("subagent-live-progress");
+    expect(liveDetailHtml.match(/Checking edge cases/gu)).toHaveLength(1);
+    expect(liveDetailHtml).toContain("Read a.ts");
+
+    const doneDetailHtml = renderToStaticMarkup(createElement(SubagentCard, { item: completedItem, collapsible: false }));
+    expect(doneDetailHtml).not.toContain("<details");
+    expect(doneDetailHtml).not.toContain("展开全文");
+    expect(doneDetailHtml).not.toContain("inert");
+    expect(doneDetailHtml).toContain("Line 35: subagent finding detail");
   });
 
   it("merges subagent progress and completion reports across history and live events", () => {

@@ -13,24 +13,24 @@ const sharedDefine = {
   __BRIDGE_DEFAULT_RELAY__: JSON.stringify(buildEnvironmentValue(
     process.env,
     "BRIDGE_RELAY_URL",
-    "wss://relay.alioxis.com/ws",
+    "wss://bis.zju.edu.cn/bridge-relay/ws",
   )),
   __BRIDGE_DEFAULT_PUBLIC_RELAY__: JSON.stringify(
-    buildEnvironmentValue(process.env, "BRIDGE_PUBLIC_RELAY_URL", "wss://relay.alioxis.com/ws"),
+    buildEnvironmentValue(process.env, "BRIDGE_PUBLIC_RELAY_URL", "wss://bis.zju.edu.cn/bridge-relay/ws"),
   ),
   __BRIDGE_DEFAULT_PAIRING_BASE__: JSON.stringify(buildEnvironmentValue(
     process.env,
     "BRIDGE_PAIRING_BASE_URL",
-    "https://relay.alioxis.com",
+    "https://bis.zju.edu.cn",
   )),
   __BRIDGE_DEFAULT_SERVICE_ORIGIN__: JSON.stringify(
-    buildEnvironmentValue(process.env, "BRIDGE_SERVICE_ORIGIN", "https://relay.alioxis.com"),
+    buildEnvironmentValue(process.env, "BRIDGE_SERVICE_ORIGIN", "https://bis.zju.edu.cn"),
   ),
   __BRIDGE_DEFAULT_ICE_SERVERS__: JSON.stringify(
     buildEnvironmentValue(
       process.env,
       "BRIDGE_ICE_SERVERS",
-      '[{"urls":"stun:stun.alioxis.com:3478"},{"urls":"stun:stun.cloudflare.com:3478"}]',
+      '[{"urls":"stun:stun.cloudflare.com:3478"}]',
     ),
   ),
 };

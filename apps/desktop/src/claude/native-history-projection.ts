@@ -9,6 +9,7 @@ import type {
 import type { NativeDesktopReceipt } from "../controller/conversation-state-store.js";
 import type { BridgeEventDraft } from "../controller/session-event-log.js";
 import { extractInteractivePrompt, updateClaudeTaskPlan, visibleMessage } from "../transcript/claude-history.js";
+import { summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
 import { NativeCallError } from "./claude-desktop-inspector.js";
 
 export interface NativeMessageProjection {
@@ -104,7 +105,7 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
           projection.plan = plan;
         }
         if (wrapUp) delete projection.plan;
-      } else items.set(block.id, { id: block.id, sessionId, role: "tool", toolName: block.name, text: JSON.stringify(block.input ?? {}), createdAt, origin: "claude-desktop" });
+      } else items.set(block.id, { id: block.id, sessionId, role: "tool", toolName: block.name, text: summarizeNativeToolInput(block.name, block.input), createdAt, origin: "claude-desktop" });
     }
   }
   return [...items.values()];

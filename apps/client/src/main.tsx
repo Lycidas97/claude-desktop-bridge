@@ -39,6 +39,8 @@ if ("serviceWorker" in navigator) {
   }
 }
 
-setTimeout(() => {
-  void runRelayConnectivityProbe().catch(() => undefined);
-}, 1_500);
+if (!window.bridgeDesktop) {
+  setTimeout(() => {
+    void runRelayConnectivityProbe().catch(() => undefined);
+  }, 1_500);
+}

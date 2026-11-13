@@ -7,9 +7,8 @@ import {
 } from "./index.js";
 
 describe("Bridge ICE defaults", () => {
-  it("prefers the self-hosted STUN server and retains Cloudflare as a fallback", () => {
+  it("uses Cloudflare STUN as the packaged default without deriving relay or alioxis STUN", () => {
     expect(DEFAULT_BRIDGE_ICE_SERVERS).toEqual([
-      { urls: "stun:stun.alioxis.com:3478" },
       { urls: "stun:stun.cloudflare.com:3478" },
     ]);
     expect(JSON.parse(DEFAULT_BRIDGE_ICE_SERVERS_JSON)).toEqual(DEFAULT_BRIDGE_ICE_SERVERS);
@@ -26,12 +25,31 @@ describe("Bridge ICE defaults", () => {
     })).toBe(true);
   });
 
-  it("smoothly upgrades only the historical Cloudflare-only default", () => {
-    const legacy = [{ urls: "stun:stun.cloudflare.com:3478" }];
-    const custom = [{ urls: "stun:stun.example.net:3478" }];
+  it("converges both historical Cloudflare-only and retired alioxis+Cloudflare defaults while preserving custom ICE lists", () => {
+    const legacyCloudflare = [{ urls: "stun:stun.cloudflare.com:3478" }];
+    const retiredPair = [
+      { urls: "stun:stun.alioxis.com:3478" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+    ];
+    const customFallback = [{ urls: "stun:stun.custom-build.example:3478" }];
+    const customStun = [{ urls: "stun:stun.example.net:3478" }];
+    const singleAlioxis = [{ urls: "stun:stun.alioxis.com:3478" }];
+    const reversedOrder = [
+      { urls: "stun:stun.cloudflare.com:3478" },
+      { urls: "stun:stun.alioxis.com:3478" },
+    ];
+    const credentialedTurn = [
+      { urls: "turn:stun.alioxis.com:3478", username: "bridge", credential: "secret" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+    ];
 
-    expect(isLegacyCloudflareIceServers(legacy)).toBe(true);
-    expect(preferredBridgeIceServers(legacy)).toEqual(DEFAULT_BRIDGE_ICE_SERVERS);
-    expect(preferredBridgeIceServers(custom)).toEqual(custom);
+    expect(isLegacyCloudflareIceServers(legacyCloudflare)).toBe(true);
+    expect(preferredBridgeIceServers(legacyCloudflare)).toEqual(DEFAULT_BRIDGE_ICE_SERVERS);
+    expect(preferredBridgeIceServers(retiredPair)).toEqual(DEFAULT_BRIDGE_ICE_SERVERS);
+    expect(preferredBridgeIceServers(retiredPair, customFallback)).toEqual(customFallback);
+    expect(preferredBridgeIceServers(customStun)).toEqual(customStun);
+    expect(preferredBridgeIceServers(singleAlioxis)).toEqual(singleAlioxis);
+    expect(preferredBridgeIceServers(reversedOrder)).toEqual(reversedOrder);
+    expect(preferredBridgeIceServers(credentialedTurn)).toEqual(credentialedTurn);
   });
 });

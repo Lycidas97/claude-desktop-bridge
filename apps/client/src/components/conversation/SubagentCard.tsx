@@ -15,6 +15,7 @@ const SUBAGENT_STATE_LABELS: Record<BridgeSubagentSummary["state"], string> = {
 export function SubagentCard({
   item,
   entering = false,
+  collapsible = true,
   stopping = false,
   stopBlockedReason,
   onStop,
@@ -22,6 +23,7 @@ export function SubagentCard({
 }: {
   item: ConversationItem;
   entering?: boolean;
+  collapsible?: boolean;
   stopping?: boolean;
   /** Shown instead of the stop button when only ending the whole process could stop it. */
   stopBlockedReason?: string;
@@ -40,7 +42,34 @@ export function SubagentCard({
     ? `${Math.round(subagent.durationMs / 1_000)}s`
     : undefined;
   const recentTools = subagent.recentTools ?? [];
-  const hasDetails = Boolean(subagent.reportText || subagent.latestText || recentTools.length > 0);
+  const detailsBody = (subagent.reportText || subagent.latestText || recentTools.length > 0) && (
+    <div className="subagent-details-body">
+      {recentTools.length > 0 && (
+        <div className="subagent-steps-section">
+          <div className="subagent-section-label">最近执行步骤</div>
+          <div className="subagent-recent-tools">
+            {recentTools.map((toolLine, idx) => (
+              <span className="subagent-tool-pill" key={`${idx}:${toolLine}`}>
+                {toolLine}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {(subagent.reportText || subagent.latestText) && (
+        <div className="subagent-report-section">
+          <div className="subagent-section-label">
+            {subagent.reportText ? "子代理回报" : "当前输出"}
+          </div>
+          <MarkdownText
+            text={subagent.reportText ?? subagent.latestText ?? ""}
+            collapsible={collapsible}
+            {...(onFileClick ? { onFileClick } : {})}
+          />
+        </div>
+      )}
+    </div>
+  );
   return (
     <article
       className={`conversation-subagent-card ${isRunning ? "is-running" : isUnknown ? "is-unknown" : `is-completed is-${subagent.state}`}${entering ? " is-entering" : ""}`}
@@ -66,7 +95,7 @@ export function SubagentCard({
         {subagent.model && <span className="subagent-card-model" aria-label={`模型：${subagent.model}`}>{subagent.model}</span>}
       </div>
 
-      {isRunning && (subagent.latestText || recentTools.length > 0) && (
+      {collapsible && isRunning && (subagent.latestText || recentTools.length > 0) && (
         <div className="subagent-live-progress">
           {subagent.latestText && (
             <div className="subagent-live-note">{subagent.latestText}</div>
@@ -98,7 +127,7 @@ export function SubagentCard({
         </div>
       )}
 
-      {hasDetails && (
+      {detailsBody && (collapsible ? (
         <details className="subagent-details">
           <summary>
             <span>
@@ -110,33 +139,9 @@ export function SubagentCard({
             </span>
             <ChevronDown size={14} className="subagent-details-chevron" aria-hidden="true" />
           </summary>
-          <div className="subagent-details-body">
-            {recentTools.length > 0 && (
-              <div className="subagent-steps-section">
-                <div className="subagent-section-label">最近执行步骤</div>
-                <div className="subagent-recent-tools">
-                  {recentTools.map((toolLine, idx) => (
-                    <span className="subagent-tool-pill" key={`${idx}:${toolLine}`}>
-                      {toolLine}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-            {(subagent.reportText || subagent.latestText) && (
-              <div className="subagent-report-section">
-                <div className="subagent-section-label">
-                  {subagent.reportText ? "子代理回报" : "当前输出"}
-                </div>
-                <MarkdownText
-                  text={subagent.reportText ?? subagent.latestText ?? ""}
-                  {...(onFileClick ? { onFileClick } : {})}
-                />
-              </div>
-            )}
-          </div>
+          {detailsBody}
         </details>
-      )}
+      ) : detailsBody)}
     </article>
   );
 }

@@ -5,6 +5,7 @@
 .section-create-dialog form label,
 .section-create-dialog .session-create-error,
 .section-create-dialog .session-create-status { font-size: calc(13px * var(--font-scale)); }
+.project-group-header .section-manage-trigger { align-self: center; }
 
 @media (max-width: 639px) {
   .section-create-dialog form input { font-size: calc(16px * var(--font-scale)); }

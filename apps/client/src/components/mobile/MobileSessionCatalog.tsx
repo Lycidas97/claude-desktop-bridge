@@ -29,7 +29,11 @@ import type { ReactNode, RefObject } from "react";
 import type { MobileConnectionIssue } from "../../hooks/useMobileBridge.js";
 import {
   activeSessionBadgeLabel,
+  archivedForkGroupKey,
+  archivedForkGroupLabel,
+  forkGroupToggleLabel,
   mobileConnectionLabel,
+  partitionSessionForks,
   relativeTime,
 } from "../../lib/conversation-timeline.js";
 import {
@@ -45,6 +49,7 @@ import {
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { backgroundSubagentBadge } from "../../lib/session-activity.js";
 import { IconButton } from "../common/IconButton.js";
+import { SectionManageDialog, type SectionManageController } from "../session/SectionManageDialog.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { MobilePageHeader } from "./MobilePageHeader.js";
 import { MobileSheet, SheetAction } from "./MobileSheet.js";
@@ -80,6 +85,7 @@ export interface MobileSessionCatalogProps {
   syncFlash: boolean;
   sectionCreate: { name: string; busy: boolean; error: string } | undefined;
   sectionCanCreate: boolean;
+  sectionManage: SectionManageController;
   createOpen: boolean;
   createProjectId: string;
   sessionOverlays: ReactNode;
@@ -145,6 +151,7 @@ export function MobileSessionCatalog({
   syncFlash,
   sectionCreate,
   sectionCanCreate,
+  sectionManage,
   createOpen,
   createProjectId,
   sessionOverlays,
@@ -273,31 +280,77 @@ export function MobileSessionCatalog({
               <MoreHorizontal size={18} />
           </IconButton>
         </div>
-        {forks.length > 0 && (
-          <div className={`mobile-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
-            <button
-              type="button"
-              className="mobile-fork-toggle"
-              aria-expanded={forksExpanded}
-              onClick={() => toggleForkGroup(session.sessionId)}
-            >
-              <GitFork size={12} />
-              <span>
-                {forks.every((fork) => fork.primary.sidechat)
-                  ? `${forks.length} 个 /btw 侧聊`
-                  : forks.some((fork) => fork.primary.sidechat)
-                    ? `${forks.length} 个分支与侧聊`
-                    : `${forks.length} 个 Fork 分支`}
-              </span>
-              {forksExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-            </button>
-            {forksExpanded && (
-              <div className="mobile-fork-children">
-                {forks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
+        {(() => {
+          const { activeForks, archivedForks } = partitionSessionForks(
+            session,
+            forks,
+            sessions,
+            isArchivedRow,
+            activeProjectId ? projectSearch : search,
+          );
+          if (activeForks.length === 0 && archivedForks.length === 0) return null;
+          const archivedFoldKey = archivedForkGroupKey(session.sessionId);
+          const archivedExpanded = expandedForkParents.has(archivedFoldKey);
+          if (activeForks.length === 0) {
+            return (
+              <div className={`mobile-fork-group is-archived-only ${archivedExpanded ? "expanded" : "collapsed"}`}>
+                <button
+                  type="button"
+                  className="mobile-fork-toggle is-archived-fold"
+                  aria-expanded={archivedExpanded}
+                  onClick={() => toggleForkGroup(archivedFoldKey)}
+                >
+                  <Archive size={12} />
+                  <span>{archivedForkGroupLabel(archivedForks)}</span>
+                  {archivedExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                </button>
+                {archivedExpanded && (
+                  <div className="mobile-fork-children is-archived-children">
+                    {archivedForks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        )}
+            );
+          }
+          return (
+            <div className={`mobile-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
+              <button
+                type="button"
+                className="mobile-fork-toggle"
+                aria-expanded={forksExpanded}
+                onClick={() => toggleForkGroup(session.sessionId)}
+              >
+                <GitFork size={12} />
+                <span>{forkGroupToggleLabel(activeForks)}</span>
+                {forksExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              </button>
+              {forksExpanded && (
+                <div className="mobile-fork-children">
+                  {activeForks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
+                  {archivedForks.length > 0 && (
+                    <div className={`mobile-fork-archived ${archivedExpanded ? "expanded" : "collapsed"}`}>
+                      <button
+                        type="button"
+                        className="mobile-fork-toggle is-archived-fold"
+                        aria-expanded={archivedExpanded}
+                        onClick={() => toggleForkGroup(archivedFoldKey)}
+                      >
+                        <Archive size={12} />
+                        <span>{archivedForkGroupLabel(archivedForks)}</span>
+                        {archivedExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      </button>
+                      {archivedExpanded && (
+                        <div className="mobile-fork-archived-children">
+                          {archivedForks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
     );
   }
@@ -423,6 +476,15 @@ export function MobileSessionCatalog({
                       {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                     </span>
                   </button>
+                  {sectionManage.canManage(group.project) && (
+                    <IconButton
+                      label={`管理分组：${projectName}`}
+                      className="session-row-action section-manage-trigger"
+                      onClick={() => sectionManage.openMenu(group.project!.projectId)}
+                    >
+                      <MoreHorizontal size={18} />
+                    </IconButton>
+                  )}
                 </div>
                 {expanded && (
                   <div className="session-rows" id={sessionsId}>
@@ -465,6 +527,10 @@ export function MobileSessionCatalog({
                 setSectionCreate({ name: "", busy: false, error: "" });
               }} />
             )}
+            {sectionManage.renderDirectoryActions({
+              activeGroupProject,
+              closeDirectoryMenu: () => setDirectoryMenuOpen(false),
+            })}
             <SheetAction
               icon={refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
               label={refreshing ? "正在同步" : syncFlash ? "已同步" : "同步当前电脑"}
@@ -528,6 +594,7 @@ export function MobileSessionCatalog({
           </section>
         </div>
       )}
+      <SectionManageDialog controller={sectionManage} />
       {createOpen && snapshot && (
         <SessionCreateDialog
           key={snapshot.host.hostId}

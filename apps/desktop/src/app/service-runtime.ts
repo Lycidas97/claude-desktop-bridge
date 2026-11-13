@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import {
   DEFAULT_BRIDGE_ICE_SERVERS_JSON,
+  DEFAULT_BRIDGE_SERVICE_ORIGIN,
+  DEFAULT_PUBLIC_RELAY_URL,
   parseBridgeIceServers,
   relayPathForUrl,
 } from "@bridge/protocol";
@@ -44,13 +46,13 @@ declare const __BRIDGE_DEFAULT_ICE_SERVERS__: string;
 const CONFIGURED_RELAY = firstNonEmpty([
   process.env.BRIDGE_RELAY_URL,
   __BRIDGE_DEFAULT_RELAY__,
-  "wss://relay.alioxis.com/ws",
+  DEFAULT_PUBLIC_RELAY_URL,
 ])!;
 const DEFAULT_RELAY = networkReachableUrl(CONFIGURED_RELAY);
 const DEFAULT_PAIRING_BASE = firstNonEmpty([process.env.BRIDGE_PAIRING_BASE_URL])
   ?? networkReachableUrl(firstNonEmpty([
     __BRIDGE_DEFAULT_PAIRING_BASE__,
-    "https://relay.alioxis.com",
+    DEFAULT_BRIDGE_SERVICE_ORIGIN,
   ])!);
 const CONFIGURED_PUBLIC_RELAY = (
   process.env.BRIDGE_PUBLIC_RELAY_URL === undefined

@@ -24,7 +24,7 @@ import { MAGPIE_QUOTA_METHOD } from "../../../../plugins/magpie-quota/contract.j
 import type { createMagpieQuotaPlugin } from "../../../../plugins/magpie-quota/desktop.js";
 import type { ClaudeDesktopLifecycle } from "../app/claude-desktop-lifecycle.js";
 import { accessibleDirectory } from "../app/working-directory.js";
-import type { ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
+import { WorkspaceTrustRequiredError, type ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
 import type { EvidenceManager } from "../evidence/evidence-manager.js";
 import type { FileUploadManager } from "../evidence/file-upload.js";
 import type { LoadedDesktopConfig } from "../transport/config.js";
@@ -306,19 +306,49 @@ export async function dispatchControllerRequest(
     await host.publish();
     return { session, projects: host.allProjects() };
   }
+  if (request.method === "section.rename") {
+    if (!host.broker.capabilities().includes("section.rename")) throw new BridgeRequestError("UNSUPPORTED", "当前 Claude Desktop 不支持重命名 Section。");
+    const sectionId = stringParam(params, "sectionId")!.trim();
+    const name = stringParam(params, "name")!.trim();
+    if (!name || name.length > 200) throw new Error("name must contain 1–200 characters");
+    const project = await host.broker.renameSection(sectionId, name);
+    await host.publish();
+    return { project, projects: host.allProjects(), sessions: host.allSessions() };
+  }
+  if (request.method === "section.delete") {
+    if (!host.broker.capabilities().includes("section.delete")) throw new BridgeRequestError("UNSUPPORTED", "当前 Claude Desktop 不支持删除 Section。");
+    const sectionId = stringParam(params, "sectionId")!.trim();
+    await host.broker.deleteSection(sectionId);
+    await host.publish();
+    return { projects: host.allProjects(), sessions: host.allSessions() };
+  }
   if (request.method === "session.create") {
     runtimeIdParam(params, "runtimeId");
     const projectId = params.projectId;
     if (projectId !== undefined && (typeof projectId !== "string" || !projectId.trim())) {
       throw new Error("projectId must be a non-empty string");
     }
-    return {
-      session: await host.broker.createSession(
-        stringParam(params, "cwd")!,
-        stringParam(params, "title", false),
-        typeof projectId === "string" ? projectId.trim() : undefined,
-      ),
-    };
+    if (params.trustWorkspace !== undefined && typeof params.trustWorkspace !== "boolean") {
+      throw new Error("trustWorkspace must be a boolean");
+    }
+    try {
+      return {
+        session: await host.broker.createSession(
+          stringParam(params, "cwd")!,
+          stringParam(params, "title", false),
+          typeof projectId === "string" ? projectId.trim() : undefined,
+          ...(params.trustWorkspace === true ? [true] as const : []),
+        ),
+      };
+    } catch (error) {
+      if (error instanceof WorkspaceTrustRequiredError) {
+        throw new BridgeRequestError(
+          error.manual ? "WORKSPACE_TRUST_MANUAL_REQUIRED" : "WORKSPACE_TRUST_REQUIRED",
+          error.message,
+        );
+      }
+      throw error;
+    }
   }
   if (request.method === "session.fork") {
     const sessionId = stringParam(params, "sessionId")!;
@@ -339,6 +369,17 @@ export async function dispatchControllerRequest(
         stringParam(params, "cursor", false),
         numberParam(params, "limit", 50),
       ),
+    };
+  }
+  if (request.method === "session.tool.detail") {
+    const sessionId = stringParam(params, "sessionId")!;
+    const toolUseId = stringParam(params, "toolUseId")!;
+    if (params.agentId !== undefined && (typeof params.agentId !== "string" || !params.agentId.trim())) {
+      throw new Error("agentId must be a non-empty string");
+    }
+    const agentId = typeof params.agentId === "string" ? params.agentId.trim() : undefined;
+    return {
+      detail: await host.broker.readToolDetail(sessionId.trim(), toolUseId.trim(), agentId),
     };
   }
   if (request.method === "session.rewind.preview" || request.method === "session.rewind") {

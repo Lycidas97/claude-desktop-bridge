@@ -13,6 +13,7 @@ import {
   cryptoWithRelayEndpoint,
   normalizeRelayUrl,
   relayPathForUrl,
+  relayReadyUrl,
   relayServiceOrigin,
   type BridgeDeviceInfo,
   type BridgeEndpoint,
@@ -77,14 +78,7 @@ export interface DesktopMessageDeliveryHost {
   revokeDevice(deviceId: string): Promise<unknown>;
 }
 
-export function relayReadyUrl(endpoint: string): string {
-  const url = new URL(endpoint);
-  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  url.pathname = "/ready";
-  url.search = "";
-  url.hash = "";
-  return url.toString();
-}
+export { relayReadyUrl };
 
 export function redactedEndpoint(endpoint: string): string {
   const url = new URL(endpoint);
@@ -314,13 +308,16 @@ export async function deliverTransportMessage(
   }
   if (
     message.payload.method !== "artifact.preview" &&
-    message.payload.method !== "artifact.transfer.read"
+    message.payload.method !== "artifact.transfer.read" &&
+    message.payload.method !== "session.tool.detail"
   ) host.cacheResponse(response);
   const temporaryResponse = message.payload.method !== "turn.start" && message.payload.method !== "turn.steer";
   await host.sendToDevice(
     response,
     message.header.fromDeviceId,
-    message.payload.method.startsWith("artifact.") ? ARTIFACT_TRANSFER_TTL_MS : undefined,
+    message.payload.method.startsWith("artifact.") || message.payload.method === "session.tool.detail"
+      ? ARTIFACT_TRANSFER_TTL_MS
+      : undefined,
     temporaryResponse,
     message.payload.method !== "snapshot.get",
   ).catch(() => undefined);

@@ -7460,13 +7460,19 @@ button:disabled {
   background: var(--card-fill, var(--surface));
 }
 
+.m-sheet-body > .conversation-subagent-card {
+  width: 100%;
+  margin: 0;
+}
+
 .background-task-entry > .conversation-subagent-card,
 .workflow-phase-agents .conversation-subagent-card {
   width: auto;
   margin: 0 10px 10px;
 }
 
-/* The tray row above already names the task. */
+/* The sheet header or tray row above already names the task. */
+.m-sheet-body > .conversation-subagent-card .subagent-description,
 .background-task-entry .subagent-description { display: none; }
 
 .background-task-row {
@@ -8107,6 +8113,41 @@ button:disabled {
   margin-top: 6px;
   padding-left: 10px;
   border-left: 2px solid color-mix(in srgb, var(--accent) 38%, var(--line-strong));
+}
+
+.mobile-fork-group.is-archived-only {
+  padding: 0 10px 6px 22px;
+  background: transparent;
+}
+
+.mobile-fork-archived {
+  margin-top: 4px;
+}
+
+.mobile-fork-toggle.is-archived-fold {
+  min-height: 26px;
+  padding: 2px 6px;
+  border-color: transparent;
+  background: transparent;
+  color: color-mix(in srgb, var(--muted) 80%, transparent);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.mobile-fork-toggle.is-archived-fold:hover,
+.mobile-fork-archived.expanded > .mobile-fork-toggle.is-archived-fold,
+.mobile-fork-group.is-archived-only.expanded > .mobile-fork-toggle.is-archived-fold {
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+  color: var(--muted);
+}
+
+.mobile-fork-archived-children {
+  display: grid;
+  margin-top: 4px;
+}
+
+.mobile-fork-children.is-archived-children {
+  border-left-color: var(--line-strong);
 }
 
 .session-row-v2.is-fork-child {

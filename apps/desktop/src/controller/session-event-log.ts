@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createReadStream } from "node:fs";
-import { mkdir, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import type { BridgeEvent, BridgeEventType, BridgeOrigin, BridgeSubagentSummary } from "@bridge/protocol";
@@ -144,7 +144,10 @@ export class SessionEventLog extends EventEmitter {
     if (this.initialized) return;
     this.initialized = true;
     await mkdir(dirname(this.path), { recursive: true });
-    this.database = new DatabaseSync(`${this.path}.receipts.sqlite`);
+    const receiptPath = `${this.path}.receipts.sqlite`;
+    await writeFile(receiptPath, "", { flag: "a", mode: 0o600 });
+    await chmod(receiptPath, 0o600);
+    this.database = new DatabaseSync(receiptPath);
     this.database.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = FULL;
@@ -174,7 +177,8 @@ export class SessionEventLog extends EventEmitter {
     for await (const { value, fromReceipt } of logRecords(this.path)) {
       if (isEvent(value)) {
         this.nextSeq = Math.max(this.nextSeq, value.seq + 1);
-        if (!fromReceipt || RECEIPT_ITEM_TYPES.has(value.type)) this.indexEvent(value, fromReceipt);
+        const receipt = this.receiptJson(value, fromReceipt);
+        if (receipt) this.putReceipt!.run(value.sessionId ?? "", value.type, value.itemId!, value.seq, receipt);
         if (!fromReceipt) {
           scanned += 1;
           if (compact) {
@@ -218,7 +222,7 @@ export class SessionEventLog extends EventEmitter {
     return row ? JSON.parse(row.event_json) as BridgeEvent : undefined;
   }
 
-  private indexEvent(event: BridgeEvent, fromReceipt = false): void {
+  private receiptJson(event: BridgeEvent, fromReceipt = false): string | undefined {
     if (!event.itemId || !RECEIPT_ITEM_TYPES.has(event.type)) return;
     // Generic tool heartbeats update progress without replacing the task's SDK facts.
     if (event.type === "tool.progress" && !event.data.task && !event.data.subagent) {
@@ -248,7 +252,7 @@ export class SessionEventLog extends EventEmitter {
     } else {
       data.dedup = Object.fromEntries(DEDUP_FIELDS.map((name) => [name, dedupDigest(event.data[name])]));
     }
-    this.putReceipt!.run(event.sessionId ?? "", event.type, event.itemId, event.seq, JSON.stringify({ ...event, data }));
+    return JSON.stringify({ ...event, data });
   }
 
   private replaceProgress(event: BridgeEvent): void {
@@ -317,13 +321,14 @@ export class SessionEventLog extends EventEmitter {
       ...(draft.itemId ? { itemId: draft.itemId } : {}),
     };
     this.replaceProgress(event);
-    this.indexEvent(event);
+    const receipt = this.receiptJson(event);
     const line = `${JSON.stringify(event)}\n`;
     // Keep the latest append even when that single event exceeds the byte budget.
     this.retainEvent(event, Buffer.byteLength(line), true, true);
     this.writeQueue = this.writeQueue.catch(() => undefined).then(async () => {
       await mkdir(dirname(this.path), { recursive: true });
       await writeFile(this.path, line, { flag: "a", encoding: "utf8", mode: 0o600 });
+      if (receipt) this.putReceipt!.run(event.sessionId ?? "", event.type, event.itemId!, event.seq, receipt);
     });
     await this.writeQueue;
     this.emit("event", event);

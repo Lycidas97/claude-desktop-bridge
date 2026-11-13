@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -326,6 +326,63 @@ describe("SessionEventLog", () => {
       expect(await appended.append({ origin: "system", type: "host.presence" })).toMatchObject({ seq: count + 3 });
     } finally {
       await appended.close();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("does not persist a receipt when the JSONL append fails, across reopening", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-receipt-failed-append-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const seed = new SessionEventLog(path);
+    await seed.append({ origin: "system", type: "host.presence" });
+    await seed.close();
+    await chmod(path, 0o400);
+    const failed = new SessionEventLog(path);
+    const draft = { sessionId: "session-1", itemId: "retry-message", origin: "claude-desktop" as const, type: "session.observed" as const, data: { role: "assistant", text: "Retry this event" } };
+    try {
+      await failed.initialize();
+      await expect(failed.append(draft)).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      await failed.close();
+      await chmod(path, 0o600);
+    }
+    const reopened = new SessionEventLog(path);
+    try {
+      await reopened.initialize();
+      expect(reopened.latestSeq()).toBe(1);
+      expect(reopened.replay().map(event => event.type)).toEqual(["host.presence"]);
+      expect(reopened.itemMatches("session-1", "session.observed", "retry-message", draft.data)).toBe(false);
+      expect(reopened.latestItem("session-1", "session.observed", "retry-message")).toBeUndefined();
+      expect(await reopened.append(draft)).toMatchObject({ seq: 2 });
+    } finally {
+      await reopened.close();
+    }
+    const delivered = new SessionEventLog(path);
+    try {
+      await delivered.initialize();
+      expect(delivered.latestSeq()).toBe(2);
+      expect(delivered.itemMatches("session-1", "session.observed", "retry-message", draft.data)).toBe(true);
+      expect(delivered.replay()).toHaveLength(2);
+    } finally {
+      await delivered.close();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("keeps the SQLite database, WAL and SHM owner-only under umask 022", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-receipt-permissions-"));
+    directories.push(directory);
+    const path = join(directory, "events.jsonl");
+    const previousUmask = process.umask(0o022);
+    const log = new SessionEventLog(path);
+    try {
+      await log.append({ sessionId: "session-1", itemId: "tool-1", origin: "claude-desktop", type: "tool.started", data: { toolName: "Agent", subagent: { description: "Private task" } } });
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+      for (const suffix of [".receipts.sqlite", ".receipts.sqlite-wal", ".receipts.sqlite-shm"]) {
+        expect((await stat(`${path}${suffix}`)).mode & 0o777, suffix).toBe(0o600);
+      }
+    } finally {
+      process.umask(previousUmask);
+      await log.close();
     }
   });
 

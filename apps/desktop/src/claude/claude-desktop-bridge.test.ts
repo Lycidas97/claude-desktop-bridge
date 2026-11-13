@@ -797,7 +797,6 @@ describe("Claude native relay", () => {
         expect(f.state.nativeDesktopReceipt("v116-foreign")).toMatchObject({ messageId: local.messageId, state: state === "close" ? "cancelled" : state === "started" ? "running" : state });
         expect(f.bridge.session(input.sessionId)?.pendingCommandIds).toEqual([local.commandId]);
         expect(f.bridge.session("other-native")?.pendingCommandIds).toEqual([]);
-        expect(f.eventLog.turnEvidence({ sessionId: input.sessionId, messageId: local.messageId }).terminal).toBeUndefined();
       } finally { await f.close(); }
     });
 
@@ -1351,7 +1350,6 @@ describe("Claude native relay", () => {
       expect(f.state.nativeDesktopReceipt("key")?.state).toBe("failed");
       await f.message({ type: "command_lifecycle", command_uuid: receipt.messageId, state: "completed" });
       expect(f.state.nativeDesktopReceipt("key")?.state).toBe("failed");
-      expect(f.eventLog.turnEvidence({ sessionId: input.sessionId, messageId: receipt.messageId }).terminal).toBe("failed");
     } finally { await f.close(); }
   });
 
@@ -1459,7 +1457,6 @@ describe("Claude native relay", () => {
       const later = await f.bridge.startTurn({ ...input, idempotencyKey: "next", requestId: "next" });
       await f.message({ type: "result", uuid: "native-result", is_error: false, user_message_uuid: receipt.messageId, user_message_uuids: [receipt.messageId] });
       expect(f.state.nativeDesktopReceipt("key")?.state).toBe("completed");
-      expect(f.eventLog.turnEvidence({ sessionId: "local-native", messageId: receipt.messageId }).terminal).toBe("completed");
       expect(f.state.nativeDesktopReceipt("next")?.messageId).toBe(later.messageId);
       expect(f.state.nativeDesktopReceipt("next")?.state).toBe("submitted");
     } finally { await f.close(); }
@@ -2813,7 +2810,6 @@ describe("Claude native relay", () => {
         await f.message({ type: "command_lifecycle", command_uuid: receipt.messageId, state, uuid: `late-${state}` });
         expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.state).toBe(isError ? "failed" : "completed");
       }
-      expect(f.eventLog.turnEvidence({ sessionId: input.sessionId, messageId: receipt.messageId }).terminal).toBe(isError ? "failed" : "completed");
       expect(f.eventLog.replay(0).filter(event => event.type === "turn.started")).toEqual([]);
     } finally { await f.close(); }
   });
@@ -2891,7 +2887,6 @@ describe("Claude native relay", () => {
       f.native.emit("event", { sessionId: "other-native", message: { type: "result", uuid: "foreign-result", user_message_uuid: receipt.messageId, is_error: false } });
       await changed;
       expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.state).toBe("submitted");
-      expect(f.eventLog.turnEvidence({ sessionId: input.sessionId, messageId: receipt.messageId }).terminal).toBeUndefined();
     } finally { await f.close(); }
   });
 

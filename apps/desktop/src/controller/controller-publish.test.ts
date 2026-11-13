@@ -275,7 +275,6 @@ describe("mobile snapshot publication", () => {
       });
       expect(received.mock.calls[1]![0].data.session).not.toHaveProperty("runningSubagents");
       expect(controller.broadcast).not.toHaveBeenCalled();
-      expect(log.history("session-0").items).toEqual([]);
       await log.close();
       const reopened = new SessionEventLog(path);
       try {

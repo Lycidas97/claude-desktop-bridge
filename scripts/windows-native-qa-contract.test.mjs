@@ -15,7 +15,7 @@ const desktopPackage = JSON.parse(await readFile(new URL("../apps/desktop/packag
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 // Native snapshot from controller.snapshot(): no SDK provider/default-mode fields,
-// and no session.rewind capability while the inspector is disconnected.
+// and no rewind, Native-prompt or PR-write capabilities while the inspector is disconnected.
 function nativeSnapshot() {
   return {
     host: {
@@ -31,7 +31,7 @@ function nativeSnapshot() {
         "turn.queue.steer.v1", "turn.queue.cancel.v1", "plugin.magpie-quota.v1",
       ],
     },
-    projects: [], sessions: [], devices: [], permissions: [],
+    projects: [], sessions: [], devices: [], permissions: [], prompts: [],
     runtime: {
       state: "unavailable", activeTurns: 0, maxParallelTurns: 0,
       desktopIntegration: { state: "disconnected", enabled: true, canRestart: false },
@@ -96,7 +96,11 @@ async function runQa(snapshot, overrides = {}) {
 }
 
 test("packaged QA accepts a disconnected Native snapshot and checks live IPC contracts", async () => {
-  const result = await runQa(nativeSnapshot());
+  const snapshot = nativeSnapshot();
+  assert.deepEqual(snapshot.prompts, []);
+  for (const capability of ["prompt.native.v1", "pr.autofix.v1"]) assert.equal(snapshot.host.capabilities.includes(capability), false);
+  for (const capability of ["prompt.resolve", "pr.autofix"]) assert.equal(snapshot.runtimes[0].capabilities.includes(capability), false);
+  const result = await runQa(snapshot);
   assert.equal(result.report.ok, true);
   for (const method of ["runtime.list", "project.list", "session.list", "provider.list", "conversation.route.get"]) {
     assert.ok(result.requests.includes(method), `${method} was not verified`);
@@ -110,11 +114,12 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
 
 test("packaged QA keeps Native configuration/evidence checks with optional runtime capabilities", async () => {
   const snapshot = nativeSnapshot();
-  snapshot.host.capabilities.push("session.rewind.v1", "session.rename.v1", "workspace.trust.v1");
+  snapshot.host.capabilities.push("session.rewind.v1", "session.rename.v1", "workspace.trust.v1", "prompt.native.v1", "pr.autofix.v1");
   snapshot.runtime.state = "ready";
   snapshot.runtime.desktopIntegration.state = "ready";
   snapshot.runtimes[0].state = "ready";
-  snapshot.runtimes[0].capabilities.push("session.create", "workspace.trust");
+  snapshot.runtimes[0].capabilities.push("session.create", "workspace.trust", "prompt.resolve", "pr.autofix");
+  snapshot.prompts.push({ promptId: "qa-cwd-trust", sessionId: "qa-native", kind: "cwd-trust", title: "信任工作目录", directory: "D:\\isolated-qa", sources: [], choices: [{ value: "trust", label: "信任目录" }, { value: "cancel", label: "取消" }], canRespond: true });
   snapshot.sessions.push({
     sessionId: "qa-native", runtimeId: "claude-desktop", transport: "claude-desktop-native",
     source: "desktop", allowedActions: { canConfigure: true },
@@ -128,6 +133,10 @@ test("packaged QA keeps Native configuration/evidence checks with optional runti
   });
   assert.equal(result.report.configuration.sessionId, "qa-native");
   assert.equal(result.report.evidence.items, 0);
+  assert.ok(snapshot.host.capabilities.includes("prompt.native.v1") && snapshot.runtimes[0].capabilities.includes("prompt.resolve"));
+  assert.ok(snapshot.host.capabilities.includes("pr.autofix.v1") && snapshot.runtimes[0].capabilities.includes("pr.autofix"));
+  assert.equal(snapshot.prompts[0].canRespond, true);
+  assert.equal(result.requests.some(method => ["prompt.resolve", "pr.autoFix.read", "pr.autoFix.set"].includes(method)), false, "Packaged QA must not answer Native prompts or query/change PR state without a user action");
   assert.ok(result.ui.includes("会话设置"));
   assert.ok(result.ui.includes(".evidence-panel, .evidence-empty"));
 });

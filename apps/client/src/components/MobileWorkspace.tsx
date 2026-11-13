@@ -11,6 +11,9 @@ import type {
   BridgeHostSnapshot,
   BridgeNativePermissionMode,
   BridgePermissionInfo,
+  BridgePrAutoFixState,
+  BridgePrAutoFixUpdate,
+  BridgePullRequest,
   BridgeProjectInfo,
   BridgeSessionCommandResult,
   BridgeSessionRewindPreview,
@@ -95,6 +98,8 @@ import {
   PermissionPrompt,
 } from "./conversation/PermissionPrompts.js";
 import { SubagentCard } from "./conversation/SubagentCard.js";
+import { NativePromptCard } from "./conversation/NativePromptCard.js";
+import { SessionPrBar } from "./conversation/SessionPrBar.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./evidence/EvidencePanel.js";
 import { FileChangesCard } from "./evidence/FileChangesCard.js";
@@ -167,6 +172,9 @@ export function MobileWorkspace({
   onStopSubagent,
   onResolveUncertain,
   onResolvePermission,
+  onResolvePrompt,
+  onReadPrAutoFix,
+  onSetPrAutoFix,
   onCreateSession,
   onCreateSection,
   onMoveSessionSection,
@@ -235,6 +243,9 @@ export function MobileWorkspace({
     updatedInput?: Record<string, unknown>,
     mode?: BridgeNativePermissionMode,
   ): Promise<void>;
+  onResolvePrompt?(sessionId: string, promptId: string, choice: string): Promise<void>;
+  onReadPrAutoFix?(sessionId: string, pr?: BridgePullRequest, includeChecks?: boolean): Promise<BridgePrAutoFixState>;
+  onSetPrAutoFix?(update: BridgePrAutoFixUpdate): Promise<BridgePrAutoFixState>;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
   onCreateDirectory?(parentPath: string, name: string): Promise<string>;
   onCreateSection?: (name: string) => Promise<BridgeProjectInfo | undefined>;
@@ -829,9 +840,9 @@ export function MobileWorkspace({
     handledFocusRequestRef.current = focusRequest.key;
     if (focusSessionId === focusRequest.sessionId) handledFocusRef.current = focusSessionId;
     void selectSession(focusRequest.sessionId);
-    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusRequest.sessionId && permission.toolName !== "AskUserQuestion"));
+    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusRequest.sessionId && permission.toolName !== "AskUserQuestion") || snapshot?.prompts?.some(prompt => prompt.sessionId === focusRequest.sessionId) === true);
     onFocusHandled?.();
-  }, [focusRequest, focusSessionId, onFocusHandled, permissions, sessions, visible]);
+  }, [focusRequest, focusSessionId, onFocusHandled, permissions, snapshot?.prompts, sessions, visible]);
 
   useEffect(() => {
     if (
@@ -843,8 +854,8 @@ export function MobileWorkspace({
     ) return;
     handledFocusRef.current = focusSessionId;
     void selectSession(focusSessionId);
-    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusSessionId && permission.toolName !== "AskUserQuestion"));
-  }, [focusRequest, focusSessionId, permissions, sessions, visible]);
+    setPermissionOpen(permissions.some((permission) => permission.sessionId === focusSessionId && permission.toolName !== "AskUserQuestion") || snapshot?.prompts?.some(prompt => prompt.sessionId === focusSessionId) === true);
+  }, [focusRequest, focusSessionId, permissions, snapshot?.prompts, sessions, visible]);
 
   useEffect(() => {
     if (!visible || !selectedSessionId) return;
@@ -859,15 +870,24 @@ export function MobileWorkspace({
   }, [permissions, selectedSessionId, visible]);
 
   useEffect(() => {
+    if (!visible || !selectedSessionId) return;
+    const next = snapshot?.prompts?.find(prompt => prompt.sessionId === selectedSessionId && !announcedPermissionsRef.current.has(`prompt:${prompt.promptId}`));
+    if (!next) return;
+    announcedPermissionsRef.current.add(`prompt:${next.promptId}`);
+    setPermissionOpen(true);
+  }, [snapshot?.prompts, selectedSessionId, visible]);
+
+  useEffect(() => {
     if (
       visible &&
       permissionOpen &&
       selectedSessionId &&
+      !snapshot?.prompts?.some(prompt => prompt.sessionId === selectedSessionId) &&
       !permissions.some((permission) => permission.sessionId === selectedSessionId && permission.toolName !== "AskUserQuestion")
     ) {
       setPermissionOpen(false);
     }
-  }, [permissionOpen, permissions, selectedSessionId, visible]);
+  }, [permissionOpen, permissions, snapshot?.prompts, selectedSessionId, visible]);
 
   const handledCommandResets = useRef(new Set<string>());
   useEffect(() => {
@@ -1416,6 +1436,10 @@ export function MobileWorkspace({
     const sessionQuestions = sessionPermissions.filter(permission => permission.toolName === "AskUserQuestion");
     const toolPermissions = sessionPermissions.filter(permission => permission.toolName !== "AskUserQuestion");
     const activePermission = toolPermissions[0];
+    const sessionNativePrompts = snapshot?.prompts?.filter(prompt => prompt.sessionId === selectedSession.sessionId) ?? [];
+    const activeNativePrompt = sessionNativePrompts[0];
+    const otherNativePrompt = snapshot?.prompts?.find(prompt => prompt.sessionId !== selectedSession.sessionId && sessions.some(session => session.sessionId === prompt.sessionId));
+    const otherNativePromptSession = otherNativePrompt ? sessions.find(session => session.sessionId === otherNativePrompt.sessionId) : undefined;
     const otherPermission = permissions.find(permission => {
       if (permission.sessionId === selectedSession.sessionId) return false;
       const session = sessions.find(candidate => candidate.sessionId === permission.sessionId);
@@ -1497,6 +1521,17 @@ export function MobileWorkspace({
             </>
           )}
         />
+        {(snapshot?.host.capabilities.includes("pr.autofix.v1") || selectedSession.prs?.length) ? (
+          <SessionPrBar
+            key={`${activeHostId}:${selectedSession.sessionId}`}
+            session={selectedSession}
+            events={events}
+            supported={Boolean(snapshot?.host.capabilities.includes("pr.autofix.v1"))}
+            online={connection === "connected" && desktopOnline}
+            {...(onReadPrAutoFix ? { onRead: onReadPrAutoFix } : {})}
+            {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
+          />
+        ) : null}
         {backgroundTaskDetails?.key === draftKey && backgroundTaskDetails.error && (
           <p className="session-channel-warning" role="alert">后台任务：{backgroundTaskDetails.error}</p>
         )}
@@ -1859,12 +1894,18 @@ export function MobileWorkspace({
           </section>
         )}
 
-        <div className={`permission-dock-slot ${activePermission || otherPermission || (sessionView === "evidence" && sessionQuestions.length) ? "has-attention" : ""}`}>
+        <div className={`permission-dock-slot ${activePermission || activeNativePrompt || otherPermission || otherNativePrompt || (sessionView === "evidence" && sessionQuestions.length) ? "has-attention" : ""}`}>
           {activePermission ? (
             <button type="button" className="permission-dock" onClick={() => setPermissionOpen(true)}>
               <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
               <span><strong>{runtimeName} 正在等待授权</strong><small>{activePermission.title || activePermission.displayName || activePermission.toolName}</small></span>
               <b>{toolPermissions.length > 1 ? `${toolPermissions.length} 项` : "处理"}</b>
+            </button>
+          ) : activeNativePrompt ? (
+            <button type="button" className="permission-dock" onClick={() => setPermissionOpen(true)}>
+              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
+              <span><strong>{runtimeName} 正在等待确认</strong><small>{activeNativePrompt.title}</small></span>
+              <b>{sessionNativePrompts.length > 1 ? `${sessionNativePrompts.length} 项` : "处理"}</b>
             </button>
           ) : sessionView === "evidence" && sessionQuestions[0] ? (
             <button type="button" className="permission-dock" onClick={() => setSessionView("conversation")}>
@@ -1876,6 +1917,12 @@ export function MobileWorkspace({
             <button type="button" className="permission-dock" onClick={() => void selectSession(otherPermission.sessionId)}>
               <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
               <span><strong>另一会话{otherPermission.toolName === "AskUserQuestion" ? "待回答" : "待授权"}</strong><small>{otherPermissionSession.title}</small></span>
+              <b>前往</b>
+            </button>
+          ) : otherNativePrompt && otherNativePromptSession ? (
+            <button type="button" className="permission-dock" onClick={() => void selectSession(otherNativePrompt.sessionId)}>
+              <span className="permission-dock-icon"><AlertTriangle size={18} /></span>
+              <span><strong>另一会话待确认</strong><small>{otherNativePromptSession.title}</small></span>
               <b>前往</b>
             </button>
           ) : null}
@@ -1918,20 +1965,29 @@ export function MobileWorkspace({
         })}
         </>
         )}
-        {permissionOpen && activePermission && (
+        {permissionOpen && (activePermission || activeNativePrompt) && (
           <MobileSheet
             eyebrow="需要处理"
-            title={`${runtimeName} 等待授权`}
+            title={`${runtimeName} ${activePermission ? "等待授权" : "等待确认"}`}
             closeLabel="暂时关闭"
             onClose={() => setPermissionOpen(false)}
           >
             {toolPermissions.length > 1 && <div className="permission-queue-count">还有 {toolPermissions.length} 项待授权，提交后自动显示下一项。</div>}
-            <PermissionPrompt
-              key={activePermission.requestId}
-              permission={activePermission}
-              onResolve={onResolvePermission}
-              onEnableNativeFullAccess={(requestId) => onResolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions")}
-            />
+            {activePermission ? (
+              <PermissionPrompt
+                key={activePermission.requestId}
+                permission={activePermission}
+                onResolve={onResolvePermission}
+                onEnableNativeFullAccess={(requestId) => onResolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions")}
+              />
+            ) : activeNativePrompt && (
+              <NativePromptCard
+                key={activeNativePrompt.promptId}
+                prompt={activeNativePrompt}
+                online={connection === "connected" && desktopOnline}
+                {...(onResolvePrompt && snapshot?.host.capabilities.includes("prompt.native.v1") ? { onResolve: onResolvePrompt } : {})}
+              />
+            )}
           </MobileSheet>
         )}
         <ConfirmationDialog

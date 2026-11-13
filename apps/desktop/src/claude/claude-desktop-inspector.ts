@@ -7,6 +7,9 @@ const METHODS = new Set([
   "setPermissionMode", "getContextUsage", "getSupportedCommands", "getTranscript", "getTranscriptPage",
   "getTranscriptTail", "respondToToolPermission", "findLocalSessionIdForBridgeId", "getAvailableCodeModels",
   "canRewindTo", "rewindV2", "rewindFiles",
+  "respondToRefusalFallbackPrompt", "respondToAutoModeServerFallbackPrompt", "respondToLanyardConsent",
+  "respondToViolinBowPrompt", "answerPendingCwdTrust", "getPrOverview", "getPrChecks",
+  "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr",
 ]);
 
 export interface NativeSectionCatalog {
@@ -55,6 +58,14 @@ const SIDEBAR_RUNTIME = `
     && ['list_sections', 'create_section', 'move_sessions'].every(name => sidebar.tools.some(tool => tool?.name === name))
     && Boolean(manager);
 `;
+
+export interface NativePrPreferences {
+  onlyOwnPrs: boolean;
+  nextOwnPrArmed: boolean;
+}
+
+const SESSION_MANAGERS = `Object.values(process.mainModule.require('module')._cache)
+  .map(mod => mod?.exports?.claudeCodeSessionManager)`;
 
 export class NativeCallError extends Error {}
 export class InspectorDisconnectedError extends Error {}
@@ -131,7 +142,9 @@ export class ClaudeDesktopInspector extends EventEmitter {
         const api = globalThis['claude.web'].LocalSessions;
         const queue = [];
         let waiter;
+        let disposed = false;
         const emit = (kind, payload) => {
+          if (disposed) return;
           queue.push({ kind, payload });
           if (waiter) { const resolve = waiter; waiter = undefined; resolve(queue.splice(0)); }
         };
@@ -147,8 +160,9 @@ export class ClaudeDesktopInspector extends EventEmitter {
           throw error;
         }
         globalThis[${JSON.stringify(STREAM)}] = {
+          emit,
           next() { return queue.length ? Promise.resolve(queue.splice(0)) : new Promise(resolve => { waiter = resolve; }); },
-          dispose() { for (const stop of stops) stop(); if (waiter) waiter(null); delete globalThis[${JSON.stringify(STREAM)}]; }
+          dispose() { disposed = true; for (const stop of stops) stop(); if (waiter) waiter(null); queue.length = 0; delete globalThis[${JSON.stringify(STREAM)}]; }
         };
         return true;
       })()`);
@@ -163,11 +177,54 @@ export class ClaudeDesktopInspector extends EventEmitter {
   }
 
   async call(method: string, args: unknown[] = []): Promise<unknown> {
+    if (method === "armAutoFixOnNextPr") return this.startAutoFixOnNextPr(args[0] as string, args[1] as boolean);
     if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected; open the Node inspector from Desktop's developer menu");
     if (!this.supports(method)) throw new NativeCallError(`Unsupported Claude Desktop method: ${method}`);
     return this.renderer(`(() => {
       if (!globalThis[${JSON.stringify(STREAM)}]) throw new Error('BRIDGE_RENDERER_RELOADED');
       return globalThis['claude.web'].LocalSessions[${JSON.stringify(method)}](${Array.from(args, arg => arg === undefined ? "undefined" : JSON.stringify(arg)).join(",")});
+    })()`);
+  }
+
+  async prPreferences(sessionId: string): Promise<NativePrPreferences | undefined> {
+    if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected");
+    return this.evaluate(`(() => {
+      const manager = ${SESSION_MANAGERS}.find(candidate => typeof candidate?.githubPr?.config?.getSession === 'function');
+      const session = manager?.githubPr.config.getSession(${JSON.stringify(sessionId)});
+      if (!session) return;
+      return { onlyOwnPrs: session.autoFixOwnPrs === true, nextOwnPrArmed: session.autoFixNextOwnPr === true };
+    })()`) as Promise<NativePrPreferences | undefined>;
+  }
+
+  async promptChoices(sessionId: string, promptId: string): Promise<string[] | undefined> {
+    if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected");
+    return this.evaluate(`(() => {
+      const manager = ${SESSION_MANAGERS}.find(candidate => typeof candidate?.userDialogBroker?.pending?.get === 'function'
+        && typeof candidate.userDialogBroker.validChoicesFor === 'function');
+      const broker = manager?.userDialogBroker;
+      const pending = broker?.pending.get(${JSON.stringify(promptId)});
+      if (!pending || pending.sessionId !== ${JSON.stringify(sessionId)}) return;
+      return [...broker.validChoicesFor(pending)].filter(choice => typeof choice === 'string');
+    })()`) as Promise<string[] | undefined>;
+  }
+
+  async startAutoFixOnNextPr(sessionId: string, enabled: boolean): Promise<void> {
+    if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected");
+    for (const method of ["armAutoFixOnNextPr", "getSession"]) {
+      if (!this.supports(method)) throw new NativeCallError(`Unsupported Claude Desktop method: ${method}`);
+    }
+    await this.renderer(`(async () => {
+      const stream = globalThis[${JSON.stringify(STREAM)}];
+      if (!stream) throw new Error('BRIDGE_RENDERER_RELOADED');
+      const api = globalThis['claude.web'].LocalSessions;
+      const sessionId = ${JSON.stringify(sessionId)};
+      const enabled = ${JSON.stringify(enabled)};
+      Promise.resolve(api.armAutoFixOnNextPr(sessionId, enabled)).then(
+        result => stream.emit('event', { type: 'bridge_pr_auto_fix_settled', sessionId, enabled, result }),
+        error => stream.emit('event', { type: 'bridge_pr_auto_fix_settled', sessionId, enabled, error: String(error?.message ?? error) }),
+      );
+      // Read behind the dispatch on LocalSessions IPC; the arm Promise itself waits for consumption or timeout.
+      await api.getSession(sessionId);
     })()`);
   }
 

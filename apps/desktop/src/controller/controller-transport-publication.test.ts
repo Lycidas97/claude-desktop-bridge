@@ -133,7 +133,7 @@ async function fixture(withWebRtc = false, claudeUnavailable = false) {
     broker: Object.assign(new EventEmitter(), {
       initialize: async () => undefined, refreshRuntime: vi.fn(async () => true), setDefaultPermissionMode: vi.fn(),
       listSessions: () => sessions, listProjects: () => [], runtimeStatus: () => ({ state: claudeUnavailable ? "unavailable" : "ready" }),
-      permissionsList: () => [], capabilities: () => ["session.list", "session.history"], magpieSettings: async () => ({}),
+      permissionsList: () => [], promptsList: () => [], capabilities: () => ["session.list", "session.history"], magpieSettings: async () => ({}),
     }),
     eventLog,
     ...(claudeUnavailable ? { runtimeSessions } : {}),

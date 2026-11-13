@@ -20,7 +20,8 @@ const serve = process.argv.includes("--serve");
 const remotePreview = serve && process.argv.includes("--remote-execution-preview");
 const projectGroupingPreview = serve && !remotePreview && process.argv.includes("--project-grouping-preview");
 const sectionCreatePreview = serve && !remotePreview && process.argv.includes("--section-create-preview");
-const nativePreview = serve && !remotePreview && (sectionCreatePreview || projectGroupingPreview || process.argv.includes("--native-permissions-preview"));
+const nativePromptsPreview = serve && !remotePreview && process.argv.includes("--native-prompts-preview");
+const nativePreview = serve && !remotePreview && (sectionCreatePreview || projectGroupingPreview || nativePromptsPreview || process.argv.includes("--native-permissions-preview"));
 let previewHost;
 let previewApproval;
 const port = serve ? Number(process.env.BRIDGE_E2E_PORT ?? 0) : 0;
@@ -45,7 +46,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
@@ -114,7 +115,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       online: true,
       lastSeenAt: now,
       version: "1.1.1",
-      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["directory.browse.v1", "workspace.trust.v1", "session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "section.rename.v1", "section.delete.v1", "transcript.toolDetail.v1"] : [])],
+      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["directory.browse.v1", "workspace.trust.v1", "session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "section.rename.v1", "section.delete.v1", "transcript.toolDetail.v1", "prompt.native.v1", "pr.autofix.v1"] : [])],
     },
     projects: [{
       projectId: session.projectId, name: session.projectName, cwd: session.cwd,
@@ -163,10 +164,11 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     runtime: { state: "ready", detail: "固定响应宿主", activeTurns: remotePreview ? 1 : 0, maxParallelTurns: 1 },
     runtimes: [{
       id: "claude-desktop", name: "Claude Desktop", state: "ready", detail: "隔离宿主",
-      capabilities: ["session.list", "session.history", "turn.start", "permission.resolve", ...(native || remotePreview ? ["attachment.image"] : []), ...(native ? ["session.create", "workspace.trust", "session.configure"] : [])],
+      capabilities: ["session.list", "session.history", "turn.start", "permission.resolve", ...(native || remotePreview ? ["attachment.image"] : []), ...(native ? ["session.create", "workspace.trust", "session.configure", "prompt.resolve", "pr.autofix"] : [])],
       sessionIsolation: "independent", sessionCount: remotePreview ? 1 : 2, updatedAt: now,
     }],
     permissions: [],
+    prompts: [],
     latestSeq: 1,
   };
   const events = [];
@@ -211,6 +213,21 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       snapshot.projects[0].runningCount = session.turnState === "running" ? 1 : 0;
       if (pushEvents) for (const event of update.events) await host.emit(event.type, event.data, {
         ...(event.turnId ? { turnId: event.turnId } : {}), ...(event.itemId ? { itemId: event.itemId } : {}),
+      });
+      await host.send({ kind: "snapshot", snapshot });
+      return update;
+    },
+    async syncNativeDialogs(update) {
+      snapshot.prompts = update.prompts;
+      snapshot.host.capabilities = snapshot.host.capabilities.filter(value => !["prompt.native.v1", "pr.autofix.v1"].includes(value));
+      if (update.runtimeCapabilities.includes("prompt.resolve")) snapshot.host.capabilities.push("prompt.native.v1");
+      if (update.runtimeCapabilities.includes("pr.autofix")) snapshot.host.capabilities.push("pr.autofix.v1");
+      snapshot.runtimes[0].capabilities = update.runtimeCapabilities;
+      for (const key of ["turnState", "ownership", "prs", "autoArchiveOnPrClose", "allowedActions"]) session[key] = update.session[key];
+      const target = snapshot.sessions.find(candidate => candidate.sessionId === sessionId);
+      if (target !== session) Object.assign(target, session);
+      for (const event of update.events) await host.emit(event.type, event.data, {
+        ...(event.itemId ? { itemId: event.itemId } : {}), ...(event.turnId ? { turnId: event.turnId } : {}),
       });
       await host.send({ kind: "snapshot", snapshot });
       return update;
@@ -445,6 +462,19 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           try {
             result = await host.nativeApproval.controllerRequest(request);
           } catch (failure) { error = { code: "DIRECTORY_REJECTED", message: failure.message }; }
+          break;
+        case "prompt.list":
+        case "prompt.resolve":
+        case "pr.autoFix.read":
+        case "pr.autoFix.set":
+          try {
+            const update = await host.nativeApproval.request(request);
+            result = update.result;
+            await host.syncNativeDialogs(update);
+          } catch (failure) {
+            error = { code: failure.code ?? "NATIVE_PROMPT_PR_REJECTED", message: failure.message };
+            await host.syncNativeDialogs({ ...host.nativeApproval.dialogs(), events: [] });
+          }
           break;
         case "events.resume": {
           const resumed = events.filter((event) => event.seq > request.params.afterSeq);
@@ -996,6 +1026,120 @@ async function verifyNativeApprovals(page, host, steps, directory) {
   await planDialog.waitFor({ state: "hidden" });
   steps.push("ExitPlanMode renders the plan and configures native acceptEdits before responding to the same request");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Native approval must fit the phone viewport");
+}
+
+async function verifyNativePromptsPr(page, host, steps, directory) {
+  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  const kinds = ["refusal-fallback", "auto-mode-server-fallback", "lanyard-consent", "violin-bow", "cwd-trust"];
+  const opened = [];
+  for (const kind of kinds) {
+    const update = await host.syncNativeDialogs(await host.nativeApproval.openPrompt(kind));
+    opened.push(update.prompt);
+  }
+  await eventually(() => page.locator(".native-prompt").count(), 5, "All five Native application prompt kinds render independently from tool permissions");
+  assert.equal(host.snapshot.permissions.length, 0);
+  const listed = await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), idempotencyKey: randomUUID(), method: "prompt.list", params: { sessionId } });
+  assert.deepEqual(listed.prompts.map(prompt => prompt.kind).sort(), [...kinds].sort());
+  await page.screenshot({ path: resolve(directory, "native-prompts.png"), fullPage: true });
+  const selected = ["edit_prompt", "interrupt", "consent_workspace", "cancel_native_operation", "trust"];
+  const methods = ["respondToRefusalFallbackPrompt", "respondToAutoModeServerFallbackPrompt", "respondToLanyardConsent", "respondToViolinBowPrompt", "answerPendingCwdTrust"];
+  for (const [index, prompt] of opened.entries()) {
+    const choice = prompt.choices.find(choice => choice.value === selected[index]);
+    assert.ok(choice, "The synthetic Native broker must publish its actual choice value");
+    const card = page.getByRole("region", { name: prompt.title, exact: true });
+    await card.getByRole("button", { name: choice.label, exact: true }).click();
+    await card.waitFor({ state: "hidden" });
+    await eventually(() => host.nativeApproval.dialogs().events.some(event => event.type === "prompt.resolved" && event.data.promptId === prompt.promptId && event.data.resolvedByDeviceId === host.pairing.deviceId), true, "Remote Native prompt resolution records its phone device");
+    const audit = host.nativeApproval.dialogs().events.findLast(event => event.type === "prompt.resolved" && event.data.promptId === prompt.promptId && event.data.resolvedByDeviceId);
+    assert.equal(audit.data.choice, selected[index]);
+    assert.equal(audit.data.resolvedByName, "隔离手机");
+    assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === methods[index]).at(-1).args, [sessionId, prompt.promptId, prompt.kind === "cwd-trust" ? true : selected[index]]);
+  }
+  assert.equal(host.requests.filter(request => request.method === "prompt.resolve").length, 5);
+  assert.equal(host.requests.filter(request => request.method === "permission.resolve" || request.method === "turn.start").length, 0);
+  steps.push("five Native prompts use independent encrypted prompt.resolve calls with their actual string choices, cwd boolean translation, and phone attribution");
+
+  const responsesBeforeLocal = host.nativeApproval.calls.filter(call => methods.includes(call.method)).length;
+  for (const kind of kinds) {
+    const update = await host.syncNativeDialogs(await host.nativeApproval.openPrompt(kind));
+    const card = page.getByRole("region", { name: update.prompt.title, exact: true });
+    await card.waitFor();
+    await host.syncNativeDialogs(await host.nativeApproval.answerPromptLocally(update.prompt.promptId));
+    await card.waitFor({ state: "hidden" });
+    assert.equal(host.nativeApproval.dialogs().events.some(event => event.type === "prompt.resolved" && event.data.promptId === update.prompt.promptId && event.data.automatic === true), true);
+  }
+  assert.equal(host.nativeApproval.calls.filter(call => methods.includes(call.method)).length, responsesBeforeLocal);
+  const rawDialogs = host.nativeApproval.dialogs().nativeEvents.filter(event => /^(refusal_fallback_prompt|auto_mode_server_fallback_prompt|lanyard_consent|violin_bow_prompt)(?:_resolved)?$/u.test(event.type));
+  assert.equal(rawDialogs.length, 16);
+  assert.equal(rawDialogs.every(event => !Object.hasOwn(event, "session")), true, "Native opened/resolved dialog events intentionally carry no event.session");
+  await host.nativeApproval.setPromptsPrPolicy({ choicesAvailable: false });
+  const unavailable = await host.syncNativeDialogs(await host.nativeApproval.openPrompt("lanyard-consent"));
+  const unavailableCard = page.getByRole("region", { name: unavailable.prompt.title, exact: true });
+  await unavailableCard.getByText("请在电脑端处理", { exact: true }).waitFor();
+  assert.equal(await unavailableCard.getByRole("button").count(), 0);
+  await host.syncNativeDialogs(await host.nativeApproval.answerPromptLocally(unavailable.prompt.promptId));
+  await host.nativeApproval.setPromptsPrPolicy({ choicesAvailable: true });
+  steps.push("Native opened/resolved events without event.session refresh all five pending lists; Desktop-local answers clear phone cards without a remote response, and unavailable Native choices stay non-actionable");
+
+  assert.equal(host.nativeApproval.calls.filter(call => ["getPrOverview", "getPrChecks"].includes(call.method)).length, 0, "Snapshot refresh never fetches GitHub PR checks");
+  assert.equal(host.requests.filter(request => request.method === "pr.autoFix.read").length, 0, "Collapsed PR controls do not query PR state");
+  const bar = page.locator(".session-pr-bar");
+  await bar.locator(":scope > summary").click();
+  const own = bar.getByRole("checkbox", { name: "仅我的 PR", exact: true });
+  const next = bar.getByRole("checkbox", { name: "下一个 PR 布防", exact: true });
+  await eventually(() => own.isEnabled(), true, "Native preference reads enable the supported controls");
+  assert.equal(host.nativeApproval.calls.filter(call => call.method === "getPrChecks").length, 0);
+  await own.click();
+  await eventually(() => own.isChecked(), true, "Only-own-PR preference reflects Native readback");
+  await eventually(() => next.isEnabled(), true, "PR preference update completes before the next action");
+  await next.click();
+  await eventually(() => next.isChecked(), true, "Next-PR latch reflects Native readback without waiting for latch consumption");
+  assert.deepEqual(host.nativeApproval.dialogs().prefs, { onlyOwnPrs: true, nextOwnPrArmed: true });
+  assert.deepEqual(host.nativeApproval.calls.findLast(call => call.method === "armAutoFixOnNextPr").args, [sessionId, true]);
+
+  const entry = bar.locator(".session-pr-entry");
+  await eventually(() => own.isEnabled(), true, "Next-PR dispatch is acknowledged before opening checks");
+  await entry.locator(":scope > summary").click();
+  await entry.getByRole("link", { name: "native-ci-failure", exact: true }).waitFor();
+  assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "getPrChecks").map(call => call.args), [[host.nativeApproval.harnessCwd, 42, "fixture/native", "github.com"]]);
+  const bound = entry.getByRole("checkbox", { name: "fixture/native#42 Auto-fix", exact: true });
+  await eventually(() => bound.isEnabled(), true, "Bound PR becomes actionable after its on-demand read");
+  await bound.click();
+  await eventually(() => bound.isChecked(), true, "Bound PR Auto-fix reflects Native readback");
+  assert.deepEqual(host.nativeApproval.calls.findLast(call => call.method === "setBoundPrAutoFix").args, [sessionId, "fixture/native", 42, true, "github.com"]);
+  for (const target of ["own-prs", "next-pr", "bound"]) {
+    const audit = host.nativeApproval.dialogs().events.findLast(event => event.type === "pr.autoFix.updated" && event.data.target === target && event.data.resolvedByDeviceId);
+    assert.equal(audit.data.resolvedByDeviceId, host.pairing.deviceId);
+    assert.equal(audit.data.resolvedByName, "隔离手机");
+  }
+  await eventually(() => bar.getByRole("button", { name: "刷新 PR 状态", exact: true }).isEnabled(), true, "PR write finishes before manual refresh");
+  const reads = host.requests.filter(request => request.method === "pr.autoFix.read").length;
+  await bar.getByRole("button", { name: "刷新 PR 状态", exact: true }).click();
+  await eventually(() => host.requests.filter(request => request.method === "pr.autoFix.read").length, reads + 1, "Explicit PR state refresh reaches the Native controller");
+  assert.equal(host.nativeApproval.calls.filter(call => call.method === "getPrChecks").length, 1, "Refreshing preferences does not poll PR checks");
+  const refreshChecks = entry.getByRole("button", { name: "刷新检查", exact: true });
+  await eventually(() => refreshChecks.isEnabled(), true, "PR state refresh finishes before refreshing checks");
+  await refreshChecks.click();
+  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "getPrChecks").length, 2, "Only explicit check refresh fetches the checks again");
+  await page.screenshot({ path: resolve(directory, "native-pr-autofix.png"), fullPage: true });
+  steps.push("PR preferences, next-PR dispatch, and bound Auto-fix use Native readback and phone audit; failed checks load only on entry expansion or explicit check refresh with the public four/five-argument APIs");
+
+  await host.nativeApproval.setPromptsPrPolicy({ applyPrWrites: false });
+  const audits = host.nativeApproval.dialogs().events.filter(event => event.type === "pr.autoFix.updated").length;
+  for (const checkbox of [bound, own, next]) {
+    await eventually(() => checkbox.isEnabled(), true, "Native action is available before testing an unapplied write");
+    await checkbox.click();
+    await bar.getByRole("alert").filter({ hasText: "Desktop 未应用 Auto-fix 设置，请刷新状态。" }).waitFor();
+    assert.equal(await checkbox.isChecked(), true, "An unapplied Native write never appears successful");
+  }
+  assert.deepEqual(host.nativeApproval.dialogs().prefs, { onlyOwnPrs: true, nextOwnPrArmed: true });
+  assert.equal(host.nativeApproval.dialogs().prs[0].autoFix, true);
+  assert.equal(host.nativeApproval.dialogs().events.filter(event => event.type === "pr.autoFix.updated").length, audits, "Failed Native writes do not record a successful device audit");
+  assert.equal(host.requests.filter(request => request.method === "pr.autoFix.set").length, 6);
+  await page.screenshot({ path: resolve(directory, "native-pr-not-applied.png"), fullPage: true });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Native prompts and PR controls fit the mobile viewport");
+  steps.push("ignored bound, own-PR and next-PR Native writes return an error, retain Native state, and create no successful audit event");
 }
 
 async function verifyNativeMessages(page, host, steps, directory) {
@@ -2014,7 +2158,8 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-messages", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
+    if (scenario === "native-prompts-pr") await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
     if (scenario === "native-queue-actions") host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (scenario === "project-grouping") Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (scenario === "section-manage") await syncNativeSections(host);
@@ -2074,6 +2219,7 @@ async function runScenario(theme, scenario) {
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
     if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
+    else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory);
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);
     else if (scenario === "history-pagination") await verifyHistoryPagination(page, host, steps, directory);
     else if (scenario === "native-boundaries") await verifyNativeBoundaries(page, host, steps, directory);
@@ -2218,6 +2364,28 @@ try {
               const snapshotGetCountBefore = previewHost.requests.filter(request => request.method === "snapshot.get").length;
               for (const [socket] of peers) socket.close(1012, "synthetic remote reconnect");
               result = { disconnected: peers.length, snapshotGetCountBefore };
+            } else if (nativePromptsPreview && url.pathname === "/prompts" && ["GET", "POST"].includes(request.method)) {
+              if (request.method === "POST") {
+                const chunks = [];
+                for await (const chunk of request) chunks.push(chunk);
+                const input = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+                if (["applyPrWrites", "choicesAvailable", "supported"].some(key => input[key] !== undefined)) {
+                  await previewHost.syncNativeDialogs({ ...await previewHost.nativeApproval.setPromptsPrPolicy({
+                    ...(input.applyPrWrites !== undefined ? { applyPrWrites: input.applyPrWrites } : {}),
+                    ...(input.choicesAvailable !== undefined ? { choicesAvailable: input.choicesAvailable } : {}),
+                    ...(input.supported !== undefined ? { supported: input.supported } : {}),
+                  }), events: [] });
+                }
+                if (input.action === "answer-local") {
+                  await previewHost.syncNativeDialogs(await previewHost.nativeApproval.answerPromptLocally(input.promptId));
+                } else if (input.kind) {
+                  assert.ok(["refusal-fallback", "auto-mode-server-fallback", "lanyard-consent", "violin-bow", "cwd-trust"].includes(input.kind), "Unknown synthetic Native prompt kind");
+                  await previewHost.syncNativeDialogs(await previewHost.nativeApproval.openPrompt(input.kind));
+                }
+              }
+              result = { ...previewHost.nativeApproval.dialogs(), calls: previewHost.nativeApproval.calls,
+                requests: previewHost.requests.filter(request => ["prompt.list", "prompt.resolve", "pr.autoFix.read", "pr.autoFix.set"].includes(request.method)).map(({ method, params }) => ({ method, params })),
+                errors: infrastructureErrors };
             } else if (nativePreview && request.method === "POST" && url.pathname === "/queue") {
               const chunks = [];
               for await (const chunk of request) chunks.push(chunk);
@@ -2265,7 +2433,7 @@ try {
               return;
             }
             response.setHeader("Content-Type", "application/json");
-            if (remotePreview) response.setHeader("Cache-Control", "no-store");
+            if (remotePreview || nativePromptsPreview) response.setHeader("Cache-Control", "no-store");
             response.end(JSON.stringify(result));
           })().catch(error => { response.statusCode = 500; response.end(error.message); });
         });
@@ -2309,7 +2477,8 @@ try {
     previewHost = host;
     if (projectGroupingPreview) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (sectionCreatePreview) await syncNativeSections(host);
-    if (nativePreview && !projectGroupingPreview && !sectionCreatePreview) {
+    if (nativePromptsPreview) await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
+    if (nativePreview && !projectGroupingPreview && !sectionCreatePreview && !nativePromptsPreview) {
       for (const [index, message] of [
         { type: "user", uuid: "preview-first", message: { content: "检查模型和额度" } },
         { type: "assistant", uuid: "preview-checkpoint", message: { content: [{ type: "text", text: "已建立回退检查点。" }] } },

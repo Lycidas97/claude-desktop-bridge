@@ -16,6 +16,9 @@ import {
   type BridgePermissionInfo,
   type BridgePermissionRules,
   type BridgeProjectInfo,
+  type BridgePrAutoFixState,
+  type BridgePrAutoFixUpdate,
+  type BridgePullRequest,
   type BridgeProviderProfile,
   type BridgeRequest,
   type BridgeResponse,
@@ -50,6 +53,7 @@ import {
 } from "./bridge/bridge-artifacts.js";
 import {
   INITIAL_STATE,
+  applyPrAutoFixToSnapshot,
   applySessionToSnapshot,
   hostWithRuntimeState,
   isClaudeNativeRelay,
@@ -410,6 +414,31 @@ export function useMobileBridge() {
           : host),
       };
     });
+  }, [resumeEvents, sendRequest]);
+
+  const resolvePrompt = useCallback(async (sessionId: string, promptId: string, choice: string): Promise<void> => {
+    const response = await sendRequest("prompt.resolve", { sessionId, promptId, choice }, { allowOffline: false, wait: true });
+    if (!response?.ok && response?.error?.code !== "ALREADY_RESOLVED") throw new Error(response?.error?.message ?? "回答提交失败");
+    await refreshSnapshot();
+    await resumeEvents();
+    if (!response?.ok) throw new Error(response?.error?.message ?? "这项提示已由其他设备处理。");
+  }, [refreshSnapshot, resumeEvents, sendRequest]);
+
+  const readPrAutoFix = useCallback(async (sessionId: string, pr?: BridgePullRequest, includeChecks = false): Promise<BridgePrAutoFixState> => {
+    const response = await sendRequest("pr.autoFix.read", { sessionId, ...(pr ? { repo: pr.repo, prNumber: pr.prNumber, ...(pr.host ? { host: pr.host } : {}) } : {}), includeChecks }, { allowOffline: false, wait: true, timeoutMs: 30_000 });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "PR 状态读取失败");
+    const result = response.result as BridgePrAutoFixState;
+    setState(current => ({ ...current, snapshot: applyPrAutoFixToSnapshot(current.snapshot, result) }));
+    return result;
+  }, [sendRequest]);
+
+  const setPrAutoFix = useCallback(async (update: BridgePrAutoFixUpdate): Promise<BridgePrAutoFixState> => {
+    const response = await sendRequest("pr.autoFix.set", update, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "Auto-fix 设置失败");
+    const result = response.result as BridgePrAutoFixState;
+    setState(current => ({ ...current, snapshot: applyPrAutoFixToSnapshot(current.snapshot, result) }));
+    await resumeEvents();
+    return result;
   }, [resumeEvents, sendRequest]);
 
   const createSection = useCallback(async (name: string): Promise<BridgeProjectInfo | undefined> => {
@@ -853,6 +882,9 @@ export function useMobileBridge() {
     stopSubagent,
     resolveUncertainDelivery,
     resolvePermission,
+    resolvePrompt,
+    readPrAutoFix,
+    setPrAutoFix,
     createSession,
     createSection,
     moveSessionSection,

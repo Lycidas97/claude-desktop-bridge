@@ -79,6 +79,10 @@ describe("isBridgePayload", () => {
     })).toBe(true);
   });
 
+  it.each(["prompt.list", "prompt.resolve", "pr.autoFix.read", "pr.autoFix.set"])("accepts independent Native %s requests", method => {
+    expect(isBridgePayload({ kind: "request", requestId: method, idempotencyKey: method, method, params: { sessionId: "native" } })).toBe(true);
+  });
+
   it("still rejects unknown methods", () => {
     expect(isBridgePayload({
       kind: "request",

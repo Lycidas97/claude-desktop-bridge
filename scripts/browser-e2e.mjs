@@ -48,6 +48,7 @@ const nativeHosts = [];
 const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
+const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
 
 // Bounded polling is only for observable browser/protocol state, never a fixed
 // sleep intended to hide a race. Unexpected selector or transport errors surface.
@@ -1772,7 +1773,7 @@ async function runScenario(theme, scenario) {
       browserLog.push({ type: "pageerror", text: error.stack });
       errors.push(`browser runtime: ${error.stack}`);
     });
-    await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+    if (enableTrace) await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
     // Visiting the real pairing URL imports identity via the production hook and
     // stores it in this context's own IndexedDB; no vault or hook is replaced.
     await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
@@ -1803,9 +1804,11 @@ async function runScenario(theme, scenario) {
       } catch (error) { errors.push(`failure capture: ${error.stack}`); }
     }
     if (context) {
-      try {
-        await context.tracing.stop(failure ? { path: resolve(directory, "trace.zip") } : {});
-      } catch (error) { errors.push(`trace cleanup: ${error.stack}`); }
+      if (enableTrace) {
+        try {
+          await context.tracing.stop(failure ? { path: resolve(directory, "trace.zip") } : {});
+        } catch (error) { errors.push(`trace cleanup: ${error.stack}`); }
+      }
       // Complete owned relay handshakes before Chromium tears down their sockets.
       for (const route of serverRoutes) await route.close({ code: 1000, reason: "Scenario complete" });
       await eventually(() => [...relayPeers.values()].filter(hello => hello.roomId === host.pairing.roomId && hello.role === "mobile").length, 0, "Scenario sockets close before disposing their browser context");
@@ -1820,6 +1823,11 @@ async function runScenario(theme, scenario) {
       nativeTrace: host?.nativeTrace,
       ...(host?.nativeQueue ? { nativeCalls: host.nativeApproval.calls, receipts: host.nativeApproval.receipts(), queueEvents: host.events } : {}),
     }, null, 2));
+    if (host?.nativeApproval) {
+      const idx = nativeHosts.indexOf(host.nativeApproval);
+      if (idx !== -1) nativeHosts.splice(idx, 1);
+      await host.nativeApproval.close();
+    }
   }
   const result = {
     name, theme, viewport: "375x812", status: failure || errors.length ? "failed" : "passed",
@@ -1827,9 +1835,9 @@ async function runScenario(theme, scenario) {
     ...(failure ? { failure: failure.stack } : {}),
     artifacts: directory,
   };
-  results.push(result);
   await writeFile(resolve(directory, "result.json"), JSON.stringify(result, null, 2));
   console.log(`${result.status.toUpperCase()} ${name} (${result.durationMs}ms)${failure ? `: ${failure.message}` : ""}`);
+  return result;
 }
 
 await mkdir(runDir, { recursive: true });
@@ -1874,7 +1882,7 @@ try {
   logger.error = (message, options) => {
     // Reload/reconnect scenarios close sockets; retain their reset logs while
     // keeping proxy connection failures, HTTP errors and app assertions fatal.
-    if (options?.error?.code !== "ECONNRESET" || !/ws proxy(?: socket)? error:/u.test(message)) infrastructureErrors.push(message);
+    if (!["ECONNRESET", "EPIPE"].includes(options?.error?.code) || !/ws proxy(?: socket)? error:/u.test(message)) infrastructureErrors.push(message);
     logError(message, options);
   };
   vite = await createServer({
@@ -2028,11 +2036,18 @@ try {
       headless: true,
       args: ["--disable-background-networking", "--disable-component-update", "--no-first-run"],
     });
-    for (const theme of ["light", "dark"]) {
-      for (const scenario of scenarios) {
-        await runScenario(theme, scenario);
+    const pairs = ["light", "dark"].flatMap((theme) => scenarios.map((scenario) => [theme, scenario]));
+    const concurrency = Math.max(1, Number(process.env.BRIDGE_E2E_CONCURRENCY ?? 4));
+    const ordered = new Array(pairs.length);
+    let nextPair = 0;
+    await Promise.all(Array.from({ length: Math.min(concurrency, pairs.length) }, async () => {
+      while (nextPair < pairs.length) {
+        const index = nextPair++;
+        const [theme, scenario] = pairs[index];
+        ordered[index] = await runScenario(theme, scenario);
       }
-    }
+    }));
+    results.push(...ordered.filter(Boolean));
   }
 } catch (error) {
   infrastructureErrors.push(error.stack);

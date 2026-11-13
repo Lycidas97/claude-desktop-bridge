@@ -727,23 +727,228 @@ test("WSL slot TMPDIR preserves a Linux packager template when another slot star
   }
 });
 
-test("WSL script input preserves Bash fail-fast behavior", { skip: process.platform !== "win32" }, async (t) => {
+test("WSL background runner executes script, propagates fail-fast exit codes, and cleans up process group on EOF or parent kill", { skip: process.platform !== "win32" }, async (t) => {
   const distributions = spawnSync("wsl.exe", ["--list", "--quiet"], { encoding: "utf16le" });
   if (!distributions.stdout?.includes("Ubuntu-24.04")) return t.skip("Ubuntu-24.04 WSL is not installed");
   const source = await readFile(new URL("./win-local-ci.ps1", import.meta.url), "utf8");
-  const directory = await mkdtemp(join(tmpdir(), "bridge-wsl-fail-fast-"));
+
+  const encodingStart = source.indexOf("chcp 65001");
+  const encodingEnd = source.indexOf("# Keep Windows");
+  const launchStart = source.indexOf("$wslEncoded =");
+  const launchErrIdx = source.indexOf("$wslErrTask =", launchStart);
+  const launchEnd = launchErrIdx === -1 ? -1 : source.indexOf("\n", launchErrIdx);
+  const joinStart = source.indexOf("# 9. Join parallel WSL2");
+  const joinEnd = source.indexOf('Write-Output "=== [WIN] ALL WINDOWS');
+  const outerFinallyStart = source.indexOf("} finally {", joinEnd);
+  const cleanupStart = source.indexOf("if ($null -ne $wslProc)", outerFinallyStart);
+  const cleanupEnd = source.indexOf("if ($slot -ge 0", cleanupStart);
+  assert.ok(
+    encodingStart !== -1 && encodingEnd > encodingStart &&
+    launchStart !== -1 && launchEnd > launchStart &&
+    joinStart !== -1 && joinEnd > joinStart &&
+    cleanupStart !== -1 && cleanupEnd > cleanupStart,
+    "Expected WSL encoding, launch, join, and finally cleanup blocks in scripts/win-local-ci.ps1",
+  );
+
+  const encodingBlock = source.slice(encodingStart, encodingEnd);
+  const launchBlock = source.slice(launchStart, launchEnd);
+  const rawJoinBlock = source.slice(joinStart, joinEnd);
+  const waitIdx = rawJoinBlock.indexOf("$wslProc.WaitForExit()");
+  const closeIdx = rawJoinBlock.indexOf("$wslProc.StandardInput.Close()");
+  assert.ok(waitIdx !== -1 && closeIdx > waitIdx, "WSL join block must WaitForExit() before closing StandardInput");
+  const boundedJoinBlock = rawJoinBlock.replace(
+    "$wslProc.WaitForExit()",
+    'if (-not $wslProc.WaitForExit(5000)) { throw "WSLWaitForExitTimedOutBeforeStdinClose" }',
+  );
+  const cleanupBlock = source.slice(cleanupStart, cleanupEnd);
+
+  const tag = `${process.pid}_${Date.now()}`;
+  const directory = await mkdtemp(join(tmpdir(), "bridge-wsl-runner-contract-"));
   try {
-    const fixture = join(directory, "encoding.ps1");
+    const childFixture = join(directory, "wsl-parent-holder.ps1");
+    await writeFile(childFixture, [
+      '$ErrorActionPreference = "Stop"',
+      encodingBlock,
+      `$wslScript = "set -euo pipefail\`nbash -c 'exec -a WSL_KILL_${tag} sleep 60'\`n"`,
+      launchBlock,
+      "$wslProc.WaitForExit()",
+    ].join("\n"));
+
+    const fixture = join(directory, "wsl-runner-contract.ps1");
     await writeFile(fixture, `
-      $ErrorActionPreference = "Stop"
-      ${source.slice(source.indexOf("chcp 65001"), source.indexOf("# Keep Windows"))}
-      "set -euo pipefail\`nfalse\`nprintf 'UNEXPECTED_CONTINUATION\\n'" | wsl.exe -d Ubuntu-24.04 -- bash -s
-      exit $LASTEXITCODE
-    `);
-    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture], { encoding: "utf8" });
-    assert.equal(result.status, 1, `Bash must stop at false before the final successful command:\n${result.stdout}\n${result.stderr}`);
-    assert.doesNotMatch(result.stdout, /UNEXPECTED_CONTINUATION/u);
-    assert.doesNotMatch(result.stderr, /set: command not found/u);
+$ErrorActionPreference = "Stop"
+${encodingBlock}
+
+function Invoke-JoinedCase([string]$caseName, [string]$wslScript) {
+  $wslProc = $null
+  $wslErr = ""
+  $outLines = [System.Collections.Generic.List[string]]::new()
+  $threw = $null
+  $exitCode = $null
+  $capturedStderr = ""
+  try {
+    & {
+      ${launchBlock}
+      try {
+        ${boundedJoinBlock}
+      } finally {
+        $script:lastExitCode = $wslProc.ExitCode
+        $script:lastStderr = $wslErr
+      }
+    } | ForEach-Object {
+      $outLines.Add([string]$_)
+    }
+    $exitCode = $script:lastExitCode
+    $capturedStderr = [string]$script:lastStderr
+  } catch {
+    $threw = $_.Exception.Message
+    $exitCode = $script:lastExitCode
+    $capturedStderr = [string]$script:lastStderr
+  } finally {
+    ${cleanupBlock}
+  }
+  return [ordered]@{
+    case = $caseName
+    exitCode = $exitCode
+    threw = $threw
+    stdout = ($outLines -join "\`n").Trim()
+    stderr = $capturedStderr.Trim()
+  }
+}
+
+$results = [ordered]@{}
+$results["exit0"] = Invoke-JoinedCase "exit0" ('set -euo pipefail' + "\`n" + 'printf "PGID=%s\n" "$(ps -o pgid= -p $$ | tr -d '' '')"' + "\`n" + 'echo "WSL_OUT_0_${tag}"' + "\`n" + 'echo "WSL_ERR_0_${tag}" >&2' + "\`n" + 'exit 0' + "\`n")
+$results["exit7"] = Invoke-JoinedCase "exit7" ('set -euo pipefail' + "\`n" + 'echo "WSL_OUT_7_${tag}"' + "\`n" + 'echo "WSL_ERR_7_${tag}" >&2' + "\`n" + 'exit 7' + "\`n")
+$results["failFast9"] = Invoke-JoinedCase "failFast9" ('set -euo pipefail' + "\`n" + 'echo "WSL_BEFORE_9_${tag}"' + "\`n" + 'sh -c "exit 9"' + "\`n" + 'echo "UNEXPECTED_CONTINUATION_${tag}"' + "\`n")
+
+# Case 4: stdin EOF cleanup on active child process
+$wslProc = $null
+$eofHolderPid = ""
+$eofPgid = ""
+$eofRemain = ""
+$eofOut = ""
+$eofErr = ""
+$eofTimedOut = $false
+try {
+  $wslScript = 'set -euo pipefail' + "\`n" + 'echo "WSL_EOF_READY_${tag}"' + "\`n" + 'bash -c "exec -a WSL_EOF_${tag} sleep 60"' + "\`n"
+  ${launchBlock}
+  for ($i = 0; $i -lt 50 -and -not $eofHolderPid -and -not $wslProc.HasExited; $i++) {
+    Start-Sleep -Milliseconds 100
+    $eofHolderPid = ((& wsl.exe -d Ubuntu-24.04 --exec pgrep -f "^WSL_EOF_${tag} ") -join "").Trim()
+  }
+  if ($eofHolderPid) {
+    $eofPgid = ((& wsl.exe -d Ubuntu-24.04 --exec ps -o pgid= -p $eofHolderPid) -join "").Trim()
+  }
+  $wslProc.StandardInput.Close()
+  if (-not $wslProc.WaitForExit(5000)) {
+    $eofTimedOut = $true
+  } else {
+    $eofOut = $wslOutTask.GetAwaiter().GetResult().Trim()
+    $eofErr = $wslErrTask.GetAwaiter().GetResult().Trim()
+  }
+  Start-Sleep -Milliseconds 100
+  if ($eofPgid) {
+    $eofRemain = ((& wsl.exe -d Ubuntu-24.04 --exec ps -o pid=,comm= -g $eofPgid) -join ";").Trim()
+  }
+} finally {
+  ${cleanupBlock}
+  if ($eofPgid) {
+    & wsl.exe -d Ubuntu-24.04 --exec bash -c "kill -TERM -- -$eofPgid 2>/dev/null || true" | Out-Null
+  }
+}
+$results["stdinEof"] = [ordered]@{
+  holderPid = $eofHolderPid
+  pgid = $eofPgid
+  timedOut = $eofTimedOut
+  stdout = $eofOut
+  stderr = $eofErr
+  remaining = $eofRemain
+}
+
+# Case 5: taskkill /T /F of owned parent powershell.exe
+$parentPs = $null
+$killHolderPid = ""
+$killPgid = ""
+$killRemain = ""
+try {
+  $parentPs = [System.Diagnostics.Process]::Start(
+    "powershell.exe",
+    "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \`"${childFixture.replaceAll("\\", "\\\\")}\`""
+  )
+  for ($i = 0; $i -lt 50 -and -not $killHolderPid -and -not $parentPs.HasExited; $i++) {
+    Start-Sleep -Milliseconds 100
+    $killHolderPid = ((& wsl.exe -d Ubuntu-24.04 --exec pgrep -f "^WSL_KILL_${tag} ") -join "").Trim()
+  }
+  if ($killHolderPid) {
+    $killPgid = ((& wsl.exe -d Ubuntu-24.04 --exec ps -o pgid= -p $killHolderPid) -join "").Trim()
+  }
+  & cmd.exe /c "taskkill.exe /PID $($parentPs.Id) /T /F >nul 2>nul"
+  [void]$parentPs.WaitForExit(5000)
+  for ($i = 0; $i -lt 20; $i++) {
+    if (-not $killPgid) { break }
+    $killRemain = ((& wsl.exe -d Ubuntu-24.04 --exec ps -o pid=,comm= -g $killPgid) -join ";").Trim()
+    if (-not $killRemain) { break }
+    Start-Sleep -Milliseconds 100
+  }
+} finally {
+  if ($null -ne $parentPs) {
+    if (-not $parentPs.HasExited) {
+      & cmd.exe /c "taskkill.exe /PID $($parentPs.Id) /T /F >nul 2>nul"
+    }
+    $parentPs.Dispose()
+  }
+  if ($killPgid) {
+    & wsl.exe -d Ubuntu-24.04 --exec bash -c "kill -TERM -- -$killPgid 2>/dev/null || true" | Out-Null
+  }
+}
+$results["parentKill"] = [ordered]@{
+  holderPid = $killHolderPid
+  pgid = $killPgid
+  remaining = $killRemain
+}
+
+Write-Output ("BRIDGE_WSL_CONTRACT_JSON=" + ($results | ConvertTo-Json -Compress -Depth 5))
+`);
+
+    const run = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", fixture], {
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    assert.equal(run.status, 0, `WSL contract fixture failed:\nSTDOUT:\n${run.stdout}\nSTDERR:\n${run.stderr}`);
+    const markerLine = run.stdout.split(/\r?\n/u).find(line => line.startsWith("BRIDGE_WSL_CONTRACT_JSON="));
+    assert.ok(markerLine, `Missing BRIDGE_WSL_CONTRACT_JSON in output:\n${run.stdout}\n${run.stderr}`);
+    const results = JSON.parse(markerLine.slice("BRIDGE_WSL_CONTRACT_JSON=".length));
+    t.diagnostic(JSON.stringify(results));
+
+    assert.equal(results.exit0.threw, null, `exit 0 threw: ${JSON.stringify(results.exit0)}`);
+    assert.equal(results.exit0.exitCode, 0, `exit 0 code mismatch: ${JSON.stringify(results.exit0)}`);
+    assert.match(results.exit0.stdout, new RegExp(`WSL_OUT_0_${tag}`, "u"));
+    assert.match(results.exit0.stdout, /<<< \[WIN\] WSL2 Ubuntu-24\.04 Linux tests \+ installers/u);
+    assert.match(results.exit0.stderr, new RegExp(`WSL_ERR_0_${tag}`, "u"));
+    assert.match(run.stderr, new RegExp(`WSL_ERR_0_${tag}`, "u"));
+    const exit0Pgid = results.exit0.stdout.match(/PGID=(\d+)/u)?.[1];
+    assert.ok(exit0Pgid, `Missing PGID in exit0 stdout: ${results.exit0.stdout}`);
+    const exit0Remain = spawnSync("wsl.exe", ["-d", "Ubuntu-24.04", "--exec", "ps", "-o", "pid=,comm=", "-g", exit0Pgid], { encoding: "utf8" });
+    assert.equal((exit0Remain.stdout ?? "").trim(), "", `Owned PGID ${exit0Pgid} leaked after exit 0: ${exit0Remain.stdout}`);
+
+    assert.equal(results.exit7.exitCode, 7, `exit 7 must propagate exitCode=7: ${JSON.stringify(results.exit7)}`);
+    assert.match(results.exit7.threw ?? "", /failed with exit code 7/u);
+    assert.match(results.exit7.stdout, new RegExp(`WSL_OUT_7_${tag}`, "u"));
+    assert.match(results.exit7.stderr, new RegExp(`WSL_ERR_7_${tag}`, "u"));
+    assert.match(run.stderr, new RegExp(`WSL_ERR_7_${tag}`, "u"));
+
+    assert.equal(results.failFast9.exitCode, 9, `set -e exit 9 must propagate exitCode=9: ${JSON.stringify(results.failFast9)}`);
+    assert.match(results.failFast9.threw ?? "", /failed with exit code 9/u);
+    assert.match(results.failFast9.stdout, new RegExp(`WSL_BEFORE_9_${tag}`, "u"));
+    assert.doesNotMatch(results.failFast9.stdout, new RegExp(`UNEXPECTED_CONTINUATION_${tag}`, "u"));
+
+    assert.notEqual(results.stdinEof.holderPid, "", `stdinEof sleep child never started: ${JSON.stringify(results.stdinEof)}`);
+    assert.equal(results.stdinEof.timedOut, false, `stdinEof WaitForExit timed out: ${JSON.stringify(results.stdinEof)}`);
+    assert.match(results.stdinEof.stdout, new RegExp(`WSL_EOF_READY_${tag}`, "u"));
+    assert.equal(results.stdinEof.remaining, "", `Owned PGID leaked after stdin EOF: ${JSON.stringify(results.stdinEof)}`);
+
+    assert.notEqual(results.parentKill.holderPid, "", `parentKill sleep child never started: ${JSON.stringify(results.parentKill)}`);
+    assert.equal(results.parentKill.remaining, "", `Owned PGID leaked after parent taskkill: ${JSON.stringify(results.parentKill)}`);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

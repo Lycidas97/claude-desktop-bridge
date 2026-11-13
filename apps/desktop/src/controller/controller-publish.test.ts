@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type { BridgeSessionInfo, DesktopControlSnapshot } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { DesktopController } from "./controller.js";
@@ -292,7 +290,7 @@ describe("mobile snapshot publication", () => {
       }
     } finally {
       await log.close();
-      await trashTestDirectory(directory);
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
@@ -343,7 +341,7 @@ describe("mobile snapshot publication", () => {
     } finally {
       resume();
       await log.close();
-      await trashTestDirectory(directory);
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
@@ -372,17 +370,6 @@ describe("mobile snapshot publication", () => {
   });
 
 });
-
-async function trashTestDirectory(directory: string) {
-  if (process.platform === "win32") {
-    await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-      "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName Microsoft.VisualBasic; " +
-      "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($env:BRIDGE_RECYCLE_PATH, 'OnlyErrorDialogs', 'SendToRecycleBin', 'ThrowException')",
-    ], { env: { ...process.env, BRIDGE_RECYCLE_PATH: directory } });
-  } else {
-    await promisify(execFile)(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [directory]);
-  }
-}
 
 function progressFixture() {
   const sessions: BridgeSessionInfo[] = Array.from({ length: 140 }, (_, index) => ({

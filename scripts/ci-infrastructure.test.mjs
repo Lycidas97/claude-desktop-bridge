@@ -16,34 +16,52 @@ import { LOCAL_CI_STATUS_CONTEXT, recordAndPublishLocalCi, validateStatusRepo } 
 const require = createRequire(import.meta.url);
 const preload = await readFile(new URL('./recycle-cleanup.cjs', import.meta.url), 'utf8');
 
-function mockCleanup(platform, { missing = false, failure = false, directory = false, extraEnv = {} } = {}) {
+function mockCleanup(platform, { missing = false, failure = false, directory = false, extraEnv = {}, renameError = null } = {}) {
   const calls = [];
+  const renames = [];
+  const mkdtemps = [];
   const check = () => {
     if (missing) throw Object.assign(new Error('missing fixture'), { code: 'ENOENT' });
     return { isDirectory: () => directory };
   };
-  const mockFs = { lstatSync: check, promises: { lstat: async () => check() } };
+  const doRename = (from, to) => {
+    if (renameError) throw Object.assign(new Error(renameError), { code: renameError });
+    renames.push([from, to]);
+  };
+  const mockFs = {
+    lstatSync: check,
+    mkdtempSync(prefix) { const dir = `${prefix}abc`; mkdtemps.push(dir); return dir; },
+    renameSync: doRename,
+    promises: {
+      lstat: async () => check(),
+      rename: async (from, to) => doRename(from, to),
+    },
+  };
   const execFileSync = (...args) => {
     calls.push(args);
     if (failure) throw Object.assign(new Error('trash command failed'), { code: 'ENOENT' });
   };
-  const mockProcess = { platform, env: { PRESERVE_ME: 'yes', ...extraEnv } };
-  vm.runInNewContext(preload, {
-    Buffer, URL, process: mockProcess,
-    require(name) {
-      if (name === 'node:fs') return mockFs;
-      if (name === 'node:module') return { syncBuiltinESMExports() {} };
-      if (name === 'node:child_process') return {
-        execFileSync,
-        execFile(command, args, options, callback) {
-          try { execFileSync(command, args, options); callback(null, '', ''); }
-          catch (error) { callback(error); }
-        },
-      };
-      return require(name);
-    },
-  });
-  return { fs: mockFs, calls, process: mockProcess };
+  const runPreload = (targetPlatform, env) => {
+    const proc = { platform: targetPlatform, pid: 4242, env: { PRESERVE_ME: 'yes', ...env } };
+    vm.runInNewContext(preload, {
+      Buffer, URL, Symbol, process: proc,
+      require(name) {
+        if (name === 'node:fs') return mockFs;
+        if (name === 'node:module') return { syncBuiltinESMExports() {} };
+        if (name === 'node:child_process') return {
+          execFileSync,
+          execFile(command, args, options, callback) {
+            try { execFileSync(command, args, options); callback(null, '', ''); }
+            catch (error) { callback(error); }
+          },
+        };
+        return require(name);
+      },
+    });
+    return proc;
+  };
+  const mockProcess = runPreload(platform, extraEnv);
+  return { fs: mockFs, calls, renames, mkdtemps, process: mockProcess, reload: runPreload };
 }
 
 test('suite failures, missing reports and startup errors preserve subsequent evidence', async () => {
@@ -264,20 +282,29 @@ test('browser harness records proxy resets without failing intentional disconnec
   const infrastructureErrors = [];
   const logged = [];
   vm.runInNewContext(source.match(/logger\.error = \(message, options\) => \{[\s\S]*?\n  \};/u)[0], {
-    logger, infrastructureErrors, logError: message => logged.push(message),
+    logger, infrastructureErrors, logError: (message, options) => logged.push([message, options]),
   });
-  for (const message of ['\u001b[31mws proxy error:\u001b[39m\nError: read ECONNRESET', 'ws proxy socket error:\nError: read ECONNRESET']) {
-    logger.error(message, { error: { code: 'ECONNRESET' } });
-  }
+  const expected = [
+    ['\u001b[31mws proxy error:\u001b[39m\nError: read ECONNRESET', { timestamp: true, error: { code: 'ECONNRESET' } }],
+    ['ws proxy socket error:\nError: read ECONNRESET', { timestamp: true, error: { code: 'ECONNRESET' } }],
+    ['\u001b[31mws proxy error:\u001b[39m\nError: write EPIPE', { timestamp: true, error: { code: 'EPIPE' } }],
+    ['ws proxy socket error:\nError: write EPIPE', { timestamp: true, error: { code: 'EPIPE' } }],
+  ];
+  for (const [message, options] of expected) logger.error(message, options);
   assert.deepEqual(infrastructureErrors, []);
-  for (const [message, options] of [
-    ['ws proxy error: refused', { error: { code: 'ECONNREFUSED' } }],
-    ['http proxy error: /health', { error: { code: 'ECONNRESET' } }],
+  const fatal = [
+    ['ws proxy error: refused', { timestamp: true, error: { code: 'ECONNREFUSED' } }],
+    ['http proxy error: /health', { timestamp: true, error: { code: 'ECONNRESET' } }],
+    ['http proxy error: /health', { timestamp: true, error: { code: 'EPIPE' } }],
     ['transform error', { error: { code: 'ECONNRESET' } }],
+    ['transform error', { error: { code: 'EPIPE' } }],
+    ['\u001b[31mws proxy bypass error:\u001b[39m\nError: write EPIPE', { timestamp: true, error: { code: 'EPIPE' } }],
     ['ws proxy error: unknown failure', undefined],
-  ]) logger.error(message, options);
-  assert.equal(infrastructureErrors.length, 4);
-  assert.equal(logged.length, 6);
+    ['ws proxy error: timed out', { timestamp: true, error: { code: 'ETIMEDOUT' } }],
+  ];
+  for (const [message, options] of fatal) logger.error(message, options);
+  assert.deepEqual(infrastructureErrors, fatal.map(([message]) => message));
+  assert.deepEqual(logged, [...expected, ...fatal]);
 });
 
 test('Desktop startup leaves relay diagnostics to the configured Native connection', async () => {
@@ -531,7 +558,7 @@ test('Mac CI stages every command per run and recycles its staging before comple
         import { appendFileSync, existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
         import { join } from 'node:path';
         const staging = process.env.BRIDGE_RECYCLE_STAGING;
-        const renderer = join(process.cwd(), 'renderer');
+        const renderer = join(process.cwd(), \`renderer-\${process.pid}\`);
         mkdirSync(renderer);
         writeFileSync(join(renderer, 'index.html'), 'fixture');
         rmSync(renderer, { recursive: true });
@@ -667,4 +694,140 @@ test('browser E2E binds an ephemeral kernel port via httpServer.listen and local
   assert.match(winCiSource, /Invoke-CimMethod -ClassName Win32_Process -MethodName Create[^\n]*start-server/u);
   assert.doesNotMatch(winCiSource, /ci-worktree|refs\/ci\/current|"bridge-ci-api36"/u);
   assert.doesNotMatch(localCiSource, /ci-worktree/u);
+});
+
+test('BRIDGE_RECYCLE_STAGING stages same-volume removals, falls back on EXDEV, propagates non-EXDEV errors, and loads idempotently', async () => {
+  const stageBase = join(tmpdir(), 'bridge-stage');
+  const staged = mockCleanup('darwin', { extraEnv: { BRIDGE_RECYCLE_STAGING: stageBase } });
+  assert.equal(staged.fs[Symbol.for('bridge.recycleCleanupInstalled')], true);
+
+  staged.fs.rmSync(join(tmpdir(), 'item-a'));
+  await staged.fs.promises.unlink(join(tmpdir(), 'item-b'));
+  await new Promise((resolve, reject) => staged.fs.rmdir(join(tmpdir(), 'item-c'), err => err ? reject(err) : resolve()));
+  assert.equal(staged.calls.length, 0);
+  assert.equal(staged.mkdtemps.length, 1);
+  assert.deepEqual(staged.renames.map(([, to]) => to), [
+    join(staged.mkdtemps[0], '1'),
+    join(staged.mkdtemps[0], '2'),
+    join(staged.mkdtemps[0], '3'),
+  ]);
+
+  // Double-require on the same fs module is a no-op and preserves existing install state.
+  staged.reload('unsupported', {});
+  staged.fs.rmSync(join(tmpdir(), 'item-d'));
+  assert.equal(staged.calls.length, 0);
+  assert.equal(staged.renames.at(-1)[1], join(staged.mkdtemps[0], '4'));
+
+  // Cross-volume EXDEV falls back to the OS Recycle Bin command.
+  const exdev = mockCleanup('darwin', { extraEnv: { BRIDGE_RECYCLE_STAGING: stageBase }, renameError: 'EXDEV' });
+  exdev.fs.rmSync('cross-volume-sync');
+  await exdev.fs.promises.rm('cross-volume-async');
+  assert.equal(exdev.calls.length, 2);
+  assert.ok(exdev.calls.every(call => call[0] === '/usr/bin/trash'));
+
+  // Non-EXDEV rename errors surface directly without invoking OS trash or deleting.
+  const eacces = mockCleanup('darwin', { extraEnv: { BRIDGE_RECYCLE_STAGING: stageBase }, renameError: 'EACCES' });
+  assert.throws(() => eacces.fs.rmSync('denied-sync'), { code: 'EACCES' });
+  await assert.rejects(eacces.fs.promises.rm('denied-async'), { code: 'EACCES' });
+  assert.equal(eacces.calls.length, 0);
+});
+
+test('runSuites preserves input entries order in summary.json, recycles per-run staging, and retains caller-owned staging', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge suite order-'));
+  const prevStaging = process.env.BRIDGE_RECYCLE_STAGING;
+  delete process.env.BRIDGE_RECYCLE_STAGING;
+  try {
+    const fixture = join(directory, 'staged-suite.mjs');
+    await writeFile(fixture, `
+      import { writeFileSync } from 'node:fs';
+      const metaOut = process.argv[2];
+      const junit = process.argv.at(-1).split('=').slice(1).join('=');
+      writeFileSync(junit, '<testsuites/>');
+      writeFileSync(metaOut, JSON.stringify({ staging: process.env.BRIDGE_RECYCLE_STAGING ?? null }));
+    `);
+    const firstMeta = join(directory, 'first.json');
+    const secondMeta = join(directory, 'second.json');
+    const entries = [
+      { name: 'first', cwd: directory, command: process.execPath, args: [fixture, firstMeta] },
+      { name: 'second', cwd: directory, command: process.execPath, args: [fixture, secondMeta] },
+    ];
+    assert.equal(await runSuites(entries, directory), 0);
+    const summary = JSON.parse(await readFile(join(directory, 'summary.json'), 'utf8'));
+    assert.deepEqual(summary.map(result => result.suite), ['first', 'second']);
+    const first = JSON.parse(await readFile(firstMeta, 'utf8'));
+    const second = JSON.parse(await readFile(secondMeta, 'utf8'));
+    assert.ok(first.staging && first.staging === second.staging, 'child suites share a per-run BRIDGE_RECYCLE_STAGING directory');
+    assert.equal(fs.existsSync(first.staging), false, 'per-run staging directory is recycled after runSuites completes');
+
+    const outerStaging = await mkdtemp(join(tmpdir(), 'bridge outer stage-'));
+    process.env.BRIDGE_RECYCLE_STAGING = outerStaging;
+    try {
+      const outerOut = join(directory, 'outer');
+      const outerMeta = join(directory, 'outer.json');
+      assert.equal(await runSuites([{ name: 'inherited', cwd: directory, command: process.execPath, args: [fixture, outerMeta] }], outerOut), 0);
+      assert.equal(JSON.parse(await readFile(outerMeta, 'utf8')).staging, outerStaging);
+      assert.equal(fs.existsSync(outerStaging), true, 'outer BRIDGE_RECYCLE_STAGING remains owned by caller');
+    } finally {
+      await rm(outerStaging, { recursive: true, force: true });
+    }
+  } finally {
+    if (prevStaging === undefined) delete process.env.BRIDGE_RECYCLE_STAGING;
+    else process.env.BRIDGE_RECYCLE_STAGING = prevStaging;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('ci-run browser:nobuild invokes browser-e2e.mjs with recycle preload without rebuilding protocol or relay', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge browser nobuild-'));
+  try {
+    const scriptsDir = join(directory, 'scripts');
+    await mkdir(scriptsDir, { recursive: true });
+    const events = join(directory, 'events.jsonl');
+    const npmStub = join(directory, 'npm-stub.mjs');
+    await writeFile(npmStub, `
+      import { appendFileSync } from 'node:fs';
+      appendFileSync(process.env.EVENTS, JSON.stringify({ kind: 'npm', args: process.argv.slice(2) }) + '\\n');
+    `);
+    await writeFile(join(scriptsDir, 'browser-e2e.mjs'), `
+      import { appendFileSync } from 'node:fs';
+      appendFileSync(process.env.EVENTS, JSON.stringify({ kind: 'browser', options: process.env.NODE_OPTIONS }) + '\\n');
+    `);
+    const runner = join(scriptsDir, 'ci-run.mjs');
+    await copyFile(new URL('./ci-run.mjs', import.meta.url), runner);
+    await copyFile(new URL('./recycle-cleanup.cjs', import.meta.url), join(scriptsDir, 'recycle-cleanup.cjs'));
+    const result = spawnSync(process.execPath, [runner, 'browser:nobuild'], {
+      env: { ...process.env, npm_execpath: npmStub, EVENTS: events },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const records = (await readFile(events, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(records.length, 1);
+    assert.equal(records[0].kind, 'browser');
+    assert.match(records[0].options, /recycle-cleanup\.cjs/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('win-local-ci builds shared client once, overlaps make:windows:from-client with Android APK, and guards WSL2 setsid pipe-EOF before bundle recycle', async () => {
+  const desktopPkg = JSON.parse(await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'));
+  assert.equal(desktopPkg.scripts['make:windows:from-client'], 'npm run build:bundle && node scripts/make-windows.mjs');
+
+  const winCi = await readFile(new URL('./win-local-ci.ps1', import.meta.url), 'utf8');
+  const clientBuildIdx = winCi.indexOf('run build -w @bridge/client');
+  const nsisParallelIdx = winCi.indexOf('make:windows:from-client -w @bridge/desktop');
+  const androidSyncIdx = winCi.indexOf('sync:from-client -w @bridge/mobile');
+  const nsisWaitIdx = winCi.indexOf('$nsisProc.WaitForExit()');
+  const wslWaitIdx = winCi.indexOf('$wslProc.WaitForExit()');
+  const recycleBundleIdx = winCi.indexOf('Recycle uploaded git bundle');
+
+  assert.ok(clientBuildIdx !== -1 && nsisParallelIdx > clientBuildIdx && androidSyncIdx > nsisParallelIdx && nsisWaitIdx > androidSyncIdx, 'shared client build precedes parallel make:windows:from-client and Android sync/Gradle');
+  assert.ok(wslWaitIdx > nsisWaitIdx, 'WSL2 is joined after Windows + Android QA steps');
+  assert.match(winCi, /RedirectStandardInput\s*=\s*\$true/u);
+  assert.match(winCi, /exec 3<&0 <\/dev\/null;[\s\S]*?cat <&3[\s\S]*?kill -TERM 0/u);
+  // Keep --no-daemon for now: shared Gradle daemon lifecycle across concurrent ssh win slots is deferred (not yet empirically verified).
+  assert.match(winCi, /gradlew\.bat"\s+assembleDebug\s+--no-daemon/u);
+  const outerFinally = winCi.slice(winCi.indexOf('=== [WIN] ALL WINDOWS'));
+  assert.ok(outerFinally.indexOf('StandardInput.Close()') !== -1 && outerFinally.indexOf('StandardInput.Close()') < outerFinally.indexOf('Recycle uploaded git bundle'), 'WSL2 stdin pipe closes in outer finally before recycling BundlePath');
+  assert.ok(recycleBundleIdx > wslWaitIdx);
 });

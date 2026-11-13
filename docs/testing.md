@@ -33,8 +33,8 @@ stderr, and runner errors), and `summary.json`. The suite names are `desktop`,
 `client`, `protocol`, `relay`, and `quota`. A failed process, launch error, or missing
 or empty JUnit report fails the command. Later suites still run and retain evidence.
 A suite's previous JUnit report is sent to Trash before that suite starts, so it
-cannot satisfy the new run. Logs are replaced and the summary is updated after
-each suite. Reports are local artifacts; avoid including them in source commits.
+cannot satisfy the new run. Logs are replaced and `summary.json` is updated after
+each suite in deterministic order. Reports are local artifacts; avoid including them in source commits.
 
 Browser evidence is written to `artifacts/browser-e2e`. To install the Chromium
 version matching the existing `playwright-core` dependency, run:
@@ -92,7 +92,8 @@ responses, native local answers, lifecycle cancellation, and disconnected Hook
 requests. Native manual-only requests remain pending through full-access policy
 changes. No test changes real Claude settings or calls a model.
 
-Browser failures retain screenshots, HTML, traces, console errors and RPC records;
+Browser failures retain screenshots, HTML, console errors, RPC records, and (when
+`BRIDGE_E2E_TRACE=1`) Playwright traces;
 passing native scenarios also retain screenshots and a correlated request trace.
 
 After the protocol and relay builds exist, a local debug fixture can be kept open:
@@ -125,9 +126,11 @@ recycle command. Missing paths are ignored only with `force: true`. Unsupported
 systems, missing recycle commands, and recycle failures surface as errors; there
 is no permanent-delete fallback. The preload selects the host platform at startup,
 so application tests that mock `process.platform` do not change the recycle command.
-When `BRIDGE_RECYCLE_STAGING` names a directory (set per slot by `win-local-ci.ps1`),
-removals rename into a per-process subdirectory there instead (paths on another
-volume still use the recycle command), and the caller recycles that directory once.
+When `BRIDGE_RECYCLE_STAGING` names a directory (created automatically per `npm test`
+run unless already set per run by `local-ci.mjs` or per slot by `win-local-ci.ps1`),
+removals rename disposable paths into a per-process subdirectory there instead (falling
+back to the OS recycle command on `EXDEV`, `EBUSY`, or `EPERM`), and the caller recycles
+that directory once in a single OS Recycle Bin invocation.
 
 This covers Node processes that inherit `NODE_OPTIONS`. It does not intercept
 native tools, shell deletion commands, browser internals, or processes that discard

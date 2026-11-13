@@ -45,6 +45,7 @@ import {
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { backgroundSubagentBadge } from "../../lib/session-activity.js";
 import { IconButton } from "../common/IconButton.js";
+import { SectionManageDialog, type SectionManageController } from "../session/SectionManageDialog.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { MobilePageHeader } from "./MobilePageHeader.js";
 import { MobileSheet, SheetAction } from "./MobileSheet.js";
@@ -80,6 +81,7 @@ export interface MobileSessionCatalogProps {
   syncFlash: boolean;
   sectionCreate: { name: string; busy: boolean; error: string } | undefined;
   sectionCanCreate: boolean;
+  sectionManage: SectionManageController;
   createOpen: boolean;
   createProjectId: string;
   sessionOverlays: ReactNode;
@@ -145,6 +147,7 @@ export function MobileSessionCatalog({
   syncFlash,
   sectionCreate,
   sectionCanCreate,
+  sectionManage,
   createOpen,
   createProjectId,
   sessionOverlays,
@@ -423,6 +426,15 @@ export function MobileSessionCatalog({
                       {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                     </span>
                   </button>
+                  {sectionManage.canManage(group.project) && (
+                    <IconButton
+                      label={`管理分组：${projectName}`}
+                      className="session-row-action section-manage-trigger"
+                      onClick={() => sectionManage.openMenu(group.project!.projectId)}
+                    >
+                      <MoreHorizontal size={18} />
+                    </IconButton>
+                  )}
                 </div>
                 {expanded && (
                   <div className="session-rows" id={sessionsId}>
@@ -465,6 +477,10 @@ export function MobileSessionCatalog({
                 setSectionCreate({ name: "", busy: false, error: "" });
               }} />
             )}
+            {sectionManage.renderDirectoryActions({
+              activeGroupProject,
+              closeDirectoryMenu: () => setDirectoryMenuOpen(false),
+            })}
             <SheetAction
               icon={refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
               label={refreshing ? "正在同步" : syncFlash ? "已同步" : "同步当前电脑"}
@@ -528,6 +544,7 @@ export function MobileSessionCatalog({
           </section>
         </div>
       )}
+      <SectionManageDialog controller={sectionManage} />
       {createOpen && snapshot && (
         <SessionCreateDialog
           key={snapshot.host.hostId}

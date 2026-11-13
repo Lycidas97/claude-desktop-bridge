@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import {
   safeStorageSecretProtector,
   type SecretProtector,
 } from "./config.js";
+import { probeRelayReady, relayReadyUrl } from "./controller-transport.js";
 import { DEFAULT_BRIDGE_ICE_SERVERS } from "@bridge/protocol";
 import { removeLegacyConnector } from "../claude/connector.js";
 import { localNetworkAddress } from "../app/platform.js";
@@ -311,9 +313,9 @@ describe("desktop configuration", () => {
     created.devices.push({ deviceId: "phone-1", name: "Android", platform: "android", secret: "phone-secret", createdAt: 1_000, expiresAt: 2_000, pairedAt: 1_100 });
     await custom.save(created);
     const genericUpdate = new DesktopConfigRepository(path, protector, {
-      relayUrl: "wss://relay.alioxis.com/ws",
-      publicRelayUrl: "wss://relay.alioxis.com/ws",
-      serviceOrigin: "https://relay.alioxis.com",
+      relayUrl: "wss://bis.zju.edu.cn/bridge-relay/ws",
+      publicRelayUrl: "wss://bis.zju.edu.cn/bridge-relay/ws",
+      serviceOrigin: "https://bis.zju.edu.cn",
       desktopName: "Test PC",
     });
     await expect(genericUpdate.load()).resolves.toMatchObject({
@@ -324,6 +326,164 @@ describe("desktop configuration", () => {
       devices: [expect.objectContaining({ deviceId: "phone-1", secret: "phone-secret" })],
       relayEndpoints: [expect.objectContaining({ id: "public", url: "wss://relay.example/ws" })],
     });
+  });
+
+  it("migrates only the retired alioxis.com default relay and 2-entry ICE list to BIS without leaving a fallback", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-retired-default-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const retired = new DesktopConfigRepository(path, protector, {
+      relayUrl: "ws://192.168.1.32:8788/ws",
+      publicRelayUrl: "wss://relay.alioxis.com/ws",
+      serviceOrigin: "https://relay.alioxis.com",
+      iceServers: [
+        { urls: "stun:stun.alioxis.com:3478" },
+        { urls: "stun:stun.cloudflare.com:3478" },
+      ],
+      desktopName: "Test PC",
+    });
+    const created = await retired.loadOrCreate();
+    created.pairingEpoch = 4;
+    created.devices.push({
+      deviceId: "phone-bis",
+      name: "Android",
+      platform: "android",
+      secret: "phone-bis-secret",
+      createdAt: 1_000,
+      expiresAt: 2_000,
+      pairedAt: 1_100,
+    });
+    await retired.save(created);
+
+    const bisUpdate = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://bis.zju.edu.cn/bridge-relay/ws",
+      publicRelayUrl: "wss://bis.zju.edu.cn/bridge-relay/ws",
+      serviceOrigin: "https://bis.zju.edu.cn",
+      iceServers: [...DEFAULT_BRIDGE_ICE_SERVERS],
+      desktopName: "Test PC",
+    });
+    const loaded = await bisUpdate.load();
+
+    expect(loaded).toMatchObject({
+      roomId: created.roomId,
+      pairingEpoch: 4,
+      hostDeviceId: created.hostDeviceId,
+      hostSecret: created.hostSecret,
+      evidenceKey: created.evidenceKey,
+      relayUrl: "wss://bis.zju.edu.cn/bridge-relay/ws",
+      activeEndpoint: "public",
+      serviceOrigin: "https://bis.zju.edu.cn",
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+      devices: [expect.objectContaining({ deviceId: "phone-bis", secret: "phone-bis-secret" })],
+    });
+    expect(loaded?.relayEndpoints.map((endpoint) => endpoint.url)).not.toContain("wss://relay.alioxis.com/ws");
+    expect(loaded?.relayEndpoints).toEqual([
+      {
+        id: "public",
+        kind: "public-relay",
+        url: "wss://bis.zju.edu.cn/bridge-relay/ws",
+        priority: 10,
+      },
+      {
+        id: "lan",
+        kind: "lan-relay",
+        url: `ws://${localNetworkAddress()}:8788/ws`,
+        priority: 20,
+      },
+    ]);
+    const persisted = JSON.parse(await readFile(path, "utf8")) as {
+      serviceOrigin: string;
+      relayEndpoints: Array<{ url: string }>;
+      iceServers: Array<{ urls: string }>;
+    };
+    expect(persisted.serviceOrigin).toBe("https://bis.zju.edu.cn");
+    expect(persisted.relayEndpoints.map((endpoint) => endpoint.url)).not.toContain("wss://relay.alioxis.com/ws");
+    expect(persisted.iceServers).toEqual([{ urls: "stun:stun.cloudflare.com:3478" }]);
+  });
+
+  it("preserves custom .uk relay, custom serviceOrigin, and manual retired-URL override while migrating retired ICE on override", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-custom-preserve-"));
+    directories.push(directory);
+    const ukPath = join(directory, "uk-config.json");
+    const ukRepo = new DesktopConfigRepository(ukPath, protector, {
+      relayUrl: "wss://relay.alioxis.uk/ws",
+      publicRelayUrl: "wss://relay.alioxis.uk/ws",
+      serviceOrigin: "https://relay.alioxis.uk",
+      desktopName: "UK PC",
+    });
+    const ukCreated = await ukRepo.loadOrCreate();
+    const bisGeneric = {
+      relayUrl: "wss://bis.zju.edu.cn/bridge-relay/ws",
+      publicRelayUrl: "wss://bis.zju.edu.cn/bridge-relay/ws",
+      serviceOrigin: "https://bis.zju.edu.cn",
+      iceServers: [...DEFAULT_BRIDGE_ICE_SERVERS],
+      desktopName: "UK PC",
+    };
+    await expect(new DesktopConfigRepository(ukPath, protector, bisGeneric).load()).resolves.toMatchObject({
+      roomId: ukCreated.roomId,
+      relayUrl: "wss://relay.alioxis.uk/ws",
+      serviceOrigin: "https://relay.alioxis.uk",
+    });
+
+    const customOriginPath = join(directory, "custom-origin-config.json");
+    const retiredWithCustomOrigin = new DesktopConfigRepository(customOriginPath, protector, {
+      relayUrl: "wss://relay.alioxis.com/ws",
+      publicRelayUrl: "wss://relay.alioxis.com/ws",
+      serviceOrigin: "https://portal.custom.example",
+      desktopName: "Custom Origin PC",
+    });
+    await retiredWithCustomOrigin.loadOrCreate();
+    await expect(new DesktopConfigRepository(customOriginPath, protector, bisGeneric).load()).resolves.toMatchObject({
+      relayUrl: "wss://bis.zju.edu.cn/bridge-relay/ws",
+      serviceOrigin: "https://portal.custom.example",
+    });
+
+    const overridePath = join(directory, "override-retired-config.json");
+    const overrideRepo = new DesktopConfigRepository(overridePath, protector, {
+      relayUrl: "wss://old.example/ws",
+      iceServers: [
+        { urls: "stun:stun.alioxis.com:3478" },
+        { urls: "stun:stun.cloudflare.com:3478" },
+      ],
+      desktopName: "Override PC",
+    });
+    const overrideCreated = await overrideRepo.loadOrCreate();
+    await overrideRepo.save({ ...overrideCreated, relayUrlOverride: "wss://relay.alioxis.com/ws" });
+    const overrideLoaded = await new DesktopConfigRepository(overridePath, protector, bisGeneric).load();
+    expect(overrideLoaded).toMatchObject({
+      relayUrlOverride: "wss://relay.alioxis.com/ws",
+      relayUrl: "wss://relay.alioxis.com/ws",
+      serviceOrigin: "https://relay.alioxis.com",
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+    });
+  });
+
+  it("preserves subpath prefixes when deriving and probing relay ready URLs", async () => {
+    expect(relayReadyUrl("wss://bis.zju.edu.cn/bridge-relay/ws")).toBe("https://bis.zju.edu.cn/bridge-relay/ready");
+    expect(relayReadyUrl("wss://relay.example:9443/bridge-relay/ws/?region=1#frag"))
+      .toBe("https://relay.example:9443/bridge-relay/ready");
+    expect(relayReadyUrl("ws://127.0.0.1:8788/ws")).toBe("http://127.0.0.1:8788/ready");
+
+    const seenPaths: string[] = [];
+    const server = createServer((req, res) => {
+      seenPaths.push(req.url ?? "");
+      if (req.url === "/bridge-relay/ready") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      await expect(probeRelayReady(`ws://127.0.0.1:${port}/bridge-relay/ws`)).resolves.toBe(true);
+      expect(seenPaths).toEqual(["/bridge-relay/ready"]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("migrates v2 to pairing schema v4 while preserving host identity and rotating credentials", async () => {

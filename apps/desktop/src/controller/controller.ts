@@ -199,6 +199,8 @@ export class DesktopController extends EventEmitter {
           ...(runtimes.some(runtime => runtime.capabilities.includes("workspace.trust")) ? ["workspace.trust.v1" as const] : []),
           ...(runtimes.some(runtime => runtime.capabilities.includes("section.create")) ? ["section.create.v1" as const] : []),
           ...(runtimes.some(runtime => runtime.capabilities.includes("section.move")) ? ["section.move.v1" as const] : []),
+          ...(runtimes.some(runtime => runtime.capabilities.includes("section.rename")) ? ["section.rename.v1" as const] : []),
+          ...(runtimes.some(runtime => runtime.capabilities.includes("section.delete")) ? ["section.delete.v1" as const] : []),
           "subagent.stop.v1",
           "turn.queue.steer.v1",
           "turn.queue.cancel.v1",

@@ -732,41 +732,39 @@ test('BRIDGE_RECYCLE_STAGING stages same-volume removals, falls back on EXDEV, p
   assert.equal(eacces.calls.length, 0);
 });
 
-test('runSuites runs concurrently while preserving input entries order in summary.json and recycling per-run staging', async () => {
+test('runSuites preserves input entries order in summary.json, recycles per-run staging, and retains caller-owned staging', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bridge suite order-'));
   const prevStaging = process.env.BRIDGE_RECYCLE_STAGING;
   delete process.env.BRIDGE_RECYCLE_STAGING;
   try {
-    const fixture = join(directory, 'timed-suite.mjs');
+    const fixture = join(directory, 'staged-suite.mjs');
     await writeFile(fixture, `
       import { writeFileSync } from 'node:fs';
-      const [mode, metaOut] = process.argv.slice(2, 4);
+      const metaOut = process.argv[2];
       const junit = process.argv.at(-1).split('=').slice(1).join('=');
-      if (mode === 'slow') await new Promise(resolve => setTimeout(resolve, 180));
       writeFileSync(junit, '<testsuites/>');
-      writeFileSync(metaOut, JSON.stringify({ finishedAt: Date.now(), staging: process.env.BRIDGE_RECYCLE_STAGING ?? null }));
+      writeFileSync(metaOut, JSON.stringify({ staging: process.env.BRIDGE_RECYCLE_STAGING ?? null }));
     `);
-    const slowMeta = join(directory, 'slow.json');
-    const fastMeta = join(directory, 'fast.json');
+    const firstMeta = join(directory, 'first.json');
+    const secondMeta = join(directory, 'second.json');
     const entries = [
-      { name: 'slow-first', cwd: directory, command: process.execPath, args: [fixture, 'slow', slowMeta] },
-      { name: 'fast-second', cwd: directory, command: process.execPath, args: [fixture, 'fast', fastMeta] },
+      { name: 'first', cwd: directory, command: process.execPath, args: [fixture, firstMeta] },
+      { name: 'second', cwd: directory, command: process.execPath, args: [fixture, secondMeta] },
     ];
     assert.equal(await runSuites(entries, directory), 0);
     const summary = JSON.parse(await readFile(join(directory, 'summary.json'), 'utf8'));
-    assert.deepEqual(summary.map(result => result.suite), ['slow-first', 'fast-second']);
-    const slow = JSON.parse(await readFile(slowMeta, 'utf8'));
-    const fast = JSON.parse(await readFile(fastMeta, 'utf8'));
-    assert.ok(fast.finishedAt < slow.finishedAt, 'suite #1 should finish while suite #0 is still running');
-    assert.ok(slow.staging && slow.staging === fast.staging, 'child suites share a per-run BRIDGE_RECYCLE_STAGING directory');
-    assert.equal(fs.existsSync(slow.staging), false, 'per-run staging directory is recycled after runSuites completes');
+    assert.deepEqual(summary.map(result => result.suite), ['first', 'second']);
+    const first = JSON.parse(await readFile(firstMeta, 'utf8'));
+    const second = JSON.parse(await readFile(secondMeta, 'utf8'));
+    assert.ok(first.staging && first.staging === second.staging, 'child suites share a per-run BRIDGE_RECYCLE_STAGING directory');
+    assert.equal(fs.existsSync(first.staging), false, 'per-run staging directory is recycled after runSuites completes');
 
     const outerStaging = await mkdtemp(join(tmpdir(), 'bridge outer stage-'));
     process.env.BRIDGE_RECYCLE_STAGING = outerStaging;
     try {
       const outerOut = join(directory, 'outer');
       const outerMeta = join(directory, 'outer.json');
-      assert.equal(await runSuites([{ name: 'inherited', cwd: directory, command: process.execPath, args: [fixture, 'fast', outerMeta] }], outerOut), 0);
+      assert.equal(await runSuites([{ name: 'inherited', cwd: directory, command: process.execPath, args: [fixture, outerMeta] }], outerOut), 0);
       assert.equal(JSON.parse(await readFile(outerMeta, 'utf8')).staging, outerStaging);
       assert.equal(fs.existsSync(outerStaging), true, 'outer BRIDGE_RECYCLE_STAGING remains owned by caller');
     } finally {
@@ -811,24 +809,19 @@ test('ci-run browser:nobuild invokes browser-e2e.mjs with recycle preload withou
   }
 });
 
-test('win-local-ci parallelizes WSL2 via setsid pipe-EOF, early emulator boot, and make:windows:from-client alongside Android APK', async () => {
+test('win-local-ci builds shared client once, overlaps make:windows:from-client with Android APK, and guards WSL2 setsid pipe-EOF before bundle recycle', async () => {
   const desktopPkg = JSON.parse(await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'));
   assert.equal(desktopPkg.scripts['make:windows:from-client'], 'npm run build:bundle && node scripts/make-windows.mjs');
 
   const winCi = await readFile(new URL('./win-local-ci.ps1', import.meta.url), 'utf8');
-  const syncIdx = winCi.indexOf('Sync git bundle ($Revision)');
-  const wslStartIdx = winCi.indexOf('--exec setsid --wait bash -c');
-  const emuStartIdx = winCi.indexOf('Starting headless WHPX AVD $avdName');
-  const testInfraIdx = winCi.indexOf('Invoke-Checked "npm run test:infra"');
+  const clientBuildIdx = winCi.indexOf('run build -w @bridge/client');
   const nsisParallelIdx = winCi.indexOf('make:windows:from-client -w @bridge/desktop');
   const androidSyncIdx = winCi.indexOf('sync:from-client -w @bridge/mobile');
   const nsisWaitIdx = winCi.indexOf('$nsisProc.WaitForExit()');
   const wslWaitIdx = winCi.indexOf('$wslProc.WaitForExit()');
   const recycleBundleIdx = winCi.indexOf('Recycle uploaded git bundle');
 
-  assert.ok(syncIdx !== -1 && wslStartIdx > syncIdx && wslStartIdx < testInfraIdx, 'WSL2 starts immediately after git bundle sync before Windows tests');
-  assert.ok(emuStartIdx !== -1 && emuStartIdx < testInfraIdx, 'Android Emulator boots before Windows test:infra and npm test');
-  assert.ok(nsisParallelIdx !== -1 && androidSyncIdx > nsisParallelIdx && nsisWaitIdx > androidSyncIdx, 'make:windows:from-client runs in parallel with Android sync/Gradle before WaitForExit');
+  assert.ok(clientBuildIdx !== -1 && nsisParallelIdx > clientBuildIdx && androidSyncIdx > nsisParallelIdx && nsisWaitIdx > androidSyncIdx, 'shared client build precedes parallel make:windows:from-client and Android sync/Gradle');
   assert.ok(wslWaitIdx > nsisWaitIdx, 'WSL2 is joined after Windows + Android QA steps');
   assert.match(winCi, /RedirectStandardInput\s*=\s*\$true/u);
   assert.match(winCi, /exec 3<&0 <\/dev\/null;[\s\S]*?cat <&3[\s\S]*?kill -TERM 0/u);

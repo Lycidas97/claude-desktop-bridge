@@ -119,53 +119,6 @@ Invoke-Checked "Sync git bundle ($Revision)" {
   git -C $anchorRepo fetch --force $BundlePath "HEAD:refs/ci/slot-$slot"
 }
 
-if (-not $SkipWslLinux) {
-  $wslBundlePath = "/mnt/d/work/cache/temp/" + [IO.Path]::GetFileName($BundlePath)
-  $wslScript = @"
-set -euo pipefail
-export PATH="/usr/local/bin:`$PATH"
-CI_DIR="/var/tmp/bridge-linux-ci-slot-$slot"
-export TMPDIR="`$CI_DIR-tmp"
-mkdir -p "`$TMPDIR"
-if [ ! -d "`$CI_DIR/.git" ]; then
-  mkdir -p "`$CI_DIR"
-  git init -q "`$CI_DIR"
-fi
-git -C "`$CI_DIR" fetch --force "$wslBundlePath" "HEAD:refs/ci/slot-$slot"
-git -C "`$CI_DIR" reset --hard -q
-git -C "`$CI_DIR" checkout --force --detach -q "$Revision"
-cd "`$CI_DIR"
-LOCK_HASH=`$(sha256sum package-lock.json | awk '{print `$1}')
-STAMP="node_modules/.bridge-lock-sha256"
-if [ ! -f "`$STAMP" ] || [ "`$(cat "`$STAMP")" != "`$LOCK_HASH" ] || [ ! -f "node_modules/electron/package.json" ]; then
-  npm ci
-  printf '%s' "`$LOCK_HASH" > "`$STAMP"
-fi
-npm run test:infra
-npm test
-npm run ci:run -- run build -w @bridge/protocol
-BRIDGE_FAST_INSTALLER="1" BRIDGE_RELAY_URL="" BRIDGE_PUBLIC_RELAY_URL="" BRIDGE_PAIRING_BASE_URL="" BRIDGE_SERVICE_ORIGIN="" BRIDGE_ICE_SERVERS="" \
-  npm run ci:run -- run make:linux -w @bridge/desktop
-find apps/desktop/out/make -name "*.deb" -print -quit | grep -q . || { echo "Missing .deb output"; exit 1; }
-find apps/desktop/out/make -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }
-find apps/desktop/out/make -name "*.zip" -print -quit | grep -q . || { echo "Missing .zip output"; exit 1; }
-echo "<<< [WSL Ubuntu-24.04] Linux tests + .deb / .rpm / .zip outputs verified"
-"@
-  $wslEncoded = [Convert]::ToBase64String((New-Object Text.UTF8Encoding($false)).GetBytes(($wslScript -replace "`r`n", "`n")))
-  Write-Output ">>> [WIN] Starting WSL2 Ubuntu-24.04 Linux tests + installers in background"
-  $wslPsi = [System.Diagnostics.ProcessStartInfo]::new("wsl.exe")
-  $wslPsi.Arguments = "-d Ubuntu-24.04 --exec setsid --wait bash -c `"exec 3<&0 </dev/null; (exec >/dev/null 2>&1; cat <&3; kill -TERM 0 || true) & W=`$!; exec 3<&-; trap 'kill -TERM `$W 2>/dev/null || true; pkill -TERM -P `$W 2>/dev/null || true; wait `$W 2>/dev/null || true' EXIT; printf '%s' $wslEncoded | base64 -d | bash`""
-  $wslPsi.UseShellExecute = $false
-  $wslPsi.RedirectStandardInput = $true
-  $wslPsi.RedirectStandardOutput = $true
-  $wslPsi.RedirectStandardError = $true
-  $wslPsi.StandardOutputEncoding = [Text.Encoding]::UTF8
-  $wslPsi.StandardErrorEncoding = [Text.Encoding]::UTF8
-  $wslProc = [System.Diagnostics.Process]::Start($wslPsi)
-  $wslOutTask = $wslProc.StandardOutput.ReadToEndAsync()
-  $wslErrTask = $wslProc.StandardError.ReadToEndAsync()
-}
-
 if (-not (Test-Path "$ciWorktree\.git")) {
   Invoke-Checked "Create $ciWorktree" {
     git -C $anchorRepo worktree add --force --detach $ciWorktree $Revision
@@ -213,7 +166,11 @@ if ($lockHash -ne $cachedHash -or -not (Test-Path "node_modules\electron\package
   Set-Content -Path $stampFile -Value $lockHash -NoNewline
 }
 
-# 4. Boot headless WHPX Android Emulator in background before unit tests, NSIS, and Gradle APK builds
+# 4. Windows infra + unit tests (typecheck is platform-independent and runs once in macOS verify) (runs before QEMU cold boot so Vitest gets uncontended CPU/IO)
+Invoke-Checked "npm run test:infra" { & "$nodeBin\npm.cmd" run test:infra }
+Invoke-Checked "npm test (Windows)" { & "$nodeBin\npm.cmd" test }
+
+# 5. Boot headless WHPX Android Emulator in background while shared prerequisites, NSIS, and Gradle APK build run
 $adb = "$sdkRoot\platform-tools\adb.exe"
 $emulatorExe = "$sdkRoot\emulator\emulator.exe"
 $startedEmulator = $false
@@ -242,10 +199,6 @@ if (-not $onlineEmulator) {
 }
 
 try {
-  # 5. Windows infra + unit tests (typecheck is platform-independent and runs once in macOS verify)
-  Invoke-Checked "npm run test:infra" { & "$nodeBin\npm.cmd" run test:infra }
-  Invoke-Checked "npm test (Windows)" { & "$nodeBin\npm.cmd" test }
-
   # 6. Build shared prerequisites (@bridge/protocol, @bridge/relay, @bridge/client)
   Invoke-Checked "Build @bridge/protocol, @bridge/relay & @bridge/client" {
     & "$nodeBin\npm.cmd" run ci:run -- run build -w @bridge/protocol
@@ -390,6 +343,53 @@ try {
   if ($startedEmulator) {
     & cmd.exe /c "`"$adb`" emu kill >nul 2>nul"
   }
+}
+
+if (-not $SkipWslLinux) {
+  $wslBundlePath = "/mnt/d/work/cache/temp/" + [IO.Path]::GetFileName($BundlePath)
+  $wslScript = @"
+set -euo pipefail
+export PATH="/usr/local/bin:`$PATH"
+CI_DIR="/var/tmp/bridge-linux-ci-slot-$slot"
+export TMPDIR="`$CI_DIR-tmp"
+mkdir -p "`$TMPDIR"
+if [ ! -d "`$CI_DIR/.git" ]; then
+  mkdir -p "`$CI_DIR"
+  git init -q "`$CI_DIR"
+fi
+git -C "`$CI_DIR" fetch --force "$wslBundlePath" "HEAD:refs/ci/slot-$slot"
+git -C "`$CI_DIR" reset --hard -q
+git -C "`$CI_DIR" checkout --force --detach -q "$Revision"
+cd "`$CI_DIR"
+LOCK_HASH=`$(sha256sum package-lock.json | awk '{print `$1}')
+STAMP="node_modules/.bridge-lock-sha256"
+if [ ! -f "`$STAMP" ] || [ "`$(cat "`$STAMP")" != "`$LOCK_HASH" ] || [ ! -f "node_modules/electron/package.json" ]; then
+  npm ci
+  printf '%s' "`$LOCK_HASH" > "`$STAMP"
+fi
+npm run test:infra
+npm test
+npm run ci:run -- run build -w @bridge/protocol
+BRIDGE_FAST_INSTALLER="1" BRIDGE_RELAY_URL="" BRIDGE_PUBLIC_RELAY_URL="" BRIDGE_PAIRING_BASE_URL="" BRIDGE_SERVICE_ORIGIN="" BRIDGE_ICE_SERVERS="" \
+  npm run ci:run -- run make:linux -w @bridge/desktop
+find apps/desktop/out/make -name "*.deb" -print -quit | grep -q . || { echo "Missing .deb output"; exit 1; }
+find apps/desktop/out/make -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }
+find apps/desktop/out/make -name "*.zip" -print -quit | grep -q . || { echo "Missing .zip output"; exit 1; }
+echo "<<< [WSL Ubuntu-24.04] Linux tests + .deb / .rpm / .zip outputs verified"
+"@
+  $wslEncoded = [Convert]::ToBase64String((New-Object Text.UTF8Encoding($false)).GetBytes(($wslScript -replace "`r`n", "`n")))
+  Write-Output ">>> [WIN] Starting WSL2 Ubuntu-24.04 Linux tests + installers in background"
+  $wslPsi = [System.Diagnostics.ProcessStartInfo]::new("wsl.exe")
+  $wslPsi.Arguments = "-d Ubuntu-24.04 --exec setsid --wait bash -c `"exec 3<&0 </dev/null; (exec >/dev/null 2>&1; cat <&3; kill -TERM 0 || true) & W=`$!; exec 3<&-; trap 'kill -TERM `$W 2>/dev/null || true; pkill -TERM -P `$W 2>/dev/null || true; wait `$W 2>/dev/null || true' EXIT; printf '%s' $wslEncoded | base64 -d | bash`""
+  $wslPsi.UseShellExecute = $false
+  $wslPsi.RedirectStandardInput = $true
+  $wslPsi.RedirectStandardOutput = $true
+  $wslPsi.RedirectStandardError = $true
+  $wslPsi.StandardOutputEncoding = [Text.Encoding]::UTF8
+  $wslPsi.StandardErrorEncoding = [Text.Encoding]::UTF8
+  $wslProc = [System.Diagnostics.Process]::Start($wslPsi)
+  $wslOutTask = $wslProc.StandardOutput.ReadToEndAsync()
+  $wslErrTask = $wslProc.StandardError.ReadToEndAsync()
 }
 
 # 9. Join parallel WSL2 Ubuntu-24.04 Linux infra + unit tests + .deb / .rpm / .zip packaging

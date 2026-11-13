@@ -7,7 +7,7 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 
 | Command | Coverage |
 | --- | --- |
-| `npm test` | Desktop, client, protocol, relay, and `plugins/magpie-quota`; bounded concurrent Vitest runs (2 suites in parallel, at most four workers each) |
+| `npm test` | Desktop, client, protocol, relay, then `plugins/magpie-quota`; sequential Vitest runs, at most two workers each |
 | `npm run typecheck` | All workspace typechecks, then the quota plugin explicitly |
 | `npm run verify` | Typecheck, five test suites, then the full root build; stops at the first failing stage |
 | `npm run test:infra` | Small fixtures for runner failure propagation and recycle-bin behavior |
@@ -33,8 +33,8 @@ stderr, and runner errors), and `summary.json`. The suite names are `desktop`,
 `client`, `protocol`, `relay`, and `quota`. A failed process, launch error, or missing
 or empty JUnit report fails the command. Later suites still run and retain evidence.
 A suite's previous JUnit report is sent to Trash before that suite starts, so it
-cannot satisfy the new run. Logs are replaced and `summary.json` is written in deterministic
-suite order. Reports are local artifacts; avoid including them in source commits.
+cannot satisfy the new run. Logs are replaced and `summary.json` is updated after
+each suite in deterministic order. Reports are local artifacts; avoid including them in source commits.
 
 Browser evidence is written to `artifacts/browser-e2e`. To install the Chromium
 version matching the existing `playwright-core` dependency, run:

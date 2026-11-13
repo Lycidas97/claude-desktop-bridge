@@ -6,9 +6,8 @@ const resources = vi.hoisted(() => {
   const resource = () => ({ initialize: vi.fn(async () => {}), close: vi.fn(async () => {}) });
   return {
     eventLog: resource(), state: resource(),
-    evidence: resource(), observer: { start: vi.fn(async () => {}), close: vi.fn(async () => {}) },
-    broker: resource(), nativeOptions: vi.fn(), legacyConstruct: vi.fn(),
-    hook: { start: vi.fn(async () => {}), close: vi.fn(async () => {}) },
+    evidence: resource(),
+    broker: resource(), nativeOptions: vi.fn(),
     controller: { ...resource(), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
     cleanupRtc: vi.fn(),
     inspector: { start: vi.fn(async () => {}), close: vi.fn(), notificationFailed: vi.fn() },
@@ -41,12 +40,8 @@ vi.mock("../controller/conversation-state-store.js", () => ({ ConversationStateS
 vi.mock("../evidence/evidence-store.js", () => ({ EvidenceStore: class {} }));
 vi.mock("../evidence/evidence-manager.js", () => ({ EvidenceManager: class { constructor() { return resources.evidence; } } }));
 vi.mock("../evidence/artifact-preview.js", () => ({ ElectronEvidencePreviewRenderer: class {} }));
-vi.mock("../legacy/transcript-observer.js", () => ({ TranscriptObserver: class { constructor() { resources.legacyConstruct("TranscriptObserver"); } } }));
 vi.mock("../claude/claude-desktop-bridge.js", () => ({ ClaudeDesktopBridge: class { constructor(options: unknown) { resources.nativeOptions(options); return resources.broker; } } }));
-vi.mock("../legacy/claude-permission-hook.js", () => ({ ClaudePermissionHook: class { constructor() { resources.legacyConstruct("ClaudePermissionHook"); } } }));
 vi.mock("../controller/controller.js", () => ({ DesktopController: class { constructor() { return resources.controller; } } }));
-vi.mock("../legacy/claude-desktop-session-registrar.js", () => ({ ClaudeDesktopSessionRegistrar: class { constructor() { resources.legacyConstruct("ClaudeDesktopSessionRegistrar"); } } }));
-vi.mock("../legacy/provider-registry.js", () => ({ ProviderRegistry: class { constructor() { resources.legacyConstruct("ProviderRegistry"); } } }));
 vi.mock("./claude-desktop-lifecycle.js", () => ({ ClaudeDesktopLifecycle: class {} }));
 vi.mock("../transport/webrtc-runtime.js", () => ({ loadDesktopPeerConnection: vi.fn(), cleanupDesktopPeerConnection: resources.cleanupRtc }));
 
@@ -150,13 +145,12 @@ it("disables real Native menu automation for a custom inspector origin", async (
   finally { await runtime.close(); vi.unstubAllEnvs(); }
 });
 
-it("assembles the native facade without legacy Claude execution services", async () => {
+it("assembles the native facade", async () => {
   const { createServiceRuntime } = await import("./service-runtime.js");
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
   expect(resources.nativeOptions).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
     settingsPath: "/test/settings.json",
     eventLog: resources.eventLog, conversationState: resources.state, evidence: resources.evidence,
   }));
-  expect(resources.legacyConstruct).not.toHaveBeenCalled();
   await runtime.close();
 });

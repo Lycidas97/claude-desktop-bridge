@@ -121,7 +121,7 @@ export class RelayTransport implements BridgeTransport {
     this.socket.revokeDevice(deviceId);
   }
 
-  registerPushToken(platform: "android" | "ios", pushToken: string): void {
+  registerPushToken(platform: "android", pushToken: string): void {
     this.socket.registerPushToken(platform, pushToken);
   }
 

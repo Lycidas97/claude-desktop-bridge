@@ -55,7 +55,7 @@ export interface RelayStore {
   registerPush(
     roomId: string,
     deviceId: string,
-    platform: "android" | "ios",
+    platform: "android",
     pushToken: string,
     at: number,
   ): Promise<boolean>;
@@ -163,7 +163,7 @@ export class MemoryRelayStore implements RelayStore {
   async registerPush(
     roomId: string,
     deviceId: string,
-    platform: "android" | "ios",
+    platform: "android",
     pushToken: string,
     at: number,
   ): Promise<boolean> {

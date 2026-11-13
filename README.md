@@ -10,6 +10,8 @@ Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队
 
 这是独立维护的 fork，日常使用与验证主要围绕 **macOS + Android + Claude Desktop（含 Claude-3p）**。它依赖 Desktop 的本地 `LocalSessions` 接口，具体操作取决于已安装的 Desktop 版本与账号 / 工作区策略；普通网页聊天记录不属于这条接入路径。
 
+原生手机端支持 Android，通用手机 Web 客户端继续保留；原生 iOS 产品线已退役。
+
 ## 版本与下载
 
 **当前正式版是 [v1.3.1](https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.1)，下方上手步骤以该版为准。** 请从本 fork 下载电脑端和手机端，尽量使用同一版本。
@@ -20,7 +22,6 @@ Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队
 | Android 8.0+ | [APK](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-android-debug.apk) | 使用仓库固定 debug 签名；需允许当前下载来源安装应用 |
 | Windows | [安装包 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-windows-installer-ci.zip) | CI 构建；签名状态见包内 `windows-release-evidence.json`，原生连接未完成实机验收 |
 | Linux | [安装包 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-linux-installers-ci.zip) | CI 构建；不能据此推断已具备可用的 Claude Desktop 原生环境 |
-| iOS | [模拟器](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-ios-simulator.zip) / [未签名真机应用](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-ios-device-unsigned.zip) | 开发产物；真机版须自行签名，不是可直接安装的 IPA |
 
 发布页同时提供 `SHA256SUMS.txt` 与 `SOURCE_COMMIT.txt`。构建成功不代表所有平台均完成实机验证；Android 系统返回流程已在 Android 16 模拟器中验证。
 
@@ -141,7 +142,7 @@ Claude 的任务、队列和审批由 Desktop 管理，Bridge 不另起 Claude S
 | 更新了窗口，仍显示旧能力 | 旧后台服务可能仍在运行；等任务结束后停止后台并重新打开 Bridge，两端尽量同版 |
 | 消息一直排队或投递未确认 | 先看 Desktop 的当前任务、授权等待和原生队列，再核对历史；不要因为网络超时重复发送 |
 | 文件预览失败 | 文件是否在工作区、仍存在且可读；是否触及敏感路径、1 MiB 文本预览或 20 MiB 传输限制 |
-| 锁屏后收不到即时通知 | 先检查系统通知权限；在线本地提醒不等于后台推送。FCM / APNs 需要另配应用与服务凭据，最小中继部署不提供锁屏即时唤醒保证 |
+| 锁屏后收不到即时通知 | 先检查系统通知权限；在线本地提醒不等于后台推送。Android FCM 需要另配应用与服务凭据，最小中继部署不提供锁屏即时唤醒保证 |
 
 继续排查时，电脑可在“状态”或“设置 → 诊断与关于”导出诊断；手机在 **设置 → 连接诊断与日志**查看连接问题。反馈版本、平台、出错步骤与具体提示，勿附配对链接、密钥或聊天正文。可以在[本 fork 的 Issues](https://github.com/Lycidas97/claude-desktop-bridge/issues)反馈可复现问题。
 
@@ -171,6 +172,6 @@ npm run build -w @bridge/protocol
 npm run dev:desktop
 ```
 
-开发模式启动本地 Relay、React 客户端和 Electron Bridge；手机不能通过自己的 `127.0.0.1` 访问电脑服务。构建默认参数见 [.env.example](.env.example)，安装后的手动连接设置优先。Android / iOS 打包还需要对应平台工具链；测试与发布规则见贡献指南。
+开发模式启动本地 Relay、React 客户端和 Electron Bridge；手机不能通过自己的 `127.0.0.1` 访问电脑服务。构建默认参数见 [.env.example](.env.example)，安装后的手动连接设置优先。Android 打包还需要 Android 工具链；测试与发布规则见贡献指南。
 
 感谢 [czhmartinez/claude-desktop-bridge](https://github.com/czhmartinez/claude-desktop-bridge) 的原始项目。本 fork 保留 **MIT** 许可证，见 [LICENSE](LICENSE)。

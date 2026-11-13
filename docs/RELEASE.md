@@ -2,7 +2,7 @@
 
 ## 版本与源码
 
-发布目标为本 fork：`Lycidas97/claude-desktop-bridge`。根包、全部 npm workspace、`package-lock.json`、Android `versionName` 和 iOS `MARKETING_VERSION` 必须一致。1.3 使用 `1.3.0`；Android `versionCode` 必须高于已分发的 117，iOS 构建号同步递增。
+发布目标为本 fork：`Lycidas97/claude-desktop-bridge`。根包、全部 npm workspace、`package-lock.json` 和 Android `versionName` 必须一致。1.3 使用 `1.3.0`；Android `versionCode` 必须高于已分发的 117。
 
 所有平台产物必须来自同一发布提交。不要把本机 `output/`、测试 `artifacts/`、嵌套工作树、设备配置、配对链接、凭据或本机签名材料提交到仓库。
 
@@ -45,7 +45,7 @@ npm run audit:runtime
 5. 所有平台资产统一在 GitHub Actions 洁净环境中基于同一锁定修订构建。任一必要 job 失败时保留草稿，不公开残缺发布；修复后通过工作流重跑。
 6. 全部资产成功后由工作流发布。不要绕过版本校验、单独手动创建 tag，或把先前版本的安装包改名上传。
 
-具体 job 结果、构建提交与产物哈希以 GitHub Actions 为准。无签名或未签名设备包必须在文件名和发布说明中保留 `ci`、`adhoc` 或 `unsigned` 标记。
+具体 job 结果、构建提交与产物哈希以 GitHub Actions 为准。无正式签名的产物必须在文件名和发布说明中保留 `ci` 或 `adhoc` 标记。
 
 ## Windows
 
@@ -81,7 +81,7 @@ npm run ci:run -- run make:adhoc -w @bridge/desktop
 
 Linux 在 Linux runner 构建 ZIP/DEB/RPM，需要 `rpm`、`fakeroot`、`dpkg` 和 `trash-cli`。没有仓库签名、打包态 UI 和托盘实机验收时，只报告已完成的构建范围。
 
-## Android 与 iOS
+## Android
 
 Android 使用 JDK 21 和 Android SDK，沿用仓库固定调试签名，确保既有 APK 可覆盖升级：
 
@@ -91,17 +91,7 @@ npm run ci:run -- run build:android:debug
 
 检查包名 `com.localbridge.mobile`、版本号和构建号、签名指纹、全部前端资源、原生 Capacitor 插件注册、DEX 完整性，以及没有开发服务器 URL。发布文件需记录 SHA-256，上传后应下载回验。
 
-iOS 保留模拟器与未签名设备构建：
-
-```bash
-npm run ci:run -- run build:ios:simulator
-```
-
-```bash
-npm run ci:run -- run build:ios:device
-```
-
-未签名设备 `.app` 不是可直接安装的 IPA。正式设备分发仍需要 Apple Developer、Team、证书、provisioning profile 和推送配置。
+原生 iOS 产品线已退役；手机浏览器继续使用通用 Web 客户端。
 
 ## 1.3 功能验收重点
 

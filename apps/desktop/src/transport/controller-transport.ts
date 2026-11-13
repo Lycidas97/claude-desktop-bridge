@@ -413,7 +413,7 @@ export function applyRememberedDevice(
       deflateDevices.add(deviceId);
     }
     if (typeof value.name === "string" && value.name.trim()) device.name = value.name.trim().slice(0, 80);
-    if (value.platform === "android" || value.platform === "ios" || value.platform === "web") {
+    if (value.platform === "android" || value.platform === "web") {
       device.platform = value.platform;
     }
   }

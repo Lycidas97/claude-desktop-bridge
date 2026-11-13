@@ -258,7 +258,7 @@ export class BridgeSocket {
     this.ws.send(JSON.stringify({ type: "device-revoke", deviceId }));
   }
 
-  registerPushToken(platform: "android" | "ios", pushToken: string): void {
+  registerPushToken(platform: "android", pushToken: string): void {
     if (this.role !== "mobile") throw new Error("Only mobile clients can register push tokens");
     if (!this.ws || this.stateValue !== "connected" || this.ws.readyState !== this.WebSocketImpl.OPEN) {
       throw new Error("Bridge is not connected");

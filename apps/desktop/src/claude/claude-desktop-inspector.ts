@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 
 const STREAM = "__claudeBridgeNativeStreamV1";
 const METHODS = new Set([
-  "getAll", "getSession", "start", "forkSession", "startBtwChild", "updateSession", "archive", "unarchive", "delete",
+  "getAll", "getSession", "start", "saveTrust", "forkSession", "startBtwChild", "updateSession", "archive", "unarchive", "delete",
   "sendMessage", "sendSteeredNow", "promoteQueuedMessage", "cancelQueuedMessage", "interrupt", "stopTask", "setModel", "setEffort",
   "setPermissionMode", "getContextUsage", "getSupportedCommands", "getTranscript", "getTranscriptPage",
   "getTranscriptTail", "respondToToolPermission", "findLocalSessionIdForBridgeId", "getAvailableCodeModels",

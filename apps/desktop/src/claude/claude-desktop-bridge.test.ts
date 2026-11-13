@@ -7,7 +7,7 @@ import { DesktopController } from "../controller/controller.js";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ClaudeDesktopBridge, nativeHistoryItems } from "./claude-desktop-bridge.js";
+import { ClaudeDesktopBridge, WorkspaceTrustRequiredError, nativeHistoryItems } from "./claude-desktop-bridge.js";
 import { InspectorDisconnectedError, NativeCallError } from "./claude-desktop-inspector.js";
 import { ConversationStateStore } from "../controller/conversation-state-store.js";
 import { SessionEventLog } from "../controller/session-event-log.js";
@@ -41,6 +41,8 @@ class NativeDesktop extends EventEmitter {
   filesPreviewError: Error | undefined;
   conversationRewind: { prefill: string } | null = { prefill: "Original draft" };
   conversationRewindError: Error | undefined;
+  untrustedCwds = new Set<string>();
+  keepUntrustedAfterSave = false;
   supports(method: string) { return !this.unsupported.has(method); }
   async connect() { this.ready = true; }
   async close() { this.ready = false; }
@@ -93,8 +95,15 @@ class NativeDesktop extends EventEmitter {
     if (method === "respondToToolPermission") for (const session of this.sessions) {
       if (Array.isArray(session.pendingToolPermissions)) session.pendingToolPermissions = session.pendingToolPermissions.filter(permission => permission.requestId !== args[0]);
     }
+    if (method === "saveTrust") {
+      if (!this.keepUntrustedAfterSave) this.untrustedCwds.delete(String(args[0]));
+      return;
+    }
     if (method === "start") {
       const input = args[0] as Record<string, unknown>;
+      if (this.untrustedCwds.has(String(input.cwd))) {
+        throw new NativeCallError("Error invoking remote method '$eipc_message$d32c5f9b_$_claude.web_$_LocalSessions_$_start': WorkspaceTrustError: Workspace requires trust approval before starting a session. [ccdErrorCategory:trust_required]");
+      }
       this.sessions.push({ ...input, isRunning: false, turnRunning: false });
       return { sessionId: input.sessionId };
     }
@@ -196,6 +205,29 @@ describe("native Sections", () => {
       }
       expect(f.native.calls.filter(call => call.method === "start")).toEqual([]);
       expect(assignSection).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+
+  it.each(["D:\\PARA", "/Users/lycidas/work/new-folder"])("sanitizes WorkspaceTrustError, authorizes via saveTrust on confirmation, and falls back to manual when required (%s)", async cwd => {
+    const f = await fixture();
+    try {
+      f.native.untrustedCwds.add(cwd);
+      expect(f.bridge.capabilities()).toContain("workspace.trust");
+      await expect(f.bridge.createSession(cwd, "Untrusted")).rejects.toEqual(new WorkspaceTrustRequiredError(false));
+      expect(f.native.calls.some(call => call.method === "saveTrust")).toBe(false);
+
+      const created = await f.bridge.createSession(cwd, "Untrusted", undefined, true);
+      expect(created.cwd).toBe(cwd);
+      expect(f.native.calls.filter(call => call.method === "saveTrust")).toEqual([{ method: "saveTrust", args: [cwd] }]);
+
+      f.native.untrustedCwds.add(cwd);
+      f.native.keepUntrustedAfterSave = true;
+      await expect(f.bridge.createSession(cwd, "Still untrusted", undefined, true)).rejects.toEqual(new WorkspaceTrustRequiredError(true));
+
+      f.native.keepUntrustedAfterSave = false;
+      f.native.unsupported.add("saveTrust");
+      expect(f.bridge.capabilities()).not.toContain("workspace.trust");
+      await expect(f.bridge.createSession(cwd, "Manual desktop")).rejects.toEqual(new WorkspaceTrustRequiredError(true));
     } finally { await f.close(); }
   });
 
@@ -1831,6 +1863,18 @@ describe("Claude native relay", () => {
       await f.message({ type: "assistant", uuid: "hidden-call", ...attribution, message: { content: [{ type: "tool_use", id: "hidden-tool", name, input: { items: [{ content: "Inspect", status: "in_progress" }] } }] } });
       await f.message({ type: "user", uuid: "hidden-result", ...attribution, message: { content: [{ type: "tool_result", tool_use_id: "hidden-tool", content: "Done" }] } });
       expect(f.eventLog.latestItem("local-native", "tool.completed", "hidden-tool")).toBeUndefined();
+    } finally { await f.close(); }
+  });
+
+  it("releases completed tool input and keeps raw tool output out of the event log", async () => {
+    const f = await fixture();
+    try {
+      await f.message({ type: "assistant", uuid: "payload-call", message: { content: [{ type: "tool_use", id: "payload-tool", name: "Read", input: { file_path: "/project/payload.ts" } }] } });
+      await f.message({ type: "user", uuid: "payload-result", message: { content: [{ type: "tool_result", tool_use_id: "payload-tool", content: "x".repeat(1_024) }] } });
+      const completed = f.eventLog.latestItem("local-native", "tool.completed", "payload-tool");
+      expect(completed?.data).toMatchObject({ toolName: "Read", text: expect.stringContaining("/project/payload.ts") });
+      expect(completed?.data).not.toHaveProperty("output");
+      expect((f.bridge as unknown as { tools: Map<string, unknown> }).tools.size).toBe(0);
     } finally { await f.close(); }
   });
 

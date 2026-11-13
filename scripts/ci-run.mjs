@@ -18,9 +18,11 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
     : mode === 'browser'
       ? [npm('run', 'build', '-w', '@bridge/protocol'), npm('run', 'build', '-w', '@bridge/relay'),
         [process.execPath, ['scripts/browser-e2e.mjs']]]
-      : mode === 'npm' ? [npm(...process.argv.slice(3))] : null;
+      : mode === 'browser:nobuild'
+        ? [[process.execPath, ['scripts/browser-e2e.mjs']]]
+        : mode === 'npm' ? [npm(...process.argv.slice(3))] : null;
 
-  if (!commands || !process.env.npm_execpath) {
+  if (!commands || (mode !== 'browser:nobuild' && !process.env.npm_execpath)) {
     console.error('Use npm run verify, npm run test:browser, or npm run ci:run -- <npm arguments>');
     process.exitCode = 1;
   } else {

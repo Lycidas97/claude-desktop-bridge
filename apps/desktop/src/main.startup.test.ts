@@ -38,7 +38,7 @@ vi.mock("electron", async () => {
   }
   return {
     app, BrowserWindow, Tray,
-    dialog: { showErrorBox: vi.fn(), showOpenDialog: vi.fn() },
+    dialog: { showErrorBox: vi.fn(), showOpenDialog: vi.fn(), showMessageBox: vi.fn() },
     protocol: { registerSchemesAsPrivileged: vi.fn() }, ipcMain: { handle: vi.fn() },
     Menu: { buildFromTemplate: vi.fn(() => ({ getMenuItemById: vi.fn(() => ({ checked: false })) })) },
     nativeImage: { createFromPath: vi.fn(() => ({ resize: vi.fn(), setTemplateImage: vi.fn() })) }, shell: {},
@@ -145,6 +145,35 @@ it.each(["confirm", "cancel", "wrong directory"])("uses a local directory access
     expect(write).not.toHaveBeenCalled();
   }
   expect(dialog.showOpenDialog).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({ defaultPath: "/fixture/Claude", properties: ["openDirectory", "showHiddenFiles"] }));
+});
+
+it.each([
+  { case: "running native turn", ownership: "DESKTOP_NATIVE_RUNNING", turnState: "running", confirms: true },
+  { case: "native turn waiting for permission", ownership: "DESKTOP_NATIVE_RUNNING", turnState: "waiting", confirms: true },
+  { case: "idle native session", ownership: "DESKTOP_NATIVE_IDLE", turnState: "idle", confirms: false },
+])("confirms before quitting Claude Desktop only with an active native turn: $case", async ({ ownership, turnState, confirms }) => {
+  process.argv = originalArgv;
+  const { EventEmitter } = await import("node:events");
+  const { dialog, ipcMain } = await import("electron");
+  const snapshot = { launchAtLogin: false, sessions: [{ sessionId: "native", transport: "claude-desktop-native", ownership, turnState }] };
+  const call = vi.fn(async (method: string) => method === "quitDesktopApp" ? { quit: true } : snapshot);
+  mocks.connect.mockResolvedValueOnce(Object.assign(new EventEmitter(), { call, close: vi.fn() }));
+  vi.mocked(dialog.showMessageBox).mockResolvedValue({ response: 1, checkboxChecked: false });
+  await import("./main.js");
+  await vi.waitFor(() => expect(ipcMain.handle).toHaveBeenCalledWith("bridge:quit-claude-desktop", expect.any(Function)));
+  const quit = vi.mocked(ipcMain.handle).mock.calls.find(([channel]) => channel === "bridge:quit-claude-desktop")![1];
+  const event = { senderFrame: { url: process.env.BRIDGE_DEV_SERVER_URL || "file:///bridge/index.html" } } as Electron.IpcMainInvokeEvent;
+  if (confirms) {
+    await expect(quit(event)).resolves.toBe(snapshot);
+    expect(dialog.showMessageBox).toHaveBeenCalledOnce();
+    expect(vi.mocked(dialog.showMessageBox).mock.calls[0]!.at(-1)).toMatchObject({ message: "Claude Desktop 仍有会话正在运行" });
+    expect(JSON.stringify(vi.mocked(dialog.showMessageBox).mock.calls[0])).not.toContain("接管");
+    expect(call).not.toHaveBeenCalledWith("quitDesktopApp", "claude-desktop");
+  } else {
+    await expect(quit(event)).resolves.toEqual({ quit: true });
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    expect(call).toHaveBeenCalledWith("quitDesktopApp", "claude-desktop");
+  }
 });
 
 it("closes the runtime if starting the local listener fails", async () => {

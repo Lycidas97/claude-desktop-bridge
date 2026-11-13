@@ -42,6 +42,22 @@ import {
 
 export { nativeHistoryItems };
 
+export class WorkspaceTrustRequiredError extends NativeCallError {
+  constructor(readonly manual: boolean) {
+    super(
+      manual
+        ? "请在电脑端 Claude 窗口打开并信任此文件夹后重试。"
+        : "此文件夹首次在 Claude Desktop 中使用，需要确认信任后才能创建会话。",
+    );
+    this.name = "WorkspaceTrustRequiredError";
+  }
+}
+
+function isWorkspaceTrustError(error: unknown): boolean {
+  const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  return /\bWorkspaceTrustError\b|\[ccdErrorCategory:trust_required\]/u.test(text);
+}
+
 interface NativeSession {
   sessionId: string;
   cwd: string;
@@ -192,7 +208,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const capabilities: BridgeRuntimeCapability[] = ["session.list", "session.history"];
     if (!this.inspector.ready) return capabilities;
     const methods: Array<[string, BridgeRuntimeCapability]> = [
-      ["start", "session.create"], ["forkSession", "session.fork"], ["sendMessage", "turn.start"],
+      ["start", "session.create"], ["saveTrust", "workspace.trust"], ["forkSession", "session.fork"], ["sendMessage", "turn.start"],
       ["sendMessage", "turn.steer"], ["interrupt", "turn.interrupt"], ["setModel", "session.configure"],
       ["respondToToolPermission", "permission.resolve"], ["sendMessage", "attachment.image"],
     ];
@@ -385,11 +401,24 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (!await this.refreshRuntime()) throw new NativeCallError(this.lastError);
   }
 
-  async createSession(cwd: string, title?: string, projectId?: string): Promise<BridgeSessionInfo> {
+  async createSession(cwd: string, title?: string, projectId?: string, trustWorkspace?: boolean): Promise<BridgeSessionInfo> {
     if (projectId && !await this.refreshRuntime()) throw new NativeCallError(this.lastError);
     const project = projectId ? this.listProjects().find(project => project.projectId === projectId) : undefined;
     if (projectId && !project) throw new NativeCallError("Selected Desktop project is no longer available");
-    const result = record(await this.inspector.call("start", [{ cwd, title, sessionId: `local_${randomUUID()}`, withoutFirstMessage: true, message: "" }]));
+    if (trustWorkspace) {
+      if (!this.inspector.supports("saveTrust")) throw new WorkspaceTrustRequiredError(true);
+      await this.inspector.call("saveTrust", [cwd]);
+    }
+    let raw: unknown;
+    try {
+      raw = await this.inspector.call("start", [{ cwd, title, sessionId: `local_${randomUUID()}`, withoutFirstMessage: true, message: "" }]);
+    } catch (error) {
+      if (isWorkspaceTrustError(error)) {
+        throw new WorkspaceTrustRequiredError(Boolean(trustWorkspace) || !this.inspector.supports("saveTrust"));
+      }
+      throw error;
+    }
+    const result = record(raw);
     if (typeof result.sessionId !== "string") throw new NativeCallError("Desktop did not return a session ID");
     if (project?.kind === "desktop-group") await this.inspector.assignSection!(result.sessionId, project.projectId);
     await this.refreshRuntime();
@@ -979,10 +1008,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
         const block = record(rawBlock);
         if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
           const tool = this.tools.get(block.tool_use_id);
+          this.tools.delete(block.tool_use_id);
           const started = this.options.eventLog.latestItem(sessionId, "tool.started", block.tool_use_id);
           const toolName = tool?.toolName ?? started?.data.toolName;
           if (toolName && toolName !== "mcp__ccd_turn__update_plan" && toolName !== "mcp__ccd_turn__wrap_up") {
-            await this.record({ sessionId, itemId: block.tool_use_id, origin: "claude-desktop", type: "tool.completed", data: { toolName, text: tool ? JSON.stringify(tool.input ?? {}) : started?.data.text ?? "", output: block.content } });
+            await this.record({ sessionId, itemId: block.tool_use_id, origin: "claude-desktop", type: "tool.completed", data: { toolName, text: tool ? JSON.stringify(tool.input ?? {}) : started?.data.text ?? "" } });
           }
           if (tool && this.options.evidence) {
             tool.output = block.content; tool.completedAt = Date.now();

@@ -196,6 +196,7 @@ export class DesktopController extends EventEmitter {
           "session.command.v1",
           ...(runtimes.some(runtime => runtime.id === "claude-desktop" && runtime.capabilities.includes("session.rewind")) ? ["session.rewind.v1" as const] : []),
           ...(this.conversationState ? ["session.rename.v1" as const] : []),
+          ...(runtimes.some(runtime => runtime.capabilities.includes("workspace.trust")) ? ["workspace.trust.v1" as const] : []),
           ...(runtimes.some(runtime => runtime.capabilities.includes("section.create")) ? ["section.create.v1" as const] : []),
           ...(runtimes.some(runtime => runtime.capabilities.includes("section.move")) ? ["section.move.v1" as const] : []),
           ...(runtimes.some(runtime => runtime.capabilities.includes("section.rename")) ? ["section.rename.v1" as const] : []),

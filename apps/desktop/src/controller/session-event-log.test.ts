@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -499,6 +499,86 @@ describe("SessionEventLog", () => {
     });
     expect(reopened.latestSeq()).toBe(lastSeq + 1);
     await reopened.close();
+  });
+
+  it("applies the event retention window while appending instead of only on reopen", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-events-runtime-window-"));
+    directories.push(directory);
+    const log = new SessionEventLog(join(directory, "events.jsonl"), 1, { bytesThreshold: 1_000_000, retainEvents: 3, retainBytes: 1_000_000 });
+    try {
+      for (let index = 0; index < 12; index += 1) {
+        await log.append({ sessionId: "session-1", turnId: "turn-1", itemId: `output-${index}`, origin: "claude-host", type: "command.output", data: { text: `line-${index}` } });
+      }
+      expect(log.replay(0, 100).map((event) => event.itemId)).toEqual(["output-9", "output-10", "output-11"]);
+      expect(log.history("session-1").items.map((item) => item.id)).toEqual(["output-9", "output-10", "output-11"]);
+      expect(log.hasItem("session-1", "command.output", "output-0")).toBe(true);
+      expect(log.itemMatches("session-1", "command.output", "output-0", { text: "line-0" })).toBe(true);
+      expect(log.latestItem("session-1", "command.output", "output-0")).toMatchObject({ seq: 1 });
+      expect(log.latestItem("session-1", "command.output", "output-0")?.data).not.toHaveProperty("text");
+      expect(log.latestItem("session-1", "command.output", "output-11")).toMatchObject({ data: { text: "line-11" } });
+    } finally {
+      await log.close();
+    }
+  });
+
+  it("prefers full window payloads over narrow receipts until events age out", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-events-window-priority-"));
+    directories.push(directory);
+    const log = new SessionEventLog(join(directory, "events.jsonl"), 1, { bytesThreshold: 1_000_000, retainEvents: 2, retainBytes: 1_000_000 });
+    try {
+      await log.append({ sessionId: "session-1", itemId: "handoff-1", origin: "claude-desktop", type: "session.desktop-handoff", data: { state: "active", reason: "window-reason" } });
+      await log.append({ sessionId: "session-1", itemId: "task-1", origin: "claude-host", type: "tool.progress", data: { subagent: { agentId: "agent-1", state: "running", latestText: "window-step" } } });
+      expect(log.latestDesktopHandoffs()).toMatchObject([{ itemId: "handoff-1", data: { state: "active", reason: "window-reason" } }]);
+      expect(log.latestTaskEvents("session-1")).toMatchObject([{ itemId: "task-1", data: { subagent: { agentId: "agent-1", latestText: "window-step" } } }]);
+
+      await log.append({ sessionId: "session-1", itemId: "output-1", origin: "claude-host", type: "command.output", data: { text: "evict-1" } });
+      await log.append({ sessionId: "session-1", itemId: "output-2", origin: "claude-host", type: "command.output", data: { text: "evict-2" } });
+      expect(log.latestDesktopHandoffs()).toMatchObject([{ itemId: "handoff-1", data: { state: "active" } }]);
+      expect(log.latestDesktopHandoffs()[0]?.data).not.toHaveProperty("reason");
+      expect(log.latestTaskEvents("session-1")).toMatchObject([{ itemId: "task-1", data: { subagent: { agentId: "agent-1", state: "running" } } }]);
+      expect((log.latestTaskEvents("session-1")[0]?.data.subagent as Record<string, unknown> | undefined)).not.toHaveProperty("latestText");
+    } finally {
+      await log.close();
+    }
+  });
+
+  it("bounds retained events by bytes while appending", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-events-runtime-bytes-"));
+    directories.push(directory);
+    const log = new SessionEventLog(join(directory, "events.jsonl"), 1, { bytesThreshold: 1_000_000, retainEvents: 100, retainBytes: 1_200 });
+    try {
+      for (let index = 0; index < 12; index += 1) {
+        await log.append({ sessionId: "session-1", itemId: `payload-${index}`, origin: "claude-host", type: "command.output", data: { text: "x".repeat(400) } });
+      }
+      const retained = log.replay(0, 100);
+      expect(retained.length).toBeGreaterThan(0);
+      expect(retained.length).toBeLessThan(6);
+      expect(retained.reduce((bytes, event) => bytes + Buffer.byteLength(JSON.stringify(event)) + 1, 0)).toBeLessThanOrEqual(1_200);
+      expect(retained.at(-1)?.itemId).toBe("payload-11");
+      await log.close();
+      const reopened = new SessionEventLog(join(directory, "events.jsonl"));
+      await reopened.initialize();
+      expect(reopened.hasItem("session-1", "command.output", "payload-0")).toBe(true);
+      expect(reopened.itemMatches("session-1", "command.output", "payload-0", { text: "x".repeat(400) })).toBe(true);
+      await reopened.close();
+
+      const crlfPath = join(directory, "crlf-events.jsonl");
+      const seed = new SessionEventLog(crlfPath, 1);
+      await seed.append({ sessionId: "session-1", itemId: "seed-1", origin: "claude-host", type: "command.output", data: { text: "s".repeat(500) } });
+      await seed.close();
+      const raw = (await readFile(crlfPath, "utf8")).trimEnd();
+      await writeFile(crlfPath, `${raw}${" ".repeat(900)}\r\n`, "utf8");
+      const loaded = new SessionEventLog(crlfPath, 1, { bytesThreshold: 1_000_000, retainEvents: 10, retainBytes: 900 });
+      try {
+        await loaded.append({ sessionId: "session-1", itemId: "next-1", origin: "claude-host", type: "command.output", data: { text: "a" } });
+        await loaded.append({ sessionId: "session-1", itemId: "next-2", origin: "claude-host", type: "command.output", data: { text: "b" } });
+        expect(loaded.replay(0, 10).map((event) => event.itemId)).toEqual(["next-1", "next-2"]);
+      } finally {
+        await loaded.close();
+      }
+    } finally {
+      await log.close();
+    }
   });
 
   it("keeps only the bounded tail when the retained window overflows", async () => {

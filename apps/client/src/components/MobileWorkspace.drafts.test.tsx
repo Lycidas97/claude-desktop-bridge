@@ -453,6 +453,9 @@ describe("background tasks", () => {
     expect(markers()[0]!.props.task).toBe(running);
     markers()[1]!.props.onOpen(); draw();
     expect(traySheet()!.props.focus.id).toBe("tool:agent-tool-1");
+    expect(traySheet()!.props.renderSubagent(props.histories.A!.items[1]).props.collapsible).toBe(false);
+    expect(dispatchMobileBack()).toBe(true); draw();
+    expect(traySheet()).toBeUndefined();
   });
 
   it("keeps the stop action on subagent cards inside the tray", async () => {

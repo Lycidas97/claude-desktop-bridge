@@ -500,14 +500,23 @@ export function useMobileBridge() {
     title?: string,
     runtimeId?: BridgeDesktopRuntimeId,
     projectId?: string,
+    trustWorkspace?: boolean,
   ): Promise<BridgeSessionInfo | undefined> => {
+    const canTrust = trustWorkspace === true
+      && stateRef.current.snapshot?.host.capabilities.includes("workspace.trust.v1") === true;
     const response = await sendRequest("session.create", {
       cwd,
       ...(title ? { title } : {}),
       ...(runtimeId ? { runtimeId } : {}),
       ...(projectId !== undefined ? { projectId } : {}),
+      ...(canTrust ? { trustWorkspace: true } : {}),
     }, { wait: true });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "新建会话失败");
+    if (!response?.ok) {
+      throw Object.assign(
+        new Error(response?.error?.message ?? "新建会话失败"),
+        response?.error?.code ? { code: response.error.code } : {},
+      );
+    }
     const result = response.result as { session?: BridgeSessionInfo };
     if (result.session) {
       setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));

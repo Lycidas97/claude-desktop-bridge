@@ -68,3 +68,15 @@ During scheduled consolidation (`bridge-tech-debt-patrol`) or pre-release retros
 - Verified in: `b5a2300`
 - Pattern: After `git push` or fast-forwarding local `main` to a squash-merged PR commit whose `HEAD^{tree}` matches the verified branch, run `npm run ci:local -- --publish` to post `ci/local-distributed = success` directly to `Lycidas97/claude-desktop-bridge`.
 - Seen 1× (2026-11-12)
+
+**[Pitfall] Give concurrent WSL Electron Packager builds a separate TMPDIR per CI slot.**
+- Broken in: `45229d5` / `Lycidas97/claude-desktop-bridge#46` — Electron Packager 18.4.4 clears its shared `<os.tmpdir()>/electron-packager` root on startup, deleting another process’s existing Linux template before `LinuxApp.initialize()` consumes it.
+- Fixed in: `2b51a7e`
+- Done right: In the WSL Bash script emitted by `scripts/win-local-ci.ps1`, export `TMPDIR="$CI_DIR-tmp"` and create it before Linux builds. The Linux-only regression in `scripts/windows-native-qa-contract.test.mjs` executes two real Packager processes in a fixed create→second-startup→consume sequence: shared root fails with template ENOENT; slot-specific roots pass. Run `npm run test:infra` under WSL Ubuntu24.04; the final four-way full run also passed with isolated roots.
+- Seen 1× (2026-11-12)
+
+**[Pitfall] Set BOM-free PowerShell Console.InputEncoding before piping a strict Bash script into WSL.**
+- Broken in: `6f35763` / `Lycidas97/claude-desktop-bridge#46` — after `chcp 65001`, the input pipe began with EF BB BF, so the first `set -euo pipefail` was invalid and later successful commands concealed a prior Git failure.
+- Fixed in: `2b51a7e`
+- Done right: Set `[Console]::InputEncoding = New-Object Text.UTF8Encoding($false)` before `wsl.exe ... bash -s`. The actual Windows→WSL regression in `scripts/windows-native-qa-contract.test.mjs` pipes `false` followed by a success sentinel: original returns 0 and prints the sentinel; fixed returns 1 before the sentinel. Run `npm run test:infra` on Windows; both red and green execute with zero skips.
+- Seen 1× (2026-11-12)

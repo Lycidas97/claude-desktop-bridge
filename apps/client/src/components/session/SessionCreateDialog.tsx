@@ -18,7 +18,7 @@ export interface SessionCreateDialogProps {
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
   onCreateDirectory?(parentPath: string, name: string): Promise<string>;
   onChooseDirectory?(initialPath?: string): Promise<string | undefined>;
-  onCreate(cwd: string, title?: string, runtimeId?: BridgeDesktopRuntimeId, projectId?: string): Promise<BridgeSessionInfo | undefined>;
+  onCreate(cwd: string, title?: string, runtimeId?: BridgeDesktopRuntimeId, projectId?: string, trustWorkspace?: boolean): Promise<BridgeSessionInfo | undefined>;
   onCreated(session: BridgeSessionInfo): void;
   onClose(): void;
 }
@@ -51,8 +51,12 @@ export function SessionCreateDialog({ snapshot, initialProjectId, connected, onB
   const [mkdirName, setMkdirName] = useState("");
   const [mkdirBusy, setMkdirBusy] = useState(false);
   const [mkdirError, setMkdirError] = useState("");
+  const [trustMode, setTrustMode] = useState<"confirm" | "manual">();
 
   const runtime = snapshot.runtimes?.find((candidate) => candidate.id === runtimeId);
+  const canTrustWorkspace = snapshot.host.capabilities.includes("workspace.trust.v1")
+    && Boolean(runtime?.capabilities.includes("workspace.trust"));
+  const activeTrustMode = trustMode === "confirm" && !canTrustWorkspace ? "manual" : trustMode;
   const runtimeAvailable = snapshot.runtimes
     ? runtime?.state === "ready" && runtime.capabilities.includes("session.create")
     : runtimeId === "claude-desktop" && (snapshot.runtime.state === "ready" || snapshot.runtime.state === "working");
@@ -127,6 +131,7 @@ export function SessionCreateDialog({ snapshot, initialProjectId, connected, onB
     setView("form");
     setBrowseTarget(undefined);
     setPathEditing(false);
+    setTrustMode(undefined);
     setError("");
   }
 
@@ -167,17 +172,37 @@ export function SessionCreateDialog({ snapshot, initialProjectId, connected, onB
     } finally { setChoosing(false); }
   }
 
-  async function createSession(): Promise<void> {
+  async function createSession(trustWorkspace = false): Promise<void> {
     if (!canCreate) return;
     setBusy(true);
     setError("");
     try {
-      const session = await onCreate(cwd.trim(), title.trim() || undefined, runtimeId, projectId || undefined);
-      if (!session) { setError("会话未创建，请重试。"); return; }
+      const trimmedCwd = cwd.trim();
+      const trimmedTitle = title.trim() || undefined;
+      const selectedGroup = projectId || undefined;
+      const session = trustWorkspace
+        ? await onCreate(trimmedCwd, trimmedTitle, runtimeId, selectedGroup, true)
+        : await onCreate(trimmedCwd, trimmedTitle, runtimeId, selectedGroup);
+      if (!session) {
+        setTrustMode(undefined);
+        setError("会话未创建，请重试。");
+        return;
+      }
       onCreated(session);
       onClose();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "会话创建失败");
+      const code = reason && typeof reason === "object" && "code" in reason ? String((reason as { code?: unknown }).code ?? "") : "";
+      const message = reason instanceof Error ? reason.message : "会话创建失败";
+      if (
+        code === "WORKSPACE_TRUST_REQUIRED" ||
+        code === "WORKSPACE_TRUST_MANUAL_REQUIRED" ||
+        /\bWorkspaceTrustError\b|\[ccdErrorCategory:trust_required\]/u.test(message)
+      ) {
+        setTrustMode(code === "WORKSPACE_TRUST_REQUIRED" && canTrustWorkspace ? "confirm" : "manual");
+      } else {
+        setTrustMode(undefined);
+        setError(message);
+      }
     } finally { setBusy(false); }
   }
 
@@ -196,7 +221,7 @@ export function SessionCreateDialog({ snapshot, initialProjectId, connected, onB
         </header>
         <form onSubmit={(event) => {
           event.preventDefault();
-          if (view === "form") void createSession();
+          if (view === "form") void createSession(activeTrustMode === "confirm");
           else if (view === "browse" && pathEditing && connected && !browseLoading && onBrowseDirectory) openDirectory(browseInput.trim() || undefined);
           else if (view === "browse" && mkdirOpen) void createSubdirectory();
         }}>
@@ -301,6 +326,16 @@ export function SessionCreateDialog({ snapshot, initialProjectId, connected, onB
                 <label><span>会话名称（可选）</span><input aria-label="会话名称（可选）" value={title} disabled={locked} placeholder="可留空，稍后命名" onChange={(event) => setTitle(event.target.value)} /></label>
                 {groupUnavailable && <p className="session-create-error" role="alert">所选分组已不可用，请重新选择。</p>}
                 {connected && !runtimeAvailable && <p className="session-create-error" role="alert">{desktopRuntimeName(runtimeId)} 当前无法创建会话。</p>}
+                {activeTrustMode === "confirm" && (
+                  <p className="session-create-trust" role="alert">
+                    该文件夹首次使用，是否信任并允许 Claude 访问「{cwd.trim()}」？
+                  </p>
+                )}
+                {activeTrustMode === "manual" && (
+                  <p className="session-create-trust is-manual" role="alert">
+                    请在电脑端 Claude 窗口打开并信任「{cwd.trim()}」后重试。
+                  </p>
+                )}
                 {error && <p className="session-create-error" role="alert">{error}</p>}
               </>
             )}
@@ -308,7 +343,7 @@ export function SessionCreateDialog({ snapshot, initialProjectId, connected, onB
           {!connected && <p className="session-create-status session-create-offline" role="status">电脑已离线，连接后可创建会话。</p>}
           <footer className="dialog-actions session-create-actions">
             {view === "form" ? (
-              <><button type="button" className="secondary-button" disabled={locked} onClick={onClose}>取消</button><button key="create-session" type="submit" className="primary-button" disabled={!canCreate}>{busy && <LoaderCircle className="is-spinning" size={16} />}创建会话</button></>
+              <><button type="button" className="secondary-button" disabled={locked} onClick={onClose}>取消</button><button key="create-session" type="submit" className="primary-button" disabled={!canCreate}>{busy && <LoaderCircle className="is-spinning" size={16} />}{activeTrustMode === "confirm" ? "信任并创建" : activeTrustMode === "manual" ? "重试创建" : "创建会话"}</button></>
             ) : (
               <><button type="button" className="secondary-button" onClick={back}>取消选择</button>{view === "browse" ? <button key="use-folder" type="button" className="primary-button" disabled={!canSelectFolder} onClick={() => selectFolder(onBrowseDirectory ? listing!.path : browseInput.trim())}>使用此文件夹</button> : <button key="open-browse" type="button" className="primary-button" onClick={() => setView("browse")}>{onBrowseDirectory ? "浏览电脑文件夹" : "输入文件夹路径"}</button>}</>
             )}

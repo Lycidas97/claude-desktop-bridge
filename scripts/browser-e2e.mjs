@@ -48,6 +48,7 @@ const nativeHosts = [];
 const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
+const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
 
 // Bounded polling is only for observable browser/protocol state, never a fixed
 // sleep intended to hide a race. Unexpected selector or transport errors surface.
@@ -63,17 +64,18 @@ async function eventually(read, expected, message, timeout = 15_000) {
 }
 
 async function syncNativeSections(host) {
-  const { capable, moveCapable, renameCapable, deleteCapable, runtimeCapabilities, projects, sessions } = await host.nativeApproval.sectionCatalog();
+  const { capable, moveCapable, renameCapable, deleteCapable, trustCapable, runtimeCapabilities, projects, sessions } = await host.nativeApproval.sectionCatalog();
   host.snapshot.projects = projects;
   host.snapshot.sessions = sessions;
   host.snapshot.host.capabilities = host.snapshot.host.capabilities.filter(
-    value => !["section.create.v1", "section.move.v1", "section.rename.v1", "section.delete.v1", "directory.browse.v1", "directory.mkdir.v1"].includes(value),
+    value => !["section.create.v1", "section.move.v1", "section.rename.v1", "section.delete.v1", "workspace.trust.v1", "directory.browse.v1", "directory.mkdir.v1"].includes(value),
   );
   host.snapshot.host.capabilities.push("directory.browse.v1", "directory.mkdir.v1");
   if (capable) host.snapshot.host.capabilities.push("section.create.v1");
   if (moveCapable) host.snapshot.host.capabilities.push("section.move.v1");
   if (renameCapable) host.snapshot.host.capabilities.push("section.rename.v1");
   if (deleteCapable) host.snapshot.host.capabilities.push("section.delete.v1");
+  if (trustCapable) host.snapshot.host.capabilities.push("workspace.trust.v1");
   if (host.snapshot.runtimes?.[0]) host.snapshot.runtimes[0].capabilities = runtimeCapabilities;
 }
 
@@ -112,7 +114,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       online: true,
       lastSeenAt: now,
       version: "1.1.1",
-      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "section.rename.v1", "section.delete.v1"] : [])],
+      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["directory.browse.v1", "workspace.trust.v1", "session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "section.rename.v1", "section.delete.v1"] : [])],
     },
     projects: [{
       projectId: session.projectId, name: session.projectName, cwd: session.cwd,
@@ -161,7 +163,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     runtime: { state: "ready", detail: "固定响应宿主", activeTurns: remotePreview ? 1 : 0, maxParallelTurns: 1 },
     runtimes: [{
       id: "claude-desktop", name: "Claude Desktop", state: "ready", detail: "隔离宿主",
-      capabilities: ["session.list", "session.history", "turn.start", "permission.resolve", ...(native || remotePreview ? ["attachment.image"] : []), ...(native ? ["session.configure"] : [])],
+      capabilities: ["session.list", "session.history", "turn.start", "permission.resolve", ...(native || remotePreview ? ["attachment.image"] : []), ...(native ? ["session.create", "workspace.trust", "session.configure"] : [])],
       sessionIsolation: "independent", sessionCount: remotePreview ? 1 : 2, updatedAt: now,
     }],
     permissions: [],
@@ -421,6 +423,9 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       let remoteCommand;
       let remoteCommandCreated = false;
       switch (request.method) {
+        case "runtime.refresh":
+          if (host.nativeApproval) await syncNativeSections(host);
+          result = { runtime: snapshot.runtime }; break;
         case "snapshot.get":
           if (host.sectionsEnabled) await syncNativeSections(host);
           result = { snapshot }; break;
@@ -433,7 +438,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
             result = await host.nativeApproval.controllerRequest(request);
             await syncNativeSections(host);
             await host.send({ kind: "snapshot", snapshot });
-          } catch (failure) { error = { code: "NATIVE_SECTION_REJECTED", message: failure.message }; }
+          } catch (failure) { error = { code: failure.code ?? "NATIVE_SECTION_REJECTED", message: failure.message }; }
           break;
         case "directory.list":
         case "directory.mkdir":
@@ -1630,6 +1635,55 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   await eventually(() => notices.count(), 3, "Reload merges Native history and live notices without duplicate cards");
   assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "session.rewind", "permission.resolve"].includes(request.method)).length, 0);
   steps.push("Native report and idle notices stay compact in history, live updates and replay; original text remains readable, quoted examples keep user controls, and no Native mutation is sent");
+
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  const { untrustedDir, manualTrustDir } = host.nativeApproval;
+  const createDialog = page.locator(".session-create-dialog");
+  const chooseFolderByPath = async (targetDir) => {
+    await createDialog.getByRole("button", { name: "选择文件夹" }).click();
+    await createDialog.getByRole("button", { name: "浏览电脑文件夹", exact: true }).click();
+    await createDialog.getByRole("button", { name: "输入路径", exact: true }).click();
+    await createDialog.getByLabel("当前路径", { exact: true }).fill(targetDir);
+    await createDialog.getByLabel("当前路径", { exact: true }).press("Enter");
+    await createDialog.getByRole("button", { name: "使用此文件夹", exact: true }).click();
+  };
+
+  await page.getByRole("button", { name: "新建会话", exact: true }).click();
+  await chooseFolderByPath(untrustedDir);
+  await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("受信任目录会话");
+  await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
+
+  const trustAlert = createDialog.getByRole("alert");
+  await eventually(() => trustAlert.innerText(), `该文件夹首次使用，是否信任并允许 Claude 访问「${untrustedDir}」？`, "Untrusted folder prompts for explicit confirmation without exposing EIPC text");
+  assert.equal((await createDialog.innerText()).includes("$eipc_message$"), false);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: resolve(directory, "workspace-trust-confirm.png"), fullPage: true });
+
+  await createDialog.getByRole("button", { name: "信任并创建", exact: true }).click();
+  await createDialog.waitFor({ state: "hidden" });
+  await page.getByRole("heading", { name: "受信任目录会话", exact: true }).waitFor();
+  assert.deepEqual(
+    host.nativeApproval.calls.filter(call => call.method === "saveTrust").map(call => call.args),
+    [[untrustedDir]],
+  );
+
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  host.nativeApproval.setTrustPolicy({ keepUntrustedAfterSave: true });
+  await page.getByRole("button", { name: "新建会话", exact: true }).click();
+  await chooseFolderByPath(manualTrustDir);
+  await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("手动信任兜底会话");
+  await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
+  await createDialog.getByRole("button", { name: "信任并创建", exact: true }).click();
+  await eventually(() => trustAlert.innerText(), `请在电脑端 Claude 窗口打开并信任「${manualTrustDir}」后重试。`, "Manual fallback guides desktop GUI approval when saveTrust cannot satisfy trust");
+  await page.screenshot({ path: resolve(directory, "workspace-trust-manual.png"), fullPage: true });
+
+  host.nativeApproval.trustWorkspace(manualTrustDir);
+  await createDialog.getByRole("button", { name: "重试创建", exact: true }).click();
+  await createDialog.waitFor({ state: "hidden" });
+  await page.getByRole("heading", { name: "手动信任兜底会话", exact: true }).waitFor();
+  assert.equal(host.requests.filter(request => request.method === "session.create").at(-1)?.params.trustWorkspace, undefined);
+  assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "session.rewind", "permission.resolve"].includes(request.method)).length, 0);
+  steps.push("untrusted folders sanitize WorkspaceTrustError into confirmation + saveTrust auto-retry, and degrade to manual desktop guidance + one-click retry when saveTrust is insufficient");
 }
 
 async function verifyProjectGrouping(page, host, steps, directory) {
@@ -1884,8 +1938,8 @@ async function runScenario(theme, scenario) {
     await context.routeWebSocket("**/*", (socket) => {
       const url = new URL(socket.url());
       if (url.hostname === "127.0.0.1" && [new URL(baseUrl).port, new URL(relay.url).port].includes(url.port)) {
-        const serverRoute = socket.connectToServer();
-        if (url.pathname === "/ws") serverRoutes.push(serverRoute);
+        socket.connectToServer();
+        if (url.pathname === "/ws") serverRoutes.push(socket);
       } else {
         errors.push(`Blocked non-fixture WebSocket: ${url.href}`);
         socket.close({ code: 1008, reason: "Isolated E2E only permits its loopback servers" });
@@ -1901,7 +1955,7 @@ async function runScenario(theme, scenario) {
       browserLog.push({ type: "pageerror", text: error.stack });
       errors.push(`browser runtime: ${error.stack}`);
     });
-    await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+    if (enableTrace) await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
     // Visiting the real pairing URL imports identity via the production hook and
     // stores it in this context's own IndexedDB; no vault or hook is replaced.
     await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
@@ -1933,9 +1987,11 @@ async function runScenario(theme, scenario) {
       } catch (error) { errors.push(`failure capture: ${error.stack}`); }
     }
     if (context) {
-      try {
-        await context.tracing.stop(failure ? { path: resolve(directory, "trace.zip") } : {});
-      } catch (error) { errors.push(`trace cleanup: ${error.stack}`); }
+      if (enableTrace) {
+        try {
+          await context.tracing.stop(failure ? { path: resolve(directory, "trace.zip") } : {});
+        } catch (error) { errors.push(`trace cleanup: ${error.stack}`); }
+      }
       // Complete owned relay handshakes before Chromium tears down their sockets.
       for (const route of serverRoutes) await route.close({ code: 1000, reason: "Scenario complete" });
       await eventually(() => [...relayPeers.values()].filter(hello => hello.roomId === host.pairing.roomId && hello.role === "mobile").length, 0, "Scenario sockets close before disposing their browser context");
@@ -1950,6 +2006,11 @@ async function runScenario(theme, scenario) {
       nativeTrace: host?.nativeTrace,
       ...(host?.nativeQueue ? { nativeCalls: host.nativeApproval.calls, receipts: host.nativeApproval.receipts(), queueEvents: host.events } : {}),
     }, null, 2));
+    if (host?.nativeApproval) {
+      const idx = nativeHosts.indexOf(host.nativeApproval);
+      if (idx !== -1) nativeHosts.splice(idx, 1);
+      await host.nativeApproval.close();
+    }
   }
   const result = {
     name, theme, viewport: "375x812", status: failure || errors.length ? "failed" : "passed",
@@ -1957,9 +2018,9 @@ async function runScenario(theme, scenario) {
     ...(failure ? { failure: failure.stack } : {}),
     artifacts: directory,
   };
-  results.push(result);
   await writeFile(resolve(directory, "result.json"), JSON.stringify(result, null, 2));
   console.log(`${result.status.toUpperCase()} ${name} (${result.durationMs}ms)${failure ? `: ${failure.message}` : ""}`);
+  return result;
 }
 
 await mkdir(runDir, { recursive: true });
@@ -2004,7 +2065,7 @@ try {
   logger.error = (message, options) => {
     // Reload/reconnect scenarios close sockets; retain their reset logs while
     // keeping proxy connection failures, HTTP errors and app assertions fatal.
-    if (options?.error?.code !== "ECONNRESET" || !/ws proxy(?: socket)? error:/u.test(message)) infrastructureErrors.push(message);
+    if (!["ECONNRESET", "EPIPE"].includes(options?.error?.code) || !/ws proxy(?: socket)? error:/u.test(message)) infrastructureErrors.push(message);
     logError(message, options);
   };
   vite = await createServer({
@@ -2159,11 +2220,18 @@ try {
       headless: true,
       args: ["--disable-background-networking", "--disable-component-update", "--no-first-run"],
     });
-    for (const theme of ["light", "dark"]) {
-      for (const scenario of scenarios) {
-        await runScenario(theme, scenario);
+    const pairs = ["light", "dark"].flatMap((theme) => scenarios.map((scenario) => [theme, scenario]));
+    const concurrency = Math.max(1, Number(process.env.BRIDGE_E2E_CONCURRENCY ?? 4));
+    const ordered = new Array(pairs.length);
+    let nextPair = 0;
+    await Promise.all(Array.from({ length: Math.min(concurrency, pairs.length) }, async () => {
+      while (nextPair < pairs.length) {
+        const index = nextPair++;
+        const [theme, scenario] = pairs[index];
+        ordered[index] = await runScenario(theme, scenario);
       }
-    }
+    }));
+    results.push(...ordered.filter(Boolean));
   }
 } catch (error) {
   infrastructureErrors.push(error.stack);

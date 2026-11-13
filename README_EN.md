@@ -10,6 +10,8 @@ Bridge brings local Claude Desktop Code sessions to your phone: continue a conve
 
 This independently maintained fork primarily targets **macOS + Android + Claude Desktop, including Claude-3p**. It depends on Desktop's local `LocalSessions` interface. Available operations depend on the installed Desktop version and account/workspace policies; ordinary web chat history is outside this integration.
 
+Android is the native phone client. The generic mobile Web client remains available; the native iOS product line is retired.
+
 ## Versions and downloads
 
 **The current public release is [v1.3.1](https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.1). The setup steps below describe that release.** Download desktop and mobile packages from this fork, preferably from the same version.
@@ -20,7 +22,6 @@ This independently maintained fork primarily targets **macOS + Android + Claude 
 | Android 8.0+ | [APK](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-android-debug.apk) | Uses the repository's fixed debug signing key; allow installation from the app used to download it |
 | Windows | [Installer ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-windows-installer-ci.zip) | CI build; see the included `windows-release-evidence.json` for signing status. Native connectivity has not completed live-device validation |
 | Linux | [Installer ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-linux-installers-ci.zip) | CI build; this alone does not establish a usable native Claude Desktop environment |
-| iOS | [Simulator](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-ios-simulator.zip) / [unsigned device app](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-ios-device-unsigned.zip) | Development artifacts; the device app needs signing and is not a directly installable IPA |
 
 The release also includes `SHA256SUMS.txt` and `SOURCE_COMMIT.txt`. Successful builds do not establish live-device validation on every platform. Android system back navigation has been tested in an Android 16 emulator.
 
@@ -143,7 +144,7 @@ With a compatible Magpie Gateway, open **Settings → Magpie quota (设置 → M
 | Updated window still shows old capabilities | The old background service may still be running. Wait for tasks to finish, stop it and reopen Bridge. Prefer matching versions on both devices |
 | Message remains queued or delivery is unconfirmed | Check Desktop's active task, pending approvals, native queue and history before resending after a network timeout |
 | File preview fails | Check that the file is still readable in the workspace, is not a sensitive path, and fits the 1 MiB text-preview or 20 MiB transfer limit |
-| No immediate notification while locked | Check system notification permission. Online local notifications are separate from background push. FCM / APNs require application and service credentials; the minimal relay setup does not guarantee immediate lock-screen wakeups |
+| No immediate notification while locked | Check system notification permission. Online local notifications are separate from background push. Android FCM require application and service credentials; the minimal relay setup does not guarantee immediate lock-screen wakeups |
 
 For further investigation, export diagnostics from desktop Status or **Settings → Diagnostics and About**. On mobile, open **Settings → Connection diagnostics and logs (设置 → 连接诊断与日志)**. Include versions, platform, steps and the exact error when reporting a problem; leave out pairing links, keys and conversation content. Report reproducible issues in [this fork's issue tracker](https://github.com/Lycidas97/claude-desktop-bridge/issues).
 
@@ -173,6 +174,6 @@ npm run build -w @bridge/protocol
 npm run dev:desktop
 ```
 
-Development mode starts a local relay, React client and Electron Bridge. A phone cannot reach the computer's services through its own `127.0.0.1`. See [.env.example](.env.example) for build defaults; saved manual connection settings take priority. Android / iOS packaging also needs the corresponding platform toolchains. See Contributing for tests and release rules.
+Development mode starts a local relay, React client and Electron Bridge. A phone cannot reach the computer's services through its own `127.0.0.1`. See [.env.example](.env.example) for build defaults; saved manual connection settings take priority. Android packaging also needs the Android toolchain. See Contributing for tests and release rules.
 
 Built on [czhmartinez/claude-desktop-bridge](https://github.com/czhmartinez/claude-desktop-bridge). This fork retains the **MIT** license; see [LICENSE](LICENSE).

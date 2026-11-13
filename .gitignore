@@ -17,8 +17,6 @@ apps/desktop/.devdata/
 .vite/
 apps/mobile/android/.gradle/
 apps/mobile/android/app/build/
-apps/mobile/ios/App/Pods/
-apps/mobile/ios/App/DerivedData/
 deploy/vps-minimal/
 output/
 .bridge-uploads/

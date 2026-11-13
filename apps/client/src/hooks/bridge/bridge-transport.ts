@@ -279,8 +279,8 @@ export async function readStoredHostState(
 export function clientMetadata(): Record<string, string | string[]> {
   const platform = Capacitor.getPlatform();
   return {
-    platform: platform === "android" || platform === "ios" ? platform : "web",
-    name: platform === "android" ? "Android 手机" : platform === "ios" ? "iPhone" : "Web 客户端",
+    platform: platform === "android" ? "android" : "web",
+    name: platform === "android" ? "Android 手机" : "Web 客户端",
     capabilities: PAYLOAD_DEFLATE_SUPPORTED ? [PAYLOAD_DEFLATE_CAPABILITY] : [],
   };
 }

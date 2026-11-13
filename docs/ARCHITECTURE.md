@@ -11,7 +11,7 @@ Bridge 只建立出站连接，不要求公网 IP、端口映射或额外组网�
 
 ```mermaid
 flowchart LR
-  M["Android / iOS"] <-->|"WebRTC DataChannel"| D["Bridge Desktop"]
+  M["Android / 手机 Web"] <-->|"WebRTC DataChannel"| D["Bridge Desktop"]
   M <-->|"公网 WSS / 局域网 WS"| T["TransportRouter"]
   D <-->|"公网 WSS / 局域网 WS"| T
   T <-->|"协议 V3 加密信封"| R["Relay"]
@@ -278,8 +278,8 @@ Claude 工具与成果线索来自 Desktop 原生事件，不扫描旧 JSONL 来
 主机为每台设备保存独立密钥和鉴权令牌，信封带 `toDeviceId`，撤销一台设备不会影响
 其他设备。
 
-FCM/APNs 只发送 `bridge-wake` 或 `content-available`，不包含会话 ID、消息摘要或
-正文。App 唤醒后再从 Relay 获取并端到端解密。
+Android FCM 只发送 `bridge-wake`，不包含会话 ID、消息摘要或正文。App 唤醒后再从
+Relay 获取并端到端解密。历史 iOS 设备记录保留可读，但不再注册或发送原生推送。
 
 协议 V3 与配对 schema V4 继续拒绝 V0.3 设备；这是既有协议版本边界。本次 Claude
 原生接入不迁移会话记录，不轮换 `hostId`、房间或设备密钥，也不改动既有配对。

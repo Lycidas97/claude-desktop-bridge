@@ -9,14 +9,10 @@
     "prepare:web": "npm run build -w @bridge/client && node scripts/prepare-web.mjs",
     "prepare:from-client": "node scripts/prepare-web.mjs",
     "add:android": "npm run prepare:web && cap add android",
-    "add:ios": "npm run prepare:web && cap add ios",
     "open:android": "cap open android",
-    "open:ios": "cap open ios",
-    "sync": "npm run prepare:web && cap sync",
-    "sync:from-client": "npm run prepare:from-client && cap sync",
+    "sync": "npm run prepare:web && cap sync android",
+    "sync:from-client": "npm run prepare:from-client && cap sync android",
     "apk:debug": "npm run sync && cd android && ./gradlew --no-daemon assembleDebug && python3 -I ../../../scripts/verify-android-dex.py app/build/outputs/apk/debug/app-debug.apk",
-    "build:ios:simulator": "npm run sync && xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug -derivedDataPath ios/DerivedData CODE_SIGNING_ALLOWED=NO build",
-    "build:ios:device": "npm run sync && xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphoneos -configuration Debug -derivedDataPath ios/DerivedData-device CODE_SIGNING_ALLOWED=NO build",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -24,7 +20,6 @@
     "@capacitor/app": "^8.1.1",
     "@capacitor/core": "^8.4.3",
     "@capacitor/filesystem": "^8.1.2",
-    "@capacitor/ios": "^8.4.3",
     "@capacitor/local-notifications": "^8.3.1",
     "@capacitor/push-notifications": "^8.1.2",
     "@capacitor/share": "^8.0.1"

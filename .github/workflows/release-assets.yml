@@ -239,42 +239,8 @@ jobs:
           name: Bridge-Android-debug-ci
           path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
 
-  ios:
-    needs: source
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          ref: ${{ needs.source.outputs.revision }}
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
-      - run: npm run ci:run -- run build -w @bridge/protocol
-      - name: Build unsigned simulator app
-        run: npm run ci:run -- run build:ios:simulator -w @bridge/mobile
-      - name: Build unsigned device app
-        run: npm run ci:run -- run build:ios:device -w @bridge/mobile
-      - name: Assert iOS build outputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -d "apps/mobile/ios/DerivedData/Build/Products/Debug-iphonesimulator/App.app" \
-            || { echo "Missing simulator App.app"; exit 1; }
-          test -d "apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app" \
-            || { echo "Missing unsigned device App.app"; exit 1; }
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: Bridge-iOS-simulator-ci
-          path: apps/mobile/ios/DerivedData/Build/Products/Debug-iphonesimulator/App.app
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: Bridge-iOS-device-unsigned-ci
-          path: apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app
-
   publish:
-    needs: [source, desktop, android, ios]
+    needs: [source, desktop, android]
     if: ${{ inputs.tag != '' || startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -300,8 +266,6 @@ jobs:
           (cd "packed/Bridge-Windows-installer-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-windows-installer-ci.zip" .)
           (cd "packed/Bridge-Linux-installers-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-linux-installers-ci.zip" .)
           cp "packed/Bridge-Android-debug-ci/app-debug.apk" "assets/Bridge-${version}-android-debug.apk"
-          (cd "packed/Bridge-iOS-simulator-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-ios-simulator.zip" .)
-          (cd "packed/Bridge-iOS-device-unsigned-ci" && zip -qr "$OLDPWD/assets/Bridge-${version}-ios-device-unsigned.zip" .)
           (cd assets && sha256sum Bridge-* > SHA256SUMS.txt)
           printf '%s\n' "$RELEASE_REVISION" > assets/SOURCE_COMMIT.txt
           ls -l assets
@@ -326,7 +290,7 @@ jobs:
           section = Path("CHANGELOG.md").read_text().split(marker, 1)[1].split("\n## ", 1)[0].strip()
           Path(target).write_text(section + "\n")
           PY
-          printf '\nBuild commit: `%s`\n\nmacOS uses ad-hoc signing. Windows and Linux assets are CI builds; Windows Authenticode status is recorded in the included windows-release-evidence.json. Android uses the repository debug signing key. The unsigned iOS device app requires signing before installation.\n' "$RELEASE_REVISION" >> "$NOTES_FILE"
+          printf '\nBuild commit: `%s`\n\nmacOS uses ad-hoc signing. Windows and Linux assets are CI builds; Windows Authenticode status is recorded in the included windows-release-evidence.json. Android uses the repository debug signing key.\n' "$RELEASE_REVISION" >> "$NOTES_FILE"
           if [[ -n "$LAST_TAG" ]]; then
             printf '\n**Full Changelog**: %s/%s/compare/%s...%s\n' \
               "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$LAST_TAG" "$TAG" >> "$NOTES_FILE"

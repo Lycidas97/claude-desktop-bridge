@@ -923,3 +923,27 @@ test('relay-contract-probe preserves subpath prefix for /health and build/env de
   assert.doesNotMatch(envExample, /alioxis/iu);
   assert.match(envExample, /BRIDGE_ICE_SERVERS=\[\{"urls":"stun:stun\.cloudflare\.com:3478"\}\]/u);
 });
+
+test('picker-id resolves Magpie labels to Claude Desktop picker ids and rejects missing or ambiguous ones', async () => {
+  const { configLibraryDir, resolvePickerId } = await import('./picker-id.mjs');
+  const directory = await mkdtemp(join(tmpdir(), 'bridge picker-id-'));
+  try {
+    await writeFile(join(directory, 'gateway.json'), JSON.stringify({ inferenceModels: [
+      { name: 'mythos-magpie-1', labelOverride: 'bridge-runner · routing group' },
+      { name: 'mythos-magpie-2', labelOverride: 'GPT-6.1-Sol · Codex' },
+      { name: 'mythos-magpie-3', labelOverride: 'GPT-6.1 Sol · OpenAI' },
+      { name: 'mythos-magpie-4', labelOverride: 'Gemini 4 Hydrogen · Antigravity' },
+      { name: 'mythos-magpie-5', labelOverride: 'Gemini 4 Hydrogen · Google Gemini' },
+    ] }));
+    await writeFile(join(directory, 'notes.txt'), 'not json');
+    assert.equal(resolvePickerId(directory, 'bridge-runner'), 'mythos-magpie-1');
+    assert.equal(resolvePickerId(directory, 'GPT-6.1-Sol · Codex'), 'mythos-magpie-2');
+    assert.equal(resolvePickerId(directory, 'GPT-6.1-Sol'), 'mythos-magpie-2');
+    assert.throws(() => resolvePickerId(directory, 'bridge-docs'), /not in the model list.*restarts/);
+    assert.throws(() => resolvePickerId(directory, 'Gemini 4 Hydrogen'), /matches .*Antigravity.*Google Gemini/);
+    assert.equal(configLibraryDir('win32', { LOCALAPPDATA: 'C:\\L' }), join('C:\\L', 'Claude-3p', 'configLibrary'));
+    assert.equal(configLibraryDir('linux', { CLAUDE_CONFIG_LIBRARY: directory }), directory);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

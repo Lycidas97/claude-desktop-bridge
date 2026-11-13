@@ -12,16 +12,23 @@ How the Issue patrol session runs several Issues at once: dispatch, implement, r
 
 Pick models per role, not per task. Fallback is done by Magpie routing groups with `routing=order` (first member until it can't answer, then the next; requests return to the first once its quota renews), so no session or agent carries fallback logic. Gemini is used only through `antigravity/*`; never `gemini-web/*` or `google/models/*`.
 
-| Role | Model (gateway id) | Picker id (as of 2026-11-13) |
+| Role | Magpie group or model | Picker label |
 | --- | --- | --- |
-| Patrol, `ci:local` runs | `group/bridge-runner`: DeepSeek Flash → GPT-6.1-Sol | `mythos-magpie-5504762153` |
-| Fork, Reviewer, `LESSONS.md` consolidation | `codex/gpt-6.1-sol` | `mythos-magpie-9189869295` |
-| Extra reviewer for architecture/UI PRs | `auto/claude-opus-5-5` | `mythos-magpie-1855947975` |
-| `plan-ideator` / `plan-reviewer` | `group/bridge-ideator`: Gemini 4 Carbon → GPT-6.1-Sol / `codex/gpt-6.1-sol` | `mythos-magpie-4308101457` / `mythos-magpie-9189869295` |
-| Drafting Issue bodies, PR descriptions, docs | `group/bridge-docs`: Gemini 4 Hydrogen → Opus 5.5 (antigravity, then Claude Code) → DeepSeek Flash | `mythos-magpie-7764859324` |
-| Hard bugs | `codex/gpt-6-astra` | `mythos-magpie-2161436569` |
+| Patrol, `ci:local` runs | `group/bridge-runner`: DeepSeek Flash → GPT-6.1-Sol | `bridge-runner` |
+| Fork, Reviewer, `LESSONS.md` consolidation | `codex/gpt-6.1-sol` | `GPT-6.1-Sol · Codex` |
+| Extra reviewer for architecture/UI PRs | `auto/claude-opus-5-5` | `Claude Opus 5.5` |
+| `plan-ideator` / `plan-reviewer` | `group/bridge-ideator`: Gemini 4 Carbon → GPT-6.1-Sol / `codex/gpt-6.1-sol` | `bridge-ideator` / `GPT-6.1-Sol · Codex` |
+| Drafting Issue bodies, PR descriptions, docs | `group/bridge-docs`: Gemini 4 Hydrogen → Opus 5.5 (antigravity, then Claude Code) → DeepSeek Flash | `bridge-docs` |
+| Hard bugs | `codex/gpt-6-astra` | `GPT-6-Astra · Codex` |
 
-- Picker ids are what `set_session_model` and agent frontmatter take; `provider/model` ids are rejected there. An unknown id returns the valid list. A group created in Magpie gets its picker id in Claude Desktop's `configLibrary` at once, but the running app keeps its old list until restarted: until then `set_session_model` rejects the id and agent frontmatter naming it silently runs on the `sonnet` default (`codex/gpt-6.1-sol`). Check `usage.jsonl` (`req` field) to see which model actually answered. Edit a group with `magpie group set <id> models=…`.
+- `set_session_model` and agent frontmatter take a picker id (`provider/model` ids are rejected there). Picker ids are generated per machine by Claude Desktop and change, so they are never written down: resolve one from its label with `node scripts/picker-id.mjs <label>` right before use. It reads Claude Desktop's `configLibrary` (macOS `~/Library/Application Support/Claude-3p/configLibrary`, Windows `%LOCALAPPDATA%\Claude-3p\configLibrary`, override with `CLAUDE_CONFIG_LIBRARY`) and fails when the label is missing or ambiguous.
+- A group added in Magpie shows up in `configLibrary` at once, but the running Claude Desktop keeps its old list until restarted: until then `set_session_model` rejects the id, and agent frontmatter naming it silently runs on the `sonnet` default. Magpie's `usage.jsonl` (`req` field) shows which model actually answered.
+- Set up the groups once per machine (the label is the group name, so keep these names):
+  ```bash
+  magpie group add bridge-runner models=deepseek/deepseek-flash,codex/gpt-6.1-sol routing=order
+  magpie group add bridge-ideator models=antigravity/gemini-4-carbon,codex/gpt-6.1-sol routing=order
+  magpie group add bridge-docs models=antigravity/gemini-4-hydrogen,antigravity/claude-opus-5-5,claude/claude-opus-5-5,deepseek/deepseek-flash routing=order
+  ```
 - No quota check before dispatching: the groups route around exhausted members. Sol (a single model, no group) keeps running on Codex credits once its 7-day window is used up; when a Sol session reports a quota error (patrol checklist), the patrol stops dispatching and asks the owner before a reset credit is spent.
 - Escalate to Astra when the same defect survives two fix rounds, or `ci:local` fails twice in a row for the same cause.
 - DeepSeek runs fixed procedures with an objective check (`ci/local-distributed`, `gh` state). It never writes tests or fixes code; its own summaries are not evidence.
@@ -35,7 +42,7 @@ Pick models per role, not per task. Fallback is done by Magpie routing groups wi
 ## 1. Dispatch (owner's turn)
 
 1. For each Issue, list the files it is expected to touch. Issues that overlap get an explicit merge order; record it in each affected brief.
-2. Start the fork (`start_session`, `use_worktree: true`) with the **Fork brief** below, then switch it to GPT-6.1-Sol with `mcp__ccd_session_mgmt__set_session_model`.
+2. Start the fork (`start_session`, `use_worktree: true`) with the **Fork brief** below, then switch it to GPT-6.1-Sol with `mcp__ccd_session_mgmt__set_session_model` (picker id from `node scripts/picker-id.mjs "GPT-6.1-Sol · Codex"`).
 3. In the same turn, start its reviewer (`start_session`, `use_worktree: false`) with the **Reviewer brief** below, then switch it to GPT-6.1-Sol while it waits.
 4. Start the patrol checklist (step 8).
 

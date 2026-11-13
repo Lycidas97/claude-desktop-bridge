@@ -303,6 +303,22 @@ export async function dispatchControllerRequest(
     await host.publish();
     return { session, projects: host.allProjects() };
   }
+  if (request.method === "section.rename") {
+    if (!host.broker.capabilities().includes("section.rename")) throw new BridgeRequestError("UNSUPPORTED", "当前 Claude Desktop 不支持重命名 Section。");
+    const sectionId = stringParam(params, "sectionId")!.trim();
+    const name = stringParam(params, "name")!.trim();
+    if (!name || name.length > 200) throw new Error("name must contain 1–200 characters");
+    const project = await host.broker.renameSection(sectionId, name);
+    await host.publish();
+    return { project, projects: host.allProjects(), sessions: host.allSessions() };
+  }
+  if (request.method === "section.delete") {
+    if (!host.broker.capabilities().includes("section.delete")) throw new BridgeRequestError("UNSUPPORTED", "当前 Claude Desktop 不支持删除 Section。");
+    const sectionId = stringParam(params, "sectionId")!.trim();
+    await host.broker.deleteSection(sectionId);
+    await host.publish();
+    return { projects: host.allProjects(), sessions: host.allSessions() };
+  }
   if (request.method === "session.create") {
     runtimeIdParam(params, "runtimeId");
     const projectId = params.projectId;

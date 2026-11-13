@@ -58,9 +58,11 @@ describe("isBridgePayload", () => {
     expect(isBridgePayload({ kind: "request", requestId: "return", idempotencyKey: "return", method: "session.return_to_desktop", params: { sessionId: "session" } })).toBe(true);
   });
 
-  it("accepts native section creation and movement on the paired channel", () => {
+  it("accepts native section creation, movement, rename, and deletion on the paired channel", () => {
     expect(isBridgePayload({ kind: "request", requestId: "section", idempotencyKey: "section", method: "section.create", params: { name: "Research" } })).toBe(true);
     expect(isBridgePayload({ kind: "request", requestId: "move", idempotencyKey: "move", method: "section.move", params: { sessionId: "local_1", sectionId: null } })).toBe(true);
+    expect(isBridgePayload({ kind: "request", requestId: "rename", idempotencyKey: "rename", method: "section.rename", params: { sectionId: "group_1", name: "Research v2" } })).toBe(true);
+    expect(isBridgePayload({ kind: "request", requestId: "delete", idempotencyKey: "delete", method: "section.delete", params: { sectionId: "group_1" } })).toBe(true);
   });
 
   it("accepts controlled directory creation on the paired channel", () => {

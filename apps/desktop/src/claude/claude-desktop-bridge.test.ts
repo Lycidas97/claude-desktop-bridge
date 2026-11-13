@@ -293,6 +293,42 @@ describe("native Sections", () => {
       await expect(f.bridge.moveSessionSection("local-native", originalProjectId)).rejects.toThrow("no longer available");
     } finally { await f.close(); }
   });
+
+  it("renames and deletes native Sections while returning assigned sessions to their default project directories", async () => {
+    const f = await fixture();
+    try {
+      await expect(f.bridge.renameSection("missing", "Next")).rejects.toThrow("does not support Sections");
+      await expect(f.bridge.deleteSection("missing")).rejects.toThrow("does not support Sections");
+      const sections = await createNativeSectionFixture(f.directory);
+      Object.assign(f.native, {
+        sections: sections.sections,
+        createSection: sections.createSection,
+        assignSection: sections.assignSection,
+        renameSection: sections.renameSection,
+        deleteSection: sections.deleteSection,
+      });
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.capabilities()).toContain("section.rename");
+      expect(f.bridge.capabilities()).toContain("section.delete");
+
+      const originalProjectId = f.bridge.session("local-native")!.projectId;
+      const originalCwd = f.bridge.session("local-native")!.cwd;
+      const created = await f.bridge.createSection("破甲");
+      await f.bridge.moveSessionSection("local-native", created.projectId);
+      expect(f.bridge.session("local-native")).toMatchObject({ projectId: created.projectId, projectName: "破甲" });
+
+      const renamed = await f.bridge.renameSection(created.projectId, "Bridge 开发维护");
+      expect(renamed).toMatchObject({ projectId: created.projectId, name: "Bridge 开发维护", kind: "desktop-group", sessionCount: 1 });
+      expect(f.bridge.session("local-native")).toMatchObject({ projectId: created.projectId, projectName: "Bridge 开发维护", cwd: originalCwd });
+
+      await f.bridge.deleteSection(created.projectId);
+      expect(f.bridge.listProjects().some(project => project.projectId === created.projectId)).toBe(false);
+      expect(f.bridge.session("local-native")).toMatchObject({ projectId: originalProjectId, cwd: originalCwd });
+
+      await expect(f.bridge.renameSection(created.projectId, "Gone")).rejects.toThrow("no longer available");
+      await expect(f.bridge.deleteSection(created.projectId)).rejects.toThrow("no longer available");
+    } finally { await f.close(); }
+  });
 });
 
 describe("Claude native relay", () => {

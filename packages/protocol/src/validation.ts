@@ -29,6 +29,8 @@ const METHODS = new Set([
   "session.create",
   "section.create",
   "section.move",
+  "section.rename",
+  "section.delete",
   "session.fork",
   "session.rename",
   "session.history",

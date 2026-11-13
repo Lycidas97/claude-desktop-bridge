@@ -91,6 +91,8 @@ interface InspectorTransport {
   sections?(sessionIds: string[]): Promise<NativeSectionCatalog | undefined>;
   createSection?(name: string): Promise<string>;
   assignSection?(sessionId: string, sectionId: string): Promise<void>;
+  renameSection?(sectionId: string, name: string): Promise<void>;
+  deleteSection?(sectionId: string): Promise<void>;
   on(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
@@ -214,6 +216,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (["canRewindTo", "rewindV2", "rewindFiles"].every(method => this.inspector.supports(method))) capabilities.push("session.rewind");
     if (this.sectionCatalog && this.inspector.createSection && this.inspector.assignSection) capabilities.push("section.create");
     if (this.sectionCatalog && this.inspector.assignSection) capabilities.push("section.move");
+    if (this.sectionCatalog?.canRename && this.inspector.renameSection) capabilities.push("section.rename");
+    if (this.sectionCatalog?.canDelete && this.inspector.deleteSection) capabilities.push("section.delete");
     capabilities.push("tool.events");
     return capabilities;
   }
@@ -374,6 +378,27 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const session = this.session(sessionId);
     if (!session) throw new NativeCallError("Moved Desktop session is no longer available");
     return session;
+  }
+
+  async renameSection(sectionId: string, name: string): Promise<BridgeProjectInfo> {
+    if (!this.capabilities().includes("section.rename")) throw new NativeCallError("This Claude Desktop version does not support Sections");
+    if (!this.sectionCatalog?.sections.some(section => section.id === sectionId)) {
+      throw new NativeCallError("Selected Desktop Section is no longer available");
+    }
+    await this.inspector.renameSection!(sectionId, name);
+    if (!await this.refreshRuntime()) throw new NativeCallError(this.lastError);
+    const project = this.listProjects().find(project => project.kind === "desktop-group" && project.projectId === sectionId);
+    if (!project) throw new NativeCallError("Selected Desktop Section is no longer available");
+    return project;
+  }
+
+  async deleteSection(sectionId: string): Promise<void> {
+    if (!this.capabilities().includes("section.delete")) throw new NativeCallError("This Claude Desktop version does not support Sections");
+    if (!this.sectionCatalog?.sections.some(section => section.id === sectionId)) {
+      throw new NativeCallError("Selected Desktop Section is no longer available");
+    }
+    await this.inspector.deleteSection!(sectionId);
+    if (!await this.refreshRuntime()) throw new NativeCallError(this.lastError);
   }
 
   async createSession(cwd: string, title?: string, projectId?: string, trustWorkspace?: boolean): Promise<BridgeSessionInfo> {

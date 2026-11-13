@@ -153,6 +153,28 @@ describe("native Desktop inspector", () => {
     } finally { await f.close(); }
   });
 
+  it("advertises and forwards rename_section and delete_section only when the sidebar exposes them", async () => {
+    const f = await fixture();
+    try {
+      await f.inspector.connect();
+      await expect(f.inspector.renameSection("empty", "Renamed")).rejects.toThrow("does not support Sections");
+      await expect(f.inspector.deleteSection("empty")).rejects.toThrow("does not support Sections");
+      f.sidebar.tools.push({ name: "rename_section" }, { name: "delete_section" });
+      expect(await f.inspector.sections(["local-native"])).toEqual({
+        sections: [{ id: "empty", name: "<Research>", order: 0 }],
+        assignments: { "local-native": "empty" },
+        canRename: true,
+        canDelete: true,
+      });
+      await f.inspector.renameSection("empty", "Renamed");
+      await f.inspector.deleteSection("empty");
+      expect(f.sidebar.calls.slice(-2)).toEqual([
+        { method: "rename_section", params: { section_id: "empty", name: "Renamed" }, context: {} },
+        { method: "delete_section", params: { section_id: "empty" }, context: {} },
+      ]);
+    } finally { await f.close(); }
+  });
+
   it("discovers the renderer, receives both streams and unsubscribes on close", async () => {
     const f = await fixture();
     try {

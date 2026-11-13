@@ -208,7 +208,13 @@ export async function startNativeApprovalHost(options: {
     },
   });
   const sections = options.sections ? await createNativeSectionFixture(options.directory) : undefined;
-  if (sections) Object.assign(inspector, { sections: sections.sections, createSection: sections.createSection, assignSection: sections.assignSection });
+  if (sections) Object.assign(inspector, {
+    sections: sections.sections,
+    createSection: sections.createSection,
+    assignSection: sections.assignSection,
+    renameSection: sections.renameSection,
+    deleteSection: sections.deleteSection,
+  });
   const state = new ConversationStateStore({
     databasePath: join(options.directory, "native-state.sqlite"), sessionsPath: join(options.directory, "sessions.json"),
     queuePath: join(options.directory, "queue.json"), masterSecret: "isolated-browser-native-fixture",
@@ -247,6 +253,8 @@ export async function startNativeApprovalHost(options: {
         sessions: broker.listSessions(),
         capable: caps.includes("section.create"),
         moveCapable: caps.includes("section.move"),
+        renameCapable: caps.includes("section.rename"),
+        deleteCapable: caps.includes("section.delete"),
         trustCapable: caps.includes("workspace.trust"),
         runtimeCapabilities: caps,
       };

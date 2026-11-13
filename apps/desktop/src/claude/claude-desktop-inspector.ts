@@ -12,6 +12,8 @@ const METHODS = new Set([
 export interface NativeSectionCatalog {
   sections: Array<{ id: string; name: string; order: number }>;
   assignments: Record<string, string>;
+  canRename?: boolean;
+  canDelete?: boolean;
 }
 
 // Verified against Desktop 4.23118.1 and 5.1231.2: discover already-loaded
@@ -180,21 +182,25 @@ export class ClaudeDesktopInspector extends EventEmitter {
       const groups = manager.listCustomGroups();
       if (!groups) return;
       const shown = new Set(sections.filter(section => section.kind === 'manual' && section.shown !== false).map(section => section.id));
+      const canRename = sidebar.tools.some(tool => tool?.name === 'rename_section');
+      const canDelete = sidebar.tools.some(tool => tool?.name === 'delete_section');
       return {
         sections: groups.filter(group => shown.has(group.id)).map(({ id, name, order }) => ({ id, name, order })),
         assignments: Object.fromEntries(${JSON.stringify(sessionIds)}.flatMap(id => {
           const group = manager.getSessionCustomGroup(id);
           return group && shown.has(group.id) ? [[id, group.id]] : [];
         })),
+        ...(canRename ? { canRename: true } : {}),
+        ...(canDelete ? { canDelete: true } : {}),
       };
     })()`) as Promise<NativeSectionCatalog | undefined>;
   }
 
-  private async sidebarTool(method: "create_section" | "move_sessions", params: Record<string, unknown>, sessionId?: string): Promise<string> {
+  private async sidebarTool(method: "create_section" | "move_sessions" | "rename_section" | "delete_section", params: Record<string, unknown>, sessionId?: string): Promise<string> {
     if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected");
     const reply = await this.evaluate(`(async () => {
       ${SIDEBAR_RUNTIME}
-      if (!available) throw new Error('This Claude Desktop version does not support Sections');
+      if (!available || !sidebar.tools.some(tool => tool?.name === ${JSON.stringify(method)})) throw new Error('This Claude Desktop version does not support Sections');
       return sidebar.handleToolCall(${JSON.stringify(method)}, ${JSON.stringify(params)}, ${JSON.stringify({ sessionId })});
     })()`) as { isError?: boolean; content: Array<{ type: string; text?: string }> };
     const text = reply.content.filter(item => item.type === "text").map(item => item.text).join("\n");
@@ -208,6 +214,14 @@ export class ClaudeDesktopInspector extends EventEmitter {
 
   async assignSection(sessionId: string, sectionId: string): Promise<void> {
     await this.sidebarTool("move_sessions", { session_ids: [sessionId], section_id: sectionId }, sessionId);
+  }
+
+  async renameSection(sectionId: string, name: string): Promise<void> {
+    await this.sidebarTool("rename_section", { section_id: sectionId, name });
+  }
+
+  async deleteSection(sectionId: string): Promise<void> {
+    await this.sidebarTool("delete_section", { section_id: sectionId });
   }
 
   async availableCodeModels(): Promise<string[]> {

@@ -171,6 +171,62 @@ describe("createDirectory", () => {
   });
 });
 
+describe("renameSection and deleteSection", () => {
+  const renamedProject: BridgeProjectInfo = {
+    projectId: "section:sec-misc",
+    name: "核心任务",
+    kind: "desktop-group",
+    cwd: "/work/杂活/colab-connect",
+    sessionCount: 1,
+    runningCount: 0,
+    pendingCount: 0,
+    lastActivityAt: 10,
+  };
+
+  it("sends section.rename and section.delete without offline persistence", async () => {
+    harness.response = { project: renamedProject, projects: [renamedProject], sessions: [] };
+    await expect(useMobileBridge().renameSection("section:sec-misc", "核心任务")).resolves.toEqual({
+      project: renamedProject,
+      projects: [renamedProject],
+      sessions: [],
+    });
+    expect(harness.requests[0]).toMatchObject({
+      method: "section.rename",
+      params: { sectionId: "section:sec-misc", name: "核心任务" },
+    });
+    expect(harness.encrypt.mock.calls[0]![6]).toBe(true);
+
+    harness.refs = [];
+    harness.requests = [];
+    harness.response = { projects: [], sessions: [] };
+    await expect(useMobileBridge().deleteSection("section:sec-misc")).resolves.toEqual({
+      projects: [],
+      sessions: [],
+    });
+    expect(harness.requests[0]).toMatchObject({
+      method: "section.delete",
+      params: { sectionId: "section:sec-misc" },
+    });
+    expect(harness.encrypt.mock.calls[0]![6]).toBe(true);
+  });
+
+  it("propagates native errors and rejects offline before encrypting", async () => {
+    harness.error = { code: "REQUEST_FAILED", message: "Built-in sections cannot be deleted" };
+    await expect(useMobileBridge().deleteSection("section:sessions")).rejects.toThrow("Built-in sections cannot be deleted");
+
+    harness.refs = [];
+    harness.requests = [];
+    harness.error = undefined;
+    harness.encrypt.mockClear();
+    const bridge = useMobileBridge();
+    harness.refs[3]!.current.state = "closed";
+    await expect(bridge.renameSection("section:sec-misc", "新名")).rejects.toThrow("电脑当前离线");
+    await expect(bridge.deleteSection("section:sec-misc")).rejects.toThrow("电脑当前离线");
+    expect(harness.encrypt).not.toHaveBeenCalled();
+    expect(harness.requests).toEqual([]);
+  });
+});
+
 describe("loadBackgroundTasks", () => {
   it("syncs returned session runningSubagents into snapshot while stripping backgroundTasks payload", async () => {
     const baseSession: BridgeSessionInfo = {

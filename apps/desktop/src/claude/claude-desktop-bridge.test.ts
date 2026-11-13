@@ -49,12 +49,12 @@ class NativeDesktop extends EventEmitter {
   async promptChoices() { return this.promptChoiceValues; }
   async prPreferences(sessionId: string) {
     const session = this.sessions.find(session => session.sessionId === sessionId);
-    return session ? { onlyOwnPrs: session.autoFixOwnPrs === true, nextOwnPrArmed: session.autoFixNextOwnPr === true } : undefined;
+    return session ? { onlyOwnPrs: session.autoFixOwnPrs === true, nextOwnPrArmed: typeof session.autoFixNextOwnPr === "string" && session.autoFixNextOwnPr.length > 0 } : undefined;
   }
-  async startAutoFixOnNextPr(sessionId: string, enabled: boolean) {
-    this.calls.push({ method: "armAutoFixOnNextPr", args: [sessionId, enabled] });
+  async startAutoFixOnNextPr(sessionId: string, branch: string) {
+    this.calls.push({ method: "armAutoFixOnNextPr", args: [sessionId, branch] });
     const session = this.sessions.find(session => session.sessionId === sessionId)!;
-    if (this.applyPrSettings) session.autoFixNextOwnPr = enabled;
+    if (this.applyPrSettings) session.autoFixNextOwnPr = branch;
   }
   supports(method: string) { return !this.unsupported.has(method); }
   async connect() { this.ready = true; }
@@ -68,6 +68,7 @@ class NativeDesktop extends EventEmitter {
     const session = this.sessions.find(session => session.sessionId === args[0]);
     if (method === "getSession") return structuredClone(session);
     if (method === "getContextUsage") return structuredClone(this.contextUsage);
+    if (method === "getGitInfo") return { branch: "feature/owned" };
     const promptField = ({ respondToRefusalFallbackPrompt: "pendingRefusalFallbackPrompt", respondToAutoModeServerFallbackPrompt: "pendingAutoModeServerFallbackPrompt", respondToLanyardConsent: "pendingLanyardConsent", respondToViolinBowPrompt: "pendingViolinBowPrompt", answerPendingCwdTrust: "pendingCwdTrustPrompt" } as Record<string, string>)[method];
     if (promptField) {
       if (!this.promptResult || !session || (session[promptField] as { promptId?: string } | undefined)?.promptId !== args[1]) return false;
@@ -193,8 +194,8 @@ describe("native application dialogs and PR Auto-fix", () => {
       Object.assign(f.native.sessions[0]!, {
         pendingRefusalFallbackPrompt: { promptId: "r", originalModel: "primary", fallbackModel: "fallback" },
         pendingAutoModeServerFallbackPrompt: { promptId: "a", title: "Gateway confirmation", paragraphs: ["First paragraph", "Second paragraph"] },
-        pendingLanyardConsent: { promptId: "l", title: "Access request" },
-        pendingViolinBowPrompt: { promptId: "v", title: "Confirm action" },
+        pendingLanyardConsent: { promptId: "l", targetKind: "channel", title: "Access request", channelId: "owned-channel", channelName: "owned-channel", workspace: "Owned workspace", permalink: "https://example.invalid/channel", bullets: ["Read messages"], postsIntro: "Post as", postsLabelled: "AI", pollIntervalSeconds: 60 },
+        pendingViolinBowPrompt: { promptId: "v", title: "Confirm action", body: "Copy files", folder: "/owned", machineName: "Owned machine" },
         pendingCwdTrustPrompt: { promptId: "c", directory: "/new-project", sources: ["settings"] },
       });
       await f.bridge.refreshRuntime();
@@ -218,7 +219,10 @@ describe("native application dialogs and PR Auto-fix", () => {
   ] as const)("forwards %s choices to %s and records the answering device", async (field, method, choice, nativeChoice) => {
     const f = await fixture();
     try {
-      f.native.sessions[0]![field] = { promptId: "pending", directory: "/project", sources: [] };
+      f.native.sessions[0]![field] = field === "pendingLanyardConsent"
+        ? { promptId: "pending", targetKind: "channel", title: "Read channel", channelId: "owned", channelName: "owned", workspace: "Owned workspace", permalink: "https://example.invalid/channel", bullets: ["Read messages"], postsIntro: "Post as", postsLabelled: "AI", pollIntervalSeconds: 60 }
+        : field === "pendingViolinBowPrompt" ? { promptId: "pending", body: "Copy files", folder: "/owned", machineName: "Owned machine" }
+          : { promptId: "pending", directory: "/project", sources: [] };
       f.native.promptChoiceValues = ["native-confirm", "native-decline"];
       await f.bridge.refreshRuntime();
       expect(await f.bridge.resolvePrompt("local-native", "pending", String(choice), { deviceId: "phone-2", name: "My phone" })).toBe(true);
@@ -271,6 +275,19 @@ describe("native application dialogs and PR Auto-fix", () => {
     } finally { await f.close(); }
   });
 
+  it("review regression: keeps enterprise checks on the binding host without querying a github.com overview", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.prs = [{ repo: "owner/repo", prNumber: 42, host: "github.enterprise.invalid", url: "https://github.enterprise.invalid/owner/repo/pull/42" }];
+      const detail = await f.bridge.readPrAutoFix("local-native", { repo: "owner/repo", prNumber: 42, host: "github.enterprise.invalid", includeChecks: true });
+      expect(f.native.calls.filter(call => call.method === "getPrOverview")).toEqual([]);
+      expect(f.native.calls.find(call => call.method === "getPrChecks")?.args).toEqual(["/project", 42, "owner/repo", "github.enterprise.invalid"]);
+      expect(detail.checks?.[0]).toMatchObject({ name: "ci/local-distributed", state: "fail" });
+      expect(detail).toMatchObject({ overviewUnavailable: expect.any(String) });
+      expect(detail.overview).toBeUndefined();
+    } finally { await f.close(); }
+  });
+
   it("writes bound Auto-fix via the public person-actor wrapper and reads back Native preferences", async () => {
     const f = await fixture();
     const resolver = { deviceId: "phone", name: "Phone" };
@@ -281,10 +298,13 @@ describe("native application dialogs and PR Auto-fix", () => {
       expect(f.native.calls.find(call => call.method === "setBoundPrAutoFix")?.args).toEqual(["local-native", "owner/repo", 42, true, "github.com"]);
       expect((await f.bridge.setPrAutoFix({ sessionId: "local-native", target: "own-prs", enabled: true }, resolver)).onlyOwnPrs).toBe(true);
       expect((await f.bridge.setPrAutoFix({ sessionId: "local-native", target: "next-pr", enabled: true }, resolver)).nextOwnPrArmed).toBe(true);
-      expect((await f.bridge.setPrAutoFix({ sessionId: "local-native", target: "next-pr", enabled: false }, resolver)).nextOwnPrArmed).toBe(false);
+      expect(f.native.calls.find(call => call.method === "armAutoFixOnNextPr")?.args).toEqual(["local-native", "feature/owned"]);
+      await expect(f.bridge.setPrAutoFix({ sessionId: "local-native", target: "next-pr", enabled: false }, resolver)).rejects.toThrow("取消布防");
       f.native.applyPrSettings = false;
+      delete f.native.sessions[0]!.autoFixNextOwnPr;
+      await expect(f.bridge.setPrAutoFix({ sessionId: "local-native", target: "next-pr", enabled: true }, resolver)).rejects.toThrow("Desktop 未应用");
       await expect(f.bridge.setPrAutoFix({ sessionId: "local-native", target: "own-prs", enabled: false }, resolver)).rejects.toThrow("Desktop 未应用");
-      expect(f.eventLog.replay(0, 100).filter(event => event.type === "pr.autoFix.updated")).toHaveLength(4);
+      expect(f.eventLog.replay(0, 100).filter(event => event.type === "pr.autoFix.updated")).toHaveLength(3);
     } finally { await f.close(); }
   });
 
@@ -295,7 +315,7 @@ describe("native application dialogs and PR Auto-fix", () => {
       expect(f.bridge.capabilities()).not.toContain("prompt.resolve");
       expect(f.bridge.capabilities()).not.toContain("pr.autofix");
       expect((await f.bridge.readPrAutoFix("local-native")).capabilities).toEqual({ bound: false, onlyOwnPrs: false, nextPr: false, checks: false });
-      f.native.sessions[0]!.autoFixNextOwnPr = false;
+      delete f.native.sessions[0]!.autoFixNextOwnPr;
       const changed = once(f.bridge, "changed");
       f.native.emit("event", { type: "bridge_pr_auto_fix_settled", sessionId: "local-native", enabled: true, result: "dropped" });
       await changed;

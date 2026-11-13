@@ -10,6 +10,7 @@ import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { conversationItems } from "../lib/conversation-timeline.js";
 import { InteractivePromptCard, PermissionPrompt } from "./conversation/PermissionPrompts.js";
+import { NativePromptCard } from "./conversation/NativePromptCard.js";
 import { SubagentCard } from "./conversation/SubagentCard.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAttachmentPicker.js";
@@ -155,6 +156,29 @@ beforeEach(() => {
   open("A");
 });
 afterEach(() => { hooks.effects.forEach((e) => e.cleanup?.()); vi.unstubAllGlobals(); });
+
+describe("Native prompt queue review regression", () => {
+  it("keeps a read-only first prompt visible and lets the user reach an answerable second prompt", () => {
+    props = { ...props, onResolvePrompt: vi.fn(), snapshot: { ...props.snapshot!, prompts: [
+      { sessionId: "A", promptId: "unsupported-first", kind: "lanyard-consent", title: "Desktop only", canRespond: false, choices: [] },
+      { sessionId: "A", promptId: "answerable-second", kind: "cwd-trust", title: "Trust owned directory", directory: "/owned", sources: [], canRespond: true, choices: [{ value: "trust", label: "信任目录" }] },
+    ] } };
+    draw();
+    elements(tree).find(element => element.type === "button" && element.props.className === "permission-dock")!.props.onClick();
+    draw();
+    expect(elements(tree).find(element => element.type === NativePromptCard)!.props.prompt.promptId).toBe("unsupported-first");
+    const selector = elements(tree).find(element => element.type === "select" && element.props["aria-label"] === "待处理提示");
+    expect(selector).toBeDefined();
+    expect(elements(selector).filter(element => element.type === "option").map(element => element.props.value)).toEqual(["unsupported-first", "answerable-second"]);
+    selector!.props.onChange({ target: { value: "answerable-second" } });
+    draw();
+    expect(elements(tree).find(element => element.type === NativePromptCard)!.props.prompt).toMatchObject({ promptId: "answerable-second", canRespond: true });
+    props = { ...props, snapshot: { ...props.snapshot!, prompts: props.snapshot!.prompts!.slice(0, 1) } };
+    draw();
+    expect(elements(tree).find(element => element.type === NativePromptCard)!.props.prompt.promptId).toBe("unsupported-first");
+    expect(props.onResolvePrompt).not.toHaveBeenCalled();
+  });
+});
 
 describe("history pagination on upward scroll", () => {
   let stream: { scrollTop: number; scrollHeight: number; clientHeight: number; getBoundingClientRect: () => { top: number }; querySelectorAll: () => never[] };

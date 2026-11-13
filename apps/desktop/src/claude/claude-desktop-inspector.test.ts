@@ -10,8 +10,8 @@ async function fixture() {
   const events = new Set<(value: unknown) => void>();
   const permissions = new Set<(value: unknown) => void>();
   const calls: unknown[][] = [];
-  const preferences: Record<string, { autoFixOwnPrs?: boolean; autoFixNextOwnPr?: boolean; privateLabel?: string }> = {
-    "local-native": { autoFixOwnPrs: true, autoFixNextOwnPr: false, privateLabel: "Native session private data" },
+  const preferences: Record<string, { autoFixOwnPrs?: boolean; autoFixNextOwnPr?: string; privateLabel?: string }> = {
+    "local-native": { autoFixOwnPrs: true, privateLabel: "Native session private data" },
   };
   const pendingDialogs = new Map<string, { sessionId: string; choices: Set<unknown> }>([
     ["lanyard-prompt", { sessionId: "local-native", choices: new Set(["start_lanyard", "not_now"]) }],
@@ -25,13 +25,14 @@ async function fixture() {
     respondToLanyardConsent: (...args: unknown[]) => { calls.push(args); return true; },
     respondToViolinBowPrompt: (...args: unknown[]) => { calls.push(args); return Promise.resolve(true); },
     answerPendingCwdTrust: (...args: unknown[]) => { calls.push(args); return Promise.resolve(true); },
+    getGitInfo: (...args: unknown[]) => { calls.push(args); return { branch: "feature/owned" }; },
     getPrOverview: (...args: unknown[]) => { calls.push(args); return { success: true, overview: { title: "Native PR" } }; },
     getPrChecks: (...args: unknown[]) => { calls.push(args); return { success: true, checks: [] }; },
     setBoundPrAutoFix: (...args: unknown[]) => { calls.push(args); },
     setAutoFixOwnPrsWanted: (...args: unknown[]) => { calls.push(args); },
     armAutoFixOnNextPr: (...args: unknown[]): Promise<unknown> => {
       calls.push(["armAutoFixOnNextPr", ...args]);
-      preferences[String(args[0])]!.autoFixNextOwnPr = args[1] === true;
+      preferences[String(args[0])]!.autoFixNextOwnPr = args[1] as string;
       return Promise.resolve("Consumed");
     },
     canRewindTo: (...args: unknown[]) => { calls.push(args); return true; },
@@ -120,7 +121,7 @@ describe("native Desktop inspector", () => {
     try {
       await f.inspector.connect();
       expect(await f.inspector.prPreferences("local-native")).toEqual({ onlyOwnPrs: true, nextOwnPrArmed: false });
-      f.preferences["local-native"] = { autoFixNextOwnPr: true };
+      f.preferences["local-native"] = { autoFixNextOwnPr: "feature/owned" };
       expect(await f.inspector.prPreferences("local-native")).toEqual({ onlyOwnPrs: false, nextOwnPrArmed: true });
       expect(await f.inspector.prPreferences("absent")).toBeUndefined();
       expect(f.calls).toEqual([]);
@@ -130,6 +131,15 @@ describe("native Desktop inspector", () => {
       expect(await f.inspector.prPreferences("local-native")).toBeUndefined();
       await f.inspector.close();
       await expect(f.inspector.prPreferences("local-native")).rejects.toBeInstanceOf(InspectorDisconnectedError);
+    } finally { await f.close(); }
+  });
+
+  it("review regression: recognizes the actual Native branch latch as armed", async () => {
+    const f = await fixture();
+    try {
+      await f.inspector.connect();
+      Object.assign(f.preferences["local-native"]!, { autoFixNextOwnPr: "feature/owned" });
+      expect(await f.inspector.prPreferences("local-native")).toEqual({ onlyOwnPrs: true, nextOwnPrArmed: true });
     } finally { await f.close(); }
   });
 
@@ -159,6 +169,7 @@ describe("native Desktop inspector", () => {
     ["respondToLanyardConsent", ["local-native", "prompt", "not_now"]],
     ["respondToViolinBowPrompt", ["local-native", "prompt", "native_choice"]],
     ["answerPendingCwdTrust", ["local-native", "prompt", false]],
+    ["getGitInfo", ["/project"]],
     ["getPrOverview", ["/project", 42, "owner/repo", "local-native", true]],
     ["getPrChecks", ["/project", 42, "owner/repo", "github.example"]],
     ["setBoundPrAutoFix", ["local-native", "owner/repo", 42, true, "github.example"]],
@@ -195,13 +206,13 @@ describe("native Desktop inspector", () => {
       await f.inspector.connect();
       f.api.armAutoFixOnNextPr = (...args) => {
         f.calls.push(["armAutoFixOnNextPr", ...args]);
-        f.preferences["local-native"]!.autoFixNextOwnPr = args[1] === true;
+        f.preferences["local-native"]!.autoFixNextOwnPr = args[1] as string;
         return new Promise(resolve => { finish = resolve; });
       };
       const event = once(f.inspector, "event");
-      if (entry === "port") await f.inspector.startAutoFixOnNextPr("local-native", true);
-      else await f.inspector.call("armAutoFixOnNextPr", ["local-native", true]);
-      expect(f.calls).toEqual([["armAutoFixOnNextPr", "local-native", true], ["getSession", "local-native"]]);
+      if (entry === "port") await f.inspector.startAutoFixOnNextPr("local-native", "feature/owned");
+      else await f.inspector.call("armAutoFixOnNextPr", ["local-native", "feature/owned"]);
+      expect(f.calls).toEqual([["armAutoFixOnNextPr", "local-native", "feature/owned"], ["getSession", "local-native"]]);
       expect(await f.inspector.prPreferences("local-native")).toEqual({ onlyOwnPrs: true, nextOwnPrArmed: true });
       finish!("Consumed");
       expect(await event).toEqual([{ type: "bridge_pr_auto_fix_settled", sessionId: "local-native", enabled: true, result: "Consumed" }]);
@@ -214,10 +225,10 @@ describe("native Desktop inspector", () => {
     try {
       await f.inspector.connect();
       f.api.armAutoFixOnNextPr = () => new Promise((_, reject) => { rejectArm = reject; });
-      await f.inspector.startAutoFixOnNextPr("local-native", false);
+      await f.inspector.startAutoFixOnNextPr("local-native", "feature/owned");
       const event = once(f.inspector, "event");
       rejectArm!(new Error("Native arm failed"));
-      expect(await event).toEqual([{ type: "bridge_pr_auto_fix_settled", sessionId: "local-native", enabled: false, error: "Native arm failed" }]);
+      expect(await event).toEqual([{ type: "bridge_pr_auto_fix_settled", sessionId: "local-native", enabled: true, error: "Native arm failed" }]);
     } finally { await f.close(); }
   });
 
@@ -229,14 +240,14 @@ describe("native Desktop inspector", () => {
       await f.inspector.connect();
       f.api.armAutoFixOnNextPr = (...args) => {
         f.calls.push(["armAutoFixOnNextPr", ...args]);
-        f.preferences["local-native"]!.autoFixNextOwnPr = true;
+        f.preferences["local-native"]!.autoFixNextOwnPr = "feature/owned";
         return new Promise(resolve => { finish = resolve; });
       };
       f.inspector.on("event", value => received.push(value));
-      await f.inspector.startAutoFixOnNextPr("local-native", true);
+      await f.inspector.startAutoFixOnNextPr("local-native", "feature/owned");
       await f.inspector.close();
-      expect(f.preferences["local-native"]!.autoFixNextOwnPr).toBe(true);
-      expect(f.calls).toEqual([["armAutoFixOnNextPr", "local-native", true], ["getSession", "local-native"]]);
+      expect(f.preferences["local-native"]!.autoFixNextOwnPr).toBe("feature/owned");
+      expect(f.calls).toEqual([["armAutoFixOnNextPr", "local-native", "feature/owned"], ["getSession", "local-native"]]);
       await f.inspector.connect();
       finish!("Dropped");
       const freshEvent = once(f.inspector, "event");
@@ -252,10 +263,10 @@ describe("native Desktop inspector", () => {
     try {
       Reflect.deleteProperty(f.api, "getSession");
       await f.inspector.connect();
-      await expect(f.inspector.startAutoFixOnNextPr("local-native", true)).rejects.toThrow("Unsupported Claude Desktop method: getSession");
+      await expect(f.inspector.startAutoFixOnNextPr("local-native", "feature/owned")).rejects.toThrow("Unsupported Claude Desktop method: getSession");
       expect(f.calls).toEqual([]);
       await f.inspector.close();
-      await expect(f.inspector.startAutoFixOnNextPr("local-native", true)).rejects.toBeInstanceOf(InspectorDisconnectedError);
+      await expect(f.inspector.startAutoFixOnNextPr("local-native", "feature/owned")).rejects.toBeInstanceOf(InspectorDisconnectedError);
     } finally { await f.close(); }
   });
 

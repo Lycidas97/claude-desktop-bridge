@@ -900,6 +900,8 @@ export function MobileWorkspace({
     }
   }, [events]);
 
+  const [selectedNativePromptId, setSelectedNativePromptId] = useState<string>();
+
   async function selectSession(sessionId: string): Promise<void> {
     setConfigurationSessionId(undefined);
     setForkChainOpen(Boolean(sessions.find((session) => session.sessionId === sessionId)?.sidechat));
@@ -1437,7 +1439,7 @@ export function MobileWorkspace({
     const toolPermissions = sessionPermissions.filter(permission => permission.toolName !== "AskUserQuestion");
     const activePermission = toolPermissions[0];
     const sessionNativePrompts = snapshot?.prompts?.filter(prompt => prompt.sessionId === selectedSession.sessionId) ?? [];
-    const activeNativePrompt = sessionNativePrompts[0];
+    const activeNativePrompt = sessionNativePrompts.find(prompt => prompt.promptId === selectedNativePromptId) ?? sessionNativePrompts[0];
     const otherNativePrompt = snapshot?.prompts?.find(prompt => prompt.sessionId !== selectedSession.sessionId && sessions.some(session => session.sessionId === prompt.sessionId));
     const otherNativePromptSession = otherNativePrompt ? sessions.find(session => session.sessionId === otherNativePrompt.sessionId) : undefined;
     const otherPermission = permissions.find(permission => {
@@ -1981,12 +1983,20 @@ export function MobileWorkspace({
                 onEnableNativeFullAccess={(requestId) => onResolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions")}
               />
             ) : activeNativePrompt && (
-              <NativePromptCard
-                key={activeNativePrompt.promptId}
-                prompt={activeNativePrompt}
-                online={connection === "connected" && desktopOnline}
-                {...(onResolvePrompt && snapshot?.host.capabilities.includes("prompt.native.v1") ? { onResolve: onResolvePrompt } : {})}
-              />
+              <>
+                {sessionNativePrompts.length > 1 && (
+                  <select className="native-prompt-selector" aria-label="待处理提示" value={activeNativePrompt.promptId}
+                    onChange={event => setSelectedNativePromptId(event.target.value)}>
+                    {sessionNativePrompts.map(prompt => <option key={prompt.promptId} value={prompt.promptId}>{prompt.title}</option>)}
+                  </select>
+                )}
+                <NativePromptCard
+                  key={activeNativePrompt.promptId}
+                  prompt={activeNativePrompt}
+                  online={connection === "connected" && desktopOnline}
+                  {...(onResolvePrompt && snapshot?.host.capabilities.includes("prompt.native.v1") ? { onResolve: onResolvePrompt } : {})}
+                />
+              </>
             )}
           </MobileSheet>
         )}

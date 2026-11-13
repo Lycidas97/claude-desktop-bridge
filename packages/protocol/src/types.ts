@@ -1105,6 +1105,7 @@ export interface BridgePrAutoFixState {
   nextOwnPrArmed?: boolean;
   capabilities: { bound: boolean; onlyOwnPrs: boolean; nextPr: boolean; checks: boolean };
   overview?: { title?: string; state?: string; url?: string };
+  overviewUnavailable?: string;
   checks?: BridgePrCheck[];
 }
 

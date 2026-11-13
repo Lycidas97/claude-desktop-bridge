@@ -111,23 +111,25 @@ export async function startNativeApprovalHost(options: {
   let keepUntrustedAfterSave = false;
   let applyPrWrites = true;
   let choicesAvailable = true;
-  const preferences = { onlyOwnPrs: false, nextOwnPrArmed: false };
+  const preferences = { onlyOwnPrs: false };
+  let nextPrBranch: string | undefined;
   const nativeEvents: Record<string, unknown>[] = [];
   const unsupportedMethods = new Set<string>();
   const inspector = Object.assign(new EventEmitter(), {
     ready: true,
-    supports: (method: string) => !unsupportedMethods.has(method) && ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", "getPrOverview", "getPrChecks", "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", ...Object.values(nativeDialogs).map(dialog => dialog.method), ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
+    supports: (method: string) => !unsupportedMethods.has(method) && ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", "getPrOverview", "getPrChecks", "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getGitInfo", ...Object.values(nativeDialogs).map(dialog => dialog.method), ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
     async prPreferences(id: string) {
-      return id === options.sessionId ? structuredClone(preferences) : undefined;
+      return id === options.sessionId ? { ...preferences, nextOwnPrArmed: nextPrBranch !== undefined } : undefined;
     },
     async promptChoices(id: string, promptId: string) {
       if (id !== options.sessionId || !choicesAvailable) return undefined;
       return Object.values(nativeDialogs).find(dialog => native[dialog.field]?.promptId === promptId)?.choices.slice();
     },
-    async startAutoFixOnNextPr(id: string, enabled: boolean) {
-      calls.push({ method: "armAutoFixOnNextPr", args: [id, enabled] });
+    async startAutoFixOnNextPr(id: string, branch: string) {
+      calls.push({ method: "armAutoFixOnNextPr", args: [id, branch] });
       assert.equal(id, options.sessionId);
-      if (applyPrWrites) preferences.nextOwnPrArmed = enabled;
+      assert.equal(branch, "feature/owned", "Native arms a branch string, not an enabled boolean");
+      if (applyPrWrites) nextPrBranch = branch;
     },
     async availableCodeModels() { return [...new Set(nativeModelIds.map(id => id.replace(/\[1m\]$/iu, "")))]; },
     async connect() {},
@@ -137,6 +139,10 @@ export async function startNativeApprovalHost(options: {
       if (rewindCompleted && method === rewindReadbackFailure) {
         failedRewindReadbacks.push(method);
         throw new InspectorDisconnectedError(`Synthetic ${method} disconnected after successful rewind`);
+      }
+      if (method === "getGitInfo") {
+        assert.deepEqual(args, [harnessCwd]);
+        return { branch: "feature/owned" };
       }
       if (method === "getAll" || method === "getSession") {
         return structuredClone(method === "getAll" ? nativeSessions : nativeSessions.find(session => session.sessionId === args[0]));
@@ -318,7 +324,7 @@ export async function startNativeApprovalHost(options: {
     return {
       events: eventLog.replay(after), nativeEvents: structuredClone(nativeEvents),
       session: structuredClone(broker.session(options.sessionId)!), prompts: broker.promptsList(),
-      prs: structuredClone(native.prs), prefs: structuredClone(preferences), runtimeCapabilities: broker.capabilities(),
+      prs: structuredClone(native.prs), prefs: { ...preferences, nextOwnPrArmed: nextPrBranch !== undefined }, runtimeCapabilities: broker.capabilities(),
     };
   }
   async function emitDialogEvent(event: Record<string, unknown>) {
@@ -339,7 +345,15 @@ export async function startNativeApprovalHost(options: {
         promptId: `native-dialog-${++sequence}`,
         ...(kind === "refusal-fallback" ? { originalModel: "Native primary", fallbackModel: "Native fallback", apiRefusalCategory: "隔离回退请求" }
           : kind === "cwd-trust" ? { directory: harnessCwd, sources: ["隔离测试目录"] }
-            : { message: `隔离 ${kind} 提示` }),
+            : kind === "lanyard-consent" ? {
+              targetKind: "channel", title: "访问频道", lead: "读取并向隔离频道发消息",
+              channelId: "owned-channel", channelName: "隔离频道", workspace: "隔离工作区",
+              permalink: "https://example.invalid/owned-channel", bullets: ["读取频道历史", "向频道发消息"],
+              postsIntro: "发帖身份", postsAs: "隔离账号", postsLabelled: "AI", pollIntervalSeconds: 60,
+            } : kind === "violin-bow" ? {
+              title: "复制文件", body: "复制选中的文件", detail: "将文件复制到隔离电脑",
+              folder: harnessCwd, machineName: "隔离电脑", fileCount: 2, totalBytes: 123,
+            } : { paragraphs: ["隔离自动模式确认"] }),
       };
       native[dialog.field] = info;
       const update = await emitDialogEvent("event" in dialog

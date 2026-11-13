@@ -31,16 +31,40 @@ export async function nativePendingPrompts(session: NativePromptSession, inspect
     const info = raw as Record<string, unknown>;
     if (typeof info.promptId !== "string" || !info.promptId) throw new NativeCallError(`Desktop returned an invalid ${spec.field} ID`);
     const choices = "choices" in spec ? [...spec.choices] : (await inspector.promptChoices?.(session.sessionId, info.promptId))?.map(value => ({ value, label: value }));
-    const message = spec.kind === "refusal-fallback" && typeof info.originalModel === "string" && typeof info.fallbackModel === "string"
+    let message = spec.kind === "refusal-fallback" && typeof info.originalModel === "string" && typeof info.fallbackModel === "string"
       ? `${info.originalModel} → ${info.fallbackModel}${typeof info.apiRefusalCategory === "string" ? `\n${info.apiRefusalCategory}` : ""}`
       : Array.isArray(info.paragraphs) ? info.paragraphs.filter(value => typeof value === "string").join("\n\n")
         : [info.message, info.description, info.reason].find((value): value is string => typeof value === "string" && value.length > 0);
+    if (spec.kind === "lanyard-consent") {
+      message = [
+        info.lead,
+        ...(Array.isArray(info.bullets) ? info.bullets : []),
+        typeof info.workspace === "string" && `工作区：${info.workspace}`,
+        typeof info.channelName === "string" && `频道：${info.channelName}`,
+        info.permalink, info.scope, info.threadStarted, info.threadTs,
+        info.postsIntro, info.postsAs, info.postsLabelled,
+        typeof info.pollIntervalSeconds === "number" && `轮询间隔：${info.pollIntervalSeconds} 秒`,
+        info.externallyShared === true && "与工作区外部共享",
+      ].filter(value => typeof value === "string" && value.length > 0).join("\n\n");
+    } else if (spec.kind === "violin-bow") {
+      message = [
+        info.body, info.detail, info.offer,
+        typeof info.folder === "string" && `目录：${info.folder}`,
+        typeof info.launchFolder === "string" && `启动目录：${info.launchFolder}`,
+        typeof info.machineName === "string" && `电脑：${info.machineName}`,
+        typeof info.fileCount === "number" && `文件：${info.fileCount} 个`,
+        typeof info.totalBytes === "number" && `大小：${info.totalBytes} 字节`,
+        typeof info.attempts === "number" && `尝试次数：${info.attempts}`,
+        info.lastError,
+      ].filter(value => typeof value === "string" && value.length > 0).join("\n\n");
+    }
     const base = {
       promptId: info.promptId, sessionId: session.sessionId,
       title: typeof info.title === "string" && info.title ? info.title : spec.title,
       ...(message ? { message } : {}),
       choices: choices ?? [],
-      canRespond: inspector.supports(spec.method) && choices !== undefined && choices.length > 0,
+      canRespond: inspector.supports(spec.method) && choices !== undefined && choices.length > 0
+        && (spec.kind !== "lanyard-consent" && spec.kind !== "violin-bow" || Boolean(message)),
     };
     if (spec.kind === "cwd-trust") {
       if (typeof info.directory !== "string" || !Array.isArray(info.sources) || !info.sources.every(source => typeof source === "string")) throw new NativeCallError("Desktop returned an invalid pendingCwdTrustPrompt");

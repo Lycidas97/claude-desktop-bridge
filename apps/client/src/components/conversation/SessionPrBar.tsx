@@ -15,6 +15,7 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
   const [details, setDetails] = useState<Record<string, BridgePrAutoFixState>>({});
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string>();
+  const [initialChecks, setInitialChecks] = useState<Record<string, "pending" | "attempted">>({});
   const available = supported && online && Boolean(onRead && onSet);
   const prs = state?.prs ?? session.prs ?? [];
   const prUpdate = events?.filter(event => event.sessionId === session.sessionId && event.type === "pr.autoFix.updated").at(-1);
@@ -40,6 +41,14 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
       setBusy(undefined);
     }
   }
+
+  useEffect(() => {
+    if (busy || !available || !state?.capabilities.checks) return;
+    const pr = prs.find(pr => initialChecks[`${pr.host ?? ""}/${pr.repo}/${pr.prNumber}`] === "pending");
+    if (!pr) return;
+    setInitialChecks(current => ({ ...current, [`${pr.host ?? ""}/${pr.repo}/${pr.prNumber}`]: "attempted" }));
+    void read(pr);
+  }, [busy, available, state?.capabilities.checks, initialChecks, prs]);
 
   async function update(change: BridgePrAutoFixUpdate): Promise<void> {
     setBusy("write");
@@ -74,12 +83,11 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
                 onChange={event => void update({ sessionId: session.sessionId, target: "own-prs", enabled: event.target.checked })} />
               <span>仅我的 PR</span>
             </label>
-            <label>
-              <input type="checkbox" checked={state.nextOwnPrArmed === true}
-                disabled={!available || Boolean(busy) || !state.capabilities.nextPr || state.nextOwnPrArmed === undefined}
-                onChange={event => void update({ sessionId: session.sessionId, target: "next-pr", enabled: event.target.checked })} />
-              <span>下一个 PR 布防</span>
-            </label>
+            <button type="button" className="message-copy-button"
+              disabled={!available || Boolean(busy) || !state.capabilities.nextPr || state.nextOwnPrArmed === undefined || state.nextOwnPrArmed}
+              onClick={() => void update({ sessionId: session.sessionId, target: "next-pr", enabled: true })}>
+              {state.nextOwnPrArmed ? "已布防下一个 PR" : "布防下一个 PR"}
+            </button>
           </div>
         )}
         {prs.map(pr => {
@@ -87,7 +95,21 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
           const detail = details[key];
           return (
             <details key={key} className="session-pr-entry" onToggle={event => {
-              if (event.target === event.currentTarget && event.currentTarget.open && !detail && !busy && available && state?.capabilities.checks) void read(pr);
+              if (event.target !== event.currentTarget) return;
+              if (!event.currentTarget.open) {
+                setInitialChecks(current => {
+                  const next = { ...current };
+                  if (next[key] === "pending") delete next[key];
+                  return next;
+                });
+              } else if (!detail) {
+                if (!busy && available && state?.capabilities.checks) {
+                  setInitialChecks(current => ({ ...current, [key]: "attempted" }));
+                  void read(pr);
+                } else {
+                  setInitialChecks(current => ({ ...current, [key]: "pending" }));
+                }
+              }
             }}>
               <summary><span>{pr.repo}#{pr.prNumber}</span><small>{pr.state}</small></summary>
               <div className="session-pr-entry-body">
@@ -98,6 +120,7 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
                     onChange={event => void update({ sessionId: session.sessionId, target: "bound", repo: pr.repo, prNumber: pr.prNumber, ...(pr.host ? { host: pr.host } : {}), enabled: event.target.checked })} />
                   <span>Auto-fix</span>
                 </label>
+                {detail?.overviewUnavailable && <span className="session-pr-empty">{detail.overviewUnavailable}</span>}
                 {detail?.checks && (detail.checks.length ? (
                   <ul className="session-pr-checks" aria-label="PR 检查">
                     {detail.checks.map((check, index) => (

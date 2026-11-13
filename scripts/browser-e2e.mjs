@@ -1102,8 +1102,15 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   const unavailableCard = page.getByRole("region", { name: unavailable.prompt.title, exact: true });
   await unavailableCard.getByText("请在电脑端处理", { exact: true }).waitFor();
   assert.equal(await unavailableCard.getByRole("button").count(), 0);
+  const reachable = await host.syncNativeDialogs(await host.nativeApproval.openPrompt("cwd-trust"));
+  await page.getByRole("combobox", { name: "待处理提示", exact: true }).selectOption(reachable.prompt.promptId);
+  const reachableCard = page.getByRole("region", { name: reachable.prompt.title, exact: true });
+  await reachableCard.getByRole("button", { name: "信任目录", exact: true }).click();
+  await reachableCard.waitFor({ state: "hidden" });
+  await unavailableCard.waitFor();
   await host.syncNativeDialogs(await host.nativeApproval.answerPromptLocally(unavailable.prompt.promptId));
   await host.nativeApproval.setPromptsPrPolicy({ choicesAvailable: true });
+  steps.push("a read-only first prompt remains visible while the selector reaches and answers a later Native prompt");
   steps.push("Native opened/resolved events without event.session refresh all five pending lists; Desktop-local answers clear phone cards without a remote response, and unavailable Native choices stay non-actionable");
 
   assert.equal(host.nativeApproval.calls.filter(call => ["getPrOverview", "getPrChecks"].includes(call.method)).length, 0, "Snapshot refresh never fetches GitHub PR checks");
@@ -1111,16 +1118,16 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   const bar = page.locator(".session-pr-bar");
   await bar.locator(":scope > summary").click();
   const own = bar.getByRole("checkbox", { name: "仅我的 PR", exact: true });
-  const next = bar.getByRole("checkbox", { name: "下一个 PR 布防", exact: true });
+  const next = bar.getByRole("button", { name: "布防下一个 PR", exact: true });
   await eventually(() => own.isEnabled(), true, "Native preference reads enable the supported controls");
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "getPrChecks").length, 0);
   await own.click();
   await eventually(() => own.isChecked(), true, "Only-own-PR preference reflects Native readback");
   await eventually(() => next.isEnabled(), true, "PR preference update completes before the next action");
   await next.click();
-  await eventually(() => next.isChecked(), true, "Next-PR latch reflects Native readback without waiting for latch consumption");
+  await eventually(() => bar.getByRole("button", { name: "已布防下一个 PR", exact: true }).isDisabled(), true, "Next-PR branch latch reflects Native readback without offering an unsupported cancel action");
   assert.deepEqual(host.nativeApproval.dialogs().prefs, { onlyOwnPrs: true, nextOwnPrArmed: true });
-  assert.deepEqual(host.nativeApproval.calls.findLast(call => call.method === "armAutoFixOnNextPr").args, [sessionId, true]);
+  assert.deepEqual(host.nativeApproval.calls.findLast(call => call.method === "armAutoFixOnNextPr").args, [sessionId, "feature/owned"]);
 
   const entry = bar.locator(".session-pr-entry");
   await eventually(() => own.isEnabled(), true, "Next-PR dispatch is acknowledged before opening checks");
@@ -1151,7 +1158,7 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
 
   await host.nativeApproval.setPromptsPrPolicy({ applyPrWrites: false });
   const audits = host.nativeApproval.dialogs().events.filter(event => event.type === "pr.autoFix.updated").length;
-  for (const checkbox of [bound, own, next]) {
+  for (const checkbox of [bound, own]) {
     await eventually(() => checkbox.isEnabled(), true, "Native action is available before testing an unapplied write");
     await checkbox.click();
     await bar.getByRole("alert").filter({ hasText: "Desktop 未应用 Auto-fix 设置，请刷新状态。" }).waitFor();
@@ -1160,10 +1167,10 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   assert.deepEqual(host.nativeApproval.dialogs().prefs, { onlyOwnPrs: true, nextOwnPrArmed: true });
   assert.equal(host.nativeApproval.dialogs().prs[0].autoFix, true);
   assert.equal(host.nativeApproval.dialogs().events.filter(event => event.type === "pr.autoFix.updated").length, audits, "Failed Native writes do not record a successful device audit");
-  assert.equal(host.requests.filter(request => request.method === "pr.autoFix.set").length, 6);
+  assert.equal(host.requests.filter(request => request.method === "pr.autoFix.set").length, 5);
   await page.screenshot({ path: resolve(directory, "native-pr-not-applied.png"), fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Native prompts and PR controls fit the mobile viewport");
-  steps.push("ignored bound, own-PR and next-PR Native writes return an error, retain Native state, and create no successful audit event");
+  steps.push("ignored bound and own-PR Native writes return an error, retain Native state, and create no successful audit event; an armed next-PR latch offers no unsupported cancel action");
 }
 
 async function verifyNativeMessages(page, host, steps, directory) {

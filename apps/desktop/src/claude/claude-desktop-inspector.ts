@@ -9,7 +9,7 @@ const METHODS = new Set([
   "canRewindTo", "rewindV2", "rewindFiles",
   "respondToRefusalFallbackPrompt", "respondToAutoModeServerFallbackPrompt", "respondToLanyardConsent",
   "respondToViolinBowPrompt", "answerPendingCwdTrust", "getPrOverview", "getPrChecks",
-  "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr",
+  "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getGitInfo",
 ]);
 
 export interface NativeSectionCatalog {
@@ -177,7 +177,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
   }
 
   async call(method: string, args: unknown[] = []): Promise<unknown> {
-    if (method === "armAutoFixOnNextPr") return this.startAutoFixOnNextPr(args[0] as string, args[1] as boolean);
+    if (method === "armAutoFixOnNextPr") return this.startAutoFixOnNextPr(args[0] as string, args[1] as string);
     if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected; open the Node inspector from Desktop's developer menu");
     if (!this.supports(method)) throw new NativeCallError(`Unsupported Claude Desktop method: ${method}`);
     return this.renderer(`(() => {
@@ -192,7 +192,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
       const manager = ${SESSION_MANAGERS}.find(candidate => typeof candidate?.githubPr?.config?.getSession === 'function');
       const session = manager?.githubPr.config.getSession(${JSON.stringify(sessionId)});
       if (!session) return;
-      return { onlyOwnPrs: session.autoFixOwnPrs === true, nextOwnPrArmed: session.autoFixNextOwnPr === true };
+      return { onlyOwnPrs: session.autoFixOwnPrs === true, nextOwnPrArmed: typeof session.autoFixNextOwnPr === 'string' && session.autoFixNextOwnPr.length > 0 };
     })()`) as Promise<NativePrPreferences | undefined>;
   }
 
@@ -208,7 +208,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
     })()`) as Promise<string[] | undefined>;
   }
 
-  async startAutoFixOnNextPr(sessionId: string, enabled: boolean): Promise<void> {
+  async startAutoFixOnNextPr(sessionId: string, branch: string): Promise<void> {
     if (!this.ready) throw new InspectorDisconnectedError("Claude Desktop inspector is disconnected");
     for (const method of ["armAutoFixOnNextPr", "getSession"]) {
       if (!this.supports(method)) throw new NativeCallError(`Unsupported Claude Desktop method: ${method}`);
@@ -218,10 +218,10 @@ export class ClaudeDesktopInspector extends EventEmitter {
       if (!stream) throw new Error('BRIDGE_RENDERER_RELOADED');
       const api = globalThis['claude.web'].LocalSessions;
       const sessionId = ${JSON.stringify(sessionId)};
-      const enabled = ${JSON.stringify(enabled)};
-      Promise.resolve(api.armAutoFixOnNextPr(sessionId, enabled)).then(
-        result => stream.emit('event', { type: 'bridge_pr_auto_fix_settled', sessionId, enabled, result }),
-        error => stream.emit('event', { type: 'bridge_pr_auto_fix_settled', sessionId, enabled, error: String(error?.message ?? error) }),
+      const branch = ${JSON.stringify(branch)};
+      Promise.resolve(api.armAutoFixOnNextPr(sessionId, branch)).then(
+        result => stream.emit('event', { type: 'bridge_pr_auto_fix_settled', sessionId, enabled: true, result }),
+        error => stream.emit('event', { type: 'bridge_pr_auto_fix_settled', sessionId, enabled: true, error: String(error?.message ?? error) }),
       );
       // Read behind the dispatch on LocalSessions IPC; the arm Promise itself waits for consumption or timeout.
       await api.getSession(sessionId);

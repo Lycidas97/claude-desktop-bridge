@@ -105,6 +105,27 @@ describe("PR Auto-fix disclosure", () => {
     expect(onSet).not.toHaveBeenCalled();
   });
 
+  it("review regression: reads checks once after an already-open PR finishes waiting for preferences", async () => {
+    let finish!: (value: BridgePrAutoFixState) => void;
+    const onRead = vi.fn().mockImplementationOnce(() => new Promise<BridgePrAutoFixState>(resolve => { finish = resolve; }))
+      .mockRejectedValue(new Error("Owned checks failure"));
+    const props = { session, supported: true, online: true, onRead, onSet: vi.fn() };
+    open(renderPr(props));
+    open(elements(renderPr(props)).find(element => element.props.className === "session-pr-entry")!);
+    expect(onRead).toHaveBeenCalledTimes(1);
+    finish(state);
+    await Promise.resolve();
+    renderPr(props);
+    await Promise.resolve();
+    renderPr(props);
+    expect(onRead).toHaveBeenNthCalledWith(2, "session-1", pr, true);
+    expect(text(renderPr(props))).toContain("Owned checks failure");
+    renderPr(props);
+    await Promise.resolve();
+    renderPr(props);
+    expect(onRead).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps failed writes at the last Native state and exposes the failure", async () => {
     const onRead = vi.fn().mockResolvedValue(state);
     const onSet = vi.fn().mockRejectedValue(new Error("Desktop 拒绝布防"));
@@ -112,13 +133,11 @@ describe("PR Auto-fix disclosure", () => {
     open(render());
     await Promise.resolve();
     let tree = render();
-    const nextPrLabel = elements(tree).find(element => element.type === "label" && text(element).includes("下一个 PR 布防"))!;
-    elements(nextPrLabel).find(element => element.type === "input")!.props.onChange({ target: { checked: true } });
+    elements(tree).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.onClick();
     await Promise.resolve();
     tree = render();
     expect(onSet).toHaveBeenCalledWith({ sessionId: "session-1", target: "next-pr", enabled: true });
-    const nextPrInput = elements(elements(tree).find(element => element.type === "label" && text(element).includes("下一个 PR 布防"))!).find(element => element.type === "input")!;
-    expect(nextPrInput.props.checked).toBe(false);
+    expect(elements(tree).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.disabled).toBe(false);
     expect(text(tree)).toContain("Desktop 拒绝布防");
   });
 
@@ -145,12 +164,9 @@ describe("PR Auto-fix disclosure", () => {
     const props = { session, supported: true, online: true, onRead, onSet };
     open(renderPr(props));
     await Promise.resolve();
-    const checkedInput = elements(elements(renderPr(props)).find(element => element.type === "label" && text(element).includes("下一个 PR 布防"))!).find(element => element.type === "input")!;
-    expect(checkedInput.props.checked).toBe(true);
+    expect(elements(renderPr(props)).find(element => element.type === "button" && text(element) === "已布防下一个 PR")!.props.disabled).toBe(true);
     const next = renderPr({ ...props, session: { ...session, prAutoFix: { onlyOwnPrs: true, nextOwnPrArmed: false } } });
-    const nextInput = elements(elements(next).find(element => element.type === "label" && text(element).includes("下一个 PR 布防"))!).find(element => element.type === "input")!;
-    expect(nextInput.props.checked).toBe(false);
-    expect(nextInput.props.disabled).toBe(false);
+    expect(elements(next).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.disabled).toBe(false);
     expect(onRead).toHaveBeenCalledTimes(1);
     expect(onSet).not.toHaveBeenCalled();
   });
@@ -166,8 +182,7 @@ describe("PR Auto-fix disclosure", () => {
       data: { error: "Native 布防已失效", state },
     };
     const next = renderPr({ ...props, events: [event] });
-    const input = elements(elements(next).find(element => element.type === "label" && text(element).includes("下一个 PR 布防"))!).find(element => element.type === "input")!;
-    expect(input.props.checked).toBe(false);
+    expect(elements(next).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.disabled).toBe(false);
     expect(text(next)).toContain("Native 布防已失效");
     expect(onRead).toHaveBeenCalledTimes(1);
     expect(onSet).not.toHaveBeenCalled();

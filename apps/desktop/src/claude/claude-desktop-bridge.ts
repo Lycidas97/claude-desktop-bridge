@@ -96,7 +96,7 @@ interface InspectorTransport {
   sections?(sessionIds: string[]): Promise<NativeSectionCatalog | undefined>;
   prPreferences?(sessionId: string): Promise<{ onlyOwnPrs: boolean; nextOwnPrArmed: boolean } | undefined>;
   promptChoices?(sessionId: string, promptId: string): Promise<string[] | undefined>;
-  startAutoFixOnNextPr?(sessionId: string, enabled: boolean): Promise<void>;
+  startAutoFixOnNextPr?(sessionId: string, branch: string): Promise<void>;
   createSection?(name: string): Promise<string>;
   assignSection?(sessionId: string, sectionId: string): Promise<void>;
   renameSection?(sectionId: string, name: string): Promise<void>;
@@ -942,8 +942,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
       capabilities: {
         bound: this.inspector.supports("setBoundPrAutoFix"),
         onlyOwnPrs: preferences !== undefined && this.inspector.supports("setAutoFixOwnPrsWanted"),
-        nextPr: preferences !== undefined && this.inspector.supports("armAutoFixOnNextPr") && this.inspector.startAutoFixOnNextPr !== undefined,
-        checks: this.inspector.supports("getPrOverview") && this.inspector.supports("getPrChecks"),
+        nextPr: preferences !== undefined && this.inspector.supports("getGitInfo") && this.inspector.supports("armAutoFixOnNextPr") && this.inspector.startAutoFixOnNextPr !== undefined,
+        checks: this.inspector.supports("getPrChecks"),
       },
     };
     if (target?.includeChecks) {
@@ -951,18 +951,24 @@ export class ClaudeDesktopBridge extends EventEmitter {
       if (!binding) throw new NativeCallError("PR is not bound to this Desktop session");
       if (!state.capabilities.checks) throw new NativeCallError("当前 Claude Desktop 版本不支持读取 PR 检查。");
       const cwd = this.executionCwd(sessionId)!;
+      // The public overview API has no host argument; explicit repos resolve to github.com.
+      const overviewSupported = (!binding.host || binding.host.toLowerCase() === "github.com") && this.inspector.supports("getPrOverview");
       const [overview, checks] = await Promise.all([
-        this.inspector.call("getPrOverview", [cwd, binding.prNumber, binding.repo, id, true]).then(record),
+        overviewSupported ? this.inspector.call("getPrOverview", [cwd, binding.prNumber, binding.repo, id, true]).then(record) : undefined,
         this.inspector.call("getPrChecks", [cwd, binding.prNumber, binding.repo, binding.host]).then(record),
       ]);
-      if (overview.success !== true) throw new NativeCallError(typeof overview.error === "string" ? overview.error : "Desktop 无法读取 PR 状态。");
       if (checks.success !== true) throw new NativeCallError(typeof checks.error === "string" ? checks.error : "Desktop 无法读取 PR 检查。");
-      const detail = record(overview.overview);
-      state.overview = {
-        ...(typeof detail.title === "string" ? { title: detail.title } : {}),
-        ...(typeof detail.state === "string" ? { state: detail.state } : {}),
-        ...(typeof detail.url === "string" ? { url: detail.url } : {}),
-      };
+      if (overview?.success === true) {
+        const detail = record(overview.overview);
+        state.overview = {
+          ...(typeof detail.title === "string" ? { title: detail.title } : {}),
+          ...(typeof detail.state === "string" ? { state: detail.state } : {}),
+          ...(typeof detail.url === "string" ? { url: detail.url } : {}),
+        };
+      } else {
+        state.overviewUnavailable = overview ? typeof overview.error === "string" ? overview.error : "Desktop 无法读取 PR 状态。"
+          : binding.host && binding.host.toLowerCase() !== "github.com" ? "当前 Desktop 不支持此 GitHub 主机的 PR 概览。" : "当前 Desktop 不支持 PR 概览。";
+      }
       if (!Array.isArray(checks.checks)) throw new NativeCallError("Desktop returned invalid PR checks");
       state.checks = checks.checks.map(raw => {
         const check = record(raw);
@@ -988,7 +994,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
       await this.inspector.call("setAutoFixOwnPrsWanted", [id, update.enabled]);
     } else {
       if (!before.capabilities.nextPr) throw new NativeCallError("当前 Claude Desktop 版本不支持下一个 PR 布防。");
-      await this.inspector.startAutoFixOnNextPr!(id, update.enabled);
+      if (!update.enabled) throw new NativeCallError("当前 Desktop 不支持远程取消布防。");
+      const git = record(await this.inspector.call("getGitInfo", [this.executionCwd(update.sessionId)!]));
+      if (typeof git.branch !== "string" || !git.branch) throw new NativeCallError("Desktop 当前工作目录没有可布防的 Git 分支。");
+      await this.inspector.startAutoFixOnNextPr!(id, git.branch);
     }
     const state = await this.readPrAutoFix(update.sessionId);
     const applied = update.target === "bound" ? state.prs.find(pr => pr.repo === update.repo && pr.prNumber === update.prNumber && (update.host === undefined || pr.host === update.host))?.autoFix === true

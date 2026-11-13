@@ -82,7 +82,6 @@ function Invoke-Checked {
 $wslProc = $null
 $wslOutTask = $null
 $wslErrTask = $null
-$wslSw = $null
 $nsisProc = $null
 
 # Up to 4 concurrent ci:local runs; each slot owns its worktree + bundle ref, AVD + ADB port, and WSL2 checkout
@@ -154,9 +153,8 @@ echo "<<< [WSL Ubuntu-24.04] Linux tests + .deb / .rpm / .zip outputs verified"
 "@
   $wslEncoded = [Convert]::ToBase64String((New-Object Text.UTF8Encoding($false)).GetBytes(($wslScript -replace "`r`n", "`n")))
   Write-Output ">>> [WIN] Starting WSL2 Ubuntu-24.04 Linux tests + installers in background"
-  $wslSw = [Diagnostics.Stopwatch]::StartNew()
   $wslPsi = [System.Diagnostics.ProcessStartInfo]::new("wsl.exe")
-  $wslPsi.Arguments = "-d Ubuntu-24.04 -- setsid bash -c `"exec 3<&0 </dev/null; (exec >/dev/null 2>&1; cat <&3; kill -TERM 0 || true) & W=`$!; exec 3<&-; trap 'kill -TERM `$W 2>/dev/null || true; pkill -TERM -P `$W 2>/dev/null || true; wait `$W 2>/dev/null || true' EXIT; printf '%s' $wslEncoded | base64 -d | bash`""
+  $wslPsi.Arguments = "-d Ubuntu-24.04 --exec setsid --wait bash -c `"exec 3<&0 </dev/null; (exec >/dev/null 2>&1; cat <&3; kill -TERM 0 || true) & W=`$!; exec 3<&-; trap 'kill -TERM `$W 2>/dev/null || true; pkill -TERM -P `$W 2>/dev/null || true; wait `$W 2>/dev/null || true' EXIT; printf '%s' $wslEncoded | base64 -d | bash`""
   $wslPsi.UseShellExecute = $false
   $wslPsi.RedirectStandardInput = $true
   $wslPsi.RedirectStandardOutput = $true
@@ -400,13 +398,12 @@ if ($null -ne $wslProc) {
   try { $wslProc.StandardInput.Close() } catch {}
   $wslOut = $wslOutTask.GetAwaiter().GetResult()
   $wslErr = $wslErrTask.GetAwaiter().GetResult()
-  $wslSw.Stop()
   if ($wslOut) { Write-Output $wslOut.TrimEnd() }
   if ($wslErr) { [Console]::Error.WriteLine($wslErr.TrimEnd()) }
   if ($wslProc.ExitCode -ne 0) {
     throw "[WIN] WSL2 Ubuntu-24.04 Linux tests + installers (.deb/.rpm/.zip) failed with exit code $($wslProc.ExitCode)"
   }
-  Write-Output ("<<< [WIN] WSL2 Ubuntu-24.04 Linux tests + installers (.deb/.rpm/.zip) OK ({0:N1}s)" -f $wslSw.Elapsed.TotalSeconds)
+  Write-Output ("<<< [WIN] WSL2 Ubuntu-24.04 Linux tests + installers (.deb/.rpm/.zip) OK ({0:N1}s)" -f ($wslProc.ExitTime - $wslProc.StartTime).TotalSeconds)
 }
 
 Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revision) ==="

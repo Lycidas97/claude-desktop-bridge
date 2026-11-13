@@ -808,7 +808,7 @@ test('win-local-ci parallelizes WSL2 via setsid pipe-EOF, early emulator boot, a
 
   const winCi = await readFile(new URL('./win-local-ci.ps1', import.meta.url), 'utf8');
   const syncIdx = winCi.indexOf('Sync git bundle ($Revision)');
-  const wslStartIdx = winCi.indexOf('setsid bash -c');
+  const wslStartIdx = winCi.indexOf('--exec setsid --wait bash -c');
   const emuStartIdx = winCi.indexOf('Starting headless WHPX AVD $avdName');
   const testInfraIdx = winCi.indexOf('Invoke-Checked "npm run test:infra"');
   const nsisParallelIdx = winCi.indexOf('make:windows:from-client -w @bridge/desktop');

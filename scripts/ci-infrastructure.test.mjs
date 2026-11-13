@@ -282,20 +282,29 @@ test('browser harness records proxy resets without failing intentional disconnec
   const infrastructureErrors = [];
   const logged = [];
   vm.runInNewContext(source.match(/logger\.error = \(message, options\) => \{[\s\S]*?\n  \};/u)[0], {
-    logger, infrastructureErrors, logError: message => logged.push(message),
+    logger, infrastructureErrors, logError: (message, options) => logged.push([message, options]),
   });
-  for (const message of ['\u001b[31mws proxy error:\u001b[39m\nError: read ECONNRESET', 'ws proxy socket error:\nError: read ECONNRESET']) {
-    logger.error(message, { error: { code: 'ECONNRESET' } });
-  }
+  const expected = [
+    ['\u001b[31mws proxy error:\u001b[39m\nError: read ECONNRESET', { timestamp: true, error: { code: 'ECONNRESET' } }],
+    ['ws proxy socket error:\nError: read ECONNRESET', { timestamp: true, error: { code: 'ECONNRESET' } }],
+    ['\u001b[31mws proxy error:\u001b[39m\nError: write EPIPE', { timestamp: true, error: { code: 'EPIPE' } }],
+    ['ws proxy socket error:\nError: write EPIPE', { timestamp: true, error: { code: 'EPIPE' } }],
+  ];
+  for (const [message, options] of expected) logger.error(message, options);
   assert.deepEqual(infrastructureErrors, []);
-  for (const [message, options] of [
-    ['ws proxy error: refused', { error: { code: 'ECONNREFUSED' } }],
-    ['http proxy error: /health', { error: { code: 'ECONNRESET' } }],
+  const fatal = [
+    ['ws proxy error: refused', { timestamp: true, error: { code: 'ECONNREFUSED' } }],
+    ['http proxy error: /health', { timestamp: true, error: { code: 'ECONNRESET' } }],
+    ['http proxy error: /health', { timestamp: true, error: { code: 'EPIPE' } }],
     ['transform error', { error: { code: 'ECONNRESET' } }],
+    ['transform error', { error: { code: 'EPIPE' } }],
+    ['\u001b[31mws proxy bypass error:\u001b[39m\nError: write EPIPE', { timestamp: true, error: { code: 'EPIPE' } }],
     ['ws proxy error: unknown failure', undefined],
-  ]) logger.error(message, options);
-  assert.equal(infrastructureErrors.length, 4);
-  assert.equal(logged.length, 6);
+    ['ws proxy error: timed out', { timestamp: true, error: { code: 'ETIMEDOUT' } }],
+  ];
+  for (const [message, options] of fatal) logger.error(message, options);
+  assert.deepEqual(infrastructureErrors, fatal.map(([message]) => message));
+  assert.deepEqual(logged, [...expected, ...fatal]);
 });
 
 test('Desktop startup leaves relay diagnostics to the configured Native connection', async () => {

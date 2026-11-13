@@ -1882,7 +1882,7 @@ try {
   logger.error = (message, options) => {
     // Reload/reconnect scenarios close sockets; retain their reset logs while
     // keeping proxy connection failures, HTTP errors and app assertions fatal.
-    if (options?.error?.code !== "ECONNRESET" || !/ws proxy(?: socket)? error:/u.test(message)) infrastructureErrors.push(message);
+    if (!["ECONNRESET", "EPIPE"].includes(options?.error?.code) || !/ws proxy(?: socket)? error:/u.test(message)) infrastructureErrors.push(message);
     logError(message, options);
   };
   vite = await createServer({

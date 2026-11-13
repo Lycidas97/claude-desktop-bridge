@@ -7460,13 +7460,19 @@ button:disabled {
   background: var(--card-fill, var(--surface));
 }
 
+.m-sheet-body > .conversation-subagent-card {
+  width: 100%;
+  margin: 0;
+}
+
 .background-task-entry > .conversation-subagent-card,
 .workflow-phase-agents .conversation-subagent-card {
   width: auto;
   margin: 0 10px 10px;
 }
 
-/* The tray row above already names the task. */
+/* The sheet header or tray row above already names the task. */
+.m-sheet-body > .conversation-subagent-card .subagent-description,
 .background-task-entry .subagent-description { display: none; }
 
 .background-task-row {

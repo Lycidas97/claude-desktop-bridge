@@ -49,4 +49,24 @@ describe("Windows installer configuration", () => {
       certificatePassword: "secret",
     });
   });
+
+  it("uses store compression only when BRIDGE_FAST_INSTALLER=1", () => {
+    const releaseConfig = createWindowsInstallerConfig({
+      buildResourcesDirectory: "C:\\bridge\\assets",
+      electronVersion: "43.1.1",
+      environment: {},
+      outputDirectory: "C:\\bridge\\out",
+      version: "0.5.3",
+    });
+    expect(releaseConfig.compression).toBeUndefined();
+
+    const fastConfig = createWindowsInstallerConfig({
+      buildResourcesDirectory: "C:\\bridge\\assets",
+      electronVersion: "43.1.1",
+      environment: { BRIDGE_FAST_INSTALLER: "1" },
+      outputDirectory: "C:\\bridge\\out",
+      version: "0.5.3",
+    });
+    expect(fastConfig.compression).toBe("store");
+  });
 });

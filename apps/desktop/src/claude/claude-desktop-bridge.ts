@@ -983,10 +983,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
         const block = record(rawBlock);
         if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
           const tool = this.tools.get(block.tool_use_id);
+          this.tools.delete(block.tool_use_id);
           const started = this.options.eventLog.latestItem(sessionId, "tool.started", block.tool_use_id);
           const toolName = tool?.toolName ?? started?.data.toolName;
           if (toolName && toolName !== "mcp__ccd_turn__update_plan" && toolName !== "mcp__ccd_turn__wrap_up") {
-            await this.record({ sessionId, itemId: block.tool_use_id, origin: "claude-desktop", type: "tool.completed", data: { toolName, text: tool ? JSON.stringify(tool.input ?? {}) : started?.data.text ?? "", output: block.content } });
+            await this.record({ sessionId, itemId: block.tool_use_id, origin: "claude-desktop", type: "tool.completed", data: { toolName, text: tool ? JSON.stringify(tool.input ?? {}) : started?.data.text ?? "" } });
           }
           if (tool && this.options.evidence) {
             tool.output = block.content; tool.completedAt = Date.now();

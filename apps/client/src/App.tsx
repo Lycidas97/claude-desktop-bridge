@@ -205,6 +205,8 @@ export function App() {
               onCreateSession={mobile.createSession}
               {...(snapshot?.host.capabilities.includes("section.create.v1") ? { onCreateSection: mobile.createSection } : {})}
               {...(snapshot?.host.capabilities.includes("section.move.v1") ? { onMoveSessionSection: mobile.moveSessionSection } : {})}
+              {...(snapshot?.host.capabilities.includes("section.rename.v1") ? { onRenameSection: mobile.renameSection } : {})}
+              {...(snapshot?.host.capabilities.includes("section.delete.v1") ? { onDeleteSection: mobile.deleteSection } : {})}
               {...(snapshot?.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: mobile.browseDirectory } : {})}
               {...(snapshot?.host.capabilities.includes("directory.mkdir.v1") ? { onCreateDirectory: mobile.createDirectory } : {})}
               onForkSession={mobile.forkSession}

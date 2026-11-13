@@ -1,13 +1,13 @@
 import type { BridgeIceServer } from "./types.js";
 
+const LEGACY_CLOUDFLARE_STUN_URL = "stun:stun.cloudflare.com:3478";
+const RETIRED_ALIOXIS_STUN_URL = "stun:stun.alioxis.com:3478";
+
 export const DEFAULT_BRIDGE_ICE_SERVERS = [
-  { urls: "stun:stun.alioxis.com:3478" },
-  { urls: "stun:stun.cloudflare.com:3478" },
+  { urls: LEGACY_CLOUDFLARE_STUN_URL },
 ] as const satisfies readonly BridgeIceServer[];
 
 export const DEFAULT_BRIDGE_ICE_SERVERS_JSON = JSON.stringify(DEFAULT_BRIDGE_ICE_SERVERS);
-
-const LEGACY_CLOUDFLARE_STUN_URL = "stun:stun.cloudflare.com:3478";
 
 function isIceUrl(value: unknown): value is string {
   return typeof value === "string" && /^(?:stun|stuns|turn|turns):\S+$/iu.test(value);
@@ -60,25 +60,39 @@ export function parseBridgeIceServers(value: string | undefined): BridgeIceServe
   }
 }
 
-export function isLegacyCloudflareIceServers(value: unknown): boolean {
-  const servers = normalizeBridgeIceServers(value);
-  if (servers.length !== 1) return false;
-  const [server] = servers;
+function hasSingleUncredentialedUrl(server: BridgeIceServer | undefined, expected: string): boolean {
   if (!server || server.username !== undefined || server.credential !== undefined) return false;
   const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
-  return urls.length === 1 && urls[0] === LEGACY_CLOUDFLARE_STUN_URL;
+  return urls.length === 1 && urls[0] === expected;
+}
+
+export function isLegacyCloudflareIceServers(value: unknown): boolean {
+  const servers = normalizeBridgeIceServers(value);
+  return servers.length === 1 && hasSingleUncredentialedUrl(servers[0], LEGACY_CLOUDFLARE_STUN_URL);
+}
+
+function isRetiredDefaultIceServers(servers: readonly BridgeIceServer[]): boolean {
+  return (
+    servers.length === 2 &&
+    hasSingleUncredentialedUrl(servers[0], RETIRED_ALIOXIS_STUN_URL) &&
+    hasSingleUncredentialedUrl(servers[1], LEGACY_CLOUDFLARE_STUN_URL)
+  );
 }
 
 /**
- * Keep explicit user-provided ICE servers intact while transparently replacing
- * the historical single Cloudflare default with the current packaged default.
+ * Keep explicit user-provided ICE servers intact while converging historical
+ * Cloudflare-only and retired alioxis+Cloudflare defaults to the active default.
  */
 export function preferredBridgeIceServers(
   value: unknown,
   fallback: readonly BridgeIceServer[] = DEFAULT_BRIDGE_ICE_SERVERS,
 ): BridgeIceServer[] {
   const configured = normalizeBridgeIceServers(value);
-  if (configured.length > 0 && !isLegacyCloudflareIceServers(configured)) return configured;
+  if (
+    configured.length > 0 &&
+    !isLegacyCloudflareIceServers(configured) &&
+    !isRetiredDefaultIceServers(configured)
+  ) return configured;
   return normalizeBridgeIceServers(fallback);
 }
 

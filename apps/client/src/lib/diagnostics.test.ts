@@ -1,7 +1,14 @@
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
 import clientPackage from "../../package.json";
-import { BUILD_DIAG_TAG, buildDiagnosticReportText, inspectIndexedDbSummary } from "./diagnostics.js";
+import {
+  BUILD_DIAG_TAG,
+  buildDiagnosticReportText,
+  clearDiagEntries,
+  getDiagEntries,
+  inspectIndexedDbSummary,
+  runRelayConnectivityProbe,
+} from "./diagnostics.js";
 import type { DesktopControlSnapshot } from "@bridge/protocol";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -50,4 +57,30 @@ it("reports the desktop connection without inspecting the phone vault", async ()
 
 it("reports the package version rather than a stale hard-coded diagnostic tag", () => {
   expect(BUILD_DIAG_TAG).toBe(`v${clientPackage.version}`);
+});
+
+it("probes the BIS relay health and WebSocket subpath by default", async () => {
+  clearDiagEntries();
+  const fetchUrls: string[] = [];
+  const wsUrls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    fetchUrls.push(String(input));
+    return { type: "opaque", status: 0 } as Response;
+  }));
+  class StubWebSocket extends EventTarget {
+    readyState = 1;
+    constructor(url: string | URL) {
+      super();
+      wsUrls.push(String(url));
+      queueMicrotask(() => this.dispatchEvent(new Event("open")));
+    }
+    close(): void {}
+  }
+  vi.stubGlobal("WebSocket", StubWebSocket);
+
+  await runRelayConnectivityProbe();
+
+  expect(fetchUrls).toEqual(["https://bis.zju.edu.cn/bridge-relay/health"]);
+  expect(wsUrls).toEqual(["wss://bis.zju.edu.cn/bridge-relay/ws"]);
+  expect(getDiagEntries().some((entry) => entry.message.includes("https://bis.zju.edu.cn/bridge-relay/health"))).toBe(true);
 });

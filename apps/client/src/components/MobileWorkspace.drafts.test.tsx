@@ -61,7 +61,7 @@ vi.mock("react", async (original) => ({
   useLayoutEffect: () => undefined,
 }));
 
-vi.mock("./evidence/MediaPreviewProvider.js", () => ({ useMediaPreview: () => vi.fn() }));
+vi.mock("./evidence/MediaPreviewProvider.js", () => ({ useMediaPreview: () => vi.fn(), useMediaRequest: () => undefined }));
 
 class DeferredFileReader {
   result = "data:image/png;base64,cGljdHVyZQ==";
@@ -453,6 +453,9 @@ describe("background tasks", () => {
     expect(markers()[0]!.props.task).toBe(running);
     markers()[1]!.props.onOpen(); draw();
     expect(traySheet()!.props.focus.id).toBe("tool:agent-tool-1");
+    expect(traySheet()!.props.renderSubagent(props.histories.A!.items[1]).props.collapsible).toBe(false);
+    expect(dispatchMobileBack()).toBe(true); draw();
+    expect(traySheet()).toBeUndefined();
   });
 
   it("keeps the stop action on subagent cards inside the tray", async () => {
@@ -1625,6 +1628,39 @@ describe("sidechat and slash command integration", () => {
     expect(props.onOpenSession).not.toHaveBeenCalledWith("late-fork");
     expect(input().props.value).toBe("parent draft");
     expect(props.onSendTurn).not.toHaveBeenCalled();
+  });
+
+  it("excludes archived sidechats from the active parent session menu and fork chain once archived", async () => {
+    const activeSidechat: BridgeSessionInfo = { ...props.snapshot!.sessions[1]!, sessionId: "btw-live", title: "btw: Live", parentSessionId: "A", sidechat: true };
+    const archivedSidechat: BridgeSessionInfo = { ...props.snapshot!.sessions[1]!, sessionId: "btw-done", title: "btw: Done", parentSessionId: "A", sidechat: true, archivedAt: 100 };
+    const clickHeaderMenu = () => {
+      const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+      elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+      draw();
+    };
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: [props.snapshot!.sessions[0]!, activeSidechat, archivedSidechat] } };
+    draw();
+    clickHeaderMenu();
+    const menuLabelsBefore = elements(tree).map(element => element.props?.label).filter(Boolean);
+    expect(menuLabelsBefore).toContain("侧聊 1");
+    expect(menuLabelsBefore).not.toContain("侧聊 2");
+    elements(tree).find(element => element.props?.label === "侧聊 1")!.props.onClick();
+    draw();
+    expect(elements(tree).some(element => Array.isArray(element.props?.children) && element.props.children.includes("/btw · btw: Live"))).toBe(true);
+    expect(elements(tree).some(element => Array.isArray(element.props?.children) && element.props.children.includes("/btw · btw: Done"))).toBe(false);
+
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        sessions: [props.snapshot!.sessions[0]!, { ...activeSidechat, archivedAt: 200 }, archivedSidechat],
+      },
+    };
+    draw();
+    expect(elements(tree).some(element => element.props?.className === "relay-chain-bar fork-chain-bar")).toBe(false);
+    clickHeaderMenu();
+    const menuLabelsAfter = elements(tree).map(element => element.props?.label).filter(Boolean);
+    expect(menuLabelsAfter.some(label => String(label).startsWith("侧聊"))).toBe(false);
   });
 });
 

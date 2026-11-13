@@ -120,8 +120,10 @@ import {
   type ProviderSwitchResult,
 } from "./session/ProviderSwitchDialog.js";
 import "./session/section-create.css";
+import { useSectionManage } from "./session/SectionManageDialog.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "./conversation/SessionActivityIndicator.js";
 import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
+import { ToolCallGroupRows } from "./conversation/ToolCallDetailSheet.js";
 import { useSessionCommands } from "../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
 import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
@@ -168,6 +170,8 @@ export function MobileWorkspace({
   onCreateSession,
   onCreateSection,
   onMoveSessionSection,
+  onRenameSection,
+  onDeleteSection,
   onBrowseDirectory,
   onCreateDirectory,
   onForkSession,
@@ -233,8 +237,10 @@ export function MobileWorkspace({
   ): Promise<void>;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
   onCreateDirectory?(parentPath: string, name: string): Promise<string>;
-  onCreateSection?(name: string): Promise<BridgeProjectInfo | undefined>;
-  onMoveSessionSection?(sessionId: string, sectionId: string | null): Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] }>;
+  onCreateSection?: (name: string) => Promise<BridgeProjectInfo | undefined>;
+  onMoveSessionSection?: (sessionId: string, sectionId: string | null) => Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] }>;
+  onRenameSection?: (sectionId: string, name: string) => Promise<{ project?: BridgeProjectInfo; projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] }>;
+  onDeleteSection?: (sectionId: string) => Promise<{ projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] }>;
   onCreateSession(
     cwd: string,
     title?: string,
@@ -310,6 +316,7 @@ export function MobileWorkspace({
     try {
       const project = await onCreateSection(sectionCreate.name.trim());
       if (!project) throw new Error("Section 未创建，请重试。");
+      sectionManage.revealEmptySections();
       setCollapsedProjectIds(current => expandProject(current, project.projectId));
       setActiveProjectId(undefined);
       setSearch("");
@@ -384,6 +391,15 @@ export function MobileWorkspace({
   const announcedPermissionsRef = useRef(new Set<string>());
 
   const sessions = snapshot?.sessions ?? [];
+  const sectionManage = useSectionManage({
+    activeHostId,
+    desktopName,
+    snapshot,
+    connection,
+    desktopOnline,
+    onRenameSection,
+    onDeleteSection,
+  });
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
   const fileUploads = useFileAttachments(selectedSession?.sessionId, onUploadFile);
   const commands = useSessionCommands({
@@ -480,11 +496,18 @@ export function MobileWorkspace({
       list.push(session);
       groups.set(session.projectId, list);
     }
-    return projectOrder.filter((projectId) => groups.has(projectId)).map((projectId) => ({
-      project: snapshot?.projects.find((project) => project.projectId === projectId),
-      sessions: sortProjectSessionsByRecent(groups.get(projectId)!),
-    }));
-  }, [activeParentProjects, projectOrder, search, sessions, snapshot?.projects]);
+    return projectOrder
+      .filter((projectId) => {
+        const groupSessions = groups.get(projectId);
+        if (!groupSessions) return false;
+        const project = snapshot?.projects.find((candidate) => candidate.projectId === projectId);
+        return !sectionManage.shouldHideEmpty(project, groupSessions.length, query);
+      })
+      .map((projectId) => ({
+        project: snapshot?.projects.find((project) => project.projectId === projectId),
+        sessions: sortProjectSessionsByRecent(groups.get(projectId)!),
+      }));
+  }, [activeParentProjects, projectOrder, search, sectionManage.hideEmptySections, sessions, snapshot?.projects]);
   const archivedSessions = useMemo(() => sortProjectSessionsByRecent(sessions.filter((session) => (
     Boolean(session.archivedAt)
   ))), [sessions]);
@@ -1092,7 +1115,7 @@ export function MobileWorkspace({
     ? sessions.find((candidate) => candidate.sessionId === selectedSession.parentSessionId)
     : undefined;
   const childForks = selectedSession ? sessions.filter((candidate) => (
-    candidate.parentSessionId === selectedSession.sessionId && (!candidate.archivedAt || Boolean(candidate.sidechat))
+    candidate.parentSessionId === selectedSession.sessionId && (!candidate.archivedAt || Boolean(selectedSession.archivedAt))
   )) : [];
   const relatedForkCount = (parentSession ? 1 : 0) + childForks.length;
 
@@ -1409,6 +1432,7 @@ export function MobileWorkspace({
         item={item}
         key={item.id}
         entering={streamEntering(item.id)}
+        collapsible={false}
         stopping={subagentStopBusy && stopSubagentTarget?.agentId === item.subagent!.agentId}
         {...(selectedSession.subagentStopScope === "process" && selectedSession.turnState === "running"
           ? { stopBlockedReason: "主对话运行中，需要先停止主对话" }
@@ -1655,14 +1679,12 @@ export function MobileWorkspace({
                     <span>{summaryText}</span>
                     <ChevronDown size={13} className="tool-group-chevron" aria-hidden="true" />
                   </summary>
-                  <div className="conversation-tool-group-list">
-                    {node.tools.map((tool) => (
-                      <div className="conversation-tool-row" key={tool.id}>
-                        <strong>{tool.toolName || "工具"}</strong>
-                        {tool.text && tool.text !== tool.toolName && <span>{tool.text}</span>}
-                      </div>
-                    ))}
-                  </div>
+                  <ToolCallGroupRows
+                    {...(activeHostId ? { hostId: activeHostId } : {})}
+                    sessionId={selectedSession.sessionId}
+                    tools={node.tools}
+                    supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))}
+                  />
                 </details>
               );
             }
@@ -1979,6 +2001,7 @@ export function MobileWorkspace({
     syncFlash,
     sectionCreate,
     sectionCanCreate,
+    sectionManage,
     createOpen,
     createProjectId,
     sessionOverlays,

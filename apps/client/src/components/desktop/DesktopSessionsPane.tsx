@@ -99,7 +99,12 @@ import {
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 
 export function unwrap<T>(response: BridgeResponse): T {
-  if (!response.ok) throw new Error(response.error?.message ?? "Bridge 请求失败");
+  if (!response.ok) {
+    throw Object.assign(
+      new Error(response.error?.message ?? "Bridge 请求失败"),
+      response.error?.code ? { code: response.error.code } : {},
+    );
+  }
   return response.result as T;
 }
 
@@ -639,9 +644,17 @@ export function DesktopSessions({
     }
   }
 
-  async function createSession(cwd: string, title?: string, runtimeId?: BridgeDesktopRuntimeId, projectId?: string): Promise<BridgeSessionInfo> {
+  async function createSession(cwd: string, title?: string, runtimeId?: BridgeDesktopRuntimeId, projectId?: string, trustWorkspace?: boolean): Promise<BridgeSessionInfo> {
+    const canTrust = trustWorkspace === true && snapshot.host.capabilities.includes("workspace.trust.v1");
     const result = unwrap<{ session: BridgeSessionInfo }>(await apiRequest({
-      method: "session.create", params: { cwd, ...(title ? { title } : {}), ...(runtimeId ? { runtimeId } : {}), ...(projectId ? { projectId } : {}) },
+      method: "session.create",
+      params: {
+        cwd,
+        ...(title ? { title } : {}),
+        ...(runtimeId ? { runtimeId } : {}),
+        ...(projectId ? { projectId } : {}),
+        ...(canTrust ? { trustWorkspace: true } : {}),
+      },
     }));
     await onRefreshSnapshot();
     return result.session;

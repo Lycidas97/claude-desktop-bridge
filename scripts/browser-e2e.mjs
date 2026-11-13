@@ -45,9 +45,10 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
+const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
 
 // Bounded polling is only for observable browser/protocol state, never a fixed
 // sleep intended to hide a race. Unexpected selector or transport errors surface.
@@ -63,19 +64,22 @@ async function eventually(read, expected, message, timeout = 15_000) {
 }
 
 async function syncNativeSections(host) {
-  const { capable, moveCapable, runtimeCapabilities, projects, sessions } = await host.nativeApproval.sectionCatalog();
+  const { capable, moveCapable, renameCapable, deleteCapable, trustCapable, runtimeCapabilities, projects, sessions } = await host.nativeApproval.sectionCatalog();
   host.snapshot.projects = projects;
   host.snapshot.sessions = sessions;
   host.snapshot.host.capabilities = host.snapshot.host.capabilities.filter(
-    value => !["section.create.v1", "section.move.v1", "directory.browse.v1", "directory.mkdir.v1"].includes(value),
+    value => !["section.create.v1", "section.move.v1", "section.rename.v1", "section.delete.v1", "workspace.trust.v1", "directory.browse.v1", "directory.mkdir.v1"].includes(value),
   );
   host.snapshot.host.capabilities.push("directory.browse.v1", "directory.mkdir.v1");
   if (capable) host.snapshot.host.capabilities.push("section.create.v1");
   if (moveCapable) host.snapshot.host.capabilities.push("section.move.v1");
+  if (renameCapable) host.snapshot.host.capabilities.push("section.rename.v1");
+  if (deleteCapable) host.snapshot.host.capabilities.push("section.delete.v1");
+  if (trustCapable) host.snapshot.host.capabilities.push("workspace.trust.v1");
   if (host.snapshot.runtimes?.[0]) host.snapshot.runtimes[0].capabilities = runtimeCapabilities;
 }
 
-async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false) {
+async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview) {
   const now = Date.now();
   const clientRelayUrl = `${baseUrl.replace("http:", "ws:")}/ws`;
   const { crypto, pairing } = await BridgeCrypto.createDesktop(clientRelayUrl, "Browser E2E 隔离电脑");
@@ -110,7 +114,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       online: true,
       lastSeenAt: now,
       version: "1.1.1",
-      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1"] : [])],
+      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["directory.browse.v1", "workspace.trust.v1", "session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "section.rename.v1", "section.delete.v1", "transcript.toolDetail.v1"] : [])],
     },
     projects: [{
       projectId: session.projectId, name: session.projectName, cwd: session.cwd,
@@ -159,7 +163,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     runtime: { state: "ready", detail: "固定响应宿主", activeTurns: remotePreview ? 1 : 0, maxParallelTurns: 1 },
     runtimes: [{
       id: "claude-desktop", name: "Claude Desktop", state: "ready", detail: "隔离宿主",
-      capabilities: ["session.list", "session.history", "turn.start", "permission.resolve", ...(native || remotePreview ? ["attachment.image"] : []), ...(native ? ["session.configure"] : [])],
+      capabilities: ["session.list", "session.history", "turn.start", "permission.resolve", ...(native || remotePreview ? ["attachment.image"] : []), ...(native ? ["session.create", "workspace.trust", "session.configure"] : [])],
       sessionIsolation: "independent", sessionCount: remotePreview ? 1 : 2, updatedAt: now,
     }],
     permissions: [],
@@ -191,7 +195,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     async emit(type, data, options = {}) {
       const event = {
         eventId: `browser-e2e-event-${++snapshot.latestSeq}`,
-        sessionId, seq: snapshot.latestSeq, timestamp: Date.now(), origin: "claude-desktop",
+        sessionId: options.sessionId ?? sessionId, seq: snapshot.latestSeq, timestamp: Date.now(), origin: "claude-desktop",
         type, data,
         ...(options.turnId ? { turnId: options.turnId } : {}),
         ...(options.itemId ? { itemId: options.itemId } : {}),
@@ -367,8 +371,9 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
   if (native) {
     const directory = resolve(runDir, "native-fixtures", String(++nativeFixtureSequence));
     await mkdir(directory, { recursive: true });
+    host.sectionsEnabled = sections;
     host.nativeApproval = await startNativeApprovalHost({
-      directory, sessionId, title: originalTitle, deviceId: pairing.deviceId, sections: sectionCreatePreview,
+      directory, sessionId, title: originalTitle, deviceId: pairing.deviceId, sections,
       onRequested(request) {
         snapshot.permissions.push(request);
         session.turnState = "waiting";
@@ -418,17 +423,22 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       let remoteCommand;
       let remoteCommandCreated = false;
       switch (request.method) {
+        case "runtime.refresh":
+          if (host.nativeApproval) await syncNativeSections(host);
+          result = { runtime: snapshot.runtime }; break;
         case "snapshot.get":
-          if (sectionCreatePreview) await syncNativeSections(host);
+          if (host.sectionsEnabled) await syncNativeSections(host);
           result = { snapshot }; break;
         case "section.create":
         case "section.move":
+        case "section.rename":
+        case "section.delete":
         case "session.create":
           try {
             result = await host.nativeApproval.controllerRequest(request);
             await syncNativeSections(host);
             await host.send({ kind: "snapshot", snapshot });
-          } catch (failure) { error = { code: "NATIVE_SECTION_REJECTED", message: failure.message }; }
+          } catch (failure) { error = { code: failure.code ?? "NATIVE_SECTION_REJECTED", message: failure.message }; }
           break;
         case "directory.list":
         case "directory.mkdir":
@@ -513,6 +523,13 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           break;
         case "evidence.list":
           result = { evidence: { sessionId: request.params.sessionId, items: [], hasMore: false } };
+          break;
+        case "session.tool.detail":
+          try {
+            result = await host.nativeApproval.controllerRequest(request);
+          } catch (failure) {
+            error = { code: "TOOL_DETAIL_FAILED", message: failure.message };
+          }
           break;
         case "artifact.transfer.open": {
           assert.equal(request.params.sessionId, sessionId);
@@ -1384,7 +1401,31 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
   await eventually(async () => (await toolRows.locator("strong").allTextContents()).sort(), ["Bash", "Edit", "Read", "Write"], "Native history and replay keep one named row per original call after reload");
-  steps.push("Read/Bash/Edit/Write keep names and input summaries when only completion events reach the phone, and reload merges native history without anonymous or duplicate rows");
+  assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 0, "Timeline rendering never eagerly fetches full tool outputs");
+  await stream.locator(".conversation-tool-group").last().locator("summary").click();
+  await toolRows.filter({ hasText: "pwd" }).click();
+  const toolDetailDialog = page.getByRole("dialog", { name: "Bash", exact: true });
+  await toolDetailDialog.waitFor();
+  await eventually(async () => {
+    const text = await toolDetailDialog.innerText();
+    return text.includes("已完成") && text.includes("pwd") && text.includes("Completed");
+  }, true, "Clicking a tool row lazily fetches full input and execution output");
+  assert.deepEqual(
+    host.requests.filter(request => request.method === "session.tool.detail").map(request => ({
+      sessionId: request.params.sessionId,
+      toolUseId: request.params.toolUseId,
+    })),
+    [{ sessionId, toolUseId: "completion-only-Bash" }],
+  );
+  await page.screenshot({ path: resolve(directory, "native-tool-detail-sheet.png"), fullPage: true });
+  await toolDetailDialog.getByRole("button", { name: "关闭工具详情", exact: true }).click();
+  await toolDetailDialog.waitFor({ state: "hidden" });
+  await toolRows.filter({ hasText: "pwd" }).click();
+  await toolDetailDialog.waitFor();
+  assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 1, "Completed tool detail reuses the in-memory session cache");
+  await toolDetailDialog.getByRole("button", { name: "关闭工具详情", exact: true }).click();
+  await toolDetailDialog.waitFor({ state: "hidden" });
+  steps.push("Read/Bash/Edit/Write keep names and input summaries when only completion events reach the phone, reload merges native history without anonymous or duplicate rows, and clicking a tool row lazily loads and caches full tool input/output via session.tool.detail");
 
   for (const method of ["getSession", "getTranscriptPage"]) {
     const text = `回退成功后 ${method} 断连`;
@@ -1668,6 +1709,55 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   await eventually(() => notices.count(), 3, "Reload merges Native history and live notices without duplicate cards");
   assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "session.rewind", "permission.resolve"].includes(request.method)).length, 0);
   steps.push("Native report and idle notices stay compact in history, live updates and replay; original text remains readable, quoted examples keep user controls, and no Native mutation is sent");
+
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  const { untrustedDir, manualTrustDir } = host.nativeApproval;
+  const createDialog = page.locator(".session-create-dialog");
+  const chooseFolderByPath = async (targetDir) => {
+    await createDialog.getByRole("button", { name: "选择文件夹" }).click();
+    await createDialog.getByRole("button", { name: "浏览电脑文件夹", exact: true }).click();
+    await createDialog.getByRole("button", { name: "输入路径", exact: true }).click();
+    await createDialog.getByLabel("当前路径", { exact: true }).fill(targetDir);
+    await createDialog.getByLabel("当前路径", { exact: true }).press("Enter");
+    await createDialog.getByRole("button", { name: "使用此文件夹", exact: true }).click();
+  };
+
+  await page.getByRole("button", { name: "新建会话", exact: true }).click();
+  await chooseFolderByPath(untrustedDir);
+  await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("受信任目录会话");
+  await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
+
+  const trustAlert = createDialog.getByRole("alert");
+  await eventually(() => trustAlert.innerText(), `该文件夹首次使用，是否信任并允许 Claude 访问「${untrustedDir}」？`, "Untrusted folder prompts for explicit confirmation without exposing EIPC text");
+  assert.equal((await createDialog.innerText()).includes("$eipc_message$"), false);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: resolve(directory, "workspace-trust-confirm.png"), fullPage: true });
+
+  await createDialog.getByRole("button", { name: "信任并创建", exact: true }).click();
+  await createDialog.waitFor({ state: "hidden" });
+  await page.getByRole("heading", { name: "受信任目录会话", exact: true }).waitFor();
+  assert.deepEqual(
+    host.nativeApproval.calls.filter(call => call.method === "saveTrust").map(call => call.args),
+    [[untrustedDir]],
+  );
+
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  host.nativeApproval.setTrustPolicy({ keepUntrustedAfterSave: true });
+  await page.getByRole("button", { name: "新建会话", exact: true }).click();
+  await chooseFolderByPath(manualTrustDir);
+  await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("手动信任兜底会话");
+  await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
+  await createDialog.getByRole("button", { name: "信任并创建", exact: true }).click();
+  await eventually(() => trustAlert.innerText(), `请在电脑端 Claude 窗口打开并信任「${manualTrustDir}」后重试。`, "Manual fallback guides desktop GUI approval when saveTrust cannot satisfy trust");
+  await page.screenshot({ path: resolve(directory, "workspace-trust-manual.png"), fullPage: true });
+
+  host.nativeApproval.trustWorkspace(manualTrustDir);
+  await createDialog.getByRole("button", { name: "重试创建", exact: true }).click();
+  await createDialog.waitFor({ state: "hidden" });
+  await page.getByRole("heading", { name: "手动信任兜底会话", exact: true }).waitFor();
+  assert.equal(host.requests.filter(request => request.method === "session.create").at(-1)?.params.trustWorkspace, undefined);
+  assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "session.rewind", "permission.resolve"].includes(request.method)).length, 0);
+  steps.push("untrusted folders sanitize WorkspaceTrustError into confirmation + saveTrust auto-retry, and degrade to manual desktop guidance + one-click retry when saveTrust is insufficient");
 }
 
 async function verifyProjectGrouping(page, host, steps, directory) {
@@ -1686,13 +1776,24 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.deepEqual(await headers.allTextContents(), ["other-project", "claude-desktop-bridge"]);
   assert.equal(await mainGroup.locator('[data-session-id="browser-e2e-parent"]').count(), 1);
   assert.equal(await mainGroup.locator(".project-count-pill").innerText(), "2");
-  assert.equal(await mainGroup.locator(".mobile-fork-toggle").count(), 1);
+  const primaryForkToggle = mainGroup.locator(".mobile-fork-toggle:not(.is-archived-fold)");
+  const archivedFoldToggle = mainGroup.locator(".mobile-fork-toggle.is-archived-fold");
+  assert.equal(await primaryForkToggle.count(), 1);
+  assert.equal((await primaryForkToggle.innerText()).trim(), "1 个 Fork 分支");
   assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
-  await mainGroup.locator(".mobile-fork-toggle").click();
+  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  await primaryForkToggle.click();
   await mainGroup.locator('[data-session-id="browser-e2e-fork"]').waitFor();
-  assert.equal(await mainGroup.locator(".mobile-fork-toggle").getAttribute("aria-expanded"), "true");
+  assert.equal(await primaryForkToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  assert.equal(await archivedFoldToggle.count(), 1);
+  assert.equal(await archivedFoldToggle.getAttribute("aria-expanded"), "false");
+  assert.equal((await archivedFoldToggle.innerText()).trim(), "1 个已结束侧聊");
+  await archivedFoldToggle.click();
+  await mainGroup.locator('[data-session-id="browser-e2e-btw-archived"]').waitFor();
+  assert.equal(await archivedFoldToggle.getAttribute("aria-expanded"), "true");
   await page.screenshot({ path: resolve(directory, "project-fork-expanded.png"), fullPage: true });
-  steps.push("real Native projection groups linked worktrees under the repository; only the authoritative fork has an expandable parent relationship");
+  steps.push("real Native projection groups linked worktrees under the repository; active fork count excludes archived /btw sidechats while preserving a secondary fold");
 
   const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
   await search.fill(worktree.title);
@@ -1706,6 +1807,28 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.deepEqual(await headers.allTextContents(), ["other-project", "claude-desktop-bridge"]);
   assert.equal(await page.evaluate(key => localStorage.getItem(key), orderKey), savedOrder);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Project list fits the phone viewport");
+
+  await primaryForkToggle.click();
+  await archivedFoldToggle.click();
+  await mainGroup.locator('[data-session-id="browser-e2e-btw-archived"]').getByRole("button").first().click();
+  const parentChainButton = page.locator(".fork-chain-bar").getByRole("button", { name: "主会话：主会话", exact: true });
+  await parentChainButton.waitFor();
+  await parentChainButton.click();
+  await page.getByRole("heading", { name: "主会话", exact: true }).waitFor();
+  await page.getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.getByRole("button", { name: /分支 1/u }).waitFor();
+  await page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+
+  const forkSnapshot = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-fork");
+  forkSnapshot.archivedAt = Date.now();
+  await host.emit("session.archived", { archived: true, archivedAt: forkSnapshot.archivedAt }, { sessionId: "browser-e2e-fork" });
+  await eventually(() => primaryForkToggle.count(), 0, "Archiving the last active fork moves the parent to archived-only fold");
+  assert.equal(await mainGroup.locator(".mobile-fork-group.is-archived-only").count(), 1);
+  assert.equal((await archivedFoldToggle.innerText()).trim(), "2 个已归档分支与侧聊");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Archived-only fold fits the phone viewport");
+
   assert.equal(host.requests.filter(request => request.method.startsWith("turn.")).length, 0);
   await writeFile(resolve(directory, "project-catalog.json"), JSON.stringify({ projects: host.snapshot.projects, sessions: host.snapshot.sessions }, null, 2));
   await page.screenshot({ path: resolve(directory, "project-list.png"), fullPage: true });
@@ -1754,6 +1877,129 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   steps.push("saved main-project ordering survives search and reload, handle and long-press drag reorder projects cleanly, unrelated projects remain separate, and the 375px layout has no horizontal overflow");
 }
 
+async function verifySectionManage(page, host, steps, directory) {
+  const groups = page.locator(".project-groups > .project-group:not(.archived-group)");
+  const headers = groups.locator(".project-group-open strong");
+  const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
+
+  async function createSectionFromDirectory(name) {
+    await page.getByRole("button", { name: "目录选项", exact: true }).click();
+    await page.getByRole("button", { name: "新建 Section", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "新建 Section" });
+    await dialog.getByLabel("Section 名称").fill(name);
+    await dialog.getByRole("button", { name: "创建 Section", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+  }
+
+  await createSectionFromDirectory("待办分组");
+  await createSectionFromDirectory("临时空组");
+  await eventually(
+    async () => {
+      const names = await headers.allTextContents();
+      return names.includes("待办分组") && names.includes("临时空组");
+    },
+    true,
+    "Newly created empty sections appear in catalog",
+  );
+
+  // Folder groups do not render custom section management actions; custom sections do.
+  assert.equal(await page.getByRole("button", { name: "管理分组：待办分组", exact: true }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "管理分组：claude-desktop-bridge", exact: true }).count(), 0);
+
+  // Toggle "隐藏空分组（2）" and verify persistence + search + auto-reveal on new section creation.
+  await page.getByRole("button", { name: "目录选项", exact: true }).click();
+  await page.getByRole("button", { name: "隐藏空分组（2）", exact: true }).click();
+  await eventually(
+    async () => {
+      const names = await headers.allTextContents();
+      return !names.includes("待办分组") && !names.includes("临时空组") && names.includes("claude-desktop-bridge");
+    },
+    true,
+    "Hiding empty sections removes empty desktop-group headers while preserving folder groups",
+  );
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  assert.equal((await headers.allTextContents()).includes("临时空组"), false, "Hidden empty sections persist across reload");
+
+  await search.fill("临时空组");
+  await eventually(() => headers.allTextContents(), ["临时空组"], "Search still surfaces matching empty custom sections");
+  await search.fill("");
+  await eventually(() => (headers.allTextContents()).then(names => names.includes("临时空组")), false, "Clearing search hides empty sections again");
+
+  await createSectionFromDirectory("新建即现");
+  await eventually(
+    async () => {
+      const names = await headers.allTextContents();
+      return names.includes("新建即现") && names.includes("待办分组") && names.includes("临时空组");
+    },
+    true,
+    "Creating a new section reveals empty sections automatically",
+  );
+  steps.push("empty custom sections can be hidden per host, remain searchable, persist across reloads, and reveal automatically when creating a new section");
+
+  // 1-tap delete on empty section ("删除空分组") without ConfirmationDialog.
+  await page.getByRole("button", { name: "管理分组：临时空组", exact: true }).click();
+  await page.getByRole("button", { name: "删除空分组", exact: true }).click();
+  assert.equal(await page.getByRole("alertdialog").count(), 0, "Empty section deletion skips confirmation dialog");
+  await eventually(
+    async () => (await headers.allTextContents()).includes("临时空组"),
+    false,
+    "Deleted empty section disappears immediately",
+  );
+
+  // Rename custom section ("待办分组" -> "重点推进").
+  await page.getByRole("button", { name: "管理分组：待办分组", exact: true }).click();
+  await page.getByRole("button", { name: "重命名分组", exact: true }).click();
+  const renameDialog = page.getByRole("dialog", { name: "重命名分组" });
+  await renameDialog.getByLabel("分组名称").fill("重点推进");
+  await renameDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await renameDialog.waitFor({ state: "detached" });
+  await eventually(
+    async () => {
+      const names = await headers.allTextContents();
+      return names.includes("重点推进") && !names.includes("待办分组");
+    },
+    true,
+    "Renamed custom section updates in catalog",
+  );
+  steps.push("empty sections delete in one tap and custom sections rename via native section.rename");
+
+  // Move a session into "重点推进", then verify non-empty delete requires confirmation and returns session to folder.
+  await page.locator('[data-session-id="browser-e2e-misc-sub"]').locator("..").getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.getByRole("button", { name: /移动到分组/u }).click();
+  await page.locator(".m-sheet").getByRole("button", { name: /重点推进/u }).click();
+  await eventually(
+    () => host.snapshot.sessions.find(item => item.sessionId === "browser-e2e-misc-sub")?.projectName,
+    "重点推进",
+    "Session moved into renamed section",
+  );
+
+  await page.getByRole("button", { name: "管理分组：重点推进", exact: true }).click();
+  await page.getByRole("button", { name: "删除分组", exact: true }).click();
+  const confirmDialog = page.getByRole("alertdialog");
+  await confirmDialog.waitFor();
+  assert.match(await confirmDialog.innerText(), /组内 1 个会话不会删除，将移回各自的项目目录/u);
+  await page.screenshot({ path: resolve(directory, "section-delete-confirm.png"), fullPage: true });
+  await confirmDialog.getByRole("button", { name: "删除分组", exact: true }).click();
+  await confirmDialog.waitFor({ state: "detached" });
+
+  await eventually(
+    async () => (await headers.allTextContents()).includes("重点推进"),
+    false,
+    "Confirmed non-empty section deletion removes custom section",
+  );
+  await eventually(
+    () => page.locator('[data-session-id="browser-e2e-misc-sub"]').count(),
+    1,
+    "Session inside deleted section remains intact and returns to its folder group",
+  );
+  assert.equal(host.snapshot.sessions.find(item => item.sessionId === "browser-e2e-misc-sub")?.projectName, "claude-desktop-bridge");
+  assert.equal(host.requests.some(request => request.method === "section.rename"), true);
+  assert.equal(host.requests.filter(request => request.method === "section.delete").length, 2);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Section manage UI fits 375px viewport");
+  steps.push("deleting a non-empty section requires confirmation, calls native delete_section, and safely returns sessions to their folder project");
+}
+
 async function runScenario(theme, scenario) {
   const name = `${theme}-${scenario}`;
   const directory = resolve(runDir, name);
@@ -1768,9 +2014,10 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-messages", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping"].includes(scenario), scenario === "native-queue-actions");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-messages", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
     if (scenario === "native-queue-actions") host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (scenario === "project-grouping") Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
+    if (scenario === "section-manage") await syncNativeSections(host);
     context = await browser.newContext({
       viewport: { width: 375, height: 812 }, colorScheme: theme,
       serviceWorkers: "block",
@@ -1798,8 +2045,8 @@ async function runScenario(theme, scenario) {
     await context.routeWebSocket("**/*", (socket) => {
       const url = new URL(socket.url());
       if (url.hostname === "127.0.0.1" && [new URL(baseUrl).port, new URL(relay.url).port].includes(url.port)) {
-        const serverRoute = socket.connectToServer();
-        if (url.pathname === "/ws") serverRoutes.push(serverRoute);
+        socket.connectToServer();
+        if (url.pathname === "/ws") serverRoutes.push(socket);
       } else {
         errors.push(`Blocked non-fixture WebSocket: ${url.href}`);
         socket.close({ code: 1008, reason: "Isolated E2E only permits its loopback servers" });
@@ -1815,14 +2062,14 @@ async function runScenario(theme, scenario) {
       browserLog.push({ type: "pageerror", text: error.stack });
       errors.push(`browser runtime: ${error.stack}`);
     });
-    await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+    if (enableTrace) await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
     // Visiting the real pairing URL imports identity via the production hook and
     // stores it in this context's own IndexedDB; no vault or hook is replaced.
     await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
     await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
     assert.equal(await page.locator("html").getAttribute("data-theme"), theme);
-    assert.equal(await page.locator("[data-session-id]").count(), scenario === "project-grouping" ? 3 : 2, "Pairing must synchronize the visible session rows");
+    assert.equal(await page.locator("[data-session-id]").count(), ["project-grouping", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the visible session rows");
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
@@ -1833,6 +2080,7 @@ async function runScenario(theme, scenario) {
     else if (scenario === "native-queue-actions") await verifyNativeQueueActions(page, host, steps, directory);
     else if (scenario === "native-session-notices") await verifyNativeSessionNotices(page, host, steps, directory);
     else if (scenario === "project-grouping") await verifyProjectGrouping(page, host, steps, directory);
+    else if (scenario === "section-manage") await verifySectionManage(page, host, steps, directory);
     else if (scenario === "delivery-approval-reconnect") await verifyDelivery(page, host, steps);
     else await verifyRename(page, host, scenario === "rename-list" ? "list" : "chat", steps);
     assert.deepEqual(errors, [], "Browser runtime, console, network isolation, or host errors");
@@ -1846,9 +2094,11 @@ async function runScenario(theme, scenario) {
       } catch (error) { errors.push(`failure capture: ${error.stack}`); }
     }
     if (context) {
-      try {
-        await context.tracing.stop(failure ? { path: resolve(directory, "trace.zip") } : {});
-      } catch (error) { errors.push(`trace cleanup: ${error.stack}`); }
+      if (enableTrace) {
+        try {
+          await context.tracing.stop(failure ? { path: resolve(directory, "trace.zip") } : {});
+        } catch (error) { errors.push(`trace cleanup: ${error.stack}`); }
+      }
       // Complete owned relay handshakes before Chromium tears down their sockets.
       for (const route of serverRoutes) await route.close({ code: 1000, reason: "Scenario complete" });
       await eventually(() => [...relayPeers.values()].filter(hello => hello.roomId === host.pairing.roomId && hello.role === "mobile").length, 0, "Scenario sockets close before disposing their browser context");
@@ -1863,6 +2113,11 @@ async function runScenario(theme, scenario) {
       nativeTrace: host?.nativeTrace,
       ...(host?.nativeQueue ? { nativeCalls: host.nativeApproval.calls, receipts: host.nativeApproval.receipts(), queueEvents: host.events } : {}),
     }, null, 2));
+    if (host?.nativeApproval) {
+      const idx = nativeHosts.indexOf(host.nativeApproval);
+      if (idx !== -1) nativeHosts.splice(idx, 1);
+      await host.nativeApproval.close();
+    }
   }
   const result = {
     name, theme, viewport: "375x812", status: failure || errors.length ? "failed" : "passed",
@@ -1870,9 +2125,9 @@ async function runScenario(theme, scenario) {
     ...(failure ? { failure: failure.stack } : {}),
     artifacts: directory,
   };
-  results.push(result);
   await writeFile(resolve(directory, "result.json"), JSON.stringify(result, null, 2));
   console.log(`${result.status.toUpperCase()} ${name} (${result.durationMs}ms)${failure ? `: ${failure.message}` : ""}`);
+  return result;
 }
 
 await mkdir(runDir, { recursive: true });
@@ -1894,7 +2149,7 @@ try {
   // Vite must not read a developer's .env or inherit production VITE_* values.
   for (const key of Object.keys(inheritedVite)) delete process.env[key];
   relay = await startRelayServer({
-    host: "127.0.0.1", port: 0,
+    host: "127.0.0.1", port: 0, roomCreationsPerIpPerHour: 1000,
     pushDispatcher: { wake: async () => false },
     logger: { info() {}, warn() {}, error: (...args) => infrastructureErrors.push(args.join(" ")) },
   });
@@ -1917,7 +2172,7 @@ try {
   logger.error = (message, options) => {
     // Reload/reconnect scenarios close sockets; retain their reset logs while
     // keeping proxy connection failures, HTTP errors and app assertions fatal.
-    if (options?.error?.code !== "ECONNRESET" || !/ws proxy(?: socket)? error:/u.test(message)) infrastructureErrors.push(message);
+    if (!["ECONNRESET", "EPIPE"].includes(options?.error?.code) || !/ws proxy(?: socket)? error:/u.test(message)) infrastructureErrors.push(message);
     logError(message, options);
   };
   vite = await createServer({
@@ -1939,6 +2194,7 @@ try {
               if (request.method === "POST") {
                 if (url.searchParams.has("failure")) fixture.failure = url.searchParams.get("failure") === "true" ? "Native section limit reached" : "";
                 if (url.searchParams.has("supported")) fixture.supported = url.searchParams.get("supported") !== "false";
+                if (url.searchParams.has("manageSupported")) fixture.manageSupported = url.searchParams.get("manageSupported") !== "false";
                 if (url.searchParams.has("scope")) fixture.scope = url.searchParams.get("scope");
                 if (url.searchParams.get("connection") === "offline") previewHost.socket.close();
                 if (url.searchParams.get("connection") === "connected") previewHost.socket.connect();
@@ -1949,7 +2205,7 @@ try {
               result = { projects: previewHost.snapshot.projects, sessions: previewHost.snapshot.sessions,
                 miscRoot: previewHost.nativeApproval.miscRoot, calls: fixture.calls, scope: fixture.scope,
                 persisted: JSON.parse(await readFile(fixture.profile, "utf8")),
-                sectionRequests: previewHost.requests.filter(request => ["section.create", "section.move", "directory.mkdir", "session.create"].includes(request.method)).map(({ method, params }) => ({ method, params })),
+                sectionRequests: previewHost.requests.filter(request => ["section.create", "section.move", "section.rename", "section.delete", "directory.mkdir", "session.create"].includes(request.method)).map(({ method, params }) => ({ method, params })),
                 errors: infrastructureErrors };
             } else if (remotePreview && request.method === "GET" && url.pathname === "/remote/state") {
               result = previewHost.remoteState();
@@ -2071,11 +2327,18 @@ try {
       headless: true,
       args: ["--disable-background-networking", "--disable-component-update", "--no-first-run"],
     });
-    for (const theme of ["light", "dark"]) {
-      for (const scenario of scenarios) {
-        await runScenario(theme, scenario);
+    const pairs = ["light", "dark"].flatMap((theme) => scenarios.map((scenario) => [theme, scenario]));
+    const concurrency = Math.max(1, Number(process.env.BRIDGE_E2E_CONCURRENCY ?? 4));
+    const ordered = new Array(pairs.length);
+    let nextPair = 0;
+    await Promise.all(Array.from({ length: Math.min(concurrency, pairs.length) }, async () => {
+      while (nextPair < pairs.length) {
+        const index = nextPair++;
+        const [theme, scenario] = pairs[index];
+        ordered[index] = await runScenario(theme, scenario);
       }
-    }
+    }));
+    results.push(...ordered.filter(Boolean));
   }
 } catch (error) {
   infrastructureErrors.push(error.stack);

@@ -21,7 +21,8 @@ import {
   type LocalTurn,
   type SessionHistoryState,
 } from "../hooks/useMobileBridge.js";
-import { desktopRuntimeId } from "./runtime-labels.js";
+import { desktopRuntimeId, desktopRuntimeName } from "./runtime-labels.js";
+import type { SessionFamily } from "./project-groups.js";
 import { sessionQueueLabel } from "./session-activity.js";
 
 export interface ConversationItem extends BridgeHistoryItem {
@@ -31,6 +32,8 @@ export interface ConversationItem extends BridgeHistoryItem {
   replyPending?: boolean;
   requestId?: string;
   commandId?: string;
+  toolUseId?: string;
+  isError?: boolean;
   error?: string;
   live?: boolean;
 }
@@ -330,10 +333,14 @@ export function conversationItems(
       ? previous.taskPlan
       : item.taskPlan;
     if (previous?.subagent && item.subagent && previous.subagent.updatedAt > item.subagent.updatedAt) continue;
+    const rawToolUseId = item.role === "tool" && !item.subagent
+      ? item.id.replace(/^tool:/u, "").replace(/:completed$/u, "")
+      : undefined;
     items.set(normalizedId, {
       ...previous,
       ...item,
       id: normalizedId,
+      ...(rawToolUseId ? { toolUseId: rawToolUseId } : {}),
       ...(item.role === "user" && (previous?.delivery || item.delivery)
         ? { delivery: mergeAcceptedDelivery(previous?.delivery, item.delivery) } : {}),
       ...(taskPlan ? { taskPlan } : {}),
@@ -559,6 +566,10 @@ export function conversationItems(
             }
           : prevSubagent
         : incomingSubagent ?? prevSubagent;
+      const toolUseId = !incomingSubagent
+        ? (typeof event.itemId === "string" && event.itemId.trim() ? event.itemId.trim() : existing?.toolUseId)
+        : undefined;
+      const isError = event.type === "tool.completed" && event.data.isError === true ? true : existing?.isError;
       toolByItem.set(id, {
         id: `tool:${id}`,
         sessionId,
@@ -568,6 +579,8 @@ export function conversationItems(
         text,
         createdAt: existing?.createdAt ?? event.timestamp,
         origin: "claude-host",
+        ...(toolUseId ? { toolUseId } : {}),
+        ...(isError ? { isError: true } : {}),
         ...(subagent?.state === "unknown" ? {} : {
           state: subagent?.state === "stopped"
             ? "interrupted" as const
@@ -867,4 +880,80 @@ export async function fileToAttachment(file: File): Promise<BridgeAttachment> {
     size: file.size,
     data,
   };
+}
+
+export function archivedForkGroupKey(parentSessionId: string): string {
+  return `archived:${parentSessionId}`;
+}
+
+export function forkGroupToggleLabel<T extends { sidechat?: boolean }>(
+  forks: readonly SessionFamily<T>[],
+): string {
+  if (forks.every((fork) => fork.primary.sidechat)) return `${forks.length} 个 /btw 侧聊`;
+  if (forks.some((fork) => fork.primary.sidechat)) return `${forks.length} 个分支与侧聊`;
+  return `${forks.length} 个 Fork 分支`;
+}
+
+export function archivedForkGroupLabel<T extends { sidechat?: boolean }>(
+  archivedForks: readonly SessionFamily<T>[],
+): string {
+  if (archivedForks.every((fork) => fork.primary.sidechat)) return `${archivedForks.length} 个已结束侧聊`;
+  if (archivedForks.some((fork) => fork.primary.sidechat)) return `${archivedForks.length} 个已归档分支与侧聊`;
+  return `${archivedForks.length} 个已归档分支`;
+}
+
+export function partitionSessionForks(
+  parent: BridgeSessionInfo,
+  forks: readonly SessionFamily<BridgeSessionInfo>[],
+  allSessions: readonly BridgeSessionInfo[],
+  includeArchivedInline: boolean,
+  query = "",
+): {
+  activeForks: SessionFamily<BridgeSessionInfo>[];
+  archivedForks: SessionFamily<BridgeSessionInfo>[];
+} {
+  if (includeArchivedInline) {
+    return { activeForks: [...forks], archivedForks: [] };
+  }
+  const activeForks: SessionFamily<BridgeSessionInfo>[] = [];
+  // Archived ancestors stay in history; their live descendants remain reachable
+  // from the active list without requiring the history fold to be opened.
+  function separateArchivedFork(fork: SessionFamily<BridgeSessionInfo>): SessionFamily<BridgeSessionInfo>[] {
+    if (!fork.primary.archivedAt) {
+      activeForks.push(fork);
+      return [];
+    }
+    return [{ ...fork, forks: fork.forks.flatMap(separateArchivedFork) }];
+  }
+  const archivedForks = forks.flatMap(separateArchivedFork);
+  const seenIds = new Set(forks.map((fork) => fork.primary.sessionId));
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const supplementalArchived: SessionFamily<BridgeSessionInfo>[] = [];
+  for (const candidate of allSessions) {
+    if (
+      !candidate.archivedAt
+      || candidate.parentSessionId !== parent.sessionId
+      || candidate.projectId !== parent.projectId
+      || seenIds.has(candidate.sessionId)
+    ) {
+      continue;
+    }
+    if (
+      normalizedQuery
+      && !`${candidate.title}\n${candidate.currentSummary ?? ""}\n${candidate.projectName}\n${candidate.cwd}\n${desktopRuntimeName(desktopRuntimeId(candidate))}`
+        .toLocaleLowerCase()
+        .includes(normalizedQuery)
+    ) {
+      continue;
+    }
+    supplementalArchived.push({
+      primary: candidate,
+      forks: [],
+      lastActivityAt: candidate.lastActivityAt,
+    });
+  }
+  activeForks.sort((left, right) => right.lastActivityAt - left.lastActivityAt);
+  archivedForks.push(...supplementalArchived);
+  archivedForks.sort((left, right) => right.lastActivityAt - left.lastActivityAt);
+  return { activeForks, archivedForks };
 }

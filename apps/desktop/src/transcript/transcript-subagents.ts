@@ -12,11 +12,11 @@ import {
   toolUses,
 } from "./transcript-dag.js";
 
-function subagentsDirectoryForTranscript(transcriptPath: string): string {
+export function subagentsDirectoryForTranscript(transcriptPath: string): string {
   return join(transcriptPath.replace(/\.jsonl$/u, ""), "subagents");
 }
 
-async function collectSubagentJsonlFiles(directory: string, depth = 0): Promise<string[]> {
+export async function collectSubagentJsonlFiles(directory: string, depth = 0): Promise<string[]> {
   if (depth > 3) return [];
   let entries;
   try {

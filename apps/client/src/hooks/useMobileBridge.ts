@@ -444,19 +444,79 @@ export function useMobileBridge() {
     return result;
   }, [sendRequest]);
 
+  const renameSection = useCallback(async (
+    sectionId: string,
+    name: string,
+  ): Promise<{ project?: BridgeProjectInfo; projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] }> => {
+    const response = await sendRequest("section.rename", { sectionId, name }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "重命名分组失败");
+    const result = response.result as { project?: BridgeProjectInfo; projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] };
+    setState((current) => {
+      if (!current.snapshot) return current;
+      const projects = Array.isArray(result.projects)
+        ? result.projects
+        : result.project
+          ? current.snapshot.projects.map((item) => item.projectId === result.project!.projectId ? result.project! : item)
+          : current.snapshot.projects;
+      const sessions = Array.isArray(result.sessions) ? result.sessions : current.snapshot.sessions;
+      const snapshot = { ...current.snapshot, projects, sessions };
+      return {
+        ...current,
+        snapshot,
+        hosts: current.hosts.map((host) => host.roomId === current.activeHostId
+          ? hostWithRuntimeState(host, snapshot, current.permissions)
+          : host),
+      };
+    });
+    return result;
+  }, [sendRequest]);
+
+  const deleteSection = useCallback(async (
+    sectionId: string,
+  ): Promise<{ projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] }> => {
+    const response = await sendRequest("section.delete", { sectionId }, { allowOffline: false, wait: true });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "删除分组失败");
+    const result = response.result as { projects?: BridgeProjectInfo[]; sessions?: BridgeSessionInfo[] };
+    setState((current) => {
+      if (!current.snapshot) return current;
+      const projects = Array.isArray(result.projects)
+        ? result.projects
+        : current.snapshot.projects.filter((item) => item.projectId !== sectionId);
+      const sessions = Array.isArray(result.sessions) ? result.sessions : current.snapshot.sessions;
+      const snapshot = { ...current.snapshot, projects, sessions };
+      return {
+        ...current,
+        snapshot,
+        hosts: current.hosts.map((host) => host.roomId === current.activeHostId
+          ? hostWithRuntimeState(host, snapshot, current.permissions)
+          : host),
+      };
+    });
+    return result;
+  }, [sendRequest]);
+
   const createSession = useCallback(async (
     cwd: string,
     title?: string,
     runtimeId?: BridgeDesktopRuntimeId,
     projectId?: string,
+    trustWorkspace?: boolean,
   ): Promise<BridgeSessionInfo | undefined> => {
+    const canTrust = trustWorkspace === true
+      && stateRef.current.snapshot?.host.capabilities.includes("workspace.trust.v1") === true;
     const response = await sendRequest("session.create", {
       cwd,
       ...(title ? { title } : {}),
       ...(runtimeId ? { runtimeId } : {}),
       ...(projectId !== undefined ? { projectId } : {}),
+      ...(canTrust ? { trustWorkspace: true } : {}),
     }, { wait: true });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "新建会话失败");
+    if (!response?.ok) {
+      throw Object.assign(
+        new Error(response?.error?.message ?? "新建会话失败"),
+        response?.error?.code ? { code: response.error.code } : {},
+      );
+    }
     const result = response.result as { session?: BridgeSessionInfo };
     if (result.session) {
       setState((current) => ({ ...current, snapshot: applySessionToSnapshot(current.snapshot, result.session) }));
@@ -796,6 +856,8 @@ export function useMobileBridge() {
     createSession,
     createSection,
     moveSessionSection,
+    renameSection,
+    deleteSection,
     forkSession,
     returnToDesktop,
     takeoverDesktop,

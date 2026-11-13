@@ -115,7 +115,7 @@ try {
 
   if (smokePairingOnly) {
     await androidPage.waitFor(
-      "Boolean(document.querySelector('.m-host-chip .m-status-dot.is-online')) && (document.querySelector('.session-catalog-loading strong')?.textContent?.trim() === '暂未发现 Desktop 会话' || Boolean(document.querySelector('.session-row-v2')))",
+      "Boolean(document.querySelector('.m-host-chip .m-status-dot.is-online')) && (['暂无会话', '暂无活跃会话', '未检测到 Claude Desktop'].includes(document.querySelector('.session-catalog-loading strong')?.textContent?.trim() ?? '') || Boolean(document.querySelector('.session-row-v2')))",
       30_000,
     );
     await androidPage.screenshot(resolve(artifacts, "02-paired-smoke.png"));

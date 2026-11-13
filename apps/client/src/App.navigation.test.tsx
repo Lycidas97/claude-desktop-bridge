@@ -139,6 +139,13 @@ describe("mobile app parent navigation", () => {
     tab("settings"); tab("sessions");
     expect(component(MobileWorkspace)!.props.directoryRequest).not.toBe(initial);
   });
+  it("opens active computer connection details directly from workspace inspection callback", () => {
+    component(MobileWorkspace)!.props.onInspectConnection(); draw();
+    expect(component(MobileAppShell)!.props.tab).toBe("computers");
+    expect(component(MobileHostDetails)).toBeDefined();
+    expect(back()).toBe(true);
+    expect(component(HostBrowser)).toBeDefined();
+  });
   it("lets an unpaired start screen return to Android while keeping secure import in place", () => {
     hooks.mobile.state.hosts = []; hooks.mobile.state.activeHostId = undefined; draw();
     expect(back()).toBe(false);

@@ -148,6 +148,7 @@ export function MobileWorkspace({
   events,
   localTurns,
   connectionIssue,
+  onInspectConnection,
   transportMetrics,
   pendingOutbound,
   themeControl,
@@ -209,6 +210,7 @@ export function MobileWorkspace({
   events: BridgeEvent[];
   localTurns: LocalTurn[];
   connectionIssue?: MobileConnectionIssue | undefined;
+  onInspectConnection?: (() => void) | undefined;
   transportMetrics?: BridgeTransportMetrics | undefined;
   pendingOutbound: number;
   themeControl: ThemeControl;
@@ -1985,6 +1987,7 @@ export function MobileWorkspace({
     projectsByActivity,
     permissions,
     connectionIssue,
+    onInspectConnection,
     transportMetrics,
     pendingOutbound,
     activeProjectId,

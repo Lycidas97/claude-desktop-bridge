@@ -61,6 +61,7 @@ import {
   type ControllerRpcHost,
 } from "./controller-rpc.js";
 import type { SessionEventLog } from "./session-event-log.js";
+import type { DesktopUpdater } from "../updater/desktop-updater.js";
 
 export { acceptsRelayDevice };
 
@@ -90,6 +91,7 @@ export class DesktopController extends EventEmitter {
   private lastPublishedPermissions = new Map<string, BridgePermissionInfo>();
   private readonly sessionVisibility = new Map<string, { visibility: SessionVisibility; updatedAt: number }>();
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
+  updater: DesktopUpdater | undefined;
 
   constructor(
     private readonly app: App,
@@ -103,8 +105,27 @@ export class DesktopController extends EventEmitter {
     private readonly RTCPeerConnectionImpl?: typeof RTCPeerConnection,
     private readonly desktopAppControls?: ReadonlyMap<BridgeDesktopRuntimeId, ClaudeDesktopLifecycle>,
     private readonly conversationState?: ConversationStateStore,
+    updater?: DesktopUpdater,
   ) {
     super();
+    this.updater = updater;
+  }
+
+  async attachUpdater(updater: DesktopUpdater): Promise<DesktopControlSnapshot> {
+    this.updater = updater;
+    return this.publish();
+  }
+
+  notifyUpdaterChanged(): void {
+    this.queuePublish();
+  }
+
+  requestQuitForUpdate(): void {
+    this.emit("quit-for-update");
+  }
+
+  isIdleForUpdate(): boolean {
+    return this.broker.runtimeStatus().activeTurns === 0 && this.claudePermissions().length === 0;
   }
 
   async initialize(): Promise<void> {
@@ -206,6 +227,7 @@ export class DesktopController extends EventEmitter {
           "turn.queue.cancel.v1",
           "transcript.toolDetail.v1",
           "plugin.magpie-quota.v1",
+          ...(this.updater ? ["system.update.v1" as const] : []),
         ],
       },
       projects: this.allProjects(),
@@ -232,6 +254,7 @@ export class DesktopController extends EventEmitter {
       managedDesktopEnabled: this.config.managedDesktopEnabled,
       claudeDesktop: await this.claudeDesktop.status(),
       desktopApps: await this.desktopAppStatuses(),
+      ...(this.updater ? { updater: this.updater.snapshot() } : {}),
       ...(this.inspectorStatus ? { claudeInspector: this.inspectorStatus } : {}),
       ...(currentPairing ? {
         pairingUrl: buildPairingUrl(this.pairingBaseUrl, pairingForDevice(this.config, currentPairing)),
@@ -624,6 +647,7 @@ export class DesktopController extends EventEmitter {
       runtime: [snapshot.runtime?.state, snapshot.runtime?.activeTurns, snapshot.runtime?.maxParallelTurns],
       providers: snapshot.providers,
       magpie: snapshot.magpie,
+      updater: snapshot.updater,
       projects: snapshot.projects?.map(project => ({ projectId: project.projectId, name: project.name, kind: project.kind, cwd: project.cwd, runtimeId: project.runtimeId }))
         .sort((a, b) => a.projectId.localeCompare(b.projectId)),
     }) + "\n" + snapshot.sessions
@@ -670,6 +694,9 @@ export class DesktopController extends EventEmitter {
         }),
       ]);
     }
+    this.updater?.notifyIdleStateChanged(
+      snapshot.runtime.activeTurns === 0 && snapshot.permissions.length === 0,
+    );
     return snapshot;
   }
 }

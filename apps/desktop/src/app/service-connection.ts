@@ -26,7 +26,7 @@ export async function serveDesktopService(options: {
   addressPath: string;
   controller: ServiceController;
   shutdown(): void;
-}): Promise<{ close(): Promise<void> }> {
+}): Promise<{ close(): Promise<void>; hasConnectedClients(): boolean }> {
   const resources = new ServiceResources();
   const token = randomBytes(32).toString("hex");
   const server = createServer((_request, response) => { response.writeHead(404); response.end(); });
@@ -97,12 +97,18 @@ export async function serveDesktopService(options: {
     };
     const snapshot = (value: unknown) => broadcast("snapshot", value);
     const event = (value: unknown) => broadcast("event", value);
+    const quitForUpdate = () => {
+      broadcast("quit-for-update", null);
+      setTimeout(() => options.shutdown(), 100).unref?.();
+    };
     resources.defer("Controller subscriptions", () => {
       options.controller.off("snapshot", snapshot);
       options.controller.off("event", event);
+      options.controller.off("quit-for-update", quitForUpdate);
     });
     options.controller.on("snapshot", snapshot);
     options.controller.on("event", event);
+    options.controller.on("quit-for-update", quitForUpdate);
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
@@ -113,7 +119,10 @@ export async function serveDesktopService(options: {
     const temporaryAddressPath = `${options.addressPath}.${process.pid}.tmp`;
     await writeFile(temporaryAddressPath, JSON.stringify({ port: address.port, token, protocol: SERVICE_PROTOCOL }), { mode: 0o600 });
     await rename(temporaryAddressPath, options.addressPath);
-    return { close: () => resources.close() };
+    return {
+      close: () => resources.close(),
+      hasConnectedClients: () => [...sockets.clients].some((client) => client.readyState === WebSocket.OPEN),
+    };
   } catch (error) {
     return resources.fail(error);
   }
@@ -167,6 +176,10 @@ export class DesktopServiceClient extends EventEmitter {
         } else if (message.kind === "snapshot") {
           if (this.replaying) this.bufferedSnapshot = message.value;
           else this.emit("snapshot", message.value);
+        } else if (message.kind === "quit-for-update") {
+          this.closed = true;
+          clearTimeout(this.reconnectTimer);
+          this.emit("quit-for-update");
         }
       });
       socket.on("close", () => {

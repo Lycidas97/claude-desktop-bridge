@@ -8,7 +8,8 @@ const resources = vi.hoisted(() => {
     eventLog: resource(), state: resource(),
     evidence: resource(),
     broker: resource(), nativeOptions: vi.fn(),
-    controller: { ...resource(), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
+    controller: { ...resource(), attachUpdater: vi.fn(async () => {}), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
+    updater: { initialize: vi.fn(async () => {}), close: vi.fn() },
     cleanupRtc: vi.fn(),
     inspector: { start: vi.fn(async () => {}), close: vi.fn(), notificationFailed: vi.fn() },
     inspectorOptions: undefined as undefined | { onUpdate(status: BridgeInspectorStatus): void; onAlert(alert: BridgeInspectorAlert): string | undefined; startup?: (listening: boolean) => Promise<string | undefined> },
@@ -17,7 +18,7 @@ const resources = vi.hoisted(() => {
   };
 });
 vi.mock("electron", () => ({
-  app: {}, safeStorage: {}, shell: {}, powerMonitor: new EventEmitter(),
+  app: { getVersion: () => "1.3.2", isPackaged: false }, safeStorage: {}, shell: {}, powerMonitor: new EventEmitter(),
   Notification: class extends EventEmitter {
     static isSupported() { return resources.notificationSupported(); }
     show = resources.showNotification;
@@ -42,6 +43,7 @@ vi.mock("../evidence/evidence-manager.js", () => ({ EvidenceManager: class { con
 vi.mock("../evidence/artifact-preview.js", () => ({ ElectronEvidencePreviewRenderer: class {} }));
 vi.mock("../claude/claude-desktop-bridge.js", () => ({ ClaudeDesktopBridge: class { constructor(options: unknown) { resources.nativeOptions(options); return resources.broker; } } }));
 vi.mock("../controller/controller.js", () => ({ DesktopController: class { constructor() { return resources.controller; } } }));
+vi.mock("../updater/desktop-updater.js", () => ({ DesktopUpdater: class { constructor() { return resources.updater; } } }));
 vi.mock("./claude-desktop-lifecycle.js", () => ({ ClaudeDesktopLifecycle: class {} }));
 vi.mock("../transport/webrtc-runtime.js", () => ({ loadDesktopPeerConnection: vi.fn(), cleanupDesktopPeerConnection: resources.cleanupRtc }));
 
@@ -81,6 +83,8 @@ it("shares shutdown completion and closes each resource once", async () => {
   await vi.waitFor(() => expect(resources.broker.close).toHaveBeenCalledOnce());
   try { expect(first).toBe(second); } finally { finish(); await Promise.all([first, second]); }
   expect(resources.controller.close).toHaveBeenCalledOnce();
+  expect(resources.controller.attachUpdater).toHaveBeenCalledOnce();
+  expect(resources.updater.close).toHaveBeenCalledOnce();
   expect(resources.inspector.start).toHaveBeenCalledOnce();
   expect(resources.inspector.close).toHaveBeenCalledOnce();
 });

@@ -114,8 +114,20 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       online: true,
       lastSeenAt: now,
       version: "1.1.1",
-      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["directory.browse.v1", "workspace.trust.v1", "session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "section.rename.v1", "section.delete.v1", "transcript.toolDetail.v1"] : [])],
+      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["directory.browse.v1", "workspace.trust.v1", "session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "section.rename.v1", "section.delete.v1", "transcript.toolDetail.v1", "system.update.v1"] : [])],
     },
+    ...(native ? {
+      updater: {
+        platform: "win32",
+        arch: "x64",
+        currentVersion: "1.1.1",
+        channel: "stable",
+        autoCheck: true,
+        applyMode: "prompt",
+        canAutoRestart: true,
+        phase: "idle",
+      },
+    } : {}),
     projects: [{
       projectId: session.projectId, name: session.projectName, cwd: session.cwd,
       runtimeId: "claude-desktop", sessionCount: remotePreview ? 1 : 2, runningCount: remotePreview ? 1 : 0,
@@ -455,6 +467,17 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
         case "plugin.magpie-quota.list":
           result = { status: "available", fetchedAt: Date.now(), accounts: [{ provider: "claude", name: "隔离 Magpie 账号", windows: [{ name: "5 hours", remaining: 73 }, { name: "7 days", remaining: 81 }] }] };
           break;
+        case "system.update": {
+          const action = request.params?.action ?? "status";
+          if (action === "check") {
+            snapshot.updater = { ...snapshot.updater, phase: "available", latestVersion: "1.3.3", assetName: "Bridge-1.3.3-windows-installer-ci.zip", statusDetail: "发现新版本 v1.3.3" };
+          } else if (action === "apply") {
+            snapshot.updater = { ...snapshot.updater, phase: "applying", latestVersion: "1.3.3", statusDetail: "正在后台静默升级并重启 Bridge 服务…" };
+          }
+          result = snapshot.updater;
+          await host.send({ kind: "snapshot", snapshot });
+          break;
+        }
         case "session.rewind.preview":
         case "session.rewind": {
           try {
@@ -1454,6 +1477,17 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     assert.equal(await target.count(), 0, "Refreshed history and replay must not revive the successfully rewound target");
   }
   steps.push("successful Native rewind preserves prefill and closes confirmation when subsequent getSession or getTranscriptPage disconnects; each mutation executes once and discarded history stays absent after reload");
+
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await page.getByRole("button", { name: "菜单", exact: true }).click();
+  await page.getByRole("navigation", { name: "主要导航", exact: true }).getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("heading", { name: "远端桌面状态", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "版本与更新", exact: true }).waitFor();
+  assert.ok((await page.locator(".mobile-settings-page").innerText()).includes("v1.1.1"));
+  await page.getByRole("button", { name: "检查并升级桌面端", exact: true }).click();
+  await eventually(() => host.requests.some(request => request.method === "system.update" && request.params.action === "apply"), true, "Mobile triggers encrypted system.update apply RPC");
+  await eventually(() => page.locator(".mobile-settings-page").innerText().then(t => t.includes("正在重启升级")), true, "Remote desktop status reflects applying phase over E2EE");
+  steps.push("mobile Settings displays remote desktop version, graceful Web release fallback, and triggers E2EE system.update upgrade");
 }
 
 async function verifyNativeQueueActions(page, host, steps, directory) {

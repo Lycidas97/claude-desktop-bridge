@@ -1,5 +1,7 @@
+import type { BridgeSystemUpdateParams, BridgeUpdaterSnapshot } from "@bridge/protocol";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { claudeSnapshot } from "./lib/claude-snapshot.js";
+import { useClientUpdater } from "./lib/client-updater.js";
 import { useTheme } from "./hooks/useTheme.js";
 import { useMobileBridge } from "./hooks/useMobileBridge.js";
 import {
@@ -20,12 +22,14 @@ import { MobilePageHeader } from "./components/mobile/MobilePageHeader.js";
 import { MobileQuotaPage } from "./components/mobile/MobileQuotaPage.js";
 import { MobileSettings } from "./components/mobile/MobileSettings.js";
 import { ProviderSettings } from "./components/session/ProviderSettings.js";
+import { MobileClientUpdateDialog, type RemoteDesktopUpdateControl } from "./components/updater/UpdaterSections.js";
 import { MAGPIE_QUOTA_METHOD, type QuotaLoader, type QuotaSnapshot } from "../../../plugins/magpie-quota/contract.js";
 import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
 
 export function App() {
   const themeControl = useTheme();
   const mobile = useMobileBridge();
+  const clientUpdater = useClientUpdater(!window.bridgeDesktop);
   const snapshot = useMemo(() => mobile.state.snapshot
     ? claudeSnapshot(mobile.state.snapshot)
     : undefined, [mobile.state.snapshot]);
@@ -51,6 +55,32 @@ export function App() {
   const quotaDeclared = Boolean(mobile.state.snapshot?.host.capabilities.includes("plugin.magpie-quota.v1"));
   const quotaEnabled = mobile.state.connection === "connected" && mobile.state.desktopOnline && quotaDeclared;
   const closeQuota = useCallback(() => setQuotaOpen(false), []);
+  const invokeRemoteUpdate = useCallback(async (params: BridgeSystemUpdateParams): Promise<BridgeUpdaterSnapshot> => {
+    const response = await request("system.update", params as unknown as Record<string, unknown>, {
+      wait: true,
+      allowOffline: false,
+      timeoutMs: 45_000,
+    });
+    if (!response?.ok) throw new Error(response?.error?.message ?? "远端桌面更新指令执行失败");
+    return response.result as BridgeUpdaterSnapshot;
+  }, [request]);
+  const remoteDesktopUpdate = useMemo<RemoteDesktopUpdateControl | undefined>(() => {
+    const rawHost = mobile.state.snapshot;
+    if (!mobile.state.activeHostId || !rawHost) return undefined;
+    return {
+      hostVersion: rawHost.host.version,
+      connected: mobile.state.connection === "connected" && mobile.state.desktopOnline,
+      supported: rawHost.host.capabilities.includes("system.update.v1"),
+      updater: rawHost.updater,
+      onInvoke: invokeRemoteUpdate,
+    };
+  }, [
+    invokeRemoteUpdate,
+    mobile.state.activeHostId,
+    mobile.state.connection,
+    mobile.state.desktopOnline,
+    mobile.state.snapshot,
+  ]);
 
   async function openComputer(hostId: string, sessionId?: string): Promise<void> {
     if (hostId !== mobile.state.activeHostId) await mobile.selectHost(hostId);
@@ -108,6 +138,7 @@ export function App() {
     return (
       <>
         <PairingSyncScreen sync={mobile.state.pairingSync} />
+        <MobileClientUpdateDialog updater={clientUpdater} />
         <DiagnosticFloatingEntry />
       </>
     );
@@ -116,6 +147,7 @@ export function App() {
     return (
       <>
         <main className="mobile-loading"><span className="spinner" /><span>正在读取已配对电脑</span></main>
+        <MobileClientUpdateDialog updater={clientUpdater} />
         <DiagnosticFloatingEntry />
       </>
     );
@@ -134,6 +166,7 @@ export function App() {
           }}
           {...(mobile.state.hosts.length > 0 ? { onCancel: () => setPairingOpen(false) } : {})}
         />
+        <MobileClientUpdateDialog updater={clientUpdater} />
         <DiagnosticFloatingEntry />
       </>
     );
@@ -275,6 +308,7 @@ export function App() {
           onRetry={mobile.retryConnection}
           onRefresh={mobile.refresh}
           onDesktopAppAction={mobile.controlDesktopApp}
+          remoteUpdate={remoteDesktopUpdate}
           onRemove={async () => {
             await mobile.forgetHost(mobile.state.activeHostId!);
             setComputerDetailsHostId(undefined);
@@ -306,12 +340,14 @@ export function App() {
       ) : (
         <MobileSettings
           themeControl={themeControl}
-
+          remoteDesktop={remoteDesktopUpdate}
+          clientUpdater={clientUpdater}
           {...(mobile.state.activeHostId ? { providers: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setProvidersOpen(true) } } : {})}
           {...(quotaDeclared ? { quota: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setQuotaOpen(true) } } : {})}
         />
       ))}
       </MagpieQuotaProvider>
+      <MobileClientUpdateDialog updater={clientUpdater} />
       <DiagnosticFloatingEntry />
     </MobileAppShell>
   );

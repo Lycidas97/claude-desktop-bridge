@@ -72,6 +72,7 @@ export interface MobileSessionCatalogProps {
   projectsByActivity: string[];
   permissions: BridgePermissionInfo[];
   connectionIssue: MobileConnectionIssue | undefined;
+  onInspectConnection?: (() => void) | undefined;
   transportMetrics: BridgeTransportMetrics | undefined;
   pendingOutbound: number;
   activeProjectId: string | undefined;
@@ -138,6 +139,7 @@ export function MobileSessionCatalog({
   projectsByActivity,
   permissions,
   connectionIssue,
+  onInspectConnection,
   transportMetrics,
   pendingOutbound,
   activeProjectId,
@@ -433,19 +435,80 @@ export function MobileSessionCatalog({
             {connectionIssue.message}
           </button>
         )}
-        {!snapshot && (
+        {!snapshot && connection === "connected" && desktopOnline && (
           <div className="session-catalog-loading">
             <LoaderCircle className="is-spinning" size={20} />
             <strong>正在同步主机状态</strong>
             <span>已保存的会话会在连接恢复后自动出现。</span>
           </div>
         )}
-        {snapshot && grouped.length === 0 && (
-          <div className="session-catalog-loading">
-            <strong>{search ? "没有匹配的会话" : "暂未发现 Desktop 会话"}</strong>
-            <span>{search ? "换一个关键词试试。" : "启动目标 Desktop 后，Bridge 会自动读取其独立会话。"}</span>
-          </div>
-        )}
+        {(snapshot ? grouped.length === 0 : connection !== "connected" || !desktopOnline) && (() => {
+          const claudeRuntime = snapshot?.runtimes?.find((candidate) => candidate.id === "claude-desktop");
+          const claudeDesktopReady = claudeRuntime
+            ? claudeRuntime.state === "ready"
+            : snapshot?.runtime.state === "ready" || snapshot?.runtime.state === "working";
+          if (search.trim()) {
+            return (
+              <div className="session-catalog-loading">
+                <strong>没有匹配的会话</strong>
+                <span>换一个关键词试试。</span>
+              </div>
+            );
+          }
+          if (connection === "connected" && desktopOnline && claudeDesktopReady) {
+            const canCreate = snapshot?.runtimes
+              ? claudeRuntime?.state === "ready" && claudeRuntime.capabilities.includes("session.create")
+              : claudeDesktopReady;
+            return (
+              <div className="session-catalog-loading">
+                <strong>{archivedSessions.length > 0 ? "暂无活跃会话" : "暂无会话"}</strong>
+                <span>{archivedSessions.length > 0
+                  ? canCreate ? "当前会话均已归档，可开始新对话或查看下方已归档会话。" : "当前会话均已归档，可查看下方已归档会话。"
+                  : canCreate ? "当前电脑上尚未创建会话，可随时开始新的对话。" : "当前电脑上尚未创建会话，请在 Claude Desktop 中创建会话。"}</span>
+                {canCreate && (
+                  <button
+                    type="button"
+                    className="primary-button session-catalog-empty-action"
+                    onClick={() => openCreateDialogForProject()}
+                  >
+                    <Plus size={16} />
+                    新建会话
+                  </button>
+                )}
+              </div>
+            );
+          }
+          if (connection === "connected" && desktopOnline) {
+            return (
+              <div className="session-catalog-loading">
+                <strong>未检测到 Claude Desktop</strong>
+                <span>请在电脑端打开 Claude Desktop。启动后 Bridge 将自动建立连接。</span>
+                <button
+                  type="button"
+                  className="secondary-button session-catalog-empty-action"
+                  onClick={onInspectConnection ?? onBackToHosts}
+                >
+                  检查连接
+                </button>
+              </div>
+            );
+          }
+          const connecting = connection === "connecting" || connection === "reconnecting";
+          return (
+            <div className="session-catalog-loading">
+              {connecting && <LoaderCircle className="is-spinning" size={20} />}
+              <strong>{connecting ? "正在连接电脑" : connection === "connected" ? "电脑端 Bridge 离线" : "当前未连接电脑"}</strong>
+              <span>{connecting ? "连接恢复后将自动同步会话列表。" : connection === "connected" ? "请确认电脑端 Bridge 正在运行并已连接网络。" : "请检查网络或连接设置，连接恢复后将自动同步。"}</span>
+              <button
+                type="button"
+                className="secondary-button session-catalog-empty-action"
+                onClick={onInspectConnection ?? onBackToHosts}
+              >
+                检查连接
+              </button>
+            </div>
+          );
+        })()}
         <div className="project-groups">
           {grouped.map((group) => {
             const projectId = group.project?.projectId ?? group.sessions[0]!.projectId;

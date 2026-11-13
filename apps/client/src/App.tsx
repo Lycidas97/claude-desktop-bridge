@@ -204,6 +204,10 @@ export function App() {
               events={mobile.state.events}
               localTurns={mobile.state.localTurns}
               connectionIssue={mobile.state.connectionIssue}
+              onInspectConnection={() => {
+                setComputerDetailsHostId(mobile.state.activeHostId);
+                setTab("computers");
+              }}
               transportMetrics={mobile.state.transportMetrics}
               pendingOutbound={mobile.state.pendingOutbound}
               themeControl={themeControl}

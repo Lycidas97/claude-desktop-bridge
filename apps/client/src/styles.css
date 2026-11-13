@@ -3170,6 +3170,10 @@ button:disabled {
   line-height: 1.55;
 }
 
+.session-catalog-empty-action {
+  margin-top: 6px;
+}
+
 .project-groups {
   display: grid;
   gap: 14px;

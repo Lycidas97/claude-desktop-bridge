@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { BridgeProjectInfo, BridgeRequest, BridgeSessionInfo } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { DesktopController } from "./controller.js";
+import { WorkspaceTrustRequiredError } from "../claude/claude-desktop-bridge.js";
 
 // Reuse the repository's Trash-only cleanup on all CI platforms.
 createRequire(import.meta.url)("../../../../scripts/recycle-cleanup.cjs");
@@ -74,6 +75,38 @@ describe("session.create project identity", () => {
       params: { cwd: "/shared", projectId },
     }, "mobile")).rejects.toThrow(/projectId/u);
     expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it.each(["D:\\PARA", "/work/untrusted"])("maps WorkspaceTrustRequiredError to structured codes and forwards trustWorkspace (%s)", async cwd => {
+    const createSession = vi.fn()
+      .mockRejectedValueOnce(new WorkspaceTrustRequiredError(false))
+      .mockRejectedValueOnce(new WorkspaceTrustRequiredError(true))
+      .mockResolvedValueOnce({ sessionId: "trusted-session", cwd });
+    const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { createSession } }) as {
+      handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown>;
+    };
+    const req = (trustWorkspace?: unknown): BridgeRequest => ({
+      kind: "request", method: "session.create", requestId: "trust-req", idempotencyKey: "trust-req",
+      params: { cwd, title: "Demo", ...(trustWorkspace !== undefined ? { trustWorkspace } : {}) },
+    });
+
+    await expect(controller.handleRequest(req(), "mobile")).rejects.toMatchObject({
+      code: "WORKSPACE_TRUST_REQUIRED",
+      message: expect.not.stringContaining("$eipc_message$"),
+    });
+    expect(createSession).toHaveBeenNthCalledWith(1, cwd, "Demo", undefined);
+
+    await expect(controller.handleRequest(req(true), "mobile")).rejects.toMatchObject({
+      code: "WORKSPACE_TRUST_MANUAL_REQUIRED",
+      message: expect.stringContaining("电脑端 Claude 窗口"),
+    });
+    expect(createSession).toHaveBeenNthCalledWith(2, cwd, "Demo", undefined, true);
+
+    await expect(controller.handleRequest(req(true), "mobile")).resolves.toEqual({
+      session: { sessionId: "trusted-session", cwd },
+    });
+
+    await expect(controller.handleRequest(req("yes"), "mobile")).rejects.toThrow(/trustWorkspace/u);
   });
 });
 

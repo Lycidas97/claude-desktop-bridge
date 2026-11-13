@@ -109,10 +109,11 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
 
 test("packaged QA keeps Native configuration/evidence checks with optional runtime capabilities", async () => {
   const snapshot = nativeSnapshot();
-  snapshot.host.capabilities.push("session.rewind.v1", "session.rename.v1");
+  snapshot.host.capabilities.push("session.rewind.v1", "session.rename.v1", "workspace.trust.v1");
   snapshot.runtime.state = "ready";
   snapshot.runtime.desktopIntegration.state = "ready";
   snapshot.runtimes[0].state = "ready";
+  snapshot.runtimes[0].capabilities.push("session.create", "workspace.trust");
   snapshot.sessions.push({
     sessionId: "qa-native", runtimeId: "claude-desktop", transport: "claude-desktop-native",
     source: "desktop", allowedActions: { canConfigure: true },

@@ -1640,3 +1640,41 @@ it("keeps a completed command's returned session on its original computer after 
   await command;
   expect(harness.state.snapshot.sessions).toEqual([]);
 });
+
+describe("session.create workspace trust capability gating and error code preservation", () => {
+  it("gates trustWorkspace on workspace.trust.v1 and preserves error.code on failed responses", async () => {
+    const bridge = useMobileBridge();
+    harness.refs[0]!.current = harness.state;
+    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+      harness.requests.push({ host: "A", request });
+      const pending = harness.refs[6]!.current.get(request.requestId);
+      clearTimeout(pending.timer);
+      harness.refs[6]!.current.delete(request.requestId);
+      if (!request.params.trustWorkspace) {
+        pending.resolve({
+          kind: "response", requestId: request.requestId, ok: false,
+          error: { code: "WORKSPACE_TRUST_REQUIRED", message: "需要确认信任", retryable: false },
+        } satisfies BridgeResponse);
+        return;
+      }
+      pending.resolve({
+        kind: "response", requestId: request.requestId, ok: true,
+        result: { session: { sessionId: "trusted-1", cwd: "D:\\PARA", title: "PARA" } },
+      } satisfies BridgeResponse);
+    };
+
+    await expect(bridge.createSession("D:\\PARA", "PARA", "claude-desktop", undefined, true)).rejects.toMatchObject({
+      code: "WORKSPACE_TRUST_REQUIRED",
+      message: "需要确认信任",
+    });
+    expect(harness.requests[0]!.request.params).not.toHaveProperty("trustWorkspace");
+
+    harness.state.snapshot.host.capabilities = ["workspace.trust.v1"];
+    harness.refs[0]!.current = harness.state;
+    await expect(bridge.createSession("D:\\PARA", "PARA", "claude-desktop", undefined, true)).resolves.toMatchObject({
+      sessionId: "trusted-1",
+      cwd: "D:\\PARA",
+    });
+    expect(harness.requests[1]!.request.params).toMatchObject({ cwd: "D:\\PARA", title: "PARA", trustWorkspace: true });
+  });
+});

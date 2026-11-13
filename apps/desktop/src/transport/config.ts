@@ -4,10 +4,13 @@ import { dirname } from "node:path";
 import {
   BridgeCrypto,
   DEFAULT_BRIDGE_ICE_SERVERS,
+  DEFAULT_PUBLIC_RELAY_URL,
   PROTOCOL_VERSION,
   bridgeEndpoint,
   isBridgeIceServer,
   isBridgeEndpoint,
+  isRetiredDefaultRelayUrl,
+  isRetiredDefaultServiceOrigin,
   normalizeBridgeIceServers,
   normalizeBridgeEndpoints,
   normalizeRelayUrl,
@@ -364,18 +367,15 @@ function migrateV2(config: DesktopConfigFileV2, defaults: DesktopConfigDefaults)
   };
 }
 
-const UPSTREAM_DEFAULT_RELAY = "wss://relay.alioxis.com/ws";
-
 function refreshV3Endpoints(
   config: DesktopConfigFileV3 | DesktopConfigFileV4,
   defaults: DesktopConfigDefaults,
 ): BridgeEndpoint[] {
+  const dropRetiredDefault = Boolean(
+    defaults.publicRelayUrl && !isRetiredDefaultRelayUrl(defaults.publicRelayUrl),
+  );
   const refreshed = config.relayEndpoints
-    .filter((endpoint) => !(
-      defaults.publicRelayUrl &&
-      defaults.publicRelayUrl !== UPSTREAM_DEFAULT_RELAY &&
-      endpoint.url === UPSTREAM_DEFAULT_RELAY
-    ))
+    .filter((endpoint) => !(dropRetiredDefault && isRetiredDefaultRelayUrl(endpoint.url)))
     .map((endpoint, index) => {
     // 0.9.5: heal fossil LAN endpoints. Pairing-era builds baked the LAN IP of
     // that day into the config; DHCP moves make it a dead candidate forever.
@@ -445,9 +445,14 @@ export class DesktopConfigRepository {
     const savedEndpoint = config.version === 2
       ? undefined
       : selectBridgeEndpoint(config.relayEndpoints, config.activeEndpoint);
-    // A generic build must not move a paired host away from its custom relay.
-    const defaults = config.version !== 2 && this.defaults.publicRelayUrl === UPSTREAM_DEFAULT_RELAY &&
-      savedEndpoint?.kind === "public-relay" && savedEndpoint.url !== UPSTREAM_DEFAULT_RELAY
+    const genericPublicBuild = this.defaults.publicRelayUrl === DEFAULT_PUBLIC_RELAY_URL;
+    // A generic build must not move a paired host away from its custom relay,
+    // while still migrating the retired alioxis.com default to the active default.
+    const defaults = config.version !== 2 &&
+      genericPublicBuild &&
+      savedEndpoint?.kind === "public-relay" &&
+      savedEndpoint.url !== DEFAULT_PUBLIC_RELAY_URL &&
+      !isRetiredDefaultRelayUrl(savedEndpoint.url)
       ? {
           ...this.defaults,
           relayUrl: savedEndpoint.url,
@@ -455,12 +460,18 @@ export class DesktopConfigRepository {
           serviceOrigin: config.serviceOrigin,
         }
       : this.defaults;
+    const fallbackIceServers = this.defaults.iceServers?.length
+      ? this.defaults.iceServers
+      : DEFAULT_BRIDGE_ICE_SERVERS;
     const transport = relayUrlOverride
       ? {
           relayEndpoints: [bridgeEndpoint(relayUrlOverride, 0, "manual")],
           activeEndpoint: "manual",
           serviceOrigin: relayServiceOrigin(relayUrlOverride),
-          iceServers: normalizeBridgeIceServers(config.version !== 2 ? config.iceServers : undefined),
+          iceServers: preferredBridgeIceServers(
+            config.version !== 2 ? config.iceServers : undefined,
+            fallbackIceServers,
+          ),
           ...(config.version !== 2 && config.migratedAt !== undefined ? { migratedAt: config.migratedAt } : {}),
         }
       : config.version === 2
@@ -469,16 +480,14 @@ export class DesktopConfigRepository {
           relayEndpoints: refreshV3Endpoints(config, defaults),
           activeEndpoint: config.activeEndpoint,
           serviceOrigin: defaults.publicRelayUrl
-            ? defaults.serviceOrigin || config.serviceOrigin || ""
+            ? genericPublicBuild
+              ? (!config.serviceOrigin || isRetiredDefaultServiceOrigin(config.serviceOrigin)
+                  ? defaults.serviceOrigin || ""
+                  : config.serviceOrigin)
+              : defaults.serviceOrigin || config.serviceOrigin || ""
             : config.serviceOrigin || defaults.serviceOrigin || "",
-          // Preserve explicit ICE choices, but move the old packaged
-          // Cloudflare-only default to the current self-hosted-first list.
-          iceServers: preferredBridgeIceServers(
-            config.iceServers,
-            this.defaults.iceServers?.length
-              ? this.defaults.iceServers
-              : DEFAULT_BRIDGE_ICE_SERVERS,
-          ),
+          // Preserve explicit ICE choices while converging historical and retired packaged defaults.
+          iceServers: preferredBridgeIceServers(config.iceServers, fallbackIceServers),
           ...(config.migratedAt !== undefined ? { migratedAt: config.migratedAt } : {}),
         };
     const active = (
@@ -542,9 +551,17 @@ export class DesktopConfigRepository {
     };
     const storedIceServers = normalizeBridgeIceServers(config.iceServers);
     const iceServersMigrated = JSON.stringify(storedIceServers) !== JSON.stringify(transport.iceServers);
-    // Persist fossil-LAN rewrites (0.9.5) so refreshed addresses survive restarts.
+    // Persist fossil-LAN rewrites (0.9.5) and retired-default migrations across restarts.
     const endpointsMigrated = JSON.stringify(config.relayEndpoints) !== JSON.stringify(transport.relayEndpoints);
-    if (!config.protectedEvidenceKey || iceServersMigrated || endpointsMigrated) await this.save(loaded);
+    const serviceOriginMigrated = config.serviceOrigin !== loaded.serviceOrigin;
+    const activeEndpointMigrated = config.activeEndpoint !== loaded.activeEndpoint;
+    if (
+      !config.protectedEvidenceKey ||
+      iceServersMigrated ||
+      endpointsMigrated ||
+      serviceOriginMigrated ||
+      activeEndpointMigrated
+    ) await this.save(loaded);
     return loaded;
   }
 

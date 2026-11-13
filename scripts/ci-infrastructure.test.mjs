@@ -831,3 +831,82 @@ test('win-local-ci builds shared client once, overlaps make:windows:from-client 
   assert.ok(outerFinally.indexOf('StandardInput.Close()') !== -1 && outerFinally.indexOf('StandardInput.Close()') < outerFinally.indexOf('Recycle uploaded git bundle'), 'WSL2 stdin pipe closes in outer finally before recycling BundlePath');
   assert.ok(recycleBundleIdx > wslWaitIdx);
 });
+
+test('relay-contract-probe preserves subpath prefix for /health and build/env defaults use BIS + Cloudflare STUN', async () => {
+  const { createServer } = await import('node:http');
+  const { WebSocketServer } = await import('ws');
+  const { PROTOCOL_VERSION } = await import('../packages/protocol/dist/index.js');
+
+  const seenHttpPaths = [];
+  const wss = new WebSocketServer({ noServer: true });
+  wss.on('connection', (socket) => {
+    socket.once('message', (raw) => {
+      const frame = JSON.parse(raw.toString());
+      if (frame.version === PROTOCOL_VERSION) {
+        socket.send(JSON.stringify({ type: 'error', code: 'ROOM_NOT_FOUND', message: 'unknown room' }));
+      } else {
+        socket.send(JSON.stringify({ type: 'error', code: 'UPGRADE_REQUIRED', message: 'upgrade required' }));
+      }
+    });
+  });
+  const server = createServer((req, res) => {
+    seenHttpPaths.push(req.url ?? '');
+    if (req.url === '/bridge-relay/health') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, version: PROTOCOL_VERSION }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  server.on('upgrade', (req, socket, head) => {
+    if (req.url !== '/bridge-relay/ws') {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address();
+    const probePath = fileURLToPath(new URL('./relay-contract-probe.mjs', import.meta.url));
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [probePath], {
+        env: { ...process.env, BRIDGE_RELAY_URL: `ws://127.0.0.1:${port}/bridge-relay/ws` },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+      child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+      child.on('error', reject);
+      child.on('close', (status) => resolve({ status, stdout, stderr }));
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(seenHttpPaths, ['/bridge-relay/health']);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      relayUrl: `ws://127.0.0.1:${port}/bridge-relay/ws`,
+      protocolVersion: PROTOCOL_VERSION,
+      currentHello: 'ROOM_NOT_FOUND',
+      legacyHello: 'UPGRADE_REQUIRED',
+    });
+  } finally {
+    await new Promise((resolve) => wss.close(resolve));
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  const buildMjs = await readFile(new URL('../apps/desktop/scripts/build.mjs', import.meta.url), 'utf8');
+  const serviceRuntime = await readFile(new URL('../apps/desktop/src/app/service-runtime.ts', import.meta.url), 'utf8');
+  const probeScript = await readFile(new URL('./relay-contract-probe.mjs', import.meta.url), 'utf8');
+  const envExample = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(buildMjs, /alioxis/iu);
+  assert.match(buildMjs, /wss:\/\/bis\.zju\.edu\.cn\/bridge-relay\/ws/u);
+  assert.match(buildMjs, /https:\/\/bis\.zju\.edu\.cn/u);
+  assert.doesNotMatch(serviceRuntime, /alioxis/iu);
+  assert.doesNotMatch(probeScript, /alioxis/iu);
+  assert.doesNotMatch(envExample, /alioxis/iu);
+  assert.match(envExample, /BRIDGE_ICE_SERVERS=\[\{"urls":"stun:stun\.cloudflare\.com:3478"\}\]/u);
+});

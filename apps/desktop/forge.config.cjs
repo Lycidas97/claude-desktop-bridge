@@ -12,6 +12,7 @@ const macSignKeychain = process.env.BRIDGE_MAC_SIGN_KEYCHAIN?.trim();
 const macSignTimestamp = process.env.BRIDGE_MAC_SIGN_TIMESTAMP?.trim();
 const macLocalSigning = process.env.BRIDGE_MAC_LOCAL_SIGNING === "1";
 const allowAdHocMacSigning = process.env.BRIDGE_ALLOW_ADHOC_SIGNING === "1";
+const fastInstaller = process.env.BRIDGE_FAST_INSTALLER === "1";
 
 module.exports = {
   packagerConfig: {
@@ -168,12 +169,28 @@ module.exports = {
     {
       name: "@electron-forge/maker-deb",
       platforms: ["linux"],
-      config: { options: { name: "bridge", bin: "bridge", productName: "Bridge", license: "MIT" } },
+      config: {
+        options: {
+          name: "bridge",
+          bin: "bridge",
+          productName: "Bridge",
+          license: "MIT",
+          ...(fastInstaller ? { compression: "none" } : {}),
+        },
+      },
     },
     {
       name: "@electron-forge/maker-rpm",
       platforms: ["linux"],
-      config: { options: { name: "bridge", bin: "bridge", productName: "Bridge", license: "MIT" } },
+      config: {
+        options: {
+          name: "bridge",
+          bin: "bridge",
+          productName: "Bridge",
+          license: "MIT",
+          ...(fastInstaller ? { compressionLevel: 0 } : {}),
+        },
+      },
     },
   ],
 };

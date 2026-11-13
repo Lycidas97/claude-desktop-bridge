@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import {
   BridgeCrypto,
   PROTOCOL_VERSION,
@@ -79,14 +77,7 @@ afterEach(async () => {
     controller.socket.close();
     if (controller.publishTimer) clearTimeout(controller.publishTimer);
     await controller.eventLog.close();
-    if (process.platform === "win32") {
-      await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-        "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName Microsoft.VisualBasic; " +
-        "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($env:BRIDGE_RECYCLE_PATH, 'OnlyErrorDialogs', 'SendToRecycleBin', 'ThrowException')",
-      ], { env: { ...process.env, BRIDGE_RECYCLE_PATH: controller.root } });
-    } else {
-      await promisify(execFile)(process.platform === "darwin" ? "/usr/bin/trash" : "trash-put", [controller.root]);
-    }
+    await rm(controller.root, { recursive: true, force: true });
   }
   vi.unstubAllGlobals();
   vi.useRealTimers();

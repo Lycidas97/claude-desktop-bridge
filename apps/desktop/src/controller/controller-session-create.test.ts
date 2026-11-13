@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { BridgeProjectInfo, BridgeRequest, BridgeSessionInfo } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { DesktopController } from "./controller.js";
+import { WorkspaceTrustRequiredError } from "../claude/claude-desktop-bridge.js";
 
 // Reuse the repository's Trash-only cleanup on all CI platforms.
 createRequire(import.meta.url)("../../../../scripts/recycle-cleanup.cjs");
@@ -75,6 +76,38 @@ describe("session.create project identity", () => {
     }, "mobile")).rejects.toThrow(/projectId/u);
     expect(createSession).not.toHaveBeenCalled();
   });
+
+  it.each(["D:\\PARA", "/work/untrusted"])("maps WorkspaceTrustRequiredError to structured codes and forwards trustWorkspace (%s)", async cwd => {
+    const createSession = vi.fn()
+      .mockRejectedValueOnce(new WorkspaceTrustRequiredError(false))
+      .mockRejectedValueOnce(new WorkspaceTrustRequiredError(true))
+      .mockResolvedValueOnce({ sessionId: "trusted-session", cwd });
+    const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { createSession } }) as {
+      handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown>;
+    };
+    const req = (trustWorkspace?: unknown): BridgeRequest => ({
+      kind: "request", method: "session.create", requestId: "trust-req", idempotencyKey: "trust-req",
+      params: { cwd, title: "Demo", ...(trustWorkspace !== undefined ? { trustWorkspace } : {}) },
+    });
+
+    await expect(controller.handleRequest(req(), "mobile")).rejects.toMatchObject({
+      code: "WORKSPACE_TRUST_REQUIRED",
+      message: expect.not.stringContaining("$eipc_message$"),
+    });
+    expect(createSession).toHaveBeenNthCalledWith(1, cwd, "Demo", undefined);
+
+    await expect(controller.handleRequest(req(true), "mobile")).rejects.toMatchObject({
+      code: "WORKSPACE_TRUST_MANUAL_REQUIRED",
+      message: expect.stringContaining("电脑端 Claude 窗口"),
+    });
+    expect(createSession).toHaveBeenNthCalledWith(2, cwd, "Demo", undefined, true);
+
+    await expect(controller.handleRequest(req(true), "mobile")).resolves.toEqual({
+      session: { sessionId: "trusted-session", cwd },
+    });
+
+    await expect(controller.handleRequest(req("yes"), "mobile")).rejects.toThrow(/trustWorkspace/u);
+  });
 });
 
 describe("section.move", () => {
@@ -127,6 +160,85 @@ describe("section.move", () => {
     });
     await expect(controller.handleRequest(request({ sessionId: "local-1", sectionId: null }), "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
     expect(moveSessionSection).not.toHaveBeenCalled();
+  });
+});
+
+describe("section.rename and section.delete", () => {
+  const renamedProject: BridgeProjectInfo = { projectId: "section-zahuo", name: "Bridge 维护", kind: "desktop-group", cwd: "", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 };
+  const session: BridgeSessionInfo = {
+    sessionId: "local-1", title: "Subproject", cwd: "/work/杂活/colab-connect",
+    projectId: renamedProject.projectId, projectName: renamedProject.name, source: "desktop",
+    transport: "claude-desktop-native", ownership: "DESKTOP_NATIVE_IDLE", turnState: "idle",
+    pendingCount: 0, lastActivityAt: 1,
+  };
+
+  it("renames a section, publishes and returns updated project, projects and sessions", async () => {
+    const renameSection = vi.fn().mockResolvedValue(renamedProject);
+    const publish = vi.fn().mockResolvedValue({});
+    const controller = Object.assign(Object.create(DesktopController.prototype), {
+      broker: { capabilities: () => ["section.rename"], renameSection, listProjects: () => [renamedProject] },
+      allSessions: () => [session],
+      publish,
+    });
+    await expect(controller.handleRequest({
+      kind: "request", method: "section.rename", requestId: "rename-sec", idempotencyKey: "rename-sec",
+      params: { sectionId: "  section-zahuo  ", name: "  Bridge 维护  " },
+    }, "mobile")).resolves.toEqual({
+      project: renamedProject,
+      projects: [renamedProject],
+      sessions: [session],
+    });
+    expect(renameSection).toHaveBeenCalledExactlyOnceWith("section-zahuo", "Bridge 维护");
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
+  it("deletes a section, publishes and returns updated projects and ungrouped sessions", async () => {
+    const deleteSection = vi.fn().mockResolvedValue(undefined);
+    const publish = vi.fn().mockResolvedValue({});
+    const fallbackProject: BridgeProjectInfo = { projectId: "proj-colab", name: "colab-connect", cwd: "/work/杂活/colab-connect", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 };
+    const ungroupedSession = { ...session, projectId: fallbackProject.projectId, projectName: fallbackProject.name };
+    const controller = Object.assign(Object.create(DesktopController.prototype), {
+      broker: { capabilities: () => ["section.delete"], deleteSection, listProjects: () => [fallbackProject] },
+      allSessions: () => [ungroupedSession],
+      publish,
+    });
+    await expect(controller.handleRequest({
+      kind: "request", method: "section.delete", requestId: "delete-sec", idempotencyKey: "delete-sec",
+      params: { sectionId: "  section-zahuo  " },
+    }, "mobile")).resolves.toEqual({
+      projects: [fallbackProject],
+      sessions: [ungroupedSession],
+    });
+    expect(deleteSection).toHaveBeenCalledExactlyOnceWith("section-zahuo");
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
+  it("rejects unsupported or malformed section.rename and section.delete requests", async () => {
+    const renameSection = vi.fn();
+    const deleteSection = vi.fn();
+    const unsupported = Object.assign(Object.create(DesktopController.prototype), {
+      broker: { capabilities: () => [], renameSection, deleteSection },
+    });
+    await expect(unsupported.handleRequest({
+      kind: "request", method: "section.rename", requestId: "r1", idempotencyKey: "r1", params: { sectionId: "s1", name: "Next" },
+    }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
+    await expect(unsupported.handleRequest({
+      kind: "request", method: "section.delete", requestId: "d1", idempotencyKey: "d1", params: { sectionId: "s1" },
+    }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
+
+    const capable = Object.assign(Object.create(DesktopController.prototype), {
+      broker: { capabilities: () => ["section.rename", "section.delete"], renameSection, deleteSection },
+    });
+    for (const badRename of [{ sectionId: "", name: "Next" }, { sectionId: "s1", name: "   " }, { sectionId: "s1", name: "x".repeat(201) }]) {
+      await expect(capable.handleRequest({
+        kind: "request", method: "section.rename", requestId: "r2", idempotencyKey: "r2", params: badRename,
+      }, "mobile")).rejects.toThrow();
+    }
+    await expect(capable.handleRequest({
+      kind: "request", method: "section.delete", requestId: "d2", idempotencyKey: "d2", params: { sectionId: "   " },
+    }, "mobile")).rejects.toThrow();
+    expect(renameSection).not.toHaveBeenCalled();
+    expect(deleteSection).not.toHaveBeenCalled();
   });
 });
 

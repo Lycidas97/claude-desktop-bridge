@@ -19,6 +19,7 @@ export function createWindowsInstallerConfig({
     appId: "com.localbridge.desktop",
     productName: "Bridge",
     electronVersion,
+    ...(environment.BRIDGE_FAST_INSTALLER === "1" ? { compression: "store" } : {}),
     directories: {
       buildResources: buildResourcesDirectory,
       output: outputDirectory,

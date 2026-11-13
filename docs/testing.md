@@ -13,7 +13,7 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 | `npm run test:infra` | Small fixtures for runner failure propagation and recycle-bin behavior |
 | `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture |
 | `npm run ci:run -- run test:desktop:service` | After a current Desktop build: real compiled Electron UI/service with isolated Native fixture; on macOS also verifies developer settings, real random TCP/lsof/proc_pidpath, ASAR helper, injected warning UI, and completed background scans after window close |
-| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (`D:\work\ci-worktree`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` Linux `test:infra` + `npm test` + `.deb`/`.rpm`/`.zip`), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
+| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (up to 4 parallel isolated slots `D:\work\ci-slot-<n>`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` Linux `test:infra` + `npm test` + `.deb`/`.rpm`/`.zip`), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
 | `npm run ci:run -- run build -w @bridge/protocol` | Example of wrapping another npm command with Trash-only Node cleanup |
 
 The quota plugin is outside the `apps/*` and `packages/*` workspaces; root test and
@@ -33,8 +33,8 @@ stderr, and runner errors), and `summary.json`. The suite names are `desktop`,
 `client`, `protocol`, `relay`, and `quota`. A failed process, launch error, or missing
 or empty JUnit report fails the command. Later suites still run and retain evidence.
 A suite's previous JUnit report is sent to Trash before that suite starts, so it
-cannot satisfy the new run. Logs are replaced and the summary is updated after
-each suite. Reports are local artifacts; avoid including them in source commits.
+cannot satisfy the new run. Logs are replaced and `summary.json` is updated after
+each suite in deterministic order. Reports are local artifacts; avoid including them in source commits.
 
 Browser evidence is written to `artifacts/browser-e2e`. To install the Chromium
 version matching the existing `playwright-core` dependency, run:
@@ -92,7 +92,8 @@ responses, native local answers, lifecycle cancellation, and disconnected Hook
 requests. Native manual-only requests remain pending through full-access policy
 changes. No test changes real Claude settings or calls a model.
 
-Browser failures retain screenshots, HTML, traces, console errors and RPC records;
+Browser failures retain screenshots, HTML, console errors, RPC records, and (when
+`BRIDGE_E2E_TRACE=1`) Playwright traces;
 passing native scenarios also retain screenshots and a correlated request trace.
 
 After the protocol and relay builds exist, a local debug fixture can be kept open:
@@ -125,6 +126,11 @@ recycle command. Missing paths are ignored only with `force: true`. Unsupported
 systems, missing recycle commands, and recycle failures surface as errors; there
 is no permanent-delete fallback. The preload selects the host platform at startup,
 so application tests that mock `process.platform` do not change the recycle command.
+When `BRIDGE_RECYCLE_STAGING` names a directory (created automatically per `npm test`
+run unless already set per run by `local-ci.mjs` or per slot by `win-local-ci.ps1`),
+removals rename disposable paths into a per-process subdirectory there instead (falling
+back to the OS recycle command on `EXDEV`, `EBUSY`, or `EPERM`), and the caller recycles
+that directory once in a single OS Recycle Bin invocation.
 
 This covers Node processes that inherit `NODE_OPTIONS`. It does not intercept
 native tools, shell deletion commands, browser internals, or processes that discard

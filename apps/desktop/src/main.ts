@@ -179,11 +179,11 @@ async function desktopMain(): Promise<void> {
     async function quitDesktopAppWithConfirmation(runtimeId: BridgeDesktopRuntimeId) {
       const displayName = "Claude Desktop";
       const snapshot = await controller.call("snapshot");
-      const desktopTurnRunning = snapshot.sessions.some((session) => session.turnState === "running" && ["DESKTOP_OBSERVED", "DESKTOP_MANAGED_RUNNING", "OWNERSHIP_CONFLICT"].includes(session.ownership));
+      const desktopTurnRunning = snapshot.sessions.some((session) => session.turnState === "running" || session.ownership === "DESKTOP_NATIVE_RUNNING");
       if (desktopTurnRunning) {
         const options: Electron.MessageBoxOptions = {
           type: "warning", title: `退出 ${displayName}`, message: `${displayName} 仍有会话正在运行`,
-          detail: "现在退出会中断电脑端正在执行的内容。由 Bridge 接管的远程任务不会受到影响。",
+          detail: "现在退出会中断 Claude Desktop 正在执行的内容，包括从手机端发起的任务。",
           buttons: ["仍然退出", "取消"], defaultId: 1, cancelId: 1, noLink: true,
         };
         const result = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);

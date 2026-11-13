@@ -1060,7 +1060,8 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
     const update = await host.syncNativeDialogs(await host.nativeApproval.openPrompt(kind));
     opened.push(update.prompt);
   }
-  await eventually(() => page.locator(".native-prompt").count(), 5, "All five Native application prompt kinds render independently from tool permissions");
+  await eventually(() => page.locator(".native-prompt").count(), 1, "The phone sheet renders the first pending Native application prompt");
+  await page.locator(".permission-dock").getByText("5 项", { exact: true }).waitFor();
   assert.equal(host.snapshot.permissions.length, 0);
   const listed = await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), idempotencyKey: randomUUID(), method: "prompt.list", params: { sessionId } });
   assert.deepEqual(listed.prompts.map(prompt => prompt.kind).sort(), [...kinds].sort());

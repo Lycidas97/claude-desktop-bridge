@@ -123,6 +123,7 @@ import "./session/section-create.css";
 import { useSectionManage } from "./session/SectionManageDialog.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "./conversation/SessionActivityIndicator.js";
 import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
+import { ToolCallGroupRows } from "./conversation/ToolCallDetailSheet.js";
 import { useSessionCommands } from "../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
 import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
@@ -1676,14 +1677,12 @@ export function MobileWorkspace({
                     <span>{summaryText}</span>
                     <ChevronDown size={13} className="tool-group-chevron" aria-hidden="true" />
                   </summary>
-                  <div className="conversation-tool-group-list">
-                    {node.tools.map((tool) => (
-                      <div className="conversation-tool-row" key={tool.id}>
-                        <strong>{tool.toolName || "工具"}</strong>
-                        {tool.text && tool.text !== tool.toolName && <span>{tool.text}</span>}
-                      </div>
-                    ))}
-                  </div>
+                  <ToolCallGroupRows
+                    {...(activeHostId ? { hostId: activeHostId } : {})}
+                    sessionId={selectedSession.sessionId}
+                    tools={node.tools}
+                    supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))}
+                  />
                 </details>
               );
             }

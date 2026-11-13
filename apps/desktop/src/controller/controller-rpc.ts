@@ -368,6 +368,17 @@ export async function dispatchControllerRequest(
       ),
     };
   }
+  if (request.method === "session.tool.detail") {
+    const sessionId = stringParam(params, "sessionId")!;
+    const toolUseId = stringParam(params, "toolUseId")!;
+    if (params.agentId !== undefined && (typeof params.agentId !== "string" || !params.agentId.trim())) {
+      throw new Error("agentId must be a non-empty string");
+    }
+    const agentId = typeof params.agentId === "string" ? params.agentId.trim() : undefined;
+    return {
+      detail: await host.broker.readToolDetail(sessionId.trim(), toolUseId.trim(), agentId),
+    };
+  }
   if (request.method === "session.rewind.preview" || request.method === "session.rewind") {
     const sessionId = stringParam(params, "sessionId")!;
     const messageId = stringParam(params, "messageId")!;

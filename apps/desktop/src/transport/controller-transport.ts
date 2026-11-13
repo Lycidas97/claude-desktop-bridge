@@ -308,13 +308,16 @@ export async function deliverTransportMessage(
   }
   if (
     message.payload.method !== "artifact.preview" &&
-    message.payload.method !== "artifact.transfer.read"
+    message.payload.method !== "artifact.transfer.read" &&
+    message.payload.method !== "session.tool.detail"
   ) host.cacheResponse(response);
   const temporaryResponse = message.payload.method !== "turn.start" && message.payload.method !== "turn.steer";
   await host.sendToDevice(
     response,
     message.header.fromDeviceId,
-    message.payload.method.startsWith("artifact.") ? ARTIFACT_TRANSFER_TTL_MS : undefined,
+    message.payload.method.startsWith("artifact.") || message.payload.method === "session.tool.detail"
+      ? ARTIFACT_TRANSFER_TTL_MS
+      : undefined,
     temporaryResponse,
     message.payload.method !== "snapshot.get",
   ).catch(() => undefined);

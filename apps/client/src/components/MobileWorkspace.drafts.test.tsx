@@ -61,7 +61,7 @@ vi.mock("react", async (original) => ({
   useLayoutEffect: () => undefined,
 }));
 
-vi.mock("./evidence/MediaPreviewProvider.js", () => ({ useMediaPreview: () => vi.fn() }));
+vi.mock("./evidence/MediaPreviewProvider.js", () => ({ useMediaPreview: () => vi.fn(), useMediaRequest: () => undefined }));
 
 class DeferredFileReader {
   result = "data:image/png;base64,cGljdHVyZQ==";

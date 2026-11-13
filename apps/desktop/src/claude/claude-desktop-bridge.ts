@@ -5,11 +5,12 @@ import type {
   BridgeAttachment, BridgeBackgroundTask, BridgeEffort, BridgeHistoryItem, BridgeHistoryPage, BridgeModelInfo, BridgeNativeImageRef, BridgeNativePermissionMode, BridgeNativePermissionModeChange, BridgeOrigin,
   BridgePermissionDecision, BridgePermissionInfo, BridgeProjectInfo, BridgeRuntimeCapability,
   BridgeRuntimeStatus, BridgeSDKPermissionMode, BridgeSessionCommandResult,
-  BridgeSessionConfiguration, BridgeSessionContextUsage, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeSubagentSummary,
+  BridgeSessionConfiguration, BridgeSessionContextUsage, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeSubagentSummary, BridgeToolCallDetail,
 } from "@bridge/protocol";
 import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "../controller/conversation-state-store.js";
 import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, scanClaudeContextFromMessages, visibleMessage } from "../transcript/claude-history.js";
+import { extractToolCallDetailFromMessages, readSubagentToolCallDetail, summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
 import { claudeRuntimePaths } from "../app/platform.js";
 import type { SessionEventLog, BridgeEventDraft } from "../controller/session-event-log.js";
 import type { EvidenceManager, ObservedDesktopTool } from "../evidence/evidence-manager.js";
@@ -655,6 +656,30 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return extractNativeImageAttachment(sessionId, messages, ref);
   }
 
+  async readToolDetail(sessionId: string, toolUseId: string, agentId?: string): Promise<BridgeToolCallDetail> {
+    const id = this.desktopId(sessionId);
+    if (agentId !== undefined) {
+      const observed = (await (this.options.scanCatalog?.() ?? scanClaudeCatalog(claudeRuntimePaths())))
+        .sessions.find(session => session.desktopSessionId === id);
+      if (!observed?.transcriptPath) throw new NativeCallError("Subagent transcript not found");
+      const detail = await readSubagentToolCallDetail({
+        sessionId,
+        transcriptPath: observed.transcriptPath,
+        agentId,
+        toolUseId,
+      });
+      if (!detail) throw new NativeCallError("Tool call not found");
+      return detail;
+    }
+    if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop transcript is unavailable while inspector is disconnected");
+    const result = await this.inspector.call("getTranscript", [id]);
+    const messages = Array.isArray(result) ? result : record(result).messages;
+    if (!Array.isArray(messages)) throw new NativeCallError("Desktop returned an invalid transcript");
+    const detail = extractToolCallDetailFromMessages({ sessionId, toolUseId, messages });
+    if (!detail) throw new NativeCallError("Tool call not found");
+    return detail;
+  }
+
   async commands(sessionId: string): Promise<BridgeSlashCommandCatalog> {
     const result = await this.inspector.call("getSupportedCommands", [{ sessionId: this.desktopId(sessionId), cwd: this.session(sessionId)?.cwd }]);
     const commands = Array.isArray(result) ? result : record(result).commands;
@@ -1010,9 +1035,20 @@ export class ClaudeDesktopBridge extends EventEmitter {
           const tool = this.tools.get(block.tool_use_id);
           this.tools.delete(block.tool_use_id);
           const started = this.options.eventLog.latestItem(sessionId, "tool.started", block.tool_use_id);
-          const toolName = tool?.toolName ?? started?.data.toolName;
+          const rawToolName = tool?.toolName ?? started?.data.toolName;
+          const toolName = typeof rawToolName === "string" && rawToolName ? rawToolName : undefined;
           if (toolName && toolName !== "mcp__ccd_turn__update_plan" && toolName !== "mcp__ccd_turn__wrap_up") {
-            await this.record({ sessionId, itemId: block.tool_use_id, origin: "claude-desktop", type: "tool.completed", data: { toolName, text: tool ? JSON.stringify(tool.input ?? {}) : started?.data.text ?? "" } });
+            await this.record({
+              sessionId,
+              itemId: block.tool_use_id,
+              origin: "claude-desktop",
+              type: "tool.completed",
+              data: {
+                toolName,
+                text: tool ? summarizeNativeToolInput(toolName, tool.input) : started?.data.text ?? "",
+                ...(block.is_error === true ? { isError: true } : {}),
+              },
+            });
           }
           if (tool && this.options.evidence) {
             tool.output = block.content; tool.completedAt = Date.now();

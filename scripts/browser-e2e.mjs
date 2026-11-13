@@ -114,7 +114,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       online: true,
       lastSeenAt: now,
       version: "1.1.1",
-      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["directory.browse.v1", "workspace.trust.v1", "session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "section.rename.v1", "section.delete.v1"] : [])],
+      capabilities: ["claude.native-relay.v1", "session.rename.v1", "runtime.adapter.v1", ...(native ? ["directory.browse.v1", "workspace.trust.v1", "session.commands.v1", "session.command.v1", "session.rewind.v1", "plugin.magpie-quota.v1", "turn.queue.steer.v1", "turn.queue.cancel.v1", "artifact.transfer.stat.v1", "section.rename.v1", "section.delete.v1", "transcript.toolDetail.v1"] : [])],
     },
     projects: [{
       projectId: session.projectId, name: session.projectName, cwd: session.cwd,
@@ -523,6 +523,13 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           break;
         case "evidence.list":
           result = { evidence: { sessionId: request.params.sessionId, items: [], hasMore: false } };
+          break;
+        case "session.tool.detail":
+          try {
+            result = await host.nativeApproval.controllerRequest(request);
+          } catch (failure) {
+            error = { code: "TOOL_DETAIL_FAILED", message: failure.message };
+          }
           break;
         case "artifact.transfer.open": {
           assert.equal(request.params.sessionId, sessionId);
@@ -1351,7 +1358,31 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
   await eventually(async () => (await toolRows.locator("strong").allTextContents()).sort(), ["Bash", "Edit", "Read", "Write"], "Native history and replay keep one named row per original call after reload");
-  steps.push("Read/Bash/Edit/Write keep names and input summaries when only completion events reach the phone, and reload merges native history without anonymous or duplicate rows");
+  assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 0, "Timeline rendering never eagerly fetches full tool outputs");
+  await stream.locator(".conversation-tool-group").last().locator("summary").click();
+  await toolRows.filter({ hasText: "pwd" }).click();
+  const toolDetailDialog = page.getByRole("dialog", { name: "Bash", exact: true });
+  await toolDetailDialog.waitFor();
+  await eventually(async () => {
+    const text = await toolDetailDialog.innerText();
+    return text.includes("已完成") && text.includes("pwd") && text.includes("Completed");
+  }, true, "Clicking a tool row lazily fetches full input and execution output");
+  assert.deepEqual(
+    host.requests.filter(request => request.method === "session.tool.detail").map(request => ({
+      sessionId: request.params.sessionId,
+      toolUseId: request.params.toolUseId,
+    })),
+    [{ sessionId, toolUseId: "completion-only-Bash" }],
+  );
+  await page.screenshot({ path: resolve(directory, "native-tool-detail-sheet.png"), fullPage: true });
+  await toolDetailDialog.getByRole("button", { name: "关闭工具详情", exact: true }).click();
+  await toolDetailDialog.waitFor({ state: "hidden" });
+  await toolRows.filter({ hasText: "pwd" }).click();
+  await toolDetailDialog.waitFor();
+  assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 1, "Completed tool detail reuses the in-memory session cache");
+  await toolDetailDialog.getByRole("button", { name: "关闭工具详情", exact: true }).click();
+  await toolDetailDialog.waitFor({ state: "hidden" });
+  steps.push("Read/Bash/Edit/Write keep names and input summaries when only completion events reach the phone, reload merges native history without anonymous or duplicate rows, and clicking a tool row lazily loads and caches full tool input/output via session.tool.detail");
 
   for (const method of ["getSession", "getTranscriptPage"]) {
     const text = `回退成功后 ${method} 断连`;

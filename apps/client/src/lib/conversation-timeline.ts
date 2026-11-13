@@ -31,6 +31,8 @@ export interface ConversationItem extends BridgeHistoryItem {
   replyPending?: boolean;
   requestId?: string;
   commandId?: string;
+  toolUseId?: string;
+  isError?: boolean;
   error?: string;
   live?: boolean;
 }
@@ -330,10 +332,14 @@ export function conversationItems(
       ? previous.taskPlan
       : item.taskPlan;
     if (previous?.subagent && item.subagent && previous.subagent.updatedAt > item.subagent.updatedAt) continue;
+    const rawToolUseId = item.role === "tool" && !item.subagent
+      ? item.id.replace(/^tool:/u, "").replace(/:completed$/u, "")
+      : undefined;
     items.set(normalizedId, {
       ...previous,
       ...item,
       id: normalizedId,
+      ...(rawToolUseId ? { toolUseId: rawToolUseId } : {}),
       ...(item.role === "user" && (previous?.delivery || item.delivery)
         ? { delivery: mergeAcceptedDelivery(previous?.delivery, item.delivery) } : {}),
       ...(taskPlan ? { taskPlan } : {}),
@@ -559,6 +565,10 @@ export function conversationItems(
             }
           : prevSubagent
         : incomingSubagent ?? prevSubagent;
+      const toolUseId = !incomingSubagent
+        ? (typeof event.itemId === "string" && event.itemId.trim() ? event.itemId.trim() : existing?.toolUseId)
+        : undefined;
+      const isError = event.type === "tool.completed" && event.data.isError === true ? true : existing?.isError;
       toolByItem.set(id, {
         id: `tool:${id}`,
         sessionId,
@@ -568,6 +578,8 @@ export function conversationItems(
         text,
         createdAt: existing?.createdAt ?? event.timestamp,
         origin: "claude-host",
+        ...(toolUseId ? { toolUseId } : {}),
+        ...(isError ? { isError: true } : {}),
         ...(subagent?.state === "unknown" ? {} : {
           state: subagent?.state === "stopped"
             ? "interrupted" as const

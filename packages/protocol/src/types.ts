@@ -6,6 +6,7 @@ export const ARTIFACT_MAX_BYTES = 20 * 1024 * 1024;
 export const FILE_PREVIEW_CONFIRM_BYTES = 1024 * 1024;
 export const ARTIFACT_TRANSFER_CHUNK_BYTES = 256 * 1024;
 export const ARTIFACT_TRANSFER_TTL_MS = 10 * 60 * 1000;
+export const TOOL_DETAIL_MAX_BYTES = 256 * 1024;
 
 export type BridgeRole = "desktop" | "mobile" | "agent";
 export type MessageTarget = BridgeRole;
@@ -216,6 +217,7 @@ export type BridgeCapability =
   | "subagent.stop.v1"
   | "turn.queue.steer.v1"
   | "turn.queue.cancel.v1"
+  | "transcript.toolDetail.v1"
   | "plugin.magpie-quota.v1";
 
 /**
@@ -967,6 +969,31 @@ export interface BridgeHistoryPage {
   hasMore: boolean;
 }
 
+export type BridgeToolCallStatus = "running" | "completed" | "error";
+
+export interface BridgeToolResultOmittedBlock {
+  type: string;
+  mimeType?: string;
+  count: number;
+}
+
+export interface BridgeToolCallDetail {
+  sessionId: string;
+  toolUseId: string;
+  agentId?: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  /** UTF-8 truncated JSON representation when serialized input exceeds TOOL_DETAIL_MAX_BYTES. */
+  inputText?: string;
+  inputTruncated?: boolean;
+  status: BridgeToolCallStatus;
+  outputText?: string;
+  isError?: boolean;
+  omittedBlocks?: BridgeToolResultOmittedBlock[];
+  truncated: boolean;
+  totalBytes: number;
+}
+
 // Transcript parsing stays intentionally transport-agnostic.
 export interface ClaudeHistoryMessage {
   id: string;
@@ -1174,6 +1201,7 @@ export type BridgeMethod =
   | "session.fork"
   | "session.rename"
   | "session.history"
+  | "session.tool.detail"
   | "session.configuration"
   | "session.commands"
   | "session.command"

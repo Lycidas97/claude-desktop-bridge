@@ -1113,7 +1113,7 @@ export function MobileWorkspace({
     ? sessions.find((candidate) => candidate.sessionId === selectedSession.parentSessionId)
     : undefined;
   const childForks = selectedSession ? sessions.filter((candidate) => (
-    candidate.parentSessionId === selectedSession.sessionId && (!candidate.archivedAt || Boolean(candidate.sidechat))
+    candidate.parentSessionId === selectedSession.sessionId && (!candidate.archivedAt || Boolean(selectedSession.archivedAt))
   )) : [];
   const relatedForkCount = (parentSession ? 1 : 0) + childForks.length;
 

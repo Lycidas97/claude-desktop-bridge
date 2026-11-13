@@ -21,6 +21,7 @@
     "test": "node scripts/test.mjs",
     "test:infra": "node --require ./scripts/recycle-cleanup.cjs --test scripts/ci-infrastructure.test.mjs scripts/windows-native-qa-contract.test.mjs scripts/release-workflow.test.mjs",
     "test:browser": "node scripts/ci-run.mjs browser",
+    "test:browser:nobuild": "node scripts/ci-run.mjs browser:nobuild",
     "ci:run": "node scripts/ci-run.mjs npm",
     "test:coverage": "npm run test:coverage -ws --if-present",
     "test:visual": "node scripts/visual-qa.mjs",

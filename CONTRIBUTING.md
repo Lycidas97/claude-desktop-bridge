@@ -10,7 +10,7 @@ Bridge is an npm workspace with four runnable parts:
 ```text
 apps/client        React UI shared by desktop and mobile
 apps/desktop       Electron bridge, native adapters, transport and evidence
-apps/mobile        Capacitor shell for Android/iOS
+apps/mobile        Capacitor shell for Android
 apps/relay         Ciphertext relay and push wake
 packages/protocol  Protocol V3, crypto, reliable transports
 ```
@@ -106,11 +106,11 @@ Releases are controlled by automation on `main`:
 1. Code and README changes are committed and pushed normally.
 2. A successful complete `CI` run on `main` starts `release.yml`, which checks the synchronized version at that run's commit.
 3. If the version is unpublished, the workflow creates or resumes its draft GitHub Release and starts all platform asset jobs at that exact commit.
-4. The Release and its tag are published only after the desktop, Android, and iOS asset jobs all succeed. Failed drafts can be retried; manual retries also require successful CI for the selected commit.
+4. The Release and its tag are published only after the desktop and Android asset jobs all succeed. Failed drafts can be retried; manual retries also require successful CI for the selected commit.
 
 Do not create tags or GitHub Releases manually, and do not bump only one workspace. The
 release workflow validates that `package.json`, every workspace, `package-lock.json`,
-Android `versionName`, and iOS `MARKETING_VERSION` match exactly.
+and Android `versionName` match exactly.
 
 ## Security
 

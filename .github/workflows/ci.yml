@@ -16,7 +16,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
-      ios_changed: ${{ steps.classify.outputs.ios_changed }}
     steps:
       - if: github.event_name == 'pull_request'
         uses: actions/checkout@v7.0.1
@@ -32,13 +31,11 @@ jobs:
           set -euo pipefail
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            echo "ios_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           CHANGED="$(git diff --name-only "$BASE_SHA"...HEAD)"
           if [[ -z "$CHANGED" ]]; then
             echo "docs_only=true" >> "$GITHUB_OUTPUT"
-            echo "ios_changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           printf '%s\n' "$CHANGED"
@@ -47,12 +44,6 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           else
             echo "docs_only=true" >> "$GITHUB_OUTPUT"
-          fi
-          IOS_FILES="$(printf '%s\n' "$CHANGED" | grep -E '^apps/mobile/ios/' || true)"
-          if [[ -n "$IOS_FILES" ]]; then
-            echo "ios_changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ios_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
   verify:
@@ -204,42 +195,6 @@ jobs:
           name: Bridge-Android-debug
           path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
 
-  ios:
-    needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.ios_changed == 'true'
-    runs-on: macos-15
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
-      - run: npm run ci:run -- run build -w @bridge/protocol
-      - name: Build unsigned simulator app
-        run: npm run ci:run -- run build:ios:simulator -w @bridge/mobile
-      - name: Build unsigned device app
-        run: npm run ci:run -- run build:ios:device -w @bridge/mobile
-      - name: Assert iOS build outputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -d "apps/mobile/ios/DerivedData/Build/Products/Debug-iphonesimulator/App.app" \
-            || { echo "Missing simulator App.app"; exit 1; }
-          test -d "apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app" \
-            || { echo "Missing unsigned device App.app"; exit 1; }
-      - uses: actions/upload-artifact@v7.0.2
-        if: always()
-        with:
-          name: Bridge-iOS-simulator-ci
-          path: apps/mobile/ios/DerivedData/Build/Products/Debug-iphonesimulator/App.app
-      - uses: actions/upload-artifact@v7.0.2
-        if: always()
-        with:
-          name: Bridge-iOS-device-unsigned-ci
-          path: apps/mobile/ios/DerivedData-device/Build/Products/Debug-iphoneos/App.app
-
   macos-unit:
     if: github.event_name != 'pull_request'
     runs-on: macos-15
@@ -285,7 +240,7 @@ jobs:
   quality-gate:
     name: Quality gate
     if: always()
-    needs: [changes, verify, desktop-windows, desktop-linux, android-debug, ios, macos-unit, browser-e2e]
+    needs: [changes, verify, desktop-windows, desktop-linux, android-debug, macos-unit, browser-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -297,22 +252,19 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
-          IOS_CHANGED: ${{ needs.changes.outputs.ios_changed }}
           JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
           node -e '
             const jobs = JSON.parse(process.env.JOB_RESULTS);
             for (const [name, job] of Object.entries(jobs)) console.log(`${name}: ${job.result}`);
-            const fullMatrix = ["changes", "verify", "desktop-windows", "desktop-linux", "android-debug", "ios", "macos-unit", "browser-e2e"];
+            const fullMatrix = ["changes", "verify", "desktop-windows", "desktop-linux", "android-debug", "macos-unit", "browser-e2e"];
             if (process.env.EVENT_NAME !== "pull_request") {
               if (fullMatrix.some((name) => jobs[name]?.result !== "success")) process.exit(1);
               process.exit(0);
             }
             const docsOnly = process.env.DOCS_ONLY === "true";
-            const iosChanged = process.env.IOS_CHANGED === "true";
             const required = new Set(["changes", "verify"]);
             if (!docsOnly) required.add("browser-e2e");
-            if (iosChanged) required.add("ios");
             for (const name of fullMatrix) {
               const result = jobs[name]?.result;
               if (required.has(name)) {

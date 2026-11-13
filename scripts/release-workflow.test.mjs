@@ -77,9 +77,9 @@ test('release automation triggers on main ci/local-distributed status or manual 
 
 test('every platform and publisher uses the same resolved source; all platforms must finish', () => {
   assert.match(assets, /ref: \$\{\{ inputs\.revision \|\| github\.sha \}\}/u);
-  for (const job of ['desktop', 'android', 'ios', 'publish']) {
+  for (const job of ['desktop', 'android', 'publish']) {
     const section = assets.split(`\n  ${job}:\n`)[1].split(/\n  [a-z]+:\n/u)[0];
-    assert.match(section, /needs: (source|\[source, desktop, android, ios\])/u);
+    assert.match(section, /needs: (source|\[source, desktop, android\])/u);
     assert.match(section, /ref: \$\{\{ needs\.source\.outputs\.revision \}\}/u);
   }
   const source = shellStep(assets, 'Resolve source and require successful CI before publication');
@@ -271,7 +271,7 @@ process.exit(2);
   }
 });
 
-test('CI Quality gate enforces full 8-job success on manual dispatch', {
+test('CI Quality gate enforces full 7-job success on manual dispatch', {
   skip: process.platform === 'win32',
 }, () => {
   const gateScript = shellStep(ci, 'Require every job to succeed');
@@ -281,25 +281,22 @@ test('CI Quality gate enforces full 8-job success on manual dispatch', {
     'desktop-windows': { result: 'success' },
     'desktop-linux': { result: 'success' },
     'android-debug': { result: 'success' },
-    ios: { result: 'success' },
     'macos-unit': { result: 'success' },
     'browser-e2e': { result: 'success' },
   };
-  const skippedPlatform = {
-    ...allSuccess,
-    'desktop-windows': { result: 'skipped' },
-  };
-
   const cases = [
-    { label: 'workflow_dispatch all success', env: { EVENT_NAME: 'workflow_dispatch', DOCS_ONLY: 'false', IOS_CHANGED: 'true', JOB_RESULTS: JSON.stringify(allSuccess) }, pass: true },
-    { label: 'workflow_dispatch rejects skipped platform job', env: { EVENT_NAME: 'workflow_dispatch', DOCS_ONLY: 'false', IOS_CHANGED: 'false', JOB_RESULTS: JSON.stringify(skippedPlatform) }, pass: false },
-    { label: 'workflow_dispatch rejects cancelled job', env: { EVENT_NAME: 'workflow_dispatch', DOCS_ONLY: 'false', IOS_CHANGED: 'true', JOB_RESULTS: JSON.stringify({ ...allSuccess, ios: { result: 'cancelled' } }) }, pass: false },
+    { label: 'workflow_dispatch all success', jobs: allSuccess, pass: true },
+    ...['skipped', 'cancelled', 'failure'].map(result => ({
+      label: `workflow_dispatch rejects Android ${result}`,
+      jobs: { ...allSuccess, 'android-debug': { result } },
+      pass: false,
+    })),
   ];
 
-  for (const { label, env, pass } of cases) {
+  for (const { label, jobs, pass } of cases) {
     const result = spawnSync('bash', ['-c', gateScript], {
       encoding: 'utf8',
-      env: { ...process.env, ...env },
+      env: { ...process.env, EVENT_NAME: 'workflow_dispatch', DOCS_ONLY: 'false', JOB_RESULTS: JSON.stringify(jobs) },
     });
     if (pass) assert.equal(result.status, 0, `Expected pass (${label}): ${result.stderr}`);
     else assert.notEqual(result.status, 0, `Expected failure (${label})`);

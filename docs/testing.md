@@ -148,8 +148,8 @@ runners. Upon a full clean pass (after temporary-directory recycle cleanup compl
 receipt immediately after pushing).
 
 `.github/workflows/ci.yml` is retained as a manual `workflow_dispatch` fallback that
-runs the full 8-job hosted matrix (`changes`, Linux `verify`, Windows/Linux installers,
-Android, iOS, macOS unit tests, and browser E2E) gated by `Quality gate` (all eight
+runs the full 7-job hosted matrix (`changes`, Linux `verify`, Windows/Linux installers,
+Android, macOS unit tests, and browser E2E) gated by `Quality gate` (all seven
 jobs must succeed; failed, cancelled, or skipped jobs fail the gate). Native Desktop
 unit fixtures explicitly simulate macOS while mocking their process and inbox
 dependencies. POSIX mode-bit assertions apply on macOS/Linux; Windows skips the two

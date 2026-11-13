@@ -1493,7 +1493,7 @@ export interface ClientDeviceRevoke {
 
 export interface ClientPushRegister {
   type: "push-register";
-  platform: "android" | "ios";
+  platform: "android";
   pushToken: string;
 }
 

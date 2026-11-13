@@ -216,7 +216,7 @@ export class SqliteRelayStore implements RelayStore {
   async registerPush(
     roomId: string,
     deviceId: string,
-    platform: "android" | "ios",
+    platform: "android",
     pushToken: string,
     at: number,
   ): Promise<boolean> {

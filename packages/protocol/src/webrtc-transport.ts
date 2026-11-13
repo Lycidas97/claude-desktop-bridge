@@ -350,7 +350,7 @@ export class WebRtcTransport implements BridgeTransport {
     this.relay.revokeDevice(deviceId);
   }
 
-  registerPushToken(platform: "android" | "ios", pushToken: string): void {
+  registerPushToken(platform: "android", pushToken: string): void {
     this.relay.registerPushToken(platform, pushToken);
   }
 

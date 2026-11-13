@@ -14,7 +14,6 @@ const DEFAULT_STATUS_REPO = "Lycidas97/claude-desktop-bridge";
 const scriptPath = fileURLToPath(import.meta.url);
 const root = resolve(dirname(scriptPath), "..");
 const macChromeDefault = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const hasXcodeApp = existsSync("/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild");
 
 function git(gitArgs, cwd = root) {
   const result = spawnSync("git", gitArgs, { cwd, encoding: "utf8" });
@@ -247,12 +246,6 @@ async function runCli() {
         ]);
         results.push(`macOS test:browser: 10 Chrome mobile E2E scenarios x 2 themes (${tBrowser}s)`);
         results.push(`macOS test:desktop:service: Electron UI + service + native TCP helper (${tService}s)`);
-
-        if (hasXcodeApp) {
-          const tIosSim = await runPrefixed("MAC", "npm", ["run", "ci:run", "--", "run", "build:ios:simulator", "-w", "@bridge/mobile"]);
-          const tIosDev = await runPrefixed("MAC", "npm", ["run", "ci:run", "--", "run", "build:ios:device", "-w", "@bridge/mobile"]);
-          results.push(`macOS iOS simulator + unsigned device builds (${(tIosSim + tIosDev).toFixed(1)}s)`);
-        }
       })());
     }
 
@@ -321,9 +314,6 @@ async function runCli() {
   console.log("\n=== LOCAL DISTRIBUTED CI SUCCEEDED ===");
   console.log(`Verified Commit SHA: ${revision}`);
   for (const line of results) console.log(`  - ${line}`);
-  if (!hasXcodeApp && !skipMac) {
-    console.log("  - Not Run: iOS Xcode simulator/device builds (Xcode.app not installed on this Mac)");
-  }
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === scriptPath) {

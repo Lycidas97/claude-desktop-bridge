@@ -1,5 +1,9 @@
 ## 1.3.2
 
+- Retire the native iOS app, APNs wakeups, and iOS build/release assets. Keep
+  Android, generic mobile Web, and macOS Desktop; retain existing iOS device
+  records for read compatibility without sending pushes.
+
 - Focus Bridge on Claude Desktop and Claude-3p. Retire independent Codex, Hermes
   and DSH adapters while preserving saved data and the models and quota features
   available inside Claude Desktop.

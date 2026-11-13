@@ -5,11 +5,6 @@ const config: CapacitorConfig = {
   appName: "Bridge",
   webDir: "dist",
   backgroundColor: "#000000",
-  ios: {
-    contentInset: "always",
-    preferredContentMode: "mobile",
-    scheme: "Bridge",
-  },
   android: {
     backgroundColor: "#000000",
   },

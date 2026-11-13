@@ -9,6 +9,7 @@ import { once } from 'node:events';
 import { createContext, runInContext } from 'node:vm';
 import { WebSocket, WebSocketServer } from 'ws';
 import { _electron } from 'playwright-core';
+import electronPath from 'electron';
 import { verifyInspectorMonitor } from './claude-inspector-monitor-qa.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
@@ -242,7 +243,7 @@ const checkpoints = [];
 
 async function launchUI() {
   const instance = await _electron.launch({
-    executablePath: join(repo, 'node_modules/electron/dist', process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : process.platform === 'win32' ? 'electron.exe' : 'electron'),
+    executablePath: electronPath,
     args: [application, '--bridge-packaged-qa'], env: environment, timeout: 45_000,
   });
   ui = { instance };

@@ -65,7 +65,7 @@ it.each([false, true])("advertises native rewind only when the broker supports i
   const controller = Object.assign(Object.create(DesktopController.prototype), {
     config: { devices: [], relayEndpoints: [], hostDeviceId: "host", desktopName: "test", relayUrl: "ws://localhost:1" },
     app: { getVersion: () => "test" }, allProjects: () => [], allSessions: () => [], deviceSnapshots: () => [],
-    broker: { runtimeStatus: () => ({}), magpieSettings: async () => ({}) }, desktopRuntimes: () => [{ id: "claude-desktop", capabilities: available ? ["session.rewind"] : [] }], claudePermissions: () => [],
+    broker: { runtimeStatus: () => ({}), magpieSettings: async () => ({}), promptsList: () => [] }, desktopRuntimes: () => [{ id: "claude-desktop", capabilities: available ? ["session.rewind"] : [] }], claudePermissions: () => [],
     eventLog: { latestSeq: () => 0 }, claudeDesktop: { status: async () => ({}) }, desktopAppStatuses: async () => [],
   });
   expect((await controller.snapshot()).host.capabilities.includes("session.rewind.v1")).toBe(available);

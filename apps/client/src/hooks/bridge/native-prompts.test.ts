@@ -64,7 +64,7 @@ describe("Native prompt state", () => {
   });
 
   it("keeps resolver attribution in the conversation without inventing a tool permission result", () => {
-    const items = conversationItems("native", [], [resolved], []);
+    const items = conversationItems("native", undefined, [resolved], []);
     expect(items.some(item => item.text === "我的手机回答了 Desktop 提示")).toBe(true);
     expect(items.some(item => item.text.includes("允许了这一次操作"))).toBe(false);
   });

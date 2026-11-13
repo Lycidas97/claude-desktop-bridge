@@ -565,7 +565,7 @@ export async function dispatchControllerRequest(
     const prNumber = repo === undefined ? undefined : integerParam(params, "prNumber");
     if (prNumber !== undefined && prNumber <= 0) throw new Error("prNumber must be positive");
     return host.broker.readPrAutoFix(stringParam(params, "sessionId")!, repo === undefined ? undefined : {
-      repo, prNumber: prNumber!, host: stringParam(params, "host", false), includeChecks: params.includeChecks === true,
+      repo, prNumber: prNumber!, ...(params.host === undefined ? {} : { host: stringParam(params, "host")! }), includeChecks: params.includeChecks === true,
     });
   }
   if (request.method === "prompt.resolve" || request.method === "pr.autoFix.set") {
@@ -582,7 +582,7 @@ export async function dispatchControllerRequest(
     if (target === "bound") {
       const prNumber = integerParam(params, "prNumber");
       if (prNumber <= 0) throw new Error("prNumber must be positive");
-      return host.broker.setPrAutoFix({ sessionId, target, enabled: params.enabled, repo: stringParam(params, "repo")!, prNumber, host: stringParam(params, "host", false) }, resolver);
+      return host.broker.setPrAutoFix({ sessionId, target, enabled: params.enabled, repo: stringParam(params, "repo")!, prNumber, ...(params.host === undefined ? {} : { host: stringParam(params, "host")! }) }, resolver);
     }
     if (target !== "own-prs" && target !== "next-pr") throw new Error("Invalid Auto-fix target");
     return host.broker.setPrAutoFix({ sessionId, target, enabled: params.enabled }, resolver);

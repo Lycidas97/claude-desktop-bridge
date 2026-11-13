@@ -224,7 +224,7 @@ describe("native application dialogs and PR Auto-fix", () => {
       expect(await f.bridge.resolvePrompt("local-native", "pending", String(choice), { deviceId: "phone-2", name: "My phone" })).toBe(true);
       expect(f.native.calls.find(call => call.method === method)?.args).toEqual(["local-native", "pending", nativeChoice]);
       expect(f.bridge.promptsList()).toEqual([]);
-      expect(f.eventLog.replay(0, 100).findLast(event => event.type === "prompt.resolved")?.data).toMatchObject({ promptId: "pending", choice, resolvedByDeviceId: "phone-2", resolvedByName: "My phone" });
+      expect(f.eventLog.replay(0, 100).filter(event => event.type === "prompt.resolved").at(-1)?.data).toMatchObject({ promptId: "pending", choice, resolvedByDeviceId: "phone-2", resolvedByName: "My phone" });
     } finally { await f.close(); }
   });
 
@@ -299,7 +299,7 @@ describe("native application dialogs and PR Auto-fix", () => {
       const changed = once(f.bridge, "changed");
       f.native.emit("event", { type: "bridge_pr_auto_fix_settled", sessionId: "local-native", enabled: true, result: "dropped" });
       await changed;
-      await vi.waitFor(() => expect(f.eventLog.replay(0, 100).findLast(event => event.type === "pr.autoFix.updated")?.data).toMatchObject({ target: "next-pr", phase: "settled", result: "dropped" }));
+      await vi.waitFor(() => expect(f.eventLog.replay(0, 100).filter(event => event.type === "pr.autoFix.updated").at(-1)?.data).toMatchObject({ target: "next-pr", phase: "settled", result: "dropped" }));
     } finally { await f.close(); }
   });
 });

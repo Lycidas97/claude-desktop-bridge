@@ -116,3 +116,15 @@ During scheduled consolidation (`bridge-tech-debt-patrol`) or pre-release retros
 - Fixed in: `2b51a7e`
 - Done right: Set `[Console]::InputEncoding = New-Object Text.UTF8Encoding($false)` before `wsl.exe ... bash -s`. The actual Windows→WSL regression in `scripts/windows-native-qa-contract.test.mjs` pipes `false` followed by a success sentinel: original returns 0 and prints the sentinel; fixed returns 1 before the sentinel. Run `npm run test:infra` on Windows; both red and green execute with zero skips.
 - Seen 1× (2026-11-12)
+
+**[Pitfall] Preserve a root ignore rule when retiring a platform project whose generated files may already exist in developer checkouts.**
+- Broken in: `7214a8e` / `#65` — removing `apps/mobile/ios/.gitignore` left previously ignored DerivedData files untracked after checkout, so the actual `ci:local` clean-tree gate failed before any platform leg started.
+- Fixed in: `354542c1cf11faa89b0bc10ae90ed4dda66aed3b`.
+- Done right: Root `/apps/mobile/ios/` preserves the retired directory's ignored status. The original reviewer verified DerivedData, DerivedData-device, and App/App/public remain present while Git stays clean; no info/exclude patch, product restoration, file removal, or gate bypass.
+- Seen 1× (2026-11-13)
+
+**[Recipe] Use Electron's official executable-path export in standalone Node QA instead of reconstructing its dist path.**
+- Context: Electron43.1.1 has no postinstall lifecycle; its Node entry initializes a missing binary before returning the executable path. The service QA bypassed that entry and failed with spawn ENOENT after fresh npm ci.
+- Verified in: `4098aaa6cad0f6249aebf9a29a2d07586088ae2f`; original review5897066888 and the actual `npm run ci:run -- run test:desktop:service` source Green.
+- Pattern: `scripts/service-restart-qa.mjs` imports the default `electronPath` from `electron` and passes it as Playwright's executablePath. With only the earlier manual-install dist/path.txt products sent to Trash, the original QA directly initialized the official binary and passed all eight lifecycle assertions; infra39 passed/8 platform skips. No separate installer hook, download wrapper, retry, or cache clearing was added. This proves the compiled Electron fixture, not installed Bridge or live Claude Desktop.
+- Seen 1× (2026-11-13)

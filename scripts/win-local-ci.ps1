@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 chcp 65001 > $null
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
+[Console]::InputEncoding = New-Object Text.UTF8Encoding($false)
 
 # Keep Windows out of Modern Standby (S0 Low Power Idle) for the lifetime of this CI process
 Add-Type -Namespace BridgeCi -Name Power -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint esFlags);'
@@ -14,7 +15,6 @@ Add-Type -Namespace BridgeCi -Name Power -MemberDefinition '[DllImport("kernel32
 
 $workRoot = "D:\work"
 $anchorRepo = "$workRoot\claude-desktop-bridge"
-$ciWorktree = "$workRoot\ci-worktree"
 $toolsRoot = "$workRoot\tools"
 $cacheRoot = "$workRoot\cache"
 
@@ -79,37 +79,52 @@ function Invoke-Checked {
   Write-Output ("<<< [WIN] $Label OK ({0:N1}s)" -f $sw.Elapsed.TotalSeconds)
 }
 
-# Serialize concurrent multi-worktree ci:local runs sharing D:\work\ci-worktree, bridge-ci-api36, and WSL2
-$ciMutex = [System.Threading.Mutex]::new($false, "Local\ClaudeDesktopBridgeWinCi")
-$mutexAcquired = $false
+$wslProc = $null
+$wslOutTask = $null
+$wslErrTask = $null
+$nsisProc = $null
+
+# Up to 4 concurrent ci:local runs; each slot owns its worktree + bundle ref, AVD + ADB port, and WSL2 checkout
+$slotCount = 4
+$slotMutexes = @(0..($slotCount - 1) | ForEach-Object { [System.Threading.Mutex]::new($false, "Local\ClaudeDesktopBridgeWinCi-$_") })
+$slot = -1
 try {
-  try {
-    $mutexAcquired = $ciMutex.WaitOne(0)
-  } catch [System.Threading.AbandonedMutexException] {
-    $mutexAcquired = $true
-  }
-  if (-not $mutexAcquired) {
-    Write-Output ">>> [WIN] Waiting for active win-local-ci run to finish (Local\ClaudeDesktopBridgeWinCi)..."
+  foreach ($index in 0..($slotCount - 1)) {
     try {
-      $mutexAcquired = $ciMutex.WaitOne()
+      if ($slotMutexes[$index].WaitOne(0)) { $slot = $index; break }
     } catch [System.Threading.AbandonedMutexException] {
-      $mutexAcquired = $true
+      $slot = $index; break
     }
   }
+  if ($slot -lt 0) {
+    Write-Output ">>> [WIN] All $slotCount win-local-ci slots busy (Local\ClaudeDesktopBridgeWinCi-*); waiting for one to finish..."
+    try {
+      $slot = [System.Threading.WaitHandle]::WaitAny($slotMutexes)
+    } catch [System.Threading.AbandonedMutexException] {
+      $slot = $_.Exception.MutexIndex
+    }
+  }
+  Write-Output ">>> [WIN] Acquired win-local-ci slot $slot"
 
-# 1. Fetch exact commit bundle into anchor repo and attach/checkout D:\work\ci-worktree
+$ciWorktree = "$workRoot\ci-slot-$slot"
+$avdName = "bridge-ci-api36-$slot"
+$emulatorPort = 5560 + 2 * $slot
+$env:ANDROID_SERIAL = "emulator-$emulatorPort"
+$recycleStaging = Join-Path $cacheRoot ("recycle-staging-$slot-" + [Guid]::NewGuid().ToString("N"))
+
+# 1. Fetch exact commit bundle into the anchor repo under this slot's ref and check out D:\work\ci-slot-<n>
 Invoke-Checked "Sync git bundle ($Revision)" {
   git -C $anchorRepo bundle verify $BundlePath | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "git bundle verify failed ($LASTEXITCODE)" }
-  git -C $anchorRepo fetch --force $BundlePath "HEAD:refs/ci/current"
+  git -C $anchorRepo fetch --force $BundlePath "HEAD:refs/ci/slot-$slot"
 }
 
 if (-not (Test-Path "$ciWorktree\.git")) {
-  Invoke-Checked "Create D:\work\ci-worktree" {
+  Invoke-Checked "Create $ciWorktree" {
     git -C $anchorRepo worktree add --force --detach $ciWorktree $Revision
   }
 } else {
-  Invoke-Checked "Checkout $Revision in D:\work\ci-worktree" {
+  Invoke-Checked "Checkout $Revision in $ciWorktree" {
     git -C $ciWorktree reset --hard
     if ($LASTEXITCODE -ne 0) { throw "git reset failed ($LASTEXITCODE)" }
     git -C $ciWorktree checkout --force --detach $Revision
@@ -135,6 +150,10 @@ if ($recycleHash -ne $cachedRecycleHash -or -not (Test-Path $recycleExe)) {
   Set-Content -Path $recycleStamp -Value $recycleHash -NoNewline
 }
 $env:BRIDGE_WIN_RECYCLE_EXE = $recycleExe
+# Node removals in this run rename into the slot staging dir, which the finally block recycles as one item.
+# Create it only once bridge-recycle.exe exists, so that finally never calls a helper that was never built.
+New-Item -ItemType Directory -Force -Path $recycleStaging | Out-Null
+$env:BRIDGE_RECYCLE_STAGING = $recycleStaging
 
 # 3. Install npm dependencies when package-lock.json changes
 $lockHash = (Get-FileHash -Algorithm SHA256 "package-lock.json").Hash
@@ -151,62 +170,86 @@ if ($lockHash -ne $cachedHash -or -not (Test-Path "node_modules\electron\package
 Invoke-Checked "npm run test:infra" { & "$nodeBin\npm.cmd" run test:infra }
 Invoke-Checked "npm test (Windows)" { & "$nodeBin\npm.cmd" test }
 
-# 5. Boot headless WHPX Android Emulator in background while Windows NSIS + Gradle APK build run
+# 5. Boot headless WHPX Android Emulator in background while shared prerequisites, NSIS, and Gradle APK build run
 $adb = "$sdkRoot\platform-tools\adb.exe"
 $emulatorExe = "$sdkRoot\emulator\emulator.exe"
 $startedEmulator = $false
-& $adb start-server | Out-Null
-$onlineEmulator = (& $adb devices) | Select-String -Pattern "^emulator-\d+\s+device$"
+# OpenSSH kills every process in a session's job when the session ends, so an adb server spawned by one
+# slot would take down the adb forwards of the other slots. Start the shared server through WMI instead.
+$adbServer = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$adb`" start-server" }
+if ($adbServer.ReturnValue -ne 0) { throw "Failed to launch adb start-server via WMI ($($adbServer.ReturnValue))" }
+Wait-Process -Id $adbServer.ProcessId -ErrorAction SilentlyContinue
+$avdIni = "$avdHome\$avdName.ini"
+if (-not (Test-Path $avdIni)) {
+  Invoke-Checked "Clone AVD bridge-ci-api36 -> $avdName" {
+    $avdDir = "$avdHome\$avdName.avd"
+    New-Item -ItemType Directory -Force -Path $avdDir | Out-Null
+    Copy-Item "$avdHome\bridge-ci-api36.avd\config.ini" "$avdDir\config.ini"
+    $ini = (Get-Content "$avdHome\bridge-ci-api36.ini") -replace "^path=.*", "path=$avdDir"
+    [IO.File]::WriteAllLines($avdIni, $ini, [Text.Encoding]::ASCII)
+  }
+}
+$onlineEmulator = (& $adb devices) | Select-String -Pattern "^$env:ANDROID_SERIAL\s+device$"
 if (-not $onlineEmulator) {
-  Write-Output ">>> [WIN] Starting headless WHPX AVD bridge-ci-api36 in background"
+  Write-Output ">>> [WIN] Starting headless WHPX AVD $avdName on $env:ANDROID_SERIAL in background"
   Start-Process -FilePath $emulatorExe `
-    -ArgumentList @("-avd", "bridge-ci-api36", "-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot-save", "-gpu", "swiftshader_indirect") `
+    -ArgumentList @("-avd", $avdName, "-port", "$emulatorPort", "-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot-save", "-gpu", "swiftshader_indirect") `
     -WindowStyle Hidden | Out-Null
   $startedEmulator = $true
 }
 
 try {
-  # 6. Build protocol, relay, and Windows NSIS installer
-  Invoke-Checked "Build @bridge/protocol & @bridge/relay" {
+  # 6. Build shared prerequisites (@bridge/protocol, @bridge/relay, @bridge/client)
+  Invoke-Checked "Build @bridge/protocol, @bridge/relay & @bridge/client" {
     & "$nodeBin\npm.cmd" run ci:run -- run build -w @bridge/protocol
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & "$nodeBin\npm.cmd" run ci:run -- run build -w @bridge/relay
-  }
-
-  Invoke-Checked "Build Windows NSIS installer (make:windows)" {
-    $prevRelay = $env:BRIDGE_RELAY_URL
-    $prevPubRelay = $env:BRIDGE_PUBLIC_RELAY_URL
-    $prevPairing = $env:BRIDGE_PAIRING_BASE_URL
-    $prevOrigin = $env:BRIDGE_SERVICE_ORIGIN
-    $prevIce = $env:BRIDGE_ICE_SERVERS
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $prevViteRelay = $env:VITE_BRIDGE_PUBLIC_RELAY_URL
+    $prevViteOrigin = $env:VITE_BRIDGE_SERVICE_ORIGIN
+    $prevViteIce = $env:VITE_BRIDGE_ICE_SERVERS
     try {
-      $env:BRIDGE_RELAY_URL = ""
-      $env:BRIDGE_PUBLIC_RELAY_URL = ""
-      $env:BRIDGE_PAIRING_BASE_URL = ""
-      $env:BRIDGE_SERVICE_ORIGIN = ""
-      $env:BRIDGE_ICE_SERVERS = ""
-      & "$nodeBin\npm.cmd" run ci:run -- run make:windows -w @bridge/desktop
+      $env:VITE_BRIDGE_PUBLIC_RELAY_URL = "wss://bis.zju.edu.cn/bridge-relay/ws"
+      $env:VITE_BRIDGE_SERVICE_ORIGIN = "https://bis.zju.edu.cn/bridge-relay"
+      $env:VITE_BRIDGE_ICE_SERVERS = '[{"urls":"stun:stun.cloudflare.com:3478"}]'
+      & "$nodeBin\npm.cmd" run ci:run -- run build -w @bridge/client
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     } finally {
-      $env:BRIDGE_RELAY_URL = $prevRelay
-      $env:BRIDGE_PUBLIC_RELAY_URL = $prevPubRelay
-      $env:BRIDGE_PAIRING_BASE_URL = $prevPairing
-      $env:BRIDGE_SERVICE_ORIGIN = $prevOrigin
-      $env:BRIDGE_ICE_SERVERS = $prevIce
+      $env:VITE_BRIDGE_PUBLIC_RELAY_URL = $prevViteRelay
+      $env:VITE_BRIDGE_SERVICE_ORIGIN = $prevViteOrigin
+      $env:VITE_BRIDGE_ICE_SERVERS = $prevViteIce
     }
   }
 
-  $setupExe = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
-  if ($null -eq $setupExe) { throw "Assisted NSIS Setup.exe was not produced" }
+  # 7. Build Windows NSIS installer (make:windows:from-client) in parallel with Android debug APK
+  Write-Output ">>> [WIN] Starting Windows NSIS installer (make:windows:from-client) in background"
+  $nsisSw = [Diagnostics.Stopwatch]::StartNew()
+  $nsisPsi = [System.Diagnostics.ProcessStartInfo]::new("cmd.exe")
+  $nsisPsi.Arguments = "/d /s /c `"`"$nodeBin\npm.cmd`" run ci:run -- run make:windows:from-client -w @bridge/desktop`""
+  $nsisPsi.WorkingDirectory = $ciWorktree
+  $nsisPsi.UseShellExecute = $false
+  $nsisPsi.RedirectStandardOutput = $true
+  $nsisPsi.RedirectStandardError = $true
+  $nsisPsi.StandardOutputEncoding = [Text.Encoding]::UTF8
+  $nsisPsi.StandardErrorEncoding = [Text.Encoding]::UTF8
+  $nsisPsi.EnvironmentVariables["BRIDGE_FAST_INSTALLER"] = "1"
+  $nsisPsi.EnvironmentVariables["BRIDGE_RELAY_URL"] = "wss://bis.zju.edu.cn/bridge-relay/ws"
+  $nsisPsi.EnvironmentVariables["BRIDGE_PUBLIC_RELAY_URL"] = "wss://bis.zju.edu.cn/bridge-relay/ws"
+  $nsisPsi.EnvironmentVariables["BRIDGE_PAIRING_BASE_URL"] = "https://bis.zju.edu.cn"
+  $nsisPsi.EnvironmentVariables["BRIDGE_SERVICE_ORIGIN"] = "https://bis.zju.edu.cn"
+  $nsisPsi.EnvironmentVariables["BRIDGE_ICE_SERVERS"] = '[{"urls":"stun:stun.cloudflare.com:3478"}]'
+  $nsisProc = [System.Diagnostics.Process]::Start($nsisPsi)
+  $nsisOutTask = $nsisProc.StandardOutput.ReadToEndAsync()
+  $nsisErrTask = $nsisProc.StandardError.ReadToEndAsync()
 
-  # 7. Build Android debug APK + verify DEX + verify pinned debug signature
   Invoke-Checked "Sync Capacitor Android (@bridge/mobile)" {
-    & "$nodeBin\npm.cmd" run ci:run -- run sync -w @bridge/mobile
+    & "$nodeBin\npm.cmd" run ci:run -- run sync:from-client -w @bridge/mobile
   }
 
   Invoke-Checked "Gradle assembleDebug (Android SDK 36)" {
     Push-Location "apps/mobile/android"
     try {
+      # Keep --no-daemon for now: shared Gradle daemon lifecycle across concurrent ssh win slots is deferred (not yet empirically verified).
       & ".\gradlew.bat" assembleDebug --no-daemon
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     } finally {
@@ -235,21 +278,38 @@ try {
   }
   Write-Output "<<< [WIN] Android APK debug signature OK: $actualCert"
 
-  # 8. Wait for Android Emulator boot completion, then run packaged Windows QA + Android WebView pairing smoke
+  $nsisProc.WaitForExit()
+  $nsisOut = $nsisOutTask.GetAwaiter().GetResult()
+  $nsisErr = $nsisErrTask.GetAwaiter().GetResult()
+  $nsisSw.Stop()
+  if ($nsisOut) { Write-Output $nsisOut.TrimEnd() }
+  if ($nsisErr) { [Console]::Error.WriteLine($nsisErr.TrimEnd()) }
+  if ($nsisProc.ExitCode -ne 0) {
+    throw "[WIN] Build Windows NSIS installer (make:windows:from-client) failed with exit code $($nsisProc.ExitCode)"
+  }
+  $setupExe = Get-ChildItem -Path "apps/desktop/out/make" -Recurse -Filter "*Setup.exe" | Select-Object -First 1
+  if ($null -eq $setupExe) { throw "Assisted NSIS Setup.exe was not produced" }
+  Write-Output ("<<< [WIN] Build Windows NSIS installer (make:windows:from-client) OK ({0:N1}s)" -f $nsisSw.Elapsed.TotalSeconds)
+
+  # 8. Wait for Android Emulator boot completion and guest network readiness, then run packaged Windows QA + Android WebView pairing smoke
   $bootDeadline = (Get-Date).AddSeconds(180)
   $booted = $false
   while ((Get-Date) -lt $bootDeadline) {
     $prop = (& cmd.exe /c "`"$adb`" shell getprop sys.boot_completed 2>nul") -join ""
     if ($prop.Trim() -eq "1") {
-      $booted = $true
-      break
+      $route = (& cmd.exe /c "`"$adb`" shell ip route 2>nul") -join "`n"
+      $connectivity = (& cmd.exe /c "`"$adb`" shell dumpsys connectivity 2>nul") -join "`n"
+      if ($route -match "10\.0\.2\.0/24" -and $connectivity -match "Active default network:\s*\d+") {
+        $booted = $true
+        break
+      }
     }
     Start-Sleep -Seconds 2
   }
   if (-not $booted) {
-    throw "Timed out waiting for Android Emulator bridge-ci-api36 to finish booting"
+    throw "Timed out waiting for Android Emulator $avdName ($env:ANDROID_SERIAL) boot and guest network readiness"
   }
-  Write-Output "<<< [WIN] Android Emulator sys.boot_completed=1"
+  Write-Output "<<< [WIN] Android Emulator sys.boot_completed=1, guest network ready"
 
   Invoke-Checked "Packaged Windows QA + Android Emulator WebView Pairing Smoke" {
     $prevSmoke = $env:BRIDGE_WITH_ANDROID_SMOKE
@@ -271,23 +331,33 @@ try {
     }
   }
 } finally {
+  if ($null -ne $nsisProc) {
+    try {
+      if (-not $nsisProc.HasExited) {
+        & cmd.exe /c "taskkill.exe /PID $($nsisProc.Id) /T /F >nul 2>nul"
+      }
+    } finally {
+      $nsisProc.Dispose()
+    }
+  }
   if ($startedEmulator) {
     & cmd.exe /c "`"$adb`" emu kill >nul 2>nul"
   }
 }
 
-# 9. WSL2 Ubuntu-24.04 Linux infra + unit tests + .deb / .rpm / .zip packaging
 if (-not $SkipWslLinux) {
   $wslBundlePath = "/mnt/d/work/cache/temp/" + [IO.Path]::GetFileName($BundlePath)
   $wslScript = @"
 set -euo pipefail
 export PATH="/usr/local/bin:`$PATH"
-CI_DIR="/var/tmp/bridge-linux-ci"
+CI_DIR="/var/tmp/bridge-linux-ci-slot-$slot"
+export TMPDIR="`$CI_DIR-tmp"
+mkdir -p "`$TMPDIR"
 if [ ! -d "`$CI_DIR/.git" ]; then
   mkdir -p "`$CI_DIR"
   git init -q "`$CI_DIR"
 fi
-git -C "`$CI_DIR" fetch --force "$wslBundlePath" "HEAD:refs/ci/current"
+git -C "`$CI_DIR" fetch --force "$wslBundlePath" "HEAD:refs/ci/slot-$slot"
 git -C "`$CI_DIR" reset --hard -q
 git -C "`$CI_DIR" checkout --force --detach -q "$Revision"
 cd "`$CI_DIR"
@@ -300,21 +370,61 @@ fi
 npm run test:infra
 npm test
 npm run ci:run -- run build -w @bridge/protocol
-BRIDGE_RELAY_URL="" BRIDGE_PUBLIC_RELAY_URL="" BRIDGE_PAIRING_BASE_URL="" BRIDGE_SERVICE_ORIGIN="" BRIDGE_ICE_SERVERS="" \
+BRIDGE_FAST_INSTALLER="1" BRIDGE_RELAY_URL="" BRIDGE_PUBLIC_RELAY_URL="" BRIDGE_PAIRING_BASE_URL="" BRIDGE_SERVICE_ORIGIN="" BRIDGE_ICE_SERVERS="" \
   npm run ci:run -- run make:linux -w @bridge/desktop
 find apps/desktop/out/make -name "*.deb" -print -quit | grep -q . || { echo "Missing .deb output"; exit 1; }
 find apps/desktop/out/make -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }
 find apps/desktop/out/make -name "*.zip" -print -quit | grep -q . || { echo "Missing .zip output"; exit 1; }
 echo "<<< [WSL Ubuntu-24.04] Linux tests + .deb / .rpm / .zip outputs verified"
 "@
-  Invoke-Checked "WSL2 Ubuntu-24.04 Linux tests + installers (.deb/.rpm/.zip)" {
-    ($wslScript -replace "`r`n", "`n") | wsl.exe -d Ubuntu-24.04 -- bash -s
+  $wslEncoded = [Convert]::ToBase64String((New-Object Text.UTF8Encoding($false)).GetBytes(($wslScript -replace "`r`n", "`n")))
+  Write-Output ">>> [WIN] Starting WSL2 Ubuntu-24.04 Linux tests + installers in background"
+  $wslPsi = [System.Diagnostics.ProcessStartInfo]::new("wsl.exe")
+  $wslPsi.Arguments = "-d Ubuntu-24.04 --exec setsid --wait bash -c `"exec 3<&0 </dev/null; (exec >/dev/null 2>&1; cat <&3; kill -TERM 0 || true) & W=`$!; exec 3<&-; trap 'kill -TERM `$W 2>/dev/null || true; pkill -TERM -P `$W 2>/dev/null || true; wait `$W 2>/dev/null || true' EXIT; printf '%s' $wslEncoded | base64 -d | bash`""
+  $wslPsi.UseShellExecute = $false
+  $wslPsi.RedirectStandardInput = $true
+  $wslPsi.RedirectStandardOutput = $true
+  $wslPsi.RedirectStandardError = $true
+  $wslPsi.StandardOutputEncoding = [Text.Encoding]::UTF8
+  $wslPsi.StandardErrorEncoding = [Text.Encoding]::UTF8
+  $wslProc = [System.Diagnostics.Process]::Start($wslPsi)
+  $wslOutTask = $wslProc.StandardOutput.ReadToEndAsync()
+  $wslErrTask = $wslProc.StandardError.ReadToEndAsync()
+}
+
+# 9. Join parallel WSL2 Ubuntu-24.04 Linux infra + unit tests + .deb / .rpm / .zip packaging
+if ($null -ne $wslProc) {
+  $wslProc.WaitForExit()
+  try { $wslProc.StandardInput.Close() } catch {}
+  $wslOut = $wslOutTask.GetAwaiter().GetResult()
+  $wslErr = $wslErrTask.GetAwaiter().GetResult()
+  if ($wslOut) { Write-Output $wslOut.TrimEnd() }
+  if ($wslErr) { [Console]::Error.WriteLine($wslErr.TrimEnd()) }
+  if ($wslProc.ExitCode -ne 0) {
+    throw "[WIN] WSL2 Ubuntu-24.04 Linux tests + installers (.deb/.rpm/.zip) failed with exit code $($wslProc.ExitCode)"
   }
+  Write-Output ("<<< [WIN] WSL2 Ubuntu-24.04 Linux tests + installers (.deb/.rpm/.zip) OK ({0:N1}s)" -f ($wslProc.ExitTime - $wslProc.StartTime).TotalSeconds)
 }
 
 Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revision) ==="
 } finally {
   try {
+    if ($null -ne $wslProc) {
+      try {
+        try { $wslProc.StandardInput.Close() } catch {}
+        if (-not $wslProc.HasExited) {
+          [void]$wslProc.WaitForExit(5000)
+        }
+        if (-not $wslProc.HasExited) {
+          & cmd.exe /c "taskkill.exe /PID $($wslProc.Id) /T /F >nul 2>nul"
+        }
+      } finally {
+        $wslProc.Dispose()
+      }
+    }
+    if ($slot -ge 0 -and (Test-Path -LiteralPath $recycleStaging)) {
+      Invoke-Checked "Recycle slot $slot staged test removals" { & "$cacheRoot\bridge-recycle.exe" $recycleStaging }
+    }
     if (Test-Path -LiteralPath $BundlePath) {
       Invoke-Checked "Recycle uploaded git bundle" {
         if (Test-Path -LiteralPath "$cacheRoot\bridge-recycle.exe") {
@@ -325,9 +435,9 @@ Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revisi
       }
     }
   } finally {
-    if ($mutexAcquired) {
-      $ciMutex.ReleaseMutex()
+    if ($slot -ge 0) {
+      $slotMutexes[$slot].ReleaseMutex()
     }
-    $ciMutex.Dispose()
+    foreach ($slotMutex in $slotMutexes) { $slotMutex.Dispose() }
   }
 }

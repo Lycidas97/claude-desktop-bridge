@@ -8,7 +8,7 @@ How the Issue patrol session runs several Issues at once: dispatch, implement, r
 - **Fork**: one implementing session per Issue, in its own worktree. Never reviews or merges its own PR.
 - **Reviewer**: one review session paired with each fork, for every review round of that PR, including NIT fix diffs and merge resolutions. Never sees the patrol's analysis or the fork brief.
 
-## Models and quota
+## Models and fallback
 
 Pick models per role, not per task. Fallback is done by Magpie routing groups with `routing=order` (first member until it can't answer, then the next; requests return to the first once its quota renews), so no session or agent carries fallback logic. Gemini is used only through `antigravity/*`; never `gemini-web/*` or `google/models/*`.
 
@@ -22,8 +22,7 @@ Pick models per role, not per task. Fallback is done by Magpie routing groups wi
 | Hard bugs | `codex/gpt-6-astra` | `mythos-magpie-2161436569` |
 
 - Picker ids are what `set_session_model` and agent frontmatter take; `provider/model` ids are rejected there. An unknown id returns the valid list. A group created in Magpie gets its picker id in Claude Desktop's `configLibrary` at once, but the running app keeps its old list until restarted: until then `set_session_model` rejects the id and agent frontmatter naming it silently runs on the `sonnet` default (`codex/gpt-6.1-sol`). Check `usage.jsonl` (`req` field) to see which model actually answered. Edit a group with `magpie group set <id> models=…`.
-- Before dispatching, the patrol reads `curl -s "$ANTHROPIC_BASE_URL/v1/magpie/quotas"`. A model is available when, across accounts, the best account's lowest applicable window is ≥10%. Accounts carrying `asOf` hold a stale reading and do not count.
-- Sol below 10% on the Codex 7-day window keeps running on Codex credits. When credits are also gone, the patrol stops dispatching and asks the owner before a reset credit is spent.
+- No quota check before dispatching: the groups route around exhausted members. Sol (a single model, no group) keeps running on Codex credits once its 7-day window is used up; when a Sol session reports a quota error (patrol checklist), the patrol stops dispatching and asks the owner before a reset credit is spent.
 - Escalate to Astra when the same defect survives two fix rounds, or `ci:local` fails twice in a row for the same cause.
 - DeepSeek runs fixed procedures with an objective check (`ci/local-distributed`, `gh` state). It never writes tests or fixes code; its own summaries are not evidence.
 
@@ -35,7 +34,7 @@ Pick models per role, not per task. Fallback is done by Magpie routing groups wi
 
 ## 1. Dispatch (owner's turn)
 
-1. Read Magpie quota (see **Models and quota**). For each Issue, list the files it is expected to touch. Issues that overlap get an explicit merge order; record it in each affected brief.
+1. For each Issue, list the files it is expected to touch. Issues that overlap get an explicit merge order; record it in each affected brief.
 2. Start the fork (`start_session`, `use_worktree: true`) with the **Fork brief** below, then switch it to GPT-6.1-Sol with `mcp__ccd_session_mgmt__set_session_model`.
 3. In the same turn, start its reviewer (`start_session`, `use_worktree: false`) with the **Reviewer brief** below, then switch it to GPT-6.1-Sol while it waits.
 4. Start the patrol checklist (step 8).

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { PROTOCOL_VERSION } from "@bridge/protocol";
+import { DEFAULT_PUBLIC_RELAY_URL, relayHealthUrl } from "../packages/protocol/src/endpoints.ts";
+import { PROTOCOL_VERSION } from "../packages/protocol/src/types.ts";
 import { WebSocket } from "ws";
 
-const relayUrl = process.env.BRIDGE_RELAY_URL ?? "wss://relay.alioxis.com/ws";
+const relayUrl = process.env.BRIDGE_RELAY_URL ?? DEFAULT_PUBLIC_RELAY_URL;
 const timeoutMs = Number(process.env.BRIDGE_RELAY_PROBE_TIMEOUT_MS ?? 8_000);
 
 function randomId(bytes) {
@@ -11,12 +12,7 @@ function randomId(bytes) {
 }
 
 function healthUrlForRelay(endpoint) {
-  const url = new URL(endpoint);
-  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  url.pathname = "/health";
-  url.search = "";
-  url.hash = "";
-  return url;
+  return new URL(relayHealthUrl(endpoint));
 }
 
 async function probeHello(version) {

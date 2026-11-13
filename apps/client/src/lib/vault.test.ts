@@ -351,6 +351,132 @@ describe("BridgeVault pairing migration", () => {
     await vault.clear();
   });
 
+  it("migrates retired alioxis.com endpoints, serviceOrigin, 2-entry ICE, and persisted home relay without resurrecting on reload or touch", async () => {
+    const vault = new BridgeVault();
+    await vault.clear();
+    try {
+      const created = await BridgeCrypto.createDevicePairing({
+        hostId: "retired-bis-host",
+        pairingEpoch: 5,
+        roomId: "retired-bis-room",
+        relayUrl: "wss://relay.alioxis.com/ws",
+        serviceOrigin: "https://relay.alioxis.com",
+        relayEndpoints: [
+          bridgeEndpoint("wss://relay.alioxis.com/ws", 10, "public"),
+          bridgeEndpoint("ws://192.168.1.32:8788/ws", 20, "lan"),
+        ],
+        activeEndpoint: "public",
+        iceServers: [
+          { urls: "stun:stun.alioxis.com:3478" },
+          { urls: "stun:stun.cloudflare.com:3478" },
+        ],
+        desktopName: "Studio Mac",
+      });
+      const importedCrypto = await vault.importPairing(created.pairing);
+      const savedEnvelope = await created.desktopCrypto
+        .withSenderDevice(created.pairing.hostId)
+        .encrypt(
+          { kind: "response", requestId: "saved-msg", ok: true, result: { ok: 1 } },
+          "desktop",
+          "mobile",
+          Date.now(),
+          60_000,
+          created.pairing.deviceId,
+        );
+      const outboxEnvelope = await importedCrypto.encrypt(
+        { kind: "request", requestId: "outbox-msg", idempotencyKey: "outbox-key", method: "snapshot.get", params: {} },
+        "mobile",
+        "desktop",
+      );
+      await vault.saveMessage(savedEnvelope);
+      await vault.addOutbox(outboxEnvelope);
+
+      const seedDb = await requestResult(indexedDB.open("claude-bridge"));
+      const seedTx = seedDb.transaction("identity", "readwrite");
+      const seedStore = seedTx.objectStore("identity");
+      const seedRecord = await requestResult(seedStore.get("host:retired-bis-host"));
+      seedStore.put({ ...seedRecord, desktopRelayUrl: "wss://relay.alioxis.com/ws" });
+      await transactionDone(seedTx);
+      seedDb.close();
+
+      const migrated = (await vault.getHost("retired-bis-room"))!;
+      expect(migrated).toMatchObject({
+        hostId: "retired-bis-host",
+        roomId: "retired-bis-room",
+        pairingEpoch: 5,
+        relayUrl: "wss://bis.zju.edu.cn/bridge-relay/ws",
+        serviceOrigin: "https://bis.zju.edu.cn",
+        activeEndpoint: "public",
+        iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+      });
+      expect(migrated.desktopRelayUrl).toBeUndefined();
+      expect(migrated.relayEndpoints).toEqual([
+        bridgeEndpoint("wss://bis.zju.edu.cn/bridge-relay/ws", 10, "public"),
+        bridgeEndpoint("ws://192.168.1.32:8788/ws", 20, "lan"),
+      ]);
+      expect(migrated.crypto.identity).toMatchObject({
+        roomId: "retired-bis-room",
+        hostId: "retired-bis-host",
+        deviceId: importedCrypto.identity.deviceId,
+        authToken: importedCrypto.identity.authToken,
+        pairingEpoch: 5,
+        relayUrl: "wss://bis.zju.edu.cn/bridge-relay/ws",
+      });
+
+      const inspectDb1 = await requestResult(indexedDB.open("claude-bridge"));
+      const rawAfterLoad = await requestResult(
+        inspectDb1.transaction("identity", "readonly").objectStore("identity").get("host:retired-bis-host"),
+      ) as Record<string, unknown>;
+      inspectDb1.close();
+      expect("desktopRelayUrl" in rawAfterLoad).toBe(false);
+
+      // Even touching with the pre-migration crypto instance must not resurrect the retired home or endpoint.
+      await vault.touchHost(importedCrypto);
+      const inspectDb2 = await requestResult(indexedDB.open("claude-bridge"));
+      const rawAfterTouch = await requestResult(
+        inspectDb2.transaction("identity", "readonly").objectStore("identity").get("host:retired-bis-host"),
+      ) as Record<string, unknown>;
+      inspectDb2.close();
+      expect("desktopRelayUrl" in rawAfterTouch).toBe(false);
+
+      const reloaded = (await new BridgeVault().getHost("retired-bis-room"))!;
+      expect(reloaded.desktopRelayUrl).toBeUndefined();
+      expect(reloaded.relayUrl).toBe("wss://bis.zju.edu.cn/bridge-relay/ws");
+      expect(reloaded.serviceOrigin).toBe("https://bis.zju.edu.cn");
+      expect(await reloaded.crypto.decrypt((await vault.listMessages("retired-bis-room"))[0]!)).toMatchObject({
+        payload: { kind: "response", requestId: "saved-msg", ok: true },
+      });
+      expect((await vault.listOutbox("retired-bis-room")).map((entry) => entry.id)).toEqual([outboxEnvelope.id]);
+
+      // Preserves custom serviceOrigin when migrating retired default relay, and honors explicit override to retired URL.
+      const customOriginPair = await BridgeCrypto.createDevicePairing({
+        hostId: "custom-origin-host",
+        pairingEpoch: 2,
+        roomId: "custom-origin-room",
+        relayUrl: "wss://relay.alioxis.com/ws",
+        serviceOrigin: "https://portal.custom.example",
+        relayEndpoints: [bridgeEndpoint("wss://relay.alioxis.com/ws", 10, "public")],
+        activeEndpoint: "public",
+        desktopName: "Portal Mac",
+      });
+      await vault.importPairing(customOriginPair.pairing);
+      expect((await vault.getHost("custom-origin-room"))).toMatchObject({
+        relayUrl: "wss://bis.zju.edu.cn/bridge-relay/ws",
+        serviceOrigin: "https://portal.custom.example",
+      });
+
+      const manualRetired = await vault.setRelayUrl("custom-origin-room", "wss://relay.alioxis.com/ws");
+      expect(manualRetired).toMatchObject({
+        relayUrlOverride: "wss://relay.alioxis.com/ws",
+        relayUrl: "wss://relay.alioxis.com/ws",
+        serviceOrigin: "https://relay.alioxis.com",
+        activeEndpoint: "manual",
+      });
+    } finally {
+      await vault.clear();
+    }
+  });
+
   it("marks protocol v2 hosts for repair and reconnects encrypted cache by stable hostId", async () => {
     const oldHostId = "stable-desktop-host";
     const oldPair = await BridgeCrypto.createDevicePairing({

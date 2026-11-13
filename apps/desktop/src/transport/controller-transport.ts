@@ -13,6 +13,7 @@ import {
   cryptoWithRelayEndpoint,
   normalizeRelayUrl,
   relayPathForUrl,
+  relayReadyUrl,
   relayServiceOrigin,
   type BridgeDeviceInfo,
   type BridgeEndpoint,
@@ -77,14 +78,7 @@ export interface DesktopMessageDeliveryHost {
   revokeDevice(deviceId: string): Promise<unknown>;
 }
 
-export function relayReadyUrl(endpoint: string): string {
-  const url = new URL(endpoint);
-  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  url.pathname = "/ready";
-  url.search = "";
-  url.hash = "";
-  return url.toString();
-}
+export { relayReadyUrl };
 
 export function redactedEndpoint(endpoint: string): string {
   const url = new URL(endpoint);

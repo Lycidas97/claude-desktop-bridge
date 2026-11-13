@@ -1,9 +1,13 @@
 import {
   BridgeCrypto,
   DEFAULT_BRIDGE_ICE_SERVERS_JSON,
+  DEFAULT_BRIDGE_SERVICE_ORIGIN,
+  DEFAULT_PUBLIC_RELAY_URL,
   PROTOCOL_VERSION,
   bridgeEndpoint,
   cryptoWithRelayEndpoint,
+  isRetiredDefaultRelayUrl,
+  isRetiredDefaultServiceOrigin,
   normalizeBridgeIceServers,
   normalizeBridgeEndpoints,
   normalizeRelayUrl,
@@ -67,16 +71,22 @@ export interface StoredBridgeHost {
   crypto: BridgeCrypto;
 }
 
-const UPSTREAM_DEFAULT_RELAY = "wss://relay.alioxis.com/ws";
 const PACKAGED_PUBLIC_RELAY = String(
-  import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? UPSTREAM_DEFAULT_RELAY,
+  import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? DEFAULT_PUBLIC_RELAY_URL,
 ).trim();
 const PACKAGED_SERVICE_ORIGIN = String(
-  import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? "https://bridge.alioxis.com",
+  import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? DEFAULT_BRIDGE_SERVICE_ORIGIN,
 ).trim();
 const PACKAGED_ICE_SERVERS = parseBridgeIceServers(String(
   import.meta.env.VITE_BRIDGE_ICE_SERVERS ?? DEFAULT_BRIDGE_ICE_SERVERS_JSON,
 ));
+const ALLOW_RETIRED_DEFAULT_RELAY = isRetiredDefaultRelayUrl(PACKAGED_PUBLIC_RELAY);
+
+function sanitizeDesktopRelayUrl(stored: StoredCrypto): string | undefined {
+  if (stored.relayUrlOverride || !stored.desktopRelayUrl) return undefined;
+  if (!ALLOW_RETIRED_DEFAULT_RELAY && isRetiredDefaultRelayUrl(stored.desktopRelayUrl)) return undefined;
+  return stored.desktopRelayUrl;
+}
 
 function serviceOriginForRelay(relayUrl: string): string {
   try {
@@ -108,19 +118,48 @@ function transportForStored(stored: StoredCrypto): {
       iceServers: preferredBridgeIceServers(stored.iceServers, PACKAGED_ICE_SERVERS),
     };
   }
-  const relayEndpoints = normalizeBridgeEndpoints(stored.relayEndpoints?.length
+  const rawEndpoints = stored.relayEndpoints?.length
     ? stored.relayEndpoints
-    : [bridgeEndpoint(stored.identity.relayUrl || PACKAGED_PUBLIC_RELAY, 10, "public")]);
+    : [bridgeEndpoint(
+        (!ALLOW_RETIRED_DEFAULT_RELAY && isRetiredDefaultRelayUrl(stored.identity.relayUrl)
+          ? PACKAGED_PUBLIC_RELAY
+          : stored.identity.relayUrl) || PACKAGED_PUBLIC_RELAY,
+        10,
+        "public",
+      )];
+  const hadRetiredEndpoint = !ALLOW_RETIRED_DEFAULT_RELAY && (
+    rawEndpoints.some((endpoint) => isRetiredDefaultRelayUrl(endpoint.url)) ||
+    isRetiredDefaultRelayUrl(stored.identity.relayUrl)
+  );
+  const filteredEndpoints = ALLOW_RETIRED_DEFAULT_RELAY
+    ? rawEndpoints
+    : rawEndpoints.filter((endpoint) => !isRetiredDefaultRelayUrl(endpoint.url));
+  const hasPublicCandidate = filteredEndpoints.some((endpoint) => endpoint.kind === "public-relay");
+  const relayEndpoints = normalizeBridgeEndpoints(
+    (hadRetiredEndpoint && !hasPublicCandidate) || filteredEndpoints.length === 0
+      ? [bridgeEndpoint(PACKAGED_PUBLIC_RELAY, 10, "public"), ...filteredEndpoints]
+      : filteredEndpoints,
+  );
   const active = selectBridgeEndpoint(relayEndpoints, stored.activeEndpoint);
   if (!active) throw new Error("No relay endpoint is available");
+  const storedOrigin = stored.serviceOrigin?.trim();
+  const serviceOrigin = (
+    storedOrigin && !(hadRetiredEndpoint && isRetiredDefaultServiceOrigin(storedOrigin))
+      ? storedOrigin
+      : undefined
+  ) || (
+    active.url === PACKAGED_PUBLIC_RELAY
+      ? PACKAGED_SERVICE_ORIGIN
+      : serviceOriginForRelay(active.url)
+  ) || PACKAGED_SERVICE_ORIGIN;
   return {
-    serviceOrigin: stored.serviceOrigin || serviceOriginForRelay(active.url) || PACKAGED_SERVICE_ORIGIN,
+    serviceOrigin,
     relayEndpoints,
     activeEndpoint: active.id,
     relayUrl: active.url,
-    // Existing custom ICE settings stay untouched. The pre-0.8.4 packaged
-    // Cloudflare-only default is upgraded in place without touching pairing
-    // identities, encrypted messages, or Relay endpoints.
+    // Existing custom ICE settings stay untouched. Historical Cloudflare-only
+    // and retired alioxis+Cloudflare defaults converge in place without touching
+    // pairing identities or encrypted caches.
     iceServers: preferredBridgeIceServers(stored.iceServers, PACKAGED_ICE_SERVERS),
   };
 }
@@ -312,7 +351,8 @@ export class BridgeVault {
       const updatedAt = stored.updatedAt ?? 0;
       if (existing && existing.updatedAt > updatedAt) continue;
       const transport = transportForStored(normalizedStored);
-      const sanitizedDesktopRelayUrl = normalizedStored.relayUrlOverride ? undefined : normalizedStored.desktopRelayUrl;
+      const sanitizedDesktopRelayUrl = sanitizeDesktopRelayUrl(normalizedStored);
+      const { desktopRelayUrl: _previousDesktopRelay, ...storedWithoutDesktopRelay } = normalizedStored;
       const relayMigrationNeeded = (
         normalizedStored.identity.relayUrl !== transport.relayUrl ||
         normalizedStored.serviceOrigin !== transport.serviceOrigin ||
@@ -321,9 +361,9 @@ export class BridgeVault {
         JSON.stringify(normalizedStored.relayEndpoints ?? []) !== JSON.stringify(transport.relayEndpoints)
       );
       if (iceServersChanged(normalizedStored, transport.iceServers) || relayMigrationNeeded) {
-        // Fill legacy transport metadata without changing paired endpoints or encrypted cache.
+        // Fill or migrate transport metadata without rotating pairing identities or encrypted cache.
         store.put({
-          ...normalizedStored,
+          ...storedWithoutDesktopRelay,
           identity: { ...normalizedStored.identity, relayUrl: transport.relayUrl },
           serviceOrigin: transport.serviceOrigin,
           relayEndpoints: transport.relayEndpoints,
@@ -374,19 +414,25 @@ export class BridgeVault {
     const current = await requestResult(
       store.get(hostKey(crypto.identity.hostId ?? crypto.identity.roomId)),
     ) as StoredCrypto | undefined;
-    const transport = transportForStored(current ?? {
+    const baseStored: StoredCrypto = current ?? {
       key: hostKey(crypto.identity.hostId ?? crypto.identity.roomId),
       identity: crypto.identity,
       encryptionKey: crypto.encryptionKey,
-    });
+    };
+    const transport = transportForStored(baseStored);
+    const sanitizedDesktopRelayUrl = sanitizeDesktopRelayUrl(baseStored);
+    const { desktopRelayUrl: _previousDesktopRelay, ...currentWithoutDesktopRelay } = current ?? {};
     store.put({
-      ...(current ?? {}),
+      ...currentWithoutDesktopRelay,
       key: hostKey(crypto.identity.hostId ?? crypto.identity.roomId),
       identity: { ...crypto.identity, relayUrl: transport.relayUrl },
       encryptionKey: crypto.encryptionKey,
       serviceOrigin: transport.serviceOrigin,
       relayEndpoints: transport.relayEndpoints,
       activeEndpoint: transport.activeEndpoint,
+      ...(sanitizedDesktopRelayUrl !== undefined
+        ? { desktopRelayUrl: sanitizedDesktopRelayUrl }
+        : {}),
       iceServers: transport.iceServers,
       ...(current?.migratedAt !== undefined ? { migratedAt: current.migratedAt } : {}),
       updatedAt: Date.now(),
@@ -445,13 +491,19 @@ export class BridgeVault {
       transaction.abort();
       throw new Error("Relay endpoint is unavailable");
     }
+    const sanitizedDesktopRelayUrl = sanitizeDesktopRelayUrl(record);
+    const { desktopRelayUrl: _previousDesktopRelay, ...recordWithoutDesktopRelay } = record;
     store.put({
-      ...record,
+      ...recordWithoutDesktopRelay,
       key: hostKey(record.identity.hostId ?? record.identity.roomId),
       identity: { ...record.identity, relayUrl: selected.url },
       serviceOrigin: transport.serviceOrigin,
       relayEndpoints: transport.relayEndpoints,
       activeEndpoint: selected.id,
+      ...(sanitizedDesktopRelayUrl !== undefined
+        ? { desktopRelayUrl: sanitizedDesktopRelayUrl }
+        : {}),
+      iceServers: transport.iceServers,
       migratedAt: Date.now(),
       updatedAt: Date.now(),
     } satisfies StoredCrypto);

@@ -29,7 +29,7 @@
   </g>
   <g font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="600">
     <rect x="296" y="384" width="230" height="54" rx="27" fill="#1c1611" stroke="#e0885f" stroke-width="2"/>
-    <text x="411" y="419" fill="#f2ece4" text-anchor="middle">Android / iOS</text>
+    <text x="411" y="419" fill="#f2ece4" text-anchor="middle">Android / Web</text>
     <rect x="542" y="384" width="230" height="54" rx="27" fill="#1c1611" stroke="#e0885f" stroke-width="2"/>
     <text x="657" y="419" fill="#f2ece4" text-anchor="middle">macOS / Windows</text>
     <rect x="788" y="384" width="218" height="54" rx="27" fill="#1c1611" stroke="#d9a45b" stroke-width="2"/>

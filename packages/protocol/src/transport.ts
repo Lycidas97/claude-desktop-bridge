@@ -37,7 +37,7 @@ export interface BridgeTransport {
     options?: DeviceRegistrationOptions,
   ): void;
   revokeDevice(deviceId: string): void;
-  registerPushToken(platform: "android" | "ios", pushToken: string): void;
+  registerPushToken(platform: "android", pushToken: string): void;
   onMessage(
     listener: (message: DecryptedEnvelope, encrypted: EncryptedEnvelope) => void,
   ): () => void;
@@ -181,7 +181,7 @@ export class TransportRouter implements BridgeTransport {
     (this.active ?? unavailable()).revokeDevice(deviceId);
   }
 
-  registerPushToken(platform: "android" | "ios", pushToken: string): void {
+  registerPushToken(platform: "android", pushToken: string): void {
     (this.active ?? unavailable()).registerPushToken(platform, pushToken);
   }
 

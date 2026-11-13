@@ -49,6 +49,8 @@ describe("SqliteRelayStore", () => {
       authHash: "device-auth-hash",
       createdAt: now,
       expiresAt: now + 60_000,
+      pushPlatform: "ios",
+      pushToken: "legacy-device-token",
     });
     expect(await first.claimDevice(
       host.crypto.identity.roomId,
@@ -65,6 +67,8 @@ describe("SqliteRelayStore", () => {
     expect(reopened.getDevice(host.crypto.identity.roomId, pairing.pairing.deviceId)).toMatchObject({
       claimedInstanceId: "installation-1",
       claimedAt: now,
+      pushPlatform: "ios",
+      pushToken: "legacy-device-token",
     });
     expect(reopened.listQueued(
       host.crypto.identity.roomId,

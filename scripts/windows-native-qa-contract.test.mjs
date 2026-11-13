@@ -775,6 +775,15 @@ test("WSL background runner executes script, propagates fail-fast exit codes, an
     "Expected WSL encoding, launch, join, and finally cleanup blocks in scripts/win-local-ci.ps1",
   );
 
+  const environmentBlock = source.match(/^cd "`\$CI_DIR"\r?\n([\s\S]*?)(?=^LOCK_HASH=)/mu)[1];
+  const proxyEnvironment = {
+    HTTP_PROXY: "http://127.0.0.1:18080",
+    HTTPS_PROXY: "http://127.0.0.1:18443",
+    NO_PROXY: "localhost,127.0.0.1,fixture.invalid",
+    npm_config_proxy: "http://127.0.0.1:18080",
+    npm_config_https_proxy: "http://127.0.0.1:18443",
+    ELECTRON_GET_USE_PROXY: "1",
+  };
   const encodingBlock = source.slice(encodingStart, encodingEnd);
   const launchBlock = source.slice(launchStart, launchEnd);
   const rawJoinBlock = source.slice(joinStart, joinEnd);
@@ -842,6 +851,31 @@ function Invoke-JoinedCase([string]$caseName, [string]$wslScript) {
 }
 
 $results = [ordered]@{}
+$env:HTTP_PROXY = "${proxyEnvironment.HTTP_PROXY}"
+$env:HTTPS_PROXY = "${proxyEnvironment.HTTPS_PROXY}"
+$env:NO_PROXY = "${proxyEnvironment.NO_PROXY}"
+$proxyScript = @"
+set -euo pipefail
+export PATH="/usr/local/bin:\`$PATH"
+unset HTTP_PROXY HTTPS_PROXY NO_PROXY npm_config_proxy npm_config_https_proxy ELECTRON_GET_USE_PROXY
+${environmentBlock}
+node <<'NODE'
+const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
+assert.match(process.version, /^v26\\./u, "WSL proxy probe requires Node26");
+const expected = ${JSON.stringify(proxyEnvironment)};
+for (const [name, value] of Object.entries(expected)) {
+  assert.equal(process.env[name], value, "WSL child environment: " + name);
+}
+for (const [name, value] of [["proxy", expected.HTTP_PROXY], ["https-proxy", expected.HTTPS_PROXY]]) {
+  const config = spawnSync("npm", ["config", "get", name, "--no-update-notifier"], { encoding: "utf8" });
+  assert.equal(config.status, 0, config.stderr);
+  assert.equal(config.stdout.trim(), value, "WSL npm config get " + name);
+}
+console.log("WSL_PROXY_ENV_AND_NPM_OK");
+NODE
+"@
+$results["proxy"] = Invoke-JoinedCase "proxy" $proxyScript
 $results["exit0"] = Invoke-JoinedCase "exit0" ('set -euo pipefail' + "\`n" + 'printf "PGID=%s\n" "$(ps -o pgid= -p $$ | tr -d '' '')"' + "\`n" + 'echo "WSL_OUT_0_${tag}"' + "\`n" + 'echo "WSL_ERR_0_${tag}" >&2' + "\`n" + 'exit 0' + "\`n")
 $results["exit7"] = Invoke-JoinedCase "exit7" ('set -euo pipefail' + "\`n" + 'echo "WSL_OUT_7_${tag}"' + "\`n" + 'echo "WSL_ERR_7_${tag}" >&2' + "\`n" + 'exit 7' + "\`n")
 $results["failFast9"] = Invoke-JoinedCase "failFast9" ('set -euo pipefail' + "\`n" + 'echo "WSL_BEFORE_9_${tag}"' + "\`n" + 'sh -c "exit 9"' + "\`n" + 'echo "UNEXPECTED_CONTINUATION_${tag}"' + "\`n")
@@ -944,6 +978,10 @@ Write-Output ("BRIDGE_WSL_CONTRACT_JSON=" + ($results | ConvertTo-Json -Compress
     assert.ok(markerLine, `Missing BRIDGE_WSL_CONTRACT_JSON in output:\n${run.stdout}\n${run.stderr}`);
     const results = JSON.parse(markerLine.slice("BRIDGE_WSL_CONTRACT_JSON=".length));
     t.diagnostic(JSON.stringify(results));
+
+    assert.equal(results.proxy.threw, null, `proxy configuration threw: ${JSON.stringify(results.proxy)}`);
+    assert.equal(results.proxy.exitCode, 0, `proxy configuration failed: ${JSON.stringify(results.proxy)}`);
+    assert.match(results.proxy.stdout, /WSL_PROXY_ENV_AND_NPM_OK/u);
 
     assert.equal(results.exit0.threw, null, `exit 0 threw: ${JSON.stringify(results.exit0)}`);
     assert.equal(results.exit0.exitCode, 0, `exit 0 code mismatch: ${JSON.stringify(results.exit0)}`);

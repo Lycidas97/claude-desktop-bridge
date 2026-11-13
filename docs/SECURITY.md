@@ -48,7 +48,7 @@ Relay 必须看到房间 ID、设备 ID、时间、密文长度、在线状态�
 恶意 Relay 仍可丢弃、延迟或重放密文。客户端通过事件 ID、请求幂等键和单调
 `seq` 去重并发现缺口，但无法阻止服务端拒绝服务。
 
-FCM/APNs 请求只包含无正文唤醒标记。推送服务不会收到会话 ID、标题、摘要、消息
+Android FCM 请求只包含无正文唤醒标记。推送服务不会收到会话 ID、标题、摘要、消息
 文本或成果正文。
 
 WebRTC 的 SDP、ICE candidate 与断线 ACK 也封装在设备 AES-GCM 信封中，Relay
@@ -137,9 +137,8 @@ Bridge 不展示、存储或推断隐藏 CoT，不提供任意进程求值、远
   速率保护；TURN 长期密钥只能留在服务端，客户端只接收短期凭据。
 - Relay 使用 SQLite WAL 持久卷，密文默认保留七天，每房间最多 2,000 条或 128 MB；
   每日备份保留七份；成果临时响应不得进入该持久队列。
-- Relay 数据目录、FCM 服务账号和 APNs 私钥不得进入镜像或源码。
-- 配置 macOS notarization、Windows code signing、Android keystore 和 iOS
-  provisioning profile。
+- Relay 数据目录和 FCM 服务账号不得进入镜像或源码。
+- 配置 macOS notarization、Windows code signing 和 Android keystore。
 - Windows 安装包必须使用 Authenticode 签名；Bridge 的 `safeStorage` 在 Windows
   由 DPAPI 保护。旧凭据不迁移到手机、Relay 或安装包，Claude 不恢复 standalone API Key lane。
 - 为桌面安装包建立签名自动更新源；升级必须保留设备配置与事件日志。
@@ -149,6 +148,6 @@ Bridge 不展示、存储或推断隐藏 CoT，不提供任意进程求值、远
 
 ## 仍需外部条件
 
-仓库已实现 FCM/APNs 通道，但真实后台推送需要 Firebase 项目、
-`google-services.json`、APNs Key、应用商店标识和已签名安装包。未提供这些外部
+仓库已实现 Android FCM 通道，但真实后台推送需要 Firebase 项目、
+`google-services.json`、应用标识和已签名安装包。未提供这些外部
 凭据时，App 前台与重新打开后的离线恢复可用，但不能宣称锁屏即时唤醒已发布。

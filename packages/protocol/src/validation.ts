@@ -246,7 +246,7 @@ export function parseClientFrame(input: string): ClientFrame {
   }
   if (
     value.type === "push-register" &&
-    (value.platform === "android" || value.platform === "ios") &&
+    value.platform === "android" &&
     typeof value.pushToken === "string" &&
     value.pushToken.length >= 16 &&
     value.pushToken.length <= 4_096

@@ -1,5 +1,4 @@
 import { createSign } from "node:crypto";
-import { connect } from "node:http2";
 import type { DeviceRecord } from "./store.js";
 
 export interface PushDispatcher {
@@ -14,30 +13,18 @@ function jwt(
   header: Record<string, unknown>,
   payload: Record<string, unknown>,
   privateKey: string,
-  algorithm: "RSA-SHA256" | "SHA256",
 ): string {
   const body = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(payload))}`;
-  const signer = createSign(algorithm);
+  const signer = createSign("RSA-SHA256");
   signer.update(body);
   signer.end();
-  const signature = algorithm === "SHA256"
-    ? signer.sign({ key: privateKey, dsaEncoding: "ieee-p1363" })
-    : signer.sign(privateKey);
-  return `${body}.${base64url(signature)}`;
+  return `${body}.${base64url(signer.sign(privateKey))}`;
 }
 
 interface FcmConfig {
   projectId: string;
   clientEmail: string;
   privateKey: string;
-}
-
-interface ApnsConfig {
-  teamId: string;
-  keyId: string;
-  bundleId: string;
-  privateKey: string;
-  production: boolean;
 }
 
 export function fcmWakeRequestBody(pushToken: string): Record<string, unknown> {
@@ -50,10 +37,6 @@ export function fcmWakeRequestBody(pushToken: string): Record<string, unknown> {
   };
 }
 
-export function apnsWakeRequestBody(): Record<string, unknown> {
-  return { aps: { "content-available": 1 } };
-}
-
 function envValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
   const value = environment[name]?.replaceAll("\\n", "\n").trim();
   return value || undefined;
@@ -61,9 +44,7 @@ function envValue(environment: NodeJS.ProcessEnv, name: string): string | undefi
 
 export class EnvironmentPushDispatcher implements PushDispatcher {
   private readonly fcm: FcmConfig | undefined;
-  private readonly apns: ApnsConfig | undefined;
   private fcmAccessToken: { value: string; expiresAt: number } | undefined;
-  private apnsToken: { value: string; expiresAt: number } | undefined;
   private readonly lastWake = new Map<string, number>();
 
   constructor(environment: NodeJS.ProcessEnv = process.env) {
@@ -72,19 +53,6 @@ export class EnvironmentPushDispatcher implements PushDispatcher {
     const fcmPrivateKey = envValue(environment, "BRIDGE_FCM_PRIVATE_KEY");
     if (projectId && clientEmail && fcmPrivateKey) {
       this.fcm = { projectId, clientEmail, privateKey: fcmPrivateKey };
-    }
-    const teamId = envValue(environment, "BRIDGE_APNS_TEAM_ID");
-    const keyId = envValue(environment, "BRIDGE_APNS_KEY_ID");
-    const bundleId = envValue(environment, "BRIDGE_APNS_BUNDLE_ID");
-    const apnsPrivateKey = envValue(environment, "BRIDGE_APNS_PRIVATE_KEY");
-    if (teamId && keyId && bundleId && apnsPrivateKey) {
-      this.apns = {
-        teamId,
-        keyId,
-        bundleId,
-        privateKey: apnsPrivateKey,
-        production: environment.BRIDGE_APNS_PRODUCTION === "1",
-      };
     }
   }
 
@@ -96,7 +64,6 @@ export class EnvironmentPushDispatcher implements PushDispatcher {
     this.lastWake.set(key, now);
     try {
       if (device.pushPlatform === "android" && this.fcm) return await this.wakeFcm(device.pushToken);
-      if (device.pushPlatform === "ios" && this.apns) return await this.wakeApns(device.pushToken);
     } catch {
       return false;
     }
@@ -118,7 +85,6 @@ export class EnvironmentPushDispatcher implements PushDispatcher {
         exp: now + 3_600,
       },
       this.fcm!.privateKey,
-      "RSA-SHA256",
     );
     const response = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
@@ -153,51 +119,5 @@ export class EnvironmentPushDispatcher implements PushDispatcher {
       },
     );
     return response.ok;
-  }
-
-  private apnsJwt(): string {
-    if (this.apnsToken && this.apnsToken.expiresAt > Date.now() + 60_000) return this.apnsToken.value;
-    const now = Math.floor(Date.now() / 1_000);
-    const value = jwt(
-      { alg: "ES256", kid: this.apns!.keyId },
-      { iss: this.apns!.teamId, iat: now },
-      this.apns!.privateKey,
-      "SHA256",
-    );
-    this.apnsToken = { value, expiresAt: Date.now() + 50 * 60_000 };
-    return value;
-  }
-
-  private wakeApns(pushToken: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      const authority = this.apns!.production
-        ? "https://api.push.apple.com"
-        : "https://api.sandbox.push.apple.com";
-      const client = connect(authority);
-      client.once("error", () => resolve(false));
-      const request = client.request({
-        ":method": "POST",
-        ":path": `/3/device/${pushToken}`,
-        authorization: `bearer ${this.apnsJwt()}`,
-        "apns-topic": this.apns!.bundleId,
-        "apns-push-type": "background",
-        "apns-priority": "5",
-        "content-type": "application/json",
-      });
-      let ok = false;
-      request.on("response", (headers) => {
-        const status = headers[":status"];
-        ok = typeof status === "number" && status >= 200 && status < 300;
-      });
-      request.on("end", () => {
-        client.close();
-        resolve(ok);
-      });
-      request.on("error", () => {
-        client.close();
-        resolve(false);
-      });
-      request.end(JSON.stringify(apnsWakeRequestBody()));
-    });
   }
 }

@@ -361,6 +361,12 @@ git -C "`$CI_DIR" fetch --force "$wslBundlePath" "HEAD:refs/ci/slot-$slot"
 git -C "`$CI_DIR" reset --hard -q
 git -C "`$CI_DIR" checkout --force --detach -q "$Revision"
 cd "`$CI_DIR"
+export HTTP_PROXY="$env:HTTP_PROXY"
+export HTTPS_PROXY="$env:HTTPS_PROXY"
+export NO_PROXY="$env:NO_PROXY"
+export npm_config_proxy="`$HTTP_PROXY"
+export npm_config_https_proxy="`$HTTPS_PROXY"
+export ELECTRON_GET_USE_PROXY=1
 LOCK_HASH=`$(sha256sum package-lock.json | awk '{print `$1}')
 STAMP="node_modules/.bridge-lock-sha256"
 if [ ! -f "`$STAMP" ] || [ "`$(cat "`$STAMP")" != "`$LOCK_HASH" ] || [ ! -f "node_modules/electron/package.json" ]; then

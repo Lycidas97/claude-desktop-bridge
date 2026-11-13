@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { isBridgeNativeImageRef, isBridgePayload } from "./validation.js";
+import { isBridgeNativeImageRef, isBridgePayload, parseClientFrame } from "./validation.js";
+
+describe("push registration", () => {
+  it("accepts Android tokens and rejects iOS and invalid tokens at the wire boundary", () => {
+    const frame = { type: "push-register", platform: "android", pushToken: "synthetic-push-token" };
+    expect(parseClientFrame(JSON.stringify(frame))).toEqual(frame);
+    for (const value of [
+      { ...frame, platform: "ios" },
+      { ...frame, platform: "web" },
+      { ...frame, pushToken: "short" },
+      { ...frame, pushToken: "x".repeat(4_097) },
+    ]) expect(() => parseClientFrame(JSON.stringify(value))).toThrow("Unsupported frame");
+  });
+});
 
 describe("native image refs", () => {
   it("accepts exact UUID and zero-based image identities without accepting paths or bytes", () => {

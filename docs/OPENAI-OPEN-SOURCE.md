@@ -21,7 +21,7 @@
 | 仓库 | https://github.com/czhmartinez/claude-desktop-bridge |
 | 当前版本 | 0.7.8 |
 | License | MIT |
-| 平台 | macOS / Windows 桌面端；Android / iOS 移动端 |
+| 平台 | macOS / Windows 桌面端；Android 原生端 / 通用手机 Web |
 | 技术栈 | TypeScript、Electron、React、Capacitor、Node.js、SQLite、WebRTC |
 | 核心能力 | 端到端加密的手机遥控 Claude/Codex/Hermes/DSH Desktop；跨 Desktop 手动接力；会话同步、审批、成果预览、离线恢复 |
 
@@ -96,7 +96,7 @@ and device coverage to mature.
 ### What would the support be used for?
 
 - Public relay and push infrastructure for real-world cross-network testing.
-- Additional device and OS coverage (Windows, iOS, self-hosted relay).
+- Additional device and OS coverage (Windows, Android, mobile Web, self-hosted relay).
 - Documentation, internationalization, and community onboarding.
 - Long-running goal and cross-desktop relay reliability work.
 

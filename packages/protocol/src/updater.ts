@@ -14,7 +14,7 @@ export type BridgeUpdaterPhase =
   | "ready"
   | "applying"
   | "error";
-export type BridgeUpdaterPlatform = "win32" | "darwin" | "linux" | "android" | "ios" | "web";
+export type BridgeUpdaterPlatform = "win32" | "darwin" | "linux" | "android" | "web";
 
 export interface BridgeReleaseAsset {
   name: string;

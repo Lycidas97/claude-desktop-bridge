@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import {
   evidenceSummary,
   isBridgeNativeImageRef,
+  parseSystemUpdateParams,
   summarizeEvidenceEvent,
   type BridgeAttachment,
   type BridgeDesktopAppStatus,
@@ -29,6 +30,7 @@ import type { FileUploadManager } from "../evidence/file-upload.js";
 import type { LoadedDesktopConfig } from "../transport/config.js";
 import type { ConversationStateStore } from "./conversation-state-store.js";
 import type { SessionEventLog } from "./session-event-log.js";
+import type { DesktopUpdater } from "../updater/desktop-updater.js";
 
 export class BridgeRequestError extends Error {
   constructor(
@@ -153,6 +155,7 @@ export interface ControllerRpcHost {
   readonly conversationState?: ConversationStateStore;
   readonly uploads: FileUploadManager;
   readonly magpieQuota: ReturnType<typeof createMagpieQuotaPlugin>;
+  readonly updater?: DesktopUpdater;
   snapshot(): Promise<DesktopControlSnapshot>;
   publish(): Promise<DesktopControlSnapshot>;
   launchClaudeDesktop(): Promise<DesktopControlSnapshot>;
@@ -789,5 +792,13 @@ export async function dispatchControllerRequest(
     return { scheduled: true, deviceId };
   }
   if (request.method === MAGPIE_QUOTA_METHOD) return host.magpieQuota.handle(request);
+  if (request.method === "system.update") {
+    if (!host.updater) {
+      throw new BridgeRequestError("UNSUPPORTED", "当前 Bridge 服务未启用自动更新模块。");
+    }
+    const updater = await host.updater.handleRpc(parseSystemUpdateParams(params), origin);
+    await host.publish();
+    return updater;
+  }
   throw new Error("Unsupported request method");
 }

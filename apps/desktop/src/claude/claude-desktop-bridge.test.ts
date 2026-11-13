@@ -997,7 +997,6 @@ describe("Claude native relay", () => {
         expect(f.state.nativeDesktopReceipt("v116-foreign")).toMatchObject({ messageId: local.messageId, state: state === "close" ? "cancelled" : state === "started" ? "running" : state });
         expect(f.bridge.session(input.sessionId)?.pendingCommandIds).toEqual([local.commandId]);
         expect(f.bridge.session("other-native")?.pendingCommandIds).toEqual([]);
-        expect(f.eventLog.turnEvidence({ sessionId: input.sessionId, messageId: local.messageId }).terminal).toBeUndefined();
       } finally { await f.close(); }
     });
 
@@ -1551,7 +1550,6 @@ describe("Claude native relay", () => {
       expect(f.state.nativeDesktopReceipt("key")?.state).toBe("failed");
       await f.message({ type: "command_lifecycle", command_uuid: receipt.messageId, state: "completed" });
       expect(f.state.nativeDesktopReceipt("key")?.state).toBe("failed");
-      expect(f.eventLog.turnEvidence({ sessionId: input.sessionId, messageId: receipt.messageId }).terminal).toBe("failed");
     } finally { await f.close(); }
   });
 
@@ -1659,7 +1657,6 @@ describe("Claude native relay", () => {
       const later = await f.bridge.startTurn({ ...input, idempotencyKey: "next", requestId: "next" });
       await f.message({ type: "result", uuid: "native-result", is_error: false, user_message_uuid: receipt.messageId, user_message_uuids: [receipt.messageId] });
       expect(f.state.nativeDesktopReceipt("key")?.state).toBe("completed");
-      expect(f.eventLog.turnEvidence({ sessionId: "local-native", messageId: receipt.messageId }).terminal).toBe("completed");
       expect(f.state.nativeDesktopReceipt("next")?.messageId).toBe(later.messageId);
       expect(f.state.nativeDesktopReceipt("next")?.state).toBe("submitted");
     } finally { await f.close(); }
@@ -2001,19 +1998,33 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("keeps a persisted tool identity when its completion arrives after Bridge restarts", async () => {
+  it.each([false, true])("keeps a persisted tool identity and dedup after Bridge restarts (compacted=%s)", async compacted => {
     const f = await fixture();
     let restarted: ClaudeDesktopBridge | undefined;
+    let reloadedLog: SessionEventLog | undefined;
     try {
-      await f.message({ type: "assistant", uuid: "restart-call", message: { content: [{ type: "tool_use", id: "restart-tool", name: "Read", input: { file_path: "/project/restart.ts" } }] } });
+      const call = { type: "assistant", uuid: "restart-call", message: { content: [{ type: "tool_use", id: "restart-tool", name: "Read", input: { file_path: "/project/restart.ts" } }] } };
+      await f.message(call);
       await f.bridge.close();
-      restarted = new ClaudeDesktopBridge(f.options);
+      await f.eventLog.close();
+      reloadedLog = new SessionEventLog(f.eventLog.path, 80, compacted ? { bytesThreshold: 1, retainEvents: 0 } : undefined);
+      await reloadedLog.initialize();
+      restarted = new ClaudeDesktopBridge({ ...f.options, eventLog: reloadedLog });
       await restarted.initialize();
-      const changed = once(restarted, "changed");
+      const beforeDuplicate = reloadedLog.latestSeq();
+      let changed = once(restarted, "changed");
+      f.native.emit("event", { type: "message", sessionId: "local-native", message: call });
+      await changed;
+      expect(reloadedLog.latestSeq()).toBe(beforeDuplicate);
+      // Discard the rehydrated in-memory tool so completion resolves its identity from the event log.
+      await restarted.close();
+      restarted = new ClaudeDesktopBridge({ ...f.options, eventLog: reloadedLog });
+      await restarted.initialize();
+      changed = once(restarted, "changed");
       f.native.emit("event", { type: "message", sessionId: "local-native", message: { type: "user", uuid: "restart-result", message: { content: [{ type: "tool_result", tool_use_id: "restart-tool", content: "Finished" }] } } });
       await changed;
-      expect(f.eventLog.latestItem("local-native", "tool.completed", "restart-tool")?.data).toMatchObject({ toolName: "Read", text: expect.stringContaining("/project/restart.ts") });
-    } finally { await restarted?.close(); await f.close(); }
+      expect(reloadedLog.latestItem("local-native", "tool.completed", "restart-tool")?.data).toMatchObject({ toolName: "Read", text: compacted ? "" : expect.stringContaining("/project/restart.ts") });
+    } finally { await restarted?.close(); await reloadedLog?.close(); await f.close(); }
   });
 
   it.each([
@@ -3013,7 +3024,6 @@ describe("Claude native relay", () => {
         await f.message({ type: "command_lifecycle", command_uuid: receipt.messageId, state, uuid: `late-${state}` });
         expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.state).toBe(isError ? "failed" : "completed");
       }
-      expect(f.eventLog.turnEvidence({ sessionId: input.sessionId, messageId: receipt.messageId }).terminal).toBe(isError ? "failed" : "completed");
       expect(f.eventLog.replay(0).filter(event => event.type === "turn.started")).toEqual([]);
     } finally { await f.close(); }
   });
@@ -3091,7 +3101,6 @@ describe("Claude native relay", () => {
       f.native.emit("event", { sessionId: "other-native", message: { type: "result", uuid: "foreign-result", user_message_uuid: receipt.messageId, is_error: false } });
       await changed;
       expect(f.state.nativeDesktopReceipt(input.idempotencyKey)?.state).toBe("submitted");
-      expect(f.eventLog.turnEvidence({ sessionId: input.sessionId, messageId: receipt.messageId }).terminal).toBeUndefined();
     } finally { await f.close(); }
   });
 

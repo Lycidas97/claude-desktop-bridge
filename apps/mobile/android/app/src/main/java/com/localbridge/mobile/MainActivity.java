@@ -1,5 +1,6 @@
 package com.localbridge.mobile;
 
+import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -7,6 +8,12 @@ public class MainActivity extends BridgeActivity {
 
     public static boolean isForeground() {
         return foreground;
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        registerPlugin(BridgeUpdaterPlugin.class);
+        super.onCreate(savedInstanceState);
     }
 
     @Override

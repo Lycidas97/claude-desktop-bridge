@@ -27,9 +27,19 @@ function nativeSnapshot() {
         "claude.native-relay.v1",
         "directory.browse.v1", "runtime.adapter.v1", "session.visibility.v1",
         "session.commands.v1", "session.command.v1", "subagent.stop.v1",
-        "transcript.toolDetail.v1",
+        "system.update.v1", "transcript.toolDetail.v1",
         "turn.queue.steer.v1", "turn.queue.cancel.v1", "plugin.magpie-quota.v1",
       ],
+    },
+    updater: {
+      platform: "win32",
+      arch: "x64",
+      currentVersion: desktopPackage.version,
+      channel: "stable",
+      autoCheck: true,
+      applyMode: "prompt",
+      canAutoRestart: true,
+      phase: "idle",
     },
     projects: [], sessions: [], devices: [], permissions: [], prompts: [],
     runtime: {
@@ -73,6 +83,9 @@ async function runQa(snapshot, overrides = {}) {
       if (["provider.list", "conversation.route.get"].includes(request.method)) {
         return { ok: false, error: { code: "UNSUPPORTED", message: "Claude Desktop 原生会话不支持 Bridge 独立提供方或执行通道接力。" } };
       }
+      if (request.method === "system.update") {
+        return { ok: true, result: snapshot.updater };
+      }
       const field = { "runtime.list": "runtimes", "project.list": "projects", "session.list": "sessions" }[request.method];
       assert.ok(field, `Unexpected QA request: ${request.method}`);
       return { ok: true, result: { [field]: snapshot[field] } };
@@ -102,7 +115,7 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
   for (const capability of ["prompt.resolve", "pr.autofix"]) assert.equal(snapshot.runtimes[0].capabilities.includes(capability), false);
   const result = await runQa(snapshot);
   assert.equal(result.report.ok, true);
-  for (const method of ["runtime.list", "project.list", "session.list", "provider.list", "conversation.route.get"]) {
+  for (const method of ["runtime.list", "project.list", "session.list", "system.update", "provider.list", "conversation.route.get"]) {
     assert.ok(result.requests.includes(method), `${method} was not verified`);
   }
   assert.ok(result.ui.includes(".desktop-sidebar-empty"));
@@ -110,6 +123,7 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
   assert.ok(result.ui.includes("诊断与关于"));
   assert.ok(result.ui.includes('dt:text-is("原生中转") + dd'));
   assert.ok(result.ui.includes("已就绪"));
+  assert.ok(result.ui.includes("版本更新"));
 });
 
 test("packaged QA keeps Native configuration/evidence checks with optional runtime capabilities", async () => {

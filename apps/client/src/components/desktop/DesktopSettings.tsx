@@ -12,6 +12,7 @@ import { setDiagDialogOpen } from "../../lib/diagnostics.js";
 import { AppearanceSettings } from "../mobile/MobileSettings.js";
 import { ProviderSettings } from "../session/ProviderSettings.js";
 import { RelaySettings } from "../pairing/RelaySettings.js";
+import { DesktopUpdaterSection } from "../updater/UpdaterSections.js";
 import "../session/settings.css";
 
 const SECTIONS = [
@@ -161,6 +162,7 @@ export function DesktopSettings({ snapshot, api, onSnapshot, themeControl }: {
           <button type="button" className="secondary-button" onClick={() => { setExportError(""); void api.exportDiagnostics().catch((reason: unknown) => setExportError(reason instanceof Error ? reason.message : "诊断导出失败")); }}><Download size={16} />导出诊断</button>
         </div>
         {exportError && <p role="alert" className="inline-error">{exportError}</p>}
+        <DesktopUpdaterSection snapshot={snapshot} api={api} onSnapshot={onSnapshot} />
       </section>}
     </div>
   </section>;

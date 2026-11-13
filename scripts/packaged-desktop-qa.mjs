@@ -50,6 +50,7 @@ try {
     "session.commands.v1",
     "session.visibility.v1",
     "subagent.stop.v1",
+    "system.update.v1",
     "turn.queue.cancel.v1",
     "turn.queue.steer.v1",
     "workspace.upload.v1",
@@ -90,6 +91,10 @@ try {
     }
     ipcProof[method] = response.result[field].length;
   }
+  const updaterStatus = await page.evaluate(() => window.bridgeDesktop.request({ method: "system.update", params: { action: "status" } }));
+  assert.equal(updaterStatus.ok, true, `system.update: ${updaterStatus.error?.message}`);
+  assert.equal(updaterStatus.result.currentVersion, desktopPackage.version);
+  ipcProof["system.update"] = updaterStatus.result.phase;
   for (const method of ["provider.list", "conversation.route.get"]) {
     const response = await page.evaluate((method) => window.bridgeDesktop.request({ method, params: {} }), method);
     assert.equal(response.ok, false, `${method} must be unsupported for Native relay`);
@@ -141,6 +146,7 @@ try {
   await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
   await page.getByRole("button", { name: "诊断与关于", exact: true }).click();
   await page.locator('dt:text-is("原生中转") + dd').getByText("已就绪", { exact: true }).waitFor();
+  await page.getByRole("heading", { name: "版本更新", exact: true }).waitFor();
   assert.deepEqual(errors, []);
   await page.screenshot({ path: resolve(artifacts, "desktop-evidence.png"), fullPage: true });
   process.stdout.write(`${JSON.stringify({

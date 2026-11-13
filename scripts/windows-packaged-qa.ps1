@@ -72,9 +72,10 @@ if ($null -eq $installer) {
   throw "Windows NSIS installer was not found. Run npm run make:windows first."
 }
 
-$qaRoot = Join-Path $env:TEMP ("bridge-packaged-qa-" + [Guid]::NewGuid().ToString("N"))
-$smokeRoot = Join-Path $env:TEMP ("bridge-packaged-smoke-" + [Guid]::NewGuid().ToString("N"))
-$installRoot = Join-Path $env:TEMP ("bridge-custom-install-" + [Guid]::NewGuid().ToString("N"))
+$qaParent = if ($env:RUNNER_ENVIRONMENT -ne "github-hosted" -and $env:BRIDGE_RECYCLE_STAGING) { $env:BRIDGE_RECYCLE_STAGING } else { $env:TEMP }
+$qaRoot = Join-Path $qaParent ("bridge-packaged-qa-" + [Guid]::NewGuid().ToString("N"))
+$smokeRoot = Join-Path $qaParent ("bridge-packaged-smoke-" + [Guid]::NewGuid().ToString("N"))
+$installRoot = Join-Path $qaParent ("bridge-custom-install-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $qaRoot | Out-Null
 New-Item -ItemType Directory -Path $smokeRoot | Out-Null
 
@@ -221,7 +222,7 @@ try {
     & $adb install -r $apk
     if ($LASTEXITCODE -ne 0) { throw "adb install failed with exit code $LASTEXITCODE" }
     & $adb shell pm clear com.localbridge.mobile | Out-Null
-    & $adb shell am start -W -n com.localbridge.mobile/.MainActivity | Out-Null
+    & $adb shell am start -W -n com.localbridge.mobile/.MainActivity
     if ($LASTEXITCODE -ne 0) { throw "Failed to launch com.localbridge.mobile/.MainActivity" }
 
     $webviewSocket = $null
@@ -237,6 +238,8 @@ try {
     }
     if (-not $webviewSocket) { throw "Timed out waiting for Android WebView DevTools socket" }
 
+    Write-Output "Android WebView DevTools socket: $webviewSocket"
+    Write-Output ("Android Bridge PID: " + ((& $adb shell pidof com.localbridge.mobile) -join " "))
     $androidPort = ((& $adb forward tcp:0 "localabstract:$webviewSocket") -join "").Trim()
     if ($LASTEXITCODE -ne 0 -or $androidPort -notmatch "^\d+$") {
       throw "adb forward tcp:0 failed with exit code $LASTEXITCODE ($androidPort)"
@@ -310,7 +313,7 @@ try {
     # Hosted Windows runners can reject recycle-bin directory operations.
     # Retain isolated QA data rather than substitute permanent deletion.
     Write-Warning "Packaged QA data retained (hosted Windows recycle-bin cleanup is unsupported on some runners): $qaRoot; $smokeRoot; $installRoot"
-  } else {
+  } elseif (-not $env:BRIDGE_RECYCLE_STAGING) {
     & node.exe --require (Join-Path $PSScriptRoot "recycle-cleanup.cjs") `
       (Join-Path $PSScriptRoot "clean.mjs") $qaRoot $smokeRoot $installRoot
     if ($LASTEXITCODE -ne 0) {

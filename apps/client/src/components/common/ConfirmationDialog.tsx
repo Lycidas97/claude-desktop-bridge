@@ -7,6 +7,7 @@ export function ConfirmationDialog({
   description,
   confirmLabel,
   busy = false,
+  confirmDisabled = false,
   danger = false,
   onCancel,
   onConfirm,
@@ -16,6 +17,7 @@ export function ConfirmationDialog({
   description: string;
   confirmLabel: string;
   busy?: boolean;
+  confirmDisabled?: boolean;
   danger?: boolean;
   onCancel(): void;
   onConfirm(): void;
@@ -37,7 +39,7 @@ export function ConfirmationDialog({
         <p id={descriptionId}>{description}</p>
         <div className="confirm-actions">
           <button type="button" className="secondary-button" onClick={onCancel} disabled={busy}>取消</button>
-          <button type="button" className={danger ? "danger-button" : "primary-button"} onClick={onConfirm} disabled={busy}>
+          <button type="button" className={danger ? "danger-button" : "primary-button"} onClick={onConfirm} disabled={busy || confirmDisabled}>
             {busy ? "正在处理" : confirmLabel}
           </button>
         </div>

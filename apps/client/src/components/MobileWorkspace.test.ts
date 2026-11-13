@@ -1869,6 +1869,49 @@ describe("conversationItems", () => {
     expect(html).not.toContain("lucide-check");
   });
 
+  it("renders SubagentCard expanded without outer details, duplicate live preview, or inner truncation when collapsible is false", () => {
+    const longReport = Array.from({ length: 35 }, (_, idx) => `Line ${idx + 1}: subagent finding detail`).join("\n");
+    const runningItem: BridgeHistoryItem = {
+      id: "task-live",
+      sessionId: "session-1",
+      role: "tool",
+      origin: "claude-desktop",
+      createdAt: 100,
+      text: "Audit",
+      subagent: {
+        agentId: "ag-live",
+        description: "Audit",
+        state: "running",
+        toolCount: 2,
+        recentTools: ["Read a.ts", "Grep bar"],
+        latestText: "Checking edge cases",
+        startedAt: 100,
+        updatedAt: 200,
+      },
+    };
+    const completedItem: BridgeHistoryItem = {
+      ...runningItem,
+      id: "task-done",
+      subagent: { ...runningItem.subagent!, state: "completed", reportText: longReport },
+    };
+
+    const inlineHtml = renderToStaticMarkup(createElement(SubagentCard, { item: completedItem }));
+    expect(inlineHtml).toContain('<details class="subagent-details">');
+    expect(inlineHtml).toContain("展开全文");
+
+    const liveDetailHtml = renderToStaticMarkup(createElement(SubagentCard, { item: runningItem, collapsible: false }));
+    expect(liveDetailHtml).not.toContain("<details");
+    expect(liveDetailHtml).not.toContain("subagent-live-progress");
+    expect(liveDetailHtml.match(/Checking edge cases/gu)).toHaveLength(1);
+    expect(liveDetailHtml).toContain("Read a.ts");
+
+    const doneDetailHtml = renderToStaticMarkup(createElement(SubagentCard, { item: completedItem, collapsible: false }));
+    expect(doneDetailHtml).not.toContain("<details");
+    expect(doneDetailHtml).not.toContain("展开全文");
+    expect(doneDetailHtml).not.toContain("inert");
+    expect(doneDetailHtml).toContain("Line 35: subagent finding detail");
+  });
+
   it("merges subagent progress and completion reports across history and live events", () => {
     const events: BridgeEvent[] = [
       {

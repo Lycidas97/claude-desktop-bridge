@@ -1,5 +1,14 @@
 import type { BridgeEndpoint, BridgeEndpointKind } from "./types.js";
 
+export const DEFAULT_PUBLIC_RELAY_URL = "wss://bis.zju.edu.cn/bridge-relay/ws";
+export const DEFAULT_BRIDGE_SERVICE_ORIGIN = "https://bis.zju.edu.cn";
+export const RETIRED_DEFAULT_RELAY_URL = "wss://relay.alioxis.com/ws";
+
+const RETIRED_DEFAULT_SERVICE_ORIGINS = new Set([
+  "https://relay.alioxis.com",
+  "https://bridge.alioxis.com",
+]);
+
 function isPrivateIpv4(hostname: string): boolean {
   const octets = hostname.split(".").map(Number);
   if (
@@ -43,6 +52,39 @@ export function relayServiceOrigin(relayUrl: string): string {
   const url = new URL(relayUrl);
   url.protocol = url.protocol === "wss:" ? "https:" : "http:";
   return url.origin;
+}
+
+export function isRetiredDefaultRelayUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    return normalizeRelayUrl(value) === RETIRED_DEFAULT_RELAY_URL;
+  } catch {
+    return false;
+  }
+}
+
+export function isRetiredDefaultServiceOrigin(value: string | undefined): boolean {
+  const trimmed = value?.trim().replace(/\/+$/u, "");
+  return trimmed ? RETIRED_DEFAULT_SERVICE_ORIGINS.has(trimmed.toLowerCase()) : false;
+}
+
+function relaySiblingHttpUrl(endpoint: string, leaf: "health" | "ready"): string {
+  const url = new URL(endpoint);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  url.pathname = /\/ws\/?$/iu.test(url.pathname)
+    ? url.pathname.replace(/\/ws\/?$/iu, `/${leaf}`)
+    : `/${leaf}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+export function relayHealthUrl(endpoint: string): string {
+  return relaySiblingHttpUrl(endpoint, "health");
+}
+
+export function relayReadyUrl(endpoint: string): string {
+  return relaySiblingHttpUrl(endpoint, "ready");
 }
 
 export function bridgeEndpoint(

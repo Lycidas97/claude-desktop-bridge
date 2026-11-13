@@ -5,11 +5,12 @@ import type {
   BridgeAttachment, BridgeBackgroundTask, BridgeEffort, BridgeHistoryItem, BridgeHistoryPage, BridgeModelInfo, BridgeNativeImageRef, BridgeNativePermissionMode, BridgeNativePermissionModeChange, BridgeOrigin,
   BridgePermissionDecision, BridgePermissionInfo, BridgeProjectInfo, BridgeRuntimeCapability,
   BridgeRuntimeStatus, BridgeSDKPermissionMode, BridgeSessionCommandResult,
-  BridgeSessionConfiguration, BridgeSessionContextUsage, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeSubagentSummary,
+  BridgeSessionConfiguration, BridgeSessionContextUsage, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeSubagentSummary, BridgeToolCallDetail,
 } from "@bridge/protocol";
 import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "../controller/conversation-state-store.js";
 import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, scanClaudeContextFromMessages, visibleMessage } from "../transcript/claude-history.js";
+import { extractToolCallDetailFromMessages, readSubagentToolCallDetail, summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
 import { claudeRuntimePaths } from "../app/platform.js";
 import type { SessionEventLog, BridgeEventDraft } from "../controller/session-event-log.js";
 import type { EvidenceManager, ObservedDesktopTool } from "../evidence/evidence-manager.js";
@@ -41,6 +42,22 @@ import {
 } from "./native-history-projection.js";
 
 export { nativeHistoryItems };
+
+export class WorkspaceTrustRequiredError extends NativeCallError {
+  constructor(readonly manual: boolean) {
+    super(
+      manual
+        ? "请在电脑端 Claude 窗口打开并信任此文件夹后重试。"
+        : "此文件夹首次在 Claude Desktop 中使用，需要确认信任后才能创建会话。",
+    );
+    this.name = "WorkspaceTrustRequiredError";
+  }
+}
+
+function isWorkspaceTrustError(error: unknown): boolean {
+  const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  return /\bWorkspaceTrustError\b|\[ccdErrorCategory:trust_required\]/u.test(text);
+}
 
 interface NativeSession {
   sessionId: string;
@@ -75,6 +92,8 @@ interface InspectorTransport {
   sections?(sessionIds: string[]): Promise<NativeSectionCatalog | undefined>;
   createSection?(name: string): Promise<string>;
   assignSection?(sessionId: string, sectionId: string): Promise<void>;
+  renameSection?(sectionId: string, name: string): Promise<void>;
+  deleteSection?(sectionId: string): Promise<void>;
   on(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
@@ -190,7 +209,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const capabilities: BridgeRuntimeCapability[] = ["session.list", "session.history"];
     if (!this.inspector.ready) return capabilities;
     const methods: Array<[string, BridgeRuntimeCapability]> = [
-      ["start", "session.create"], ["forkSession", "session.fork"], ["sendMessage", "turn.start"],
+      ["start", "session.create"], ["saveTrust", "workspace.trust"], ["forkSession", "session.fork"], ["sendMessage", "turn.start"],
       ["sendMessage", "turn.steer"], ["interrupt", "turn.interrupt"], ["setModel", "session.configure"],
       ["respondToToolPermission", "permission.resolve"], ["sendMessage", "attachment.image"],
     ];
@@ -198,6 +217,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (["canRewindTo", "rewindV2", "rewindFiles"].every(method => this.inspector.supports(method))) capabilities.push("session.rewind");
     if (this.sectionCatalog && this.inspector.createSection && this.inspector.assignSection) capabilities.push("section.create");
     if (this.sectionCatalog && this.inspector.assignSection) capabilities.push("section.move");
+    if (this.sectionCatalog?.canRename && this.inspector.renameSection) capabilities.push("section.rename");
+    if (this.sectionCatalog?.canDelete && this.inspector.deleteSection) capabilities.push("section.delete");
     capabilities.push("tool.events");
     return capabilities;
   }
@@ -360,11 +381,45 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return session;
   }
 
-  async createSession(cwd: string, title?: string, projectId?: string): Promise<BridgeSessionInfo> {
+  async renameSection(sectionId: string, name: string): Promise<BridgeProjectInfo> {
+    if (!this.capabilities().includes("section.rename")) throw new NativeCallError("This Claude Desktop version does not support Sections");
+    if (!this.sectionCatalog?.sections.some(section => section.id === sectionId)) {
+      throw new NativeCallError("Selected Desktop Section is no longer available");
+    }
+    await this.inspector.renameSection!(sectionId, name);
+    if (!await this.refreshRuntime()) throw new NativeCallError(this.lastError);
+    const project = this.listProjects().find(project => project.kind === "desktop-group" && project.projectId === sectionId);
+    if (!project) throw new NativeCallError("Selected Desktop Section is no longer available");
+    return project;
+  }
+
+  async deleteSection(sectionId: string): Promise<void> {
+    if (!this.capabilities().includes("section.delete")) throw new NativeCallError("This Claude Desktop version does not support Sections");
+    if (!this.sectionCatalog?.sections.some(section => section.id === sectionId)) {
+      throw new NativeCallError("Selected Desktop Section is no longer available");
+    }
+    await this.inspector.deleteSection!(sectionId);
+    if (!await this.refreshRuntime()) throw new NativeCallError(this.lastError);
+  }
+
+  async createSession(cwd: string, title?: string, projectId?: string, trustWorkspace?: boolean): Promise<BridgeSessionInfo> {
     if (projectId && !await this.refreshRuntime()) throw new NativeCallError(this.lastError);
     const project = projectId ? this.listProjects().find(project => project.projectId === projectId) : undefined;
     if (projectId && !project) throw new NativeCallError("Selected Desktop project is no longer available");
-    const result = record(await this.inspector.call("start", [{ cwd, title, sessionId: `local_${randomUUID()}`, withoutFirstMessage: true, message: "" }]));
+    if (trustWorkspace) {
+      if (!this.inspector.supports("saveTrust")) throw new WorkspaceTrustRequiredError(true);
+      await this.inspector.call("saveTrust", [cwd]);
+    }
+    let raw: unknown;
+    try {
+      raw = await this.inspector.call("start", [{ cwd, title, sessionId: `local_${randomUUID()}`, withoutFirstMessage: true, message: "" }]);
+    } catch (error) {
+      if (isWorkspaceTrustError(error)) {
+        throw new WorkspaceTrustRequiredError(Boolean(trustWorkspace) || !this.inspector.supports("saveTrust"));
+      }
+      throw error;
+    }
+    const result = record(raw);
     if (typeof result.sessionId !== "string") throw new NativeCallError("Desktop did not return a session ID");
     if (project?.kind === "desktop-group") await this.inspector.assignSection!(result.sessionId, project.projectId);
     await this.refreshRuntime();
@@ -599,6 +654,30 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const messages = Array.isArray(result) ? result : record(result).messages;
     if (!Array.isArray(messages)) throw new NativeCallError("Desktop returned an invalid transcript");
     return extractNativeImageAttachment(sessionId, messages, ref);
+  }
+
+  async readToolDetail(sessionId: string, toolUseId: string, agentId?: string): Promise<BridgeToolCallDetail> {
+    const id = this.desktopId(sessionId);
+    if (agentId !== undefined) {
+      const observed = (await (this.options.scanCatalog?.() ?? scanClaudeCatalog(claudeRuntimePaths())))
+        .sessions.find(session => session.desktopSessionId === id);
+      if (!observed?.transcriptPath) throw new NativeCallError("Subagent transcript not found");
+      const detail = await readSubagentToolCallDetail({
+        sessionId,
+        transcriptPath: observed.transcriptPath,
+        agentId,
+        toolUseId,
+      });
+      if (!detail) throw new NativeCallError("Tool call not found");
+      return detail;
+    }
+    if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop transcript is unavailable while inspector is disconnected");
+    const result = await this.inspector.call("getTranscript", [id]);
+    const messages = Array.isArray(result) ? result : record(result).messages;
+    if (!Array.isArray(messages)) throw new NativeCallError("Desktop returned an invalid transcript");
+    const detail = extractToolCallDetailFromMessages({ sessionId, toolUseId, messages });
+    if (!detail) throw new NativeCallError("Tool call not found");
+    return detail;
   }
 
   async commands(sessionId: string): Promise<BridgeSlashCommandCatalog> {
@@ -954,10 +1033,22 @@ export class ClaudeDesktopBridge extends EventEmitter {
         const block = record(rawBlock);
         if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
           const tool = this.tools.get(block.tool_use_id);
+          this.tools.delete(block.tool_use_id);
           const started = this.options.eventLog.latestItem(sessionId, "tool.started", block.tool_use_id);
-          const toolName = tool?.toolName ?? started?.data.toolName;
+          const rawToolName = tool?.toolName ?? started?.data.toolName;
+          const toolName = typeof rawToolName === "string" && rawToolName ? rawToolName : undefined;
           if (toolName && toolName !== "mcp__ccd_turn__update_plan" && toolName !== "mcp__ccd_turn__wrap_up") {
-            await this.record({ sessionId, itemId: block.tool_use_id, origin: "claude-desktop", type: "tool.completed", data: { toolName, text: tool ? JSON.stringify(tool.input ?? {}) : started?.data.text ?? "", output: block.content } });
+            await this.record({
+              sessionId,
+              itemId: block.tool_use_id,
+              origin: "claude-desktop",
+              type: "tool.completed",
+              data: {
+                toolName,
+                text: tool ? summarizeNativeToolInput(toolName, tool.input) : started?.data.text ?? "",
+                ...(block.is_error === true ? { isError: true } : {}),
+              },
+            });
           }
           if (tool && this.options.evidence) {
             tool.output = block.content; tool.completedAt = Date.now();

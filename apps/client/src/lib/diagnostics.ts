@@ -1,5 +1,9 @@
 import { Capacitor } from "@capacitor/core";
-import type { DesktopControlSnapshot } from "@bridge/protocol";
+import {
+  DEFAULT_BRIDGE_SERVICE_ORIGIN,
+  DEFAULT_PUBLIC_RELAY_URL,
+  type DesktopControlSnapshot,
+} from "@bridge/protocol";
 import { useEffect, useState } from "react";
 import clientPackage from "../../package.json";
 
@@ -16,10 +20,10 @@ const MAX_LOG_ENTRIES = 400;
 const DIAG_ENABLED_STORAGE_KEY = "bridge.mobile.diag.enabled.v1";
 export const BUILD_DIAG_TAG = `v${clientPackage.version}`;
 const DEFAULT_DIAG_RELAY_URL = String(
-  import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? "wss://relay.alioxis.com/ws",
+  import.meta.env.VITE_BRIDGE_PUBLIC_RELAY_URL ?? DEFAULT_PUBLIC_RELAY_URL,
 ).trim();
 const DEFAULT_DIAG_SERVICE_ORIGIN = String(
-  import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? "https://relay.alioxis.com",
+  import.meta.env.VITE_BRIDGE_SERVICE_ORIGIN ?? DEFAULT_BRIDGE_SERVICE_ORIGIN,
 ).trim();
 
 let nextSeq = 1;

@@ -21,6 +21,7 @@ async function fixture() {
     cancelQueuedMessage: (...args: unknown[]) => { calls.push(args); return args[1] !== "consumed"; },
     promoteQueuedMessage: (...args: unknown[]) => { calls.push(args); return args[1] !== "consumed"; },
     sendSteeredNow: (...args: unknown[]) => { calls.push(args); return args[1] !== "consumed"; },
+    saveTrust: (...args: unknown[]) => { calls.push(args); },
     onOnEvent: (callback: (value: unknown) => void) => { events.add(callback); return () => events.delete(callback); },
     onOnToolPermissionRequest: (callback: (value: unknown) => void) => { permissions.add(callback); return () => permissions.delete(callback); },
   };
@@ -152,6 +153,28 @@ describe("native Desktop inspector", () => {
     } finally { await f.close(); }
   });
 
+  it("advertises and forwards rename_section and delete_section only when the sidebar exposes them", async () => {
+    const f = await fixture();
+    try {
+      await f.inspector.connect();
+      await expect(f.inspector.renameSection("empty", "Renamed")).rejects.toThrow("does not support Sections");
+      await expect(f.inspector.deleteSection("empty")).rejects.toThrow("does not support Sections");
+      f.sidebar.tools.push({ name: "rename_section" }, { name: "delete_section" });
+      expect(await f.inspector.sections(["local-native"])).toEqual({
+        sections: [{ id: "empty", name: "<Research>", order: 0 }],
+        assignments: { "local-native": "empty" },
+        canRename: true,
+        canDelete: true,
+      });
+      await f.inspector.renameSection("empty", "Renamed");
+      await f.inspector.deleteSection("empty");
+      expect(f.sidebar.calls.slice(-2)).toEqual([
+        { method: "rename_section", params: { section_id: "empty", name: "Renamed" }, context: {} },
+        { method: "delete_section", params: { section_id: "empty" }, context: {} },
+      ]);
+    } finally { await f.close(); }
+  });
+
   it("discovers the renderer, receives both streams and unsubscribes on close", async () => {
     const f = await fixture();
     try {
@@ -191,6 +214,21 @@ describe("native Desktop inspector", () => {
       expect(f.inspector.supports("startBtwChild")).toBe(true);
       expect(await f.inspector.call("startBtwChild", ["local-native"])).toEqual({ status: "started", sessionId: "native-child" });
       expect(f.calls).toEqual([["local-native"]]);
+    } finally { await f.close(); }
+  });
+
+  it.each(["D:\\PARA", "/Users/demo/new-workspace"])("detects and forwards saveTrust for %s without advertising absent methods", async cwd => {
+    const f = await fixture();
+    try {
+      await f.inspector.connect();
+      expect(f.inspector.supports("saveTrust")).toBe(true);
+      await f.inspector.call("saveTrust", [cwd]);
+      expect(f.calls).toEqual([[cwd]]);
+      Reflect.deleteProperty(f.api, "saveTrust");
+      await f.inspector.close();
+      f.reload();
+      await f.inspector.connect();
+      expect(f.inspector.supports("saveTrust")).toBe(false);
     } finally { await f.close(); }
   });
 

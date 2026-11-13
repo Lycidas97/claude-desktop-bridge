@@ -364,4 +364,74 @@ describe("creation contract", () => {
     const browseTree = await click(input, "浏览电脑文件夹");
     expect(button(browseTree, "使用此文件夹").key).toBe("use-folder");
   });
+
+  it.each(["D:\\PARA", "/work/untrusted"])("confirms workspace trust and retries with trustWorkspace=true when capability is advertised (%s)", async (targetCwd) => {
+    const host = snapshot([group]);
+    host.host.capabilities.push("workspace.trust.v1");
+    host.runtimes![0]!.capabilities.push("workspace.trust");
+    const onCreate = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("此文件夹首次在 Claude Desktop 中使用，需要确认信任后才能创建会话。"), { code: "WORKSPACE_TRUST_REQUIRED" }))
+      .mockResolvedValueOnce({ ...created, cwd: targetCwd });
+    const input = { ...props(host), initialProjectId: group.projectId, onCreate };
+
+    let tree = await manual(input, targetCwd);
+    change(tree, "会话名称（可选）", "Trust check");
+    submit(render(input)); await settle();
+    tree = render(input);
+
+    expect(onCreate).toHaveBeenNthCalledWith(1, targetCwd, "Trust check", "claude-desktop", group.projectId);
+    expect(text(tree)).toContain(`是否信任并允许 Claude 访问「${targetCwd}」`);
+    expect(text(tree)).not.toContain("$eipc_message$");
+    expect(button(tree, "信任并创建")).toBeDefined();
+    expect(input.onClose).not.toHaveBeenCalled();
+
+    submit(tree); await settle();
+    expect(onCreate).toHaveBeenNthCalledWith(2, targetCwd, "Trust check", "claude-desktop", group.projectId, true);
+    expect(input.onCreated).toHaveBeenCalledWith({ ...created, cwd: targetCwd });
+    expect(input.onClose).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["manual code", { code: "WORKSPACE_TRUST_MANUAL_REQUIRED", message: "请在电脑端 Claude 窗口打开并信任此文件夹后重试。" }, true],
+    ["legacy raw eipc", { message: "Error invoking remote method '$eipc_message$abc_$_claude.web_$_LocalSessions_$_start': WorkspaceTrustError: Workspace requires trust approval before starting a session. [ccdErrorCategory:trust_required]" }, false],
+  ])("falls back to manual desktop guidance and one-click retry without trustWorkspace (%s)", async (_caseName, errSpec, advertiseCapability) => {
+    const host = snapshot();
+    if (advertiseCapability) {
+      host.host.capabilities.push("workspace.trust.v1");
+      host.runtimes![0]!.capabilities.push("workspace.trust");
+    }
+    const onCreate = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error(errSpec.message), "code" in errSpec ? { code: errSpec.code } : {}))
+      .mockResolvedValueOnce({ ...created, cwd: "D:\\PARA" });
+    const input = { ...props(host), onCreate };
+
+    let tree = await manual(input, "D:\\PARA");
+    submit(tree); await settle();
+    tree = render(input);
+
+    expect(text(tree)).toContain("请在电脑端 Claude 窗口打开并信任「D:\\PARA」后重试。");
+    expect(text(tree)).not.toContain("$eipc_message$");
+    expect(button(tree, "重试创建")).toBeDefined();
+
+    submit(tree); await settle();
+    expect(onCreate).toHaveBeenNthCalledWith(2, "D:\\PARA", undefined, "claude-desktop", undefined);
+    expect(input.onCreated).toHaveBeenCalledOnce();
+  });
+
+  it("clears workspace trust prompt when choosing another folder", async () => {
+    const host = snapshot([directory]);
+    host.host.capabilities.push("workspace.trust.v1");
+    host.runtimes![0]!.capabilities.push("workspace.trust");
+    const onCreate = vi.fn().mockRejectedValueOnce(Object.assign(new Error("需要确认信任"), { code: "WORKSPACE_TRUST_REQUIRED" }));
+    const input = { ...props(host), onCreate };
+
+    let tree = await manual(input, "D:\\PARA");
+    submit(tree); await settle();
+    expect(button(render(input), "信任并创建")).toBeDefined();
+
+    await click(input, "选择文件夹");
+    tree = await click(input, `选择 ${directory.cwd}`);
+    expect(button(tree, "创建会话")).toBeDefined();
+    expect(text(tree)).not.toContain("是否信任并允许 Claude 访问");
+  });
 });

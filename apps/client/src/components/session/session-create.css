@@ -117,6 +117,17 @@
 .session-create-error { margin: 12px 0; color: var(--muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .session-create-status { display: flex; align-items: center; gap: 8px; }
 .session-create-error { color: var(--danger-ink); }
+.session-create-trust {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-card);
+  background: var(--warm-soft);
+  color: var(--warm-ink);
+  font-size: calc(13px * var(--font-scale, 1));
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
 .session-create-browse-error { padding: 8px 0 16px; }
 .session-create-empty { display: grid; min-height: 210px; align-content: center; justify-items: center; gap: 12px; color: var(--muted); text-align: center; }
 .session-create-empty p { margin: 0; font-size: 14px; }

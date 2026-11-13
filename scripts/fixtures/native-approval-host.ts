@@ -67,6 +67,9 @@ export async function startNativeApprovalHost(options: {
   };
   const miscRoot = join(options.directory, "work", "杂活");
   const miscSubdir = join(miscRoot, "existing-tool");
+  const untrustedDir = join(options.directory, "untrusted-para");
+  const manualTrustDir = join(options.directory, "manual-trust-dir");
+  await Promise.all([mkdir(untrustedDir, { recursive: true }), mkdir(manualTrustDir, { recursive: true })]);
   if (options.sections) {
     await mkdir(miscSubdir, { recursive: true });
     await writeFile(join(miscRoot, "conflict-file"), "not a directory\n");
@@ -89,9 +92,12 @@ export async function startNativeApprovalHost(options: {
   let rewindReadbackFailure: "getSession" | "getTranscriptPage" | undefined;
   let rewindCompleted = false;
   const failedRewindReadbacks: string[] = [];
+  const trustedCwds = new Set<string>([commandCwd, harnessCwd, miscRoot, miscSubdir]);
+  let saveTrustSupported = true;
+  let keepUntrustedAfterSave = false;
   const inspector = Object.assign(new EventEmitter(), {
     ready: true,
-    supports: (method: string) => ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", ...(options.sections ? ["start"] : [])].includes(method),
+    supports: (method: string) => ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
     async availableCodeModels() { return [...new Set(nativeModelIds.map(id => id.replace(/\[1m\]$/iu, "")))]; },
     async connect() {},
     async close() {},
@@ -104,8 +110,15 @@ export async function startNativeApprovalHost(options: {
       if (method === "getAll" || method === "getSession") {
         return structuredClone(method === "getAll" ? nativeSessions : nativeSessions.find(session => session.sessionId === args[0]));
       }
+      if (method === "saveTrust") {
+        if (!keepUntrustedAfterSave) trustedCwds.add(String(args[0]));
+        return;
+      }
       if (method === "start") {
         const input = args[0] as { cwd: string; title?: string; sessionId?: string };
+        if (!trustedCwds.has(input.cwd)) {
+          throw new Error("Error invoking remote method '$eipc_message$d32c5f9b_$_claude.web_$_LocalSessions_$_start': WorkspaceTrustError: Workspace requires trust approval before starting a session. [ccdErrorCategory:trust_required]");
+        }
         const now = Date.now();
         const created = {
           ...native,
@@ -195,7 +208,13 @@ export async function startNativeApprovalHost(options: {
     },
   });
   const sections = options.sections ? await createNativeSectionFixture(options.directory) : undefined;
-  if (sections) Object.assign(inspector, { sections: sections.sections, createSection: sections.createSection, assignSection: sections.assignSection });
+  if (sections) Object.assign(inspector, {
+    sections: sections.sections,
+    createSection: sections.createSection,
+    assignSection: sections.assignSection,
+    renameSection: sections.renameSection,
+    deleteSection: sections.deleteSection,
+  });
   const state = new ConversationStateStore({
     databasePath: join(options.directory, "native-state.sqlite"), sessionsPath: join(options.directory, "sessions.json"),
     queuePath: join(options.directory, "queue.json"), masterSecret: "isolated-browser-native-fixture",
@@ -220,6 +239,12 @@ export async function startNativeApprovalHost(options: {
   let sequence = 0;
   return {
     cwd: commandCwd, harnessCwd, miscRoot, calls, failedRewindReadbacks, sections,
+    untrustedDir, manualTrustDir,
+    trustWorkspace(cwd: string) { trustedCwds.add(cwd); },
+    setTrustPolicy(policy: { saveTrustSupported?: boolean; keepUntrustedAfterSave?: boolean }) {
+      if (policy.saveTrustSupported !== undefined) saveTrustSupported = policy.saveTrustSupported;
+      if (policy.keepUntrustedAfterSave !== undefined) keepUntrustedAfterSave = policy.keepUntrustedAfterSave;
+    },
     async sectionCatalog() {
       await broker.refreshRuntime();
       const caps = broker.capabilities();
@@ -228,6 +253,9 @@ export async function startNativeApprovalHost(options: {
         sessions: broker.listSessions(),
         capable: caps.includes("section.create"),
         moveCapable: caps.includes("section.move"),
+        renameCapable: caps.includes("section.rename"),
+        deleteCapable: caps.includes("section.delete"),
+        trustCapable: caps.includes("workspace.trust"),
         runtimeCapabilities: caps,
       };
     },
@@ -250,6 +278,9 @@ export async function startNativeApprovalHost(options: {
         mkdir(join(otherProject, ".git", "objects"), { recursive: true }),
         mkdir(join(otherProject, ".git", "refs"), { recursive: true }),
       ]);
+      trustedCwds.add(project);
+      trustedCwds.add(worktree);
+      trustedCwds.add(otherProject);
       await Promise.all([
         writeFile(join(project, ".git", "HEAD"), "ref: refs/heads/main\n"),
         writeFile(join(otherProject, ".git", "HEAD"), "ref: refs/heads/main\n"),

@@ -548,7 +548,7 @@ describe("WebRtcTransport", () => {
     expect(bridgeIceServers([])).toEqual([]);
   });
 
-  it("passes the packaged self-hosted-first ICE defaults into each WebRTC peer", async () => {
+  it("passes the packaged Cloudflare ICE default into each WebRTC peer", async () => {
     const iceServers = bridgeIceServers(DEFAULT_BRIDGE_ICE_SERVERS);
     const { desktop, mobile } = await transportPair(100, iceServers);
 
@@ -561,7 +561,6 @@ describe("WebRtcTransport", () => {
       { iceServers },
     ]);
     expect(iceServers).toEqual([
-      { urls: "stun:stun.alioxis.com:3478" },
       { urls: "stun:stun.cloudflare.com:3478" },
     ]);
     expect(iceServers.some((server) => {

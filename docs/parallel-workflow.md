@@ -23,7 +23,7 @@ A Light reviewer whose PR grows into Paired scope tells the patrol.
 | Role | Magpie group or model | Picker label |
 | --- | --- | --- |
 | Patrol | `group/bridge-runner`: DeepSeek Flash → GPT-6.1-Sol | `bridge-runner` |
-| Fork, reviewer, `LESSONS.md` consolidation, scheduled `bridge-tech-debt-patrol` | `codex/gpt-6.1-sol` | `GPT-6.1-Sol · Codex` |
+| Fork, reviewer, `LESSONS.md` consolidation, scheduled `bridge-tech-debt-patrol` (no subagents: a weaker scanner's misses cannot be caught by review) | `codex/gpt-6.1-sol` | `GPT-6.1-Sol · Codex` |
 | Extra reviewer for architecture/UI PRs | `auto/claude-opus-5-5` | `Claude Opus 5.5` |
 | `plan-ideator` / `plan-reviewer` | `group/bridge-ideator`: Gemini 4 Carbon → GPT-6.1-Sol / `codex/gpt-6.1-sol` | `bridge-ideator` / `GPT-6.1-Sol · Codex` |
 | Drafting Issue bodies, PR descriptions, docs | `group/bridge-docs`: Gemini 4 Hydrogen → Opus 5.5 → DeepSeek Flash | `bridge-docs` |

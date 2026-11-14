@@ -20,7 +20,7 @@ vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
   const app = Object.assign(new EventEmitter(), {
     getPath: () => "/test/bridge", getAppPath: () => "/test/app", getVersion: () => "1.3.3", setPath: vi.fn(), requestSingleInstanceLock: () => true,
-    enableSandbox: vi.fn(), whenReady: async () => {}, dock: { hide: vi.fn() },
+    enableSandbox: vi.fn(), whenReady: async () => {}, dock: { hide: vi.fn() }, get isPackaged() { return false; },
     quit: vi.fn(), exit: vi.fn(), getLoginItemSettings: () => ({}),
   });
   class BrowserWindow extends EventEmitter {
@@ -49,6 +49,7 @@ vi.mock("electron", async () => {
 });
 
 let originalArgv: string[];
+const originalPlatform = process.platform;
 let originalSignals: Map<NodeJS.Signals, NodeJS.SignalsListener[]>;
 beforeEach(async () => {
   vi.resetModules();
@@ -72,6 +73,7 @@ beforeEach(async () => {
 afterEach(() => {
   vi.restoreAllMocks();
   process.argv = originalArgv;
+  Object.defineProperty(process, "platform", { value: originalPlatform });
   for (const [signal, listeners] of originalSignals) {
     for (const listener of process.listeners(signal)) if (!listeners.includes(listener)) process.removeListener(signal, listener);
   }
@@ -177,6 +179,26 @@ it.each([
     expect(dialog.showMessageBox).not.toHaveBeenCalled();
     expect(call).toHaveBeenCalledWith("quitDesktopApp", "claude-desktop");
   }
+});
+
+it.each([true, false])("hides the service Dock icon on every macOS reactivation before opening the UI (packaged: %s)", async (packaged) => {
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  const { app } = await import("electron");
+  vi.spyOn(app, "isPackaged", "get").mockReturnValue(packaged);
+  const windowProcess = { on: vi.fn(), unref: vi.fn() };
+  mocks.spawn.mockReturnValue(windowProcess);
+  await import("./main.js");
+  await vi.waitFor(() => expect(mocks.server).toHaveBeenCalledOnce());
+  expect(app.dock!.hide).toHaveBeenCalledOnce();
+
+  for (let activation = 1; activation <= 2; activation++) {
+    app.emit("activate");
+    expect(app.dock!.hide).toHaveBeenCalledTimes(activation + 1);
+    expect(mocks.spawn).toHaveBeenCalledTimes(activation);
+    expect(vi.mocked(app.dock!.hide).mock.invocationCallOrder[activation]).toBeLessThan(mocks.spawn.mock.invocationCallOrder[activation - 1]!);
+  }
+  expect(mocks.spawn).toHaveBeenLastCalledWith(process.execPath, packaged ? [] : ["/test/app"], expect.objectContaining({ detached: true, stdio: "ignore" }));
+  expect(windowProcess.unref).toHaveBeenCalledTimes(2);
 });
 
 it("closes the runtime if starting the local listener fails", async () => {

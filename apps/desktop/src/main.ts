@@ -75,6 +75,7 @@ async function serviceMain(): Promise<void> {
       await app.whenReady();
       app.dock?.hide();
       if (process.platform === "darwin") app.on("activate", () => {
+        app.dock?.hide();
         const environment = { ...process.env };
         delete environment.ELECTRON_RUN_AS_NODE;
         const windowProcess = spawn(process.execPath, [

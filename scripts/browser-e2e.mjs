@@ -151,16 +151,16 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await sidebar.locator(`[data-session-id="${sessionId}"]`).waitFor();
   assert.deepEqual(await headers.allTextContents(), manualOrder, "Desktop project order survives reload");
-  await page.evaluate(() => {
+  await page.evaluate(projectName => {
     const snapshot = structuredClone(window.__catalogSnapshot);
-    snapshot.sessions.find(session => session.projectName === "other-project").lastActivityAt = Date.now();
+    snapshot.sessions.find(session => session.projectName === projectName).lastActivityAt = Date.now();
     window.__updateCatalog(snapshot);
-  });
+  }, initialOrder[0]);
   assert.deepEqual(await headers.allTextContents(), manualOrder, "Activity does not move fixed projects");
   await sidebar.getByRole("button", { name: "调整项目顺序", exact: true }).click();
   await orderDialog.getByRole("button", { name: "按最近活动重排", exact: true }).click();
   await orderDialog.getByRole("button", { name: "关闭", exact: true }).click();
-  await eventually(async () => (await headers.allTextContents())[0], "other-project", "Explicit activity reorder moves the newest project first");
+  await eventually(async () => (await headers.allTextContents())[0], initialOrder[0], "Explicit activity reorder moves the newest project first");
   steps.push("Desktop collapse/expand, manual ordering, reload persistence, fixed activity order and explicit activity reorder");
 
   await page.setViewportSize({ width: 860, height: 620 });

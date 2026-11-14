@@ -29,6 +29,7 @@ interface DragSession {
   projectId: string;
   startX: number;
   startY: number;
+  clientY: number;
   active: boolean;
   timer: ReturnType<typeof setTimeout> | undefined;
 }
@@ -52,12 +53,32 @@ export function ProjectOrderSheet({
 
   const isDragging = Boolean(drag);
   useEffect(() => {
-    if (!isDragging || typeof document === "undefined") return;
+    const list = listRef.current!;
     const preventTouchScroll = (event: TouchEvent) => {
-      if (event.cancelable) event.preventDefault();
+      if (sessionRef.current?.active && event.cancelable) event.preventDefault();
     };
-    document.addEventListener("touchmove", preventTouchScroll, { passive: false });
-    return () => document.removeEventListener("touchmove", preventTouchScroll);
+    list.addEventListener("touchmove", preventTouchScroll, { passive: false });
+    return () => list.removeEventListener("touchmove", preventTouchScroll);
+  }, []);
+
+  useEffect(() => {
+    if (!isDragging) return;
+    const body = listRef.current!.closest<HTMLElement>(".m-sheet-body")!;
+    let frame: number;
+    const scrollAtEdge = () => {
+      const session = sessionRef.current;
+      if (!session?.active) return;
+      const { top, bottom } = body.getBoundingClientRect();
+      const delta = session.clientY < top + 40
+        ? -Math.min(12, top + 40 - session.clientY)
+        : session.clientY > bottom - 40 ? Math.min(12, session.clientY - bottom + 40) : 0;
+      const previousTop = body.scrollTop;
+      body.scrollTop += delta;
+      if (body.scrollTop !== previousTop) updateDragPosition(session.clientY);
+      frame = requestAnimationFrame(scrollAtEdge);
+    };
+    frame = requestAnimationFrame(scrollAtEdge);
+    return () => cancelAnimationFrame(frame);
   }, [isDragging]);
 
   useEffect(() => () => {
@@ -93,6 +114,7 @@ export function ProjectOrderSheet({
       projectId,
       startX: event.clientX,
       startY: event.clientY,
+      clientY: event.clientY,
       active: true,
       timer: undefined,
     };
@@ -116,6 +138,7 @@ export function ProjectOrderSheet({
       projectId,
       startX: clientX,
       startY: clientY,
+      clientY,
       active: false,
       timer,
     };
@@ -130,9 +153,15 @@ export function ProjectOrderSheet({
       }
       return;
     }
+    session.clientY = event.clientY;
+    updateDragPosition(event.clientY);
+  }
+
+  function updateDragPosition(clientY: number): void {
+    const session = sessionRef.current;
     const currentOrder = dragOrderRef.current;
     const list = listRef.current;
-    if (!currentOrder || !list) return;
+    if (!session || !currentOrder || !list) return;
     const currentIndex = currentOrder.indexOf(session.projectId);
     if (currentIndex < 0) return;
     const rows = Array.from(list.children) as HTMLElement[];
@@ -140,11 +169,11 @@ export function ProjectOrderSheet({
     let targetIndex = currentIndex;
     for (let i = currentIndex + 1; i < rows.length; i += 1) {
       const rect = rows[i]!.getBoundingClientRect();
-      if (event.clientY >= rect.top + rect.height / 2) targetIndex = i;
+      if (clientY >= rect.top + rect.height / 2) targetIndex = i;
     }
     for (let i = currentIndex - 1; i >= 0; i -= 1) {
       const rect = rows[i]!.getBoundingClientRect();
-      if (event.clientY <= rect.top + rect.height / 2) targetIndex = i;
+      if (clientY <= rect.top + rect.height / 2) targetIndex = i;
     }
     if (targetIndex !== currentIndex) {
       const nextOrder = moveProject(currentOrder, session.projectId, targetIndex);

@@ -436,6 +436,9 @@
 }
 .mobile-app-shell .project-order-bar button:active { background: var(--surface-2); }
 
+/* Keep the grid item at content height so the sheet body can scroll every row. */
+.project-order-list { min-height: max-content; }
+
 /* Project order: one row per project with long-press and drag-handle reordering. */
 .project-order-list.is-dragging {
   overflow: visible;
@@ -487,7 +490,6 @@
   flex: none;
   color: var(--muted);
   cursor: grab;
-  touch-action: none;
   -webkit-user-select: none;
   user-select: none;
 }

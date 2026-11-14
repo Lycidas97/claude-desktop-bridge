@@ -1672,7 +1672,27 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.getByRole("button", { name: "检查并升级桌面端", exact: true }).click();
   await eventually(() => host.requests.some(request => request.method === "system.update" && request.params.action === "apply"), true, "Mobile triggers encrypted system.update apply RPC");
   await eventually(() => page.locator(".mobile-settings-page").innerText().then(t => t.includes("正在重启升级")), true, "Remote desktop status reflects applying phase over E2EE");
-  steps.push("mobile Settings displays remote desktop version, graceful Web release fallback, and triggers E2EE system.update upgrade");
+  for (const title of ["远端桌面状态", "版本与更新"]) {
+    const rows = await page.getByRole("region", { name: title, exact: true }).locator(":scope > :not(h2)").evaluateAll(elements => elements.map(element => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, background: style.backgroundColor,
+        topRadius: style.borderTopLeftRadius, bottomRadius: style.borderBottomLeftRadius };
+    }));
+    assert.ok(rows.length >= 4, `${title} includes version, details, and actions`);
+    for (const [index, row] of rows.entries()) {
+      assert.equal(row.left, rows[0].left, `${title} rows share the left card edge`);
+      assert.equal(row.right, rows[0].right, `${title} rows share the right card edge`);
+      assert.equal(row.background, rows[0].background, `${title} details stay inside the card background`);
+      if (index > 0) {
+        assert.equal(row.top, rows[index - 1].bottom, `${title} has no gaps between rows`);
+        assert.equal(row.topRadius, "0px", `${title} only rounds the first row's top corners`);
+      }
+      if (index < rows.length - 1) assert.equal(row.bottomRadius, "0px", `${title} only rounds the last row's bottom corners`);
+    }
+  }
+  await page.screenshot({ path: resolve(directory, "settings-updater-cards.png"), fullPage: true });
+  steps.push("mobile Settings keeps remote updater details/actions and Web release fallback in continuous cards and triggers E2EE system.update upgrade");
 }
 
 async function verifyNativeQueueActions(page, host, steps, directory) {

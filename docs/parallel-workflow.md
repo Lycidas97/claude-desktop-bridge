@@ -53,7 +53,7 @@ Every status change is an explicit `SendMessage`:
 
 | Message | From → to |
 | --- | --- |
-| `READY #<n> <sha>` + checks run / not run. The head is frozen from here except for fixes and syncs. | fork → reviewer |
+| `READY #<n> <sha>` + checks run / not run. The head is frozen from here except for review fixes and syncs; any other change goes in a new PR. | fork → reviewer |
 | `HEAD CHANGED #<n> <old> → <new>` + why | fork → reviewer |
 | `REVIEWED #<n> <sha>: CLEAN — run ci:local` or `…: <k> BLOCKER, <m> NIT — fix` | reviewer → fork |
 | `NIT FIX OK #<n> <sha>` / `MERGE OK #<n> <sha>`: that SHA becomes the reviewed SHA | reviewer → fork |
@@ -76,6 +76,7 @@ Every status change is an explicit `SendMessage`:
 - Before review run only `npm run typecheck` and `vitest related --run <changed files>`, plus `npm run test:browser` if client UI changed. A failure already seen in CI or reported by the owner is the Red Check.
 - Evidence goes in the PR body, not in `output/`. Mac E2E ports are random and Windows CI queues itself, so write no wait loops or markers.
 - Open the PR with `Fixes #N` and `ci:local — pending review` (or `— docs only`) under `## Not Run`, try `set_monitor`, then send `READY`.
+- A PR that removes or shortens rules in docs lists each removed rule in its body; the reviewer checks the diff against that list, and an unlisted removal is a `[BLOCKER]`.
 
 ## Review (reviewer)
 

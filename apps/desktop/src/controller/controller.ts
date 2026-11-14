@@ -658,7 +658,7 @@ export class DesktopController extends EventEmitter {
         type: permission.toolName === "AskUserQuestion" ? "question.requested" : "permission.requested",
         data: { ...permission },
       })),
-      ...[...previous.values()].filter(permission => !permissions.has(permission.requestId)).map(permission => this.eventLog.append({
+      ...[...previous.values()].filter(permission => !permissions.has(permission.requestId) && !this.broker.permissionResolutionInFlight(permission.requestId)).map(permission => this.eventLog.append({
         sessionId: permission.sessionId,
         itemId: permission.toolUseId,
         origin: "claude-desktop",

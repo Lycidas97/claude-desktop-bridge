@@ -47,12 +47,6 @@ Pick models per role, not per task. Fallback is done by Magpie routing groups wi
 
 ## Host constraints this workflow is built around
 
-- `start_session` is refused in turns triggered by another session's message or an automated event (`/loop`, task notifications). Every fork **and** reviewer must be started in a turn the owner's own message started.
-- A session's completion note reaches the patrol only after **all** linked sessions are idle. With many forks running, the patrol is never woken by notes; status travels only by explicit `SendMessage` with `to` set to the target's `local_…` session id (this is what every `SendMessage` below means).
-- `mcp__ccd_pr__set_monitor` is refused for PRs opened with `gh pr create` from a fork. Try it; if refused, do not work around it. Fixes are relayed by `SendMessage`.
-
-## Host constraints this workflow is built around
-
 - `start_session` is refused in turns triggered by another session's message or an automated event (`/loop`, task notifications). Every fork **and** paired reviewer must be started in a turn the owner's own message started.
 - A session's completion note reaches the patrol only after **all** linked sessions are idle. With many forks running, the patrol is never woken by notes; status travels only by explicit `SendMessage` with `to` set to the target's `local_…` session id (this is what every `SendMessage` below means).
 - `mcp__ccd_pr__set_monitor` is refused for PRs opened with `gh pr create` from a fork. Try it; if refused, do not work around it. Fixes are relayed by `SendMessage`.

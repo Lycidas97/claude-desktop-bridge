@@ -327,12 +327,12 @@ export async function startNativeApprovalHost(options: {
       prs: structuredClone(native.prs), prefs: { ...preferences, nextOwnPrArmed: nextPrBranch !== undefined }, runtimeCapabilities: broker.capabilities(),
     };
   }
-  async function emitDialogEvent(event: Record<string, unknown>) {
+  // Wait until the broker reflects this dialog: an unrelated "changed" (e.g. the periodic refresh) can come first.
+  async function emitDialogEvent(event: Record<string, unknown>, promptId: unknown, open: boolean) {
     const after = eventLog.latestSeq();
-    const changed = once(broker, "changed");
     nativeEvents.push(structuredClone(event));
     inspector.emit("event", event);
-    await changed;
+    while (broker.promptsList().some(prompt => prompt.promptId === promptId) !== open) await once(broker, "changed");
     return dialogs(after);
   }
   return {
@@ -359,7 +359,7 @@ export async function startNativeApprovalHost(options: {
       native[dialog.field] = info;
       const update = await emitDialogEvent("event" in dialog
         ? { type: dialog.event, sessionId: options.sessionId, [dialog.payload]: info }
-        : { type: "session_updated", sessionId: options.sessionId, session: structuredClone(native) });
+        : { type: "session_updated", sessionId: options.sessionId, session: structuredClone(native) }, info.promptId, true);
       return { ...update, prompt: update.prompts.find(prompt => prompt.promptId === info.promptId)! };
     },
     async answerPromptLocally(promptId: string) {
@@ -369,7 +369,7 @@ export async function startNativeApprovalHost(options: {
       native[dialog.field] = undefined;
       return emitDialogEvent("event" in dialog
         ? { type: `${dialog.event}_resolved`, sessionId: options.sessionId, [dialog.payload]: info }
-        : { type: "session_updated", sessionId: options.sessionId, session: structuredClone(native) });
+        : { type: "session_updated", sessionId: options.sessionId, session: structuredClone(native) }, promptId, false);
     },
     async seedPullRequest(pr: BridgePullRequest = { repo: "fixture/native", prNumber: 42, host: "github.com", url: "https://github.com/fixture/native/pull/42", branch: "fixture-42", state: "OPEN", autoFix: false }) {
       native.prs = [structuredClone(pr)];

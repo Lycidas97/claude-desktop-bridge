@@ -46,7 +46,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
@@ -107,6 +107,65 @@ async function verifyDesktopDiagnostics(page, host, steps) {
   await eventually(() => toggle.isChecked(), false, "Desktop uses the returned disabled state");
   assert.equal(await page.evaluate(async () => (await window.bridgeDesktop.getSnapshot()).diagnosticsEnabled), false);
   steps.push("Desktop recorder checkbox defaults off and renders returned local setting states");
+}
+
+async function verifyMobileSafeArea(page, steps, directory, viewports) {
+  const emulation = await page.context().newCDPSession(page);
+  for (const [tab, selector, height] of [
+    ["会话", ".host-detail", 240],
+    ["电脑", ".host-browser", 240],
+    ["设置", ".mobile-settings-content", 520],
+  ]) {
+    await page.setViewportSize({ width: 375, height });
+    viewports.push({ page: tab, ...page.viewportSize() });
+    if (tab !== "会话") {
+      await page.getByRole("button", { name: "菜单", exact: true }).click();
+      await page.getByRole("navigation", { name: "主要导航", exact: true }).getByRole("button", { name: tab, exact: true }).click();
+    }
+    const content = page.locator(selector);
+    await content.waitFor();
+    const header = page.locator(".m-header:visible");
+    const headerBefore = await header.boundingBox();
+    const paddings = [];
+    for (const bottom of [0, 48]) {
+      // Chromium overrides env() itself; production CSS is neither replaced nor patched.
+      await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom, left: 0 } });
+      const layout = await content.evaluate(element => {
+        element.scrollTop = element.scrollHeight;
+        const bounds = element.getBoundingClientRect();
+        const last = element.lastElementChild.getBoundingClientRect();
+        return {
+          padding: parseFloat(getComputedStyle(element).paddingBottom),
+          gap: bounds.bottom - last.bottom,
+          lastTop: last.top,
+          top: bounds.top,
+          bottom: bounds.bottom,
+          scrollTop: element.scrollTop,
+          maxScroll: element.scrollHeight - element.clientHeight,
+          viewport: innerHeight,
+          pageScroll: window.scrollY,
+          documentHeight: document.documentElement.scrollHeight,
+        };
+      });
+      assert.ok(layout.maxScroll > 0, `${tab} fixture must overflow the content area`);
+      assert.equal(layout.scrollTop, layout.maxScroll, `${tab} reaches the content scroll end`);
+      assert.ok(layout.padding >= bottom, `${tab} bottom padding must cover the ${bottom}px safe area (got ${layout.padding}px)`);
+      assert.ok(layout.gap >= Math.max(paddings[0] ?? 0, bottom) - 1, `${tab} last content must stop above the bottom safe area`);
+      assert.ok(layout.bottom <= layout.viewport, `${tab} content stays inside the viewport`);
+      assert.equal(layout.pageScroll, 0, `${tab} does not scroll the document`);
+      assert.equal(layout.documentHeight, layout.viewport, `${tab} does not grow the document`);
+      if (tab === "设置") assert.ok(layout.lastTop >= layout.top, "The entire diagnostics group is visible at scroll end");
+      assert.deepEqual(await header.boundingBox(), headerBefore, `${tab} header stays fixed while its content scrolls`);
+      paddings.push(layout.padding);
+    }
+    assert.ok(paddings[1] > paddings[0], `${tab} padding grows with a nonzero safe area`);
+    await page.screenshot({ path: resolve(directory, `${tab}-safe-area.png`), fullPage: true });
+    steps.push(`${tab}: env(safe-area-inset-bottom) 0 → 48px changes padding ${paddings[0]} → ${paddings[1]}px; last content clears safe area, header/document stay fixed`);
+  }
+  await page.getByRole("button", { name: /连接诊断与日志/u }).click();
+  await page.getByRole("dialog", { name: "连接诊断与日志导出", exact: true }).waitFor();
+  steps.push("The final settings diagnostics button opens its dialog after scrolling to the bottom");
+  await emulation.detach();
 }
 
 async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview) {
@@ -1462,6 +1521,13 @@ async function verifyHistoryPagination(page, host, steps, directory) {
 }
 
 async function verifyNativeBoundaries(page, host, steps, directory) {
+  const markdownName = "NATIVE-CHAIN-author-database-current.zh.md";
+  await writeFile(resolve(host.nativeApproval.harnessCwd, markdownName), [
+    "# 手机文件预览",
+    ...Array.from({ length: 4 }, () => "段首可见，中文长段落应当在手机宽度内自然换行，段尾也必须完整显示。".repeat(15)),
+    `\`\`\`text\n${"wide-code-".repeat(40)}\n\`\`\``,
+    `| ${Array.from({ length: 6 }, (_, index) => `wide-column-${index}`).join(" | ")} |\n|${" --- |".repeat(6)}\n|${" value |".repeat(6)}`,
+  ].join("\n\n"));
   const tool = (id, input, name = "mcp__ccd_turn__update_plan") => ({ type: "assistant", uuid: id, timestamp: Date.now(), message: { content: [{ type: "tool_use", id, name, input }] } });
   const planItems = [{ content: "读取报告", status: "in_progress" }, { content: "验证文件", status: "pending" }];
   const initial = [
@@ -1469,7 +1535,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     { ...tool("child-plan", { scope: "first_task", items: [{ content: "子代理内部计划", status: "in_progress" }] }), isSidechain: true },
     { ...tool("child-wrap", { recap: "Child done" }, "mcp__ccd_turn__wrap_up"), isSidechain: true },
     ...["isCompactSummary", "isMeta", "isSynthetic", "isVisibleInTranscriptOnly"].map(flag => ({ type: "user", uuid: `hidden-${flag}`, [flag]: true, message: { content: "INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN" } })),
-    { type: "assistant", uuid: "boundary-files", timestamp: Date.now(), message: { id: "boundary-files", content: [{ type: "text", text: `[相对报告](report.json) · [绝对报告](<${host.nativeApproval.harnessCwd}/report.json:12:3>) · [说明预览](<说明 notes.md>)` }] } },
+    { type: "assistant", uuid: "boundary-files", timestamp: Date.now(), message: { id: "boundary-files", content: [{ type: "text", text: `[相对报告](report.json) · [绝对报告](<${host.nativeApproval.harnessCwd}/report.json:12:3>) · [说明预览](<说明 notes.md>) · [长文预览](${markdownName})` }] } },
   ];
   for (const message of initial) await host.nativeApproval.message(message);
   const subagentStartAt = Date.now() - 30_000;
@@ -1538,6 +1604,57 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   assert.ok((await page.locator("#text-preview-content").innerText()).includes("# Worktree preview"));
   await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
   steps.push("real Native facade + Controller resolve relative/absolute report links and Chinese spaced Markdown paths in the worktree");
+  await stream.getByRole("button", { name: "长文预览", exact: true }).click();
+  const markdownViewer = page.locator(".media-viewer");
+  await markdownViewer.getByRole("heading", { name: "手机文件预览", exact: true }).waitFor();
+  for (const width of [375, 320, 1200]) {
+    await page.setViewportSize({ width, height: 812 });
+    const layout = await markdownViewer.evaluate(dialog => {
+      const bounds = element => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, width: rect.width, clientWidth: element.clientWidth, scrollWidth: element.scrollWidth };
+      };
+      return {
+        dialog: bounds(dialog),
+        regions: [".media-viewer-shell > header", ".media-viewer-toolbar", ".media-viewer-viewport", ".media-viewer-shell > footer", "#media-viewer-title", '[aria-label="关闭查看器"]'].map(selector => ({ selector, ...bounds(dialog.querySelector(selector)) })),
+        paragraphs: [...dialog.querySelectorAll(".markdown-paragraph")].map(bounds),
+        scrollLeft: dialog.scrollLeft,
+      };
+    });
+    await writeFile(resolve(directory, `markdown-layout-${width}.json`), JSON.stringify(layout, null, 2));
+    assert.ok(layout.dialog.left >= 0 && layout.dialog.right <= width, "File preview dialog stays within the screen");
+    assert.ok(layout.dialog.scrollWidth <= layout.dialog.clientWidth + 1, `Long filename must not widen the dialog grid at ${width}px: ${JSON.stringify(layout)}`);
+    assert.equal(layout.scrollLeft, 0, "Dialog focus must not scroll the filename and paragraph starts offscreen");
+    for (const region of [...layout.regions, ...layout.paragraphs]) {
+      assert.ok(region.left >= layout.dialog.left && region.right <= layout.dialog.right, `Header controls and rendered prose stay inside the dialog at ${width}px: ${JSON.stringify(region)}`);
+    }
+    assert.ok(layout.paragraphs.length >= 4 && layout.paragraphs.every(paragraph => paragraph.scrollWidth <= paragraph.clientWidth + 1), "Chinese prose wraps without clipping or horizontal overflow");
+    for (const selector of [".markdown-code-pre", ".markdown-table-wrap"]) {
+      const scrolled = await markdownViewer.locator(selector).evaluate(element => {
+        element.scrollLeft = element.scrollWidth;
+        return { clientWidth: element.clientWidth, scrollWidth: element.scrollWidth, scrollLeft: element.scrollLeft };
+      });
+      if (width <= 375 || selector === ".markdown-code-pre") {
+        assert.ok(scrolled.scrollWidth > scrolled.clientWidth && scrolled.scrollLeft > 0, `Wide Markdown content can scroll horizontally at ${width}px: ${selector}`);
+      }
+    }
+    await page.getByRole("tab", { name: "源码", exact: true }).click();
+    const sourceScroll = await markdownViewer.locator(".media-viewer-viewport").evaluate(viewport => {
+      viewport.scrollLeft = viewport.scrollWidth;
+      return viewport.scrollLeft;
+    });
+    assert.ok(sourceScroll > 0, "Raw Markdown source keeps horizontal scrolling");
+    await page.getByRole("tab", { name: "预览", exact: true }).click();
+  }
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.screenshot({ path: resolve(directory, "native-markdown-mobile.png"), fullPage: true });
+  assert.ok(await markdownViewer.locator(".media-viewer-viewport").evaluate(viewport => {
+    viewport.scrollTop = viewport.scrollHeight;
+    return viewport.scrollTop > 0;
+  }), "Long Markdown scrolls vertically within the preview viewport");
+  await page.screenshot({ path: resolve(directory, "native-markdown-wide-content.png"), fullPage: true });
+  await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
+  steps.push("long Markdown filenames preserve the visible header and wrapped Chinese prose at 320/375/1200px; wide code, tables and source scroll horizontally while long documents scroll vertically");
   for (const event of await host.nativeApproval.message(tool("boundary-advance", { advance: true }))) await host.emit(event.type, event.data, { itemId: event.itemId });
   await eventually(() => stream.locator(".task-plan-progress").first().innerText(), "1/2 已完成", "Native empty-text live plan updates the history card");
   assert.equal(await stream.locator(".task-plan-card").count(), 1);
@@ -2287,6 +2404,7 @@ async function runScenario(theme, scenario) {
   const errors = [];
   const browserLog = [];
   const steps = [];
+  const viewports = [];
   const startedAt = Date.now();
   const serverRoutes = [];
   let context;
@@ -2354,7 +2472,8 @@ async function runScenario(theme, scenario) {
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
-    if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
+    if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
+    else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
     else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory);
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);
@@ -2403,7 +2522,7 @@ async function runScenario(theme, scenario) {
     }
   }
   const result = {
-    name, theme, viewport: "375x812", status: failure || errors.length ? "failed" : "passed",
+    name, theme, viewport: viewports.length ? viewports : "375x812", status: failure || errors.length ? "failed" : "passed",
     durationMs: Date.now() - startedAt, steps, errors,
     ...(failure ? { failure: failure.stack } : {}),
     artifacts: directory,

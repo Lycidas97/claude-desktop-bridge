@@ -22,7 +22,6 @@ export interface MobileDraftState {
   text: string;
   attachments: BridgeAttachment[];
   sending: boolean;
-  steer: boolean;
   imageError?: string | undefined;
 }
 
@@ -37,10 +36,8 @@ export interface MobileComposerProps {
   text: string;
   attachments: BridgeAttachment[];
   sending: boolean;
-  steer: boolean;
   imageError: string | undefined;
   canAttachImages: boolean;
-  bridgeRunning: boolean;
   commandDraft: boolean;
   hasDraft: boolean;
   stopTarget: BridgeSessionInfo | undefined;
@@ -69,10 +66,8 @@ export function MobileComposer({
   text,
   attachments,
   sending,
-  steer,
   imageError,
   canAttachImages,
-  bridgeRunning,
   commandDraft,
   hasDraft,
   stopTarget,
@@ -110,12 +105,6 @@ export function MobileComposer({
         </div>
       )}
       {imageError && <div className="composer-error" role="alert">{imageError}</div>}
-      {bridgeRunning && !commandDraft && (desktopRuntimeId(selectedSession) === "claude-desktop" ? canSendSession(selectedSession, snapshot) && selectedSession.allowedActions?.canSteer === true : selectedSession.allowedActions?.canSteer !== false) && (
-        <div className="composer-mode" role="group" aria-label="发送方式">
-          <button type="button" className={!steer ? "active" : ""} onClick={() => updateDraft((current) => ({ ...current, steer: false }))}>排到下一轮</button>
-          <button type="button" className={steer ? "active" : ""} onClick={() => updateDraft((current) => ({ ...current, steer: true }))}>立即调整</button>
-        </div>
-      )}
       <form
         className={(canAttachImages || Boolean(onUploadFile)) ? "composer-form composer-form--with-attachment" : "composer-form"}
         onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}

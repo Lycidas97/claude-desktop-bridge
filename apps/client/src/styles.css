@@ -5398,34 +5398,6 @@ button:disabled {
   font-size: calc(9px * var(--font-scale));
 }
 
-.composer-mode {
-  display: inline-flex;
-  margin: 0 0 7px 46px;
-  padding: 3px;
-  border: 1px solid var(--card-border);
-  border-radius: var(--r-pill);
-  background: var(--surface-2);
-}
-
-.composer-mode button {
-  min-height: 26px;
-  padding: 0 11px;
-  border: 0;
-  border-radius: var(--r-pill);
-  background: transparent;
-  color: var(--muted);
-  font-size: calc(10px * var(--font-scale));
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--t-fast) ease, color var(--t-fast) ease, box-shadow var(--t-fast) ease;
-}
-
-.composer-mode button.active {
-  background: var(--card-fill);
-  color: var(--text);
-  box-shadow: var(--card-hi), var(--card-shadow);
-}
-
 .mobile-composer .composer-form,
 .desktop-composer .composer-form {
   display: grid;
@@ -6162,10 +6134,6 @@ button:disabled {
 
 .desktop-composer {
   padding: 10px 18px 16px;
-}
-
-.desktop-composer .composer-mode {
-  margin-left: 44px;
 }
 
 .official-continue-button {

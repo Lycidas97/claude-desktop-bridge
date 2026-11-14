@@ -337,7 +337,7 @@ test('browser receipt assertion waits for a Native reply after the receipt is cr
     ${source.slice(start, source.indexOf('  await host.syncNativeQueue(await host.nativeApproval.event(', start))}
   })()`, {
     assert, isDeepStrictEqual: require('node:util').isDeepStrictEqual,
-    host: { nativeApproval: { receipts: () => [{}, {}, {}, { queueMode: 'steered', state }] } },
+    host: { nativeApproval: { receipts: () => [{}, {}, {}, { queueMode: 'deferred', state }] } },
     delay: async () => { state = 'submitted'; },
   });
   assert.equal(state, 'submitted');

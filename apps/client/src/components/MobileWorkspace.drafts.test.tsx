@@ -264,7 +264,7 @@ describe("image selection completeness", () => {
     await selecting; await settle();
     expect(imageNames()).toEqual(["移除 1.png", "移除 2.png", "移除 3.png", "移除 4.png", "移除 5.png"]);
     await form().props.onSubmit({ preventDefault() {} });
-    expect(props.onSendTurn).toHaveBeenCalledWith("A", "", expect.arrayContaining(Array.from({ length: 5 }, (_, index) => expect.objectContaining({ name: `${index + 1}.png` }))), false);
+    expect(props.onSendTurn).toHaveBeenCalledWith("A", "", expect.arrayContaining(Array.from({ length: 5 }, (_, index) => expect.objectContaining({ name: `${index + 1}.png` }))));
     expect(vi.mocked(props.onSendTurn).mock.calls[0]![2]).toHaveLength(5);
   });
 });
@@ -344,7 +344,7 @@ describe("native relay composer", () => {
   it("sends directly without a Host execution flag or handoff confirmation", async () => {
     text("Native input");
     await form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Native input", [], false);
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Native input", []);
     expect(elements(tree).some(element => element.type === ConfirmationDialog && element.props.title === "由 Bridge 继续执行？")).toBe(false);
   });
 
@@ -1305,7 +1305,7 @@ describe("native structured approvals", () => {
     const card = nativePrompt({ kind: "wrap-up", blocked: false, ask: "接下来做什么？", actions: [{ label: "继续调查", message: "继续调查" }] });
     card.props.onSelectOption("继续调查");
     await settle();
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "继续调查", [], false);
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "继续调查", []);
     expect(props.onResolvePermission).not.toHaveBeenCalled();
   });
 
@@ -1517,7 +1517,7 @@ describe("mobile conversation draft ownership", () => {
     expect(imageNames()).toEqual(["移除 A.png"]);
     open("B");
     form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenCalledWith("B", "draft for B", [], false);
+    expect(props.onSendTurn).toHaveBeenCalledWith("B", "draft for B", []);
   });
 
   it("restores a failed send to its own session without changing the next session's draft", async () => {
@@ -1560,17 +1560,16 @@ describe("mobile conversation draft ownership", () => {
     else expect(elements(tree).find((e) => e.props.className === "composer-error")?.props.children).toBe("image read failed");
   });
 
-  it("keeps the immediate-adjustment choice with its own conversation", async () => {
-    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map((session) => ({ ...session, ownership: "BRIDGE_RUNNING", turnState: "running" })) } };
+  it("sends normally in running conversations without a composer mode selector", async () => {
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map((session) => ({ ...session, ownership: "DESKTOP_NATIVE_RUNNING", turnState: "running" })) } };
     draw();
-    elements(tree).find((e) => e.type === "button" && e.props.children === "立即调整")!.props.onClick();
-    draw();
+    expect(elements(tree).some((e) => e.props.className === "composer-mode")).toBe(false);
     open("B"); text("queue B");
     form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenLastCalledWith("B", "queue B", [], false);
-    open("A"); text("adjust A");
+    expect(props.onSendTurn).toHaveBeenLastCalledWith("B", "queue B", []);
+    open("A"); text("queue A");
     form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenLastCalledWith("A", "adjust A", [], true);
+    expect(props.onSendTurn).toHaveBeenLastCalledWith("A", "queue A", []);
   });
 
   it("does not reuse a draft for an equal session ID on another computer", () => {
@@ -1871,13 +1870,13 @@ describe("mobile common commands", () => {
     expect(elements(tree).find(element => element.props.role === "alert")!.props.children).toBe("请在 Desktop 中执行");
     expect(props.onRunSessionCommand).not.toHaveBeenCalled(); expect(props.onSendTurn).not.toHaveBeenCalled();
   });
-  it("disables command attachments and steering while preserving path messages", async () => {
+  it("disables command attachments while preserving path messages", async () => {
     enable({ action: "sent" }); text("/compact notes");
     const attachments = elements(tree).find(element => element.type === ComposerAttachmentMenu)!;
     expect(attachments.props.imageDisabled).toBe(true);
     expect(elements(tree).some(element => element.props.className === "composer-mode")).toBe(false);
     text("/absolute/path prompt"); form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenCalledWith("A", "/absolute/path prompt", [], false);
+    expect(props.onSendTurn).toHaveBeenCalledWith("A", "/absolute/path prompt", []);
     expect(props.onRunSessionCommand).not.toHaveBeenCalled();
   });
 });
@@ -1924,11 +1923,11 @@ describe("mobile slash submission edges", () => {
     open("A"); expect(input().props.value).toBe(""); expect(sendButton().props.disabled).toBe(true);
   });
 
-  it("[edge] rejects slash attachments while preserving image, uploaded file and immediate-adjustment choice", async () => {
+  it("[edge] rejects slash attachments while preserving image and uploaded file", async () => {
     enable();
     const file = { uploadId: "done", name: "done.txt", path: ".bridge-uploads/done.txt", size: 8, sha256: "abc" };
-    props = { ...props, onUploadFile: vi.fn().mockResolvedValue(file), snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(item => ({ ...item, turnState: "running", ownership: "BRIDGE_RUNNING" })) } };
-    draw(); elements(tree).find(element => element.type === "button" && element.props.children === "立即调整")!.props.onClick(); draw();
+    props = { ...props, onUploadFile: vi.fn().mockResolvedValue(file), snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.map(item => ({ ...item, turnState: "running", ownership: "DESKTOP_NATIVE_RUNNING" })) } };
+    draw();
     selectImage(); hooks.readers[0].finish(); await settle();
     await elements(tree).find(element => element.type === FileAttachmentPicker)!.props.state.add([{ name: "done.txt", size: 8 }]); draw();
     text("/compact keep decisions"); form().props.onSubmit({ preventDefault() {} }); await settle();
@@ -1936,9 +1935,8 @@ describe("mobile slash submission edges", () => {
     expect(input().props.value).toBe("/compact keep decisions"); expect(imageNames()).toEqual(["移除 A.png"]);
     expect(elements(tree).find(element => element.type === FileAttachmentPicker)!.props.state.files).toEqual([file]);
     text("continue analysis");
-    expect(elements(tree).find(element => element.type === "button" && element.props.children === "立即调整")!.props.className).toBe("active");
     form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenCalledWith("A", expect.stringContaining(".bridge-uploads/done.txt"), [expect.objectContaining({ name: "A.png" })], true);
+    expect(props.onSendTurn).toHaveBeenCalledWith("A", expect.stringContaining(".bridge-uploads/done.txt"), [expect.objectContaining({ name: "A.png" })]);
   });
 });
 

@@ -167,6 +167,7 @@ export function extractToolCallDetailFromMessages(params: {
   let resultBlock: Record<string, unknown> | undefined;
   let backgroundTaskId: string | undefined;
   const notifications: unknown[] = [];
+  const systemNotifications: Record<string, unknown>[] = [];
 
   for (const raw of messages) {
     if (!isRecord(raw)) continue;
@@ -174,6 +175,7 @@ export function extractToolCallDetailFromMessages(params: {
       if (raw.isSidechain === true) continue;
       if (raw.parent_tool_use_id && (raw.type === "assistant" || raw.type === "user")) continue;
     }
+    if (raw.type === "system" && raw.subtype === "task_notification") systemNotifications.push(raw);
     const body = isRecord(raw.message) ? raw.message : undefined;
     if (raw.type === "user") notifications.push(body?.content);
     else if (raw.type === "attachment" && isRecord(raw.attachment) && raw.attachment.type === "queued_command") {
@@ -225,6 +227,12 @@ export function extractToolCallDetailFromMessages(params: {
       for (const match of text.matchAll(/<(status|summary|output)>([\s\S]*?)<\/\1>/gu)) {
         const value = match[2]!.trim();
         if (value) outputParts.push(value);
+      }
+    }
+    for (const notification of systemNotifications) {
+      if (notification.task_id !== backgroundTaskId) continue;
+      for (const value of [notification.status, notification.summary]) {
+        if (typeof value === "string" && value.trim()) outputParts.push(value.trim());
       }
     }
   }

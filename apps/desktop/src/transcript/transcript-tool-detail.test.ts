@@ -79,19 +79,22 @@ describe("extractToolCallDetailFromMessages", () => {
     });
   });
 
-  it.each(["user", "queued"])("includes matching Bash completion content from %s notifications", (kind) => {
+  it.each(["user", "queued", "system"])("includes matching Bash completion content from %s notifications", (kind) => {
     const notification = "<task-notification>\n<task-id>bsh01</task-id>\n<status>failed</status>\n<summary>Client build failed with exit code 2</summary>\n</task-notification>";
     const messages = [
       { type: "assistant", message: { content: [{ type: "tool_use", id: "bash-call", name: "Bash", input: { command: "npm run build", run_in_background: true } }] } },
       { type: "user", toolUseResult: { stdout: "", stderr: "", backgroundTaskId: "bsh01" }, message: {
         content: [{ type: "tool_result", tool_use_id: "bash-call", content: "Command running in background with ID: bsh01" }],
       } },
-      ...(kind === "user"
-        ? [{ type: "user", message: { role: "user", content: notification } }]
-        : [{ type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", origin: { kind: "task-notification", producer: "session-task" }, prompt: notification } }]),
+      ...(kind === "system"
+        ? [{ type: "system", subtype: "task_notification", task_id: "bsh01", status: "failed", summary: "Client build failed with exit code 2" }]
+        : kind === "user"
+          ? [{ type: "user", message: { role: "user", content: notification } }]
+          : [{ type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", origin: { kind: "task-notification", producer: "session-task" }, prompt: notification } }]),
     ];
-    // Native history hides these notifications; the existing full-transcript detail request owns the output.
-    expect(JSON.stringify(nativeHistoryItems("local_1", messages))).not.toContain("Client build failed with exit code 2");
+    // User/queued notifications are hidden; system notifications appear only in their loaded history page.
+    if (kind === "system") expect(JSON.stringify(nativeHistoryItems("local_1", messages))).toContain("Client build failed with exit code 2");
+    else expect(JSON.stringify(nativeHistoryItems("local_1", messages))).not.toContain("Client build failed with exit code 2");
     const detail = extractToolCallDetailFromMessages({ sessionId: "local_1", toolUseId: "bash-call", messages });
     expect(detail?.outputText).toContain("Command running in background with ID: bsh01");
     expect(detail?.outputText).toContain("Client build failed with exit code 2");
@@ -125,6 +128,8 @@ describe("extractToolCallDetailFromMessages", () => {
       ] } },
       { type: "user", message: { content: "<task-notification><task-id>other</task-id><status>completed</status><summary>Other task output</summary></task-notification>" } },
       { type: "user", isSidechain: true, message: { content: "<task-notification><task-id>bsh01</task-id><status>completed</status><summary>Child task output</summary></task-notification>" } },
+      { type: "system", subtype: "task_notification", task_id: "other", status: "completed", summary: "Other system task output" },
+      { type: "system", subtype: "task_notification", isSidechain: true, task_id: "bsh01", status: "completed", summary: "Child system task output" },
     ];
     const detail = extractToolCallDetailFromMessages({ sessionId: "local_1", toolUseId: "bash-call", messages });
     expect(detail?.outputText).toBe("Command running in background with ID: bsh01");
@@ -410,7 +415,7 @@ describe("extractToolCallDetailFromMessages", () => {
 });
 
 describe("zero-bloat timeline projection & RPC wiring", () => {
-  it("keeps large Write/Edit inputs and tool_result bodies out of nativeHistoryItems and live tool.completed events", async () => {
+  it.each(["queued", "system"])("keeps tool bodies out of the timeline and reads unloaded %s Bash notifications through RPC", async (kind) => {
     const dir = await mkdtemp(join(tmpdir(), "bridge-tool-detail-bridge-"));
     tempDirs.push(dir);
     const largeWriteBody = "LARGE_WRITE_BODY_".repeat(5_000);
@@ -502,9 +507,11 @@ describe("zero-bloat timeline projection & RPC wiring", () => {
         { type: "user", uuid: "bash-launch", toolUseResult: { backgroundTaskId: "bsh01" }, message: { content: [
           { type: "tool_result", tool_use_id: "bash-1", content: "Command running in background with ID: bsh01" },
         ] } },
-        { type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", prompt:
-          "<task-notification><task-id>bsh01</task-id><status>completed</status><summary>Earlier Bash finished with exit code 0</summary></task-notification>",
-        } },
+        kind === "system"
+          ? { type: "system", subtype: "task_notification", task_id: "bsh01", status: "completed", summary: "Earlier Bash finished with exit code 0" }
+          : { type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", prompt:
+            "<task-notification><task-id>bsh01</task-id><status>completed</status><summary>Earlier Bash finished with exit code 0</summary></task-notification>",
+          } },
         { type: "assistant", uuid: "latest-unrelated", message: { content: [{ type: "text", text: "Latest unrelated page" }] } },
       );
       latestPageOnly = true;

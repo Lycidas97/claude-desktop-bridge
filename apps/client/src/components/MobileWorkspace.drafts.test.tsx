@@ -15,6 +15,7 @@ import { SubagentCard } from "./conversation/SubagentCard.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAttachmentPicker.js";
 import { IconButton } from "./common/IconButton.js";
+import { EmptyState } from "./common/EmptyState.js";
 import { MessageCopyButton } from "./common/MessageCopyButton.js";
 import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
 import { SessionActivityIndicator } from "./conversation/SessionActivityIndicator.js";
@@ -89,7 +90,7 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Record<string, any>>;
   return [element, ...elements(
-    element.type === SessionFamilyList || element.type === ProjectGroupHeader
+    element.type === SessionFamilyList || element.type === ProjectGroupHeader || element.type === EmptyState
       ? (element.type as (props: any) => ReactNode)(element.props)
       : element.props.children,
   )];

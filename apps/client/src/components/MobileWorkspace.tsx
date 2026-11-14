@@ -494,10 +494,12 @@ export function MobileWorkspace({
   );
   const grouped = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
-    const filtered = sessions.filter((session) => (
-      (!session.archivedAt || Boolean(session.sidechat && session.parentSessionId && activeParentProjects.get(session.parentSessionId) === session.projectId))
-
-      && (!query || `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query))
+    const matches = sessions.filter((session) => (
+      !query || `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query)
+    ));
+    const matchingActiveParents = new Map(matches.filter((session) => !session.archivedAt).map((session) => [session.sessionId, session.projectId]));
+    const filtered = matches.filter((session) => (
+      !session.archivedAt || Boolean(session.sidechat && session.parentSessionId && matchingActiveParents.get(session.parentSessionId) === session.projectId)
     ));
     const groups = new Map<string, BridgeSessionInfo[]>((snapshot?.projects ?? [])
       .filter(project => project.kind === "desktop-group" && (!query || `${project.name}\n${project.cwd}`.toLocaleLowerCase().includes(query)))
@@ -518,7 +520,7 @@ export function MobileWorkspace({
         project: snapshot?.projects.find((project) => project.projectId === projectId),
         sessions: sortProjectSessionsByRecent(groups.get(projectId)!),
       }));
-  }, [activeParentProjects, projectOrder, search, sectionManage.hideEmptySections, sessions, snapshot?.projects]);
+  }, [projectOrder, search, sectionManage.hideEmptySections, sessions, snapshot?.projects]);
   const archivedSessions = useMemo(() => sortProjectSessionsByRecent(sessions.filter((session) => (
     Boolean(session.archivedAt)
   ))), [sessions]);

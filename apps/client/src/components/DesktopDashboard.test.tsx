@@ -99,7 +99,7 @@ beforeEach(() => {
     sessions: [session], projects: [{ projectId: "project", name: "Project", cwd: "/tmp/project", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 }],
     devices: [], permissions: [], latestSeq: 0,
     runtime: { state: "ready", detail: "Ready", activeTurns: 0, maxParallelTurns: 2, desktopIntegration: { state: "not-managed", detail: "Unavailable", enabled: false, canRestart: false } },
-    connection: "connected", launchAtLogin: false, managedDesktopEnabled: false,
+    connection: "connected", launchAtLogin: false, diagnosticsEnabled: false, managedDesktopEnabled: false,
     claudeDesktop: { state: "stopped", detail: "Stopped", canLaunch: true, canQuit: false },
   };
   history = [];

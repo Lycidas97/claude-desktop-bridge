@@ -272,6 +272,7 @@ export interface BridgeCryptoOptions {
 }
 
 export class BridgeCrypto {
+  static observeEncodedPayload: ((payload: BridgePayload, utf8Bytes: number) => void) | undefined;
   readonly identity: StoredIdentity;
   readonly encryptionKey: CryptoKey;
 
@@ -481,6 +482,7 @@ export class BridgeCrypto {
     };
     const nonce = randomBytes(12);
     let plaintext = utf8(JSON.stringify(payload));
+    BridgeCrypto.observeEncodedPayload?.(payload, plaintext.byteLength);
     if (compress && PAYLOAD_DEFLATE_SUPPORTED && plaintext.byteLength >= 1024) {
       const compressed = new Uint8Array(await new Response(
         new Blob([plaintext]).stream().pipeThrough(new CompressionStream("deflate")),

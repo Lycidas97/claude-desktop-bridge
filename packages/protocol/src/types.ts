@@ -1255,6 +1255,7 @@ export interface DesktopControlSnapshot extends BridgeHostSnapshot {
   claudeInspector?: BridgeInspectorStatus;
   connection: "idle" | "connecting" | "connected" | "reconnecting" | "closed";
   launchAtLogin: boolean;
+  diagnosticsEnabled: boolean;
   managedDesktopEnabled: boolean;
   claudeDesktop: ClaudeDesktopAppStatus;
   desktopApps?: BridgeDesktopAppStatus[];

@@ -2,7 +2,6 @@ import { lstat, mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import {
-  diag,
   evidenceSummary,
   isBridgeNativeImageRef,
   parseSystemUpdateParams,
@@ -21,6 +20,7 @@ import {
   type BridgeSessionInfo,
   type DesktopControlSnapshot,
 } from "@bridge/protocol";
+import { diagnostics } from "../app/diag.js";
 import { MAGPIE_QUOTA_METHOD } from "../../../../plugins/magpie-quota/contract.js";
 import type { createMagpieQuotaPlugin } from "../../../../plugins/magpie-quota/desktop.js";
 import type { ClaudeDesktopLifecycle } from "../app/claude-desktop-lifecycle.js";
@@ -176,11 +176,11 @@ export async function dispatchControllerRequest(
   origin: "desktop" | "mobile",
   sourceDeviceId?: string,
 ): Promise<unknown> {
-  diag("rpc.start", { method: request.method, origin });
+  const handled = diagnostics.begin(`handler.${diagnostics.method(request.method)}`, { origin });
   try {
     return await dispatchControllerRequestInner(host, request, origin, sourceDeviceId);
   } finally {
-    diag("rpc.done", { method: request.method });
+    handled();
   }
 }
 

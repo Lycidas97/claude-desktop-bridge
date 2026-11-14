@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { diag } from "@bridge/protocol";
+import { diag, diagnostics, type DiagBucket } from "../app/diag.js";
 
 const STREAM = "__claudeBridgeNativeStreamV1";
 const METHODS = new Set([
@@ -90,6 +90,8 @@ export class ClaudeDesktopInspector extends EventEmitter {
     resolve(value: unknown): void;
     reject(error: Error): void;
     timer?: ReturnType<typeof setTimeout>;
+    traceName: DiagBucket;
+    settled(): void;
   }>();
   private webContentsId: number | undefined;
   private receiving: Promise<void> | undefined;
@@ -117,10 +119,10 @@ export class ClaudeDesktopInspector extends EventEmitter {
     this.socket = socket;
     socket.addEventListener("message", event => {
       const raw = String(event.data);
-      diag("inspector.recv", { bytes: raw.length });
+      diag("inspector.recv", { codeUnits: raw.length });
       const reply = JSON.parse(raw) as InspectorReply;
       diag("inspector.parsed", { reply: reply.id !== undefined, pending: this.pending.size });
-      this.receive(reply);
+      this.receive(reply, raw.length);
       diag("inspector.received", { pending: this.pending.size });
     });
     socket.addEventListener("close", () => {
@@ -193,7 +195,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
       return await this.renderer(`(() => {
         if (!globalThis[${JSON.stringify(STREAM)}]) throw new Error('BRIDGE_RENDERER_RELOADED');
         return globalThis['claude.web'].LocalSessions[${JSON.stringify(method)}](${Array.from(args, arg => arg === undefined ? "undefined" : JSON.stringify(arg)).join(",")});
-      })()`);
+      })()`, true, method === "getTranscriptPage" || method === "getTranscript" ? `native.${method}` : "native.other");
     } finally {
       diag("inspector.call.done", { method });
     }
@@ -340,14 +342,14 @@ export class ClaudeDesktopInspector extends EventEmitter {
     }
   }
 
-  private async renderer(expression: string, timeout = true): Promise<unknown> {
+  private async renderer(expression: string, timeout = true, traceName: DiagBucket = timeout ? "native.other" : "native.stream"): Promise<unknown> {
     // Electron masks rejected executeJavaScript promises; carry native errors across that boundary.
     const wrapped = `(async () => { try { return { ok: true, value: await (${expression}) }; } catch (error) { return { ok: false, error: String(error?.message ?? error) }; } })()`;
     const result = await this.evaluate(`(() => {
       const page = process.mainModule.require('electron').webContents.fromId(${this.webContentsId});
       if (!page) throw new Error('BRIDGE_RENDERER_RELOADED');
       return page.executeJavaScript(${JSON.stringify(wrapped)});
-    })()`, timeout) as { ok: boolean; value?: unknown; error?: string };
+    })()`, timeout, traceName) as { ok: boolean; value?: unknown; error?: string };
     if (!result.ok) {
       if (result.error?.includes("BRIDGE_RENDERER_RELOADED")) { const socket = this.socket; this.disconnected(); socket?.close(); }
       throw new NativeCallError(result.error ?? "Desktop renderer call failed");
@@ -355,27 +357,31 @@ export class ClaudeDesktopInspector extends EventEmitter {
     return result.value;
   }
 
-  private evaluate(expression: string, timeout = true): Promise<unknown> {
+  private evaluate(expression: string, timeout = true, traceName: DiagBucket = "native.other"): Promise<unknown> {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(new InspectorDisconnectedError("Desktop inspector disconnected"));
     const id = ++this.nextId;
-    diag("inspector.send", { request: id, bytes: expression.length, pending: this.pending.size, timeout });
+    const settled = diagnostics.begin(traceName);
+    diag("inspector.send", { request: id, codeUnits: expression.length, pending: this.pending.size, timeout });
     return new Promise((resolve, reject) => {
       const timer = timeout ? setTimeout(() => {
         this.pending.delete(id);
+        settled();
         reject(new InspectorDisconnectedError("Desktop inspector RPC timed out; delivery is unconfirmed"));
       }, this.options.rpcTimeoutMs ?? 15_000) : undefined;
-      this.pending.set(id, { resolve, reject, ...(timer ? { timer } : {}) });
+      this.pending.set(id, { resolve, reject, traceName, settled, ...(timer ? { timer } : {}) });
       socket.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression, awaitPromise: true, returnByValue: true } }));
     });
   }
 
-  private receive(reply: InspectorReply): void {
+  private receive(reply: InspectorReply, codeUnits: number): void {
     if (reply.id === undefined) return;
     const pending = this.pending.get(reply.id);
     if (!pending) return;
     this.pending.delete(reply.id);
     clearTimeout(pending.timer);
+    pending.settled();
+    diagnostics.observe(pending.traceName, codeUnits);
     const exception = reply.result?.exceptionDetails;
     if (reply.error || exception) {
       const message = reply.error?.message ?? exception?.exception?.description ?? exception?.text ?? "Desktop call failed";
@@ -390,6 +396,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
     this.webContentsId = undefined;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
+      pending.settled();
       pending.reject(new InspectorDisconnectedError("Desktop inspector disconnected; delivery is unconfirmed"));
     }
     this.pending.clear();

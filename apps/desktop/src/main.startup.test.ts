@@ -9,7 +9,6 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("./app/claude-desktop-developer-settings.js", () => ({ claudeDesktopDeveloperSettings: mocks.developerSettings }));
 vi.mock("./app/service-runtime.js", () => ({ createServiceRuntime: mocks.runtime }));
-vi.mock("./app/diag.js", () => ({ initDiag: vi.fn() }));
 vi.mock("./app/memory-recorder.js", () => ({ MemoryRecorder: class {
   initialize = mocks.memoryInitialize; close = mocks.memoryClose; diagnostics() { return {}; }
 } }));

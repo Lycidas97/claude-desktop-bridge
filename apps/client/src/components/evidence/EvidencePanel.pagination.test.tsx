@@ -227,7 +227,7 @@ describe("on-demand evidence details", () => {
       sessions: [{ sessionId: "session", title: "Session", projectId: "project", projectName: "Project", cwd: "/tmp/project", source: "bridge", ownership: "BRIDGE_IDLE", transport: "bridge-host", turnState: "idle", lastActivityAt: 1, pendingCount: 0 }],
       projects: [], devices: [], permissions: [], latestSeq: 0,
       runtime: { state: "ready", detail: "Ready", activeTurns: 0, maxParallelTurns: 2, desktopIntegration: { state: "not-managed", detail: "Unavailable", enabled: false, canRestart: false } },
-      connection: "connected", launchAtLogin: false, managedDesktopEnabled: false,
+      connection: "connected", launchAtLogin: false, diagnosticsEnabled: false, managedDesktopEnabled: false,
       claudeDesktop: { state: "stopped", detail: "Stopped", canLaunch: true, canQuit: false },
     };
     const { detailsAvailable: _, ...summary } = bundle();

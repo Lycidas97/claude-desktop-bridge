@@ -7,7 +7,7 @@ import type {
   BridgeRuntimeStatus, BridgeSDKPermissionMode, BridgeSessionCommandResult,
   BridgeSessionConfiguration, BridgeSessionContextUsage, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeSubagentSummary, BridgeToolCallDetail,
 } from "@bridge/protocol";
-import { diag } from "@bridge/protocol";
+import { diag, diagnostics } from "../app/diag.js";
 import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "../controller/conversation-state-store.js";
 import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, scanClaudeContextFromMessages, visibleMessage } from "../transcript/claude-history.js";
@@ -166,8 +166,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
     super();
     this.inspector = options.inspector ?? new ClaudeDesktopInspector(process.env.BRIDGE_CLAUDE_INSPECTOR_URL ? { origin: process.env.BRIDGE_CLAUDE_INSPECTOR_URL } : {});
     this.inspector.on("event", value => {
+      const settled = diagnostics.begin("native.event");
       this.pendingEvents++;
       void this.handleEvent(value).catch(error => this.report(error)).finally(() => {
+        settled();
         this.pendingEvents--;
         this.scheduleEventProjection();
       });
@@ -628,88 +630,92 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async history(sessionId: string, cursor?: string, limit = 50): Promise<BridgeHistoryPage> {
     const id = this.desktopId(sessionId);
-    diag("history.start", { cursor: Boolean(cursor), limit });
-    if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop history is unavailable while inspector is disconnected");
-    const previousSession = !cursor ? JSON.stringify(this.session(sessionId)) : undefined;
-    const page = record(await this.inspector.call("getTranscriptPage", [id, cursor ?? "", limit, { window: "accept" }]));
-    if (!Array.isArray(page.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
-    const nextCursor = page.hasMore === true && typeof record(page.messages[0]).uuid === "string" ? String(record(page.messages[0]).uuid) : undefined;
-    const firstPlan = nativePlanMessages(page.messages)[0]?.message.content[0];
-    let boundaryFound = firstPlan?.name === "mcp__ccd_turn__update_plan" && ["first_task", "new_task"].includes(String(record(firstPlan.input).scope));
-    const context: unknown[] = [];
-    const olderPages: unknown[][] = [];
-    let before = nextCursor;
-    while (!boundaryFound && before) {
-      const older = record(await this.inspector.call("getTranscriptPage", [id, before, limit, { window: "accept" }]));
-      if (!Array.isArray(older.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
-      if (!cursor) olderPages.unshift(projectContextMessages(older.messages));
-      for (const message of nativePlanMessages(older.messages).reverse()) {
-        const block = message.message.content[0]!;
-        context.unshift(message);
-        if (block.name === "mcp__ccd_turn__wrap_up" || ["first_task", "new_task"].includes(String(record(block.input).scope))) {
-          boundaryFound = true;
-          break;
-        }
-      }
-      before = older.hasMore === true && typeof record(older.messages[0]).uuid === "string" ? String(record(older.messages[0]).uuid) : undefined;
-    }
-    const projection: NativeMessageProjection = {};
-    nativeHistoryItems(sessionId, context, projection);
-    const items = nativeHistoryItems(sessionId, page.messages, projection);
-    const localSubagents = await this.enrichSubagentItems(sessionId, items);
-    if (!cursor) {
-      const liveProjection = this.messageProjection.get(sessionId) ?? {};
-      if (!liveProjection.planObserved && projection.planObserved) {
-        if (projection.plan) liveProjection.plan = projection.plan;
-        else delete liveProjection.plan;
-        liveProjection.planObserved = true;
-        this.messageProjection.set(sessionId, liveProjection);
-      }
-      if (localSubagents?.length || projection.tasks?.size) {
-        const native = this.native.get(sessionId);
-        const allowRunning = native?.isRunning === true || native?.turnRunning === true || native?.hasBackgroundWork === true;
-        const tasks = liveProjection.tasks ??= new Map();
-        for (const task of localSubagents ?? []) tasks.set(task.agentId, task);
-        for (const [taskId, task] of projection.tasks ?? []) {
-          if (localSubagents?.some(local => local.agentId === taskId || (task.toolUseId && local.toolUseId === task.toolUseId))) continue;
-          if (task.state === "running" && !allowRunning) continue;
-          const current = tasks.get(taskId);
-          if (!current || task.updatedAt >= current.updatedAt || (current.state === "running" && task.state !== "running")) {
-            tasks.set(taskId, { ...(current?.model ? { model: current.model } : {}), ...task });
+    const read = diagnostics.begin(cursor ? "history.cursor" : "history.initial", { cursor: Boolean(cursor), limit });
+    try {
+      if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop history is unavailable while inspector is disconnected");
+      const previousSession = !cursor ? JSON.stringify(this.session(sessionId)) : undefined;
+      const page = record(await this.inspector.call("getTranscriptPage", [id, cursor ?? "", limit, { window: "accept" }]));
+      if (!Array.isArray(page.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
+      const nextCursor = page.hasMore === true && typeof record(page.messages[0]).uuid === "string" ? String(record(page.messages[0]).uuid) : undefined;
+      const firstPlan = nativePlanMessages(page.messages)[0]?.message.content[0];
+      let boundaryFound = firstPlan?.name === "mcp__ccd_turn__update_plan" && ["first_task", "new_task"].includes(String(record(firstPlan.input).scope));
+      const context: unknown[] = [];
+      const olderPages: unknown[][] = [];
+      let before = nextCursor;
+      while (!boundaryFound && before) {
+        diagnostics.count("history.planPage");
+        const older = record(await this.inspector.call("getTranscriptPage", [id, before, limit, { window: "accept" }]));
+        if (!Array.isArray(older.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
+        if (!cursor) olderPages.unshift(projectContextMessages(older.messages));
+        for (const message of nativePlanMessages(older.messages).reverse()) {
+          const block = message.message.content[0]!;
+          context.unshift(message);
+          if (block.name === "mcp__ccd_turn__wrap_up" || ["first_task", "new_task"].includes(String(record(block.input).scope))) {
+            boundaryFound = true;
+            break;
           }
         }
-        this.messageProjection.set(sessionId, liveProjection);
+        before = older.hasMore === true && typeof record(older.messages[0]).uuid === "string" ? String(record(older.messages[0]).uuid) : undefined;
       }
-      const live = await this.readLiveContextUsage(id);
-      if (live) {
-        this.applyLiveContextUsage(sessionId, live);
-      } else {
-        let combined: unknown[] = [...olderPages.flat(), ...page.messages];
-        let scan = scanClaudeContextFromMessages(combined);
-        for (let hop = 0; !scan.anchored && before && page.messages.length >= limit && limit >= 20 && hop < 8; hop += 1) {
-          const older = record(await this.inspector.call("getTranscriptPage", [id, before, Math.max(limit, 100), { window: "accept" }]));
-          if (!Array.isArray(older.messages)) break;
-          combined = [...projectContextMessages(older.messages), ...combined];
-          scan = scanClaudeContextFromMessages(combined);
-          before = older.hasMore === true && typeof record(older.messages[0]).uuid === "string"
-            ? String(record(older.messages[0]).uuid)
-            : undefined;
+      const projection: NativeMessageProjection = {};
+      nativeHistoryItems(sessionId, context, projection);
+      const items = nativeHistoryItems(sessionId, page.messages, projection);
+      const localSubagents = await this.enrichSubagentItems(sessionId, items);
+      if (!cursor) {
+        const liveProjection = this.messageProjection.get(sessionId) ?? {};
+        if (!liveProjection.planObserved && projection.planObserved) {
+          if (projection.plan) liveProjection.plan = projection.plan;
+          else delete liveProjection.plan;
+          liveProjection.planObserved = true;
+          this.messageProjection.set(sessionId, liveProjection);
         }
-        this.applyTranscriptContextMessages(sessionId, combined);
+        if (localSubagents?.length || projection.tasks?.size) {
+          const native = this.native.get(sessionId);
+          const allowRunning = native?.isRunning === true || native?.turnRunning === true || native?.hasBackgroundWork === true;
+          const tasks = liveProjection.tasks ??= new Map();
+          for (const task of localSubagents ?? []) tasks.set(task.agentId, task);
+          for (const [taskId, task] of projection.tasks ?? []) {
+            if (localSubagents?.some(local => local.agentId === taskId || (task.toolUseId && local.toolUseId === task.toolUseId))) continue;
+            if (task.state === "running" && !allowRunning) continue;
+            const current = tasks.get(taskId);
+            if (!current || task.updatedAt >= current.updatedAt || (current.state === "running" && task.state !== "running")) {
+              tasks.set(taskId, { ...(current?.model ? { model: current.model } : {}), ...task });
+            }
+          }
+          this.messageProjection.set(sessionId, liveProjection);
+        }
+        const live = await this.readLiveContextUsage(id);
+        if (live) {
+          this.applyLiveContextUsage(sessionId, live);
+        } else {
+          let combined: unknown[] = [...olderPages.flat(), ...page.messages];
+          let scan = scanClaudeContextFromMessages(combined);
+          for (let hop = 0; !scan.anchored && before && page.messages.length >= limit && limit >= 20 && hop < 8; hop += 1) {
+            diagnostics.count("history.planPage");
+            const older = record(await this.inspector.call("getTranscriptPage", [id, before, Math.max(limit, 100), { window: "accept" }]));
+            if (!Array.isArray(older.messages)) break;
+            combined = [...projectContextMessages(older.messages), ...combined];
+            scan = scanClaudeContextFromMessages(combined);
+            before = older.hasMore === true && typeof record(older.messages[0]).uuid === "string"
+              ? String(record(older.messages[0]).uuid)
+              : undefined;
+          }
+          this.applyTranscriptContextMessages(sessionId, combined);
+        }
+        this.projectSessions();
+        if (JSON.stringify(this.session(sessionId)) !== previousSession) this.emit("changed");
       }
-      this.projectSessions();
-      if (JSON.stringify(this.session(sessionId)) !== previousSession) this.emit("changed");
-    }
-    for (const item of items) {
-      const receipt = item.role === "user" ? [...this.receipts.values()].find(receipt => receipt.sessionId === sessionId && receipt.messageId === item.id) : undefined;
-      if (receipt) {
-        item.delivery = receipt.state === "dispatching" ? "host-received" : receipt.state;
-        item.commandId = receipt.commandId;
-        item.requestId = receipt.requestId;
+      for (const item of items) {
+        const receipt = item.role === "user" ? [...this.receipts.values()].find(receipt => receipt.sessionId === sessionId && receipt.messageId === item.id) : undefined;
+        if (receipt) {
+          item.delivery = receipt.state === "dispatching" ? "host-received" : receipt.state;
+          item.commandId = receipt.commandId;
+          item.requestId = receipt.requestId;
+        }
       }
-    }
-    diag("history.done", { messages: items.length });
-    return { sessionId, items, hasMore: page.hasMore === true, ...(nextCursor ? { nextCursor } : {}) };
+      diag("history.messages", { messages: items.length });
+      return { sessionId, items, hasMore: page.hasMore === true, ...(nextCursor ? { nextCursor } : {}) };
+    } finally { read(); }
   }
 
   async readNativeImage(sessionId: string, ref: BridgeNativeImageRef): Promise<{ artifactId: string; name: string; mimeType: string; bytes: Buffer }> {
@@ -1108,7 +1114,6 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   private async handleEvent(raw: unknown): Promise<void> {
     const event = record(raw);
-    diag("native.event", { type: typeof event.type === "string" ? event.type : undefined });
     if (typeof event.sessionId !== "string") return;
     if (NATIVE_PROMPTS.some(spec => "event" in spec && (event.type === spec.event || event.type === `${spec.event}_resolved`))) {
       await this.refreshRuntime();

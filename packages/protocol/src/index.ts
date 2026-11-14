@@ -1,6 +1,5 @@
 export * from "./crypto.js";
 export * from "./desktop-ipc.js";
-export * from "./diag.js";
 export * from "./encoding.js";
 export * from "./evidence.js";
 export * from "./endpoints.js";

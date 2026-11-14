@@ -3,7 +3,8 @@ import { execFile as execFileCallback } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, win32 as windowsPath } from "node:path";
 import { promisify } from "node:util";
-import { diag, type BridgeProjectInfo, type BridgeSessionInfo } from "@bridge/protocol";
+import type { BridgeProjectInfo, BridgeSessionInfo } from "@bridge/protocol";
+import { diag } from "../app/diag.js";
 import {
   listClaudeDesktopSessionState,
   type ClaudeDesktopProfile,
@@ -221,7 +222,7 @@ async function listProcessSessions(platform = process.platform): Promise<Process
   } catch {
     return undefined;
   }
-  diag("process.scan.read", { bytes: stdout.length });
+  diag("process.scan.read", { codeUnits: stdout.length });
   if (platform === "win32") return indexClaudeProcesses(new Map(parseWindowsProcessRows(stdout).map((row) => [row.pid, row])), platform);
   const processes = new Map<number, ProcessRow>();
   for (const line of stdout.split("\n")) {

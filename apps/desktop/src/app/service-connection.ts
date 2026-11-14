@@ -11,7 +11,7 @@ import { ServiceResources } from "./service-resources.js";
 
 export const SERVICE_PROTOCOL = 1;
 export const SERVICE_METHODS = [
-  "snapshot", "createPairing", "revokeDevice", "setRelayUrl", "setLaunchAtLogin",
+  "snapshot", "createPairing", "revokeDevice", "setRelayUrl", "setLaunchAtLogin", "setDiagnosticsEnabled",
   "setAnthropicApiKey", "removeAnthropicApiKey", "testMagpieConnection", "saveMagpieConnection", "launchClaudeDesktop", "quitClaudeDesktop",
   "launchDesktopApp", "quitDesktopApp", "dispatchLocal", "diagnostics", "refreshRuntime",
 ] as const;
@@ -73,7 +73,7 @@ export async function serveDesktopService(options: {
               if (args.length !== 1 || typeof args[0] !== "string") throw new Error("Expected one string");
             } else if (method === "testMagpieConnection" || method === "saveMagpieConnection") {
               if (args.length !== 1) throw new Error("Expected one Magpie configuration");
-            } else if (method === "setLaunchAtLogin") {
+            } else if (method === "setLaunchAtLogin" || method === "setDiagnosticsEnabled") {
               if (args.length !== 1 || typeof args[0] !== "boolean") throw new Error("Expected one boolean");
             } else if (method === "launchDesktopApp" || method === "quitDesktopApp") {
               if (args.length !== 1 || args[0] !== "claude-desktop") throw new Error("Unknown Desktop runtime");

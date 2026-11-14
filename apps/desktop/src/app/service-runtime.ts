@@ -36,6 +36,7 @@ import { ConversationStateStore } from "../controller/conversation-state-store.j
 import { MagpieConnectionRepository } from "../claude/magpie-connection.js";
 import { DesktopUpdater, probeInstallDirectory } from "../updater/desktop-updater.js";
 import { ServiceResources } from "./service-resources.js";
+import { diagnostics } from "./diag.js";
 import type { MemoryRecorder } from "./memory-recorder.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
@@ -112,6 +113,9 @@ export async function createServiceRuntime(options: {
       evidenceProtector,
     );
     const pairingConfig = await repository.loadOrCreate();
+    resources.defer("Diagnostics", () => diagnostics.close());
+    diagnostics.start(join(userDataPath, "background-service", "diagnostics", "trace.sqlite"));
+    diagnostics.setEnabled(pairingConfig.diagnosticsEnabled);
     const eventLog = new SessionEventLog(join(userDataPath, "events-v2.jsonl"));
     resources.defer("Session event log", () => eventLog.close());
     options.onStage?.("打开事件日志");

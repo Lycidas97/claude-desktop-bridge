@@ -23,7 +23,8 @@ $jdkRoot = "$toolsRoot\jdk-21"
 $pythonRoot = "$toolsRoot\python"
 $sdkRoot = "$toolsRoot\android-sdk"
 
-$tempDir = "$cacheRoot\temp"
+$ownsTempRoot = -not $env:BRIDGE_TEST_TEMP_ROOT
+$tempDir = if ($ownsTempRoot) { Join-Path $cacheRoot ("test-temp-" + [Guid]::NewGuid().ToString("N")) } else { $env:BRIDGE_TEST_TEMP_ROOT }
 $npmCache = "$cacheRoot\npm"
 $electronCache = "$cacheRoot\electron"
 $electronBuilderCache = "$cacheRoot\electron-builder"
@@ -32,10 +33,13 @@ $androidUserHome = "$cacheRoot\android-user"
 $avdHome = "$cacheRoot\android-avd"
 
 New-Item -ItemType Directory -Force -Path `
-  $tempDir, $npmCache, $electronCache, $electronBuilderCache, $gradleHome, $androidUserHome, $avdHome | Out-Null
+  $npmCache, $electronCache, $electronBuilderCache, $gradleHome, $androidUserHome, $avdHome | Out-Null
+if ($ownsTempRoot) { New-Item -ItemType Directory -Path $tempDir | Out-Null }
 
+$env:BRIDGE_TEST_TEMP_ROOT = $tempDir
 $env:TEMP = $tempDir
 $env:TMP = $tempDir
+$env:TMPDIR = $tempDir
 $env:npm_config_cache = $npmCache
 $env:ELECTRON_CACHE = $electronCache
 $env:ELECTRON_BUILDER_CACHE = $electronBuilderCache
@@ -110,7 +114,7 @@ $ciWorktree = "$workRoot\ci-slot-$slot"
 $avdName = "bridge-ci-api36-$slot"
 $emulatorPort = 5560 + 2 * $slot
 $env:ANDROID_SERIAL = "emulator-$emulatorPort"
-$recycleStaging = Join-Path $cacheRoot ("recycle-staging-$slot-" + [Guid]::NewGuid().ToString("N"))
+$recycleStaging = Join-Path $tempDir "qa-staging"
 
 # 1. Fetch exact commit bundle into the anchor repo under this slot's ref and check out D:\work\ci-slot-<n>
 Invoke-Checked "Sync git bundle ($Revision)" {
@@ -150,9 +154,8 @@ if ($recycleHash -ne $cachedRecycleHash -or -not (Test-Path $recycleExe)) {
   Set-Content -Path $recycleStamp -Value $recycleHash -NoNewline
 }
 $env:BRIDGE_WIN_RECYCLE_EXE = $recycleExe
-# Node removals in this run rename into the slot staging dir, which the finally block recycles as one item.
-# Create it only once bridge-recycle.exe exists, so that finally never calls a helper that was never built.
-New-Item -ItemType Directory -Force -Path $recycleStaging | Out-Null
+# QA scratch lives inside this run's private root; Node never stages arbitrary user files or old artifacts here.
+New-Item -ItemType Directory -Path $recycleStaging | Out-Null
 $env:BRIDGE_RECYCLE_STAGING = $recycleStaging
 
 # 3. Install npm dependencies when package-lock.json changes
@@ -346,13 +349,11 @@ try {
 }
 
 if (-not $SkipWslLinux) {
-  $wslBundlePath = "/mnt/d/work/cache/temp/" + [IO.Path]::GetFileName($BundlePath)
+  $wslBundlePath = "/mnt/" + $BundlePath.Substring(0, 1).ToLowerInvariant() + $BundlePath.Substring(2).Replace("\", "/")
   $wslScript = @"
 set -euo pipefail
 export PATH="/usr/local/bin:`$PATH"
 CI_DIR="/var/tmp/bridge-linux-ci-slot-$slot"
-export TMPDIR="`$CI_DIR-tmp"
-mkdir -p "`$TMPDIR"
 if [ ! -d "`$CI_DIR/.git" ]; then
   mkdir -p "`$CI_DIR"
   git init -q "`$CI_DIR"
@@ -422,17 +423,13 @@ Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revisi
         $wslProc.Dispose()
       }
     }
-    if ($slot -ge 0 -and (Test-Path -LiteralPath $recycleStaging)) {
-      Invoke-Checked "Recycle slot $slot staged test removals" { & "$cacheRoot\bridge-recycle.exe" $recycleStaging }
-    }
     if (Test-Path -LiteralPath $BundlePath) {
-      Invoke-Checked "Recycle uploaded git bundle" {
-        if (Test-Path -LiteralPath "$cacheRoot\bridge-recycle.exe") {
-          & "$cacheRoot\bridge-recycle.exe" $BundlePath
-        } else {
-          throw "No Windows Recycle Bin helper available to remove $BundlePath"
-        }
+      Invoke-Checked "Clean uploaded git bundle" {
+        & "$nodeBin\node.exe" --require "$ciWorktree\scripts\recycle-cleanup.cjs" "$ciWorktree\scripts\clean.mjs" $BundlePath
       }
+    }
+    if ($ownsTempRoot) {
+      Invoke-Checked "Delete owned test temporary root" { Remove-Item -LiteralPath $tempDir -Recurse -Force }
     }
   } finally {
     if ($slot -ge 0) {

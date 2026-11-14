@@ -14,13 +14,13 @@ Every pull request on `Lycidas97/claude-desktop-bridge` is checked against these
 - Pre-1.3 modules were retired in #51; the only remaining retirement path is `removeLegacyConnector` in `apps/desktop/src/claude/connector.ts`. Delete code that loses its last production caller together with its tests instead of quarantining it.
 - Never expose arbitrary inspector `evaluate` over Relay or transmit credentials/plaintext through `apps/relay`.
 
-## 3. Recycle-Bin-Only File Deletion
-- Permanent deletion (`rm`, `/bin/rm`, raw `fs.rmSync` / `fs.unlink` without the recycle preload, or `Remove-Item`) is strictly forbidden across local shells, SSH hosts, Python, PowerShell, and Node scripts.
-- Move deleted files and directories to the OS Recycle Bin:
+## 3. File Deletion Boundary
+- User files, build outputs, retained evidence and all other non-temporary paths must go to the OS Recycle Bin across local shells, SSH, Python, PowerShell and Node. No permanent-delete fallback is allowed if recycling fails or is unavailable; surface the error and retain the path.
   - **macOS**: `/usr/bin/trash <path>`
   - **Linux**: `trash-put <path>` (`trash-cli`)
-  - **Node tests & scripts**: preload `scripts/recycle-cleanup.cjs` (automatic in `npm test`, `npm run test:infra`, `npm run verify`, `npm run test:browser`, and `npm run ci:run -- ...`). Standalone test files that remove temporary directories must load `scripts/recycle-cleanup.cjs` explicitly.
-- If the OS recycle command is unavailable or fails, surface the error and retain the path (as hosted Windows Server QA does); never fall back to permanent deletion.
+  - **Node tests & scripts**: preload `scripts/recycle-cleanup.cjs` (automatic in `npm test`, `npm run test:infra`, `npm run verify`, `npm run test:browser`, and `npm run ci:run -- ...`). Standalone test files that remove temporary directories must load it explicitly.
+- **Exact test/CI exception**: only scratch in a fresh private temporary root created by that run (passed to children as `BRIDGE_TEST_TEMP_ROOT`), its fresh upload/QA staging, and standalone Windows QA's own GUID-named profile/smoke/install-copy directories may be deleted directly. The creator owns root cleanup; children leave inherited roots alive. Do not authorize pre-existing directories, shared system temp, reused slots, historical staging or filename prefixes. A directory symlink does not extend this exception to its external target.
+- `artifacts/`, `output/`, old JUnit reports, `dist/` and original installer outputs remain on the recycle path. The preload must never move arbitrary deletion sources into disposable staging. Manual `rm`, `/bin/rm`, raw Node deletion without the preload and unrelated `Remove-Item` calls remain forbidden.
 
 ## 4. Deliberate UX & Visual Restraint
 - Avoid redundant subtitles, secondary descriptions, explanatory callouts, and helper paragraphs. Communicate structure through visual hierarchy, spacing, alignment, typography, and concise control labels.

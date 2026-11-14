@@ -657,16 +657,17 @@ export class ClaudeDesktopBridge extends EventEmitter {
         }
         before = older.hasMore === true && typeof record(older.messages[0]).uuid === "string" ? String(record(older.messages[0]).uuid) : undefined;
       }
-      const projection: NativeMessageProjection = {};
+      const liveProjection = this.messageProjection.get(sessionId) ?? {};
+      const projection: NativeMessageProjection = { ...(liveProjection.questionAnswers ? { questionAnswers: liveProjection.questionAnswers } : {}) };
       nativeHistoryItems(sessionId, context, projection);
       const items = nativeHistoryItems(sessionId, page.messages, projection);
       const localSubagents = await this.enrichSubagentItems(sessionId, items);
+      if (projection.questions?.size || projection.questionAnswers?.size) {
+        for (const [toolUseId, question] of projection.questions ?? []) (liveProjection.questions ??= new Map()).set(toolUseId, question);
+        if (projection.questionAnswers) liveProjection.questionAnswers = projection.questionAnswers;
+        this.messageProjection.set(sessionId, liveProjection);
+      }
       if (!cursor) {
-        const liveProjection = this.messageProjection.get(sessionId) ?? {};
-        if (projection.questions?.size) {
-          for (const [toolUseId, question] of projection.questions) (liveProjection.questions ??= new Map()).set(toolUseId, question);
-          this.messageProjection.set(sessionId, liveProjection);
-        }
         if (!liveProjection.planObserved && projection.planObserved) {
           if (projection.plan) liveProjection.plan = projection.plan;
           else delete liveProjection.plan;

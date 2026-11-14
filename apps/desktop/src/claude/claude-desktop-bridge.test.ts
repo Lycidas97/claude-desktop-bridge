@@ -3263,14 +3263,14 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("updates a history-loaded native question when its live tool result arrives", async () => {
+  it.each([undefined, "older-page"])("updates a history-loaded native question when its live tool result arrives (cursor=%s)", async cursor => {
     const f = await fixture();
     try {
       f.native.page = { hasMore: false, messages: [{ type: "assistant", uuid: "question", timestamp: 10, message: { id: "question-body", content: [
         { type: "text", text: "选择接下来的检查" },
         { type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [{ question: "检查哪些？", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }] }] } },
       ] } }] };
-      await f.bridge.history("local-native");
+      await f.bridge.history("local-native", cursor);
       await f.message({ type: "user", uuid: "answer", timestamp: 20, toolUseResult: { answers: { "检查哪些？": "类型检查, 回归测试" } }, message: { content: [
         { type: "tool_result", tool_use_id: "ask", content: "User has answered your questions." },
       ] } });
@@ -3279,6 +3279,24 @@ describe("Claude native relay", () => {
           answer: "类型检查, 回归测试", options: [{ label: "稍后处理" }, { label: "类型检查", selected: true }, { label: "回归测试", selected: true }],
         }] },
       });
+    } finally { await f.close(); }
+  });
+
+  it("restores answers split between the newest and an older native history page", async () => {
+    const f = await fixture();
+    try {
+      f.native.page = { hasMore: true, messages: [{ type: "user", uuid: "answer", timestamp: 20,
+        toolUseResult: { answers: { "检查哪些？": "类型检查, 回归测试" } },
+        message: { content: [{ type: "tool_result", tool_use_id: "ask", content: "User has answered your questions." }] },
+      }] };
+      f.native.pages.set("answer", { hasMore: false, messages: [{ type: "assistant", uuid: "question", timestamp: 10, message: { content: [
+        { type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [{ question: "检查哪些？", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }] }] } },
+      ] } }] });
+      const latest = await f.bridge.history("local-native");
+      const older = await f.bridge.history("local-native", latest.nextCursor);
+      expect(older.items.find(item => item.id === "question")?.interactivePrompt).toMatchObject({ answered: true, questions: [{
+        answer: "类型检查, 回归测试", options: [{ label: "稍后处理" }, { label: "类型检查", selected: true }, { label: "回归测试", selected: true }],
+      }] });
     } finally { await f.close(); }
   });
 

@@ -17,6 +17,7 @@ export interface NativeMessageProjection {
   planObserved?: boolean;
   tasks?: Map<string, BridgeSubagentSummary>;
   questions?: Map<string, BridgeHistoryItem>;
+  questionAnswers?: Map<string, Record<string, string>>;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -96,17 +97,22 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
       };
       items.set(id, item);
       if (interactivePrompt?.kind === "question" && interactivePrompt.toolUseId) {
-        (projection.questions ??= new Map()).set(interactivePrompt.toolUseId, item);
+        const answers = projection.questionAnswers?.get(interactivePrompt.toolUseId);
+        if (answers) {
+          item.interactivePrompt = applyQuestionAnswers(interactivePrompt, answers);
+          projection.questionAnswers!.delete(interactivePrompt.toolUseId);
+        } else (projection.questions ??= new Map()).set(interactivePrompt.toolUseId, item);
       }
     }
     if (Array.isArray(body.content)) for (const rawBlock of body.content) {
       const block = record(rawBlock);
       if (message.type === "user" && block.type === "tool_result" && typeof block.tool_use_id === "string") {
+        const answers = extractToolResultAnswers(message);
         const question = projection.questions?.get(block.tool_use_id);
         if (question?.interactivePrompt) {
-          items.set(question.id, { ...question, interactivePrompt: applyQuestionAnswers(question.interactivePrompt, extractToolResultAnswers(message)) });
+          items.set(question.id, { ...question, interactivePrompt: applyQuestionAnswers(question.interactivePrompt, answers) });
           projection.questions!.delete(block.tool_use_id);
-        }
+        } else if (answers) (projection.questionAnswers ??= new Map()).set(block.tool_use_id, answers);
       }
       if (block.type !== "tool_use" || typeof block.id !== "string" || typeof block.name !== "string") continue;
       if (block.name === "mcp__ccd_turn__update_plan" || block.name === "mcp__ccd_turn__wrap_up") {

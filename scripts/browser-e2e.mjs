@@ -2020,13 +2020,13 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   for (const event of await host.nativeApproval.message({ type: "assistant", uuid: "received-rewind-anchor", timestamp: Date.now(), message: { content: [{ type: "text", text: "保留的原生回退锚点" }] } })) await host.emit(event.type, event.data, { itemId: event.itemId });
   host.nativeApproval.queuedReply(false);
   const receivedText = "只有 delivered 确认、仍在等待读取的指令";
-  await page.getByRole("button", { name: "立即调整", exact: true }).click();
+  assert.equal(await page.locator(".composer-mode").count(), 0, "Running conversations have no composer mode selector");
   await composer.fill(receivedText);
   await page.getByRole("button", { name: "发送", exact: true }).click();
-  await eventually(() => host.nativeApproval.receipts().length, 4, "A real browser immediate send reaches the native receipt without a queued flag");
+  await eventually(() => host.nativeApproval.receipts().length, 4, "A normal browser send reaches the native receipt without a queued flag");
   await eventually(() => host.nativeApproval.receipts().at(-1)?.state, "submitted", "The delivered-only Native reply must arrive before checking the submitted receipt");
   const received = host.nativeApproval.receipts().at(-1);
-  assert.equal(received.queueMode, "steered");
+  assert.equal(received.queueMode, "deferred");
   assert.equal(received.state, "submitted");
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "user", uuid: received.messageId, message: { content: receivedText } } }));
   const receivedMessage = page.locator("article.conversation-item.user").filter({ hasText: receivedText });
@@ -2035,7 +2035,7 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   assert.equal(host.session.pendingCount, 0, "The adapter does not invent queued status to expose actions");
   await composer.fill(draft);
   await receivedMessage.getByRole("button", { name: "Send now", exact: true }).click();
-  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "sendSteeredNow" && call.args[1] === received.messageId).length, 1, "Received-only Send now calls the known native steering route exactly once");
+  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage" && call.args[1] === received.messageId).length, 1, "Received-only Send now promotes the normally submitted message exactly once");
   await eventually(() => receivedMessage.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Received-only Send now preserves draft and later cancellation");
   assert.equal(await composer.inputValue(), draft);
   assert.equal(await receivedMessage.getByRole("button", { name: "回退到这条消息之前", exact: true }).isEnabled(), true);
@@ -2054,7 +2054,8 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   assert.equal(host.nativeApproval.receipts().at(-1).state, "cancelled", "The native close withdrawal clears the original queued receipt");
   assert.equal(host.session.pendingCount, 0);
   assert.equal(host.session.turnState, "idle");
-  assert.equal(host.requests.filter(request => request.method === "turn.steer").length, 1, "Only the deliberate browser immediate submission is sent");
+  assert.equal(host.requests.filter(request => request.method === "turn.start").length, 2, "Only the two deliberate browser submissions are sent");
+  assert.equal(host.requests.filter(request => request.method === "turn.steer").length, 0);
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "sendMessage").length, 4);
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "interrupt").length, 0);
   await page.reload({ waitUntil: "domcontentloaded" });
@@ -2062,7 +2063,7 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   await page.getByText("保留的原生回退锚点", { exact: true }).waitFor();
   assert.equal(await receivedMessage.count(), 0, "Replayed pre-rewind events cannot revive the discarded received message");
   await page.screenshot({ path: resolve(directory, "queue-running-rewind-complete.png"), fullPage: true });
-  steps.push("real immediate sends with delivered-only replies keep received status but expose Send now and native rewind; active rewind uses the user UUID/assistant anchor, stops through Native, clears withdrawal receipts, restores text and survives reload without resubmitting");
+  steps.push("normal sends without a composer mode selector keep delivered-only replies received but expose Send now and native rewind; active rewind uses the user UUID/assistant anchor, stops through Native, clears withdrawal receipts, restores text and survives reload without resubmitting");
 }
 
 async function verifyNativeSessionNotices(page, host, steps, directory) {

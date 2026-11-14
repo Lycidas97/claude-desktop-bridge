@@ -1003,8 +1003,6 @@ button.mobile-settings-row:active { background: var(--surface-2); }
   color: var(--bg);
 }
 
-.mobile-app-shell .composer-mode { margin: 0 0 8px; }
-.mobile-app-shell .composer-mode button { min-height: 32px; padding: 0 14px; font-size: var(--m-fs-footnote); }
 .mobile-app-shell .composer-connection { margin-bottom: 8px; padding: 8px 12px; border-radius: var(--m-r-control); font-size: var(--m-fs-footnote); }
 .mobile-app-shell .composer-error { font-size: var(--m-fs-footnote); }
 .mobile-app-shell .composer-attach-option { min-height: 52px; padding: 8px 12px; }

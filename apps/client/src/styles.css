@@ -7475,6 +7475,8 @@ button:disabled {
   margin: 0 10px 10px;
 }
 
+.background-task-entry > .tool-detail-body { padding: 0 12px 12px; }
+
 /* The sheet header or tray row above already names the task. */
 .m-sheet-body > .conversation-subagent-card .subagent-description,
 .background-task-entry .subagent-description { display: none; }
@@ -7495,7 +7497,6 @@ button:disabled {
   cursor: pointer;
 }
 
-.background-task-row:disabled { cursor: default; opacity: 1; }
 .background-task-row > svg { flex: none; color: var(--muted); }
 .background-task-row > small { flex: none; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .background-task-row-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -8117,41 +8118,6 @@ button:disabled {
   margin-top: 6px;
   padding-left: 10px;
   border-left: 2px solid color-mix(in srgb, var(--accent) 38%, var(--line-strong));
-}
-
-.mobile-fork-group.is-archived-only {
-  padding: 0 10px 6px 22px;
-  background: transparent;
-}
-
-.mobile-fork-archived {
-  margin-top: 4px;
-}
-
-.mobile-fork-toggle.is-archived-fold {
-  min-height: 26px;
-  padding: 2px 6px;
-  border-color: transparent;
-  background: transparent;
-  color: color-mix(in srgb, var(--muted) 80%, transparent);
-  font-size: 10.5px;
-  font-weight: 500;
-}
-
-.mobile-fork-toggle.is-archived-fold:hover,
-.mobile-fork-archived.expanded > .mobile-fork-toggle.is-archived-fold,
-.mobile-fork-group.is-archived-only.expanded > .mobile-fork-toggle.is-archived-fold {
-  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
-  color: var(--muted);
-}
-
-.mobile-fork-archived-children {
-  display: grid;
-  margin-top: 4px;
-}
-
-.mobile-fork-children.is-archived-children {
-  border-left-color: var(--line-strong);
 }
 
 .session-row-v2.is-fork-child {

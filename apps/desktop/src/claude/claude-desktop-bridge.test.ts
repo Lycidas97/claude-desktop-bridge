@@ -3263,6 +3263,46 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it.each([undefined, "older-page"])("updates a history-loaded native question when its live tool result arrives (cursor=%s)", async cursor => {
+    const f = await fixture();
+    try {
+      f.native.page = { hasMore: false, messages: [{ type: "assistant", uuid: "question", timestamp: 10, message: { id: "question-body", content: [
+        { type: "text", text: "选择接下来的检查" },
+        { type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [{ question: "检查哪些？", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }] }] } },
+      ] } }] };
+      await f.bridge.history("local-native", cursor);
+      await f.message({ type: "user", uuid: "answer", timestamp: 20, toolUseResult: { answers: { "检查哪些？": "类型检查, 回归测试" } }, message: { content: [
+        { type: "tool_result", tool_use_id: "ask", content: "User has answered your questions." },
+      ] } });
+      expect(f.eventLog.replay().find(event => event.type === "assistant.completed" && event.itemId === "question-body")?.data).toMatchObject({
+        text: "选择接下来的检查", interactivePrompt: { kind: "question", answered: true, toolUseId: "ask", questions: [{
+          answer: "类型检查, 回归测试", options: [{ label: "稍后处理" }, { label: "类型检查", selected: true }, { label: "回归测试", selected: true }],
+        }] },
+      });
+    } finally { await f.close(); }
+  });
+
+  it.each([1, 2])("restores split-page answers on repeated cursor reads (%i clients)", async clients => {
+    const f = await fixture();
+    try {
+      f.native.page = { hasMore: true, messages: [{ type: "user", uuid: "answer", timestamp: 20,
+        toolUseResult: { answers: { "检查哪些？": "类型检查, 回归测试" } },
+        message: { content: [{ type: "tool_result", tool_use_id: "ask", content: "User has answered your questions." }] },
+      }] };
+      f.native.pages.set("answer", { hasMore: false, messages: [{ type: "assistant", uuid: "question", timestamp: 10, message: { content: [
+        { type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [{ question: "检查哪些？", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }] }] } },
+      ] } }] });
+      const latest = await f.bridge.history("local-native");
+      const second = clients === 2 ? await f.bridge.history("local-native") : latest;
+      for (const cursor of [latest.nextCursor, second.nextCursor]) {
+        const older = await f.bridge.history("local-native", cursor);
+        expect(older.items.find(item => item.id === "question")?.interactivePrompt).toMatchObject({ answered: true, questions: [{
+          answer: "类型检查, 回归测试", options: [{ label: "稍后处理" }, { label: "类型检查", selected: true }, { label: "回归测试", selected: true }],
+        }] });
+      }
+    } finally { await f.close(); }
+  });
+
   it("filters control messages and preserves native question cards", () => {
     const items = nativeHistoryItems("native", [{ type: "user", uuid: "hidden", message: { content: "[Request interrupted by user]" } }, { type: "assistant", uuid: "question", message: { content: [{ type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }] } }] } }]);
     expect(items.some(item => item.text.includes("Request interrupted"))).toBe(false);
@@ -3342,6 +3382,125 @@ describe("Claude native relay", () => {
         model: "antigravity/gemini-3-pro",
         estimated: true,
       });
+    } finally { await f.close(); }
+  });
+
+  it("retains a gateway window across assistant usage and history reloads, but changes it with the selected model", async () => {
+    const f = await fixture();
+    try {
+      const model = "deepseek/deepseek[1m]";
+      const alias = `mythos-magpie-${magpieModelIdHash("deepseek/deepseek")}[1m]`;
+      const settings = { modelPicker: { options: [{ model, label: "DeepSeek" }] } };
+      await writeFile(f.options.settingsPath, JSON.stringify(settings));
+      f.native.sessions[0]!.model = alias;
+      f.native.contextUsage = { totalTokens: 158_000, rawMaxTokens: 272_000, model: "deepseek" };
+      await f.bridge.configuration("local-native");
+      await f.bridge.history("local-native");
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(272_000);
+
+      const assistant = { type: "assistant", uuid: "next-context", message: { id: "next-context", model: "deepseek", content: "Next turn", usage: { input_tokens: 160_000, output_tokens: 100 } } };
+      await f.message(assistant);
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 160_100, maxTokens: 272_000, estimated: true });
+      await f.message({ type: "result", modelUsage: { deepseek: { contextWindow: 272_000 } } });
+      f.native.contextUsage = null;
+      f.native.page = { messages: [assistant], hasMore: false };
+      await f.bridge.history("local-native");
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 160_100, maxTokens: 272_000 });
+      await writeFile(f.options.settingsPath, JSON.stringify({ modelPicker: { options: [] } }));
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(272_000);
+      await writeFile(f.options.settingsPath, JSON.stringify(settings));
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(272_000);
+
+      f.native.sessions[0]!.model = "claude-sonnet-4-5";
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(200_000);
+      f.native.contextUsage = { totalTokens: 160_100, rawMaxTokens: 196_000, model: "claude-sonnet-4-5" };
+      await f.bridge.history("local-native");
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(196_000);
+      f.native.contextUsage = null;
+      await f.bridge.configureSession({ sessionId: "local-native", model });
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(272_000);
+      f.native.sessions[0]!.model = "claude-sonnet-4-5";
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(196_000);
+    } finally { await f.close(); }
+  });
+
+  it.each(["claude-sonnet-4-5", "deepseek/deepseek[1m]"])("does not attribute the running turn window to a model selected for the next turn (%s)", async nextModel => {
+    const f = await fixture();
+    try {
+      const deepseek = "deepseek/deepseek[1m]";
+      const sonnet = "claude-sonnet-4-5";
+      const previousModel = nextModel === sonnet ? deepseek : sonnet;
+      const previousUsageModel = previousModel === deepseek ? "deepseek" : sonnet;
+      const previousWindow = previousModel === deepseek ? 272_000 : 200_000;
+      await writeFile(f.options.settingsPath, JSON.stringify({ modelPicker: { options: [{ model: deepseek, label: "DeepSeek" }, { model: sonnet, label: "Sonnet" }] } }));
+      f.native.sessions[0]!.model = `mythos-magpie-${magpieModelIdHash("deepseek/deepseek")}[1m]`;
+      f.native.sessions[0]!.turnRunning = true;
+      f.native.contextUsage = { totalTokens: 120_000, rawMaxTokens: 272_000, model: "deepseek" };
+      await f.bridge.configuration("local-native");
+      if (previousModel === sonnet) {
+        await f.message({ type: "result", modelUsage: { deepseek: { contextWindow: 272_000 } } });
+        f.native.sessions[0]!.turnRunning = false;
+        f.native.contextUsage = null;
+        await f.bridge.configureSession({ sessionId: "local-native", model: sonnet });
+        f.native.sessions[0]!.turnRunning = true;
+        f.native.contextUsage = { totalTokens: 120_000, rawMaxTokens: previousWindow, model: previousUsageModel };
+        await f.bridge.configuration("local-native");
+      }
+
+      await f.bridge.configureSession({ sessionId: "local-native", model: nextModel });
+      await f.bridge.configureSession({ sessionId: "local-native", model: previousModel });
+      await f.bridge.configureSession({ sessionId: "local-native", model: nextModel });
+      await f.message({ type: "stream_event", event: { type: "message_start", message: { id: "old-stream", model: previousUsageModel, usage: { input_tokens: 130_000 } } } });
+      const oldAssistant = { type: "assistant", uuid: "old-turn", message: { id: "old-turn", model: previousUsageModel, usage: { input_tokens: 130_000, output_tokens: 100 } } };
+      await f.message(oldAssistant);
+      f.native.contextUsage = null;
+      f.native.page = { messages: [oldAssistant], hasMore: false };
+      await f.bridge.history("local-native");
+      await f.message({ type: "stream_event", event: { type: "message_start", message: { id: "old-stream-tool-loop", model: previousUsageModel, usage: { input_tokens: 131_000 } } } });
+      f.native.sessions[0]!.turnRunning = false;
+      await f.bridge.refreshRuntime();
+      await f.message({ type: "result", modelUsage: { [previousUsageModel]: { contextWindow: previousWindow } } });
+      const usageModel = nextModel === deepseek ? "deepseek" : sonnet;
+      const maxTokens = nextModel === deepseek ? 272_000 : 200_000;
+      await f.message({ type: "assistant", uuid: "new-turn", message: { id: "new-turn", model: usageModel, usage: { input_tokens: 170_000 } } });
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 170_000, maxTokens });
+      await f.message({ type: "stream_event", event: { type: "message_start", message: { id: "new-stream", model: usageModel, usage: { input_tokens: 180_000 } } } });
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 180_000, maxTokens });
+    } finally { await f.close(); }
+  });
+
+  it("keeps a running turn's model when selection changes before its first usage sample", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.model = "claude-sonnet-4-5";
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.bridge.configureSession({ sessionId: "local-native", model: "deepseek[1m]" });
+      await f.message({ type: "assistant", uuid: "old-first-usage", message: { id: "old-first-usage", model: "claude-sonnet-4-5", usage: { input_tokens: 130_000 } } });
+      await f.message({ type: "result", modelUsage: { "claude-sonnet-4-5": { contextWindow: 200_000 } } });
+      await f.message({ type: "assistant", uuid: "new-first-usage", message: { id: "new-first-usage", model: "deepseek", usage: { input_tokens: 230_000 } } });
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 230_000, maxTokens: 1_000_000, percentage: 23 });
+    } finally { await f.close(); }
+  });
+
+  it("retains the model window when conversation rewind resets token usage", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.model = "deepseek[1m]";
+      f.native.sessions[0]!.turnRunning = true;
+      f.native.contextUsage = { totalTokens: 160_000, rawMaxTokens: 272_000, model: "deepseek" };
+      await f.bridge.configuration("local-native");
+      f.native.sessions[0]!.turnRunning = false;
+      f.native.contextUsage = null;
+      f.native.page = { messages: [{ type: "user", uuid: "rewind-user", message: { content: "Original prompt" } }], hasMore: false };
+      await f.bridge.rewindSession("local-native", "rewind-user", "conversation");
+      expect(f.bridge.session("local-native")?.contextUsage).toBeUndefined();
+      await f.message({ type: "assistant", uuid: "after-rewind", message: { id: "after-rewind", model: "deepseek", usage: { input_tokens: 120_000 } } });
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 120_000, maxTokens: 272_000 });
     } finally { await f.close(); }
   });
 

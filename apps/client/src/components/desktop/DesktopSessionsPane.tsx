@@ -201,6 +201,10 @@ export function DesktopSessions({
   const fileRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<HTMLDivElement>(null);
   const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
+  function openSessionFile(filePath: string): void {
+    const kind = mediaKind(filePath);
+    if (kind && selected) openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selected.sessionId, path: filePath });
+  }
   const otherNativePromptSession = snapshot.sessions.find(session => session.sessionId !== selectedId && snapshot.prompts?.some(prompt => prompt.sessionId === session.sessionId));
   const fileUploads = useFileAttachments(selected?.sessionId, (sessionId, file, onProgress, signal) =>
     uploadSessionFile(async (method, params) => apiRequest({ method, params }), sessionId, file, onProgress, signal));
@@ -1085,6 +1089,7 @@ export function DesktopSessions({
                   notice={entry.item.sessionNotice}
                   source={entry.item.text}
                   entering={streamEntering(entry.item.id)}
+                  onFileClick={openSessionFile}
                 />
               ) : entry.item.subagent ? (
                 <SubagentCard
@@ -1100,10 +1105,7 @@ export function DesktopSessions({
                   <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? selectedRuntimeName : entry.item.toolName ?? "Bridge"}</strong></div>
                   {entry.item.text && (
                     entry.item.role === "assistant" || entry.item.role === "user" ? (
-                      <MarkdownText text={entry.item.text} collapsible={!entry.item.live} onFileClick={(filePath) => {
-                        const kind = mediaKind(filePath);
-                        if (kind) openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selected.sessionId, path: filePath });
-                      }} />
+                      <MarkdownText text={entry.item.text} collapsible={!entry.item.live} onFileClick={openSessionFile} />
                     ) : (
                       <div className="conversation-text">{entry.item.text}</div>
                     )

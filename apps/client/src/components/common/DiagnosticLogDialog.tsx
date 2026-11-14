@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
 import type { DesktopControlSnapshot } from "@bridge/protocol";
 import {
   BUILD_DIAG_TAG,
@@ -12,6 +13,8 @@ import {
   useDiagnosticLogs,
 } from "../../lib/diagnostics.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
+import { IconButton } from "./IconButton.js";
+import "./diagnostic-log.css";
 
 function copyTextFallback(text: string): boolean {
   try {
@@ -163,13 +166,13 @@ export function DiagnosticFloatingEntry({ desktopSnapshot }: { desktopSnapshot?:
     }
   }
 
-  const dotColor = desktopOnline
-    ? "#22c55e"
+  const dotState = desktopOnline
+    ? "is-online"
     : conn === "connected"
-      ? "#f59e0b"
+      ? "waiting"
       : errorCount > 0
-        ? "#ef4444"
-        : "#94a3b8";
+        ? "failed"
+        : "";
 
   if (!enabled && !dialogOpen) {
     return null;
@@ -182,260 +185,105 @@ export function DiagnosticFloatingEntry({ desktopSnapshot }: { desktopSnapshot?:
           type="button"
           onClick={() => setDiagDialogOpen(true)}
           aria-label="打开连接诊断日志"
-          style={{
-            position: "fixed",
-            right: "12px",
-            bottom: "calc(env(safe-area-inset-bottom, 0px) + 74px)",
-            zIndex: 9998,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "6px",
-            padding: "5px 10px",
-            borderRadius: "999px",
-            border: "1px solid rgba(148, 163, 184, 0.35)",
-            background: "rgba(15, 23, 42, 0.86)",
-            color: "#f8fafc",
-            fontSize: "11px",
-            fontWeight: 600,
-            boxShadow: "0 4px 14px rgba(0, 0, 0, 0.28)",
-            backdropFilter: "blur(8px)",
-          }}
+          className="secondary-button diagnostic-floating-entry"
         >
-          <span
-            style={{
-              width: "7px",
-              height: "7px",
-              borderRadius: "999px",
-              background: dotColor,
-              display: "inline-block",
-            }}
-          />
+          <span className={`m-status-dot ${dotState}`} aria-hidden="true" />
           <span>记录中 ({entries.length})</span>
         </button>
       )}
 
       {dialogOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="连接诊断与日志导出"
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 9999,
-            background: "rgba(2, 6, 23, 0.78)",
-            display: "flex",
-            flexDirection: "column",
-            padding: "calc(env(safe-area-inset-top, 12px) + 8px) 12px calc(env(safe-area-inset-bottom, 12px) + 8px)",
-            color: "#f1f5f9",
-            fontFamily: "var(--font-mono, monospace)",
-          }}
-        >
-          <div
-            style={{
-              background: "#0f172a",
-              border: "1px solid rgba(148, 163, 184, 0.28)",
-              borderRadius: "14px",
-              display: "flex",
-              flexDirection: "column",
-              flex: 1,
-              minHeight: 0,
-              overflow: "hidden",
-            }}
+        <div className="m-sheet-backdrop diagnostic-backdrop">
+          <section
+            className="m-sheet diagnostic-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label="连接诊断与日志导出"
           >
-            <div
-              style={{
-                padding: "12px 14px",
-                borderBottom: "1px solid rgba(148, 163, 184, 0.2)",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: "8px",
-              }}
-            >
+            <header className="m-sheet-header">
               <div>
-                <div style={{ fontSize: "14px", fontWeight: 700 }}>连接诊断与按需日志</div>
-                <div style={{ fontSize: "11px", color: "#94a3b8" }}>
+                <h2>连接诊断与按需日志</h2>
+                <span className="diagnostic-meta">
                   {BUILD_DIAG_TAG} · 状态: {conn} / 电脑{desktopOnline ? "在线" : "未就绪"}
                   {!desktopSnapshot && <> · 缓存消息: {String(idbInfo.messagesCount ?? "?")}</>}
-                </div>
+                </span>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setRepairConfirmOpen(false);
-                  setDiagDialogOpen(false);
-                }}
-                style={{
-                  padding: "5px 10px",
-                  borderRadius: "8px",
-                  border: "1px solid rgba(148, 163, 184, 0.3)",
-                  background: "#1e293b",
-                  color: "#f8fafc",
-                  fontSize: "12px",
-                }}
-              >
-                关闭
-              </button>
-            </div>
+              <IconButton label="关闭" onClick={() => {
+                setRepairConfirmOpen(false);
+                setDiagDialogOpen(false);
+              }}><X size={20} /></IconButton>
+            </header>
 
-            <div
-              style={{
-                padding: "10px 12px",
-                display: "flex",
-                flexWrap: "wrap",
-                gap: "8px",
-                borderBottom: "1px solid rgba(148, 163, 184, 0.16)",
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !enabled;
-                  setDiagEnabled(next);
-                  setStatusNotice(next ? "已开启按需记录（页面右下角会显示记录浮标）" : "已停止按需记录（已隐藏页面浮标）");
-                }}
-                style={{
-                  padding: "7px 12px",
-                  borderRadius: "8px",
-                  border: "none",
-                  background: enabled ? "#dc2626" : "#16a34a",
-                  color: "#fff",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                }}
-              >
-                {enabled ? "停止记录" : "开启按需记录"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleCopy()}
-                style={{
-                  padding: "7px 12px",
-                  borderRadius: "8px",
-                  border: "none",
-                  background: "#2563eb",
-                  color: "#fff",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                }}
-              >
-                一键复制日志
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleExportFile()}
-                style={{
-                  padding: "7px 12px",
-                  borderRadius: "8px",
-                  border: "1px solid rgba(148, 163, 184, 0.35)",
-                  background: "#1e293b",
-                  color: "#f8fafc",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                }}
-              >
-                分享/导出 .log
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleProbe()}
-                disabled={probing}
-                style={{
-                  padding: "7px 12px",
-                  borderRadius: "8px",
-                  border: "1px solid rgba(148, 163, 184, 0.35)",
-                  background: "#0f766e",
-                  color: "#f8fafc",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                }}
-              >
-                {probing ? "探测中..." : "探测中继"}
-              </button>
-              <button
-                type="button"
-                onClick={() => clearDiagEntries()}
-                style={{
-                  padding: "7px 10px",
-                  borderRadius: "8px",
-                  border: "1px solid rgba(148, 163, 184, 0.25)",
-                  background: "transparent",
-                  color: "#94a3b8",
-                  fontSize: "12px",
-                }}
-              >
-                清空
-              </button>
-            </div>
-
-            {!desktopSnapshot && <details style={{ padding: "10px 12px", borderBottom: "1px solid rgba(148, 163, 184, 0.16)", fontSize: "12px" }}>
-              <summary style={{ cursor: "pointer", color: "#fbbf24" }}>高级修复</summary>
-              <p style={{ color: "#cbd5e1", lineHeight: 1.6 }}>
-                此操作影响手机保存的所有电脑：清空全部缓存消息和待发送消息，重置所有电脑的中继连接路由，并重新加载应用。
-              </p>
-              <button
-                type="button"
-                onClick={() => setRepairConfirmOpen(true)}
-                disabled={repairing}
-                style={{ padding: "7px 12px", borderRadius: "8px", border: "1px solid rgba(245, 158, 11, 0.45)", background: "#b45309", color: "#fff", fontSize: "12px", fontWeight: 600 }}
-              >
-                {repairing ? "修复中..." : "清理所有电脑缓存并重连…"}
-              </button>
-            </details>}
-
-            {statusNotice && (
-              <div
-                style={{
-                  padding: "7px 12px",
-                  background: "rgba(37, 99, 235, 0.22)",
-                  color: "#bfdbfe",
-                  fontSize: "12px",
-                  borderBottom: "1px solid rgba(148, 163, 184, 0.16)",
-                }}
-              >
-                {statusNotice}
+            <div className="m-sheet-body diagnostic-body">
+              <div className="diagnostic-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    const next = !enabled;
+                    setDiagEnabled(next);
+                    setStatusNotice(next ? "已开启按需记录（页面右下角会显示记录浮标）" : "已停止按需记录（已隐藏页面浮标）");
+                  }}
+                >
+                  {enabled ? "停止记录" : "开启按需记录"}
+                </button>
+                <button type="button" className="primary-button" onClick={() => void handleCopy()}>
+                  一键复制日志
+                </button>
               </div>
-            )}
+              <div className="diagnostic-tools">
+                <button type="button" className="secondary-button" onClick={() => void handleExportFile()}>
+                  分享/导出 .log
+                </button>
+                <button type="button" className="secondary-button" onClick={() => void handleProbe()} disabled={probing}>
+                  {probing ? "探测中..." : "探测中继"}
+                </button>
+                <button type="button" className="secondary-button" onClick={() => clearDiagEntries()}>
+                  清空
+                </button>
+              </div>
 
-            <textarea
-              readOnly
-              value={reportText}
-              onFocus={(e) => e.currentTarget.select()}
-              style={{
-                flex: 1,
-                width: "100%",
-                minHeight: 0,
-                padding: "10px 12px",
-                background: "#020617",
-                color: "#e2e8f0",
-                border: "none",
-                outline: "none",
-                resize: "none",
-                fontSize: "11px",
-                lineHeight: 1.45,
-                fontFamily: "var(--font-mono, monospace)",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-all",
-              }}
-            />
-          </div>
+              {!desktopSnapshot && (
+                <details className="diagnostic-repair">
+                  <summary>高级修复</summary>
+                  <p>
+                    此操作影响手机保存的所有电脑：清空全部缓存消息和待发送消息，重置所有电脑的中继连接路由，并重新加载应用。
+                  </p>
+                  <button type="button" className="danger-button" onClick={() => setRepairConfirmOpen(true)} disabled={repairing}>
+                    {repairing ? "修复中..." : "清理所有电脑缓存并重连…"}
+                  </button>
+                </details>
+              )}
+
+              <p className="diagnostic-notice" role="status">{statusNotice}</p>
+
+              <textarea
+                className="diagnostic-report"
+                aria-label="诊断日志"
+                readOnly
+                wrap="off"
+                value={reportText}
+                onFocus={(e) => e.currentTarget.select()}
+              />
+            </div>
+          </section>
+
           {repairConfirmOpen && (
             <div
               role="presentation"
-              style={{ position: "absolute", inset: 0, zIndex: 1, display: "grid", placeItems: "center", padding: "24px", background: "rgba(2, 6, 23, 0.88)" }}
+              className="confirm-backdrop diagnostic-confirm-backdrop"
               onMouseDown={(event) => {
                 if (event.currentTarget === event.target && !repairing) setRepairConfirmOpen(false);
               }}
             >
-              <section role="alertdialog" aria-modal="true" aria-labelledby="diag-repair-title" aria-describedby="diag-repair-description" style={{ width: "min(100%, 390px)", padding: "22px", border: "1px solid rgba(245, 158, 11, 0.45)", borderRadius: "14px", background: "#0f172a" }}>
-                <h2 id="diag-repair-title" style={{ margin: "0 0 12px", fontSize: "17px" }}>清理所有电脑的手机缓存？</h2>
-                <p id="diag-repair-description" style={{ color: "#cbd5e1", fontSize: "13px", lineHeight: 1.65 }}>
+              <section role="alertdialog" aria-modal="true" aria-labelledby="diag-repair-title" aria-describedby="diag-repair-description" className="confirm-dialog diagnostic-confirm">
+                <h2 id="diag-repair-title">清理所有电脑的手机缓存？</h2>
+                <p id="diag-repair-description">
                   这会清空手机上所有已配对电脑的缓存消息和待发送消息，并重置它们的中继连接路由。待发送消息无法恢复；完成后应用会重新加载。
                 </p>
-                <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "18px" }}>
-                  <button type="button" disabled={repairing} onClick={() => setRepairConfirmOpen(false)} style={{ padding: "8px 12px", borderRadius: "8px", border: "1px solid rgba(148, 163, 184, 0.3)", background: "#1e293b", color: "#f8fafc" }}>取消</button>
-                  <button type="button" disabled={repairing} onClick={() => void handleRepair()} style={{ padding: "8px 12px", borderRadius: "8px", border: "none", background: "#b45309", color: "#fff" }}>{repairing ? "修复中…" : "确认清理并重连"}</button>
+                <div className="confirm-actions">
+                  <button type="button" className="secondary-button" disabled={repairing} onClick={() => setRepairConfirmOpen(false)}>取消</button>
+                  <button type="button" className="danger-button" disabled={repairing} onClick={() => void handleRepair()}>{repairing ? "修复中…" : "确认清理并重连"}</button>
                 </div>
               </section>
             </div>

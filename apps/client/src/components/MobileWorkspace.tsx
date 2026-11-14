@@ -437,7 +437,7 @@ export function MobileWorkspace({
   const rewindDisabled = connection !== "connected" || !desktopOnline;
   const selectedHistory = selectedSessionId ? histories[selectedSessionId] : undefined;
   const taskHistoryReady = selectedHistory?.status === "ready" || Boolean(selectedHistory?.items.length);
-  const [backgroundTaskDetails, setBackgroundTaskDetails] = useState<{ key: string; tasks: BridgeBackgroundTask[]; error?: string }>();
+  const [backgroundTaskDetails, setBackgroundTaskDetails] = useState<{ key: string; tasks: BridgeBackgroundTask[] | undefined; error?: string }>();
   useEffect(() => {
     if (!onLoadBackgroundTasks || !visible || sessionView !== "conversation" || connection !== "connected" || !desktopOnline || !selectedSession || desktopRuntimeId(selectedSession) !== "claude-desktop" || !taskHistoryReady) return;
     let active = true;
@@ -448,7 +448,7 @@ export function MobileWorkspace({
         if (active) setBackgroundTaskDetails({ key: draftKey, tasks });
       } catch (error) {
         if (active) setBackgroundTaskDetails(current => ({
-          key: draftKey, tasks: current?.key === draftKey ? current.tasks : [],
+          key: draftKey, tasks: current?.key === draftKey ? current.tasks : undefined,
           error: error instanceof Error ? error.message : String(error),
         }));
       }
@@ -473,7 +473,22 @@ export function MobileWorkspace({
     entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(selectedSessionId, streamKeys);
-  const activity = useMemo(() => sessionActivity(selectedSession, items), [selectedSession, items]);
+  const selectedTaskDetails = backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails : undefined;
+  const activityTasks = selectedTaskDetails?.tasks ?? selectedSession?.backgroundTasks;
+  const activity = useMemo(() => sessionActivity(
+    selectedSession,
+    selectedTaskDetails?.error ? items.map(item => {
+      const subagent = item.subagent;
+      if (subagent?.state !== "running") return item;
+      const task = findBackgroundTask(activityTasks, subagent);
+      // A resumed workflow can add members absent from the cached launch.
+      return task && task.state !== "running"
+        && (!subagent.workflowRunId || task.workflow?.agents.some(agent => agent.agentId === subagent.agentId))
+        ? { ...item, subagent: { ...subagent, state: task.state } }
+        : item;
+    }) : items,
+    selectedTaskDetails?.error ? undefined : activityTasks,
+  ), [selectedSession, items, activityTasks, selectedTaskDetails?.error]);
   const projectsByActivity = useMemo(() => {
     const latest = new Map<string, number>((snapshot?.projects ?? []).filter(project => project.kind === "desktop-group").map(project => [project.projectId, 0]));
     for (const session of sessions) {
@@ -494,10 +509,12 @@ export function MobileWorkspace({
   );
   const grouped = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
-    const filtered = sessions.filter((session) => (
-      (!session.archivedAt || Boolean(session.sidechat && session.parentSessionId && activeParentProjects.get(session.parentSessionId) === session.projectId))
-
-      && (!query || `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query))
+    const matches = sessions.filter((session) => (
+      !query || `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query)
+    ));
+    const matchingActiveParents = new Map(matches.filter((session) => !session.archivedAt).map((session) => [session.sessionId, session.projectId]));
+    const filtered = matches.filter((session) => (
+      !session.archivedAt || Boolean(session.sidechat && session.parentSessionId && matchingActiveParents.get(session.parentSessionId) === session.projectId)
     ));
     const groups = new Map<string, BridgeSessionInfo[]>((snapshot?.projects ?? [])
       .filter(project => project.kind === "desktop-group" && (!query || `${project.name}\n${project.cwd}`.toLocaleLowerCase().includes(query)))
@@ -518,7 +535,7 @@ export function MobileWorkspace({
         project: snapshot?.projects.find((project) => project.projectId === projectId),
         sessions: sortProjectSessionsByRecent(groups.get(projectId)!),
       }));
-  }, [activeParentProjects, projectOrder, search, sectionManage.hideEmptySections, sessions, snapshot?.projects]);
+  }, [projectOrder, search, sectionManage.hideEmptySections, sessions, snapshot?.projects]);
   const archivedSessions = useMemo(() => sortProjectSessionsByRecent(sessions.filter((session) => (
     Boolean(session.archivedAt)
   ))), [sessions]);
@@ -1451,7 +1468,7 @@ export function MobileWorkspace({
       ? sessions.find((session) => session.sessionId === otherPermission.sessionId)
       : undefined;
     const displayNodes = groupTimelineTools(timeline);
-    const backgroundTasks = (backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails.tasks : undefined) ?? selectedSession.backgroundTasks ?? [];
+    const backgroundTasks = activityTasks ?? [];
     const runningBackgroundTasks = backgroundTasks.filter((task) => task.state === "running").length;
     const renderSubagent = (item: ConversationItem) => (
       <SubagentCard
@@ -1534,8 +1551,8 @@ export function MobileWorkspace({
             {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
           />
         ) : null}
-        {backgroundTaskDetails?.key === draftKey && backgroundTaskDetails.error && (
-          <p className="session-channel-warning" role="alert">后台任务：{backgroundTaskDetails.error}</p>
+        {selectedTaskDetails?.error && (
+          <p className="session-channel-warning" role="alert">后台任务：{selectedTaskDetails.error}</p>
         )}
         {selectedSession.nativePermissionModeChange && (
           <div className="session-channel-warning message-queue-status" role="status" aria-label="Desktop 会话授权变更">
@@ -1616,6 +1633,7 @@ export function MobileWorkspace({
         />
         {backgroundTasksOpen && (
           <BackgroundTasksSheet
+            supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))}
             sessionId={selectedSession.sessionId}
             tasks={backgroundTasks}
             items={items}
@@ -1739,7 +1757,8 @@ export function MobileWorkspace({
             }
             const item = node.item;
             if (item.sessionNotice) return (
-              <SessionNoticeCard key={item.id} itemId={item.id} notice={item.sessionNotice} source={item.text} entering={streamEntering(item.id)} />
+              <SessionNoticeCard key={item.id} itemId={item.id} notice={item.sessionNotice} source={item.text} entering={streamEntering(item.id)}
+                {...(onDownloadSessionFile ? { onFileClick: openSessionFile } : {})} />
             );
             const showDelivery = Boolean(item.delivery);
             const messageQueued = (item.delivery === "queued" || item.delivery === "host-received")

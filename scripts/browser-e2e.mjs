@@ -46,7 +46,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
@@ -107,6 +107,65 @@ async function verifyDesktopDiagnostics(page, host, steps) {
   await eventually(() => toggle.isChecked(), false, "Desktop uses the returned disabled state");
   assert.equal(await page.evaluate(async () => (await window.bridgeDesktop.getSnapshot()).diagnosticsEnabled), false);
   steps.push("Desktop recorder checkbox defaults off and renders returned local setting states");
+}
+
+async function verifyMobileSafeArea(page, steps, directory, viewports) {
+  const emulation = await page.context().newCDPSession(page);
+  for (const [tab, selector, height] of [
+    ["会话", ".host-detail", 240],
+    ["电脑", ".host-browser", 240],
+    ["设置", ".mobile-settings-content", 520],
+  ]) {
+    await page.setViewportSize({ width: 375, height });
+    viewports.push({ page: tab, ...page.viewportSize() });
+    if (tab !== "会话") {
+      await page.getByRole("button", { name: "菜单", exact: true }).click();
+      await page.getByRole("navigation", { name: "主要导航", exact: true }).getByRole("button", { name: tab, exact: true }).click();
+    }
+    const content = page.locator(selector);
+    await content.waitFor();
+    const header = page.locator(".m-header:visible");
+    const headerBefore = await header.boundingBox();
+    const paddings = [];
+    for (const bottom of [0, 48]) {
+      // Chromium overrides env() itself; production CSS is neither replaced nor patched.
+      await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom, left: 0 } });
+      const layout = await content.evaluate(element => {
+        element.scrollTop = element.scrollHeight;
+        const bounds = element.getBoundingClientRect();
+        const last = element.lastElementChild.getBoundingClientRect();
+        return {
+          padding: parseFloat(getComputedStyle(element).paddingBottom),
+          gap: bounds.bottom - last.bottom,
+          lastTop: last.top,
+          top: bounds.top,
+          bottom: bounds.bottom,
+          scrollTop: element.scrollTop,
+          maxScroll: element.scrollHeight - element.clientHeight,
+          viewport: innerHeight,
+          pageScroll: window.scrollY,
+          documentHeight: document.documentElement.scrollHeight,
+        };
+      });
+      assert.ok(layout.maxScroll > 0, `${tab} fixture must overflow the content area`);
+      assert.equal(layout.scrollTop, layout.maxScroll, `${tab} reaches the content scroll end`);
+      assert.ok(layout.padding >= bottom, `${tab} bottom padding must cover the ${bottom}px safe area (got ${layout.padding}px)`);
+      assert.ok(layout.gap >= Math.max(paddings[0] ?? 0, bottom) - 1, `${tab} last content must stop above the bottom safe area`);
+      assert.ok(layout.bottom <= layout.viewport, `${tab} content stays inside the viewport`);
+      assert.equal(layout.pageScroll, 0, `${tab} does not scroll the document`);
+      assert.equal(layout.documentHeight, layout.viewport, `${tab} does not grow the document`);
+      if (tab === "设置") assert.ok(layout.lastTop >= layout.top, "The entire diagnostics group is visible at scroll end");
+      assert.deepEqual(await header.boundingBox(), headerBefore, `${tab} header stays fixed while its content scrolls`);
+      paddings.push(layout.padding);
+    }
+    assert.ok(paddings[1] > paddings[0], `${tab} padding grows with a nonzero safe area`);
+    await page.screenshot({ path: resolve(directory, `${tab}-safe-area.png`), fullPage: true });
+    steps.push(`${tab}: env(safe-area-inset-bottom) 0 → 48px changes padding ${paddings[0]} → ${paddings[1]}px; last content clears safe area, header/document stay fixed`);
+  }
+  await page.getByRole("button", { name: /连接诊断与日志/u }).click();
+  await page.getByRole("dialog", { name: "连接诊断与日志导出", exact: true }).waitFor();
+  steps.push("The final settings diagnostics button opens its dialog after scrolling to the bottom");
+  await emulation.detach();
 }
 
 async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview) {
@@ -226,7 +285,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
   const socket = new BridgeSocket({ crypto, role: "desktop", createRoom: true, reconnect: false });
   const host = {
     socket, crypto, pairing, session, snapshot, events, history, requests, resumeBatches, nativeQueue, nativeTrace: [],
-    nativeImages: new Map(), imageTransfers: new Map(),
+    nativeImages: new Map(), imageTransfers: new Map(), systemUpdateError: "",
     send: (payload) => socket.send(payload, "mobile", { crypto, toDeviceId: pairing.deviceId }),
     historyPage(cursor, limit = 50) {
       const end = cursor ? history.findIndex(item => item.id === cursor) : history.length;
@@ -527,6 +586,10 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           result = { status: "available", fetchedAt: Date.now(), accounts: [{ provider: "claude", name: "隔离 Magpie 账号", windows: [{ name: "5 hours", remaining: 73 }, { name: "7 days", remaining: 81 }] }] };
           break;
         case "system.update": {
+          if (host.systemUpdateError) {
+            error = { code: "UPDATE_REJECTED", message: host.systemUpdateError };
+            break;
+          }
           const action = request.params?.action ?? "status";
           if (action === "check") {
             snapshot.updater = { ...snapshot.updater, phase: "available", latestVersion: "1.3.3", assetName: "Bridge-1.3.3-windows-installer-ci.zip", statusDetail: "发现新版本 v1.3.3" };
@@ -550,6 +613,10 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
         }
         case "session.commands": result = await host.nativeApproval.commands(request); break;
         case "session.configuration":
+          if (host.taskDetailsError && request.params.includeBackgroundTasks === true) {
+            error = { code: "TASK_DETAILS_UNAVAILABLE", message: host.taskDetailsError };
+            break;
+          }
           if (!host.nativeApproval && request.params.includeBackgroundTasks === true) {
             result = { session: snapshot.sessions.find(candidate => candidate.sessionId === request.params.sessionId) };
             break;
@@ -1002,10 +1069,14 @@ async function verifyNativeApprovals(page, host, steps, directory) {
 
   const input = { questions: [
     { question: "选择执行范围", multiSelect: false, options: [{ label: "仅本机", description: "使用隔离测试目录" }, { label: "稍后处理" }] },
-    { question: "选择检查项目", multiSelect: true, options: [{ label: "类型检查" }, { label: "回归测试" }] },
+    { question: "选择检查项目", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }] },
   ] };
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   const question = await host.nativeApproval.open("AskUserQuestion", input);
+  for (const event of await host.nativeApproval.message({ type: "assistant", uuid: "native-question-card", timestamp: Date.now(), message: { content: [
+    { type: "tool_use", id: question.request.toolUseId, name: "AskUserQuestion", input },
+  ] } })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   const sessionRow = page.locator(`[data-session-id="${sessionId}"]`);
   await sessionRow.getByText("待回答", { exact: true }).waitFor();
   await page.getByText("有提问待你回答", { exact: true }).waitFor();
@@ -1034,9 +1105,22 @@ async function verifyNativeApprovals(page, host, steps, directory) {
   assert.equal(questionReply.requestId, question.request.requestId);
   assert.deepEqual(questionReply.response, { ...input, answers: { "选择执行范围": "仅本机", "选择检查项目": "类型检查, 回归测试" } });
   await questionCard.waitFor({ state: "hidden" });
+  for (const event of await host.nativeApproval.message({ type: "user", uuid: "native-question-result", timestamp: Date.now(), toolUseResult: questionReply.response, message: { content: [
+    { type: "tool_result", tool_use_id: question.request.toolUseId, content: "User has answered your questions." },
+  ] } })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  const answeredQuestion = page.locator(".interactive-prompt-card").filter({ hasText: "选择检查项目" });
+  await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Every single and multi-choice selection is visible after the native result");
+  assert.equal(await answeredQuestion.locator(".is-primary").count(), 0, "An answered question has no default first-option highlight");
+  assert.equal(await answeredQuestion.locator(".interactive-question-block").filter({ hasText: "选择检查项目" }).getByRole("button", { name: "稍后处理", exact: true }).getAttribute("class").then(value => value.includes("is-selected")), false);
+  await page.screenshot({ path: resolve(directory, "native-question-answered.png"), fullPage: true });
+  host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   await sessionRow.getByText("待回答", { exact: true }).waitFor({ state: "hidden" });
   await sessionRow.getByRole("button").first().click();
+  await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reopened native history retains every selection");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reloaded native history retains every selection");
   const resolutions = host.requests.filter((request) => request.method === "permission.resolve");
   assert.equal(resolutions.length, 3);
   assert.equal(new Set(resolutions.map((request) => request.params.requestId)).size, 3);
@@ -1458,6 +1542,13 @@ async function verifyHistoryPagination(page, host, steps, directory) {
 }
 
 async function verifyNativeBoundaries(page, host, steps, directory) {
+  const markdownName = "NATIVE-CHAIN-author-database-current.zh.md";
+  await writeFile(resolve(host.nativeApproval.harnessCwd, markdownName), [
+    "# 手机文件预览",
+    ...Array.from({ length: 4 }, () => "段首可见，中文长段落应当在手机宽度内自然换行，段尾也必须完整显示。".repeat(15)),
+    `\`\`\`text\n${"wide-code-".repeat(40)}\n\`\`\``,
+    `| ${Array.from({ length: 6 }, (_, index) => `wide-column-${index}`).join(" | ")} |\n|${" --- |".repeat(6)}\n|${" value |".repeat(6)}`,
+  ].join("\n\n"));
   const tool = (id, input, name = "mcp__ccd_turn__update_plan") => ({ type: "assistant", uuid: id, timestamp: Date.now(), message: { content: [{ type: "tool_use", id, name, input }] } });
   const planItems = [{ content: "读取报告", status: "in_progress" }, { content: "验证文件", status: "pending" }];
   const initial = [
@@ -1465,7 +1556,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     { ...tool("child-plan", { scope: "first_task", items: [{ content: "子代理内部计划", status: "in_progress" }] }), isSidechain: true },
     { ...tool("child-wrap", { recap: "Child done" }, "mcp__ccd_turn__wrap_up"), isSidechain: true },
     ...["isCompactSummary", "isMeta", "isSynthetic", "isVisibleInTranscriptOnly"].map(flag => ({ type: "user", uuid: `hidden-${flag}`, [flag]: true, message: { content: "INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN" } })),
-    { type: "assistant", uuid: "boundary-files", timestamp: Date.now(), message: { id: "boundary-files", content: [{ type: "text", text: `[相对报告](report.json) · [绝对报告](<${host.nativeApproval.harnessCwd}/report.json:12:3>) · [说明预览](<说明 notes.md>)` }] } },
+    { type: "assistant", uuid: "boundary-files", timestamp: Date.now(), message: { id: "boundary-files", content: [{ type: "text", text: `[相对报告](report.json) · [绝对报告](<${host.nativeApproval.harnessCwd}/report.json:12:3>) · [说明预览](<说明 notes.md>) · [长文预览](${markdownName})` }] } },
   ];
   for (const message of initial) await host.nativeApproval.message(message);
   const subagentStartAt = Date.now() - 30_000;
@@ -1484,8 +1575,29 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Catalog row dot reflects running background subagent when main turn is idle");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Catalog row badge displays running background subagent");
   host.history.push(...(await host.nativeApproval.history()).items);
+  // This fixture has no on-disk task transcript, so provide the tray separately.
+  const backgroundTasks = [{
+    id: "boundary-bg-call", kind: "subagent", taskId: "boundary-bg-subagent", toolUseId: "boundary-bg-call",
+    description: "Run full local distributed CI", state: "running", startedAt: subagentStartAt, updatedAt: subagentStartAt,
+    subagent: host.history.find(item => item.subagent?.agentId === "boundary-bg-subagent").subagent,
+  }];
+  const nativeConfiguration = host.nativeApproval.configuration;
+  let taskDetailsReads = 0;
+  let useTrayFixture = false;
+  host.nativeApproval.configuration = async request => {
+    const result = await nativeConfiguration(request);
+    if (request.params.includeBackgroundTasks) {
+      taskDetailsReads++;
+      if (useTrayFixture) result.session.backgroundTasks = structuredClone(backgroundTasks);
+      else assert.deepEqual(result.session.backgroundTasks, [], "Missing native transcript produces empty task details");
+    }
+    return result;
+  };
   await catalogRow.getByRole("button").first().click();
-  await eventually(async () => (await page.locator(".session-activity-label").innerText()).includes("子代理运行中 · Run full local distributed CI"), true, "Session detail shows running subagent activity");
+  await eventually(() => taskDetailsReads >= 2, true, "Native empty task details have been loaded and polled again");
+  assert.ok((await page.locator(".session-activity-label").innerText()).includes("子代理运行中 · Run full local distributed CI"), "Native running metadata preserves activity when catalog transcript is unavailable");
+  useTrayFixture = true;
+  await page.getByRole("button", { name: "后台任务，1 个运行中", exact: true }).waitFor();
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Returning from detail keeps catalog row dot running");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Returning from detail keeps catalog row badge synchronized");
@@ -1493,7 +1605,8 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
   await eventually(() => catalogRow.locator(".session-state-dot.queued").count(), 1, "Stalled background subagent switches catalog dot to warning tone");
   await eventually(() => catalogRow.locator(".session-row-status.queued").innerText(), "子代理无进展", "Stalled background subagent switches catalog badge label");
-  for (const event of await host.nativeApproval.message({
+  // The tray settles without a matching timeline completion event (Issue #140).
+  await host.nativeApproval.message({
     type: "system",
     subtype: "task_notification",
     task_id: "boundary-bg-subagent",
@@ -1501,16 +1614,30 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     status: "completed",
     summary: "CI green",
     timestamp: Date.now(),
-  })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  });
   assert.equal(host.nativeApproval.session().runningSubagents, undefined);
+  backgroundTasks[0] = { ...backgroundTasks[0], state: "completed", updatedAt: Date.now(),
+    subagent: { ...backgroundTasks[0].subagent, state: "completed", updatedAt: Date.now() } };
   delete host.session.runningSubagents;
   await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
   await eventually(() => catalogRow.locator(".session-state-dot.idle").count(), 1, "Completed background subagent restores idle catalog dot");
   await eventually(() => catalogRow.locator(".session-row-status").count(), 0, "Completed background subagent clears catalog badge");
-  host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   steps.push("session catalog state dot and status badge stay synchronized with active, stalled, and completed background subagents before opening and after returning from detail");
   await catalogRow.getByRole("button").first().click();
   const stream = page.locator(".conversation-stream");
+  await stream.locator(".background-task-marker.is-completed").waitFor();
+  await eventually(() => page.locator(".session-activity").count(), 0, "Settled task tray clears stale running subagent activity and timer");
+  assert.equal(host.history.find(item => item.subagent?.agentId === "boundary-bg-subagent")?.subagent.state, "running", "The timeline intentionally retains its stale running state");
+  await page.getByRole("button", { name: "后台任务", exact: true }).click();
+  await page.locator(".background-task-row .is-completed").waitFor();
+  await page.screenshot({ path: resolve(directory, "subagent-settled-tray.png"), fullPage: true, animations: "disabled" });
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
+  host.taskDetailsError = "Task detail refresh unavailable";
+  await page.getByRole("alert").filter({ hasText: host.taskDetailsError }).waitFor();
+  assert.equal(await page.locator(".session-activity").count(), 0, "A failed refresh cannot revive a task already confirmed completed by the tray");
+  host.taskDetailsError = undefined;
+  await page.getByRole("alert").filter({ hasText: "Task detail refresh unavailable" }).waitFor({ state: "hidden" });
+  steps.push("completed tray clears composer activity despite a missing timeline completion event and preserves completion through a rejected refresh");
   await eventually(() => stream.locator(".task-plan-card").count(), 1, "Only the parent native task plan is projected");
   assert.equal((await stream.innerText()).includes("INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN"), false);
   assert.equal((await stream.innerText()).includes("子代理内部计划"), false);
@@ -1534,6 +1661,57 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   assert.ok((await page.locator("#text-preview-content").innerText()).includes("# Worktree preview"));
   await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
   steps.push("real Native facade + Controller resolve relative/absolute report links and Chinese spaced Markdown paths in the worktree");
+  await stream.getByRole("button", { name: "长文预览", exact: true }).click();
+  const markdownViewer = page.locator(".media-viewer");
+  await markdownViewer.getByRole("heading", { name: "手机文件预览", exact: true }).waitFor();
+  for (const width of [375, 320, 1200]) {
+    await page.setViewportSize({ width, height: 812 });
+    const layout = await markdownViewer.evaluate(dialog => {
+      const bounds = element => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, width: rect.width, clientWidth: element.clientWidth, scrollWidth: element.scrollWidth };
+      };
+      return {
+        dialog: bounds(dialog),
+        regions: [".media-viewer-shell > header", ".media-viewer-toolbar", ".media-viewer-viewport", ".media-viewer-shell > footer", "#media-viewer-title", '[aria-label="关闭查看器"]'].map(selector => ({ selector, ...bounds(dialog.querySelector(selector)) })),
+        paragraphs: [...dialog.querySelectorAll(".markdown-paragraph")].map(bounds),
+        scrollLeft: dialog.scrollLeft,
+      };
+    });
+    await writeFile(resolve(directory, `markdown-layout-${width}.json`), JSON.stringify(layout, null, 2));
+    assert.ok(layout.dialog.left >= 0 && layout.dialog.right <= width, "File preview dialog stays within the screen");
+    assert.ok(layout.dialog.scrollWidth <= layout.dialog.clientWidth + 1, `Long filename must not widen the dialog grid at ${width}px: ${JSON.stringify(layout)}`);
+    assert.equal(layout.scrollLeft, 0, "Dialog focus must not scroll the filename and paragraph starts offscreen");
+    for (const region of [...layout.regions, ...layout.paragraphs]) {
+      assert.ok(region.left >= layout.dialog.left && region.right <= layout.dialog.right, `Header controls and rendered prose stay inside the dialog at ${width}px: ${JSON.stringify(region)}`);
+    }
+    assert.ok(layout.paragraphs.length >= 4 && layout.paragraphs.every(paragraph => paragraph.scrollWidth <= paragraph.clientWidth + 1), "Chinese prose wraps without clipping or horizontal overflow");
+    for (const selector of [".markdown-code-pre", ".markdown-table-wrap"]) {
+      const scrolled = await markdownViewer.locator(selector).evaluate(element => {
+        element.scrollLeft = element.scrollWidth;
+        return { clientWidth: element.clientWidth, scrollWidth: element.scrollWidth, scrollLeft: element.scrollLeft };
+      });
+      if (width <= 375 || selector === ".markdown-code-pre") {
+        assert.ok(scrolled.scrollWidth > scrolled.clientWidth && scrolled.scrollLeft > 0, `Wide Markdown content can scroll horizontally at ${width}px: ${selector}`);
+      }
+    }
+    await page.getByRole("tab", { name: "源码", exact: true }).click();
+    const sourceScroll = await markdownViewer.locator(".media-viewer-viewport").evaluate(viewport => {
+      viewport.scrollLeft = viewport.scrollWidth;
+      return viewport.scrollLeft;
+    });
+    assert.ok(sourceScroll > 0, "Raw Markdown source keeps horizontal scrolling");
+    await page.getByRole("tab", { name: "预览", exact: true }).click();
+  }
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.screenshot({ path: resolve(directory, "native-markdown-mobile.png"), fullPage: true });
+  assert.ok(await markdownViewer.locator(".media-viewer-viewport").evaluate(viewport => {
+    viewport.scrollTop = viewport.scrollHeight;
+    return viewport.scrollTop > 0;
+  }), "Long Markdown scrolls vertically within the preview viewport");
+  await page.screenshot({ path: resolve(directory, "native-markdown-wide-content.png"), fullPage: true });
+  await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
+  steps.push("long Markdown filenames preserve the visible header and wrapped Chinese prose at 320/375/1200px; wide code, tables and source scroll horizontally while long documents scroll vertically");
   for (const event of await host.nativeApproval.message(tool("boundary-advance", { advance: true }))) await host.emit(event.type, event.data, { itemId: event.itemId });
   await eventually(() => stream.locator(".task-plan-progress").first().innerText(), "1/2 已完成", "Native empty-text live plan updates the history card");
   assert.equal(await stream.locator(".task-plan-card").count(), 1);
@@ -1672,7 +1850,44 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.getByRole("button", { name: "检查并升级桌面端", exact: true }).click();
   await eventually(() => host.requests.some(request => request.method === "system.update" && request.params.action === "apply"), true, "Mobile triggers encrypted system.update apply RPC");
   await eventually(() => page.locator(".mobile-settings-page").innerText().then(t => t.includes("正在重启升级")), true, "Remote desktop status reflects applying phase over E2EE");
-  steps.push("mobile Settings displays remote desktop version, graceful Web release fallback, and triggers E2EE system.update upgrade");
+  async function assertUpdaterCards() {
+    for (const title of ["远端桌面状态", "版本与更新"]) {
+      const rows = await page.getByRole("region", { name: title, exact: true }).locator(":scope > :not(h2)").evaluateAll(elements => elements.map(element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, background: style.backgroundColor,
+          topRadius: [style.borderTopLeftRadius, style.borderTopRightRadius], bottomRadius: [style.borderBottomLeftRadius, style.borderBottomRightRadius],
+          topBorder: style.borderTopWidth, sideBorders: [style.borderLeftColor, style.borderRightColor] };
+      }));
+      assert.ok(rows.length >= 4, `${title} includes version, details, and actions`);
+      for (const [index, row] of rows.entries()) {
+        assert.equal(row.left, rows[0].left, `${title} rows share the left card edge`);
+        assert.equal(row.right, rows[0].right, `${title} rows share the right card edge`);
+        assert.equal(row.background, rows[0].background, `${title} details stay inside the card background`);
+        assert.deepEqual(row.sideBorders, rows[0].sideBorders, `${title} rows share the card border color`);
+        if (index > 0) {
+          assert.equal(row.top, rows[index - 1].bottom, `${title} has no gaps between rows`);
+          assert.deepEqual(row.topRadius, ["0px", "0px"], `${title} only rounds the first row's top corners`);
+          assert.equal(row.topBorder, "0px", `${title} inner rows do not start a separate box`);
+        }
+        if (index < rows.length - 1) assert.deepEqual(row.bottomRadius, ["0px", "0px"], `${title} only rounds the last row's bottom corners`);
+      }
+    }
+  }
+  await assertUpdaterCards();
+  await page.screenshot({ path: resolve(directory, "settings-updater-cards.png"), fullPage: true });
+  host.snapshot.updater = { ...host.snapshot.updater, phase: "idle" };
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await eventually(() => page.getByRole("button", { name: "检查更新", exact: true }).isEnabled(), true, "Remote updater is idle before the rejection check");
+  host.systemUpdateError = "隔离更新请求失败";
+  await page.getByRole("button", { name: "检查更新", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: host.systemUpdateError }).waitFor();
+  for (const family of ["Sunstone", "Apple"]) {
+    await page.getByRole("group", { name: "主题风格", exact: true }).getByRole("button", { name: family, exact: true }).click();
+    await assertUpdaterCards();
+    await page.getByRole("region", { name: "远端桌面状态", exact: true }).screenshot({ path: resolve(directory, `settings-updater-error-${family}.png`) });
+  }
+  steps.push("mobile Settings keeps updater details/actions, rejected RPC errors, and Web release fallback in continuous cards in Sunstone/Apple themes and triggers E2EE system.update upgrade");
 }
 
 async function verifyNativeQueueActions(page, host, steps, directory) {
@@ -2005,8 +2220,8 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.deepEqual(await headers.allTextContents(), ["other-project", "claude-desktop-bridge"]);
   assert.equal(await mainGroup.locator('[data-session-id="browser-e2e-parent"]').count(), 1);
   assert.equal(await mainGroup.locator(".project-count-pill").innerText(), "2");
-  const primaryForkToggle = mainGroup.locator(".mobile-fork-toggle:not(.is-archived-fold)");
-  const archivedFoldToggle = mainGroup.locator(".mobile-fork-toggle.is-archived-fold");
+  const primaryForkToggle = mainGroup.locator(".mobile-fork-toggle");
+  const archiveEntry = page.locator(".archived-group .project-group-open");
   assert.equal(await primaryForkToggle.count(), 1);
   assert.equal((await primaryForkToggle.innerText()).trim(), "1 个 Fork 分支");
   assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
@@ -2015,16 +2230,16 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   await mainGroup.locator('[data-session-id="browser-e2e-fork"]').waitFor();
   assert.equal(await primaryForkToggle.getAttribute("aria-expanded"), "true");
   assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
-  assert.equal(await archivedFoldToggle.count(), 1);
-  assert.equal(await archivedFoldToggle.getAttribute("aria-expanded"), "false");
-  assert.equal((await archivedFoldToggle.innerText()).trim(), "1 个已结束侧聊");
-  await archivedFoldToggle.click();
-  await mainGroup.locator('[data-session-id="browser-e2e-btw-archived"]').waitFor();
-  assert.equal(await archivedFoldToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(await mainGroup.locator(".is-archived-fold").count(), 0);
+  assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "1");
   await page.screenshot({ path: resolve(directory, "project-fork-expanded.png"), fullPage: true });
-  steps.push("real Native projection groups linked worktrees under the repository; active fork count excludes archived /btw sidechats while preserving a secondary fold");
+  steps.push("Native fixture projection groups linked worktrees under the repository; active forks exclude archived sidechats, which appear only in the archive area");
 
+  const archivedSidechat = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-btw-archived");
   const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
+  await search.fill(archivedSidechat.title);
+  await eventually(() => page.locator("[data-session-id]").count(), 0, "Searching an archived sidechat cannot surface it as an active root");
+  assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "1");
   await search.fill(worktree.title);
   await eventually(() => headers.allTextContents(), ["claude-desktop-bridge"], "Searching the worktree title keeps its repository project");
   assert.equal(await page.locator(`[data-session-id="${sessionId}"]`).count(), 1);
@@ -2037,9 +2252,8 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.equal(await page.evaluate(key => localStorage.getItem(key), orderKey), savedOrder);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Project list fits the phone viewport");
 
-  await primaryForkToggle.click();
-  await archivedFoldToggle.click();
-  await mainGroup.locator('[data-session-id="browser-e2e-btw-archived"]').getByRole("button").first().click();
+  await archiveEntry.click();
+  await page.locator('[data-session-id="browser-e2e-btw-archived"]').getByRole("button").first().click();
   const parentChainButton = page.locator(".fork-chain-bar").getByRole("button", { name: "主会话：主会话", exact: true });
   await parentChainButton.waitFor();
   await parentChainButton.click();
@@ -2048,15 +2262,31 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   await page.getByRole("button", { name: /分支 1/u }).waitFor();
   await page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await page.getByRole("button", { name: "返回会话目录", exact: true }).click();
   await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
 
   const forkSnapshot = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-fork");
   forkSnapshot.archivedAt = Date.now();
   await host.emit("session.archived", { archived: true, archivedAt: forkSnapshot.archivedAt }, { sessionId: "browser-e2e-fork" });
-  await eventually(() => primaryForkToggle.count(), 0, "Archiving the last active fork moves the parent to archived-only fold");
-  assert.equal(await mainGroup.locator(".mobile-fork-group.is-archived-only").count(), 1);
-  assert.equal((await archivedFoldToggle.innerText()).trim(), "2 个已归档分支与侧聊");
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Archived-only fold fits the phone viewport");
+  await eventually(() => primaryForkToggle.count(), 0, "Archiving the last active fork removes the parent's fork fold");
+  assert.equal(await mainGroup.locator(".mobile-fork-group").count(), 0);
+  assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "2");
+  await archiveEntry.click();
+  await page.locator('[data-session-id="browser-e2e-fork"]').waitFor();
+  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
+  assert.deepEqual(await page.locator(".session-row-status").allTextContents(), ["已归档", "已归档"]);
+  const archiveSearch = page.getByPlaceholder("搜索「已归档会话」", { exact: true });
+  await archiveSearch.fill(forkSnapshot.title);
+  assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 1);
+  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  await archiveSearch.fill(archivedSidechat.title);
+  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
+  assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
+  await archiveSearch.fill("");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Archived sessions fit the phone viewport");
+  await page.screenshot({ path: resolve(directory, "archived-sessions.png"), fullPage: true });
+  await page.getByRole("button", { name: "返回会话目录", exact: true }).click();
+  steps.push("archivedAt forks and sidechats remain searchable in the archive area with the correct count and archived badges; the active parent has no empty fold");
 
   assert.equal(host.requests.filter(request => request.method.startsWith("turn.")).length, 0);
   await writeFile(resolve(directory, "project-catalog.json"), JSON.stringify({ projects: host.snapshot.projects, sessions: host.snapshot.sessions }, null, 2));
@@ -2370,6 +2600,7 @@ async function runScenario(theme, scenario) {
   const errors = [];
   const browserLog = [];
   const steps = [];
+  const viewports = [];
   const startedAt = Date.now();
   const serverRoutes = [];
   let context;
@@ -2437,7 +2668,8 @@ async function runScenario(theme, scenario) {
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
-    if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
+    if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
+    else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
     else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory);
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);
@@ -2486,7 +2718,7 @@ async function runScenario(theme, scenario) {
     }
   }
   const result = {
-    name, theme, viewport: "375x812", status: failure || errors.length ? "failed" : "passed",
+    name, theme, viewport: viewports.length ? viewports : "375x812", status: failure || errors.length ? "failed" : "passed",
     durationMs: Date.now() - startedAt, steps, errors,
     ...(failure ? { failure: failure.stack } : {}),
     artifacts: directory,

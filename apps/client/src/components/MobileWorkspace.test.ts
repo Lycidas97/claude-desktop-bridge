@@ -14,7 +14,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyEventToTurns, mergeBridgeEvents, type LocalTurn } from "../hooks/useMobileBridge.js";
 import {
   aggregateFileChanges,
-  archivedForkGroupKey,
   canConfigureSession,
   canStopBridgeTask,
   conversationItems,
@@ -176,7 +175,7 @@ describe("mobile workspace directory", () => {
     expect(html).not.toContain("Nested Fork");
   });
 
-  it("counts only active forks/sidechats by default, tucks archived sidechats/forks into a secondary fold, and shows direct parent return in sidechat detail", () => {
+  it("shows only active forks/sidechats in session families and keeps archived branches in the archive page", () => {
     const sidechatActive: BridgeSessionInfo = {
       ...session,
       sessionId: "btw-active",
@@ -212,10 +211,11 @@ describe("mobile workspace directory", () => {
         sessions: [session, sidechatArchived],
       },
     }));
-    expect(archivedOnlyHtml).toContain("mobile-fork-group is-archived-only collapsed");
-    expect(archivedOnlyHtml).toContain("1 个已结束侧聊");
+    expect(archivedOnlyHtml).not.toContain("mobile-fork-toggle");
+    expect(archivedOnlyHtml).not.toContain("1 个已结束侧聊");
     expect(archivedOnlyHtml).not.toContain("1 个 /btw 侧聊");
     expect(archivedOnlyHtml).not.toContain(sidechatArchived.title);
+    expect(archivedOnlyHtml).toMatch(/已归档会话<\/strong><b class="project-count-pill">1<\/b>/u);
 
     const allMixedSessions: BridgeSessionInfo[] = [
       session,
@@ -223,7 +223,7 @@ describe("mobile workspace directory", () => {
       sidechatArchived,
       { ...session, sessionId: "fork-archived", title: "历史实验分支", parentSessionId: session.sessionId, archivedAt: 120, lastActivityAt: 120 },
     ];
-    const renderCatalog = (expandedForkParents: Set<string>, activeProjectId?: string, catalogSessions = allMixedSessions) => {
+    const renderCatalog = (expandedForkParents: Set<string>, activeProjectId?: string, catalogSessions = allMixedSessions, projectSearch = "") => {
       const activeList = catalogSessions.filter((candidate) => !candidate.archivedAt || Boolean(candidate.sidechat && candidate.parentSessionId === session.sessionId));
       const archivedList = catalogSessions.filter((candidate) => Boolean(candidate.archivedAt));
       return renderToStaticMarkup(createElement(MobileSessionCatalog, {
@@ -247,7 +247,7 @@ describe("mobile workspace directory", () => {
         pendingOutbound: 0,
         activeProjectId,
         search: "",
-        projectSearch: "",
+        projectSearch,
         directoryRef: { current: null },
         directoryScrollPositions: { current: new Map() },
         directoryMenuOpen: false,
@@ -308,16 +308,30 @@ describe("mobile workspace directory", () => {
         createSection: vi.fn(),
       }));
     };
-    const primaryExpandedHtml = renderCatalog(new Set([session.sessionId]));
-    expect(primaryExpandedHtml).toContain(sidechatActive.title);
-    expect(primaryExpandedHtml).toContain("2 个已归档分支与侧聊");
-    expect(primaryExpandedHtml).not.toContain(sidechatArchived.title);
-    expect(primaryExpandedHtml).not.toContain("历史实验分支");
-
-    const bothExpandedHtml = renderCatalog(new Set([session.sessionId, archivedForkGroupKey(session.sessionId)]));
-    expect(bothExpandedHtml).toContain(sidechatActive.title);
-    expect(bothExpandedHtml).toContain(sidechatArchived.title);
-    expect(bothExpandedHtml).toContain("历史实验分支");
+    for (const activeProjectId of [undefined, session.projectId]) {
+      const primaryExpandedHtml = renderCatalog(new Set([session.sessionId]), activeProjectId);
+      expect(primaryExpandedHtml).toContain(sidechatActive.title);
+      expect(primaryExpandedHtml).not.toContain("is-archived-fold");
+      expect(primaryExpandedHtml).not.toContain("已归档分支");
+      expect(primaryExpandedHtml).not.toContain(sidechatArchived.title);
+      expect(primaryExpandedHtml).not.toContain("历史实验分支");
+    }
+    for (const title of [sidechatArchived.title, "历史实验分支"]) {
+      const projectSearchHtml = renderCatalog(new Set(), session.projectId, allMixedSessions, title);
+      expect(projectSearchHtml).not.toContain('data-session-id="btw-archived"');
+      expect(projectSearchHtml).not.toContain('data-session-id="fork-archived"');
+      expect(projectSearchHtml).toContain("没有匹配的会话");
+      const archiveSearchHtml = renderCatalog(new Set(), "__archived__", allMixedSessions, title);
+      expect(archiveSearchHtml).toContain(`>${title}`);
+      expect(archiveSearchHtml.match(/class="session-row-status [^"]+">已归档<\/span>/gu)).toHaveLength(1);
+    }
+    expect(renderCatalog(new Set())).toMatch(/已归档会话<\/strong><b class="project-count-pill">2<\/b>/u);
+    const archivedBranchesHtml = renderCatalog(new Set(), "__archived__");
+    expect(archivedBranchesHtml).toContain(sidechatArchived.title);
+    expect(archivedBranchesHtml).toContain("历史实验分支");
+    expect(archivedBranchesHtml).not.toContain(sidechatActive.title);
+    expect(archivedBranchesHtml.match(/class="session-row-status [^"]+">已归档<\/span>/gu)).toHaveLength(2);
+    expect(archivedBranchesHtml).not.toContain("is-archived-fold");
 
     const liveGrandchild: BridgeSessionInfo = {
       ...session, sessionId: "live-fork", title: "仍在执行的孙分支", parentSessionId: sidechatArchived.sessionId,
@@ -329,16 +343,18 @@ describe("mobile workspace directory", () => {
     expect(threeLevelCollapsedHtml).not.toContain("is-archived-only");
     const threeLevelActiveHtml = renderCatalog(new Set([session.sessionId]), undefined, threeLevelSessions);
     expect(threeLevelActiveHtml).toContain(liveGrandchild.title);
-    expect(threeLevelActiveHtml).toContain("1 个已结束侧聊");
+    expect(threeLevelActiveHtml).not.toContain("1 个已结束侧聊");
     expect(threeLevelActiveHtml).not.toContain(sidechatArchived.title);
-    const threeLevelHistoryHtml = renderCatalog(new Set([
-      session.sessionId, archivedForkGroupKey(session.sessionId), sidechatArchived.sessionId,
-    ]), undefined, threeLevelSessions);
-    expect(threeLevelHistoryHtml).toContain(sidechatArchived.title);
-    const liveRow = /data-session-id="live-fork"([\s\S]*?)<\/button>/u.exec(threeLevelHistoryHtml)![1]!;
+    const liveRow = /data-session-id="live-fork"([\s\S]*?)<\/button>/u.exec(threeLevelActiveHtml)![1]!;
     expect(liveRow).toContain("桌面运行中");
     expect(liveRow).not.toContain("已归档");
-    expect(threeLevelHistoryHtml.match(/data-session-id="live-fork"/gu)).toHaveLength(1);
+    expect(threeLevelActiveHtml.match(/data-session-id="live-fork"/gu)).toHaveLength(1);
+    const searchedLiveHtml = renderCatalog(new Set(), session.projectId, threeLevelSessions, liveGrandchild.title);
+    expect(searchedLiveHtml).toContain('data-session-id="live-fork"');
+    expect(searchedLiveHtml).not.toContain('data-session-id="btw-archived"');
+    const threeLevelHistoryHtml = renderCatalog(new Set([sidechatArchived.sessionId]), "__archived__", threeLevelSessions);
+    expect(threeLevelHistoryHtml).toContain(sidechatArchived.title);
+    expect(threeLevelHistoryHtml).not.toContain(liveGrandchild.title);
 
     const archivedParent: BridgeSessionInfo = { ...session, sessionId: "archived-parent", title: "已归档父会话", archivedAt: 50 };
     const archivedChild: BridgeSessionInfo = { ...session, sessionId: "btw-of-archived-parent", title: "btw: 归档父会话的侧聊", parentSessionId: "archived-parent", sidechat: true, archivedAt: 60 };
@@ -385,6 +401,32 @@ describe("mobile workspace directory", () => {
     expect(mixedHtml).not.toContain("3 个分支与侧聊");
     expect(mixedHtml).not.toContain("btw: 归档父会话的侧聊");
     expect(mixedHtml).not.toContain("btw: 跨项目孤儿保护");
+  });
+
+  it.each([false, true])("excludes archived-only matches from directory search and keeps live descendants reachable (%s)", (withLiveDescendant) => {
+    const useState = vi.mocked(React.useState).getMockImplementation()!;
+    const stateSpy = vi.mocked(React.useState)
+      .mockImplementationOnce(useState)
+      .mockImplementationOnce(useState)
+      .mockImplementationOnce(useState)
+      .mockImplementationOnce(useState)
+      .mockReturnValueOnce(["白名单", vi.fn()]);
+    try {
+      const html = renderToStaticMarkup(createElement(MobileWorkspace, {
+        ...workspaceProps(),
+        snapshot: { ...snapshot, sessions: [
+          session,
+          { ...session, sessionId: "archived-sidechat", parentSessionId: session.sessionId, title: "btw: 白名单排查", sidechat: true, archivedAt: 100 },
+          ...(withLiveDescendant ? [{ ...session, sessionId: "live-grandchild", parentSessionId: "archived-sidechat", title: "白名单活跃后代" }] : []),
+        ] },
+      }));
+      expect(html).not.toContain('data-session-id="archived-sidechat"');
+      expect(html).toMatch(/已归档会话<\/strong><b class="project-count-pill">1<\/b>/u);
+      if (withLiveDescendant) expect(html).toContain('data-session-id="live-grandchild"');
+      else expect(html).toContain("没有匹配的会话");
+    } finally {
+      stateSpy.mockReset();
+    }
   });
 
   it.each([
@@ -937,6 +979,30 @@ describe("question reply delivery association", () => {
     text: "Deploy the documentation", attachments: [], createdAt: 4, delivery,
   });
 
+  it("preserves answered native history against an older unanswered completed event", () => {
+    const answered = { ...question.interactivePrompt!, toolUseId: "ask", answered: true, questions: [{ question: "检查哪些？", multiSelect: true,
+      answer: "类型检查, 回归测试", options: [{ label: "稍后处理" }, { label: "类型检查", selected: true }, { label: "回归测试", selected: true }],
+    }] };
+    const event: BridgeEvent = { eventId: "original-question", seq: 1, timestamp: 1, sessionId: "session-1", origin: "claude-desktop",
+      itemId: question.id, type: "assistant.completed", data: { text: "", interactivePrompt: { ...answered, answered: false, questions: [{
+        question: "检查哪些？", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }],
+      }] } } };
+    expect(conversationItems("session-1", history([{ ...question, interactivePrompt: answered }]), [event], [])[0]?.interactivePrompt).toEqual(answered);
+  });
+
+  it("updates native selected answers without moving the question after later output", () => {
+    const answered = { ...question.interactivePrompt!, toolUseId: "ask", answered: true, questions: [{ question: "检查哪些？", multiSelect: true,
+      answer: "类型检查, 回归测试", options: [{ label: "稍后处理" }, { label: "类型检查", selected: true }, { label: "回归测试", selected: true }],
+    }] };
+    const event: BridgeEvent = { eventId: "question-answered", seq: 1, timestamp: 10, sessionId: "session-1", origin: "claude-desktop",
+      itemId: question.id, type: "assistant.completed", data: { text: "", interactivePrompt: answered } };
+    const items = conversationItems("session-1", history([question, {
+      id: "later-output", sessionId: "session-1", role: "assistant", text: "提问后的总结", createdAt: 2, origin: "claude-desktop",
+    }]), [event], []);
+    expect(items.map(item => item.id)).toEqual([question.id, "later-output"]);
+    expect(items[0]).toMatchObject({ createdAt: 1, interactivePrompt: answered });
+  });
+
   it.each(["host-received", "failed"] as const)("keeps a transcript-resolved question independent of a later %s task", delivery => {
     const resolved: BridgeHistoryItem = { ...question, interactivePrompt: {
       ...question.interactivePrompt!, answered: true,
@@ -1304,11 +1370,14 @@ describe("conversationTimeline", () => {
     ]);
   });
 
-  it("ignores session notifications when finding the next real user boundary for evidence", () => {
+  it.each([
+    "<side-sessions-event>None of the sessions you started is working now; their notes are above.</side-sessions-event>",
+    '<cross-session-message from="local_fixture" from-name="验收">完成</cross-session-message>',
+  ])("ignores session notifications when finding the next real user boundary for evidence: %s", text => {
     const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [
       { id: "user-1", sessionId: "session-1", role: "user", text: "Run", createdAt: 1, origin: "claude-desktop" },
       { id: "answer-1", sessionId: "session-1", role: "assistant", text: "Working", createdAt: 2, origin: "claude-desktop" },
-      { id: "notice", sessionId: "session-1", role: "user", text: "<side-sessions-event>None of the sessions you started is working now; their notes are above.</side-sessions-event>", createdAt: 3, origin: "claude-desktop" },
+      { id: "notice", sessionId: "session-1", role: "user", text, createdAt: 3, origin: "claude-desktop" },
       { id: "answer-2", sessionId: "session-1", role: "assistant", text: "Final result", createdAt: 4, origin: "claude-desktop" },
       { id: "user-2", sessionId: "session-1", role: "user", text: "Next task", createdAt: 5, origin: "claude-desktop" },
     ] }, [], []);
@@ -1491,6 +1560,21 @@ describe("session notice presentation", () => {
     expect(event.data.text).toBe(idle);
   });
 
+  const crossSession = '<cross-session-message\n from="local_fixture"\n from-name="Issue 巡检">\n**核对完成**\n</cross-session-message>';
+
+  it.each(["history", "session.observed", "user.message.accepted"] as const)("recognizes cross-session messages from %s and deduplicates cached events", source => {
+    const original = { ...item, text: crossSession };
+    const event: BridgeEvent = { eventId: "cross-event", itemId: item.id, sessionId: item.sessionId, seq: 1, timestamp: 2,
+      origin: "claude-desktop", type: source === "history" ? "session.observed" : source, data: { role: "user", text: crossSession } };
+    const items = conversationItems(item.sessionId, source === "history" ? { status: "ready", hasMore: false, items: [original] } : undefined, [event], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ ...original, sessionNotice: {
+      kind: "cross-session", title: "来自 Issue 巡检", reports: [{ text: "**核对完成**" }],
+    } });
+    expect(original).not.toHaveProperty("sessionNotice");
+    expect(event.data.text).toBe(crossSession);
+  });
+
   it("preserves a report before reminder cleanup and merges cached events without duplicate notices", () => {
     const items = conversationItems(item.sessionId, { status: "ready", hasMore: false, items: [{ ...item, text: report }] }, [
       { eventId: "cached", itemId: item.id, sessionId: item.sessionId, seq: 1, timestamp: 2, origin: "claude-desktop", type: "user.message.accepted", data: { text: report } },
@@ -1510,10 +1594,10 @@ describe("session notice presentation", () => {
     }
   });
 
-  it("does not infer a question answer from a notification, but still accepts a real user reply", () => {
+  it.each([idle, crossSession])("does not infer a question answer from a notification, but still accepts a real user reply: %s", text => {
     const question: BridgeHistoryItem = { ...item, id: "question", role: "assistant", text: "", createdAt: 1,
       interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } };
-    const history = { status: "ready" as const, hasMore: false, items: [question, item] };
+    const history = { status: "ready" as const, hasMore: false, items: [question, { ...item, text }] };
     expect(conversationItems(item.sessionId, history, [], [])[0]?.interactivePrompt?.answered).not.toBe(true);
     const items = conversationItems(item.sessionId, { ...history, items: [...history.items, { ...item, id: "reply", text: "Main", createdAt: 3 }] }, [], []);
     expect(items[0]?.interactivePrompt?.answered).toBe(true);

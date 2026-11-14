@@ -251,7 +251,7 @@ export function extractInteractivePrompt(value: Record<string, unknown>): Bridge
   return found;
 }
 
-function extractToolResultAnswers(value: Record<string, unknown>): Record<string, string> | undefined {
+export function extractToolResultAnswers(value: Record<string, unknown>): Record<string, string> | undefined {
   if (value.type !== "user") return undefined;
   const direct = value.toolUseResult ?? value.tool_use_result;
   if (!isRecord(direct) || !isRecord(direct.answers)) return undefined;
@@ -267,7 +267,7 @@ function extractToolResultAnswers(value: Record<string, unknown>): Record<string
   return Object.keys(answers).length > 0 ? answers : undefined;
 }
 
-function applyQuestionAnswers(
+export function applyQuestionAnswers(
   prompt: BridgeInteractivePrompt,
   answers?: Record<string, string>,
 ): BridgeInteractivePrompt {

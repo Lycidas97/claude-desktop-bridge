@@ -1,0 +1,140 @@
+.diagnostic-floating-entry.secondary-button {
+  position: fixed;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 74px);
+  z-index: 9998;
+  min-height: var(--m-touch);
+  gap: 8px;
+  padding: 0 12px;
+  border-color: var(--glass-border);
+  border-radius: var(--r-pill);
+  background: var(--m-sheet-fill);
+  box-shadow: var(--card-hi), var(--card-shadow);
+  font-family: var(--font-sans);
+  font-size: var(--m-fs-footnote);
+}
+
+.diagnostic-backdrop.m-sheet-backdrop {
+  z-index: 9999;
+  font-family: var(--font-sans);
+}
+
+.diagnostic-sheet.m-sheet {
+  height: min(88dvh, 760px);
+}
+
+.diagnostic-sheet .diagnostic-meta {
+  overflow: visible;
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.diagnostic-body.m-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.diagnostic-actions {
+  display: grid;
+  flex: none;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.diagnostic-tools {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diagnostic-tools > button {
+  flex: 1 0 auto;
+}
+
+.diagnostic-actions > button,
+.diagnostic-tools > button,
+.diagnostic-repair > button {
+  min-height: var(--m-touch);
+  padding: 8px 12px;
+  border-radius: var(--m-r-control);
+}
+
+.diagnostic-repair {
+  flex: none;
+  padding: 12px 0;
+  border-block: 1px solid var(--line);
+  font-size: var(--m-fs-subhead);
+}
+
+.diagnostic-repair > summary {
+  width: fit-content;
+  color: var(--muted);
+  font-size: var(--m-fs-callout);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.diagnostic-repair > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+.diagnostic-repair > p {
+  margin: 12px 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.diagnostic-notice {
+  flex: none;
+  block-size: 4.5em;
+  margin: 0;
+  overflow: auto;
+  color: var(--muted);
+  font-size: var(--m-fs-subhead);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-report {
+  flex: 1 0 160px;
+  width: 100%;
+  min-height: 160px;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--m-r-control);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--m-fs-footnote);
+  line-height: 1.6;
+  resize: none;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.diagnostic-confirm-backdrop.confirm-backdrop {
+  position: absolute;
+  z-index: 1;
+}
+
+.diagnostic-confirm {
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+.diagnostic-confirm.confirm-dialog h2 {
+  font-size: var(--m-fs-title);
+}
+
+.diagnostic-confirm.confirm-dialog p {
+  font-size: var(--m-fs-subhead);
+}
+
+.diagnostic-confirm .confirm-actions {
+  flex-wrap: wrap;
+}

@@ -143,6 +143,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private readonly permissionModeChanges = new Map<string, BridgeNativePermissionModeChange>();
   private readonly resolvingPermissions = new Set<string>();
   private readonly streams = new Map<string, string>();
+  private readonly compactingSessions = new Set<string>();
   private readonly tools = new Map<string, ObservedDesktopTool>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private eventProjection: ReturnType<typeof setImmediate> | undefined;
@@ -290,6 +291,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private async observeNativeSession(session: NativeSession): Promise<void> {
     if (!this.projectDirectories.has(session.cwd)) this.projectDirectories.set(session.cwd, await discoverClaudeProjectDirectory(session.cwd));
     this.native.set(session.sessionId, session);
+    if (!session.turnRunning) this.compactingSessions.delete(session.sessionId);
     const previous = this.promptsList(session.sessionId);
     const current = await nativePendingPrompts(session, this.inspector);
     for (const prompt of previous) this.prompts.delete(prompt.promptId);
@@ -369,6 +371,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         lastActivityAt: native.lastActivityAt ?? native.createdAt ?? 0, pendingCount: pendingCommandIds.length, pendingCommandIds,
         ...(native.model ? { model: native.model, modelDisplayName: this.savedModel(native.model)?.displayName ?? native.model } : {}), ...(native.effort ? { effort: native.effort } : {}),
         ...(contextUsage ? { contextUsage } : {}),
+        ...(running && this.compactingSessions.has(sessionId) ? { isCompacting: true } : {}),
         prs: native.prs ?? [],
         ...(this.prPreferences.has(sessionId) ? { prAutoFix: this.prPreferences.get(sessionId)! } : {}),
         ...(typeof native.autoArchiveOnPrClose === "boolean" ? { autoArchiveOnPrClose: native.autoArchiveOnPrClose } : {}),
@@ -1162,6 +1165,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (message.isSidechain === true || (message.parent_tool_use_id && (message.type === "assistant" || message.type === "user" || message.type === "system" || message.type === "stream_event"))) {
       return;
     }
+    if (message.type === "system" && message.subtype === "status") {
+      if (message.status === "compacting") this.compactingSessions.add(sessionId);
+      else if (message.status === null) this.compactingSessions.delete(sessionId);
+    }
+    if ((message.type === "system" && message.subtype === "compact_boundary") || (message.type === "result" && !message.parent_tool_use_id) || event.type === "error") this.compactingSessions.delete(sessionId);
     const stream = record(message.event);
     if (message.type === "stream_event" && !message.parent_tool_use_id) {
       if (stream.type === "message_start") {

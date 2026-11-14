@@ -46,7 +46,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
@@ -308,7 +308,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     },
     async syncNativeQueue(update, { pushEvents = true } = {}) {
       history.splice(0, history.length, ...update.history.items);
-      for (const key of ["turnState", "ownership", "pendingCount", "pendingCommandIds", "allowedActions"]) session[key] = update.session[key];
+      for (const key of ["turnState", "ownership", "pendingCount", "pendingCommandIds", "allowedActions", "isCompacting"]) session[key] = update.session[key];
       snapshot.projects[0].pendingCount = session.pendingCount;
       snapshot.projects[0].runningCount = session.turnState === "running" ? 1 : 0;
       if (pushEvents) for (const event of update.events) await host.emit(event.type, event.data, {
@@ -1371,6 +1371,27 @@ async function verifyNativeMessages(page, host, steps, directory) {
   host.history.push({ id: assistantId, sessionId, role: "assistant", text: "流式完成内容", createdAt: Date.now(), origin: "claude-desktop" });
   steps.push("completion without a turnId retains final content and shows no per-message blinking caret");
 
+  for (const terminal of ["completed", "observed", "without-turn"]) {
+    const id = `browser-e2e-long-${terminal}`;
+    const turn = terminal === "completed" ? { turnId: `${id}-turn` } : {};
+    const text = `${id}\n\n${"这条长回复正在阅读，输出结束后应保持展开。\n\n".repeat(100)}`;
+    const message = page.locator("article.conversation-item.assistant").filter({ hasText: id });
+    await host.emit("assistant.delta", { text }, { itemId: id });
+    await message.waitFor();
+    assert.equal(await message.locator(".expandable-message-fold").count(), 0, "Streaming replies are fully expanded");
+    await host.emit(terminal === "observed" ? "session.observed" : "assistant.completed", { text, role: "assistant" }, { itemId: id, ...turn });
+    await eventually(() => message.locator(".expandable-message-toggle").getAttribute("aria-expanded"), "true", "A long reply read live stays expanded after native completion");
+    assert.equal(await message.locator("[inert]").count(), 0, "The completed reply remains accessible");
+    await message.getByRole("button", { name: "收起", exact: true }).click();
+    await message.getByRole("button", { name: "展开全文", exact: true }).waitFor();
+    await host.emit("assistant.completed", { text: "后续回复不应重新展开已手动收起的消息" }, { itemId: `${id}-next` });
+    assert.equal(await message.locator(".expandable-message-toggle").getAttribute("aria-expanded"), "false", "Later messages preserve a manual collapse");
+    await message.getByRole("button", { name: "展开全文", exact: true }).click();
+    host.history.push({ id, sessionId, role: "assistant", text, createdAt: Date.now(), origin: "claude-desktop", ...turn });
+  }
+  await page.screenshot({ path: resolve(directory, "live-reply-stays-expanded.png"), fullPage: true });
+  steps.push("long streamed replies stay expanded after completed/observed finalization and still support manual collapse and expansion");
+
   assert.match(host.session.model, /^mythos-magpie-/u, "The header test must receive a native internal model alias");
   await eventually(async () => (await page.getByRole("button", { name: "会话设置", exact: true }).innerText()).includes("隔离模型 · 标准"), true, "Initial native alias snapshot uses its saved header label before opening configuration");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
@@ -1400,6 +1421,12 @@ async function verifyNativeMessages(page, host, steps, directory) {
   assert.equal(await page.locator(".stream-caret").count(), 0);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   steps.push("reloading restores completed delivery and five-image metadata without original bytes in cached history");
+  for (const terminal of ["completed", "observed", "without-turn"]) {
+    const message = page.locator("article.conversation-item.assistant").filter({ hasText: `browser-e2e-long-${terminal}` });
+    await message.getByRole("button", { name: "展开全文", exact: true }).waitFor();
+    assert.equal(await message.locator(".expandable-message-toggle").getAttribute("aria-expanded"), "false", "Reopened history starts collapsed even when it was read live before reload");
+  }
+  steps.push("reopened historical replies start collapsed without retaining the previous live-reading state");
 
   const geminiModel = ["antigravity", "gemini-4-argon"].join("/");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
@@ -1539,6 +1566,30 @@ async function verifyHistoryPagination(page, host, steps, directory) {
     await eventually(() => stream.evaluate(root => root.scrollHeight - root.clientHeight - root.scrollTop < 4), true, "Returning to the bottom resumes streaming follow");
   }
   steps.push("streaming follows at the bottom, preserves the reader's position after 40/80/640px upward scrolling, and follows again only after returning to the bottom");
+}
+
+async function verifyNativeCompaction(page, host, steps, directory) {
+  const row = page.locator(`[data-session-id="${sessionId}"]`);
+  await row.getByRole("button").first().click();
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: "compacting" } }));
+  await eventually(() => page.locator(".session-activity-label").innerText(), "正在压缩上下文", "Native compaction replaces generic activity even with queued input");
+  assert.equal(await page.locator(".session-activity-elapsed").count(), 0, "User turn age is not shown as compaction duration");
+  await page.screenshot({ path: resolve(directory, "native-compaction.png"), fullPage: true });
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await eventually(() => row.locator(".session-row-status").innerText(), "正在压缩上下文", "Catalog badge shares the observed compaction status");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await row.waitFor();
+  await eventually(() => row.locator(".session-row-status").innerText(), "正在压缩上下文", "Reconnect snapshot retains current compaction status");
+  await row.getByRole("button").first().click();
+  await eventually(() => page.locator(".session-activity-label").innerText(), "正在压缩上下文", "Reopening a compacting session restores its activity line");
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: null, compact_result: "success" } }));
+  await eventually(() => page.locator(".session-activity.compacting").count(), 0, "Native status clear restores regular activity");
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: "compacting" } }));
+  await eventually(() => page.locator(".session-activity.compacting").count(), 1, "A later automatic compaction can start independently of input text");
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "compact_boundary", uuid: "browser-compact-boundary" } }));
+  await eventually(() => page.locator(".session-activity.compacting").count(), 0, "Compaction boundary restores regular activity");
+  assert.equal(host.requests.filter(request => request.method === "turn.start" || request.method === "turn.steer").length, 0, "Observing compaction never submits a command");
+  steps.push("Native status drives compaction activity and catalog badge, survives reconnect, and clears on Native status/boundary without a timer or command-text guess");
 }
 
 async function verifyNativeBoundaries(page, host, steps, directory) {
@@ -2608,9 +2659,9 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
     if (scenario === "native-prompts-pr") await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
-    if (scenario === "native-queue-actions") host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
+    if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (scenario === "project-grouping") Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (scenario === "section-manage") await syncNativeSections(host);
     context = await browser.newContext({
@@ -2675,6 +2726,7 @@ async function runScenario(theme, scenario) {
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);
     else if (scenario === "history-pagination") await verifyHistoryPagination(page, host, steps, directory);
     else if (scenario === "native-boundaries") await verifyNativeBoundaries(page, host, steps, directory);
+    else if (scenario === "native-compaction") await verifyNativeCompaction(page, host, steps, directory);
     else if (scenario === "native-queue-actions") await verifyNativeQueueActions(page, host, steps, directory);
     else if (scenario === "native-session-notices") await verifyNativeSessionNotices(page, host, steps, directory);
     else if (scenario === "project-grouping") await verifyProjectGrouping(page, host, steps, directory);
@@ -2855,8 +2907,7 @@ try {
               const chunks = [];
               for await (const chunk of request) chunks.push(chunk);
               const events = await previewHost.nativeApproval.message(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-              for (const event of events) await previewHost.emit(event.type, event.data, { itemId: event.itemId, turnId: event.turnId });
-              previewHost.history.splice(0, previewHost.history.length, ...(await previewHost.nativeApproval.history()).items);
+              await previewHost.syncNativeQueue({ events, history: await previewHost.nativeApproval.history(), session: previewHost.nativeApproval.session() });
               result = { events: events.length };
             } else if (nativePreview && request.method === "POST" && url.pathname === "/request") {
               previewApproval = url.searchParams.get("kind") === "question"

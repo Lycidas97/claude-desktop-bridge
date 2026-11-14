@@ -629,6 +629,8 @@ export interface BridgeSessionInfo {
   sessionId: string;
   /** Host startup and submission precede the runtime's execution acknowledgment. */
   executionStage?: "starting" | "submitted" | "running";
+  /** Read-only main-session compaction status observed from the native runtime. */
+  isCompacting?: boolean;
   /** Subagents not yet ended. They outlive the main conversation, which turnState describes. */
   runningSubagents?: { count: number; lastUpdatedAt: number };
   /** Running background tasks plus the most recent finished ones, newest first. */

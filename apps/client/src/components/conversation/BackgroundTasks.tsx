@@ -187,12 +187,14 @@ function BashTaskDetail({
   subagent,
   items,
   supportsToolDetail,
+  showStatus = false,
 }: {
   sessionId: string;
   task?: BridgeBackgroundTask;
   subagent?: BridgeSubagentSummary;
   items: readonly BridgeHistoryItem[];
   supportsToolDetail: boolean;
+  showStatus?: boolean;
 }) {
   const request = useMediaRequest();
   const requestRef = useRef(request);
@@ -221,10 +223,12 @@ function BashTaskDetail({
 
   return (
     <div className="tool-detail-body">
-      <div className="tool-detail-section-label" role="status">
-        <StateGlyph state={state} />
-        {STATE_LABELS[state]}
-      </div>
+      {showStatus && (
+        <div className="tool-detail-section-label" role="status">
+          <StateGlyph state={state} />
+          {STATE_LABELS[state]}
+        </div>
+      )}
       <section className="tool-detail-section" aria-label="命令">
         <span className="tool-detail-section-label">
           {result.detail ? (result.detail.inputTruncated ? "入参（已截断）" : "命令") : "命令摘要"}
@@ -256,7 +260,6 @@ function BashTaskDetail({
 
 /** The session's background tasks, grouped by kind from the header or focused on a single stream marker. */
 export function BackgroundTasksSheet({
-  hostId,
   sessionId,
   tasks,
   items,
@@ -265,7 +268,6 @@ export function BackgroundTasksSheet({
   renderSubagent,
   onClose,
 }: {
-  hostId?: string;
   sessionId: string;
   supportsToolDetail?: boolean;
   tasks: readonly BridgeBackgroundTask[];
@@ -313,10 +315,11 @@ export function BackgroundTasksSheet({
           </>
         ) : kind === "bash" ? (
           <BashTaskDetail
-            key={`${hostId ?? "local"}:${sessionId}:${focusTask?.id ?? streamFocus.id}`}
+            key={`${sessionId}:${focusTask?.id ?? streamFocus.id}`}
             sessionId={sessionId}
             {...(focusTask ? { task: focusTask } : {})}
             subagent={focusSubagent}
+            showStatus
             items={items}
             supportsToolDetail={supportsToolDetail}
           />
@@ -362,7 +365,7 @@ export function BackgroundTasksSheet({
                 )}
                 {open && task.kind === "bash" && (
                   <BashTaskDetail
-                    key={`${hostId ?? "local"}:${sessionId}:${task.id}`}
+                    key={`${sessionId}:${task.id}`}
                     sessionId={sessionId}
                     task={task}
                     items={items}

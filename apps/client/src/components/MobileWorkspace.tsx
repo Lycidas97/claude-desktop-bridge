@@ -1616,7 +1616,6 @@ export function MobileWorkspace({
         />
         {backgroundTasksOpen && (
           <BackgroundTasksSheet
-            {...(activeHostId ? { hostId: activeHostId } : {})}
             supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))}
             sessionId={selectedSession.sessionId}
             tasks={backgroundTasks}

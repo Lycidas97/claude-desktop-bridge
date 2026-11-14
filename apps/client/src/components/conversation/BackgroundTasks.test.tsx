@@ -237,7 +237,8 @@ describe("background task tray", () => {
     expect(html).toContain("npm run dev -- --host 127.0.0.1");
     expect(html).toContain("Server listening on port 5188");
     expect(html).toContain("Command running in background with ID: bsh01");
-    expect(html).toContain('role="status"');
+    expect(html).not.toContain('role="status"');
+    expect(html.match(/aria-label="运行中"/gu)).toHaveLength(1);
     expect(html).toContain("运行中");
     expect(html).not.toContain("已完成");
   });
@@ -246,6 +247,7 @@ describe("background task tray", () => {
     const focus = item(agent("bsh01", { toolUseId: "bash-call", taskKind: "bash", state, reportText: "Retained task output" }));
     const { html } = sheet(focus, [focus], []);
     expect(html).toContain("Retained task output");
+    expect(html).toContain('role="status"');
     expect(html).toContain(`background-task-state is-${state}`);
     expect(html).not.toContain("全部后台任务");
   });

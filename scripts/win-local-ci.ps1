@@ -23,6 +23,11 @@ $jdkRoot = "$toolsRoot\jdk-21"
 $pythonRoot = "$toolsRoot\python"
 $sdkRoot = "$toolsRoot\android-sdk"
 
+$temporaryEnvironment = @{}
+foreach ($key in @("BRIDGE_TEST_TEMP_ROOT", "TEMP", "TMP", "TMPDIR", "BRIDGE_RECYCLE_STAGING")) {
+  $temporaryEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
+}
+try {
 $ownsTempRoot = -not $env:BRIDGE_TEST_TEMP_ROOT
 $tempDir = if ($ownsTempRoot) { Join-Path $cacheRoot ("test-temp-" + [Guid]::NewGuid().ToString("N")) } else { $env:BRIDGE_TEST_TEMP_ROOT }
 $npmCache = "$cacheRoot\npm"
@@ -436,5 +441,10 @@ Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revisi
       $slotMutexes[$slot].ReleaseMutex()
     }
     foreach ($slotMutex in $slotMutexes) { $slotMutex.Dispose() }
+  }
+}
+} finally {
+  foreach ($key in $temporaryEnvironment.Keys) {
+    [Environment]::SetEnvironmentVariable($key, $temporaryEnvironment[$key], "Process")
   }
 }

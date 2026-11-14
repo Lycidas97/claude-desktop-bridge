@@ -58,7 +58,7 @@ if (!fs[INSTALLED]) {
     const path = normalize(value);
     try { fs.lstatSync(path); }
     catch (error) { if (options.force && error.code === 'ENOENT') return; throw error; }
-    if (isTemporary(path)) return remove(value, options);
+    if (isTemporary(path)) return remove(path, options);
     execFileSync(...command(path));
   }
 
@@ -66,7 +66,7 @@ if (!fs[INSTALLED]) {
     const path = normalize(value);
     try { await fs.promises.lstat(path); }
     catch (error) { if (options.force && error.code === 'ENOENT') return; throw error; }
-    if (isTemporary(path)) return remove(value, options);
+    if (isTemporary(path)) return remove(path, options);
     await run(...command(path));
   }
 

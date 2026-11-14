@@ -710,6 +710,38 @@ test('owned scratch uses native sync, promise and callback APIs; other paths alw
   assert.equal(failed.removals.length, 0);
 });
 
+test('native deletion uses the checked absolute path across symlink parent traversal', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-checked-path-'));
+  try {
+    const root = join(directory, 'owned');
+    const outside = join(directory, 'outside');
+    await mkdir(root);
+    await mkdir(join(outside, 'child'), { recursive: true });
+    await symlink(join(outside, 'child'), join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+    for (const name of ['sync', 'promise', 'callback']) {
+      await writeFile(join(root, name), 'owned');
+      await writeFile(join(outside, name), 'external sentinel');
+    }
+    const result = spawnSync(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      const root = process.env.BRIDGE_TEST_TEMP_ROOT;
+      (async () => {
+        fs.unlinkSync(root + '/link/../sync');
+        await fs.promises.unlink(root + '/link/../promise');
+        await new Promise((resolve, reject) => fs.unlink(root + '/link/../callback', error => error ? reject(error) : resolve()));
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `], { env: { ...recycleEnv(), BRIDGE_TEST_TEMP_ROOT: root }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    for (const name of ['sync', 'promise', 'callback']) {
+      assert.equal(fs.existsSync(join(outside, name)), true, `${name} must preserve the external sentinel`);
+      assert.equal(await readFile(join(outside, name), 'utf8'), 'external sentinel');
+      assert.equal(fs.existsSync(join(root, name)), false, `${name} must delete the checked owned path`);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('directory symlinks do not authorize deletion of targets outside owned scratch', () => {
   const root = join(tmpdir(), 'owned-scratch');
   const mock = mockCleanup('darwin', { extraEnv: { BRIDGE_TEST_TEMP_ROOT: root } });

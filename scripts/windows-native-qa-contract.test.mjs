@@ -641,6 +641,60 @@ test("reusing a Windows CI slot preserves the previous run's retained staging", 
   }
 });
 
+test("Windows CI restores temporary environment before the caller starts another Node process", { skip: process.platform !== "win32" }, async () => {
+  const source = await readFile(new URL('./win-local-ci.ps1', import.meta.url), 'utf8');
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-ci-temp-env-'));
+  try {
+    const fixture = join(directory, 'environment.ps1');
+    const probe = join(directory, 'next-node.cjs');
+    await writeFile(probe, `process.stdout.write('NEXT_NODE_OK');`);
+    await writeFile(fixture, `
+      $ErrorActionPreference = 'Stop'
+      $keys = @('BRIDGE_TEST_TEMP_ROOT', 'TEMP', 'TMP', 'TMPDIR', 'BRIDGE_RECYCLE_STAGING')
+      $callerRoot = $env:BRIDGE_QA_TEST_ROOT
+      $cacheRoot = $callerRoot
+      $env:TEMP = $env:TMP = $env:TMPDIR = $callerRoot
+      $env:BRIDGE_RECYCLE_STAGING = Join-Path $callerRoot 'caller-staging'
+      if ($env:BRIDGE_ENV_CASE -eq 'inherited') {
+        $env:BRIDGE_TEST_TEMP_ROOT = Join-Path $callerRoot 'inherited'
+        New-Item -ItemType Directory -Path $env:BRIDGE_TEST_TEMP_ROOT | Out-Null
+      } else { [Environment]::SetEnvironmentVariable('BRIDGE_TEST_TEMP_ROOT', $null, 'Process') }
+      $expected = @{}
+      foreach ($key in $keys) { $expected[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+      function Invoke-Checked { param($Label, $Command); & $Command }
+      function Invoke-CiTemp {
+        ${source.match(/^\$temporaryEnvironment =[^]*?(?=^try \{)/mu)?.[0] ?? ''}
+        ${source.match(/^\$ownsTempRoot = .+\r?\n\$tempDir = .+$/mu)[0]}
+        if ($ownsTempRoot) { New-Item -ItemType Directory -Path $tempDir | Out-Null }
+        ${source.match(/^\$recycleStaging = .+$/mu)[0]}
+        ${source.match(/^\$env:(?:BRIDGE_TEST_TEMP_ROOT|TEMP|TMP|TMPDIR|BRIDGE_RECYCLE_STAGING) = .+$/gmu).join('\n')}
+        try {} finally {
+          ${source.match(/^    if \(\$ownsTempRoot\) \{[^]*?^    \}/mu)[0]}
+          ${source.match(/^  foreach \(\$key in \$temporaryEnvironment.Keys\) \{[^]*?^  \}/mu)?.[0] ?? ''}
+        }
+        if (($env:BRIDGE_ENV_CASE -eq 'inherited') -ne (Test-Path -LiteralPath $tempDir)) { throw 'ROOT_OWNERSHIP_CHANGED' }
+      }
+      Invoke-CiTemp
+      & node.exe --require ${JSON.stringify(fileURLToPath(new URL('./recycle-cleanup.cjs', import.meta.url)))} ${JSON.stringify(probe)}
+      if ($LASTEXITCODE -ne 0) { throw 'NEXT_NODE_FAILED' }
+      $actual = @{}
+      foreach ($key in $keys) { $actual[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+      Write-Output ('ENV=' + (ConvertTo-Json -InputObject @{ expected = $expected; actual = $actual } -Compress))
+    `);
+    for (const mode of ['standalone', 'inherited']) {
+      const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', fixture], {
+        env: { ...process.env, BRIDGE_QA_TEST_ROOT: directory, BRIDGE_ENV_CASE: mode }, encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, `${mode}: ${result.stderr}`);
+      assert.match(result.stdout, /NEXT_NODE_OK/u);
+      const { expected, actual } = JSON.parse(/ENV=(.+)/u.exec(result.stdout)[1]);
+      assert.deepEqual(actual, expected, `${mode} must restore the caller's temporary environment`);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("concurrent Windows CI callers each take a free slot and a fifth caller waits for one to release", { skip: process.platform !== "win32" }, async () => {
   const { spawn } = await import("node:child_process");
   const { once } = await import("node:events");

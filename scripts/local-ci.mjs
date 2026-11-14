@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { createWriteStream, existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm as recycle, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -178,7 +178,19 @@ async function runCli() {
 
   const revision = git(["rev-parse", "HEAD"]);
   const tree = git(["rev-parse", "HEAD^{tree}"]);
-  console.log(`=== Local Distributed CI @ ${revision} ===`);
+  // Keep every run's full output beside the receipts, independent of where the caller redirects it.
+  const logDir = join(receiptDirFor(root), "logs");
+  await mkdir(logDir, { recursive: true });
+  const logPath = join(logDir, `${revision.slice(0, 12)}-${new Date().toISOString().replaceAll(":", "")}.log`);
+  const log = createWriteStream(logPath);
+  for (const stream of [process.stdout, process.stderr]) {
+    const write = stream.write.bind(stream);
+    stream.write = (chunk, ...rest) => {
+      log.write(chunk);
+      return write(chunk, ...rest);
+    };
+  }
+  console.log(`=== Local Distributed CI @ ${revision} ===\nLog: ${logPath}`);
 
   const activeChildren = new Set();
   function runPrefixed(prefix, command, commandArgs, extraEnv = {}) {
@@ -317,5 +329,8 @@ async function runCli() {
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === scriptPath) {
-  await runCli();
+  await runCli().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }

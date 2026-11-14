@@ -1304,11 +1304,14 @@ describe("conversationTimeline", () => {
     ]);
   });
 
-  it("ignores session notifications when finding the next real user boundary for evidence", () => {
+  it.each([
+    "<side-sessions-event>None of the sessions you started is working now; their notes are above.</side-sessions-event>",
+    '<cross-session-message from="local_fixture" from-name="验收">完成</cross-session-message>',
+  ])("ignores session notifications when finding the next real user boundary for evidence: %s", text => {
     const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [
       { id: "user-1", sessionId: "session-1", role: "user", text: "Run", createdAt: 1, origin: "claude-desktop" },
       { id: "answer-1", sessionId: "session-1", role: "assistant", text: "Working", createdAt: 2, origin: "claude-desktop" },
-      { id: "notice", sessionId: "session-1", role: "user", text: "<side-sessions-event>None of the sessions you started is working now; their notes are above.</side-sessions-event>", createdAt: 3, origin: "claude-desktop" },
+      { id: "notice", sessionId: "session-1", role: "user", text, createdAt: 3, origin: "claude-desktop" },
       { id: "answer-2", sessionId: "session-1", role: "assistant", text: "Final result", createdAt: 4, origin: "claude-desktop" },
       { id: "user-2", sessionId: "session-1", role: "user", text: "Next task", createdAt: 5, origin: "claude-desktop" },
     ] }, [], []);
@@ -1491,6 +1494,21 @@ describe("session notice presentation", () => {
     expect(event.data.text).toBe(idle);
   });
 
+  const crossSession = '<cross-session-message\n from="local_fixture"\n from-name="Issue 巡检">\n**核对完成**\n</cross-session-message>';
+
+  it.each(["history", "session.observed", "user.message.accepted"] as const)("recognizes cross-session messages from %s and deduplicates cached events", source => {
+    const original = { ...item, text: crossSession };
+    const event: BridgeEvent = { eventId: "cross-event", itemId: item.id, sessionId: item.sessionId, seq: 1, timestamp: 2,
+      origin: "claude-desktop", type: source === "history" ? "session.observed" : source, data: { role: "user", text: crossSession } };
+    const items = conversationItems(item.sessionId, source === "history" ? { status: "ready", hasMore: false, items: [original] } : undefined, [event], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ ...original, sessionNotice: {
+      kind: "cross-session", title: "来自 Issue 巡检", reports: [{ text: "**核对完成**" }],
+    } });
+    expect(original).not.toHaveProperty("sessionNotice");
+    expect(event.data.text).toBe(crossSession);
+  });
+
   it("preserves a report before reminder cleanup and merges cached events without duplicate notices", () => {
     const items = conversationItems(item.sessionId, { status: "ready", hasMore: false, items: [{ ...item, text: report }] }, [
       { eventId: "cached", itemId: item.id, sessionId: item.sessionId, seq: 1, timestamp: 2, origin: "claude-desktop", type: "user.message.accepted", data: { text: report } },
@@ -1510,10 +1528,10 @@ describe("session notice presentation", () => {
     }
   });
 
-  it("does not infer a question answer from a notification, but still accepts a real user reply", () => {
+  it.each([idle, crossSession])("does not infer a question answer from a notification, but still accepts a real user reply: %s", text => {
     const question: BridgeHistoryItem = { ...item, id: "question", role: "assistant", text: "", createdAt: 1,
       interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } };
-    const history = { status: "ready" as const, hasMore: false, items: [question, item] };
+    const history = { status: "ready" as const, hasMore: false, items: [question, { ...item, text }] };
     expect(conversationItems(item.sessionId, history, [], [])[0]?.interactivePrompt?.answered).not.toBe(true);
     const items = conversationItems(item.sessionId, { ...history, items: [...history.items, { ...item, id: "reply", text: "Main", createdAt: 3 }] }, [], []);
     expect(items[0]?.interactivePrompt?.answered).toBe(true);

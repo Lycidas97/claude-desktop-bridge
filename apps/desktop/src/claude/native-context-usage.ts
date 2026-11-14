@@ -5,6 +5,7 @@ import { magpieModelIdHash, parseMagpieSyntheticModelId } from "./claude-runtime
 export interface NativeContextState {
   totalTokens: number;
   maxTokensByModel: Map<string, number>;
+  turnModel?: string;
   model?: string;
   estimated: boolean;
   hydrated: boolean;
@@ -100,10 +101,10 @@ export function projectContextMessages(messages: readonly unknown[]): unknown[] 
   });
 }
 
-export function createNativeContextState(): NativeContextState {
+export function createNativeContextState(maxTokensByModel = new Map<string, number>()): NativeContextState {
   return {
     totalTokens: 0,
-    maxTokensByModel: new Map(),
+    maxTokensByModel,
     estimated: true,
     hydrated: false,
     seenAssistantUuids: new Set<string>(),
@@ -192,7 +193,7 @@ export function applyLiveContextUsageState(
   delete state.stream;
 }
 
-export function buildTranscriptContextState(messages: readonly unknown[], maxTokensByModel = new Map<string, number>()): NativeContextState {
+export function buildTranscriptContextState(messages: readonly unknown[], previous?: NativeContextState): NativeContextState {
   const scan = scanClaudeContextFromMessages(messages);
   const seenAssistantUuids = new Set<string>();
   const preCompactUuids = new Set<string>();
@@ -211,7 +212,8 @@ export function buildTranscriptContextState(messages: readonly unknown[], maxTok
   }
   return {
     totalTokens: scan.estimate?.totalTokens ?? 0,
-    maxTokensByModel,
+    maxTokensByModel: previous?.maxTokensByModel ?? new Map(),
+    ...(previous?.turnModel !== undefined ? { turnModel: previous.turnModel } : {}),
     ...(scan.estimate?.model ? { model: scan.estimate.model } : {}),
     estimated: true,
     hydrated: true,

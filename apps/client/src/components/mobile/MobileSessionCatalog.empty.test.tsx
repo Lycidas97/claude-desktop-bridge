@@ -235,6 +235,65 @@ describe("MobileSessionCatalog empty states", () => {
     expect(elements(tree).some((el) => el.type === SessionCreateDialog)).toBe(true);
   });
 
+  it.each(["directory", "desktop-group"] as const)("preselects the clicked %s project when groups share a directory", kind => {
+    props = {
+      ...props,
+      snapshot: makeSnapshot({
+        projects: [
+          { projectId: "project-1", name: "Project", kind: "directory", cwd: "/tmp/project", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 10 },
+          { projectId: "target-project", name: "Target", kind, cwd: "/tmp/project", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 10 },
+        ],
+        sessions: [baseSession, { ...baseSession, sessionId: "target-session", projectId: "target-project", projectName: "Target" }],
+      }),
+    };
+    draw();
+    const createButton = elements(tree).find(el => el.props.label === "新建会话：Target");
+    expect(createButton).toBeDefined();
+    expect(createButton!.props.disabled).toBe(false);
+    createButton!.props.onClick();
+    draw();
+
+    expect(elements(tree).find(el => el.type === SessionCreateDialog)?.props.initialProjectId).toBe("target-project");
+    expect(elements(tree).filter(el => el.props.className === "project-group-header")).toHaveLength(2);
+    expect(props.onOpenSession).not.toHaveBeenCalled();
+  });
+
+  it("opens creation for a collapsed empty Desktop group without expanding it", () => {
+    props = {
+      ...props,
+      snapshot: makeSnapshot({
+        projects: [{ projectId: "empty-section", name: "Empty", kind: "desktop-group", cwd: "", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 10 }],
+      }),
+    };
+    draw();
+    elements(tree).find(el => el.props.className === "project-group-open")!.props.onClick();
+    draw();
+    expect(elements(tree).find(el => el.props.className === "project-group-open")?.props["aria-expanded"]).toBe(false);
+    const createButton = elements(tree).find(el => el.props.label === "新建会话：Empty");
+    expect(createButton).toBeDefined();
+    createButton!.props.onClick();
+    draw();
+
+    expect(elements(tree).find(el => el.type === SessionCreateDialog)?.props.initialProjectId).toBe("empty-section");
+    expect(elements(tree).find(el => el.props.className === "project-group-open")?.props["aria-expanded"]).toBe(false);
+  });
+
+  it.each([
+    { connection: "reconnecting" as const, desktopOnline: true },
+    { connection: "connected" as const, desktopOnline: false },
+  ])("disables group creation while unavailable ($connection, online=$desktopOnline)", availability => {
+    props = {
+      ...props,
+      ...availability,
+      snapshot: makeSnapshot({
+        projects: [{ projectId: "project-1", name: "Project", cwd: "/tmp/project", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 10 }],
+        sessions: [baseSession],
+      }),
+    };
+    draw();
+    expect(elements(tree).find(el => el.props.label === "新建会话：Project")?.props.disabled).toBe(true);
+  });
+
   it("distinguishes archived-only sessions on an online Desktop and preserves the archived group entry", () => {
     props = {
       ...props,
@@ -248,6 +307,7 @@ describe("MobileSessionCatalog empty states", () => {
     expect(elements(box).find((el) => el.type === "strong")?.props.children).toBe("暂无活跃会话");
     expect(textContent(elements(box).find((el) => el.type === "button"))).toBe("新建会话");
     expect(elements(tree).some((el) => el.type === "strong" && el.props.children === "已归档会话")).toBe(true);
+    expect(elements(tree).some(el => el.props.label?.startsWith("新建会话："))).toBe(false);
   });
 
   it.each([

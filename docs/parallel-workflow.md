@@ -26,17 +26,17 @@ A Light reviewer whose PR grows into Paired scope tells the patrol.
 | --- | --- | --- |
 | Patrol | `group/bridge-runner`: DeepSeek Flash → GPT-6.1-Sol | `bridge-runner` |
 | Fork, reviewer, `LESSONS.md` consolidation, scheduled `bridge-tech-debt-patrol` (no subagents: a weaker scanner's misses cannot be caught by review) | `codex/gpt-6.1-sol` | `GPT-6.1-Sol · Codex` |
-| Extra reviewer for architecture/UI PRs | `group/ui-review`: Opus 5.5 (Antigravity → Claude Code) → Gemini 4 Carbon | `ui-review` |
+| Extra reviewer for architecture/UI PRs | `group/ui-review`: Opus 5.5 (agy-cli → Claude Code) → Gemini 4 Carbon | `ui-review` |
 | `plan-ideator` / `plan-reviewer` | `group/ideator`: Gemini 4 Argon → Gemini 4 Carbon → GPT-6.1-Sol / `codex/gpt-6.1-sol` | `ideator` / `GPT-6.1-Sol · Codex` |
 | Drafting Issue bodies, PR descriptions, docs | `group/docs`: Gemini 4 Hydrogen → Opus 5.5 → DeepSeek Flash | `docs` |
 | Hard bugs | `codex/gpt-6-astra` | `GPT-6-Astra · Codex` |
 
-- Fallback lives in Magpie groups with `routing=order`, so sessions carry no fallback logic. Gemini only via `antigravity/*`. One-time setup per machine (the group name is the label):
+- Fallback lives in Magpie groups with `routing=order`, so sessions carry no fallback logic. Gemini (and the second Opus account) only via `agy-cli/*`; never `antigravity/*`, `antigravity-bridge/*`, or `gemini-web/*`, whose reverse-proxy accounts get banned. One-time setup per machine (the group name is the label):
   ```bash
   magpie group add bridge-runner models=deepseek/deepseek-flash,codex/gpt-6.1-sol routing=order
-  magpie group add ideator models=antigravity/gemini-4-argon,antigravity/gemini-4-carbon,codex/gpt-6.1-sol routing=order
-  magpie group add docs models=antigravity/gemini-4-hydrogen,antigravity/claude-opus-5-5,claude/claude-opus-5-5,deepseek/deepseek-flash routing=order
-  magpie group add ui-review models=antigravity/claude-opus-5-5,claude/claude-opus-5-5,antigravity/gemini-4-carbon routing=order
+  magpie group add ideator models=agy-cli/gemini-4-argon,agy-cli/gemini-4-carbon,codex/gpt-6.1-sol routing=order
+  magpie group add docs models=agy-cli/gemini-4-hydrogen,agy-cli/claude-opus-5-5,claude/claude-opus-5-5,deepseek/deepseek-flash routing=order
+  magpie group add ui-review models=agy-cli/claude-opus-5-5,claude/claude-opus-5-5,agy-cli/gemini-4-carbon routing=order
   ```
 - `set_session_model` and frontmatter take a picker id. Resolve it right before use with `node scripts/picker-id.mjs "<label>"`; never write ids down. A new group needs a Claude Desktop restart before its id works.
 - A session keeps one model for life. `set_session_model` applies only from the session's next turn (see **Dispatch**).

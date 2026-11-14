@@ -502,6 +502,9 @@ export function conversationItems(
       if (!text && !interactivePrompt && !taskPlan) continue;
       const itemId = event.itemId ?? event.eventId;
       const prev = items.get(itemId);
+      const mergedPrompt = interactivePrompt
+        ? (prev?.interactivePrompt?.answered && !interactivePrompt.answered ? prev.interactivePrompt : interactivePrompt)
+        : prev?.interactivePrompt;
       const mergedTaskPlan = prev?.taskPlan && (!taskPlan || prev.taskPlan.updatedAt >= taskPlan.updatedAt)
         ? prev.taskPlan
         : taskPlan;
@@ -511,13 +514,9 @@ export function conversationItems(
         ...(event.turnId ? { turnId: event.turnId } : {}),
         role: "assistant",
         text,
-        createdAt: mergedTaskPlan ? prev?.createdAt ?? event.timestamp : event.timestamp,
+        createdAt: mergedTaskPlan || mergedPrompt?.kind === "question" ? prev?.createdAt ?? event.timestamp : event.timestamp,
         origin: "claude-host",
-        ...(interactivePrompt
-          ? { interactivePrompt }
-          : prev?.interactivePrompt
-            ? { interactivePrompt: prev.interactivePrompt }
-            : {}),
+        ...(mergedPrompt ? { interactivePrompt: mergedPrompt } : {}),
         ...(mergedTaskPlan ? { taskPlan: mergedTaskPlan } : {}),
       });
     }

@@ -14,6 +14,7 @@ beforeAll(async () => {
   await build({
     entryPoints: [fileURLToPath(new URL("./history-retention.fixture.mjs", import.meta.url))],
     outfile: entry, bundle: true, platform: "node", format: "esm",
+    alias: { "@bridge/protocol": fileURLToPath(new URL("../../../../packages/protocol/src/index.ts", import.meta.url)) },
     banner: { js: `import { createRequire } from 'node:module'; const require = createRequire(${JSON.stringify(import.meta.url)});` },
   });
 });

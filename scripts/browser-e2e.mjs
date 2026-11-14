@@ -1979,6 +1979,16 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   steps.push("untrusted folders sanitize WorkspaceTrustError into confirmation + saveTrust auto-retry, and degrade to manual desktop guidance + one-click retry when saveTrust is insufficient");
 }
 
+function addScrollProjects(host, count) {
+  const session = host.snapshot.sessions.find(session => session.sessionId === sessionId);
+  while (host.snapshot.projects.length < count) {
+    const index = host.snapshot.projects.length;
+    const projectId = `scroll-project-${index}`;
+    host.snapshot.projects.push({ ...host.snapshot.projects[0], projectId, name: `Scroll project ${index}`, cwd: `/browser-e2e/${projectId}` });
+    host.snapshot.sessions.push({ ...session, sessionId: `scroll-session-${index}`, projectId, projectName: `Scroll project ${index}`, title: `Scroll session ${index}` });
+  }
+}
+
 async function verifyProjectGrouping(page, host, steps, directory) {
   const groups = page.locator(".project-groups > .project-group:not(.archived-group)");
   const headers = groups.locator(".project-group-open strong");
@@ -2094,6 +2104,81 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.equal(await page.evaluate(key => localStorage.getItem(key), orderKey), savedOrder);
 
   steps.push("saved main-project ordering survives search and reload, handle and long-press drag reorder projects cleanly, unrelated projects remain separate, and the 375px layout has no horizontal overflow");
+
+  for (const [count, width] of [[9, 375], [30, 375], [30, 900]]) {
+    addScrollProjects(host, count);
+    await host.send({ kind: "snapshot", snapshot: host.snapshot });
+    await eventually(() => headers.count(), count, "Long project catalog arrives through the encrypted snapshot");
+    await page.setViewportSize({ width, height: 568 });
+    await page.locator(".project-order-bar button").click();
+    await orderSheet.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
+    assert.equal(await orderRowTitles.count(), count);
+    const body = orderSheet.locator(".m-sheet-body");
+    const headerBox = await orderSheet.locator(".m-sheet-header").boundingBox();
+    const footerBox = await orderSheet.locator(".m-sheet-footer").boundingBox();
+    const bodyBox = await body.boundingBox();
+    await page.mouse.move(bodyBox.x + 80, bodyBox.y + bodyBox.height / 2);
+    await page.mouse.wheel(0, 10000);
+    await eventually(() => body.evaluate(el => el.scrollTop === el.scrollHeight - el.clientHeight), true, "Wheel reaches the bottom of the sheet body");
+    const geometry = await orderSheet.evaluate(el => {
+      const body = el.querySelector(".m-sheet-body");
+      const list = el.querySelector(".project-order-list");
+      return { bodyHeight: body.clientHeight, bodyScrollHeight: body.scrollHeight, scrollTop: body.scrollTop,
+        listHeight: list.clientHeight, listScrollHeight: list.scrollHeight,
+        lastBottom: list.lastElementChild.getBoundingClientRect().bottom, bodyBottom: body.getBoundingClientRect().bottom };
+    });
+    await writeFile(resolve(directory, `project-order-${count}-${width}-geometry.json`), JSON.stringify(geometry, null, 2));
+    assert.ok(geometry.lastBottom <= geometry.bodyBottom, `All ${count} projects remain reachable: ${JSON.stringify(geometry)}`);
+    assert.deepEqual(await orderSheet.locator(".m-sheet-header").boundingBox(), headerBox, "Scrolling keeps the title fixed");
+    assert.deepEqual(await orderSheet.locator(".m-sheet-footer").boundingBox(), footerBox, "Scrolling keeps the actions fixed");
+    await page.screenshot({ path: resolve(directory, `project-order-${count}-${width}-scrolled.png`), fullPage: true });
+    if (count === 30 && width === 375) {
+      const touch = await page.context().newCDPSession(page);
+      await touch.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+      await page.evaluate(() => {
+        window.projectOrderTouchMoves = [];
+        document.addEventListener("touchmove", event => window.projectOrderTouchMoves.push(event.defaultPrevented), { passive: true });
+      });
+      await body.evaluate(el => { el.scrollTop = 0; });
+      assert.equal(await orderSheet.locator(".project-order-handle").first().evaluate(el => getComputedStyle(el).touchAction.includes("none")), false, "Idle handles allow native touch scrolling");
+      const swipeX = bodyBox.x + 80;
+      const swipeY = bodyBox.y + bodyBox.height - 24;
+      await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: swipeX, y: swipeY }] });
+      for (let step = 1; step <= 8; step += 1) {
+        await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: swipeX, y: swipeY - step * 20 }] });
+      }
+      await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await eventually(() => body.evaluate(el => el.scrollTop > 80), true, "A real touch swipe scrolls the long list");
+      assert.equal(await orderSheet.locator(".is-dragging").count(), 0, "Swiping cancels the pending long-press");
+      assert.deepEqual(await page.evaluate(() => [...new Set(window.projectOrderTouchMoves)]), [false], "Idle touch moves are never prevented");
+      // Stop inertial scrolling before a separate long-press gesture.
+      await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: swipeX, y: bodyBox.y + 30 }] });
+      await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await body.evaluate(el => { el.scrollTop = 0; });
+      const draggedName = await orderRowTitles.first().innerText();
+      const textBox = await orderSheet.locator(".project-order-row strong").first().boundingBox();
+      await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: textBox.x + 20, y: textBox.y + textBox.height / 2 }] });
+      await orderSheet.locator(".project-order-row.is-dragging").waitFor();
+      await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: swipeX, y: bodyBox.y + bodyBox.height - 5 }] });
+      await eventually(() => orderRowTitles.last().innerText(), draggedName, "Holding at the bottom edge scrolls and drags to the last position");
+      await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: swipeX, y: bodyBox.y + 5 }] });
+      await eventually(() => body.evaluate(el => el.scrollTop), 0, "Holding at the top edge scrolls back to the start");
+      await eventually(() => orderRowTitles.first().innerText(), draggedName, "Top-edge scrolling updates the insertion position without another move");
+      await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      assert.equal(await orderSheet.locator(".is-dragging").count(), 0, "Touch release ends the drag");
+      await page.evaluate(() => { window.projectOrderTouchMoves = []; });
+      await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: swipeX, y: swipeY }] });
+      for (let step = 1; step <= 8; step += 1) {
+        await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: swipeX, y: swipeY - step * 20 }] });
+      }
+      await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await eventually(() => body.evaluate(el => el.scrollTop > 80), true, "Native touch scrolling resumes after the drag");
+      assert.deepEqual(await page.evaluate(() => [...new Set(window.projectOrderTouchMoves)]), [false], "Drag touch blocking is removed on release");
+      await touch.detach();
+    }
+    await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
+  }
+  steps.push("9 projects on a short phone viewport and 30 projects in a centered sheet scroll to the final row with fixed header and footer");
 }
 
 async function verifySectionManage(page, host, steps, directory) {
@@ -2557,6 +2642,7 @@ try {
     const host = await createMockHost(!nativePreview && !remotePreview, false, infrastructureErrors, nativePreview, nativePreview);
     previewHost = host;
     if (projectGroupingPreview) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
+    if (projectGroupingPreview && process.argv.includes("--project-order-scroll-preview")) addScrollProjects(host, 30);
     if (sectionCreatePreview) await syncNativeSections(host);
     if (nativePromptsPreview) await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
     if (nativePreview && !projectGroupingPreview && !sectionCreatePreview && !nativePromptsPreview) {

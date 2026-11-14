@@ -118,6 +118,12 @@ function attachListGeometry(currentTree: ReactElement<Record<string, any>>): voi
         width: 343,
       }),
     })),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    closest: () => ({
+      scrollTop: 0,
+      getBoundingClientRect: () => ({ top: LIST_TOP, bottom: LIST_TOP + ROW_HEIGHT * 3 }),
+    }),
     setPointerCapture: vi.fn((id: number) => { capturedPointers.add(id); }),
     hasPointerCapture: vi.fn((id: number) => capturedPointers.has(id)),
     releasePointerCapture: vi.fn((id: number) => { capturedPointers.delete(id); }),
@@ -164,6 +170,8 @@ describe("ProjectOrderSheet", () => {
     capturedPointers = new Set();
     vibrateMock = vi.fn(() => true);
     vi.stubGlobal("navigator", { vibrate: vibrateMock });
+    vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
     store = { slots: [], index: 0, dirty: false, effects: [], effectIndex: 0, pending: [] };
     props = {
       desktopName: "Studio Mac",

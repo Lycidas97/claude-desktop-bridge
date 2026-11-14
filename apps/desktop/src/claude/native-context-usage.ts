@@ -4,7 +4,7 @@ import { magpieModelIdHash, parseMagpieSyntheticModelId } from "./claude-runtime
 
 export interface NativeContextState {
   totalTokens: number;
-  rawMaxTokens?: number;
+  maxTokensByModel: Map<string, number>;
   model?: string;
   estimated: boolean;
   hydrated: boolean;
@@ -103,6 +103,7 @@ export function projectContextMessages(messages: readonly unknown[]): unknown[] 
 export function createNativeContextState(): NativeContextState {
   return {
     totalTokens: 0,
+    maxTokensByModel: new Map(),
     estimated: true,
     hydrated: false,
     seenAssistantUuids: new Set<string>(),
@@ -137,16 +138,20 @@ export function resolveContextMaxTokens(
   return knownClaudeModelWindow(trimmed);
 }
 
+function contextWindowModel(models: BridgeModelInfo[] | undefined, sessionModel?: string, usageModel?: string): string {
+  const model = sessionModel?.trim();
+  return model && model.toLowerCase() !== "default" ? savedModelOption(models, model)?.value ?? model : usageModel ?? "";
+}
+
 export function projectedContextUsage(
   state: NativeContextState | undefined,
   models: BridgeModelInfo[] | undefined,
   sessionModel?: string,
 ): BridgeSessionContextUsage | undefined {
   if (!state || state.totalTokens <= 0) return undefined;
-  let maxTokens = !state.estimated && state.rawMaxTokens && state.rawMaxTokens > 0
-    ? state.rawMaxTokens
-    : resolveContextMaxTokens(models, sessionModel, state.model);
-  if (state.estimated && maxTokens !== undefined && maxTokens < state.totalTokens) maxTokens = undefined;
+  const observedMaxTokens = state.maxTokensByModel.get(contextWindowModel(models, sessionModel, state.model));
+  let maxTokens = observedMaxTokens ?? resolveContextMaxTokens(models, sessionModel, state.model);
+  if (observedMaxTokens === undefined && state.estimated && maxTokens !== undefined && maxTokens < state.totalTokens) maxTokens = undefined;
   const percentage = maxTokens && maxTokens > 0
     ? Math.min(100, Math.max(0, Math.round((state.totalTokens / maxTokens) * 1000) / 10))
     : undefined;
@@ -176,17 +181,18 @@ export function parseLiveContextUsage(rawValue: unknown): { totalTokens: number;
 export function applyLiveContextUsageState(
   state: NativeContextState,
   live: { totalTokens: number; rawMaxTokens?: number; model?: string },
+  models?: BridgeModelInfo[],
+  sessionModel?: string,
 ): void {
   state.totalTokens = live.totalTokens;
-  if (live.rawMaxTokens) state.rawMaxTokens = live.rawMaxTokens;
-  else delete state.rawMaxTokens;
   if (live.model) state.model = live.model;
+  if (live.rawMaxTokens) state.maxTokensByModel.set(contextWindowModel(models, sessionModel, state.model), live.rawMaxTokens);
   state.estimated = false;
   state.hydrated = true;
   delete state.stream;
 }
 
-export function buildTranscriptContextState(messages: readonly unknown[]): NativeContextState {
+export function buildTranscriptContextState(messages: readonly unknown[], maxTokensByModel = new Map<string, number>()): NativeContextState {
   const scan = scanClaudeContextFromMessages(messages);
   const seenAssistantUuids = new Set<string>();
   const preCompactUuids = new Set<string>();
@@ -205,6 +211,7 @@ export function buildTranscriptContextState(messages: readonly unknown[]): Nativ
   }
   return {
     totalTokens: scan.estimate?.totalTokens ?? 0,
+    maxTokensByModel,
     ...(scan.estimate?.model ? { model: scan.estimate.model } : {}),
     estimated: true,
     hydrated: true,
@@ -233,7 +240,6 @@ export function applyStreamStartContext(
     state.totalTokens = Math.round(input + cacheRead + cacheCreation + output);
     state.estimated = true;
     state.hydrated = true;
-    delete state.rawMaxTokens;
     if (model) state.model = model;
   }
 }
@@ -256,7 +262,6 @@ export function applyStreamDeltaContext(
     state.totalTokens = Math.round(promptTokens + next.output);
     state.estimated = true;
     state.hydrated = true;
-    delete state.rawMaxTokens;
   }
 }
 
@@ -274,7 +279,6 @@ export function applyCompactBoundaryContext(
   state.totalTokens = postTokens > 0 ? Math.round(postTokens) : 0;
   state.estimated = true;
   state.hydrated = true;
-  delete state.rawMaxTokens;
   delete state.stream;
   delete state.lastMessageId;
   delete state.lastMessageUsage;
@@ -312,7 +316,6 @@ export function applyAssistantMessageContext(
   state.totalTokens = Math.round(merged.input + merged.cacheRead + merged.cacheCreation + merged.output);
   state.estimated = true;
   state.hydrated = true;
-  delete state.rawMaxTokens;
   delete state.stream;
   const model = realUsageModel(body.model);
   if (model) state.model = model;
@@ -321,13 +324,15 @@ export function applyAssistantMessageContext(
 export function applyResultModelUsageContext(
   state: NativeContextState | undefined,
   message: Record<string, unknown>,
+  models?: BridgeModelInfo[],
+  sessionModel?: string,
 ): void {
   if (!state || state.totalTokens <= 0) return;
   const modelUsage = record(message.modelUsage ?? message.model_usage);
   const entry = state.model ? record(modelUsage[state.model]) : undefined;
   const contextWindow = nonNegativeTokenCount(entry?.contextWindow ?? entry?.context_window);
-  if (contextWindow >= state.totalTokens) {
-    state.rawMaxTokens = Math.round(contextWindow);
+  if (contextWindow > 0) {
+    state.maxTokensByModel.set(contextWindowModel(models, sessionModel, state.model), Math.round(contextWindow));
     state.estimated = false;
   }
 }

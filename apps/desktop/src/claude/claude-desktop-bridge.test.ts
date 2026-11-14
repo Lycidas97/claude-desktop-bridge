@@ -3345,6 +3345,42 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("retains a gateway window across assistant usage and history reloads, but changes it with the selected model", async () => {
+    const f = await fixture();
+    try {
+      const model = "deepseek/deepseek[1m]";
+      const alias = `mythos-magpie-${magpieModelIdHash("deepseek/deepseek")}[1m]`;
+      await writeFile(f.options.settingsPath, JSON.stringify({ modelPicker: { options: [{ model, label: "DeepSeek" }] } }));
+      f.native.sessions[0]!.model = alias;
+      f.native.contextUsage = { totalTokens: 158_000, rawMaxTokens: 272_000, model: "deepseek" };
+      await f.bridge.configuration("local-native");
+      await f.bridge.history("local-native");
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(272_000);
+
+      const assistant = { type: "assistant", uuid: "next-context", message: { id: "next-context", model: "deepseek", content: "Next turn", usage: { input_tokens: 160_000, output_tokens: 100 } } };
+      await f.message(assistant);
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 160_100, maxTokens: 272_000, estimated: true });
+      await f.message({ type: "result", modelUsage: { deepseek: { contextWindow: 272_000 } } });
+      f.native.contextUsage = null;
+      f.native.page = { messages: [assistant], hasMore: false };
+      await f.bridge.history("local-native");
+      expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 160_100, maxTokens: 272_000 });
+
+      f.native.sessions[0]!.model = "claude-sonnet-4-5";
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(200_000);
+      f.native.contextUsage = { totalTokens: 160_100, rawMaxTokens: 196_000, model: "claude-sonnet-4-5" };
+      await f.bridge.history("local-native");
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(196_000);
+      f.native.contextUsage = null;
+      await f.bridge.configureSession({ sessionId: "local-native", model });
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(272_000);
+      f.native.sessions[0]!.model = "claude-sonnet-4-5";
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(196_000);
+    } finally { await f.close(); }
+  });
+
   it("tracks streaming growth, ignores sidechains, and updates or clears context usage across /compact and rewind", async () => {
     const f = await fixture();
     try {

@@ -333,11 +333,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   private applyLiveContextUsage(sessionId: string, live: { totalTokens: number; rawMaxTokens?: number; model?: string }): void {
-    applyLiveContextUsageState(this.ensureContextState(sessionId), live);
+    applyLiveContextUsageState(this.ensureContextState(sessionId), live, this.models, this.native.get(sessionId)?.model);
   }
 
   private applyTranscriptContextMessages(sessionId: string, messages: readonly unknown[]): void {
-    this.contextStates.set(sessionId, buildTranscriptContextState(messages));
+    this.contextStates.set(sessionId, buildTranscriptContextState(messages, this.contextStates.get(sessionId)?.maxTokensByModel));
   }
 
   private projectSessions(): void {
@@ -842,10 +842,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       }
       await this.inspector.call("setModel", [id, nativeModel]);
       const existing = this.contextStates.get(input.sessionId);
-      if (existing) {
-        delete existing.rawMaxTokens;
-        existing.estimated = true;
-      }
+      if (existing) existing.estimated = true;
     }
     if (input.effort !== undefined) await this.inspector.call("setEffort", [id, input.effort]);
     if (input.permissionMode !== undefined) await this.inspector.call("setPermissionMode", [id, input.permissionMode]);
@@ -1259,7 +1256,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         }
       }
       if (message.type === "result") {
-        applyResultModelUsageContext(this.contextStates.get(sessionId), message);
+        applyResultModelUsageContext(this.contextStates.get(sessionId), message, this.models, this.native.get(sessionId)?.model);
         if (!indexedResult) await this.record({ sessionId, ...(typeof message.uuid === "string" ? { itemId: message.uuid } : {}), origin: "claude-desktop", type: message.is_error === true ? "turn.failed" : "turn.completed", data: { ...(message.is_error === true ? { error: message.result ?? message.errors } : {}) } });
       }
     }

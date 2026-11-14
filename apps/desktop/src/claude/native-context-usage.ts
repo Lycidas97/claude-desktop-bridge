@@ -65,6 +65,41 @@ export function savedModelOption(models: BridgeModelInfo[] | undefined, model: s
   return base ? { ...base, value: `${base.value}[1m]`, displayName: `${base.displayName} · 1M` } : undefined;
 }
 
+// Rebuild nested records: old pages must not keep content or extra Native fields alive.
+export function projectContextMessages(messages: readonly unknown[]): unknown[] {
+  const fields = (value: unknown, names: string[]): Record<string, unknown> | undefined => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+    return Object.fromEntries(names.flatMap(name => {
+      const field = (value as Record<string, unknown>)[name];
+      return ["string", "number", "boolean"].includes(typeof field) ? [[name, field]] : [];
+    }));
+  };
+  const metadata = (value: unknown): Record<string, unknown> | undefined => {
+    const projected = fields(value, ["postTokens", "post_tokens"]);
+    if (!projected) return undefined;
+    for (const name of ["preservedSegment", "preserved_segment"]) {
+      const segment = fields(record(value)[name], ["headUuid", "tailUuid", "head_uuid", "tail_uuid"]);
+      if (segment) projected[name] = segment;
+    }
+    return projected;
+  };
+  return messages.map(raw => {
+    const entry = record(raw);
+    const projected = fields(entry, ["type", "subtype", "uuid", "isSidechain", "parent_tool_use_id", "isSynthetic"])!;
+    const message = fields(entry.message, ["id", "model"]);
+    if (message) {
+      const usage = fields(record(entry.message).usage, ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"]);
+      if (usage) message.usage = usage;
+      projected.message = message;
+    }
+    for (const name of ["compactMetadata", "compact_metadata"]) {
+      const compact = metadata(entry[name]);
+      if (compact) projected[name] = compact;
+    }
+    return projected;
+  });
+}
+
 export function createNativeContextState(): NativeContextState {
   return {
     totalTokens: 0,

@@ -1,3 +1,19 @@
+## 1.3.3
+
+- Release unrelated raw transcript content while reading older native history pages;
+  preserve task plans, pagination and context usage across compact boundaries.
+- Select the parent transcript branch for task summaries without building or
+  caching the complete visible conversation.
+- Record Bridge background-service memory numbers locally at startup, every
+  30 seconds and shutdown. Keep at most seven days and 20,160 rows, with an
+  8 MiB main database ceiling; rollback-journal space is additional. Include the
+  records in Desktop Settings → 导出诊断. Records contain timestamps, uptime,
+  memory counters and schema/app versions, without conversation content or
+  session/device identifiers; nothing is uploaded automatically.
+- The two previously observed out-of-memory crashes remain unattributed. These
+  changes fix the measured history retention paths and add field diagnostics;
+  they do not establish that those crashes are resolved.
+
 ## 1.3.2
 
 - Retire the native iOS app, APNs wakeups, and iOS build/release assets. Keep

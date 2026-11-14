@@ -7,6 +7,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell
 import { connectDesktopService, serveDesktopService } from "./app/service-connection.js";
 import { createServiceRuntime } from "./app/service-runtime.js";
 import { ServiceResources } from "./app/service-resources.js";
+import { MemoryRecorder } from "./app/memory-recorder.js";
 import { claudeDesktopDeveloperSettings } from "./app/claude-desktop-developer-settings.js";
 
 protocol.registerSchemesAsPrivileged([{
@@ -43,6 +44,8 @@ async function serviceMain(): Promise<void> {
   app.setPath("sessionData", join(serviceDirectory, "profile"));
   if (!app.requestSingleInstanceLock()) { app.quit(); return; }
   const resources = new ServiceResources();
+  const memoryRecorder = new MemoryRecorder(join(serviceDirectory, "memory-v1.sqlite"), app.getVersion());
+  resources.defer("Memory recorder", () => memoryRecorder.close());
   let stopping = false;
   let stopped = false;
   let shutdown: Promise<void> | undefined;
@@ -67,6 +70,7 @@ async function serviceMain(): Promise<void> {
   app.enableSandbox();
   startup = (async () => {
     try {
+      memoryRecorder.initialize();
       reportStartup("等待后台应用就绪");
       await app.whenReady();
       app.dock?.hide();
@@ -85,6 +89,7 @@ async function serviceMain(): Promise<void> {
         userDataPath,
         onStage: reportStartup,
         hasConnectedUi: () => uiConnected(),
+        memoryRecorder,
       });
       resources.defer("Service runtime", () => runtime.close());
       if (stopping) return;

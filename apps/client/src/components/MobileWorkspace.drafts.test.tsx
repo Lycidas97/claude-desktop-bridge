@@ -496,7 +496,7 @@ describe("background tasks", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it.each(["completed", "failed", "stopped"] as const)("retains observed %s task state after refresh failure without hiding a new invocation", async state => {
+  it.each(["completed", "failed", "stopped", "unknown"] as const)("retains observed %s task state after refresh failure without hiding a new invocation", async state => {
     vi.useFakeTimers();
     try {
       agents(1);
@@ -512,6 +512,31 @@ describe("background tasks", () => {
       props = { ...props, histories: { ...props.histories, A: { ...props.histories.A!, items: [{ ...item, id: "tool:new-call", subagent: { ...item.subagent!, toolUseId: "new-call" } }] } } };
       draw();
       expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity?.label).toContain("子代理运行中");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["running", "completed"] as const)("keeps a new resumed workflow member active after refresh failure with an old %s member", async state => {
+    vi.useFakeTimers();
+    try {
+      agents(1, () => ({ agentId: "old-member", workflowRunId: "wf_1", startedAt: 100, updatedAt: 180 }));
+      const old = props.histories.A!.items[0]!;
+      delete old.subagent!.toolUseId;
+      const workflow: BridgeBackgroundTask = {
+        ...running, id: "old-launch", kind: "workflow", toolUseId: "old-launch", state: "completed", startedAt: 90, updatedAt: 200,
+        workflow: { runId: "wf_1", phases: [], agents: [{ ...old.subagent!, state, updatedAt: 200 }] },
+      };
+      props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValueOnce([workflow]).mockRejectedValue(new Error("Offline")) };
+      draw(); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toBeUndefined();
+      props = { ...props, histories: { ...props.histories, A: { ...props.histories.A!, items: [old, {
+        ...old, id: "tool:new-member", subagent: { ...old.subagent!, agentId: "new-member", description: "新成员", startedAt: 300, updatedAt: 310 },
+      }] } } };
+      draw();
+      await vi.advanceTimersByTimeAsync(2_000); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toEqual({
+        kind: "running", label: "子代理运行中 · 新成员 (1 步)", since: 300,
+      });
+      expect(props.histories.A!.items.map(item => item.subagent!.state)).toEqual(["running", "running"]);
     } finally { vi.useRealTimers(); }
   });
 

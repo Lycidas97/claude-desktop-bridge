@@ -478,10 +478,13 @@ export function MobileWorkspace({
   const activity = useMemo(() => sessionActivity(
     selectedSession,
     selectedTaskDetails?.error ? items.map(item => {
-      if (item.subagent?.state !== "running") return item;
-      const task = findBackgroundTask(activityTasks, item.subagent);
-      return task && (task.state === "completed" || task.state === "failed" || task.state === "stopped")
-        ? { ...item, subagent: { ...item.subagent, state: task.state } }
+      const subagent = item.subagent;
+      if (subagent?.state !== "running") return item;
+      const task = findBackgroundTask(activityTasks, subagent);
+      // A resumed workflow can add members absent from the cached launch.
+      return task && task.state !== "running"
+        && (!subagent.workflowRunId || task.workflow?.agents.some(agent => agent.agentId === subagent.agentId))
+        ? { ...item, subagent: { ...subagent, state: task.state } }
         : item;
     }) : items,
     selectedTaskDetails?.error ? undefined : activityTasks,

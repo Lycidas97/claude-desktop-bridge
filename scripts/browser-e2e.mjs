@@ -2071,6 +2071,10 @@ async function verifySectionManage(page, host, steps, directory) {
   const groups = page.locator(".project-groups > .project-group:not(.archived-group)");
   const headers = groups.locator(".project-group-open strong");
   const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
+  const folderNames = host.snapshot.projects.filter(project => project.kind !== "desktop-group").map(project => project.name).sort();
+  const { projectId: originalProjectId, projectName: originalProjectName } = host.snapshot.sessions.find(item => item.sessionId === "browser-e2e-misc-sub");
+  assert.ok(folderNames.length > 0, "Section management starts with folder projects");
+  assert.deepEqual((await headers.allTextContents()).sort(), folderNames);
 
   async function createSectionFromDirectory(name) {
     await page.getByRole("button", { name: "目录选项", exact: true }).click();
@@ -2094,18 +2098,17 @@ async function verifySectionManage(page, host, steps, directory) {
 
   // Folder groups do not render custom section management actions; custom sections do.
   assert.equal(await page.getByRole("button", { name: "管理分组：待办分组", exact: true }).count(), 1);
-  assert.equal(await page.getByRole("button", { name: "管理分组：claude-desktop-bridge", exact: true }).count(), 0);
+  for (const name of folderNames) {
+    assert.equal(await page.getByRole("button", { name: `管理分组：${name}`, exact: true }).count(), 0);
+  }
 
   // Toggle "隐藏空分组（2）" and verify persistence + search + auto-reveal on new section creation.
   await page.getByRole("button", { name: "目录选项", exact: true }).click();
   await page.getByRole("button", { name: "隐藏空分组（2）", exact: true }).click();
   await eventually(
-    async () => {
-      const names = await headers.allTextContents();
-      return !names.includes("待办分组") && !names.includes("临时空组") && names.includes("claude-desktop-bridge");
-    },
-    true,
-    "Hiding empty sections removes empty desktop-group headers while preserving folder groups",
+    async () => (await headers.allTextContents()).sort(),
+    folderNames,
+    "Hiding empty sections removes empty desktop-group headers while preserving all folder groups",
   );
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
@@ -2183,7 +2186,9 @@ async function verifySectionManage(page, host, steps, directory) {
     1,
     "Session inside deleted section remains intact and returns to its folder group",
   );
-  assert.equal(host.snapshot.sessions.find(item => item.sessionId === "browser-e2e-misc-sub")?.projectName, "claude-desktop-bridge");
+  const restoredSession = host.snapshot.sessions.find(item => item.sessionId === "browser-e2e-misc-sub");
+  assert.equal(restoredSession.projectId, originalProjectId);
+  assert.equal(restoredSession.projectName, originalProjectName);
   assert.equal(host.requests.some(request => request.method === "section.rename"), true);
   assert.equal(host.requests.filter(request => request.method === "section.delete").length, 2);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Section manage UI fits 375px viewport");

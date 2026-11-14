@@ -19,6 +19,8 @@ import { MessageCopyButton } from "./common/MessageCopyButton.js";
 import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
 import { SessionActivityIndicator } from "./conversation/SessionActivityIndicator.js";
 import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
+import { SessionFamilyList } from "./session/SessionFamilyList.js";
+import { ProjectGroupHeader } from "./session/ProjectGroupHeader.js";
 import { dispatchMobileBack } from "../lib/mobile-back-navigation.js";
 import { SlashCommandInput } from "./conversation/SlashCommandInput.js";
 import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
@@ -86,7 +88,11 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Record<string, any>>;
-  return [element, ...elements(element.props.children)];
+  return [element, ...elements(
+    element.type === SessionFamilyList || element.type === ProjectGroupHeader
+      ? (element.type as (props: any) => ReactNode)(element.props)
+      : element.props.children,
+  )];
 }
 
 let props: ComponentProps<typeof MobileWorkspace>;

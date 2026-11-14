@@ -13,12 +13,10 @@ import {
   Archive,
   ArrowUpDown,
   Check,
-  ChevronDown,
   ChevronRight,
   ChevronsDown,
   ChevronsUp,
   FolderPlus,
-  GitFork,
   LoaderCircle,
   MoreHorizontal,
   Plus,
@@ -27,13 +25,7 @@ import {
 } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
 import type { MobileConnectionIssue } from "../../hooks/useMobileBridge.js";
-import {
-  activeSessionBadgeLabel,
-  forkGroupToggleLabel,
-  mobileConnectionLabel,
-  relativeTime,
-  visibleSessionForks,
-} from "../../lib/conversation-timeline.js";
+import { mobileConnectionLabel } from "../../lib/conversation-timeline.js";
 import {
   PROJECT_PREVIEW_SESSION_LIMIT,
   collapseProjects,
@@ -42,13 +34,14 @@ import {
   groupProjectSessionFamilies,
   previewProjectSessionFamilies,
   sortProjectSessionsByRecent,
-  type SessionFamily,
 } from "../../lib/project-groups.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
-import { backgroundSubagentBadge } from "../../lib/session-activity.js";
+import { EmptyState } from "../common/EmptyState.js";
 import { IconButton } from "../common/IconButton.js";
+import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SectionManageDialog, type SectionManageController } from "../session/SectionManageDialog.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
+import { SessionFamilyList } from "../session/SessionFamilyList.js";
 import { MobilePageHeader } from "./MobilePageHeader.js";
 import { MobileSheet, SheetAction } from "./MobileSheet.js";
 import { ProjectOrderSheet } from "./ProjectOrderSheet.js";
@@ -225,92 +218,6 @@ export function MobileSessionCatalog({
       ? "正在连接"
       : (pendingOutbound > 0 ? `离线 · ${pendingOutbound} 条待发` : "离线");
 
-  function renderMobileSessionFamily(
-    family: SessionFamily<BridgeSessionInfo>,
-    isArchivedList = false,
-    isForkChild = false,
-  ): ReactNode {
-    const { primary: session, forks } = family;
-    const isArchivedRow = isArchivedList || Boolean(session.archivedAt);
-    const pendingPermission = isArchivedRow ? undefined : permissions.find(permission => permission.sessionId === session.sessionId);
-    const turnBadge = isArchivedRow ? "已归档" : pendingPermission ? pendingPermission.toolName === "AskUserQuestion" ? "待回答" : "待授权" : activeSessionBadgeLabel(session);
-    const subagentBadge = isArchivedRow || turnBadge ? undefined : backgroundSubagentBadge(session);
-    const badge = turnBadge ?? subagentBadge?.label;
-    const statusTone = pendingPermission ? "waiting" : subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState;
-    const forksExpanded = expandedForkParents.has(session.sessionId);
-    const badgeLabel = session.sidechat ? "/btw" : (session.forkLabel || "fork");
-    const badgeClassName = `session-fork-badge${session.sidechat ? " is-sidechat" : ""}`;
-    const sessionProject = !isArchivedRow
-      ? snapshot?.projects.find((candidate) => candidate.projectId === session.projectId)
-      : undefined;
-    const sessionFolder = session.cwd.replace(/[\\/]+$/u, "").split(/[\\/]/u).at(-1) || "";
-    const subfolderLabel = sessionProject?.kind === "desktop-group" && sessionFolder && sessionFolder !== sessionProject.name
-      ? sessionFolder
-      : "";
-    return (
-      <div className="mobile-session-family" key={session.sessionId}>
-        <div className={`session-row-v2 ${isForkChild ? "is-fork-child" : ""}`} data-session-id={session.sessionId}>
-          <button
-            type="button"
-            className="session-row-hit"
-            onClick={() => void selectSession(session.sessionId)}
-          >
-            <span className={`session-state-dot ${statusTone}`} />
-            <span className="session-row-copy">
-              <strong>
-                {isForkChild && <em className={badgeClassName}>{badgeLabel}</em>}
-                {session.title}
-                {!isForkChild && session.parentSessionId && (
-                  <em className={badgeClassName}>{badgeLabel}</em>
-                )}
-              </strong>
-              <small>
-                {subfolderLabel ? `${subfolderLabel} · ` : ""}
-                {relativeTime(session.lastActivityAt)}
-                {!isArchivedRow && session.currentSummary ? ` · ${session.currentSummary}` : ""}
-              </small>
-            </span>
-            {badge && (
-              <span className={`session-row-status ${statusTone}`}>
-                {badge}
-              </span>
-            )}
-          </button>
-          <IconButton
-              label="会话操作"
-              className="session-row-action"
-              onClick={() => onOpenSessionActions(session.sessionId)}
-            >
-              <MoreHorizontal size={18} />
-          </IconButton>
-        </div>
-        {(() => {
-          const visibleForks = visibleSessionForks(forks, isArchivedRow);
-          if (visibleForks.length === 0) return null;
-          return (
-            <div className={`mobile-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
-              <button
-                type="button"
-                className="mobile-fork-toggle"
-                aria-expanded={forksExpanded}
-                onClick={() => toggleForkGroup(session.sessionId)}
-              >
-                <GitFork size={12} />
-                <span>{forkGroupToggleLabel(visibleForks)}</span>
-                {forksExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-              </button>
-              {forksExpanded && (
-                <div className="mobile-fork-children">
-                  {visibleForks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
-                </div>
-              )}
-            </div>
-          );
-        })()}
-      </div>
-    );
-  }
-
   return (
     <main className="mobile-workspace host-detail-workspace">
       <MobilePageHeader
@@ -352,13 +259,22 @@ export function MobileSessionCatalog({
             />
           </label>
           {activeGroupFamilies.length === 0 ? (
-            <div className="session-catalog-loading">
-              <strong>{projectSearch ? "没有匹配的会话" : isArchivedGroupPage ? "暂无已归档会话" : "此分组暂无会话"}</strong>
-              <span>{projectSearch ? "换一个关键词试试。" : isArchivedGroupPage ? "归档后的会话会显示在这里，可返回会话目录继续查看。" : "可点击右上角新建会话，或返回查看其它项目。"}</span>
-            </div>
+            <EmptyState
+              title={projectSearch ? "没有匹配的会话" : isArchivedGroupPage ? "暂无已归档会话" : "此分组暂无会话"}
+              description={projectSearch ? "换一个关键词试试。" : isArchivedGroupPage ? "归档后的会话会显示在这里，可返回会话目录继续查看。" : "可点击右上角新建会话，或返回查看其它项目。"}
+            />
           ) : (
             <div className="session-rows project-detail-rows">
-              {activeGroupFamilies.map((family) => renderMobileSessionFamily(family, isArchivedGroupPage))}
+              <SessionFamilyList
+                families={activeGroupFamilies}
+                projects={snapshot?.projects}
+                permissions={permissions}
+                expandedForkParents={expandedForkParents}
+                archivedList={isArchivedGroupPage}
+                onSelectSession={selectSession}
+                onOpenSessionActions={onOpenSessionActions}
+                onToggleForkGroup={toggleForkGroup}
+              />
             </div>
           )}
         </section>
@@ -390,11 +306,11 @@ export function MobileSessionCatalog({
           </button>
         )}
         {!snapshot && connection === "connected" && desktopOnline && (
-          <div className="session-catalog-loading">
-            <LoaderCircle className="is-spinning" size={20} />
-            <strong>正在同步主机状态</strong>
-            <span>已保存的会话会在连接恢复后自动出现。</span>
-          </div>
+          <EmptyState
+            icon={<LoaderCircle className="is-spinning" size={20} />}
+            title="正在同步主机状态"
+            description="已保存的会话会在连接恢复后自动出现。"
+          />
         )}
         {(snapshot ? grouped.length === 0 : connection !== "connected" || !desktopOnline) && (() => {
           const claudeRuntime = snapshot?.runtimes?.find((candidate) => candidate.id === "claude-desktop");
@@ -403,10 +319,7 @@ export function MobileSessionCatalog({
             : snapshot?.runtime.state === "ready" || snapshot?.runtime.state === "working";
           if (search.trim()) {
             return (
-              <div className="session-catalog-loading">
-                <strong>没有匹配的会话</strong>
-                <span>换一个关键词试试。</span>
-              </div>
+              <EmptyState title="没有匹配的会话" description="换一个关键词试试。" />
             );
           }
           if (connection === "connected" && desktopOnline && claudeDesktopReady) {
@@ -414,12 +327,12 @@ export function MobileSessionCatalog({
               ? claudeRuntime?.state === "ready" && claudeRuntime.capabilities.includes("session.create")
               : claudeDesktopReady;
             return (
-              <div className="session-catalog-loading">
-                <strong>{archivedSessions.length > 0 ? "暂无活跃会话" : "暂无会话"}</strong>
-                <span>{archivedSessions.length > 0
+              <EmptyState
+                title={archivedSessions.length > 0 ? "暂无活跃会话" : "暂无会话"}
+                description={archivedSessions.length > 0
                   ? canCreate ? "当前会话均已归档，可开始新对话或查看下方已归档会话。" : "当前会话均已归档，可查看下方已归档会话。"
-                  : canCreate ? "当前电脑上尚未创建会话，可随时开始新的对话。" : "当前电脑上尚未创建会话，请在 Claude Desktop 中创建会话。"}</span>
-                {canCreate && (
+                  : canCreate ? "当前电脑上尚未创建会话，可随时开始新的对话。" : "当前电脑上尚未创建会话，请在 Claude Desktop 中创建会话。"}
+                action={canCreate && (
                   <button
                     type="button"
                     className="primary-button session-catalog-empty-action"
@@ -429,14 +342,33 @@ export function MobileSessionCatalog({
                     新建会话
                   </button>
                 )}
-              </div>
+              />
             );
           }
           if (connection === "connected" && desktopOnline) {
             return (
-              <div className="session-catalog-loading">
-                <strong>未检测到 Claude Desktop</strong>
-                <span>请在电脑端打开 Claude Desktop。启动后 Bridge 将自动建立连接。</span>
+              <EmptyState
+                title="未检测到 Claude Desktop"
+                description="请在电脑端打开 Claude Desktop。启动后 Bridge 将自动建立连接。"
+                action={(
+                  <button
+                    type="button"
+                    className="secondary-button session-catalog-empty-action"
+                    onClick={onInspectConnection ?? onBackToHosts}
+                  >
+                    检查连接
+                  </button>
+                )}
+              />
+            );
+          }
+          const connecting = connection === "connecting" || connection === "reconnecting";
+          return (
+            <EmptyState
+              icon={connecting && <LoaderCircle className="is-spinning" size={20} />}
+              title={connecting ? "正在连接电脑" : connection === "connected" ? "电脑端 Bridge 离线" : "当前未连接电脑"}
+              description={connecting ? "连接恢复后将自动同步会话列表。" : connection === "connected" ? "请确认电脑端 Bridge 正在运行并已连接网络。" : "请检查网络或连接设置，连接恢复后将自动同步。"}
+              action={(
                 <button
                   type="button"
                   className="secondary-button session-catalog-empty-action"
@@ -444,23 +376,8 @@ export function MobileSessionCatalog({
                 >
                   检查连接
                 </button>
-              </div>
-            );
-          }
-          const connecting = connection === "connecting" || connection === "reconnecting";
-          return (
-            <div className="session-catalog-loading">
-              {connecting && <LoaderCircle className="is-spinning" size={20} />}
-              <strong>{connecting ? "正在连接电脑" : connection === "connected" ? "电脑端 Bridge 离线" : "当前未连接电脑"}</strong>
-              <span>{connecting ? "连接恢复后将自动同步会话列表。" : connection === "connected" ? "请确认电脑端 Bridge 正在运行并已连接网络。" : "请检查网络或连接设置，连接恢复后将自动同步。"}</span>
-              <button
-                type="button"
-                className="secondary-button session-catalog-empty-action"
-                onClick={onInspectConnection ?? onBackToHosts}
-              >
-                检查连接
-              </button>
-            </div>
+              )}
+            />
           );
         })()}
         <div className="project-groups">
@@ -475,47 +392,45 @@ export function MobileSessionCatalog({
             );
             return (
               <section className={`project-group ${expanded ? "expanded" : "collapsed"}`} key={projectId}>
-                <div className="project-group-header">
-                  <button
-                    type="button"
-                    className="project-group-open"
-                    aria-expanded={expanded}
-                    aria-controls={sessionsId}
-                    onClick={() => toggleProject(projectId)}
-                  >
-                    <span className="project-group-toggle-copy">
-                      <span>
-                        <strong>{projectName}</strong>
-                        <b className="project-count-pill">{totalCount}</b>
-                      </span>
-                    </span>
-                    <span className="project-group-chevron">
-                      {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                    </span>
-                  </button>
-                  <div className="project-group-actions">
-                    <IconButton
-                      label={`新建会话：${projectName}`}
-                      className="session-row-action"
-                      disabled={!snapshot || connection !== "connected" || !desktopOnline}
-                      onClick={() => openCreateDialogForProject(projectId)}
-                    >
-                      <Plus size={20} />
-                    </IconButton>
-                    {sectionManage.canManage(group.project) && (
+                <ProjectGroupHeader
+                  title={projectName}
+                  count={totalCount}
+                  expanded={expanded}
+                  controlsId={sessionsId}
+                  onToggle={() => toggleProject(projectId)}
+                  actions={(
+                    <>
                       <IconButton
-                        label={`管理分组：${projectName}`}
-                        className="session-row-action section-manage-trigger"
-                        onClick={() => sectionManage.openMenu(group.project!.projectId)}
+                        label={`新建会话：${projectName}`}
+                        className="session-row-action"
+                        disabled={!snapshot || connection !== "connected" || !desktopOnline}
+                        onClick={() => openCreateDialogForProject(projectId)}
                       >
-                        <MoreHorizontal size={18} />
+                        <Plus size={20} />
                       </IconButton>
-                    )}
-                  </div>
-                </div>
+                      {sectionManage.canManage(group.project) && (
+                        <IconButton
+                          label={`管理分组：${projectName}`}
+                          className="session-row-action section-manage-trigger"
+                          onClick={() => sectionManage.openMenu(group.project!.projectId)}
+                        >
+                          <MoreHorizontal size={18} />
+                        </IconButton>
+                      )}
+                    </>
+                  )}
+                />
                 {expanded && (
                   <div className="session-rows" id={sessionsId}>
-                    {preview.map((family) => renderMobileSessionFamily(family, false))}
+                    <SessionFamilyList
+                      families={preview}
+                      projects={snapshot?.projects}
+                      permissions={permissions}
+                      expandedForkParents={expandedForkParents}
+                      onSelectSession={selectSession}
+                      onOpenSessionActions={onOpenSessionActions}
+                      onToggleForkGroup={toggleForkGroup}
+                    />
                     {hiddenCount > 0 && (
                       <button
                         type="button"

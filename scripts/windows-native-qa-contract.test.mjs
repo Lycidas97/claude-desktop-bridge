@@ -769,7 +769,7 @@ test("WSL background runner executes script, propagates fail-fast exit codes, an
   const joinEnd = source.indexOf('Write-Output "=== [WIN] ALL WINDOWS');
   const outerFinallyStart = source.indexOf("} finally {", joinEnd);
   const cleanupStart = source.indexOf("if ($null -ne $wslProc)", outerFinallyStart);
-  const cleanupEnd = source.indexOf("if ($slot -ge 0", cleanupStart);
+  const cleanupEnd = source.indexOf("if (Test-Path -LiteralPath $BundlePath)", cleanupStart);
   assert.ok(
     encodingStart !== -1 && encodingEnd > encodingStart &&
     launchStart !== -1 && launchEnd > launchStart &&

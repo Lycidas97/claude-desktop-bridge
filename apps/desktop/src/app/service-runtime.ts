@@ -109,6 +109,7 @@ export async function createServiceRuntime(options: {
         serviceOrigin: DEFAULT_SERVICE_ORIGIN,
         iceServers: DEFAULT_ICE_SERVERS,
         desktopName: defaultDesktopName(),
+        diagnosticsEnabled: app.getVersion().includes("-"),
       },
       evidenceProtector,
     );

@@ -26,22 +26,24 @@ afterEach(async () => {
 });
 
 describe("desktop configuration", () => {
-  it("defaults new and old profiles to diagnostics on and persists both toggle states without rotating identity", async () => {
+  it.each([false, true])("uses diagnostics default %s for new and old profiles and preserves saved choices", async (defaultEnabled) => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-diag-"));
     directories.push(directory);
     const path = join(directory, "config.json");
-    const defaults = { relayUrl: "ws://127.0.0.1:9/ws", desktopName: "Fixture" };
+    const defaults = { relayUrl: "ws://127.0.0.1:9/ws", desktopName: "Fixture", diagnosticsEnabled: defaultEnabled };
     const repository = new DesktopConfigRepository(path, protector, defaults);
     const created = await repository.loadOrCreate();
-    expect(created.diagnosticsEnabled).toBe(true);
+    expect(created.diagnosticsEnabled).toBe(defaultEnabled);
     const stored = JSON.parse(await readFile(path, "utf8"));
-    expect(stored.diagnosticsEnabled).toBe(true);
+    expect(stored.diagnosticsEnabled).toBe(defaultEnabled);
     delete stored.diagnosticsEnabled;
     await writeFile(path, JSON.stringify(stored));
-    expect((await repository.load())?.diagnosticsEnabled).toBe(true);
+    expect((await repository.load())?.diagnosticsEnabled).toBe(defaultEnabled);
     for (const diagnosticsEnabled of [true, false]) {
       await repository.save({ ...created, diagnosticsEnabled });
-      const restarted = await new DesktopConfigRepository(path, protector, defaults).load();
+      const restarted = await new DesktopConfigRepository(path, protector, {
+        ...defaults, diagnosticsEnabled: !diagnosticsEnabled,
+      }).load();
       expect(restarted).toMatchObject({ diagnosticsEnabled, roomId: created.roomId, hostSecret: created.hostSecret, evidenceKey: created.evidenceKey, pairingEpoch: created.pairingEpoch });
     }
     await writeFile(path, JSON.stringify({ ...stored, diagnosticsEnabled: "false" }));
@@ -508,15 +510,19 @@ describe("desktop configuration", () => {
     }
   });
 
-  it("migrates v2 to pairing schema v4 while preserving host identity and rotating credentials", async () => {
+  it.each([[2, false], [2, true], [3, false], [3, true]] as const)("migrates v%s with diagnostics default %s while preserving host identity and rotating credentials", async (version, diagnosticsEnabled) => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);
     const path = join(directory, "bridge-config.json");
     await writeFile(path, JSON.stringify({
-      version: 2,
+      version,
       protocolVersion: 2,
       roomId: "room-legacy-12345678",
-      relayUrl: "ws://192.168.1.32:8788/ws",
+      ...(version === 2 ? { relayUrl: "ws://192.168.1.32:8788/ws" } : {
+        serviceOrigin: "http://192.168.1.32:8788",
+        relayEndpoints: [{ id: "lan", kind: "lan-relay", url: "ws://192.168.1.32:8788/ws", priority: 20 }],
+        activeEndpoint: "lan",
+      }),
       desktopName: "Test PC",
       hostDeviceId: "desktop-1",
       protectedHostSecret: protector.protect("host-secret"),
@@ -538,6 +544,7 @@ describe("desktop configuration", () => {
       serviceOrigin: "https://bridge.example",
       iceServers: [{ urls: "stun:stun.example:3478" }],
       desktopName: "Test PC",
+      diagnosticsEnabled,
     });
 
     const loaded = await repository.loadOrCreate();
@@ -546,7 +553,7 @@ describe("desktop configuration", () => {
       protocolVersion: 3,
       pairingEpoch: 1,
       hostDeviceId: "desktop-1",
-      diagnosticsEnabled: true,
+      diagnosticsEnabled,
       relayUrl: "wss://bridge.example/ws",
       activeEndpoint: "public",
       serviceOrigin: "https://bridge.example",
@@ -565,6 +572,7 @@ describe("desktop configuration", () => {
     const persisted = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
     expect(persisted.version).toBe(4);
     expect(persisted.protocolVersion).toBe(3);
+    expect(persisted.diagnosticsEnabled).toBe(diagnosticsEnabled);
     expect(persisted).not.toHaveProperty("relayUrl");
     expect(JSON.stringify(persisted)).not.toContain("host-secret");
     expect(JSON.stringify(persisted)).not.toContain("phone-secret");

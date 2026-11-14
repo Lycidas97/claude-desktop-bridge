@@ -180,6 +180,7 @@ export interface DesktopConfigDefaults {
   serviceOrigin?: string;
   iceServers?: BridgeIceServer[];
   desktopName: string;
+  diagnosticsEnabled?: boolean;
 }
 
 export function bridgeLocalToken(hostSecret: string): string {
@@ -519,7 +520,7 @@ export class DesktopConfigRepository {
         evidenceKey: randomBytes(32).toString("base64url"),
         createdAt: config.createdAt,
         launchAtLogin: config.launchAtLogin,
-        diagnosticsEnabled: true,
+        diagnosticsEnabled: this.defaults.diagnosticsEnabled ?? false,
         managedDesktopEnabled: false,
         defaultPermissionMode: "standard",
         runtimePermissionModes: {},
@@ -548,7 +549,7 @@ export class DesktopConfigRepository {
         : randomBytes(32).toString("base64url"),
       createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
-      diagnosticsEnabled: config.diagnosticsEnabled ?? true,
+      diagnosticsEnabled: config.diagnosticsEnabled ?? this.defaults.diagnosticsEnabled ?? false,
       // The unsupported managed Desktop experiment remains disabled during upgrade.
       managedDesktopEnabled: false,
       defaultPermissionMode: config.defaultPermissionMode ?? "standard",
@@ -605,7 +606,7 @@ export class DesktopConfigRepository {
       evidenceKey: randomBytes(32).toString("base64url"),
       createdAt: Date.now(),
       launchAtLogin,
-      diagnosticsEnabled: true,
+      diagnosticsEnabled: this.defaults.diagnosticsEnabled ?? false,
       managedDesktopEnabled: false,
       defaultPermissionMode: "standard",
       runtimePermissionModes: {},

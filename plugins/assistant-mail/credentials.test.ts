@@ -7,16 +7,17 @@ const mocked = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: mocked.spawn }));
 let code: number;
 let output: string;
+let errorOutput: string;
 let input: string;
 
 beforeEach(() => {
-  code = 0; output = ""; input = "";
+  code = 0; output = ""; errorOutput = "raw Keychain diagnostics must stay private"; input = "";
   mocked.spawn.mockReset().mockImplementation(() => {
     const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
     child.stdin.on("data", chunk => { input += String(chunk); });
     child.stdin.on("finish", () => {
       child.stdout.end(output);
-      child.stderr.end("raw Keychain diagnostics must stay private");
+      child.stderr.end(errorOutput);
       child.emit("close", code);
     });
     return child;
@@ -32,10 +33,17 @@ it("writes the exact UTF-8 password through stdin hex without putting secrets in
   expect(JSON.stringify(mocked.spawn.mock.calls)).not.toContain(password);
 });
 
-it("reads a captured password and removes only the command's final newline", async () => {
-  output = "secret\n\n";
-  expect(await new KeychainMailCredentials("darwin").get("a".repeat(64))).toBe("secret\n");
-  expect(mocked.spawn.mock.calls[0]?.[1]).toEqual(["find-generic-password", "-s", "Claude Desktop Bridge assistant-mail", "-a", "a".repeat(64), "-w"]);
+it.each([
+  ["password\n", 'password: 0x70617373776F72640A "password\\012"\n'],
+  ["中文密码", "password: 0xE4B8ADE69687E5AF86E7A081\n"],
+  ["deadbeef", 'password: "deadbeef"\n'],
+  ['quote"in password', 'password: "quote"in password"\n'],
+  ["slash\\in password", 'password: 0x736C6173685C696E2070617373776F7264 "slash\\134in password"\n'],
+])("reads marked Keychain output without confusing hex-looking plaintext: %j", async (password, markedOutput) => {
+  output = "keychain item attributes\n";
+  errorOutput = markedOutput;
+  expect(await new KeychainMailCredentials("darwin").get("a".repeat(64))).toBe(password);
+  expect(mocked.spawn.mock.calls[0]?.[1]).toEqual(["find-generic-password", "-s", "Claude Desktop Bridge assistant-mail", "-a", "a".repeat(64), "-g"]);
 });
 
 it("distinguishes a missing item from an unavailable Keychain without exposing subprocess output", async () => {

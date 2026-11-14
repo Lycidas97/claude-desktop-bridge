@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ImapFlow, type ImapFlowOptions } from "imapflow";
+import { hasCapability } from "imapflow/lib/tools.js";
 import { KeychainMailCredentials, type MailCredentials } from "./credentials.js";
 import { AssistantMailStore, type AssistantBinding } from "./store.js";
 
@@ -74,8 +75,8 @@ export class AssistantMailService extends EventEmitter {
     if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
     const account = parseAccount({ host: input.host, port: input.port ?? 993, user: input.user });
     if (typeof input.password !== "string" || !input.password) throw new Error("Invalid IMAP password");
-    await this.stop();
     await this.credentials.set(this.accountKey(account), input.password);
+    await this.stop();
     this.account = { ...account, enabled: true };
     await this.saveAccount();
     this.start();
@@ -112,8 +113,7 @@ export class AssistantMailService extends EventEmitter {
   private start(): void {
     if (!this.credentials.supported) { this.setState("unsupported", "mail_credentials_unsupported"); return; }
     this.stopped = false;
-    this.receiver = this.receive(this.account!);
-    void this.receiver.catch(error => this.emit("error", error));
+    this.receiver = this.receive(this.account!).catch(error => { this.emit("error", error); });
   }
 
   private async receive(account: SavedAccount): Promise<void> {
@@ -138,7 +138,7 @@ export class AssistantMailService extends EventEmitter {
       try {
         await client.connect();
         if (this.stopped) break;
-        if (!client.capabilities.has("IDLE")) { this.setState("unsupported", "mail_idle_unsupported"); return; }
+        if (!hasCapability(client, "IDLE")) { this.setState("unsupported", "mail_idle_unsupported"); return; }
         const mailbox = await client.mailboxOpen("INBOX", { readOnly: true });
         const uidValidity = mailbox.uidValidity.toString();
         storageFailure = true;
@@ -147,9 +147,14 @@ export class AssistantMailService extends EventEmitter {
         this.setState("connected");
         while (!this.stopped && !ended) {
           changed = false;
-          // UID ranges ending in '*' can include the last old UID; never ingest it as new.
-          for await (const message of client.fetch(`${lastUid + 1}:*`, { uid: true, envelope: true, internalDate: true, source: true }, { uid: true })) {
-            if (message.uid <= lastUid) continue;
+          // FETCH responses may arrive out of UID order. Enumerate IDs first so each commit covers every earlier new UID.
+          const uids: number[] = [];
+          for await (const message of client.fetch(`${lastUid + 1}:*`, { uid: true }, { uid: true })) uids.push(message.uid);
+          for (const uid of uids.sort((left, right) => left - right)) {
+            // UID ranges ending in '*' can include the last old UID when there is no new mail.
+            if (uid <= lastUid) continue;
+            const message = await client.fetchOne(String(uid), { uid: true, envelope: true, internalDate: true, source: true }, { uid: true });
+            if (!message) continue; // The server may have expunged it since enumeration.
             if (!message.source) throw new Error("IMAP source unavailable");
             storageFailure = true;
             const event = await this.store.record({

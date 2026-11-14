@@ -9,6 +9,8 @@ import { AssistantMailStore } from "./store.js";
 
 class Inbox extends EventEmitter {
   capabilities = new Map([["IDLE", true]]);
+  enabled = new Set<string>();
+  fetchOne = vi.fn(async (uid: string) => this.messages.find(message => message.uid === Number(uid)) ?? false);
   uidValidity = 1n;
   uidNext = 5;
   messages: FetchMessageObject[] = [];
@@ -56,11 +58,14 @@ afterEach(async () => {
 
 async function createService(inboxes: Inbox[] = [new Inbox()], supported = true) {
   const createClient = vi.fn(() => inboxes.shift()! as unknown as ImapFlow);
-  const service = new AssistantMailService({ userDataPath: root, createClient,
-    credentials: { supported, get: async key => secrets.get(key), set: async (key, password) => { secrets.set(key, password); } } });
+  const credentials = { supported,
+    get: vi.fn(async (key: string) => secrets.get(key)),
+    set: vi.fn(async (key: string, password: string) => { secrets.set(key, password); }),
+  };
+  const service = new AssistantMailService({ userDataPath: root, createClient, credentials });
   services.push(service);
   await service.initialize();
-  return { service, createClient };
+  return { service, createClient, credentials };
 }
 
 it("keeps one background receiver independent of readers, skips old tail UIDs and persists new mail", async () => {
@@ -84,6 +89,64 @@ it("keeps one background receiver independent of readers, skips old tail UIDs an
   const config = await readFile(join(root, "private", "assistant", "account.json"), "utf8");
   expect(config).not.toContain(account.password);
   if (process.platform !== "win32") expect((await stat(join(root, "private", "assistant", "account.json"))).mode & 0o777).toBe(0o600);
+});
+
+it("persists all new UIDs even when FETCH responses arrive out of order", async () => {
+  const inbox = new Inbox();
+  const { service } = await createService([inbox]);
+  await service.enable(account);
+  await vi.waitFor(() => expect(inbox.idle).toHaveBeenCalledOnce());
+  inbox.deliver(6); inbox.deliver(5);
+  await vi.waitFor(() => expect(inbox.idle).toHaveBeenCalledTimes(2));
+  expect(service.page().events.map(event => event.uid)).toEqual([6, 5]);
+});
+
+it("does not advance past an uncommitted lower UID when unordered mail encounters a write failure", async () => {
+  const inbox = new Inbox();
+  const recovered = new Inbox();
+  const { service } = await createService([inbox, recovered]);
+  const onError = vi.fn();
+  service.on("error", onError);
+  await service.enable(account);
+  await vi.waitFor(() => expect(inbox.idle).toHaveBeenCalledOnce());
+  const record = AssistantMailStore.prototype.record;
+  vi.spyOn(AssistantMailStore.prototype, "record").mockImplementation(async function (this: AssistantMailStore, message) {
+    if (message.uid === 6) throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    return record.call(this, message);
+  });
+  inbox.deliver(6); inbox.deliver(5);
+  await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+  expect(service.page().events.map(event => event.uid)).toEqual([5]);
+  vi.restoreAllMocks();
+  await service.disable();
+  recovered.deliver(6); recovered.deliver(5);
+  await service.enable(account);
+  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([6, 5]));
+  expect(recovered.scans[0]).toBe("6:*");
+});
+
+it("keeps the healthy receiver running when new credentials cannot be saved", async () => {
+  const inbox = new Inbox();
+  const { service, credentials, createClient } = await createService([inbox]);
+  await service.enable(account);
+  await vi.waitFor(() => expect(inbox.idle).toHaveBeenCalledOnce());
+  credentials.set.mockRejectedValueOnce(new Error("mail_credentials_unavailable"));
+  await expect(service.enable({ ...account, password: "replacement" })).rejects.toThrow("mail_credentials_unavailable");
+  expect(inbox.close).not.toHaveBeenCalled();
+  expect(service.status().state).toBe("connected");
+  inbox.deliver(5);
+  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([5]));
+  expect(createClient).toHaveBeenCalledOnce();
+});
+
+it.each([false, true])("accepts active IMAP4rev2 semantics with dual revision advertisement=%s", async dualRevision => {
+  const inbox = new Inbox();
+  inbox.capabilities = new Map([["IMAP4rev2", true]]);
+  if (dualRevision) { inbox.capabilities.set("IMAP4rev1", true); inbox.enabled.add("IMAP4REV2"); }
+  const { service } = await createService([inbox]);
+  await service.enable(account);
+  await vi.waitFor(() => expect(service.status().state).toBe("connected"));
+  expect(inbox.mailboxOpen).toHaveBeenCalledOnce();
 });
 
 it("retains an EXISTS notification arriving during a fetch without launching parallel scans", async () => {
@@ -162,9 +225,10 @@ it("stops when an advertised IDLE command is refused", async () => {
   expect(inbox.idle).toHaveBeenCalledOnce();
 });
 
-it("exposes a storage failure and pauses reception without advancing or retrying", async () => {
+it("reports a storage failure once and allows explicit disable and re-enable after storage recovers", async () => {
   const inbox = new Inbox();
-  const { service, createClient } = await createService([inbox]);
+  const recovered = new Inbox();
+  const { service, createClient } = await createService([inbox, recovered]);
   const failure = Object.assign(new Error("disk full"), { code: "ENOSPC" });
   const onError = vi.fn();
   service.on("error", onError);
@@ -176,8 +240,14 @@ it("exposes a storage failure and pauses reception without advancing or retrying
   expect(service.status()).toMatchObject({ state: "error", errorCode: "mail_storage_failed" });
   expect(service.page().events).toEqual([]);
   expect(createClient).toHaveBeenCalledOnce();
-  await expect(service.close()).rejects.toThrow("disk full");
-  services.splice(services.indexOf(service), 1);
+  await expect(service.disable()).resolves.toBeUndefined();
+  expect(service.status().state).toBe("disabled");
+  await service.enable(account);
+  await vi.waitFor(() => expect(recovered.idle).toHaveBeenCalledOnce());
+  recovered.deliver(5);
+  await vi.waitFor(() => expect(service.page().events.map(event => event.uid)).toEqual([5]));
+  expect(createClient).toHaveBeenCalledTimes(2);
+  expect(onError).toHaveBeenCalledOnce();
 });
 
 it("shows fixed connection errors without exposing server diagnostics or credentials", async () => {

@@ -177,7 +177,7 @@ Invoke-Checked "npm test (Windows)" { & "$nodeBin\npm.cmd" test }
 # 5. Boot headless WHPX Android Emulator in background while shared prerequisites, NSIS, and Gradle APK build run
 $adb = "$sdkRoot\platform-tools\adb.exe"
 $emulatorExe = "$sdkRoot\emulator\emulator.exe"
-$startedEmulator = $false
+$emulatorProcess = $null
 # OpenSSH kills every process in a session's job when the session ends, so an adb server spawned by one
 # slot would take down the adb forwards of the other slots. Start the shared server through WMI instead.
 $adbServer = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$adb`" start-server" }
@@ -196,10 +196,9 @@ if (-not (Test-Path $avdIni)) {
 $onlineEmulator = (& $adb devices) | Select-String -Pattern "^$env:ANDROID_SERIAL\s+device$"
 if (-not $onlineEmulator) {
   Write-Output ">>> [WIN] Starting headless WHPX AVD $avdName on $env:ANDROID_SERIAL in background"
-  Start-Process -FilePath $emulatorExe `
+  $emulatorProcess = Start-Process -FilePath $emulatorExe `
     -ArgumentList @("-avd", $avdName, "-port", "$emulatorPort", "-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot-save", "-gpu", "swiftshader_indirect") `
-    -WindowStyle Hidden | Out-Null
-  $startedEmulator = $true
+    -WindowStyle Hidden -PassThru
 }
 
 try {
@@ -344,8 +343,10 @@ try {
       $nsisProc.Dispose()
     }
   }
-  if ($startedEmulator) {
+  if ($null -ne $emulatorProcess) {
     & cmd.exe /c "`"$adb`" emu kill >nul 2>nul"
+    $emulatorProcess.WaitForExit()
+    $emulatorProcess.Dispose()
   }
 }
 

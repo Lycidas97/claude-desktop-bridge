@@ -71,9 +71,10 @@ Every status change is an explicit `SendMessage`:
 ## Dispatch (owner's turn)
 
 1. For each Issue, list the files it should touch, pick its tier, and set a merge order for overlapping Issues. CI and tooling PRs never gate feature PRs.
-2. Start the reviewers (`use_worktree: false`, **Reviewer brief**), then switch them to Sol. Their brief idles until `READY`.
-3. Start each fork with only `Reply "waiting" until the task message arrives.` (`use_worktree: true`), switch it to Sol, then `SendMessage` it the **Fork brief**. A brief passed to `start_session` would run its whole first turn on the patrol's model.
-4. Start the patrol checklist.
+2. Start the reviewers (`use_worktree: false`, **Reviewer brief**). Their brief idles until `READY`.
+3. Start each fork with only `Reply "waiting" until the task message arrives.` (`use_worktree: true`). A brief passed to `start_session` would run its whole first turn on the patrol's model.
+4. **Switch and confirm the model** of every session from steps 2–3, and of any session started later (Astra, a sync fork): `set_session_model` with the id from `node scripts/picker-id.mjs "<label>"`, then `get_session` and check that `model` equals that id. Only then send the **Fork brief** or `READY`. Never pass `model` to `start_session`: it is silently ignored for a model pricier than or outside the patrol's family, and the session inherits `bridge-runner`.
+5. Start the patrol checklist.
 
 ## Implement (fork)
 
@@ -124,7 +125,7 @@ and send `MERGED`.
 
 ## Patrol checklist
 
-During a round, run `/loop 20m` read-only. It reports linked sessions that are stopped, errored, or out of quota (`list_sessions {"linked": true}`, `list_events`), and the round's PRs with no activity for 60 minutes. It stays silent when nothing is wrong. It never starts sessions, switches models, or merges.
+During a round, run `/loop 20m` read-only. It reports linked sessions that are stopped, errored, out of quota, or whose `get_session` `model` does not match their role in **Models** (`list_sessions {"linked": true}`, `list_events`), and the round's PRs with no activity for 60 minutes. It stays silent when nothing is wrong. It never starts sessions, switches models, or merges.
 
 ## Briefs
 

@@ -432,7 +432,6 @@ process.stdout.write('{"state":"success"}\\n');
     for (const partial of [
       { skipWin: true },
       { skipMac: true },
-      { skipWslLinux: true },
       { allowDirty: true },
     ]) {
       const skipped = await recordAndPublishLocalCi({
@@ -469,6 +468,8 @@ process.stdout.write('{"state":"success"}\\n');
       env: { ...baseEnv, MOCK_GH_MODE: '422' },
     });
     assert.deepEqual(deferred, { qualified: true, published: false, deferred: true });
+    const deferredCalls = (await readFile(ghLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(deferredCalls[0].includes(`description=Mac + Win11 + Android16 verified (${prSha.slice(0, 12)})`));
 
     // 4. Subsequent --publish CLI call publishes exact SHA status without re-running suites
     await writeFile(ghLog, '');
@@ -483,6 +484,7 @@ process.stdout.write('{"state":"success"}\\n');
     assert.equal(calls1.length, 1);
     assert.equal(calls1[0][1], `repos/Lycidas97/claude-desktop-bridge/statuses/${prSha}`);
     assert.ok(calls1[0].includes(`context=${LOCAL_CI_STATUS_CONTEXT}`));
+    assert.ok(calls1[0].includes(`description=Mac + Win11 + Android16 verified (${prSha.slice(0, 12)})`));
 
     // 5. Squash-merged commit with byte-identical HEAD^{tree} promotes verified receipt
     runGit('checkout', '--orphan', 'main');
@@ -501,7 +503,8 @@ process.stdout.write('{"state":"success"}\\n');
     const calls2 = (await readFile(ghLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.equal(calls2[0][1], `repos/Lycidas97/claude-desktop-bridge/statuses/${mainSha}`);
     const descArg = calls2[0].find(arg => arg.startsWith('description='));
-    assert.ok(descArg && descArg.slice('description='.length).length <= 140);
+    assert.equal(descArg, `description=Mac + Win11 + Android16 verified (tree ${prTree.slice(0, 10)} from ${prSha.slice(0, 10)})`);
+    assert.ok(descArg.slice('description='.length).length <= 140);
 
     // 6. Unverified modified tree is rejected with zero gh calls
     await writeFile(join(repoDir, 'file.txt'), 'v2-unverified\n');
@@ -672,7 +675,6 @@ test('browser E2E binds an ephemeral kernel port via httpServer.listen and local
   assert.match(winCiSource, /"HEAD:refs\/ci\/slot-\$slot"/u);
   assert.match(winCiSource, /"-avd", \$avdName, "-port", "\$emulatorPort"/u);
   assert.match(winCiSource, /\$env:ANDROID_SERIAL = "emulator-\$emulatorPort"/u);
-  assert.match(winCiSource, /CI_DIR="\/var\/tmp\/bridge-linux-ci-slot-\$slot"/u);
   assert.match(winCiSource, /\$recycleStaging = Join-Path \$tempDir "qa-staging"/u);
   assert.match(winCiSource, /if \(\$ownsTempRoot\) \{[\s\S]*?Remove-Item -LiteralPath \$tempDir -Recurse -Force/u);
   assert.doesNotMatch(winCiSource, /bridge-recycle\.exe" \$recycleStaging/u);
@@ -831,7 +833,7 @@ test('ci-run browser:nobuild invokes browser-e2e.mjs with recycle preload withou
   }
 });
 
-test('win-local-ci builds shared client once, overlaps make:windows:from-client with Android APK, and guards WSL2 setsid pipe-EOF before bundle recycle', async () => {
+test('win-local-ci builds shared client once, overlaps make:windows:from-client with Android APK, and recycles its bundle after QA', async () => {
   const desktopPkg = JSON.parse(await readFile(new URL('../apps/desktop/package.json', import.meta.url), 'utf8'));
   assert.equal(desktopPkg.scripts['make:windows:from-client'], 'npm run build:bundle && node scripts/make-windows.mjs');
 
@@ -840,18 +842,16 @@ test('win-local-ci builds shared client once, overlaps make:windows:from-client 
   const nsisParallelIdx = winCi.indexOf('make:windows:from-client -w @bridge/desktop');
   const androidSyncIdx = winCi.indexOf('sync:from-client -w @bridge/mobile');
   const nsisWaitIdx = winCi.indexOf('$nsisProc.WaitForExit()');
-  const wslWaitIdx = winCi.indexOf('$wslProc.WaitForExit()');
+  const packagedQaIdx = winCi.indexOf('run test:desktop:packaged:windows');
   const recycleBundleIdx = winCi.indexOf('Clean uploaded git bundle');
 
   assert.ok(clientBuildIdx !== -1 && nsisParallelIdx > clientBuildIdx && androidSyncIdx > nsisParallelIdx && nsisWaitIdx > androidSyncIdx, 'shared client build precedes parallel make:windows:from-client and Android sync/Gradle');
-  assert.ok(wslWaitIdx > nsisWaitIdx, 'WSL2 is joined after Windows + Android QA steps');
-  assert.match(winCi, /RedirectStandardInput\s*=\s*\$true/u);
-  assert.match(winCi, /exec 3<&0 <\/dev\/null;[\s\S]*?cat <&3[\s\S]*?kill -TERM 0/u);
   // Keep --no-daemon for now: shared Gradle daemon lifecycle across concurrent ssh win slots is deferred (not yet empirically verified).
   assert.match(winCi, /gradlew\.bat"\s+assembleDebug\s+--no-daemon/u);
-  const outerFinally = winCi.slice(winCi.indexOf('=== [WIN] ALL WINDOWS'));
-  assert.ok(outerFinally.indexOf('StandardInput.Close()') !== -1 && outerFinally.indexOf('StandardInput.Close()') < outerFinally.indexOf('Clean uploaded git bundle'), 'WSL2 stdin pipe closes in outer finally before recycling BundlePath');
-  assert.ok(recycleBundleIdx > wslWaitIdx);
+  assert.ok(packagedQaIdx > nsisWaitIdx && recycleBundleIdx > packagedQaIdx);
+  assert.doesNotMatch(winCi, /wsl|linux/iu);
+  const localCi = await readFile(new URL('./local-ci.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(localCi, /wsl|skip-linux/iu);
 });
 
 test('relay-contract-probe preserves subpath prefix for /health and build/env defaults use BIS + Cloudflare STUN', async () => {

@@ -83,13 +83,12 @@ export async function recordAndPublishLocalCi({
   allowDirty = false,
   skipMac = false,
   skipWin = false,
-  skipWslLinux = false,
   noPublish = false,
   repo = process.env.BRIDGE_GITHUB_STATUS_REPO ?? DEFAULT_STATUS_REPO,
   env = process.env,
 }) {
   validateStatusRepo(repo);
-  if (allowDirty || skipMac || skipWin || skipWslLinux || !/^[0-9a-f]{40}$/u.test(revision)) {
+  if (allowDirty || skipMac || skipWin || !/^[0-9a-f]{40}$/u.test(revision)) {
     return { qualified: false, published: false, deferred: false };
   }
   const receipts = receiptDirFor(cwd);
@@ -111,7 +110,7 @@ export async function recordAndPublishLocalCi({
   if (noPublish) {
     return { qualified: true, published: false, deferred: false };
   }
-  const description = `Mac + Win11 + Android16 + WSL2 Ubuntu24 verified (${revision.slice(0, 12)})`;
+  const description = `Mac + Win11 + Android16 verified (${revision.slice(0, 12)})`;
   const outcome = postCommitStatus({ repo, revision, description, cwd, env, allowUnpushed: true });
   return { qualified: true, ...outcome };
 }
@@ -148,8 +147,8 @@ export async function publishVerifiedHead({
     throw new Error(`No verified local CI receipt found for commit ${revision} (or tree ${tree}). Run npm run ci:local first.`);
   }
   const description = viaTree
-    ? `Mac + Win11 + Android16 + WSL2 verified (tree ${tree.slice(0, 10)} from ${receipt.revision.slice(0, 10)})`
-    : `Mac + Win11 + Android16 + WSL2 Ubuntu24 verified (${revision.slice(0, 12)})`;
+    ? `Mac + Win11 + Android16 verified (tree ${tree.slice(0, 10)} from ${receipt.revision.slice(0, 10)})`
+    : `Mac + Win11 + Android16 verified (${revision.slice(0, 12)})`;
   postCommitStatus({ repo, revision, description, cwd: topLevel, env, allowUnpushed: false });
   return { revision, tree, viaTree, sourceRevision: receipt.revision };
 }
@@ -160,7 +159,6 @@ async function runCli() {
   const noPublish = args.has("--no-publish");
   const skipMac = args.has("--skip-mac");
   const skipWin = args.has("--skip-win");
-  const skipWslLinux = args.has("--skip-linux");
   const allowDirty = args.has("--allow-dirty");
   const winHost = process.env.BRIDGE_WIN_SSH_HOST ?? "win";
   const statusRepo = validateStatusRepo(process.env.BRIDGE_GITHUB_STATUS_REPO ?? DEFAULT_STATUS_REPO);
@@ -281,12 +279,12 @@ async function runCli() {
         const psArgs = [
           ...sshAlive,
           winHost,
-          `$ErrorActionPreference = 'Stop'; $env:BRIDGE_TEST_TEMP_ROOT = "${remoteTempWin}"; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE } finally { Remove-Item -LiteralPath "${remoteTempWin}" -Recurse -Force }; exit $ec`,
+          `$ErrorActionPreference = 'Stop'; $env:BRIDGE_TEST_TEMP_ROOT = "${remoteTempWin}"; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"; $ec = $LASTEXITCODE } finally { Remove-Item -LiteralPath "${remoteTempWin}" -Recurse -Force }; exit $ec`,
         ];
         const tWin = await runPrefixed("WIN", "ssh", psArgs);
         unfinishedWinRunId = null;
         results.push(
-          `Windows 11 + Android API 36 WHPX Emulator${skipWslLinux ? "" : " + WSL2 Ubuntu-24.04 Linux tests"} (${tWin}s)`,
+          `Windows 11 + Android API 36 WHPX Emulator (${tWin}s)`,
         );
       })());
     }
@@ -319,7 +317,6 @@ async function runCli() {
     allowDirty,
     skipMac,
     skipWin,
-    skipWslLinux,
     noPublish,
     repo: statusRepo,
   });

@@ -1,7 +1,6 @@
 param(
   [Parameter(Mandatory = $true)][string]$Revision,
-  [Parameter(Mandatory = $true)][string]$BundlePath,
-  [switch]$SkipWslLinux
+  [Parameter(Mandatory = $true)][string]$BundlePath
 )
 
 $ErrorActionPreference = "Stop"
@@ -88,12 +87,9 @@ function Invoke-Checked {
   Write-Output ("<<< [WIN] $Label OK ({0:N1}s)" -f $sw.Elapsed.TotalSeconds)
 }
 
-$wslProc = $null
-$wslOutTask = $null
-$wslErrTask = $null
 $nsisProc = $null
 
-# Up to 4 concurrent ci:local runs; each slot owns its worktree + bundle ref, AVD + ADB port, and WSL2 checkout
+# Up to 4 concurrent ci:local runs; each slot owns its worktree + bundle ref and AVD + ADB port
 $slotCount = 4
 $slotMutexes = @(0..($slotCount - 1) | ForEach-Object { [System.Threading.Mutex]::new($false, "Local\ClaudeDesktopBridgeWinCi-$_") })
 $slot = -1
@@ -181,7 +177,7 @@ Invoke-Checked "npm test (Windows)" { & "$nodeBin\npm.cmd" test }
 # 5. Boot headless WHPX Android Emulator in background while shared prerequisites, NSIS, and Gradle APK build run
 $adb = "$sdkRoot\platform-tools\adb.exe"
 $emulatorExe = "$sdkRoot\emulator\emulator.exe"
-$startedEmulator = $false
+$emulatorProcess = $null
 # OpenSSH kills every process in a session's job when the session ends, so an adb server spawned by one
 # slot would take down the adb forwards of the other slots. Start the shared server through WMI instead.
 $adbServer = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$adb`" start-server" }
@@ -200,10 +196,9 @@ if (-not (Test-Path $avdIni)) {
 $onlineEmulator = (& $adb devices) | Select-String -Pattern "^$env:ANDROID_SERIAL\s+device$"
 if (-not $onlineEmulator) {
   Write-Output ">>> [WIN] Starting headless WHPX AVD $avdName on $env:ANDROID_SERIAL in background"
-  Start-Process -FilePath $emulatorExe `
+  $emulatorProcess = Start-Process -FilePath $emulatorExe `
     -ArgumentList @("-avd", $avdName, "-port", "$emulatorPort", "-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot-save", "-gpu", "swiftshader_indirect") `
-    -WindowStyle Hidden | Out-Null
-  $startedEmulator = $true
+    -WindowStyle Hidden -PassThru
 }
 
 try {
@@ -348,86 +343,16 @@ try {
       $nsisProc.Dispose()
     }
   }
-  if ($startedEmulator) {
+  if ($null -ne $emulatorProcess) {
     & cmd.exe /c "`"$adb`" emu kill >nul 2>nul"
+    $emulatorProcess.WaitForExit()
+    $emulatorProcess.Dispose()
   }
 }
 
-if (-not $SkipWslLinux) {
-  $wslBundlePath = "/mnt/" + $BundlePath.Substring(0, 1).ToLowerInvariant() + $BundlePath.Substring(2).Replace("\", "/")
-  $wslScript = @"
-set -euo pipefail
-export PATH="/usr/local/bin:`$PATH"
-CI_DIR="/var/tmp/bridge-linux-ci-slot-$slot"
-if [ ! -d "`$CI_DIR/.git" ]; then
-  mkdir -p "`$CI_DIR"
-  git init -q "`$CI_DIR"
-fi
-git -C "`$CI_DIR" fetch --force "$wslBundlePath" "HEAD:refs/ci/slot-$slot"
-git -C "`$CI_DIR" reset --hard -q
-git -C "`$CI_DIR" checkout --force --detach -q "$Revision"
-cd "`$CI_DIR"
-export HTTP_PROXY="$env:HTTP_PROXY"
-export HTTPS_PROXY="$env:HTTPS_PROXY"
-export NO_PROXY="$env:NO_PROXY"
-export npm_config_proxy="`$HTTP_PROXY"
-export npm_config_https_proxy="`$HTTPS_PROXY"
-export ELECTRON_GET_USE_PROXY=1
-LOCK_HASH=`$(sha256sum package-lock.json | awk '{print `$1}')
-STAMP="node_modules/.bridge-lock-sha256"
-if [ ! -f "`$STAMP" ] || [ "`$(cat "`$STAMP")" != "`$LOCK_HASH" ] || [ ! -f "node_modules/electron/package.json" ]; then
-  npm ci
-  printf '%s' "`$LOCK_HASH" > "`$STAMP"
-fi
-npm run test:infra
-npm test
-echo "<<< [WSL Ubuntu-24.04] Linux infra + unit tests verified"
-"@
-  $wslEncoded = [Convert]::ToBase64String((New-Object Text.UTF8Encoding($false)).GetBytes(($wslScript -replace "`r`n", "`n")))
-  Write-Output ">>> [WIN] Starting WSL2 Ubuntu-24.04 Linux tests in background"
-  $wslPsi = [System.Diagnostics.ProcessStartInfo]::new("wsl.exe")
-  $wslPsi.Arguments = "-d Ubuntu-24.04 --exec setsid --wait bash -c `"exec 3<&0 </dev/null; (exec >/dev/null 2>&1; cat <&3; kill -TERM 0 || true) & W=`$!; exec 3<&-; trap 'kill -TERM `$W 2>/dev/null || true; pkill -TERM -P `$W 2>/dev/null || true; wait `$W 2>/dev/null || true' EXIT; printf '%s' $wslEncoded | base64 -d | bash`""
-  $wslPsi.UseShellExecute = $false
-  $wslPsi.RedirectStandardInput = $true
-  $wslPsi.RedirectStandardOutput = $true
-  $wslPsi.RedirectStandardError = $true
-  $wslPsi.StandardOutputEncoding = [Text.Encoding]::UTF8
-  $wslPsi.StandardErrorEncoding = [Text.Encoding]::UTF8
-  $wslProc = [System.Diagnostics.Process]::Start($wslPsi)
-  $wslOutTask = $wslProc.StandardOutput.ReadToEndAsync()
-  $wslErrTask = $wslProc.StandardError.ReadToEndAsync()
-}
-
-# 9. Join parallel WSL2 Ubuntu-24.04 Linux infra + unit tests
-if ($null -ne $wslProc) {
-  $wslProc.WaitForExit()
-  try { $wslProc.StandardInput.Close() } catch {}
-  $wslOut = $wslOutTask.GetAwaiter().GetResult()
-  $wslErr = $wslErrTask.GetAwaiter().GetResult()
-  if ($wslOut) { Write-Output $wslOut.TrimEnd() }
-  if ($wslErr) { [Console]::Error.WriteLine($wslErr.TrimEnd()) }
-  if ($wslProc.ExitCode -ne 0) {
-    throw "[WIN] WSL2 Ubuntu-24.04 Linux tests failed with exit code $($wslProc.ExitCode)"
-  }
-  Write-Output ("<<< [WIN] WSL2 Ubuntu-24.04 Linux tests OK ({0:N1}s)" -f ($wslProc.ExitTime - $wslProc.StartTime).TotalSeconds)
-}
-
-Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revision) ==="
+Write-Output "=== [WIN] ALL WINDOWS + ANDROID CHECKS PASSED ($Revision) ==="
 } finally {
   try {
-    if ($null -ne $wslProc) {
-      try {
-        try { $wslProc.StandardInput.Close() } catch {}
-        if (-not $wslProc.HasExited) {
-          [void]$wslProc.WaitForExit(5000)
-        }
-        if (-not $wslProc.HasExited) {
-          & cmd.exe /c "taskkill.exe /PID $($wslProc.Id) /T /F >nul 2>nul"
-        }
-      } finally {
-        $wslProc.Dispose()
-      }
-    }
     if (Test-Path -LiteralPath $BundlePath) {
       Invoke-Checked "Clean uploaded git bundle" {
         & "$nodeBin\node.exe" --require "$ciWorktree\scripts\recycle-cleanup.cjs" "$ciWorktree\scripts\clean.mjs" $BundlePath

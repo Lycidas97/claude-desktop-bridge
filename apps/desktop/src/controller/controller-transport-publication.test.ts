@@ -10,6 +10,7 @@ import {
   serializeHeader,
   type EncryptedEnvelope,
   type BridgePermissionInfo,
+  type BridgePayload,
   toBase64Url,
   utf8,
   type BridgeSessionInfo,
@@ -267,6 +268,86 @@ describe("controller transport publication", () => {
     expect(controller.transportMetrics.rttMs).toBe(42);
   });
 
+  it.each([
+    ["broker.changed", "status"], ["eventLog", "status"],
+    ["broker.changed", "broadcast"], ["eventLog", "broadcast"],
+    ["broker.changed", "append"], ["eventLog", "append"],
+  ] as const)("coalesces continuous %s changes blocked at %s and publishes the final state", async (source, boundary) => {
+    const { controller, published, sessions, eventLog, ws, paired } = await fixture();
+    controller.broker.runtimeStatus = () => ({ state: "working", activeTurns: 1 });
+    sessions[0] = { ...sessions[0]!, turnState: "running" };
+    await controller.publish();
+    published.mockClear();
+    ws.sent.length = 0;
+    let release!: () => void, captured!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { captured = resolve; });
+    if (boundary === "status") {
+      controller.claudeDesktop.status = async () => { captured(); await blocked; return { state: "stopped" }; };
+    } else if (boundary === "broadcast") {
+      const broadcast = controller.broadcast.bind(controller);
+      vi.spyOn(controller, "broadcast").mockImplementation(async (...args: unknown[]) => {
+        if ((args[0] as BridgePayload).kind === "snapshot") { captured(); await blocked; }
+        return broadcast(...args);
+      });
+    } else {
+      const append = eventLog.append.bind(eventLog);
+      vi.spyOn(eventLog, "append").mockImplementation(async draft => {
+        if (draft.type === "runtime.updated") { captured(); await blocked; }
+        return append(draft);
+      });
+    }
+    let active = 0, peak = 0;
+    const publish = controller.publish.bind(controller);
+    vi.spyOn(controller, "publish").mockImplementation(async () => {
+      peak = Math.max(peak, ++active);
+      try { return await publish(); } finally { active -= 1; }
+    });
+    const changed = async () => {
+      if (boundary === "broadcast") sessions[0] = { ...sessions[0]!, title: `Catalog ${Date.now()}` };
+      if (source === "broker.changed") controller.broker.emit("changed");
+      else await eventLog.append({
+        type: "session.desktop-registration", origin: "claude-desktop", sessionId: sessions[0]!.sessionId, data: {},
+      });
+    };
+    try {
+      sessions[0] = { ...sessions[0]!, mainTurnStopScope: "process",
+        runningSubagents: { count: 1, lastUpdatedAt: Date.now() }, subagentStopScope: "task" };
+      await changed();
+      await vi.advanceTimersByTimeAsync(120);
+      await entered;
+      expect(active).toBe(1);
+      // Replace objects so snapshots captured before the async boundary retain their old state.
+      for (let index = 0; index < 18; index += 1) {
+        sessions[0] = { ...sessions[0]!, lastActivityAt: Date.now(),
+          runningSubagents: { count: index + 2, lastUpdatedAt: Date.now() } };
+        await changed();
+        await vi.advanceTimersByTimeAsync(20);
+      }
+      sessions[0] = { ...sessions[0]!, turnState: "idle", lastActivityAt: Date.now() };
+      delete sessions[0].mainTurnStopScope;
+      delete sessions[0].runningSubagents;
+      delete sessions[0].subagentStopScope;
+      await changed();
+      await vi.advanceTimersByTimeAsync(120);
+      expect.soft(peak).toBe(1);
+    } finally {
+      release();
+    }
+    await vi.advanceTimersByTimeAsync(120);
+    await vi.waitFor(() => expect(published.mock.calls.at(-1)?.[0].sessions[0]).toEqual(sessions[0]));
+    await vi.waitFor(async () => {
+      const payloads = await Promise.all(ws.sent.flatMap(frame => frame.type === "envelope"
+        ? [paired.desktopCrypto.decrypt(frame.envelope).then(message => message.payload)] : []));
+      if (boundary === "broadcast") expect(payloads).toContainEqual(expect.objectContaining({ kind: "snapshot",
+        snapshot: expect.objectContaining({ sessions: expect.arrayContaining([sessions[0]]) }) }));
+      else expect(payloads).toContainEqual(expect.objectContaining({ kind: "event", event: expect.objectContaining({
+        type: "runtime.updated", sessionId: sessions[0]!.sessionId, data: { replaceSession: true, session: sessions[0] },
+      }) }));
+    });
+    await vi.waitFor(() => expect(active).toBe(0));
+  });
+
   it("coalesces reconnect callbacks while preserving health publication and initial device state", async () => {
     const { ws, controller, paired, published } = await fixture();
     ws.close();
@@ -419,6 +500,94 @@ describe("controller transport publication", () => {
     permissions = [];
     await controller.publish();
     expect(eventLog.replay(before).filter(event => /^(permission|question)\.(requested|resolved)$/u.test(event.type))).toEqual([]);
+  });
+
+  it.each([
+    ["Bash", "status"], ["AskUserQuestion", "status"], ["Bash", "broadcast"],
+  ] as const)("delivers a durable %s request while an older passive publication is blocked at %s", async (toolName, boundary) => {
+    const { controller, sessions, ws, paired } = await fixture();
+    const permissions: BridgePermissionInfo[] = [];
+    controller.broker.permissionsList = () => permissions;
+    controller.broker.runtimeStatus = () => ({ state: "working", activeTurns: 1 });
+    sessions[0] = { ...sessions[0]!, turnState: "running" };
+    await controller.publish();
+    ws.sent.length = 0;
+    let release!: () => void, captured!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { captured = resolve; });
+    if (boundary === "status") {
+      vi.spyOn(controller.claudeDesktop, "status")
+        .mockImplementationOnce(async () => { captured(); await blocked; return { state: "stopped" }; });
+    } else {
+      const broadcast = controller.broadcast.bind(controller);
+      vi.spyOn(controller, "broadcast").mockImplementation(async (...args: unknown[]) => {
+        if ((args[0] as BridgePayload).kind === "snapshot") { captured(); await blocked; }
+        return broadcast(...args);
+      });
+    }
+    const publish = controller.publish.bind(controller);
+    let oldPublication!: Promise<DesktopControlSnapshot>;
+    vi.spyOn(controller, "publish").mockImplementationOnce(() => oldPublication = publish());
+    try {
+      sessions[0] = { ...sessions[0]!, title: "Slow catalog publication" };
+      controller.broker.emit("changed");
+      await vi.advanceTimersByTimeAsync(120);
+      await entered;
+      const permission: BridgePermissionInfo = { requestId: "during-passive-publication", sessionId: sessions[0]!.sessionId,
+        toolUseId: "synthetic-tool", toolName, input: {}, createdAt: 1, canAllowAlways: false };
+      permissions.push(permission);
+      sessions[0] = { ...sessions[0]!, turnState: "waiting" };
+      controller.broker.emit("changed");
+      expect(controller.onlineDevices.size).toBe(0);
+      await vi.waitFor(async () => {
+        const decoded = await Promise.all(ws.sent.flatMap(frame => frame.type === "envelope"
+          ? [paired.desktopCrypto.decrypt(frame.envelope).then(message => ({ frame, payload: message.payload }))] : []));
+        const request = decoded.find(({ payload }) => payload.kind === "event"
+          && payload.event.type === (toolName === "AskUserQuestion" ? "question.requested" : "permission.requested")
+          && payload.event.data.requestId === permission.requestId);
+        expect(request).toBeDefined();
+        expect(request!.frame.envelope.temporary).toBeUndefined();
+      });
+    } finally {
+      release();
+      await oldPublication;
+      await vi.advanceTimersByTimeAsync(150);
+    }
+  });
+
+  it("returns a fresh active publication while a passive snapshot is pending without rolling back permission membership", async () => {
+    const { controller, sessions, eventLog } = await fixture();
+    const permissions: BridgePermissionInfo[] = [];
+    controller.broker.permissionsList = () => permissions;
+    controller.broker.runtimeStatus = () => ({ state: "working", activeTurns: 1 });
+    sessions[0] = { ...sessions[0]!, turnState: "running" };
+    await controller.publish();
+    let release!: () => void, captured!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { captured = resolve; });
+    vi.spyOn(controller.claudeDesktop, "status")
+      .mockImplementationOnce(async () => { captured(); await blocked; return { state: "stopped" }; });
+    const publish = controller.publish.bind(controller);
+    let oldPublication!: Promise<DesktopControlSnapshot>;
+    vi.spyOn(controller, "publish").mockImplementationOnce(() => oldPublication = publish());
+    try {
+      controller.broker.emit("changed");
+      await vi.advanceTimersByTimeAsync(120);
+      await entered;
+      permissions.push({ requestId: "still-pending", sessionId: sessions[0]!.sessionId,
+        toolUseId: "synthetic-tool", toolName: "Bash", input: {}, createdAt: 1, canAllowAlways: false });
+      sessions[0] = { ...sessions[0]!, turnState: "waiting" };
+      const current = await controller.publish();
+      expect(current.sessions[0]).toEqual(sessions[0]);
+      expect(current.permissions).toEqual(permissions);
+    } finally {
+      release();
+      expect((await oldPublication).sessions[0]!.turnState).toBe("running");
+    }
+    await controller.publish();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(eventLog.replay().filter(event => event.data.requestId === "still-pending").map(event => event.type))
+      .toEqual(["permission.requested"]);
   });
 
   it("keeps the Native publication baseline tied to its captured snapshot during overlapping catalog updates", async () => {

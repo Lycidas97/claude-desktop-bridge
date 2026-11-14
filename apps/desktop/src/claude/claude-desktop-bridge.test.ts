@@ -193,13 +193,16 @@ describe("native application dialogs and PR Auto-fix", () => {
     try {
       let release!: () => void;
       const gate = new Promise<void>(resolve => { release = resolve; });
+      let markSnapshotCaptured!: () => void;
+      const snapshotCaptured = new Promise<void>(resolve => { markSnapshotCaptured = resolve; });
       const call = f.native.call.bind(f.native);
       f.native.call = async (method, args) => {
         const result = await call(method, args);
-        if (method === "getAll") { f.native.call = call; await gate; }
+        if (method === "getAll") { f.native.call = call; markSnapshotCaptured(); await gate; }
         return result;
       };
       const staleRefresh = f.bridge.refreshRuntime();
+      await snapshotCaptured;
       f.native.sessions[0]!.pendingCwdTrustPrompt = { promptId: "c", directory: "/new-project", sources: ["settings"] };
       f.native.emit("event", { type: "session_updated", sessionId: "local-native", session: structuredClone(f.native.sessions[0]) });
       await new Promise(resolve => setTimeout(resolve, 50));

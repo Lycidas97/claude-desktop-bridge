@@ -230,7 +230,7 @@ export function MobileWorkspace({
   onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
   onDownloadSessionFile?(sessionId: string, filePath: string): Promise<void>;
   onUploadFile?: UploadFileHandler;
-  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<{ requestId: string } | void>;
+  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[]): Promise<{ requestId: string } | void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
   onSteerQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
   onCancelQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
@@ -958,7 +958,7 @@ export function MobileWorkspace({
     updateDraft((current) => ({ ...current, text: "", attachments: [], sending: true, imageError: undefined }));
     try {
       if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) return;
-      await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, false);
+      await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments);
       fileUploads.clear(nextFiles);
     } catch (error) {
       updateDraft((current) => ({
@@ -981,7 +981,7 @@ export function MobileWorkspace({
     ) return;
     updateDraft((current) => ({ ...current, sending: true }));
     try {
-      const receipt = await onSendTurn(selectedSession.sessionId, promptText.trim(), [], false);
+      const receipt = await onSendTurn(selectedSession.sessionId, promptText.trim(), []);
       setPromptReplies((current) => ({ ...current, [draftKey]: { ...current[draftKey], [promptId]: receipt?.requestId ?? null } }));
     } finally {
       updateDraft((current) => ({ ...current, sending: false }));

@@ -653,12 +653,12 @@ describe("durable sends during transport failure", () => {
     expect(harness.addOutbox).toHaveBeenCalledOnce();
     expect(harness.saveMessage.mock.calls[0]![0]).toBe(harness.addOutbox.mock.calls[0]![0]);
   });
-  it.each([false, true])("keeps a persisted message queued without restoring the draft (steer=%s)", async steer => {
+  it("keeps a persisted message queued without restoring the draft", async () => {
     const bridge = useMobileBridge();
     const send = vi.fn().mockRejectedValue(new Error("Socket is not connected"));
     harness.refs[11]!.current = true;
     harness.refs[3]!.current.sendEnvelope = send;
-    const receipt = await bridge.sendTurn("session-1", "Continue", [], steer);
+    const receipt = await bridge.sendTurn("session-1", "Continue");
     expect(receipt).toEqual({ requestId: expect.any(String) });
     expect(harness.addOutbox).toHaveBeenCalledOnce();
     expect(harness.saveMessage).toHaveBeenCalledOnce();
@@ -669,7 +669,7 @@ describe("durable sends during transport failure", () => {
     expect(send).toHaveBeenCalledWith(envelope);
     expect(receipt).toEqual({ requestId: envelope.request.requestId });
     expect(harness.state.localTurns[0].requestId).toBe(envelope.request.requestId);
-    expect(envelope.request.method).toBe(steer ? "turn.steer" : "turn.start");
+    expect(envelope.request.method).toBe("turn.start");
   });
 
   it("surfaces a persistence failure before attempting network delivery", async () => {
@@ -790,7 +790,7 @@ describe("native relay connection boundaries", () => {
     };
   }
 
-  it.each([false, true])("rejects a writable legacy snapshot loaded from storage before persisting new input (steer=%s)", async steer => {
+  it("rejects a writable legacy snapshot loaded from storage before persisting new input", async () => {
     const cached = nativeSnapshot();
     cached.host.capabilities = [];
     cached.sessions[0] = { ...cached.sessions[0]!, transport: "bridge-host", ownership: "BRIDGE_IDLE" };
@@ -802,7 +802,7 @@ describe("native relay connection boundaries", () => {
     harness.refs[3]!.current.sendEnvelope = send;
     try {
       expect(harness.state.snapshot).toEqual(cached);
-      await expect(bridge.sendTurn("session-1", "Keep draft", [], steer)).rejects.toThrow("原生中转");
+      await expect(bridge.sendTurn("session-1", "Keep draft")).rejects.toThrow("原生中转");
       expect(harness.addOutbox).not.toHaveBeenCalled();
       expect(harness.saveMessage).not.toHaveBeenCalled();
       expect(harness.state.localTurns).toEqual([]);

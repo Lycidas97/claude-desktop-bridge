@@ -256,7 +256,7 @@ describe("image selection completeness", () => {
     await selecting; await settle();
     expect(imageNames()).toEqual(["移除 1.png", "移除 2.png", "移除 3.png", "移除 4.png", "移除 5.png"]);
     await form().props.onSubmit({ preventDefault() {} });
-    expect(props.onSendTurn).toHaveBeenCalledWith("A", "", expect.arrayContaining(Array.from({ length: 5 }, (_, index) => expect.objectContaining({ name: `${index + 1}.png` }))), false);
+    expect(props.onSendTurn).toHaveBeenCalledWith("A", "", expect.arrayContaining(Array.from({ length: 5 }, (_, index) => expect.objectContaining({ name: `${index + 1}.png` }))));
     expect(vi.mocked(props.onSendTurn).mock.calls[0]![2]).toHaveLength(5);
   });
 });
@@ -336,7 +336,7 @@ describe("native relay composer", () => {
   it("sends directly without a Host execution flag or handoff confirmation", async () => {
     text("Native input");
     await form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Native input", [], false);
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "Native input", []);
     expect(elements(tree).some(element => element.type === ConfirmationDialog && element.props.title === "由 Bridge 继续执行？")).toBe(false);
   });
 
@@ -1205,7 +1205,7 @@ describe("native structured approvals", () => {
     const card = nativePrompt({ kind: "wrap-up", blocked: false, ask: "接下来做什么？", actions: [{ label: "继续调查", message: "继续调查" }] });
     card.props.onSelectOption("继续调查");
     await settle();
-    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "继续调查", [], false);
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "继续调查", []);
     expect(props.onResolvePermission).not.toHaveBeenCalled();
   });
 
@@ -1417,7 +1417,7 @@ describe("mobile conversation draft ownership", () => {
     expect(imageNames()).toEqual(["移除 A.png"]);
     open("B");
     form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenCalledWith("B", "draft for B", [], false);
+    expect(props.onSendTurn).toHaveBeenCalledWith("B", "draft for B", []);
   });
 
   it("restores a failed send to its own session without changing the next session's draft", async () => {
@@ -1466,10 +1466,10 @@ describe("mobile conversation draft ownership", () => {
     expect(elements(tree).some((e) => e.props.className === "composer-mode")).toBe(false);
     open("B"); text("queue B");
     form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenLastCalledWith("B", "queue B", [], false);
+    expect(props.onSendTurn).toHaveBeenLastCalledWith("B", "queue B", []);
     open("A"); text("queue A");
     form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenLastCalledWith("A", "queue A", [], false);
+    expect(props.onSendTurn).toHaveBeenLastCalledWith("A", "queue A", []);
   });
 
   it("does not reuse a draft for an equal session ID on another computer", () => {
@@ -1776,7 +1776,7 @@ describe("mobile common commands", () => {
     expect(attachments.props.imageDisabled).toBe(true);
     expect(elements(tree).some(element => element.props.className === "composer-mode")).toBe(false);
     text("/absolute/path prompt"); form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenCalledWith("A", "/absolute/path prompt", [], false);
+    expect(props.onSendTurn).toHaveBeenCalledWith("A", "/absolute/path prompt", []);
     expect(props.onRunSessionCommand).not.toHaveBeenCalled();
   });
 });
@@ -1836,7 +1836,7 @@ describe("mobile slash submission edges", () => {
     expect(elements(tree).find(element => element.type === FileAttachmentPicker)!.props.state.files).toEqual([file]);
     text("continue analysis");
     form().props.onSubmit({ preventDefault() {} }); await settle();
-    expect(props.onSendTurn).toHaveBeenCalledWith("A", expect.stringContaining(".bridge-uploads/done.txt"), [expect.objectContaining({ name: "A.png" })], false);
+    expect(props.onSendTurn).toHaveBeenCalledWith("A", expect.stringContaining(".bridge-uploads/done.txt"), [expect.objectContaining({ name: "A.png" })]);
   });
 });
 

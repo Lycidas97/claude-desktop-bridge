@@ -176,7 +176,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
       });
     });
     this.inspector.on("permission", value => { this.observePermission(value); this.projectSessions(); this.emit("changed"); });
-    this.inspector.on("disconnected", () => { this.lastError = "Claude Desktop inspector 已断开；请在 Desktop 开发者菜单开启 Node inspector"; this.projectSessions(); this.emit("changed"); });
+    this.inspector.on("disconnected", () => {
+      this.lastError = "Claude Desktop inspector 已断开；请在 Desktop 开发者菜单开启 Node inspector";
+      void this.serialized(async () => {
+        this.compactingSessions.clear();
+        this.projectSessions();
+        this.emit("changed");
+      }).catch(error => this.report(error));
+    });
     this.inspector.on("stream-error", error => this.report(error));
   }
 
@@ -1129,13 +1136,24 @@ export class ClaudeDesktopBridge extends EventEmitter {
       } });
       return;
     }
-    if (event.session) {
-      const session = nativeSession(event.session);
+    const sessionId = event.sessionId;
+    const message = record(event.message);
+    const sidechain = message.isSidechain === true || (message.parent_tool_use_id && (message.type === "assistant" || message.type === "user" || message.type === "system" || message.type === "stream_event"));
+    let compacting: boolean | undefined;
+    if (!sidechain) {
+      if (message.type === "system" && message.subtype === "status") {
+        if (message.status === "compacting") compacting = true;
+        else if (message.status === null) compacting = false;
+      } else if ((message.type === "system" && message.subtype === "compact_boundary") || (message.type === "result" && !message.parent_tool_use_id && message.isSyntheticResult !== true) || event.type === "error") compacting = false;
+    }
+    if (event.session || compacting !== undefined) {
+      const session = event.session ? nativeSession(event.session) : undefined;
       await this.serialized(async () => {
-        await this.observeNativeSession(session);
+        if (session) await this.observeNativeSession(session);
+        if (compacting === true) this.compactingSessions.add(sessionId);
+        else if (compacting === false) this.compactingSessions.delete(sessionId);
       });
     }
-    const sessionId = event.sessionId;
     if (!this.native.has(sessionId)) return;
     const deliveries: BridgeEventDraft[] = [];
     if (event.type === "steers_rekeyed" && Array.isArray(event.rekeyedSteers)) {
@@ -1161,15 +1179,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       }
     }
     for (const delivery of deliveries) await this.record(delivery);
-    const message = record(event.message);
-    if (message.isSidechain === true || (message.parent_tool_use_id && (message.type === "assistant" || message.type === "user" || message.type === "system" || message.type === "stream_event"))) {
-      return;
-    }
-    if (message.type === "system" && message.subtype === "status") {
-      if (message.status === "compacting") this.compactingSessions.add(sessionId);
-      else if (message.status === null) this.compactingSessions.delete(sessionId);
-    }
-    if ((message.type === "system" && message.subtype === "compact_boundary") || (message.type === "result" && !message.parent_tool_use_id) || event.type === "error") this.compactingSessions.delete(sessionId);
+    if (sidechain) return;
     const stream = record(message.event);
     if (message.type === "stream_event" && !message.parent_tool_use_id) {
       if (stream.type === "message_start") {

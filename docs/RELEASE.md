@@ -36,6 +36,8 @@ npm run audit:runtime
 
 自动化使用隔离数据目录、合成 Native 边界和本地 Relay。不能为发布验收向真实用户会话发送模型输入、撤回真实队列消息、执行真实回退，或替换生产 Native stream。模拟测试只能证明对应接口与数据流，不能替代真实 Desktop 或手机验收。
 
+真实 Desktop 与手机验收由测试版完成（[测试版与运行时事故](dogfood.md)）：发布提交必须已作为测试版安装在本机，并经过数小时真实手机使用且没有未解决的回归。发布后不再另做本机补充验收；正式版比已安装的测试版新时，由内置更新器提示升级。
+
 ## GitHub 发布流程
 
 1. 在独立工作树发布分支整理源码、同步版本号与 `CHANGELOG.md`，在本地通过 `npm run ci:local` 完成全平台预检（Mac + Windows 11 + Android 16 WHPX + WSL2 Ubuntu-24.04 Linux 单测与打包），再推送到 `origin`（`Lycidas97/claude-desktop-bridge`；若先验后推，执行 `npm run ci:local -- --publish` 回写 `ci/local-distributed = success`）并创建指向 `main` 的 PR（严禁推送到 `upstream` `czhmartinez/claude-desktop-bridge`）。

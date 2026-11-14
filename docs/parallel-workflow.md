@@ -7,6 +7,8 @@ How the Issue patrol session runs several Issues at once: dispatch, implement, r
 - **Patrol**: the session the owner talks to. Dispatches, sets merge order, resolves conflicts and anything needing the owner, runs post-merge `main` CI and dogfood installs, and is the single writer for `LESSONS.md`, `docs/subsystems/*.md`, and shared memory. It does not relay review traffic and makes no code judgments.
 - **Fork**: one implementing session per Issue, in its own worktree. Never reviews or merges its own PR. Talks to its reviewer directly.
 - **Reviewer**: reviews every round of one PR (findings, NIT fix diffs, merge resolutions), sends verdicts straight to the fork, and merges when the objective conditions in step 6 hold. Never sees the patrol's analysis or the fork brief.
+- **Discussion**: a session where the owner reviews a past round or works on process. It may open and own docs-only PRs (paths matching `NON_DOC`'s exclusion, Light tier). Anything else it turns up — code fixes, CI failures, a PR needing `ci:local` — becomes an Issue handed to the patrol; it does not implement, run CI, or coordinate reviewers for it.
+- **Handoff**: when work moves between sessions, the receiver confirms with `TAKEN OVER <PRs>` and then tells the affected reviewers to route to it. Until that confirmation, the sender only forwards messages it receives and acts on none of them.
 - **Reports to the owner** (any session): conclusion, decisions the owner must make, risks — in the owner's language. SHAs, PIDs, and timings stay in PRs and records.
 
 ## Review tiers

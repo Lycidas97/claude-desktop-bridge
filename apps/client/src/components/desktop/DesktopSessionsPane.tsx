@@ -27,6 +27,7 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
+  ArrowDownUp,
   ChevronDown,
   ChevronRight,
   ChevronsDown,
@@ -44,7 +45,7 @@ import {
   X,
 } from "lucide-react";
 import { evidenceSummary } from "@bridge/protocol";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionEvidenceState, SessionHistoryState } from "../../hooks/useMobileBridge.js";
 import { downloadBridgeArtifact } from "../../lib/artifact-download.js";
 import { useStreamEntrance } from "../../lib/stream-entrance.js";
@@ -54,8 +55,8 @@ import {
   expandProject,
   getSessionAncestorIds,
   groupProjectSessionFamilies,
+  orderProjects,
   toggleCollapsedProject,
-  type SessionFamily,
 } from "../../lib/project-groups.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "../evidence/EvidencePanel.js";
@@ -79,7 +80,10 @@ import {
   stoppableBridgeTask,
 } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
-import { backgroundSubagentBadge } from "../../lib/session-activity.js";
+import { EmptyState } from "../common/EmptyState.js";
+import { ProjectOrderSheet } from "../mobile/ProjectOrderSheet.js";
+import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
+import { SessionFamilyList } from "../session/SessionFamilyList.js";
 import {
   InteractivePromptCard,
   matchingQuestionPermission,
@@ -177,6 +181,11 @@ export function DesktopSessions({
   const [deleteSessionOpen, setDeleteSessionOpen] = useState(false);
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const [sessionActionError, setSessionActionError] = useState<string>();
+  const [projectOrderOpen, setProjectOrderOpen] = useState(false);
+  const projectOrderKey = `bridge-project-order:${snapshot.host.hostId}`;
+  const [placedProjects, setPlacedProjects] = useState<string[]>(() => (
+    JSON.parse(localStorage.getItem(projectOrderKey) ?? "[]") as string[]
+  ));
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
   const handledCommandEvents = useRef(new Set<string>());
@@ -266,6 +275,18 @@ export function DesktopSessions({
   )), [timeline]);
   const streamEntering = useStreamEntrance(selectedId, streamKeys);
   const activity = useMemo(() => sessionActivity(selected, items), [selected, items]);
+  const projectsByActivity = useMemo(() => {
+    const latest = new Map<string, number>();
+    for (const session of snapshot.sessions) {
+      if (!session.archivedAt) latest.set(session.projectId, Math.max(latest.get(session.projectId) ?? 0, session.lastActivityAt));
+    }
+    return [...latest.keys()].sort((left, right) => latest.get(right)! - latest.get(left)!);
+  }, [snapshot.sessions]);
+  const projectOrder = useMemo(() => orderProjects(projectsByActivity, placedProjects), [placedProjects, projectsByActivity]);
+  useEffect(() => {
+    const unplaced = projectOrder.filter(projectId => !placedProjects.includes(projectId));
+    if (unplaced.length) placeProjects([...unplaced, ...placedProjects]);
+  }, [placedProjects, projectOrder]);
   const grouped = useMemo(() => {
     const activeParentProjects = new Map(
       snapshot.sessions.filter((candidate) => !candidate.archivedAt).map((candidate) => [candidate.sessionId, candidate.projectId]),
@@ -279,8 +300,8 @@ export function DesktopSessions({
       list.push(session);
       map.set(session.projectId, list);
     }
-    return [...map.entries()];
-  }, [snapshot.sessions]);
+    return projectOrder.filter(projectId => map.has(projectId)).map(projectId => [projectId, map.get(projectId)!] as const);
+  }, [projectOrder, snapshot.sessions]);
   const visibilityAvailable = snapshot.host.capabilities.includes("session.visibility.v1");
   const archivedSessions = useMemo(() => snapshot.sessions.filter((candidate) => (
     Boolean(candidate.archivedAt)
@@ -668,6 +689,11 @@ export function DesktopSessions({
     return result.session;
   }
 
+  function placeProjects(order: string[]): void {
+    localStorage.setItem(projectOrderKey, JSON.stringify(order));
+    setPlacedProjects(order);
+  }
+
   function toggleProject(projectId: string): void {
     setCollapsedProjectIds((current) => toggleCollapsedProject(current, projectId));
   }
@@ -769,72 +795,17 @@ export function DesktopSessions({
     }
   }
 
-  function renderDesktopSessionFamily(
-    { primary: session, forks }: SessionFamily<BridgeSessionInfo>,
-    isForkChild = false,
-  ): ReactNode {
-    const forksExpanded = expandedForkParents.has(session.sessionId);
-    const subagentBadge = session.archivedAt || session.turnState !== "idle" ? undefined : backgroundSubagentBadge(session);
-    const badgeLabel = session.sidechat ? "/btw" : (session.forkLabel || "fork");
-    const badgeClassName = `session-fork-badge${session.sidechat ? " is-sidechat" : ""}`;
-    return (
-      <div className="desktop-session-family" key={session.sessionId}>
-        <button
-          type="button"
-          className={`desktop-session-row ${isForkChild ? "is-fork-child" : ""} ${session.sessionId === selectedId ? "active" : ""}`}
-          onClick={() => setSelectedId(session.sessionId)}
-        >
-          <span className={`session-state-dot ${subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState}`} />
-          <span>
-            <strong>
-              {isForkChild && <em className={badgeClassName}>{badgeLabel}</em>}
-              {session.title}
-              {!isForkChild && session.parentSessionId && (
-                <em className={badgeClassName}>{badgeLabel}</em>
-              )}
-            </strong>
-            <small>
-              {!isForkChild && `${desktopRuntimeName(desktopRuntimeId(session))} · `}
-              {session.archivedAt ? "已归档" : subagentBadge?.label ?? sessionState(session)}
-            </small>
-          </span>
-          {session.pendingCount > 0 && <b>{session.pendingCount}</b>}
-        </button>
-        {forks.length > 0 && (
-          <div className={`desktop-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
-            <button
-              type="button"
-              className="desktop-fork-toggle"
-              aria-expanded={forksExpanded}
-              onClick={() => toggleForkGroup(session.sessionId)}
-            >
-              <GitFork size={12} />
-              <span>
-                {forks.every((fork) => fork.primary.sidechat)
-                  ? `${forks.length} 个 /btw 侧聊`
-                  : forks.some((fork) => fork.primary.sidechat)
-                    ? `${forks.length} 个分支与侧聊`
-                    : `${forks.length} 个 Fork 分支`}
-              </span>
-              {forksExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            </button>
-            {forksExpanded && (
-              <div className="desktop-fork-children">
-                {forks.map((fork) => renderDesktopSessionFamily(fork, true))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
     <section className="desktop-session-layout">
       <aside className="desktop-session-sidebar">
         <div className="desktop-sidebar-heading">
           <div><span>Bridge 1.0</span><h1>会话</h1></div>
           <div className="desktop-sidebar-actions">
+            {projectOrder.length > 1 && (
+              <IconButton label="调整项目顺序" onClick={() => setProjectOrderOpen(true)}>
+                <ArrowDownUp size={17} />
+              </IconButton>
+            )}
             <IconButton
               label="全部折叠"
               disabled={groupedProjectIds.length === 0 || allProjectsCollapsed}
@@ -865,27 +836,40 @@ export function DesktopSessions({
             const families = groupProjectSessionFamilies(sessions);
             return (
               <section className={expanded ? "expanded" : "collapsed"} key={groupProjectId}>
-                <button
-                  type="button"
-                  className="desktop-project-toggle"
-                  aria-expanded={expanded}
-                  aria-controls={sessionsId}
-                  onClick={() => toggleProject(groupProjectId)}
-                >
-                  {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <strong>{snapshot.projects.find((project) => project.projectId === groupProjectId)?.name ?? sessions[0]!.projectName}</strong>
-                  <span>{families.length}</span>
-                </button>
+                <ProjectGroupHeader
+                  title={snapshot.projects.find(project => project.projectId === groupProjectId)?.name ?? sessions[0]!.projectName}
+                  count={families.length}
+                  expanded={expanded}
+                  controlsId={sessionsId}
+                  onToggle={() => toggleProject(groupProjectId)}
+                />
                 {expanded && (
                   <div className="desktop-project-sessions" id={sessionsId}>
-                    {families.map((family) => renderDesktopSessionFamily(family))}
+                    <SessionFamilyList
+                      families={families}
+                      projects={snapshot.projects}
+                      permissions={snapshot.permissions}
+                      expandedForkParents={expandedForkParents}
+                      selectedId={selectedId}
+                      includeArchivedInline
+                      onSelectSession={setSelectedId}
+                      onToggleForkGroup={toggleForkGroup}
+                    />
                   </div>
                 )}
               </section>
             );
           })}
           {grouped.length === 0 && (
-            <div className="desktop-sidebar-empty">等待发现 Desktop 会话</div>
+            <EmptyState
+              title={snapshot.runtime.desktopIntegration.state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop"}
+              action={(
+                <button type="button" className="primary-button session-catalog-empty-action" onClick={() => setCreateOpen(true)}>
+                  <Plus size={16} />
+                  新建会话
+                </button>
+              )}
+            />
           )}
           {visibilityAvailable && archivedSessions.length > 0 && (() => {
             const archivedFamilies = groupProjectSessionFamilies(archivedSessions);
@@ -904,7 +888,16 @@ export function DesktopSessions({
                 </button>
                 {archivedExpanded && (
                   <div className="desktop-project-sessions" id="desktop-archived-sessions">
-                    {archivedFamilies.map((family) => renderDesktopSessionFamily(family))}
+                    <SessionFamilyList
+                      families={archivedFamilies}
+                      projects={snapshot.projects}
+                      permissions={snapshot.permissions}
+                      expandedForkParents={expandedForkParents}
+                      selectedId={selectedId}
+                      archivedList
+                      onSelectSession={setSelectedId}
+                      onToggleForkGroup={toggleForkGroup}
+                    />
                   </div>
                 )}
               </section>
@@ -1274,6 +1267,17 @@ export function DesktopSessions({
         )}
       </section>
 
+      {projectOrderOpen && (
+        <ProjectOrderSheet
+          desktopName={snapshot.host.name}
+          projectOrder={projectOrder}
+          projectsByActivity={projectsByActivity}
+          projects={snapshot.projects}
+          sessions={snapshot.sessions}
+          onPlaceProjects={placeProjects}
+          onClose={() => setProjectOrderOpen(false)}
+        />
+      )}
       {createOpen && (
         <SessionCreateDialog
           key={snapshot.host.hostId}

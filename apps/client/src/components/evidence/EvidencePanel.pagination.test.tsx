@@ -238,6 +238,7 @@ describe("on-demand evidence details", () => {
         : method === "evidence.get" ? { evidence: full }
         : { page: { evidenceId: "evidence", kind: "tools", items: [tool("rpc-page")], hasMore: false } },
     }));
+    vi.stubGlobal("localStorage", { getItem: () => null, setItem: vi.fn() });
     let onEvent!: (event: BridgeEvent) => void;
     vi.stubGlobal("window", { bridgeDesktop: { getSnapshot: async () => snapshot, onSnapshot: () => () => undefined,
       onEvent: (receive: typeof onEvent) => { onEvent = receive; return () => undefined; }, request } });

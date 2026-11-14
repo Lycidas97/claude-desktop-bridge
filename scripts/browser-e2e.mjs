@@ -46,7 +46,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
@@ -78,6 +78,110 @@ async function syncNativeSections(host) {
   if (deleteCapable) host.snapshot.host.capabilities.push("section.delete.v1");
   if (trustCapable) host.snapshot.host.capabilities.push("workspace.trust.v1");
   if (host.snapshot.runtimes?.[0]) host.snapshot.runtimes[0].capabilities = runtimeCapabilities;
+}
+
+async function verifySessionCatalog(page, host, steps, directory, viewports) {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const axeSource = await readFile(resolve(root, "node_modules/axe-core/axe.min.js"), "utf8");
+  async function capture(name) {
+    await page.evaluate(axeSource);
+    const violations = await page.evaluate(async () => (await window.axe.run(document, {
+      resultTypes: ["violations"], runOnly: { type: "tag", values: ["wcag2a", "wcag2aa"] },
+    })).violations.filter(item => ["serious", "critical"].includes(item.impact)).map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) })));
+    assert.deepEqual(violations, [], `${name} accessibility`);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1 && document.body.getBoundingClientRect().height >= 100), true, `${name} has content without horizontal overflow`);
+    viewports.push({ page: name, ...page.viewportSize() });
+    await page.screenshot({ path: resolve(directory, `${name}.png`), fullPage: true });
+  }
+  await capture("mobile-catalog");
+  await page.getByRole("button", { name: "调整顺序", exact: true }).click();
+  await page.getByRole("dialog", { name: "项目顺序" }).waitFor();
+  await capture("mobile-project-order");
+  await page.getByRole("dialog", { name: "项目顺序" }).getByRole("button", { name: "关闭", exact: true }).click();
+
+  await page.exposeFunction("catalogRequest", async input => ({
+    kind: "response", requestId: randomUUID(), ok: true,
+    result: await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), ...input }),
+  }));
+  await page.addInitScript(snapshot => {
+    window.__catalogSnapshot = snapshot;
+    window.__updateCatalog = next => {
+      window.__catalogSnapshot = next;
+      window.__catalogReceive?.(structuredClone(next));
+    };
+    window.bridgeDesktop = {
+      getSnapshot: async () => structuredClone(window.__catalogSnapshot),
+      onSnapshot: receive => { window.__catalogReceive = receive; return () => { delete window.__catalogReceive; }; },
+      onEvent: () => () => {},
+      request: input => window.catalogRequest(input),
+    };
+  }, { ...host.snapshot, connection: "connected", launchAtLogin: false, diagnosticsEnabled: false,
+    managedDesktopEnabled: false,
+    host: { ...host.snapshot.host, capabilities: [...host.snapshot.host.capabilities.filter(value => value !== "plugin.magpie-quota.v1"), "session.visibility.v1"] },
+    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true } });
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  const sidebar = page.locator(".desktop-session-sidebar");
+  const headers = sidebar.locator(".project-group-toggle-copy strong");
+  await sidebar.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  const initialOrder = await headers.allTextContents();
+  assert.equal(initialOrder.length, 2);
+  const selected = sidebar.locator(".session-row-v2.active");
+  assert.equal(await selected.count(), 1, "Desktop highlights the selected shared row");
+  assert.notEqual(await selected.evaluate(element => getComputedStyle(element).backgroundColor), "rgba(0, 0, 0, 0)");
+  await sidebar.locator(".mobile-fork-toggle").click();
+  await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').waitFor();
+  assert.match(await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').innerText(), /已归档/u);
+  await sidebar.locator('[data-session-id="browser-e2e-fork"] .session-row-hit').click();
+  assert.equal(await sidebar.locator('[data-session-id="browser-e2e-fork"]').evaluate(element => element.classList.contains("active")), true);
+  await capture("desktop-catalog");
+  steps.push("mobile/Desktop share family rows; Desktop retains archived sidechats, selection and fork navigation");
+
+  await sidebar.getByRole("button", { name: "全部折叠", exact: true }).click();
+  assert.equal(await sidebar.locator("[data-session-id]").count(), 0);
+  await sidebar.getByRole("button", { name: "全部展开", exact: true }).click();
+  await sidebar.getByRole("button", { name: "调整项目顺序", exact: true }).click();
+  const orderDialog = page.getByRole("dialog", { name: "项目顺序" });
+  await orderDialog.getByLabel(`移动「${initialOrder[1]}」到`, { exact: true }).selectOption("0");
+  await capture("desktop-project-order");
+  await orderDialog.getByRole("button", { name: "关闭", exact: true }).click();
+  const manualOrder = [...initialOrder].reverse();
+  await eventually(() => headers.allTextContents(), manualOrder, "Manual project order updates the Desktop catalog");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await sidebar.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  assert.deepEqual(await headers.allTextContents(), manualOrder, "Desktop project order survives reload");
+  await page.evaluate(() => {
+    const snapshot = structuredClone(window.__catalogSnapshot);
+    snapshot.sessions.find(session => session.projectName === "other-project").lastActivityAt = Date.now();
+    window.__updateCatalog(snapshot);
+  });
+  assert.deepEqual(await headers.allTextContents(), manualOrder, "Activity does not move fixed projects");
+  await sidebar.getByRole("button", { name: "调整项目顺序", exact: true }).click();
+  await orderDialog.getByRole("button", { name: "按最近活动重排", exact: true }).click();
+  await orderDialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await eventually(async () => (await headers.allTextContents())[0], "other-project", "Explicit activity reorder moves the newest project first");
+  steps.push("Desktop collapse/expand, manual ordering, reload persistence, fixed activity order and explicit activity reorder");
+
+  await page.setViewportSize({ width: 860, height: 620 });
+  await capture("desktop-catalog-compact");
+  const scroll = await page.locator(".desktop-project-list").evaluate(element => ({ overflow: getComputedStyle(element).overflowY, height: element.clientHeight }));
+  assert.equal(scroll.overflow, "auto");
+  assert.ok(scroll.height > 0, "Desktop retains its own catalog scroll container");
+  await page.setViewportSize({ width: 1200, height: 800 });
+  for (const state of ["ready", "not-managed"]) {
+    await page.evaluate(state => {
+      const snapshot = structuredClone(window.__catalogSnapshot);
+      snapshot.sessions = []; snapshot.projects = [];
+      snapshot.runtime.desktopIntegration.state = state;
+      window.__updateCatalog(snapshot);
+    }, state);
+    await sidebar.getByText(state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop", { exact: true }).waitFor();
+    await sidebar.locator(".session-catalog-empty-action").click();
+    await page.getByRole("dialog", { name: "新建会话" }).waitFor();
+    await page.getByRole("dialog", { name: "新建会话" }).getByRole("button", { name: "关闭", exact: true }).click();
+    await capture(`desktop-empty-${state}`);
+  }
+  steps.push("Desktop distinguishes disconnected/ready empty catalogs and opens creation from both");
 }
 
 async function verifyDesktopDiagnostics(page, host, steps) {
@@ -261,7 +365,8 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       deviceId: pairing.deviceId, name: "隔离浏览器", platform: "web",
       online: true, createdAt: now, lastSeenAt: now,
     }],
-    runtime: { state: "ready", detail: "固定响应宿主", activeTurns: remotePreview ? 1 : 0, maxParallelTurns: 1 },
+    runtime: { state: "ready", detail: "固定响应宿主", activeTurns: remotePreview ? 1 : 0, maxParallelTurns: 1,
+      desktopIntegration: { state: "ready", detail: "隔离 Native 宿主", enabled: true, canRestart: false } },
     runtimes: [{
       id: "claude-desktop", name: "Claude Desktop", state: "ready", detail: "隔离宿主",
       capabilities: ["session.list", "session.history", "turn.start", "permission.resolve", ...(native || remotePreview ? ["attachment.image"] : []), ...(native ? ["session.create", "workspace.trust", "session.configure", "prompt.resolve", "pr.autofix"] : [])],
@@ -2659,10 +2764,10 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
     if (scenario === "native-prompts-pr") await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
     if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
-    if (scenario === "project-grouping") Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
+    if (["project-grouping", "session-catalog"].includes(scenario)) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (scenario === "section-manage") await syncNativeSections(host);
     context = await browser.newContext({
       viewport: { width: 375, height: 812 }, colorScheme: theme,
@@ -2715,11 +2820,12 @@ async function runScenario(theme, scenario) {
     await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
     assert.equal(await page.locator("html").getAttribute("data-theme"), theme);
-    assert.equal(await page.locator("[data-session-id]").count(), ["project-grouping", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the visible session rows");
+    assert.equal(await page.locator("[data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the visible session rows");
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
     if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
+    else if (scenario === "session-catalog") await verifySessionCatalog(page, host, steps, directory, viewports);
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
     else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory);

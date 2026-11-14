@@ -700,14 +700,14 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 .mobile-settings-row.danger > svg:first-child { color: var(--danger-ink); }
 .mobile-settings-group > .inline-error { margin: 8px 0; }
 .mobile-settings-row.detail-text,
-.mobile-settings-group > .mobile-settings-row.inline-error {
+.mobile-settings-row.updater-error {
   min-height: 0;
   margin: 0;
   font-size: var(--m-fs-footnote);
   line-height: 1.6;
 }
 .mobile-settings-row.detail-text { color: var(--muted); }
-.mobile-settings-row.inline-error { color: var(--danger-ink); }
+.mobile-settings-row.updater-error { color: var(--danger-ink); }
 .mobile-settings-value { color: var(--muted); font-size: var(--m-fs-callout); }
 .mobile-settings-actions { flex-wrap: wrap; }
 .mobile-settings-actions > button { flex: 1; min-height: var(--m-touch); border-radius: var(--m-r-control); }

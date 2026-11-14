@@ -313,7 +313,7 @@ export function RemoteDesktopUpdaterSection({
         </div>
       )}
       {(error || updater?.error) && (
-        <p className="mobile-settings-row inline-error" role="alert">{error || updater?.error}</p>
+        <p className="mobile-settings-row updater-error" role="alert">{error || updater?.error}</p>
       )}
       {remote.supported && (
         <div className="mobile-settings-row mobile-settings-actions">
@@ -414,7 +414,7 @@ export function MobileClientUpdaterSection({ updater }: { updater: ClientUpdater
               <ProgressBar downloadedBytes={state.downloadedBytes} totalBytes={state.totalBytes} />
             </div>
           )}
-          {state.error && <p className="mobile-settings-row inline-error" role="alert">{state.error}</p>}
+          {state.error && <p className="mobile-settings-row updater-error" role="alert">{state.error}</p>}
           <div className="mobile-settings-row mobile-settings-actions">
             <button
               type="button"

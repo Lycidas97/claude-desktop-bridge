@@ -226,7 +226,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
   const socket = new BridgeSocket({ crypto, role: "desktop", createRoom: true, reconnect: false });
   const host = {
     socket, crypto, pairing, session, snapshot, events, history, requests, resumeBatches, nativeQueue, nativeTrace: [],
-    nativeImages: new Map(), imageTransfers: new Map(),
+    nativeImages: new Map(), imageTransfers: new Map(), systemUpdateError: "",
     send: (payload) => socket.send(payload, "mobile", { crypto, toDeviceId: pairing.deviceId }),
     historyPage(cursor, limit = 50) {
       const end = cursor ? history.findIndex(item => item.id === cursor) : history.length;
@@ -527,6 +527,10 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           result = { status: "available", fetchedAt: Date.now(), accounts: [{ provider: "claude", name: "隔离 Magpie 账号", windows: [{ name: "5 hours", remaining: 73 }, { name: "7 days", remaining: 81 }] }] };
           break;
         case "system.update": {
+          if (host.systemUpdateError) {
+            error = { code: "UPDATE_REJECTED", message: host.systemUpdateError };
+            break;
+          }
           const action = request.params?.action ?? "status";
           if (action === "check") {
             snapshot.updater = { ...snapshot.updater, phase: "available", latestVersion: "1.3.3", assetName: "Bridge-1.3.3-windows-installer-ci.zip", statusDetail: "发现新版本 v1.3.3" };
@@ -1672,27 +1676,44 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.getByRole("button", { name: "检查并升级桌面端", exact: true }).click();
   await eventually(() => host.requests.some(request => request.method === "system.update" && request.params.action === "apply"), true, "Mobile triggers encrypted system.update apply RPC");
   await eventually(() => page.locator(".mobile-settings-page").innerText().then(t => t.includes("正在重启升级")), true, "Remote desktop status reflects applying phase over E2EE");
-  for (const title of ["远端桌面状态", "版本与更新"]) {
-    const rows = await page.getByRole("region", { name: title, exact: true }).locator(":scope > :not(h2)").evaluateAll(elements => elements.map(element => {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, background: style.backgroundColor,
-        topRadius: style.borderTopLeftRadius, bottomRadius: style.borderBottomLeftRadius };
-    }));
-    assert.ok(rows.length >= 4, `${title} includes version, details, and actions`);
-    for (const [index, row] of rows.entries()) {
-      assert.equal(row.left, rows[0].left, `${title} rows share the left card edge`);
-      assert.equal(row.right, rows[0].right, `${title} rows share the right card edge`);
-      assert.equal(row.background, rows[0].background, `${title} details stay inside the card background`);
-      if (index > 0) {
-        assert.equal(row.top, rows[index - 1].bottom, `${title} has no gaps between rows`);
-        assert.equal(row.topRadius, "0px", `${title} only rounds the first row's top corners`);
+  async function assertUpdaterCards() {
+    for (const title of ["远端桌面状态", "版本与更新"]) {
+      const rows = await page.getByRole("region", { name: title, exact: true }).locator(":scope > :not(h2)").evaluateAll(elements => elements.map(element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, background: style.backgroundColor,
+          topRadius: [style.borderTopLeftRadius, style.borderTopRightRadius], bottomRadius: [style.borderBottomLeftRadius, style.borderBottomRightRadius],
+          topBorder: style.borderTopWidth, sideBorders: [style.borderLeftColor, style.borderRightColor] };
+      }));
+      assert.ok(rows.length >= 4, `${title} includes version, details, and actions`);
+      for (const [index, row] of rows.entries()) {
+        assert.equal(row.left, rows[0].left, `${title} rows share the left card edge`);
+        assert.equal(row.right, rows[0].right, `${title} rows share the right card edge`);
+        assert.equal(row.background, rows[0].background, `${title} details stay inside the card background`);
+        assert.deepEqual(row.sideBorders, rows[0].sideBorders, `${title} rows share the card border color`);
+        if (index > 0) {
+          assert.equal(row.top, rows[index - 1].bottom, `${title} has no gaps between rows`);
+          assert.deepEqual(row.topRadius, ["0px", "0px"], `${title} only rounds the first row's top corners`);
+          assert.equal(row.topBorder, "0px", `${title} inner rows do not start a separate box`);
+        }
+        if (index < rows.length - 1) assert.deepEqual(row.bottomRadius, ["0px", "0px"], `${title} only rounds the last row's bottom corners`);
       }
-      if (index < rows.length - 1) assert.equal(row.bottomRadius, "0px", `${title} only rounds the last row's bottom corners`);
     }
   }
+  await assertUpdaterCards();
   await page.screenshot({ path: resolve(directory, "settings-updater-cards.png"), fullPage: true });
-  steps.push("mobile Settings keeps remote updater details/actions and Web release fallback in continuous cards and triggers E2EE system.update upgrade");
+  host.snapshot.updater = { ...host.snapshot.updater, phase: "idle" };
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await eventually(() => page.getByRole("button", { name: "检查更新", exact: true }).isEnabled(), true, "Remote updater is idle before the rejection check");
+  host.systemUpdateError = "隔离更新请求失败";
+  await page.getByRole("button", { name: "检查更新", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: host.systemUpdateError }).waitFor();
+  for (const family of ["Sunstone", "Apple"]) {
+    await page.getByRole("group", { name: "主题风格", exact: true }).getByRole("button", { name: family, exact: true }).click();
+    await assertUpdaterCards();
+    await page.getByRole("region", { name: "远端桌面状态", exact: true }).screenshot({ path: resolve(directory, `settings-updater-error-${family}.png`) });
+  }
+  steps.push("mobile Settings keeps updater details/actions, rejected RPC errors, and Web release fallback in continuous cards in Sunstone/Apple themes and triggers E2EE system.update upgrade");
 }
 
 async function verifyNativeQueueActions(page, host, steps, directory) {

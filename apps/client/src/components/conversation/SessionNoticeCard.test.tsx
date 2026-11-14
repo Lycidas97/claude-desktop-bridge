@@ -32,6 +32,23 @@ describe("cross-session messages", () => {
     expect(html).not.toMatch(/cross-session-message|local_fixture/u);
   });
 
+  it.each([
+    '请核对这个结束标签：`</cross-session-message>`。正文继续。',
+    '复现输入：\n\n```xml\n<cross-session-message from="example" from-name="示例">例子</cross-session-message>\n```\n\n以上是测试输入。',
+  ])("preserves closing-tag examples within the actual Markdown body: %s", body => {
+    expect(parseSessionNotice(crossSession.replace(crossSessionBody, body))?.reports)
+      .toEqual([{ title: "Issue 巡检", text: body }]);
+  });
+
+  it("parses each message's complete wrapper in a batch", () => {
+    const source = `${wrappedCrossSession}\n\n${wrappedCrossSession.replace('from-name="Issue 巡检"', 'from-name="构建"').replace(crossSessionBody, "构建通过")}`;
+    expect(parseSessionNotice(source)?.reports).toEqual([
+      { title: "Issue 巡检", text: crossSessionBody },
+      { title: "构建", text: "构建通过" },
+    ]);
+    expect(parseSessionNotice(`${source} 不要合并，先等我确认。`)).toBeUndefined();
+  });
+
   it("preserves a real user reply appended on the provenance paragraph's line", () => {
     expect(parseSessionNotice(`${wrappedCrossSession} 不要合并，先等我确认。`)).toBeUndefined();
   });

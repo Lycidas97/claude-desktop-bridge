@@ -46,7 +46,7 @@ function nativeSnapshot() {
       desktopIntegration: { state: "disconnected", enabled: true, canRestart: false },
     },
     runtimes: [{ id: "claude-desktop", state: "unavailable", capabilities: ["session.list", "session.history"] }],
-    connection: "connected",
+    connection: "connected", diagnosticsEnabled: false,
   };
 }
 
@@ -59,6 +59,7 @@ async function runQa(snapshot, overrides = {}) {
     async waitFor() {},
     async click() {},
     async isVisible() { return true; },
+    async isChecked() { return snapshot.diagnosticsEnabled; },
     getByRole(role, options) { ui.push(options?.name); return locator; },
     getByText(text) { ui.push(text); return locator; },
   };
@@ -120,6 +121,7 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
   assert.ok(result.ui.includes(".desktop-sidebar-empty"));
   assert.ok(result.ui.includes("连接与启动"));
   assert.ok(result.ui.includes("诊断与关于"));
+  assert.ok(result.ui.some(label => String(label).includes("后台诊断记录")));
   assert.ok(result.ui.includes('dt:text-is("原生中转") + dd'));
   assert.ok(result.ui.includes("已就绪"));
   assert.ok(result.ui.includes("版本更新"));

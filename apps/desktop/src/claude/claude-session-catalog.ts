@@ -4,6 +4,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, win32 as windowsPath } from "node:path";
 import { promisify } from "node:util";
 import type { BridgeProjectInfo, BridgeSessionInfo } from "@bridge/protocol";
+import { diag } from "../app/diag.js";
 import {
   listClaudeDesktopSessionState,
   type ClaudeDesktopProfile,
@@ -195,6 +196,7 @@ async function listProcessSessions(platform = process.platform): Promise<Process
   if ((platform !== "darwin" && platform !== "win32") || process.env.BRIDGE_DISABLE_PROCESS_SCAN === "1") {
     return undefined;
   }
+  diag("process.scan.start");
   let stdout: string;
   try {
     if (platform === "win32") {
@@ -220,6 +222,7 @@ async function listProcessSessions(platform = process.platform): Promise<Process
   } catch {
     return undefined;
   }
+  diag("process.scan.read", { codeUnits: stdout.length });
   if (platform === "win32") return indexClaudeProcesses(new Map(parseWindowsProcessRows(stdout).map((row) => [row.pid, row])), platform);
   const processes = new Map<number, ProcessRow>();
   for (const line of stdout.split("\n")) {
@@ -228,7 +231,9 @@ async function listProcessSessions(platform = process.platform): Promise<Process
     const startedAt = Date.parse(match[3]!);
     processes.set(Number(match[1]), { pid: Number(match[1]), ppid: Number(match[2]), command: match[4]!, startedAt: Number.isFinite(startedAt) ? startedAt : 0 });
   }
-  return indexClaudeProcesses(processes, platform);
+  const scan = indexClaudeProcesses(processes, platform);
+  diag("process.scan.done", { processes: processes.size, sessions: scan.sessions.size });
+  return scan;
 }
 
 async function listActiveSessions(
@@ -348,11 +353,13 @@ export async function scanClaudeCatalog(
   paths: ClaudeRuntimePaths,
   platform = process.platform,
 ): Promise<ClaudeCatalogSnapshot> {
+  diag("catalog.start");
   const [desktopState, activeSessions] = await Promise.all([
     listClaudeDesktopSessionState(paths.desktopSessions),
     listActiveSessions(paths.sessions, platform),
   ]);
   const { sessions: desktopSessions, archivedSessions: archivedDesktopSessions, metadataPaths, archivedCliSessionIds } = desktopState;
+  diag("catalog.listed", { sessions: desktopSessions.length, active: activeSessions.size });
   const observedAt = Date.now();
   const seen = new Set<string>();
   const sessions: ObservedClaudeSession[] = [];
@@ -489,6 +496,7 @@ export async function scanClaudeCatalog(
       });
     }
   }
+  diag("catalog.done", { sessions: sessions.length });
   return {
     projects: [...grouped.values()].sort((left, right) => right.lastActivityAt - left.lastActivityAt),
     sessions,

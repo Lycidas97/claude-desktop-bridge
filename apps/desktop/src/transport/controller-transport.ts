@@ -1,3 +1,4 @@
+import { diag, diagnostics } from "../app/diag.js";
 import { createHash } from "node:crypto";
 import {
   ARTIFACT_TRANSFER_TTL_MS,
@@ -232,6 +233,7 @@ export function connectDesktopTransport(host: DesktopTransportHost): void {
     host.queuePublish();
   });
   socket.onFrame((frame) => {
+    diag("transport.frame");
     if (frame.type !== "ready" && (frame.type !== "presence" || frame.role !== "mobile")) return;
     if (frame.type === "ready") {
       host.deflateDevices.clear();
@@ -265,6 +267,7 @@ export function connectDesktopTransport(host: DesktopTransportHost): void {
     host.queuePublish();
   });
   socket.onMessage((message, encrypted) => {
+    diag("transport.message");
     void host.receiveMessage(message, encrypted);
   });
   socket.connect();
@@ -292,45 +295,56 @@ export async function deliverTransportMessage(
     host.socket?.ack([encrypted.id]);
     return;
   }
-  await host.rememberDevice(message.header.fromDeviceId, message.payload.params);
-  const cached = host.responseCache.get(message.payload.requestId);
-  if (cached) {
-    await host.sendToDevice(cached, message.header.fromDeviceId, undefined, false, message.payload.method !== "snapshot.get");
-    host.socket?.ack([encrypted.id]);
-    return;
-  }
-  let response: BridgeResponse;
+  const method = diagnostics.method(message.payload.method);
+  const delivered = diagnostics.begin(`rpc.${method}`);
   try {
-    const result = await host.handleRequest(message.payload, "mobile", message.header.fromDeviceId);
-    response = { kind: "response", requestId: message.payload.requestId, ok: true, result };
-  } catch (error) {
-    response = formatError(message.payload.requestId, error);
-  }
-  if (
-    message.payload.method !== "artifact.preview" &&
-    message.payload.method !== "artifact.transfer.read" &&
-    message.payload.method !== "session.tool.detail"
-  ) host.cacheResponse(response);
-  const temporaryResponse = message.payload.method !== "turn.start" && message.payload.method !== "turn.steer";
-  await host.sendToDevice(
-    response,
-    message.header.fromDeviceId,
-    message.payload.method.startsWith("artifact.") || message.payload.method === "session.tool.detail"
-      ? ARTIFACT_TRANSFER_TTL_MS
-      : undefined,
-    temporaryResponse,
-    message.payload.method !== "snapshot.get",
-  ).catch(() => undefined);
-  host.socket?.ack([encrypted.id]);
-  if (
-    message.payload.method === "device.revoke" &&
-    response.ok &&
-    typeof message.payload.params.deviceId === "string" &&
-    message.payload.params.deviceId.trim() &&
-    message.payload.params.deviceId === message.header.fromDeviceId
-  ) {
-    setTimeout(() => void host.revokeDevice(message.header.fromDeviceId), 250);
-  }
+    await host.rememberDevice(message.header.fromDeviceId, message.payload.params);
+    const cached = host.responseCache.get(message.payload.requestId);
+    if (cached) {
+      diagnostics.cacheHit();
+      const sent = diagnostics.begin(`send.${method}`);
+      try { await host.sendToDevice(cached, message.header.fromDeviceId, undefined, false, message.payload.method !== "snapshot.get"); }
+      finally { sent(); }
+      host.socket?.ack([encrypted.id]);
+      return;
+    }
+    let response: BridgeResponse;
+    try {
+      const result = await host.handleRequest(message.payload, "mobile", message.header.fromDeviceId);
+      response = { kind: "response", requestId: message.payload.requestId, ok: true, result };
+    } catch (error) {
+      response = formatError(message.payload.requestId, error);
+    }
+    diagnostics.response(response, method);
+    if (
+      message.payload.method !== "artifact.preview" &&
+      message.payload.method !== "artifact.transfer.read" &&
+      message.payload.method !== "session.tool.detail"
+    ) host.cacheResponse(response);
+    const temporaryResponse = message.payload.method !== "turn.start" && message.payload.method !== "turn.steer";
+    const sent = diagnostics.begin(`send.${method}`);
+    try {
+      await host.sendToDevice(
+        response,
+        message.header.fromDeviceId,
+        message.payload.method.startsWith("artifact.") || message.payload.method === "session.tool.detail"
+          ? ARTIFACT_TRANSFER_TTL_MS
+          : undefined,
+        temporaryResponse,
+        message.payload.method !== "snapshot.get",
+      ).catch(() => undefined);
+    } finally { sent(); }
+    host.socket?.ack([encrypted.id]);
+    if (
+      message.payload.method === "device.revoke" &&
+      response.ok &&
+      typeof message.payload.params.deviceId === "string" &&
+      message.payload.params.deviceId.trim() &&
+      message.payload.params.deviceId === message.header.fromDeviceId
+    ) {
+      setTimeout(() => void host.revokeDevice(message.header.fromDeviceId), 250);
+    }
+  } finally { delivered(); }
 }
 
 export async function sendPayloadToDevice(
@@ -442,9 +456,15 @@ export function cacheDeviceResponse(
   responseCache: Map<string, BridgeResponse>,
   response: BridgeResponse,
 ): void {
+  const previous = responseCache.get(response.requestId);
+  if (previous) diagnostics.cacheEvict(previous);
   responseCache.set(response.requestId, response);
+  diagnostics.cacheInsert(response);
   while (responseCache.size > 500) {
     const oldest = responseCache.keys().next().value as string | undefined;
-    if (oldest) responseCache.delete(oldest);
+    if (oldest) {
+      diagnostics.cacheEvict(responseCache.get(oldest)!);
+      responseCache.delete(oldest);
+    }
   }
 }

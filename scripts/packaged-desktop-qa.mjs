@@ -146,6 +146,8 @@ try {
   await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
   await page.getByRole("button", { name: "诊断与关于", exact: true }).click();
   await page.locator('dt:text-is("原生中转") + dd').getByText("已就绪", { exact: true }).waitFor();
+  await page.getByRole("checkbox", { name: /后台诊断记录/u }).waitFor();
+  assert.equal(await page.getByRole("checkbox", { name: /后台诊断记录/u }).isChecked(), snapshot.diagnosticsEnabled);
   await page.getByRole("heading", { name: "版本更新", exact: true }).waitFor();
   assert.deepEqual(errors, []);
   await page.screenshot({ path: resolve(artifacts, "desktop-evidence.png"), fullPage: true });

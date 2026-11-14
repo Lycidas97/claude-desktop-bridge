@@ -46,7 +46,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
@@ -78,6 +78,35 @@ async function syncNativeSections(host) {
   if (deleteCapable) host.snapshot.host.capabilities.push("section.delete.v1");
   if (trustCapable) host.snapshot.host.capabilities.push("workspace.trust.v1");
   if (host.snapshot.runtimes?.[0]) host.snapshot.runtimes[0].capabilities = runtimeCapabilities;
+}
+
+async function verifyDesktopDiagnostics(page, host, steps) {
+  await page.addInitScript((snapshot) => {
+    window.bridgeDesktop = {
+      getSnapshot: async () => structuredClone(snapshot),
+      onSnapshot: () => () => {}, onEvent: () => () => {},
+      checkClaudeDesktopDeveloperSettings: async () => ({ supported: false, enabled: false, profiles: [] }),
+      setDiagnosticsEnabled: async (enabled) => {
+        snapshot.diagnosticsEnabled = enabled;
+        return structuredClone(snapshot);
+      },
+    };
+  }, { ...host.snapshot, sessions: [], projects: [], diagnosticsEnabled: false, launchAtLogin: false,
+    managedDesktopEnabled: false, connection: "connected",
+    claudeDesktop: { state: "running", detail: "Isolated fixture", canLaunch: false, canQuit: true } });
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "诊断与关于", exact: true }).click();
+  const toggle = page.getByRole("checkbox", { name: /后台诊断记录/u });
+  assert.equal(await toggle.isChecked(), false);
+  await page.getByText("后台诊断记录", { exact: true }).click();
+  await eventually(() => toggle.isChecked(), true, "Desktop uses the returned enabled state");
+  assert.equal(await page.evaluate(async () => (await window.bridgeDesktop.getSnapshot()).diagnosticsEnabled), true);
+  await page.getByText("后台诊断记录", { exact: true }).click();
+  await eventually(() => toggle.isChecked(), false, "Desktop uses the returned disabled state");
+  assert.equal(await page.evaluate(async () => (await window.bridgeDesktop.getSnapshot()).diagnosticsEnabled), false);
+  steps.push("Desktop recorder checkbox defaults off and renders returned local setting states");
 }
 
 async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview) {
@@ -2269,7 +2298,8 @@ async function runScenario(theme, scenario) {
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
-    if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
+    if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
+    else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory);
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);
     else if (scenario === "history-pagination") await verifyHistoryPagination(page, host, steps, directory);

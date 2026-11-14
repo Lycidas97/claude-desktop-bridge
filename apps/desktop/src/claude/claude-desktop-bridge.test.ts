@@ -168,6 +168,30 @@ async function fixture(legacy = false, evidence?: ConstructorParameters<typeof C
 
 const input = { sessionId: "local-native", text: "hello", requestId: "request", idempotencyKey: "key", origin: "mobile" as const };
 
+it.each(["assistant", "system"])("coalesces same-turn %s event projections without dropping messages", async (type) => {
+  const f = await fixture();
+  try {
+    for (let index = 1; index < 348; index++) f.native.sessions.push({ ...f.native.sessions[0], sessionId: `other-${index}` });
+    await f.bridge.refreshRuntime();
+    const project = vi.spyOn(f.bridge as unknown as { projectSessions(): void }, "projectSessions");
+    for (let index = 0; index < 32; index++) {
+      f.native.emit("event", {
+        type: "message", sessionId: "local-native",
+        session: { ...f.native.sessions[0], title: `burst-${index}` },
+        message: type === "assistant"
+          ? { type, uuid: `message-${index}`, message: { content: [{ type: "text", text: `Message ${index}` }] } }
+          : { type, uuid: `message-${index}`, subtype: "compact_boundary" },
+      });
+    }
+    await vi.waitFor(() => {
+      expect(f.bridge.session("local-native")?.title).toBe("burst-31");
+      expect(f.eventLog.replay(0, 100).filter(event => event.type === (type === "assistant" ? "assistant.completed" : "session.compacted"))).toHaveLength(32);
+    });
+    expect(f.bridge.listSessions()).toHaveLength(348);
+    expect(project).toHaveBeenCalledTimes(1);
+  } finally { await f.close(); }
+});
+
 describe("native application dialogs and PR Auto-fix", () => {
   it("marks native dialog wait from a snapshot and refreshes opened/resolved events without event.session", async () => {
     const f = await fixture();
@@ -2095,6 +2119,22 @@ describe("Claude native relay", () => {
       expect(completed?.data).toMatchObject({ toolName: "Read", text: expect.stringContaining("/project/payload.ts") });
       expect(completed?.data).not.toHaveProperty("output");
       expect((f.bridge as unknown as { tools: Map<string, unknown> }).tools.size).toBe(0);
+    } finally { await f.close(); }
+  });
+
+  it("collects evidence for a newly observed session before its deferred projection", async () => {
+    const upsertDesktopEvidence = vi.fn().mockResolvedValue({});
+    const f = await fixture(false, { upsertDesktopEvidence });
+    try {
+      const session = { ...f.native.sessions[0], sessionId: "new-native", cwd: "/new-project" };
+      f.native.sessions.push(session);
+      expect(f.bridge.session("new-native")).toBeUndefined();
+      f.native.emit("event", { type: "message", sessionId: "new-native", session, message: { type: "assistant", uuid: "new-call", message: { content: [{ type: "tool_use", id: "new-tool", name: "Read", input: { file_path: "/new-project/a.ts" } }] } } });
+      f.native.emit("event", { type: "message", sessionId: "new-native", session, message: { type: "user", uuid: "new-result", message: { content: [{ type: "tool_result", tool_use_id: "new-tool", content: "file contents" }] } } });
+      await vi.waitFor(() => {
+        expect(upsertDesktopEvidence).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sessionId: "new-native", cwd: "/new-project", readCwd: "/new-project", paths: ["/new-project/a.ts"] }));
+        expect(f.bridge.session("new-native")?.cwd).toBe("/new-project");
+      });
     } finally { await f.close(); }
   });
 

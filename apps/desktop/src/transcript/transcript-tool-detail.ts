@@ -1,4 +1,5 @@
 import { createReadStream } from "node:fs";
+import { diagnostics } from "../app/diag.js";
 import { createInterface } from "node:readline";
 import {
   TOOL_DETAIL_MAX_BYTES,
@@ -241,8 +242,10 @@ export async function readSubagentToolCallDetail(params: {
   const messages: unknown[] = [];
   const stream = createReadStream(targetPath, { encoding: "utf8" });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  const read = diagnostics.begin("file.toolDetail");
   try {
     for await (const line of lines) {
+      diagnostics.observe("file.toolDetail", line.length);
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
@@ -254,6 +257,7 @@ export async function readSubagentToolCallDetail(params: {
   } finally {
     lines.close();
     stream.destroy();
+    read();
   }
 
   return extractToolCallDetailFromMessages({

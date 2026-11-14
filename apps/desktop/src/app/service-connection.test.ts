@@ -9,6 +9,9 @@ import { build } from "esbuild";
 import { afterEach, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { DesktopServiceClient, connectDesktopService, serveDesktopService, type ServiceController } from "./service-connection.js";
+import { DesktopController } from "../controller/controller.js";
+import { DesktopConfigRepository } from "../transport/config.js";
+import { diagnostics } from "./diag.js";
 
 vi.mock("node:http", async (importOriginal) => {
   const actual = await importOriginal<typeof http>();
@@ -71,6 +74,30 @@ it("keeps the running task and pending approval alive across UI disconnect and r
   } finally { first.close(); second.close(); await server.close(); }
 });
 
+it("toggles the unified recorder and persisted profile through the authenticated local service", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-service-diag-"));
+  directories.push(root);
+  const configPath = join(root, "config.json");
+  const defaults = { relayUrl: "ws://127.0.0.1:9/ws", desktopName: "Fixture" };
+  const repository = new DesktopConfigRepository(configPath, { available: () => true, protect: value => value, unprotect: value => value }, defaults);
+  const config = await repository.loadOrCreate();
+  diagnostics.start(join(root, "diagnostics", "trace.sqlite"));
+  const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
+    config, repository, publish: async () => ({ diagnosticsEnabled: diagnostics.enabled }),
+  });
+  const addressPath = join(root, "address.json");
+  const server = await serveDesktopService({ addressPath, controller, shutdown() {} });
+  const client = new DesktopServiceClient(addressPath);
+  try {
+    await client.connect();
+    await expect(client.call("setDiagnosticsEnabled", true)).resolves.toMatchObject({ diagnosticsEnabled: true });
+    expect((await repository.load())?.diagnosticsEnabled).toBe(true);
+    expect((await stat(join(root, "diagnostics", "trace.sqlite"))).isFile()).toBe(true);
+    await expect(client.call("setDiagnosticsEnabled", false)).resolves.toMatchObject({ diagnosticsEnabled: false });
+    expect((await repository.load())?.diagnosticsEnabled).toBe(false);
+  } finally { client.close(); await server.close(); diagnostics.close(); }
+});
+
 it("requires the local bearer token and refuses non-allowlisted methods", async () => {
   const root = await mkdtemp(join(tmpdir(), "bridge-service-auth-"));
   directories.push(root);
@@ -88,6 +115,7 @@ it("requires the local bearer token and refuses non-allowlisted methods", async 
     await client.connect();
     await expect((client.call as (method: string) => Promise<unknown>)("close")).rejects.toThrow("Unknown service method");
     await expect(client.call("setLaunchAtLogin", "false" as unknown as boolean)).rejects.toThrow("Expected one boolean");
+    await expect(client.call("setDiagnosticsEnabled", "false" as unknown as boolean)).rejects.toThrow("Expected one boolean");
   } finally { client.close(); await server.close(); }
 });
 

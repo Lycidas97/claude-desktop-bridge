@@ -55,11 +55,30 @@ const profile = { supported: true, profiles: [{ id: "Claude" as const, path: "/f
 beforeEach(() => {
   hooks.slots = []; hooks.effects = []; hooks.pending = [];
   props = {
-    snapshot: { host: { name: "Fixture", version: "1.3.2", capabilities: [] }, sessions: [], runtime: { state: "unavailable" } } as unknown as DesktopControlSnapshot,
+    snapshot: { host: { name: "Fixture", version: "1.3.2", capabilities: [] }, sessions: [], permissions: [], diagnosticsEnabled: false, runtime: { state: "unavailable" } } as unknown as DesktopControlSnapshot,
     api: { checkClaudeDesktopDeveloperSettings: vi.fn().mockResolvedValue(profile), enableClaudeDesktopDeveloperSettings: vi.fn().mockRejectedValue(new Error("权限申请被取消，原配置未修改")) } as unknown as ComponentProps<typeof DesktopSettings>["api"],
     onSnapshot: vi.fn(), themeControl: {} as ComponentProps<typeof DesktopSettings>["themeControl"],
   };
   draw();
+});
+
+it("uses the local recorder setting and displays the returned state", async () => {
+  props.api.setDiagnosticsEnabled = vi.fn(async enabled => ({ ...props.snapshot, diagnosticsEnabled: enabled }));
+  button("诊断与关于").props.onClick(); draw();
+  const checkbox = () => elements().find(element => element.type === "input" && element.props.type === "checkbox")!;
+  expect(checkbox().props.checked).toBe(false);
+  checkbox().props.onChange({ target: { checked: true } }); await settle();
+  expect(props.api.setDiagnosticsEnabled).toHaveBeenCalledWith(true);
+  props.snapshot = vi.mocked(props.onSnapshot).mock.calls.at(-1)![0]; draw();
+  expect(checkbox().props.checked).toBe(true);
+  checkbox().props.onChange({ target: { checked: false } }); await settle();
+  expect(props.api.setDiagnosticsEnabled).toHaveBeenLastCalledWith(false);
+  props.snapshot = vi.mocked(props.onSnapshot).mock.calls.at(-1)![0]; draw();
+  expect(checkbox().props.checked).toBe(false);
+  vi.mocked(props.api.setDiagnosticsEnabled).mockRejectedValueOnce(new Error("Local recorder unavailable"));
+  checkbox().props.onChange({ target: { checked: true } }); await settle();
+  expect(checkbox().props.checked).toBe(false);
+  expect(text()).toContain("Local recorder unavailable");
 });
 
 it("lets the user retry after an enable attempt is canceled or denied", async () => {

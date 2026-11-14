@@ -127,6 +127,7 @@ interface DesktopConfigFileV4 extends Omit<DesktopConfigFileV3, "version" | "pro
   protocolVersion: typeof PROTOCOL_VERSION;
   pairingEpoch: number;
   protectedEvidenceKey?: string;
+  diagnosticsEnabled?: boolean;
   defaultPermissionMode?: BridgePermissionMode;
   runtimePermissionModes?: RuntimePermissionModes;
   relayUrlOverride?: string;
@@ -165,6 +166,7 @@ export interface LoadedDesktopConfig {
   evidenceKey: string;
   createdAt: number;
   launchAtLogin: boolean;
+  diagnosticsEnabled: boolean;
   managedDesktopEnabled: boolean;
   defaultPermissionMode: BridgePermissionMode;
   runtimePermissionModes: RuntimePermissionModes;
@@ -213,6 +215,7 @@ function assertConfig(value: unknown): DesktopConfigFile {
     protectedEvidenceKey?: unknown;
     createdAt?: unknown;
     launchAtLogin?: unknown;
+    diagnosticsEnabled?: unknown;
     managedDesktopEnabled?: unknown;
     defaultPermissionMode?: unknown;
     runtimePermissionModes?: unknown;
@@ -228,6 +231,7 @@ function assertConfig(value: unknown): DesktopConfigFile {
     typeof config.protectedHostSecret !== "string" ||
     typeof config.createdAt !== "number" ||
     typeof config.launchAtLogin !== "boolean" ||
+    (config.diagnosticsEnabled !== undefined && typeof config.diagnosticsEnabled !== "boolean") ||
     !Array.isArray(config.devices)
   ) throw new Error("Desktop config is incomplete");
   for (const device of config.devices as StoredDeviceConfig[]) assertDevice(device);
@@ -515,6 +519,7 @@ export class DesktopConfigRepository {
         evidenceKey: randomBytes(32).toString("base64url"),
         createdAt: config.createdAt,
         launchAtLogin: config.launchAtLogin,
+        diagnosticsEnabled: false,
         managedDesktopEnabled: false,
         defaultPermissionMode: "standard",
         runtimePermissionModes: {},
@@ -543,6 +548,7 @@ export class DesktopConfigRepository {
         : randomBytes(32).toString("base64url"),
       createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
+      diagnosticsEnabled: config.diagnosticsEnabled ?? false,
       // The unsupported managed Desktop experiment remains disabled during upgrade.
       managedDesktopEnabled: false,
       defaultPermissionMode: config.defaultPermissionMode ?? "standard",
@@ -599,6 +605,7 @@ export class DesktopConfigRepository {
       evidenceKey: randomBytes(32).toString("base64url"),
       createdAt: Date.now(),
       launchAtLogin,
+      diagnosticsEnabled: false,
       managedDesktopEnabled: false,
       defaultPermissionMode: "standard",
       runtimePermissionModes: {},
@@ -632,6 +639,7 @@ export class DesktopConfigRepository {
       protectedEvidenceKey: this.evidenceProtector.protect(config.evidenceKey),
       createdAt: config.createdAt,
       launchAtLogin: config.launchAtLogin,
+      diagnosticsEnabled: config.diagnosticsEnabled,
       managedDesktopEnabled: config.managedDesktopEnabled,
       defaultPermissionMode: config.defaultPermissionMode,
       ...(Object.keys(config.runtimePermissionModes).length

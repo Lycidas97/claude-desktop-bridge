@@ -232,6 +232,7 @@ async function desktopMain(): Promise<void> {
       return result.canceled ? undefined : result.filePaths[0];
     });
     handle("bridge:revoke-device", (deviceId: string) => controller.call("revokeDevice", deviceId));
+    handle("bridge:set-diagnostics-enabled", (enabled: boolean) => controller.call("setDiagnosticsEnabled", enabled));
     handle("bridge:set-launch-at-login", (enabled: boolean) => controller.call("setLaunchAtLogin", Boolean(enabled)));
     handle("bridge:set-relay-url", (url: string) => controller.call("setRelayUrl", url));
     handle("bridge:test-magpie-connection", (input: unknown) => controller.call("testMagpieConnection", input));

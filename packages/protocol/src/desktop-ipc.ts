@@ -34,6 +34,7 @@ export interface DesktopApi {
   createPairing(): Promise<DesktopControlSnapshot>;
   revokeDevice(deviceId: string): Promise<DesktopControlSnapshot>;
   setLaunchAtLogin(enabled: boolean): Promise<DesktopControlSnapshot>;
+  setDiagnosticsEnabled(enabled: boolean): Promise<DesktopControlSnapshot>;
   setRelayUrl(url: string): Promise<DesktopControlSnapshot>;
   testMagpieConnection?(input: BridgeMagpieConnectionInput): Promise<BridgeMagpieConnectionTestResult>;
   saveMagpieConnection?(input: BridgeMagpieConnectionInput): Promise<DesktopControlSnapshot>;

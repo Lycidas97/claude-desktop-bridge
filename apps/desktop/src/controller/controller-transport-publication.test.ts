@@ -100,7 +100,7 @@ async function fixture(withWebRtc = false, claudeUnavailable = false) {
     relayEndpoints: [{ id: "local", kind: "public-relay", url: relayUrl, priority: 1 }],
     activeEndpoint: "local", relayUrl, desktopName: "Synthetic desktop",
     hostDeviceId: host.crypto.identity.deviceId, hostSecret: host.secret, evidenceKey: host.secret,
-    iceServers: [], createdAt: 1, launchAtLogin: false, managedDesktopEnabled: false,
+    iceServers: [], createdAt: 1, launchAtLogin: false, diagnosticsEnabled: false, managedDesktopEnabled: false,
     defaultPermissionMode: "standard", runtimePermissionModes: {},
     devices: [{
       deviceId: paired.pairing.deviceId, name: "Synthetic phone", platform: "android",

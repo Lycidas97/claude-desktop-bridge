@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { BridgeInspectorAlert, BridgeInspectorStatus } from "@bridge/protocol";
 
@@ -11,6 +12,8 @@ const resources = vi.hoisted(() => {
     controller: { ...resource(), attachUpdater: vi.fn(async () => {}), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
     updater: { initialize: vi.fn(async () => {}), close: vi.fn() },
     cleanupRtc: vi.fn(),
+    diagnosticsEnabled: false,
+    diagnostics: { start: vi.fn(), setEnabled: vi.fn(), close: vi.fn() },
     inspector: { start: vi.fn(async () => {}), close: vi.fn(), notificationFailed: vi.fn() },
     inspectorOptions: undefined as undefined | { onUpdate(status: BridgeInspectorStatus): void; onAlert(alert: BridgeInspectorAlert): string | undefined; startup?: (listening: boolean) => Promise<string | undefined> },
     notificationSupported: vi.fn(() => true), showNotification: vi.fn(),
@@ -28,7 +31,7 @@ vi.mock("electron", () => ({
 vi.mock("../claude/claude-inspector-monitor.js", () => ({ ClaudeInspectorMonitor: class { constructor(options: NonNullable<typeof resources.inspectorOptions>) { resources.inspectorOptions = options; return resources.inspector; } } }));
 vi.mock("../transport/config.js", () => ({
   fileSecretProtector: vi.fn(),
-  DesktopConfigRepository: class { async loadOrCreate() { return { evidenceKey: "test-key" }; } },
+  DesktopConfigRepository: class { async loadOrCreate() { return { evidenceKey: "test-key", diagnosticsEnabled: resources.diagnosticsEnabled }; } },
 }));
 vi.mock("../claude/connector.js", () => ({ removeLegacyConnector: vi.fn(async () => {}) }));
 vi.mock("./platform.js", () => ({
@@ -44,11 +47,13 @@ vi.mock("../evidence/artifact-preview.js", () => ({ ElectronEvidencePreviewRende
 vi.mock("../claude/claude-desktop-bridge.js", () => ({ ClaudeDesktopBridge: class { constructor(options: unknown) { resources.nativeOptions(options); return resources.broker; } } }));
 vi.mock("../controller/controller.js", () => ({ DesktopController: class { constructor() { return resources.controller; } } }));
 vi.mock("../updater/desktop-updater.js", () => ({ DesktopUpdater: class { constructor() { return resources.updater; } } }));
+vi.mock("./diag.js", () => ({ diagnostics: resources.diagnostics }));
 vi.mock("./claude-desktop-lifecycle.js", () => ({ ClaudeDesktopLifecycle: class {} }));
 vi.mock("../transport/webrtc-runtime.js", () => ({ loadDesktopPeerConnection: vi.fn(), cleanupDesktopPeerConnection: resources.cleanupRtc }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resources.diagnosticsEnabled = false;
   resources.notifications.length = 0;
   resources.inspectorOptions = undefined;
   resources.notificationSupported.mockReturnValue(true);
@@ -63,6 +68,7 @@ it.each(["eventLog", "state", "evidence", "controller"] as const)("unwinds acqui
   const { createServiceRuntime } = await import("./service-runtime.js");
   await expect(createServiceRuntime({ userDataPath: "/test/bridge" })).rejects.toThrow(failure.message);
   expect(resources.eventLog.close).toHaveBeenCalledOnce();
+  expect(resources.diagnostics.close).toHaveBeenCalledOnce();
   if (stage !== "eventLog") expect(resources.state.close).toHaveBeenCalledOnce();
   if (stage === "evidence" || stage === "controller") expect(resources.evidence.close).toHaveBeenCalledOnce();
   if (stage === "controller") {
@@ -71,6 +77,17 @@ it.each(["eventLog", "state", "evidence", "controller"] as const)("unwinds acqui
     }
     expect(resources.cleanupRtc).toHaveBeenCalledOnce();
   }
+});
+
+it("restores the saved diagnostic preference and releases the recorder with the service", async () => {
+  resources.diagnosticsEnabled = true;
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
+  expect(resources.diagnostics.start).toHaveBeenCalledWith(join("/test/bridge", "background-service", "diagnostics", "trace.sqlite"));
+  expect(resources.diagnostics.setEnabled).toHaveBeenCalledWith(true);
+  expect(resources.diagnostics.setEnabled.mock.invocationCallOrder[0]).toBeLessThan(resources.eventLog.initialize.mock.invocationCallOrder[0]!);
+  await runtime.close();
+  expect(resources.diagnostics.close).toHaveBeenCalledOnce();
 });
 
 it("shares shutdown completion and closes each resource once", async () => {

@@ -157,6 +157,7 @@ export function DesktopSettings({ snapshot, api, onSnapshot, themeControl }: {
           <div><dt>待处理审批</dt><dd>{snapshot.permissions.length}</dd></div>
           <div><dt>事件游标</dt><dd>{snapshot.latestSeq}</dd></div>
         </dl>
+        <label className="toggle-row"><span><strong>后台诊断记录</strong><small>仅本机保存，内存快照可能包含会话内容</small></span><input type="checkbox" checked={snapshot.diagnosticsEnabled} onChange={event => { setExportError(""); void api.setDiagnosticsEnabled(event.target.checked).then(onSnapshot).catch((reason: unknown) => setExportError(reason instanceof Error ? reason.message : "诊断设置失败")); }} /><i aria-hidden="true" /></label>
         <div className="settings-inline-actions">
           <button type="button" className="secondary-button" onClick={() => setDiagDialogOpen(true)}><Activity size={16} />连接诊断与日志</button>
           <button type="button" className="secondary-button" onClick={() => { setExportError(""); void api.exportDiagnostics().catch((reason: unknown) => setExportError(reason instanceof Error ? reason.message : "诊断导出失败")); }}><Download size={16} />导出诊断</button>

@@ -28,6 +28,7 @@ import {
   type SocketState,
 } from "@bridge/protocol";
 import type { App } from "electron";
+import { diag, diagnostics } from "../app/diag.js";
 import type { MemoryRecorder } from "../app/memory-recorder.js";
 import { createMagpieQuotaPlugin } from "../../../../plugins/magpie-quota/desktop.js";
 import type { ClaudeDesktopLifecycle } from "../app/claude-desktop-lifecycle.js";
@@ -191,6 +192,7 @@ export class DesktopController extends EventEmitter {
       ? this.config.devices.find((device) => device.deviceId === this.currentPairingDeviceId && !device.revokedAt)
       : undefined;
     const runtimes = this.desktopRuntimes();
+    diag("snapshot.build", { runtimes: runtimes.length });
     return {
       host: {
         hostId: this.config.hostDeviceId,
@@ -258,6 +260,7 @@ export class DesktopController extends EventEmitter {
       latestSeq: this.eventLog.latestSeq(),
       connection: this.connection,
       launchAtLogin: this.config.launchAtLogin,
+      diagnosticsEnabled: diagnostics.enabled,
       managedDesktopEnabled: this.config.managedDesktopEnabled,
       claudeDesktop: await this.claudeDesktop.status(),
       desktopApps: await this.desktopAppStatuses(),
@@ -326,6 +329,14 @@ export class DesktopController extends EventEmitter {
       type: "device.revoked",
       data: { deviceId },
     });
+    return this.publish();
+  }
+
+  async setDiagnosticsEnabled(enabled: boolean): Promise<DesktopControlSnapshot> {
+    if (!this.config) throw new Error("Desktop controller is not initialized");
+    this.config.diagnosticsEnabled = enabled;
+    await this.repository.save(this.config);
+    diagnostics.setEnabled(enabled);
     return this.publish();
   }
 
@@ -669,51 +680,55 @@ export class DesktopController extends EventEmitter {
   }
 
   private async publish(): Promise<DesktopControlSnapshot> {
-    const [snapshot] = await Promise.all([this.snapshot(), this.publishPermissions()]);
-    this.emit("snapshot", snapshot);
-    // Catalog metadata and global runtime changes need a complete snapshot.
-    // Session runtime changes use the existing coalesced event channel.
-    const sessionKey = JSON.stringify({
-      capabilities: snapshot.host?.capabilities,
-      defaultPermissionMode: snapshot.host?.defaultPermissionMode,
-      runtimeDefaults: snapshot.runtimes?.map(runtime => [runtime.id, runtime.defaultPermissionMode]),
-      detection: snapshot.runtime?.detection,
-      runtime: [snapshot.runtime?.state, snapshot.runtime?.activeTurns, snapshot.runtime?.maxParallelTurns],
-      providers: snapshot.providers,
-      magpie: snapshot.magpie,
-      prompts: snapshot.prompts,
-      updater: snapshot.updater,
-      projects: snapshot.projects?.map(project => ({ projectId: project.projectId, name: project.name, kind: project.kind, cwd: project.cwd, runtimeId: project.runtimeId }))
-        .sort((a, b) => a.projectId.localeCompare(b.projectId)),
-    }) + "\n" + snapshot.sessions
-      .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.forkLabel ?? ""}\t${session.sidechat ? "1" : ""}\t${session.archivedAt ?? ""}\t${session.desktopArchivePending ? "1" : ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${JSON.stringify(session.desktopHandoff ?? null)}\t${JSON.stringify(session.nativePermissionModeChange ?? null)}`)
-      .sort()
-      .join("\n");
-    const previousKey = this.lastPublishedSessionKey;
-    const previousSessions = this.lastPublishedSessions;
-    const sessions = new Map(snapshot.sessions.map((session) => [session.sessionId, JSON.stringify(session)]));
-    this.lastPublishedSessionKey = sessionKey;
-    this.lastPublishedSessions = sessions;
-    if (previousKey !== sessionKey) {
-      await this.broadcast({ kind: "snapshot", snapshot }, true);
-    } else {
-      // Start all appends before waiting for disk so later snapshots cover their sequences.
-      await Promise.all([
-        ...snapshot.sessions.map((session) => {
-          if (previousSessions.get(session.sessionId) === sessions.get(session.sessionId)) return;
-          return this.eventLog.append({
-            sessionId: session.sessionId,
-            itemId: "session:subagent-activity",
-            origin: "system",
-            type: "runtime.updated",
-            data: { replaceSession: true, session },
-          });
-        }),
-      ]);
-    }
-    this.updater?.notifyIdleStateChanged(
-      snapshot.runtime.activeTurns === 0 && snapshot.permissions.length === 0,
-    );
-    return snapshot;
+    const published = diagnostics.begin("publish");
+    try {
+      const [snapshot] = await Promise.all([this.snapshot(), this.publishPermissions()]);
+      diag("publish.snapshot", { sessions: snapshot.sessions.length });
+      this.emit("snapshot", snapshot);
+      // Catalog metadata and global runtime changes need a complete snapshot.
+      // Session runtime changes use the existing coalesced event channel.
+      const sessionKey = JSON.stringify({
+        capabilities: snapshot.host?.capabilities,
+        defaultPermissionMode: snapshot.host?.defaultPermissionMode,
+        runtimeDefaults: snapshot.runtimes?.map(runtime => [runtime.id, runtime.defaultPermissionMode]),
+        detection: snapshot.runtime?.detection,
+        runtime: [snapshot.runtime?.state, snapshot.runtime?.activeTurns, snapshot.runtime?.maxParallelTurns],
+        providers: snapshot.providers,
+        magpie: snapshot.magpie,
+        prompts: snapshot.prompts,
+        updater: snapshot.updater,
+        projects: snapshot.projects?.map(project => ({ projectId: project.projectId, name: project.name, kind: project.kind, cwd: project.cwd, runtimeId: project.runtimeId }))
+          .sort((a, b) => a.projectId.localeCompare(b.projectId)),
+      }) + "\n" + snapshot.sessions
+        .map((session) => `${session.sessionId}\t${session.projectId}\t${session.projectName}\t${session.title}\t${session.parentSessionId ?? ""}\t${session.forkLabel ?? ""}\t${session.sidechat ? "1" : ""}\t${session.archivedAt ?? ""}\t${session.desktopArchivePending ? "1" : ""}\t${session.model ?? ""}\t${session.modelDisplayName ?? ""}\t${session.effort ?? ""}\t${JSON.stringify(session.desktopRegistration ?? null)}\t${JSON.stringify(session.desktopHandoff ?? null)}\t${JSON.stringify(session.nativePermissionModeChange ?? null)}`)
+        .sort()
+        .join("\n");
+      const previousKey = this.lastPublishedSessionKey;
+      const previousSessions = this.lastPublishedSessions;
+      const sessions = new Map(snapshot.sessions.map((session) => [session.sessionId, JSON.stringify(session)]));
+      this.lastPublishedSessionKey = sessionKey;
+      this.lastPublishedSessions = sessions;
+      if (previousKey !== sessionKey) {
+        await this.broadcast({ kind: "snapshot", snapshot }, true);
+      } else {
+        // Start all appends before waiting for disk so later snapshots cover their sequences.
+        await Promise.all([
+          ...snapshot.sessions.map((session) => {
+            if (previousSessions.get(session.sessionId) === sessions.get(session.sessionId)) return;
+            return this.eventLog.append({
+              sessionId: session.sessionId,
+              itemId: "session:subagent-activity",
+              origin: "system",
+              type: "runtime.updated",
+              data: { replaceSession: true, session },
+            });
+          }),
+        ]);
+      }
+      this.updater?.notifyIdleStateChanged(
+        snapshot.runtime.activeTurns === 0 && snapshot.permissions.length === 0,
+      );
+      return snapshot;
+    } finally { published(); }
   }
 }

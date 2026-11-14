@@ -26,6 +26,27 @@ afterEach(async () => {
 });
 
 describe("desktop configuration", () => {
+  it("defaults old profiles to diagnostics off and persists both toggle states without rotating identity", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-diag-"));
+    directories.push(directory);
+    const path = join(directory, "config.json");
+    const defaults = { relayUrl: "ws://127.0.0.1:9/ws", desktopName: "Fixture" };
+    const repository = new DesktopConfigRepository(path, protector, defaults);
+    const created = await repository.loadOrCreate();
+    expect(created.diagnosticsEnabled).toBe(false);
+    const stored = JSON.parse(await readFile(path, "utf8"));
+    delete stored.diagnosticsEnabled;
+    await writeFile(path, JSON.stringify(stored));
+    expect((await repository.load())?.diagnosticsEnabled).toBe(false);
+    for (const diagnosticsEnabled of [true, false]) {
+      await repository.save({ ...created, diagnosticsEnabled });
+      const restarted = await new DesktopConfigRepository(path, protector, defaults).load();
+      expect(restarted).toMatchObject({ diagnosticsEnabled, roomId: created.roomId, hostSecret: created.hostSecret, evidenceKey: created.evidenceKey, pairingEpoch: created.pairingEpoch });
+    }
+    await writeFile(path, JSON.stringify({ ...stored, diagnosticsEnabled: "false" }));
+    await expect(repository.load()).rejects.toThrow("Desktop config is incomplete");
+  });
+
   it.each([
     ["wss://manual.example:9443/custom/ws?region=west", "https://manual.example:9443"],
     ["ws://192.168.99.99:8788/custom/ws?region=west", "http://192.168.99.99:8788"],

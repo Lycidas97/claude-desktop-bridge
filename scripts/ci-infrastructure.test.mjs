@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as fs from 'node:fs';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -630,6 +630,9 @@ test('a failed Mac leg stops the remote Windows leg so its slot is released', { 
     assert.ok(stop, `No remote stop for win-local-ci-${runId}.ps1:\n${calls.join('\n')}`);
     assert.match(stop, /win-fixture/u);
     assert.ok(stop.includes(`ci-${runId}.bundle`) && stop.includes('bridge-recycle.exe'), stop);
+    const logDir = join(repoDir, '.git', 'local-ci', 'logs');
+    const [logName] = await readdir(logDir);
+    assert.match(await readFile(join(logDir, logName), 'utf8'), /\[MAC\] npm run test:infra exited with code 1/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -145,7 +145,9 @@ runners. Upon a full clean pass (after temporary-directory recycle cleanup compl
 `local-ci.mjs` records a receipt under `<git-common-dir>/local-ci/` and publishes the
 `ci/local-distributed = success` commit status to `Lycidas97/claude-desktop-bridge`
 (if `ci:local` ran before `git push`, `npm run ci:local -- --publish` publishes that
-receipt immediately after pushing).
+receipt immediately after pushing). Every run, passing or failing, also keeps its full
+output in `<git-common-dir>/local-ci/logs/<sha12>-<UTC time>.log` (path printed on the
+first line), so callers do not need to redirect it.
 
 `.github/workflows/ci.yml` is retained as a manual `workflow_dispatch` fallback that
 runs the full 6-job hosted matrix (`changes`, Linux `verify`, Windows installers,

@@ -230,7 +230,7 @@ export function MobileWorkspace({
   onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
   onDownloadSessionFile?(sessionId: string, filePath: string): Promise<void>;
   onUploadFile?: UploadFileHandler;
-  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], steer: boolean): Promise<{ requestId: string } | void>;
+  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[]): Promise<{ requestId: string } | void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
   onSteerQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
   onCancelQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
@@ -308,13 +308,12 @@ export function MobileWorkspace({
     text: string;
     attachments: BridgeAttachment[];
     sending: boolean;
-    steer: boolean;
     imageError?: string | undefined;
   }>>({});
   const [promptReplies, setPromptReplies] = useState<Record<string, Record<string, string | null>>>({});
   const draftKey = JSON.stringify([activeHostId, selectedSessionId]);
-  const draft = drafts[draftKey] ?? { text: "", attachments: [], sending: false, steer: false };
-  const { text, attachments, sending, steer, imageError } = draft;
+  const draft = drafts[draftKey] ?? { text: "", attachments: [], sending: false };
+  const { text, attachments, sending, imageError } = draft;
   function updateDraft(change: (current: typeof draft) => typeof draft): void {
     setDrafts((current) => ({ ...current, [draftKey]: change(current[draftKey] ?? draft) }));
   }
@@ -973,13 +972,9 @@ export function MobileWorkspace({
     const nextFiles = fileUploads.files;
     updateDraft((current) => ({ ...current, text: "", attachments: [], sending: true, imageError: undefined }));
     try {
-      if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) {
-        updateDraft(current => ({ ...current, steer: false }));
-        return;
-      }
-      await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, steer);
+      if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) return;
+      await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments);
       fileUploads.clear(nextFiles);
-      updateDraft((current) => ({ ...current, steer: false }));
     } catch (error) {
       updateDraft((current) => ({
         ...current,
@@ -1001,9 +996,8 @@ export function MobileWorkspace({
     ) return;
     updateDraft((current) => ({ ...current, sending: true }));
     try {
-      const receipt = await onSendTurn(selectedSession.sessionId, promptText.trim(), [], steer);
+      const receipt = await onSendTurn(selectedSession.sessionId, promptText.trim(), []);
       setPromptReplies((current) => ({ ...current, [draftKey]: { ...current[draftKey], [promptId]: receipt?.requestId ?? null } }));
-      updateDraft((current) => ({ ...current, steer: false }));
     } finally {
       updateDraft((current) => ({ ...current, sending: false }));
     }
@@ -1169,7 +1163,7 @@ export function MobileWorkspace({
         onRewind={(messageId, scope) => onRewindSession!(selectedSession.sessionId, messageId, scope)}
         onComplete={result => {
           if (result.scope !== "files") {
-            updateDraft(current => ({ ...current, text: result.prefill ?? "", attachments: [], steer: false }));
+            updateDraft(current => ({ ...current, text: result.prefill ?? "", attachments: [] }));
             fileUploads.clear(fileUploads.files);
           }
           setRewindTarget(undefined);
@@ -1437,12 +1431,6 @@ export function MobileWorkspace({
     const runtimeName = desktopRuntimeName(desktopRuntimeId(selectedSession));
     const canAttachImages = runtimeSupports(snapshot, selectedSession, "attachment.image");
     const canConfigure = canConfigureSession(selectedSession, snapshot);
-    const bridgeRunning = selectedSession.turnState === "running"
-      && (
-        selectedSession.ownership === "BRIDGE_RUNNING" ||
-        selectedSession.ownership === "DESKTOP_MANAGED_RUNNING" ||
-        selectedSession.ownership === "DESKTOP_NATIVE_RUNNING"
-      );
     const selectedBusy = selectedSession.pendingCount > 0
       || selectedSession.turnState === "running"
       || selectedSession.turnState === "queued"
@@ -1964,10 +1952,8 @@ export function MobileWorkspace({
           text,
           attachments,
           sending,
-          steer,
           imageError,
           canAttachImages,
-          bridgeRunning,
           commandDraft,
           hasDraft,
           stopTarget,

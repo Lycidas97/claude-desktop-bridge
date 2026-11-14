@@ -170,7 +170,6 @@ export function DesktopSessions({
   const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<BridgeAttachment[]>([]);
-  const [steer, setSteer] = useState(false);
   const [sending, setSending] = useState(false);
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
   const [stopError, setStopError] = useState<string>();
@@ -196,7 +195,7 @@ export function DesktopSessions({
       if (event.type === "session.reset" && event.data.previousSessionId === selectedId && typeof event.data.sessionId === "string") {
         const sessionId = event.data.sessionId;
         setHistory(current => ({ ...current, [sessionId]: { status: "ready", items: [], hasMore: false } }));
-        setText(""); setAttachments([]); setSteer(false); setConfigurationOpen(false); setSelectedId(sessionId);
+        setText(""); setAttachments([]); setConfigurationOpen(false); setSelectedId(sessionId);
         void onRefreshSnapshot().then(() => openSession(sessionId)).catch(reason => setStopError(reason instanceof Error ? reason.message : "新会话打开失败"));
       } else if (event.type === "session.rewound" && event.sessionId) {
         const sessionId = event.sessionId;
@@ -253,11 +252,6 @@ export function DesktopSessions({
   const rewindAvailable = selected?.transport === "claude-desktop-native" && snapshot.host.capabilities.includes("session.rewind.v1");
   const rewindDisabled = selected?.turnState === "running" || selected?.turnState === "waiting" || Boolean(selected?.pendingCount);
   const selectedEvidence = selectedId ? evidence[selectedId] : undefined;
-  const bridgeRunning = selected?.turnState === "running" && (
-    selected.ownership === "BRIDGE_RUNNING" ||
-    selected.ownership === "DESKTOP_MANAGED_RUNNING" ||
-    selected.ownership === "DESKTOP_NATIVE_RUNNING"
-  );
   const stopTarget = stoppableBridgeTask(snapshot.sessions, selected?.sessionId);
   const canStop = Boolean(stopTarget);
   const stopping = stopTarget?.sessionId === stoppingSessionId;
@@ -334,7 +328,6 @@ export function DesktopSessions({
 
   useEffect(() => {
     if (!selectedId) return;
-    setSteer(false);
     setSessionView("conversation");
     setConfigurationOpen(false);
     setStopError(undefined);
@@ -602,12 +595,9 @@ export function DesktopSessions({
     setSending(true);
     setCommandError(undefined);
     try {
-      if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) {
-        if (composerKeyRef.current === composerKey) setSteer(false);
-        return;
-      }
+      if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) return;
       unwrap(await apiRequest({
-        method: steer ? "turn.steer" : "turn.start",
+        method: "turn.start",
         params: {
           sessionId: selected.sessionId,
           text: appendUploadedFilePaths(nextText, nextFiles),
@@ -616,7 +606,6 @@ export function DesktopSessions({
         idempotencyKey: crypto.randomUUID(),
       }));
       fileUploads.clear(nextFiles);
-      if (composerKeyRef.current === composerKey) setSteer(false);
     } catch (error) {
       if (composerKeyRef.current !== composerKey) return;
       setCommandError(error instanceof Error ? error.message : "发送失败");
@@ -632,7 +621,7 @@ export function DesktopSessions({
     setSending(true);
     try {
       const response = await apiRequest({
-        method: steer ? "turn.steer" : "turn.start",
+        method: "turn.start",
         params: {
           sessionId: selected.sessionId,
           text: promptText.trim(),
@@ -642,7 +631,6 @@ export function DesktopSessions({
       });
       unwrap(response);
       setPromptReplies((current) => ({ ...current, [selected.sessionId]: { ...current[selected.sessionId], [promptId]: response.requestId } }));
-      setSteer(false);
     } finally {
       setSending(false);
     }
@@ -1224,12 +1212,6 @@ export function DesktopSessions({
                   {attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={12} /></button></span>)}
                 </div>
               )}
-              {bridgeRunning && !commandDraft && canSendSession(selected, snapshot) && (selectedRuntime === "claude-desktop" ? selected.allowedActions?.canSteer === true : selected.allowedActions?.canSteer !== false) && (
-                <div className="composer-mode">
-                  <button type="button" className={!steer ? "active" : ""} onClick={() => setSteer(false)}>排到下一轮</button>
-                  <button type="button" className={steer ? "active" : ""} onClick={() => setSteer(true)}>立即调整</button>
-                </div>
-              )}
               <form
                 className="composer-form composer-form--with-attachment"
                 onSubmit={(event) => { event.preventDefault(); void send(); }}
@@ -1303,7 +1285,7 @@ export function DesktopSessions({
           return result.rewind;
         }}
         onComplete={result => {
-          if (result.scope !== "files") { setText(result.prefill ?? ""); setAttachments([]); setSteer(false); fileUploads.clear(fileUploads.files); }
+          if (result.scope !== "files") { setText(result.prefill ?? ""); setAttachments([]); fileUploads.clear(fileUploads.files); }
           setRewindTarget(undefined);
         }}
         onClose={() => setRewindTarget(undefined)}

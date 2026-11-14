@@ -396,10 +396,13 @@ describe("desktop conversation actions", () => {
     expect(apiRequest).not.toHaveBeenCalled();
   });
 
-  it("preserves quick replies for wrap-up options", async () => {
+  it("preserves quick replies in running sessions without a composer mode selector", async () => {
+    Object.assign(snapshot.sessions[0]!, { turnState: "running", ownership: "DESKTOP_NATIVE_RUNNING" });
+    snapshot.sessions[0]!.allowedActions!.canSteer = true;
     history = [{ id: "wrap-up", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-host",
       interactivePrompt: { kind: "wrap-up", actions: [{ label: "Continue", message: "Continue the task" }] } }];
     await openSessions();
+    expect(elements(tree).some((element) => element.props.className === "composer-mode")).toBe(false);
     elements(tree).find((element) => element.type === InteractivePromptCard)!.props.onSelectOption("Continue the task"); await settle();
     expect(apiRequest).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ method: "turn.start", params: { sessionId: "A", text: "Continue the task", attachments: [] } }));
   });

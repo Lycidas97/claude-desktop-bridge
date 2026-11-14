@@ -221,7 +221,7 @@ describe("subagent actual model rendering", () => {
       toolCount: 7, durationMs: 30_000, updatedAt: 200, reportText: "Full child report",
     }));
     const refreshed = item(agent("ag01", {
-      toolUseId: "agent-call", state: "completed", updatedAt: 300, reportText: "Full child report",
+      toolUseId: "agent-call", state: "completed", durationMs: 0, updatedAt: 300, reportText: "Full child report",
     }));
     let current = focus;
     const render = () => {
@@ -242,12 +242,48 @@ describe("subagent actual model rendering", () => {
     expect(html).toContain("Full child report");
   });
 
+  it.each(["history", "tray"] as const)("retains metadata observed after opening from %s across a later sparse refresh", (source) => {
+    const focus = item(agent("ag01", { toolUseId: "agent-call", updatedAt: 100 }));
+    const observed = item(agent("ag01", {
+      toolUseId: "agent-call", model: "actual-model", toolCount: 7, durationMs: 30_000, updatedAt: 200,
+    }));
+    const sparse = item(agent("ag01", {
+      toolUseId: "agent-call", state: "completed", updatedAt: 300, reportText: "Current report",
+    }));
+    let current = focus;
+    let tray = focus.subagent!;
+    const render = () => {
+      hooks.index = 0;
+      return renderToStaticMarkup(createElement(BackgroundTasksSheet, {
+        sessionId: "A", focus, items: [current],
+        tasks: source === "tray" ? [{ ...reviewer, state: tray.state, subagent: tray }] : [],
+        renderSubagent: (entry) => createElement(SubagentCard, { item: entry, collapsible: false }),
+        onClose: vi.fn(),
+      }));
+    };
+    expect(render()).not.toContain("subagent-card-model");
+    if (source === "history") current = observed;
+    else tray = observed.subagent!;
+    const observedHtml = render();
+    expect(observedHtml).toContain("模型：actual-model");
+    expect(observedHtml).toContain("7 步");
+    expect(observedHtml).toContain("30s");
+    current = sparse;
+    tray = sparse.subagent!;
+    const html = render();
+    expect(html).toContain("模型：actual-model");
+    expect(html).toContain("7 步");
+    expect(html).toContain("30s");
+    expect(html).toContain("已完成");
+    expect(html).toContain("Current report");
+  });
+
   it("keeps observed steps when a newer tray summary has no execution details", () => {
     const stream = item(agent("ag01", {
       toolUseId: "agent-call", model: "codex/gpt-6.1-sol", toolCount: 7, durationMs: 30_000, updatedAt: 200,
     }));
     const task = { ...reviewer, state: "completed" as const, subagent: agent("ag01", {
-      toolUseId: "agent-call", state: "completed", updatedAt: 300,
+      toolUseId: "agent-call", state: "completed", durationMs: 0, updatedAt: 300,
     }) };
     const html = renderToStaticMarkup(createElement(BackgroundTasksSheet, {
       sessionId: "A", focus: stream, items: [stream], tasks: [task],
@@ -283,11 +319,14 @@ describe("subagent actual model rendering", () => {
 
   it("omits unobserved metadata in a completed detail panel", () => {
     const sparse = item(agent("ag01", { state: "completed", reportText: "Done" }));
+    const render = vi.fn((entry: BridgeHistoryItem) => createElement(SubagentCard, { item: entry, collapsible: false }));
     const html = renderToStaticMarkup(createElement(BackgroundTasksSheet, {
       sessionId: "A", focus: sparse, items: [sparse], tasks: [],
-      renderSubagent: (entry) => createElement(SubagentCard, { item: entry, collapsible: false }),
+      renderSubagent: render,
       onClose: vi.fn(),
     }));
+    expect(render.mock.calls[0]?.[0].subagent).not.toHaveProperty("durationMs");
+    expect(render.mock.calls[0]?.[0].subagent).not.toHaveProperty("model");
     expect(html).toContain("已完成");
     expect(html).not.toContain("subagent-card-model");
     expect(html).not.toMatch(/\d+ 步|\d+s</u);

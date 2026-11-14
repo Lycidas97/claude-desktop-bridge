@@ -117,6 +117,9 @@ function subagentItem(sessionId: string, subagent: BridgeSubagentSummary, items:
   return { ...streamItem, subagent: {
     ...merged,
     toolCount: Math.max(streamItem.subagent.toolCount, subagent.toolCount),
+    ...(streamItem.subagent.durationMs !== undefined || subagent.durationMs !== undefined
+      ? { durationMs: Math.max(streamItem.subagent.durationMs ?? 0, subagent.durationMs ?? 0) }
+      : {}),
     ...(streamItem.subagent.latestText ? { latestText: streamItem.subagent.latestText } : {}),
     ...(model ? { model } : {}),
     state: subagent.state,
@@ -211,10 +214,21 @@ export function BackgroundTasksSheet({
       ...focused.subagent,
       ...streamFocus.subagent,
       toolCount: Math.max(focused.subagent.toolCount, streamFocus.subagent.toolCount),
+      ...(focused.subagent.durationMs !== undefined || streamFocus.subagent.durationMs !== undefined
+        ? { durationMs: Math.max(focused.subagent.durationMs ?? 0, streamFocus.subagent.durationMs ?? 0) }
+        : {}),
       ...(model ? { model } : {}),
     };
     const focusItem = { ...streamFocus, subagent: focusSubagent };
     const focusTask = findBackgroundTask(tasks, focusSubagent);
+    const detailItem = focusTask?.subagent ? subagentItem(sessionId, focusTask.subagent, [focusItem]) : focusItem;
+    const detailSubagent = detailItem.subagent!;
+    // Retain observations from either source for the next sparse refresh.
+    if (focused.subagent.model !== detailSubagent.model
+      || focused.subagent.toolCount !== detailSubagent.toolCount
+      || focused.subagent.durationMs !== detailSubagent.durationMs) {
+      setFocused(detailItem);
+    }
     const kind = focusTask?.kind ?? itemKind(focusSubagent);
     const title = kind === "workflow" && focusSubagent.workflowRunId
       ? focusTask?.workflow?.name ?? focusTask?.description ?? KIND_TITLES.workflow
@@ -249,11 +263,7 @@ export function BackgroundTasksSheet({
             </button>
           </div>
         ) : (
-          renderSubagent(
-            focusTask?.subagent
-              ? subagentItem(sessionId, focusTask.subagent, [focusItem])
-              : focusItem,
-          )
+          renderSubagent(detailItem)
         )}
       </MobileSheet>
     );

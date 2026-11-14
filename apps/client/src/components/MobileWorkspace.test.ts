@@ -979,6 +979,30 @@ describe("question reply delivery association", () => {
     text: "Deploy the documentation", attachments: [], createdAt: 4, delivery,
   });
 
+  it("preserves answered native history against an older unanswered completed event", () => {
+    const answered = { ...question.interactivePrompt!, toolUseId: "ask", answered: true, questions: [{ question: "检查哪些？", multiSelect: true,
+      answer: "类型检查, 回归测试", options: [{ label: "稍后处理" }, { label: "类型检查", selected: true }, { label: "回归测试", selected: true }],
+    }] };
+    const event: BridgeEvent = { eventId: "original-question", seq: 1, timestamp: 1, sessionId: "session-1", origin: "claude-desktop",
+      itemId: question.id, type: "assistant.completed", data: { text: "", interactivePrompt: { ...answered, answered: false, questions: [{
+        question: "检查哪些？", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }],
+      }] } } };
+    expect(conversationItems("session-1", history([{ ...question, interactivePrompt: answered }]), [event], [])[0]?.interactivePrompt).toEqual(answered);
+  });
+
+  it("updates native selected answers without moving the question after later output", () => {
+    const answered = { ...question.interactivePrompt!, toolUseId: "ask", answered: true, questions: [{ question: "检查哪些？", multiSelect: true,
+      answer: "类型检查, 回归测试", options: [{ label: "稍后处理" }, { label: "类型检查", selected: true }, { label: "回归测试", selected: true }],
+    }] };
+    const event: BridgeEvent = { eventId: "question-answered", seq: 1, timestamp: 10, sessionId: "session-1", origin: "claude-desktop",
+      itemId: question.id, type: "assistant.completed", data: { text: "", interactivePrompt: answered } };
+    const items = conversationItems("session-1", history([question, {
+      id: "later-output", sessionId: "session-1", role: "assistant", text: "提问后的总结", createdAt: 2, origin: "claude-desktop",
+    }]), [event], []);
+    expect(items.map(item => item.id)).toEqual([question.id, "later-output"]);
+    expect(items[0]).toMatchObject({ createdAt: 1, interactivePrompt: answered });
+  });
+
   it.each(["host-received", "failed"] as const)("keeps a transcript-resolved question independent of a later %s task", delivery => {
     const resolved: BridgeHistoryItem = { ...question, interactivePrompt: {
       ...question.interactivePrompt!, answered: true,

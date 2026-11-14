@@ -1065,10 +1065,14 @@ async function verifyNativeApprovals(page, host, steps, directory) {
 
   const input = { questions: [
     { question: "选择执行范围", multiSelect: false, options: [{ label: "仅本机", description: "使用隔离测试目录" }, { label: "稍后处理" }] },
-    { question: "选择检查项目", multiSelect: true, options: [{ label: "类型检查" }, { label: "回归测试" }] },
+    { question: "选择检查项目", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }] },
   ] };
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   const question = await host.nativeApproval.open("AskUserQuestion", input);
+  for (const event of await host.nativeApproval.message({ type: "assistant", uuid: "native-question-card", timestamp: Date.now(), message: { content: [
+    { type: "tool_use", id: question.request.toolUseId, name: "AskUserQuestion", input },
+  ] } })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   const sessionRow = page.locator(`[data-session-id="${sessionId}"]`);
   await sessionRow.getByText("待回答", { exact: true }).waitFor();
   await page.getByText("有提问待你回答", { exact: true }).waitFor();
@@ -1097,9 +1101,22 @@ async function verifyNativeApprovals(page, host, steps, directory) {
   assert.equal(questionReply.requestId, question.request.requestId);
   assert.deepEqual(questionReply.response, { ...input, answers: { "选择执行范围": "仅本机", "选择检查项目": "类型检查, 回归测试" } });
   await questionCard.waitFor({ state: "hidden" });
+  for (const event of await host.nativeApproval.message({ type: "user", uuid: "native-question-result", timestamp: Date.now(), toolUseResult: questionReply.response, message: { content: [
+    { type: "tool_result", tool_use_id: question.request.toolUseId, content: "User has answered your questions." },
+  ] } })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  const answeredQuestion = page.locator(".interactive-prompt-card").filter({ hasText: "选择检查项目" });
+  await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Every single and multi-choice selection is visible after the native result");
+  assert.equal(await answeredQuestion.locator(".is-primary").count(), 0, "An answered question has no default first-option highlight");
+  assert.equal(await answeredQuestion.locator(".interactive-question-block").filter({ hasText: "选择检查项目" }).getByRole("button", { name: "稍后处理", exact: true }).getAttribute("class").then(value => value.includes("is-selected")), false);
+  await page.screenshot({ path: resolve(directory, "native-question-answered.png"), fullPage: true });
+  host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   await sessionRow.getByText("待回答", { exact: true }).waitFor({ state: "hidden" });
   await sessionRow.getByRole("button").first().click();
+  await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reopened native history retains every selection");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reloaded native history retains every selection");
   const resolutions = host.requests.filter((request) => request.method === "permission.resolve");
   assert.equal(resolutions.length, 3);
   assert.equal(new Set(resolutions.map((request) => request.params.requestId)).size, 3);

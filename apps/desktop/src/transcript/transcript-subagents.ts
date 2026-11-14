@@ -3,7 +3,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { BridgeBackgroundTask, BridgeSubagentSummary } from "@bridge/protocol";
-import { parseClaudeTranscriptSnapshot } from "./claude-history.js";
+import { readClaudeTranscriptBranch } from "./claude-history.js";
 import {
   findClaudeTranscriptFile,
   isNonDagTranscriptRecord,
@@ -268,9 +268,9 @@ async function parseParentTranscriptSubagents(transcriptPath: string): Promise<P
   let compactedAt = 0;
   const taskStates = new Map<string, { state: BridgeSubagentSummary["state"]; at: number }>();
 
-  const snapshot = await parseClaudeTranscriptSnapshot(transcriptPath, { limit: 1 });
-  const selected = new Set(snapshot.branch?.uuids);
-  const inherited = new Set(snapshot.branch?.inheritedUuids);
+  const branch = await readClaudeTranscriptBranch(transcriptPath);
+  const selected = new Set(branch.uuids);
+  const inherited = new Set(branch.inheritedUuids);
   const excludedTasks = new Set<string>();
   let anchorUuid: string | undefined;
   const callsByToolId = new Map<string, {

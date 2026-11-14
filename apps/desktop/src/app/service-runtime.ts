@@ -36,6 +36,7 @@ import { ConversationStateStore } from "../controller/conversation-state-store.j
 import { MagpieConnectionRepository } from "../claude/magpie-connection.js";
 import { DesktopUpdater, probeInstallDirectory } from "../updater/desktop-updater.js";
 import { ServiceResources } from "./service-resources.js";
+import type { MemoryRecorder } from "./memory-recorder.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
@@ -81,6 +82,7 @@ export async function createServiceRuntime(options: {
   userDataPath: string;
   onStage?(stage: string): void;
   hasConnectedUi?: () => boolean;
+  memoryRecorder?: Pick<MemoryRecorder, "diagnostics">;
 }): Promise<{
   controller: DesktopController;
   close(): Promise<void>;
@@ -173,6 +175,8 @@ export async function createServiceRuntime(options: {
       RTCPeerConnectionImpl,
       desktopAppControls,
       conversationState,
+      undefined,
+      options.memoryRecorder,
     );
 
     // The service owns the Claude broker and controller.

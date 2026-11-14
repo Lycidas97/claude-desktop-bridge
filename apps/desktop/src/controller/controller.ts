@@ -28,6 +28,7 @@ import {
   type SocketState,
 } from "@bridge/protocol";
 import type { App } from "electron";
+import type { MemoryRecorder } from "../app/memory-recorder.js";
 import { createMagpieQuotaPlugin } from "../../../../plugins/magpie-quota/desktop.js";
 import type { ClaudeDesktopLifecycle } from "../app/claude-desktop-lifecycle.js";
 import { isLaunchAtLoginEnabled, setLaunchAtLogin } from "../app/platform.js";
@@ -106,6 +107,7 @@ export class DesktopController extends EventEmitter {
     private readonly desktopAppControls?: ReadonlyMap<BridgeDesktopRuntimeId, ClaudeDesktopLifecycle>,
     private readonly conversationState?: ConversationStateStore,
     updater?: DesktopUpdater,
+    private readonly memoryRecorder?: Pick<MemoryRecorder, "diagnostics">,
   ) {
     super();
     this.updater = updater;
@@ -425,6 +427,7 @@ export class DesktopController extends EventEmitter {
         pendingPermissions: this.claudePermissions().length,
       },
       latestEventSeq: this.eventLog.latestSeq(),
+      ...(this.memoryRecorder ? { memory: this.memoryRecorder.diagnostics() } : {}),
     };
   }
 

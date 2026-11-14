@@ -29,6 +29,7 @@ import {
   createNativeContextState,
   parseLiveContextUsage,
   projectedContextUsage,
+  projectContextMessages,
   savedModelOption,
   type NativeContextState,
 } from "./native-context-usage.js";
@@ -607,7 +608,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     while (!boundaryFound && before) {
       const older = record(await this.inspector.call("getTranscriptPage", [id, before, limit, { window: "accept" }]));
       if (!Array.isArray(older.messages)) throw new NativeCallError("Desktop returned an invalid transcript page");
-      olderPages.unshift(older.messages);
+      if (!cursor) olderPages.unshift(projectContextMessages(older.messages));
       for (const message of nativePlanMessages(older.messages).reverse()) {
         const block = message.message.content[0]!;
         context.unshift(message);
@@ -654,7 +655,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         for (let hop = 0; !scan.anchored && before && page.messages.length >= limit && limit >= 20 && hop < 8; hop += 1) {
           const older = record(await this.inspector.call("getTranscriptPage", [id, before, Math.max(limit, 100), { window: "accept" }]));
           if (!Array.isArray(older.messages)) break;
-          combined = [...older.messages, ...combined];
+          combined = [...projectContextMessages(older.messages), ...combined];
           scan = scanClaudeContextFromMessages(combined);
           before = older.hasMore === true && typeof record(older.messages[0]).uuid === "string"
             ? String(record(older.messages[0]).uuid)

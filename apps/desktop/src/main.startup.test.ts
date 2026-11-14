@@ -4,11 +4,14 @@ const mocks = vi.hoisted(() => ({
   runtime: vi.fn(), server: vi.fn(), connect: vi.fn(),
   runtimeClose: vi.fn(async () => {}), serverClose: vi.fn(async () => {}),
   spawn: vi.fn(), logOpen: vi.fn(), logClose: vi.fn(async () => {}),
-  developerSettings: vi.fn(),
+  developerSettings: vi.fn(), memoryInitialize: vi.fn(), memoryClose: vi.fn(),
   windows: [] as Array<{ loadURL: ReturnType<typeof vi.fn>; show: ReturnType<typeof vi.fn>; webContents: { executeJavaScript: ReturnType<typeof vi.fn> } }>,
 }));
 vi.mock("./app/claude-desktop-developer-settings.js", () => ({ claudeDesktopDeveloperSettings: mocks.developerSettings }));
 vi.mock("./app/service-runtime.js", () => ({ createServiceRuntime: mocks.runtime }));
+vi.mock("./app/memory-recorder.js", () => ({ MemoryRecorder: class {
+  initialize = mocks.memoryInitialize; close = mocks.memoryClose; diagnostics() { return {}; }
+} }));
 vi.mock("./app/service-connection.js", () => ({ serveDesktopService: mocks.server, connectDesktopService: mocks.connect }));
 vi.mock("node:fs", () => ({ mkdirSync: vi.fn() }));
 vi.mock("node:fs/promises", () => ({ mkdir: vi.fn(async () => {}), writeFile: vi.fn(), open: mocks.logOpen }));
@@ -16,7 +19,7 @@ vi.mock("node:child_process", () => ({ spawn: mocks.spawn }));
 vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
   const app = Object.assign(new EventEmitter(), {
-    getPath: () => "/test/bridge", getAppPath: () => "/test/app", setPath: vi.fn(), requestSingleInstanceLock: () => true,
+    getPath: () => "/test/bridge", getAppPath: () => "/test/app", getVersion: () => "1.3.3", setPath: vi.fn(), requestSingleInstanceLock: () => true,
     enableSandbox: vi.fn(), whenReady: async () => {}, dock: { hide: vi.fn() },
     quit: vi.fn(), exit: vi.fn(), getLoginItemSettings: () => ({}),
   });
@@ -182,6 +185,27 @@ it("closes the runtime if starting the local listener fails", async () => {
   await import("./main.js");
   await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(1));
   expect(mocks.runtimeClose).toHaveBeenCalledOnce();
+  expect(mocks.memoryClose).toHaveBeenCalledOnce();
+  expect(mocks.memoryInitialize.mock.invocationCallOrder[0]).toBeLessThan(mocks.runtime.mock.invocationCallOrder[0]!);
+  expect(mocks.runtimeClose.mock.invocationCallOrder[0]).toBeLessThan(mocks.memoryClose.mock.invocationCallOrder[0]!);
+});
+
+it("releases the registered memory recorder if its initialization throws", async () => {
+  const { app } = await import("electron");
+  mocks.memoryInitialize.mockImplementationOnce(() => { throw new TypeError("invalid recorder schema"); });
+  await import("./main.js");
+  await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(1));
+  expect(mocks.memoryClose).toHaveBeenCalledOnce();
+  expect(mocks.runtime).not.toHaveBeenCalled();
+});
+
+it("does not open the recorder when another service owns the instance lock", async () => {
+  const { app } = await import("electron");
+  vi.spyOn(app, "requestSingleInstanceLock").mockReturnValueOnce(false);
+  await import("./main.js");
+  await vi.waitFor(() => expect(app.quit).toHaveBeenCalledOnce());
+  expect(mocks.memoryInitialize).not.toHaveBeenCalled();
+  expect(mocks.runtime).not.toHaveBeenCalled();
 });
 
 it("defers every quit until pending startup and cleanup finish", async () => {

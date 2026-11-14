@@ -420,17 +420,31 @@ export function updateClaudeTaskPlan(previous: BridgeTaskPlan | undefined, id: s
     ? { ...previous, items, updatedAt: Math.max(at, previous.updatedAt + 1) } : previous;
 }
 
-export async function parseClaudeTranscriptSnapshot(
+export function parseClaudeTranscriptSnapshot(
   path: string,
   options: ClaudeHistoryReadOptions = {},
   userLimit = 200,
+): Promise<ClaudeTranscriptSnapshot> {
+  return parseTranscript(path, options, userLimit, false);
+}
+
+export async function readClaudeTranscriptBranch(path: string): Promise<{ uuids: string[]; inheritedUuids: string[] }> {
+  const result = await parseTranscript(path, {}, 0, true);
+  return { uuids: result.branch?.uuids ?? [], inheritedUuids: result.branch?.inheritedUuids ?? [] };
+}
+
+async function parseTranscript(
+  path: string,
+  options: ClaudeHistoryReadOptions,
+  userLimit: number,
+  branchOnly: boolean,
 ): Promise<ClaudeTranscriptSnapshot> {
   const fileStat = await stat(path).catch(() => undefined);
   if (!fileStat) {
     return { available: false, messages: [], truncated: false, userMessages: [] };
   }
   const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}:${userLimit}`;
-  const cached = transcriptSnapshotCache.get(path);
+  const cached = branchOnly ? undefined : transcriptSnapshotCache.get(path);
   if (cached && cached.signature === cacheSignature) {
     return {
       available: true,
@@ -468,6 +482,17 @@ export async function parseClaudeTranscriptSnapshot(
         inheritedHead = value.bridgeFork.baseMessageUuid;
       }
       if (isNonDagTranscriptRecord(value)) continue;
+      if (branchOnly) {
+        if (typeof value.uuid !== "string" || !value.uuid) continue;
+        const existing = nodes.get(value.uuid);
+        const parentUuid = existing?.parentUuid ?? resolveTranscriptParentUuid(value, nodes, lastMainUuid);
+        if (parentUuid) referencedParents.add(parentUuid);
+        // This mode exits after ancestry selection, before any TranscriptNode body access.
+        nodes.set(value.uuid, { index: existing?.index ?? index, uuid: value.uuid,
+          ...(parentUuid ? { parentUuid } : {}) } as TranscriptNode);
+        lastMainUuid = value.uuid;
+        continue;
+      }
       const message = isRecord(value.message) ? value.message : undefined;
       const rawText = message ? textFromContent(message.content)
         : value.type === "attachment" && isRecord(value.attachment) && value.attachment.type === "queued_command"
@@ -601,6 +626,22 @@ export async function parseClaudeTranscriptSnapshot(
     available: true, messages: [], truncated: false, userMessages, atTurnBoundary: true,
     pendingBackgroundShellTaskIds: [], branch: { uuids: [], inheritedUuids: [], excludedMessageUuids: [], excludedToolUseIds: [], forkBaseMessageUuid: null },
   };
+  const chain: TranscriptNode[] = [];
+  const seen = new Set<string>();
+  let current: TranscriptNode | undefined = terminal;
+  while (current && !seen.has(current.uuid)) {
+    seen.add(current.uuid);
+    chain.push(current);
+    current = current.parentUuid ? nodes.get(current.parentUuid) : undefined;
+  }
+  chain.reverse();
+  const inheritedIndex = inheritedHead ? nodes.get(inheritedHead)?.index ?? -1 : -1;
+  const inheritedUuids = new Set(chain.filter((node) => node.index <= inheritedIndex).map((node) => node.uuid));
+  if (branchOnly) return {
+    available: true, messages: [], userMessages: [], truncated: false,
+    branch: { uuids: chain.map(node => node.uuid), inheritedUuids: [...inheritedUuids],
+      excludedMessageUuids: [], excludedToolUseIds: [] },
+  };
   const atTurnBoundary = transcriptTurnBoundary(nodes, terminal);
   let pendingUserMessageId: string | undefined;
   if (!atTurnBoundary) {
@@ -619,17 +660,6 @@ export async function parseClaudeTranscriptSnapshot(
     }
   }
 
-  const chain: TranscriptNode[] = [];
-  const seen = new Set<string>();
-  let current: TranscriptNode | undefined = terminal;
-  while (current && !seen.has(current.uuid)) {
-    seen.add(current.uuid);
-    chain.push(current);
-    current = current.parentUuid ? nodes.get(current.parentUuid) : undefined;
-  }
-  chain.reverse();
-  const inheritedIndex = inheritedHead ? nodes.get(inheritedHead)?.index ?? -1 : -1;
-  const inheritedUuids = new Set(chain.filter((node) => node.index <= inheritedIndex).map((node) => node.uuid));
   // Steering inputs and tool results remain part of the unfinished round. Only
   // explicit completion/interruption evidence establishes its preceding boundary.
   const completedHead = [...chain].reverse().find((node) => node.interruptedBoundary ||

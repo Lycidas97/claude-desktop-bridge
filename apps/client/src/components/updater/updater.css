@@ -52,7 +52,3 @@
   color: var(--accent-ink, var(--accent));
   font-weight: 600;
 }
-
-.updater-card-actions {
-  padding: 10px 16px 14px;
-}

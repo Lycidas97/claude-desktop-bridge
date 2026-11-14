@@ -226,7 +226,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
   const socket = new BridgeSocket({ crypto, role: "desktop", createRoom: true, reconnect: false });
   const host = {
     socket, crypto, pairing, session, snapshot, events, history, requests, resumeBatches, nativeQueue, nativeTrace: [],
-    nativeImages: new Map(), imageTransfers: new Map(),
+    nativeImages: new Map(), imageTransfers: new Map(), systemUpdateError: "",
     send: (payload) => socket.send(payload, "mobile", { crypto, toDeviceId: pairing.deviceId }),
     historyPage(cursor, limit = 50) {
       const end = cursor ? history.findIndex(item => item.id === cursor) : history.length;
@@ -527,6 +527,10 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           result = { status: "available", fetchedAt: Date.now(), accounts: [{ provider: "claude", name: "隔离 Magpie 账号", windows: [{ name: "5 hours", remaining: 73 }, { name: "7 days", remaining: 81 }] }] };
           break;
         case "system.update": {
+          if (host.systemUpdateError) {
+            error = { code: "UPDATE_REJECTED", message: host.systemUpdateError };
+            break;
+          }
           const action = request.params?.action ?? "status";
           if (action === "check") {
             snapshot.updater = { ...snapshot.updater, phase: "available", latestVersion: "1.3.3", assetName: "Bridge-1.3.3-windows-installer-ci.zip", statusDetail: "发现新版本 v1.3.3" };
@@ -1696,7 +1700,44 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.getByRole("button", { name: "检查并升级桌面端", exact: true }).click();
   await eventually(() => host.requests.some(request => request.method === "system.update" && request.params.action === "apply"), true, "Mobile triggers encrypted system.update apply RPC");
   await eventually(() => page.locator(".mobile-settings-page").innerText().then(t => t.includes("正在重启升级")), true, "Remote desktop status reflects applying phase over E2EE");
-  steps.push("mobile Settings displays remote desktop version, graceful Web release fallback, and triggers E2EE system.update upgrade");
+  async function assertUpdaterCards() {
+    for (const title of ["远端桌面状态", "版本与更新"]) {
+      const rows = await page.getByRole("region", { name: title, exact: true }).locator(":scope > :not(h2)").evaluateAll(elements => elements.map(element => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, background: style.backgroundColor,
+          topRadius: [style.borderTopLeftRadius, style.borderTopRightRadius], bottomRadius: [style.borderBottomLeftRadius, style.borderBottomRightRadius],
+          topBorder: style.borderTopWidth, sideBorders: [style.borderLeftColor, style.borderRightColor] };
+      }));
+      assert.ok(rows.length >= 4, `${title} includes version, details, and actions`);
+      for (const [index, row] of rows.entries()) {
+        assert.equal(row.left, rows[0].left, `${title} rows share the left card edge`);
+        assert.equal(row.right, rows[0].right, `${title} rows share the right card edge`);
+        assert.equal(row.background, rows[0].background, `${title} details stay inside the card background`);
+        assert.deepEqual(row.sideBorders, rows[0].sideBorders, `${title} rows share the card border color`);
+        if (index > 0) {
+          assert.equal(row.top, rows[index - 1].bottom, `${title} has no gaps between rows`);
+          assert.deepEqual(row.topRadius, ["0px", "0px"], `${title} only rounds the first row's top corners`);
+          assert.equal(row.topBorder, "0px", `${title} inner rows do not start a separate box`);
+        }
+        if (index < rows.length - 1) assert.deepEqual(row.bottomRadius, ["0px", "0px"], `${title} only rounds the last row's bottom corners`);
+      }
+    }
+  }
+  await assertUpdaterCards();
+  await page.screenshot({ path: resolve(directory, "settings-updater-cards.png"), fullPage: true });
+  host.snapshot.updater = { ...host.snapshot.updater, phase: "idle" };
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await eventually(() => page.getByRole("button", { name: "检查更新", exact: true }).isEnabled(), true, "Remote updater is idle before the rejection check");
+  host.systemUpdateError = "隔离更新请求失败";
+  await page.getByRole("button", { name: "检查更新", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: host.systemUpdateError }).waitFor();
+  for (const family of ["Sunstone", "Apple"]) {
+    await page.getByRole("group", { name: "主题风格", exact: true }).getByRole("button", { name: family, exact: true }).click();
+    await assertUpdaterCards();
+    await page.getByRole("region", { name: "远端桌面状态", exact: true }).screenshot({ path: resolve(directory, `settings-updater-error-${family}.png`) });
+  }
+  steps.push("mobile Settings keeps updater details/actions, rejected RPC errors, and Web release fallback in continuous cards in Sunstone/Apple themes and triggers E2EE system.update upgrade");
 }
 
 async function verifyNativeQueueActions(page, host, steps, directory) {
@@ -2019,8 +2060,8 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.deepEqual(await headers.allTextContents(), ["other-project", "claude-desktop-bridge"]);
   assert.equal(await mainGroup.locator('[data-session-id="browser-e2e-parent"]').count(), 1);
   assert.equal(await mainGroup.locator(".project-count-pill").innerText(), "2");
-  const primaryForkToggle = mainGroup.locator(".mobile-fork-toggle:not(.is-archived-fold)");
-  const archivedFoldToggle = mainGroup.locator(".mobile-fork-toggle.is-archived-fold");
+  const primaryForkToggle = mainGroup.locator(".mobile-fork-toggle");
+  const archiveEntry = page.locator(".archived-group .project-group-open");
   assert.equal(await primaryForkToggle.count(), 1);
   assert.equal((await primaryForkToggle.innerText()).trim(), "1 个 Fork 分支");
   assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
@@ -2029,16 +2070,16 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   await mainGroup.locator('[data-session-id="browser-e2e-fork"]').waitFor();
   assert.equal(await primaryForkToggle.getAttribute("aria-expanded"), "true");
   assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
-  assert.equal(await archivedFoldToggle.count(), 1);
-  assert.equal(await archivedFoldToggle.getAttribute("aria-expanded"), "false");
-  assert.equal((await archivedFoldToggle.innerText()).trim(), "1 个已结束侧聊");
-  await archivedFoldToggle.click();
-  await mainGroup.locator('[data-session-id="browser-e2e-btw-archived"]').waitFor();
-  assert.equal(await archivedFoldToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(await mainGroup.locator(".is-archived-fold").count(), 0);
+  assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "1");
   await page.screenshot({ path: resolve(directory, "project-fork-expanded.png"), fullPage: true });
-  steps.push("real Native projection groups linked worktrees under the repository; active fork count excludes archived /btw sidechats while preserving a secondary fold");
+  steps.push("Native fixture projection groups linked worktrees under the repository; active forks exclude archived sidechats, which appear only in the archive area");
 
+  const archivedSidechat = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-btw-archived");
   const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
+  await search.fill(archivedSidechat.title);
+  await eventually(() => page.locator("[data-session-id]").count(), 0, "Searching an archived sidechat cannot surface it as an active root");
+  assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "1");
   await search.fill(worktree.title);
   await eventually(() => headers.allTextContents(), ["claude-desktop-bridge"], "Searching the worktree title keeps its repository project");
   assert.equal(await page.locator(`[data-session-id="${sessionId}"]`).count(), 1);
@@ -2051,9 +2092,8 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.equal(await page.evaluate(key => localStorage.getItem(key), orderKey), savedOrder);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Project list fits the phone viewport");
 
-  await primaryForkToggle.click();
-  await archivedFoldToggle.click();
-  await mainGroup.locator('[data-session-id="browser-e2e-btw-archived"]').getByRole("button").first().click();
+  await archiveEntry.click();
+  await page.locator('[data-session-id="browser-e2e-btw-archived"]').getByRole("button").first().click();
   const parentChainButton = page.locator(".fork-chain-bar").getByRole("button", { name: "主会话：主会话", exact: true });
   await parentChainButton.waitFor();
   await parentChainButton.click();
@@ -2062,15 +2102,31 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   await page.getByRole("button", { name: /分支 1/u }).waitFor();
   await page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await page.getByRole("button", { name: "返回会话目录", exact: true }).click();
   await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
 
   const forkSnapshot = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-fork");
   forkSnapshot.archivedAt = Date.now();
   await host.emit("session.archived", { archived: true, archivedAt: forkSnapshot.archivedAt }, { sessionId: "browser-e2e-fork" });
-  await eventually(() => primaryForkToggle.count(), 0, "Archiving the last active fork moves the parent to archived-only fold");
-  assert.equal(await mainGroup.locator(".mobile-fork-group.is-archived-only").count(), 1);
-  assert.equal((await archivedFoldToggle.innerText()).trim(), "2 个已归档分支与侧聊");
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Archived-only fold fits the phone viewport");
+  await eventually(() => primaryForkToggle.count(), 0, "Archiving the last active fork removes the parent's fork fold");
+  assert.equal(await mainGroup.locator(".mobile-fork-group").count(), 0);
+  assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "2");
+  await archiveEntry.click();
+  await page.locator('[data-session-id="browser-e2e-fork"]').waitFor();
+  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
+  assert.deepEqual(await page.locator(".session-row-status").allTextContents(), ["已归档", "已归档"]);
+  const archiveSearch = page.getByPlaceholder("搜索「已归档会话」", { exact: true });
+  await archiveSearch.fill(forkSnapshot.title);
+  assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 1);
+  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  await archiveSearch.fill(archivedSidechat.title);
+  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
+  assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
+  await archiveSearch.fill("");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Archived sessions fit the phone viewport");
+  await page.screenshot({ path: resolve(directory, "archived-sessions.png"), fullPage: true });
+  await page.getByRole("button", { name: "返回会话目录", exact: true }).click();
+  steps.push("archivedAt forks and sidechats remain searchable in the archive area with the correct count and archived badges; the active parent has no empty fold");
 
   assert.equal(host.requests.filter(request => request.method.startsWith("turn.")).length, 0);
   await writeFile(resolve(directory, "project-catalog.json"), JSON.stringify({ projects: host.snapshot.projects, sessions: host.snapshot.sessions }, null, 2));

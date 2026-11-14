@@ -1462,6 +1462,13 @@ async function verifyHistoryPagination(page, host, steps, directory) {
 }
 
 async function verifyNativeBoundaries(page, host, steps, directory) {
+  const markdownName = "NATIVE-CHAIN-author-database-current.zh.md";
+  await writeFile(resolve(host.nativeApproval.harnessCwd, markdownName), [
+    "# 手机文件预览",
+    ...Array.from({ length: 4 }, () => "段首可见，中文长段落应当在手机宽度内自然换行，段尾也必须完整显示。".repeat(15)),
+    `\`\`\`text\n${"wide-code-".repeat(40)}\n\`\`\``,
+    `| ${Array.from({ length: 6 }, (_, index) => `wide-column-${index}`).join(" | ")} |\n|${" --- |".repeat(6)}\n|${" value |".repeat(6)}`,
+  ].join("\n\n"));
   const tool = (id, input, name = "mcp__ccd_turn__update_plan") => ({ type: "assistant", uuid: id, timestamp: Date.now(), message: { content: [{ type: "tool_use", id, name, input }] } });
   const planItems = [{ content: "读取报告", status: "in_progress" }, { content: "验证文件", status: "pending" }];
   const initial = [
@@ -1469,7 +1476,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     { ...tool("child-plan", { scope: "first_task", items: [{ content: "子代理内部计划", status: "in_progress" }] }), isSidechain: true },
     { ...tool("child-wrap", { recap: "Child done" }, "mcp__ccd_turn__wrap_up"), isSidechain: true },
     ...["isCompactSummary", "isMeta", "isSynthetic", "isVisibleInTranscriptOnly"].map(flag => ({ type: "user", uuid: `hidden-${flag}`, [flag]: true, message: { content: "INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN" } })),
-    { type: "assistant", uuid: "boundary-files", timestamp: Date.now(), message: { id: "boundary-files", content: [{ type: "text", text: `[相对报告](report.json) · [绝对报告](<${host.nativeApproval.harnessCwd}/report.json:12:3>) · [说明预览](<说明 notes.md>)` }] } },
+    { type: "assistant", uuid: "boundary-files", timestamp: Date.now(), message: { id: "boundary-files", content: [{ type: "text", text: `[相对报告](report.json) · [绝对报告](<${host.nativeApproval.harnessCwd}/report.json:12:3>) · [说明预览](<说明 notes.md>) · [长文预览](${markdownName})` }] } },
   ];
   for (const message of initial) await host.nativeApproval.message(message);
   const subagentStartAt = Date.now() - 30_000;
@@ -1538,6 +1545,57 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   assert.ok((await page.locator("#text-preview-content").innerText()).includes("# Worktree preview"));
   await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
   steps.push("real Native facade + Controller resolve relative/absolute report links and Chinese spaced Markdown paths in the worktree");
+  await stream.getByRole("button", { name: "长文预览", exact: true }).click();
+  const markdownViewer = page.locator(".media-viewer");
+  await markdownViewer.getByRole("heading", { name: "手机文件预览", exact: true }).waitFor();
+  for (const width of [375, 320, 1200]) {
+    await page.setViewportSize({ width, height: 812 });
+    const layout = await markdownViewer.evaluate(dialog => {
+      const bounds = element => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, width: rect.width, clientWidth: element.clientWidth, scrollWidth: element.scrollWidth };
+      };
+      return {
+        dialog: bounds(dialog),
+        regions: [".media-viewer-shell > header", ".media-viewer-toolbar", ".media-viewer-viewport", ".media-viewer-shell > footer", "#media-viewer-title", '[aria-label="关闭查看器"]'].map(selector => ({ selector, ...bounds(dialog.querySelector(selector)) })),
+        paragraphs: [...dialog.querySelectorAll(".markdown-paragraph")].map(bounds),
+        scrollLeft: dialog.scrollLeft,
+      };
+    });
+    await writeFile(resolve(directory, `markdown-layout-${width}.json`), JSON.stringify(layout, null, 2));
+    assert.ok(layout.dialog.left >= 0 && layout.dialog.right <= width, "File preview dialog stays within the screen");
+    assert.ok(layout.dialog.scrollWidth <= layout.dialog.clientWidth + 1, `Long filename must not widen the dialog grid at ${width}px: ${JSON.stringify(layout)}`);
+    assert.equal(layout.scrollLeft, 0, "Dialog focus must not scroll the filename and paragraph starts offscreen");
+    for (const region of [...layout.regions, ...layout.paragraphs]) {
+      assert.ok(region.left >= layout.dialog.left && region.right <= layout.dialog.right, `Header controls and rendered prose stay inside the dialog at ${width}px: ${JSON.stringify(region)}`);
+    }
+    assert.ok(layout.paragraphs.length >= 4 && layout.paragraphs.every(paragraph => paragraph.scrollWidth <= paragraph.clientWidth + 1), "Chinese prose wraps without clipping or horizontal overflow");
+    for (const selector of [".markdown-code-pre", ".markdown-table-wrap"]) {
+      const scrolled = await markdownViewer.locator(selector).evaluate(element => {
+        element.scrollLeft = element.scrollWidth;
+        return { clientWidth: element.clientWidth, scrollWidth: element.scrollWidth, scrollLeft: element.scrollLeft };
+      });
+      if (width <= 375 || selector === ".markdown-code-pre") {
+        assert.ok(scrolled.scrollWidth > scrolled.clientWidth && scrolled.scrollLeft > 0, `Wide Markdown content can scroll horizontally at ${width}px: ${selector}`);
+      }
+    }
+    await page.getByRole("tab", { name: "源码", exact: true }).click();
+    const sourceScroll = await markdownViewer.locator(".media-viewer-viewport").evaluate(viewport => {
+      viewport.scrollLeft = viewport.scrollWidth;
+      return viewport.scrollLeft;
+    });
+    assert.ok(sourceScroll > 0, "Raw Markdown source keeps horizontal scrolling");
+    await page.getByRole("tab", { name: "预览", exact: true }).click();
+  }
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.screenshot({ path: resolve(directory, "native-markdown-mobile.png"), fullPage: true });
+  assert.ok(await markdownViewer.locator(".media-viewer-viewport").evaluate(viewport => {
+    viewport.scrollTop = viewport.scrollHeight;
+    return viewport.scrollTop > 0;
+  }), "Long Markdown scrolls vertically within the preview viewport");
+  await page.screenshot({ path: resolve(directory, "native-markdown-wide-content.png"), fullPage: true });
+  await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
+  steps.push("long Markdown filenames preserve the visible header and wrapped Chinese prose at 320/375/1200px; wide code, tables and source scroll horizontally while long documents scroll vertically");
   for (const event of await host.nativeApproval.message(tool("boundary-advance", { advance: true }))) await host.emit(event.type, event.data, { itemId: event.itemId });
   await eventually(() => stream.locator(".task-plan-progress").first().innerText(), "1/2 已完成", "Native empty-text live plan updates the history card");
   assert.equal(await stream.locator(".task-plan-card").count(), 1);

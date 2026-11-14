@@ -89,6 +89,7 @@ import {
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../lib/runtime-labels.js";
 import { useStreamEntrance } from "../lib/stream-entrance.js";
+import { useLiveReplyExpansion } from "../lib/live-reply-expansion.js";
 import { sessionActivity, sessionQueueLabel } from "../lib/session-activity.js";
 import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "./conversation/BackgroundTasks.js";
 import {
@@ -473,6 +474,10 @@ export function MobileWorkspace({
     entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(selectedSessionId, streamKeys);
+  const expandedReplies = useLiveReplyExpansion(
+    visible && selectedSession && sessionView === "conversation" ? draftKey : undefined,
+    items,
+  );
   const activity = useMemo(() => sessionActivity(selectedSession, items), [selectedSession, items]);
   const projectsByActivity = useMemo(() => {
     const latest = new Map<string, number>((snapshot?.projects ?? []).filter(project => project.kind === "desktop-group").map(project => [project.projectId, 0]));
@@ -1769,6 +1774,7 @@ export function MobileWorkspace({
                     <MarkdownText
                       text={item.text}
                       collapsible={!item.live}
+                      defaultExpanded={expandedReplies.has(item.id)}
                       {...(onDownloadSessionFile ? {
                         onFileClick: openSessionFile,
                       } : {})}

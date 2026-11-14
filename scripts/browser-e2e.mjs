@@ -1291,6 +1291,27 @@ async function verifyNativeMessages(page, host, steps, directory) {
   host.history.push({ id: assistantId, sessionId, role: "assistant", text: "流式完成内容", createdAt: Date.now(), origin: "claude-desktop" });
   steps.push("completion without a turnId retains final content and shows no per-message blinking caret");
 
+  for (const terminal of ["completed", "observed", "without-turn"]) {
+    const id = `browser-e2e-long-${terminal}`;
+    const turn = terminal === "without-turn" ? {} : { turnId: `${id}-turn` };
+    const text = `${id}\n\n${"这条长回复正在阅读，输出结束后应保持展开。\n\n".repeat(100)}`;
+    const message = page.locator("article.conversation-item.assistant").filter({ hasText: id });
+    await host.emit("assistant.delta", { text }, { itemId: `${id}-delta`, ...turn });
+    await message.waitFor();
+    assert.equal(await message.locator(".expandable-message-fold").count(), 0, "Streaming replies are fully expanded");
+    await host.emit(terminal === "observed" ? "session.observed" : "assistant.completed", { text, role: "assistant" }, { itemId: terminal === "without-turn" ? `${id}-delta` : id, ...turn });
+    await eventually(() => message.locator(".expandable-message-toggle").getAttribute("aria-expanded"), "true", "A long reply read live stays expanded after completion, including a replaced item ID");
+    assert.equal(await message.locator("[inert]").count(), 0, "The completed reply remains accessible");
+    await message.getByRole("button", { name: "收起", exact: true }).click();
+    await message.getByRole("button", { name: "展开全文", exact: true }).waitFor();
+    await host.emit("assistant.completed", { text: "后续回复不应重新展开已手动收起的消息" }, { itemId: `${id}-next` });
+    assert.equal(await message.locator(".expandable-message-toggle").getAttribute("aria-expanded"), "false", "Later messages preserve a manual collapse");
+    await message.getByRole("button", { name: "展开全文", exact: true }).click();
+    host.history.push({ id: terminal === "without-turn" ? `${id}-delta` : id, sessionId, role: "assistant", text, createdAt: Date.now(), origin: "claude-desktop", ...turn });
+  }
+  await page.screenshot({ path: resolve(directory, "live-reply-stays-expanded.png"), fullPage: true });
+  steps.push("long streamed replies stay expanded after completed/observed finalization and still support manual collapse and expansion");
+
   assert.match(host.session.model, /^mythos-magpie-/u, "The header test must receive a native internal model alias");
   await eventually(async () => (await page.getByRole("button", { name: "会话设置", exact: true }).innerText()).includes("隔离模型 · 标准"), true, "Initial native alias snapshot uses its saved header label before opening configuration");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
@@ -1320,6 +1341,12 @@ async function verifyNativeMessages(page, host, steps, directory) {
   assert.equal(await page.locator(".stream-caret").count(), 0);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   steps.push("reloading restores completed delivery and five-image metadata without original bytes in cached history");
+  for (const terminal of ["completed", "observed", "without-turn"]) {
+    const message = page.locator("article.conversation-item.assistant").filter({ hasText: `browser-e2e-long-${terminal}` });
+    await message.getByRole("button", { name: "展开全文", exact: true }).waitFor();
+    assert.equal(await message.locator(".expandable-message-toggle").getAttribute("aria-expanded"), "false", "Reopened history starts collapsed even when it was read live before reload");
+  }
+  steps.push("reopened historical replies start collapsed without retaining the previous live-reading state");
 
   const geminiModel = ["antigravity", "gemini-4-argon"].join("/");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();

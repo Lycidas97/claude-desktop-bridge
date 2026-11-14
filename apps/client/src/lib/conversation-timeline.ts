@@ -102,7 +102,10 @@ export function sessionProfile(session: BridgeSessionInfo): string {
 }
 
 export function ownershipLabel(session: BridgeSessionInfo): string {
-  if (session.transport === "claude-desktop-native") return session.turnState === "waiting" ? "需处理" : session.turnState === "queued" ? sessionQueueLabel(session) : session.ownership === "DESKTOP_NATIVE_RUNNING" ? "桌面运行中" : "桌面待机";
+  if (session.transport === "claude-desktop-native") {
+    if (session.turnState === "running" && session.isCompacting) return "正在压缩上下文";
+    return session.turnState === "waiting" ? "需处理" : session.turnState === "queued" ? sessionQueueLabel(session) : session.ownership === "DESKTOP_NATIVE_RUNNING" ? "桌面运行中" : "桌面待机";
+  }
   const bridgeCreated = session.source === "bridge";
   if (session.desktopHandoff?.reason === "bridge-execution-requested") return "等待当前工作结束后交接";
   if (session.desktopHandoff?.reason === "inbox-confirmation-expired") return "等待确认交接";

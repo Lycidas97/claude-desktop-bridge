@@ -3385,6 +3385,118 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("projects native compaction status until the native status clears", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message({ type: "system", subtype: "status", status: "compacting" });
+      expect(f.bridge.session("local-native")).toMatchObject({ turnState: "running", isCompacting: true });
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+      await f.message({ type: "system", subtype: "status", status: null, compact_result: "success" });
+      expect(f.bridge.session("local-native")).not.toHaveProperty("isCompacting");
+    } finally { await f.close(); }
+  });
+
+  it("preserves main compaction after a local synthetic result", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message({ type: "system", subtype: "status", status: "compacting" });
+      await f.message({ type: "result", subtype: "success", uuid: "color-command-result", parent_tool_use_id: null, isSyntheticResult: true, result: "Session color set to red" });
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")).toMatchObject({ turnState: "running", isCompacting: true });
+    } finally { await f.close(); }
+  });
+
+  it("preserves newer compaction status while an older idle snapshot is in flight", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    try {
+      let markSnapshotCaptured!: () => void;
+      const snapshotCaptured = new Promise<void>(resolve => { markSnapshotCaptured = resolve; });
+      Object.assign(f.native, { async sections() { markSnapshotCaptured(); await gate; } });
+      const staleRefresh = f.bridge.refreshRuntime();
+      await snapshotCaptured;
+      f.native.sessions[0]!.turnRunning = true;
+      f.native.emit("event", { type: "session_updated", sessionId: "local-native", session: structuredClone(f.native.sessions[0]) });
+      const compacting = f.message({ type: "system", subtype: "status", status: "compacting" });
+      release();
+      await staleRefresh;
+      await compacting;
+      await vi.waitFor(() => expect(f.bridge.session("local-native")?.turnState).toBe("running"));
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+    } finally { release(); await f.close(); }
+  });
+
+  it("discards unconfirmed compaction after an inspector reconnect", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message({ type: "system", subtype: "status", status: "compacting" });
+      f.native.ready = false;
+      f.native.emit("disconnected");
+      // Native finishes compaction while disconnected, then continues generating.
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.turnState).toBe("running");
+      expect(f.bridge.session("local-native")).not.toHaveProperty("isCompacting");
+      await f.message({ type: "system", subtype: "status", status: "compacting" });
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+    } finally { await f.close(); }
+  });
+
+  it.each([
+    { parent_tool_use_id: "child-tool" },
+    { isSidechain: true },
+  ])("ignores subagent compaction status (%j)", async attribution => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message({ type: "system", subtype: "status", status: "compacting", ...attribution });
+      expect(f.bridge.session("local-native")).not.toHaveProperty("isCompacting");
+      await f.message({ type: "system", subtype: "status", status: "compacting" });
+      await f.message({ type: "system", subtype: "status", status: null, ...attribution });
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+      await f.message({ type: "result", uuid: "child-result", ...attribution });
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+    } finally { await f.close(); }
+  });
+
+  it.each([
+    { type: "system", subtype: "compact_boundary", uuid: "compact-done" },
+    { type: "result", uuid: "compact-result", is_error: true },
+  ])("clears compaction on native completion (%j)", async message => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message({ type: "system", subtype: "status", status: "compacting" });
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+      await f.message(message);
+      expect(f.bridge.session("local-native")).not.toHaveProperty("isCompacting");
+    } finally { await f.close(); }
+  });
+
+  it("clears compaction when Native reports the main turn idle", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message({ type: "system", subtype: "status", status: "compacting" });
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+      f.native.sessions[0]!.turnRunning = false;
+      await f.bridge.refreshRuntime();
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")).not.toHaveProperty("isCompacting");
+    } finally { await f.close(); }
+  });
+
   it("retains a gateway window across assistant usage and history reloads, but changes it with the selected model", async () => {
     const f = await fixture();
     try {

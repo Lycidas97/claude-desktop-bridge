@@ -9,7 +9,7 @@ export interface SessionActivityItem {
 }
 
 export interface SessionActivity {
-  kind: "queued" | "running" | "thinking" | "generating";
+  kind: "queued" | "running" | "thinking" | "generating" | "compacting";
   label: string;
   /** Start of the displayed subagent, or the user message that started the main turn. */
   since?: number;
@@ -35,11 +35,12 @@ export function sessionQueueLabel(
 }
 
 export function sessionActivity(
-  session: Pick<BridgeSessionInfo, "turnState" | "executionStage" | "desktopHandoff"> & Partial<Pick<BridgeSessionInfo, "ownership" | "pendingCount" | "runningSubagents">> | undefined,
+  session: Pick<BridgeSessionInfo, "turnState" | "executionStage" | "desktopHandoff" | "isCompacting"> & Partial<Pick<BridgeSessionInfo, "ownership" | "pendingCount" | "runningSubagents">> | undefined,
   items: readonly SessionActivityItem[],
   backgroundTasks?: readonly BridgeBackgroundTask[],
 ): SessionActivity | undefined {
   if (!session) return undefined;
+  if (session.turnState === "running" && session.isCompacting) return { kind: "compacting", label: "正在压缩上下文" };
   const lastUser = [...items].reverse().find((item) => item.role === "user");
   const since = lastUser?.createdAt;
   if (session.turnState === "queued" || (session.pendingCount ?? 0) > 0) return {

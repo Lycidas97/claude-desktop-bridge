@@ -876,6 +876,7 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 }
 
 .mobile-app-shell .project-group-header { background: transparent; }
+.mobile-app-shell .project-group-actions { display: flex; align-items: center; }
 .mobile-app-shell .project-group-open { min-height: 52px; padding: 10px 12px 10px 16px; }
 .mobile-app-shell .project-group-open:hover { background: transparent; }
 .mobile-app-shell .project-group-open:active { background: var(--surface-2); }

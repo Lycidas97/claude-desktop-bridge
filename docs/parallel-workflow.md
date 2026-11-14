@@ -129,6 +129,8 @@ During a round, run `/loop 20m` read-only. It reports linked sessions that are s
 
 ## Briefs
 
+Send these verbatim, filling only the `<...>` placeholders. Never add a restriction that contradicts the role, such as "do not merge" in a reviewer brief.
+
 ### Fork brief
 
 ```text
@@ -142,5 +144,5 @@ LESSONS.md, docs/subsystems/*.md, and shared memory are read-only.
 
 ```text
 You are the reviewer for <#N, ...> (merge order: <...>). Follow docs/parallel-workflow.md as the Reviewer.
-Do nothing until a fork sends READY. Patrol: <patrol session id>. Never edit files or push.
+Do nothing until a fork sends READY. Patrol: <patrol session id>. Never edit files or push. You merge your PRs per Merge.
 ```

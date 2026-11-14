@@ -5,7 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "./BackgroundTasks.js";
 import { SubagentCard } from "./SubagentCard.js";
 
-const hooks = vi.hoisted(() => ({ slots: [] as any[], index: 0 }));
+const hooks = vi.hoisted(() => ({
+  slots: [] as any[], index: 0,
+  effects: [] as Array<() => void>,
+  request: undefined as ReturnType<typeof vi.fn> | undefined,
+}));
+vi.mock("../evidence/MediaPreviewProvider.js", () => ({ useMediaRequest: () => hooks.request }));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useState(initial: any) {
@@ -15,6 +20,12 @@ vi.mock("react", async (original) => ({
       hooks.slots[index] = typeof value === "function" ? value(hooks.slots[index]) : value;
     }];
   },
+  useRef(initial: any) {
+    const index = hooks.index++;
+    if (!(index in hooks.slots)) hooks.slots[index] = { current: initial };
+    return hooks.slots[index];
+  },
+  useEffect(effect: () => void) { hooks.effects.push(effect); },
 }));
 
 vi.mock("../mobile/MobileSheet.js", () => ({
@@ -37,6 +48,8 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
 beforeEach(() => {
   hooks.slots = [];
   hooks.index = 0;
+  hooks.effects = [];
+  hooks.request = undefined;
 });
 
 function agent(agentId: string, extra: Partial<BridgeSubagentSummary> = {}): BridgeSubagentSummary {
@@ -160,13 +173,116 @@ describe("background task tray", () => {
     expect(sheet(old, [old], []).html).not.toContain("全部后台任务");
   });
 
-  it("opens a focused bash marker directly without listing other background tasks", () => {
-    const bashFocus = item(agent("bsh01", { toolUseId: "bash-call", description: "Start dev server", taskKind: "bash" }));
+  it.each(["bash-call", "tool:bash-call"])("expands and collapses a bash task with matching history (%s)", (id) => {
+    const bash = item(agent("bsh01", {
+      toolUseId: "bash-call", taskKind: "bash", state: "completed", reportText: "Server ready\nExit code: 0",
+    }));
+    const command: BridgeHistoryItem = { id, sessionId: "A", role: "tool", toolName: "Bash", text: "npm run dev", state: "completed", createdAt: 1, origin: "claude-desktop" };
+    const render = () => {
+      hooks.index = 0;
+      return BackgroundTasksSheet({ sessionId: "A", tasks: [shell], items: [command, bash], renderSubagent: () => null, onClose: vi.fn() });
+    };
+    let tree = render();
+    const row = elements(tree).find(el => el.type === "button" && el.props.className === "background-task-row")!;
+    expect(row.props.disabled).not.toBe(true);
+    expect(row.props["aria-expanded"]).toBe(false);
+    expect(renderToStaticMarkup(tree)).not.toContain("Server ready");
+    row.props.onClick();
+    tree = render();
+    const html = renderToStaticMarkup(tree);
+    expect(html).toContain("npm run dev");
+    expect(html).toContain("Server ready\nExit code: 0");
+    const openRow = elements(tree).find(el => el.type === "button" && el.props.className === "background-task-row")!;
+    expect(openRow.props["aria-expanded"]).toBe(true);
+    openRow.props.onClick();
+    expect(renderToStaticMarkup(render())).not.toContain("Server ready");
+  });
+
+  it("opens a focused bash marker with output without listing other background tasks", () => {
+    const bashFocus = item(agent("bsh01", {
+      toolUseId: "bash-call", description: "Start dev server", taskKind: "bash", reportText: "Server ready\nExit code: 0",
+    }));
     const { html, rendered } = sheet(bashFocus);
     expect(rendered).toEqual([]);
-    expect(html).toContain("Start dev server");
+    expect(html).toContain("Server ready\nExit code: 0");
     expect(html).not.toContain("figure-review");
     expect(html).not.toContain("Audit the parser");
+  });
+
+  it("loads the original command only when the bash row opens, preserving running task state", async () => {
+    hooks.request = vi.fn().mockResolvedValue({ ok: true, result: { detail: {
+      sessionId: "A", toolUseId: "bash-call", toolName: "Bash", input: { command: "npm run dev -- --host 127.0.0.1" },
+      status: "completed", outputText: "Command running in background with ID: bsh01", truncated: false, totalBytes: 51,
+    } } });
+    const stream = { ...item(agent("bsh01", {
+      toolUseId: "bash-call", taskKind: "bash", latestText: "Server listening on port 5188",
+    })), id: "tool:bash-call", toolName: "Agent", text: "Server listening on port 5188" };
+    const render = () => {
+      hooks.index = 0;
+      return BackgroundTasksSheet({
+        sessionId: "A", tasks: [{ ...shell, state: "running" }], items: [stream], supportsToolDetail: true,
+        renderSubagent: () => null, onClose: vi.fn(),
+      });
+    };
+    const tree = render();
+    renderToStaticMarkup(tree);
+    expect(hooks.effects).toHaveLength(0);
+    expect(hooks.request).not.toHaveBeenCalled();
+    elements(tree).find(el => el.type === "button" && el.props.className === "background-task-row")!.props.onClick();
+    expect(renderToStaticMarkup(render())).toContain("正在加载命令");
+    for (const effect of hooks.effects.splice(0)) effect();
+    await Promise.resolve();
+    const html = renderToStaticMarkup(render());
+    expect(hooks.request).toHaveBeenCalledWith("session.tool.detail", { sessionId: "A", toolUseId: "bash-call" }, { wait: true, timeoutMs: 30_000 });
+    expect(html).toContain("npm run dev -- --host 127.0.0.1");
+    expect(html).toContain("Server listening on port 5188");
+    expect(html).toContain("Command running in background with ID: bsh01");
+    expect(html).toContain('role="status"');
+    expect(html).toContain("运行中");
+    expect(html).not.toContain("已完成");
+  });
+
+  it.each(["running", "completed", "failed", "stopped", "unknown"] as const)("keeps focused bash output after the tray expires (%s)", (state) => {
+    const focus = item(agent("bsh01", { toolUseId: "bash-call", taskKind: "bash", state, reportText: "Retained task output" }));
+    const { html } = sheet(focus, [focus], []);
+    expect(html).toContain("Retained task output");
+    expect(html).toContain(`background-task-state is-${state}`);
+    expect(html).not.toContain("全部后台任务");
+  });
+
+  it("does not fetch on old hosts or label merged task text as the command", () => {
+    hooks.request = vi.fn();
+    const focus = { ...item(agent("bsh01", {
+      toolUseId: "bash-call", taskKind: "bash", latestText: "Output only", state: "failed",
+    })), id: "tool:bash-call", toolName: "Agent", text: "Output only" };
+    const { html } = sheet(focus, [focus], []);
+    for (const effect of hooks.effects.splice(0)) effect();
+    expect(hooks.request).not.toHaveBeenCalled();
+    expect(html).toContain("暂无命令详情");
+    expect(html.match(/Output only/gu)).toHaveLength(1);
+    expect(html).toContain("失败");
+  });
+
+  it.each([
+    [{ ok: false, error: { message: "Tool call no longer available" } }, "Tool call no longer available"],
+    [{ ok: true, result: {} }, "命令详情不可用"],
+  ])("shows unavailable command details while retaining task output (%j)", async (response, message) => {
+    hooks.request = vi.fn().mockResolvedValue(response);
+    const focus = item(agent("bsh01", { toolUseId: "bash-call", taskKind: "bash", reportText: "Retained output" }));
+    const render = () => {
+      hooks.index = 0;
+      return renderToStaticMarkup(createElement(BackgroundTasksSheet, {
+        sessionId: "A", tasks: [], items: [], focus, supportsToolDetail: true, renderSubagent: () => null, onClose: vi.fn(),
+      }));
+    };
+    render();
+    for (const effect of hooks.effects.splice(0)) effect();
+    await Promise.resolve();
+    await Promise.resolve();
+    const html = render();
+    expect(html).toContain('role="alert"');
+    expect(html).toContain(message);
+    expect(html).toContain("Retained output");
   });
 
   it("updates a focused subagent live across stream and tray updates, and returns to the full list or closes", () => {

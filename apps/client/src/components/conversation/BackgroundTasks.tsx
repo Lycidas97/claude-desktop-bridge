@@ -1,7 +1,9 @@
-import type { BridgeBackgroundTask, BridgeHistoryItem, BridgeSubagentSummary } from "@bridge/protocol";
+import type { BridgeBackgroundTask, BridgeHistoryItem, BridgeSubagentSummary, BridgeToolCallDetail } from "@bridge/protocol";
 import { Bot, Check, ChevronRight, LoaderCircle, MoreHorizontal, Terminal, Workflow, X } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useMediaRequest } from "../evidence/MediaPreviewProvider.js";
 import { MobileSheet } from "../mobile/MobileSheet.js";
+import "./ToolCallDetailSheet.css";
 
 type TaskState = BridgeSubagentSummary["state"];
 
@@ -179,16 +181,93 @@ function WorkflowTimeline({
   );
 }
 
+function BashTaskDetail({
+  sessionId,
+  task,
+  subagent,
+  items,
+  supportsToolDetail,
+}: {
+  sessionId: string;
+  task?: BridgeBackgroundTask;
+  subagent?: BridgeSubagentSummary;
+  items: readonly BridgeHistoryItem[];
+  supportsToolDetail: boolean;
+}) {
+  const request = useMediaRequest();
+  const requestRef = useRef(request);
+  requestRef.current = request;
+  const hasRequest = Boolean(request);
+  const toolUseId = task?.toolUseId ?? subagent?.toolUseId;
+  const history = task
+    ? items.find(entry => entry.subagent && findBackgroundTask([task], entry.subagent))?.subagent ?? subagent
+    : subagent;
+  const state = task?.state ?? history?.state ?? "unknown";
+  const summary = items.find(entry => entry.toolName === "Bash" && toolUseId
+    && (entry.id === toolUseId || entry.id === `tool:${toolUseId}`))?.text;
+  const output = history?.reportText ?? history?.latestText;
+  const [result, setResult] = useState<{ detail?: BridgeToolCallDetail; error?: string }>({});
+
+  useEffect(() => {
+    if (!supportsToolDetail || !toolUseId || !hasRequest) return;
+    void requestRef.current!("session.tool.detail", { sessionId, toolUseId }, { wait: true, timeoutMs: 30_000 })
+      .then(response => {
+        if (!response?.ok) throw new Error(response?.error?.message ?? "命令详情加载失败");
+        const detail = (response.result as { detail?: BridgeToolCallDetail } | undefined)?.detail;
+        setResult(detail ? { detail } : { error: "命令详情不可用" });
+      })
+      .catch((error: unknown) => setResult({ error: error instanceof Error ? error.message : "命令详情加载失败" }));
+  }, [hasRequest, sessionId, supportsToolDetail, toolUseId]);
+
+  return (
+    <div className="tool-detail-body">
+      <div className="tool-detail-section-label" role="status">
+        <StateGlyph state={state} />
+        {STATE_LABELS[state]}
+      </div>
+      <section className="tool-detail-section" aria-label="命令">
+        <span className="tool-detail-section-label">
+          {result.detail ? (result.detail.inputTruncated ? "入参（已截断）" : "命令") : "命令摘要"}
+        </span>
+        {result.detail ? (
+          <pre className="tool-detail-code"><code>{result.detail.inputTruncated
+            ? result.detail.inputText
+            : String(result.detail.input.command ?? JSON.stringify(result.detail.input, null, 2))}</code></pre>
+        ) : summary ? (
+          <pre className="tool-detail-code"><code>{summary}</code></pre>
+        ) : (
+          <div className="tool-detail-empty">{supportsToolDetail && toolUseId && hasRequest && !result.error ? "正在加载命令…" : "暂无命令详情"}</div>
+        )}
+        {result.error && <div className="tool-detail-fetch-error" role="alert">{result.error}</div>}
+      </section>
+      <section className="tool-detail-section" aria-label="任务输出">
+        <span className="tool-detail-section-label">任务输出</span>
+        {output ? <pre className="tool-detail-code"><code>{output}</code></pre> : <div className="tool-detail-empty">暂无任务输出</div>}
+      </section>
+      {result.detail?.outputText && result.detail.outputText !== output && (
+        <section className="tool-detail-section" aria-label="启动结果">
+          <span className="tool-detail-section-label">启动结果{result.detail.truncated ? "（已截断）" : ""}</span>
+          <pre className="tool-detail-code"><code>{result.detail.outputText}</code></pre>
+        </section>
+      )}
+    </div>
+  );
+}
+
 /** The session's background tasks, grouped by kind from the header or focused on a single stream marker. */
 export function BackgroundTasksSheet({
+  hostId,
   sessionId,
   tasks,
   items,
   focus,
+  supportsToolDetail = false,
   renderSubagent,
   onClose,
 }: {
+  hostId?: string;
   sessionId: string;
+  supportsToolDetail?: boolean;
   tasks: readonly BridgeBackgroundTask[];
   /** Loaded conversation items, used for full subagent reports. */
   items: readonly BridgeHistoryItem[];
@@ -233,13 +312,14 @@ export function BackgroundTasksSheet({
             <WorkflowTimeline task={focusTask} sessionId={sessionId} items={items} renderSubagent={renderSubagent} />
           </>
         ) : kind === "bash" ? (
-          <div className="background-task-entry">
-            <button type="button" className="background-task-row" disabled>
-              <Terminal size={16} aria-hidden="true" />
-              <span className="background-task-row-text">{title}</span>
-              <StateGlyph state={focusTask?.state ?? focusSubagent.state} />
-            </button>
-          </div>
+          <BashTaskDetail
+            key={`${hostId ?? "local"}:${sessionId}:${focusTask?.id ?? streamFocus.id}`}
+            sessionId={sessionId}
+            {...(focusTask ? { task: focusTask } : {})}
+            subagent={focusSubagent}
+            items={items}
+            supportsToolDetail={supportsToolDetail}
+          />
         ) : (
           renderSubagent(
             focusTask?.subagent
@@ -260,16 +340,14 @@ export function BackgroundTasksSheet({
           <h3>{KIND_TITLES[group.kind]}</h3>
           {group.tasks.map((task) => {
             const Icon = KIND_ICONS[task.kind];
-            const expandable = task.kind !== "bash";
-            const open = expandable && openId === task.id;
+            const open = openId === task.id;
             const done = task.workflow?.agents.filter((agent) => agent.state === "completed").length;
             return (
               <div className={`background-task-entry${open ? " is-open" : ""}`} key={task.id}>
                 <button
                   type="button"
                   className="background-task-row"
-                  disabled={!expandable}
-                  {...(expandable ? { "aria-expanded": open } : {})}
+                  aria-expanded={open}
                   onClick={() => setOpenId(open ? undefined : task.id)}
                 >
                   <Icon size={16} aria-hidden="true" />
@@ -282,7 +360,16 @@ export function BackgroundTasksSheet({
                 {open && task.workflow && (
                   <WorkflowTimeline task={task} sessionId={sessionId} items={items} renderSubagent={renderSubagent} />
                 )}
-                {open && task.subagent && renderSubagent(subagentItem(sessionId, task.subagent, items))}
+                {open && task.kind === "bash" && (
+                  <BashTaskDetail
+                    key={`${hostId ?? "local"}:${sessionId}:${task.id}`}
+                    sessionId={sessionId}
+                    task={task}
+                    items={items}
+                    supportsToolDetail={supportsToolDetail}
+                  />
+                )}
+                {open && task.kind !== "bash" && task.subagent && renderSubagent(subagentItem(sessionId, task.subagent, items))}
               </div>
             );
           })}

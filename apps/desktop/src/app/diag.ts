@@ -158,7 +158,6 @@ export class Diagnostics {
     this.buckets.clear();
     this.responses = new WeakMap();
     Object.assign(this.cache, { inserts: 0, evicts: 0, hits: 0, current: 0, encodedItems: 0, jsonUtf8Bytes: 0 });
-    this.heapSnapshot = { attempted: 0, written: 0, failed: 0 };
     this.lastSampleAt = Date.now();
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     chmodSync(dirname(path), 0o700);

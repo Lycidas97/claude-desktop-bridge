@@ -114,7 +114,7 @@ test("an overlapping read transaction does not stop current or later numeric rec
   }
 });
 
-test("heap snapshot triggers at 60% once, after committing numeric evidence in a private directory", () => {
+test("heap snapshot triggers at 60% once across OFF/ON, after committing private evidence", () => {
   const directory = temporaryDirectory("bridge-oom-threshold-");
   chmodSync(directory, 0o755);
   const path = join(directory, "trace.sqlite");
@@ -142,12 +142,21 @@ test("heap snapshot triggers at 60% once, after committing numeric evidence in a
     trace.write();
     for (let i = 0; i < 3; i++) trace.write();
     expect(writeHeapSnapshot).toHaveBeenCalledTimes(1);
+    trace.cacheHit();
+    trace.count("history.initial");
+    trace.setEnabled(false);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1000);
+    trace.setEnabled(true);
+    trace.write();
+    expect(trace.cache.hits).toBe(0);
+    expect(trace.snapshot().stages).toEqual({});
+    expect(writeHeapSnapshot).toHaveBeenCalledTimes(1);
     expect(readdirSync(directory).filter(name => name.endsWith(".heapsnapshot"))).toHaveLength(1);
     expect(trace.snapshot().heapSnapshot).toMatchObject({ attempted: 1, written: 1, failed: 0 });
   } finally { trace.close(); }
 });
 
-test("a heap snapshot write failure is attempted once while numeric recording continues", () => {
+test("a heap snapshot write failure is not retried across OFF/ON while numeric recording continues", () => {
   const path = join(temporaryDirectory("bridge-oom-snapshot-failure-"), "trace.sqlite");
   const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
   vi.mocked(writeHeapSnapshot).mockImplementation(() => { throw Object.assign(new Error("PRIVATE_FAILURE_MESSAGE"), { code: "ENOSPC" }); });
@@ -157,12 +166,17 @@ test("a heap snapshot write failure is attempted once while numeric recording co
     trace.write();
     trace.write();
     expect(writeHeapSnapshot).toHaveBeenCalledTimes(1);
+    trace.setEnabled(false);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1000);
+    trace.setEnabled(true);
+    trace.write();
+    expect(writeHeapSnapshot).toHaveBeenCalledTimes(1);
     expect(stderr).toHaveBeenCalledExactlyOnceWith("Bridge diagnostic heap snapshot failed: ENOSPC\n");
     expect(trace.snapshot().heapSnapshot).toMatchObject({ attempted: 1, written: 0, failed: 1 });
   } finally { trace.close(); }
   const db = new DatabaseSync(path, { readOnly: true });
   try {
-    expect((db.prepare("SELECT count(*) AS n FROM samples").get() as { n: number }).n).toBe(3);
+    expect((db.prepare("SELECT count(*) AS n FROM samples").get() as { n: number }).n).toBe(5);
     const data = (db.prepare("SELECT data FROM samples ORDER BY id DESC LIMIT 1").get() as { data: string }).data;
     expect(JSON.parse(data).heapSnapshot.failed).toBe(1);
     expect(data).not.toContain("PRIVATE_FAILURE_MESSAGE");

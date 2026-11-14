@@ -99,7 +99,7 @@ Flag only defects with a concrete trigger. After a `[BLOCKER]` round, re-review 
 
 Merge SHA `X` when all of these hold:
 - the last verdict on `X` is CLEAN, `NIT FIX OK`, or `MERGE OK`;
-- `gh api repos/Lycidas97/claude-desktop-bridge/commits/X/statuses` shows `ci/local-distributed = success`, checked yourself rather than taken from the fork's report (not needed for docs-only);
+- `gh api repos/Lycidas97/claude-desktop-bridge/commits/X/statuses` shows `ci/local-distributed = success`, checked yourself rather than taken from the fork's report (not needed for docs-only, or for a sync head exempted by **After merge** step 2);
 - every earlier PR in the merge order is merged.
 
 Then run:

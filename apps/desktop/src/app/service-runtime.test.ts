@@ -12,6 +12,8 @@ const resources = vi.hoisted(() => {
     controller: { ...resource(), attachUpdater: vi.fn(async () => {}), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
     updater: { initialize: vi.fn(async () => {}), close: vi.fn() },
     cleanupRtc: vi.fn(),
+    version: "1.3.4",
+    repositoryDefaults: vi.fn(),
     diagnosticsEnabled: false,
     diagnostics: { start: vi.fn(), setEnabled: vi.fn(), close: vi.fn() },
     inspector: { start: vi.fn(async () => {}), close: vi.fn(), notificationFailed: vi.fn() },
@@ -21,7 +23,7 @@ const resources = vi.hoisted(() => {
   };
 });
 vi.mock("electron", () => ({
-  app: { getVersion: () => "1.3.2", isPackaged: false }, safeStorage: {}, shell: {}, powerMonitor: new EventEmitter(),
+  app: { getVersion: () => resources.version, isPackaged: false }, safeStorage: {}, shell: {}, powerMonitor: new EventEmitter(),
   Notification: class extends EventEmitter {
     static isSupported() { return resources.notificationSupported(); }
     show = resources.showNotification;
@@ -31,7 +33,10 @@ vi.mock("electron", () => ({
 vi.mock("../claude/claude-inspector-monitor.js", () => ({ ClaudeInspectorMonitor: class { constructor(options: NonNullable<typeof resources.inspectorOptions>) { resources.inspectorOptions = options; return resources.inspector; } } }));
 vi.mock("../transport/config.js", () => ({
   fileSecretProtector: vi.fn(),
-  DesktopConfigRepository: class { async loadOrCreate() { return { evidenceKey: "test-key", diagnosticsEnabled: resources.diagnosticsEnabled }; } },
+  DesktopConfigRepository: class {
+    constructor(_path: string, _protector: unknown, defaults: unknown) { resources.repositoryDefaults(defaults); }
+    async loadOrCreate() { return { evidenceKey: "test-key", diagnosticsEnabled: resources.diagnosticsEnabled }; }
+  },
 }));
 vi.mock("../claude/connector.js", () => ({ removeLegacyConnector: vi.fn(async () => {}) }));
 vi.mock("./platform.js", () => ({
@@ -53,6 +58,7 @@ vi.mock("../transport/webrtc-runtime.js", () => ({ loadDesktopPeerConnection: vi
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resources.version = "1.3.4";
   resources.diagnosticsEnabled = false;
   resources.notifications.length = 0;
   resources.inspectorOptions = undefined;
@@ -79,12 +85,25 @@ it.each(["eventLog", "state", "evidence", "controller"] as const)("unwinds acqui
   }
 });
 
-it("restores the saved diagnostic preference and releases the recorder with the service", async () => {
-  resources.diagnosticsEnabled = true;
+it.each([
+  ["1.3.4", false],
+  ["1.3.4-dev.22", true],
+  ["1.3.4-dev.22.diag", true],
+] as const)("uses the diagnostics default for build %s", async (version, diagnosticsEnabled) => {
+  resources.version = version;
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
+  try {
+    expect(resources.repositoryDefaults).toHaveBeenCalledWith(expect.objectContaining({ diagnosticsEnabled }));
+  } finally { await runtime.close(); }
+});
+
+it.each([false, true])("restores saved diagnostic preference %s and releases the recorder with the service", async (diagnosticsEnabled) => {
+  resources.diagnosticsEnabled = diagnosticsEnabled;
   const { createServiceRuntime } = await import("./service-runtime.js");
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
   expect(resources.diagnostics.start).toHaveBeenCalledWith(join("/test/bridge", "background-service", "diagnostics", "trace.sqlite"));
-  expect(resources.diagnostics.setEnabled).toHaveBeenCalledWith(true);
+  expect(resources.diagnostics.setEnabled).toHaveBeenCalledWith(diagnosticsEnabled);
   expect(resources.diagnostics.setEnabled.mock.invocationCallOrder[0]).toBeLessThan(resources.eventLog.initialize.mock.invocationCallOrder[0]!);
   await runtime.close();
   expect(resources.diagnostics.close).toHaveBeenCalledOnce();

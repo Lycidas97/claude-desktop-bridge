@@ -243,6 +243,39 @@ describe("background task tray", () => {
     expect(html).not.toContain("已完成");
   });
 
+  it.each([
+    "Command running in background with ID: bsh01\n\nfailed\n\nClient build failed with exit code 2",
+    "",
+  ])("uses full-transcript execution info when no task history is loaded (%s)", async (outputText) => {
+    hooks.request = vi.fn().mockResolvedValue({ ok: true, result: { detail: {
+      sessionId: "A", toolUseId: "bash-call", toolName: "Bash", input: { command: "npm run build" },
+      status: "completed", outputText, truncated: false, totalBytes: outputText.length,
+    } } });
+    const render = () => {
+      hooks.index = 0;
+      return BackgroundTasksSheet({
+        sessionId: "A", tasks: [{ ...shell, state: "failed" }], items: [], supportsToolDetail: true,
+        renderSubagent: () => null, onClose: vi.fn(),
+      });
+    };
+    const tree = render();
+    elements(tree).find(el => el.type === "button" && el.props.className === "background-task-row")!.props.onClick();
+    renderToStaticMarkup(render());
+    for (const effect of hooks.effects.splice(0)) effect();
+    await Promise.resolve();
+    const html = renderToStaticMarkup(render());
+    expect(html).toContain("npm run build");
+    expect(html).toContain('aria-label="失败"');
+    if (outputText) {
+      expect(html).toContain("执行信息");
+      expect(html).toContain("Client build failed with exit code 2");
+      expect(html).not.toContain("暂无任务输出");
+      expect(html).not.toContain("启动结果");
+    } else {
+      expect(html).toContain("暂无任务输出");
+    }
+  });
+
   it.each(["running", "completed", "failed", "stopped", "unknown"] as const)("keeps focused bash output after the tray expires (%s)", (state) => {
     const focus = item(agent("bsh01", { toolUseId: "bash-call", taskKind: "bash", state, reportText: "Retained task output" }));
     const { html } = sheet(focus, [focus], []);

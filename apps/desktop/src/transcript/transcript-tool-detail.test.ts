@@ -79,6 +79,65 @@ describe("extractToolCallDetailFromMessages", () => {
     });
   });
 
+  it.each(["user", "queued"])("includes matching Bash completion content from %s notifications", (kind) => {
+    const notification = "<task-notification>\n<task-id>bsh01</task-id>\n<status>failed</status>\n<summary>Client build failed with exit code 2</summary>\n</task-notification>";
+    const messages = [
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "bash-call", name: "Bash", input: { command: "npm run build", run_in_background: true } }] } },
+      { type: "user", toolUseResult: { stdout: "", stderr: "", backgroundTaskId: "bsh01" }, message: {
+        content: [{ type: "tool_result", tool_use_id: "bash-call", content: "Command running in background with ID: bsh01" }],
+      } },
+      ...(kind === "user"
+        ? [{ type: "user", message: { role: "user", content: notification } }]
+        : [{ type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", origin: { kind: "task-notification", producer: "session-task" }, prompt: notification } }]),
+    ];
+    // Native history hides these notifications; the existing full-transcript detail request owns the output.
+    expect(JSON.stringify(nativeHistoryItems("local_1", messages))).not.toContain("Client build failed with exit code 2");
+    const detail = extractToolCallDetailFromMessages({ sessionId: "local_1", toolUseId: "bash-call", messages });
+    expect(detail?.outputText).toContain("Command running in background with ID: bsh01");
+    expect(detail?.outputText).toContain("Client build failed with exit code 2");
+    expect(detail?.outputText).not.toContain("<task-notification>");
+    expect(detail?.outputText).not.toContain("<summary>");
+    expect(detail?.status).toBe("completed");
+    expect(detail?.isError).toBeUndefined();
+    expect(detail?.totalBytes).toBe(Buffer.byteLength(detail!.outputText!, "utf8"));
+  });
+
+  it("redacts and bounds notification output carried in user text blocks", () => {
+    const notification = `<task-notification><task-id>bsh01</task-id><status>completed</status><output>Authorization: Bearer notification-secret-value\n${"中文日志🚀".repeat(1_000)}</output></task-notification>`;
+    const detail = extractToolCallDetailFromMessages({ sessionId: "local_1", toolUseId: "bash-call", maxBytes: 160, messages: [
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "bash-call", name: "Bash", input: { command: "npm test" } }] } },
+      { type: "user", toolUseResult: { backgroundTaskId: "bsh01" }, message: { content: [{ type: "tool_result", tool_use_id: "bash-call", content: "Background task launched" }] } },
+      { type: "user", message: { content: [{ type: "text", text: notification }] } },
+    ] });
+    expect(detail?.outputText).toContain("中文日志");
+    expect(detail?.outputText).not.toContain("notification-secret-value");
+    expect(detail?.outputText).not.toContain("�");
+    expect(detail?.truncated).toBe(true);
+    expect(detail?.totalBytes).toBeGreaterThan(160);
+    expect(Buffer.byteLength(detail!.outputText!, "utf8")).toBeLessThanOrEqual(160);
+  });
+
+  it("preserves launch output when the Bash task has no completion text, or none for this task", () => {
+    const messages = [
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "bash-call", name: "Bash", input: { command: "npm test" } }] } },
+      { type: "user", toolUseResult: { backgroundTaskId: "bsh01" }, message: { content: [
+        { type: "tool_result", tool_use_id: "bash-call", content: "Command running in background with ID: bsh01" },
+      ] } },
+      { type: "user", message: { content: "<task-notification><task-id>other</task-id><status>completed</status><summary>Other task output</summary></task-notification>" } },
+      { type: "user", isSidechain: true, message: { content: "<task-notification><task-id>bsh01</task-id><status>completed</status><summary>Child task output</summary></task-notification>" } },
+    ];
+    const detail = extractToolCallDetailFromMessages({ sessionId: "local_1", toolUseId: "bash-call", messages });
+    expect(detail?.outputText).toBe("Command running in background with ID: bsh01");
+  });
+
+  it("returns an empty result when a Bash task has neither launch nor notification text", () => {
+    const detail = extractToolCallDetailFromMessages({ sessionId: "local_1", toolUseId: "bash-call", messages: [
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "bash-call", name: "Bash", input: { command: "npm test" } }] } },
+      { type: "user", toolUseResult: { backgroundTaskId: "bsh01" }, message: { content: [{ type: "tool_result", tool_use_id: "bash-call", content: "" }] } },
+    ] });
+    expect(detail).toMatchObject({ status: "completed", outputText: "", truncated: false, totalBytes: 0 });
+  });
+
   it("extracts array content blocks, strips hidden thinking blocks, and converts non-text blocks to placeholders without base64", () => {
     const fakeBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
     const detail = extractToolCallDetailFromMessages({
@@ -357,6 +416,7 @@ describe("zero-bloat timeline projection & RPC wiring", () => {
     const largeWriteBody = "LARGE_WRITE_BODY_".repeat(5_000);
     const largeToolOutput = "LARGE_TOOL_OUTPUT_".repeat(5_000);
     const transcriptMessages: unknown[] = [];
+    let latestPageOnly = false;
 
     const inspector = Object.assign(new EventEmitter(), {
       ready: true,
@@ -368,7 +428,7 @@ describe("zero-bloat timeline projection & RPC wiring", () => {
         if (method === "getAll") return [{ sessionId: "local_native", cwd: "/project", title: "Native", pendingToolPermissions: [] }];
         if (method === "getSession") return { sessionId: "local_native", cwd: "/project", title: "Native", pendingToolPermissions: [] };
         if (method === "getTranscript") return { messages: transcriptMessages };
-        if (method === "getTranscriptPage") return { messages: transcriptMessages, hasMore: false };
+        if (method === "getTranscriptPage") return { messages: latestPageOnly ? transcriptMessages.slice(-1) : transcriptMessages, hasMore: false };
         throw new Error(`Unexpected method: ${method}`);
       },
     }) as unknown as ClaudeDesktopInspector;
@@ -436,6 +496,23 @@ describe("zero-bloat timeline projection & RPC wiring", () => {
       const res = await controller.handleRequest(req, "mobile", "phone") as { detail: { input: Record<string, unknown>; outputText?: string } };
       expect(res.detail.input).toEqual({ file_path: "/project/big.ts", content: largeWriteBody });
       expect(res.detail.outputText).toBe(largeToolOutput);
+
+      transcriptMessages.push(
+        { type: "assistant", uuid: "bash-use", message: { content: [{ type: "tool_use", id: "bash-1", name: "Bash", input: { command: "npm test" } }] } },
+        { type: "user", uuid: "bash-launch", toolUseResult: { backgroundTaskId: "bsh01" }, message: { content: [
+          { type: "tool_result", tool_use_id: "bash-1", content: "Command running in background with ID: bsh01" },
+        ] } },
+        { type: "attachment", attachment: { type: "queued_command", commandMode: "task-notification", prompt:
+          "<task-notification><task-id>bsh01</task-id><status>completed</status><summary>Earlier Bash finished with exit code 0</summary></task-notification>",
+        } },
+        { type: "assistant", uuid: "latest-unrelated", message: { content: [{ type: "text", text: "Latest unrelated page" }] } },
+      );
+      latestPageOnly = true;
+      const page = await bridge.history("local_native");
+      expect(page.items.map(item => item.text)).toEqual(["Latest unrelated page"]);
+      const bash = await controller.handleRequest({ ...req, params: { sessionId: "local_native", toolUseId: "bash-1" } }, "mobile", "phone") as { detail: { outputText: string } };
+      expect(bash.detail.outputText).toContain("Earlier Bash finished with exit code 0");
+      expect(bash.detail.outputText).toContain("Command running in background with ID: bsh01");
 
       // Invalid agentId parameter rejected cleanly at boundary
       await expect(

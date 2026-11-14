@@ -244,13 +244,15 @@ function BashTaskDetail({
         )}
         {result.error && <div className="tool-detail-fetch-error" role="alert">{result.error}</div>}
       </section>
-      <section className="tool-detail-section" aria-label="任务输出">
-        <span className="tool-detail-section-label">任务输出</span>
-        {output ? <pre className="tool-detail-code"><code>{output}</code></pre> : <div className="tool-detail-empty">暂无任务输出</div>}
-      </section>
+      {(output || !result.detail?.outputText) && (
+        <section className="tool-detail-section" aria-label="任务输出">
+          <span className="tool-detail-section-label">任务输出</span>
+          {output ? <pre className="tool-detail-code"><code>{output}</code></pre> : <div className="tool-detail-empty">暂无任务输出</div>}
+        </section>
+      )}
       {result.detail?.outputText && result.detail.outputText !== output && (
-        <section className="tool-detail-section" aria-label="启动结果">
-          <span className="tool-detail-section-label">启动结果{result.detail.truncated ? "（已截断）" : ""}</span>
+        <section className="tool-detail-section" aria-label="执行信息">
+          <span className="tool-detail-section-label">执行信息{result.detail.truncated ? "（已截断）" : ""}</span>
           <pre className="tool-detail-code"><code>{result.detail.outputText}</code></pre>
         </section>
       )}

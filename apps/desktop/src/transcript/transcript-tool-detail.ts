@@ -165,6 +165,8 @@ export function extractToolCallDetailFromMessages(params: {
   let toolName: string | undefined;
   let rawInput: Record<string, unknown> = {};
   let resultBlock: Record<string, unknown> | undefined;
+  let backgroundTaskId: string | undefined;
+  const notifications: unknown[] = [];
 
   for (const raw of messages) {
     if (!isRecord(raw)) continue;
@@ -173,6 +175,10 @@ export function extractToolCallDetailFromMessages(params: {
       if (raw.parent_tool_use_id && (raw.type === "assistant" || raw.type === "user")) continue;
     }
     const body = isRecord(raw.message) ? raw.message : undefined;
+    if (raw.type === "user") notifications.push(body?.content);
+    else if (raw.type === "attachment" && isRecord(raw.attachment) && raw.attachment.type === "queued_command") {
+      notifications.push(raw.attachment.prompt);
+    }
     if (!body || !Array.isArray(body.content)) continue;
     for (const rawBlock of body.content) {
       if (!isRecord(rawBlock)) continue;
@@ -186,6 +192,8 @@ export function extractToolCallDetailFromMessages(params: {
         rawInput = isRecord(rawBlock.input) ? rawBlock.input : {};
       } else if (rawBlock.type === "tool_result" && rawBlock.tool_use_id === toolUseId) {
         resultBlock = rawBlock;
+        backgroundTaskId = isRecord(raw.toolUseResult) && typeof raw.toolUseResult.backgroundTaskId === "string"
+          ? raw.toolUseResult.backgroundTaskId : undefined;
       }
     }
   }
@@ -208,7 +216,19 @@ export function extractToolCallDetailFromMessages(params: {
 
   const isError = resultBlock.is_error === true;
   const parsed = parseToolResultContent(resultBlock.content);
-  const redactedOutput = redactEvidenceText(parsed.text);
+  const outputParts = [parsed.text];
+  if (toolName === "Bash" && backgroundTaskId) {
+    for (const content of notifications) {
+      const text = parseToolResultContent(content).text.trim();
+      if (!text.startsWith("<task-notification>")
+        || ![...text.matchAll(/<task-id>([^<]+)<\/task-id>/gu)].some(match => match[1] === backgroundTaskId)) continue;
+      for (const match of text.matchAll(/<(status|summary|output)>([\s\S]*?)<\/\1>/gu)) {
+        const value = match[2]!.trim();
+        if (value) outputParts.push(value);
+      }
+    }
+  }
+  const redactedOutput = redactEvidenceText(outputParts.filter(Boolean).join("\n\n"));
   const boundedOutput = truncateUtf8(redactedOutput, maxBytes);
 
   return {

@@ -17,6 +17,7 @@ import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAtt
 import { IconButton } from "./common/IconButton.js";
 import { MessageCopyButton } from "./common/MessageCopyButton.js";
 import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
+import { SessionActivityIndicator } from "./conversation/SessionActivityIndicator.js";
 import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
 import { dispatchMobileBack } from "../lib/mobile-back-navigation.js";
 import { SlashCommandInput } from "./conversation/SlashCommandInput.js";
@@ -445,6 +446,28 @@ describe("background tasks", () => {
       await vi.advanceTimersByTimeAsync(4_000); await settle();
       expect(props.onLoadBackgroundTasks).toHaveBeenCalledTimes(2);
     } finally { vi.useRealTimers(); }
+  });
+
+  it("updates composer activity with the same refreshed tasks as the tray while history stays running", async () => {
+    vi.useFakeTimers();
+    try {
+      agents(1);
+      props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValueOnce([running]).mockResolvedValue([{ ...running, state: "completed" }]) };
+      draw(); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toMatchObject({ kind: "running", since: 1 });
+      await vi.advanceTimersByTimeAsync(2_000); await settle();
+      expect(props.histories.A!.items[0]!.subagent!.state).toBe("running");
+      expect(trayButton()!.props.label).toBe("后台任务");
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toBeUndefined();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps history activity if the first task detail load fails", async () => {
+    agents(1);
+    props = { ...props, onLoadBackgroundTasks: vi.fn().mockRejectedValue(new Error("Offline")) };
+    draw(); await settle();
+    expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity?.label).toContain("子代理运行中");
+    expect(elements(tree).find(element => element.props.role === "alert")!.props.children).toContain("Offline");
   });
 
   it.each([0, 1, 4, 8])("shows each of %s subagents as one line instead of an inline card", count => {

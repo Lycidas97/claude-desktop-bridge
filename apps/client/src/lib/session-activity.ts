@@ -1,4 +1,4 @@
-import type { BridgeSessionInfo, BridgeSubagentSummary, BridgeTurnState } from "@bridge/protocol";
+import type { BridgeBackgroundTask, BridgeSessionInfo, BridgeSubagentSummary, BridgeTurnState } from "@bridge/protocol";
 
 export interface SessionActivityItem {
   role: string;
@@ -11,7 +11,7 @@ export interface SessionActivityItem {
 export interface SessionActivity {
   kind: "queued" | "running" | "thinking" | "generating";
   label: string;
-  /** Timestamp of the user message that started the current work, when known. */
+  /** Start of the displayed subagent, or the user message that started the main turn. */
   since?: number;
 }
 
@@ -37,6 +37,7 @@ export function sessionQueueLabel(
 export function sessionActivity(
   session: Pick<BridgeSessionInfo, "turnState" | "executionStage" | "desktopHandoff"> & Partial<Pick<BridgeSessionInfo, "ownership" | "pendingCount">> | undefined,
   items: readonly SessionActivityItem[],
+  backgroundTasks?: readonly BridgeBackgroundTask[],
 ): SessionActivity | undefined {
   if (!session) return undefined;
   const lastUser = [...items].reverse().find((item) => item.role === "user");
@@ -45,15 +46,21 @@ export function sessionActivity(
     kind: "queued",
     label: session.ownership ? sessionQueueLabel({ ...session, ownership: session.ownership }) : "排队等待中",
   };
-  const runningSubagents = items.filter(
-    (item) => item.role === "tool" && item.subagent?.state === "running",
-  );
+  const runningSubagents = backgroundTasks !== undefined
+    ? backgroundTasks.filter(task => task.state === "running").flatMap(task => task.kind === "workflow"
+      ? task.workflow?.agents.filter(agent => agent.state === "running") ?? []
+      : task.kind === "subagent" ? [{
+        description: task.subagent?.description ?? task.description,
+        toolCount: task.subagent?.toolCount ?? 0,
+        startedAt: task.subagent?.startedAt ?? task.startedAt,
+      }] : [])
+    : items.filter(item => item.role === "tool" && item.subagent?.state === "running").map(item => item.subagent!);
   if (runningSubagents.length > 0) {
-    const latest = runningSubagents[runningSubagents.length - 1]!.subagent!;
+    const latest = runningSubagents[runningSubagents.length - 1]!;
     const label = runningSubagents.length === 1
       ? `子代理运行中 · ${latest.description}${latest.toolCount ? ` (${latest.toolCount} 步)` : ""}`
       : `${runningSubagents.length} 个子代理运行中 · ${latest.description}`;
-    return { kind: "running", label, ...(since ?? latest.startedAt ? { since: since ?? latest.startedAt } : {}) };
+    return { kind: "running", label, since: latest.startedAt };
   }
   if (session.turnState !== "running") return undefined;
   if (session.executionStage === "starting") return { kind: "queued", label: "正在启动" };

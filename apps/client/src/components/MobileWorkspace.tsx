@@ -437,7 +437,7 @@ export function MobileWorkspace({
   const rewindDisabled = connection !== "connected" || !desktopOnline;
   const selectedHistory = selectedSessionId ? histories[selectedSessionId] : undefined;
   const taskHistoryReady = selectedHistory?.status === "ready" || Boolean(selectedHistory?.items.length);
-  const [backgroundTaskDetails, setBackgroundTaskDetails] = useState<{ key: string; tasks: BridgeBackgroundTask[]; error?: string }>();
+  const [backgroundTaskDetails, setBackgroundTaskDetails] = useState<{ key: string; tasks: BridgeBackgroundTask[] | undefined; error?: string }>();
   useEffect(() => {
     if (!onLoadBackgroundTasks || !visible || sessionView !== "conversation" || connection !== "connected" || !desktopOnline || !selectedSession || desktopRuntimeId(selectedSession) !== "claude-desktop" || !taskHistoryReady) return;
     let active = true;
@@ -448,7 +448,7 @@ export function MobileWorkspace({
         if (active) setBackgroundTaskDetails({ key: draftKey, tasks });
       } catch (error) {
         if (active) setBackgroundTaskDetails(current => ({
-          key: draftKey, tasks: current?.key === draftKey ? current.tasks : [],
+          key: draftKey, tasks: current?.key === draftKey ? current.tasks : undefined,
           error: error instanceof Error ? error.message : String(error),
         }));
       }
@@ -473,7 +473,8 @@ export function MobileWorkspace({
     entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(selectedSessionId, streamKeys);
-  const activity = useMemo(() => sessionActivity(selectedSession, items), [selectedSession, items]);
+  const activityTasks = (backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails.tasks : undefined) ?? selectedSession?.backgroundTasks;
+  const activity = useMemo(() => sessionActivity(selectedSession, items, activityTasks), [selectedSession, items, activityTasks]);
   const projectsByActivity = useMemo(() => {
     const latest = new Map<string, number>((snapshot?.projects ?? []).filter(project => project.kind === "desktop-group").map(project => [project.projectId, 0]));
     for (const session of sessions) {
@@ -1453,7 +1454,7 @@ export function MobileWorkspace({
       ? sessions.find((session) => session.sessionId === otherPermission.sessionId)
       : undefined;
     const displayNodes = groupTimelineTools(timeline);
-    const backgroundTasks = (backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails.tasks : undefined) ?? selectedSession.backgroundTasks ?? [];
+    const backgroundTasks = activityTasks ?? [];
     const runningBackgroundTasks = backgroundTasks.filter((task) => task.state === "running").length;
     const renderSubagent = (item: ConversationItem) => (
       <SubagentCard

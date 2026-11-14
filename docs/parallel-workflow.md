@@ -6,7 +6,7 @@ How the patrol runs Issues through dispatch, implementation, review, CI, and mer
 
 - **Patrol**: the session the owner talks to. Dispatches, sets merge order, resolves conflicts and owner decisions. After merges it runs `main` CI and the dogfood install, and it is the single writer of `LESSONS.md`, `docs/subsystems/*.md`, and shared memory. It makes no code judgments and does not relay review traffic.
   - The patrol never edits code, tests, or scripts, and never diagnoses failures. Any work that needs a code change goes to a fork. Record it as a comment on the Issue it belongs to (the merged PR's Issue for a `main` failure); open a new Issue only when none fits.
-  - In a turn that cannot `start_session` (**Host constraints**), the patrol proposes the fork as a card and waits for the owner to start it.
+  - In a turn that cannot `start_session` (**Host constraints**), the patrol proposes the session (fork, reviewer, or Astra) as a card and waits for the owner to start it. If it cannot propose one, it sends `BLOCKED` and stops; it never routes around the constraint.
 - **Fork**: implements one Issue in its own worktree. Never reviews or merges its own PR.
 - **Reviewer**: reviews every round of its PRs and merges them (**Merge**). It sees only the PR number and SHA, never the patrol's analysis or the fork brief, and otherwise stays read-only.
 - **Discussion**: a session for retros and process work. It may own docs-only PRs. Anything else it finds becomes an Issue for the patrol; it does not implement, run CI, or coordinate reviewers.
@@ -48,6 +48,8 @@ A Light reviewer whose PR grows into Paired scope tells the patrol.
 - `start_session` works only in a turn the owner's own message started, never in one triggered by a peer message, `/loop`, or a task notification.
 - Completion notes reach the patrol only once all linked sessions are idle, so status travels by `SendMessage` to the target's `local_…` id.
 - `set_monitor` may be refused for PRs a fork opened. If it is, do not work around it.
+- A session does only the task it was started for. Never give an idle session, Astra included, a different task: its compacted old context mixes into the new one.
+- When `SendMessage` reports delivery as uncertain, check the target with `list_events` before acting as if it was not delivered.
 
 ## Messages
 

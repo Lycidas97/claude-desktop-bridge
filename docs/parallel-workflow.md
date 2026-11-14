@@ -16,7 +16,7 @@ Reports to the owner give the conclusion, the decisions the owner must make, and
 ## Review tiers
 
 - **Light**: docs-only (every path matches the `NON_DOC` exclusion in `.github/workflows/ci.yml`), or tests and fixtures only. One reviewer session per round handles all Light PRs.
-- **Paired**: everything else. A reviewer session is started with the fork. Architecture and UI PRs also get the Opus reviewer.
+- **Paired**: everything else. A reviewer session is started with the fork. Architecture and UI PRs also get the extra `ui-review` reviewer.
 
 A Light reviewer whose PR grows into Paired scope tells the patrol.
 
@@ -26,20 +26,22 @@ A Light reviewer whose PR grows into Paired scope tells the patrol.
 | --- | --- | --- |
 | Patrol | `group/bridge-runner`: DeepSeek Flash → GPT-6.1-Sol | `bridge-runner` |
 | Fork, reviewer, `LESSONS.md` consolidation, scheduled `bridge-tech-debt-patrol` (no subagents: a weaker scanner's misses cannot be caught by review) | `codex/gpt-6.1-sol` | `GPT-6.1-Sol · Codex` |
-| Extra reviewer for architecture/UI PRs | `auto/claude-opus-5-5` | `Claude Opus 5.5` |
-| `plan-ideator` / `plan-reviewer` | `group/bridge-ideator`: Gemini 4 Carbon → GPT-6.1-Sol / `codex/gpt-6.1-sol` | `bridge-ideator` / `GPT-6.1-Sol · Codex` |
-| Drafting Issue bodies, PR descriptions, docs | `group/bridge-docs`: Gemini 4 Hydrogen → Opus 5.5 → DeepSeek Flash | `bridge-docs` |
+| Extra reviewer for architecture/UI PRs | `group/ui-review`: Opus 5.5 (Antigravity → Claude Code) → Gemini 4 Carbon | `ui-review` |
+| `plan-ideator` / `plan-reviewer` | `group/ideator`: Gemini 4 Argon → Gemini 4 Carbon → GPT-6.1-Sol / `codex/gpt-6.1-sol` | `ideator` / `GPT-6.1-Sol · Codex` |
+| Drafting Issue bodies, PR descriptions, docs | `group/docs`: Gemini 4 Hydrogen → Opus 5.5 → DeepSeek Flash | `docs` |
 | Hard bugs | `codex/gpt-6-astra` | `GPT-6-Astra · Codex` |
 
 - Fallback lives in Magpie groups with `routing=order`, so sessions carry no fallback logic. Gemini only via `antigravity/*`. One-time setup per machine (the group name is the label):
   ```bash
   magpie group add bridge-runner models=deepseek/deepseek-flash,codex/gpt-6.1-sol routing=order
-  magpie group add bridge-ideator models=antigravity/gemini-4-carbon,codex/gpt-6.1-sol routing=order
-  magpie group add bridge-docs models=antigravity/gemini-4-hydrogen,antigravity/claude-opus-5-5,claude/claude-opus-5-5,deepseek/deepseek-flash routing=order
+  magpie group add ideator models=antigravity/gemini-4-argon,antigravity/gemini-4-carbon,codex/gpt-6.1-sol routing=order
+  magpie group add docs models=antigravity/gemini-4-hydrogen,antigravity/claude-opus-5-5,claude/claude-opus-5-5,deepseek/deepseek-flash routing=order
+  magpie group add ui-review models=antigravity/claude-opus-5-5,claude/claude-opus-5-5,antigravity/gemini-4-carbon routing=order
   ```
 - `set_session_model` and frontmatter take a picker id. Resolve it right before use with `node scripts/picker-id.mjs "<label>"`; never write ids down. A new group needs a Claude Desktop restart before its id works.
 - A session keeps one model for life. `set_session_model` applies only from the session's next turn (see **Dispatch**).
 - Escalate to Astra when a defect survives two fix rounds, `ci:local` fails twice for the same cause, or a merge conflict survives two resolution rounds.
+- The `ui-review` reviewer names the model that wrote its review in the review body. A Gemini Carbon `[BLOCKER]` blocks the merge only after the PR's Sol reviewer confirms it; Opus findings stand on their own.
 - DeepSeek only runs procedures with an objective check (`gh` state, `ci/local-distributed`); it never writes code or tests.
 - When a Sol session reports a quota error, the patrol stops dispatching and asks the owner.
 

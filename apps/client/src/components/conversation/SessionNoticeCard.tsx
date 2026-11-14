@@ -3,6 +3,7 @@ import { MarkdownText } from "../common/MarkdownText.js";
 
 export interface SessionNotice {
   kind?: "cross-session";
+  commonSender?: string;
   title: string;
   summary: string;
   reports: Array<{ title: string; text: string }>;
@@ -26,7 +27,7 @@ export function parseSessionNotice(text: string): SessionNotice | undefined {
     crossEnvelope.lastIndex = offset;
     const block = crossEnvelope.exec(text);
     if (!block) break;
-    const sender = /(?:^|\s)from-name\s*=\s*(?:"([^"]+)"|'([^']+)')/u.exec(block[1]!);
+    const sender = /(?:^|\s)(?:from-)?name\s*=\s*(?:"([^"]+)"|'([^']+)')/u.exec(block[1]!);
     if (!sender) return undefined;
     reports.push({ title: sender[1] ?? sender[2]!, text: block[2]!.trim() });
     offset = crossEnvelope.lastIndex;
@@ -57,10 +58,12 @@ export function parseSessionNotice(text: string): SessionNotice | undefined {
     }
   }
   if (!reports.length && !idle) return undefined;
+  const commonSender = crossSession && reports.every(report => report.title === reports[0]!.title) ? reports[0]!.title : undefined;
   return {
     ...(crossSession ? { kind: "cross-session" as const } : {}),
+    ...(commonSender ? { commonSender } : {}),
     title: crossSession
-      ? reports.length === 1 ? `来自 ${reports[0]!.title}` : `${reports.length} 条跨会话消息`
+      ? commonSender ? `来自 ${commonSender}` : `${reports.length} 条跨会话消息`
       : reports.length === 1 ? reports[0]!.title : reports.length ? `${reports.length} 个子会话更新` : "子会话动态",
     summary: reports.length
       ? reports.map(report => report.text).join("\n\n").replace(/\[([^\]]+)\]\([^)]+\)/gu, "$1").replace(/[*`#]/gu, "").replace(/\s+/gu, " ").trim()
@@ -90,7 +93,7 @@ export function SessionNoticeCard({ notice, source, itemId, entering = false, on
       <div className="session-notice-content">
         {notice.reports.map((report, index) => (
           <section key={index}>
-            {notice.reports.length > 1 && <strong>{report.title}</strong>}
+            {notice.reports.length > 1 && !notice.commonSender && <strong>{report.title}</strong>}
             <MarkdownText text={report.text} collapsible={false} {...(onFileClick ? { onFileClick } : {})} />
           </section>
         ))}

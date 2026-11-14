@@ -914,7 +914,7 @@ export function MarkdownText({
   onFileClick?: (filePath: string) => void;
   collapsible?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(!collapsible);
   const contentId = useId();
   const long = collapsible && (text.length > 2_000 || text.split("\n").length > 30);
   const blocks = parseMarkdownBlocks(text);

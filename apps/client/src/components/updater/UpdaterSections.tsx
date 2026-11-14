@@ -302,18 +302,18 @@ export function RemoteDesktopUpdaterSection({
         </span>
       </div>
       {updater?.statusDetail && updater.phase !== "error" && (
-        <p className="detail-text" role="status">{updater.statusDetail}</p>
+        <p className="mobile-settings-row detail-text" role="status">{updater.statusDetail}</p>
       )}
       {updater && !updater.canAutoRestart && (updater.phase === "available" || updater.phase === "ready") && (
-        <p className="detail-text">{osInstallBoundaryHint(updater)}</p>
+        <p className="mobile-settings-row detail-text">{osInstallBoundaryHint(updater)}</p>
       )}
       {updater?.phase === "downloading" && (
-        <div className="updater-card-actions">
+        <div className="mobile-settings-row">
           <ProgressBar downloadedBytes={updater.downloadedBytes} totalBytes={updater.totalBytes} />
         </div>
       )}
       {(error || updater?.error) && (
-        <p className="inline-error" role="alert">{error || updater?.error}</p>
+        <p className="mobile-settings-row updater-error" role="alert">{error || updater?.error}</p>
       )}
       {remote.supported && (
         <div className="mobile-settings-row mobile-settings-actions">
@@ -407,14 +407,14 @@ export function MobileClientUpdaterSection({ updater }: { updater: ClientUpdater
             <i aria-hidden="true" />
           </label>
           {state.statusDetail && state.phase !== "error" && (
-            <p className="detail-text" role="status">{state.statusDetail}</p>
+            <p className="mobile-settings-row detail-text" role="status">{state.statusDetail}</p>
           )}
           {state.phase === "downloading" && (
-            <div className="updater-card-actions">
+            <div className="mobile-settings-row">
               <ProgressBar downloadedBytes={state.downloadedBytes} totalBytes={state.totalBytes} />
             </div>
           )}
-          {state.error && <p className="inline-error" role="alert">{state.error}</p>}
+          {state.error && <p className="mobile-settings-row updater-error" role="alert">{state.error}</p>}
           <div className="mobile-settings-row mobile-settings-actions">
             <button
               type="button"
@@ -444,7 +444,7 @@ export function MobileClientUpdaterSection({ updater }: { updater: ClientUpdater
         </>
       ) : (
         <>
-          <p className="detail-text">Web 访问端请前往 GitHub Releases 获取各平台最新安装包。</p>
+          <p className="mobile-settings-row detail-text">Web 访问端请前往 GitHub Releases 获取各平台最新安装包。</p>
           <div className="mobile-settings-row mobile-settings-actions">
             <button
               type="button"

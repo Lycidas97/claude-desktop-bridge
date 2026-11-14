@@ -475,7 +475,17 @@ export function MobileWorkspace({
   const streamEntering = useStreamEntrance(selectedSessionId, streamKeys);
   const selectedTaskDetails = backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails : undefined;
   const activityTasks = selectedTaskDetails?.tasks ?? selectedSession?.backgroundTasks;
-  const activity = useMemo(() => sessionActivity(selectedSession, items, selectedTaskDetails?.error ? undefined : activityTasks), [selectedSession, items, activityTasks, selectedTaskDetails?.error]);
+  const activity = useMemo(() => sessionActivity(
+    selectedSession,
+    selectedTaskDetails?.error ? items.map(item => {
+      if (item.subagent?.state !== "running") return item;
+      const task = findBackgroundTask(activityTasks, item.subagent);
+      return task && (task.state === "completed" || task.state === "failed" || task.state === "stopped")
+        ? { ...item, subagent: { ...item.subagent, state: task.state } }
+        : item;
+    }) : items,
+    selectedTaskDetails?.error ? undefined : activityTasks,
+  ), [selectedSession, items, activityTasks, selectedTaskDetails?.error]);
   const projectsByActivity = useMemo(() => {
     const latest = new Map<string, number>((snapshot?.projects ?? []).filter(project => project.kind === "desktop-group").map(project => [project.projectId, 0]));
     for (const session of sessions) {

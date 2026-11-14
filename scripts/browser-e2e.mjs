@@ -554,6 +554,10 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
         }
         case "session.commands": result = await host.nativeApproval.commands(request); break;
         case "session.configuration":
+          if (host.taskDetailsError && request.params.includeBackgroundTasks === true) {
+            error = { code: "TASK_DETAILS_UNAVAILABLE", message: host.taskDetailsError };
+            break;
+          }
           if (!host.nativeApproval && request.params.includeBackgroundTasks === true) {
             result = { session: snapshot.sessions.find(candidate => candidate.sessionId === request.params.sessionId) };
             break;
@@ -1545,7 +1549,12 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.locator(".background-task-row .is-completed").waitFor();
   await page.screenshot({ path: resolve(directory, "subagent-settled-tray.png"), fullPage: true, animations: "disabled" });
   await page.getByRole("button", { name: "关闭", exact: true }).click();
-  steps.push("completed tray clears composer activity despite a missing timeline completion event");
+  host.taskDetailsError = "Task detail refresh unavailable";
+  await page.getByRole("alert").filter({ hasText: host.taskDetailsError }).waitFor();
+  assert.equal(await page.locator(".session-activity").count(), 0, "A failed refresh cannot revive a task already confirmed completed by the tray");
+  host.taskDetailsError = undefined;
+  await page.getByRole("alert").filter({ hasText: "Task detail refresh unavailable" }).waitFor({ state: "hidden" });
+  steps.push("completed tray clears composer activity despite a missing timeline completion event and preserves completion through a rejected refresh");
   await eventually(() => stream.locator(".task-plan-card").count(), 1, "Only the parent native task plan is projected");
   assert.equal((await stream.innerText()).includes("INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN"), false);
   assert.equal((await stream.innerText()).includes("子代理内部计划"), false);

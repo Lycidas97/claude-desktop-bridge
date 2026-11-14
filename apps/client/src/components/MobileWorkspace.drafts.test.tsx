@@ -496,6 +496,25 @@ describe("background tasks", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it.each(["completed", "failed", "stopped"] as const)("retains observed %s task state after refresh failure without hiding a new invocation", async state => {
+    vi.useFakeTimers();
+    try {
+      agents(1);
+      props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValueOnce([{ ...running, state }]).mockRejectedValue(new Error("Offline")) };
+      draw(); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toBeUndefined();
+      expect(trayButton()!.props.label).toBe("后台任务");
+      await vi.advanceTimersByTimeAsync(2_000); await settle();
+      expect(props.histories.A!.items[0]!.subagent!.state).toBe("running");
+      expect(trayButton()!.props.label).toBe("后台任务");
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toBeUndefined();
+      const item = props.histories.A!.items[0]!;
+      props = { ...props, histories: { ...props.histories, A: { ...props.histories.A!, items: [{ ...item, id: "tool:new-call", subagent: { ...item.subagent!, toolUseId: "new-call" } }] } } };
+      draw();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity?.label).toContain("子代理运行中");
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each([0, 1, 4, 8])("shows each of %s subagents as one line instead of an inline card", count => {
     agents(count);
     expect(markers()).toHaveLength(count);

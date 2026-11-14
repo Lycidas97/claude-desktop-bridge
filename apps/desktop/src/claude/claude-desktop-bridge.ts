@@ -145,6 +145,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private readonly streams = new Map<string, string>();
   private readonly tools = new Map<string, ObservedDesktopTool>();
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private eventProjection: ReturnType<typeof setImmediate> | undefined;
+  private pendingEvents = 0;
   private closed = false;
   private lastError = "Claude Desktop inspector 尚未连接";
   private gateway: ClaudeGatewayConfig | undefined;
@@ -163,7 +165,13 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }) {
     super();
     this.inspector = options.inspector ?? new ClaudeDesktopInspector(process.env.BRIDGE_CLAUDE_INSPECTOR_URL ? { origin: process.env.BRIDGE_CLAUDE_INSPECTOR_URL } : {});
-    this.inspector.on("event", value => { void this.handleEvent(value).catch(error => this.report(error)); });
+    this.inspector.on("event", value => {
+      this.pendingEvents++;
+      void this.handleEvent(value).catch(error => this.report(error)).finally(() => {
+        this.pendingEvents--;
+        this.scheduleEventProjection();
+      });
+    });
     this.inspector.on("permission", value => { this.observePermission(value); this.projectSessions(); this.emit("changed"); });
     this.inspector.on("disconnected", () => { this.lastError = "Claude Desktop inspector 已断开；请在 Desktop 开发者菜单开启 Node inspector"; this.projectSessions(); this.emit("changed"); });
     this.inspector.on("stream-error", error => this.report(error));
@@ -185,6 +193,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   async close(): Promise<void> {
     this.closed = true;
     clearTimeout(this.timer);
+    clearImmediate(this.eventProjection);
     await this.inspector.close();
   }
 
@@ -1087,6 +1096,16 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
   }
 
+  private scheduleEventProjection(): void {
+    if (this.closed || this.pendingEvents || this.eventProjection) return;
+    // Keep one final projection after the burst's message/evidence writes settle.
+    this.eventProjection = setImmediate(() => {
+      this.eventProjection = undefined;
+      this.projectSessions();
+      this.emit("changed");
+    });
+  }
+
   private async handleEvent(raw: unknown): Promise<void> {
     const event = record(raw);
     diag("native.event", { type: typeof event.type === "string" ? event.type : undefined });
@@ -1106,7 +1125,6 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const session = nativeSession(event.session);
       await this.serialized(async () => {
         await this.observeNativeSession(session);
-        this.projectSessions();
       });
     }
     const sessionId = event.sessionId;
@@ -1137,7 +1155,6 @@ export class ClaudeDesktopBridge extends EventEmitter {
     for (const delivery of deliveries) await this.record(delivery);
     const message = record(event.message);
     if (message.isSidechain === true || (message.parent_tool_use_id && (message.type === "assistant" || message.type === "user" || message.type === "system" || message.type === "stream_event"))) {
-      this.emit("changed");
       return;
     }
     const stream = record(message.event);
@@ -1202,7 +1219,6 @@ export class ClaudeDesktopBridge extends EventEmitter {
       this.messageProjection.set(sessionId, projection);
       const items = nativeHistoryItems(sessionId, [event.message], projection);
       await this.enrichSubagentItems(sessionId, items);
-      if (message.type === "system") this.projectSessions();
       for (const item of items) {
         const receipt = item.role === "user" ? [...this.receipts.values()].find(receipt => receipt.sessionId === sessionId && receipt.messageId === message.uuid) : undefined;
         if (item.role === "assistant") await this.options.eventLog.flushDeltas(sessionId);
@@ -1233,7 +1249,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
             tool.output = block.content; tool.completedAt = Date.now();
             const input = record(tool.input);
             const paths = [input.file_path, input.path].filter((path): path is string => typeof path === "string");
-            await this.options.evidence.upsertDesktopEvidence({ id: `native:${sessionId}:${tool.id}`, sessionId, cwd: this.session(sessionId)!.cwd, readCwd: this.executionCwd(sessionId)!, startedAt: tool.startedAt, completedAt: tool.completedAt, tools: [tool], paths });
+            await this.options.evidence.upsertDesktopEvidence({ id: `native:${sessionId}:${tool.id}`, sessionId, cwd: this.native.get(sessionId)!.cwd, readCwd: this.executionCwd(sessionId)!, startedAt: tool.startedAt, completedAt: tool.completedAt, tools: [tool], paths });
           }
         }
       }
@@ -1243,8 +1259,6 @@ export class ClaudeDesktopBridge extends EventEmitter {
       }
     }
     if (event.type === "error") await this.record({ sessionId, origin: "claude-desktop", type: "turn.failed", data: { error: event.error } });
-    this.projectSessions();
-    this.emit("changed");
   }
 
   private async record(draft: BridgeEventDraft): Promise<void> {

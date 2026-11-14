@@ -206,15 +206,21 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   private async applyRuntimeSnapshot(): Promise<boolean> {
+    diag("refresh.start", { ready: this.inspector.ready });
     try {
       if (!this.inspector.ready) await this.inspector.connect();
+      diag("refresh.connected");
       const result = await this.inspector.call("getAll");
       if (!Array.isArray(result)) throw new NativeCallError("Desktop getAll did not return a session list");
+      diag("refresh.getAll", { count: result.length });
       const sessions = result.map(nativeSession);
       this.sectionCatalog = await this.inspector.sections?.(sessions.map(session => session.sessionId));
+      diag("refresh.sections");
       this.models = await readClaudeModelOptions(this.options.settingsPath);
+      diag("refresh.models");
       this.native.clear();
       for (const session of sessions) await this.observeNativeSession(session);
+      diag("refresh.observed", { count: sessions.length });
       for (const [promptId, prompt] of this.prompts) if (!this.native.has(prompt.sessionId)) {
         this.prompts.delete(promptId);
         await this.record({ sessionId: prompt.sessionId, itemId: promptId, origin: "claude-desktop", type: "prompt.resolved", data: { promptId, automatic: true } });
@@ -224,11 +230,13 @@ export class ClaudeDesktopBridge extends EventEmitter {
       this.projectSessions();
       this.lastError = "";
       this.emit("changed");
+      diag("refresh.done", { ok: true });
       return true;
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);
       this.projectSessions();
       this.emit("changed");
+      diag("refresh.done", { ok: false });
       return false;
     }
   }
@@ -322,6 +330,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   private projectSessions(): void {
+    diag("project.start", { count: this.native.size });
     this.sessions.clear();
     const ready = this.inspector.ready;
     for (const native of this.native.values()) {
@@ -370,6 +379,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         },
       });
     }
+    diag("project.done", { count: this.sessions.size });
   }
 
   listSessions(): BridgeSessionInfo[] { return [...this.sessions.values()].sort((a, b) => b.lastActivityAt - a.lastActivityAt); }

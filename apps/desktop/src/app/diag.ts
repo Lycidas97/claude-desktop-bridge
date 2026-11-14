@@ -16,11 +16,7 @@ export function initDiag(directory: string): void {
         if (value !== undefined) parts.push(`${key}=${String(value)}`);
       }
     }
-    try {
-      writeSync(fd!, `${new Date().toISOString()} [diag] ${parts.join(" ")}\n`);
-    } catch {
-      // Diagnostics never affect service behavior.
-    }
+    writeSync(fd!, `${new Date().toISOString()} [diag] ${parts.join(" ")}\n`);
   });
   setInterval(() => {
     const usage = process.memoryUsage();

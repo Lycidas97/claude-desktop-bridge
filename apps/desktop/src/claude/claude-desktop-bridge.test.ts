@@ -188,6 +188,31 @@ describe("native application dialogs and PR Auto-fix", () => {
     } finally { await f.close(); }
   });
 
+  it("keeps a prompt opened by session_updated while an older getAll refresh is still in flight", async () => {
+    const f = await fixture();
+    try {
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      let markSnapshotCaptured!: () => void;
+      const snapshotCaptured = new Promise<void>(resolve => { markSnapshotCaptured = resolve; });
+      const call = f.native.call.bind(f.native);
+      f.native.call = async (method, args) => {
+        const result = await call(method, args);
+        if (method === "getAll") { f.native.call = call; markSnapshotCaptured(); await gate; }
+        return result;
+      };
+      const staleRefresh = f.bridge.refreshRuntime();
+      await snapshotCaptured;
+      f.native.sessions[0]!.pendingCwdTrustPrompt = { promptId: "c", directory: "/new-project", sources: ["settings"] };
+      f.native.emit("event", { type: "session_updated", sessionId: "local-native", session: structuredClone(f.native.sessions[0]) });
+      await new Promise(resolve => setTimeout(resolve, 50));
+      release();
+      await staleRefresh;
+      await vi.waitFor(() => expect(f.bridge.promptsList().map(prompt => prompt.promptId)).toEqual(["c"]));
+      expect(f.eventLog.replay(0, 100).filter(event => event.type.startsWith("prompt.")).map(event => event.type)).toEqual(["prompt.requested"]);
+    } finally { await f.close(); }
+  });
+
   it("projects all five prompt kinds using registered choices and native method capabilities", async () => {
     const f = await fixture();
     try {

@@ -147,6 +147,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private lastError = "Claude Desktop inspector 尚未连接";
   private gateway: ClaudeGatewayConfig | undefined;
   private models: BridgeModelInfo[] | undefined;
+  private snapshotQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: {
     settingsPath: string;
@@ -191,7 +192,18 @@ export class ClaudeDesktopBridge extends EventEmitter {
     this.timer.unref?.();
   }
 
-  async refreshRuntime(): Promise<boolean> {
+  /** Snapshot reads and their application run one at a time, so an older getAll can never overwrite a newer event's state. */
+  private serialized<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.snapshotQueue.then(task);
+    this.snapshotQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  refreshRuntime(): Promise<boolean> {
+    return this.serialized(() => this.applyRuntimeSnapshot());
+  }
+
+  private async applyRuntimeSnapshot(): Promise<boolean> {
     try {
       if (!this.inspector.ready) await this.inspector.connect();
       const result = await this.inspector.call("getAll");
@@ -1067,8 +1079,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
     if (event.session) {
       const session = nativeSession(event.session);
-      await this.observeNativeSession(session);
-      this.projectSessions();
+      await this.serialized(async () => {
+        await this.observeNativeSession(session);
+        this.projectSessions();
+      });
     }
     const sessionId = event.sessionId;
     if (!this.native.has(sessionId)) return;

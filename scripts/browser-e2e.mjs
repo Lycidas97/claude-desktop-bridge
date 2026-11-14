@@ -613,6 +613,10 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
         }
         case "session.commands": result = await host.nativeApproval.commands(request); break;
         case "session.configuration":
+          if (host.taskDetailsError && request.params.includeBackgroundTasks === true) {
+            error = { code: "TASK_DETAILS_UNAVAILABLE", message: host.taskDetailsError };
+            break;
+          }
           if (!host.nativeApproval && request.params.includeBackgroundTasks === true) {
             result = { session: snapshot.sessions.find(candidate => candidate.sessionId === request.params.sessionId) };
             break;
@@ -1571,8 +1575,29 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Catalog row dot reflects running background subagent when main turn is idle");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Catalog row badge displays running background subagent");
   host.history.push(...(await host.nativeApproval.history()).items);
+  // This fixture has no on-disk task transcript, so provide the tray separately.
+  const backgroundTasks = [{
+    id: "boundary-bg-call", kind: "subagent", taskId: "boundary-bg-subagent", toolUseId: "boundary-bg-call",
+    description: "Run full local distributed CI", state: "running", startedAt: subagentStartAt, updatedAt: subagentStartAt,
+    subagent: host.history.find(item => item.subagent?.agentId === "boundary-bg-subagent").subagent,
+  }];
+  const nativeConfiguration = host.nativeApproval.configuration;
+  let taskDetailsReads = 0;
+  let useTrayFixture = false;
+  host.nativeApproval.configuration = async request => {
+    const result = await nativeConfiguration(request);
+    if (request.params.includeBackgroundTasks) {
+      taskDetailsReads++;
+      if (useTrayFixture) result.session.backgroundTasks = structuredClone(backgroundTasks);
+      else assert.deepEqual(result.session.backgroundTasks, [], "Missing native transcript produces empty task details");
+    }
+    return result;
+  };
   await catalogRow.getByRole("button").first().click();
-  await eventually(async () => (await page.locator(".session-activity-label").innerText()).includes("子代理运行中 · Run full local distributed CI"), true, "Session detail shows running subagent activity");
+  await eventually(() => taskDetailsReads >= 2, true, "Native empty task details have been loaded and polled again");
+  assert.ok((await page.locator(".session-activity-label").innerText()).includes("子代理运行中 · Run full local distributed CI"), "Native running metadata preserves activity when catalog transcript is unavailable");
+  useTrayFixture = true;
+  await page.getByRole("button", { name: "后台任务，1 个运行中", exact: true }).waitFor();
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Returning from detail keeps catalog row dot running");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Returning from detail keeps catalog row badge synchronized");
@@ -1580,7 +1605,8 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
   await eventually(() => catalogRow.locator(".session-state-dot.queued").count(), 1, "Stalled background subagent switches catalog dot to warning tone");
   await eventually(() => catalogRow.locator(".session-row-status.queued").innerText(), "子代理无进展", "Stalled background subagent switches catalog badge label");
-  for (const event of await host.nativeApproval.message({
+  // The tray settles without a matching timeline completion event (Issue #140).
+  await host.nativeApproval.message({
     type: "system",
     subtype: "task_notification",
     task_id: "boundary-bg-subagent",
@@ -1588,16 +1614,30 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     status: "completed",
     summary: "CI green",
     timestamp: Date.now(),
-  })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  });
   assert.equal(host.nativeApproval.session().runningSubagents, undefined);
+  backgroundTasks[0] = { ...backgroundTasks[0], state: "completed", updatedAt: Date.now(),
+    subagent: { ...backgroundTasks[0].subagent, state: "completed", updatedAt: Date.now() } };
   delete host.session.runningSubagents;
   await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
   await eventually(() => catalogRow.locator(".session-state-dot.idle").count(), 1, "Completed background subagent restores idle catalog dot");
   await eventually(() => catalogRow.locator(".session-row-status").count(), 0, "Completed background subagent clears catalog badge");
-  host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   steps.push("session catalog state dot and status badge stay synchronized with active, stalled, and completed background subagents before opening and after returning from detail");
   await catalogRow.getByRole("button").first().click();
   const stream = page.locator(".conversation-stream");
+  await stream.locator(".background-task-marker.is-completed").waitFor();
+  await eventually(() => page.locator(".session-activity").count(), 0, "Settled task tray clears stale running subagent activity and timer");
+  assert.equal(host.history.find(item => item.subagent?.agentId === "boundary-bg-subagent")?.subagent.state, "running", "The timeline intentionally retains its stale running state");
+  await page.getByRole("button", { name: "后台任务", exact: true }).click();
+  await page.locator(".background-task-row .is-completed").waitFor();
+  await page.screenshot({ path: resolve(directory, "subagent-settled-tray.png"), fullPage: true, animations: "disabled" });
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
+  host.taskDetailsError = "Task detail refresh unavailable";
+  await page.getByRole("alert").filter({ hasText: host.taskDetailsError }).waitFor();
+  assert.equal(await page.locator(".session-activity").count(), 0, "A failed refresh cannot revive a task already confirmed completed by the tray");
+  host.taskDetailsError = undefined;
+  await page.getByRole("alert").filter({ hasText: "Task detail refresh unavailable" }).waitFor({ state: "hidden" });
+  steps.push("completed tray clears composer activity despite a missing timeline completion event and preserves completion through a rejected refresh");
   await eventually(() => stream.locator(".task-plan-card").count(), 1, "Only the parent native task plan is projected");
   assert.equal((await stream.innerText()).includes("INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN"), false);
   assert.equal((await stream.innerText()).includes("子代理内部计划"), false);

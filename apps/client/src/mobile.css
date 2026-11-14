@@ -444,8 +444,9 @@
   overflow: visible;
   touch-action: none;
 }
-.project-order-row {
-  position: relative;
+.project-order-row { position: relative; }
+.project-order-row,
+.project-order-ghost {
   display: flex;
   min-height: var(--m-row);
   align-items: center;
@@ -469,23 +470,47 @@
   border-bottom-left-radius: var(--m-r-group);
   border-bottom-right-radius: var(--m-r-group);
 }
-.project-order-row.is-dragging {
-  z-index: 2;
-  border-bottom-color: transparent;
-  border-radius: var(--m-r-control);
+.project-order-row.is-placeholder {
   background: var(--accent-soft);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.16), inset 0 0 0 1px var(--accent);
-  transform: scale(1.01);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
-.project-order-row > span { display: grid; flex: 1; min-width: 0; gap: 2px; }
-.project-order-row strong {
+.project-order-row.is-placeholder > * { visibility: hidden; }
+.project-order-ghost {
+  position: fixed;
+  z-index: 96;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  border-radius: var(--m-r-control);
+  background: var(--m-sheet-fill);
+  color: var(--text);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+  --ghost-scale: 1.02;
+  transition: none;
+  animation: project-order-lift 120ms var(--ease-out);
+}
+.project-order-ghost.is-dropping {
+  --ghost-scale: 1;
+  box-shadow: none;
+  animation: none;
+  transition: transform 140ms var(--ease-out), box-shadow 140ms var(--ease-out);
+}
+.project-order-ghost-grip { display: grid; width: var(--m-touch); flex: none; place-items: center; color: var(--accent-ink); }
+@keyframes project-order-lift { from { opacity: 0.8; box-shadow: none; } }
+.project-order-row > span,
+.project-order-ghost > span:first-child { display: grid; flex: 1; min-width: 0; gap: 2px; }
+.project-order-row strong,
+.project-order-ghost strong {
   overflow: hidden;
   font-size: var(--m-fs-body);
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.project-order-row small { color: var(--muted); font-size: var(--m-fs-footnote); }
+.project-order-row small,
+.project-order-ghost small { color: var(--muted); font-size: var(--m-fs-footnote); }
 .project-order-row .project-order-handle {
   flex: none;
   color: var(--muted);
@@ -500,8 +525,9 @@
 .project-order-row .icon-button:disabled { opacity: 0.32; cursor: default; }
 
 @media (prefers-reduced-motion: reduce) {
-  .project-order-row { transition: none; }
-  .project-order-row.is-dragging { transform: none; }
+  .project-order-row,
+  .project-order-ghost { transition: none; animation: none; }
+  .project-order-ghost { --ghost-scale: 1; }
 }
 
 .m-field {

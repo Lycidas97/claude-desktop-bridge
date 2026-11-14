@@ -2076,12 +2076,27 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   const secondBox = await secondRow.boundingBox();
   await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
   await page.mouse.down();
+  const ghost = page.locator(".project-order-ghost");
+  await ghost.waitFor();
+  await ghost.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
+  const liftBox = await ghost.boundingBox();
+  const sourceBox = await orderSheet.locator(".project-order-row.is-placeholder").boundingBox();
+  assert.ok(Math.abs(sourceBox.height - liftBox.height / 1.02) < 1, "The placeholder keeps the lifted row's height");
+  await page.mouse.move(handleBox.x + handleBox.width / 2 + 80, handleBox.y + handleBox.height / 2 + 18);
+  const movedBox = await ghost.boundingBox();
+  assert.ok(Math.abs(movedBox.x - liftBox.x - 80) < 1 && Math.abs(movedBox.y - liftBox.y - 18) < 1, `The ghost freely follows both pointer axes: ${JSON.stringify({ liftBox, movedBox })}`);
+  await page.screenshot({ path: resolve(directory, "project-order-ghost-following.png"), fullPage: true });
   await page.mouse.move(handleBox.x + handleBox.width / 2, secondBox.y + secondBox.height * 0.75, { steps: 6 });
   await orderSheet.locator(".project-order-row.is-dragging").waitFor();
   assert.deepEqual(await orderRowTitles.allTextContents(), ["claude-desktop-bridge", "other-project"]);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Dragging project order row stays within 375px viewport");
   await page.screenshot({ path: resolve(directory, "project-order-dragging.png"), fullPage: true });
+  const dropBox = await orderSheet.locator(".project-order-row.is-placeholder").boundingBox();
   await page.mouse.up();
+  await ghost.waitFor({ state: "hidden" });
+  const placedBox = await orderSheet.locator(".project-order-row").last().boundingBox();
+  assert.ok(Math.abs(dropBox.height - placedBox.height) < 1, "Dropping restores the row without changing its height");
+  assert.equal(await orderSheet.locator(".is-placeholder").count(), 0, "Drop removes the placeholder after settling");
   await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
   await eventually(() => headers.allTextContents(), ["claude-desktop-bridge", "other-project"], "Handle drag persists reordered projects");
 
@@ -2133,6 +2148,44 @@ async function verifyProjectGrouping(page, host, steps, directory) {
     assert.deepEqual(await orderSheet.locator(".m-sheet-footer").boundingBox(), footerBox, "Scrolling keeps the actions fixed");
     await page.screenshot({ path: resolve(directory, `project-order-${count}-${width}-scrolled.png`), fullPage: true });
     if (count === 30 && width === 375) {
+      await body.evaluate(el => { el.scrollTop = 0; });
+      const beforeClick = await orderRowTitles.allTextContents();
+      const edgeIndex = await orderSheet.evaluate(el => {
+        const bottom = el.querySelector(".m-sheet-body").getBoundingClientRect().bottom;
+        return [...el.querySelectorAll(".project-order-row")].findIndex(row => {
+          const rect = row.getBoundingClientRect();
+          return rect.top + rect.height / 2 > bottom - 40 && rect.top + rect.height / 2 < bottom;
+        });
+      });
+      assert.ok(edgeIndex >= 0, "The long catalog has a handle inside the edge zone");
+      const edgeHandle = await orderSheet.locator(".project-order-handle").nth(edgeIndex).boundingBox();
+      await page.mouse.move(edgeHandle.x + edgeHandle.width / 2, edgeHandle.y + edgeHandle.height / 2);
+      await page.mouse.down();
+      await page.evaluate(() => new Promise(resolve => {
+        let remaining = 10;
+        const frame = () => { if (--remaining === 0) resolve(); else requestAnimationFrame(frame); };
+        requestAnimationFrame(frame);
+      }));
+      assert.equal(await body.evaluate(el => el.scrollTop), 0, "A stationary edge handle press does not scroll");
+      await page.mouse.up();
+      assert.deepEqual(await orderRowTitles.allTextContents(), beforeClick, "A stationary handle click does not reorder");
+      await orderSheet.locator("select").waitFor();
+      assert.equal(await orderSheet.locator("select").inputValue(), String(edgeIndex), "Handle click still opens position selection");
+      await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
+      await page.locator(".project-order-bar button").click();
+      await orderSheet.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
+      const centerHandle = await orderSheet.locator(".project-order-handle").nth(1).boundingBox();
+      await page.mouse.move(centerHandle.x + centerHandle.width / 2, centerHandle.y + centerHandle.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(bodyBox.x + 80, bodyBox.y + bodyBox.height / 2);
+      const beforeWheelIndex = await orderSheet.locator(".project-order-row").evaluateAll(rows => rows.findIndex(row => row.classList.contains("is-placeholder")));
+      await page.mouse.wheel(0, 224);
+      await eventually(() => orderSheet.locator(".project-order-row").evaluateAll((rows, index) => rows.findIndex(row => row.classList.contains("is-placeholder")) >= index + 3, beforeWheelIndex), true, "Wheel scrolling updates the drop slot without another pointermove");
+      await page.keyboard.press("Escape");
+      await ghost.waitFor({ state: "hidden" });
+      await page.mouse.up();
+      assert.equal(await orderSheet.locator(".is-placeholder").count(), 0, "Escape leaves no ghost or placeholder");
+      assert.deepEqual(await orderRowTitles.allTextContents(), beforeClick, "Escape restores the pre-drag order");
       const touch = await page.context().newCDPSession(page);
       await touch.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
       await page.evaluate(() => {
@@ -2160,10 +2213,10 @@ async function verifyProjectGrouping(page, host, steps, directory) {
       await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: textBox.x + 20, y: textBox.y + textBox.height / 2 }] });
       await orderSheet.locator(".project-order-row.is-dragging").waitFor();
       await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: swipeX, y: bodyBox.y + bodyBox.height - 5 }] });
-      await eventually(() => orderRowTitles.last().innerText(), draggedName, "Holding at the bottom edge scrolls and drags to the last position");
+      await eventually(() => orderRowTitles.last().textContent(), draggedName, "Holding at the bottom edge scrolls and drags to the last position");
       await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: swipeX, y: bodyBox.y + 5 }] });
       await eventually(() => body.evaluate(el => el.scrollTop), 0, "Holding at the top edge scrolls back to the start");
-      await eventually(() => orderRowTitles.first().innerText(), draggedName, "Top-edge scrolling updates the insertion position without another move");
+      await eventually(() => orderRowTitles.first().textContent(), draggedName, "Top-edge scrolling updates the insertion position without another move");
       await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
       assert.equal(await orderSheet.locator(".is-dragging").count(), 0, "Touch release ends the drag");
       await page.evaluate(() => { window.projectOrderTouchMoves = []; });
@@ -2179,6 +2232,7 @@ async function verifyProjectGrouping(page, host, steps, directory) {
     await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
   }
   steps.push("9 projects on a short phone viewport and 30 projects in a centered sheet scroll to the final row with fixed header and footer");
+  steps.push("a lifted ghost follows x/y with an equal-height placeholder and settles on drop; stationary handle clicks select a position without reordering; wheel scrolling updates the drop slot; Escape and touch release clean up and restore native scrolling");
 }
 
 async function verifySectionManage(page, host, steps, directory) {

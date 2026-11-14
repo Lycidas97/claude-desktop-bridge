@@ -1,12 +1,14 @@
 import type { BridgeProjectInfo, BridgeSessionInfo } from "@bridge/protocol";
 import { GripVertical } from "lucide-react";
 import {
+  Fragment,
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   useEffect,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { moveProject } from "../../lib/project-groups.js";
 import { IconButton } from "../common/IconButton.js";
 import { MobileSheet } from "./MobileSheet.js";
@@ -29,7 +31,12 @@ interface DragSession {
   projectId: string;
   startX: number;
   startY: number;
+  clientX: number;
   clientY: number;
+  offsetX: number;
+  offsetY: number;
+  moved: boolean;
+  fromHandle: boolean;
   active: boolean;
   timer: ReturnType<typeof setTimeout> | undefined;
 }
@@ -44,6 +51,7 @@ export function ProjectOrderSheet({
   onClose,
 }: ProjectOrderSheetProps) {
   const [drag, setDrag] = useState<{ projectId: string; order: string[] }>();
+  const [ghost, setGhost] = useState<{ projectId: string; x: number; y: number; width: number; height: number; dropping?: boolean }>();
   const [positionProjectId, setPositionProjectId] = useState<string>();
   const listRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<DragSession | undefined>(undefined);
@@ -65,21 +73,29 @@ export function ProjectOrderSheet({
     if (!isDragging) return;
     const body = listRef.current!.closest<HTMLElement>(".m-sheet-body")!;
     let frame: number;
+    let previousTop = body.scrollTop;
     const scrollAtEdge = () => {
       const session = sessionRef.current;
       if (!session?.active) return;
-      const { top, bottom } = body.getBoundingClientRect();
-      const delta = session.clientY < top + 40
-        ? -Math.min(12, top + 40 - session.clientY)
-        : session.clientY > bottom - 40 ? Math.min(12, session.clientY - bottom + 40) : 0;
-      const previousTop = body.scrollTop;
-      body.scrollTop += delta;
-      if (body.scrollTop !== previousTop) updateDragPosition(session.clientY);
+      if (session.moved) {
+        const { top, bottom } = body.getBoundingClientRect();
+        body.scrollTop += session.clientY < top + 40
+          ? -Math.min(12, top + 40 - session.clientY)
+          : session.clientY > bottom - 40 ? Math.min(12, session.clientY - bottom + 40) : 0;
+        if (body.scrollTop !== previousTop) updateDragPosition(session.clientY);
+      }
+      previousTop = body.scrollTop;
       frame = requestAnimationFrame(scrollAtEdge);
     };
     frame = requestAnimationFrame(scrollAtEdge);
     return () => cancelAnimationFrame(frame);
   }, [isDragging]);
+
+  useEffect(() => {
+    if (!ghost?.dropping) return;
+    const timer = setTimeout(() => setGhost(undefined), 140);
+    return () => clearTimeout(timer);
+  }, [ghost?.dropping]);
 
   useEffect(() => () => {
     if (sessionRef.current?.timer !== undefined) clearTimeout(sessionRef.current.timer);
@@ -94,12 +110,19 @@ export function ProjectOrderSheet({
     sessionRef.current = undefined;
     dragOrderRef.current = undefined;
     setDrag(undefined);
+    setGhost(undefined);
   }
 
   function activateDrag(pointerId: number, projectId: string, vibrate: boolean): void {
     const initialOrder = [...projectOrderRef.current];
+    const rect = listRef.current!.children[initialOrder.indexOf(projectId)]!.getBoundingClientRect();
+    const session = sessionRef.current!;
+    session.offsetX = session.startX - rect.left;
+    session.offsetY = session.startY - rect.top;
+    setGhost({ projectId, x: session.clientX - session.offsetX, y: session.clientY - session.offsetY, width: rect.width, height: rect.height });
     dragOrderRef.current = initialOrder;
     listRef.current?.setPointerCapture?.(pointerId);
+    listRef.current!.focus({ preventScroll: true });
     if (vibrate) globalThis.navigator?.vibrate?.(10);
     setDrag({ projectId, order: initialOrder });
   }
@@ -114,11 +137,16 @@ export function ProjectOrderSheet({
       projectId,
       startX: event.clientX,
       startY: event.clientY,
+      clientX: event.clientX,
       clientY: event.clientY,
+      offsetX: 0,
+      offsetY: 0,
+      moved: false,
+      fromHandle: true,
       active: true,
       timer: undefined,
     };
-    activateDrag(event.pointerId, projectId, false);
+    activateDrag(event.pointerId, projectId, event.pointerType === "touch");
   }
 
   function startRowPress(projectId: string, event: ReactPointerEvent<HTMLDivElement>): void {
@@ -138,7 +166,12 @@ export function ProjectOrderSheet({
       projectId,
       startX: clientX,
       startY: clientY,
+      clientX,
       clientY,
+      offsetX: 0,
+      offsetY: 0,
+      moved: false,
+      fromHandle: false,
       active: false,
       timer,
     };
@@ -147,14 +180,16 @@ export function ProjectOrderSheet({
   function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>): void {
     const session = sessionRef.current;
     if (!session || session.pointerId !== event.pointerId) return;
+    session.clientX = event.clientX;
+    session.clientY = event.clientY;
+    const moved = Math.hypot(event.clientX - session.startX, event.clientY - session.startY) > MOVE_CANCEL_PX;
     if (!session.active) {
-      if (Math.hypot(event.clientX - session.startX, event.clientY - session.startY) > MOVE_CANCEL_PX) {
-        clearSession();
-      }
+      if (moved) clearSession();
       return;
     }
-    session.clientY = event.clientY;
-    updateDragPosition(event.clientY);
+    session.moved ||= moved;
+    setGhost((current) => current && ({ ...current, x: event.clientX - session.offsetX, y: event.clientY - session.offsetY }));
+    if (session.moved) updateDragPosition(event.clientY);
   }
 
   function updateDragPosition(clientY: number): void {
@@ -186,7 +221,12 @@ export function ProjectOrderSheet({
     const session = sessionRef.current;
     if (!session || session.pointerId !== event.pointerId) return;
     const finalOrder = session.active ? dragOrderRef.current : undefined;
+    const dropRect = session.moved && ghost && !globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? listRef.current!.children[finalOrder!.indexOf(session.projectId)]!.getBoundingClientRect()
+      : undefined;
     clearSession();
+    if (session.fromHandle && !session.moved) setPositionProjectId((current) => current === session.projectId ? undefined : session.projectId);
+    if (dropRect && ghost) setGhost({ ...ghost, x: dropRect.left, y: dropRect.top, dropping: true });
     if (finalOrder && finalOrder.some((id, index) => id !== projectOrderRef.current[index])) {
       onPlaceProjects(finalOrder);
     }
@@ -248,6 +288,7 @@ export function ProjectOrderSheet({
       <div
         ref={listRef}
         role="list"
+        tabIndex={-1}
         aria-label="项目顺序列表"
         className={`m-group project-order-list${isDragging ? " is-dragging" : ""}`}
         onPointerMove={handlePointerMove}
@@ -279,44 +320,59 @@ export function ProjectOrderSheet({
             ?? projectId;
           const rowDragging = drag?.projectId === projectId;
           return (
-            <div
-              role="listitem"
-              className={`project-order-row${rowDragging ? " is-dragging" : ""}`}
-              key={projectId}
-              data-project-id={projectId}
-              onPointerDown={(event) => startRowPress(projectId, event)}
-            >
-              <span>
-                <strong>{name}</strong>
-                <small>{projectSessions.length} 个会话</small>
-                {positionProjectId === projectId && (
-                  <select
-                    aria-label={`移动「${name}」到`}
-                    autoFocus
-                    value={index}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onChange={(event) => {
-                      onPlaceProjects(moveProject(projectOrder, projectId, Number(event.target.value)));
-                    }}
-                  >
-                    {projectOrder.map((id, position) => (
-                      <option key={id} value={position}>第 {position + 1} 位</option>
-                    ))}
-                  </select>
-                )}
-              </span>
-              <IconButton
-                label={`拖动「${name}」调整顺序`}
-                className="project-order-handle"
-                disabled={projectOrder.length < 2}
-                onPointerDown={(event) => startHandleDrag(projectId, event)}
-                onKeyDown={(event) => handleHandleKeyDown(projectId, index, event)}
-                aria-expanded={positionProjectId === projectId}
-                onClick={() => setPositionProjectId(positionProjectId === projectId ? undefined : projectId)}
+            <Fragment key={projectId}>
+              <div
+                role="listitem"
+                className={`project-order-row${rowDragging ? " is-dragging" : ""}${ghost?.projectId === projectId ? " is-placeholder" : ""}`}
+                data-project-id={projectId}
+                onPointerDown={(event) => startRowPress(projectId, event)}
               >
-                <GripVertical size={18} />
-              </IconButton>
-            </div>
+                <span>
+                  <strong>{name}</strong>
+                  <small>{projectSessions.length} 个会话</small>
+                  {positionProjectId === projectId && (
+                    <select
+                      aria-label={`移动「${name}」到`}
+                      autoFocus
+                      value={index}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onChange={(event) => {
+                        onPlaceProjects(moveProject(projectOrder, projectId, Number(event.target.value)));
+                      }}
+                    >
+                      {projectOrder.map((id, position) => (
+                        <option key={id} value={position}>第 {position + 1} 位</option>
+                      ))}
+                    </select>
+                  )}
+                </span>
+                <IconButton
+                  label={`拖动「${name}」调整顺序`}
+                  className="project-order-handle"
+                  disabled={projectOrder.length < 2}
+                  onPointerDown={(event) => startHandleDrag(projectId, event)}
+                  onKeyDown={(event) => handleHandleKeyDown(projectId, index, event)}
+                  aria-expanded={positionProjectId === projectId}
+                  onClick={(event) => {
+                    if (event.detail === 0) setPositionProjectId(positionProjectId === projectId ? undefined : projectId);
+                  }}
+                >
+                  <GripVertical size={18} />
+                </IconButton>
+              </div>
+              {ghost?.projectId === projectId && createPortal(
+                <div
+                  className={`project-order-ghost${ghost.dropping ? " is-dropping" : ""}`}
+                  aria-hidden
+                  inert
+                  style={{ width: ghost.width, height: ghost.height, transform: `translate3d(${ghost.x}px, ${ghost.y}px, 0) scale(var(--ghost-scale))` }}
+                >
+                  <span><strong>{name}</strong><small>{projectSessions.length} 个会话</small></span>
+                  <span className="project-order-ghost-grip"><GripVertical size={18} /></span>
+                </div>,
+                document.body,
+              )}
+            </Fragment>
           );
         })}
       </div>

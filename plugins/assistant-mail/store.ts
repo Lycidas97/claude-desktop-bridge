@@ -1,0 +1,201 @@
+import { randomUUID } from "node:crypto";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+export interface AssistantBinding {
+  assistantId: string;
+  nativeSessionId: string | null;
+  sectionId: string | null;
+  previousSessionIds: string[];
+}
+
+export interface MailIdentity {
+  accountKey: string;
+  mailbox: "INBOX";
+  uidValidity: string;
+  uid: number;
+}
+
+export type MailProcessingStatus = "pending" | "processing" | "processed";
+
+export interface MailEvent extends MailIdentity {
+  seq: number;
+  mailRefId: string;
+  subject: string;
+  from: Array<{ name?: string | undefined; address?: string | undefined }>;
+  receivedAt: string;
+  recordedAt: number;
+  processingStatus: MailProcessingStatus;
+}
+
+type EventRow = {
+  seq: number;
+  mail_ref_id: string;
+  account_key: string;
+  mailbox: "INBOX";
+  uid_validity: string;
+  uid: number;
+  subject: string;
+  from_json: string;
+  received_at: string;
+  recorded_at: number;
+  processing_status: MailProcessingStatus;
+  raw_file: string;
+};
+
+function eventFromRow(row: EventRow): MailEvent {
+  return {
+    seq: row.seq, mailRefId: row.mail_ref_id, accountKey: row.account_key,
+    mailbox: row.mailbox, uidValidity: row.uid_validity, uid: row.uid,
+    subject: row.subject, from: JSON.parse(row.from_json) as MailEvent["from"],
+    receivedAt: row.received_at, recordedAt: row.recorded_at,
+    processingStatus: row.processing_status,
+  };
+}
+
+export class AssistantMailStore {
+  readonly directory: string;
+  private database: DatabaseSync | undefined;
+
+  constructor(private readonly userDataPath: string) {
+    this.directory = join(userDataPath, "private", "assistant");
+  }
+
+  async initialize(): Promise<void> {
+    for (const directory of [join(this.userDataPath, "private"), this.directory, join(this.directory, "raw-mail")]) {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await chmod(directory, 0o700);
+    }
+    const path = join(this.directory, "assistant.sqlite");
+    await writeFile(path, "", { flag: "a", mode: 0o600 });
+    await chmod(path, 0o600);
+    this.database = new DatabaseSync(path);
+    this.database.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = FULL;
+      CREATE TABLE IF NOT EXISTS assistant_binding (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        assistant_id TEXT NOT NULL,
+        native_session_id TEXT,
+        section_id TEXT,
+        previous_session_ids TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE IF NOT EXISTS imap_watermarks (
+        account_key TEXT NOT NULL,
+        mailbox TEXT NOT NULL,
+        uid_validity TEXT NOT NULL,
+        last_persisted_uid INTEGER NOT NULL,
+        PRIMARY KEY (account_key, mailbox)
+      ) STRICT;
+      CREATE TABLE IF NOT EXISTS mail_events (
+        seq INTEGER PRIMARY KEY,
+        mail_ref_id TEXT NOT NULL UNIQUE,
+        account_key TEXT NOT NULL,
+        mailbox TEXT NOT NULL,
+        uid_validity TEXT NOT NULL,
+        uid INTEGER NOT NULL,
+        subject TEXT NOT NULL,
+        from_json TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        recorded_at INTEGER NOT NULL,
+        processing_status TEXT NOT NULL DEFAULT 'pending',
+        raw_file TEXT NOT NULL,
+        UNIQUE (account_key, mailbox, uid_validity, uid)
+      ) STRICT;
+    `);
+  }
+
+  private db(): DatabaseSync {
+    if (!this.database) throw new Error("Assistant mail store is not initialized");
+    return this.database;
+  }
+
+  binding(): AssistantBinding | undefined {
+    const row = this.db().prepare("SELECT * FROM assistant_binding WHERE singleton = 1").get() as {
+      assistant_id: string; native_session_id: string | null; section_id: string | null; previous_session_ids: string;
+    } | undefined;
+    return row ? {
+      assistantId: row.assistant_id, nativeSessionId: row.native_session_id,
+      sectionId: row.section_id, previousSessionIds: JSON.parse(row.previous_session_ids) as string[],
+    } : undefined;
+  }
+
+  setBinding(binding: AssistantBinding): void {
+    this.db().prepare(`
+      INSERT INTO assistant_binding VALUES (1, ?, ?, ?, ?)
+      ON CONFLICT(singleton) DO UPDATE SET assistant_id = excluded.assistant_id,
+        native_session_id = excluded.native_session_id, section_id = excluded.section_id,
+        previous_session_ids = excluded.previous_session_ids
+    `).run(binding.assistantId, binding.nativeSessionId, binding.sectionId, JSON.stringify(binding.previousSessionIds));
+  }
+
+  /** A new mailbox generation starts at enable time; an existing one resumes its committed UID. */
+  openMailbox(accountKey: string, uidValidity: string, uidNext: number): number {
+    const row = this.db().prepare("SELECT uid_validity, last_persisted_uid FROM imap_watermarks WHERE account_key = ? AND mailbox = 'INBOX'")
+      .get(accountKey) as { uid_validity: string; last_persisted_uid: number } | undefined;
+    if (row?.uid_validity === uidValidity) return row.last_persisted_uid;
+    this.db().prepare(`
+      INSERT INTO imap_watermarks VALUES (?, 'INBOX', ?, ?)
+      ON CONFLICT(account_key, mailbox) DO UPDATE SET uid_validity = excluded.uid_validity,
+        last_persisted_uid = excluded.last_persisted_uid
+    `).run(accountKey, uidValidity, uidNext - 1);
+    return uidNext - 1;
+  }
+
+  async record(message: MailIdentity & Pick<MailEvent, "subject" | "from" | "receivedAt"> & { source: Buffer }): Promise<MailEvent | undefined> {
+    if (this.db().prepare("SELECT 1 FROM mail_events WHERE account_key = ? AND mailbox = ? AND uid_validity = ? AND uid = ?")
+      .get(message.accountKey, message.mailbox, message.uidValidity, message.uid)) return undefined;
+    const mailRefId = randomUUID();
+    const rawFile = `${mailRefId}.eml`;
+    // No database record can reference a file that is still being written.
+    await writeFile(join(this.directory, "raw-mail", rawFile), message.source, { flag: "wx", mode: 0o600 });
+    const db = this.db();
+    db.exec("BEGIN");
+    try {
+      const result = db.prepare(`
+        INSERT INTO mail_events (mail_ref_id, account_key, mailbox, uid_validity, uid, subject, from_json,
+          received_at, recorded_at, raw_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(mailRefId, message.accountKey, message.mailbox, message.uidValidity, message.uid, message.subject,
+        JSON.stringify(message.from), message.receivedAt, Date.now(), rawFile);
+      const watermark = db.prepare(`
+        UPDATE imap_watermarks SET last_persisted_uid = MAX(last_persisted_uid, ?)
+        WHERE account_key = ? AND mailbox = ? AND uid_validity = ?
+      `).run(message.uid, message.accountKey, message.mailbox, message.uidValidity);
+      if (watermark.changes !== 1) throw new Error("Mail watermark generation does not match");
+      db.exec("COMMIT");
+      return eventFromRow(db.prepare("SELECT * FROM mail_events WHERE seq = ?").get(result.lastInsertRowid) as EventRow);
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  page(options: { cursor?: string; limit?: number; processingStatus?: MailProcessingStatus } = {}): { events: MailEvent[]; nextCursor?: string } {
+    const limit = options.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid mail page limit");
+    if (options.cursor !== undefined && (!/^[1-9]\d*$/.test(options.cursor) || !Number.isSafeInteger(Number(options.cursor)))) {
+      throw new Error("Invalid mail page cursor");
+    }
+    if (options.processingStatus !== undefined && !["pending", "processing", "processed"].includes(options.processingStatus)) {
+      throw new Error("Invalid mail processing status");
+    }
+    const rows = this.db().prepare(`
+      SELECT * FROM mail_events WHERE seq < ? AND (? IS NULL OR processing_status = ?)
+      ORDER BY seq DESC LIMIT ?
+    `).all(options.cursor ? Number(options.cursor) : Number.MAX_SAFE_INTEGER,
+      options.processingStatus ?? null, options.processingStatus ?? null, limit + 1) as EventRow[];
+    const events = rows.slice(0, limit).map(eventFromRow);
+    return { events, ...(rows.length > limit ? { nextCursor: String(events.at(-1)!.seq) } : {}) };
+  }
+
+  async read(mailRefId: string): Promise<{ event: MailEvent; source: Buffer } | undefined> {
+    const row = this.db().prepare("SELECT * FROM mail_events WHERE mail_ref_id = ?").get(mailRefId) as EventRow | undefined;
+    return row ? { event: eventFromRow(row), source: await readFile(join(this.directory, "raw-mail", row.raw_file)) } : undefined;
+  }
+
+  close(): void {
+    this.database?.close();
+    this.database = undefined;
+  }
+}

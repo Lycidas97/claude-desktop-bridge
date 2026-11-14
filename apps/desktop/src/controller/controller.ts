@@ -30,6 +30,7 @@ import {
 import type { App } from "electron";
 import { diag, diagnostics } from "../app/diag.js";
 import type { MemoryRecorder } from "../app/memory-recorder.js";
+import type { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
 import { createMagpieQuotaPlugin } from "../../../../plugins/magpie-quota/desktop.js";
 import type { ClaudeDesktopLifecycle } from "../app/claude-desktop-lifecycle.js";
 import { isLaunchAtLoginEnabled, setLaunchAtLogin } from "../app/platform.js";
@@ -111,6 +112,7 @@ export class DesktopController extends EventEmitter {
     private readonly conversationState?: ConversationStateStore,
     updater?: DesktopUpdater,
     private readonly memoryRecorder?: Pick<MemoryRecorder, "diagnostics">,
+    readonly assistantMail?: AssistantMailService,
   ) {
     super();
     this.updater = updater;

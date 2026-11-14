@@ -12,6 +12,7 @@ const suites = [
   ['protocol', 'packages/protocol'],
   ['relay', 'apps/relay'],
   ['quota', 'plugins/magpie-quota'],
+  ['assistant-mail', 'plugins/assistant-mail'],
 ].map(([name, path]) => ({
   name,
   cwd: resolve(root, path),

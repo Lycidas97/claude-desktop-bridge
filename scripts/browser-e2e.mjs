@@ -46,7 +46,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
@@ -308,7 +308,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     },
     async syncNativeQueue(update, { pushEvents = true } = {}) {
       history.splice(0, history.length, ...update.history.items);
-      for (const key of ["turnState", "ownership", "pendingCount", "pendingCommandIds", "allowedActions"]) session[key] = update.session[key];
+      for (const key of ["turnState", "ownership", "pendingCount", "pendingCommandIds", "allowedActions", "isCompacting"]) session[key] = update.session[key];
       snapshot.projects[0].pendingCount = session.pendingCount;
       snapshot.projects[0].runningCount = session.turnState === "running" ? 1 : 0;
       if (pushEvents) for (const event of update.events) await host.emit(event.type, event.data, {
@@ -613,6 +613,10 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
         }
         case "session.commands": result = await host.nativeApproval.commands(request); break;
         case "session.configuration":
+          if (host.taskDetailsError && request.params.includeBackgroundTasks === true) {
+            error = { code: "TASK_DETAILS_UNAVAILABLE", message: host.taskDetailsError };
+            break;
+          }
           if (!host.nativeApproval && request.params.includeBackgroundTasks === true) {
             result = { session: snapshot.sessions.find(candidate => candidate.sessionId === request.params.sessionId) };
             break;
@@ -1367,6 +1371,27 @@ async function verifyNativeMessages(page, host, steps, directory) {
   host.history.push({ id: assistantId, sessionId, role: "assistant", text: "流式完成内容", createdAt: Date.now(), origin: "claude-desktop" });
   steps.push("completion without a turnId retains final content and shows no per-message blinking caret");
 
+  for (const terminal of ["completed", "observed", "without-turn"]) {
+    const id = `browser-e2e-long-${terminal}`;
+    const turn = terminal === "completed" ? { turnId: `${id}-turn` } : {};
+    const text = `${id}\n\n${"这条长回复正在阅读，输出结束后应保持展开。\n\n".repeat(100)}`;
+    const message = page.locator("article.conversation-item.assistant").filter({ hasText: id });
+    await host.emit("assistant.delta", { text }, { itemId: id });
+    await message.waitFor();
+    assert.equal(await message.locator(".expandable-message-fold").count(), 0, "Streaming replies are fully expanded");
+    await host.emit(terminal === "observed" ? "session.observed" : "assistant.completed", { text, role: "assistant" }, { itemId: id, ...turn });
+    await eventually(() => message.locator(".expandable-message-toggle").getAttribute("aria-expanded"), "true", "A long reply read live stays expanded after native completion");
+    assert.equal(await message.locator("[inert]").count(), 0, "The completed reply remains accessible");
+    await message.getByRole("button", { name: "收起", exact: true }).click();
+    await message.getByRole("button", { name: "展开全文", exact: true }).waitFor();
+    await host.emit("assistant.completed", { text: "后续回复不应重新展开已手动收起的消息" }, { itemId: `${id}-next` });
+    assert.equal(await message.locator(".expandable-message-toggle").getAttribute("aria-expanded"), "false", "Later messages preserve a manual collapse");
+    await message.getByRole("button", { name: "展开全文", exact: true }).click();
+    host.history.push({ id, sessionId, role: "assistant", text, createdAt: Date.now(), origin: "claude-desktop", ...turn });
+  }
+  await page.screenshot({ path: resolve(directory, "live-reply-stays-expanded.png"), fullPage: true });
+  steps.push("long streamed replies stay expanded after completed/observed finalization and still support manual collapse and expansion");
+
   assert.match(host.session.model, /^mythos-magpie-/u, "The header test must receive a native internal model alias");
   await eventually(async () => (await page.getByRole("button", { name: "会话设置", exact: true }).innerText()).includes("隔离模型 · 标准"), true, "Initial native alias snapshot uses its saved header label before opening configuration");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
@@ -1396,6 +1421,12 @@ async function verifyNativeMessages(page, host, steps, directory) {
   assert.equal(await page.locator(".stream-caret").count(), 0);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   steps.push("reloading restores completed delivery and five-image metadata without original bytes in cached history");
+  for (const terminal of ["completed", "observed", "without-turn"]) {
+    const message = page.locator("article.conversation-item.assistant").filter({ hasText: `browser-e2e-long-${terminal}` });
+    await message.getByRole("button", { name: "展开全文", exact: true }).waitFor();
+    assert.equal(await message.locator(".expandable-message-toggle").getAttribute("aria-expanded"), "false", "Reopened history starts collapsed even when it was read live before reload");
+  }
+  steps.push("reopened historical replies start collapsed without retaining the previous live-reading state");
 
   const geminiModel = ["antigravity", "gemini-4-argon"].join("/");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
@@ -1537,6 +1568,30 @@ async function verifyHistoryPagination(page, host, steps, directory) {
   steps.push("streaming follows at the bottom, preserves the reader's position after 40/80/640px upward scrolling, and follows again only after returning to the bottom");
 }
 
+async function verifyNativeCompaction(page, host, steps, directory) {
+  const row = page.locator(`[data-session-id="${sessionId}"]`);
+  await row.getByRole("button").first().click();
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: "compacting" } }));
+  await eventually(() => page.locator(".session-activity-label").innerText(), "正在压缩上下文", "Native compaction replaces generic activity even with queued input");
+  assert.equal(await page.locator(".session-activity-elapsed").count(), 0, "User turn age is not shown as compaction duration");
+  await page.screenshot({ path: resolve(directory, "native-compaction.png"), fullPage: true });
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await eventually(() => row.locator(".session-row-status").innerText(), "正在压缩上下文", "Catalog badge shares the observed compaction status");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await row.waitFor();
+  await eventually(() => row.locator(".session-row-status").innerText(), "正在压缩上下文", "Reconnect snapshot retains current compaction status");
+  await row.getByRole("button").first().click();
+  await eventually(() => page.locator(".session-activity-label").innerText(), "正在压缩上下文", "Reopening a compacting session restores its activity line");
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: null, compact_result: "success" } }));
+  await eventually(() => page.locator(".session-activity.compacting").count(), 0, "Native status clear restores regular activity");
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: "compacting" } }));
+  await eventually(() => page.locator(".session-activity.compacting").count(), 1, "A later automatic compaction can start independently of input text");
+  await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "compact_boundary", uuid: "browser-compact-boundary" } }));
+  await eventually(() => page.locator(".session-activity.compacting").count(), 0, "Compaction boundary restores regular activity");
+  assert.equal(host.requests.filter(request => request.method === "turn.start" || request.method === "turn.steer").length, 0, "Observing compaction never submits a command");
+  steps.push("Native status drives compaction activity and catalog badge, survives reconnect, and clears on Native status/boundary without a timer or command-text guess");
+}
+
 async function verifyNativeBoundaries(page, host, steps, directory) {
   const markdownName = "NATIVE-CHAIN-author-database-current.zh.md";
   await writeFile(resolve(host.nativeApproval.harnessCwd, markdownName), [
@@ -1571,8 +1626,29 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Catalog row dot reflects running background subagent when main turn is idle");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Catalog row badge displays running background subagent");
   host.history.push(...(await host.nativeApproval.history()).items);
+  // This fixture has no on-disk task transcript, so provide the tray separately.
+  const backgroundTasks = [{
+    id: "boundary-bg-call", kind: "subagent", taskId: "boundary-bg-subagent", toolUseId: "boundary-bg-call",
+    description: "Run full local distributed CI", state: "running", startedAt: subagentStartAt, updatedAt: subagentStartAt,
+    subagent: host.history.find(item => item.subagent?.agentId === "boundary-bg-subagent").subagent,
+  }];
+  const nativeConfiguration = host.nativeApproval.configuration;
+  let taskDetailsReads = 0;
+  let useTrayFixture = false;
+  host.nativeApproval.configuration = async request => {
+    const result = await nativeConfiguration(request);
+    if (request.params.includeBackgroundTasks) {
+      taskDetailsReads++;
+      if (useTrayFixture) result.session.backgroundTasks = structuredClone(backgroundTasks);
+      else assert.deepEqual(result.session.backgroundTasks, [], "Missing native transcript produces empty task details");
+    }
+    return result;
+  };
   await catalogRow.getByRole("button").first().click();
-  await eventually(async () => (await page.locator(".session-activity-label").innerText()).includes("子代理运行中 · Run full local distributed CI"), true, "Session detail shows running subagent activity");
+  await eventually(() => taskDetailsReads >= 2, true, "Native empty task details have been loaded and polled again");
+  assert.ok((await page.locator(".session-activity-label").innerText()).includes("子代理运行中 · Run full local distributed CI"), "Native running metadata preserves activity when catalog transcript is unavailable");
+  useTrayFixture = true;
+  await page.getByRole("button", { name: "后台任务，1 个运行中", exact: true }).waitFor();
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Returning from detail keeps catalog row dot running");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Returning from detail keeps catalog row badge synchronized");
@@ -1580,7 +1656,8 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
   await eventually(() => catalogRow.locator(".session-state-dot.queued").count(), 1, "Stalled background subagent switches catalog dot to warning tone");
   await eventually(() => catalogRow.locator(".session-row-status.queued").innerText(), "子代理无进展", "Stalled background subagent switches catalog badge label");
-  for (const event of await host.nativeApproval.message({
+  // The tray settles without a matching timeline completion event (Issue #140).
+  await host.nativeApproval.message({
     type: "system",
     subtype: "task_notification",
     task_id: "boundary-bg-subagent",
@@ -1588,16 +1665,30 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     status: "completed",
     summary: "CI green",
     timestamp: Date.now(),
-  })) await host.emit(event.type, event.data, { itemId: event.itemId });
+  });
   assert.equal(host.nativeApproval.session().runningSubagents, undefined);
+  backgroundTasks[0] = { ...backgroundTasks[0], state: "completed", updatedAt: Date.now(),
+    subagent: { ...backgroundTasks[0].subagent, state: "completed", updatedAt: Date.now() } };
   delete host.session.runningSubagents;
   await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
   await eventually(() => catalogRow.locator(".session-state-dot.idle").count(), 1, "Completed background subagent restores idle catalog dot");
   await eventually(() => catalogRow.locator(".session-row-status").count(), 0, "Completed background subagent clears catalog badge");
-  host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   steps.push("session catalog state dot and status badge stay synchronized with active, stalled, and completed background subagents before opening and after returning from detail");
   await catalogRow.getByRole("button").first().click();
   const stream = page.locator(".conversation-stream");
+  await stream.locator(".background-task-marker.is-completed").waitFor();
+  await eventually(() => page.locator(".session-activity").count(), 0, "Settled task tray clears stale running subagent activity and timer");
+  assert.equal(host.history.find(item => item.subagent?.agentId === "boundary-bg-subagent")?.subagent.state, "running", "The timeline intentionally retains its stale running state");
+  await page.getByRole("button", { name: "后台任务", exact: true }).click();
+  await page.locator(".background-task-row .is-completed").waitFor();
+  await page.screenshot({ path: resolve(directory, "subagent-settled-tray.png"), fullPage: true, animations: "disabled" });
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
+  host.taskDetailsError = "Task detail refresh unavailable";
+  await page.getByRole("alert").filter({ hasText: host.taskDetailsError }).waitFor();
+  assert.equal(await page.locator(".session-activity").count(), 0, "A failed refresh cannot revive a task already confirmed completed by the tray");
+  host.taskDetailsError = undefined;
+  await page.getByRole("alert").filter({ hasText: "Task detail refresh unavailable" }).waitFor({ state: "hidden" });
+  steps.push("completed tray clears composer activity despite a missing timeline completion event and preserves completion through a rejected refresh");
   await eventually(() => stream.locator(".task-plan-card").count(), 1, "Only the parent native task plan is projected");
   assert.equal((await stream.innerText()).includes("INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN"), false);
   assert.equal((await stream.innerText()).includes("子代理内部计划"), false);
@@ -2155,6 +2246,16 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   steps.push("untrusted folders sanitize WorkspaceTrustError into confirmation + saveTrust auto-retry, and degrade to manual desktop guidance + one-click retry when saveTrust is insufficient");
 }
 
+function addScrollProjects(host, count) {
+  const session = host.snapshot.sessions.find(session => session.sessionId === sessionId);
+  while (host.snapshot.projects.length < count) {
+    const index = host.snapshot.projects.length;
+    const projectId = `scroll-project-${index}`;
+    host.snapshot.projects.push({ ...host.snapshot.projects[0], projectId, name: `Scroll project ${index}`, cwd: `/browser-e2e/${projectId}` });
+    host.snapshot.sessions.push({ ...session, sessionId: `scroll-session-${index}`, projectId, projectName: `Scroll project ${index}`, title: `Scroll session ${index}` });
+  }
+}
+
 async function verifyProjectGrouping(page, host, steps, directory) {
   const groups = page.locator(".project-groups > .project-group:not(.archived-group)");
   const headers = groups.locator(".project-group-open strong");
@@ -2257,12 +2358,27 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   const secondBox = await secondRow.boundingBox();
   await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
   await page.mouse.down();
+  const ghost = page.locator(".project-order-ghost");
+  await ghost.waitFor();
+  await ghost.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
+  const liftBox = await ghost.boundingBox();
+  const sourceBox = await orderSheet.locator(".project-order-row.is-placeholder").boundingBox();
+  assert.ok(Math.abs(sourceBox.height - liftBox.height / 1.02) < 1, "The placeholder keeps the lifted row's height");
+  await page.mouse.move(handleBox.x + handleBox.width / 2 + 80, handleBox.y + handleBox.height / 2 + 18);
+  const movedBox = await ghost.boundingBox();
+  assert.ok(Math.abs(movedBox.x - liftBox.x - 80) < 1 && Math.abs(movedBox.y - liftBox.y - 18) < 1, `The ghost freely follows both pointer axes: ${JSON.stringify({ liftBox, movedBox })}`);
+  await page.screenshot({ path: resolve(directory, "project-order-ghost-following.png"), fullPage: true });
   await page.mouse.move(handleBox.x + handleBox.width / 2, secondBox.y + secondBox.height * 0.75, { steps: 6 });
   await orderSheet.locator(".project-order-row.is-dragging").waitFor();
   assert.deepEqual(await orderRowTitles.allTextContents(), ["claude-desktop-bridge", "other-project"]);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Dragging project order row stays within 375px viewport");
   await page.screenshot({ path: resolve(directory, "project-order-dragging.png"), fullPage: true });
+  const dropBox = await orderSheet.locator(".project-order-row.is-placeholder").boundingBox();
   await page.mouse.up();
+  await ghost.waitFor({ state: "hidden" });
+  const placedBox = await orderSheet.locator(".project-order-row").last().boundingBox();
+  assert.ok(Math.abs(dropBox.height - placedBox.height) < 1, "Dropping restores the row without changing its height");
+  assert.equal(await orderSheet.locator(".is-placeholder").count(), 0, "Drop removes the placeholder after settling");
   await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
   await eventually(() => headers.allTextContents(), ["claude-desktop-bridge", "other-project"], "Handle drag persists reordered projects");
 
@@ -2285,6 +2401,120 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.equal(await page.evaluate(key => localStorage.getItem(key), orderKey), savedOrder);
 
   steps.push("saved main-project ordering survives search and reload, handle and long-press drag reorder projects cleanly, unrelated projects remain separate, and the 375px layout has no horizontal overflow");
+
+  for (const [count, width] of [[9, 375], [30, 375], [30, 900]]) {
+    addScrollProjects(host, count);
+    await host.send({ kind: "snapshot", snapshot: host.snapshot });
+    await eventually(() => headers.count(), count, "Long project catalog arrives through the encrypted snapshot");
+    await page.setViewportSize({ width, height: 568 });
+    await page.locator(".project-order-bar button").click();
+    await orderSheet.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
+    assert.equal(await orderRowTitles.count(), count);
+    const body = orderSheet.locator(".m-sheet-body");
+    const headerBox = await orderSheet.locator(".m-sheet-header").boundingBox();
+    const footerBox = await orderSheet.locator(".m-sheet-footer").boundingBox();
+    const bodyBox = await body.boundingBox();
+    await page.mouse.move(bodyBox.x + 80, bodyBox.y + bodyBox.height / 2);
+    await page.mouse.wheel(0, 10000);
+    await eventually(() => body.evaluate(el => el.scrollTop === el.scrollHeight - el.clientHeight), true, "Wheel reaches the bottom of the sheet body");
+    const geometry = await orderSheet.evaluate(el => {
+      const body = el.querySelector(".m-sheet-body");
+      const list = el.querySelector(".project-order-list");
+      return { bodyHeight: body.clientHeight, bodyScrollHeight: body.scrollHeight, scrollTop: body.scrollTop,
+        listHeight: list.clientHeight, listScrollHeight: list.scrollHeight,
+        lastBottom: list.lastElementChild.getBoundingClientRect().bottom, bodyBottom: body.getBoundingClientRect().bottom };
+    });
+    await writeFile(resolve(directory, `project-order-${count}-${width}-geometry.json`), JSON.stringify(geometry, null, 2));
+    assert.ok(geometry.lastBottom <= geometry.bodyBottom, `All ${count} projects remain reachable: ${JSON.stringify(geometry)}`);
+    assert.deepEqual(await orderSheet.locator(".m-sheet-header").boundingBox(), headerBox, "Scrolling keeps the title fixed");
+    assert.deepEqual(await orderSheet.locator(".m-sheet-footer").boundingBox(), footerBox, "Scrolling keeps the actions fixed");
+    await page.screenshot({ path: resolve(directory, `project-order-${count}-${width}-scrolled.png`), fullPage: true });
+    if (count === 30 && width === 375) {
+      await body.evaluate(el => { el.scrollTop = 0; });
+      const beforeClick = await orderRowTitles.allTextContents();
+      const edgeIndex = await orderSheet.evaluate(el => {
+        const bottom = el.querySelector(".m-sheet-body").getBoundingClientRect().bottom;
+        return [...el.querySelectorAll(".project-order-row")].findIndex(row => {
+          const rect = row.getBoundingClientRect();
+          return rect.top + rect.height / 2 > bottom - 40 && rect.top + rect.height / 2 < bottom;
+        });
+      });
+      assert.ok(edgeIndex >= 0, "The long catalog has a handle inside the edge zone");
+      const edgeHandle = await orderSheet.locator(".project-order-handle").nth(edgeIndex).boundingBox();
+      await page.mouse.move(edgeHandle.x + edgeHandle.width / 2, edgeHandle.y + edgeHandle.height / 2);
+      await page.mouse.down();
+      await page.evaluate(() => new Promise(resolve => {
+        let remaining = 10;
+        const frame = () => { if (--remaining === 0) resolve(); else requestAnimationFrame(frame); };
+        requestAnimationFrame(frame);
+      }));
+      assert.equal(await body.evaluate(el => el.scrollTop), 0, "A stationary edge handle press does not scroll");
+      await page.mouse.up();
+      assert.deepEqual(await orderRowTitles.allTextContents(), beforeClick, "A stationary handle click does not reorder");
+      await orderSheet.locator("select").waitFor();
+      assert.equal(await orderSheet.locator("select").inputValue(), String(edgeIndex), "Handle click still opens position selection");
+      await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
+      await page.locator(".project-order-bar button").click();
+      await orderSheet.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
+      const centerHandle = await orderSheet.locator(".project-order-handle").nth(1).boundingBox();
+      await page.mouse.move(centerHandle.x + centerHandle.width / 2, centerHandle.y + centerHandle.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(bodyBox.x + 80, bodyBox.y + bodyBox.height / 2);
+      const beforeWheelIndex = await orderSheet.locator(".project-order-row").evaluateAll(rows => rows.findIndex(row => row.classList.contains("is-placeholder")));
+      await page.mouse.wheel(0, 224);
+      await eventually(() => orderSheet.locator(".project-order-row").evaluateAll((rows, index) => rows.findIndex(row => row.classList.contains("is-placeholder")) >= index + 3, beforeWheelIndex), true, "Wheel scrolling updates the drop slot without another pointermove");
+      await page.keyboard.press("Escape");
+      await ghost.waitFor({ state: "hidden" });
+      await page.mouse.up();
+      assert.equal(await orderSheet.locator(".is-placeholder").count(), 0, "Escape leaves no ghost or placeholder");
+      assert.deepEqual(await orderRowTitles.allTextContents(), beforeClick, "Escape restores the pre-drag order");
+      const touch = await page.context().newCDPSession(page);
+      await touch.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+      await page.evaluate(() => {
+        window.projectOrderTouchMoves = [];
+        document.addEventListener("touchmove", event => window.projectOrderTouchMoves.push(event.defaultPrevented), { passive: true });
+      });
+      await body.evaluate(el => { el.scrollTop = 0; });
+      assert.equal(await orderSheet.locator(".project-order-handle").first().evaluate(el => getComputedStyle(el).touchAction.includes("none")), false, "Idle handles allow native touch scrolling");
+      const swipeX = bodyBox.x + 80;
+      const swipeY = bodyBox.y + bodyBox.height - 24;
+      await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: swipeX, y: swipeY }] });
+      for (let step = 1; step <= 8; step += 1) {
+        await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: swipeX, y: swipeY - step * 20 }] });
+      }
+      await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await eventually(() => body.evaluate(el => el.scrollTop > 80), true, "A real touch swipe scrolls the long list");
+      assert.equal(await orderSheet.locator(".is-dragging").count(), 0, "Swiping cancels the pending long-press");
+      assert.deepEqual(await page.evaluate(() => [...new Set(window.projectOrderTouchMoves)]), [false], "Idle touch moves are never prevented");
+      // Stop inertial scrolling before a separate long-press gesture.
+      await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: swipeX, y: bodyBox.y + 30 }] });
+      await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await body.evaluate(el => { el.scrollTop = 0; });
+      const draggedName = await orderRowTitles.first().innerText();
+      const textBox = await orderSheet.locator(".project-order-row strong").first().boundingBox();
+      await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: textBox.x + 20, y: textBox.y + textBox.height / 2 }] });
+      await orderSheet.locator(".project-order-row.is-dragging").waitFor();
+      await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: swipeX, y: bodyBox.y + bodyBox.height - 5 }] });
+      await eventually(() => orderRowTitles.last().textContent(), draggedName, "Holding at the bottom edge scrolls and drags to the last position");
+      await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: swipeX, y: bodyBox.y + 5 }] });
+      await eventually(() => body.evaluate(el => el.scrollTop), 0, "Holding at the top edge scrolls back to the start");
+      await eventually(() => orderRowTitles.first().textContent(), draggedName, "Top-edge scrolling updates the insertion position without another move");
+      await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      assert.equal(await orderSheet.locator(".is-dragging").count(), 0, "Touch release ends the drag");
+      await page.evaluate(() => { window.projectOrderTouchMoves = []; });
+      await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: swipeX, y: swipeY }] });
+      for (let step = 1; step <= 8; step += 1) {
+        await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: swipeX, y: swipeY - step * 20 }] });
+      }
+      await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await eventually(() => body.evaluate(el => el.scrollTop > 80), true, "Native touch scrolling resumes after the drag");
+      assert.deepEqual(await page.evaluate(() => [...new Set(window.projectOrderTouchMoves)]), [false], "Drag touch blocking is removed on release");
+      await touch.detach();
+    }
+    await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
+  }
+  steps.push("9 projects on a short phone viewport and 30 projects in a centered sheet scroll to the final row with fixed header and footer");
+  steps.push("a lifted ghost follows x/y with an equal-height placeholder and settles on drop; stationary handle clicks select a position without reordering; wheel scrolling updates the drop slot; Escape and touch release clean up and restore native scrolling");
 }
 
 async function verifySectionManage(page, host, steps, directory) {
@@ -2430,9 +2660,9 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
     if (scenario === "native-prompts-pr") await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
-    if (scenario === "native-queue-actions") host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
+    if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (scenario === "project-grouping") Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (scenario === "section-manage") await syncNativeSections(host);
     context = await browser.newContext({
@@ -2497,6 +2727,7 @@ async function runScenario(theme, scenario) {
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);
     else if (scenario === "history-pagination") await verifyHistoryPagination(page, host, steps, directory);
     else if (scenario === "native-boundaries") await verifyNativeBoundaries(page, host, steps, directory);
+    else if (scenario === "native-compaction") await verifyNativeCompaction(page, host, steps, directory);
     else if (scenario === "native-queue-actions") await verifyNativeQueueActions(page, host, steps, directory);
     else if (scenario === "native-session-notices") await verifyNativeSessionNotices(page, host, steps, directory);
     else if (scenario === "project-grouping") await verifyProjectGrouping(page, host, steps, directory);
@@ -2677,8 +2908,7 @@ try {
               const chunks = [];
               for await (const chunk of request) chunks.push(chunk);
               const events = await previewHost.nativeApproval.message(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-              for (const event of events) await previewHost.emit(event.type, event.data, { itemId: event.itemId, turnId: event.turnId });
-              previewHost.history.splice(0, previewHost.history.length, ...(await previewHost.nativeApproval.history()).items);
+              await previewHost.syncNativeQueue({ events, history: await previewHost.nativeApproval.history(), session: previewHost.nativeApproval.session() });
               result = { events: events.length };
             } else if (nativePreview && request.method === "POST" && url.pathname === "/request") {
               previewApproval = url.searchParams.get("kind") === "question"
@@ -2750,6 +2980,7 @@ try {
     const host = await createMockHost(!nativePreview && !remotePreview, false, infrastructureErrors, nativePreview, nativePreview);
     previewHost = host;
     if (projectGroupingPreview) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
+    if (projectGroupingPreview && process.argv.includes("--project-order-scroll-preview")) addScrollProjects(host, 30);
     if (sectionCreatePreview) await syncNativeSections(host);
     if (nativePromptsPreview) await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
     if (nativePreview && !projectGroupingPreview && !sectionCreatePreview && !nativePromptsPreview) {

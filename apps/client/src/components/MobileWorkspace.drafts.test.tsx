@@ -17,6 +17,7 @@ import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAtt
 import { IconButton } from "./common/IconButton.js";
 import { MessageCopyButton } from "./common/MessageCopyButton.js";
 import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
+import { SessionActivityIndicator } from "./conversation/SessionActivityIndicator.js";
 import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
 import { dispatchMobileBack } from "../lib/mobile-back-navigation.js";
 import { SlashCommandInput } from "./conversation/SlashCommandInput.js";
@@ -444,6 +445,98 @@ describe("background tasks", () => {
       props = { ...props, visible: false }; draw();
       await vi.advanceTimersByTimeAsync(4_000); await settle();
       expect(props.onLoadBackgroundTasks).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("updates composer activity with the same refreshed tasks as the tray while history stays running", async () => {
+    vi.useFakeTimers();
+    try {
+      agents(1);
+      props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValueOnce([running]).mockResolvedValue([{ ...running, state: "completed" }]) };
+      draw(); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toMatchObject({ kind: "running", since: 1 });
+      await vi.advanceTimersByTimeAsync(2_000); await settle();
+      expect(props.histories.A!.items[0]!.subagent!.state).toBe("running");
+      expect(trayButton()!.props.label).toBe("后台任务");
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toBeUndefined();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps history activity if the first task detail load fails", async () => {
+    agents(1);
+    props = { ...props, onLoadBackgroundTasks: vi.fn().mockRejectedValue(new Error("Offline")) };
+    draw(); await settle();
+    expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity?.label).toContain("子代理运行中");
+    expect(elements(tree).find(element => element.props.role === "alert")!.props.children).toContain("Offline");
+  });
+
+  it("uses completed live history after a running task cache fails to refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      agents(1);
+      props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValueOnce([running]).mockRejectedValue(new Error("Offline")) };
+      draw(); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity?.kind).toBe("running");
+      const item = props.histories.A!.items[0]!;
+      props = { ...props, histories: { ...props.histories, A: { ...props.histories.A!, items: [{ ...item, state: "completed", subagent: { ...item.subagent!, state: "completed", updatedAt: Date.now() + 10_000 } }] } } };
+      draw();
+      await vi.advanceTimersByTimeAsync(2_000); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toBeUndefined();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("uses newly running live history after an empty task cache fails to refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValueOnce([]).mockRejectedValue(new Error("Offline")) };
+      draw(); await settle();
+      agents(1);
+      await vi.advanceTimersByTimeAsync(2_000); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity?.label).toContain("子代理运行中");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["completed", "failed", "stopped", "unknown"] as const)("retains observed %s task state after refresh failure without hiding a new invocation", async state => {
+    vi.useFakeTimers();
+    try {
+      agents(1);
+      props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValueOnce([{ ...running, state }]).mockRejectedValue(new Error("Offline")) };
+      draw(); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toBeUndefined();
+      expect(trayButton()!.props.label).toBe("后台任务");
+      await vi.advanceTimersByTimeAsync(2_000); await settle();
+      expect(props.histories.A!.items[0]!.subagent!.state).toBe("running");
+      expect(trayButton()!.props.label).toBe("后台任务");
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toBeUndefined();
+      const item = props.histories.A!.items[0]!;
+      props = { ...props, histories: { ...props.histories, A: { ...props.histories.A!, items: [{ ...item, id: "tool:new-call", subagent: { ...item.subagent!, toolUseId: "new-call" } }] } } };
+      draw();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity?.label).toContain("子代理运行中");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["running", "completed"] as const)("keeps a new resumed workflow member active after refresh failure with an old %s member", async state => {
+    vi.useFakeTimers();
+    try {
+      agents(1, () => ({ agentId: "old-member", workflowRunId: "wf_1", startedAt: 100, updatedAt: 180 }));
+      const old = props.histories.A!.items[0]!;
+      delete old.subagent!.toolUseId;
+      const workflow: BridgeBackgroundTask = {
+        ...running, id: "old-launch", kind: "workflow", toolUseId: "old-launch", state: "completed", startedAt: 90, updatedAt: 200,
+        workflow: { runId: "wf_1", phases: [], agents: [{ ...old.subagent!, state, updatedAt: 200 }] },
+      };
+      props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValueOnce([workflow]).mockRejectedValue(new Error("Offline")) };
+      draw(); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toBeUndefined();
+      props = { ...props, histories: { ...props.histories, A: { ...props.histories.A!, items: [old, {
+        ...old, id: "tool:new-member", subagent: { ...old.subagent!, agentId: "new-member", description: "新成员", startedAt: 300, updatedAt: 310 },
+      }] } } };
+      draw();
+      await vi.advanceTimersByTimeAsync(2_000); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toEqual({
+        kind: "running", label: "子代理运行中 · 新成员 (1 步)", since: 300,
+      });
+      expect(props.histories.A!.items.map(item => item.subagent!.state)).toEqual(["running", "running"]);
     } finally { vi.useRealTimers(); }
   });
 

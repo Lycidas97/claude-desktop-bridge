@@ -1,3 +1,4 @@
+import type { BridgeBackgroundTask } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
 import { formatContextPercentage, formatContextTokens, SessionContextUsageBar } from "../components/conversation/SessionActivityIndicator.js";
 import { backgroundSubagentBadge, formatElapsed, sessionActivity, sessionQueueLabel, subagentStalledSeconds } from "./session-activity.js";
@@ -15,6 +16,19 @@ describe("sessionActivity", () => {
     }])).toEqual({ kind: "queued", label: "等待电脑端空闲" });
     expect(sessionActivity({ turnState: "running", ownership: "BRIDGE_RUNNING", pendingCount: 1 }, []))
       .toEqual({ kind: "queued", label: "等待前一条消息完成" });
+  });
+
+  it("shows observed compaction ahead of queued work and background activity without timing the user turn", () => {
+    const items = [
+      { role: "user", createdAt: 100 },
+      { role: "tool", createdAt: 150, subagent: { agentId: "child", state: "running" as const, description: "后台任务", toolCount: 1, startedAt: 150, updatedAt: 200 } },
+    ];
+    expect(sessionActivity({ turnState: "running", pendingCount: 1, isCompacting: true }, items))
+      .toEqual({ kind: "compacting", label: "正在压缩上下文" });
+    expect(sessionActivity({ turnState: "running", isCompacting: false }, [{ role: "user", createdAt: 100 }]))
+      .toEqual({ kind: "thinking", label: "思考中", since: 100 });
+    expect(sessionActivity({ turnState: "idle", isCompacting: true }, [])).toBeUndefined();
+    expect(sessionActivity({ turnState: "waiting", isCompacting: true }, [])).toBeUndefined();
   });
 
   it("requires closing the Desktop session instead of waiting idle when explicit handoff is present", () => {
@@ -99,8 +113,62 @@ describe("sessionActivity", () => {
     expect(activity).toEqual({
       kind: "running",
       label: "子代理运行中 · Audit chapter 3 citations (4 步)",
-      since: 100,
+      since: 150,
     });
+  });
+
+  const staleAgent = {
+    agentId: "a1", toolUseId: "call-1", description: "Old progress", state: "running" as const,
+    toolCount: 4, startedAt: 150, updatedAt: 180,
+  };
+  const staleItems = [{ role: "user", createdAt: 100 }, { role: "tool", createdAt: 150, subagent: staleAgent }];
+  const task: BridgeBackgroundTask = {
+    id: "call-1", kind: "subagent", taskId: "a1", toolUseId: "call-1", description: "Current task",
+    state: "running", startedAt: 160, updatedAt: 200, subagent: { ...staleAgent, description: "Current task", startedAt: 160, toolCount: 6 },
+  };
+
+  it.each(["completed", "failed", "stopped", "unknown"] as const)("clears stale activity when the tray task is %s", state => {
+    expect(sessionActivity({ turnState: "idle", runningSubagents: { count: 1, lastUpdatedAt: 180 } }, staleItems, [{ ...task, state }])).toBeUndefined();
+  });
+
+  it("treats a successful empty tray as settled and an unavailable tray as history fallback", () => {
+    expect(sessionActivity({ turnState: "idle" }, staleItems, [])).toBeUndefined();
+    expect(sessionActivity({ turnState: "idle" }, staleItems, undefined)).toMatchObject({ label: "子代理运行中 · Old progress (4 步)", since: 150 });
+  });
+
+  it("keeps native running history when an empty tray has no transcript details", () => {
+    expect(sessionActivity({ turnState: "idle", runningSubagents: { count: 1, lastUpdatedAt: 180 } }, staleItems, []))
+      .toEqual({ kind: "running", label: "子代理运行中 · Old progress (4 步)", since: 150 });
+  });
+
+  it("uses current tray progress and actual start time even before its history is loaded", () => {
+    expect(sessionActivity({ turnState: "idle" }, staleItems, [task])).toEqual({ kind: "running", label: "子代理运行中 · Current task (6 步)", since: 160 });
+    expect(sessionActivity({ turnState: "idle" }, [], [task])).toEqual({ kind: "running", label: "子代理运行中 · Current task (6 步)", since: 160 });
+  });
+
+  it("handles sparse tasks, counts only running subagents and times the named one", () => {
+    const sparseTask = { ...task };
+    delete sparseTask.subagent;
+    expect(sessionActivity({ turnState: "idle" }, staleItems, [
+      { ...task, id: "settled", state: "completed" },
+      { ...sparseTask, id: "second", description: "Second task", startedAt: 220 },
+      sparseTask,
+      { ...task, kind: "bash" },
+      { ...task, kind: "workflow" },
+    ])).toEqual({ kind: "running", label: "2 个子代理运行中 · Second task", since: 220 });
+    expect(sessionActivity({ turnState: "idle" }, staleItems, [{ ...task, kind: "bash" }, { ...task, kind: "workflow" }])).toBeUndefined();
+  });
+
+  it("keeps running workflow members visible only while their tray run is active", () => {
+    const workflow: BridgeBackgroundTask = { ...task, kind: "workflow", workflow: { runId: "wf_1", phases: [], agents: [staleAgent, { ...staleAgent, agentId: "finished", state: "completed" }] } };
+    expect(sessionActivity({ turnState: "idle" }, [], [workflow])).toEqual({ kind: "running", label: "子代理运行中 · Old progress (4 步)", since: 150 });
+    expect(sessionActivity({ turnState: "idle" }, staleItems, [{ ...workflow, state: "completed" }])).toBeUndefined();
+  });
+
+  it("keeps queue priority and returns to the main turn after the tray settles", () => {
+    expect(sessionActivity({ turnState: "queued" }, staleItems, [task])).toEqual({ kind: "queued", label: "排队等待中" });
+    expect(sessionActivity({ turnState: "running" }, [...staleItems, { role: "assistant", createdAt: 300 }], [{ ...task, state: "completed" }]))
+      .toEqual({ kind: "generating", label: "正在生成回复", since: 100 });
   });
 });
 

@@ -54,8 +54,8 @@ Pick models per role, not per task. Fallback is done by Magpie routing groups wi
 ## 1. Dispatch (owner's turn)
 
 1. For each Issue, list the files it is expected to touch and pick its review tier. Issues that overlap get an explicit merge order; record it in each affected brief. CI or tooling PRs never gate feature PRs: features merge on the CI that works today, and infrastructure improvements proceed in parallel.
-2. Start each Paired PR's reviewer, plus one Light reviewer if the round has Light PRs (`start_session`, `use_worktree: false`, **Reviewer brief**), then switch them to GPT-6.1-Sol.
-3. Start the fork (`start_session`, `use_worktree: true`, **Fork brief** with its reviewer's `local_…` id), then switch it to GPT-6.1-Sol (picker id from `node scripts/picker-id.mjs "GPT-6.1-Sol · Codex"`).
+2. Start each Paired PR's reviewer, plus one Light reviewer if the round has Light PRs (`start_session`, `use_worktree: false`, **Reviewer brief**), then switch them to GPT-6.1-Sol. The reviewer brief does nothing until `READY`, so its first turn costs nothing on the patrol's model.
+3. Start the fork with a placeholder prompt (`start_session`, `use_worktree: true`, prompt `Reply "waiting" and do nothing else until the task message arrives.`), switch it to GPT-6.1-Sol (picker id from `node scripts/picker-id.mjs "GPT-6.1-Sol · Codex"`), then `SendMessage` it the **Fork brief** with its reviewer's `local_…` id. Never put the fork brief in `start_session`: that first turn runs at once on the patrol's model, and `set_session_model` applies only from the session's next turn.
 4. Start the patrol checklist (step 8).
 
 ## 2. Implement (fork)

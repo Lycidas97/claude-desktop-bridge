@@ -7,6 +7,7 @@ import type {
   BridgeRuntimeStatus, BridgeSDKPermissionMode, BridgeSessionCommandResult,
   BridgeSessionConfiguration, BridgeSessionContextUsage, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeSubagentSummary, BridgeToolCallDetail,
 } from "@bridge/protocol";
+import { diag } from "@bridge/protocol";
 import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
 import type { ConversationStateStore, NativeDesktopReceipt } from "../controller/conversation-state-store.js";
 import { readClaudeTranscriptBackgroundTasks, readClaudeTranscriptSubagents, scanClaudeContextFromMessages, visibleMessage } from "../transcript/claude-history.js";
@@ -608,6 +609,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async history(sessionId: string, cursor?: string, limit = 50): Promise<BridgeHistoryPage> {
     const id = this.desktopId(sessionId);
+    diag("history.start", { cursor: Boolean(cursor), limit });
     if (!this.inspector.ready) throw new InspectorDisconnectedError("Claude Desktop history is unavailable while inspector is disconnected");
     const previousSession = !cursor ? JSON.stringify(this.session(sessionId)) : undefined;
     const page = record(await this.inspector.call("getTranscriptPage", [id, cursor ?? "", limit, { window: "accept" }]));
@@ -687,6 +689,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         item.requestId = receipt.requestId;
       }
     }
+    diag("history.done", { messages: items.length });
     return { sessionId, items, hasMore: page.hasMore === true, ...(nextCursor ? { nextCursor } : {}) };
   }
 
@@ -1076,6 +1079,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   private async handleEvent(raw: unknown): Promise<void> {
     const event = record(raw);
+    diag("native.event", { type: typeof event.type === "string" ? event.type : undefined });
     if (typeof event.sessionId !== "string") return;
     if (NATIVE_PROMPTS.some(spec => "event" in spec && (event.type === spec.event || event.type === `${spec.event}_resolved`))) {
       await this.refreshRuntime();

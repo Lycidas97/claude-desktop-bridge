@@ -6,6 +6,7 @@ import type { BridgeDesktopRuntimeId, BridgeEvent, DesktopControlSnapshot, Local
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell, Tray } from "electron";
 import { connectDesktopService, serveDesktopService } from "./app/service-connection.js";
 import { createServiceRuntime } from "./app/service-runtime.js";
+import { initDiag } from "./app/diag.js";
 import { ServiceResources } from "./app/service-resources.js";
 import { MemoryRecorder } from "./app/memory-recorder.js";
 import { claudeDesktopDeveloperSettings } from "./app/claude-desktop-developer-settings.js";
@@ -40,6 +41,7 @@ async function serviceMain(): Promise<void> {
   // Separate Chromium profile/instance lock; business files retain their original paths.
   // Keep app.name unchanged so safeStorage retains the application's keychain identity.
   mkdirSync(join(serviceDirectory, "profile"), { recursive: true, mode: 0o700 });
+  initDiag(serviceDirectory);
   app.setPath("userData", join(serviceDirectory, "profile"));
   app.setPath("sessionData", join(serviceDirectory, "profile"));
   if (!app.requestSingleInstanceLock()) { app.quit(); return; }

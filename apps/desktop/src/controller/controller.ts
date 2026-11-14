@@ -6,6 +6,7 @@ import {
   PAYLOAD_DEFLATE_SUPPORTED,
   PROTOCOL_VERSION,
   buildPairingUrl,
+  diag,
   relayPathForUrl,
   summarizeEvidenceEvent,
   type BridgeDesktopAppStatus,
@@ -191,6 +192,7 @@ export class DesktopController extends EventEmitter {
       ? this.config.devices.find((device) => device.deviceId === this.currentPairingDeviceId && !device.revokedAt)
       : undefined;
     const runtimes = this.desktopRuntimes();
+    diag("snapshot.build", { runtimes: runtimes.length });
     return {
       host: {
         hostId: this.config.hostDeviceId,
@@ -669,7 +671,9 @@ export class DesktopController extends EventEmitter {
   }
 
   private async publish(): Promise<DesktopControlSnapshot> {
+    diag("publish.start");
     const [snapshot] = await Promise.all([this.snapshot(), this.publishPermissions()]);
+    diag("publish.snapshot", { sessions: snapshot.sessions.length });
     this.emit("snapshot", snapshot);
     // Catalog metadata and global runtime changes need a complete snapshot.
     // Session runtime changes use the existing coalesced event channel.
@@ -714,6 +718,7 @@ export class DesktopController extends EventEmitter {
     this.updater?.notifyIdleStateChanged(
       snapshot.runtime.activeTurns === 0 && snapshot.permissions.length === 0,
     );
+    diag("publish.done", { sessions: snapshot.sessions.length });
     return snapshot;
   }
 }

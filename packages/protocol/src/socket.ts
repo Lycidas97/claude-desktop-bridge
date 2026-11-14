@@ -1,4 +1,5 @@
 import { BridgeCrypto } from "./crypto.js";
+import { diag } from "./diag.js";
 import { decodeUtf8, fromBase64Url, toBase64Url, utf8 } from "./encoding.js";
 import { isEncryptedEnvelope, parseServerFrame } from "./validation.js";
 import {
@@ -122,7 +123,11 @@ export class BridgeSocket {
         create: this.createRoom,
       }));
     });
-    ws.addEventListener("message", (event) => void this.handleMessage(String(event.data)));
+    ws.addEventListener("message", (event) => {
+      const raw = String(event.data);
+      diag("ws.recv", { bytes: raw.length });
+      void this.handleMessage(raw);
+    });
     ws.addEventListener("close", () => this.handleClose());
     ws.addEventListener("error", () => {
       if (ws.readyState === this.WebSocketImpl.OPEN) ws.close();
@@ -294,6 +299,7 @@ export class BridgeSocket {
     } catch {
       return;
     }
+    diag("ws.frame", { type: frame.type, bytes: raw.length });
     for (const listener of this.frameListeners) listener(frame);
     if (frame.type === "ready") {
       this.reconnectAttempt = 0;

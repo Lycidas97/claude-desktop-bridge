@@ -2,6 +2,7 @@ import { lstat, mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import {
+  diag,
   evidenceSummary,
   isBridgeNativeImageRef,
   parseSystemUpdateParams,
@@ -170,6 +171,20 @@ export interface ControllerRpcHost {
 }
 
 export async function dispatchControllerRequest(
+  host: ControllerRpcHost,
+  request: BridgeRequest,
+  origin: "desktop" | "mobile",
+  sourceDeviceId?: string,
+): Promise<unknown> {
+  diag("rpc.start", { method: request.method, origin });
+  try {
+    return await dispatchControllerRequestInner(host, request, origin, sourceDeviceId);
+  } finally {
+    diag("rpc.done", { method: request.method });
+  }
+}
+
+async function dispatchControllerRequestInner(
   host: ControllerRpcHost,
   request: BridgeRequest,
   origin: "desktop" | "mobile",

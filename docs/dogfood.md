@@ -20,7 +20,7 @@ Not covered yet: Android APK and Windows dogfood builds.
 
 ## Runtime incidents (OOM, freeze, leak)
 
-**Who does what.** The patrol only collects evidence: thread samples, a frozen copy of the memory records, logs. It copies them to a local `0600` directory and, with the owner's approval, restarts or reinstalls. Diagnostic patches, fixtures, regression tests, and fixes (steps 2–4) belong to a fork started for the incident. The fork's brief carries the evidence paths. The patrol never opens an implementation worktree, even while the service is stuck.
+**Who does what.** The patrol only collects evidence: thread samples, a frozen copy of the memory records, logs. It copies them to a local directory (mode `0700`, files `0600`) and, with the owner's approval, restarts or reinstalls. Diagnostic patches, fixtures, regression tests, and fixes (steps 2–4) belong to a fork started for the incident. The fork's brief carries the evidence paths. The patrol never opens an implementation worktree, even while the service is stuck.
 
 1. **Reproduce from existing code and records.** If that fails, stop static analysis; do not start parallel multi-model code reading.
 2. **Diagnostic patch + full test run.** The patch records numbers only (in-flight requests, cache sizes, history read sizes, heap) plus a heap snapshot near the heap limit (`--heapsnapshot-near-heap-limit` or one `v8.writeHeapSnapshot()` past a threshold; snapshots contain plaintext, so local-only, `0600`). Drive fixtures along the incident's path (large history, repeated tool and subagent output, continuous scroll-back). A reproduction becomes a failing regression test before any fix.

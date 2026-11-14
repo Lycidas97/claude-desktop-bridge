@@ -8,27 +8,23 @@ Fixes #
 
 ## Checks Run
 
-- [ ] `npm run typecheck`
-- [ ] `npm run test:infra`
-- [ ] `npm test`
-- [ ] `npm run test:browser`
-- [ ] `npm run verify`
-- [ ] `npm run ci:local` (runs after review converges, on the reviewed SHA; until then list `ci:local — pending review` under Not Run; docs-only PRs skip it and list `ci:local — docs only`)
+- [ ] Before review: `npm run typecheck` + `vitest related --run <changed files>` (+ `npm run test:browser` for client UI)
+- [ ] `npm run ci:local` (once, after review converges, on the reviewed SHA; until then list `ci:local — pending review` under Not Run; docs-only PRs skip it and list `ci:local — docs only`)
 
 Commands & results:
 ```text
-<paste exact commands and pass counts>
+<exact commands and pass counts; one line each>
 ```
 
 ## Red Check
 
-<!-- Required for all bug fixes: revert the fix and confirm the new/updated test fails for the exact broken behavior (compile errors do not count). For pure structural refactors or docs, write: N/A — pure structural refactor -->
+<!-- Bug fixes: link the observed failure (CI log, user report) or show the new test failing without the fix for the exact broken behavior (compile errors do not count). Refactors or docs: N/A — pure structural refactor / N/A — docs only -->
 
 ## Real Surface / Platform Check
 
-<!-- State which real surface(s) were exercised: macOS packaged app, real Claude Desktop Inspector, Windows 11 (`ssh win` / packaged QA), Android APK, or local Browser E2E fixture (`375x812` light/dark). Do not claim synthetic fixtures prove live OS/Desktop behavior. -->
+<!-- Real surfaces exercised beyond ci:local, if any. Live Desktop and phone behavior is covered by the dogfood build (docs/dogfood.md); do not claim synthetic fixtures prove it. -->
 
 ## Not Run
 
-<!-- Required: explicitly list every check or platform surface NOT run and why. Never leave blank. -->
+<!-- Required: every check or surface not run and why. -->
 - 

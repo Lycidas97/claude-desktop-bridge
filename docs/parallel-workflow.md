@@ -42,14 +42,16 @@ Pick models per role, not per task. Fallback is done by Magpie routing groups wi
 
 ## 1. Dispatch (owner's turn)
 
-1. For each Issue, list the files it is expected to touch. Issues that overlap get an explicit merge order; record it in each affected brief.
+1. For each Issue, list the files it is expected to touch. Issues that overlap get an explicit merge order; record it in each affected brief. CI or tooling PRs never gate feature PRs: features merge on the CI that works today, and infrastructure improvements proceed in parallel.
 2. Start the fork (`start_session`, `use_worktree: true`) with the **Fork brief** below, then switch it to GPT-6.1-Sol with `mcp__ccd_session_mgmt__set_session_model` (picker id from `node scripts/picker-id.mjs "GPT-6.1-Sol · Codex"`).
 3. In the same turn, start its reviewer (`start_session`, `use_worktree: false`) with the **Reviewer brief** below, then switch it to GPT-6.1-Sol while it waits.
 4. Start the patrol checklist (step 8).
 
 ## 2. Implement (fork)
 
-- Run only local checks: the subsystem's minimum verification from `AGENTS.md`, `typecheck`, and `npm run test:browser` when the client is touched. Do **not** run `ci:local` yet.
+- Run only `npm run typecheck` and the tests related to the changed files (`vitest related --run <files>` in the touched workspace), plus `npm run test:browser` when client UI changed. Full suites run once inside `ci:local`; do **not** run them, or `ci:local`, yet.
+- A failure already observed in a CI log or a user report is the Red Check; do not rebuild it in an isolated checkout.
+- Do not write acceptance files under `output/`; the PR body carries the checklist, commands, and links.
 - Do not hand-roll port or CI wait loops and do not write `RUNNING` markers to shared notes. Mac browser E2E uses random ports and the Windows script queues itself.
 - Open the PR (`Fixes #N`, template filled; under `## Not Run` list `ci:local — pending review`, or `ci:local — docs only` for docs-only PRs) and try `set_monitor`.
 
@@ -84,15 +86,16 @@ From `READY` until told otherwise, the head is frozen: no pushes except requeste
 
 ## 6. CI (fork, after review converges)
 
-- The patrol switches the fork to `group/bridge-runner` (`set_session_model`), then tells it to run `npm run ci:local` on the reviewed SHA. The fork reports the exit code, SHA, and `ci/local-distributed` status, then edits the PR body: the reviewed SHA under `## Reviewed / Verified Commit SHA`, the `ci:local` box checked, and the `pending review` line removed. The patrol verifies the status with `gh api repos/Lycidas97/claude-desktop-bridge/commits/<sha>/statuses`, not from the report, then switches the fork back to GPT-6.1-Sol.
+- The patrol switches the fork to `group/bridge-runner` (`set_session_model`), then tells it to run `npm run ci:local` on the reviewed SHA. The fork reports the exit code, SHA, and `ci/local-distributed` status, then edits the PR body: the reviewed SHA under `## Reviewed / Verified Commit SHA`, the `ci:local` box checked, and the `pending review` line removed. The patrol verifies the status with `gh api repos/Lycidas97/claude-desktop-bridge/commits/<sha>/statuses`, not from the report, and does not re-audit CI logs, then switches the fork back to GPT-6.1-Sol.
 - Docs-only PRs skip this step (see `AGENTS.md` **PR review & merge**).
 - A CI failure that needs a code change sends the PR back to step 5 as a `[BLOCKER]` round (the fork, back on GPT-6.1-Sol, fixes it; the reviewer re-reviews the fix head), then step 6 re-runs.
 
 ## 7. Merge (patrol)
 
 1. Merge in the planned order: `gh pr merge <n> --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>`. Then sync local `main` and, unless the PR was docs-only, run `npm run ci:local -- --publish` when `HEAD^{tree}` matches the verified head (otherwise skip; see `AGENTS.md` Bug fixes step 4).
-2. Tell only forks whose files overlap the merged PR to sync (`mcp__ccd_host__sync_with_base_branch`), push, and report `HEAD CHANGED`. The patrol sends that PR's reviewer `MERGE CHECK #<n> <new-head-sha>`; the reviewer inspects only the merge resolution (the host sync merges or fast-forwards, never rebases, so `git show --remerge-diff <new-head-sha>` shows only the resolution; empty for a clean merge) and replies `MERGE OK` or posts a `[BLOCKER]` review. On `MERGE OK` the new head becomes the reviewed SHA and the fork re-runs step 6. Non-overlapping PRs keep their CI status.
-3. After the round's merges, a GPT-6.1-Sol session (a fork or reviewer still open, or a new one) consolidates the candidate lessons from forks and reviewers into `LESSONS.md` as the single writer for that round.
+2. Tell only forks whose files overlap the merged PR to sync (`mcp__ccd_host__sync_with_base_branch`), push, and report `HEAD CHANGED`. The patrol sends that PR's reviewer `MERGE CHECK #<n> <new-head-sha>`; the reviewer inspects only the merge resolution (the host sync merges or fast-forwards, never rebases, so `git show --remerge-diff <new-head-sha>` shows only the resolution; empty for a clean merge) and replies `MERGE OK` or posts a `[BLOCKER]` review. The fork runs `npm run typecheck` and the related tests on the new head. On `MERGE OK` plus those checks, the new head becomes the reviewed SHA and merges without re-running `ci:local`, unless the PR touches `.github/workflows/`, `scripts/`, packaging, or release files (then step 6 re-runs). Non-overlapping PRs keep their CI status.
+3. After each batch of merges, run `npm run ci:local` on the new `main` head (patrol on `group/bridge-runner`). A failure is fixed forward or reverted before the next merge. Then install the dogfood build (`docs/dogfood.md`).
+4. After the round's merges, a GPT-6.1-Sol session (a fork or reviewer still open, or a new one) consolidates the candidate lessons from forks and reviewers into `LESSONS.md` as the single writer for that round.
 
 ## 8. Patrol checklist
 
@@ -112,7 +115,7 @@ Silent when nothing is wrong; otherwise it tells the owner and may `SendMessage`
 Implement Issue #<N> (<link>) in this worktree.
 Paths: <subsystem paths from AGENTS.md>. Overlaps: <Issue/PR and files> — merge order: <first → last>.
 Environment: <e.g. CHROME_PATH=..., Playwright cache>.
-Local checks: <minimum verification from AGENTS.md>. Do not run ci:local until the patrol says so.
+Local checks: typecheck + vitest related --run <changed files> (+ test:browser for client UI). No full suites, no output/ acceptance files. Do not run ci:local until the patrol says so.
 Report to the patrol (<patrol session id>) via SendMessage: READY #<pr> <sha> / BLOCKED <reason> / HEAD CHANGED #<pr> <old> → <new>.
 Freeze the head after READY except for requested fixes and syncs.
 LESSONS.md, docs/subsystems/*.md, and shared memory are read-only; put 0–2 verified candidate lessons in your READY report.

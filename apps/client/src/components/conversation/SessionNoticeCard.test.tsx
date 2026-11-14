@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { parseSessionNotice, SessionNoticeCard } from "./SessionNoticeCard.js";
@@ -15,6 +16,39 @@ describe("cross-session messages", () => {
       kind: "cross-session", title: "来自 Issue 巡检",
       reports: [{ title: "Issue 巡检", text: crossSessionBody }],
     });
+  });
+
+  it("splits adjacent envelopes into separate reports without exposing sender IDs or tags", () => {
+    const source = `${crossSession}\n${crossSession.replace(crossSessionBody, "第二条 **进展**")}`;
+    const notice = parseSessionNotice(source)!;
+    expect(notice.reports).toEqual([
+      { title: "Issue 巡检", text: crossSessionBody },
+      { title: "Issue 巡检", text: "第二条 **进展**" },
+    ]);
+    const html = renderToStaticMarkup(<SessionNoticeCard notice={notice} source={source} itemId="batch" />);
+    expect(html).toContain("2 条跨会话消息");
+    expect(html).toContain("<strong>进展</strong>");
+    expect(html.match(/<section>/gu)).toHaveLength(2);
+    expect(html).not.toMatch(/cross-session-message|local_fixture/u);
+  });
+
+  it("preserves a real user reply appended on the provenance paragraph's line", () => {
+    expect(parseSessionNotice(`${wrappedCrossSession} 不要合并，先等我确认。`)).toBeUndefined();
+  });
+
+  it("retains screenshot and PDF file actions on cross-session reports", () => {
+    const source = crossSession.replace(crossSessionBody, "[查看截图](output/qa.png) [下载报告](output/report.pdf)");
+    const html = renderToStaticMarkup(<SessionNoticeCard notice={parseSessionNotice(source)!} source={source} itemId="files" onFileClick={() => {}} />);
+    expect(html.match(/class="markdown-file-link"/gu)).toHaveLength(2);
+    expect(html).toContain("查看截图");
+    expect(html).toContain("下载报告");
+  });
+
+  it("parses 28 ordinary reminder blocks without exponential backtracking", () => {
+    const source = "<system-reminder>Linked sessions now (status): x</system-reminder>\n".repeat(28);
+    const result = spawnSync(process.execPath, ["-e", `(${parseSessionNotice.toString()})(${JSON.stringify(source)})`], { timeout: 1_500 });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
   });
 
   it("accepts single-line, reordered attributes and quoted angle brackets in the sender name", () => {

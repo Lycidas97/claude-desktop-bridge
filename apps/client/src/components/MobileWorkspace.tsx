@@ -1739,7 +1739,8 @@ export function MobileWorkspace({
             }
             const item = node.item;
             if (item.sessionNotice) return (
-              <SessionNoticeCard key={item.id} itemId={item.id} notice={item.sessionNotice} source={item.text} entering={streamEntering(item.id)} />
+              <SessionNoticeCard key={item.id} itemId={item.id} notice={item.sessionNotice} source={item.text} entering={streamEntering(item.id)}
+                {...(onDownloadSessionFile ? { onFileClick: openSessionFile } : {})} />
             );
             const showDelivery = Boolean(item.delivery);
             const messageQueued = (item.delivery === "queued" || item.delivery === "host-received")

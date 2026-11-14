@@ -47,6 +47,42 @@ describe("Claude Desktop lifecycle", () => {
     }
   });
 
+  it("keeps forced status reads independent of a pending ordinary read", async () => {
+    let release!: (pids: number[]) => void;
+    const scan = new Promise<number[]>(resolve => { release = resolve; });
+    const listMainProcessIds = vi.fn<() => Promise<number[]>>()
+      .mockReturnValueOnce(scan)
+      .mockResolvedValue([42]);
+    const lifecycle = new ClaudeDesktopLifecycle({
+      platform: "darwin",
+      applicationInstalled: async () => true,
+      listMainProcessIds,
+    });
+
+    const pending = lifecycle.status();
+    await Promise.resolve();
+    await expect(lifecycle.status(true)).resolves.toMatchObject({ state: "running" });
+    expect(listMainProcessIds).toHaveBeenCalledTimes(2);
+    release([]);
+    await expect(pending).resolves.toMatchObject({ state: "stopped" });
+  });
+
+  it("allows another ordinary read after an installation check rejects", async () => {
+    const error = new Error("installation check failed");
+    const applicationInstalled = vi.fn<() => Promise<boolean>>()
+      .mockRejectedValueOnce(error)
+      .mockResolvedValue(true);
+    const lifecycle = new ClaudeDesktopLifecycle({
+      platform: "darwin",
+      applicationInstalled,
+      listMainProcessIds: async () => [],
+    });
+
+    await expect(lifecycle.status()).rejects.toBe(error);
+    await expect(lifecycle.status()).resolves.toMatchObject({ state: "stopped" });
+    expect(applicationInstalled).toHaveBeenCalledTimes(2);
+  });
+
   it("launches the installed app and reports its running state", async () => {
     let running = false;
     const launchApplication = vi.fn(async () => {

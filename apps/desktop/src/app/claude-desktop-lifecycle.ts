@@ -178,6 +178,7 @@ export function signalProcess(
 
 export class ClaudeDesktopLifecycle {
   private cached: CachedStatus | undefined;
+  private statusInFlight: Promise<ClaudeDesktopAppStatus> | undefined;
   readonly definition: DesktopAppDefinition;
 
   constructor(private readonly options: ClaudeDesktopLifecycleOptions = {}) {
@@ -188,6 +189,11 @@ export class ClaudeDesktopLifecycle {
     const cacheTtlMs = this.options.cacheTtlMs ?? 1_000;
     if (!force && this.cached && Date.now() - this.cached.observedAt < cacheTtlMs) {
       return this.cached.value;
+    }
+    if (!force) {
+      return this.statusInFlight ??= this.status(true).finally(() => {
+        this.statusInFlight = undefined;
+      });
     }
     const value = await this.readStatus();
     this.cached = { value, observedAt: Date.now() };

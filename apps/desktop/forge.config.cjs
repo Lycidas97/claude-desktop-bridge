@@ -12,7 +12,6 @@ const macSignKeychain = process.env.BRIDGE_MAC_SIGN_KEYCHAIN?.trim();
 const macSignTimestamp = process.env.BRIDGE_MAC_SIGN_TIMESTAMP?.trim();
 const macLocalSigning = process.env.BRIDGE_MAC_LOCAL_SIGNING === "1";
 const allowAdHocMacSigning = process.env.BRIDGE_ALLOW_ADHOC_SIGNING === "1";
-const fastInstaller = process.env.BRIDGE_FAST_INSTALLER === "1";
 
 module.exports = {
   packagerConfig: {
@@ -161,36 +160,7 @@ module.exports = {
     },
   },
   makers: [
-    { name: "@electron-forge/maker-zip", platforms: ["darwin", "linux"] },
+    { name: "@electron-forge/maker-zip", platforms: ["darwin"] },
     { name: "@electron-forge/maker-dmg", platforms: ["darwin"], config: { name: "Bridge" } },
-    // electron-installer derives the binary path from the package.json name by
-    // default, which breaks on the scoped "@bridge/desktop"; point it at the
-    // real executableName instead.
-    {
-      name: "@electron-forge/maker-deb",
-      platforms: ["linux"],
-      config: {
-        options: {
-          name: "bridge",
-          bin: "bridge",
-          productName: "Bridge",
-          license: "MIT",
-          ...(fastInstaller ? { compression: "none" } : {}),
-        },
-      },
-    },
-    {
-      name: "@electron-forge/maker-rpm",
-      platforms: ["linux"],
-      config: {
-        options: {
-          name: "bridge",
-          bin: "bridge",
-          productName: "Bridge",
-          license: "MIT",
-          ...(fastInstaller ? { compressionLevel: 0 } : {}),
-        },
-      },
-    },
   ],
 };

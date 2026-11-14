@@ -273,7 +273,7 @@ async function runCli() {
         const tWin = await runPrefixed("WIN", "ssh", psArgs);
         unfinishedWinRunId = null;
         results.push(
-          `Windows 11 + Android API 36 WHPX Emulator${skipWslLinux ? "" : " + WSL2 Ubuntu-24.04 Linux tests & .deb/.rpm/.zip"} (${tWin}s)`,
+          `Windows 11 + Android API 36 WHPX Emulator${skipWslLinux ? "" : " + WSL2 Ubuntu-24.04 Linux tests"} (${tWin}s)`,
         );
       })());
     }

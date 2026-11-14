@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm as recycle, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm as recycle, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -93,6 +94,46 @@ test('every platform and publisher uses the same resolved source; all platforms 
   assert.doesNotMatch(shellStep(assets, 'Publish GitHub Release with platform assets'), /\$GITHUB_SHA/u);
   assert.match(shellStep(assets, 'Publish GitHub Release with platform assets'), /--target "\$RELEASE_REVISION"/u);
   assert.match(shellStep(assets, 'Stage platform assets'), /sha256sum Bridge-\* > SHA256SUMS\.txt/u);
+});
+
+test('release staging succeeds with only macOS, Windows and Android artifacts', {
+  skip: process.platform === 'win32', // The production staging job runs on Ubuntu.
+}, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-release-assets-'));
+  try {
+    await writeFile(join(directory, 'package.json'), JSON.stringify({ version: '1.3.3' }));
+    for (const [artifact, filename] of [
+      ['Bridge-macOS-adhoc-ci', 'Bridge.zip'],
+      ['Bridge-Windows-installer-ci', 'Bridge-1.3.3-Setup.exe'],
+      ['Bridge-Android-debug-ci', 'app-debug.apk'],
+    ]) {
+      await mkdir(join(directory, 'packed', artifact), { recursive: true });
+      await writeFile(join(directory, 'packed', artifact, filename), filename);
+    }
+    const revision = 'a'.repeat(40);
+    const result = spawnSync('bash', ['-c', shellStep(assets, 'Stage platform assets')], {
+      cwd: directory, encoding: 'utf8',
+      env: { ...process.env, RELEASE_REVISION: revision },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const filenames = [
+      'Bridge-1.3.3-android-debug.apk',
+      'Bridge-1.3.3-macos-adhoc.zip',
+      'Bridge-1.3.3-windows-installer-ci.zip',
+    ];
+    assert.deepEqual((await readdir(join(directory, 'assets'))).sort(), [
+      ...filenames, 'SHA256SUMS.txt', 'SOURCE_COMMIT.txt',
+    ]);
+    assert.equal(await readFile(join(directory, 'assets', 'SOURCE_COMMIT.txt'), 'utf8'), `${revision}\n`);
+    assert.equal(await readFile(join(directory, 'assets', filenames[0]), 'utf8'), 'app-debug.apk');
+    const checksums = [];
+    for (const filename of filenames) {
+      checksums.push(`${createHash('sha256').update(await readFile(join(directory, 'assets', filename))).digest('hex')}  ${filename}`);
+    }
+    assert.equal(await readFile(join(directory, 'assets', 'SHA256SUMS.txt'), 'utf8'), `${checksums.join('\n')}\n`);
+  } finally {
+    await recycle(directory, { recursive: true, force: true });
+  }
 });
 
 test('release and release-assets CI gates enforce main ancestry and accept exact-SHA local status or completed main CI', {
@@ -271,7 +312,7 @@ process.exit(2);
   }
 });
 
-test('CI Quality gate enforces full 7-job success on manual dispatch', {
+test('CI Quality gate enforces full 6-job success on manual dispatch', {
   skip: process.platform === 'win32',
 }, () => {
   const gateScript = shellStep(ci, 'Require every job to succeed');
@@ -279,7 +320,6 @@ test('CI Quality gate enforces full 7-job success on manual dispatch', {
     changes: { result: 'success' },
     verify: { result: 'success' },
     'desktop-windows': { result: 'success' },
-    'desktop-linux': { result: 'success' },
     'android-debug': { result: 'success' },
     'macos-unit': { result: 'success' },
     'browser-e2e': { result: 'success' },

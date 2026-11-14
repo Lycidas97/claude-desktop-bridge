@@ -375,16 +375,10 @@ if [ ! -f "`$STAMP" ] || [ "`$(cat "`$STAMP")" != "`$LOCK_HASH" ] || [ ! -f "nod
 fi
 npm run test:infra
 npm test
-npm run ci:run -- run build -w @bridge/protocol
-BRIDGE_FAST_INSTALLER="1" BRIDGE_RELAY_URL="" BRIDGE_PUBLIC_RELAY_URL="" BRIDGE_PAIRING_BASE_URL="" BRIDGE_SERVICE_ORIGIN="" BRIDGE_ICE_SERVERS="" \
-  npm run ci:run -- run make:linux -w @bridge/desktop
-find apps/desktop/out/make -name "*.deb" -print -quit | grep -q . || { echo "Missing .deb output"; exit 1; }
-find apps/desktop/out/make -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }
-find apps/desktop/out/make -name "*.zip" -print -quit | grep -q . || { echo "Missing .zip output"; exit 1; }
-echo "<<< [WSL Ubuntu-24.04] Linux tests + .deb / .rpm / .zip outputs verified"
+echo "<<< [WSL Ubuntu-24.04] Linux infra + unit tests verified"
 "@
   $wslEncoded = [Convert]::ToBase64String((New-Object Text.UTF8Encoding($false)).GetBytes(($wslScript -replace "`r`n", "`n")))
-  Write-Output ">>> [WIN] Starting WSL2 Ubuntu-24.04 Linux tests + installers in background"
+  Write-Output ">>> [WIN] Starting WSL2 Ubuntu-24.04 Linux tests in background"
   $wslPsi = [System.Diagnostics.ProcessStartInfo]::new("wsl.exe")
   $wslPsi.Arguments = "-d Ubuntu-24.04 --exec setsid --wait bash -c `"exec 3<&0 </dev/null; (exec >/dev/null 2>&1; cat <&3; kill -TERM 0 || true) & W=`$!; exec 3<&-; trap 'kill -TERM `$W 2>/dev/null || true; pkill -TERM -P `$W 2>/dev/null || true; wait `$W 2>/dev/null || true' EXIT; printf '%s' $wslEncoded | base64 -d | bash`""
   $wslPsi.UseShellExecute = $false
@@ -398,7 +392,7 @@ echo "<<< [WSL Ubuntu-24.04] Linux tests + .deb / .rpm / .zip outputs verified"
   $wslErrTask = $wslProc.StandardError.ReadToEndAsync()
 }
 
-# 9. Join parallel WSL2 Ubuntu-24.04 Linux infra + unit tests + .deb / .rpm / .zip packaging
+# 9. Join parallel WSL2 Ubuntu-24.04 Linux infra + unit tests
 if ($null -ne $wslProc) {
   $wslProc.WaitForExit()
   try { $wslProc.StandardInput.Close() } catch {}
@@ -407,9 +401,9 @@ if ($null -ne $wslProc) {
   if ($wslOut) { Write-Output $wslOut.TrimEnd() }
   if ($wslErr) { [Console]::Error.WriteLine($wslErr.TrimEnd()) }
   if ($wslProc.ExitCode -ne 0) {
-    throw "[WIN] WSL2 Ubuntu-24.04 Linux tests + installers (.deb/.rpm/.zip) failed with exit code $($wslProc.ExitCode)"
+    throw "[WIN] WSL2 Ubuntu-24.04 Linux tests failed with exit code $($wslProc.ExitCode)"
   }
-  Write-Output ("<<< [WIN] WSL2 Ubuntu-24.04 Linux tests + installers (.deb/.rpm/.zip) OK ({0:N1}s)" -f ($wslProc.ExitTime - $wslProc.StartTime).TotalSeconds)
+  Write-Output ("<<< [WIN] WSL2 Ubuntu-24.04 Linux tests OK ({0:N1}s)" -f ($wslProc.ExitTime - $wslProc.StartTime).TotalSeconds)
 }
 
 Write-Output "=== [WIN] ALL WINDOWS + ANDROID + WSL LINUX CHECKS PASSED ($Revision) ==="

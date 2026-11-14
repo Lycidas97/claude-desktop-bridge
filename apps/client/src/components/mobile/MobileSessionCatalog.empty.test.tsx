@@ -2,6 +2,8 @@ import type { BridgeHostSnapshot, BridgeSessionInfo } from "@bridge/protocol";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MobileWorkspace } from "../MobileWorkspace.js";
+import { EmptyState } from "../common/EmptyState.js";
+import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 
 const hooks = vi.hoisted(() => ({
@@ -57,7 +59,11 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Record<string, any>>;
-  return [element, ...elements(element.props.children)];
+  return [element, ...elements(
+    element.type === EmptyState || element.type === ProjectGroupHeader
+      ? (element.type as (props: any) => ReactNode)(element.props)
+      : element.props.children,
+  )];
 }
 
 function textContent(node: ReactNode): string {

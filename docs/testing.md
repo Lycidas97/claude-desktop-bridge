@@ -13,7 +13,7 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 | `npm run test:infra` | Small fixtures for runner failure propagation and recycle-bin behavior |
 | `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture |
 | `npm run ci:run -- run test:desktop:service` | After a current Desktop build: real compiled Electron UI/service with isolated Native fixture; on macOS also verifies developer settings, real random TCP/lsof/proc_pidpath, ASAR helper, injected warning UI, and completed background scans after window close |
-| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (up to 4 parallel isolated slots `D:\work\ci-slot-<n>`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` Linux `test:infra` + `npm test` + `.deb`/`.rpm`/`.zip`), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
+| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (up to 4 parallel isolated slots `D:\work\ci-slot-<n>`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` Linux `test:infra` + `npm test`), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
 | `npm run ci:run -- run build -w @bridge/protocol` | Example of wrapping another npm command with Trash-only Node cleanup |
 
 The quota plugin is outside the `apps/*` and `packages/*` workspaces; root test and
@@ -148,8 +148,8 @@ runners. Upon a full clean pass (after temporary-directory recycle cleanup compl
 receipt immediately after pushing).
 
 `.github/workflows/ci.yml` is retained as a manual `workflow_dispatch` fallback that
-runs the full 7-job hosted matrix (`changes`, Linux `verify`, Windows/Linux installers,
-Android, macOS unit tests, and browser E2E) gated by `Quality gate` (all seven
+runs the full 6-job hosted matrix (`changes`, Linux `verify`, Windows installers,
+Android, macOS unit tests, and browser E2E) gated by `Quality gate` (all six
 jobs must succeed; failed, cancelled, or skipped jobs fail the gate). Native Desktop
 unit fixtures explicitly simulate macOS while mocking their process and inbox
 dependencies. POSIX mode-bit assertions apply on macOS/Linux; Windows skips the two

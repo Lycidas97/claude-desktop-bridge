@@ -21,7 +21,6 @@ Bridge 把 Claude Desktop 的本地 Code 会话带到手机：接着聊、排队
 | macOS | [电脑端 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-macos-adhoc.zip) | 解压后使用内含安装包。ad-hoc 签名，未经 Apple 公证；主要验证平台 |
 | Android 8.0+ | [APK](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-android-debug.apk) | 使用仓库固定 debug 签名；需允许当前下载来源安装应用 |
 | Windows | [安装包 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-windows-installer-ci.zip) | CI 构建；签名状态见包内 `windows-release-evidence.json`，原生连接未完成实机验收 |
-| Linux | [安装包 ZIP](https://github.com/Lycidas97/claude-desktop-bridge/releases/download/v1.3.1/Bridge-1.3.1-linux-installers-ci.zip) | CI 构建；不能据此推断已具备可用的 Claude Desktop 原生环境 |
 
 发布页同时提供 `SHA256SUMS.txt` 与 `SOURCE_COMMIT.txt`。构建成功不代表所有平台均完成实机验证；Android 系统返回流程已在 Android 16 模拟器中验证。
 

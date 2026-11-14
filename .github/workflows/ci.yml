@@ -110,47 +110,6 @@ jobs:
             artifacts/packaged-desktop/**
             artifacts/tests/**
 
-  desktop-linux:
-    if: github.event_name != 'pull_request'
-    # Forge's RPM maker expects the RPM 4.18 build layout shipped by this LTS.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Install recycle-bin and RPM/DEB toolchains
-        run: sudo apt-get update && sudo apt-get install -y trash-cli rpm fakeroot dpkg
-      - run: npm ci
-      - run: npm run ci:run -- run typecheck
-      - run: npm test
-      - run: npm run ci:run -- run build -w @bridge/protocol
-      - name: Build Linux installers with empty optional release variables
-        run: npm run ci:run -- run make:linux -w @bridge/desktop
-        env:
-          BRIDGE_RELAY_URL: ""
-          BRIDGE_PUBLIC_RELAY_URL: ""
-          BRIDGE_PAIRING_BASE_URL: ""
-          BRIDGE_SERVICE_ORIGIN: ""
-          BRIDGE_ICE_SERVERS: ""
-      - name: Assert Linux installer outputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          make_dir="apps/desktop/out/make"
-          find "$make_dir" -name "*.deb" -print -quit | grep -q . || { echo "Missing .deb output"; exit 1; }
-          find "$make_dir" -name "*.rpm" -print -quit | grep -q . || { echo "Missing .rpm output"; exit 1; }
-          find "$make_dir" -name "*.zip" -print -quit | grep -q . || { echo "Missing .zip output"; exit 1; }
-      - uses: actions/upload-artifact@v7.0.2
-        if: always()
-        with:
-          name: Bridge-Linux-installers-ci
-          path: |
-            apps/desktop/out/make/**
-            artifacts/tests/**
-
   android-debug:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -240,7 +199,7 @@ jobs:
   quality-gate:
     name: Quality gate
     if: always()
-    needs: [changes, verify, desktop-windows, desktop-linux, android-debug, macos-unit, browser-e2e]
+    needs: [changes, verify, desktop-windows, android-debug, macos-unit, browser-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -257,7 +216,7 @@ jobs:
           node -e '
             const jobs = JSON.parse(process.env.JOB_RESULTS);
             for (const [name, job] of Object.entries(jobs)) console.log(`${name}: ${job.result}`);
-            const fullMatrix = ["changes", "verify", "desktop-windows", "desktop-linux", "android-debug", "macos-unit", "browser-e2e"];
+            const fullMatrix = ["changes", "verify", "desktop-windows", "android-debug", "macos-unit", "browser-e2e"];
             if (process.env.EVENT_NAME !== "pull_request") {
               if (fullMatrix.some((name) => jobs[name]?.result !== "success")) process.exit(1);
               process.exit(0);

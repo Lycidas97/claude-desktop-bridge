@@ -40,7 +40,7 @@ npm run audit:runtime
 
 ## GitHub 发布流程
 
-1. 在独立工作树发布分支整理源码、同步版本号与 `CHANGELOG.md`，在本地通过 `npm run ci:local` 完成全平台预检（Mac + Windows 11 + Android 16 WHPX + WSL2 Ubuntu-24.04 Linux 单测与打包），再推送到 `origin`（`Lycidas97/claude-desktop-bridge`；若先验后推，执行 `npm run ci:local -- --publish` 回写 `ci/local-distributed = success`）并创建指向 `main` 的 PR（严禁推送到 `upstream` `czhmartinez/claude-desktop-bridge`）。
+1. 在独立工作树发布分支整理源码、同步版本号与 `CHANGELOG.md`，在本地通过 `npm run ci:local` 完成全平台预检（Mac + Windows 11 + Android 16 WHPX + WSL2 Ubuntu-24.04 Linux 单测），再推送到 `origin`（`Lycidas97/claude-desktop-bridge`；若先验后推，执行 `npm run ci:local -- --publish` 回写 `ci/local-distributed = success`）并创建指向 `main` 的 PR（严禁推送到 `upstream` `czhmartinez/claude-desktop-bridge`）。
 2. 确认审查与 `ci/local-distributed` 绿勾无误后，使用 `gh pr merge <pr-number> --repo Lycidas97/claude-desktop-bridge --squash --match-head-commit <reviewed-sha>` 合并到 `main`。
 3. 检出最新 `main`：若 Squash Merge 后的 `HEAD^{tree}` 与已验证提交一致，可直接运行 `npm run ci:local -- --publish` 将验证状态晋升回写到 `main` 目标提交（否则在 `main` 上重新运行 `npm run ci:local`，或通过 `gh workflow run ci.yml --ref main` 手动运行线上全矩阵兜底 CI）。
 4. `main` 提交获得 `ci/local-distributed == "success"`（或手动 `CI` 工作流 `completed` + `success`）后自动触发 `release.yml`。`release.yml` 与 `release-assets.yml` 均强制校验目标 40 位 SHA 属于 `origin/main` 祖先且具备最新 `ci/local-distributed == "success"` 状态（或已完成的成功 `main` `CI` 运行），被取消、未完成或非 `main` 分支运行一律无效。
@@ -71,7 +71,7 @@ GitHub 托管的 Windows runner 可能不支持回收站目录操作，因此打
 
 Windows 编译、安装和配对通过，不代表真实 Claude Desktop、DPAPI 跨重启、托盘、开机启动及手机网络切换都已完成实机验收。macOS 的 inspector 进程路径监测 helper 不在 Windows 上启用。
 
-## macOS 与 Linux
+## macOS
 
 macOS 正式签名需要有效 Developer ID 和对应公证条件。没有这些材料时，工作流使用明确标记的 ad-hoc CI 包；本机自签身份不能替代 Apple 正式分发身份，也不能打包私钥上传。
 
@@ -80,8 +80,6 @@ npm run ci:run -- run make:adhoc -w @bridge/desktop
 ```
 
 验证应用的主进程、preload、前端资源、Native helper 解包位置和代码签名。打包态验收使用独立数据目录；不要覆盖或清空真实 Bridge 配置来跑测试。
-
-Linux 在 Linux runner 构建 ZIP/DEB/RPM，需要 `rpm`、`fakeroot`、`dpkg` 和 `trash-cli`。没有仓库签名、打包态 UI 和托盘实机验收时，只报告已完成的构建范围。
 
 ## Android
 

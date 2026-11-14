@@ -4,7 +4,7 @@ How the patrol runs Issues through dispatch, implementation, review, CI, and mer
 
 ## Roles
 
-- **Patrol**: the session the owner talks to. Dispatches, sets merge order, resolves conflicts and owner decisions. After merges it runs `main` CI and the dogfood install, and it is the single writer of `LESSONS.md`, `docs/subsystems/*.md`, and shared memory. It makes no code judgments and does not relay review traffic.
+- **Patrol**: the session the owner talks to. Dispatches, sets merge order, settles scheduling conflicts and owner decisions. After merges it runs `main` CI and the dogfood install, and it is the single writer of `LESSONS.md`, `docs/subsystems/*.md`, and shared memory. It makes no code judgments and does not relay review traffic.
   - The patrol never edits code, tests, or scripts, and never diagnoses failures. Any work that needs a code change goes to a fork. Record it as a comment on the Issue it belongs to (the merged PR's Issue for a `main` failure); open a new Issue only when none fits.
   - In a turn that cannot `start_session` (**Host constraints**), the patrol proposes the fork as a card and waits for the owner to start it.
 - **Fork**: implements one Issue in its own worktree. Never reviews or merges its own PR.
@@ -39,7 +39,7 @@ A Light reviewer whose PR grows into Paired scope tells the patrol.
   ```
 - `set_session_model` and frontmatter take a picker id. Resolve it right before use with `node scripts/picker-id.mjs "<label>"`; never write ids down. A new group needs a Claude Desktop restart before its id works.
 - A session keeps one model for life. `set_session_model` applies only from the session's next turn (see **Dispatch**).
-- Escalate to Astra when a defect survives two fix rounds or `ci:local` fails twice for the same cause.
+- Escalate to Astra when a defect survives two fix rounds, `ci:local` fails twice for the same cause, or a merge conflict survives two resolution rounds.
 - DeepSeek only runs procedures with an objective check (`gh` state, `ci/local-distributed`); it never writes code or tests.
 - When a Sol session reports a quota error, the patrol stops dispatching and asks the owner.
 
@@ -116,7 +116,7 @@ and send `MERGED`.
 ## After merge (patrol)
 
 1. Sync `main`. Unless docs-only, run `npm run ci:local -- --publish` when `HEAD^{tree}` matches the verified head.
-2. Only forks whose files overlap the merged PR sync (`sync_with_base_branch`), run typecheck and related tests, and send `HEAD CHANGED`. A synced head merges on `MERGE OK` without rerunning `ci:local`, unless the PR touches `.github/workflows/`, `scripts/`, packaging, or release files.
+2. Only forks whose files overlap the merged PR sync (`sync_with_base_branch`), resolve any conflicts, run typecheck and related tests, and send `HEAD CHANGED`. Each PR's own fork syncs it; if that fork is gone, the patrol starts a new Sol fork for the sync and never syncs itself or through a subagent. A synced head merges on `MERGE OK` without rerunning `ci:local`, unless the PR touches `.github/workflows/`, `scripts/`, packaging, or release files.
 3. After each batch, run `npm run ci:local` on `main`. On failure, hold further merges and hand the fix or revert to a fork (**Roles**). Then install the dogfood build (`docs/dogfood.md`).
 4. After the round, a Sol session consolidates the candidate lessons into `LESSONS.md`.
 

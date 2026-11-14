@@ -338,7 +338,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private applyLiveContextUsage(sessionId: string, live: { totalTokens: number; rawMaxTokens?: number; model?: string }): void {
     const native = this.native.get(sessionId);
     const state = this.ensureContextState(sessionId, native?.turnRunning ? native.model ?? "default" : undefined);
-    applyLiveContextUsageState(state, live, this.models, state.turnModel ?? native?.model);
+    applyLiveContextUsageState(state, live, state.turnModel ?? native?.model);
   }
 
   private applyTranscriptContextMessages(sessionId: string, messages: readonly unknown[]): void {
@@ -1262,7 +1262,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       }
       if (message.type === "result") {
         const context = this.contextStates.get(sessionId);
-        applyResultModelUsageContext(context, message, this.models, context?.turnModel ?? this.native.get(sessionId)?.model);
+        applyResultModelUsageContext(context, message, context?.turnModel ?? this.native.get(sessionId)?.model);
         if (context) delete context.turnModel;
         if (!indexedResult) await this.record({ sessionId, ...(typeof message.uuid === "string" ? { itemId: message.uuid } : {}), origin: "claude-desktop", type: message.is_error === true ? "turn.failed" : "turn.completed", data: { ...(message.is_error === true ? { error: message.result ?? message.errors } : {}) } });
       }

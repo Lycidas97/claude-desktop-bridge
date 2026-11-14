@@ -6,10 +6,12 @@ import {
   applyResultModelUsageContext,
   applyStreamDeltaContext,
   applyStreamStartContext,
+  buildTranscriptContextState,
   createNativeContextState,
   projectedContextUsage,
   type NativeContextState,
 } from "./native-context-usage.js";
+import { magpieModelIdHash } from "./claude-runtime-discovery.js";
 
 it.each<[string, (state: NativeContextState) => void]>([
   ["assistant usage", state => applyAssistantMessageContext(state, { uuid: "next" }, { id: "next", model: "deepseek", usage: { input_tokens: 160_000, output_tokens: 100 } })],
@@ -60,4 +62,48 @@ it("keeps observed windows per usage model in default sessions and separate from
   const other = createNativeContextState();
   applyLiveContextUsageState(other, { totalTokens: 160_000, model: "deepseek" });
   expect(projectedContextUsage(other, models, "default")?.maxTokens).toBe(1_000_000);
+});
+
+it.each<[string, "live" | "result"]>([["", "live"], ["[1m]", "live"], ["", "result"], ["[1m]", "result"]])("keeps native and canonical window identity when the picker changes (%s, %s)", (suffix, source) => {
+  const state = createNativeContextState();
+  const model = `deepseek/deepseek${suffix}`;
+  const alias = `mythos-magpie-${magpieModelIdHash("deepseek/deepseek")}${suffix}`;
+  const models = [{ value: model, displayName: "DeepSeek", maxInputTokens: 1_000_000 }];
+  if (source === "live") {
+    applyLiveContextUsageState(state, { totalTokens: 158_000, rawMaxTokens: 272_000, model: "deepseek" }, alias);
+  } else {
+    applyAssistantMessageContext(state, {}, { model: "deepseek", usage: { input_tokens: 158_000 } });
+    applyResultModelUsageContext(state, { modelUsage: { deepseek: { contextWindow: 272_000 } } }, alias);
+  }
+  expect(projectedContextUsage(state, models, alias)?.maxTokens).toBe(272_000);
+  expect(projectedContextUsage(state, [], alias)?.maxTokens).toBe(272_000);
+  expect(projectedContextUsage(state, undefined, model)?.maxTokens).toBe(272_000);
+  expect(projectedContextUsage(state, models, alias)?.maxTokens).toBe(272_000);
+  expect(projectedContextUsage(state, [], `deepseek/deepseek${suffix ? "" : "[1m]"}`)?.maxTokens).not.toBe(272_000);
+});
+
+it.each<[string, (state: NativeContextState) => NativeContextState]>([
+  ["assistant", state => {
+    applyAssistantMessageContext(state, {}, { model: "claude-sonnet-4-5", usage: { input_tokens: 51_000 } });
+    return state;
+  }],
+  ["stream start", state => {
+    applyStreamStartContext(state, {}, { model: "claude-sonnet-4-5", usage: { input_tokens: 51_000 } }, "first-model");
+    return state;
+  }],
+  ["live usage", state => {
+    applyLiveContextUsageState(state, { totalTokens: 51_000, model: "claude-sonnet-4-5" });
+    return state;
+  }],
+  ["history", state => buildTranscriptContextState([{ type: "assistant", uuid: "first-model", message: { model: "claude-sonnet-4-5", usage: { input_tokens: 51_000 } } }], state)],
+])("binds a default window with no model to the first model learned from %s", (_source, update) => {
+  const state = createNativeContextState();
+  applyLiveContextUsageState(state, { totalTokens: 50_000, rawMaxTokens: 196_000 }, "default");
+  expect(projectedContextUsage(state, undefined, "default")?.maxTokens).toBe(196_000);
+  const updated = update(state);
+  expect(projectedContextUsage(updated, undefined, "default")).toMatchObject({ totalTokens: 51_000, maxTokens: 196_000 });
+  applyAssistantMessageContext(updated, {}, { model: "claude-haiku-4-5", usage: { input_tokens: 52_000 } });
+  expect(projectedContextUsage(updated, undefined, "default")?.maxTokens).toBe(200_000);
+  applyAssistantMessageContext(updated, {}, { model: "claude-sonnet-4-5", usage: { input_tokens: 53_000 } });
+  expect(projectedContextUsage(updated, undefined, "default")?.maxTokens).toBe(196_000);
 });

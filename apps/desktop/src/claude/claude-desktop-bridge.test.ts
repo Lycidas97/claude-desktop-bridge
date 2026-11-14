@@ -3350,7 +3350,8 @@ describe("Claude native relay", () => {
     try {
       const model = "deepseek/deepseek[1m]";
       const alias = `mythos-magpie-${magpieModelIdHash("deepseek/deepseek")}[1m]`;
-      await writeFile(f.options.settingsPath, JSON.stringify({ modelPicker: { options: [{ model, label: "DeepSeek" }] } }));
+      const settings = { modelPicker: { options: [{ model, label: "DeepSeek" }] } };
+      await writeFile(f.options.settingsPath, JSON.stringify(settings));
       f.native.sessions[0]!.model = alias;
       f.native.contextUsage = { totalTokens: 158_000, rawMaxTokens: 272_000, model: "deepseek" };
       await f.bridge.configuration("local-native");
@@ -3365,6 +3366,12 @@ describe("Claude native relay", () => {
       f.native.page = { messages: [assistant], hasMore: false };
       await f.bridge.history("local-native");
       expect(f.bridge.session("local-native")?.contextUsage).toMatchObject({ totalTokens: 160_100, maxTokens: 272_000 });
+      await writeFile(f.options.settingsPath, JSON.stringify({ modelPicker: { options: [] } }));
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(272_000);
+      await writeFile(f.options.settingsPath, JSON.stringify(settings));
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")?.contextUsage?.maxTokens).toBe(272_000);
 
       f.native.sessions[0]!.model = "claude-sonnet-4-5";
       await f.bridge.refreshRuntime();

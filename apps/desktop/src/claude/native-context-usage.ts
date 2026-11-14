@@ -139,9 +139,20 @@ export function resolveContextMaxTokens(
   return knownClaudeModelWindow(trimmed);
 }
 
-function contextWindowModel(models: BridgeModelInfo[] | undefined, sessionModel?: string, usageModel?: string): string {
-  const model = sessionModel?.trim();
-  return model && model.toLowerCase() !== "default" ? savedModelOption(models, model)?.value ?? model : usageModel ?? "";
+function contextWindowModel(sessionModel?: string, usageModel?: string): string {
+  const selected = sessionModel?.trim();
+  const model = selected && selected.toLowerCase() !== "default" ? selected : usageModel;
+  return model ? `${parseMagpieSyntheticModelId(model)?.hash ?? magpieModelIdHash(model)}${/\[1m\]$/iu.test(model) ? "[1m]" : ""}` : "";
+}
+
+function updateContextModel(state: NativeContextState, model: string | undefined): void {
+  if (!model) return;
+  const maxTokens = !state.model ? state.maxTokensByModel.get("") : undefined;
+  if (maxTokens !== undefined) {
+    state.maxTokensByModel.set(contextWindowModel(undefined, model), maxTokens);
+    state.maxTokensByModel.delete("");
+  }
+  state.model = model;
 }
 
 export function projectedContextUsage(
@@ -150,7 +161,7 @@ export function projectedContextUsage(
   sessionModel?: string,
 ): BridgeSessionContextUsage | undefined {
   if (!state || state.totalTokens <= 0) return undefined;
-  const observedMaxTokens = state.maxTokensByModel.get(contextWindowModel(models, sessionModel, state.model));
+  const observedMaxTokens = state.maxTokensByModel.get(contextWindowModel(sessionModel, state.model));
   let maxTokens = observedMaxTokens ?? resolveContextMaxTokens(models, sessionModel, state.model);
   if (observedMaxTokens === undefined && state.estimated && maxTokens !== undefined && maxTokens < state.totalTokens) maxTokens = undefined;
   const percentage = maxTokens && maxTokens > 0
@@ -182,12 +193,11 @@ export function parseLiveContextUsage(rawValue: unknown): { totalTokens: number;
 export function applyLiveContextUsageState(
   state: NativeContextState,
   live: { totalTokens: number; rawMaxTokens?: number; model?: string },
-  models?: BridgeModelInfo[],
   sessionModel?: string,
 ): void {
   state.totalTokens = live.totalTokens;
-  if (live.model) state.model = live.model;
-  if (live.rawMaxTokens) state.maxTokensByModel.set(contextWindowModel(models, sessionModel, state.model), live.rawMaxTokens);
+  updateContextModel(state, live.model);
+  if (live.rawMaxTokens) state.maxTokensByModel.set(contextWindowModel(sessionModel, state.model), live.rawMaxTokens);
   state.estimated = false;
   state.hydrated = true;
   delete state.stream;
@@ -210,16 +220,17 @@ export function buildTranscriptContextState(messages: readonly unknown[], previo
       }
     }
   }
-  return {
+  const state: NativeContextState = {
     totalTokens: scan.estimate?.totalTokens ?? 0,
     maxTokensByModel: previous?.maxTokensByModel ?? new Map(),
     ...(previous?.turnModel !== undefined ? { turnModel: previous.turnModel } : {}),
-    ...(scan.estimate?.model ? { model: scan.estimate.model } : {}),
     estimated: true,
     hydrated: true,
     seenAssistantUuids,
     preCompactUuids,
   };
+  updateContextModel(state, scan.estimate?.model);
+  return state;
 }
 
 export function applyStreamStartContext(
@@ -242,7 +253,7 @@ export function applyStreamStartContext(
     state.totalTokens = Math.round(input + cacheRead + cacheCreation + output);
     state.estimated = true;
     state.hydrated = true;
-    if (model) state.model = model;
+    updateContextModel(state, model);
   }
 }
 
@@ -320,13 +331,12 @@ export function applyAssistantMessageContext(
   state.hydrated = true;
   delete state.stream;
   const model = realUsageModel(body.model);
-  if (model) state.model = model;
+  updateContextModel(state, model);
 }
 
 export function applyResultModelUsageContext(
   state: NativeContextState | undefined,
   message: Record<string, unknown>,
-  models?: BridgeModelInfo[],
   sessionModel?: string,
 ): void {
   if (!state || state.totalTokens <= 0) return;
@@ -334,7 +344,7 @@ export function applyResultModelUsageContext(
   const entry = state.model ? record(modelUsage[state.model]) : undefined;
   const contextWindow = nonNegativeTokenCount(entry?.contextWindow ?? entry?.context_window);
   if (contextWindow > 0) {
-    state.maxTokensByModel.set(contextWindowModel(models, sessionModel, state.model), Math.round(contextWindow));
+    state.maxTokensByModel.set(contextWindowModel(sessionModel, state.model), Math.round(contextWindow));
     state.estimated = false;
   }
 }

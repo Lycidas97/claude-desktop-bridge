@@ -82,7 +82,7 @@ test("numeric SQLite samples persist with a 900-row bound and private file mode"
   try {
     expect((db.prepare("SELECT count(*) AS n FROM samples").get() as { n: number }).n).toBe(900);
     expect(JSON.parse((db.prepare("SELECT data FROM samples ORDER BY id DESC LIMIT 1").get() as { data: string }).data).schema).toBe(1);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(statSync(path).size).toBeLessThanOrEqual(32 * 1024 * 1024);
   } finally { db.close(); }
 });
@@ -103,8 +103,10 @@ test("an overlapping read transaction does not stop current or later numeric rec
     trace.write();
     expect((reader.prepare("SELECT count(*) AS n FROM samples").get() as { n: number }).n).toBe(3);
     expect(stderr).not.toHaveBeenCalled();
-    expect(statSync(path + "-wal").mode & 0o777).toBe(0o600);
-    expect(statSync(path + "-shm").mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect(statSync(path + "-wal").mode & 0o777).toBe(0o600);
+      expect(statSync(path + "-shm").mode & 0o777).toBe(0o600);
+    }
   } finally {
     if (reader.isTransaction) reader.exec("ROLLBACK");
     reader.close();
@@ -120,8 +122,10 @@ test("heap snapshot triggers at 60% once, after committing numeric evidence in a
   const memory = process.memoryUsage();
   const usage = vi.spyOn(process, "memoryUsage").mockReturnValue({ ...memory, heapUsed: boundary - 1 });
   vi.mocked(writeHeapSnapshot).mockImplementation(snapshotFile => {
-    expect(statSync(directory).mode & 0o777).toBe(0o700);
-    expect(statSync(snapshotFile!).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect(statSync(directory).mode & 0o777).toBe(0o700);
+      expect(statSync(snapshotFile!).mode & 0o777).toBe(0o600);
+    }
     const db = new DatabaseSync(path, { readOnly: true });
     try {
       const data = JSON.parse((db.prepare("SELECT data FROM samples ORDER BY id DESC LIMIT 1").get() as { data: string }).data);

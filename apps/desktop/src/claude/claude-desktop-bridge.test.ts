@@ -3345,6 +3345,68 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("projects native compaction status until the native status clears", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message({ type: "system", subtype: "status", status: "compacting" });
+      expect(f.bridge.session("local-native")).toMatchObject({ turnState: "running", isCompacting: true });
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+      await f.message({ type: "system", subtype: "status", status: null, compact_result: "success" });
+      expect(f.bridge.session("local-native")).not.toHaveProperty("isCompacting");
+    } finally { await f.close(); }
+  });
+
+  it.each([
+    { parent_tool_use_id: "child-tool" },
+    { isSidechain: true },
+  ])("ignores subagent compaction status (%j)", async attribution => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message({ type: "system", subtype: "status", status: "compacting", ...attribution });
+      expect(f.bridge.session("local-native")).not.toHaveProperty("isCompacting");
+      await f.message({ type: "system", subtype: "status", status: "compacting" });
+      await f.message({ type: "system", subtype: "status", status: null, ...attribution });
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+      await f.message({ type: "result", uuid: "child-result", ...attribution });
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+    } finally { await f.close(); }
+  });
+
+  it.each([
+    { type: "system", subtype: "compact_boundary", uuid: "compact-done" },
+    { type: "result", uuid: "compact-result", is_error: true },
+  ])("clears compaction on native completion (%j)", async message => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message({ type: "system", subtype: "status", status: "compacting" });
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+      await f.message(message);
+      expect(f.bridge.session("local-native")).not.toHaveProperty("isCompacting");
+    } finally { await f.close(); }
+  });
+
+  it("clears compaction when Native reports the main turn idle", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      await f.message({ type: "system", subtype: "status", status: "compacting" });
+      expect(f.bridge.session("local-native")).toMatchObject({ isCompacting: true });
+      f.native.sessions[0]!.turnRunning = false;
+      await f.bridge.refreshRuntime();
+      f.native.sessions[0]!.turnRunning = true;
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")).not.toHaveProperty("isCompacting");
+    } finally { await f.close(); }
+  });
+
   it("tracks streaming growth, ignores sidechains, and updates or clears context usage across /compact and rewind", async () => {
     const f = await fixture();
     try {

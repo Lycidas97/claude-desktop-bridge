@@ -9,7 +9,7 @@ export interface SessionActivityItem {
 }
 
 export interface SessionActivity {
-  kind: "queued" | "running" | "thinking" | "generating";
+  kind: "queued" | "running" | "thinking" | "generating" | "compacting";
   label: string;
   /** Timestamp of the user message that started the current work, when known. */
   since?: number;
@@ -35,10 +35,11 @@ export function sessionQueueLabel(
 }
 
 export function sessionActivity(
-  session: Pick<BridgeSessionInfo, "turnState" | "executionStage" | "desktopHandoff"> & Partial<Pick<BridgeSessionInfo, "ownership" | "pendingCount">> | undefined,
+  session: Pick<BridgeSessionInfo, "turnState" | "executionStage" | "desktopHandoff" | "isCompacting"> & Partial<Pick<BridgeSessionInfo, "ownership" | "pendingCount">> | undefined,
   items: readonly SessionActivityItem[],
 ): SessionActivity | undefined {
   if (!session) return undefined;
+  if (session.turnState === "running" && session.isCompacting) return { kind: "compacting", label: "正在压缩上下文" };
   const lastUser = [...items].reverse().find((item) => item.role === "user");
   const since = lastUser?.createdAt;
   if (session.turnState === "queued" || (session.pendingCount ?? 0) > 0) return {

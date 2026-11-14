@@ -17,6 +17,19 @@ describe("sessionActivity", () => {
       .toEqual({ kind: "queued", label: "等待前一条消息完成" });
   });
 
+  it("shows observed compaction ahead of queued work and background activity without timing the user turn", () => {
+    const items = [
+      { role: "user", createdAt: 100 },
+      { role: "tool", createdAt: 150, subagent: { agentId: "child", state: "running" as const, description: "后台任务", toolCount: 1, startedAt: 150, updatedAt: 200 } },
+    ];
+    expect(sessionActivity({ turnState: "running", pendingCount: 1, isCompacting: true }, items))
+      .toEqual({ kind: "compacting", label: "正在压缩上下文" });
+    expect(sessionActivity({ turnState: "running", isCompacting: false }, [{ role: "user", createdAt: 100 }]))
+      .toEqual({ kind: "thinking", label: "思考中", since: 100 });
+    expect(sessionActivity({ turnState: "idle", isCompacting: true }, [])).toBeUndefined();
+    expect(sessionActivity({ turnState: "waiting", isCompacting: true }, [])).toBeUndefined();
+  });
+
   it("requires closing the Desktop session instead of waiting idle when explicit handoff is present", () => {
     const session = { turnState: "queued", ownership: "DESKTOP_OBSERVED", pendingCount: 1,
       desktopHandoff: { state: "close-desktop", canReturn: false },

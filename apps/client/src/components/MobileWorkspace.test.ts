@@ -1093,6 +1093,13 @@ function evidence(
 }
 
 describe("ownershipLabel", () => {
+  it("shares native compaction status while preserving action-required priority", () => {
+    const session = { transport: "claude-desktop-native", ownership: "DESKTOP_NATIVE_RUNNING", turnState: "running", isCompacting: true } as BridgeSessionInfo;
+    expect(ownershipLabel(session)).toBe("正在压缩上下文");
+    expect(ownershipLabel({ ...session, isCompacting: false })).toBe("桌面运行中");
+    expect(ownershipLabel({ ...session, turnState: "waiting" })).toBe("需处理");
+  });
+
   it("identifies an active observed Claude session as Desktop running", () => {
     const session: BridgeSessionInfo = {
       sessionId: "session-1",

@@ -98,10 +98,8 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
       items.set(id, item);
       if (interactivePrompt?.kind === "question" && interactivePrompt.toolUseId) {
         const answers = projection.questionAnswers?.get(interactivePrompt.toolUseId);
-        if (answers) {
-          item.interactivePrompt = applyQuestionAnswers(interactivePrompt, answers);
-          projection.questionAnswers!.delete(interactivePrompt.toolUseId);
-        } else (projection.questions ??= new Map()).set(interactivePrompt.toolUseId, item);
+        if (answers) item.interactivePrompt = applyQuestionAnswers(interactivePrompt, answers);
+        else (projection.questions ??= new Map()).set(interactivePrompt.toolUseId, item);
       }
     }
     if (Array.isArray(body.content)) for (const rawBlock of body.content) {

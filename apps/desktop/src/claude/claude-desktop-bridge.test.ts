@@ -3282,7 +3282,7 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("restores answers split between the newest and an older native history page", async () => {
+  it.each([1, 2])("restores split-page answers on repeated cursor reads (%i clients)", async clients => {
     const f = await fixture();
     try {
       f.native.page = { hasMore: true, messages: [{ type: "user", uuid: "answer", timestamp: 20,
@@ -3293,10 +3293,13 @@ describe("Claude native relay", () => {
         { type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [{ question: "检查哪些？", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }] }] } },
       ] } }] });
       const latest = await f.bridge.history("local-native");
-      const older = await f.bridge.history("local-native", latest.nextCursor);
-      expect(older.items.find(item => item.id === "question")?.interactivePrompt).toMatchObject({ answered: true, questions: [{
-        answer: "类型检查, 回归测试", options: [{ label: "稍后处理" }, { label: "类型检查", selected: true }, { label: "回归测试", selected: true }],
-      }] });
+      const second = clients === 2 ? await f.bridge.history("local-native") : latest;
+      for (const cursor of [latest.nextCursor, second.nextCursor]) {
+        const older = await f.bridge.history("local-native", cursor);
+        expect(older.items.find(item => item.id === "question")?.interactivePrompt).toMatchObject({ answered: true, questions: [{
+          answer: "类型检查, 回归测试", options: [{ label: "稍后处理" }, { label: "类型检查", selected: true }, { label: "回归测试", selected: true }],
+        }] });
+      }
     } finally { await f.close(); }
   });
 

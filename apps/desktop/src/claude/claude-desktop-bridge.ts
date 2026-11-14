@@ -290,6 +290,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private async observeNativeSession(session: NativeSession): Promise<void> {
     if (!this.projectDirectories.has(session.cwd)) this.projectDirectories.set(session.cwd, await discoverClaudeProjectDirectory(session.cwd));
     this.native.set(session.sessionId, session);
+    if (session.turnRunning) this.ensureContextState(session.sessionId, session.model ?? "default");
     const previous = this.promptsList(session.sessionId);
     const current = await nativePendingPrompts(session, this.inspector);
     for (const prompt of previous) this.prompts.delete(prompt.promptId);
@@ -307,12 +308,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return [...this.projectDirectories].find(([original, candidate]) => original === candidate.cwd && candidate.realCwd === project.realCwd)?.[0] ?? project.cwd;
   }
 
-  private ensureContextState(sessionId: string): NativeContextState {
+  private ensureContextState(sessionId: string, turnModel?: string): NativeContextState {
     let state = this.contextStates.get(sessionId);
     if (!state) {
       state = createNativeContextState();
       this.contextStates.set(sessionId, state);
     }
+    // Native setModel selects the next turn while the current turn keeps its model.
+    if (turnModel !== undefined) state.turnModel ??= turnModel;
     return state;
   }
 
@@ -333,11 +336,13 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   private applyLiveContextUsage(sessionId: string, live: { totalTokens: number; rawMaxTokens?: number; model?: string }): void {
-    applyLiveContextUsageState(this.ensureContextState(sessionId), live);
+    const native = this.native.get(sessionId);
+    const state = this.ensureContextState(sessionId, native?.turnRunning ? native.model ?? "default" : undefined);
+    applyLiveContextUsageState(state, live, state.turnModel ?? native?.model);
   }
 
   private applyTranscriptContextMessages(sessionId: string, messages: readonly unknown[]): void {
-    this.contextStates.set(sessionId, buildTranscriptContextState(messages));
+    this.contextStates.set(sessionId, buildTranscriptContextState(messages, this.contextStates.get(sessionId)));
   }
 
   private projectSessions(): void {
@@ -612,7 +617,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       await this.options.eventLog.flushDeltas(sessionId);
       await this.record({ sessionId, origin: "claude-desktop", type: "session.rewound", data: { messageId, scope } });
       this.messageProjection.delete(sessionId);
-      this.contextStates.delete(sessionId);
+      this.contextStates.set(sessionId, createNativeContextState(this.contextStates.get(sessionId)?.maxTokensByModel));
       this.backgroundTasks.delete(sessionId);
       this.streams.delete(sessionId);
     }
@@ -847,10 +852,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       }
       await this.inspector.call("setModel", [id, nativeModel]);
       const existing = this.contextStates.get(input.sessionId);
-      if (existing) {
-        delete existing.rawMaxTokens;
-        existing.estimated = true;
-      }
+      if (existing) existing.estimated = true;
     }
     if (input.effort !== undefined) await this.inspector.call("setEffort", [id, input.effort]);
     if (input.permissionMode !== undefined) await this.inspector.call("setPermissionMode", [id, input.permissionMode]);
@@ -1173,7 +1175,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         const streamMessage = record(stream.message);
         const id = streamMessage.id;
         if (typeof id === "string") this.streams.set(sessionId, id);
-        applyStreamStartContext(this.ensureContextState(sessionId), message, streamMessage, id);
+        applyStreamStartContext(this.ensureContextState(sessionId, this.native.get(sessionId)?.model ?? "default"), message, streamMessage, id);
       } else if (stream.type === "message_delta" && typeof stream.usage === "object" && stream.usage !== null && !Array.isArray(stream.usage)) {
         applyStreamDeltaContext(this.ensureContextState(sessionId), record(stream.usage));
       }
@@ -1219,7 +1221,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         });
       }
       if (message.type === "assistant" && message.isSynthetic !== true && body.model !== "<synthetic>") {
-        applyAssistantMessageContext(this.ensureContextState(sessionId), message, body);
+        applyAssistantMessageContext(this.ensureContextState(sessionId, this.native.get(sessionId)?.model ?? "default"), message, body);
       }
       if (Array.isArray(body.content)) for (const rawBlock of body.content) {
         const block = record(rawBlock);
@@ -1264,7 +1266,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
         }
       }
       if (message.type === "result") {
-        applyResultModelUsageContext(this.contextStates.get(sessionId), message);
+        const context = this.contextStates.get(sessionId);
+        applyResultModelUsageContext(context, message, context?.turnModel ?? this.native.get(sessionId)?.model);
+        if (context) delete context.turnModel;
         if (!indexedResult) await this.record({ sessionId, ...(typeof message.uuid === "string" ? { itemId: message.uuid } : {}), origin: "claude-desktop", type: message.is_error === true ? "turn.failed" : "turn.completed", data: { ...(message.is_error === true ? { error: message.result ?? message.errors } : {}) } });
       }
     }

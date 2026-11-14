@@ -215,6 +215,84 @@ describe("background task tray", () => {
 });
 
 describe("subagent actual model rendering", () => {
+  it.each([false, true])("retains observed detail metadata after a sparse history refresh (tray: %s)", (withTray) => {
+    const focus = item(agent("ag01", {
+      toolUseId: "agent-call", state: "completed", model: "codex/gpt-6.1-sol",
+      toolCount: 7, durationMs: 30_000, updatedAt: 200, reportText: "Full child report",
+    }));
+    const refreshed = item(agent("ag01", {
+      toolUseId: "agent-call", state: "completed", updatedAt: 300, reportText: "Full child report",
+    }));
+    let current = focus;
+    const render = () => {
+      hooks.index = 0;
+      return renderToStaticMarkup(createElement(BackgroundTasksSheet, {
+        sessionId: "A", focus, items: [current],
+        tasks: withTray ? [{ ...reviewer, state: "completed", subagent: current.subagent! }] : [],
+        renderSubagent: (entry) => createElement(SubagentCard, { item: entry, collapsible: false }),
+        onClose: vi.fn(),
+      }));
+    };
+    expect(render()).toContain("模型：codex/gpt-6.1-sol");
+    current = refreshed;
+    const html = render();
+    expect(html).toContain("模型：codex/gpt-6.1-sol");
+    expect(html).toContain("7 步");
+    expect(html).toContain("30s");
+    expect(html).toContain("Full child report");
+  });
+
+  it("keeps observed steps when a newer tray summary has no execution details", () => {
+    const stream = item(agent("ag01", {
+      toolUseId: "agent-call", model: "codex/gpt-6.1-sol", toolCount: 7, durationMs: 30_000, updatedAt: 200,
+    }));
+    const task = { ...reviewer, state: "completed" as const, subagent: agent("ag01", {
+      toolUseId: "agent-call", state: "completed", updatedAt: 300,
+    }) };
+    const html = renderToStaticMarkup(createElement(BackgroundTasksSheet, {
+      sessionId: "A", focus: stream, items: [stream], tasks: [task],
+      renderSubagent: (entry) => createElement(SubagentCard, { item: entry, collapsible: false }),
+      onClose: vi.fn(),
+    }));
+    expect(html).toContain("模型：codex/gpt-6.1-sol");
+    expect(html).toContain("7 步");
+    expect(html).toContain("30s");
+    expect(html).toContain("已完成");
+  });
+
+  it("uses refreshed state, model and report ahead of the clicked snapshot", () => {
+    const focus = item(agent("ag01", {
+      toolUseId: "agent-call", model: "old-model", toolCount: 7, durationMs: 30_000, updatedAt: 200, reportText: "Old report",
+    }));
+    const refreshed = item(agent("ag01", {
+      toolUseId: "agent-call", state: "completed", model: "new-model", toolCount: 9, durationMs: 40_000, updatedAt: 300, reportText: "Current report",
+    }));
+    const html = renderToStaticMarkup(createElement(BackgroundTasksSheet, {
+      sessionId: "A", focus, items: [refreshed], tasks: [],
+      renderSubagent: (entry) => createElement(SubagentCard, { item: entry, collapsible: false }),
+      onClose: vi.fn(),
+    }));
+    expect(html).toContain("模型：new-model");
+    expect(html).toContain("9 步");
+    expect(html).toContain("40s");
+    expect(html).toContain("已完成");
+    expect(html).toContain("Current report");
+    expect(html).not.toContain("old-model");
+    expect(html).not.toContain("Old report");
+  });
+
+  it("omits unobserved metadata in a completed detail panel", () => {
+    const sparse = item(agent("ag01", { state: "completed", reportText: "Done" }));
+    const html = renderToStaticMarkup(createElement(BackgroundTasksSheet, {
+      sessionId: "A", focus: sparse, items: [sparse], tasks: [],
+      renderSubagent: (entry) => createElement(SubagentCard, { item: entry, collapsible: false }),
+      onClose: vi.fn(),
+    }));
+    expect(html).toContain("已完成");
+    expect(html).not.toContain("subagent-card-model");
+    expect(html).not.toMatch(/\d+ 步|\d+s</u);
+  });
+
   it("shows the raw model in markers and keeps it in the accessible name", () => {
     const html = renderToStaticMarkup(createElement(BackgroundTaskMarker, {
       item: item(agent("ag01", { toolUseId: "agent-call", model: "codex/gpt-6.1-sol" })), task: reviewer, onOpen: vi.fn(),

@@ -116,6 +116,7 @@ function subagentItem(sessionId: string, subagent: BridgeSubagentSummary, items:
     : { ...subagent, ...streamItem.subagent };
   return { ...streamItem, subagent: {
     ...merged,
+    toolCount: Math.max(streamItem.subagent.toolCount, subagent.toolCount),
     ...(streamItem.subagent.latestText ? { latestText: streamItem.subagent.latestText } : {}),
     ...(model ? { model } : {}),
     state: subagent.state,
@@ -204,8 +205,15 @@ export function BackgroundTasksSheet({
       ?? items.find((entry) => entry.subagent && sameSubagentInvocation(entry.subagent, focused.subagent!))
       ?? focused
     : undefined;
-  if (streamFocus?.subagent) {
-    const focusSubagent = streamFocus.subagent;
+  if (streamFocus?.subagent && focused?.subagent) {
+    const model = latestSubagentModel(focused.subagent, streamFocus.subagent);
+    const focusSubagent = {
+      ...focused.subagent,
+      ...streamFocus.subagent,
+      toolCount: Math.max(focused.subagent.toolCount, streamFocus.subagent.toolCount),
+      ...(model ? { model } : {}),
+    };
+    const focusItem = { ...streamFocus, subagent: focusSubagent };
     const focusTask = findBackgroundTask(tasks, focusSubagent);
     const kind = focusTask?.kind ?? itemKind(focusSubagent);
     const title = kind === "workflow" && focusSubagent.workflowRunId
@@ -243,8 +251,8 @@ export function BackgroundTasksSheet({
         ) : (
           renderSubagent(
             focusTask?.subagent
-              ? subagentItem(sessionId, focusTask.subagent, items.includes(streamFocus) ? items : [...items, streamFocus])
-              : streamFocus,
+              ? subagentItem(sessionId, focusTask.subagent, [focusItem])
+              : focusItem,
           )
         )}
       </MobileSheet>

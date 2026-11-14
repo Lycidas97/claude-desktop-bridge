@@ -625,7 +625,7 @@
   min-height: 0;
   flex-direction: column;
   gap: 28px;
-  padding: 20px max(var(--m-gutter), env(safe-area-inset-right)) 32px max(var(--m-gutter), env(safe-area-inset-left));
+  padding: 20px max(var(--m-gutter), env(safe-area-inset-right)) max(32px, env(safe-area-inset-bottom)) max(var(--m-gutter), env(safe-area-inset-left));
   overflow-y: auto;
 }
 

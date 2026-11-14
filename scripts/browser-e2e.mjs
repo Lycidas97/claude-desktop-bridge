@@ -46,7 +46,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
@@ -107,6 +107,64 @@ async function verifyDesktopDiagnostics(page, host, steps) {
   await eventually(() => toggle.isChecked(), false, "Desktop uses the returned disabled state");
   assert.equal(await page.evaluate(async () => (await window.bridgeDesktop.getSnapshot()).diagnosticsEnabled), false);
   steps.push("Desktop recorder checkbox defaults off and renders returned local setting states");
+}
+
+async function verifyMobileSafeArea(page, steps, directory) {
+  const emulation = await page.context().newCDPSession(page);
+  for (const [tab, selector, height] of [
+    ["会话", ".host-detail", 240],
+    ["电脑", ".host-browser", 240],
+    ["设置", ".mobile-settings-content", 520],
+  ]) {
+    await page.setViewportSize({ width: 375, height });
+    if (tab !== "会话") {
+      await page.getByRole("button", { name: "菜单", exact: true }).click();
+      await page.getByRole("navigation", { name: "主要导航", exact: true }).getByRole("button", { name: tab, exact: true }).click();
+    }
+    const content = page.locator(selector);
+    await content.waitFor();
+    const header = page.locator(".m-header:visible");
+    const headerBefore = await header.boundingBox();
+    const paddings = [];
+    for (const bottom of [0, 48]) {
+      // Chromium overrides env() itself; production CSS is neither replaced nor patched.
+      await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom, left: 0 } });
+      const layout = await content.evaluate(element => {
+        element.scrollTop = element.scrollHeight;
+        const bounds = element.getBoundingClientRect();
+        const last = element.lastElementChild.getBoundingClientRect();
+        return {
+          padding: parseFloat(getComputedStyle(element).paddingBottom),
+          gap: bounds.bottom - last.bottom,
+          lastTop: last.top,
+          top: bounds.top,
+          bottom: bounds.bottom,
+          scrollTop: element.scrollTop,
+          maxScroll: element.scrollHeight - element.clientHeight,
+          viewport: innerHeight,
+          pageScroll: window.scrollY,
+          documentHeight: document.documentElement.scrollHeight,
+        };
+      });
+      assert.ok(layout.maxScroll > 0, `${tab} fixture must overflow the content area`);
+      assert.equal(layout.scrollTop, layout.maxScroll, `${tab} reaches the content scroll end`);
+      assert.ok(layout.padding >= bottom, `${tab} bottom padding must cover the ${bottom}px safe area (got ${layout.padding}px)`);
+      assert.ok(layout.gap >= Math.max(paddings[0] ?? 0, bottom) - 1, `${tab} last content must stop above the bottom safe area`);
+      assert.ok(layout.bottom <= layout.viewport, `${tab} content stays inside the viewport`);
+      assert.equal(layout.pageScroll, 0, `${tab} does not scroll the document`);
+      assert.equal(layout.documentHeight, layout.viewport, `${tab} does not grow the document`);
+      if (tab === "设置") assert.ok(layout.lastTop >= layout.top, "The entire diagnostics group is visible at scroll end");
+      assert.deepEqual(await header.boundingBox(), headerBefore, `${tab} header stays fixed while its content scrolls`);
+      paddings.push(layout.padding);
+    }
+    assert.ok(paddings[1] > paddings[0], `${tab} padding grows with a nonzero safe area`);
+    await page.screenshot({ path: resolve(directory, `${tab}-safe-area.png`), fullPage: true });
+    steps.push(`${tab}: env(safe-area-inset-bottom) 0 → 48px changes padding ${paddings[0]} → ${paddings[1]}px; last content clears safe area, header/document stay fixed`);
+  }
+  await page.getByRole("button", { name: /连接诊断与日志/u }).click();
+  await page.getByRole("dialog", { name: "连接诊断与日志导出", exact: true }).waitFor();
+  steps.push("The final settings diagnostics button opens its dialog after scrolling to the bottom");
+  await emulation.detach();
 }
 
 async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview) {
@@ -2298,7 +2356,8 @@ async function runScenario(theme, scenario) {
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
-    if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
+    if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory);
+    else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
     else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory);
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);

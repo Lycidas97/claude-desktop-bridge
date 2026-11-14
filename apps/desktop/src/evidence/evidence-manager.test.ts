@@ -176,15 +176,15 @@ describe("EvidenceManager", () => {
       expect(second.artifactId).toBe(first.artifactId);
       for (const index of [1, 0]) {
         for (const transfer of [first, second]) {
-          expect(Buffer.from(manager.readTransfer(transfer.transferId, index, "phone-1").data, "base64"))
-            .toEqual(bytes.subarray(index * transfer.chunkBytes, (index + 1) * transfer.chunkBytes));
+          expect(manager.readTransfer(transfer.transferId, index, "phone-1").data)
+            .toBe(bytes.subarray(index * transfer.chunkBytes, (index + 1) * transfer.chunkBytes).toString("base64"));
         }
       }
       expect(manager.closeTransfer(first.transferId, "phone-2")).toBe(false);
       expect(manager.closeTransfer(first.transferId, "phone-1")).toBe(true);
       expect(() => manager.readTransfer(first.transferId, 0, "phone-1")).toThrow("expired");
-      expect(Buffer.from(manager.readTransfer(second.transferId, 0, "phone-1").data, "base64"))
-        .toEqual(bytes.subarray(0, second.chunkBytes));
+      expect(manager.readTransfer(second.transferId, 0, "phone-1").data)
+        .toBe(bytes.subarray(0, second.chunkBytes).toString("base64"));
     } finally {
       await manager.close();
     }
@@ -202,15 +202,15 @@ describe("EvidenceManager", () => {
       expect(second.artifactId).toBe(first.artifactId);
       for (const index of [1, 0]) {
         for (const transfer of [first, second]) {
-          expect(Buffer.from(manager.readTransfer(transfer.transferId, index, "phone-1").data, "base64"))
-            .toEqual(bytes.subarray(index * transfer.chunkBytes, (index + 1) * transfer.chunkBytes));
+          expect(manager.readTransfer(transfer.transferId, index, "phone-1").data)
+            .toBe(bytes.subarray(index * transfer.chunkBytes, (index + 1) * transfer.chunkBytes).toString("base64"));
         }
       }
       expect(manager.closeTransfer(first.transferId, "phone-2")).toBe(false);
       expect(manager.closeTransfer(first.transferId, "phone-1")).toBe(true);
       expect(() => manager.readTransfer(first.transferId, 0, "phone-1")).toThrow("expired");
-      expect(Buffer.from(manager.readTransfer(second.transferId, 0, "phone-1").data, "base64"))
-        .toEqual(bytes.subarray(0, second.chunkBytes));
+      expect(manager.readTransfer(second.transferId, 0, "phone-1").data)
+        .toBe(bytes.subarray(0, second.chunkBytes).toString("base64"));
     } finally {
       await manager.close();
     }

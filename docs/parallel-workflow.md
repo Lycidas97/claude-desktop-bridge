@@ -5,6 +5,8 @@ How the patrol runs Issues through dispatch, implementation, review, CI, and mer
 ## Roles
 
 - **Patrol**: the session the owner talks to. Dispatches, sets merge order, resolves conflicts and owner decisions. After merges it runs `main` CI and the dogfood install, and it is the single writer of `LESSONS.md`, `docs/subsystems/*.md`, and shared memory. It makes no code judgments and does not relay review traffic.
+  - The patrol never edits code, tests, or scripts, and never diagnoses failures. Any work that needs a code change goes to a fork. Record it as a comment on the Issue it belongs to (the merged PR's Issue for a `main` failure); open a new Issue only when none fits.
+  - In a turn that cannot `start_session` (**Host constraints**), the patrol proposes the fork as a card and waits for the owner to start it.
 - **Fork**: implements one Issue in its own worktree. Never reviews or merges its own PR.
 - **Reviewer**: reviews every round of its PRs and merges them (**Merge**). It sees only the PR number and SHA, never the patrol's analysis or the fork brief, and otherwise stays read-only.
 - **Discussion**: a session for retros and process work. It may own docs-only PRs. Anything else it finds becomes an Issue for the patrol; it does not implement, run CI, or coordinate reviewers.
@@ -62,7 +64,7 @@ Every status change is an explicit `SendMessage`:
 | `BLOCKED <reason>` | any → patrol |
 | `TAKEN OVER <PRs>` | new owner → old owner |
 
-**Handoff**: when PRs move to another session, the receiver confirms with `TAKEN OVER` and reroutes the reviewers itself. Until then the old owner only forwards what it receives.
+**Handoff**: when PRs move to another session, the receiver confirms with `TAKEN OVER` and reroutes the reviewers itself. A patrol receiver takes over coordination only; remaining implementation goes to a fork. Until then the old owner only forwards what it receives.
 
 ## Dispatch (owner's turn)
 
@@ -115,7 +117,7 @@ and send `MERGED`.
 
 1. Sync `main`. Unless docs-only, run `npm run ci:local -- --publish` when `HEAD^{tree}` matches the verified head.
 2. Only forks whose files overlap the merged PR sync (`sync_with_base_branch`), run typecheck and related tests, and send `HEAD CHANGED`. A synced head merges on `MERGE OK` without rerunning `ci:local`, unless the PR touches `.github/workflows/`, `scripts/`, packaging, or release files.
-3. After each batch, run `npm run ci:local` on `main`; fix forward or revert before the next merge. Then install the dogfood build (`docs/dogfood.md`).
+3. After each batch, run `npm run ci:local` on `main`. On failure, hold further merges and hand the fix or revert to a fork (**Roles**). Then install the dogfood build (`docs/dogfood.md`).
 4. After the round, a Sol session consolidates the candidate lessons into `LESSONS.md`.
 
 ## Patrol checklist

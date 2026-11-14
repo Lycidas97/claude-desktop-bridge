@@ -3190,6 +3190,29 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("does not let the passive permission diff preempt a manual resolution", async () => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.pendingToolPermissions = [{ requestId: "manual-permission", sessionId: "local-native", toolName: "Bash", input: {} }];
+      await f.bridge.refreshRuntime();
+      const controller = Object.assign(Object.create(DesktopController.prototype), {
+        broker: f.bridge,
+        eventLog: f.eventLog,
+        lastPublishedPermissions: new Map(),
+      });
+      const publishPermissions = () => (controller as unknown as { publishPermissions(): Promise<void> }).publishPermissions();
+      await publishPermissions();
+      const passive: Array<Promise<void>> = [];
+      f.bridge.on("changed", () => { passive.push(publishPermissions()); });
+      expect(await f.bridge.resolvePermission("manual-permission", "allow-once", undefined, undefined, { deviceId: "phone-1", name: "Phone" })).toBe(true);
+      await Promise.all(passive);
+      const resolved = f.eventLog.replay().filter(event => event.type === "permission.resolved" && event.data.requestId === "manual-permission");
+      expect(resolved.map(event => event.data)).toEqual([expect.objectContaining({
+        requestId: "manual-permission", decision: "allow-once", resolvedByDeviceId: "phone-1", resolvedByName: "Phone",
+      })]);
+    } finally { await f.close(); }
+  });
+
   it("does not use event replay as native history after disconnection", async () => {
     const f = await fixture();
     try {

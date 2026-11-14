@@ -140,6 +140,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private readonly contextStates = new Map<string, NativeContextState>();
   private readonly backgroundTasks = new Map<string, BridgeBackgroundTask[]>();
   private readonly permissionModeChanges = new Map<string, BridgeNativePermissionModeChange>();
+  private readonly resolvingPermissions = new Set<string>();
   private readonly streams = new Map<string, string>();
   private readonly tools = new Map<string, ObservedDesktopTool>();
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -1024,6 +1025,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   permissionsList(): BridgePermissionInfo[] { return [...this.permissions.values()]; }
 
+  /** True while a manual decision is being applied; the passive diff must not preempt it. */
+  permissionResolutionInFlight(requestId: string): boolean {
+    return this.resolvingPermissions.has(requestId);
+  }
+
   private observePermission(raw: unknown, nativeId?: string): void {
     const value = record(raw);
     if (typeof value.requestId !== "string" || typeof value.toolName !== "string") return;
@@ -1055,12 +1061,17 @@ export class ClaudeDesktopBridge extends EventEmitter {
       }
     }
     const response = { ...request.input, ...updatedInput, ...(message ? { _feedbackMessage: message } : {}) };
-    await this.inspector.call("respondToToolPermission", [requestId, decision === "allow-once" ? "once" : decision === "allow-always" ? "always" : "deny", response]);
-    if (modeChange) modeChange.state = "not-applied";
-    await this.refreshRuntime();
-    if (this.permissions.has(requestId)) return false;
-    await this.record({ sessionId: request.sessionId, origin: "claude-desktop", type: "permission.resolved", data: { requestId, decision, resolvedByDeviceId: resolver?.deviceId ?? "desktop", resolvedByName: resolver?.name ?? "Desktop", resolvedAt: Date.now() } });
-    return true;
+    this.resolvingPermissions.add(requestId);
+    try {
+      await this.inspector.call("respondToToolPermission", [requestId, decision === "allow-once" ? "once" : decision === "allow-always" ? "always" : "deny", response]);
+      if (modeChange) modeChange.state = "not-applied";
+      await this.refreshRuntime();
+      if (this.permissions.has(requestId)) return false;
+      await this.record({ sessionId: request.sessionId, origin: "claude-desktop", type: "permission.resolved", data: { requestId, decision, resolvedByDeviceId: resolver?.deviceId ?? "desktop", resolvedByName: resolver?.name ?? "Desktop", resolvedAt: Date.now() } });
+      return true;
+    } finally {
+      this.resolvingPermissions.delete(requestId);
+    }
   }
 
   private async handleEvent(raw: unknown): Promise<void> {

@@ -92,6 +92,8 @@ export class DesktopController extends EventEmitter {
   private lastPublishedPermissions = new Map<string, BridgePermissionInfo>();
   private readonly sessionVisibility = new Map<string, { visibility: SessionVisibility; updatedAt: number }>();
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
+  private publishInFlight = false;
+  private publishPending = false;
   updater: DesktopUpdater | undefined;
 
   constructor(
@@ -172,7 +174,7 @@ export class DesktopController extends EventEmitter {
       if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") this.queuePublish();
     });
     this.broker.on("changed", () => {
-      void this.publish();
+      this.queuePublish();
     });
     await this.broker.initialize();
     await this.connect();
@@ -625,23 +627,49 @@ export class DesktopController extends EventEmitter {
     cacheDeviceResponse(this.responseCache, response);
   }
 
-  /**
-   * Event-driven republish, trailing-debounced: busy streams and startup
-   * storms append dozens of events per second, and rebuilding the full
-   * snapshot per event used to stall the main process. Live updates still
-   * travel per-event over the broadcast channel; this only rebuilds the
-   * snapshot, and 120ms is invisible next to relay latency.
-   */
+  /** Coalesce passive snapshots through completion; permissions still publish immediately. */
   private queuePublish(): void {
-    if (this.publishTimer) return;
-    this.publishTimer = setTimeout(() => {
+    void this.publishPermissions();
+    this.publishPending = true;
+    if (this.publishTimer || this.publishInFlight) return;
+    this.publishTimer = setTimeout(async () => {
       this.publishTimer = undefined;
-      void this.publish();
+      this.publishPending = false;
+      this.publishInFlight = true;
+      try {
+        await this.publish();
+      } finally {
+        this.publishInFlight = false;
+        if (this.publishPending) this.queuePublish();
+      }
     }, 120);
   }
 
+  private async publishPermissions(): Promise<void> {
+    const previous = this.lastPublishedPermissions;
+    const permissions = new Map(this.claudePermissions().map(permission => [permission.requestId, permission]));
+    // Observe membership before I/O; older snapshots never write this baseline back.
+    this.lastPublishedPermissions = permissions;
+    await Promise.all([
+      ...[...permissions.values()].filter(permission => !previous.has(permission.requestId)).map(permission => this.eventLog.append({
+        sessionId: permission.sessionId,
+        itemId: permission.toolUseId,
+        origin: "claude-desktop",
+        type: permission.toolName === "AskUserQuestion" ? "question.requested" : "permission.requested",
+        data: { ...permission },
+      })),
+      ...[...previous.values()].filter(permission => !permissions.has(permission.requestId) && !this.broker.permissionResolutionInFlight(permission.requestId)).map(permission => this.eventLog.append({
+        sessionId: permission.sessionId,
+        itemId: permission.toolUseId,
+        origin: "claude-desktop",
+        type: permission.toolName === "AskUserQuestion" ? "question.resolved" : "permission.resolved",
+        data: { requestId: permission.requestId, automatic: true },
+      })),
+    ]);
+  }
+
   private async publish(): Promise<DesktopControlSnapshot> {
-    const snapshot = await this.snapshot();
+    const [snapshot] = await Promise.all([this.snapshot(), this.publishPermissions()]);
     this.emit("snapshot", snapshot);
     // Catalog metadata and global runtime changes need a complete snapshot.
     // Session runtime changes use the existing coalesced event channel.
@@ -663,32 +691,14 @@ export class DesktopController extends EventEmitter {
       .join("\n");
     const previousKey = this.lastPublishedSessionKey;
     const previousSessions = this.lastPublishedSessions;
-    const previousPermissions = this.lastPublishedPermissions;
-    const permissions = new Map(snapshot.permissions
-      .map((permission) => [permission.requestId, permission]));
     const sessions = new Map(snapshot.sessions.map((session) => [session.sessionId, JSON.stringify(session)]));
     this.lastPublishedSessionKey = sessionKey;
     this.lastPublishedSessions = sessions;
-    this.lastPublishedPermissions = permissions;
     if (previousKey !== sessionKey) {
       await this.broadcast({ kind: "snapshot", snapshot }, true);
     } else {
       // Start all appends before waiting for disk so later snapshots cover their sequences.
       await Promise.all([
-        ...[...permissions.values()].filter((permission) => !previousPermissions.has(permission.requestId)).map((permission) => this.eventLog.append({
-          sessionId: permission.sessionId,
-          itemId: permission.toolUseId,
-          origin: "claude-desktop",
-          type: permission.toolName === "AskUserQuestion" ? "question.requested" : "permission.requested",
-          data: { ...permission },
-        })),
-        ...[...previousPermissions.values()].filter((permission) => !permissions.has(permission.requestId)).map((permission) => this.eventLog.append({
-          sessionId: permission.sessionId,
-          itemId: permission.toolUseId,
-          origin: "claude-desktop",
-          type: permission.toolName === "AskUserQuestion" ? "question.resolved" : "permission.resolved",
-          data: { requestId: permission.requestId, automatic: true },
-        })),
         ...snapshot.sessions.map((session) => {
           if (previousSessions.get(session.sessionId) === sessions.get(session.sessionId)) return;
           return this.eventLog.append({

@@ -473,8 +473,9 @@ export function MobileWorkspace({
     entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(selectedSessionId, streamKeys);
-  const activityTasks = (backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails.tasks : undefined) ?? selectedSession?.backgroundTasks;
-  const activity = useMemo(() => sessionActivity(selectedSession, items, activityTasks), [selectedSession, items, activityTasks]);
+  const selectedTaskDetails = backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails : undefined;
+  const activityTasks = selectedTaskDetails?.tasks ?? selectedSession?.backgroundTasks;
+  const activity = useMemo(() => sessionActivity(selectedSession, items, selectedTaskDetails?.error ? undefined : activityTasks), [selectedSession, items, activityTasks, selectedTaskDetails?.error]);
   const projectsByActivity = useMemo(() => {
     const latest = new Map<string, number>((snapshot?.projects ?? []).filter(project => project.kind === "desktop-group").map(project => [project.projectId, 0]));
     for (const session of sessions) {
@@ -1537,8 +1538,8 @@ export function MobileWorkspace({
             {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
           />
         ) : null}
-        {backgroundTaskDetails?.key === draftKey && backgroundTaskDetails.error && (
-          <p className="session-channel-warning" role="alert">后台任务：{backgroundTaskDetails.error}</p>
+        {selectedTaskDetails?.error && (
+          <p className="session-channel-warning" role="alert">后台任务：{selectedTaskDetails.error}</p>
         )}
         {selectedSession.nativePermissionModeChange && (
           <div className="session-channel-warning message-queue-status" role="status" aria-label="Desktop 会话授权变更">

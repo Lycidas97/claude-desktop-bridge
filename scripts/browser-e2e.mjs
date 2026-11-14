@@ -1495,13 +1495,22 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     subagent: host.history.find(item => item.subagent?.agentId === "boundary-bg-subagent").subagent,
   }];
   const nativeConfiguration = host.nativeApproval.configuration;
+  let taskDetailsReads = 0;
+  let useTrayFixture = false;
   host.nativeApproval.configuration = async request => {
     const result = await nativeConfiguration(request);
-    if (request.params.includeBackgroundTasks) result.session.backgroundTasks = structuredClone(backgroundTasks);
+    if (request.params.includeBackgroundTasks) {
+      taskDetailsReads++;
+      if (useTrayFixture) result.session.backgroundTasks = structuredClone(backgroundTasks);
+      else assert.deepEqual(result.session.backgroundTasks, [], "Missing native transcript produces empty task details");
+    }
     return result;
   };
   await catalogRow.getByRole("button").first().click();
-  await eventually(async () => (await page.locator(".session-activity-label").innerText()).includes("子代理运行中 · Run full local distributed CI"), true, "Session detail shows running subagent activity");
+  await eventually(() => taskDetailsReads >= 2, true, "Native empty task details have been loaded and polled again");
+  assert.ok((await page.locator(".session-activity-label").innerText()).includes("子代理运行中 · Run full local distributed CI"), "Native running metadata preserves activity when catalog transcript is unavailable");
+  useTrayFixture = true;
+  await page.getByRole("button", { name: "后台任务，1 个运行中", exact: true }).waitFor();
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Returning from detail keeps catalog row dot running");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Returning from detail keeps catalog row badge synchronized");

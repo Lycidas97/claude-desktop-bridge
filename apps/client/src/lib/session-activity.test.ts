@@ -115,12 +115,17 @@ describe("sessionActivity", () => {
   };
 
   it.each(["completed", "failed", "stopped", "unknown"] as const)("clears stale activity when the tray task is %s", state => {
-    expect(sessionActivity({ turnState: "idle" }, staleItems, [{ ...task, state }])).toBeUndefined();
+    expect(sessionActivity({ turnState: "idle", runningSubagents: { count: 1, lastUpdatedAt: 180 } }, staleItems, [{ ...task, state }])).toBeUndefined();
   });
 
   it("treats a successful empty tray as settled and an unavailable tray as history fallback", () => {
     expect(sessionActivity({ turnState: "idle" }, staleItems, [])).toBeUndefined();
     expect(sessionActivity({ turnState: "idle" }, staleItems, undefined)).toMatchObject({ label: "子代理运行中 · Old progress (4 步)", since: 150 });
+  });
+
+  it("keeps native running history when an empty tray has no transcript details", () => {
+    expect(sessionActivity({ turnState: "idle", runningSubagents: { count: 1, lastUpdatedAt: 180 } }, staleItems, []))
+      .toEqual({ kind: "running", label: "子代理运行中 · Old progress (4 步)", since: 150 });
   });
 
   it("uses current tray progress and actual start time even before its history is loaded", () => {
@@ -133,8 +138,8 @@ describe("sessionActivity", () => {
     delete sparseTask.subagent;
     expect(sessionActivity({ turnState: "idle" }, staleItems, [
       { ...task, id: "settled", state: "completed" },
-      sparseTask,
       { ...sparseTask, id: "second", description: "Second task", startedAt: 220 },
+      sparseTask,
       { ...task, kind: "bash" },
       { ...task, kind: "workflow" },
     ])).toEqual({ kind: "running", label: "2 个子代理运行中 · Second task", since: 220 });

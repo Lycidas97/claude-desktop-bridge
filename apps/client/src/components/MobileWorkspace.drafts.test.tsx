@@ -470,6 +470,32 @@ describe("background tasks", () => {
     expect(elements(tree).find(element => element.props.role === "alert")!.props.children).toContain("Offline");
   });
 
+  it("uses completed live history after a running task cache fails to refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      agents(1);
+      props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValueOnce([running]).mockRejectedValue(new Error("Offline")) };
+      draw(); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity?.kind).toBe("running");
+      const item = props.histories.A!.items[0]!;
+      props = { ...props, histories: { ...props.histories, A: { ...props.histories.A!, items: [{ ...item, state: "completed", subagent: { ...item.subagent!, state: "completed", updatedAt: Date.now() + 10_000 } }] } } };
+      draw();
+      await vi.advanceTimersByTimeAsync(2_000); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity).toBeUndefined();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("uses newly running live history after an empty task cache fails to refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      props = { ...props, onLoadBackgroundTasks: vi.fn().mockResolvedValueOnce([]).mockRejectedValue(new Error("Offline")) };
+      draw(); await settle();
+      agents(1);
+      await vi.advanceTimersByTimeAsync(2_000); await settle();
+      expect(elements(tree).find(element => element.type === SessionActivityIndicator)!.props.activity?.label).toContain("子代理运行中");
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each([0, 1, 4, 8])("shows each of %s subagents as one line instead of an inline card", count => {
     agents(count);
     expect(markers()).toHaveLength(count);

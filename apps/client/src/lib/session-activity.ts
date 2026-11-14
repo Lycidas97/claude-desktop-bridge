@@ -35,7 +35,7 @@ export function sessionQueueLabel(
 }
 
 export function sessionActivity(
-  session: Pick<BridgeSessionInfo, "turnState" | "executionStage" | "desktopHandoff"> & Partial<Pick<BridgeSessionInfo, "ownership" | "pendingCount">> | undefined,
+  session: Pick<BridgeSessionInfo, "turnState" | "executionStage" | "desktopHandoff"> & Partial<Pick<BridgeSessionInfo, "ownership" | "pendingCount" | "runningSubagents">> | undefined,
   items: readonly SessionActivityItem[],
   backgroundTasks?: readonly BridgeBackgroundTask[],
 ): SessionActivity | undefined {
@@ -46,7 +46,8 @@ export function sessionActivity(
     kind: "queued",
     label: session.ownership ? sessionQueueLabel({ ...session, ownership: session.ownership }) : "排队等待中",
   };
-  const runningSubagents = backgroundTasks !== undefined
+  // No catalog transcript also yields an empty tray; native metadata can still report live work.
+  const runningSubagents = backgroundTasks !== undefined && (backgroundTasks.length > 0 || !session.runningSubagents?.count)
     ? backgroundTasks.filter(task => task.state === "running").flatMap(task => task.kind === "workflow"
       ? task.workflow?.agents.filter(agent => agent.state === "running") ?? []
       : task.kind === "subagent" ? [{
@@ -56,7 +57,7 @@ export function sessionActivity(
       }] : [])
     : items.filter(item => item.role === "tool" && item.subagent?.state === "running").map(item => item.subagent!);
   if (runningSubagents.length > 0) {
-    const latest = runningSubagents[runningSubagents.length - 1]!;
+    const latest = runningSubagents.reduce((latest, agent) => agent.startedAt > latest.startedAt ? agent : latest);
     const label = runningSubagents.length === 1
       ? `子代理运行中 · ${latest.description}${latest.toolCount ? ` (${latest.toolCount} 步)` : ""}`
       : `${runningSubagents.length} 个子代理运行中 · ${latest.description}`;

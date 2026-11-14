@@ -625,7 +625,7 @@
   min-height: 0;
   flex-direction: column;
   gap: 28px;
-  padding: 20px max(var(--m-gutter), env(safe-area-inset-right)) 32px max(var(--m-gutter), env(safe-area-inset-left));
+  padding: 20px max(var(--m-gutter), env(safe-area-inset-right)) max(32px, env(safe-area-inset-bottom)) max(var(--m-gutter), env(safe-area-inset-left));
   overflow-y: auto;
 }
 
@@ -876,6 +876,7 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 }
 
 .mobile-app-shell .project-group-header { background: transparent; }
+.mobile-app-shell .project-group-actions { display: flex; align-items: center; }
 .mobile-app-shell .project-group-open { min-height: 52px; padding: 10px 12px 10px 16px; }
 .mobile-app-shell .project-group-open:hover { background: transparent; }
 .mobile-app-shell .project-group-open:active { background: var(--surface-2); }

@@ -493,15 +493,25 @@ export function MobileSessionCatalog({
                       {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                     </span>
                   </button>
-                  {sectionManage.canManage(group.project) && (
+                  <div className="project-group-actions">
                     <IconButton
-                      label={`管理分组：${projectName}`}
-                      className="session-row-action section-manage-trigger"
-                      onClick={() => sectionManage.openMenu(group.project!.projectId)}
+                      label={`新建会话：${projectName}`}
+                      className="session-row-action"
+                      disabled={!snapshot || connection !== "connected" || !desktopOnline}
+                      onClick={() => openCreateDialogForProject(projectId)}
                     >
-                      <MoreHorizontal size={18} />
+                      <Plus size={20} />
                     </IconButton>
-                  )}
+                    {sectionManage.canManage(group.project) && (
+                      <IconButton
+                        label={`管理分组：${projectName}`}
+                        className="session-row-action section-manage-trigger"
+                        onClick={() => sectionManage.openMenu(group.project!.projectId)}
+                      >
+                        <MoreHorizontal size={18} />
+                      </IconButton>
+                    )}
+                  </div>
                 </div>
                 {expanded && (
                   <div className="session-rows" id={sessionsId}>

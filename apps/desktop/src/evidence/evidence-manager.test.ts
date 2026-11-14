@@ -23,11 +23,11 @@ vi.mock("node:fs/promises", async (original) => {
 });
 
 const directories: string[] = [];
-const eventLogs: SessionEventLog[] = [];
+const resources: Array<EvidenceManager | EvidenceStore | SessionEventLog> = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const eventLog of eventLogs.splice(0)) await eventLog.close();
+  for (const resource of resources.splice(0).reverse()) await resource.close();
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
@@ -40,14 +40,21 @@ async function managerFixture() {
     masterSecret: "manager-test-secret",
   });
   const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
-  eventLogs.push(eventLog);
-  await eventLog.initialize();
   const manager = new EvidenceManager({ store, eventLog });
+  resources.push(eventLog, manager);
+  await eventLog.initialize();
   await manager.initialize();
   return { directory, manager, eventLog, store };
 }
 
 describe("EvidenceManager", () => {
+  it("closes fixture SQLite handles in teardown without an explicit manager close", async ({ onTestFinished }) => {
+    const { store } = await managerFixture();
+    onTestFinished(() => {
+      expect(() => store.list("session-1")).toThrow("Evidence store has not been initialized");
+    });
+  });
+
   it("uses the existing owner, chunk, capacity, TTL and size rules for in-memory bytes", async () => {
     const { manager } = await managerFixture();
     try {
@@ -697,6 +704,7 @@ describe("EvidenceManager", () => {
       usage: { inputTokens: 120, outputTokens: 45, cacheReadTokens: 300, reasoningTokens: 12 },
     });
 
+    expect(evidence?.state, evidence?.warnings.join("\n")).toBe("ready");
     expect(evidence?.source).toBe("runtime-host");
     expect(evidence?.runtimeId).toBe("dsh-desktop");
     expect(evidence?.usage).toEqual({ inputTokens: 120, outputTokens: 45, cacheReadTokens: 300, reasoningTokens: 12 });
@@ -722,6 +730,7 @@ describe("EvidenceManager", () => {
       blobsPath,
       masterSecret: "restart-test-secret",
     });
+    resources.push(previousStore);
     await previousStore.initialize();
     previousStore.saveBundle({
       id: "interrupted-evidence",
@@ -756,6 +765,7 @@ describe("EvidenceManager", () => {
       }),
       eventLog,
     });
+    resources.push(eventLog, manager);
     await manager.initialize();
 
     expect(manager.get("interrupted-evidence")).toMatchObject({

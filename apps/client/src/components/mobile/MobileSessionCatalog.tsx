@@ -194,13 +194,17 @@ export function MobileSessionCatalog({
         )))
     : [];
   const activeGroupQuery = projectSearch.trim().toLocaleLowerCase();
-  const activeGroupSessions = activeGroupQuery
+  const activeGroupMatches = activeGroupQuery
     ? activeGroupSessionsAll.filter((session) => (
         `${session.title}\n${session.currentSummary ?? ""}\n${session.cwd}\n${desktopRuntimeName(desktopRuntimeId(session))}`
           .toLocaleLowerCase()
           .includes(activeGroupQuery)
       ))
     : activeGroupSessionsAll;
+  const matchingActiveParents = new Map(activeGroupMatches.filter((session) => !session.archivedAt).map((session) => [session.sessionId, session.projectId]));
+  const activeGroupSessions = activeGroupMatches.filter((session) => (
+    isArchivedGroupPage || !session.archivedAt || Boolean(session.parentSessionId && matchingActiveParents.get(session.parentSessionId) === session.projectId)
+  ));
   const activeGroupName = isArchivedGroupPage
     ? "已归档会话"
     : activeGroupProject?.name

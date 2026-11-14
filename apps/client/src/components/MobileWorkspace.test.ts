@@ -223,7 +223,7 @@ describe("mobile workspace directory", () => {
       sidechatArchived,
       { ...session, sessionId: "fork-archived", title: "历史实验分支", parentSessionId: session.sessionId, archivedAt: 120, lastActivityAt: 120 },
     ];
-    const renderCatalog = (expandedForkParents: Set<string>, activeProjectId?: string, catalogSessions = allMixedSessions) => {
+    const renderCatalog = (expandedForkParents: Set<string>, activeProjectId?: string, catalogSessions = allMixedSessions, projectSearch = "") => {
       const activeList = catalogSessions.filter((candidate) => !candidate.archivedAt || Boolean(candidate.sidechat && candidate.parentSessionId === session.sessionId));
       const archivedList = catalogSessions.filter((candidate) => Boolean(candidate.archivedAt));
       return renderToStaticMarkup(createElement(MobileSessionCatalog, {
@@ -247,7 +247,7 @@ describe("mobile workspace directory", () => {
         pendingOutbound: 0,
         activeProjectId,
         search: "",
-        projectSearch: "",
+        projectSearch,
         directoryRef: { current: null },
         directoryScrollPositions: { current: new Map() },
         directoryMenuOpen: false,
@@ -316,6 +316,15 @@ describe("mobile workspace directory", () => {
       expect(primaryExpandedHtml).not.toContain(sidechatArchived.title);
       expect(primaryExpandedHtml).not.toContain("历史实验分支");
     }
+    for (const title of [sidechatArchived.title, "历史实验分支"]) {
+      const projectSearchHtml = renderCatalog(new Set(), session.projectId, allMixedSessions, title);
+      expect(projectSearchHtml).not.toContain('data-session-id="btw-archived"');
+      expect(projectSearchHtml).not.toContain('data-session-id="fork-archived"');
+      expect(projectSearchHtml).toContain("没有匹配的会话");
+      const archiveSearchHtml = renderCatalog(new Set(), "__archived__", allMixedSessions, title);
+      expect(archiveSearchHtml).toContain(`>${title}`);
+      expect(archiveSearchHtml.match(/class="session-row-status [^"]+">已归档<\/span>/gu)).toHaveLength(1);
+    }
     expect(renderCatalog(new Set())).toMatch(/已归档会话<\/strong><b class="project-count-pill">2<\/b>/u);
     const archivedBranchesHtml = renderCatalog(new Set(), "__archived__");
     expect(archivedBranchesHtml).toContain(sidechatArchived.title);
@@ -340,6 +349,9 @@ describe("mobile workspace directory", () => {
     expect(liveRow).toContain("桌面运行中");
     expect(liveRow).not.toContain("已归档");
     expect(threeLevelActiveHtml.match(/data-session-id="live-fork"/gu)).toHaveLength(1);
+    const searchedLiveHtml = renderCatalog(new Set(), session.projectId, threeLevelSessions, liveGrandchild.title);
+    expect(searchedLiveHtml).toContain('data-session-id="live-fork"');
+    expect(searchedLiveHtml).not.toContain('data-session-id="btw-archived"');
     const threeLevelHistoryHtml = renderCatalog(new Set([sidechatArchived.sessionId]), "__archived__", threeLevelSessions);
     expect(threeLevelHistoryHtml).toContain(sidechatArchived.title);
     expect(threeLevelHistoryHtml).not.toContain(liveGrandchild.title);
@@ -389,6 +401,32 @@ describe("mobile workspace directory", () => {
     expect(mixedHtml).not.toContain("3 个分支与侧聊");
     expect(mixedHtml).not.toContain("btw: 归档父会话的侧聊");
     expect(mixedHtml).not.toContain("btw: 跨项目孤儿保护");
+  });
+
+  it.each([false, true])("excludes archived-only matches from directory search and keeps live descendants reachable (%s)", (withLiveDescendant) => {
+    const useState = vi.mocked(React.useState).getMockImplementation()!;
+    const stateSpy = vi.mocked(React.useState)
+      .mockImplementationOnce(useState)
+      .mockImplementationOnce(useState)
+      .mockImplementationOnce(useState)
+      .mockImplementationOnce(useState)
+      .mockReturnValueOnce(["白名单", vi.fn()]);
+    try {
+      const html = renderToStaticMarkup(createElement(MobileWorkspace, {
+        ...workspaceProps(),
+        snapshot: { ...snapshot, sessions: [
+          session,
+          { ...session, sessionId: "archived-sidechat", parentSessionId: session.sessionId, title: "btw: 白名单排查", sidechat: true, archivedAt: 100 },
+          ...(withLiveDescendant ? [{ ...session, sessionId: "live-grandchild", parentSessionId: "archived-sidechat", title: "白名单活跃后代" }] : []),
+        ] },
+      }));
+      expect(html).not.toContain('data-session-id="archived-sidechat"');
+      expect(html).toMatch(/已归档会话<\/strong><b class="project-count-pill">1<\/b>/u);
+      if (withLiveDescendant) expect(html).toContain('data-session-id="live-grandchild"');
+      else expect(html).toContain("没有匹配的会话");
+    } finally {
+      stateSpy.mockReset();
+    }
   });
 
   it.each([

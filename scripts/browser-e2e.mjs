@@ -2010,7 +2010,11 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   await page.screenshot({ path: resolve(directory, "project-fork-expanded.png"), fullPage: true });
   steps.push("Native fixture projection groups linked worktrees under the repository; active forks exclude archived sidechats, which appear only in the archive area");
 
+  const archivedSidechat = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-btw-archived");
   const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
+  await search.fill(archivedSidechat.title);
+  await eventually(() => page.locator("[data-session-id]").count(), 0, "Searching an archived sidechat cannot surface it as an active root");
+  assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "1");
   await search.fill(worktree.title);
   await eventually(() => headers.allTextContents(), ["claude-desktop-bridge"], "Searching the worktree title keeps its repository project");
   assert.equal(await page.locator(`[data-session-id="${sessionId}"]`).count(), 1);
@@ -2050,6 +2054,9 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   await archiveSearch.fill(forkSnapshot.title);
   assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 1);
   assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  await archiveSearch.fill(archivedSidechat.title);
+  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
+  assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
   await archiveSearch.fill("");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Archived sessions fit the phone viewport");
   await page.screenshot({ path: resolve(directory, "archived-sessions.png"), fullPage: true });

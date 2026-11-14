@@ -14,7 +14,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyEventToTurns, mergeBridgeEvents, type LocalTurn } from "../hooks/useMobileBridge.js";
 import {
   aggregateFileChanges,
-  archivedForkGroupKey,
   canConfigureSession,
   canStopBridgeTask,
   conversationItems,
@@ -176,7 +175,7 @@ describe("mobile workspace directory", () => {
     expect(html).not.toContain("Nested Fork");
   });
 
-  it("counts only active forks/sidechats by default, tucks archived sidechats/forks into a secondary fold, and shows direct parent return in sidechat detail", () => {
+  it("shows only active forks/sidechats in session families and keeps archived branches in the archive page", () => {
     const sidechatActive: BridgeSessionInfo = {
       ...session,
       sessionId: "btw-active",
@@ -212,10 +211,11 @@ describe("mobile workspace directory", () => {
         sessions: [session, sidechatArchived],
       },
     }));
-    expect(archivedOnlyHtml).toContain("mobile-fork-group is-archived-only collapsed");
-    expect(archivedOnlyHtml).toContain("1 个已结束侧聊");
+    expect(archivedOnlyHtml).not.toContain("mobile-fork-toggle");
+    expect(archivedOnlyHtml).not.toContain("1 个已结束侧聊");
     expect(archivedOnlyHtml).not.toContain("1 个 /btw 侧聊");
     expect(archivedOnlyHtml).not.toContain(sidechatArchived.title);
+    expect(archivedOnlyHtml).toMatch(/已归档会话<\/strong><b class="project-count-pill">1<\/b>/u);
 
     const allMixedSessions: BridgeSessionInfo[] = [
       session,
@@ -308,16 +308,21 @@ describe("mobile workspace directory", () => {
         createSection: vi.fn(),
       }));
     };
-    const primaryExpandedHtml = renderCatalog(new Set([session.sessionId]));
-    expect(primaryExpandedHtml).toContain(sidechatActive.title);
-    expect(primaryExpandedHtml).toContain("2 个已归档分支与侧聊");
-    expect(primaryExpandedHtml).not.toContain(sidechatArchived.title);
-    expect(primaryExpandedHtml).not.toContain("历史实验分支");
-
-    const bothExpandedHtml = renderCatalog(new Set([session.sessionId, archivedForkGroupKey(session.sessionId)]));
-    expect(bothExpandedHtml).toContain(sidechatActive.title);
-    expect(bothExpandedHtml).toContain(sidechatArchived.title);
-    expect(bothExpandedHtml).toContain("历史实验分支");
+    for (const activeProjectId of [undefined, session.projectId]) {
+      const primaryExpandedHtml = renderCatalog(new Set([session.sessionId]), activeProjectId);
+      expect(primaryExpandedHtml).toContain(sidechatActive.title);
+      expect(primaryExpandedHtml).not.toContain("is-archived-fold");
+      expect(primaryExpandedHtml).not.toContain("已归档分支");
+      expect(primaryExpandedHtml).not.toContain(sidechatArchived.title);
+      expect(primaryExpandedHtml).not.toContain("历史实验分支");
+    }
+    expect(renderCatalog(new Set())).toMatch(/已归档会话<\/strong><b class="project-count-pill">2<\/b>/u);
+    const archivedBranchesHtml = renderCatalog(new Set(), "__archived__");
+    expect(archivedBranchesHtml).toContain(sidechatArchived.title);
+    expect(archivedBranchesHtml).toContain("历史实验分支");
+    expect(archivedBranchesHtml).not.toContain(sidechatActive.title);
+    expect(archivedBranchesHtml.match(/class="session-row-status [^"]+">已归档<\/span>/gu)).toHaveLength(2);
+    expect(archivedBranchesHtml).not.toContain("is-archived-fold");
 
     const liveGrandchild: BridgeSessionInfo = {
       ...session, sessionId: "live-fork", title: "仍在执行的孙分支", parentSessionId: sidechatArchived.sessionId,
@@ -329,16 +334,15 @@ describe("mobile workspace directory", () => {
     expect(threeLevelCollapsedHtml).not.toContain("is-archived-only");
     const threeLevelActiveHtml = renderCatalog(new Set([session.sessionId]), undefined, threeLevelSessions);
     expect(threeLevelActiveHtml).toContain(liveGrandchild.title);
-    expect(threeLevelActiveHtml).toContain("1 个已结束侧聊");
+    expect(threeLevelActiveHtml).not.toContain("1 个已结束侧聊");
     expect(threeLevelActiveHtml).not.toContain(sidechatArchived.title);
-    const threeLevelHistoryHtml = renderCatalog(new Set([
-      session.sessionId, archivedForkGroupKey(session.sessionId), sidechatArchived.sessionId,
-    ]), undefined, threeLevelSessions);
-    expect(threeLevelHistoryHtml).toContain(sidechatArchived.title);
-    const liveRow = /data-session-id="live-fork"([\s\S]*?)<\/button>/u.exec(threeLevelHistoryHtml)![1]!;
+    const liveRow = /data-session-id="live-fork"([\s\S]*?)<\/button>/u.exec(threeLevelActiveHtml)![1]!;
     expect(liveRow).toContain("桌面运行中");
     expect(liveRow).not.toContain("已归档");
-    expect(threeLevelHistoryHtml.match(/data-session-id="live-fork"/gu)).toHaveLength(1);
+    expect(threeLevelActiveHtml.match(/data-session-id="live-fork"/gu)).toHaveLength(1);
+    const threeLevelHistoryHtml = renderCatalog(new Set([sidechatArchived.sessionId]), "__archived__", threeLevelSessions);
+    expect(threeLevelHistoryHtml).toContain(sidechatArchived.title);
+    expect(threeLevelHistoryHtml).not.toContain(liveGrandchild.title);
 
     const archivedParent: BridgeSessionInfo = { ...session, sessionId: "archived-parent", title: "已归档父会话", archivedAt: 50 };
     const archivedChild: BridgeSessionInfo = { ...session, sessionId: "btw-of-archived-parent", title: "btw: 归档父会话的侧聊", parentSessionId: "archived-parent", sidechat: true, archivedAt: 60 };

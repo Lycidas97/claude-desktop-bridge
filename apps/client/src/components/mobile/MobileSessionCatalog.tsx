@@ -29,12 +29,10 @@ import type { ReactNode, RefObject } from "react";
 import type { MobileConnectionIssue } from "../../hooks/useMobileBridge.js";
 import {
   activeSessionBadgeLabel,
-  archivedForkGroupKey,
-  archivedForkGroupLabel,
   forkGroupToggleLabel,
   mobileConnectionLabel,
-  partitionSessionForks,
   relativeTime,
+  visibleSessionForks,
 } from "../../lib/conversation-timeline.js";
 import {
   PROJECT_PREVIEW_SESSION_LIMIT,
@@ -283,37 +281,8 @@ export function MobileSessionCatalog({
           </IconButton>
         </div>
         {(() => {
-          const { activeForks, archivedForks } = partitionSessionForks(
-            session,
-            forks,
-            sessions,
-            isArchivedRow,
-            activeProjectId ? projectSearch : search,
-          );
-          if (activeForks.length === 0 && archivedForks.length === 0) return null;
-          const archivedFoldKey = archivedForkGroupKey(session.sessionId);
-          const archivedExpanded = expandedForkParents.has(archivedFoldKey);
-          if (activeForks.length === 0) {
-            return (
-              <div className={`mobile-fork-group is-archived-only ${archivedExpanded ? "expanded" : "collapsed"}`}>
-                <button
-                  type="button"
-                  className="mobile-fork-toggle is-archived-fold"
-                  aria-expanded={archivedExpanded}
-                  onClick={() => toggleForkGroup(archivedFoldKey)}
-                >
-                  <Archive size={12} />
-                  <span>{archivedForkGroupLabel(archivedForks)}</span>
-                  {archivedExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                </button>
-                {archivedExpanded && (
-                  <div className="mobile-fork-children is-archived-children">
-                    {archivedForks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
-                  </div>
-                )}
-              </div>
-            );
-          }
+          const visibleForks = visibleSessionForks(forks, isArchivedRow);
+          if (visibleForks.length === 0) return null;
           return (
             <div className={`mobile-fork-group ${forksExpanded ? "expanded" : "collapsed"}`}>
               <button
@@ -323,31 +292,12 @@ export function MobileSessionCatalog({
                 onClick={() => toggleForkGroup(session.sessionId)}
               >
                 <GitFork size={12} />
-                <span>{forkGroupToggleLabel(activeForks)}</span>
+                <span>{forkGroupToggleLabel(visibleForks)}</span>
                 {forksExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
               </button>
               {forksExpanded && (
                 <div className="mobile-fork-children">
-                  {activeForks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
-                  {archivedForks.length > 0 && (
-                    <div className={`mobile-fork-archived ${archivedExpanded ? "expanded" : "collapsed"}`}>
-                      <button
-                        type="button"
-                        className="mobile-fork-toggle is-archived-fold"
-                        aria-expanded={archivedExpanded}
-                        onClick={() => toggleForkGroup(archivedFoldKey)}
-                      >
-                        <Archive size={12} />
-                        <span>{archivedForkGroupLabel(archivedForks)}</span>
-                        {archivedExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                      </button>
-                      {archivedExpanded && (
-                        <div className="mobile-fork-archived-children">
-                          {archivedForks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  {visibleForks.map((fork) => renderMobileSessionFamily(fork, isArchivedList, true))}
                 </div>
               )}
             </div>

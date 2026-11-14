@@ -364,10 +364,13 @@ describe("desktop shared catalog", () => {
     order.props.onPlaceProjects([...order.props.projectsByActivity]);
     tree = sessions.draw();
     expect(titles()).toEqual(["Third", "Project", "Second"]);
+    order.props.onPlaceProjects(["second", "third", "project"]);
+    tree = sessions.draw();
+    expect(titles()).toEqual(["Second", "Third", "Project"]);
     snapshot.host.hostId = "another-computer";
     await openSessions();
     expect(titles()).toEqual(["Third", "Project", "Second"]);
-    expect(JSON.parse(localStorage.getItem("bridge-project-order:computer")!)).toEqual(["third", "project", "second"]);
+    expect(JSON.parse(localStorage.getItem("bridge-project-order:computer")!)).toEqual(["second", "third", "project"]);
     expect(JSON.parse(localStorage.getItem("bridge-project-order:another-computer")!)).toEqual(["third", "project", "second"]);
   });
 });

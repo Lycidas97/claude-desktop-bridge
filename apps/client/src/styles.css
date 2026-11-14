@@ -5893,7 +5893,11 @@ button:disabled {
 }
 
 .desktop-project-list .session-row-v2.active {
-  background: var(--accent-soft);
+  background: var(--surface-2);
+}
+
+.desktop-project-list .session-row-v2.active .session-fork-badge {
+  color: var(--text);
 }
 
 .desktop-project-list .session-row-hit {

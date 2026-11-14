@@ -84,6 +84,7 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   await page.emulateMedia({ reducedMotion: "reduce" });
   const axeSource = await readFile(resolve(root, "node_modules/axe-core/axe.min.js"), "utf8");
   async function capture(name) {
+    await page.waitForFunction(() => document.getAnimations().every(animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished"));
     await page.evaluate(axeSource);
     const violations = await page.evaluate(async () => (await window.axe.run(document, {
       resultTypes: ["violations"], runOnly: { type: "tag", values: ["wcag2a", "wcag2aa"] },
@@ -142,7 +143,7 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   await sidebar.getByRole("button", { name: "全部展开", exact: true }).click();
   await sidebar.getByRole("button", { name: "调整项目顺序", exact: true }).click();
   const orderDialog = page.getByRole("dialog", { name: "项目顺序" });
-  await orderDialog.getByLabel(`移动「${initialOrder[1]}」到`, { exact: true }).selectOption("0");
+  await orderDialog.getByRole("button", { name: `拖动「${initialOrder[1]}」调整顺序`, exact: true }).press("Home");
   await capture("desktop-project-order");
   await orderDialog.getByRole("button", { name: "关闭", exact: true }).click();
   const manualOrder = [...initialOrder].reverse();

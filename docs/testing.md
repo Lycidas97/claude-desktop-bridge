@@ -14,7 +14,7 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 | `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture |
 | `npm run ci:run -- run test:desktop:service` | After a current Desktop build: real compiled Electron UI/service with isolated Native fixture; on macOS also verifies developer settings, real random TCP/lsof/proc_pidpath, ASAR helper, injected warning UI, and completed background scans after window close |
 | `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (up to 4 parallel isolated slots `D:\work\ci-slot-<n>`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` Linux `test:infra` + `npm test`), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
-| `npm run ci:run -- run build -w @bridge/protocol` | Example of wrapping another npm command with Trash-only Node cleanup |
+| `npm run ci:run -- run build -w @bridge/protocol` | Example of wrapping another npm command with scoped temporary cleanup and OS recycling |
 
 The quota plugin is outside the `apps/*` and `packages/*` workspaces; root test and
 typecheck include it explicitly. These commands do not enable real model sessions
@@ -119,29 +119,42 @@ These checks do not call a model or alter the parent's transcript or working fil
 ## Cleanup boundary
 
 The runners append the checkout's `scripts/recycle-cleanup.cjs` to `NODE_OPTIONS`,
-keeping existing options and environment variables. Paths are resolved at runtime
-and quoted for checkouts containing spaces. The preload redirects Node's sync,
-promise, and callback `rm`, `unlink`, and `rmdir` APIs to the operating system's
-recycle command. Missing paths are ignored only with `force: true`. Unsupported
-systems, missing recycle commands, and recycle failures surface as errors; there
-is no permanent-delete fallback. The preload selects the host platform at startup,
-so application tests that mock `process.platform` do not change the recycle command.
-When `BRIDGE_RECYCLE_STAGING` names a directory (created automatically per `npm test`
-run unless already set per run by `local-ci.mjs` or per slot by `win-local-ci.ps1`),
-removals rename disposable paths into a per-process subdirectory there instead (falling
-back to the OS recycle command on `EXDEV`, `EBUSY`, or `EPERM`), and the caller recycles
-that directory once in a single OS Recycle Bin invocation.
+keeping existing options. Paths are resolved at runtime and quoted for checkouts
+containing spaces. On first load the preload creates a fresh private temporary
+root, records its exact path in `BRIDGE_TEST_TEMP_ROOT`, and points `TMPDIR`, `TEMP`
+and `TMP` there. Children inherit that root; only its creator deletes the root on
+exit. Windows distributed CI creates its own fresh root before uploading the
+bundle/script and passes it to the Windows leg. A standalone Windows leg creates
+and cleans its own root. Do not register a pre-existing directory, the system temp
+directory, a reused CI slot, or a name prefix as disposable.
 
-This covers Node processes that inherit `NODE_OPTIONS`. It does not intercept
-native tools, shell deletion commands, browser internals, or processes that discard
-the environment. Use the operating system's Trash command for manual cleanup.
+Node's sync, promise and callback `rm`, `unlink` and `rmdir` APIs use their original
+delete implementation only for this root and its descendants. Physical parent paths
+are checked so a directory symlink cannot authorize deletion of an external target.
+All other paths go directly to the OS Recycle Bin, including old JUnit reports,
+`dist/`, installer outputs, user files and retained `artifacts/` or `output/`
+evidence. They are never renamed into disposable staging. Missing paths are ignored
+only with `force: true`; unsupported recycle systems, missing recycle commands and
+recycle failures surface as errors, without a permanent-delete fallback. The host
+platform is captured before tests can mock `process.platform`.
+
+`BRIDGE_RECYCLE_STAGING` is now only caller-owned Windows QA scratch inside the
+fresh run root. QA leaves it to that caller. Standalone Windows QA directly removes
+only its own GUID-named profile, smoke and install-copy directories after stopping
+its processes (and uninstalling on hosted Windows). Original installers and
+retained evidence remain outside those directories. Historical staging is neither
+registered nor scanned for cleanup.
+
+The preload covers Node processes that inherit `NODE_OPTIONS`; it does not intercept
+native tools, shell commands, browser internals or processes that discard the
+environment. Manual cleanup and all other deletion paths still use OS Trash.
 
 ## CI
 
 Routine pull requests and `main` merges are verified locally via `npm run ci:local`,
 which runs the full multi-platform matrix across Mac M4, Windows 11, Android API 36
 WHPX Emulator, and WSL2 `Ubuntu-24.04` without spinning up redundant GitHub-hosted
-runners. Upon a full clean pass (after temporary-directory recycle cleanup completes),
+runners. Upon a full clean pass (after owned temporary-directory cleanup completes),
 `local-ci.mjs` records a receipt under `<git-common-dir>/local-ci/` and publishes the
 `ci/local-distributed = success` commit status to `Lycidas97/claude-desktop-bridge`
 (if `ci:local` ran before `git push`, `npm run ci:local -- --publish` publishes that

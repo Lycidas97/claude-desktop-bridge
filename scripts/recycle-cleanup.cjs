@@ -1,4 +1,4 @@
-// Preload for validation: Node removal APIs send paths to the system recycle bin.
+// Validation scratch is deleted inside a fresh, inherited temporary root; all other paths go to the OS recycle bin.
 const fs = require('node:fs');
 const INSTALLED = Symbol.for('bridge.recycleCleanupInstalled');
 if (!fs[INSTALLED]) {
@@ -6,18 +6,26 @@ if (!fs[INSTALLED]) {
   const { execFile, execFileSync } = require('node:child_process');
   const { promisify } = require('node:util');
   const { fileURLToPath } = require('node:url');
-  const { join, resolve } = require('node:path');
+  const { basename, dirname, isAbsolute, join, relative, resolve, sep } = require('node:path');
+  const { tmpdir } = require('node:os');
   const { syncBuiltinESMExports } = require('node:module');
   const run = promisify(execFile);
   const platform = process.platform;
   const winRecycleExe = platform === 'win32' ? process.env.BRIDGE_WIN_RECYCLE_EXE : undefined;
-  // win-local-ci points this at a per-slot directory it recycles once per run: SHFileOperation serializes every
-  // Recycle Bin move system-wide (~0.3 s each, far slower once the bin is large), so per-test moves stall hooks.
-  const staging = process.env.BRIDGE_RECYCLE_STAGING;
-  let stagingDir;
-  let staged = 0;
-  const stagedPath = () => join(stagingDir ??= fs.mkdtempSync(join(staging, `${process.pid}-`)), String(++staged));
+  const removeOwnedRoot = fs.rmSync;
+  const ownedRoot = !process.env.BRIDGE_TEST_TEMP_ROOT;
+  const tempRoot = fs.realpathSync(process.env.BRIDGE_TEST_TEMP_ROOT || fs.mkdtempSync(join(tmpdir(), 'bridge-test-')));
+  process.env.BRIDGE_TEST_TEMP_ROOT = tempRoot;
+  process.env.TMPDIR = process.env.TEMP = process.env.TMP = tempRoot;
+  // Only the process that created this empty root owns its lifetime. Children inherit it, never clean it on exit.
+  if (ownedRoot) process.once('exit', () => removeOwnedRoot(tempRoot, { recursive: true, force: true }));
   const normalize = value => resolve(value instanceof URL ? fileURLToPath(value) : Buffer.isBuffer(value) ? value.toString() : value);
+  function isTemporary(path) {
+    // Resolve the parent so a symlink inside scratch cannot grant direct deletion of an external target.
+    // Keep the leaf unresolved: unlinking a symlink only removes the link itself.
+    const within = relative(tempRoot, join(fs.realpathSync(dirname(path)), basename(path)));
+    return within !== '..' && !within.startsWith(`..${sep}`) && !isAbsolute(within);
+  }
 
   function command(path) {
     if (platform === 'darwin') return ['/usr/bin/trash', [path], {}];
@@ -46,34 +54,30 @@ if (!fs[INSTALLED]) {
     throw new Error(`Trash-only cleanup is unsupported on ${platform}; nothing was deleted`);
   }
 
-  function recycleSync(value, options = {}) {
+  function recycleSync(value, options = {}, remove) {
     const path = normalize(value);
     try { fs.lstatSync(path); }
     catch (error) { if (options.force && error.code === 'ENOENT') return; throw error; }
-    if (staging) {
-      try { return fs.renameSync(path, stagedPath()); }
-      catch (error) { if (!['EXDEV', 'EBUSY', 'EPERM'].includes(error.code)) throw error; }
-    }
+    if (isTemporary(path)) return remove(path, options);
     execFileSync(...command(path));
   }
 
-  async function recycle(value, options = {}) {
+  async function recycle(value, options = {}, remove) {
     const path = normalize(value);
     try { await fs.promises.lstat(path); }
     catch (error) { if (options.force && error.code === 'ENOENT') return; throw error; }
-    if (staging) {
-      try { return await fs.promises.rename(path, stagedPath()); }
-      catch (error) { if (!['EXDEV', 'EBUSY', 'EPERM'].includes(error.code)) throw error; }
-    }
+    if (isTemporary(path)) return remove(path, options);
     await run(...command(path));
   }
 
   for (const method of ['rm', 'unlink', 'rmdir']) {
-    fs[method + 'Sync'] = recycleSync;
-    fs.promises[method] = recycle;
+    const removeSync = fs[method + 'Sync'];
+    const remove = fs.promises[method];
+    fs[method + 'Sync'] = (path, options) => recycleSync(path, options, removeSync);
+    fs.promises[method] = (path, options) => recycle(path, options, remove);
     fs[method] = (path, options, callback) => {
       if (typeof options === 'function') { callback = options; options = {}; }
-      recycle(path, options).then(() => callback(null), callback);
+      recycle(path, options, remove).then(() => callback(null), callback);
     };
   }
   syncBuiltinESMExports();

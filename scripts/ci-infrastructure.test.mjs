@@ -16,20 +16,22 @@ import { LOCAL_CI_STATUS_CONTEXT, recordAndPublishLocalCi, validateStatusRepo } 
 const require = createRequire(import.meta.url);
 const preload = await readFile(new URL('./recycle-cleanup.cjs', import.meta.url), 'utf8');
 
-function mockCleanup(platform, { missing = false, failure = false, directory = false, extraEnv = {}, renameError = null } = {}) {
+function mockCleanup(platform, { missing = false, failure = false, directory = false, extraEnv = {} } = {}) {
   const calls = [];
   const renames = [];
   const mkdtemps = [];
+  const removals = [];
+  const exits = [];
   const check = () => {
     if (missing) throw Object.assign(new Error('missing fixture'), { code: 'ENOENT' });
     return { isDirectory: () => directory };
   };
   const doRename = (from, to) => {
-    if (renameError) throw Object.assign(new Error(renameError), { code: renameError });
     renames.push([from, to]);
   };
   const mockFs = {
     lstatSync: check,
+    realpathSync: path => path,
     mkdtempSync(prefix) { const dir = `${prefix}abc`; mkdtemps.push(dir); return dir; },
     renameSync: doRename,
     promises: {
@@ -37,12 +39,18 @@ function mockCleanup(platform, { missing = false, failure = false, directory = f
       rename: async (from, to) => doRename(from, to),
     },
   };
+  for (const method of ['rm', 'unlink', 'rmdir']) {
+    mockFs[`${method}Sync`] = (...args) => { removals.push([method, ...args]); };
+    mockFs.promises[method] = async (...args) => { removals.push([method, ...args]); };
+  }
   const execFileSync = (...args) => {
     calls.push(args);
     if (failure) throw Object.assign(new Error('trash command failed'), { code: 'ENOENT' });
   };
   const runPreload = (targetPlatform, env) => {
-    const proc = { platform: targetPlatform, pid: 4242, env: { PRESERVE_ME: 'yes', ...env } };
+    const proc = { platform: targetPlatform, pid: 4242,
+      env: { PRESERVE_ME: 'yes', BRIDGE_TEST_TEMP_ROOT: join(tmpdir(), 'mock-owned-root'), ...env },
+      once: (event, callback) => { assert.equal(event, 'exit'); exits.push(callback); } };
     vm.runInNewContext(preload, {
       Buffer, URL, Symbol, process: proc,
       require(name) {
@@ -61,7 +69,7 @@ function mockCleanup(platform, { missing = false, failure = false, directory = f
     return proc;
   };
   const mockProcess = runPreload(platform, extraEnv);
-  return { fs: mockFs, calls, renames, mkdtemps, process: mockProcess, reload: runPreload };
+  return { fs: mockFs, calls, renames, mkdtemps, removals, exits, process: mockProcess, reload: runPreload };
 }
 
 test('suite failures, missing reports and startup errors preserve subsequent evidence', async () => {
@@ -201,7 +209,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
   });
 }
 
-test('a recycle staging directory turns removals into renames that win-local-ci recycles once per run', async () => {
+test('test-owned temporary removals bypass recycle staging', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bridge staging 测试-'));
   try {
     const staging = join(directory, 'staging');
@@ -215,39 +223,10 @@ test('a recycle staging directory turns removals into renames that win-local-ci 
       fs.promises.unlink(${JSON.stringify(join(directory, 'file.txt'))}).then(() => fs.rmSync(${JSON.stringify(join(directory, 'gone'))}, { force: true }));
     `;
     const result = spawnSync(process.execPath, ['--require', fileURLToPath(new URL('./recycle-cleanup.cjs', import.meta.url)), '-e', script],
-      { env: { ...process.env, BRIDGE_RECYCLE_STAGING: staging }, encoding: 'utf8' });
+      { env: { ...process.env, BRIDGE_TEST_TEMP_ROOT: directory, BRIDGE_RECYCLE_STAGING: staging }, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     assert.ok(!fs.existsSync(join(directory, 'tree')) && !fs.existsSync(join(directory, 'file.txt')));
-    const [processDir, ...others] = fs.readdirSync(staging);
-    assert.equal(others.length, 0);
-    assert.match(processDir, /^\d+-/u);
-    assert.equal(fs.readFileSync(join(staging, processDir, '1', 'sub', 'a.txt'), 'utf8'), 'a');
-    assert.equal(fs.readFileSync(join(staging, processDir, '2'), 'utf8'), 'f');
-
-    for (const code of ['EXDEV', 'EBUSY', 'EPERM']) {
-      const fallback = mockCleanup('win32', { extraEnv: { BRIDGE_RECYCLE_STAGING: 'D:\\staging' } });
-      fallback.fs.mkdtempSync = prefix => `${prefix}1`;
-      fallback.fs.renameSync = fallback.fs.promises.rename = () => {
-        throw Object.assign(new Error('staging rename failed'), { code });
-      };
-      fallback.fs.rmSync('fixture');
-      await fallback.fs.promises.rm('fixture');
-      assert.equal(fallback.calls.length, 2, `${code} must use native recycling for sync and async removals`);
-    }
-    const failed = mockCleanup('win32', { failure: true, extraEnv: { BRIDGE_RECYCLE_STAGING: 'D:\\staging' } });
-    failed.fs.mkdtempSync = prefix => `${prefix}1`;
-    failed.fs.renameSync = failed.fs.promises.rename = () => {
-      throw Object.assign(new Error('staging rename failed'), { code: 'EPERM' });
-    };
-    assert.throws(() => failed.fs.rmSync('fixture'), { code: 'ENOENT' });
-    await assert.rejects(failed.fs.promises.rm('fixture'), { code: 'ENOENT' });
-    assert.equal(failed.calls.length, 2);
-    failed.fs.renameSync = failed.fs.promises.rename = () => {
-      throw Object.assign(new Error('unexpected staging failure'), { code: 'EIO' });
-    };
-    assert.throws(() => failed.fs.rmSync('fixture'), { code: 'EIO' });
-    await assert.rejects(failed.fs.promises.rm('fixture'), { code: 'EIO' });
-    assert.equal(failed.calls.length, 2);
+    assert.deepEqual(fs.readdirSync(staging), [], 'Owned temporary files must not accumulate in recycle staging');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -370,7 +349,7 @@ test('real system recycle command removes disposable files, readonly items, and 
     const fixture = join(directory, 'disposable.txt');
     await writeFile(fixture, 'infrastructure fixture');
     const result = spawnSync(process.execPath, ['-e', `require('node:fs').unlinkSync(process.argv[1])`, fixture], {
-      env: recycleEnv(), encoding: 'utf8',
+      env: { ...recycleEnv(), BRIDGE_TEST_TEMP_ROOT: '' }, encoding: 'utf8',
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(fs.existsSync(fixture), false);
@@ -389,7 +368,7 @@ test('real system recycle command removes disposable files, readonly items, and 
       await symlink(externalTarget, join(tree, 'linked-dir'), process.platform === 'win32' ? 'junction' : 'dir');
 
       const treeResult = spawnSync(process.execPath, ['-e', `require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })`, tree], {
-        env: recycleEnv(), encoding: 'utf8',
+        env: { ...recycleEnv(), BRIDGE_TEST_TEMP_ROOT: '' }, encoding: 'utf8',
       });
       assert.equal(treeResult.status, 0, treeResult.stderr);
       assert.equal(fs.existsSync(tree), false);
@@ -541,7 +520,7 @@ process.stdout.write('{"state":"success"}\\n');
   }
 });
 
-test('Mac CI stages every command per run and recycles its staging before completion', { skip: process.platform === 'win32' }, async () => {
+test('Mac CI shares owned scratch across commands and deletes it before completion', { skip: process.platform === 'win32' }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bridge-mac-ci-staging-'));
   try {
     const runs = await Promise.all([0, 1].map(async index => {
@@ -557,20 +536,21 @@ test('Mac CI stages every command per run and recycles its staging before comple
       await writeFile(fixture, `
         import { appendFileSync, existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
         import { join } from 'node:path';
-        const staging = process.env.BRIDGE_RECYCLE_STAGING;
-        const renderer = join(process.cwd(), \`renderer-\${process.pid}\`);
+        const root = process.env.BRIDGE_TEST_TEMP_ROOT;
+        const renderer = join(root, \`renderer-\${process.pid}\`);
         mkdirSync(renderer);
         writeFileSync(join(renderer, 'index.html'), 'fixture');
         rmSync(renderer, { recursive: true });
-        appendFileSync(${JSON.stringify(events)}, JSON.stringify({ args: process.argv.slice(2), staging,
-          staged: !!staging && existsSync(staging) && readdirSync(staging).length > 0 }) + '\\n');
+        writeFileSync(join(root, 'leftover.txt'), 'creator owns final cleanup');
+        appendFileSync(${JSON.stringify(events)}, JSON.stringify({ args: process.argv.slice(2), root,
+          cleaned: !existsSync(renderer) }) + '\\n');
       `);
       await writeFile(join(binDir, 'npm'), `#!/bin/sh\nexec "${process.execPath}" --require "${join(repoDir, 'scripts/recycle-cleanup.cjs')}" "${fixture}" "$@"\n`, { mode: 0o755 });
       for (const args of [['init', '-q'], ['add', '.'], ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'fixture']]) {
         assert.equal(spawnSync('git', args, { cwd: repoDir }).status, 0);
       }
       const child = spawn(process.execPath, [join(repoDir, 'scripts/local-ci.mjs'), '--skip-win', '--no-publish'], {
-        cwd: repoDir, env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: repoDir, env: { ...process.env, BRIDGE_TEST_TEMP_ROOT: '', PATH: `${binDir}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'],
       });
       let output = '';
       child.stdout.on('data', chunk => { output += chunk; });
@@ -584,11 +564,11 @@ test('Mac CI stages every command per run and recycles its staging before comple
     for (const run of runs) {
       assert.equal(run.code, 0, run.output);
       assert.ok(run.records.some(record => record.args.join(' ') === 'run verify'));
-      assert.ok(run.records.every(record => record.staging && record.staged), 'Every Mac CI command must inherit staging');
-      assert.equal(new Set(run.records.map(record => record.staging)).size, 1);
-      assert.equal(fs.existsSync(run.records[0].staging), false, 'Run staging must be recycled before completion');
+      assert.ok(run.records.every(record => record.root && record.cleaned), 'Every Mac CI command must inherit owned scratch');
+      assert.equal(new Set(run.records.map(record => record.root)).size, 1);
+      assert.equal(fs.existsSync(run.records[0].root), false, 'Owned scratch must be deleted before completion');
     }
-    assert.notEqual(runs[0].records[0].staging, runs[1].records[0].staging);
+    assert.notEqual(runs[0].records[0].root, runs[1].records[0].root);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -629,7 +609,7 @@ test('a failed Mac leg stops the remote Windows leg so its slot is released', { 
     const stop = calls.find(call => call.includes('taskkill') && call.includes(`win-local-ci-${runId}.ps1`));
     assert.ok(stop, `No remote stop for win-local-ci-${runId}.ps1:\n${calls.join('\n')}`);
     assert.match(stop, /win-fixture/u);
-    assert.ok(stop.includes(`ci-${runId}.bundle`) && stop.includes('bridge-recycle.exe'), stop);
+    assert.ok(stop.includes(`bridge-ci-${runId}`) && stop.includes('Remove-Item -LiteralPath'), stop);
     const logDir = join(repoDir, '.git', 'local-ci', 'logs');
     const [logName] = await readdir(logDir);
     assert.match(await readFile(join(logDir, logName), 'utf8'), /\[MAC\] npm run test:infra exited with code 1/u);
@@ -693,89 +673,128 @@ test('browser E2E binds an ephemeral kernel port via httpServer.listen and local
   assert.match(winCiSource, /"-avd", \$avdName, "-port", "\$emulatorPort"/u);
   assert.match(winCiSource, /\$env:ANDROID_SERIAL = "emulator-\$emulatorPort"/u);
   assert.match(winCiSource, /CI_DIR="\/var\/tmp\/bridge-linux-ci-slot-\$slot"/u);
-  assert.match(winCiSource, /\$recycleStaging = .*recycle-staging-\$slot-[\s\S]*?\$env:BRIDGE_WIN_RECYCLE_EXE = \$recycleExe[\s\S]*?New-Item -ItemType Directory -Force -Path \$recycleStaging[\s\S]*?\$env:BRIDGE_RECYCLE_STAGING = \$recycleStaging[\s\S]*?\} finally \{[\s\S]*?bridge-recycle\.exe" \$recycleStaging/u);
+  assert.match(winCiSource, /\$recycleStaging = Join-Path \$tempDir "qa-staging"/u);
+  assert.match(winCiSource, /if \(\$ownsTempRoot\) \{[\s\S]*?Remove-Item -LiteralPath \$tempDir -Recurse -Force/u);
+  assert.doesNotMatch(winCiSource, /bridge-recycle\.exe" \$recycleStaging/u);
   assert.match(winCiSource, /Invoke-CimMethod -ClassName Win32_Process -MethodName Create[^\n]*start-server/u);
   assert.doesNotMatch(winCiSource, /ci-worktree|refs\/ci\/current|"bridge-ci-api36"/u);
   assert.doesNotMatch(localCiSource, /ci-worktree/u);
 });
 
-test('BRIDGE_RECYCLE_STAGING stages same-volume removals, falls back on EXDEV, propagates non-EXDEV errors, and loads idempotently', async () => {
-  const stageBase = join(tmpdir(), 'bridge-stage');
-  const staged = mockCleanup('darwin', { extraEnv: { BRIDGE_RECYCLE_STAGING: stageBase } });
-  assert.equal(staged.fs[Symbol.for('bridge.recycleCleanupInstalled')], true);
-
-  staged.fs.rmSync(join(tmpdir(), 'item-a'));
-  await staged.fs.promises.unlink(join(tmpdir(), 'item-b'));
-  await new Promise((resolve, reject) => staged.fs.rmdir(join(tmpdir(), 'item-c'), err => err ? reject(err) : resolve()));
-  assert.equal(staged.calls.length, 0);
-  assert.equal(staged.mkdtemps.length, 1);
-  assert.deepEqual(staged.renames.map(([, to]) => to), [
-    join(staged.mkdtemps[0], '1'),
-    join(staged.mkdtemps[0], '2'),
-    join(staged.mkdtemps[0], '3'),
-  ]);
-
-  // Double-require on the same fs module is a no-op and preserves existing install state.
-  staged.reload('unsupported', {});
-  staged.fs.rmSync(join(tmpdir(), 'item-d'));
-  assert.equal(staged.calls.length, 0);
-  assert.equal(staged.renames.at(-1)[1], join(staged.mkdtemps[0], '4'));
-
-  // Cross-volume EXDEV falls back to the OS Recycle Bin command.
-  const exdev = mockCleanup('darwin', { extraEnv: { BRIDGE_RECYCLE_STAGING: stageBase }, renameError: 'EXDEV' });
-  exdev.fs.rmSync('cross-volume-sync');
-  await exdev.fs.promises.rm('cross-volume-async');
-  assert.equal(exdev.calls.length, 2);
-  assert.ok(exdev.calls.every(call => call[0] === '/usr/bin/trash'));
-
-  // Non-EXDEV rename errors surface directly without invoking OS trash or deleting.
-  const eacces = mockCleanup('darwin', { extraEnv: { BRIDGE_RECYCLE_STAGING: stageBase }, renameError: 'EACCES' });
-  assert.throws(() => eacces.fs.rmSync('denied-sync'), { code: 'EACCES' });
-  await assert.rejects(eacces.fs.promises.rm('denied-async'), { code: 'EACCES' });
-  assert.equal(eacces.calls.length, 0);
+test('owned scratch uses native sync, promise and callback APIs; other paths always recycle even with staging set', async () => {
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    const root = join(tmpdir(), 'owned-scratch');
+    const mock = mockCleanup(platform, { extraEnv: { BRIDGE_TEST_TEMP_ROOT: root, BRIDGE_RECYCLE_STAGING: join(root, 'staging') } });
+    for (const method of ['rm', 'unlink', 'rmdir']) {
+      mock.fs[`${method}Sync`](Buffer.from(join(root, 'item')), { recursive: true });
+      await mock.fs.promises[method](pathToFileURL(join(root, 'item')));
+      await new Promise((resolve, reject) => mock.fs[method](join(root, 'item'), error => error ? reject(error) : resolve()));
+    }
+    assert.equal(mock.removals.length, 9);
+    assert.equal(mock.calls.length, 0);
+    assert.equal(mock.exits.length, 0, 'A child must not clean its inherited root');
+    assert.equal(mock.fs[Symbol.for('bridge.recycleCleanupInstalled')], true);
+    mock.reload('unsupported', {});
+    mock.fs.rmSync(join(root, 'another'));
+    assert.equal(mock.removals.length, 10, 'Reloading must not install another wrapper');
+    for (const path of [root + '-sibling/file', join(tmpdir(), 'user-file'), 'artifacts/tests/desktop.xml', 'apps/desktop/out/make/installer.exe']) {
+      mock.fs.rmSync(path);
+      await mock.fs.promises.rm(path);
+    }
+    assert.equal(mock.calls.length, 8);
+    assert.equal(mock.renames.length, 0, 'Non-temporary items must never enter disposable staging');
+  }
+  const failed = mockCleanup('darwin', { failure: true, extraEnv: { BRIDGE_RECYCLE_STAGING: 'staging' } });
+  assert.throws(() => failed.fs.rmSync('user-file'), /trash command failed/);
+  await assert.rejects(failed.fs.promises.rm('user-file'), /trash command failed/);
+  assert.equal(failed.removals.length, 0);
 });
 
-test('runSuites preserves input entries order in summary.json, recycles per-run staging, and retains caller-owned staging', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'bridge suite order-'));
-  const prevStaging = process.env.BRIDGE_RECYCLE_STAGING;
-  delete process.env.BRIDGE_RECYCLE_STAGING;
+test('native deletion uses the checked absolute path across symlink parent traversal', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-checked-path-'));
   try {
-    const fixture = join(directory, 'staged-suite.mjs');
+    const root = join(directory, 'owned');
+    const outside = join(directory, 'outside');
+    await mkdir(root);
+    await mkdir(join(outside, 'child'), { recursive: true });
+    await symlink(join(outside, 'child'), join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+    for (const name of ['sync', 'promise', 'callback']) {
+      await writeFile(join(root, name), 'owned');
+      await writeFile(join(outside, name), 'external sentinel');
+    }
+    const result = spawnSync(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      const root = process.env.BRIDGE_TEST_TEMP_ROOT;
+      (async () => {
+        fs.unlinkSync(root + '/link/../sync');
+        await fs.promises.unlink(root + '/link/../promise');
+        await new Promise((resolve, reject) => fs.unlink(root + '/link/../callback', error => error ? reject(error) : resolve()));
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `], { env: { ...recycleEnv(), BRIDGE_TEST_TEMP_ROOT: root }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    for (const name of ['sync', 'promise', 'callback']) {
+      assert.equal(fs.existsSync(join(outside, name)), true, `${name} must preserve the external sentinel`);
+      assert.equal(await readFile(join(outside, name), 'utf8'), 'external sentinel');
+      assert.equal(fs.existsSync(join(root, name)), false, `${name} must delete the checked owned path`);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('directory symlinks do not authorize deletion of targets outside owned scratch', () => {
+  const root = join(tmpdir(), 'owned-scratch');
+  const mock = mockCleanup('darwin', { extraEnv: { BRIDGE_TEST_TEMP_ROOT: root } });
+  mock.fs.realpathSync = path => path === join(root, 'external-link') ? join(tmpdir(), 'user-directory') : path;
+  mock.fs.unlinkSync(join(root, 'external-link', 'user-file'));
+  assert.equal(mock.calls.length, 1, 'An external target must recycle');
+  assert.equal(mock.removals.length, 0);
+  mock.fs.unlinkSync(join(root, 'external-link'));
+  assert.equal(mock.removals.length, 1, 'The owned link itself is disposable');
+});
+
+test('only the creator cleans its fresh temporary root on exit', () => {
+  const mock = mockCleanup('darwin', { extraEnv: { BRIDGE_TEST_TEMP_ROOT: '' } });
+  assert.equal(mock.mkdtemps.length, 1);
+  assert.equal(mock.exits.length, 1);
+  assert.equal(mock.process.env.BRIDGE_TEST_TEMP_ROOT, mock.mkdtemps[0]);
+  assert.equal(mock.process.env.TMPDIR, mock.mkdtemps[0]);
+  assert.equal(mock.process.env.TEMP, mock.mkdtemps[0]);
+  assert.equal(mock.process.env.TMP, mock.mkdtemps[0]);
+  mock.exits[0]();
+  assert.equal(mock.removals.length, 1);
+  assert.equal(mock.removals[0][1], mock.mkdtemps[0]);
+  assert.equal(mock.calls.length, 0);
+});
+
+test('runSuites preserves summary order and children retain the inherited temporary root', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge suite order-'));
+  try {
+    const fixture = join(directory, 'suite.mjs');
     await writeFile(fixture, `
       import { writeFileSync } from 'node:fs';
-      const metaOut = process.argv[2];
-      const junit = process.argv.at(-1).split('=').slice(1).join('=');
-      writeFileSync(junit, '<testsuites/>');
-      writeFileSync(metaOut, JSON.stringify({ staging: process.env.BRIDGE_RECYCLE_STAGING ?? null }));
+      import { tmpdir } from 'node:os';
+      writeFileSync(process.argv.at(-1).split('=').slice(1).join('='), '<testsuites/>');
+      writeFileSync(process.argv[2], JSON.stringify({ root: process.env.BRIDGE_TEST_TEMP_ROOT, tmp: tmpdir() }));
     `);
-    const firstMeta = join(directory, 'first.json');
-    const secondMeta = join(directory, 'second.json');
-    const entries = [
-      { name: 'first', cwd: directory, command: process.execPath, args: [fixture, firstMeta] },
-      { name: 'second', cwd: directory, command: process.execPath, args: [fixture, secondMeta] },
-    ];
+    const entries = ['first', 'second'].map(name => ({
+      name, cwd: directory, command: process.execPath, args: [fixture, join(directory, `${name}.json`)],
+    }));
     assert.equal(await runSuites(entries, directory), 0);
     const summary = JSON.parse(await readFile(join(directory, 'summary.json'), 'utf8'));
     assert.deepEqual(summary.map(result => result.suite), ['first', 'second']);
-    const first = JSON.parse(await readFile(firstMeta, 'utf8'));
-    const second = JSON.parse(await readFile(secondMeta, 'utf8'));
-    assert.ok(first.staging && first.staging === second.staging, 'child suites share a per-run BRIDGE_RECYCLE_STAGING directory');
-    assert.equal(fs.existsSync(first.staging), false, 'per-run staging directory is recycled after runSuites completes');
-
-    const outerStaging = await mkdtemp(join(tmpdir(), 'bridge outer stage-'));
-    process.env.BRIDGE_RECYCLE_STAGING = outerStaging;
-    try {
-      const outerOut = join(directory, 'outer');
-      const outerMeta = join(directory, 'outer.json');
-      assert.equal(await runSuites([{ name: 'inherited', cwd: directory, command: process.execPath, args: [fixture, outerMeta] }], outerOut), 0);
-      assert.equal(JSON.parse(await readFile(outerMeta, 'utf8')).staging, outerStaging);
-      assert.equal(fs.existsSync(outerStaging), true, 'outer BRIDGE_RECYCLE_STAGING remains owned by caller');
-    } finally {
-      await rm(outerStaging, { recursive: true, force: true });
+    for (const name of ['first', 'second']) {
+      const meta = JSON.parse(await readFile(join(directory, `${name}.json`), 'utf8'));
+      assert.equal(meta.root, process.env.BRIDGE_TEST_TEMP_ROOT);
+      assert.equal(meta.tmp, meta.root);
+      assert.equal(fs.existsSync(meta.root), true, 'Suite children leave the caller-owned root alive');
     }
+    const child = spawnSync(process.execPath, ['-e', 'console.log(process.env.BRIDGE_TEST_TEMP_ROOT)'], {
+      env: { ...recycleEnv(), BRIDGE_TEST_TEMP_ROOT: '' }, encoding: 'utf8',
+    });
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(fs.existsSync(child.stdout.trim()), false, 'A fresh root is removed when its creator exits');
   } finally {
-    if (prevStaging === undefined) delete process.env.BRIDGE_RECYCLE_STAGING;
-    else process.env.BRIDGE_RECYCLE_STAGING = prevStaging;
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -822,7 +841,7 @@ test('win-local-ci builds shared client once, overlaps make:windows:from-client 
   const androidSyncIdx = winCi.indexOf('sync:from-client -w @bridge/mobile');
   const nsisWaitIdx = winCi.indexOf('$nsisProc.WaitForExit()');
   const wslWaitIdx = winCi.indexOf('$wslProc.WaitForExit()');
-  const recycleBundleIdx = winCi.indexOf('Recycle uploaded git bundle');
+  const recycleBundleIdx = winCi.indexOf('Clean uploaded git bundle');
 
   assert.ok(clientBuildIdx !== -1 && nsisParallelIdx > clientBuildIdx && androidSyncIdx > nsisParallelIdx && nsisWaitIdx > androidSyncIdx, 'shared client build precedes parallel make:windows:from-client and Android sync/Gradle');
   assert.ok(wslWaitIdx > nsisWaitIdx, 'WSL2 is joined after Windows + Android QA steps');
@@ -831,7 +850,7 @@ test('win-local-ci builds shared client once, overlaps make:windows:from-client 
   // Keep --no-daemon for now: shared Gradle daemon lifecycle across concurrent ssh win slots is deferred (not yet empirically verified).
   assert.match(winCi, /gradlew\.bat"\s+assembleDebug\s+--no-daemon/u);
   const outerFinally = winCi.slice(winCi.indexOf('=== [WIN] ALL WINDOWS'));
-  assert.ok(outerFinally.indexOf('StandardInput.Close()') !== -1 && outerFinally.indexOf('StandardInput.Close()') < outerFinally.indexOf('Recycle uploaded git bundle'), 'WSL2 stdin pipe closes in outer finally before recycling BundlePath');
+  assert.ok(outerFinally.indexOf('StandardInput.Close()') !== -1 && outerFinally.indexOf('StandardInput.Close()') < outerFinally.indexOf('Clean uploaded git bundle'), 'WSL2 stdin pipe closes in outer finally before recycling BundlePath');
   assert.ok(recycleBundleIdx > wslWaitIdx);
 });
 

@@ -72,7 +72,7 @@ if ($null -eq $installer) {
   throw "Windows NSIS installer was not found. Run npm run make:windows first."
 }
 
-$qaParent = if ($env:RUNNER_ENVIRONMENT -ne "github-hosted" -and $env:BRIDGE_RECYCLE_STAGING) { $env:BRIDGE_RECYCLE_STAGING } else { $env:TEMP }
+$qaParent = if ($env:BRIDGE_RECYCLE_STAGING) { $env:BRIDGE_RECYCLE_STAGING } else { $env:TEMP }
 $qaRoot = Join-Path $qaParent ("bridge-packaged-qa-" + [Guid]::NewGuid().ToString("N"))
 $smokeRoot = Join-Path $qaParent ("bridge-packaged-smoke-" + [Guid]::NewGuid().ToString("N"))
 $installRoot = Join-Path $qaParent ("bridge-custom-install-" + [Guid]::NewGuid().ToString("N"))
@@ -310,14 +310,11 @@ try {
         throw "Windows uninstaller failed with exit code $($uninstallResult.ExitCode)."
       }
     }
-    # Hosted Windows runners can reject recycle-bin directory operations.
-    # Retain isolated QA data rather than substitute permanent deletion.
-    Write-Warning "Packaged QA data retained (hosted Windows recycle-bin cleanup is unsupported on some runners): $qaRoot; $smokeRoot; $installRoot"
-  } elseif (-not $env:BRIDGE_RECYCLE_STAGING) {
-    & node.exe --require (Join-Path $PSScriptRoot "recycle-cleanup.cjs") `
-      (Join-Path $PSScriptRoot "clean.mjs") $qaRoot $smokeRoot $installRoot
-    if ($LASTEXITCODE -ne 0) {
-      throw "Packaged QA recycle-bin cleanup failed with exit code $LASTEXITCODE. Inspect remaining paths: $qaRoot; $smokeRoot; $installRoot"
+  }
+  if (-not $env:BRIDGE_RECYCLE_STAGING) {
+    # Only these GUID-named directories were created by this QA run; artifacts and user profiles are outside them.
+    foreach ($scratch in @($qaRoot, $smokeRoot, $installRoot)) {
+      if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
     }
   }
 }

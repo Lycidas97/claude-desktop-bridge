@@ -198,7 +198,7 @@ async function runCli() {
       const startedAt = Date.now();
       const child = spawn(command, commandArgs, {
         cwd: root,
-        env: { ...process.env, ...(prefix === "MAC" ? { BRIDGE_RECYCLE_STAGING: join(tempRoot, "mac-recycle") } : {}), ...extraEnv },
+        env: { ...process.env, ...(prefix === "MAC" ? { BRIDGE_TEST_TEMP_ROOT: tempRoot, TMPDIR: tempRoot, TEMP: tempRoot, TMP: tempRoot } : {}), ...extraEnv },
         stdio: ["ignore", "pipe", "pipe"],
       });
       activeChildren.add(child);
@@ -230,7 +230,6 @@ async function runCli() {
   }
 
   const tempRoot = await mkdtemp(join(tmpdir(), "bridge-local-ci-"));
-  if (!skipMac) await mkdir(join(tempRoot, "mac-recycle"));
   const results = [];
   const sshAlive = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
   let unfinishedWinRunId = null;
@@ -266,22 +265,24 @@ async function runCli() {
         const runId = `${revision.slice(0, 12)}-${process.pid}-${Date.now()}`;
         const bundleLocal = join(tempRoot, `ci-${runId}.bundle`);
         const scriptLocal = resolve(root, "scripts/win-local-ci.ps1");
-        const remoteBundle = `D:/work/cache/temp/ci-${runId}.bundle`;
-        const remoteScript = `D:/work/cache/temp/win-local-ci-${runId}.ps1`;
+        const remoteTemp = `D:/work/cache/temp/bridge-ci-${runId}`;
+        const remoteBundle = `${remoteTemp}/ci-${runId}.bundle`;
+        const remoteScript = `${remoteTemp}/win-local-ci-${runId}.ps1`;
+        const remoteTempWin = remoteTemp.replaceAll("/", "\\");
         const remoteBundleWin = remoteBundle.replaceAll("/", "\\");
         const remoteScriptWin = remoteScript.replaceAll("/", "\\");
 
         await runPrefixed("WIN-SYNC", "git", ["bundle", "create", bundleLocal, "HEAD"]);
-        await runPrefixed("WIN-SYNC", "ssh", [...sshAlive, winHost, 'New-Item -ItemType Directory -Force -Path "D:\\work\\cache\\temp" | Out-Null']);
+        await runPrefixed("WIN-SYNC", "ssh", [...sshAlive, winHost, `New-Item -ItemType Directory -Path "${remoteTempWin}" | Out-Null`]);
+        unfinishedWinRunId = runId;
         await runPrefixed("WIN-SYNC", "scp", ["-q", ...sshAlive, bundleLocal, `${winHost}:${remoteBundle}`]);
         await runPrefixed("WIN-SYNC", "scp", ["-q", ...sshAlive, scriptLocal, `${winHost}:${remoteScript}`]);
 
         const psArgs = [
           ...sshAlive,
           winHost,
-          `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE; if (Test-Path -LiteralPath "${remoteScriptWin}") { if (Test-Path "D:\\work\\cache\\bridge-recycle.exe") { & "D:\\work\\cache\\bridge-recycle.exe" "${remoteScriptWin}" } elseif (Test-Path "D:\\work\\claude-desktop-bridge\\scripts\\recycle-cleanup.cjs") { D:\\work\\tools\\node-26\\node.exe --require D:\\work\\claude-desktop-bridge\\scripts\\recycle-cleanup.cjs D:\\work\\claude-desktop-bridge\\scripts\\clean.mjs "${remoteScriptWin}" }; if ($LASTEXITCODE -ne 0 -and $ec -eq 0) { $ec = $LASTEXITCODE } }; exit $ec`,
+          `$ErrorActionPreference = 'Stop'; $env:BRIDGE_TEST_TEMP_ROOT = "${remoteTempWin}"; try { powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${remoteScriptWin}" -Revision "${revision}" -BundlePath "${remoteBundleWin}"${skipWslLinux ? " -SkipWslLinux" : ""}; $ec = $LASTEXITCODE } finally { Remove-Item -LiteralPath "${remoteTempWin}" -Recurse -Force }; exit $ec`,
         ];
-        unfinishedWinRunId = runId;
         const tWin = await runPrefixed("WIN", "ssh", psArgs);
         unfinishedWinRunId = null;
         results.push(
@@ -297,12 +298,12 @@ async function runCli() {
     }
     if (unfinishedWinRunId) {
       // Windows OpenSSH keeps the remote powershell.exe running after the local ssh client dies, so it would hold
-      // its win-local-ci slot mutex and emulator until it finished on its own. Kill that process tree and recycle
-      // the uploaded bundle/script its own finally would have removed.
+      // its win-local-ci slot mutex and emulator until it finished on its own. Kill that process tree and delete
+      // only the fresh run directory allocated above for its uploaded bundle/script and scratch.
       const stop = spawnSync("ssh", [
         ...sshAlive,
         winHost,
-        `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; foreach ($leftover in @("D:\\work\\cache\\temp\\ci-${unfinishedWinRunId}.bundle", "D:\\work\\cache\\temp\\win-local-ci-${unfinishedWinRunId}.ps1")) { if (Test-Path -LiteralPath $leftover) { & "D:\\work\\cache\\bridge-recycle.exe" $leftover; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } } }; exit 0`,
+        `$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*win-local-ci-${unfinishedWinRunId}.ps1*' } | ForEach-Object { cmd.exe /c "taskkill.exe /PID $($_.ProcessId) /T /F >nul 2>nul" }; if (Test-Path -LiteralPath "D:\\work\\cache\\temp\\bridge-ci-${unfinishedWinRunId}") { Remove-Item -LiteralPath "D:\\work\\cache\\temp\\bridge-ci-${unfinishedWinRunId}" -Recurse -Force }; exit 0`,
       ], { encoding: "utf8" });
       if (stop.status !== 0) {
         console.error(`[WIN] Failed to stop remote win-local-ci-${unfinishedWinRunId}.ps1; its slot stays held until it exits: ${stop.stderr || stop.error}`);

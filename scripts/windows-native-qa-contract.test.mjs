@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -162,7 +163,7 @@ test("packaged QA rejects missing Native capability and an accidentally restored
   }), /provider\.list/u);
 });
 
-test("Windows QA leaves caller-owned staging to its owner and standalone recycle failures still fail", { skip: process.platform !== "win32" }, async () => {
+test("Windows QA retains caller-owned staging and directly cleans standalone scratch with failures surfaced", { skip: process.platform !== "win32" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "bridge-qa-retention-"));
   try {
     const staging = join(directory, "staging");
@@ -183,29 +184,34 @@ test("Windows QA leaves caller-owned staging to its owner and standalone recycle
       }
       Write-Output ("ROOTS=" + (ConvertTo-Json -InputObject $roots -Compress))
       function node.exe { throw "RECYCLE_CALLED" }
+      function Remove-Item {
+        param([string]$LiteralPath, [switch]$Recurse, [switch]$Force)
+        if ($env:BRIDGE_QA_CLEANUP_FAILURE) { throw "TEMP_CLEANUP_FAILED" }
+        Microsoft.PowerShell.Management\\Remove-Item @PSBoundParameters
+      }
       try { if ($env:BRIDGE_QA_TEST_FAILURE) { throw $env:BRIDGE_QA_TEST_FAILURE } } finally {
       ${windowsSource.slice(windowsSource.indexOf("  foreach ($key in $environmentKeys) {", windowsSource.search(/^\} finally \{\r?$/mu)))}
     `);
-    for (const [environment, staged, failure] of [
+    for (const [environment, staged, failure, cleanupFailure = false] of [
       ["github-hosted", false, ""], ["github-hosted", true, ""],
       ["self-hosted", false, ""], ["self-hosted", true, ""],
-      ["github-hosted", true, "QA_ASSERTION_FAILED"], ["self-hosted", true, "QA_ASSERTION_FAILED"],
+      ["github-hosted", true, "QA_ASSERTION_FAILED"], ["self-hosted", false, "QA_ASSERTION_FAILED"],
+      ["self-hosted", false, "", true],
     ]) {
       const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", fixture], {
-        encoding: "utf8", env: { ...process.env, TEMP: directory, TMP: directory, BRIDGE_RECYCLE_STAGING: staged ? staging : "", RUNNER_ENVIRONMENT: environment, BRIDGE_QA_TEST_FAILURE: failure },
+        encoding: "utf8", env: { ...process.env, TEMP: directory, TMP: directory, BRIDGE_RECYCLE_STAGING: staged ? staging : "", RUNNER_ENVIRONMENT: environment, BRIDGE_QA_TEST_FAILURE: failure, BRIDGE_QA_CLEANUP_FAILURE: cleanupFailure ? "1" : "" },
       });
-      const hosted = environment === "github-hosted";
-      if ((hosted || staged) && !failure) {
-        assert.equal(result.status, 0, result.stderr);
-        if (hosted) assert.match(result.stdout, /Packaged QA data retained/u);
-      } else {
+      if (!failure && !cleanupFailure) assert.equal(result.status, 0, result.stderr);
+      else {
         assert.notEqual(result.status, 0);
-        assert.match(result.stderr, new RegExp(failure || "RECYCLE_CALLED", "u"));
+        assert.match(result.stderr, new RegExp(failure || "TEMP_CLEANUP_FAILED", "u"));
       }
+      assert.doesNotMatch(result.stderr, /RECYCLE_CALLED/u);
       const roots = JSON.parse(/ROOTS=(.+)/u.exec(result.stdout)[1]);
       for (const root of roots) {
-        assert.equal(dirname(root), staged && !hosted ? staging : directory);
-        assert.equal(await readFile(join(root, "retained.txt"), "utf8"), "retained");
+        assert.equal(dirname(root), staged ? staging : directory);
+        if (staged || cleanupFailure) assert.equal(await readFile(join(root, "retained.txt"), "utf8"), "retained");
+        else assert.equal(existsSync(root), false, 'Standalone QA deletes only its own scratch');
       }
     }
   } finally {
@@ -315,7 +321,7 @@ test("Windows QA keeps the local public relay, allocates dynamic ports, and isol
   assert.match(windowsSource, /if \(\$env:RUNNER_ENVIRONMENT -eq "github-hosted"\)\s*\{\s*\$installResult = Start-Process -FilePath \$installer\.FullName[\s\S]*?\} else \{[\s\S]*?Join-Path \$installer\.DirectoryName "win-unpacked"[\s\S]*?Copy-Item -LiteralPath \$unpackedDir -Destination \$installRoot -Recurse/u);
   assert.match(windowsSource, /finally\s*\{[\s\S]*?SetEnvironmentVariable\(\$key, \$originalEnvironment\[\$key\], "Process"\)/u);
   assert.match(windowsSource, /\$installPrefix = \[IO\.Path\]::GetFullPath\(\$installRoot\)\.TrimEnd\('\\'\)\s*\+\s*'\\'[\s\S]*?StartsWith\(\$installPrefix,\s*\[StringComparison\]::OrdinalIgnoreCase\)/u);
-  assert.match(windowsSource, /if \(\$env:RUNNER_ENVIRONMENT -eq "github-hosted"\)\s*\{\s*\$uninstaller =[\s\S]*?-ArgumentList @\("\/currentuser", "\/S"\)[\s\S]*?Write-Warning "Packaged QA data retained[\s\S]*?\} elseif \(-not \$env:BRIDGE_RECYCLE_STAGING\) \{[\s\S]*?recycle-cleanup\.cjs/u);
+  assert.match(windowsSource, /if \(\$env:RUNNER_ENVIRONMENT -eq "github-hosted"\)\s*\{\s*\$uninstaller =[\s\S]*?-ArgumentList @\("\/currentuser", "\/S"\)[\s\S]*?if \(-not \$env:BRIDGE_RECYCLE_STAGING\) \{[\s\S]*?Remove-Item -LiteralPath \$scratch -Recurse -Force/u);
   assert.match(windowsSource, /Invoke-NpmScript -Name "test:desktop:pairing"/u);
 });
 
@@ -608,13 +614,14 @@ test("Wait-HttpEndpoint fails immediately when the monitored process exits early
 
 test("reusing a Windows CI slot preserves the previous run's retained staging", { skip: process.platform !== "win32" }, async () => {
   const source = await readFile(new URL("./win-local-ci.ps1", import.meta.url), "utf8");
-  const allocation = source.match(/^\$recycleStaging = .+$/mu)[0];
+  const allocation = source.match(/^\$tempDir = .+$/mu)[0] + '\n' + source.match(/^\$recycleStaging = .+$/mu)[0];
   const directory = await mkdtemp(join(tmpdir(), "bridge-ci-retained-staging-"));
   try {
     const fixture = join(directory, "staging.ps1");
     await writeFile(fixture, `
       $ErrorActionPreference = "Stop"
       $cacheRoot = $env:BRIDGE_QA_TEST_ROOT
+      $ownsTempRoot = $true
       $slot = 0
       ${allocation}
       $retained = $recycleStaging
@@ -629,6 +636,60 @@ test("reusing a Windows CI slot preserves the previous run's retained staging", 
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(await readFile(join(result.stdout.trim(), "evidence.txt"), "utf8"), "retained");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Windows CI restores temporary environment before the caller starts another Node process", { skip: process.platform !== "win32" }, async () => {
+  const source = await readFile(new URL('./win-local-ci.ps1', import.meta.url), 'utf8');
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-ci-temp-env-'));
+  try {
+    const fixture = join(directory, 'environment.ps1');
+    const probe = join(directory, 'next-node.cjs');
+    await writeFile(probe, `process.stdout.write('NEXT_NODE_OK');`);
+    await writeFile(fixture, `
+      $ErrorActionPreference = 'Stop'
+      $keys = @('BRIDGE_TEST_TEMP_ROOT', 'TEMP', 'TMP', 'TMPDIR', 'BRIDGE_RECYCLE_STAGING')
+      $callerRoot = $env:BRIDGE_QA_TEST_ROOT
+      $cacheRoot = $callerRoot
+      $env:TEMP = $env:TMP = $env:TMPDIR = $callerRoot
+      $env:BRIDGE_RECYCLE_STAGING = Join-Path $callerRoot 'caller-staging'
+      if ($env:BRIDGE_ENV_CASE -eq 'inherited') {
+        $env:BRIDGE_TEST_TEMP_ROOT = Join-Path $callerRoot 'inherited'
+        New-Item -ItemType Directory -Path $env:BRIDGE_TEST_TEMP_ROOT | Out-Null
+      } else { [Environment]::SetEnvironmentVariable('BRIDGE_TEST_TEMP_ROOT', $null, 'Process') }
+      $expected = @{}
+      foreach ($key in $keys) { $expected[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+      function Invoke-Checked { param($Label, $Command); & $Command }
+      function Invoke-CiTemp {
+        ${source.match(/^\$temporaryEnvironment =[^]*?(?=^try \{)/mu)?.[0] ?? ''}
+        ${source.match(/^\$ownsTempRoot = .+\r?\n\$tempDir = .+$/mu)[0]}
+        if ($ownsTempRoot) { New-Item -ItemType Directory -Path $tempDir | Out-Null }
+        ${source.match(/^\$recycleStaging = .+$/mu)[0]}
+        ${source.match(/^\$env:(?:BRIDGE_TEST_TEMP_ROOT|TEMP|TMP|TMPDIR|BRIDGE_RECYCLE_STAGING) = .+$/gmu).join('\n')}
+        try {} finally {
+          ${source.match(/^    if \(\$ownsTempRoot\) \{[^]*?^    \}/mu)[0]}
+          ${source.match(/^  foreach \(\$key in \$temporaryEnvironment.Keys\) \{[^]*?^  \}/mu)?.[0] ?? ''}
+        }
+        if (($env:BRIDGE_ENV_CASE -eq 'inherited') -ne (Test-Path -LiteralPath $tempDir)) { throw 'ROOT_OWNERSHIP_CHANGED' }
+      }
+      Invoke-CiTemp
+      & node.exe --require ${JSON.stringify(fileURLToPath(new URL('./recycle-cleanup.cjs', import.meta.url)))} ${JSON.stringify(probe)}
+      if ($LASTEXITCODE -ne 0) { throw 'NEXT_NODE_FAILED' }
+      $actual = @{}
+      foreach ($key in $keys) { $actual[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+      Write-Output ('ENV=' + (ConvertTo-Json -InputObject @{ expected = $expected; actual = $actual } -Compress))
+    `);
+    for (const mode of ['standalone', 'inherited']) {
+      const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', fixture], {
+        env: { ...process.env, BRIDGE_QA_TEST_ROOT: directory, BRIDGE_ENV_CASE: mode }, encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, `${mode}: ${result.stderr}`);
+      assert.match(result.stdout, /NEXT_NODE_OK/u);
+      const { expected, actual } = JSON.parse(/ENV=(.+)/u.exec(result.stdout)[1]);
+      assert.deepEqual(actual, expected, `${mode} must restore the caller's temporary environment`);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -708,7 +769,7 @@ test("WSL background runner executes script, propagates fail-fast exit codes, an
   const joinEnd = source.indexOf('Write-Output "=== [WIN] ALL WINDOWS');
   const outerFinallyStart = source.indexOf("} finally {", joinEnd);
   const cleanupStart = source.indexOf("if ($null -ne $wslProc)", outerFinallyStart);
-  const cleanupEnd = source.indexOf("if ($slot -ge 0", cleanupStart);
+  const cleanupEnd = source.indexOf("if (Test-Path -LiteralPath $BundlePath)", cleanupStart);
   assert.ok(
     encodingStart !== -1 && encodingEnd > encodingStart &&
     launchStart !== -1 && launchEnd > launchStart &&

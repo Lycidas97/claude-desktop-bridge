@@ -26,18 +26,19 @@ afterEach(async () => {
 });
 
 describe("desktop configuration", () => {
-  it("defaults old profiles to diagnostics off and persists both toggle states without rotating identity", async () => {
+  it("defaults new and old profiles to diagnostics on and persists both toggle states without rotating identity", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-diag-"));
     directories.push(directory);
     const path = join(directory, "config.json");
     const defaults = { relayUrl: "ws://127.0.0.1:9/ws", desktopName: "Fixture" };
     const repository = new DesktopConfigRepository(path, protector, defaults);
     const created = await repository.loadOrCreate();
-    expect(created.diagnosticsEnabled).toBe(false);
+    expect(created.diagnosticsEnabled).toBe(true);
     const stored = JSON.parse(await readFile(path, "utf8"));
+    expect(stored.diagnosticsEnabled).toBe(true);
     delete stored.diagnosticsEnabled;
     await writeFile(path, JSON.stringify(stored));
-    expect((await repository.load())?.diagnosticsEnabled).toBe(false);
+    expect((await repository.load())?.diagnosticsEnabled).toBe(true);
     for (const diagnosticsEnabled of [true, false]) {
       await repository.save({ ...created, diagnosticsEnabled });
       const restarted = await new DesktopConfigRepository(path, protector, defaults).load();
@@ -545,6 +546,7 @@ describe("desktop configuration", () => {
       protocolVersion: 3,
       pairingEpoch: 1,
       hostDeviceId: "desktop-1",
+      diagnosticsEnabled: true,
       relayUrl: "wss://bridge.example/ws",
       activeEndpoint: "public",
       serviceOrigin: "https://bridge.example",

@@ -44,6 +44,8 @@ vi.mock("react", async (original) => ({
   },
 }));
 
+vi.mock("react-dom", () => ({ createPortal: (children: ReactNode) => children }));
+
 vi.mock("./MobileSheet.js", () => ({
   MobileSheet: ({ title, footer, onClose, children }: {
     title: ReactNode;
@@ -103,6 +105,8 @@ let props: ProjectOrderSheetProps;
 let tree: ReactElement<Record<string, any>>;
 let capturedPointers: Set<number>;
 let vibrateMock: ReturnType<typeof vi.fn>;
+let scrollBody: { scrollTop: number; getBoundingClientRect(): { top: number; bottom: number } };
+let frames: Map<number, FrameRequestCallback>;
 
 function attachListGeometry(currentTree: ReactElement<Record<string, any>>): void {
   const listEl = elements(currentTree).find((el) => el.props.role === "list")!;
@@ -110,14 +114,18 @@ function attachListGeometry(currentTree: ReactElement<Record<string, any>>): voi
   listEl.props.ref.current = {
     children: rowEls.map((_, index) => ({
       getBoundingClientRect: () => ({
-        top: LIST_TOP + index * ROW_HEIGHT,
-        bottom: LIST_TOP + (index + 1) * ROW_HEIGHT,
+        top: LIST_TOP + index * ROW_HEIGHT - scrollBody.scrollTop,
+        bottom: LIST_TOP + (index + 1) * ROW_HEIGHT - scrollBody.scrollTop,
         height: ROW_HEIGHT,
         left: 16,
         right: 359,
         width: 343,
       }),
     })),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    focus: vi.fn(),
+    closest: () => scrollBody,
     setPointerCapture: vi.fn((id: number) => { capturedPointers.add(id); }),
     hasPointerCapture: vi.fn((id: number) => capturedPointers.has(id)),
     releasePointerCapture: vi.fn((id: number) => { capturedPointers.delete(id); }),
@@ -136,6 +144,22 @@ function draw(): void {
     if (!store.dirty) return;
   }
   throw new Error("ProjectOrderSheet did not settle");
+}
+
+function nextFrame(): void {
+  const callbacks = [...frames.values()];
+  frames.clear();
+  callbacks.forEach((callback) => callback(0));
+  draw();
+}
+
+function longCatalog(): void {
+  props = { ...props, projectOrder: Array.from({ length: 30 }, (_, index) => `p${index}`) };
+  draw();
+}
+
+function ghost() {
+  return elements(tree).find((el) => String(el.props.className ?? "").split(" ").includes("project-order-ghost"));
 }
 
 function list() {
@@ -164,6 +188,13 @@ describe("ProjectOrderSheet", () => {
     capturedPointers = new Set();
     vibrateMock = vi.fn(() => true);
     vi.stubGlobal("navigator", { vibrate: vibrateMock });
+    frames = new Map();
+    let frameId = 0;
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId; }));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn((id: number) => frames.delete(id)));
+    vi.stubGlobal("document", { body: {} });
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false })));
+    scrollBody = { scrollTop: 0, getBoundingClientRect: () => ({ top: LIST_TOP, bottom: 380 }) };
     store = { slots: [], index: 0, dirty: false, effects: [], effectIndex: 0, pending: [] };
     props = {
       desktopName: "Studio Mac",
@@ -193,6 +224,94 @@ describe("ProjectOrderSheet", () => {
       expect(elements(tree).some((el) => String(el.props.label ?? "").startsWith(legacyPrefix))).toBe(false);
     }
     expect(elements(tree).filter((el) => el.props.className === "project-order-handle")).toHaveLength(3);
+  });
+
+  it("keeps an edge handle click stationary and does not commit an order", () => {
+    longCatalog();
+    handleFor("p4").props.onPointerDown({ pointerId: 1, pointerType: "mouse", button: 0, clientX: 330, clientY: 352, stopPropagation: vi.fn() });
+    draw();
+    for (let index = 0; index < 10; index += 1) nextFrame();
+    list().props.onPointerUp({ pointerId: 1 });
+    draw();
+    expect(scrollBody.scrollTop).toBe(0);
+    expect(props.onPlaceProjects).not.toHaveBeenCalled();
+    expect(frames.size).toBe(0);
+    expect(elements(tree).find(el => el.type === "select")!.props.value).toBe(4);
+  });
+
+  it("updates a stationary drag's insertion position after external scrolling", () => {
+    longCatalog();
+    handleFor("p1").props.onPointerDown({ pointerId: 1, pointerType: "mouse", button: 0, clientX: 330, clientY: 184, stopPropagation: vi.fn() });
+    draw();
+    list().props.onPointerMove({ pointerId: 1, clientX: 330, clientY: 220 });
+    draw();
+    scrollBody.scrollTop = 224;
+    nextFrame();
+    expect(renderedIds().indexOf("p1")).toBe(5);
+    list().props.onPointerUp({ pointerId: 1 });
+    draw();
+    expect(props.onPlaceProjects).toHaveBeenCalledTimes(1);
+    expect((props.onPlaceProjects as ReturnType<typeof vi.fn>).mock.calls[0]![0].indexOf("p1")).toBe(5);
+  });
+
+  it("uses the latest coordinates while long-press is pending", () => {
+    longCatalog();
+    rows()[4]!.props.onPointerDown({ pointerId: 1, pointerType: "touch", button: 0, clientX: 100, clientY: 341 });
+    list().props.onPointerMove({ pointerId: 1, clientX: 100, clientY: 334 });
+    vi.advanceTimersByTime(220);
+    draw();
+    for (let index = 0; index < 10; index += 1) nextFrame();
+    expect(scrollBody.scrollTop).toBe(0);
+    expect(ghost()!.props.style.transform).toContain("317px");
+  });
+
+  it("lifts a ghost that follows both axes and clears its placeholder on cancel", () => {
+    handleFor("Alpha").props.onPointerDown({ pointerId: 1, pointerType: "mouse", button: 0, clientX: 330, clientY: 128, stopPropagation: vi.fn() });
+    draw();
+    expect(ghost()).toBeDefined();
+    expect(ghost()!.props["aria-hidden"]).toBe(true);
+    expect(ghost()!.props.inert).toBe(true);
+    expect(ghost()!.props.style).toMatchObject({ width: 343, height: 56, transform: "translate3d(16px, 100px, 0) scale(var(--ghost-scale))" });
+    list().props.onPointerMove({ pointerId: 1, clientX: 410, clientY: 148 });
+    draw();
+    expect(ghost()!.props.style.transform).toBe("translate3d(96px, 120px, 0) scale(var(--ghost-scale))");
+    expect(rows()[0]!.props.className).toContain("is-placeholder");
+    list().props.onPointerCancel({ pointerId: 1 });
+    draw();
+    expect(ghost()).toBeUndefined();
+    expect(rows().some(row => row.props.className.includes("is-placeholder"))).toBe(false);
+    expect(frames.size).toBe(0);
+    expect(props.onPlaceProjects).not.toHaveBeenCalled();
+  });
+
+  it("commits once and settles the ghost onto its equal-height placeholder before removing it", () => {
+    handleFor("Alpha").props.onPointerDown({ pointerId: 1, pointerType: "mouse", button: 0, clientX: 330, clientY: 128, stopPropagation: vi.fn() });
+    draw();
+    list().props.onPointerMove({ pointerId: 1, clientX: 330, clientY: 250 });
+    draw();
+    list().props.onPointerUp({ pointerId: 1 });
+    draw();
+    expect(props.onPlaceProjects).toHaveBeenCalledExactlyOnceWith(["p-beta", "p-gamma", "p-alpha"]);
+    expect(frames.size).toBe(0);
+    expect(ghost()!.props.className).toContain("is-dropping");
+    expect(ghost()!.props.style).toMatchObject({ height: ROW_HEIGHT, transform: "translate3d(16px, 212px, 0) scale(var(--ghost-scale))" });
+    vi.advanceTimersByTime(140);
+    draw();
+    expect(ghost()).toBeUndefined();
+    expect(rows().some(row => row.props.className.includes("is-placeholder"))).toBe(false);
+    expect(props.onPlaceProjects).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes the ghost immediately on drop when reduced motion is requested", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
+    handleFor("Alpha").props.onPointerDown({ pointerId: 1, pointerType: "mouse", button: 0, clientX: 330, clientY: 128, stopPropagation: vi.fn() });
+    draw();
+    list().props.onPointerMove({ pointerId: 1, clientX: 330, clientY: 250 });
+    draw();
+    list().props.onPointerUp({ pointerId: 1 });
+    draw();
+    expect(ghost()).toBeUndefined();
+    expect(props.onPlaceProjects).toHaveBeenCalledTimes(1);
   });
 
   it("reorders immediately via the drag handle with live preview and commits once on pointerup", () => {
@@ -317,6 +436,8 @@ describe("ProjectOrderSheet", () => {
 
       expect(renderedIds()).toEqual(["p-alpha", "p-beta", "p-gamma"]);
       expect(list().props.className).not.toContain("is-dragging");
+      expect(ghost()).toBeUndefined();
+      expect(frames.size).toBe(0);
       expect(props.onPlaceProjects).not.toHaveBeenCalled();
     }
   });

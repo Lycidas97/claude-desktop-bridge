@@ -36,7 +36,7 @@ Every pull request on `Lycidas97/claude-desktop-bridge` is checked against these
   - Android APK (`build:android:debug` / `test:android:installed`)
   - Browser mobile viewport E2E (`npm run test:browser`)
   Never claim synthetic fixture or unit tests prove live Claude Desktop, MSIX, TCC, or mobile WebView behavior. Live Desktop and phone behavior is verified by the dogfood build in real use (`docs/dogfood.md`), not by per-PR acceptance sessions.
-- **Evidence budget**: The PR body holds the checklist, exact commands with pass counts, and links. Do not produce per-checkpoint acceptance files under `output/`; the patrol trusts commit statuses from `gh api` and does not re-audit CI logs.
+- **Evidence budget**: The PR body holds the checklist, exact commands with pass counts, and links. Do not produce per-checkpoint acceptance files under `output/`; merging reviewers trust commit statuses from `gh api` and do not re-audit CI logs.
 - **Fix environments in tooling**: A lesson about an environment difference between `ci:local` and another runner (clean release checkout, privileged identity, missing build output) is fixed in the scripts so `ci:local` reproduces it; a `LESSONS.md` entry alone does not close it.
 - **Runtime incidents** (OOM, freeze, leak) follow the reproduce-first procedure in `docs/dogfood.md`; no fix ships for an unreproduced incident.
 - **Explicit `Not Run` accounting**: Every PR body must list unexecuted checks under `## Not Run` with the concrete reason (e.g., `Windows 11 live MSIX check — not touched by client CSS change`). Silent omission is a review blocker.

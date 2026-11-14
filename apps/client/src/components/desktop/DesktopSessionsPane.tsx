@@ -48,7 +48,6 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionEvidenceState, SessionHistoryState } from "../../hooks/useMobileBridge.js";
 import { downloadBridgeArtifact } from "../../lib/artifact-download.js";
 import { useStreamEntrance } from "../../lib/stream-entrance.js";
-import { useLiveReplyExpansion } from "../../lib/live-reply-expansion.js";
 import {
   collapseProjects,
   expandAllProjects,
@@ -266,10 +265,6 @@ export function DesktopSessions({
     entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(selectedId, streamKeys);
-  const expandedReplies = useLiveReplyExpansion(
-    selected && sessionView === "conversation" ? composerKey : undefined,
-    items,
-  );
   const activity = useMemo(() => sessionActivity(selected, items), [selected, items]);
   const grouped = useMemo(() => {
     const activeParentProjects = new Map(
@@ -1110,7 +1105,7 @@ export function DesktopSessions({
                   <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? selectedRuntimeName : entry.item.toolName ?? "Bridge"}</strong></div>
                   {entry.item.text && (
                     entry.item.role === "assistant" || entry.item.role === "user" ? (
-                      <MarkdownText text={entry.item.text} collapsible={!entry.item.live} defaultExpanded={expandedReplies.has(entry.item.id)} onFileClick={openSessionFile} />
+                      <MarkdownText text={entry.item.text} collapsible={!entry.item.live} onFileClick={openSessionFile} />
                     ) : (
                       <div className="conversation-text">{entry.item.text}</div>
                     )

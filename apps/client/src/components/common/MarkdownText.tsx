@@ -908,15 +908,13 @@ export function MarkdownText({
   className = "conversation-text markdown-body",
   onFileClick,
   collapsible = true,
-  defaultExpanded = false,
 }: {
   text: string;
   className?: string;
   onFileClick?: (filePath: string) => void;
   collapsible?: boolean;
-  defaultExpanded?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
+  const [expanded, setExpanded] = useState(!collapsible);
   const contentId = useId();
   const long = collapsible && (text.length > 2_000 || text.split("\n").length > 30);
   const blocks = parseMarkdownBlocks(text);

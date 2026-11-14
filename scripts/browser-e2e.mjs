@@ -109,7 +109,7 @@ async function verifyDesktopDiagnostics(page, host, steps) {
   steps.push("Desktop recorder checkbox defaults off and renders returned local setting states");
 }
 
-async function verifyMobileSafeArea(page, steps, directory) {
+async function verifyMobileSafeArea(page, steps, directory, viewports) {
   const emulation = await page.context().newCDPSession(page);
   for (const [tab, selector, height] of [
     ["会话", ".host-detail", 240],
@@ -117,6 +117,7 @@ async function verifyMobileSafeArea(page, steps, directory) {
     ["设置", ".mobile-settings-content", 520],
   ]) {
     await page.setViewportSize({ width: 375, height });
+    viewports.push({ page: tab, ...page.viewportSize() });
     if (tab !== "会话") {
       await page.getByRole("button", { name: "菜单", exact: true }).click();
       await page.getByRole("navigation", { name: "主要导航", exact: true }).getByRole("button", { name: tab, exact: true }).click();
@@ -2289,6 +2290,7 @@ async function runScenario(theme, scenario) {
   const errors = [];
   const browserLog = [];
   const steps = [];
+  const viewports = [];
   const startedAt = Date.now();
   const serverRoutes = [];
   let context;
@@ -2356,7 +2358,7 @@ async function runScenario(theme, scenario) {
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
-    if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory);
+    if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
     else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory);
@@ -2406,7 +2408,7 @@ async function runScenario(theme, scenario) {
     }
   }
   const result = {
-    name, theme, viewport: "375x812", status: failure || errors.length ? "failed" : "passed",
+    name, theme, viewport: viewports.length ? viewports : "375x812", status: failure || errors.length ? "failed" : "passed",
     durationMs: Date.now() - startedAt, steps, errors,
     ...(failure ? { failure: failure.stack } : {}),
     artifacts: directory,

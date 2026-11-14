@@ -663,6 +663,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const localSubagents = await this.enrichSubagentItems(sessionId, items);
       if (!cursor) {
         const liveProjection = this.messageProjection.get(sessionId) ?? {};
+        if (projection.questions?.size) {
+          for (const [toolUseId, question] of projection.questions) (liveProjection.questions ??= new Map()).set(toolUseId, question);
+          this.messageProjection.set(sessionId, liveProjection);
+        }
         if (!liveProjection.planObserved && projection.planObserved) {
           if (projection.plan) liveProjection.plan = projection.plan;
           else delete liveProjection.plan;

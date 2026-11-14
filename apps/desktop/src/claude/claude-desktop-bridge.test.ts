@@ -3263,6 +3263,25 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("updates a history-loaded native question when its live tool result arrives", async () => {
+    const f = await fixture();
+    try {
+      f.native.page = { hasMore: false, messages: [{ type: "assistant", uuid: "question", timestamp: 10, message: { id: "question-body", content: [
+        { type: "text", text: "选择接下来的检查" },
+        { type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [{ question: "检查哪些？", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }] }] } },
+      ] } }] };
+      await f.bridge.history("local-native");
+      await f.message({ type: "user", uuid: "answer", timestamp: 20, toolUseResult: { answers: { "检查哪些？": "类型检查, 回归测试" } }, message: { content: [
+        { type: "tool_result", tool_use_id: "ask", content: "User has answered your questions." },
+      ] } });
+      expect(f.eventLog.replay().find(event => event.type === "assistant.completed" && event.itemId === "question-body")?.data).toMatchObject({
+        text: "选择接下来的检查", interactivePrompt: { kind: "question", answered: true, toolUseId: "ask", questions: [{
+          answer: "类型检查, 回归测试", options: [{ label: "稍后处理" }, { label: "类型检查", selected: true }, { label: "回归测试", selected: true }],
+        }] },
+      });
+    } finally { await f.close(); }
+  });
+
   it("filters control messages and preserves native question cards", () => {
     const items = nativeHistoryItems("native", [{ type: "user", uuid: "hidden", message: { content: "[Request interrupted by user]" } }, { type: "assistant", uuid: "question", message: { content: [{ type: "tool_use", id: "ask", name: "AskUserQuestion", input: { questions: [{ question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] }] } }] } }]);
     expect(items.some(item => item.text.includes("Request interrupted"))).toBe(false);

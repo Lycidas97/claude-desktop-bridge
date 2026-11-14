@@ -511,7 +511,7 @@ export function conversationItems(
         ...(event.turnId ? { turnId: event.turnId } : {}),
         role: "assistant",
         text,
-        createdAt: mergedTaskPlan ? prev?.createdAt ?? event.timestamp : event.timestamp,
+        createdAt: mergedTaskPlan || interactivePrompt?.kind === "question" ? prev?.createdAt ?? event.timestamp : event.timestamp,
         origin: "claude-host",
         ...(interactivePrompt
           ? { interactivePrompt }

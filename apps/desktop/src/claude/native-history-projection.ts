@@ -8,7 +8,7 @@ import type {
 } from "@bridge/protocol";
 import type { NativeDesktopReceipt } from "../controller/conversation-state-store.js";
 import type { BridgeEventDraft } from "../controller/session-event-log.js";
-import { extractInteractivePrompt, updateClaudeTaskPlan, visibleMessage } from "../transcript/claude-history.js";
+import { applyQuestionAnswers, extractInteractivePrompt, extractToolResultAnswers, updateClaudeTaskPlan, visibleMessage } from "../transcript/claude-history.js";
 import { summarizeNativeToolInput } from "../transcript/transcript-tool-detail.js";
 import { NativeCallError } from "./claude-desktop-inspector.js";
 
@@ -16,6 +16,7 @@ export interface NativeMessageProjection {
   plan?: BridgeTaskPlan;
   planObserved?: boolean;
   tasks?: Map<string, BridgeSubagentSummary>;
+  questions?: Map<string, BridgeHistoryItem>;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -85,15 +86,28 @@ export function nativeHistoryItems(sessionId: string, messages: unknown[], proje
         });
       }
     }
-    if (id && (visible?.role || interactivePrompt)) items.set(id, {
-      id, sessionId, role: visible?.role ?? "assistant",
-      text: attachments.length && Array.isArray(body.content)
-        ? body.content.flatMap(block => typeof block === "string" ? [block] : record(block).type === "text" && typeof record(block).text === "string" ? [String(record(block).text)] : []).join("\n\n")
-        : visible?.text ?? "", createdAt,
-      origin: "claude-desktop", ...(attachments.length ? { attachments } : {}), ...(interactivePrompt ? { interactivePrompt } : {}),
-    });
+    if (id && (visible?.role || interactivePrompt)) {
+      const item: BridgeHistoryItem = {
+        id, sessionId, role: visible?.role ?? "assistant",
+        text: attachments.length && Array.isArray(body.content)
+          ? body.content.flatMap(block => typeof block === "string" ? [block] : record(block).type === "text" && typeof record(block).text === "string" ? [String(record(block).text)] : []).join("\n\n")
+          : visible?.text ?? "", createdAt,
+        origin: "claude-desktop", ...(attachments.length ? { attachments } : {}), ...(interactivePrompt ? { interactivePrompt } : {}),
+      };
+      items.set(id, item);
+      if (interactivePrompt?.kind === "question" && interactivePrompt.toolUseId) {
+        (projection.questions ??= new Map()).set(interactivePrompt.toolUseId, item);
+      }
+    }
     if (Array.isArray(body.content)) for (const rawBlock of body.content) {
       const block = record(rawBlock);
+      if (message.type === "user" && block.type === "tool_result" && typeof block.tool_use_id === "string") {
+        const question = projection.questions?.get(block.tool_use_id);
+        if (question?.interactivePrompt) {
+          items.set(question.id, { ...question, interactivePrompt: applyQuestionAnswers(question.interactivePrompt, extractToolResultAnswers(message)) });
+          projection.questions!.delete(block.tool_use_id);
+        }
+      }
       if (block.type !== "tool_use" || typeof block.id !== "string" || typeof block.name !== "string") continue;
       if (block.name === "mcp__ccd_turn__update_plan" || block.name === "mcp__ccd_turn__wrap_up") {
         const wrapUp = block.name === "mcp__ccd_turn__wrap_up";

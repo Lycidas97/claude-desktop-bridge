@@ -32,7 +32,7 @@
     "probe:relay": "node scripts/relay-contract-probe.mjs",
     "audit:runtime": "npm audit --omit=dev --audit-level=high",
     "migrate:relay-store": "node scripts/migrate-relay-json-to-sqlite.mjs",
-    "typecheck": "npm run typecheck -ws --if-present && npm --prefix plugins/magpie-quota run typecheck",
+    "typecheck": "npm run typecheck -ws --if-present && npm --prefix plugins/magpie-quota run typecheck && npm --prefix plugins/assistant-mail run typecheck",
     "verify": "node scripts/ci-run.mjs verify",
     "ci:local": "node scripts/local-ci.mjs",
     "clean": "npm run clean -ws --if-present"
@@ -57,5 +57,8 @@
     "typescript": "^5.9.2",
     "vitest": "^3.2.4",
     "wait-on": "^8.0.4"
+  },
+  "dependencies": {
+    "imapflow": "^2.11.0"
   }
 }

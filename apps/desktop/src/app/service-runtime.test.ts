@@ -8,6 +8,7 @@ const resources = vi.hoisted(() => {
   return {
     eventLog: resource(), state: resource(),
     evidence: resource(),
+    assistantMail: { ...resource(), on: vi.fn() }, mailOptions: vi.fn(), controllerOptions: vi.fn(),
     broker: resource(), nativeOptions: vi.fn(),
     controller: { ...resource(), attachUpdater: vi.fn(async () => {}), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
     updater: { initialize: vi.fn(async () => {}), close: vi.fn() },
@@ -50,7 +51,8 @@ vi.mock("../evidence/evidence-store.js", () => ({ EvidenceStore: class {} }));
 vi.mock("../evidence/evidence-manager.js", () => ({ EvidenceManager: class { constructor() { return resources.evidence; } } }));
 vi.mock("../evidence/artifact-preview.js", () => ({ ElectronEvidencePreviewRenderer: class {} }));
 vi.mock("../claude/claude-desktop-bridge.js", () => ({ ClaudeDesktopBridge: class { constructor(options: unknown) { resources.nativeOptions(options); return resources.broker; } } }));
-vi.mock("../controller/controller.js", () => ({ DesktopController: class { constructor() { return resources.controller; } } }));
+vi.mock("../../../../plugins/assistant-mail/desktop.js", () => ({ AssistantMailService: class { constructor(options: unknown) { resources.mailOptions(options); return resources.assistantMail; } } }));
+vi.mock("../controller/controller.js", () => ({ DesktopController: class { constructor(...args: unknown[]) { resources.controllerOptions(...args); return resources.controller; } } }));
 vi.mock("../updater/desktop-updater.js", () => ({ DesktopUpdater: class { constructor() { return resources.updater; } } }));
 vi.mock("./diag.js", () => ({ diagnostics: resources.diagnostics }));
 vi.mock("./claude-desktop-lifecycle.js", () => ({ ClaudeDesktopLifecycle: class {} }));
@@ -68,7 +70,7 @@ beforeEach(() => {
   }
 });
 
-it.each(["eventLog", "state", "evidence", "controller"] as const)("unwinds acquired resources when %s initialization fails", async (stage) => {
+it.each(["eventLog", "state", "evidence", "assistantMail", "controller"] as const)("unwinds acquired resources when %s initialization fails", async (stage) => {
   const failure = new Error(`${stage} unavailable`);
   resources[stage].initialize.mockRejectedValueOnce(failure);
   const { createServiceRuntime } = await import("./service-runtime.js");
@@ -76,7 +78,8 @@ it.each(["eventLog", "state", "evidence", "controller"] as const)("unwinds acqui
   expect(resources.eventLog.close).toHaveBeenCalledOnce();
   expect(resources.diagnostics.close).toHaveBeenCalledOnce();
   if (stage !== "eventLog") expect(resources.state.close).toHaveBeenCalledOnce();
-  if (stage === "evidence" || stage === "controller") expect(resources.evidence.close).toHaveBeenCalledOnce();
+  if (stage === "evidence" || stage === "assistantMail" || stage === "controller") expect(resources.evidence.close).toHaveBeenCalledOnce();
+  if (stage === "assistantMail" || stage === "controller") expect(resources.assistantMail.close).toHaveBeenCalledOnce();
   if (stage === "controller") {
     for (const resource of [resources.controller, resources.broker]) {
       expect(resource.close).toHaveBeenCalledOnce();
@@ -132,7 +135,7 @@ it("removes power subscriptions and finishes cleanup after a close failure", asy
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge", onStage });
   expect(onStage.mock.calls.map(([stage]) => stage)).toEqual([
     "读取本机配置与配对信息", "打开事件日志", "打开会话数据库",
-    "打开成果数据库", "初始化运行时与中继连接",
+    "打开成果数据库", "打开邮件数据库", "初始化运行时与中继连接",
   ]);
   resources.controller.close.mockRejectedValueOnce(new Error("relay close failed"));
   const closed = runtime.close();
@@ -183,6 +186,26 @@ it("disables real Native menu automation for a custom inspector origin", async (
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
   try { expect(resources.inspectorOptions!.startup).toBeUndefined(); }
   finally { await runtime.close(); vi.unstubAllEnvs(); }
+});
+
+it("owns one mail service and gives the Controller that exact instance", async () => {
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
+  expect(resources.mailOptions).toHaveBeenCalledExactlyOnceWith({ userDataPath: "/test/bridge" });
+  expect(resources.assistantMail.initialize).toHaveBeenCalledOnce();
+  expect(resources.controllerOptions.mock.calls[0]?.at(-1)).toBe(resources.assistantMail);
+  expect(resources.assistantMail.initialize.mock.invocationCallOrder[0]).toBeLessThan(resources.controller.initialize.mock.invocationCallOrder[0]!);
+  await runtime.close();
+  expect(resources.assistantMail.close).toHaveBeenCalledOnce();
+  expect(resources.controller.close.mock.invocationCallOrder[0]).toBeLessThan(resources.assistantMail.close.mock.invocationCallOrder[0]!);
+});
+
+it("closes mail if native Desktop startup fails after mail initialization", async () => {
+  resources.controller.initialize.mockRejectedValueOnce(new Error("Desktop unavailable"));
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  await expect(createServiceRuntime({ userDataPath: "/test/bridge" })).rejects.toThrow("Desktop unavailable");
+  expect(resources.assistantMail.initialize).toHaveBeenCalledOnce();
+  expect(resources.assistantMail.close).toHaveBeenCalledOnce();
 });
 
 it("assembles the native facade", async () => {

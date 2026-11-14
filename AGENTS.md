@@ -15,6 +15,7 @@ Read the routed document **before** exploring or modifying any path or executing
 | Client Conversation & Workspace UI | `apps/client/src/components/`, `apps/client/src/lib/conversation-timeline.ts` | `docs/subsystems/client-conversation-ui.md` | `npm run ci:run -- test -w @bridge/client && npm run typecheck && npm run test:infra && npm run test:browser` |
 | Client Bridge State & Vault | `apps/client/src/hooks/`, `apps/client/src/lib/` | `docs/subsystems/client-bridge-state.md` | `npm run ci:run -- test -w @bridge/client && npm run typecheck && npm run test:browser` |
 | Relay Server & Quota Plugin | `apps/relay/src/`, `plugins/magpie-quota/` | `docs/subsystems/relay-and-plugins.md` | `npm run ci:run -- test -w @bridge/relay && npm run ci:run -- --prefix plugins/magpie-quota test && npm run typecheck` |
+| Assistant Mail | `plugins/assistant-mail/` | `plugins/assistant-mail/README.md`, `docs/subsystems/desktop-app-service.md` | `npm run ci:run -- --prefix plugins/assistant-mail test && npm run typecheck` |
 | CI, Release & Packaged QA | `.github/workflows/`, `scripts/` | `docs/subsystems/ci-release-qa.md` | `npm run test:infra && npm run verify` |
 
 ## Task & Workflow Routing

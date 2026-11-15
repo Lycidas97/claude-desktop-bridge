@@ -1203,17 +1203,30 @@ async function verifySessionHeader(page, host, steps, directory) {
     await eventually(() => notice.count(), state === "confirmed" ? 0 : 1, `Permission notice state ${state}`);
     assert.ok((await page.locator(".m-header .session-profile-summary").innerText()).includes("不询问"), "A requested mode never replaces the observed header mode");
   }
-  async function checkWrapping(selector, surface, requireMultipleLines = true) {
-    const layout = await page.locator(selector).evaluate(element => {
+  async function checkWrapping(selector, surface, labels, requireMultipleLines = true) {
+    const layout = await page.locator(selector).evaluate((element, labels) => {
       const range = document.createRange();
       range.selectNodeContents(element);
       const rect = element.getBoundingClientRect();
-      return { whiteSpace: getComputedStyle(element).whiteSpace, lines: range.getClientRects().length,
+      const segments = labels.map(label => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const start = node.textContent.indexOf(label);
+          if (start < 0) continue;
+          const segment = document.createRange();
+          segment.setStart(node, start);
+          segment.setEnd(node, start + label.length);
+          return { label, lines: new Set([...segment.getClientRects()].map(rect => rect.top)).size };
+        }
+        return { label, lines: 0 };
+      });
+      return { whiteSpace: getComputedStyle(element).whiteSpace, lines: range.getClientRects().length, segments,
         client: element.clientWidth, scroll: element.scrollWidth, left: rect.left, right: rect.right, width: innerWidth };
-    });
+    }, labels);
     assert.equal(layout.whiteSpace, "normal", `${surface} wraps text`);
     assert.ok((!requireMultipleLines || layout.lines > 1) && layout.scroll <= layout.client + 1, `${surface} retains every line without clipping: ${JSON.stringify(layout)}`);
     assert.ok(layout.left >= 0 && layout.right <= layout.width + 1, `${surface} fits the viewport`);
+    for (const segment of layout.segments) assert.equal(segment.lines, 1, `${surface} keeps ${segment.label} on one line`);
   }
   for (const width of [375, 320]) {
     await page.setViewportSize({ width, height: 812 });
@@ -1223,7 +1236,7 @@ async function verifySessionHeader(page, host, steps, directory) {
         session.allowedActions.canConfigure = canConfigure;
         await host.send({ kind: "snapshot", snapshot: host.snapshot });
         await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Settings availability changes only the header action");
-        await checkWrapping(".m-header .session-profile-summary", `Mobile ${width}px ${font} configure=${canConfigure}`);
+        await checkWrapping(".m-header .session-profile-summary", `Mobile ${width}px ${font} configure=${canConfigure}`, ["不询问", "reasoning high"]);
       }
     }
   }
@@ -1255,7 +1268,7 @@ async function verifySessionHeader(page, host, steps, directory) {
     await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Desktop retains a read-only header when settings are unavailable");
     const summary = page.locator(".desktop-conversation .session-profile-summary");
     await eventually(() => summary.innerText(), `${profile.modelDisplayName} · ${canConfigure ? "计划模式" : "自动模式"} · reasoning high`, "Desktop receives updated mode without a configuration read");
-    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, false);
+    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [canConfigure ? "计划模式" : "自动模式", "reasoning high"], false);
   }
   await page.screenshot({ path: resolve(directory, "desktop-header-readonly-larger.png"), fullPage: true });
   steps.push("mobile 375/320px and narrow desktop show complete model/current mode/reasoning at standard/largest font, with or without settings; confirmed notices disappear");

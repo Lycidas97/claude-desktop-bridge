@@ -20,7 +20,7 @@ import {
   conversationTimeline,
   ownershipLabel,
   restorableSessionId,
-  sessionProfile,
+  formatSessionModelLabel,
   stoppableBridgeTask,
   supportsProviderSwitching,
 } from "../lib/conversation-timeline.js";
@@ -445,7 +445,7 @@ describe("mobile workspace directory", () => {
           allowedActions: { canSend: true, canSteer: true, canInterrupt: false, canConfigure, canSwitchProvider: false, canContinueOfficial: false },
         }] },
       }));
-      expect(html).toContain("Claude Opus 5.5 custom model · 计划模式 · reasoning high");
+      expect(html.replace(/<[^>]+>/gu, "")).toContain("Claude Opus 5.5 custom model · 计划模式 · reasoning high");
       expect(html.includes('aria-label="会话设置"')).toBe(canConfigure);
       expect(html).toContain("Desktop 未切换为「完全授权」");
     } finally { stateSpy.mockReset(); }
@@ -1122,7 +1122,7 @@ describe("restorableSessionId", () => {
   });
 });
 
-describe("sessionProfile", () => {
+describe("formatSessionModelLabel", () => {
   it("uses modelDisplayName from custom gateway catalog when present", () => {
     const baseSession: BridgeSessionInfo = {
       sessionId: "session-1",
@@ -1140,19 +1140,19 @@ describe("sessionProfile", () => {
       effort: "high",
     };
 
-    expect(sessionProfile(baseSession)).toBe("gateway model alpha 1M · HIGH");
-    expect(sessionProfile({
+    expect(formatSessionModelLabel(baseSession)).toBe("gateway model alpha 1M");
+    expect(formatSessionModelLabel({
       ...baseSession,
       modelDisplayName: "Claude Opus 4.6 · Gateway 1M",
-    })).toBe("Claude Opus 4.6 · Gateway 1M · HIGH");
-    expect(sessionProfile({
+    })).toBe("Claude Opus 4.6 · Gateway 1M");
+    expect(formatSessionModelLabel({
       ...baseSession,
       model: "mythos-magpie-1052229916[1m]",
-    })).toBe("默认模型 1M · HIGH");
-    expect(sessionProfile({
+    })).toBe("默认模型 1M");
+    expect(formatSessionModelLabel({
       ...baseSession,
       model: "magpie-2213244526.anthropic.claude-opus-5-5[1m]",
-    })).toBe("opus 5 5 1M · HIGH");
+    })).toBe("opus 5 5 1M");
   });
 });
 

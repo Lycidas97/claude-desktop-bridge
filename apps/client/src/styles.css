@@ -6031,6 +6031,18 @@ button:disabled {
   line-height: 1.45;
 }
 
+.session-profile-summary > .session-profile-part {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.session-profile-summary > .is-model {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* Mobile conversation action strip: every session action lives here as a
    labeled chip instead of competing with the title row for icon space. */
 .session-action-strip {

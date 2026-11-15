@@ -938,7 +938,7 @@ export function DesktopSessions({
                     <Settings2 size={15} />
                     <SessionProfileSummary session={selected} />
                   </button>
-                ) : <SessionProfileSummary session={selected} />}
+                ) : <span className="session-profile-trigger is-static"><SessionProfileSummary session={selected} /></span>}
 
                 {canStop && (
                   <IconButton

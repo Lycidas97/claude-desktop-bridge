@@ -29,7 +29,7 @@ A Light reviewer whose PR grows into Paired scope tells the patrol.
 | Patrol | `group/bridge-runner`: DeepSeek Flash → GPT-6.1-Sol | `bridge-runner` |
 | Fork, reviewer, `LESSONS.md` consolidation, scheduled `bridge-tech-debt-patrol` (no subagents: a weaker scanner's misses cannot be caught by review) | `codex/gpt-6.1-sol` | `GPT-6.1-Sol · Codex` |
 | Extra reviewer for architecture/UI PRs | `group/ui-review`: Opus 5.5 (agy-cli → Claude Code) | `ui-review` |
-| `plan-ideator` / `plan-reviewer` | `group/ideator`: GPT-6.1-Sol / `codex/gpt-6.1-sol` | `ideator` / `GPT-6.1-Sol · Codex` |
+| `plan-ideator` / `plan-reviewer` | `group/ideator`: Opus 5.5 → GPT-6.1-Sol / `codex/gpt-6.1-sol` | `ideator` / `GPT-6.1-Sol · Codex` |
 | Drafting Issue bodies, PR descriptions, docs | `group/docs`: Opus 5.5 → DeepSeek Flash | `docs` |
 | Hard bugs | `codex/gpt-6-astra` | `GPT-6-Astra · Codex` |
 
@@ -38,7 +38,7 @@ A Light reviewer whose PR grows into Paired scope tells the patrol.
   ```bash
   magpie model disable '*gemini*'
   magpie group add bridge-runner models=deepseek/deepseek-flash,codex/gpt-6.1-sol routing=order
-  magpie group add ideator models=codex/gpt-6.1-sol routing=order
+  magpie group add ideator models=claude/claude-opus-5-5,codex/gpt-6.1-sol routing=order
   magpie group add docs models=agy-cli/claude-opus-5-5,claude/claude-opus-5-5,deepseek/deepseek-flash routing=order
   magpie group add ui-review models=agy-cli/claude-opus-5-5,claude/claude-opus-5-5 routing=order
   ```

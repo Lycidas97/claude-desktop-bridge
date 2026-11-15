@@ -20,7 +20,6 @@ import {
   textFromContent,
   toolUses,
   transcriptTurnBoundary,
-  type ClaudeForkBoundary,
 } from "./transcript-dag.js";
 
 export {
@@ -28,7 +27,6 @@ export {
   isNonDagTranscriptRecord,
   isNonTurnUserRecord,
   resolveTranscriptParentUuid,
-  type ClaudeForkBoundary,
 };
 export {
   ClaudeTranscriptEvidenceCursor,

@@ -50,10 +50,6 @@ function notify(): void {
   }
 }
 
-export function isDiagEnabled(): boolean {
-  return diagEnabled;
-}
-
 export function setDiagEnabled(enabled: boolean): void {
   if (diagEnabled === enabled) return;
   if (!enabled) {
@@ -75,10 +71,6 @@ export function setDiagEnabled(enabled: boolean): void {
     }, true);
   }
   notify();
-}
-
-export function isDiagDialogOpen(): boolean {
-  return dialogOpen;
 }
 
 export function setDiagDialogOpen(open: boolean): void {

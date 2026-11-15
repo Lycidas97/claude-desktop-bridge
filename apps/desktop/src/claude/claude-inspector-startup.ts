@@ -42,17 +42,19 @@ on run argv
       if exists menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid) then
         if exists menu item "Enable Main Process Debugger" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid) then
           set debugItem to a reference to menu item "Enable Main Process Debugger" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
-          -- NSMenu refreshes its Accessibility checkbox value when the menu opens.
+          -- AXPress queues menu tracking; cancelling immediately can leave it open.
+          -- Electron refreshes checkbox state after the native menu closes.
           click menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
+          delay 0.2
+          perform action "AXCancel" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
+          delay 0.2
           set marked to false
           if exists attribute "AXMenuItemMarkChar" of debugItem then
             set mark to value of attribute "AXMenuItemMarkChar" of debugItem
             set marked to mark is not missing value and mark is not ""
           end if
-          set menuEnabled to enabled of debugItem
-          perform action "AXCancel" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
           if marked then return "enabled"
-          if not menuEnabled then error "Native 的主进程调试菜单不可用；请检查账号与工作区开发者策略"
+          if not enabled of debugItem then error "Native 的主进程调试菜单不可用；请检查账号与工作区开发者策略"
           if item 2 of argv is "press" then
             click debugItem
             return "clicked"

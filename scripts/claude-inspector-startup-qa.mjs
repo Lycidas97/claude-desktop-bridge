@@ -26,7 +26,7 @@ let origin;
 let port;
 let nativeClient;
 let otherProcess;
-async function control(path = '/status') { return (await fetch(origin + path)).json(); }
+async function control(path = '/status') { return (await fetch(origin + path, { signal: AbortSignal.timeout(5_000) })).json(); }
 async function listening() {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(500) });
@@ -71,11 +71,22 @@ async function start() {
   child.once('exit', () => { void writeFile(join(directory, 'electron.log'), logs); });
   assert.equal(await listening(), false);
 }
-async function stop() {
-  if (!child || child.exitCode !== null) return;
-  const exited = once(child, 'exit');
-  await control('/quit');
-  await exited;
+async function stop(fixture = { child, origin }) {
+  if (!fixture.child || fixture.child.exitCode !== null || fixture.child.signalCode !== null) return;
+  const exited = once(fixture.child, 'exit');
+  const timer = setTimeout(() => fixture.child.kill('SIGKILL'), 5_000);
+  try {
+    await fetch(fixture.origin + '/quit', { signal: AbortSignal.timeout(5_000) });
+    const [code, signal] = await exited;
+    evidence.steps.push({ step: 'process-exited', pid: fixture.child.pid, code, signal });
+    assert.deepEqual([code, signal], [0, null], 'Fixture must exit normally; forced cleanup is a failure');
+  } finally {
+    clearTimeout(timer);
+    if (fixture.child.exitCode === null && fixture.child.signalCode === null) {
+      fixture.child.kill('SIGKILL');
+      await exited;
+    }
+  }
 }
 try {
   await start();
@@ -102,6 +113,7 @@ try {
 
   await control('/manual-close');
   assert.equal(await listening(), false);
+  assert.equal(await claudeInspectorMenu(child.pid, false), 'ready', 'Native checkbox must refresh after manual closure');
   await startup.check(false);
   startup = new ClaudeInspectorStartup({ recordPath, processes });
   await startup.check(false);
@@ -161,20 +173,36 @@ try {
   assert.equal(otherStatus.enabled, true);
   await control('/manual-close');
   assert.equal(await claudeInspectorMenu(child.pid, false), 'ready', 'Read the target checkbox instead of the same-name process');
-  evidence.steps.push({ step: 'same-name-processes-targeted-by-pid', presses: 1, otherPresses: 1 });
+  await startup.check(false);
+  await new ClaudeInspectorStartup({ recordPath, processes }).check(false);
+  const targetStatus = await control();
+  assert.equal(targetStatus.presses, 1);
+  assert.equal(targetStatus.enabled, false);
+  assert.equal(await listening(), false);
+  assert.equal(await claudeInspectorMenu(otherProcess.child.pid, true), 'enabled');
+  const otherAfterClose = await (await fetch(otherProcess.origin + '/status', { signal: AbortSignal.timeout(5_000) })).json();
+  assert.equal(otherAfterClose.presses, 1);
+  assert.equal(otherAfterClose.enabled, true);
+  evidence.steps.push({ step: 'same-name-processes-targeted-by-pid', target: targetStatus, other: otherAfterClose });
   evidence.passed = true;
 } catch (error) {
   evidence.passed = false;
   evidence.failure = String(error.stack ?? error);
   throw error;
 } finally {
-  await nativeClient?.close();
-  await stop();
-  if (otherProcess) {
-    const exited = once(otherProcess.child, 'exit');
-    await fetch(otherProcess.origin + '/quit');
-    await exited;
+  try {
+    await nativeClient?.close();
+  } finally {
+    for (const fixture of [{ child, origin }, ...(otherProcess ? [otherProcess] : [])]) {
+      try {
+        await stop(fixture);
+      } catch (error) {
+        evidence.passed = false;
+        (evidence.cleanupFailures ??= []).push(String(error.stack ?? error));
+        process.exitCode = 1;
+      }
+    }
+    await writeFile(join(output, 'result.json'), JSON.stringify(evidence, null, 2) + '\n');
+    console.log(JSON.stringify(evidence, null, 2));
   }
-  await writeFile(join(output, 'result.json'), JSON.stringify(evidence, null, 2) + '\n');
-  console.log(JSON.stringify(evidence, null, 2));
 }

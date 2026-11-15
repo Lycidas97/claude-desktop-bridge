@@ -77,6 +77,11 @@ vi.mock("../lib/vault.js", () => ({
     saveMessage: harness.saveMessage, addOutbox: harness.addOutbox, updateLanRelay: vi.fn(), setDesktopRelay: vi.fn().mockResolvedValue(undefined),
     importPairing: vi.fn().mockResolvedValue(undefined),
     getHost: vi.fn().mockResolvedValue({ relayEndpoints: [] }),
+    listHosts: vi.fn().mockResolvedValue([]),
+    touchHost: vi.fn().mockResolvedValue(undefined),
+    setRelayUrl: vi.fn().mockResolvedValue(undefined),
+    removeHost: vi.fn().mockResolvedValue(undefined),
+    removeDeviceArtifacts: vi.fn().mockResolvedValue(undefined),
     listMessages: harness.listMessages, listOutbox: vi.fn().mockResolvedValue([]), removeOutbox: vi.fn().mockResolvedValue(undefined),
   },
 }));
@@ -154,6 +159,11 @@ beforeEach(() => {
   harness.addOutbox.mockReset().mockResolvedValue(undefined);
   vi.mocked(bridgeVault.listOutbox).mockReset().mockResolvedValue([]);
   vi.mocked(bridgeVault.removeOutbox).mockReset().mockResolvedValue(undefined);
+  vi.mocked(bridgeVault.importPairing).mockClear();
+  vi.mocked(bridgeVault.removeHost).mockClear();
+  vi.mocked(bridgeVault.removeDeviceArtifacts).mockClear();
+  vi.mocked(bridgeVault.touchHost).mockClear();
+  vi.mocked(bridgeVault.listHosts).mockReset().mockResolvedValue([]);
   const storage = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => storage.get(key) ?? null,
@@ -1665,5 +1675,348 @@ describe("session.create workspace trust capability gating and error code preser
       cwd: "D:\\PARA",
     });
     expect(harness.requests[1]!.request.params).toMatchObject({ cwd: "D:\\PARA", title: "PARA", trustWorkspace: true });
+  });
+});
+
+describe("active-host state transitions", () => {
+  function seedActiveHostState() {
+    const hostSummaryEntry = {
+      hostId: "host-A",
+      roomId: "A",
+      desktopName: "Desktop A",
+      relayUrl: "wss://relay.example/ws",
+      needsRepair: false,
+      status: "standby" as const,
+      activeTurns: 0,
+      path: "public-relay" as const,
+    };
+    const activeSnapshot = nativeSnapshot();
+    activeSnapshot.latestSeq = 12;
+    Object.assign(harness.state, {
+      hosts: [hostSummaryEntry, { ...hostSummaryEntry, hostId: "host-B", roomId: "B", desktopName: "Desktop B" }],
+      activeHostId: "A",
+      desktopName: "Desktop A",
+      connection: "connected",
+      desktopOnline: true,
+      snapshot: activeSnapshot,
+      snapshotSeq: 12,
+      permissions: [{ requestId: "perm-1", sessionId: "session-1", toolUseId: "tool-1", toolName: "Read", input: {}, createdAt: 1, canAllowAlways: false }],
+      focusSessionId: "session-1",
+      histories: { "session-1": { status: "ready", items: [{ id: "m1", sessionId: "session-1", role: "user", text: "hi", createdAt: 1, origin: "claude-desktop" }], hasMore: false } },
+      evidence: { "session-1": { status: "ready", items: [], hasMore: false } },
+      artifactPreviews: { "art-1": { artifactId: "art-1", kind: "text", title: "file.txt", mimeType: "text/plain", text: "ok" } },
+      artifactTransfers: { "art-1": 0.5 },
+      events: [{ eventId: "e-1", seq: 12, timestamp: 12, origin: "system", type: "runtime.updated", sessionId: "session-1", data: {} }],
+      localTurns: [{ requestId: "req-1", idempotencyKey: "k-1", sessionId: "session-1", text: "draft", attachments: [], createdAt: 1, delivery: "local-saved" }],
+      latestSeq: 12,
+      connectionIssue: { code: "waiting-link" as const, message: "waiting" },
+      transportMetrics: { path: "public-relay" as const, rttMs: 42 },
+      pendingOutbound: 3,
+      pairingSync: { roomId: "A", desktopName: "Desktop A", stage: "connecting" as const, progress: 10 },
+      error: "stale error",
+    });
+    harness.refs[0]!.current = harness.state;
+  }
+
+  it("backToHosts clears transportMetrics, pendingOutbound, active-host data, and pending responses while preserving hosts", async () => {
+    const bridge = useMobileBridge();
+    seedActiveHostState();
+    const rejected = vi.fn();
+    harness.refs[6]!.current.set("pending-1", {
+      resolve: vi.fn(),
+      reject: rejected,
+      timer: setTimeout(() => {}, 10_000),
+    });
+    harness.refs[7]!.current.set("env-1", "pending-1");
+    const previousHosts = harness.state.hosts;
+
+    bridge.backToHosts();
+
+    expect(harness.state).toMatchObject({
+      hosts: previousHosts,
+      activeHostId: undefined,
+      desktopName: undefined,
+      connection: "idle",
+      desktopOnline: false,
+      snapshot: undefined,
+      snapshotSeq: 0,
+      permissions: [],
+      focusSessionId: undefined,
+      events: [],
+      localTurns: [],
+      latestSeq: 0,
+      connectionIssue: undefined,
+      transportMetrics: undefined,
+      pendingOutbound: 0,
+      pairingSync: undefined,
+      error: undefined,
+    });
+    expect(harness.state.histories).toEqual({});
+    expect(harness.state.evidence).toEqual({});
+    expect(harness.state.artifactPreviews).toEqual({});
+    expect(harness.state.artifactTransfers).toEqual({});
+    expect(harness.refs[6]!.current.size).toBe(0);
+    expect(harness.refs[7]!.current.size).toBe(0);
+    expect(rejected).toHaveBeenCalledOnce();
+  });
+
+  it("clears all active-host fields and restores prior identity when replacement pair fails before handshake", async () => {
+    vi.useFakeTimers();
+    const bridge = useMobileBridge();
+    seedActiveHostState();
+    localStorage.setItem("bridge.mobile.last-active-host.v1", "A");
+    const paired = await ActualBridgeCrypto.createDevicePairing({
+      hostId: "host-A",
+      roomId: "A",
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Desktop A",
+    });
+    const fromPairing = vi.spyOn(ActualBridgeCrypto, "fromPairing").mockRejectedValueOnce(new Error("prepared pairing failed"));
+    const previousHosts = harness.state.hosts;
+    try {
+      await expect(bridge.pair(paired.pairing)).resolves.toBe(false);
+      expect(bridgeVault.importPairing).not.toHaveBeenCalled();
+      expect(localStorage.getItem("bridge.mobile.last-active-host.v1")).toBe("A");
+      expect(harness.state).toMatchObject({
+        loading: false,
+        hosts: previousHosts,
+        activeHostId: undefined,
+        desktopName: undefined,
+        connection: "closed",
+        desktopOnline: false,
+        snapshot: undefined,
+        snapshotSeq: 0,
+        permissions: [],
+        focusSessionId: undefined,
+        events: [],
+        localTurns: [],
+        latestSeq: 0,
+        connectionIssue: undefined,
+        transportMetrics: undefined,
+        pendingOutbound: 0,
+        pairingSync: undefined,
+      });
+      expect(harness.state.histories).toEqual({});
+      expect(harness.state.evidence).toEqual({});
+      expect(harness.state.artifactPreviews).toEqual({});
+      expect(harness.state.artifactTransfers).toEqual({});
+    } finally {
+      fromPairing.mockRestore();
+      vi.clearAllTimers();
+    }
+  });
+
+  it("rejects mismatched pairingEpoch before importPairing and leaves no leaked active-host state", async () => {
+    vi.useFakeTimers();
+    const bridge = useMobileBridge();
+    seedActiveHostState();
+    localStorage.setItem("bridge.mobile.last-active-host.v1", "A");
+    const paired = await ActualBridgeCrypto.createDevicePairing({
+      hostId: "host-A",
+      roomId: "A",
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Desktop A",
+    });
+    paired.pairing.pairingEpoch = 5;
+    const crypto = hostCrypto("A");
+    const fromPairing = vi.spyOn(ActualBridgeCrypto, "fromPairing").mockResolvedValueOnce(crypto);
+    const mismatched = nativeSnapshot();
+    mismatched.host = { ...mismatched.host, hostId: "host-A", pairingEpoch: 4 };
+    harness.respond = async (request) => request.method === "snapshot.get" ? { snapshot: mismatched } : {};
+    const previousHosts = harness.state.hosts;
+    try {
+      await expect(bridge.pair(paired.pairing)).resolves.toBe(false);
+      expect(bridgeVault.importPairing).not.toHaveBeenCalled();
+      expect(localStorage.getItem("bridge.mobile.last-active-host.v1")).toBe("A");
+      expect(harness.state).toMatchObject({
+        hosts: previousHosts,
+        activeHostId: undefined,
+        connection: "closed",
+        focusSessionId: undefined,
+        events: [],
+        localTurns: [],
+        latestSeq: 0,
+        pendingOutbound: 0,
+        transportMetrics: undefined,
+        snapshot: undefined,
+        snapshotSeq: 0,
+        permissions: [],
+      });
+      expect(harness.state.histories).toEqual({});
+      expect(harness.state.evidence).toEqual({});
+      expect(harness.state.artifactPreviews).toEqual({});
+      expect(harness.state.artifactTransfers).toEqual({});
+    } finally {
+      fromPairing.mockRestore();
+      vi.clearAllTimers();
+    }
+  });
+
+  it("forgetHost clears active-host state when removing active host and preserves it when removing another host", async () => {
+    const bridge = useMobileBridge();
+    seedActiveHostState();
+    localStorage.setItem("bridge.mobile.last-active-host.v1", "A");
+
+    await bridge.forgetHost("B");
+    expect(harness.state.hosts.map((host: { roomId: string }) => host.roomId)).toEqual(["A"]);
+    expect(harness.state.activeHostId).toBe("A");
+    expect(harness.state.histories["session-1"]?.items).toHaveLength(1);
+    expect(localStorage.getItem("bridge.mobile.last-active-host.v1")).toBe("A");
+
+    await bridge.forgetHost("A");
+    expect(harness.state.hosts).toEqual([]);
+    expect(harness.state).toMatchObject({
+      activeHostId: undefined,
+      desktopName: undefined,
+      connection: "idle",
+      desktopOnline: false,
+      snapshot: undefined,
+      snapshotSeq: 0,
+      permissions: [],
+      focusSessionId: undefined,
+      events: [],
+      localTurns: [],
+      latestSeq: 0,
+      transportMetrics: undefined,
+      pendingOutbound: 0,
+      pairingSync: undefined,
+    });
+    expect(harness.state.histories).toEqual({});
+    expect(harness.state.evidence).toEqual({});
+    expect(harness.state.artifactPreviews).toEqual({});
+    expect(harness.state.artifactTransfers).toEqual({});
+    expect(localStorage.getItem("bridge.mobile.last-active-host.v1")).toBeNull();
+  });
+
+  it("preserves current-host session data on same-host retryConnection and resets it when switching hosts", async () => {
+    vi.useFakeTimers();
+    const bridge = useMobileBridge();
+    seedActiveHostState();
+    const preservedHistory = harness.state.histories;
+    const preservedTransfers = harness.state.artifactTransfers;
+    const cryptoB = hostCrypto("B");
+    harness.refs[2]!.current.set("B", cryptoB);
+    try {
+      await bridge.retryConnection();
+      expect(harness.state.activeHostId).toBe("A");
+      expect(harness.state.desktopOnline).toBe(false);
+      expect(harness.state.focusSessionId).toBe("session-1");
+      expect(harness.state.histories).toBe(preservedHistory);
+      expect(harness.state.artifactTransfers).toBe(preservedTransfers);
+      expect(harness.state.snapshot.latestSeq).toBe(12);
+
+      await bridge.selectHost("B", "session-B");
+      expect(harness.state.activeHostId).toBe("B");
+      expect(harness.state.focusSessionId).toBe("session-B");
+      expect(harness.state.histories).toEqual({});
+      expect(harness.state.artifactTransfers).toEqual({});
+      expect(harness.state.events).toEqual([]);
+      expect(harness.state.localTurns).toEqual([]);
+      expect(harness.state.latestSeq).toBe(0);
+    } finally {
+      bridge.backToHosts();
+      vi.clearAllTimers();
+    }
+  });
+
+  it("commits paired host into hosts list even when a newer snapshot arrives before importPairing finishes", async () => {
+    vi.useFakeTimers();
+    const bridge = useMobileBridge();
+    const paired = await ActualBridgeCrypto.createDevicePairing({
+      hostId: "host-P",
+      roomId: "P",
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Desktop P",
+    });
+    const crypto = hostCrypto("P");
+    const fromPairing = vi.spyOn(ActualBridgeCrypto, "fromPairing").mockResolvedValueOnce(crypto);
+    const verifiedSnap = nativeSnapshot();
+    verifiedSnap.host = { ...verifiedSnap.host, hostId: "host-P", pairingEpoch: paired.pairing.pairingEpoch, name: "Desktop P" };
+    verifiedSnap.latestSeq = 10;
+    const pushedSnap = nativeSnapshot();
+    pushedSnap.host = { ...pushedSnap.host, hostId: "host-P", pairingEpoch: paired.pairing.pairingEpoch, name: "Desktop P" };
+    pushedSnap.latestSeq = 11;
+
+    let resolveImport!: (value: ActualBridgeCrypto) => void;
+    vi.mocked(bridgeVault.importPairing).mockImplementationOnce(() => new Promise<ActualBridgeCrypto>((resolve) => {
+      resolveImport = resolve;
+    }));
+    harness.respond = async (request) => request.method === "snapshot.get" ? { snapshot: verifiedSnap } : {};
+
+    try {
+      const pairingPromise = bridge.pair(paired.pairing);
+      await vi.waitFor(() => {
+        expect(resolveImport).toBeDefined();
+      });
+      harness.receive(
+        { payload: { kind: "snapshot", snapshot: pushedSnap }, header: { sentAt: Date.now() } } as DecryptedEnvelope,
+        { id: "push-11" } as EncryptedEnvelope,
+      );
+      expect(harness.state.snapshotSeq).toBe(11);
+
+      resolveImport(crypto);
+      await expect(pairingPromise).resolves.toBe(true);
+      expect(harness.state.snapshotSeq).toBe(11);
+      expect(harness.state.hosts.some((host: { hostId: string; roomId: string }) => host.hostId === "host-P" && host.roomId === "P")).toBe(true);
+    } finally {
+      fromPairing.mockRestore();
+      bridge.backToHosts();
+      vi.clearAllTimers();
+    }
+  });
+
+  it("recovers interrupted history pagination after retryConnection so loadOlderHistory can be retried", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const bridge = useMobileBridge();
+    seedActiveHostState();
+    harness.state.histories["session-1"] = {
+      status: "ready",
+      items: [{ id: "m-2", sessionId: "session-1", role: "user", text: "second", createdAt: 2, origin: "claude-desktop" }],
+      hasMore: true,
+      nextCursor: "cursor-1",
+    };
+    harness.refs[0]!.current = harness.state;
+
+    let firstSent = false;
+    harness.refs[3]!.current = {
+      state: "connected",
+      close() {},
+      async sendEnvelope({ request }: { request: BridgeRequest }) {
+        harness.requests.push({ host: "A", request });
+        firstSent = true;
+      },
+    };
+    harness.respond = async (request) => {
+      if (request.method !== "session.history") return {};
+      return {
+        history: {
+          items: [{ id: "m-1", sessionId: "session-1", role: "user", text: "first", createdAt: 1, origin: "claude-desktop" }],
+          hasMore: false,
+        },
+      };
+    };
+
+    try {
+      const inflight = bridge.loadOlderHistory("session-1");
+      expect(harness.state.histories["session-1"]?.status).toBe("loading");
+      await vi.waitFor(() => expect(firstSent).toBe(true));
+      expect(harness.refs[6]!.current.size).toBe(1);
+
+      await bridge.retryConnection();
+      await inflight;
+      expect(harness.refs[6]!.current.size).toBe(0);
+      expect(harness.state.histories["session-1"]).toMatchObject({
+        status: "ready",
+        hasMore: true,
+        nextCursor: "cursor-1",
+      });
+
+      await bridge.loadOlderHistory("session-1");
+      expect(harness.state.histories["session-1"]?.status).toBe("ready");
+      expect(harness.state.histories["session-1"]?.items.map((item: { id: string }) => item.id)).toEqual(["m-1", "m-2"]);
+    } finally {
+      bridge.backToHosts();
+      vi.clearAllTimers();
+    }
   });
 });

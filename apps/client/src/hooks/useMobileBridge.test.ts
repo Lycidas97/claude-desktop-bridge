@@ -1,17 +1,25 @@
 import type { BridgeEvent, BridgeHostSnapshot, BridgeResponse, PairingBundle } from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
 import {
+  EMPTY_ACTIVE_HOST_STATE,
+  INITIAL_STATE,
   applyEventsToSnapshot,
   applySessionToSnapshot,
   applyEventToTurns,
   applyEventToSnapshot,
   applyPermissionEvent,
+  beginHostSessionState,
+  clearActiveHostState,
   confirmedPairingSnapshot,
+  freshActiveHostState,
+  hydrateStoredHostState,
   mergeBridgeEvents,
   mergeAcceptedDelivery,
   rebaseSnapshot,
   relayLinkAllowsSend,
+  replaceActiveHostSnapshot,
   type LocalTurn,
+  type MobileBridgeState,
 } from "./useMobileBridge.js";
 
 describe("native queue delivery projection", () => {
@@ -1543,5 +1551,415 @@ describe("provider route events", () => {
       data: { messageId: "user-1", scope: "conversation" },
     }, []);
     expect(rewound?.sessions[0]?.contextUsage).toBeUndefined();
+  });
+});
+
+describe("active-host state transition reducers", () => {
+  const makeSnapshot = (latestSeq: number, turnState: "idle" | "running" = "idle"): BridgeHostSnapshot => ({
+    host: {
+      hostId: "host-a",
+      pairingEpoch: 1,
+      name: "Mac A",
+      relayUrl: "wss://relay.example/ws",
+      online: true,
+      lastSeenAt: latestSeq,
+      version: "1.3.2",
+      capabilities: ["claude.native-relay.v1"],
+    },
+    projects: [],
+    sessions: [{
+      sessionId: "session-1",
+      projectId: "project-1",
+      projectName: "project",
+      cwd: "/tmp/project",
+      title: "Session 1",
+      source: "desktop",
+      transport: "claude-desktop-native",
+      ownership: turnState === "running" ? "DESKTOP_NATIVE_RUNNING" : "DESKTOP_NATIVE_IDLE",
+      turnState,
+      lastActivityAt: latestSeq,
+      pendingCount: 0,
+    }],
+    devices: [],
+    runtime: {
+      state: "ready",
+      detail: "Ready",
+      activeTurns: turnState === "running" ? 1 : 0,
+      maxParallelTurns: 2,
+      desktopIntegration: { state: "not-managed", detail: "未启用", enabled: false, canRestart: true },
+    },
+    permissions: [],
+    latestSeq,
+  });
+
+  const seededState = (): MobileBridgeState => ({
+    ...INITIAL_STATE,
+    loading: false,
+    hosts: [
+      {
+        hostId: "host-a",
+        roomId: "room-a",
+        desktopName: "Mac A",
+        relayUrl: "wss://relay.example/ws",
+        needsRepair: false,
+        status: "standby",
+        activeTurns: 0,
+        path: "public-relay",
+      },
+      {
+        hostId: "host-b",
+        roomId: "room-b",
+        desktopName: "Mac B",
+        relayUrl: "wss://relay.example/ws",
+        needsRepair: false,
+        status: "standby",
+        activeTurns: 0,
+        path: "public-relay",
+      },
+    ],
+    activeHostId: "room-a",
+    desktopName: "Mac A",
+    connection: "connected",
+    desktopOnline: true,
+    snapshot: makeSnapshot(12),
+    snapshotSeq: 12,
+    permissions: [],
+    focusSessionId: "session-1",
+    histories: { "session-1": { status: "ready", items: [], hasMore: false } },
+    evidence: { "session-1": { status: "ready", items: [], hasMore: false } },
+    artifactPreviews: {
+      "art-1": {
+        artifactId: "art-1",
+        mimeType: "text/plain",
+        encoding: "utf8",
+        data: "hi",
+        truncated: false,
+        mode: "text",
+        generatedAt: 1,
+      },
+    },
+    artifactTransfers: { "art-1": 0.5 },
+    events: [event(11), event(12)],
+    localTurns: [{
+      requestId: "req-1",
+      idempotencyKey: "idem-1",
+      sessionId: "session-1",
+      text: "live turn",
+      attachments: [],
+      createdAt: 1,
+      delivery: "completed",
+      lastEventSeq: 12,
+    }],
+    latestSeq: 12,
+    connectionIssue: { code: "unreachable", message: "temp" },
+    transportMetrics: {
+      path: "public-relay",
+      endpoint: "wss://relay.example/ws",
+      state: "connected",
+      rttMs: 40,
+    },
+    pendingOutbound: 2,
+    pairingSync: { roomId: "room-a", desktopName: "Mac A", stage: "syncing", progress: 60 },
+    error: "stale error",
+  });
+
+  it("freezes EMPTY_ACTIVE_HOST_STATE and clones mutable containers per call", () => {
+    expect(Object.isFrozen(EMPTY_ACTIVE_HOST_STATE)).toBe(true);
+    expect(Object.isFrozen(EMPTY_ACTIVE_HOST_STATE.histories)).toBe(true);
+    expect(Object.isFrozen(EMPTY_ACTIVE_HOST_STATE.events)).toBe(true);
+
+    const a = freshActiveHostState();
+    const b = freshActiveHostState();
+    a.events.push(event(1));
+    a.histories["s1"] = { status: "ready", items: [], hasMore: false };
+    expect(b.events).toEqual([]);
+    expect(b.histories).toEqual({});
+  });
+
+  it("beginHostSessionState preserves same-host live data or resets on host switch", () => {
+    const start = seededState();
+    const sameHost = beginHostSessionState(start, "room-a", "Mac A", { preserveCurrentHost: true });
+    expect(sameHost.connection).toBe("connecting");
+    expect(sameHost.desktopOnline).toBe(false);
+    expect(sameHost.connectionIssue).toBeUndefined();
+    expect(sameHost.transportMetrics).toBeUndefined();
+    expect(sameHost.error).toBeUndefined();
+    expect(sameHost.focusSessionId).toBe("session-1");
+    expect(sameHost.histories).toBe(start.histories);
+    expect(sameHost.evidence).toBe(start.evidence);
+    expect(sameHost.artifactPreviews).toBe(start.artifactPreviews);
+    expect(sameHost.artifactTransfers).toBe(start.artifactTransfers);
+    expect(sameHost.events).toEqual(start.events);
+    expect(sameHost.localTurns).toEqual(start.localTurns);
+    expect(sameHost.pendingOutbound).toBe(2);
+    expect(sameHost.pairingSync).toEqual(start.pairingSync);
+
+    const switched = beginHostSessionState(start, "room-b", "Mac B", { preserveCurrentHost: true });
+    expect(switched.activeHostId).toBe("room-b");
+    expect(switched.desktopName).toBe("Mac B");
+    expect(switched.connection).toBe("connecting");
+    expect(switched.snapshot).toBeUndefined();
+    expect(switched.histories).toEqual({});
+    expect(switched.evidence).toEqual({});
+    expect(switched.artifactPreviews).toEqual({});
+    expect(switched.artifactTransfers).toEqual({});
+    expect(switched.events).toEqual([]);
+    expect(switched.localTurns).toEqual([]);
+    expect(switched.focusSessionId).toBeUndefined();
+    expect(switched.latestSeq).toBe(0);
+    expect(switched.pendingOutbound).toBe(0);
+    expect(switched.hosts).toEqual(start.hosts);
+    expect(switched.pairingSync).toEqual(start.pairingSync);
+  });
+
+  it("hydrateStoredHostState merges without regressing live state, marks rejected turns uncertain, and keeps desktopOnline false", () => {
+    const reconnecting = beginHostSessionState(seededState(), "room-a", "Mac A", { preserveCurrentHost: true });
+    const hydrated = hydrateStoredHostState(
+      reconnecting,
+      "room-a",
+      {
+        snapshot: makeSnapshot(10, "running"),
+        snapshotSeq: 10,
+        permissions: [],
+        events: [event(9), event(13)],
+        evidence: {
+          "session-2": { status: "ready", items: [], hasMore: false },
+        },
+        artifactPreviews: {
+          "art-2": {
+            artifactId: "art-2",
+            mimeType: "text/plain",
+            encoding: "utf8",
+            data: "cached",
+            truncated: false,
+            mode: "text",
+            generatedAt: 2,
+          },
+        },
+        localTurns: [
+          {
+            requestId: "req-1",
+            idempotencyKey: "idem-1",
+            sessionId: "session-1",
+            text: "live turn",
+            attachments: [],
+            createdAt: 1,
+            delivery: "local-saved",
+          },
+          {
+            requestId: "req-rejected",
+            idempotencyKey: "idem-2",
+            sessionId: "session-1",
+            text: "stuck",
+            attachments: [],
+            createdAt: 2,
+            delivery: "relay-received",
+          },
+        ],
+        latestSeq: 13,
+      },
+      {
+        rejectedRequestIds: new Set(["req-1", "req-rejected"]),
+        pendingOutbound: 1,
+      },
+    );
+    expect(hydrated.desktopOnline).toBe(false);
+    expect(hydrated.snapshotSeq).toBe(12);
+    expect(hydrated.latestSeq).toBe(13);
+    expect(hydrated.events.map((item) => item.seq)).toEqual([9, 11, 12, 13]);
+    expect(Object.keys(hydrated.evidence).sort()).toEqual(["session-1", "session-2"]);
+    expect(Object.keys(hydrated.artifactPreviews).sort()).toEqual(["art-1", "art-2"]);
+    expect(hydrated.localTurns.find((turn) => turn.requestId === "req-1")?.delivery).toBe("completed");
+    expect(hydrated.localTurns.find((turn) => turn.requestId === "req-rejected")?.delivery).toBe("uncertain");
+    expect(hydrated.pendingOutbound).toBe(1);
+    expect(hydrated.hosts[0]?.status).toBe("standby");
+  });
+
+  it("preserves newer uncertain live delivery when older host-received cache is merged", () => {
+    const baseState = seededState();
+    const uncertainTurn: LocalTurn = {
+      requestId: "req-native",
+      idempotencyKey: "idem-native",
+      sessionId: "session-1",
+      text: "Check status",
+      attachments: [],
+      createdAt: 10,
+      delivery: "uncertain",
+      lastEventSeq: 2,
+      error: "Inspector disconnected",
+    };
+    const reconnecting = beginHostSessionState({
+      ...baseState,
+      localTurns: [uncertainTurn],
+      events: [],
+    }, "room-a", "Mac A", { preserveCurrentHost: true });
+    const hydrated = hydrateStoredHostState(reconnecting, "room-a", {
+      snapshot: makeSnapshot(12),
+      snapshotSeq: 12,
+      permissions: [],
+      events: [{
+        eventId: "ev-uncertain-2",
+        seq: 2,
+        timestamp: 2,
+        origin: "claude-desktop",
+        type: "message.delivery",
+        sessionId: "session-1",
+        data: { requestId: "req-native", delivery: "uncertain", error: "Inspector disconnected" },
+      }],
+      evidence: {},
+      artifactPreviews: {},
+      localTurns: [
+        {
+          requestId: "req-native",
+          idempotencyKey: "idem-native",
+          sessionId: "session-1",
+          text: "Check status",
+          attachments: [],
+          createdAt: 10,
+          delivery: "host-received",
+          lastEventSeq: 1,
+        },
+        {
+          requestId: "req-native-unseq",
+          idempotencyKey: "idem-native-unseq",
+          sessionId: "session-1",
+          text: "Check status 2",
+          attachments: [],
+          createdAt: 11,
+          delivery: "host-received",
+        },
+      ],
+      latestSeq: 12,
+    });
+    expect(hydrated.localTurns.find((turn) => turn.requestId === "req-native")).toMatchObject({
+      delivery: "uncertain",
+      lastEventSeq: 2,
+      error: "Inspector disconnected",
+    });
+
+    const hydratedVsUnseq = hydrateStoredHostState(
+      beginHostSessionState({
+        ...baseState,
+        localTurns: [{ ...uncertainTurn, requestId: "req-native-unseq" }],
+        events: [],
+      }, "room-a", "Mac A", { preserveCurrentHost: true }),
+      "room-a",
+      {
+        snapshot: makeSnapshot(12),
+        snapshotSeq: 12,
+        permissions: [],
+        events: [],
+        evidence: {},
+        artifactPreviews: {},
+        localTurns: [{
+          requestId: "req-native-unseq",
+          idempotencyKey: "idem-native-unseq",
+          sessionId: "session-1",
+          text: "Check status 2",
+          attachments: [],
+          createdAt: 11,
+          delivery: "host-received",
+        }],
+        latestSeq: 12,
+      },
+    );
+    expect(hydratedVsUnseq.localTurns.find((turn) => turn.requestId === "req-native-unseq")).toMatchObject({
+      delivery: "uncertain",
+      lastEventSeq: 2,
+      error: "Inspector disconnected",
+    });
+  });
+
+  it("beginHostSessionState recovers in-flight loading pagination and initial open states on same-host reconnect", () => {
+    const start: MobileBridgeState = {
+      ...seededState(),
+      histories: {
+        "with-items": {
+          status: "loading",
+          items: [{ id: "m-1", sessionId: "with-items", role: "user", text: "hi", createdAt: 1, origin: "claude-desktop" }],
+          hasMore: true,
+          nextCursor: "c-1",
+        },
+        "empty-open": {
+          status: "loading",
+          items: [],
+          hasMore: false,
+        },
+      },
+      evidence: {
+        "with-items": {
+          status: "loading",
+          items: [],
+          hasMore: true,
+          nextCursor: "ev-1",
+        },
+        "empty-open": {
+          status: "loading",
+          items: [],
+          hasMore: false,
+        },
+      },
+    };
+    const reconnecting = beginHostSessionState(start, "room-a", "Mac A", { preserveCurrentHost: true });
+    expect(reconnecting.histories["with-items"]).toMatchObject({ status: "ready", hasMore: true, nextCursor: "c-1" });
+    expect(reconnecting.histories["empty-open"]).toBeUndefined();
+    expect(reconnecting.evidence["with-items"]).toMatchObject({ status: "idle", hasMore: true, nextCursor: "ev-1" });
+    expect(reconnecting.evidence["empty-open"]).toBeUndefined();
+  });
+
+  it("replaceActiveHostSnapshot skips stale snapshots unless metadata overrides are present and preserves newer snapshot when committing hosts", () => {
+    const start = seededState();
+    expect(replaceActiveHostSnapshot(start, "room-a", makeSnapshot(11))).toBe(start);
+
+    const committedHost = {
+      hostId: "host-new",
+      roomId: "room-new",
+      desktopName: "New Mac",
+      relayUrl: "wss://relay.example/ws",
+      needsRepair: false,
+      status: "standby" as const,
+      activeTurns: 0,
+      path: "public-relay" as const,
+    };
+    const committedDuringPush = replaceActiveHostSnapshot(
+      { ...start, snapshot: makeSnapshot(11, "running"), snapshotSeq: 11, latestSeq: 11 },
+      "room-new",
+      makeSnapshot(10),
+      {
+        loading: false,
+        desktopOnline: true,
+        hosts: [committedHost],
+        pairingSync: { roomId: "room-new", desktopName: "New Mac", stage: "syncing", progress: 66 },
+      },
+    );
+    expect(committedDuringPush.snapshotSeq).toBe(11);
+    expect(committedDuringPush.hosts).toHaveLength(1);
+    expect(committedDuringPush.hosts[0]).toMatchObject({ roomId: "room-new", status: "running", activeTurns: 1 });
+    expect(committedDuringPush.desktopOnline).toBe(true);
+
+    const updated = replaceActiveHostSnapshot(start, "room-a", makeSnapshot(15, "running"), { clearError: true });
+    expect(updated.snapshotSeq).toBe(15);
+    expect(updated.latestSeq).toBe(15);
+    expect(updated.error).toBeUndefined();
+    expect(updated.hosts[0]?.status).toBe("running");
+    expect(updated.hosts[0]?.activeTurns).toBe(1);
+  });
+
+  it("clearActiveHostState resets active-host fields to fresh empty clones", () => {
+    const start = seededState();
+    const cleared = clearActiveHostState(start, { connection: "closed", error: "revoked" });
+    expect(cleared.hosts).toEqual(start.hosts);
+    expect(cleared.connection).toBe("closed");
+    expect(cleared.error).toBe("revoked");
+    expect(cleared.activeHostId).toBeUndefined();
+    expect(cleared.histories).toEqual({});
+    expect(cleared.evidence).toEqual({});
+    expect(cleared.artifactPreviews).toEqual({});
+    expect(cleared.artifactTransfers).toEqual({});
+    expect(cleared.events).toEqual([]);
+    expect(cleared.localTurns).toEqual([]);
+    expect(cleared.transportMetrics).toBeUndefined();
+    expect(cleared.pendingOutbound).toBe(0);
+    expect(cleared.pairingSync).toBeUndefined();
   });
 });

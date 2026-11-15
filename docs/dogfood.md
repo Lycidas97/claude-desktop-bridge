@@ -30,7 +30,7 @@ The optional argument can be a specific `main` commit. The command fetches `orig
 
 The printed `apk` path is under `output/dogfood-android/<sha12>-<run-id>/Bridge-Android-<sha12>-debug.apk` in the invoking checkout. This only builds and copies the APK; installation on the phone remains manual. No release signing or Play distribution is involved.
 
-Each run owns `D:\work\bridge-android-dogfood-<run-id>` and a local `.staging-*` directory under `output/dogfood-android/`. Both go to the OS Recycle Bin after copying, or on failure; a recycle failure fails the command and leaves the affected path for inspection. The retained APK and the dedicated dependency caches in `D:\work\cache\android-dogfood` remain. The command does not use CI slots, Git worktrees, emulators, or CI status publication.
+Each run owns `D:\work\bridge-android-dogfood-<run-id>` and a local `.staging-*` directory under `output/dogfood-android/`. Both go to the OS Recycle Bin after copying, or on failure. Ctrl-C and SIGTERM cancel the local command; cleanup stops this run's recorded Windows worker and its descendants before recycling. A recycle failure fails the command and leaves the affected path for inspection. The retained APK and the dedicated dependency caches in `D:\work\cache\android-dogfood` remain. The command does not use CI slots, Git worktrees, emulators, or CI status publication.
 
 ## Runtime incidents (OOM, freeze, leak)
 

@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'worker.pid'), [string]$PID)
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 

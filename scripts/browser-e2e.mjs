@@ -1020,7 +1020,7 @@ async function openRename(page, entry) {
 async function verifyRename(page, host, entry, steps) {
   const row = page.locator(`[data-session-id="${sessionId}"]`);
   const beforeTime = await row.locator("small").innerText();
-  const beforeBadge = await row.locator(".session-row-status").innerText();
+  const beforeBadge = await row.locator(".session-row-status:not([aria-label])").innerText();
   const beforeOrder = await page.locator("[data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId));
   const beforeSession = structuredClone(host.session);
   if (entry === "chat") {
@@ -1066,7 +1066,8 @@ async function verifyRename(page, host, entry, steps) {
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   await eventually(() => row.locator("strong").innerText(), renamedTitle, "Renamed chat must update its list row");
   assert.equal(await row.locator("small").innerText(), beforeTime, "Rename must not change displayed activity time");
-  assert.equal(await row.locator(".session-row-status").innerText(), beforeBadge, "Rename must preserve queue state");
+  assert.equal(await row.locator(".session-row-status:not([aria-label])").innerText(), beforeBadge, "Rename must preserve queue state");
+  assert.equal(await row.getByLabel(`${beforeSession.pendingCount} 条排队消息`, { exact: true }).innerText(), String(beforeSession.pendingCount), "Rename must preserve the independent pending count");
   assert.deepEqual(await page.locator("[data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId)), beforeOrder, "Rename must not reorder sessions");
   assert.deepEqual(host.session, { ...beforeSession, title: renamedTitle }, "Host rename changes only the title");
   assert.equal(host.requests.filter((request) => request.method.startsWith("turn.")).length, 0, "Rename must not alter queued turns");
@@ -1754,10 +1755,11 @@ async function verifyNativeCompaction(page, host, steps, directory) {
   assert.equal(await page.locator(".session-activity-elapsed").count(), 0, "User turn age is not shown as compaction duration");
   await page.screenshot({ path: resolve(directory, "native-compaction.png"), fullPage: true });
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
-  await eventually(() => row.locator(".session-row-status").innerText(), "正在压缩上下文", "Catalog badge shares the observed compaction status");
+  await eventually(() => row.locator(".session-row-status:not([aria-label])").innerText(), "正在压缩上下文", "Catalog badge shares the observed compaction status");
   await page.reload({ waitUntil: "domcontentloaded" });
   await row.waitFor();
-  await eventually(() => row.locator(".session-row-status").innerText(), "正在压缩上下文", "Reconnect snapshot retains current compaction status");
+  await eventually(() => row.locator(".session-row-status:not([aria-label])").innerText(), "正在压缩上下文", "Reconnect snapshot retains current compaction status");
+  assert.equal(await row.getByLabel("1 条排队消息", { exact: true }).innerText(), "1", "Compaction retains the independent pending count after reconnect");
   await row.getByRole("button").first().click();
   await eventually(() => page.locator(".session-activity-label").innerText(), "正在压缩上下文", "Reopening a compacting session restores its activity line");
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: null, compact_result: "success" } }));

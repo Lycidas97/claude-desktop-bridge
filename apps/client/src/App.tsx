@@ -38,14 +38,14 @@ function MobileAssistantConversation({
   snapshot,
   visible,
   mobile,
-  onOpenOtherSession,
+  onNavigateToSession,
 }: {
   activeHostId: string;
   session: BridgeSessionInfo;
   snapshot: BridgeHostSnapshot | undefined;
   visible: boolean;
   mobile: ReturnType<typeof useMobileBridge>;
-  onOpenOtherSession(sessionId: string): void;
+  onNavigateToSession(sessionId: string): void;
 }) {
   const assistantMail = useAssistantMail();
   const sessions = snapshot?.sessions ?? [];
@@ -78,7 +78,7 @@ function MobileAssistantConversation({
       visible={visible}
       navigation={false}
       onSelectSession={(nextSessionId) => {
-        if (nextSessionId !== session.sessionId) onOpenOtherSession(nextSessionId);
+        if (nextSessionId !== session.sessionId) onNavigateToSession(nextSessionId);
       }}
       refreshing={refreshing}
       onRefresh={handleRefresh}
@@ -423,7 +423,7 @@ export function App() {
                     snapshot={snapshot}
                     visible={tab === "assistant"}
                     mobile={mobile}
-                    onOpenOtherSession={(otherSessionId) => {
+                    onNavigateToSession={(otherSessionId) => {
                       setFocusRequest({ sessionId: otherSessionId, key: Date.now() });
                       setTab("sessions");
                     }}

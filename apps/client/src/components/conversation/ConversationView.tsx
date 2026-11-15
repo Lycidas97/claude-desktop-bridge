@@ -361,7 +361,7 @@ export function ConversationView({
   const [prActionsOpen, setPrActionsOpen] = useState(false);
   const [deleteSessionOpen, setDeleteSessionOpen] = useState(false);
 
-  const streamRef = useRef<HTMLElement | null>(null);
+  const streamRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const announcedPermissionsRef = useRef(new Set<string>());
@@ -513,7 +513,7 @@ export function ConversationView({
   ]);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!isMobile || !visible) return;
     if (connection !== "connected") {
       autoRetriedSessionRef.current = undefined;
       return;
@@ -524,7 +524,7 @@ export function ConversationView({
       autoRetriedSessionRef.current = retryKey;
       void onOpenSession(session.sessionId);
     }
-  }, [connection, history, onOpenSession, session.sessionId, visible]);
+  }, [connection, history, isMobile, onOpenSession, session.sessionId, visible]);
 
   const items = useMemo(
     () => conversationItems(session.sessionId, history, events, localTurns, true, sessionPromptReplies),
@@ -1469,7 +1469,7 @@ export function ConversationView({
           <div
             className="desktop-conversation-stream"
             aria-live="polite"
-            ref={(node) => { streamRef.current = node; }}
+            ref={streamRef}
             onScroll={() => {
               rememberStreamPosition(true);
               loadOlderNearTop();

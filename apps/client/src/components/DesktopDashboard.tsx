@@ -17,7 +17,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MAGPIE_QUOTA_METHOD, type QuotaSnapshot } from "../../../../plugins/magpie-quota/contract.js";
 import { MagpieQuotaProvider } from "../../../../plugins/magpie-quota/client.js";
 import type { ThemeControl } from "../hooks/useTheme.js";
@@ -27,6 +27,10 @@ import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 import { DiagnosticFloatingEntry } from "./common/DiagnosticLogDialog.js";
 import { IconButton } from "./common/IconButton.js";
 import { ThemeMenu } from "./common/ThemeMenu.js";
+import {
+  DesktopConversationProvider,
+  DesktopSessionConversation,
+} from "./desktop/DesktopSessionConversation.js";
 import { DesktopSessions, unwrap } from "./desktop/DesktopSessionsPane.js";
 import { DesktopSettings } from "./desktop/DesktopSettings.js";
 import { MediaPreviewProvider } from "./evidence/MediaPreviewProvider.js";
@@ -36,6 +40,7 @@ import { AssistantPage } from "./assistant/AssistantPage.js";
 import { ConversationDraftsProvider } from "./conversation/ConversationDraftsProvider.js";
 
 type DesktopTab = "sessions" | "assistant" | "devices" | "settings";
+const EMPTY_EVENTS: BridgeEvent[] = [];
 
 function formatLastSeen(value: number | undefined, online: boolean): string {
   if (online) return "当前在线";
@@ -134,20 +139,37 @@ function DesktopDevices({
 export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl }) {
   const api = window.bridgeDesktop;
   const [snapshot, setSnapshot] = useState<DesktopControlSnapshot>();
-  const [events, setEvents] = useState<BridgeEvent[]>([]);
+  const [eventsByHost, setEventsByHost] = useState<Record<string, BridgeEvent[]>>({});
   const [tab, setTab] = useState<DesktopTab>("sessions");
-  const [requestedSessionId, setRequestedSessionId] = useState<string>();
+  const [focusRequest, setFocusRequest] = useState<{ sessionId: string; key: number }>();
+  const focusKeyRef = useRef(0);
+  const activeHostIdRef = useRef<string | undefined>(undefined);
+  if (snapshot) activeHostIdRef.current = snapshot.host.hostId;
   const mailRequest = useMemo<AssistantRequest>(() => (method, params) => api!.request({ method, params }), [api]);
   const visibleSnapshot = useMemo(() => snapshot ? claudeSnapshot(snapshot) : undefined, [snapshot]);
 
+  function applySnapshot(nextSnapshot: DesktopControlSnapshot): void {
+    activeHostIdRef.current = nextSnapshot.host.hostId;
+    setSnapshot(nextSnapshot);
+  }
+
   useEffect(() => {
     if (!api) return;
-    void api.getSnapshot().then(setSnapshot);
-    const stopSnapshots = api.onSnapshot(setSnapshot);
+    void api.getSnapshot().then(applySnapshot);
+    const stopSnapshots = api.onSnapshot(applySnapshot);
     const stopEvents = api.onEvent((event) => {
-      setEvents((current) => [...current.filter((candidate) => candidate.eventId !== event.eventId), summarizeEvidenceEvent(event)]
-        .sort((left, right) => left.seq - right.seq)
-        .slice(-2_000));
+      const currentHostId = activeHostIdRef.current;
+      if (!currentHostId) return;
+      setEventsByHost((current) => {
+        const hostEvents = current[currentHostId] ?? EMPTY_EVENTS;
+        const nextHostEvents = [
+          ...hostEvents.filter((candidate) => candidate.eventId !== event.eventId),
+          summarizeEvidenceEvent(event),
+        ]
+          .sort((left, right) => left.seq - right.seq)
+          .slice(-2_000);
+        return { ...current, [currentHostId]: nextHostEvents };
+      });
     });
     return () => {
       stopSnapshots();
@@ -161,12 +183,25 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
 
   if (!api || !snapshot) return <div className="desktop-loading"><BrandMark /><span>正在准备会话主机</span></div>;
 
+  const events = eventsByHost[snapshot.host.hostId] ?? EMPTY_EVENTS;
+
   async function request(input: LocalBridgeRequest): Promise<BridgeResponse> {
     return api!.request(input);
   }
 
+  async function refreshSnapshot(): Promise<void> {
+    applySnapshot(await api!.getSnapshot());
+  }
+
+  function openDesktopSession(sessionId: string): void {
+    focusKeyRef.current += 1;
+    setFocusRequest({ sessionId, key: focusKeyRef.current });
+    setTab("sessions");
+  }
+
   return (
     <ConversationDraftsProvider activeHostId={snapshot.host.hostId}>
+    <DesktopConversationProvider snapshot={visibleSnapshot!} events={events} apiRequest={request} onRefreshSnapshot={refreshSnapshot}>
     <MediaPreviewProvider request={(method, params) => request({ method, params })} supportsFileStat={snapshot.host.capabilities.includes("artifact.transfer.stat.v1")}>
     <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={snapshot.runtime.detection?.refreshedAt ?? 0}>
     <AssistantMailProvider key={snapshot.host.hostId} snapshot={snapshot} online request={mailRequest} onDiscuss={() => setTab("assistant")}>
@@ -193,29 +228,52 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
         {tab === "sessions" && (
           <DesktopSessions
             snapshot={visibleSnapshot!}
-            initialSessionId={requestedSessionId}
+            initialSessionId={focusRequest?.sessionId}
+            focusRequest={focusRequest}
             events={events}
             apiRequest={request}
-            onRefreshSnapshot={async () => {
-              setSnapshot(await api.getSnapshot());
-            }}
-
+            onRefreshSnapshot={refreshSnapshot}
           />
         )}
-        {tab === "assistant" && <AssistantPage snapshot={visibleSnapshot!} onOpenSession={sessionId => { setRequestedSessionId(sessionId); setTab("sessions"); }}>
-          <DesktopSessions key={snapshot.assistantMail?.binding?.nativeSessionId ?? ""} snapshot={visibleSnapshot!} fixedSessionId={snapshot.assistantMail?.binding?.nativeSessionId ?? undefined}
-            onOpenOtherSession={sessionId => { setRequestedSessionId(sessionId); setTab("sessions"); }} events={events} apiRequest={request}
-            onRefreshSnapshot={async () => setSnapshot(await api.getSnapshot())} />
-        </AssistantPage>}
+        {tab === "assistant" && (
+          <AssistantPage
+            snapshot={visibleSnapshot!}
+            onOpenSession={openDesktopSession}
+            renderConversation={(sessionId) => {
+              const boundSession = visibleSnapshot!.sessions.find((candidate) => candidate.sessionId === sessionId);
+              return boundSession ? (
+                <section className="desktop-conversation">
+                  <DesktopSessionConversation
+                    session={boundSession}
+                    snapshot={visibleSnapshot!}
+                    events={events}
+                    apiRequest={request}
+                    onRefreshSnapshot={refreshSnapshot}
+                    onSelectSession={(nextSessionId) => {
+                      if (nextSessionId !== sessionId) openDesktopSession(nextSessionId);
+                    }}
+                  />
+                </section>
+              ) : (
+                <section className="desktop-conversation">
+                  <div className="desktop-conversation-empty">
+                    <MessageSquare size={24} />
+                    <span>绑定会话暂不可用，请在助理设置中核对绑定。</span>
+                  </div>
+                </section>
+              );
+            }}
+          />
+        )}
         {tab === "devices" && (
           <DesktopDevices
             snapshot={snapshot}
-            onCreatePairing={async () => setSnapshot(await api.createPairing())}
-            onRevoke={async (deviceId) => setSnapshot(await api.revokeDevice(deviceId))}
+            onCreatePairing={async () => applySnapshot(await api.createPairing())}
+            onRevoke={async (deviceId) => applySnapshot(await api.revokeDevice(deviceId))}
           />
         )}
         {tab === "settings" && (
-          <DesktopSettings snapshot={snapshot} api={api} onSnapshot={setSnapshot} themeControl={themeControl} />
+          <DesktopSettings snapshot={snapshot} api={api} onSnapshot={applySnapshot} themeControl={themeControl} />
         )}
       </section>
       <DiagnosticFloatingEntry desktopSnapshot={snapshot} />
@@ -223,6 +281,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
     </AssistantMailProvider>
     </MagpieQuotaProvider>
     </MediaPreviewProvider>
+    </DesktopConversationProvider>
     </ConversationDraftsProvider>
   );
 }

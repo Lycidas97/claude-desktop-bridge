@@ -245,16 +245,54 @@ describe("on-demand evidence details", () => {
     let onEvent!: (event: BridgeEvent) => void;
     vi.stubGlobal("window", { bridgeDesktop: { getSnapshot: async () => snapshot, onSnapshot: () => () => undefined,
       onEvent: (receive: typeof onEvent) => { onEvent = receive; return () => undefined; }, request } });
-    // Shallow-render the two dashboard levels, retaining separate hook stores.
+    // Render dashboard levels with dedicated hook stores, expanding desktop conversation children inside draw.
     function renderComponent(component: (props: any) => ReactNode, initialProps: any) {
-      const store: HookStore = { slots: [], index: 0, dirty: false, effects: [], effectIndex: 0, pending: [] };
-      stores.set(component.name, store);
+      const subStores = new Map<string, HookStore>();
       return (nextProps = initialProps) => {
         let result: ReactNode;
         for (let pass = 0; pass < 12; pass++) {
-          hooks.current = store; store.dirty = false; store.index = 0; store.effectIndex = 0;
-          result = component(nextProps); store.pending.splice(0).forEach((effect) => effect());
-          if (!store.dirty) return result;
+          const visited = new Set<string>();
+          for (const store of subStores.values()) store.dirty = false;
+          function expand(node: ReactNode, path: string): ReactNode {
+            if (Array.isArray(node)) return node.map((child, index) => expand(child, `${path}/${index}`));
+            if (!node || typeof node !== "object" || !("props" in node)) return node;
+            const element = node as ReactElement<Record<string, any>>;
+            if (
+              typeof element.type === "function"
+              && (element.type.name === "DesktopSessionConversation" || element.type.name === "ConversationView")
+            ) {
+              const key = `${path}/${element.type.name}:${element.key ?? ""}`;
+              visited.add(key);
+              let childStore = subStores.get(key);
+              if (!childStore) {
+                childStore = { slots: [], index: 0, dirty: false, effects: [], effectIndex: 0, pending: [] };
+                subStores.set(key, childStore);
+                stores.set(`${component.name}:${key}`, childStore);
+              }
+              hooks.current = childStore; childStore.index = 0; childStore.effectIndex = 0;
+              const childOut = (element.type as (props: any) => ReactNode)(element.props);
+              childStore.pending.splice(0).forEach((effect) => effect());
+              return expand(childOut, key);
+            }
+            return { ...element, props: { ...element.props, children: expand(element.props.children, `${path}/${element.key ?? String(element.type)}`) } };
+          }
+          let rootStore = subStores.get("root");
+          if (!rootStore) {
+            rootStore = { slots: [], index: 0, dirty: false, effects: [], effectIndex: 0, pending: [] };
+            subStores.set("root", rootStore);
+            stores.set(component.name, rootStore);
+          }
+          visited.add("root");
+          hooks.current = rootStore; rootStore.index = 0; rootStore.effectIndex = 0;
+          const rootOut = component(nextProps);
+          rootStore.pending.splice(0).forEach((effect) => effect());
+          result = expand(rootOut, "root");
+          for (const [key, store] of subStores) {
+            if (visited.has(key)) continue;
+            store.effects.forEach((effect) => effect.cleanup?.());
+            subStores.delete(key);
+          }
+          if (![...subStores.values()].some((store) => store.dirty)) return result;
         }
         throw new Error("Desktop did not settle");
       };

@@ -1,7 +1,17 @@
-import type { BridgeHistoryItem, BridgePermissionInfo, BridgeSessionInfo, DesktopControlSnapshot } from "@bridge/protocol";
+import type { BridgeArtifactManifest, BridgeEvent, BridgeHistoryItem, BridgePermissionInfo, BridgeResponse, BridgeSessionInfo, DesktopControlSnapshot } from "@bridge/protocol";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { downloadBridgeSessionFile } from "../lib/artifact-download.js";
+import { AssistantPage } from "./assistant/AssistantPage.js";
+import { ConversationDraftsProvider } from "./conversation/ConversationDraftsProvider.js";
+import { ConversationView } from "./conversation/ConversationView.js";
 import { DesktopDashboard } from "./DesktopDashboard.js";
+import {
+  DesktopConversationProvider,
+  DesktopSessionConversation,
+} from "./desktop/DesktopSessionConversation.js";
+import { DesktopSessions } from "./desktop/DesktopSessionsPane.js";
+import { EvidencePanel } from "./evidence/EvidencePanel.js";
 import { MediaPreviewProvider } from "./evidence/MediaPreviewProvider.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAttachmentPicker.js";
@@ -30,6 +40,7 @@ type HookStore = {
   effectIndex: number; pending: Array<() => void>;
 };
 const hooks = vi.hoisted(() => ({ current: undefined as HookStore | undefined }));
+const contexts = vi.hoisted(() => ({ current: new Map<unknown, unknown>() }));
 function recordEffect(effect: () => (() => void) | void, deps?: unknown[]) {
   const store = hooks.current!;
   const index = store.effectIndex++;
@@ -59,7 +70,7 @@ vi.mock("react", async (original) => ({
     return store.slots[index];
   },
   useMemo: (create: () => unknown) => create(),
-  useContext: () => undefined,
+  useContext: (context: unknown) => contexts.current.get(context),
   useEffect: recordEffect,
   useLayoutEffect: recordEffect,
 }));
@@ -96,19 +107,94 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   return [element, ...elements(children)];
 }
 const stores: HookStore[] = [];
-function renderer(component: (props: any) => ReactNode, initialProps: any) {
-  const store: HookStore = { slots: [], index: 0, dirty: false, effects: [], effectIndex: 0, pending: [] };
-  stores.push(store);
+function renderer(
+  component: (props: any) => ReactNode,
+  initialProps: any,
+  options?: { expandDashboard?: boolean },
+) {
+  const subStores = new Map<string, HookStore>();
   let props = initialProps;
   let tree: ReactNode;
+  function shouldExpand(type: unknown): type is (props: any) => ReactNode {
+    if (type === DesktopSessionConversation || type === ConversationView) return true;
+    if (!options?.expandDashboard) return false;
+    return (
+      type === ConversationDraftsProvider
+      || type === DesktopConversationProvider
+      || type === DesktopSessions
+      || type === AssistantPage
+    );
+  }
   return {
     draw(nextProps = props) {
       props = nextProps;
       for (let i = 0; i < 12; i++) {
-        hooks.current = store; store.dirty = false; store.index = 0; store.effectIndex = 0;
-        tree = component(props);
-        store.pending.splice(0).forEach((effect) => effect());
-        if (!store.dirty) return tree;
+        const visited = new Set<string>();
+        for (const store of subStores.values()) store.dirty = false;
+        function expand(node: ReactNode, path: string): ReactNode {
+          if (Array.isArray(node)) return node.map((child, index) => expand(child, `${path}/${index}`));
+          if (!node || typeof node !== "object" || !("props" in node)) return node;
+          const element = node as ReactElement<Record<string, any>>;
+          if (
+            typeof element.type === "object"
+            && element.type !== null
+            && "value" in element.props
+            && ("_context" in (element.type as Record<string, unknown>) || "Provider" in (element.type as Record<string, unknown>))
+          ) {
+            const ctx = (element.type as { _context?: unknown })._context ?? element.type;
+            const hadPrevious = contexts.current.has(ctx);
+            const previousValue = contexts.current.get(ctx);
+            contexts.current.set(ctx, element.props.value);
+            try {
+              return { ...element, props: { ...element.props, children: expand(element.props.children, `${path}/provider`) } };
+            } finally {
+              if (hadPrevious) contexts.current.set(ctx, previousValue);
+              else contexts.current.delete(ctx);
+            }
+          }
+          if (shouldExpand(element.type)) {
+            const key = `${path}/${element.type.name}:${element.key ?? ""}`;
+            visited.add(key);
+            let childStore = subStores.get(key);
+            if (!childStore) {
+              childStore = { slots: [], index: 0, dirty: false, effects: [], effectIndex: 0, pending: [] };
+              subStores.set(key, childStore);
+              stores.push(childStore);
+            }
+            hooks.current = childStore;
+            childStore.index = 0;
+            childStore.effectIndex = 0;
+            const childOut = element.type(element.props);
+            childStore.pending.splice(0).forEach((effect) => effect());
+            return { ...element, props: { ...element.props, children: expand(childOut, key) } };
+          }
+          return {
+            ...element,
+            props: {
+              ...element.props,
+              children: expand(element.props.children, `${path}/${element.key ?? String(element.type)}`),
+            },
+          };
+        }
+        let rootStore = subStores.get("root");
+        if (!rootStore) {
+          rootStore = { slots: [], index: 0, dirty: false, effects: [], effectIndex: 0, pending: [] };
+          subStores.set("root", rootStore);
+          stores.push(rootStore);
+        }
+        visited.add("root");
+        hooks.current = rootStore;
+        rootStore.index = 0;
+        rootStore.effectIndex = 0;
+        const rootOut = component(props);
+        rootStore.pending.splice(0).forEach((effect) => effect());
+        tree = expand(rootOut, "root");
+        for (const [key, store] of subStores) {
+          if (visited.has(key)) continue;
+          store.effects.forEach((effect) => effect.cleanup?.());
+          subStores.delete(key);
+        }
+        if (![...subStores.values()].some((store) => store.dirty)) return tree;
       }
       throw new Error("Component did not settle");
     },
@@ -143,6 +229,7 @@ beforeEach(() => {
     setItem: vi.fn((key: string, value: string) => saved.set(key, value)),
   });
   history = [];
+  vi.mocked(downloadBridgeSessionFile).mockReset();
   apiRequest = vi.fn(async ({ method }) => ({ kind: "response", requestId: "test", ok: true, result:
     method === "session.open" ? { history: { items: history, hasMore: false } }
       : method === "evidence.list" ? { evidence: { items: [], hasMore: false } } : {},
@@ -153,6 +240,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   mailContext.current = undefined;
+  contexts.current.clear();
   stores.splice(0).forEach((store) => store.effects.forEach((effect) => effect.cleanup?.()));
   vi.unstubAllGlobals();
 });
@@ -1007,5 +1095,420 @@ describe("desktop conversation parity", () => {
     const dangerWarnings = elements(tree).filter(element => element.props.className === "session-channel-warning danger");
     expect(dangerWarnings.some(element => textContent(element).includes("分支创建失败"))).toBe(true);
     expect(elements(tree).some(element => typeof element.props.className === "string" && element.props.className.includes("desktop-channel-banner"))).toBe(false);
+  });
+});
+
+describe("unified desktop and assistant conversation composition", () => {
+  it("shares drafts and conversation history across 会话 and 助理 tabs and subviews without mounting a sidebar in AssistantPage", async () => {
+    snapshot.host.capabilities.push("plugin.assistant-mail.v1");
+    snapshot.sessions = [
+      snapshot.sessions[0]!,
+      { ...snapshot.sessions[0]!, sessionId: "B", title: "Session B" },
+    ];
+    snapshot.assistantMail = {
+      binding: {
+        assistantId: "assistant-1",
+        nativeSessionId: "A",
+        sectionId: null,
+        previousSessionIds: ["B"],
+      },
+      bindingState: "ready",
+      receiverState: "connected",
+      changeToken: "tok",
+      automaticDelivery: false,
+    };
+    mailContext.current = {
+      assistant: snapshot.assistantMail,
+      online: true,
+      loading: false,
+      error: "",
+      cache: { changeToken: "tok", cards: [] },
+      refresh: vi.fn(),
+      loadOlder: vi.fn(),
+      request: apiRequest,
+      referenceFor: () => undefined,
+    };
+    history = [
+      { id: "msg-shared-1", sessionId: "A", role: "assistant", text: "Shared native reply", createdAt: 10, origin: "claude-desktop" },
+    ];
+
+    const fullDashboard = renderer(
+      DesktopDashboard,
+      {
+        themeControl: { theme: "dark", family: "apple", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
+      },
+      { expandDashboard: true },
+    );
+    fullDashboard.draw();
+    await settle();
+    fullDashboard.draw();
+    await settle();
+    let fullTree = fullDashboard.draw();
+
+    const composerInput = () => elements(fullTree).find((element) => element.type === SlashCommandInput)!;
+    expect(elements(fullTree).some((element) => element.type === DesktopSessions)).toBe(true);
+    expect(elements(fullTree).some((element) => element.props.className === "desktop-session-sidebar")).toBe(true);
+    expect(elements(fullTree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id)).toEqual(["msg-shared-1"]);
+
+    composerInput().props.onChange("从会话页输入的草稿");
+    fullTree = fullDashboard.draw();
+    expect(composerInput().props.value).toBe("从会话页输入的草稿");
+
+    const navButton = (label: string) => elements(fullTree).find((element) => (
+      element.type === "button"
+      && Array.isArray(element.props.children)
+      && elements(element).some((child) => child.type === "span" && child.props.children === label)
+    ))!;
+
+    navButton("助理").props.onClick();
+    await settle();
+    fullTree = fullDashboard.draw();
+
+    expect(elements(fullTree).some((element) => element.type === AssistantPage)).toBe(true);
+    expect(elements(fullTree).some((element) => element.type === DesktopSessionConversation)).toBe(true);
+    expect(elements(fullTree).some((element) => element.type === ConversationView)).toBe(true);
+    expect(elements(fullTree).some((element) => element.type === DesktopSessions)).toBe(false);
+    expect(elements(fullTree).some((element) => element.props.className === "desktop-session-sidebar")).toBe(false);
+    expect(elements(fullTree).some((element) => typeof element.props.className === "string" && element.props.className.includes("is-fixed-session"))).toBe(false);
+    expect(composerInput().props.value).toBe("从会话页输入的草稿");
+    expect(elements(fullTree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id)).toEqual(["msg-shared-1"]);
+
+    // Survives 助理 subview switches: 对话 -> 邮件 -> 助理设置 -> 对话
+    const assistantTabs = () => elements(fullTree).find((element) => element.props.className === "assistant-view-tabs")!;
+    elements(assistantTabs()).find((element) => element.type === "button" && element.props.children === "邮件")!.props.onClick();
+    fullTree = fullDashboard.draw();
+    expect(elements(fullTree).some((element) => element.type === ConversationView)).toBe(false);
+
+    elements(assistantTabs()).find((element) => element.type === IconButton && element.props.label === "助理设置")!.props.onClick();
+    fullTree = fullDashboard.draw();
+    elements(assistantTabs()).find((element) => element.type === "button" && element.props.children === "对话")!.props.onClick();
+    await settle();
+    fullTree = fullDashboard.draw();
+    expect(composerInput().props.value).toBe("从会话页输入的草稿");
+
+    composerInput().props.onChange("助理页修改后的草稿");
+    fullTree = fullDashboard.draw();
+
+    // Delegated navigation to another session switches DesktopDashboard back to 会话 focused on Session B
+    elements(assistantTabs()).find((element) => element.type === IconButton && element.props.label === "助理设置")!.props.onClick();
+    fullTree = fullDashboard.draw();
+    elements(fullTree).find((element) => element.type === "button" && element.props.className === "assistant-session-link" && element.props.children === "Session B")!.props.onClick();
+    await settle();
+    fullTree = fullDashboard.draw();
+
+    expect(elements(fullTree).some((element) => element.type === DesktopSessions)).toBe(true);
+    expect(elements(fullTree).some((element) => element.props.className === "desktop-session-sidebar")).toBe(true);
+    expect(textContent(elements(fullTree).find((element) => element.props.className === "desktop-conversation-heading")!)).toContain("Session B");
+
+    // Switching back to Session A in 会话 shows the updated draft from 助理
+    elements(fullTree).find((element) => element.type === "button" && element.props.className === "session-row-hit" && textContent(element).includes("Session A"))!.props.onClick();
+    await settle();
+    fullTree = fullDashboard.draw();
+    expect(composerInput().props.value).toBe("助理页修改后的草稿");
+  });
+
+  it("isolates retained and live event buffers across host switches without replaying old evidence or rewound events", async () => {
+    let pushSnapshot: ((next: DesktopControlSnapshot) => void) | undefined;
+    let pushEvent: ((event: BridgeEvent) => void) | undefined;
+    vi.stubGlobal("window", {
+      bridgeDesktop: {
+        getSnapshot: async () => snapshot,
+        onSnapshot: (listener: (next: DesktopControlSnapshot) => void) => {
+          pushSnapshot = listener;
+          return () => undefined;
+        },
+        onEvent: (listener: (event: BridgeEvent) => void) => {
+          pushEvent = listener;
+          return () => undefined;
+        },
+        request: apiRequest,
+      },
+    });
+
+    const fullDashboard = renderer(
+      DesktopDashboard,
+      {
+        themeControl: { theme: "dark", family: "apple", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
+      },
+      { expandDashboard: true },
+    );
+    fullDashboard.draw();
+    await settle();
+    fullDashboard.draw();
+    await settle();
+    let fullTree = fullDashboard.draw();
+
+    const evidenceEvent: BridgeEvent = {
+      eventId: "ev-bundle-1",
+      seq: 1,
+      timestamp: 10,
+      origin: "claude-host",
+      sessionId: "A",
+      type: "evidence.ready",
+      data: {
+        evidence: {
+          id: "bundle-host-1",
+          sessionId: "A",
+          turnId: "turn-1",
+          startedAt: 10,
+          summary: "Host 1 bundle",
+          tools: [],
+          artifacts: [],
+        },
+      },
+    };
+    const rewoundEvent: BridgeEvent = {
+      eventId: "ev-rewound-1",
+      seq: 2,
+      timestamp: 11,
+      origin: "claude-host",
+      sessionId: "A",
+      type: "session.rewound",
+      data: {},
+    };
+    pushEvent!(evidenceEvent);
+    pushEvent!(rewoundEvent);
+    fullTree = fullDashboard.draw();
+    await settle();
+    fullTree = fullDashboard.draw();
+
+    // Switch conversation to 成果 view on host-1 and verify bundle-host-1 is present
+    const viewSwitch = () => elements(fullTree).find((element) => element.props.className === "session-view-switch desktop-session-view-switch")!;
+    elements(viewSwitch()).find((element) => element.type === "button" && textContent(element).includes("成果"))!.props.onClick();
+    fullTree = fullDashboard.draw();
+    expect(elements(fullTree).find((element) => element.type === EvidencePanel)!.props.state?.items.map((item: any) => item.id)).toEqual(["bundle-host-1"]);
+
+    // Switch DesktopDashboard snapshot to host-2
+    apiRequest.mockClear();
+    const host2Snapshot: DesktopControlSnapshot = {
+      ...snapshot,
+      host: { ...snapshot.host, hostId: "computer-2", name: "Computer 2" },
+    };
+    snapshot = host2Snapshot;
+    pushSnapshot!(host2Snapshot);
+    fullTree = fullDashboard.draw();
+    await settle();
+    fullTree = fullDashboard.draw();
+
+    expect(apiRequest.mock.calls.filter(([req]) => req.method === "session.open")).toHaveLength(1);
+    elements(viewSwitch()).find((element) => element.type === "button" && textContent(element).includes("成果"))!.props.onClick();
+    fullTree = fullDashboard.draw();
+    expect(elements(fullTree).find((element) => element.type === EvidencePanel)!.props.state?.items ?? []).toEqual([]);
+
+    // Also verify standalone DesktopSessions when caller retains the same events array across a host switch
+    const retainedEvents: BridgeEvent[] = [
+      evidenceEvent,
+      rewoundEvent,
+      {
+        eventId: "ev-compacted-1",
+        seq: 3,
+        timestamp: 12,
+        origin: "claude-host",
+        sessionId: "A",
+        type: "session.compacted",
+        data: {},
+      },
+    ];
+    const host1Snapshot: DesktopControlSnapshot = {
+      ...host2Snapshot,
+      host: { ...host2Snapshot.host, hostId: "standalone-host-1" },
+    };
+    const standalone = renderer(DesktopSessions, {
+      snapshot: host1Snapshot,
+      events: retainedEvents,
+      apiRequest,
+      onRefreshSnapshot: async () => undefined,
+    });
+    standalone.draw();
+    await settle();
+    let standaloneTree = standalone.draw();
+    const standaloneSwitch = () => elements(standaloneTree).find((element) => element.props.className === "session-view-switch desktop-session-view-switch")!;
+    elements(standaloneSwitch()).find((element) => element.type === "button" && textContent(element).includes("成果"))!.props.onClick();
+    standaloneTree = standalone.draw();
+    expect(elements(standaloneTree).find((element) => element.type === EvidencePanel)!.props.state?.items.map((item: any) => item.id)).toEqual(["bundle-host-1"]);
+
+    apiRequest.mockClear();
+    const standaloneHost2: DesktopControlSnapshot = {
+      ...host1Snapshot,
+      host: { ...host1Snapshot.host, hostId: "standalone-host-2" },
+    };
+    standaloneTree = standalone.draw({
+      snapshot: standaloneHost2,
+      events: retainedEvents,
+      apiRequest,
+      onRefreshSnapshot: async () => undefined,
+    });
+    await settle();
+    standaloneTree = standalone.draw();
+    expect(apiRequest.mock.calls.filter(([req]) => req.method === "session.open")).toHaveLength(1);
+    elements(standaloneSwitch()).find((element) => element.type === "button" && textContent(element).includes("成果"))!.props.onClick();
+    standaloneTree = standalone.draw();
+    expect(elements(standaloneTree).find((element) => element.type === EvidencePanel)!.props.state?.items ?? []).toEqual([]);
+  });
+
+  it("cancels in-flight artifact and session file downloads when switching hosts after transfer.open is in flight", async () => {
+    const actualDownloadModule = await vi.importActual<typeof import("../lib/artifact-download.js")>("../lib/artifact-download.js");
+    vi.mocked(downloadBridgeSessionFile).mockImplementation(actualDownloadModule.downloadBridgeSessionFile);
+
+    history = [
+      { id: "msg-file", sessionId: "A", role: "assistant", text: "Check `dist/archive.zip`", createdAt: 10, origin: "claude-desktop" },
+    ];
+
+    let resolveArtifactOpen!: (value: BridgeResponse) => void;
+    let resolveSessionFileOpen!: (value: BridgeResponse) => void;
+    const host1Api = vi.fn(async ({ method, params }: { method: string; params?: Record<string, unknown> }): Promise<BridgeResponse> => {
+      if (method === "session.open") {
+        return { kind: "response", requestId: "open-1", ok: true, result: { history: { items: history, hasMore: false } } };
+      }
+      if (method === "evidence.list") {
+        return {
+          kind: "response",
+          requestId: "ev-1",
+          ok: true,
+          result: {
+            evidence: {
+              items: [{
+                id: "bundle-1",
+                sessionId: "A",
+                turnId: "turn-1",
+                startedAt: 10,
+                summary: "Bundle",
+                tools: [],
+                artifacts: [{ id: "art-1", kind: "file", name: "build.zip", mimeType: "application/zip", size: 128, createdAt: 10 }],
+              }],
+              hasMore: false,
+            },
+          },
+        };
+      }
+      if (method === "artifact.transfer.open") {
+        if ("artifactId" in (params ?? {})) {
+          return new Promise<BridgeResponse>((resolve) => {
+            resolveArtifactOpen = resolve;
+          });
+        }
+        return new Promise<BridgeResponse>((resolve) => {
+          resolveSessionFileOpen = resolve;
+        });
+      }
+      return { kind: "response", requestId: "other-1", ok: true, result: {} };
+    });
+
+    const host2Api = vi.fn(async ({ method }: { method: string }): Promise<BridgeResponse> => ({
+      kind: "response",
+      requestId: "host2",
+      ok: true,
+      result: method === "session.open"
+        ? { history: { items: history, hasMore: false } }
+        : method === "evidence.list"
+          ? { evidence: { items: [], hasMore: false } }
+          : {},
+    }));
+
+    const host1Snapshot: DesktopControlSnapshot = {
+      ...snapshot,
+      host: { ...snapshot.host, hostId: "dl-host-1" },
+    };
+    const host2Snapshot: DesktopControlSnapshot = {
+      ...snapshot,
+      host: { ...snapshot.host, hostId: "dl-host-2" },
+    };
+
+    const standalone = renderer(DesktopSessions, {
+      snapshot: host1Snapshot,
+      events: [],
+      apiRequest: host1Api,
+      onRefreshSnapshot: async () => undefined,
+    });
+    standalone.draw();
+    await settle();
+    let standaloneTree = standalone.draw();
+
+    // 1) Trigger workspace session file download on host-1 (deferred artifact.transfer.open)
+    const msgItem = elements(standaloneTree).find((element) => element.type === ConversationMessageItem)!;
+    msgItem.props.onFileClick("dist/archive.zip");
+    standaloneTree = standalone.draw();
+    const confirmDialog = elements(standaloneTree).find((element) => element.type === ConfirmationDialog && element.props.title === "确认下载工作区文件？")!;
+    expect(confirmDialog.props.open).toBe(true);
+    confirmDialog.props.onConfirm();
+
+    // 2) Switch to 成果 view and trigger EvidencePanel.onDownload(artifact) on host-1 (deferred artifact.transfer.open)
+    const viewSwitch = elements(standaloneTree).find((element) => element.props.className === "session-view-switch desktop-session-view-switch")!;
+    elements(viewSwitch).find((element) => element.type === "button" && textContent(element).includes("成果"))!.props.onClick();
+    standaloneTree = standalone.draw();
+    const artifact: BridgeArtifactManifest = {
+      id: "art-1",
+      evidenceId: "bundle-1",
+      relativePath: "dist/build.zip",
+      name: "build.zip",
+      kind: "binary",
+      changeKind: "created",
+      mimeType: "application/zip",
+      size: 128,
+      availability: "snapshot",
+      previewMode: "none",
+      downloadAllowed: true,
+      capturedAt: 10,
+    };
+    const artifactDownloadPromise = elements(standaloneTree).find((element) => element.type === EvidencePanel)!.props.onDownload(artifact);
+    await settle();
+
+    expect(typeof resolveArtifactOpen).toBe("function");
+    expect(typeof resolveSessionFileOpen).toBe("function");
+
+    // 3) Switch active host from dl-host-1 to dl-host-2 BEFORE either transfer.open resolves
+    standaloneTree = standalone.draw({
+      snapshot: host2Snapshot,
+      events: [],
+      apiRequest: host2Api,
+      onRefreshSnapshot: async () => undefined,
+    });
+    await settle();
+    host1Api.mockClear();
+    host2Api.mockClear();
+
+    // 4) Resolve both delayed artifact.transfer.open responses from dl-host-1
+    resolveArtifactOpen({
+      kind: "response",
+      requestId: "open-art",
+      ok: true,
+      result: {
+        transfer: {
+          transferId: "transfer-art-host-1",
+          name: "build.zip",
+          mimeType: "application/zip",
+          size: 128,
+          sha256: "00",
+          chunkSize: 64,
+          totalChunks: 2,
+          expiresAt: Date.now() + 60_000,
+        },
+      },
+    });
+    resolveSessionFileOpen({
+      kind: "response",
+      requestId: "open-file",
+      ok: true,
+      result: {
+        transfer: {
+          transferId: "transfer-file-host-1",
+          name: "report.txt",
+          mimeType: "text/plain",
+          size: 64,
+          sha256: "00",
+          chunkSize: 32,
+          totalChunks: 2,
+          expiresAt: Date.now() + 60_000,
+        },
+      },
+    });
+
+    await expect(artifactDownloadPromise).rejects.toThrow("主机已切换");
+    await settle();
+    standaloneTree = standalone.draw();
+
+    // Neither host-2 nor host-1 receives read or close with stale transferIds after the host switch
+    expect(host2Api).not.toHaveBeenCalled();
+    expect(host1Api).not.toHaveBeenCalled();
   });
 });

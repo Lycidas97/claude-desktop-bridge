@@ -50,7 +50,6 @@
 .assistant-conversation { flex: 1; min-height: 0; min-width: 0; }
 .assistant-conversation > .mobile-workspace,
 .assistant-conversation > .desktop-conversation { height: 100%; }
-.assistant-conversation .desktop-session-layout.is-fixed-session { height: 100%; grid-template-columns: minmax(0, 1fr); }
 .assistant-mail-reference { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 16px; padding: 10px 12px; border-left: 3px solid var(--accent-ink); background: var(--surface); color: var(--text); }
 .assistant-mail-reference > div { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .assistant-mail-reference span, .assistant-mail-reference code { color: var(--muted); font-size: calc(11px * var(--font-scale)); }

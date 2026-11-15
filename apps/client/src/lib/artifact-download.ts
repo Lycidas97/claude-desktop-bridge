@@ -52,7 +52,7 @@ async function readChunkWithResume(
       return response.chunk;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (/expired|index|校验|不存在/iu.test(message)) throw error;
+      if (/expired|index|校验|不存在|切换|取消/iu.test(message)) throw error;
       await delay(waitMs);
       waitMs = Math.min(5_000, waitMs * 2);
     }

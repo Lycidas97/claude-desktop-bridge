@@ -9,13 +9,12 @@ import { MailCard } from "./MailCard.js";
 import { MailReference } from "./MailReference.js";
 import "./assistant-mail.css";
 
-export function AssistantPage({ snapshot, mobile = false, active = true, onOpenSession, renderConversation, children }: {
+export function AssistantPage({ snapshot, mobile = false, active = true, onOpenSession, renderConversation }: {
   snapshot: BridgeHostSnapshot | undefined;
   mobile?: boolean;
   active?: boolean;
   onOpenSession(sessionId: string): void;
-  renderConversation?: ((sessionId: string) => ReactNode) | undefined;
-  children?: ReactNode;
+  renderConversation(sessionId: string): ReactNode;
 }) {
   const mail = useAssistantMail();
   const [view, setView] = useState<"conversation" | "mail" | "settings">("conversation");
@@ -29,7 +28,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, onOpenS
     [mail?.request],
   );
   useEffect(() => { if (active) setView("conversation"); }, [active]);
-  if (!active) return children ?? null;
+  if (!active) return null;
   if (!mail) return null;
   const binding = mail.assistant?.binding;
   const session = snapshot?.sessions.find(candidate => candidate.sessionId === binding?.nativeSessionId && !candidate.archivedAt);
@@ -93,7 +92,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, onOpenS
         {mail.cache.nextCursor && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
       </>}
     </div>
-    {displayedView === "conversation" && <div className="assistant-conversation">{session && renderConversation ? renderConversation(session.sessionId) : children}</div>}
+    {displayedView === "conversation" && session && <div className="assistant-conversation">{renderConversation(session.sessionId)}</div>}
     {creating && snapshot && <SessionCreateDialog snapshot={snapshot} connected={mail.online}
       {...(snapshot.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: browseDirectory } : {})}
       onCreate={async (cwd, title, runtimeId, projectId, trustWorkspace) => {

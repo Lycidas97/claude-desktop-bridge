@@ -207,12 +207,6 @@ export function canStopBridgeTask(session: BridgeSessionInfo): boolean {
   return false;
 }
 
-export function supportsProviderSwitching(
-  _snapshot: BridgeHostSnapshot | undefined,
-): boolean {
-  return false;
-}
-
 export function stoppableBridgeTask(
   sessions: BridgeSessionInfo[],
   selectedSessionId?: string,

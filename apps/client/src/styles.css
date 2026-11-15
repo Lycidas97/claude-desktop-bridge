@@ -1922,7 +1922,6 @@ button:disabled {
   .pairing-visual .device,
   .confirm-dialog,
   .create-session-dialog,
-  .provider-switch-dialog,
   .session-configuration-dialog,
   .artifact-preview-dialog,
   .pairing-panel,
@@ -2035,232 +2034,6 @@ button:disabled {
 
 .create-session-dialog .dialog-actions {
   justify-content: flex-end;
-}
-
-.provider-switch-dialog {
-  display: grid;
-  width: min(100%, 560px);
-  max-height: min(780px, calc(100dvh - 32px));
-  gap: 16px;
-  padding: 22px;
-  overflow-y: auto;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--r-panel);
-  background: radial-gradient(280px circle at var(--mx, 50%) var(--my, -20%), var(--glass-spec), transparent 65%), var(--glass-fill);
-  background-color: var(--glass-fill);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  box-shadow: var(--glass-hi), var(--glass-shadow);
-}
-
-.provider-switch-dialog > header,
-.provider-switch-dialog > footer {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.provider-switch-dialog > header {
-  justify-content: space-between;
-}
-
-.provider-switch-dialog > header > div {
-  display: grid;
-  gap: 3px;
-}
-
-.provider-switch-dialog > header span,
-.provider-handoff-preview > span,
-.provider-candidates > span,
-.provider-model-select > span {
-  color: var(--accent-ink);
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.provider-switch-dialog h2 {
-  margin: 0;
-  font-size: 18px;
-}
-
-.provider-switch-dialog > footer {
-  justify-content: flex-end;
-  padding-top: 2px;
-}
-
-.provider-switch-dialog > footer > span {
-  flex: 1;
-}
-
-.provider-current {
-  display: flex;
-  min-height: 38px;
-  align-items: center;
-  gap: 9px;
-  padding: 0 11px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface-2);
-}
-
-.provider-current span {
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.provider-current strong {
-  font-size: 12px;
-}
-
-.provider-current b {
-  margin-left: auto;
-  color: var(--warm);
-  font-size: 9px;
-}
-
-.provider-options {
-  display: grid;
-  gap: 7px;
-}
-
-.provider-option {
-  display: grid;
-  min-height: 62px;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 11px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface);
-  cursor: pointer;
-}
-
-.provider-option.selected {
-  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
-  background: color-mix(in srgb, var(--accent-soft) 62%, var(--surface));
-}
-
-.provider-option > span {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.provider-option strong {
-  font-size: 12px;
-}
-
-.provider-option small {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.45;
-  text-overflow: ellipsis;
-}
-
-.provider-option > b {
-  color: var(--muted);
-  font-size: 9px;
-}
-
-.provider-option > b.ready {
-  color: var(--success-ink);
-}
-
-.provider-api-setup,
-.provider-handoff-state,
-.provider-switch-error {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 11px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface-2);
-}
-
-.provider-api-setup > div,
-.provider-handoff-state > span {
-  display: grid;
-  min-width: 0;
-  flex: 1;
-  gap: 3px;
-}
-
-.provider-api-setup strong,
-.provider-handoff-state strong {
-  font-size: 11px;
-}
-
-.provider-api-setup small,
-.provider-handoff-state small {
-  color: var(--muted);
-  font-size: 9px;
-  line-height: 1.5;
-}
-
-.provider-api-key-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-}
-
-.provider-api-key-form input,
-.provider-model-select select {
-  width: 100%;
-  height: 40px;
-  padding: 0 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  outline: none;
-  background: var(--surface);
-  color: var(--text);
-}
-
-.provider-api-key-form input:focus,
-.provider-model-select select:focus {
-  border-color: var(--accent);
-}
-
-.provider-model-select,
-.provider-handoff-preview,
-.provider-candidates {
-  display: grid;
-  gap: 7px;
-}
-
-.provider-handoff-preview {
-  padding: 12px;
-  border-left: 3px solid var(--accent);
-  background: var(--surface-2);
-}
-
-.provider-handoff-preview strong {
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.provider-handoff-preview small {
-  color: var(--muted);
-  font-size: 9px;
-}
-
-.provider-handoff-state.awaiting_user_confirmation,
-.provider-handoff-state.awaiting_target {
-  border-color: color-mix(in srgb, var(--warm) 42%, var(--line));
-  background: var(--warm-soft);
-}
-
-.provider-handoff-state.failed,
-.provider-handoff-state.expired,
-.provider-switch-error {
-  border-color: color-mix(in srgb, var(--danger) 36%, var(--line));
-  color: var(--danger);
-}
-
-.provider-candidates .secondary-button {
-  justify-content: space-between;
 }
 
 /* Cross-Desktop runtime handoff (0.7) */
@@ -2600,11 +2373,6 @@ button:disabled {
 .file-changes-more:hover {
   color: inherit;
   background: var(--surface);
-}
-
-.provider-switch-error {
-  font-size: 10px;
-  line-height: 1.5;
 }
 
 .danger-text-button {
@@ -6483,21 +6251,6 @@ button:disabled {
     place-items: end center;
   }
 
-  .provider-switch-backdrop {
-    padding: 0;
-    place-items: end center;
-  }
-
-  .provider-switch-dialog {
-    width: 100%;
-    max-height: min(88dvh, 780px);
-    padding: 18px max(16px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
-    border-right: 0;
-    border-bottom: 0;
-    border-left: 0;
-    border-radius: 8px 8px 0 0;
-  }
-
   .session-configuration-dialog {
     width: 100%;
     max-height: min(86dvh, 760px);
@@ -6731,7 +6484,6 @@ button:disabled {
 
 .confirm-dialog,
 .create-session-dialog,
-.provider-switch-dialog,
 .session-configuration-dialog,
 .artifact-preview-dialog,
 .pairing-panel {
@@ -6757,7 +6509,6 @@ button:disabled {
 @media (prefers-reduced-transparency: reduce) {
   .confirm-dialog,
   .create-session-dialog,
-  .provider-switch-dialog,
   .session-configuration-dialog,
   .artifact-preview-dialog,
   .pairing-panel,

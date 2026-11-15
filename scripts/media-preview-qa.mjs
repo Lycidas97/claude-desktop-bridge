@@ -134,8 +134,7 @@ try {
           onOpenSession: noop, onLoadOlderHistory: noop, onLoadOlderEvidence: noop, onDownloadSessionFile: noop,
           onPreviewArtifact: noop, onDownloadArtifact: noop, onSendTurn: noop, onInterruptTurn: noop,
           onResolveUncertain: noop, onResolvePermission: noop, onCreateSession: noop, onLoadSessionConfiguration: noop,
-          onConfigureSession: noop, onPreviewProviderSwitch: noop, onCommitProviderSwitch: noop,
-          onCancelProviderSwitch: noop, onRefreshProviders: noop,
+          onConfigureSession: noop,
           onDesktopAppAction: noop, onRefresh: async () => true, onBackToHosts: noop, onRetry: noop,
         })));
       ` }));

@@ -620,11 +620,10 @@
 
 .m-sheet .permission-actions > button:last-child:nth-child(odd) { grid-column: 1 / -1; }
 
-/* Older form sheets (session settings, provider switch, relay) and alerts
+/* Older form sheets (session settings, relay) and alerts
    take the same opaque surface and corner radius on phones. */
 @media (max-width: 720px) {
-  .session-configuration-dialog,
-  .provider-switch-dialog {
+  .session-configuration-dialog {
     border-radius: var(--m-r-sheet) var(--m-r-sheet) 0 0;
     background: var(--m-sheet-fill);
     backdrop-filter: none;

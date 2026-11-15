@@ -22,7 +22,6 @@ import {
   restorableSessionId,
   formatSessionModelLabel,
   stoppableBridgeTask,
-  supportsProviderSwitching,
 } from "../lib/conversation-timeline.js";
 import { groupProjectSessionFamilies } from "../lib/project-groups.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
@@ -87,8 +86,7 @@ describe("mobile workspace directory", () => {
       themeControl: { theme: "dark", family: "apple", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
       onOpenSession: vi.fn(), onLoadOlderHistory: vi.fn(), onLoadOlderEvidence: vi.fn(), onPreviewArtifact: vi.fn(), onDownloadArtifact: vi.fn(),
       onSendTurn: vi.fn(), onInterruptTurn: vi.fn(), onResolveUncertain: vi.fn(), onResolvePermission: vi.fn(), onCreateSession: vi.fn(),
-      onLoadSessionConfiguration: vi.fn(), onConfigureSession: vi.fn(), onPreviewProviderSwitch: vi.fn(), onCommitProviderSwitch: vi.fn(), onCancelProviderSwitch: vi.fn(),
-      onRefreshProviders: vi.fn(),
+      onLoadSessionConfiguration: vi.fn(), onConfigureSession: vi.fn(),
     onDesktopAppAction: vi.fn(), onRefresh: vi.fn(), onBackToHosts: vi.fn(), onRetry: vi.fn(),
     };
   }
@@ -1267,20 +1265,6 @@ describe("provider switching presentation", () => {
     pendingCount: 0,
     activeProviderProfileId: "claude-official",
   };
-
-  it("keeps provider controls hidden when a V0.4 host has no capability", () => {
-    const legacy = {
-      host: { capabilities: [] },
-    } as unknown as BridgeHostSnapshot;
-    const current = {
-      host: {
-        capabilities: ["provider.profile.v1", "conversation.handoff.v1"],
-      },
-    } as unknown as BridgeHostSnapshot;
-
-    expect(supportsProviderSwitching(legacy)).toBe(false);
-    expect(supportsProviderSwitching(current)).toBe(false);
-  });
 
   it("aggregates file changes and keeps File change cards out of the timeline", () => {
     const items = [

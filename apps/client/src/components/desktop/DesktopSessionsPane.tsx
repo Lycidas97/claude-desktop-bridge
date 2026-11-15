@@ -13,7 +13,6 @@ import type {
   BridgePrAutoFixState,
   BridgePrAutoFixUpdate,
   BridgePullRequest,
-  BridgeProviderProfile,
   BridgeResponse,
   BridgeSessionCommandResult,
   BridgeSessionRewindPreview,
@@ -170,8 +169,6 @@ export function DesktopSessions({
   events: BridgeEvent[];
   apiRequest(request: LocalBridgeRequest): Promise<BridgeResponse>;
   onRefreshSnapshot(): Promise<void>;
-  onReturnToDesktop?(sessionId: string): Promise<void>;
-  onTakeoverDesktop?(sessionId: string, commandId?: string): Promise<void>;
 }) {
   const openMedia = useMediaPreview();
   const [pickedId, setPickedId] = useState(initialSessionId ?? snapshot.sessions[0]?.sessionId);
@@ -664,14 +661,6 @@ export function DesktopSessions({
     } finally {
       setSending(false);
     }
-  }
-
-  async function refreshProviders(): Promise<void> {
-    unwrap<{ providers: BridgeProviderProfile[] }>(await apiRequest({
-      method: "provider.refresh",
-      params: {},
-    }));
-    await onRefreshSnapshot();
   }
 
   async function stopCurrentTask(): Promise<void> {

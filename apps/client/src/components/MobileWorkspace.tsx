@@ -123,10 +123,6 @@ import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
 } from "./session/SessionConfigurationDialog.js";
-import {
-  type ProviderSwitchPreview,
-  type ProviderSwitchResult,
-} from "./session/ProviderSwitchDialog.js";
 import "./session/section-create.css";
 import { useSectionManage } from "./session/SectionManageDialog.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "./conversation/SessionActivityIndicator.js";
@@ -269,8 +265,6 @@ export function MobileWorkspace({
     sessionId: string,
     title?: string,
   ): Promise<BridgeSessionInfo | undefined>;
-  onReturnToDesktop?(sessionId: string): Promise<void>;
-  onTakeoverDesktop?(sessionId: string, commandId?: string): Promise<void>;
   onPreviewRewind?(sessionId: string, messageId: string): Promise<BridgeSessionRewindPreview>;
   onRewindSession?(sessionId: string, messageId: string, scope: BridgeSessionRewindScope): Promise<BridgeSessionRewindResult>;
   onLoadBackgroundTasks?(sessionId: string): Promise<BridgeBackgroundTask[]>;
@@ -283,18 +277,6 @@ export function MobileWorkspace({
     sessionId: string,
     change: SessionConfigurationChange,
   ): Promise<BridgeSessionConfiguration>;
-  onPreviewProviderSwitch(
-    sessionId: string,
-    targetProviderProfileId: string,
-    model?: string,
-  ): Promise<ProviderSwitchPreview>;
-  onCommitProviderSwitch(
-    handoffId: string,
-    targetNativeSessionId?: string,
-    model?: string,
-  ): Promise<ProviderSwitchResult>;
-  onCancelProviderSwitch(handoffId: string): Promise<void>;
-  onRefreshProviders(): Promise<void>;
   onArchiveSession?(sessionId: string, archived: boolean): Promise<void>;
   onRenameSession?(sessionId: string, title: string): Promise<void>;
   onDeleteSession?(sessionId: string): Promise<void>;

@@ -9,7 +9,6 @@
 const SPECULAR_SELECTOR = [
   ".confirm-dialog",
   ".create-session-dialog",
-  ".provider-switch-dialog",
   ".session-configuration-dialog",
   ".pairing-panel",
 ].join(", ");

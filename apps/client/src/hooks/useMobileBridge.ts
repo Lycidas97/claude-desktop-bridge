@@ -20,7 +20,6 @@ import {
   type BridgePrAutoFixState,
   type BridgePrAutoFixUpdate,
   type BridgePullRequest,
-  type BridgeProviderProfile,
   type BridgeRequest,
   type BridgeResponse,
   type BridgeSDKPermissionMode,
@@ -581,14 +580,6 @@ export function useMobileBridge() {
     return result.session;
   }, [sendRequest]);
 
-  const returnToDesktop = useCallback(async (_sessionId: string): Promise<void> => {
-    throw new Error("Claude 已由 Desktop 原生执行，无需交还。");
-  }, []);
-
-  const takeoverDesktop = useCallback(async (_sessionId: string, _commandId?: string): Promise<void> => {
-    throw new Error("Claude 已由 Desktop 原生执行，不再支持 Bridge 接管。");
-  }, []);
-
   const loadSessionCommands = useCallback(async (sessionId: string): Promise<BridgeSlashCommandCatalog> => {
     const response = await sendRequest("session.commands", { sessionId }, { allowOffline: false, wait: true });
     if (!response?.ok) throw new Error(response?.error?.message ?? "自定义命令读取失败");
@@ -684,18 +675,6 @@ export function useMobileBridge() {
     return result.configuration;
   }, [sendRequest]);
 
-  const previewProviderSwitch = useCallback(async (_sessionId: string, _targetProviderProfileId: string, _model?: string): Promise<never> => {
-    throw new Error("Claude 提供方由 Desktop 管理。");
-  }, []);
-
-  const commitProviderSwitch = useCallback(async (_handoffId: string, _targetNativeSessionId?: string, _model?: string): Promise<never> => {
-    throw new Error("Claude 提供方由 Desktop 管理。");
-  }, []);
-
-  const cancelProviderSwitch = useCallback(async (_handoffId: string): Promise<void> => {
-    throw new Error("Claude 提供方由 Desktop 管理。");
-  }, []);
-
   const browseDirectory = useCallback(async (path?: string): Promise<BridgeDirectoryListing> => {
     const response = await sendRequest("directory.list", path ? { path } : {}, { wait: true, allowOffline: false });
     if (!response?.ok) throw new Error(response?.error?.message ?? "文件夹读取失败");
@@ -716,21 +695,6 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "检测失败");
     const result = response.result as Pick<BridgeHostSnapshot, "runtime" | "runtimes" | "providers">;
     setState((current) => current.snapshot ? { ...current, snapshot: { ...current.snapshot, ...result } } : current);
-  }, [sendRequest]);
-
-  const refreshProviders = useCallback(async (): Promise<void> => {
-    const response = await sendRequest("provider.refresh", {}, {
-      wait: true,
-      timeoutMs: 45_000,
-    });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "提供方状态刷新失败");
-    const result = response.result as { providers?: BridgeProviderProfile[] };
-    const providers = result.providers;
-    if (!providers) throw new Error("电脑未返回提供方状态");
-    setState((current) => current.snapshot ? {
-      ...current,
-      snapshot: { ...current.snapshot, providers },
-    } : current);
   }, [sendRequest]);
 
   const controlClaudeDesktop = useCallback(async (
@@ -903,8 +867,6 @@ export function useMobileBridge() {
     renameSection,
     deleteSection,
     forkSession,
-    returnToDesktop,
-    takeoverDesktop,
     loadBackgroundTasks,
     loadSessionConfiguration,
     loadSessionCommands,
@@ -914,13 +876,9 @@ export function useMobileBridge() {
     previewRewind,
     rewindSession,
     configureSession,
-    previewProviderSwitch,
-    commitProviderSwitch,
-    cancelProviderSwitch,
     archiveSession,
     renameSession,
     deleteSession,
-    refreshProviders,
     launchClaudeDesktop,
     controlDesktopApp,
     quitClaudeDesktop,

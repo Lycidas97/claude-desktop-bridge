@@ -510,17 +510,6 @@ describe("session display-name renaming", () => {
   });
 });
 
-describe("retired Claude Host actions", () => {
-  it("keeps legacy callbacks non-executable", async () => {
-    const bridge = useMobileBridge();
-    await expect(bridge.takeoverDesktop("target")).rejects.toThrow("不再支持 Bridge 接管");
-    await expect(bridge.returnToDesktop("target")).rejects.toThrow("无需交还");
-    await expect(bridge.previewProviderSwitch("target", "api")).rejects.toThrow("Desktop 管理");
-    expect(harness.requests).toEqual([]);
-    expect(harness.addOutbox).not.toHaveBeenCalled();
-  });
-});
-
 function nativeSnapshot(): BridgeHostSnapshot {
   const current = snapshot("A");
   current.host.capabilities = ["claude.native-relay.v1"];

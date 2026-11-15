@@ -256,8 +256,6 @@ export function App() {
               {...(snapshot?.host.capabilities.includes("session.rename.v1")
                 ? { onRenameSession: mobile.renameSession }
                 : {})}
-              onReturnToDesktop={mobile.returnToDesktop}
-              onTakeoverDesktop={mobile.takeoverDesktop}
               onLoadSessionConfiguration={mobile.loadSessionConfiguration}
               {...(snapshot?.host.capabilities.includes("claude.native-relay.v1") ? { onLoadBackgroundTasks: mobile.loadBackgroundTasks } : {})}
               {...(snapshot?.host.capabilities.includes("session.commands.v1")
@@ -271,16 +269,12 @@ export function App() {
               onConfigureSession={mobile.configureSession}
               onPreviewRewind={mobile.previewRewind}
               onRewindSession={mobile.rewindSession}
-              onPreviewProviderSwitch={mobile.previewProviderSwitch}
-              onCommitProviderSwitch={mobile.commitProviderSwitch}
-              onCancelProviderSwitch={mobile.cancelProviderSwitch}
               {...(mobile.state.snapshot?.host.capabilities.includes("session.visibility.v1")
                 ? {
                     onArchiveSession: mobile.archiveSession,
                     onDeleteSession: mobile.deleteSession,
                   }
                 : {})}
-              onRefreshProviders={mobile.refreshProviders}
               onDesktopAppAction={mobile.controlDesktopApp}
               onRefresh={mobile.refresh}
               onBackToHosts={() => {

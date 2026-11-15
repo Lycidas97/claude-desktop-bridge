@@ -5,7 +5,7 @@ export function MessageCopyButton({ text, label }: { text: string; label: string
   const [status, setStatus] = useState<"idle" | "copied" | "error">("idle");
   useEffect(() => setStatus("idle"), [text]);
 
-  async function copy(): Promise<void> {
+  async function copy(button: HTMLButtonElement): Promise<void> {
     try {
       await navigator.clipboard.writeText(text);
       setStatus("copied");
@@ -18,7 +18,8 @@ export function MessageCopyButton({ text, label }: { text: string; label: string
     textarea.readOnly = true;
     textarea.style.position = "fixed";
     textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
+    // A modal dialog makes elements outside it inert, including selection targets.
+    (button.closest("dialog") ?? document.body).appendChild(textarea);
     textarea.select();
     textarea.setSelectionRange(0, text.length);
     try {
@@ -35,7 +36,7 @@ export function MessageCopyButton({ text, label }: { text: string; label: string
       type="button"
       className="message-copy-button"
       aria-label={status === "copied" ? "已复制" : label}
-      onClick={() => void copy()}
+      onClick={(event) => void copy(event.currentTarget)}
     >
       {status === "copied" ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
       <span aria-live="polite">{status === "copied" ? "已复制" : status === "error" ? "复制失败，点击重试" : "复制"}</span>

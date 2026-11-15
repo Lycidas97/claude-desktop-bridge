@@ -110,7 +110,13 @@ export function DesktopSettings({ snapshot, api, onSnapshot, themeControl }: {
           {!inspector ? <p className="settings-notice">后台未提供监测状态，请在任务结束后停止 Bridge 后台服务，再打开新版 Bridge。</p>
             : inspector.state === "unsupported" ? <p className="settings-notice">目前仅支持 macOS。</p> : <>
               <p role="status" className="settings-notice">{inspector.state === "starting" ? "正在启动监测…" : inspector.state === "error" ? "监测不可用" : inspector.state === "closed" ? "调试端口未开放，后台持续检查。" : `调试端口已开放 · ${inspector.clients.length} 个连接进程`}</p>
+              {inspector.state === "closed" && <p className="settings-notice">如需连接，请在 Claude Desktop 中手动勾选 Developer › Enable Main Process Debugger，Bridge 会自动连接。</p>}
               {inspector.error && <p className="inline-error">{inspector.error}</p>}
+              {inspector.startup?.state === "waiting" ? inspector.state === "closed" && <p className="settings-notice">{inspector.startup.detail}</p>
+                : inspector.startup && <details className="settings-detection"><summary>历史启动记录 · {inspector.startup.recordedAt !== undefined ? <time dateTime={new Date(inspector.startup.recordedAt).toISOString()}>{new Date(inspector.startup.recordedAt).toLocaleString("zh-CN")}</time> : "时间未知"}</summary>
+                  <p className="settings-notice">{inspector.startup.detail}</p>
+                  <p className="settings-notice">本进程不再自动尝试开启调试端口。</p>
+                </details>}
               {inspector.notificationError && <p role="alert" className="inline-error">系统通知发送失败：{inspector.notificationError}</p>}
               {inspector.clients.length > 0 && <ul className="inspector-process-list">{inspector.clients.map((client) => <li key={client.pid} className={client.approved ? "" : "inspector-process-unknown"}>
                 <strong>PID {client.pid} · {client.name} · {client.approved ? "认可路径" : "未认可路径"}</strong><span>{client.executablePath ?? client.pathError ?? "路径未知"}</span>

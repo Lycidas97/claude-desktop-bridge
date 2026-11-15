@@ -19,7 +19,7 @@ const resources = vi.hoisted(() => {
     diagnosticsEnabled: false,
     diagnostics: { start: vi.fn(), setEnabled: vi.fn(), close: vi.fn() },
     inspector: { start: vi.fn(async () => {}), close: vi.fn(), notificationFailed: vi.fn() },
-    inspectorOptions: undefined as undefined | { onUpdate(status: BridgeInspectorStatus): void; onAlert(alert: BridgeInspectorAlert): string | undefined; startup?: (listening: boolean) => Promise<string | undefined> },
+    inspectorOptions: undefined as undefined | { onUpdate(status: BridgeInspectorStatus): void; onAlert(alert: BridgeInspectorAlert): string | undefined; startup?: (listening: boolean) => Promise<BridgeInspectorStatus["startup"]> },
     notificationSupported: vi.fn(() => true), showNotification: vi.fn(),
     notifications: [] as Array<{ options: { title: string; body: string }; emit(event: string, ...args: unknown[]): boolean }>,
   };

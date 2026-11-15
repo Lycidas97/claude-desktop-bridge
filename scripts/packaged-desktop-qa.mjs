@@ -155,6 +155,11 @@ try {
   await page.getByRole("heading", { name: "设备", exact: true }).waitFor();
   await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();
   await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "Claude 接入", exact: true }).click();
+  const inspector = page.getByRole("region", { name: "调试连接监测", exact: true });
+  await inspector.waitFor();
+  if (snapshot.claudeInspector?.state === "closed") await inspector.getByText("如需连接，请在 Claude Desktop 中手动勾选 Developer › Enable Main Process Debugger，Bridge 会自动连接。", { exact: true }).waitFor();
+  if (snapshot.claudeInspector?.startup && snapshot.claudeInspector.startup.state !== "waiting") await inspector.getByText(/历史启动记录/u).waitFor();
   await page.getByRole("button", { name: "Magpie 额度", exact: true }).click();
   await page.locator(".magpie-quota-board").waitFor();
   await page.getByRole("button", { name: "连接与启动", exact: true }).click();

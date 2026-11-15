@@ -1249,12 +1249,19 @@ export interface BridgeInspectorAlert extends BridgeInspectorClient {
   detectedAt: number;
 }
 
+export interface BridgeInspectorStartupStatus {
+  state: "waiting" | "attempted" | "enabled" | "already-open" | "failed" | "legacy";
+  recordedAt?: number;
+  detail: string;
+}
+
 export interface BridgeInspectorStatus {
   state: "starting" | "unsupported" | "closed" | "listening" | "error";
   port: number;
   pollIntervalMs: number;
   clients: BridgeInspectorClient[];
   alerts: BridgeInspectorAlert[];
+  startup?: BridgeInspectorStartupStatus;
   error?: string;
   notificationError?: string;
 }

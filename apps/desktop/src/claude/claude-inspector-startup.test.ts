@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,7 @@ import { ClaudeInspectorStartup, parseInspectorDesktopProcesses } from "./claude
 
 const directories: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })));
 });
@@ -30,7 +31,7 @@ describe("one native inspector action per Desktop process start", () => {
 
   it("records an already-open process so later manual closure is respected", async () => {
     const f = await fixture();
-    await f.startup.check(true);
+    expect(await f.startup.check(true)).toMatchObject({ state: "already-open", recordedAt: expect.any(Number) });
     await f.startup.check(false);
     expect(f.menu).not.toHaveBeenCalled();
   });
@@ -57,37 +58,54 @@ describe("one native inspector action per Desktop process start", () => {
   it("waits for late menu construction without consuming the single action", async () => {
     const f = await fixture();
     f.menu.mockResolvedValueOnce("waiting");
-    expect(await f.startup.check(false)).toContain("等待");
+    expect(await f.startup.check(false)).toMatchObject({ state: "waiting", detail: expect.stringContaining("等待") });
     expect(f.menu.mock.calls.filter(([, press]) => press)).toHaveLength(0);
     await f.startup.check(false);
     await f.startup.check(false);
     expect(f.menu.mock.calls.filter(([, press]) => press)).toHaveLength(1);
   });
 
-  it("preserves a permission rejection without repeated calls, including service restart", async () => {
+  it("preserves the original failure time through polling, port recovery, manual closure and service restart", async () => {
     const f = await fixture();
+    const now = vi.spyOn(Date, "now").mockReturnValue(1794697200000);
     f.menu.mockRejectedValue(new Error("Not authorized to send Apple events (-1743)"));
-    expect(await f.startup.check(false)).toContain("-1743");
-    expect(await f.startup.check(false)).toContain("-1743");
-    expect(await new ClaudeInspectorStartup(f.options).check(false)).toContain("-1743");
+    const failed = await f.startup.check(false);
+    expect(failed).toEqual({ state: "failed", recordedAt: 1794697200000, detail: "自动开启失败：Not authorized to send Apple events (-1743)" });
+    now.mockReturnValue(1794700800000);
+    expect(await f.startup.check(false)).toEqual(failed);
+    expect(await f.startup.check(true)).toEqual(failed);
+    expect(await f.startup.check(false)).toEqual(failed);
+    expect(await new ClaudeInspectorStartup(f.options).check(false)).toEqual(failed);
+    expect(JSON.parse(await readFile(f.recordPath, "utf8"))["42:first-start"]).toEqual(failed);
     expect(f.menu).toHaveBeenCalledOnce();
   });
 
-  it("keeps a click failure visible and does not mistake the RPC result for an open port", async () => {
+  it("keeps old string records as time-unknown history without granting another automatic attempt", async () => {
     const f = await fixture();
-    f.menu.mockImplementation(async (_pid, press) => { if (press) throw new Error("AXPress failed"); return "ready"; });
-    expect(await f.startup.check(false)).toContain("AXPress failed");
-    expect(await f.startup.check(false)).toContain("AXPress failed");
-    expect(f.menu.mock.calls.filter(([, press]) => press)).toHaveLength(1);
-    const next = await fixture();
-    expect(await next.startup.check(false)).toContain("尚未开放");
-    expect(await next.startup.check(true)).toBeUndefined();
+    await writeFile(f.recordPath, JSON.stringify({ "42:first-start": "本进程自动开启失败：旧权限错误 (-2700)" }));
+    const legacy = await f.startup.check(false);
+    expect(legacy).toEqual({ state: "legacy", detail: "本进程自动开启失败：旧权限错误 (-2700)" });
+    expect(await f.startup.check(true)).toEqual(legacy);
+    expect(await new ClaudeInspectorStartup(f.options).check(false)).toEqual(legacy);
+    expect(f.menu).not.toHaveBeenCalled();
   });
 
-  it("waits for the scanner when the checkbox is already checked without pressing it", async () => {
+  it("keeps a click failure visible and does not mistake the menu result for an open port", async () => {
+    const f = await fixture();
+    f.menu.mockImplementation(async (_pid, press) => { if (press) throw new Error("AXPress failed"); return "ready"; });
+    expect(await f.startup.check(false)).toMatchObject({ state: "failed", detail: expect.stringContaining("AXPress failed") });
+    expect(await f.startup.check(false)).toMatchObject({ state: "failed", detail: expect.stringContaining("AXPress failed") });
+    expect(f.menu.mock.calls.filter(([, press]) => press)).toHaveLength(1);
+    const next = await fixture();
+    const attempted = await next.startup.check(false);
+    expect(attempted).toMatchObject({ state: "attempted" });
+    expect(await next.startup.check(true)).toEqual(attempted);
+  });
+
+  it("records a checked menu separately from a click without pressing it", async () => {
     const f = await fixture();
     f.menu.mockResolvedValue("enabled");
-    expect(await f.startup.check(false)).toContain("尚未开放");
+    expect(await f.startup.check(false)).toMatchObject({ state: "enabled", detail: expect.stringContaining("未重复操作") });
     await f.startup.check(false);
     expect(f.menu).toHaveBeenCalledExactlyOnceWith(42, false);
   });

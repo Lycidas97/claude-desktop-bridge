@@ -137,7 +137,10 @@ try {
       await page.locator(".evidence-panel, .evidence-empty").waitFor();
     }
   }
-  if (snapshot.sessions.length === 0) await page.locator(".desktop-sidebar-empty").waitFor();
+  if (snapshot.sessions.length === 0) {
+    await page.getByText(snapshot.runtime.desktopIntegration.state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop", { exact: true }).waitFor();
+    await page.locator(".session-catalog-empty-action").getByText("新建会话", { exact: true }).waitFor();
+  }
   await page.getByRole("button", { name: "设备", exact: true }).click();
   await page.getByRole("heading", { name: "设备", exact: true }).waitFor();
   await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();

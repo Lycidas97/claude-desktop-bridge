@@ -46,9 +46,13 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
+const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
+assert.ok(themes.every(theme => ["light", "dark"].includes(theme)), "BRIDGE_QA_THEME must be light or dark");
+const themeFamily = process.env.BRIDGE_QA_THEME_FAMILY ?? "sunstone";
+assert.ok(["sunstone", "apple"].includes(themeFamily), "BRIDGE_QA_THEME_FAMILY must be sunstone or apple");
 const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
 
 // Bounded polling is only for observable browser/protocol state, never a fixed
@@ -78,6 +82,179 @@ async function syncNativeSections(host) {
   if (deleteCapable) host.snapshot.host.capabilities.push("section.delete.v1");
   if (trustCapable) host.snapshot.host.capabilities.push("workspace.trust.v1");
   if (host.snapshot.runtimes?.[0]) host.snapshot.runtimes[0].capabilities = runtimeCapabilities;
+}
+
+async function verifySessionCatalog(page, host, steps, directory, viewports) {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const axeSource = await readFile(resolve(root, "node_modules/axe-core/axe.min.js"), "utf8");
+  async function capture(name) {
+    await page.waitForFunction(() => document.getAnimations().every(animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished"));
+    await page.evaluate(axeSource);
+    const violations = await page.evaluate(async () => (await window.axe.run(document, {
+      resultTypes: ["violations"], runOnly: { type: "tag", values: ["wcag2a", "wcag2aa"] },
+    })).violations.filter(item => ["serious", "critical"].includes(item.impact)).map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) })));
+    assert.deepEqual(violations, [], `${name} accessibility`);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1 && document.body.getBoundingClientRect().height >= 100), true, `${name} has content without horizontal overflow`);
+    viewports.push({ page: name, ...page.viewportSize() });
+    await page.screenshot({ path: resolve(directory, `${name}.png`), fullPage: true });
+  }
+  await capture("mobile-catalog");
+  await page.getByRole("button", { name: "调整顺序", exact: true }).click();
+  await page.getByRole("dialog", { name: "项目顺序" }).waitFor();
+  await capture("mobile-project-order");
+  await page.getByRole("dialog", { name: "项目顺序" }).getByRole("button", { name: "关闭", exact: true }).click();
+
+  await page.exposeFunction("catalogRequest", async input => ({
+    kind: "response", requestId: randomUUID(), ok: true,
+    result: await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), ...input }),
+  }));
+  await page.addInitScript(snapshot => {
+    window.__catalogSnapshot = snapshot;
+    window.__updateCatalog = next => {
+      window.__catalogSnapshot = next;
+      window.__catalogReceive?.(structuredClone(next));
+    };
+    window.bridgeDesktop = {
+      getSnapshot: async () => structuredClone(window.__catalogSnapshot),
+      onSnapshot: receive => { window.__catalogReceive = receive; return () => { delete window.__catalogReceive; }; },
+      onEvent: () => () => {},
+      request: input => window.catalogRequest(input),
+    };
+  }, { ...host.snapshot, connection: "connected", launchAtLogin: false, diagnosticsEnabled: false,
+    managedDesktopEnabled: false,
+    host: { ...host.snapshot.host, capabilities: [...host.snapshot.host.capabilities.filter(value => value !== "plugin.magpie-quota.v1"), "session.visibility.v1"] },
+    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true } });
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  const sidebar = page.locator(".desktop-session-sidebar");
+  const headers = sidebar.locator(".project-group-toggle-copy strong");
+  await sidebar.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  const initialOrder = await headers.allTextContents();
+  assert.equal(initialOrder.length, 2);
+  const selected = sidebar.locator(".session-row-v2.active");
+  assert.equal(await selected.count(), 1, "Desktop highlights the selected shared row");
+  assert.notEqual(await selected.evaluate(element => getComputedStyle(element).backgroundColor), "rgba(0, 0, 0, 0)");
+  await sidebar.locator(".mobile-fork-toggle").click();
+  await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').waitFor();
+  assert.match(await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').innerText(), /已归档/u);
+  await sidebar.locator('[data-session-id="browser-e2e-fork"] .session-row-hit').click();
+  assert.equal(await sidebar.locator('[data-session-id="browser-e2e-fork"]').evaluate(element => element.classList.contains("active")), true);
+  const savedCatalog = await page.evaluate(() => structuredClone(window.__catalogSnapshot));
+  const contrastChecks = [];
+  await page.evaluate(axeSource);
+  for (const state of ["running", "waiting", "queued"]) {
+    for (const selectedId of [sessionId, "browser-e2e-fork", "browser-e2e-btw-archived"]) {
+      await page.evaluate(({ snapshot, selectedId, state }) => {
+        for (const session of snapshot.sessions) session.pendingCount = 2;
+        const session = snapshot.sessions.find(session => session.sessionId === selectedId);
+        Object.assign(session, { turnState: state, ownership: state === "running" ? "DESKTOP_NATIVE_RUNNING" : "DESKTOP_NATIVE_IDLE" });
+        delete session.archivedAt;
+        snapshot.permissions = state === "waiting" ? [{ requestId: "catalog-contrast-permission", sessionId: selectedId, toolUseId: "catalog-contrast-tool", toolName: "Bash", input: { command: "synthetic contrast fixture" }, createdAt: Date.now(), canAllowAlways: false }] : [];
+        window.__updateCatalog(snapshot);
+      }, { snapshot: savedCatalog, selectedId, state });
+      const row = sidebar.locator(`[data-session-id="${selectedId}"]`);
+      await row.locator(".session-row-hit").click();
+      assert.equal(await row.evaluate(element => element.classList.contains("active")), true, "Contrast check uses the selected row");
+      await page.waitForFunction(() => document.getAnimations().every(animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished"));
+      const violations = await page.evaluate(async () => {
+        const result = await window.axe.run(document.querySelector(".desktop-session-sidebar"), {
+          runOnly: { type: "rule", values: ["color-contrast"] }, resultTypes: ["violations", "incomplete"],
+        });
+        return [...result.violations, ...result.incomplete.filter(item => item.nodes.some(node =>
+          [...node.any, ...node.all, ...node.none].some(check => check.data?.contrastRatio < 4.5)
+        ))].map(item => ({ id: item.id, nodes: item.nodes.map(node => ({ target: node.target, detail: node.failureSummary })) }));
+      });
+      contrastChecks.push({ selectedId, state, violations });
+      assert.deepEqual(violations, [], `Desktop ${state} status contrast with selected ${selectedId}`);
+      if (selectedId === "browser-e2e-fork") await sidebar.screenshot({ path: resolve(directory, `desktop-selected-${state}.png`) });
+    }
+  }
+  await writeFile(resolve(directory, "desktop-status-contrast.json"), JSON.stringify(contrastChecks, null, 2));
+  await page.evaluate(snapshot => window.__updateCatalog(snapshot), savedCatalog);
+  await sidebar.locator('[data-session-id="browser-e2e-fork"] .session-row-hit').click();
+  steps.push("Desktop status contrast passes for selected main/fork/sidechat rows in running, waiting and queued states");
+  await page.evaluate(sessionId => {
+    const snapshot = structuredClone(window.__catalogSnapshot);
+    Object.assign(snapshot.sessions.find(session => session.sessionId === sessionId), { turnState: "running", ownership: "DESKTOP_NATIVE_RUNNING", pendingCount: 2 });
+    window.__updateCatalog(snapshot);
+  }, sessionId);
+  await sidebar.locator(`[data-session-id="${sessionId}"]`).getByLabel("2 条排队消息", { exact: true }).waitFor();
+  assert.match(await sidebar.locator(`[data-session-id="${sessionId}"]`).innerText(), /桌面运行中/u);
+  const runningBadge = await sidebar.locator(`[data-session-id="${sessionId}"] .session-row-status.running`).boundingBox();
+  const pendingBadge = await sidebar.locator(`[data-session-id="${sessionId}"]`).getByLabel("2 条排队消息", { exact: true }).boundingBox();
+  assert.ok(Math.abs(runningBadge.y - pendingBadge.y) < 2, "Running status and pending count stay on the same row");
+  await capture("desktop-catalog");
+  steps.push("mobile/Desktop share family rows; Desktop retains archived sidechats, selection and fork navigation");
+
+  await sidebar.getByRole("button", { name: "全部折叠", exact: true }).click();
+  assert.equal(await sidebar.locator("[data-session-id]").count(), 0);
+  await sidebar.getByRole("button", { name: "全部展开", exact: true }).click();
+  const orderTrigger = sidebar.getByRole("button", { name: "调整项目顺序", exact: true });
+  await orderTrigger.focus();
+  await orderTrigger.press("Enter");
+  const orderDialog = page.getByRole("dialog", { name: "项目顺序" });
+  await orderDialog.waitFor();
+  assert.equal(await orderDialog.evaluate(element => element.contains(document.activeElement)), true, "Desktop order dialog takes keyboard focus");
+  await orderDialog.getByRole("button", { name: "关闭", exact: true }).focus();
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await orderDialog.getByRole("button", { name: "完成", exact: true }).evaluate(element => element === document.activeElement), true, "Shift+Tab wraps to the last dialog control");
+  await page.keyboard.press("Tab");
+  assert.equal(await orderDialog.getByRole("button", { name: "关闭", exact: true }).evaluate(element => element === document.activeElement), true, "Tab wraps to the first dialog control");
+  await page.keyboard.press("Escape");
+  await orderDialog.waitFor({ state: "detached" });
+  assert.equal(await orderTrigger.evaluate(element => element === document.activeElement), true, "Escape restores focus to the order trigger");
+  await orderTrigger.press("Enter");
+  await orderDialog.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+  const handle = await orderDialog.locator(".project-order-handle").first().boundingBox();
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await orderDialog.locator(".is-placeholder").waitFor();
+  await page.keyboard.press("Escape");
+  await orderDialog.locator(".is-placeholder").waitFor({ state: "detached" });
+  await page.mouse.up();
+  assert.equal(await orderDialog.isVisible(), true, "Escape during drag cancels the drag and keeps the dialog open");
+  assert.deepEqual(await orderDialog.locator(".project-order-row strong").allTextContents(), initialOrder);
+  await orderDialog.getByRole("button", { name: `拖动「${initialOrder[1]}」调整顺序`, exact: true }).press("Home");
+  await capture("desktop-project-order");
+  await orderDialog.getByRole("button", { name: "关闭", exact: true }).click();
+  assert.equal(await orderTrigger.evaluate(element => element === document.activeElement), true, "Close button restores focus to the order trigger");
+  const manualOrder = [...initialOrder].reverse();
+  await eventually(() => headers.allTextContents(), manualOrder, "Manual project order updates the Desktop catalog");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await sidebar.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  assert.deepEqual(await headers.allTextContents(), manualOrder, "Desktop project order survives reload");
+  await page.evaluate(projectName => {
+    const snapshot = structuredClone(window.__catalogSnapshot);
+    snapshot.sessions.find(session => session.projectName === projectName).lastActivityAt = Date.now();
+    window.__updateCatalog(snapshot);
+  }, initialOrder[0]);
+  assert.deepEqual(await headers.allTextContents(), manualOrder, "Activity does not move fixed projects");
+  await sidebar.getByRole("button", { name: "调整项目顺序", exact: true }).click();
+  await orderDialog.getByRole("button", { name: "按最近活动重排", exact: true }).click();
+  await orderDialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await eventually(async () => (await headers.allTextContents())[0], initialOrder[0], "Explicit activity reorder moves the newest project first");
+  steps.push("Desktop collapse/expand, manual ordering, reload persistence, fixed activity order and explicit activity reorder");
+
+  await page.setViewportSize({ width: 860, height: 620 });
+  await capture("desktop-catalog-compact");
+  const scroll = await page.locator(".desktop-project-list").evaluate(element => ({ overflow: getComputedStyle(element).overflowY, height: element.clientHeight }));
+  assert.equal(scroll.overflow, "auto");
+  assert.ok(scroll.height > 0, "Desktop retains its own catalog scroll container");
+  await page.setViewportSize({ width: 1200, height: 800 });
+  for (const state of ["ready", "not-managed"]) {
+    await page.evaluate(state => {
+      const snapshot = structuredClone(window.__catalogSnapshot);
+      snapshot.sessions = []; snapshot.projects = [];
+      snapshot.runtime.desktopIntegration.state = state;
+      window.__updateCatalog(snapshot);
+    }, state);
+    await sidebar.getByText(state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop", { exact: true }).waitFor();
+    await sidebar.locator(".session-catalog-empty-action").click();
+    await page.getByRole("dialog", { name: "新建会话" }).waitFor();
+    await page.getByRole("dialog", { name: "新建会话" }).getByRole("button", { name: "关闭", exact: true }).click();
+    await capture(`desktop-empty-${state}`);
+  }
+  steps.push("Desktop distinguishes disconnected/ready empty catalogs and opens creation from both");
 }
 
 async function verifyDesktopDiagnostics(page, host, steps) {
@@ -261,7 +438,8 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       deviceId: pairing.deviceId, name: "隔离浏览器", platform: "web",
       online: true, createdAt: now, lastSeenAt: now,
     }],
-    runtime: { state: "ready", detail: "固定响应宿主", activeTurns: remotePreview ? 1 : 0, maxParallelTurns: 1 },
+    runtime: { state: "ready", detail: "固定响应宿主", activeTurns: remotePreview ? 1 : 0, maxParallelTurns: 1,
+      desktopIntegration: { state: "ready", detail: "隔离 Native 宿主", enabled: true, canRestart: false } },
     runtimes: [{
       id: "claude-desktop", name: "Claude Desktop", state: "ready", detail: "隔离宿主",
       capabilities: ["session.list", "session.history", "turn.start", "permission.resolve", ...(native || remotePreview ? ["attachment.image"] : []), ...(native ? ["session.create", "workspace.trust", "session.configure", "prompt.resolve", "pr.autofix"] : [])],
@@ -842,7 +1020,7 @@ async function openRename(page, entry) {
 async function verifyRename(page, host, entry, steps) {
   const row = page.locator(`[data-session-id="${sessionId}"]`);
   const beforeTime = await row.locator("small").innerText();
-  const beforeBadge = await row.locator(".session-row-status").innerText();
+  const beforeBadge = await row.locator(".session-row-status:not([aria-label])").innerText();
   const beforeOrder = await page.locator("[data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId));
   const beforeSession = structuredClone(host.session);
   if (entry === "chat") {
@@ -888,7 +1066,8 @@ async function verifyRename(page, host, entry, steps) {
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   await eventually(() => row.locator("strong").innerText(), renamedTitle, "Renamed chat must update its list row");
   assert.equal(await row.locator("small").innerText(), beforeTime, "Rename must not change displayed activity time");
-  assert.equal(await row.locator(".session-row-status").innerText(), beforeBadge, "Rename must preserve queue state");
+  assert.equal(await row.locator(".session-row-status:not([aria-label])").innerText(), beforeBadge, "Rename must preserve queue state");
+  assert.equal(await row.getByLabel(`${beforeSession.pendingCount} 条排队消息`, { exact: true }).innerText(), String(beforeSession.pendingCount), "Rename must preserve the independent pending count");
   assert.deepEqual(await page.locator("[data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId)), beforeOrder, "Rename must not reorder sessions");
   assert.deepEqual(host.session, { ...beforeSession, title: renamedTitle }, "Host rename changes only the title");
   assert.equal(host.requests.filter((request) => request.method.startsWith("turn.")).length, 0, "Rename must not alter queued turns");
@@ -1576,10 +1755,11 @@ async function verifyNativeCompaction(page, host, steps, directory) {
   assert.equal(await page.locator(".session-activity-elapsed").count(), 0, "User turn age is not shown as compaction duration");
   await page.screenshot({ path: resolve(directory, "native-compaction.png"), fullPage: true });
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
-  await eventually(() => row.locator(".session-row-status").innerText(), "正在压缩上下文", "Catalog badge shares the observed compaction status");
+  await eventually(() => row.locator(".session-row-status:not([aria-label])").innerText(), "正在压缩上下文", "Catalog badge shares the observed compaction status");
   await page.reload({ waitUntil: "domcontentloaded" });
   await row.waitFor();
-  await eventually(() => row.locator(".session-row-status").innerText(), "正在压缩上下文", "Reconnect snapshot retains current compaction status");
+  await eventually(() => row.locator(".session-row-status:not([aria-label])").innerText(), "正在压缩上下文", "Reconnect snapshot retains current compaction status");
+  assert.equal(await row.getByLabel("1 条排队消息", { exact: true }).innerText(), "1", "Compaction retains the independent pending count after reconnect");
   await row.getByRole("button").first().click();
   await eventually(() => page.locator(".session-activity-label").innerText(), "正在压缩上下文", "Reopening a compacting session restores its activity line");
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: null, compact_result: "success" } }));
@@ -2646,7 +2826,7 @@ async function verifySectionManage(page, host, steps, directory) {
 }
 
 async function runScenario(theme, scenario) {
-  const name = `${theme}-${scenario}`;
+  const name = `${themeFamily === "sunstone" ? "" : `${themeFamily}-`}${theme}-${scenario}`;
   const directory = resolve(runDir, name);
   await mkdir(directory, { recursive: true });
   const errors = [];
@@ -2660,19 +2840,19 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
     if (scenario === "native-prompts-pr") await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
     if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
-    if (scenario === "project-grouping") Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
+    if (["project-grouping", "session-catalog"].includes(scenario)) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (scenario === "section-manage") await syncNativeSections(host);
     context = await browser.newContext({
       viewport: { width: 375, height: 812 }, colorScheme: theme,
       serviceWorkers: "block",
     });
-    await context.addInitScript((mode) => {
+    await context.addInitScript(({ mode, family }) => {
       localStorage.setItem("bridge-theme", mode);
-      localStorage.setItem("bridge-theme-family", "sunstone");
-    }, theme);
+      localStorage.setItem("bridge-theme-family", family);
+    }, { mode: theme, family: themeFamily });
     if (scenario === "project-grouping") {
       await context.addInitScript(({ hostId, projectIds }) => {
         const key = `bridge-project-order:${hostId}`;
@@ -2715,12 +2895,14 @@ async function runScenario(theme, scenario) {
     await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
     await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
-    assert.equal(await page.locator("html").getAttribute("data-theme"), theme);
-    assert.equal(await page.locator("[data-session-id]").count(), ["project-grouping", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the visible session rows");
+    assert.equal(await page.locator("html").getAttribute("data-theme"), process.env.BRIDGE_QA_THEME ?? theme);
+    assert.equal(await page.locator("html").getAttribute("data-theme-family"), process.env.BRIDGE_QA_THEME_FAMILY ?? "sunstone");
+    assert.equal(await page.locator("[data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the visible session rows");
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
     if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
+    else if (scenario === "session-catalog") await verifySessionCatalog(page, host, steps, directory, viewports);
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
     else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory);
@@ -2771,7 +2953,7 @@ async function runScenario(theme, scenario) {
     }
   }
   const result = {
-    name, theme, viewport: viewports.length ? viewports : "375x812", status: failure || errors.length ? "failed" : "passed",
+    name, theme, themeFamily, viewport: viewports.length ? viewports : "375x812", status: failure || errors.length ? "failed" : "passed",
     durationMs: Date.now() - startedAt, steps, errors,
     ...(failure ? { failure: failure.stack } : {}),
     artifacts: directory,
@@ -3001,7 +3183,7 @@ try {
       headless: true,
       args: ["--disable-background-networking", "--disable-component-update", "--no-first-run"],
     });
-    const pairs = ["light", "dark"].flatMap((theme) => scenarios.map((scenario) => [theme, scenario]));
+    const pairs = themes.flatMap((theme) => scenarios.map((scenario) => [theme, scenario]));
     const concurrency = Math.max(1, Number(process.env.BRIDGE_E2E_CONCURRENCY ?? 4));
     const ordered = new Array(pairs.length);
     let nextPair = 0;
@@ -3032,7 +3214,7 @@ try {
   for (const key of Object.keys(process.env)) if (key.startsWith("VITE_")) delete process.env[key];
   Object.assign(process.env, inheritedVite);
   if (!serve) {
-    const failed = infrastructureErrors.length > 0 || results.length !== scenarios.length * 2 || results.some((result) => result.status === "failed");
+    const failed = infrastructureErrors.length > 0 || results.length !== scenarios.length * themes.length || results.some((result) => result.status === "failed");
     const report = {
       status: failed ? "failed" : "passed", browser: browser?.version(), node: process.version,
       client: resolve(root, "apps/client"), runDir,
@@ -3042,7 +3224,7 @@ try {
     };
     await writeFile(resolve(runDir, "report.json"), JSON.stringify(report, null, 2));
     await writeFile(resolve(artifactRoot, "report.json"), JSON.stringify(report, null, 2));
-    console.log(`Browser E2E ${report.status}: ${report.passed}/${scenarios.length * 2} passed. Report: ${resolve(runDir, "report.json")}`);
+    console.log(`Browser E2E ${report.status}: ${report.passed}/${scenarios.length * themes.length} passed. Report: ${resolve(runDir, "report.json")}`);
     if (failed) process.exitCode = 1;
   }
   if (infrastructureErrors.length) {

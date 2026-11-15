@@ -1,5 +1,6 @@
 import type { BridgePermissionInfo, BridgeSessionInfo } from "@bridge/protocol";
 import type { ReactElement, ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { groupProjectSessionFamilies } from "../../lib/project-groups.js";
 import { IconButton } from "../common/IconButton.js";
@@ -52,6 +53,16 @@ describe("SessionFamilyList", () => {
     expect(status(row(tree))?.props.children).toBe(badge);
     expect(status(row(tree))?.props.className).toBe(`session-row-status ${tone}`);
     expect(elements(row(tree)).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe(`session-state-dot ${tone}`);
+  });
+
+  it("retains pending messages alongside a running Native turn and permission priority", () => {
+    const families = groupProjectSessionFamilies<BridgeSessionInfo>([{ ...session, turnState: "running", ownership: "DESKTOP_NATIVE_RUNNING", pendingCount: 2 }]);
+    const running = renderToStaticMarkup(render({ families }));
+    expect(running).toContain("桌面运行中");
+    expect(running).toContain('aria-label="2 条排队消息"');
+    expect(renderToStaticMarkup(render({ families, permissions: [permission] }))).toContain("待授权");
+    expect(renderToStaticMarkup(render({ families, permissions: [permission] }))).toContain('aria-label="2 条排队消息"');
+    expect(renderToStaticMarkup(render({ families, archivedList: true }))).not.toContain("排队消息");
   });
 
   it("passes the selected session and action IDs without selecting through the action button", () => {

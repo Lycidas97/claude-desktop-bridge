@@ -72,11 +72,18 @@ export function SessionFamilyList({
                 {!isArchivedRow && session.currentSummary ? ` · ${session.currentSummary}` : ""}
               </small>
             </span>
-            {badge && (
-              <span className={`session-row-status ${statusTone}`}>
-                {badge}
-              </span>
-            )}
+            <span className="session-row-badges">
+              {badge && (
+                <span className={`session-row-status ${statusTone}`}>
+                  {badge}
+                </span>
+              )}
+              {!isArchivedRow && session.pendingCount > 0 && (
+                <span className="session-row-status queued" aria-label={`${session.pendingCount} 条排队消息`}>
+                  {session.pendingCount}
+                </span>
+              )}
+            </span>
           </button>
           {onOpenSessionActions && (
             <IconButton

@@ -22,6 +22,7 @@ vi.mock("react-dom", async (original) => ({
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useId: () => "section-manage-id",
+  useRef: (initial: unknown) => ({ current: initial }),
   useState(initial: any) {
     const index = hooks.index++;
     if (!(index in hooks.slots)) {

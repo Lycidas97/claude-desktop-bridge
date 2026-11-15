@@ -11,6 +11,10 @@ import { SlashCommandInput } from "./conversation/SlashCommandInput.js";
 import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
 import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
 import { SessionNoticeCard } from "./conversation/SessionNoticeCard.js";
+import { EmptyState } from "./common/EmptyState.js";
+import { ProjectGroupHeader } from "./session/ProjectGroupHeader.js";
+import { SessionFamilyList } from "./session/SessionFamilyList.js";
+import { ProjectOrderSheet } from "./mobile/ProjectOrderSheet.js";
 
 type HookStore = {
   slots: any[]; index: number; dirty: boolean;
@@ -58,7 +62,10 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Record<string, any>>;
-  return [element, ...elements(element.props.children)];
+  const children = element.type === EmptyState || element.type === ProjectGroupHeader || element.type === SessionFamilyList
+    ? (element.type as (props: any) => ReactNode)(element.props)
+    : element.props.children;
+  return [element, ...elements(children)];
 }
 const stores: HookStore[] = [];
 function renderer(component: (props: any) => ReactNode, initialProps: any) {
@@ -102,6 +109,11 @@ beforeEach(() => {
     connection: "connected", launchAtLogin: false, diagnosticsEnabled: false, managedDesktopEnabled: false,
     claudeDesktop: { state: "stopped", detail: "Stopped", canLaunch: true, canQuit: false },
   };
+  const saved = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn((key: string) => saved.get(key) ?? null),
+    setItem: vi.fn((key: string, value: string) => saved.set(key, value)),
+  });
   history = [];
   apiRequest = vi.fn(async ({ method }) => ({ kind: "response", requestId: "test", ok: true, result:
     method === "session.open" ? { history: { items: history, hasMore: false } }
@@ -237,7 +249,7 @@ describe("desktop custom command input", () => {
     apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "commands", ok: false, error: { code: "READ_FAILED", message: "命令目录不可读" } });
     await expect(input().props.onLoad()).rejects.toThrow("命令目录不可读");
     const firstKey = input().key;
-    elements(tree).find(element => element.type === "button" && element.props.className?.includes("desktop-session-row") && textContent(element).includes("Session B"))!.props.onClick();
+    elements(tree).find(element => element.type === "button" && element.props.className === "session-row-hit" && textContent(element).includes("Session B"))!.props.onClick();
     tree = sessions.draw();
     expect(input().key).not.toBe(firstKey);
     const secondKey = input().key;
@@ -250,7 +262,7 @@ describe("desktop custom command input", () => {
     snapshot.sessions[0]!.turnState = "idle";
     snapshot.sessions[0]!.runningSubagents = { count: 1, lastUpdatedAt: now - 10_000 };
     await openSessions();
-    const row = () => elements(tree).find(element => element.type === "button" && element.props.className?.includes("desktop-session-row") && textContent(element).includes("Session A"))!;
+    const row = () => elements(tree).find(element => element.type === "button" && element.props.className === "session-row-hit" && textContent(element).includes("Session A"))!;
     expect(elements(row()).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot running");
     expect(textContent(row())).toContain("后台子代理");
 
@@ -286,6 +298,80 @@ describe("desktop empty creation", () => {
     expect(create.props.disabled).not.toBe(true);
     create.props.onClick(); tree = sessions.draw();
     expect(elements(tree).some(element => typeof element.type === "function" && element.type.name === "SessionCreateDialog")).toBe(true);
+  });
+});
+
+describe("desktop shared catalog", () => {
+  it.each(["ready", "not-managed"] as const)("distinguishes an empty catalog with Desktop %s and keeps creation", async state => {
+    snapshot.sessions = []; snapshot.projects = [];
+    snapshot.runtime.desktopIntegration.state = state;
+    await openSessions();
+    expect(textContent(tree)).toContain(state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop");
+    const empty = elements(tree).find(element => element.type === EmptyState)!;
+    elements(empty).find(element => element.type === "button" && textContent(element).includes("新建会话"))!.props.onClick();
+    tree = sessions.draw();
+    expect(elements(tree).some(element => typeof element.type === "function" && element.type.name === "SessionCreateDialog")).toBe(true);
+  });
+
+  it("keeps archived sessions accessible when no active session remains", async () => {
+    snapshot.host.capabilities.push("session.visibility.v1");
+    snapshot.runtime.desktopIntegration.state = "ready";
+    snapshot.sessions[0]!.archivedAt = 100;
+    await openSessions();
+    expect(textContent(tree)).toContain("暂无活跃会话");
+    elements(tree).find(element => element.props["aria-controls"] === "desktop-archived-sessions")!.props.onClick();
+    tree = sessions.draw();
+    expect(elements(tree).filter(element => element.props.className === "session-row-hit")).toHaveLength(1);
+    expect(textContent(elements(tree).find(element => element.props.className === "session-row-hit")!)).toContain("已归档");
+  });
+
+  it("prioritizes pending questions over running turns and background subagents", async () => {
+    snapshot.sessions[0]!.turnState = "running";
+    snapshot.sessions[0]!.runningSubagents = { count: 1, lastUpdatedAt: Date.now() };
+    snapshot.permissions = [questionPermission("question", "Which branch?")];
+    await openSessions();
+    const row = elements(tree).find(element => element.props.className === "session-row-hit")!;
+    expect(textContent(row)).toContain("待回答");
+    expect(textContent(row)).not.toContain("后台子代理");
+    expect(elements(row).some(element => element.props.className === "session-state-dot waiting")).toBe(true);
+    expect(elements(tree).find(element => element.props["data-session-id"] === "A")!.props.className).toContain("active");
+  });
+
+  it("pins activity order, prepends new projects, restores manual order per host and can reorder by activity", async () => {
+    snapshot.sessions.push({ ...snapshot.sessions[0]!, sessionId: "B", title: "Session B", projectId: "second", projectName: "Second", lastActivityAt: 2 });
+    snapshot.projects.push({ ...snapshot.projects[0]!, projectId: "second", name: "Second", lastActivityAt: 2 });
+    await openSessions();
+    const titles = () => elements(tree).filter(element => element.type === ProjectGroupHeader).map(element => element.props.title);
+    expect(titles()).toEqual(["Second", "Project"]);
+    expect(JSON.parse(localStorage.getItem("bridge-project-order:computer")!)).toEqual(["second", "project"]);
+    snapshot.sessions[0]!.lastActivityAt = 3;
+    tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot, sessions: [...snapshot.sessions] } });
+    expect(titles()).toEqual(["Second", "Project"]);
+    snapshot.sessions.push({ ...snapshot.sessions[0]!, sessionId: "C", title: "Session C", projectId: "third", projectName: "Third", lastActivityAt: 4 });
+    tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot, sessions: [...snapshot.sessions] } });
+    expect(titles()).toEqual(["Third", "Second", "Project"]);
+    elements(tree).find(element => element.type === IconButton && element.props.label === "调整项目顺序")!.props.onClick();
+    tree = sessions.draw();
+    let order = elements(tree).find(element => element.type === ProjectOrderSheet)!;
+    order.props.onPlaceProjects(["project", "third", "second"]);
+    tree = sessions.draw();
+    expect(titles()).toEqual(["Project", "Third", "Second"]);
+    await openSessions();
+    expect(titles()).toEqual(["Project", "Third", "Second"]);
+    elements(tree).find(element => element.type === IconButton && element.props.label === "调整项目顺序")!.props.onClick();
+    tree = sessions.draw();
+    order = elements(tree).find(element => element.type === ProjectOrderSheet)!;
+    order.props.onPlaceProjects([...order.props.projectsByActivity]);
+    tree = sessions.draw();
+    expect(titles()).toEqual(["Third", "Project", "Second"]);
+    order.props.onPlaceProjects(["second", "third", "project"]);
+    tree = sessions.draw();
+    expect(titles()).toEqual(["Second", "Third", "Project"]);
+    snapshot.host.hostId = "another-computer";
+    await openSessions();
+    expect(titles()).toEqual(["Third", "Project", "Second"]);
+    expect(JSON.parse(localStorage.getItem("bridge-project-order:computer")!)).toEqual(["second", "third", "project"]);
+    expect(JSON.parse(localStorage.getItem("bridge-project-order:another-computer")!)).toEqual(["third", "project", "second"]);
   });
 });
 
@@ -386,7 +472,7 @@ describe("desktop conversation actions", () => {
     expect(textContent(tree)).toContain("2 个 /btw 侧聊");
     expect(textContent(tree)).toContain("/btw · btw: 检查 IPv6 转发");
     expect(textContent(tree)).toContain("/btw · btw: 收集白名单域名");
-    const toggle = elements(tree).find((element) => element.type === "button" && element.props.className === "desktop-fork-toggle")!;
+    const toggle = elements(tree).find((element) => element.type === "button" && element.props.className === "mobile-fork-toggle")!;
     toggle.props.onClick();
     tree = sessions.draw();
     const badges = elements(tree).filter((element) => element.type === "em" && String(element.props.className).includes("is-sidechat"));
@@ -440,7 +526,7 @@ it("[edge] keeps an old session's slash failure out of the new draft and pending
   const input = () => elements(tree).find(element => element.type === SlashCommandInput)!;
   const send = () => elements(tree).find(element => element.type === "form" && element.props.className.startsWith("composer-form"))!.props.onSubmit({ preventDefault() {} });
   input().props.onChange("/context"); tree = sessions.draw(); send(); await settle(); tree = sessions.draw();
-  elements(tree).find(element => element.type === "button" && element.props.className?.includes("desktop-session-row") && textContent(element).includes("Session B"))!.props.onClick(); tree = sessions.draw();
+  elements(tree).find(element => element.type === "button" && element.props.className === "session-row-hit" && textContent(element).includes("Session B"))!.props.onClick(); tree = sessions.draw();
   input().props.onChange("/compact"); tree = sessions.draw();
   expect(elements(tree).find(element => element.type === "button" && element.props["aria-label"] === "发送")!.props.disabled).toBe(false);
   send(); await settle(); tree = sessions.draw();

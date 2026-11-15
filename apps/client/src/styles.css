@@ -5887,65 +5887,27 @@ button:disabled {
   font-size: calc(9px * var(--font-scale));
 }
 
-.desktop-session-row {
-  display: grid;
-  width: 100%;
-  min-height: 54px;
-  grid-template-columns: 8px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 9px;
+.desktop-project-list .project-group-open {
+  min-height: 40px;
   padding: 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
 }
 
-.desktop-session-row:hover,
-.desktop-session-row.active {
+.desktop-project-list .session-row-v2.active {
   background: var(--surface-2);
 }
 
-.desktop-session-row > span:nth-child(2) {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
+.desktop-project-list .session-row-v2.active .session-fork-badge,
+.desktop-project-list .session-row-v2.active .session-row-status {
+  color: var(--text);
 }
 
-.desktop-session-row strong,
-.desktop-session-row small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.desktop-project-list .session-row-hit {
+  min-height: 54px;
+  padding: 8px;
 }
 
-.desktop-session-row strong {
-  font-size: calc(11px * var(--font-scale));
-}
-
-.desktop-session-row small {
-  color: var(--muted);
-  font-size: calc(9px * var(--font-scale));
-}
-
-.desktop-session-row b {
-  display: grid;
-  min-width: 19px;
-  height: 19px;
-  padding: 0 4px;
-  border-radius: 4px;
-  place-items: center;
-  background: var(--warm-soft);
-  color: var(--warm);
-  font-size: calc(9px * var(--font-scale));
-}
-
-.desktop-sidebar-empty {
-  padding: 40px 12px;
-  color: var(--muted);
-  font-size: calc(11px * var(--font-scale));
-  text-align: center;
+.desktop-project-list .session-catalog-loading {
+  padding: 32px 12px;
 }
 
 .desktop-conversation {
@@ -7178,6 +7140,12 @@ button:disabled {
   padding: 8px 6px 8px 12px;
 }
 
+.session-row-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .session-row-status {
   padding: 2px 7px;
   border-radius: 999px;
@@ -7195,7 +7163,7 @@ button:disabled {
 .session-row-status.waiting,
 .session-row-status.queued {
   background: var(--warm-soft);
-  color: var(--warm);
+  color: var(--warm-ink);
 }
 
 .desktop-agents-drawer {
@@ -7977,65 +7945,14 @@ button:disabled {
   color: var(--muted);
 }
 
-.desktop-session-row strong .session-fork-badge,
 .session-row-copy strong .session-fork-badge {
   margin-left: 6px;
   margin-right: 0;
 }
 
-.desktop-session-row.is-fork-child strong .session-fork-badge,
 .session-row-v2.is-fork-child .session-row-copy strong .session-fork-badge {
   margin-left: 0;
   margin-right: 6px;
-}
-
-.desktop-session-family {
-  display: grid;
-  gap: 2px;
-}
-
-.desktop-fork-group {
-  margin-left: 16px;
-  padding-left: 8px;
-  border-left: 1.5px solid var(--line-strong);
-}
-
-.desktop-fork-toggle {
-  display: inline-flex;
-  width: 100%;
-  min-height: 26px;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-}
-
-.desktop-fork-toggle:hover {
-  background: var(--surface-2);
-  color: var(--text);
-}
-
-.desktop-fork-toggle > svg:last-child {
-  margin-left: auto;
-}
-
-.desktop-fork-children {
-  display: grid;
-  gap: 2px;
-  margin-top: 2px;
-}
-
-.desktop-session-row.is-fork-child {
-  min-height: 40px;
-  padding-top: 6px;
-  padding-bottom: 6px;
 }
 
 .mobile-session-family {

@@ -39,6 +39,7 @@ import { ServiceResources } from "./service-resources.js";
 import { diagnostics } from "./diag.js";
 import type { MemoryRecorder } from "./memory-recorder.js";
 import { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
+import { serveAssistantMailTools } from "../../../../plugins/assistant-mail/local-channel.js";
 
 declare const __BRIDGE_DEFAULT_RELAY__: string;
 declare const __BRIDGE_DEFAULT_PUBLIC_RELAY__: string;
@@ -149,6 +150,8 @@ export async function createServiceRuntime(options: {
     resources.defer("Assistant mail", () => assistantMail.close());
     options.onStage?.("打开邮件数据库");
     await assistantMail.initialize();
+    const mailTools = await serveAssistantMailTools({ userDataPath, service: assistantMail });
+    resources.defer("Assistant mail tools", () => mailTools.close());
     const broker = new ClaudeDesktopBridge({
       settingsPath: connectorPaths().claudeSettings,
       eventLog,

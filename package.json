@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @bridge/protocol && npm run build -w @bridge/relay && npm run build -w @bridge/client && npm run build:bundle -w @bridge/desktop && npm run prepare:from-client -w @bridge/mobile",
+    "build": "npm --prefix plugins/assistant-mail run build && npm run build -w @bridge/protocol && npm run build -w @bridge/relay && npm run build -w @bridge/client && npm run build:bundle -w @bridge/desktop && npm run prepare:from-client -w @bridge/mobile",
     "build:android:debug": "npm run apk:debug -w @bridge/mobile",
     "make:local:desktop-android": "npm run make:local-signed -w @bridge/desktop && npm run build:android:debug",
     "make:windows": "npm run make:windows -w @bridge/desktop",
@@ -48,6 +48,7 @@
     }
   },
   "devDependencies": {
+    "@types/html-to-text": "^9.0.4",
     "@types/node": "^24.0.0",
     "axe-core": "^4.10.3",
     "concurrently": "^9.2.1",
@@ -59,6 +60,10 @@
     "wait-on": "^8.0.4"
   },
   "dependencies": {
-    "imapflow": "^2.11.0"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "html-to-text": "^10.0.1",
+    "imapflow": "^2.11.0",
+    "mailparser": "^3.14.3",
+    "zod": "^4.6.7"
   }
 }

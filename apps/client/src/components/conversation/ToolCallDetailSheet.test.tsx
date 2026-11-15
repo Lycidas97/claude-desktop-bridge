@@ -53,8 +53,8 @@ vi.mock("../evidence/MediaPreviewProvider.js", () => ({
   useMediaRequest: () => env.request,
 }));
 
-vi.mock("../mobile/MobileSheet.js", () => ({
-  MobileSheet: ({ eyebrow, title, closeLabel, onClose, children }: {
+vi.mock("../common/Sheet.js", () => ({
+  Sheet: ({ eyebrow, title, closeLabel, onClose, children }: {
     eyebrow?: ReactNode;
     title: ReactNode;
     closeLabel?: string;

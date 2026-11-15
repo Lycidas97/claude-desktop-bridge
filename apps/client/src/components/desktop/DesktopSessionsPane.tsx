@@ -95,7 +95,7 @@ import {
 import { SubagentCard } from "../conversation/SubagentCard.js";
 import { NativePromptCard } from "../conversation/NativePromptCard.js";
 import { SessionPrActions, SessionPrBar } from "../conversation/SessionPrBar.js";
-import { MobileSheet } from "../mobile/MobileSheet.js";
+import { Sheet } from "../common/Sheet.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "../conversation/SessionActivityIndicator.js";
 import { SlashCommandInput } from "../conversation/SlashCommandInput.js";
 import { useSessionCommands } from "../../hooks/useSessionCommands.js";
@@ -1265,11 +1265,11 @@ export function DesktopSessions({
       </section>
 
       {prActionsOpen && selected && !selected.prs?.length && prControls.supported && (
-        <MobileSheet title="PR Auto-fix" manageFocus busy={sessionActionBusy} onClose={() => setPrActionsOpen(false)}>
+        <Sheet title="PR Auto-fix" manageFocus busy={sessionActionBusy} onClose={() => setPrActionsOpen(false)}>
           <div className="m-group">
             <SessionPrActions key={selected.sessionId} session={selected} events={events} showHeading={false} onWriteBusyChange={setSessionActionBusy} {...prControls} />
           </div>
-        </MobileSheet>
+        </Sheet>
       )}
       {projectOrderOpen && (
         <ProjectOrderSheet

@@ -29,7 +29,7 @@ import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
 import { SessionConfigurationDialog } from "./session/SessionConfigurationDialog.js";
 import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
-import { MobileSheet } from "./mobile/MobileSheet.js";
+import { Sheet } from "./common/Sheet.js";
 
 const hooks = vi.hoisted(() => ({
   slots: [] as any[], index: 0, dirty: false,
@@ -193,16 +193,16 @@ describe("Session PR disclosure", () => {
     expect(actions.props.online).toBe(false);
     expect(actions.props.onRead).toBe(props.onReadPrAutoFix);
     expect(actions.props.onSet).toBe(props.onSetPrAutoFix);
-    expect(elements(tree).find(element => element.type === MobileSheet)!.props.manageFocus).toBe(true);
+    expect(elements(tree).find(element => element.type === Sheet)!.props.manageFocus).toBe(true);
     actions.props.onWriteBusyChange(true);
     draw();
-    expect(elements(tree).find(element => element.type === MobileSheet)!.props.busy).toBe(true);
+    expect(elements(tree).find(element => element.type === Sheet)!.props.busy).toBe(true);
     expect(dispatchMobileBack()).toBe(true);
     draw();
     expect(elements(tree).some(element => element.type === SessionPrActions)).toBe(true);
     actions.props.onWriteBusyChange(false);
     draw();
-    expect(elements(tree).find(element => element.type === MobileSheet)!.props.busy).toBe(false);
+    expect(elements(tree).find(element => element.type === Sheet)!.props.busy).toBe(false);
   });
 
   it("hides the header bar for a session without PRs even when Auto-fix is supported", () => {

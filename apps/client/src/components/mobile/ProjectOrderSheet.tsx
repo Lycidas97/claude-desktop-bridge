@@ -11,7 +11,7 @@ import {
 import { createPortal } from "react-dom";
 import { moveProject } from "../../lib/project-groups.js";
 import { IconButton } from "../common/IconButton.js";
-import { MobileSheet } from "./MobileSheet.js";
+import { Sheet } from "../common/Sheet.js";
 
 const LONG_PRESS_MS = 220;
 const MOVE_CANCEL_PX = 8;
@@ -253,7 +253,7 @@ export function ProjectOrderSheet({
     && projectOrder.every((id, index) => id === projectsByActivity[index]);
 
   return (
-    <MobileSheet
+    <Sheet
       manageFocus={manageFocus}
       eyebrow={desktopName}
       title="项目顺序"
@@ -379,6 +379,6 @@ export function ProjectOrderSheet({
           );
         })}
       </div>
-    </MobileSheet>
+    </Sheet>
   );
 }

@@ -8,7 +8,7 @@ import { Eye, EyeOff, LoaderCircle, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
-import { MobileSheet, SheetAction } from "../mobile/MobileSheet.js";
+import { Sheet, SheetAction } from "../common/Sheet.js";
 
 export interface UseSectionManageOptions {
   activeHostId: string | undefined;
@@ -367,7 +367,7 @@ export function SectionManageDialog({ controller }: { controller: SectionManageC
   }
 
   return (
-    <MobileSheet eyebrow={desktopName} title={targetProject.name} onClose={controller.close}>
+    <Sheet eyebrow={desktopName} title={targetProject.name} onClose={controller.close}>
       <div className="m-group">
         {supportsRename && (
           <SheetAction
@@ -393,6 +393,6 @@ export function SectionManageDialog({ controller }: { controller: SectionManageC
       {state.busy && <p className="m-sheet-note" role="status"><LoaderCircle className="is-spinning" size={15} />正在处理…</p>}
       {state.error && <p className="m-sheet-note is-error" role="alert">{state.error}</p>}
       {!online && <p className="m-sheet-note" role="status">电脑已离线，连接后可管理分组。</p>}
-    </MobileSheet>
+    </Sheet>
   );
 }

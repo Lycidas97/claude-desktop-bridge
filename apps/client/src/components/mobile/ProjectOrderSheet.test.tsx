@@ -46,8 +46,8 @@ vi.mock("react", async (original) => ({
 
 vi.mock("react-dom", () => ({ createPortal: (children: ReactNode) => children }));
 
-vi.mock("./MobileSheet.js", () => ({
-  MobileSheet: ({ title, footer, onClose, children }: {
+vi.mock("../common/Sheet.js", () => ({
+  Sheet: ({ title, footer, onClose, children }: {
     title: ReactNode;
     footer?: ReactNode;
     onClose(): void;

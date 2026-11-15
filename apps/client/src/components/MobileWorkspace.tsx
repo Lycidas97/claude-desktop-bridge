@@ -115,7 +115,7 @@ import { MessageCopyButton } from "./common/MessageCopyButton.js";
 import { MobileComposer } from "./mobile/MobileComposer.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
 import { MobileSessionCatalog } from "./mobile/MobileSessionCatalog.js";
-import { MobileSheet, SheetAction } from "./mobile/MobileSheet.js";
+import { Sheet, SheetAction } from "./common/Sheet.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
@@ -1180,7 +1180,7 @@ export function MobileWorkspace({
         onSavePermissions={(mode, rules) => onSaveSessionPermissions!(selectedSession.sessionId, mode, rules)}
       />}
       {menuSession && !renameOpen && (
-        <MobileSheet
+        <Sheet
           manageFocus
           eyebrow={moveMenuOpen ? menuSession.title : `${menuSession.projectName} · ${desktopRuntimeName(desktopRuntimeId(menuSession))}`}
           title={moveMenuOpen ? "移动到分组" : menuSession.title}
@@ -1377,7 +1377,7 @@ export function MobileWorkspace({
           )}
           {sessionActionBusy && <p className="m-sheet-note" role="status"><LoaderCircle className="is-spinning" size={15} />正在处理…</p>}
           {sessionActionError && <p className="m-sheet-note is-error" role="alert">{sessionActionError}</p>}
-        </MobileSheet>
+        </Sheet>
       )}
       {renameOpen && menuSession && (
         <div
@@ -1989,7 +1989,7 @@ export function MobileWorkspace({
         </>
         )}
         {permissionOpen && (activePermission || activeNativePrompt) && (
-          <MobileSheet
+          <Sheet
             eyebrow="需要处理"
             title={`${runtimeName} ${activePermission ? "等待授权" : "等待确认"}`}
             closeLabel="暂时关闭"
@@ -2019,7 +2019,7 @@ export function MobileWorkspace({
                 />
               </>
             )}
-          </MobileSheet>
+          </Sheet>
         )}
         <ConfirmationDialog
           open={Boolean(pendingFileDownload)}

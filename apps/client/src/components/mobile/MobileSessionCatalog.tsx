@@ -43,7 +43,7 @@ import { SectionManageDialog, type SectionManageController } from "../session/Se
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
 import { MobilePageHeader } from "./MobilePageHeader.js";
-import { MobileSheet, SheetAction } from "./MobileSheet.js";
+import { Sheet, SheetAction } from "../common/Sheet.js";
 import { ProjectOrderSheet } from "./ProjectOrderSheet.js";
 
 export interface MobileSessionCatalogProps {
@@ -461,7 +461,7 @@ export function MobileSessionCatalog({
 
       {sessionOverlays}
       {directoryMenuOpen && (
-        <MobileSheet eyebrow={desktopName} title={activeProjectId ? activeGroupName : "会话目录"} onClose={() => setDirectoryMenuOpen(false)}>
+        <Sheet eyebrow={desktopName} title={activeProjectId ? activeGroupName : "会话目录"} onClose={() => setDirectoryMenuOpen(false)}>
           <div className="m-group">
             {onCreateSection && snapshot?.host.capabilities.includes("section.create.v1") && (
               <SheetAction icon={<FolderPlus size={19} />} label="新建 Section" disabled={connection !== "connected" || !desktopOnline} onClick={() => {
@@ -502,7 +502,7 @@ export function MobileSessionCatalog({
               />
             )}
           </div>
-        </MobileSheet>
+        </Sheet>
       )}
       {projectOrderOpen && (
         <ProjectOrderSheet

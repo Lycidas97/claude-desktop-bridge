@@ -17,7 +17,7 @@ import { ProjectGroupHeader } from "./session/ProjectGroupHeader.js";
 import { SessionFamilyList } from "./session/SessionFamilyList.js";
 import { SessionProfileSummary } from "./session/SessionProfileSummary.js";
 import { ProjectOrderSheet } from "./mobile/ProjectOrderSheet.js";
-import { MobileSheet } from "./mobile/MobileSheet.js";
+import { Sheet } from "./common/Sheet.js";
 
 type HookStore = {
   slots: any[]; index: number; dirty: boolean;
@@ -179,10 +179,10 @@ describe("desktop session PR disclosure", () => {
     expect(actions.props.online).toBe(true);
     actions.props.onWriteBusyChange(true);
     tree = sessions.draw();
-    expect(elements(tree).find(element => element.type === MobileSheet)!.props.busy).toBe(true);
+    expect(elements(tree).find(element => element.type === Sheet)!.props.busy).toBe(true);
     actions.props.onWriteBusyChange(false);
     tree = sessions.draw();
-    expect(elements(tree).find(element => element.type === MobileSheet)!.props.busy).toBe(false);
+    expect(elements(tree).find(element => element.type === Sheet)!.props.busy).toBe(false);
     const state = { sessionId: "A", prs: [], onlyOwnPrs: true, nextOwnPrArmed: false,
       capabilities: { bound: true, onlyOwnPrs: true, nextPr: true, checks: true } };
     apiRequest.mockResolvedValue({ kind: "response", requestId: "pr", ok: true, result: state });

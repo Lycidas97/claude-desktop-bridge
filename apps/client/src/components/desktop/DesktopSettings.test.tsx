@@ -21,6 +21,9 @@ vi.mock("react", async (original) => ({
     hooks.pending.push(() => { hooks.effects[index] = deps; effect(); });
   },
 }));
+vi.mock("../../../../../plugins/magpie-quota/client.js", () => ({
+  MagpieQuotaDashboard: () => <div data-quota-dashboard />,
+}));
 let props: ComponentProps<typeof DesktopSettings>;
 let tree: ReactNode;
 function draw() {
@@ -55,11 +58,23 @@ const profile = { supported: true, profiles: [{ id: "Claude" as const, path: "/f
 beforeEach(() => {
   hooks.slots = []; hooks.effects = []; hooks.pending = [];
   props = {
-    snapshot: { host: { name: "Fixture", version: "1.3.2", capabilities: [] }, sessions: [], permissions: [], diagnosticsEnabled: false, runtime: { state: "unavailable" } } as unknown as DesktopControlSnapshot,
+    snapshot: { host: { name: "Fixture", version: "1.3.2", relayUrl: "ws://127.0.0.1:8788/ws", capabilities: [] }, sessions: [], permissions: [], diagnosticsEnabled: false, runtime: { state: "unavailable" } } as unknown as DesktopControlSnapshot,
     api: { checkClaudeDesktopDeveloperSettings: vi.fn().mockResolvedValue(profile), enableClaudeDesktopDeveloperSettings: vi.fn().mockRejectedValue(new Error("权限申请被取消，原配置未修改")) } as unknown as ComponentProps<typeof DesktopSettings>["api"],
     onSnapshot: vi.fn(), themeControl: {} as ComponentProps<typeof DesktopSettings>["themeControl"],
   };
   draw();
+});
+
+it("mounts quota only in its unique group and returns to existing settings", () => {
+  expect(elements().filter(element => element.props["data-quota-dashboard"])).toHaveLength(0);
+  expect(elements().filter(element => element.type === "button" && text(element.props.children) === "Magpie 额度")).toHaveLength(1);
+  button("Magpie 额度").props.onClick(); draw();
+  expect(elements().filter(element => element.props["data-quota-dashboard"])).toHaveLength(1);
+  for (const [label, content] of [["连接与启动", "开机自动运行"], ["外观与显示", "显示模式"], ["诊断与关于", "后台诊断记录"], ["Claude 接入", "开发者工具"]]) {
+    button(label!).props.onClick(); draw();
+    expect(text()).toContain(content);
+    expect(elements().filter(element => element.props["data-quota-dashboard"])).toHaveLength(0);
+  }
 });
 
 it("uses the local recorder setting and displays the returned state", async () => {

@@ -6,12 +6,17 @@ import { MediaPreviewProvider } from "./evidence/MediaPreviewProvider.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAttachmentPicker.js";
 import { IconButton } from "./common/IconButton.js";
-import { InteractivePromptCard } from "./conversation/PermissionPrompts.js";
+import { BackgroundTaskMarker, BackgroundTasksSheet } from "./conversation/BackgroundTasks.js";
+import { ConversationMessageItem } from "./conversation/ConversationMessageItem.js";
+import { ConversationToolGroup } from "./conversation/ConversationToolGroup.js";
+import { ForkChainBar } from "./conversation/ForkChainBar.js";
+import { InteractivePromptCard, PermissionPrompt } from "./conversation/PermissionPrompts.js";
 import { SlashCommandInput } from "./conversation/SlashCommandInput.js";
 import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
 import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
 import { SessionNoticeCard } from "./conversation/SessionNoticeCard.js";
 import { SessionPrActions, SessionPrBar } from "./conversation/SessionPrBar.js";
+import { SubagentCard } from "./conversation/SubagentCard.js";
 import { EmptyState } from "./common/EmptyState.js";
 import { ProjectGroupHeader } from "./session/ProjectGroupHeader.js";
 import { SessionFamilyList } from "./session/SessionFamilyList.js";
@@ -25,6 +30,16 @@ type HookStore = {
   effectIndex: number; pending: Array<() => void>;
 };
 const hooks = vi.hoisted(() => ({ current: undefined as HookStore | undefined }));
+function recordEffect(effect: () => (() => void) | void, deps?: unknown[]) {
+  const store = hooks.current!;
+  const index = store.effectIndex++;
+  const previous = store.effects[index];
+  if (previous && deps && deps.length === previous.deps?.length && deps.every((value, i) => Object.is(value, previous.deps?.[i]))) return;
+  store.pending.push(() => {
+    previous?.cleanup?.();
+    store.effects[index] = { deps, cleanup: effect() || undefined };
+  });
+}
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useState(initial: any) {
@@ -45,28 +60,37 @@ vi.mock("react", async (original) => ({
   },
   useMemo: (create: () => unknown) => create(),
   useContext: () => undefined,
-  useEffect(effect: () => (() => void) | void, deps?: unknown[]) {
-    const store = hooks.current!;
-    const index = store.effectIndex++;
-    const previous = store.effects[index];
-    if (previous && deps && deps.length === previous.deps?.length && deps.every((value, i) => Object.is(value, previous.deps?.[i]))) return;
-    store.pending.push(() => {
-      previous?.cleanup?.();
-      store.effects[index] = { deps, cleanup: effect() || undefined };
-    });
-  },
+  useEffect: recordEffect,
+  useLayoutEffect: recordEffect,
+}));
+const mailContext = vi.hoisted(() => ({ current: undefined as any }));
+vi.mock("./assistant/AssistantMailProvider.js", async (original) => ({
+  ...await original<typeof import("./assistant/AssistantMailProvider.js")>(),
+  useAssistantMail: () => mailContext.current,
 }));
 vi.mock("./evidence/MediaPreviewProvider.js", async original => ({ ...await original<typeof import("./evidence/MediaPreviewProvider.js")>(), useMediaPreview: () => vi.fn() }));
 vi.mock("../lib/file-upload.js", async (original) => ({
   ...await original<typeof import("../lib/file-upload.js")>(),
   uploadSessionFile: vi.fn(),
 }));
+vi.mock("../lib/artifact-download.js", async (original) => ({
+  ...await original<typeof import("../lib/artifact-download.js")>(),
+  downloadBridgeSessionFile: vi.fn(),
+}));
 
 function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Record<string, any>>;
-  const children = element.type === EmptyState || element.type === ProjectGroupHeader || element.type === SessionFamilyList || element.type === SessionProfileSummary
+  const children = (
+    element.type === EmptyState
+    || element.type === ProjectGroupHeader
+    || element.type === SessionFamilyList
+    || element.type === SessionProfileSummary
+    || element.type === ConversationMessageItem
+    || element.type === ConversationToolGroup
+    || element.type === ForkChainBar
+  )
     ? (element.type as (props: any) => ReactNode)(element.props)
     : element.props.children;
   return [element, ...elements(children)];
@@ -128,6 +152,7 @@ beforeEach(() => {
   } });
 });
 afterEach(() => {
+  mailContext.current = undefined;
   stores.splice(0).forEach((store) => store.effects.forEach((effect) => effect.cleanup?.()));
   vi.unstubAllGlobals();
 });
@@ -439,26 +464,30 @@ describe("desktop shared catalog", () => {
 });
 
 describe("desktop conversation actions", () => {
-  it("resolves the matching pending question instead of sending a new turn", async () => {
+  it("suppresses an unanswered native question card in favor of the matching PermissionPrompt", async () => {
     const pending = questionPermission("matching", "Which branch?");
     snapshot.permissions = [questionPermission("other-session", "Which branch?", "B"), questionPermission("other-question", "Which color?"), pending];
     history = [{ id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-host",
-      interactivePrompt: { kind: "question", questions: pending.input.questions as NonNullable<NonNullable<BridgeHistoryItem["interactivePrompt"]>["questions"]> } }];
+      interactivePrompt: { kind: "question", toolUseId: pending.toolUseId, questions: pending.input.questions as NonNullable<NonNullable<BridgeHistoryItem["interactivePrompt"]>["questions"]> } }];
     await openSessions();
-    elements(tree).find((element) => element.type === InteractivePromptCard)!.props.onSelectOption("Main"); await settle();
+    expect(elements(tree).filter((element) => element.type === InteractivePromptCard)).toHaveLength(0);
+    const prompts = elements(tree).filter((element) => element.type === PermissionPrompt);
+    expect(prompts.map((element) => element.props.permission.requestId)).toEqual(["other-question", "matching"]);
+    const matching = prompts.find((element) => element.props.permission.requestId === "matching")!;
+    expect(matching.props.streamKey).toBe("permission:matching");
+    await matching.props.onResolve("matching", "allow-once", undefined, { ...pending.input, answers: { "Which branch?": "Main" } });
     expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "permission.resolve", params: {
       requestId: "matching", decision: "allow-once", updatedInput: { ...pending.input, answers: { "Which branch?": "Main" } },
     } });
   });
 
-  it("keeps multi-question choices in the permission form without starting a turn", async () => {
-    const pending = questionPermission("multi", "Which branch?");
-    pending.input.questions = [...pending.input.questions as unknown[], { question: "Which color?", options: [{ label: "Blue" }] }];
-    snapshot.permissions = [pending];
-    history = [{ id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-host",
-      interactivePrompt: { kind: "question", questions: pending.input.questions as NonNullable<NonNullable<BridgeHistoryItem["interactivePrompt"]>["questions"]> } }];
+  it("marks an expired native question unavailable without starting a turn", async () => {
+    history = [{ id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
+      interactivePrompt: { kind: "question", toolUseId: "expired", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } }];
     await openSessions();
-    elements(tree).find((element) => element.type === InteractivePromptCard)!.props.onSelectOption("Main"); await settle();
+    const card = elements(tree).find((element) => element.type === InteractivePromptCard)!;
+    expect(card.props.unavailableReason).toBe("提问已不在待回答列表");
+    await card.props.onSelectOption("Main"); await settle();
     expect(apiRequest).not.toHaveBeenCalled();
   });
 
@@ -474,8 +503,8 @@ describe("desktop conversation actions", () => {
   });
 
   it("tracks a quick reply by its local RPC request ID rather than a nearby user message", async () => {
-    history = [{ id: "question", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
-      interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } }];
+    history = [{ id: "wrap-up", sessionId: "A", role: "assistant", text: "", createdAt: 1, origin: "claude-desktop",
+      interactivePrompt: { kind: "wrap-up", actions: [{ label: "Main", message: "Main" }] } }];
     await openSessions();
     apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "desktop-answer", ok: true, result: { commandId: "answer-command", state: "queued" } });
     elements(tree).find(element => element.type === InteractivePromptCard)!.props.onSelectOption("Main");
@@ -616,4 +645,332 @@ it("renders composer context usage only when present and degrades cleanly for un
   const rendered = (bar.type as (props: Record<string, unknown>) => ReactNode)(bar.props);
   expect(JSON.stringify(rendered)).toContain("30K");
   expect(JSON.stringify(rendered)).not.toContain("undefined");
+});
+
+describe("desktop conversation parity", () => {
+  it("opens 50 history items, preserves cursor/items on paging error, and deduplicates retried older pages", async () => {
+    history = [
+      { id: "m-2", sessionId: "A", role: "user", text: "Recent question", createdAt: 20, origin: "claude-desktop" },
+      { id: "m-3", sessionId: "A", role: "assistant", text: "Recent answer", createdAt: 30, origin: "claude-desktop" },
+    ];
+    apiRequest.mockImplementation(async ({ method }) => ({
+      kind: "response",
+      requestId: "page",
+      ok: true,
+      result: method === "session.open"
+        ? { history: { items: history, hasMore: true, nextCursor: "m-2" } }
+        : { evidence: { items: [], hasMore: false } },
+    }));
+    dashboard = renderer(DesktopDashboard, {
+      themeControl: { theme: "dark", family: "apple", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
+      agentVisibility: { enabled: ["claude-desktop"], setEnabled: vi.fn() },
+    });
+    dashboard.draw(); await settle();
+    const child = elements(dashboard.draw()).find((element) => typeof element.type === "function" && element.type.name === "DesktopSessions")!;
+    sessionsProps = child.props;
+    sessions = renderer(child.type as (props: any) => ReactNode, sessionsProps);
+    sessions.draw(); await settle(); tree = sessions.draw();
+
+    expect(apiRequest).toHaveBeenCalledWith({ method: "session.open", params: { sessionId: "A", limit: 50 } });
+    apiRequest.mockClear();
+
+    const loadOlder = () => elements(tree).find((element) => element.props.className === "load-older-button")!;
+    expect(textContent(loadOlder())).toContain("加载更早消息");
+
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "err", ok: false, error: { code: "HISTORY_ERR", message: "历史读取超时" } });
+    loadOlder().props.onClick();
+    await settle(); tree = sessions.draw();
+    expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "session.history", params: { sessionId: "A", cursor: "m-2", limit: 50 } });
+    expect(textContent(loadOlder())).toContain("重试加载更早消息");
+    expect(elements(tree).some((element) => element.props.role === "alert" && element.props.children === "历史读取超时")).toBe(true);
+    expect(elements(tree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id)).toEqual(["m-2", "m-3"]);
+
+    apiRequest.mockResolvedValueOnce({
+      kind: "response",
+      requestId: "older",
+      ok: true,
+      result: {
+        history: {
+          items: [
+            { id: "m-1", sessionId: "A", role: "user", text: "Older question", createdAt: 10, origin: "claude-desktop" },
+            { id: "m-2", sessionId: "A", role: "user", text: "Recent question", createdAt: 20, origin: "claude-desktop" },
+          ],
+          hasMore: false,
+        },
+      },
+    });
+    loadOlder().props.onClick();
+    await settle(); tree = sessions.draw();
+    expect(apiRequest).toHaveBeenLastCalledWith({ method: "session.history", params: { sessionId: "A", cursor: "m-2", limit: 50 } });
+    expect(elements(tree).some((element) => element.props.className === "load-older-button")).toBe(false);
+    expect(elements(tree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id)).toEqual(["m-1", "m-2", "m-3"]);
+  });
+
+  it("groups consecutive tool rows, preserves group identity across backward paging, and forwards transcript.toolDetail.v1", async () => {
+    snapshot.host.capabilities.push("transcript.toolDetail.v1");
+    history = [
+      { id: "t-3", sessionId: "A", role: "tool", toolName: "Edit", text: "src/a.ts", createdAt: 30, origin: "claude-desktop" },
+      { id: "t-4", sessionId: "A", role: "tool", toolName: "Bash", text: "npm test", createdAt: 40, origin: "claude-desktop" },
+    ];
+    apiRequest.mockImplementation(async ({ method }) => ({
+      kind: "response",
+      requestId: "tools-page",
+      ok: true,
+      result: method === "session.open"
+        ? { history: { items: history, hasMore: true, nextCursor: "t-3" } }
+        : { evidence: { items: [], hasMore: false } },
+    }));
+    await openSessions();
+    const groupsBefore = elements(tree).filter((element) => element.type === ConversationToolGroup);
+    expect(groupsBefore).toHaveLength(1);
+    expect(groupsBefore[0]!.props.tools).toHaveLength(2);
+    expect(groupsBefore[0]!.props.supportsToolDetail).toBe(true);
+    expect(groupsBefore[0]!.props.hostId).toBe("computer");
+    const initialGroupKey = groupsBefore[0]!.key;
+
+    apiRequest.mockResolvedValueOnce({
+      kind: "response",
+      requestId: "tools-older",
+      ok: true,
+      result: {
+        history: {
+          items: [
+            { id: "t-1", sessionId: "A", role: "tool", toolName: "Read", text: "src/index.ts", createdAt: 10, origin: "claude-desktop" },
+            { id: "t-2", sessionId: "A", role: "tool", toolName: "Read", text: "src/b.ts", createdAt: 20, origin: "claude-desktop" },
+          ],
+          hasMore: false,
+        },
+      },
+    });
+    elements(tree).find((element) => element.props.className === "load-older-button")!.props.onClick();
+    await settle(); tree = sessions.draw();
+    const groupsAfter = elements(tree).filter((element) => element.type === ConversationToolGroup);
+    expect(groupsAfter).toHaveLength(1);
+    expect(groupsAfter[0]!.props.tools.map((tool: any) => tool.id)).toEqual(["tool:t-1", "tool:t-2", "tool:t-3", "tool:t-4"]);
+    expect(groupsAfter[0]!.key).toBe(initialGroupKey);
+  });
+
+  it("compensates scroll anchor when history prepends behind an older leading MailCard", async () => {
+    mailContext.current = {
+      cache: {
+        changeToken: "tok",
+        cards: [{
+          seq: 1,
+          mailRefId: "mail-early",
+          accountKey: "acc",
+          mailbox: "INBOX" as const,
+          subject: "Early mail",
+          from: [{ address: "ops@example.com" }],
+          receivedAt: new Date(1).toISOString(),
+          recordedAt: 1,
+          preview: "Early preview",
+          processingStatus: "processed" as const,
+          nativeDelivery: { state: "observed" as const, nativeSessionId: "A" },
+        }],
+      },
+      referenceFor: () => undefined,
+    };
+    history = [
+      { id: "m-2", sessionId: "A", role: "user", text: "Later message", createdAt: 200, origin: "claude-desktop" },
+    ];
+    apiRequest.mockImplementation(async ({ method }) => ({
+      kind: "response",
+      requestId: "mail-page",
+      ok: true,
+      result: method === "session.open"
+        ? { history: { items: history, hasMore: true, nextCursor: "m-2" } }
+        : { evidence: { items: [], hasMore: false } },
+    }));
+    await openSessions();
+
+    let anchorTop = 40;
+    const anchorEl = {
+      dataset: { streamKey: "m-2" },
+      getBoundingClientRect: () => ({ top: anchorTop, bottom: anchorTop + 60 }),
+    };
+    const fakeStream = {
+      scrollTop: 500,
+      scrollHeight: 800,
+      clientHeight: 300,
+      getBoundingClientRect: () => ({ top: 0, bottom: 300 }),
+      querySelectorAll: () => [anchorEl],
+    };
+    let streamDiv = elements(tree).find((element) => element.props.className === "desktop-conversation-stream")!;
+    streamDiv.props.ref.current = fakeStream;
+    tree = sessions.draw({
+      ...sessionsProps,
+      events: [{ eventId: "ev-tail", seq: 1, timestamp: 300, sessionId: "A", origin: "claude-desktop", itemId: "m-3", type: "assistant.completed", data: { text: "Tail reply" } }],
+    });
+    fakeStream.scrollTop = 250;
+    streamDiv = elements(tree).find((element) => element.props.className === "desktop-conversation-stream")!;
+    streamDiv.props.onScroll();
+
+    anchorTop = 140;
+    fakeStream.scrollHeight = 900;
+    apiRequest.mockResolvedValueOnce({
+      kind: "response",
+      requestId: "mail-older",
+      ok: true,
+      result: {
+        history: {
+          items: [{ id: "m-1", sessionId: "A", role: "user", text: "Inserted between mail and m-2", createdAt: 100, origin: "claude-desktop" }],
+          hasMore: false,
+        },
+      },
+    });
+    elements(tree).find((element) => element.props.className === "load-older-button")!.props.onClick();
+    await settle(); tree = sessions.draw();
+    expect(fakeStream.scrollTop).toBe(350);
+  });
+
+  it("polls background task details, opens focused task sheet, and confirms subagent stop scopes", async () => {
+    snapshot.host.capabilities.push("subagent.stop.v1", "transcript.toolDetail.v1");
+    snapshot.runtime.desktopIntegration.state = "ready";
+    snapshot.sessions[0]!.subagentStopScope = "task";
+    history = [{
+      id: "sub-item",
+      sessionId: "A",
+      role: "tool",
+      toolName: "Task",
+      text: "Audit UI parity",
+      createdAt: 1,
+      origin: "claude-desktop",
+      subagent: {
+        agentId: "agent-1",
+        toolUseId: "sub-call",
+        description: "Audit UI parity",
+        state: "running",
+        toolCount: 0,
+        startedAt: 1,
+        updatedAt: 1,
+      },
+    }];
+    const runningTask = {
+      id: "sub-call",
+      kind: "subagent" as const,
+      taskId: "agent-1",
+      toolUseId: "sub-call",
+      description: "Audit UI parity",
+      state: "running" as const,
+      startedAt: 1,
+      updatedAt: 2,
+      subagent: history[0]!.subagent!,
+    };
+    apiRequest.mockImplementation(async ({ method }) => ({
+      kind: "response",
+      requestId: "bg",
+      ok: true,
+      result: method === "session.open"
+        ? { history: { items: history, hasMore: false } }
+        : method === "session.configuration"
+          ? { session: { ...snapshot.sessions[0]!, backgroundTasks: [runningTask] } }
+          : { evidence: { items: [], hasMore: false } },
+    }));
+    await openSessions();
+    await settle(); tree = sessions.draw();
+    const headerButton = elements(tree).find((element) => element.type === IconButton && element.props.label === "后台任务，1 个运行中")!;
+    expect(headerButton).toBeDefined();
+    const marker = elements(tree).find((element) => element.type === BackgroundTaskMarker)!;
+    marker.props.onOpen();
+    tree = sessions.draw();
+    const sheet = elements(tree).find((element) => element.type === BackgroundTasksSheet)!;
+    expect(sheet.props.focus?.id).toBe("tool:sub-call");
+    expect(sheet.props.supportsToolDetail).toBe(true);
+
+    const card = sheet.props.renderSubagent(sheet.props.items.find((item: any) => item.subagent?.agentId === "agent-1")) as ReactElement<ComponentProps<typeof SubagentCard>>;
+    expect(card.type).toBe(SubagentCard);
+    card.props.onStop!();
+    tree = sessions.draw();
+    const confirm = elements(tree).find((element) => element.type === ConfirmationDialog && element.props.title === "停止这个子代理？")!;
+    expect(confirm.props.open).toBe(true);
+    confirm.props.onConfirm();
+    await settle(); tree = sessions.draw();
+    expect(apiRequest).toHaveBeenCalledWith({ method: "subagent.stop", params: { sessionId: "A", agentId: "agent-1" } });
+  });
+
+  it("confirms workspace non-media file downloads and surfaces transfer errors", async () => {
+    const { downloadBridgeSessionFile } = await import("../lib/artifact-download.js");
+    history = [{ id: "file-msg", sessionId: "A", role: "assistant", text: "See [bundle.bin](dist/bundle.bin)", createdAt: 1, origin: "claude-desktop" }];
+    await openSessions();
+    const msg = elements(tree).find((element) => element.type === ConversationMessageItem)!;
+    msg.props.onFileClick("dist/bundle.bin");
+    tree = sessions.draw();
+    const dialog = elements(tree).find((element) => element.type === ConfirmationDialog && element.props.title === "确认下载工作区文件？")!;
+    expect(dialog.props.open).toBe(true);
+    expect(dialog.props.description).toContain("bundle.bin");
+
+    vi.mocked(downloadBridgeSessionFile).mockRejectedValueOnce(new Error("工作区文件不存在"));
+    dialog.props.onConfirm();
+    await settle(); tree = sessions.draw();
+    expect(downloadBridgeSessionFile).toHaveBeenCalledWith("A", "dist/bundle.bin", expect.any(Function), expect.any(Function));
+    expect(textContent(tree)).toContain("工作区文件不存在");
+  });
+
+  it("steers and cancels queued user messages and surfaces uncertain steer rejections", async () => {
+    snapshot.host.capabilities.push("turn.queue.steer.v1", "turn.queue.cancel.v1");
+    snapshot.sessions[0]!.pendingCount = 1;
+    snapshot.sessions[0]!.pendingCommandIds = ["cmd-queued-1"];
+    history = [{
+      id: "queued-1",
+      sessionId: "A",
+      role: "user",
+      text: "Queued follow-up",
+      createdAt: 1,
+      origin: "claude-desktop",
+      delivery: "queued",
+      commandId: "cmd-queued-1",
+    }];
+    await openSessions();
+
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "steer-uncertain", ok: true, result: { state: "uncertain" } });
+    await elements(tree).find((element) => element.type === "button" && element.props.children === "Send now")!.props.onClick();
+    await settle(); tree = sessions.draw();
+    expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "turn.queue.steer", params: { sessionId: "A", commandId: "cmd-queued-1" } });
+    expect(textContent(tree)).toContain("消息投递状态尚未确认，请同步状态后重试");
+
+    apiRequest.mockClear();
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "steer-ok", ok: true, result: { state: "queued" } });
+    await elements(tree).find((element) => element.type === "button" && element.props.children === "Send now")!.props.onClick();
+    await settle(); tree = sessions.draw();
+    expect(elements(tree).find((element) => element.type === "button" && element.props.children === "Send now")!.props.disabled).toBe(true);
+    const cancelBtn = elements(tree).find((element) => element.type === "button" && element.props.children === "撤回")!;
+    expect(cancelBtn.props.disabled).toBe(false);
+
+    apiRequest.mockClear();
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "cancel-ok", ok: true, result: { cancelled: true } });
+    await cancelBtn.props.onClick();
+    await settle(); tree = sessions.draw();
+    expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "turn.queue.cancel", params: { sessionId: "A", commandId: "cmd-queued-1" } });
+  });
+
+  it("deduplicates uncertain delivery actions onto matching user bubbles while keeping orphan alerts", async () => {
+    history = [{
+      id: "u-uncertain",
+      sessionId: "A",
+      role: "user",
+      text: "Message in flight",
+      createdAt: 1,
+      origin: "mobile",
+      delivery: "uncertain",
+      commandId: "cmd-matched",
+    }];
+    await openSessions();
+    tree = sessions.draw({
+      ...sessionsProps,
+      events: [
+        { eventId: "ev-matched", seq: 1, timestamp: 2, sessionId: "A", origin: "claude-host", type: "message.delivery",
+          data: { commandId: "cmd-matched", delivery: "uncertain" } },
+        { eventId: "ev-orphan", seq: 2, timestamp: 3, sessionId: "A", origin: "claude-host", type: "message.delivery",
+          data: { commandId: "cmd-orphan", delivery: "uncertain", error: "连接中断" } },
+      ],
+    });
+    const orphanCards = elements(tree).filter((element) => typeof element.props.className === "string" && element.props.className.includes("uncertain-delivery") && element.type === "article");
+    expect(orphanCards).toHaveLength(1);
+    expect(orphanCards[0]!.props["data-stream-key"]).toBe("uncertain:ev-orphan");
+    const confirmButtons = elements(tree).filter((element) => element.type === "button" && element.props.children === "确认已发送");
+    expect(confirmButtons).toHaveLength(2);
+    confirmButtons[0]!.props.onClick();
+    await settle();
+    expect(apiRequest).toHaveBeenCalledWith({ method: "message.delivery.resolve", params: { commandId: "cmd-matched", action: "confirm" } });
+  });
 });

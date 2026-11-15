@@ -4274,11 +4274,25 @@ button:disabled {
   color: var(--danger-ink);
 }
 
+/* A sent message: the bubble wraps only its text, in the composer's shape and the sent
+   message's accent colors; delivery status and copy share one row under it. */
 .conversation-item.user {
-  margin-left: auto;
-  padding: 12px 13px;
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-end;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+.conversation-bubble {
+  min-width: 0;
+  max-width: min(85%, 560px);
+  padding: 10px 14px;
   border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
-  border-radius: 8px;
+  border-radius: var(--r-hero);
   background: var(--accent-soft);
 }
 
@@ -4311,6 +4325,14 @@ button:disabled {
 
 .conversation-item.user .conversation-message-actions {
   justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  /* The copy button keeps its 44px touch area; its padding lines the label up with the bubble's edge. */
+  margin: -4px -8px -8px 0;
+}
+
+.conversation-message-actions .delivery-state {
+  margin: 0;
 }
 
 .message-copy-button {
@@ -4333,7 +4355,7 @@ button:disabled {
   color: var(--text);
 }
 
-.queued-steer-button { color: var(--accent); }
+.queued-steer-button { color: var(--accent-ink); }
 .queued-steer-button:disabled { opacity: 0.6; cursor: default; }
 
 .conversation-item.tool {
@@ -4858,16 +4880,15 @@ button:disabled {
 }
 
 .delivery-state.failed {
-  color: var(--danger);
+  color: var(--danger-ink);
 }
 
 .delivery-error-detail {
   margin-top: 4px;
-  color: var(--danger);
+  color: var(--danger-ink);
   font-size: 10px;
   line-height: 1.5;
   text-align: right;
-  opacity: 0.85;
   overflow-wrap: anywhere;
 }
 
@@ -4880,7 +4901,7 @@ button:disabled {
 }
 
 .delivery-state.uncertain {
-  color: var(--warm);
+  color: var(--warm-ink);
 }
 
 .delivery-state.completed,
@@ -5728,7 +5749,7 @@ button:disabled {
   font-size: calc(16px * var(--font-scale));
 }
 
-.desktop-conversation-heading span {
+.desktop-conversation-heading > div:first-child > span {
   color: var(--muted);
   font-size: calc(10px * var(--font-scale));
 }
@@ -5869,13 +5890,15 @@ button:disabled {
   padding: 20px;
   overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
 }
 
 .desktop-evidence-view {
   padding: 16px 20px 24px;
 }
 
-.desktop-conversation-stream .conversation-item {
+.desktop-conversation-stream .conversation-item:not(.user) {
   width: min(78%, 720px);
 }
 
@@ -7095,11 +7118,6 @@ button:disabled {
   font-weight: 600;
 }
 
-/* Compact user bubble without header row */
-.conversation-item.user {
-  padding: 9px 12px;
-}
-
 /* ThemeMenu diagnostic button */
 .theme-menu-diag-btn {
   display: flex;
@@ -7173,8 +7191,8 @@ button:disabled {
   height: 16px;
   padding: 0 4px;
   border-radius: 999px;
-  background: var(--accent);
-  color: var(--surface);
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
   font-size: 10px;
   font-weight: 700;
   line-height: 16px;

@@ -47,7 +47,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-diagnostics", "desktop-quota", "mobile-safe-area", "assistant-mail"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
@@ -412,6 +412,320 @@ async function verifyDesktopQuota(page, host, steps, directory, viewports) {
   steps.push("First-read errors are visible; absent capability disables refresh and makes no request, including after returning to quota");
 }
 
+async function verifyDesktopConversation(page, host, steps, directory, viewports) {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const axeSource = await readFile(resolve(root, "node_modules/axe-core/axe.min.js"), "utf8");
+  const photoBase64 = await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 360;
+    canvas.height = 240;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#2c6873";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 72px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("D1", 180, 120);
+    return canvas.toDataURL("image/png").split(",")[1];
+  });
+  const imageBytes = Buffer.from(photoBase64, "base64");
+  const imageMsgId = "desktop-native-img";
+  host.nativeImages.set(`${imageMsgId}:0`, imageBytes);
+  const binaryPayload = "desktop-workspace-binary-payload-v1";
+  await writeFile(resolve(host.nativeApproval.harnessCwd, "bundle.zip"), binaryPayload);
+
+  const now = Date.now();
+  const toolUse = (id, input, name) => ({ type: "assistant", uuid: id, timestamp: now - 40_000, message: { content: [{ type: "tool_use", id, name, input }] } });
+  const toolDone = (id, content) => ({ type: "user", uuid: `${id}-result`, timestamp: now - 39_000, message: { content: [{ type: "tool_result", tool_use_id: id, content }] } });
+  for (const message of [
+    toolUse("desktop-plan-1", {
+      scope: "first_task",
+      items: [
+        { content: "提取共享对话叶子", status: "completed" },
+        { content: "对齐桌面对话能力", status: "in_progress" },
+      ],
+    }, "mcp__ccd_turn__update_plan"),
+    toolUse("desktop-tool-read", { file_path: "/fixture/DesktopSessionsPane.tsx" }, "Read"),
+    toolDone("desktop-tool-read", "Read ok"),
+    toolUse("desktop-tool-bash", { command: "git status --short" }, "Bash"),
+    toolDone("desktop-tool-bash", "clean worktree"),
+    {
+      type: "assistant",
+      uuid: "desktop-assistant-reply",
+      timestamp: now - 30_000,
+      message: {
+        id: "desktop-assistant-reply",
+        content: [{ type: "text", text: "桌面端已接入共享叶子组件，可下载构建产物 [安装包下载](bundle.zip)。" }],
+      },
+    },
+    {
+      type: "system",
+      subtype: "task_started",
+      task_id: "desktop-bg-subagent",
+      tool_use_id: "desktop-bg-call",
+      description: "Verify desktop parity",
+      timestamp: now - 20_000,
+    },
+  ]) {
+    await host.nativeApproval.message(message);
+  }
+  const queuedSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("桌面排队待处理消息"), { pushEvents: false });
+  const subagentInfo = host.history.find(item => item.subagent?.agentId === "desktop-bg-subagent")?.subagent;
+  const backgroundTasks = [{
+    id: "desktop-bg-call",
+    kind: "subagent",
+    taskId: "desktop-bg-subagent",
+    toolUseId: "desktop-bg-call",
+    description: "Verify desktop parity",
+    state: "running",
+    startedAt: now - 20_000,
+    updatedAt: now - 10_000,
+    subagent: subagentInfo,
+  }];
+  const nativeConfiguration = host.nativeApproval.configuration;
+  host.nativeApproval.configuration = async request => {
+    const result = await nativeConfiguration(request);
+    if (request.params.includeBackgroundTasks) {
+      result.session.backgroundTasks = structuredClone(backgroundTasks);
+    }
+    return result;
+  };
+
+  const toDesktopSnapshot = current => ({
+    ...structuredClone(current),
+    connection: "connected",
+    launchAtLogin: false,
+    diagnosticsEnabled: false,
+    managedDesktopEnabled: false,
+    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true },
+  });
+  await page.exposeFunction("desktopBridgeRequest", input => host.desktopRequest(input));
+  await page.exposeFunction("desktopBridgeGetSnapshot", () => toDesktopSnapshot(host.snapshot));
+  host.onDesktopPayload = async payload => {
+    if (payload.kind === "snapshot") {
+      await page.evaluate(next => window.__desktopReceiveSnapshot?.(next), toDesktopSnapshot(payload.snapshot)).catch(() => {});
+    } else if (payload.kind === "event") {
+      await page.evaluate(event => window.__desktopReceiveEvent?.(event), payload.event).catch(() => {});
+    }
+  };
+  await page.addInitScript(initialSnapshot => {
+    window.__desktopSnapshot = initialSnapshot;
+    window.bridgeDesktop = {
+      getSnapshot: () => window.desktopBridgeGetSnapshot(),
+      onSnapshot: receive => {
+        window.__desktopReceiveSnapshot = next => {
+          window.__desktopSnapshot = next;
+          receive(structuredClone(next));
+        };
+        return () => { delete window.__desktopReceiveSnapshot; };
+      },
+      onEvent: receive => {
+        window.__desktopReceiveEvent = event => receive(structuredClone(event));
+        return () => { delete window.__desktopReceiveEvent; };
+      },
+      request: input => window.desktopBridgeRequest(input),
+    };
+  }, toDesktopSnapshot(host.snapshot));
+
+  await page.setViewportSize({ width: 1280, height: 820 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  const sidebar = page.locator(".desktop-session-sidebar");
+  await sidebar.locator(`[data-session-id="${sessionId}"] .session-row-hit`).click();
+  await page.locator(".desktop-conversation-heading").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  assert.equal(await page.locator(".composer-mode").count(), 0, "Desktop conversation does not reintroduce a composer mode selector");
+
+  const stream = page.locator(".desktop-conversation-stream");
+  const queuedBubble = stream.locator("article.conversation-item.user").filter({ hasText: "桌面排队待处理消息" });
+  await queuedBubble.getByRole("button", { name: "Send now", exact: true }).waitFor();
+  await page.getByRole("button", { name: "后台任务，1 个运行中", exact: true }).waitFor();
+  await page.waitForFunction(() => document.getAnimations().every(animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished"));
+  await page.evaluate(axeSource);
+  const axeIssues = await page.evaluate(async () => {
+    const wcag = await window.axe.run(document.querySelector(".desktop-conversation"), {
+      resultTypes: ["violations"],
+      runOnly: { type: "tag", values: ["wcag2a", "wcag2aa"] },
+    });
+    const contrast = await window.axe.run(document.querySelector(".desktop-conversation"), {
+      runOnly: { type: "rule", values: ["color-contrast"] },
+      resultTypes: ["violations", "incomplete"],
+    });
+    return [
+      ...wcag.violations.filter(item => ["serious", "critical"].includes(item.impact)).map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) })),
+      ...contrast.violations.map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) })),
+      ...contrast.incomplete.filter(item => item.nodes.some(node => [...node.any, ...node.all, ...node.none].some(check => check.data?.contrastRatio < 4.5))).map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) })),
+    ];
+  });
+  assert.deepEqual(axeIssues, [], "Desktop conversation WCAG 2A/2AA and color-contrast (including queued Send now button)");
+  viewports.push({ page: "desktop-conversation-parity", ...page.viewportSize() });
+  await page.screenshot({ path: resolve(directory, "desktop-conversation-parity.png"), fullPage: true });
+
+  await queuedBubble.getByRole("button", { name: "Send now", exact: true }).click();
+  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage").length, 1, "Desktop Send now calls promoteQueuedMessage once");
+  assert.deepEqual(host.nativeApproval.calls.find(call => call.method === "promoteQueuedMessage").args, [sessionId, queuedSeed.receipt.messageId]);
+  await eventually(() => queuedBubble.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Cancel remains enabled after deferred Send now");
+  assert.equal(await queuedBubble.getByRole("button", { name: "Send now", exact: true }).isDisabled(), true, "Send now disables after promotion request");
+  await queuedBubble.getByRole("button", { name: "撤回", exact: true }).click();
+  await queuedBubble.getByRole("status").filter({ hasText: "已取消" }).waitFor();
+  assert.equal(await queuedBubble.getByRole("button", { name: "撤回", exact: true }).count(), 0);
+  steps.push("Desktop queued bubble renders WCAG-compliant Send now and 撤回 actions with status announcements");
+
+  await eventually(() => stream.locator(".task-plan-card").count(), 1, "Desktop stream renders TaskPlanCard");
+  assert.equal(await stream.locator(".task-plan-progress").innerText(), "1/2 已完成");
+  assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 0, "Desktop tool group does not eagerly fetch tool details");
+  await stream.locator(".conversation-tool-group summary").click();
+  await stream.locator(".conversation-tool-row").filter({ hasText: "git status --short" }).click();
+  const toolDialog = page.getByRole("dialog", { name: "Bash", exact: true });
+  await toolDialog.waitFor();
+  await eventually(async () => {
+    const content = await toolDialog.innerText();
+    return content.includes("已完成") && content.includes("git status --short") && content.includes("clean worktree");
+  }, true, "Desktop tool row lazily loads tool input and execution output");
+  assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 1);
+  await toolDialog.getByRole("button", { name: "关闭工具详情", exact: true }).click();
+  await toolDialog.waitFor({ state: "hidden" });
+
+  await stream.locator(".background-task-marker").click();
+  const taskSheet = page.getByRole("dialog").filter({ hasText: "Verify desktop parity" });
+  await taskSheet.waitFor();
+  await page.screenshot({ path: resolve(directory, "desktop-background-tasks.png"), fullPage: true });
+  await taskSheet.getByRole("button", { name: "关闭", exact: true }).click();
+  await taskSheet.waitFor({ state: "hidden" });
+
+  await page.evaluate(() => {
+    window.__desktopCopied = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async value => { window.__desktopCopied.push(value); } },
+    });
+  });
+  const assistantBubble = stream.locator("article.conversation-item.assistant").filter({ hasText: "桌面端已接入共享叶子组件" });
+  await assistantBubble.getByRole("button", { name: "复制这条回复", exact: true }).click();
+  await assistantBubble.getByRole("button", { name: "已复制", exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__desktopCopied), ["桌面端已接入共享叶子组件，可下载构建产物 [安装包下载](bundle.zip)。"]);
+  steps.push("Desktop conversation supports TaskPlanCard, lazy ToolCallDetailSheet, BackgroundTaskMarker sheet jump, and message copy");
+
+  await assistantBubble.getByRole("button", { name: "安装包下载", exact: true }).click();
+  const downloadConfirm = page.getByRole("alertdialog", { name: "确认下载工作区文件？", exact: true });
+  await downloadConfirm.waitFor();
+  const downloadEvent = page.waitForEvent("download");
+  await downloadConfirm.getByRole("button", { name: "确认下载", exact: true }).click();
+  const download = await downloadEvent;
+  assert.equal(download.suggestedFilename(), "bundle.zip");
+  assert.equal(await readFile(await download.path(), "utf8"), binaryPayload);
+  await downloadConfirm.waitFor({ state: "hidden" });
+  steps.push("Desktop non-media workspace path link confirms and completes chunked download via downloadBridgeSessionFile");
+
+  const imageAttachment = {
+    id: `native-image:${imageMsgId}:0`,
+    name: "image-1.png",
+    mimeType: "image/png",
+    size: imageBytes.length,
+    nativeImage: { messageUuid: imageMsgId, imageIndex: 0 },
+  };
+  host.history.push({
+    id: imageMsgId,
+    sessionId,
+    role: "user",
+    text: "桌面原生参考图消息",
+    createdAt: Date.now(),
+    origin: "claude-desktop",
+    delivery: "completed",
+    attachments: [imageAttachment],
+  });
+  await host.emit("user.message.accepted", {
+    text: "桌面原生参考图消息",
+    attachments: [imageAttachment],
+    delivery: "completed",
+    messageId: imageMsgId,
+  }, { itemId: imageMsgId });
+  const imageBubble = stream.locator("article.conversation-item.user").filter({ hasText: "桌面原生参考图消息" });
+  await imageBubble.locator(".conversation-image-preview").scrollIntoViewIfNeeded();
+  await eventually(() => imageBubble.locator("img").evaluate(node => node.complete && node.naturalWidth > 0), true, "Desktop lazy-loads native reference thumbnail");
+  await imageBubble.locator("img").click();
+  const mediaViewer = page.getByRole("dialog").last();
+  await mediaViewer.waitFor();
+  await eventually(() => mediaViewer.locator("img").evaluate(node => node.complete && node.naturalWidth > 0), true, "Desktop opens full native image in media viewer");
+  await mediaViewer.getByRole("button", { name: /关闭/u }).first().click();
+  steps.push("Desktop renders reference-based native image thumbnails and opens full-size media viewer");
+
+  host.events.length = 0;
+  host.history.length = 0;
+  const baseTime = Date.now();
+  for (let index = 0; index < 120; index += 1) {
+    host.history.push({
+      id: `desktop-history-${String(index).padStart(3, "0")}`,
+      sessionId,
+      role: index % 2 ? "assistant" : "user",
+      text: `桌面分页条目 ${String(index + 1).padStart(3, "0")}。${"用于验证桌面对话历史向前加载时保持阅读锚点不跳动。".repeat(3)}`,
+      createdAt: baseTime - (120 - index) * 1_000,
+      origin: "claude-desktop",
+    });
+  }
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  const openCountBefore = host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).length;
+  const historyCountBefore = host.requests.filter(request => request.method === "session.history").length;
+  await sidebar.locator(`[data-session-id="${sessionId}"] .session-row-hit`).click();
+  await page.locator(".desktop-conversation-heading").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  await eventually(() => host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).length > openCountBefore, true, "Selecting session requests session.open");
+  assert.equal(host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).at(-1).params.limit, 50);
+  await eventually(() => stream.locator("article.conversation-item").count(), 50, "Desktop renders initial 50 history items");
+  await eventually(() => stream.evaluate(root => root.scrollHeight - root.clientHeight - root.scrollTop < 4), true, "Desktop pins initial session load to the bottom");
+
+  const captureTopAnchor = () => stream.evaluate(root => {
+    root.scrollTop = 0;
+    const rect = root.getBoundingClientRect();
+    const node = [...root.querySelectorAll(":scope > [data-stream-key]")].find(candidate => {
+      const bounds = candidate.getBoundingClientRect();
+      return bounds.bottom > rect.top + 1 && bounds.top < rect.bottom;
+    });
+    if (!node) throw new Error("Visible desktop stream anchor required");
+    const anchor = { key: node.getAttribute("data-stream-key"), offset: node.getBoundingClientRect().top - rect.top, height: root.scrollHeight };
+    for (let index = 0; index < 4; index += 1) root.dispatchEvent(new Event("scroll"));
+    return anchor;
+  });
+  const assertDesktopAnchor = async expected => {
+    await eventually(async () => {
+      const actual = await stream.evaluate((root, target) => {
+        const node = [...root.querySelectorAll(":scope > [data-stream-key]")].find(candidate => candidate.getAttribute("data-stream-key") === target.key);
+        return node ? node.getBoundingClientRect().top - root.getBoundingClientRect().top : null;
+      }, expected);
+      return actual !== null && Math.abs(actual - expected.offset) <= 4;
+    }, true, "Desktop history prepend preserves visible message anchor offset within 4px");
+  };
+
+  let releaseHistory;
+  host.historyGate = new Promise(resolveGate => { releaseHistory = resolveGate; });
+  const firstAnchor = await captureTopAnchor();
+  try {
+    await eventually(() => host.requests.filter(request => request.method === "session.history").length, historyCountBefore + 1, "Top scroll triggers one session.history request");
+    await stream.evaluate(root => { for (let index = 0; index < 4; index += 1) root.dispatchEvent(new Event("scroll")); });
+    assert.equal(host.requests.filter(request => request.method === "session.history").length, historyCountBefore + 1, "Duplicate top scrolls do not duplicate in-flight session.history");
+  } finally {
+    host.historyGate = undefined;
+    releaseHistory();
+  }
+  await eventually(() => stream.evaluate((root, height) => root.scrollHeight > height + 100, firstAnchor.height), true, "Older page prepends into desktop stream");
+  await assertDesktopAnchor(firstAnchor);
+  assert.ok(await stream.evaluate(root => root.scrollTop > 32), "Anchor compensation moves desktop scrollTop away from 0");
+
+  host.failHistoryOnce = true;
+  await captureTopAnchor();
+  await stream.getByRole("alert").filter({ hasText: "隔离历史请求失败" }).waitFor();
+  const retryAnchor = await stream.evaluate(root => {
+    const rect = root.getBoundingClientRect();
+    const node = [...root.querySelectorAll(":scope > [data-stream-key]")].find(candidate => candidate.getBoundingClientRect().bottom > rect.top + 1);
+    return { key: node.getAttribute("data-stream-key"), offset: node.getBoundingClientRect().top - rect.top };
+  });
+  await stream.getByRole("button", { name: "重试加载更早消息", exact: true }).click();
+  await stream.locator(".load-older-button").waitFor({ state: "hidden" });
+  await assertDesktopAnchor(retryAnchor);
+  const streamKeys = await stream.locator(":scope > [data-stream-key]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-stream-key")));
+  assert.equal(new Set(streamKeys).size, streamKeys.length, "Desktop paginated stream has no duplicate keys");
+  await page.screenshot({ path: resolve(directory, "desktop-history-pagination.png"), fullPage: true });
+  steps.push("Desktop top-scroll pagination loads 50-item pages via session.history, retains failed cursors for retry, and preserves reading position");
+}
+
 async function verifyMobileSafeArea(page, steps, directory, viewports) {
   const emulation = await page.context().newCDPSession(page);
   for (const [tab, selector, height] of [
@@ -590,7 +904,11 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
   const host = {
     socket, crypto, pairing, session, snapshot, events, history, requests, resumeBatches, nativeQueue, nativeTrace: [],
     nativeImages: new Map(), imageTransfers: new Map(), systemUpdateError: "",
-    send: (payload) => socket.send(payload, "mobile", { crypto, toDeviceId: pairing.deviceId }),
+    send: async (payload) => {
+      const sent = await socket.send(payload, "mobile", { crypto, toDeviceId: pairing.deviceId });
+      await host.onDesktopPayload?.(payload);
+      return sent;
+    },
     historyPage(cursor, limit = 50) {
       const end = cursor ? history.findIndex(item => item.id === cursor) : history.length;
       assert.ok(end >= 0, "History cursors must refer to the oldest item in the preceding page");
@@ -848,19 +1166,14 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     }
     if (frame.type === "error") errors.push(`mock relay: ${frame.code}: ${frame.message}`);
   });
-  socket.onMessage((message, encrypted) => {
-    void (async () => {
-      if (message.payload.kind !== "request") {
-        socket.ack([encrypted.id]);
-        return;
-      }
-      const request = message.payload;
-      requests.push(structuredClone(request));
-      let result;
-      let error;
-      let remoteCommand;
-      let remoteCommandCreated = false;
-      switch (request.method) {
+  host.handleRequest = async (rawRequest) => {
+    const request = { kind: "request", requestId: rawRequest.requestId ?? randomUUID(), ...rawRequest };
+    requests.push(structuredClone(request));
+    let result;
+    let error;
+    let remoteCommand;
+    let remoteCommandCreated = false;
+    switch (request.method) {
         case "runtime.refresh":
           if (host.nativeApproval) await syncNativeSections(host);
           result = { runtime: snapshot.runtime }; break;
@@ -1115,11 +1428,11 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
         default:
           throw new Error(`Unimplemented host RPC: ${request.method}`);
       }
-      await host.send({
-        kind: "response", requestId: request.requestId, ok: !error,
-        ...(error ? { error } : { result }),
-      });
-      socket.ack([encrypted.id]);
+    const response = {
+      kind: "response", requestId: request.requestId, ok: !error,
+      ...(error ? { error } : { result }),
+    };
+    const afterAck = async () => {
       if (request.method === "turn.start" && remotePreview && !error) {
         if (remoteCommandCreated) {
           await host.emit("turn.queued", {
@@ -1143,6 +1456,24 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           requestId: "browser-e2e-permission", decision: "allow-once",
         }, { turnId: "browser-e2e-turn" });
       }
+    };
+    return { response, afterAck };
+  };
+  host.desktopRequest = async (input) => {
+    const { response, afterAck } = await host.handleRequest(input);
+    await afterAck();
+    return response;
+  };
+  socket.onMessage((message, encrypted) => {
+    void (async () => {
+      if (message.payload.kind !== "request") {
+        socket.ack([encrypted.id]);
+        return;
+      }
+      const { response, afterAck } = await host.handleRequest(message.payload);
+      await host.send(response);
+      socket.ack([encrypted.id]);
+      await afterAck();
     })().catch((error) => errors.push(`mock host: ${error.stack}`));
   });
   await new Promise((ready, reject) => {
@@ -3513,7 +3844,7 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "assistant-mail"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "assistant-mail"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage", scenario === "assistant-mail");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-conversation", "assistant-mail"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-conversation", "assistant-mail"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), scenario === "section-manage", scenario === "assistant-mail");
     if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (["project-grouping", "session-catalog"].includes(scenario)) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (scenario === "section-manage") await syncNativeSections(host);
@@ -3578,6 +3909,7 @@ async function runScenario(theme, scenario) {
     else if (scenario === "session-catalog") await verifySessionCatalog(page, host, steps, directory, viewports);
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
     else if (scenario === "desktop-quota") await verifyDesktopQuota(page, host, steps, directory, viewports);
+    else if (scenario === "desktop-conversation") await verifyDesktopConversation(page, host, steps, directory, viewports);
     else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory);
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);

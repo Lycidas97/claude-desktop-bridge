@@ -992,35 +992,6 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 .mobile-app-shell .message-queue-status > button:first-of-type { margin-left: 27px; }
 .mobile-app-shell .delivery-state { font-size: var(--m-fs-footnote); }
 
-/* A sent message: the bubble wraps only its text, in the composer's shape and the sent
-   message's accent colors; delivery status and copy share one row under it. */
-.mobile-app-shell .conversation-item.user {
-  display: flex;
-  width: 100%;
-  flex-direction: column;
-  align-items: flex-end;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: none;
-}
-.mobile-app-shell .conversation-bubble {
-  min-width: 0;
-  max-width: min(85%, 560px);
-  padding: 10px 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
-  border-radius: var(--r-hero);
-  background: var(--accent-soft);
-}
-.mobile-app-shell .conversation-item.user .conversation-message-actions {
-  align-items: center;
-  gap: 4px;
-  /* The copy button keeps its 44px touch area; its padding lines the label up with the bubble's edge. */
-  margin: -4px -8px -8px 0;
-}
-.mobile-app-shell .conversation-message-actions .delivery-state { margin: 0; }
-
-
 .mobile-app-shell .session-channel-warning {
   padding: 10px var(--m-gutter);
   font-size: var(--m-fs-subhead);

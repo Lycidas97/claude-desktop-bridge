@@ -13,6 +13,16 @@ type HookStore = {
 };
 const hooks = vi.hoisted(() => ({ current: undefined as HookStore | undefined }));
 const media = vi.hoisted(() => ({ open: vi.fn(), confirm: vi.fn<(_target: unknown, open: () => void) => void>((_target, open) => open()) }));
+function recordEffect(effect: () => (() => void) | void, deps?: unknown[]) {
+  const store = hooks.current!;
+  const index = store.effectIndex++;
+  const previous = store.effects[index];
+  if (previous && deps && deps.length === previous.deps?.length && deps.every((value, i) => Object.is(value, previous.deps?.[i]))) return;
+  store.pending.push(() => {
+    previous?.cleanup?.();
+    store.effects[index] = { deps, cleanup: effect() || undefined };
+  });
+}
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useState(initial: any) {
@@ -33,16 +43,8 @@ vi.mock("react", async (original) => ({
   },
   useMemo: (create: () => unknown) => create(),
   useContext: () => undefined,
-  useEffect(effect: () => (() => void) | void, deps?: unknown[]) {
-    const store = hooks.current!;
-    const index = store.effectIndex++;
-    const previous = store.effects[index];
-    if (previous && deps && deps.length === previous.deps?.length && deps.every((value, i) => Object.is(value, previous.deps?.[i]))) return;
-    store.pending.push(() => {
-      previous?.cleanup?.();
-      store.effects[index] = { deps, cleanup: effect() || undefined };
-    });
-  },
+  useEffect: recordEffect,
+  useLayoutEffect: recordEffect,
 }));
 vi.mock("./MediaPreviewProvider.js", async original => ({ ...await original<typeof import("./MediaPreviewProvider.js")>(), useMediaPreview: () => media.open, useFilePreviewConfirmation: () => media.confirm }));
 vi.mock("../../lib/mobile-back-navigation.js", () => ({ registerMobileBackHandler: () => () => undefined }));

@@ -1,12 +1,15 @@
 import { isClaudeNativeRelay } from "../../hooks/useMobileBridge.js";
+import { HISTORY_PAGE_SIZE, mergeHistoryPages } from "../../hooks/bridge/bridge-reducers.js";
 import type {
   BridgeAttachment,
   BridgeArtifactManifest,
   BridgeArtifactPreview,
+  BridgeBackgroundTask,
   BridgeEvidenceBundle,
   BridgeEvidenceDetailPage,
   BridgeEvidencePage,
   BridgeEvent,
+  BridgeHistoryItem,
   BridgeHistoryPage,
   BridgeDesktopRuntimeId,
   BridgeNativePermissionMode,
@@ -34,22 +37,21 @@ import {
   ChevronsDown,
   ChevronsUp,
   CircleStop,
-  Forward,
   GitFork,
   GitPullRequest,
+  Layers,
   LoaderCircle,
   MessageSquare,
   Plus,
-  RefreshCw,
   Send,
   Settings2,
   Trash2,
   X,
 } from "lucide-react";
 import { evidenceSummary } from "@bridge/protocol";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SessionEvidenceState, SessionHistoryState } from "../../hooks/useMobileBridge.js";
-import { downloadBridgeArtifact } from "../../lib/artifact-download.js";
+import { downloadBridgeArtifact, downloadBridgeSessionFile } from "../../lib/artifact-download.js";
 import { useStreamEntrance } from "../../lib/stream-entrance.js";
 import {
   collapseProjects,
@@ -69,7 +71,6 @@ import { MediaGallery } from "../evidence/MediaGallery.js";
 import { useMediaPreview } from "../evidence/MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../../lib/media-preview.js";
 import { IconButton } from "../common/IconButton.js";
-import { MarkdownText } from "../common/MarkdownText.js";
 import {
   aggregateFileChanges,
   canConfigureSession,
@@ -77,8 +78,10 @@ import {
   conversationItems,
   conversationTimeline,
   fileToAttachment,
+  groupTimelineTools,
   ownershipLabel,
   stoppableBridgeTask,
+  type ConversationItem,
 } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { EmptyState } from "../common/EmptyState.js";
@@ -86,6 +89,10 @@ import { ProjectOrderSheet } from "../mobile/ProjectOrderSheet.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
 import { SessionProfileSummary } from "../session/SessionProfileSummary.js";
+import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "../conversation/BackgroundTasks.js";
+import { ConversationMessageItem, type QueuedTurnActionState } from "../conversation/ConversationMessageItem.js";
+import { ConversationToolGroup } from "../conversation/ConversationToolGroup.js";
+import { ForkChainBar } from "../conversation/ForkChainBar.js";
 import {
   InteractivePromptCard,
   matchingQuestionPermission,
@@ -179,7 +186,12 @@ export function DesktopSessions({
     } else setPickedId(sessionId);
   }
   const [history, setHistory] = useState<Record<string, SessionHistoryState>>({});
+  const historyRef = useRef(history);
+  historyRef.current = history;
+  const loadingHistoryRef = useRef(new Set<string>());
   const [promptReplies, setPromptReplies] = useState<Record<string, Record<string, string | null>>>({});
+  const [promptErrors, setPromptErrors] = useState<Record<string, string>>({});
+  const [queuedSteers, setQueuedSteers] = useState<Record<string, QueuedTurnActionState>>({});
   const [evidence, setEvidence] = useState<Record<string, SessionEvidenceState>>({});
   const [artifactPreviews, setArtifactPreviews] = useState<Record<string, BridgeArtifactPreview>>({});
   const [artifactTransfers, setArtifactTransfers] = useState<Record<string, number>>({});
@@ -198,6 +210,13 @@ export function DesktopSessions({
   const [sessionActionError, setSessionActionError] = useState<string>();
   const [projectOrderOpen, setProjectOrderOpen] = useState(false);
   const [prActionsOpen, setPrActionsOpen] = useState(false);
+  const [backgroundTasksOpen, setBackgroundTasksOpen] = useState<{ focus?: BridgeHistoryItem }>();
+  const [backgroundTaskDetails, setBackgroundTaskDetails] = useState<{ key: string; tasks: BridgeBackgroundTask[] | undefined; error?: string }>();
+  const [stopSubagentTarget, setStopSubagentTarget] = useState<{ sessionId: string; agentId: string; description: string; scope: "task" | "process" }>();
+  const [subagentStopBusy, setSubagentStopBusy] = useState(false);
+  const [pendingFileDownload, setPendingFileDownload] = useState<string>();
+  const [fileDownloadBusy, setFileDownloadBusy] = useState(false);
+  const [fileDownloadError, setFileDownloadError] = useState<string>();
   const projectOrderKey = `bridge-project-order:${snapshot.host.hostId}`;
   const [placedProjects, setPlacedProjects] = useState<string[]>(() => (
     JSON.parse(localStorage.getItem(projectOrderKey) ?? "[]") as string[]
@@ -228,7 +247,12 @@ export function DesktopSessions({
   const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
   function openSessionFile(filePath: string): void {
     const kind = mediaKind(filePath);
-    if (kind && selected) openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selected.sessionId, path: filePath });
+    if (kind && selected) {
+      openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selected.sessionId, path: filePath });
+      return;
+    }
+    setFileDownloadError(undefined);
+    setPendingFileDownload(filePath);
   }
   const otherNativePromptSession = snapshot.sessions.find(session => session.sessionId !== selectedId && snapshot.prompts?.some(prompt => prompt.sessionId === session.sessionId));
   const fileUploads = useFileAttachments(selected?.sessionId, (sessionId, file, onProgress, signal) =>
@@ -242,6 +266,10 @@ export function DesktopSessions({
   useEffect(() => {
     setSending(false);
     setCommandError(undefined);
+    setBackgroundTasksOpen(undefined);
+    setStopSubagentTarget(undefined);
+    setPendingFileDownload(undefined);
+    setFileDownloadError(undefined);
   }, [composerKey]);
   const commands = useSessionCommands({
     sessionId: selected?.sessionId,
@@ -268,6 +296,43 @@ export function DesktopSessions({
   const canConfigure = Boolean(selected && canConfigureSession(selected, snapshot));
   const rewindAvailable = selected?.transport === "claude-desktop-native" && snapshot.host.capabilities.includes("session.rewind.v1");
   const rewindDisabled = selected?.turnState === "running" || selected?.turnState === "waiting" || Boolean(selected?.pendingCount);
+  const nativeOnline = snapshot.runtime.desktopIntegration.state !== "disconnected";
+  const selectedHistory = selectedId ? history[selectedId] : undefined;
+  const taskHistoryReady = selectedHistory?.status === "ready" || Boolean(selectedHistory?.items.length);
+  const canLoadBackgroundTasks = snapshot.host.capabilities.includes("claude.native-relay.v1");
+  useEffect(() => {
+    if (
+      !canLoadBackgroundTasks
+      || sessionView !== "conversation"
+      || snapshot.runtime.desktopIntegration.state !== "ready"
+      || !selected
+      || selectedRuntime !== "claude-desktop"
+      || !taskHistoryReady
+    ) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      try {
+        const result = unwrap<{ session?: BridgeSessionInfo }>(await apiRequest({
+          method: "session.configuration",
+          params: { sessionId: selected.sessionId, includeBackgroundTasks: true },
+        }));
+        if (active) setBackgroundTaskDetails({ key: composerKey, tasks: result.session?.backgroundTasks ?? [] });
+      } catch (error) {
+        if (active) setBackgroundTaskDetails((current) => ({
+          key: composerKey,
+          tasks: current?.key === composerKey ? current.tasks : undefined,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
+      if (active) timer = setTimeout(() => void refresh(), 2_000);
+    };
+    void refresh();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [canLoadBackgroundTasks, composerKey, selected?.sessionId, selectedRuntime, sessionView, snapshot.runtime.desktopIntegration.state, taskHistoryReady]);
   const assistantMail = useAssistantMail();
   const selectedEvidence = selectedId ? evidence[selectedId] : undefined;
   const stopTarget = stoppableBridgeTask(snapshot.sessions, selected?.sessionId);
@@ -275,18 +340,48 @@ export function DesktopSessions({
   const stopping = stopTarget?.sessionId === stoppingSessionId;
   const stoppingBlocker = Boolean(stopTarget && stopTarget.sessionId !== selected?.sessionId);
   const items = useMemo(() => (
-    selectedId ? conversationItems(selectedId, history[selectedId], events, [], false, promptReplies[selectedId]) : []
-  ), [events, history, promptReplies, selectedId]);
+    selectedId ? conversationItems(selectedId, selectedHistory, events, [], true, promptReplies[selectedId]) : []
+  ), [events, promptReplies, selectedHistory, selectedId]);
   const fileChangesSummary = useMemo(() => aggregateFileChanges(items), [items]);
   const timeline = useMemo(
     () => conversationTimeline(items, selectedEvidence?.items ?? [], selectedId ? assistantMail?.cache.cards.filter(card => (card.nativeDelivery.nativeSessionId ?? snapshot.assistantMail?.binding?.nativeSessionId) === selectedId) ?? [] : []),
     [items, selectedEvidence?.items, assistantMail?.cache.cards, snapshot.assistantMail?.binding?.nativeSessionId, selectedId],
   );
-  const streamKeys = useMemo(() => timeline.map((entry) => (
+  const displayNodes = useMemo(() => groupTimelineTools(timeline), [timeline]);
+  const toolGroupKeysRef = useRef<{ sessionId?: string | undefined; byToolId: Map<string, string> }>({ byToolId: new Map() });
+  const toolGroupKeys = useMemo(() => {
+    if (toolGroupKeysRef.current.sessionId !== selectedId || displayNodes.length === 0) {
+      toolGroupKeysRef.current = { sessionId: selectedId, byToolId: new Map() };
+    }
+    const { byToolId } = toolGroupKeysRef.current;
+    const keys = new Map<string, string>();
+    for (const node of displayNodes) {
+      if (node.kind !== "tool-group") continue;
+      const stableKey = node.tools.map((tool) => byToolId.get(tool.id)).find(Boolean) ?? node.id;
+      for (const tool of node.tools) byToolId.set(tool.id, stableKey);
+      keys.set(node.id, stableKey);
+    }
+    return keys;
+  }, [displayNodes, selectedId]);
+  const timelineStreamKeys = useMemo(() => timeline.map((entry) => (
     entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.kind === "mail" ? `mail:${entry.card.mailRefId}` : entry.item.id
   )), [timeline]);
-  const streamEntering = useStreamEntrance(selectedId, streamKeys);
-  const activity = useMemo(() => sessionActivity(selected, items), [selected, items]);
+  const streamEntering = useStreamEntrance(selectedId, timelineStreamKeys);
+  const selectedTaskDetails = backgroundTaskDetails?.key === composerKey ? backgroundTaskDetails : undefined;
+  const activityTasks = selectedTaskDetails?.tasks ?? selected?.backgroundTasks;
+  const activity = useMemo(() => sessionActivity(
+    selected,
+    selectedTaskDetails?.error ? items.map((item) => {
+      const subagent = item.subagent;
+      if (subagent?.state !== "running") return item;
+      const task = findBackgroundTask(activityTasks, subagent);
+      return task && task.state !== "running"
+        && (!subagent.workflowRunId || task.workflow?.agents.some((agent) => agent.agentId === subagent.agentId))
+        ? { ...item, subagent: { ...subagent, state: task.state } }
+        : item;
+    }) : items,
+    selectedTaskDetails?.error ? undefined : activityTasks,
+  ), [selected, items, activityTasks, selectedTaskDetails?.error]);
   const projectsByActivity = useMemo(() => {
     const latest = new Map<string, number>();
     for (const session of snapshot.sessions) {
@@ -343,6 +438,23 @@ export function DesktopSessions({
     }
     return [...latest.values()].filter((event) => event.data.delivery === "uncertain");
   }, [events, selectedId]);
+  const orphanUncertainDeliveries = useMemo(() => uncertainDeliveries.filter((event) => (
+    !items.some((item) => item.delivery === "uncertain" && item.commandId && item.commandId === event.data.commandId)
+  )), [items, uncertainDeliveries]);
+  const sessionPermissions = useMemo(() => (
+    selected && isClaudeNativeRelay(snapshot) && selected.transport === "claude-desktop-native"
+      ? snapshot.permissions.filter((permission) => permission.sessionId === selected.sessionId)
+      : []
+  ), [selected, snapshot]);
+  const sessionNativePrompts = useMemo(() => (
+    selected ? snapshot.prompts?.filter((prompt) => prompt.sessionId === selected.sessionId) ?? [] : []
+  ), [selected, snapshot.prompts]);
+  const streamKeys = useMemo(() => [
+    ...timelineStreamKeys,
+    ...sessionPermissions.map((permission) => `permission:${permission.requestId}`),
+    ...sessionNativePrompts.map((prompt) => `prompt:${prompt.promptId}`),
+    ...orphanUncertainDeliveries.map((event) => `uncertain:${event.eventId}`),
+  ], [orphanUncertainDeliveries, sessionNativePrompts, sessionPermissions, timelineStreamKeys]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -423,31 +535,90 @@ export function DesktopSessions({
     }
   }, [selectedId, snapshot.sessions]);
 
-  const streamScrollState = useRef<{ sessionId: string | undefined; count: number }>({
-    sessionId: undefined,
-    count: 0,
-  });
-  useEffect(() => {
+  const firstHistoryKey = selectedHistory?.items[0]?.id;
+  const historyCount = selectedHistory?.items.length ?? 0;
+  const streamScrollState = useRef<{
+    sessionId?: string | undefined;
+    firstKey?: string | undefined;
+    firstHistoryKey?: string | undefined;
+    historyCount: number;
+    lastKey?: string | undefined;
+    anchorKey?: string | undefined;
+    anchorOffset: number;
+    scrollTop?: number | undefined;
+    pinnedToBottom: boolean;
+  }>({ historyCount: 0, anchorOffset: 0, pinnedToBottom: true });
+
+  function rememberStreamPosition(updateFollow = false): void {
     const stream = streamRef.current;
     if (!stream) return;
-    const previous = streamScrollState.current;
-    streamScrollState.current = { sessionId: selectedId, count: streamKeys.length };
-    const jump = () => stream.scrollTo({ top: stream.scrollHeight });
-    // Session switch or a bulk (re)load lands at the bottom instantly.
-    if (previous.sessionId !== selectedId || streamKeys.length - previous.count > 6) {
-      jump();
+    const top = stream.getBoundingClientRect().top;
+    const anchor = [...stream.querySelectorAll<HTMLElement>(":scope > [data-stream-key]")]
+      .find((element) => element.getBoundingClientRect().bottom > top);
+    streamScrollState.current = {
+      ...streamScrollState.current,
+      anchorKey: anchor?.dataset.streamKey,
+      anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0,
+      scrollTop: stream.scrollTop,
+      pinnedToBottom: updateFollow
+        ? stream.scrollHeight - stream.scrollTop - stream.clientHeight <= 4
+        : streamScrollState.current.pinnedToBottom,
+    };
+  }
+
+  useLayoutEffect(() => {
+    const stream = streamRef.current;
+    if (!stream || !selectedId) {
+      streamScrollState.current = { historyCount: 0, anchorOffset: 0, pinnedToBottom: true };
       return;
     }
-    // Live appends and streaming text growth follow smoothly only while the
-    // user is pinned to the bottom; scrolling up to read must never yank
-    // the view back down.
-    const pinnedToBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120;
-    if (!pinnedToBottom) return;
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    stream.scrollTo({ top: stream.scrollHeight, behavior: reduced ? "auto" : "smooth" });
-  }, [streamKeys, selectedId]);
+    const previous = streamScrollState.current;
+    const firstKey = timelineStreamKeys[0];
+    const lastKey = streamKeys.at(-1);
+    const entering = previous.sessionId !== selectedId || !previous.lastKey;
+    const historyPrepended = (
+      firstHistoryKey !== undefined
+      && previous.firstHistoryKey !== undefined
+      && firstHistoryKey !== previous.firstHistoryKey
+      && historyCount > previous.historyCount
+    );
+    if (entering) {
+      stream.scrollTop = stream.scrollHeight;
+    } else if ((firstKey !== previous.firstKey || historyPrepended) && previous.anchorKey) {
+      const anchor = [...stream.querySelectorAll<HTMLElement>(":scope > [data-stream-key]")]
+        .find((element) => element.dataset.streamKey === previous.anchorKey);
+      if (anchor) {
+        stream.scrollTop += anchor.getBoundingClientRect().top - stream.getBoundingClientRect().top - previous.anchorOffset;
+      } else if (previous.pinnedToBottom) {
+        stream.scrollTop = stream.scrollHeight;
+      }
+    } else if (previous.pinnedToBottom) {
+      stream.scrollTop = stream.scrollHeight;
+    }
+    streamScrollState.current = {
+      ...previous,
+      sessionId: selectedId,
+      firstKey,
+      firstHistoryKey,
+      historyCount,
+      lastKey,
+      pinnedToBottom: entering || previous.pinnedToBottom,
+    };
+    rememberStreamPosition();
+  }, [firstHistoryKey, historyCount, streamKeys, timelineStreamKeys, selectedId, sessionView]);
+
+  function loadOlderNearTop(): void {
+    const stream = streamRef.current;
+    if (!stream || !selectedId || !selectedHistory?.hasMore || !selectedHistory.nextCursor || selectedHistory.status !== "ready" || selectedHistory.error) return;
+    if (stream.scrollTop < 200) void loadOlderHistory(selectedId);
+  }
+
+  useEffect(() => {
+    if (sessionView === "conversation") loadOlderNearTop();
+  }, [firstHistoryKey, timelineStreamKeys[0], selectedHistory?.nextCursor, selectedId, sessionView]);
 
   async function openSession(sessionId: string): Promise<void> {
+    loadingHistoryRef.current.delete(sessionId);
     setHistory((current) => ({
       ...current,
       [sessionId]: {
@@ -468,7 +639,7 @@ export function DesktopSessions({
       const [result, evidenceResult] = await Promise.all([
         apiRequest({
           method: "session.open",
-          params: { sessionId },
+          params: { sessionId, limit: HISTORY_PAGE_SIZE },
         }).then((response) => unwrap<{ history: BridgeHistoryPage }>(response)),
         apiRequest({
           method: "evidence.list",
@@ -504,10 +675,15 @@ export function DesktopSessions({
           },
         };
       });
-    } catch {
+    } catch (failure) {
       setHistory((current) => ({
         ...current,
-        [sessionId]: { status: "error", items: current[sessionId]?.items ?? [], hasMore: false },
+        [sessionId]: {
+          status: "error",
+          items: current[sessionId]?.items ?? [],
+          hasMore: false,
+          error: failure instanceof Error ? failure.message : "会话读取失败",
+        },
       }));
       setEvidence((current) => ({
         ...current,
@@ -517,6 +693,46 @@ export function DesktopSessions({
           hasMore: current[sessionId]?.hasMore ?? false,
         },
       }));
+    }
+  }
+
+  async function loadOlderHistory(sessionId: string): Promise<void> {
+    const current = historyRef.current[sessionId];
+    if (!current?.hasMore || !current.nextCursor || current.status === "loading" || loadingHistoryRef.current.has(sessionId)) return;
+    const requestedCursor = current.nextCursor;
+    loadingHistoryRef.current.add(sessionId);
+    setHistory((value) => ({
+      ...value,
+      [sessionId]: { ...current, status: "loading" },
+    }));
+    try {
+      const result = unwrap<{ history: BridgeHistoryPage }>(await apiRequest({
+        method: "session.history",
+        params: { sessionId, cursor: requestedCursor, limit: HISTORY_PAGE_SIZE },
+      }));
+      setHistory((value) => {
+        const existingItems = value[sessionId]?.items ?? current.items;
+        return {
+          ...value,
+          [sessionId]: {
+            status: "ready",
+            items: mergeHistoryPages(result.history.items, existingItems),
+            hasMore: result.history.hasMore,
+            ...(result.history.nextCursor ? { nextCursor: result.history.nextCursor } : {}),
+          },
+        };
+      });
+    } catch (failure) {
+      setHistory((value) => ({
+        ...value,
+        [sessionId]: {
+          ...(value[sessionId] ?? current),
+          status: "ready",
+          error: failure instanceof Error ? failure.message : "历史加载失败",
+        },
+      }));
+    } finally {
+      loadingHistoryRef.current.delete(sessionId);
     }
   }
 
@@ -603,6 +819,70 @@ export function DesktopSessions({
     }
   }
 
+  async function downloadSessionFile(sessionId: string, filePath: string): Promise<void> {
+    const transferKey = `file:${filePath}`;
+    setArtifactTransfers((current) => ({ ...current, [transferKey]: 0 }));
+    try {
+      await downloadBridgeSessionFile(
+        sessionId,
+        filePath,
+        async (method, params) => apiRequest({ method, params }),
+        (progress) => setArtifactTransfers((current) => ({
+          ...current,
+          [transferKey]: progress,
+        })),
+      );
+    } finally {
+      setArtifactTransfers((current) => {
+        const next = { ...current };
+        delete next[transferKey];
+        return next;
+      });
+    }
+  }
+
+  async function steerQueuedTurn(sessionId: string, commandId: string): Promise<void> {
+    const result = unwrap<{ state?: string }>(await apiRequest({
+      method: "turn.queue.steer",
+      params: { sessionId, commandId },
+    }));
+    if (result.state === "uncertain") {
+      throw new Error("消息投递状态尚未确认，请同步状态后重试");
+    }
+  }
+
+  async function cancelQueuedTurn(sessionId: string, commandId: string): Promise<void> {
+    unwrap(await apiRequest({
+      method: "turn.queue.cancel",
+      params: { sessionId, commandId },
+    }));
+  }
+
+  async function resolveUncertainDelivery(commandId: string, action: "confirm" | "retry"): Promise<void> {
+    unwrap(await apiRequest({
+      method: "message.delivery.resolve",
+      params: { commandId, action },
+    }));
+  }
+
+  async function stopSubagent(): Promise<void> {
+    if (!stopSubagentTarget || subagentStopBusy) return;
+    setSubagentStopBusy(true);
+    setStopError(undefined);
+    try {
+      unwrap(await apiRequest({
+        method: "subagent.stop",
+        params: { sessionId: stopSubagentTarget.sessionId, agentId: stopSubagentTarget.agentId },
+      }));
+      setStopSubagentTarget(undefined);
+    } catch (error) {
+      setStopSubagentTarget(undefined);
+      setStopError(error instanceof Error ? error.message : "子代理停止失败");
+    } finally {
+      setSubagentStopBusy(false);
+    }
+  }
+
   async function send(): Promise<void> {
     if (!selected || !canSendSession(selected, snapshot) || sending || fileUploads.uploading
       || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)) return;
@@ -640,7 +920,14 @@ export function DesktopSessions({
 
   async function sendQuickReply(promptId: string, promptText: string): Promise<void> {
     if (!selected || !canSendSession(selected, snapshot) || sending || !promptText.trim()) return;
+    const promptKey = `${composerKey}:${promptId}`;
     setSending(true);
+    setPromptErrors((current) => {
+      if (!(promptKey in current)) return current;
+      const next = { ...current };
+      delete next[promptKey];
+      return next;
+    });
     try {
       const mailRefId = assistantMail?.referenceFor(selected.sessionId);
       if (mailRefId && sessionCommandName(promptText.trim())) throw new Error("请先清除邮件引用，再执行会话命令。");
@@ -657,7 +944,9 @@ export function DesktopSessions({
       unwrap(response);
       setPromptReplies((current) => ({ ...current, [selected.sessionId]: { ...current[selected.sessionId], [promptId]: response.requestId } }));
     } catch (error) {
-      setCommandError(error instanceof Error ? error.message : "发送失败");
+      const message = error instanceof Error ? error.message : "发送失败";
+      setPromptErrors((current) => ({ ...current, [promptKey]: message }));
+      setCommandError(message);
     } finally {
       setSending(false);
     }
@@ -928,7 +1217,41 @@ export function DesktopSessions({
       </aside>}
 
       <section className="desktop-conversation">
-        {selected ? (
+        {selected ? (() => {
+          const backgroundTasks = activityTasks ?? [];
+          const runningBackgroundTasks = backgroundTasks.filter((task) => task.state === "running").length;
+          const canSteerQueuedTurn = snapshot.host.capabilities.includes("turn.queue.steer.v1");
+          const canCancelQueuedTurn = snapshot.host.capabilities.includes("turn.queue.cancel.v1");
+          const canStopSubagent = snapshot.host.capabilities.includes("subagent.stop.v1");
+          const parentSession = selected.parentSessionId
+            ? snapshot.sessions.find((candidate) => candidate.sessionId === selected.parentSessionId)
+            : undefined;
+          const childForks = snapshot.sessions.filter((candidate) => (
+            candidate.parentSessionId === selected.sessionId
+            && (!candidate.archivedAt || Boolean(candidate.sidechat) || Boolean(selected.archivedAt))
+          ));
+          const renderSubagent = (item: ConversationItem) => (
+            <SubagentCard
+              item={item}
+              key={item.id}
+              entering={streamEntering(item.id)}
+              collapsible={false}
+              stopping={subagentStopBusy && stopSubagentTarget?.agentId === item.subagent!.agentId}
+              {...(selected.subagentStopScope === "process" && selected.turnState === "running"
+                ? { stopBlockedReason: "主对话运行中，需要先停止主对话" }
+                : {})}
+              {...(canStopSubagent && selected.subagentStopScope ? {
+                onStop: () => setStopSubagentTarget({
+                  sessionId: selected.sessionId,
+                  agentId: item.subagent!.agentId,
+                  description: item.subagent!.description,
+                  scope: selected.subagentStopScope!,
+                }),
+              } : {})}
+              onFileClick={openSessionFile}
+            />
+          );
+          return (
           <>
             <header className="desktop-conversation-heading">
               <div>
@@ -936,6 +1259,16 @@ export function DesktopSessions({
                 <span>{selectedRuntimeName} · {selected.projectName} · {sessionState(selected)} · {transportLabel(selected)}</span>
               </div>
               <div className="desktop-conversation-heading-actions">
+                {backgroundTasks.length > 0 && (
+                  <IconButton
+                    label={runningBackgroundTasks > 0 ? `后台任务，${runningBackgroundTasks} 个运行中` : "后台任务"}
+                    className="background-tasks-button"
+                    onClick={() => setBackgroundTasksOpen({})}
+                  >
+                    <Layers size={17} />
+                    {runningBackgroundTasks > 0 && <span className="background-tasks-count">{runningBackgroundTasks}</span>}
+                  </IconButton>
+                )}
                 {!selected.prs?.length && prControls.supported && (
                   <IconButton label="PR Auto-fix" onClick={() => setPrActionsOpen(true)}>
                     <GitPullRequest size={18} />
@@ -1003,6 +1336,9 @@ export function DesktopSessions({
                 {...prControls}
               />
             ) : null}
+            {selectedTaskDetails?.error && (
+              <p className="desktop-channel-banner session-channel-warning" role="alert">后台任务：{selectedTaskDetails.error}</p>
+            )}
             {otherNativePromptSession && (
               <div className="desktop-channel-banner">
                 <AlertTriangle size={18} />
@@ -1021,48 +1357,35 @@ export function DesktopSessions({
                 <span><strong>会话操作失败</strong>{sessionActionError}</span>
               </div>
             )}
-
-
-
-            {(() => {
-              const parentSession = selected.parentSessionId
-                ? snapshot.sessions.find((candidate) => candidate.sessionId === selected.parentSessionId)
-                : undefined;
-              const childForks = snapshot.sessions.filter((candidate) => (
-                candidate.parentSessionId === selected.sessionId && (!candidate.archivedAt || Boolean(candidate.sidechat))
-              ));
-              if (!parentSession && childForks.length === 0) return null;
-              return (
-                <div className="desktop-channel-banner relay-chain-bar fork-chain-bar">
-                  {parentSession && (
-                    <button
-                      type="button"
-                      className="relay-chain-link"
-                      onClick={() => setSelectedId(parentSession.sessionId)}
-                    >
-                      <GitFork size={14} />
-                      {`主会话：${parentSession.title}`}
-                    </button>
-                  )}
-                  {childForks.map((fork) => (
-                    <button
-                      type="button"
-                      className="relay-chain-link outbound"
-                      key={fork.sessionId}
-                      onClick={() => setSelectedId(fork.sessionId)}
-                    >
-                      <GitFork size={14} />
-                      {`${fork.sidechat ? "/btw" : (fork.forkLabel || "fork")} · ${fork.title}`}
-                    </button>
-                  ))}
-                </div>
-              );
-            })()}
+            <ForkChainBar
+              parentSession={parentSession}
+              childForks={childForks}
+              onSelectSession={setSelectedId}
+              className="desktop-channel-banner"
+            />
             {stopError && (
               <div className="desktop-channel-banner danger">
                 <AlertTriangle size={18} />
                 <span><strong>任务停止失败</strong>{stopError}</span>
               </div>
+            )}
+            {fileDownloadError && (
+              <div className="desktop-channel-banner danger" role="alert">
+                <AlertTriangle size={18} />
+                <span><strong>文件下载失败</strong>{fileDownloadError}</span>
+                <button type="button" className="secondary-button goal-action" onClick={() => setFileDownloadError(undefined)}>关闭</button>
+              </div>
+            )}
+            {backgroundTasksOpen && (
+              <BackgroundTasksSheet
+                supportsToolDetail={snapshot.host.capabilities.includes("transcript.toolDetail.v1")}
+                sessionId={selected.sessionId}
+                tasks={backgroundTasks}
+                items={items}
+                {...(backgroundTasksOpen.focus ? { focus: backgroundTasksOpen.focus } : {})}
+                renderSubagent={renderSubagent}
+                onClose={() => setBackgroundTasksOpen(undefined)}
+              />
             )}
             <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
               <button
@@ -1082,136 +1405,208 @@ export function DesktopSessions({
               </button>
             </nav>
             {sessionView === "conversation" ? (
-            <div className="desktop-conversation-stream" ref={streamRef}>
-              {history[selected.sessionId]?.status === "loading" && items.length === 0 && <div className="desktop-conversation-empty">正在读取会话</div>}
-              {timeline.map((entry) => entry.kind === "mail" ? <MailCard key={`mail:${entry.card.mailRefId}`} card={entry.card} {...(entry.nativeMessage ? { nativeMessage: entry.nativeMessage } : {})} /> : entry.kind === "evidence" ? (
-                <EvidenceInlineSummary
-                  evidence={entry.evidence}
-                  key={`evidence:${entry.evidence.id}`}
-                  entering={streamEntering(`evidence:${entry.evidence.id}`)}
-                  onOpen={() => setSessionView("evidence")}
-                />
-              ) : entry.item.sessionNotice ? (
-                <SessionNoticeCard
-                  key={entry.item.id}
-                  itemId={entry.item.id}
-                  notice={entry.item.sessionNotice}
-                  source={entry.item.text}
-                  entering={streamEntering(entry.item.id)}
-                  onFileClick={openSessionFile}
-                />
-              ) : entry.item.subagent ? (
-                <SubagentCard
-                  item={entry.item}
-                  key={entry.item.id}
-                  entering={streamEntering(entry.item.id)}
-                />
-              ) : (
-                <article
-                  className={`conversation-item ${entry.item.role}${streamEntering(entry.item.id) ? " is-entering" : ""}`}
-                  key={entry.item.id}
+            <div
+              className="desktop-conversation-stream"
+              aria-live="polite"
+              ref={streamRef}
+              onScroll={() => {
+                rememberStreamPosition(true);
+                loadOlderNearTop();
+              }}
+            >
+              {selectedHistory?.hasMore && (
+                <button
+                  type="button"
+                  className="load-older-button"
+                  disabled={selectedHistory.status === "loading"}
+                  onClick={() => void loadOlderHistory(selected.sessionId)}
                 >
-                  <div className="conversation-item-meta"><strong>{entry.item.role === "user" ? "你" : entry.item.role === "assistant" ? selectedRuntimeName : entry.item.toolName ?? "Bridge"}</strong></div>
-                  {entry.item.text && (
-                    entry.item.role === "assistant" || entry.item.role === "user" ? (
-                      <MarkdownText text={entry.item.text} collapsible={!entry.item.live} onFileClick={openSessionFile} />
-                    ) : (
-                      <div className="conversation-text">{entry.item.text}</div>
-                    )
-                  )}
-                  {entry.item.interactivePrompt && (
-                    <InteractivePromptCard
-                      prompt={entry.item.interactivePrompt}
-                      {...(entry.item.replyDelivery ? { replyDelivery: entry.item.replyDelivery } : {})}
-                      {...(entry.item.replyPending ? { replyPending: true } : {})}
-                      canSend={canSendSession(selected, snapshot)}
-                      busy={sending}
-                      onSelectOption={(replyText) => {
-                        if (entry.item.interactivePrompt?.kind === "question") {
-                          const pendingQuestion = matchingQuestionPermission(
-                            entry.item.interactivePrompt,
-                            snapshot.permissions.filter((permission) => permission.sessionId === selected.sessionId),
-                          );
-                          if (pendingQuestion) {
-                            const questions = entry.item.interactivePrompt.questions ?? [];
-                            if (questions.length === 1 && !questions[0]?.multiSelect) {
-                              void resolvePermission(
-                                pendingQuestion.requestId,
-                                "allow-once",
-                                undefined,
-                                { ...pendingQuestion.input, answers: { [questions[0]!.question]: replyText } },
-                              );
-                            }
-                            return;
-                          }
-                        }
-                        void sendQuickReply(entry.item.id, replyText);
-                      }}
+                  {selectedHistory.status === "loading" && <LoaderCircle className="is-spinning" size={15} />}
+                  {selectedHistory.status === "loading" ? "正在分段加载更早消息…" : selectedHistory.error ? "重试加载更早消息" : "加载更早消息"}
+                </button>
+              )}
+              {selectedHistory?.hasMore && selectedHistory.error && (
+                <div className="conversation-error-detail" role="alert">{selectedHistory.error}</div>
+              )}
+              {selectedHistory?.status === "loading" && selectedHistory.items.length === 0 && (
+                <div className="conversation-loading"><LoaderCircle className="is-spinning" size={20} />正在加载最新对话…</div>
+              )}
+              {selectedHistory?.status === "error" && selectedHistory.items.length === 0 && (
+                <div className="conversation-empty">
+                  <strong>会话暂时无法读取</strong>
+                  {selectedHistory.error && <span className="conversation-error-detail">{selectedHistory.error}</span>}
+                  <button type="button" className="secondary-button" onClick={() => void openSession(selected.sessionId)}>重试</button>
+                </div>
+              )}
+              {displayNodes.length === 0
+                && sessionPermissions.length === 0
+                && sessionNativePrompts.length === 0
+                && orphanUncertainDeliveries.length === 0
+                && selectedHistory?.status === "ready" && (
+                  <div className="conversation-empty">
+                    <strong>这是一个空会话</strong>
+                    <span>从下方发出第一条指令。</span>
+                  </div>
+                )}
+              {displayNodes.map((node) => {
+                if (node.kind === "mail") {
+                  return (
+                    <MailCard
+                      key={`mail:${node.card.mailRefId}`}
+                      card={node.card}
+                      {...(node.nativeMessage ? { nativeMessage: node.nativeMessage } : {})}
                     />
-                  )}
-                  {entry.item.attachments?.length ? (
-                    <div className="conversation-attachments">
-                      {entry.item.attachments.map((attachment) => attachment.data ? (
-                        <button type="button" className="conversation-image-preview" key={attachment.id} aria-label={`查看 ${attachment.name}`} onClick={() => openMedia({ name: attachment.name, kind: "image", dataUrl: `data:${attachment.mimeType};base64,${attachment.data}` })}><img src={`data:${attachment.mimeType};base64,${attachment.data}`} alt={attachment.name} loading="lazy" /></button>
-                      ) : (
-                        <span className="attachment-chip" key={attachment.id}>{attachment.name}</span>
-                      ))}
-                    </div>
-                  ) : null}
-                  {rewindAvailable && entry.item.role === "user" && !entry.item.id.startsWith("local:") && <div className="conversation-message-actions">
-                    <button type="button" className="message-copy-button" aria-label="回退到这条消息之前" disabled={rewindDisabled}
-                      onClick={() => setRewindTarget({ sessionId: selected.sessionId, messageId: entry.item.id })}>回退</button>
-                  </div>}
-                </article>
-              ))}
-              {snapshot.permissions
-                .filter((permission) => permission.sessionId === selected.sessionId && (isClaudeNativeRelay(snapshot) && selected.transport === "claude-desktop-native"))
-                .map((permission) => (
-                  <PermissionPrompt
-                    key={permission.requestId}
-                    permission={permission}
-                    onResolve={resolvePermission}
-                    {...(permission.canSetNativeFullAccess ? {
-                      onEnableNativeFullAccess: (requestId: string) => resolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions"),
-                    } : {})}
+                  );
+                }
+                if (node.kind === "evidence") {
+                  return (
+                    <EvidenceInlineSummary
+                      evidence={node.evidence}
+                      key={`evidence:${node.evidence.id}`}
+                      entering={streamEntering(`evidence:${node.evidence.id}`)}
+                      onOpen={() => setSessionView("evidence")}
+                    />
+                  );
+                }
+                if (node.kind === "tool-group") {
+                  return (
+                    <ConversationToolGroup
+                      key={toolGroupKeys.get(node.id) ?? node.id}
+                      hostId={snapshot.host.hostId}
+                      sessionId={selected.sessionId}
+                      tools={node.tools}
+                      supportsToolDetail={snapshot.host.capabilities.includes("transcript.toolDetail.v1")}
+                    />
+                  );
+                }
+                if (node.kind === "background-task") {
+                  const task = findBackgroundTask(backgroundTasks, node.item.subagent!);
+                  return (
+                    <BackgroundTaskMarker
+                      key={`${selected.sessionId}:${node.id}`}
+                      item={node.item}
+                      {...(task ? { task } : {})}
+                      entering={streamEntering(node.item.id)}
+                      onOpen={() => setBackgroundTasksOpen({ focus: node.item })}
+                    />
+                  );
+                }
+                const item = node.item;
+                if (item.sessionNotice) {
+                  return (
+                    <SessionNoticeCard
+                      key={item.id}
+                      itemId={item.id}
+                      notice={item.sessionNotice}
+                      source={item.text}
+                      entering={streamEntering(item.id)}
+                      onFileClick={openSessionFile}
+                    />
+                  );
+                }
+                const queueActionKey = JSON.stringify([snapshot.host.hostId, selected.sessionId, item.commandId]);
+                const peerMessages = selected.transport === "claude-desktop-native"
+                  || selected.transport === "claude-desktop-managed"
+                  || selected.desktopHandoff?.state === "desktop-inbox";
+                const pendingQuestion = item.interactivePrompt ? matchingQuestionPermission(
+                  item.interactivePrompt,
+                  sessionPermissions,
+                  item.interactivePrompt.toolUseId ?? (peerMessages ? "" : undefined),
+                ) : undefined;
+                const unavailableReason = peerMessages && item.interactivePrompt
+                  ? item.interactivePrompt.kind === "question" && !pendingQuestion ? "提问已不在待回答列表"
+                    : item.interactivePrompt.kind === "wrap-up" && item.interactivePrompt.blocked ? "需在电脑端确认" : undefined
+                  : undefined;
+                const promptKey = `${composerKey}:${item.id}`;
+                const interactivePrompt = item.interactivePrompt && (!pendingQuestion || item.interactivePrompt.answered) ? (
+                  <InteractivePromptCard
+                    prompt={item.interactivePrompt}
+                    {...(item.replyDelivery ? { replyDelivery: item.replyDelivery } : {})}
+                    {...(item.replyPending ? { replyPending: true } : {})}
+                    canSend={canSendSession(selected, snapshot)}
+                    busy={sending}
+                    {...(unavailableReason ? { unavailableReason } : {})}
+                    {...(promptErrors[promptKey] ? { error: promptErrors[promptKey] } : {})}
+                    onSelectOption={async (replyText) => {
+                      if (unavailableReason || sending) return;
+                      await sendQuickReply(item.id, replyText);
+                    }}
                   />
-                ))}
-              {snapshot.prompts?.filter(prompt => prompt.sessionId === selected.sessionId).map(prompt => (
-                <NativePromptCard key={prompt.promptId} prompt={prompt}
-                  online={snapshot.runtime.desktopIntegration.state === "ready"}
-                  {...(snapshot.host.capabilities.includes("prompt.native.v1") ? { onResolve: async (sessionId: string, promptId: string, choice: string) => {
-                    const response = await apiRequest({ method: "prompt.resolve", params: { sessionId, promptId, choice } });
-                    if (response.ok || response.error?.code === "ALREADY_RESOLVED") await onRefreshSnapshot();
-                    unwrap(response);
-                  } } : {})}
+                ) : undefined;
+                return (
+                  <ConversationMessageItem
+                    key={item.id}
+                    item={item}
+                    session={selected}
+                    entering={streamEntering(item.id)}
+                    online={nativeOnline}
+                    canSend={canSendSession(selected, snapshot)}
+                    queueAction={queuedSteers[queueActionKey]}
+                    onSteerQueuedTurn={canSteerQueuedTurn ? steerQueuedTurn : undefined}
+                    onCancelQueuedTurn={canCancelQueuedTurn ? cancelQueuedTurn : undefined}
+                    onQueueActionChange={(next) => setQueuedSteers((current) => ({ ...current, [queueActionKey]: next }))}
+                    rewindAvailable={rewindAvailable}
+                    rewindDisabled={rewindDisabled}
+                    onRewind={(messageId) => setRewindTarget({ sessionId: selected.sessionId, messageId })}
+                    onResolveUncertain={resolveUncertainDelivery}
+                    onFileClick={openSessionFile}
+                    interactivePrompt={interactivePrompt}
+                  />
+                );
+              })}
+              {sessionPermissions.map((permission) => (
+                <PermissionPrompt
+                  key={permission.requestId}
+                  streamKey={`permission:${permission.requestId}`}
+                  permission={permission}
+                  onResolve={resolvePermission}
+                  {...(permission.canSetNativeFullAccess ? {
+                    onEnableNativeFullAccess: (requestId: string) => resolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions"),
+                  } : {})}
                 />
               ))}
-              {uncertainDeliveries.map((event) => (
-                <article className="conversation-item system uncertain-delivery" key={event.eventId}>
+              {sessionNativePrompts.map((prompt) => (
+                <NativePromptCard
+                  key={prompt.promptId}
+                  streamKey={`prompt:${prompt.promptId}`}
+                  prompt={prompt}
+                  online={snapshot.runtime.desktopIntegration.state === "ready"}
+                  {...(snapshot.host.capabilities.includes("prompt.native.v1") ? {
+                    onResolve: async (sessionId: string, promptId: string, choice: string) => {
+                      const response = await apiRequest({ method: "prompt.resolve", params: { sessionId, promptId, choice } });
+                      if (response.ok || response.error?.code === "ALREADY_RESOLVED") await onRefreshSnapshot();
+                      unwrap(response);
+                    },
+                  } : {})}
+                />
+              ))}
+              {orphanUncertainDeliveries.map((event) => (
+                <article
+                  className="conversation-item system uncertain-delivery"
+                  key={event.eventId}
+                  data-stream-key={`uncertain:${event.eventId}`}
+                >
                   <div className="conversation-item-meta"><strong>发送结果待确认</strong></div>
                   <div className="conversation-text">{typeof event.data.error === "string" ? event.data.error : "Desktop 在确认消息前断开。"}</div>
                   <div className="uncertain-delivery-actions">
-                    <button type="button" className="secondary-button" onClick={() => void apiRequest({
-                      method: "message.delivery.resolve",
-                      params: { commandId: event.data.commandId, action: "confirm" },
-                    })}>确认已发送</button>
-                    <button type="button" className="secondary-button" onClick={() => void apiRequest({
-                      method: "message.delivery.resolve",
-                      params: { commandId: event.data.commandId, action: "retry" },
-                    })}>检查后重发</button>
+                    <button type="button" className="secondary-button" onClick={() => void resolveUncertainDelivery(String(event.data.commandId), "confirm")}>确认已发送</button>
+                    <button type="button" className="secondary-button" onClick={() => void resolveUncertainDelivery(String(event.data.commandId), "retry")}>检查后重发</button>
                   </div>
                 </article>
               ))}
             </div>
             ) : (
               <div className="desktop-evidence-view">
-                <MediaGallery artifacts={mediaArtifacts(selectedEvidence?.items ?? [])} />
+                <MediaGallery artifacts={mediaArtifacts(selectedEvidence?.items ?? [])} online={nativeOnline} />
                 {fileChangesSummary && (
                   <FileChangesCard
                     summary={fileChangesSummary}
-                    onPreviewFile={(filePath) => {
-                      const kind = mediaKind(filePath);
-                      if (kind) openMedia({ name: filePath.split(/[\\/]/u).at(-1) || filePath, kind, sessionId: selected.sessionId, path: filePath });
+                    onPreviewFile={openSessionFile}
+                    transfers={artifactTransfers}
+                    online={nativeOnline}
+                    onDownloadFile={(filePath) => {
+                      setFileDownloadError(undefined);
+                      setPendingFileDownload(filePath);
                     }}
                   />
                 )}
@@ -1219,7 +1614,7 @@ export function DesktopSessions({
                   state={selectedEvidence}
                   previews={artifactPreviews}
                   transfers={artifactTransfers}
-                  online
+                  online={nativeOnline}
                   suppressEmpty={Boolean(fileChangesSummary)}
                   onLoadMore={loadOlderEvidence}
                   onLoadDetails={loadEvidenceDetails}
@@ -1273,7 +1668,8 @@ export function DesktopSessions({
             </>
             )}
           </>
-        ) : (
+          );
+        })() : (
           <div className="desktop-conversation-empty"><MessageSquare size={24} /><span>{fixedSessionId ? "绑定会话暂不可用，请在助理设置中核对绑定。" : "从左侧选择会话"}</span></div>
         )}
       </section>
@@ -1349,6 +1745,52 @@ export function DesktopSessions({
           onClose={() => setConfigurationOpen(false)}
         />
       )}
+
+      <ConfirmationDialog
+        open={Boolean(stopSubagentTarget)}
+        title={stopSubagentTarget?.scope === "process" ? "结束这个会话的 Claude 进程？" : "停止这个子代理？"}
+        description={stopSubagentTarget?.scope === "process"
+          ? `这台电脑没有开启 Claude Desktop 托管，无法单独停止「${stopSubagentTarget.description}」。确认后会结束这个会话在电脑上的 Claude 进程，这个会话的所有后台任务都会停止。对话记录会保留。`
+          : `「${stopSubagentTarget?.description ?? ""}」会被停止，还没交回的结果不会再有。主对话不受影响。`}
+        confirmLabel={stopSubagentTarget?.scope === "process" ? "结束进程" : "停止子代理"}
+        danger
+        busy={subagentStopBusy}
+        onCancel={() => {
+          if (!subagentStopBusy) setStopSubagentTarget(undefined);
+        }}
+        onConfirm={() => void stopSubagent()}
+      />
+
+      <ConfirmationDialog
+        open={Boolean(pendingFileDownload && selected)}
+        title="确认下载工作区文件？"
+        description={pendingFileDownload
+          ? `即将从工作区下载「${pendingFileDownload.split(/[\\/]/u).at(-1) || pendingFileDownload}」（${pendingFileDownload}），是否继续？`
+          : ""}
+        confirmLabel="确认下载"
+        busy={fileDownloadBusy}
+        onCancel={() => {
+          if (!fileDownloadBusy) setPendingFileDownload(undefined);
+        }}
+        onConfirm={() => {
+          if (!pendingFileDownload || !selected || fileDownloadBusy) return;
+          const targetSessionId = selected.sessionId;
+          const targetPath = pendingFileDownload;
+          setFileDownloadBusy(true);
+          setFileDownloadError(undefined);
+          void downloadSessionFile(targetSessionId, targetPath)
+            .then(() => {
+              setPendingFileDownload(undefined);
+            })
+            .catch((downloadError) => {
+              setPendingFileDownload(undefined);
+              setFileDownloadError(downloadError instanceof Error ? downloadError.message : "文件下载失败");
+            })
+            .finally(() => {
+              setFileDownloadBusy(false);
+            });
+        }}
+      />
 
       <ConfirmationDialog
         open={deleteSessionOpen && Boolean(selected)}

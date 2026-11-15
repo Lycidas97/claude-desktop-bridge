@@ -9,6 +9,7 @@ const resources = vi.hoisted(() => {
     eventLog: resource(), state: resource(),
     evidence: resource(),
     assistantMail: { ...resource(), on: vi.fn() }, mailOptions: vi.fn(), controllerOptions: vi.fn(),
+    mailTools: { close: vi.fn(async () => {}) }, serveMailTools: vi.fn(),
     broker: resource(), nativeOptions: vi.fn(),
     controller: { ...resource(), attachUpdater: vi.fn(async () => {}), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
     updater: { initialize: vi.fn(async () => {}), close: vi.fn() },
@@ -52,6 +53,7 @@ vi.mock("../evidence/evidence-manager.js", () => ({ EvidenceManager: class { con
 vi.mock("../evidence/artifact-preview.js", () => ({ ElectronEvidencePreviewRenderer: class {} }));
 vi.mock("../claude/claude-desktop-bridge.js", () => ({ ClaudeDesktopBridge: class { constructor(options: unknown) { resources.nativeOptions(options); return resources.broker; } } }));
 vi.mock("../../../../plugins/assistant-mail/desktop.js", () => ({ AssistantMailService: class { constructor(options: unknown) { resources.mailOptions(options); return resources.assistantMail; } } }));
+vi.mock("../../../../plugins/assistant-mail/local-channel.js", () => ({ serveAssistantMailTools: resources.serveMailTools }));
 vi.mock("../controller/controller.js", () => ({ DesktopController: class { constructor(...args: unknown[]) { resources.controllerOptions(...args); return resources.controller; } } }));
 vi.mock("../updater/desktop-updater.js", () => ({ DesktopUpdater: class { constructor() { return resources.updater; } } }));
 vi.mock("./diag.js", () => ({ diagnostics: resources.diagnostics }));
@@ -60,6 +62,7 @@ vi.mock("../transport/webrtc-runtime.js", () => ({ loadDesktopPeerConnection: vi
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resources.serveMailTools.mockResolvedValue(resources.mailTools);
   resources.version = "1.3.4";
   resources.diagnosticsEnabled = false;
   resources.notifications.length = 0;
@@ -194,10 +197,13 @@ it("owns one mail service and gives the Controller that exact instance", async (
   expect(resources.mailOptions).toHaveBeenCalledExactlyOnceWith({ userDataPath: "/test/bridge" });
   expect(resources.assistantMail.initialize).toHaveBeenCalledOnce();
   expect(resources.controllerOptions.mock.calls[0]?.at(-1)).toBe(resources.assistantMail);
+  expect(resources.serveMailTools).toHaveBeenCalledExactlyOnceWith({ userDataPath: "/test/bridge", service: resources.assistantMail });
   expect(resources.assistantMail.initialize.mock.invocationCallOrder[0]).toBeLessThan(resources.controller.initialize.mock.invocationCallOrder[0]!);
   await runtime.close();
   expect(resources.assistantMail.close).toHaveBeenCalledOnce();
   expect(resources.controller.close.mock.invocationCallOrder[0]).toBeLessThan(resources.assistantMail.close.mock.invocationCallOrder[0]!);
+  expect(resources.mailTools.close).toHaveBeenCalledOnce();
+  expect(resources.mailTools.close.mock.invocationCallOrder[0]).toBeLessThan(resources.assistantMail.close.mock.invocationCallOrder[0]!);
 });
 
 it("closes mail if native Desktop startup fails after mail initialization", async () => {
@@ -206,6 +212,14 @@ it("closes mail if native Desktop startup fails after mail initialization", asyn
   await expect(createServiceRuntime({ userDataPath: "/test/bridge" })).rejects.toThrow("Desktop unavailable");
   expect(resources.assistantMail.initialize).toHaveBeenCalledOnce();
   expect(resources.assistantMail.close).toHaveBeenCalledOnce();
+});
+
+it("closes the initialized mail owner when the narrow listener cannot start", async () => {
+  resources.serveMailTools.mockRejectedValueOnce(new Error("mail listener unavailable"));
+  const { createServiceRuntime } = await import("./service-runtime.js");
+  await expect(createServiceRuntime({ userDataPath: "/test/bridge" })).rejects.toThrow("mail listener unavailable");
+  expect(resources.assistantMail.close).toHaveBeenCalledOnce();
+  expect(resources.mailTools.close).not.toHaveBeenCalled();
 });
 
 it("assembles the native facade", async () => {

@@ -3,6 +3,7 @@ import type {
   BridgeInteractivePrompt,
   BridgeNativePermissionMode,
   BridgePermissionInfo,
+  BridgeSDKPermissionMode,
 } from "@bridge/protocol";
 import { AlertTriangle, Check, FilePenLine, LoaderCircle, ShieldCheck, Terminal, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -366,10 +367,13 @@ export function QuestionPrompt({
   );
 }
 
-export const NATIVE_MODE_LABELS: Record<BridgeNativePermissionMode, string> = {
+export const NATIVE_MODE_LABELS: Record<BridgeSDKPermissionMode, string> = {
   default: "逐个确认",
   acceptEdits: "自动接受编辑",
   bypassPermissions: "完全授权",
+  plan: "计划模式",
+  auto: "自动模式",
+  dontAsk: "不询问",
 };
 
 export function ToolPermissionPrompt({

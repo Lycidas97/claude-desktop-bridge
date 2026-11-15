@@ -5,6 +5,7 @@ import type { PDFDocumentProxy, PDFDocumentLoadingTask } from "pdfjs-dist";
 import { openMediaTransfer, readTextPreview, textPreviewLanguage, type MediaRequest, type MediaTarget } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { IconButton } from "../common/IconButton.js";
+import { MessageCopyButton } from "../common/MessageCopyButton.js";
 import { TextPreview } from "./TextPreview.js";
 
 export default function MediaViewer({ target, request, onClose }: { target: MediaTarget; request: MediaRequest; onClose(): void }) {
@@ -158,6 +159,7 @@ export default function MediaViewer({ target, request, onClose }: { target: Medi
             <button id="text-preview-rendered-tab" type="button" role="tab" aria-selected={!showSource} aria-controls="text-preview-content" tabIndex={showSource ? -1 : 0} onClick={() => setShowSource(false)} onKeyDown={(event) => { if (event.key === "ArrowRight" || event.key === "End") { setShowSource(true); document.getElementById("text-preview-source-tab")?.focus(); event.preventDefault(); } }}>预览</button>
             <button id="text-preview-source-tab" type="button" role="tab" aria-selected={showSource} aria-controls="text-preview-content" tabIndex={showSource ? 0 : -1} onClick={() => setShowSource(true)} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "Home") { setShowSource(false); document.getElementById("text-preview-rendered-tab")?.focus(); event.preventDefault(); } }}>源码</button>
           </div> : <span className="text-preview-format">{textPreviewLanguage(target.name) ?? "纯文本"}</span>)}
+          {target.kind === "text" && !busy && !error && text !== undefined && <MessageCopyButton text={text} label="复制文件内容" />}
           {target.kind === "pdf" && <div className="media-page-controls">
             <IconButton label="上一页" disabled={!pdf || pageNumber === 1 || busy} onClick={() => changePage(pageNumber - 1)}><ChevronLeft size={19} /></IconButton>
             <label><input aria-label="页码" type="number" min={1} max={pdf?.numPages ?? 1} value={pageNumber} onChange={(event) => changePage(Number(event.target.value) || 1)} /><span>/ {pdf?.numPages ?? "…"}</span></label>

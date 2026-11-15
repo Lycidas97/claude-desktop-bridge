@@ -275,10 +275,10 @@ describe("ToolCallGroupRows and ToolCallDetailSheet", () => {
     const copyOut = elements(tree).find((el) => el.type === "button" && el.props["aria-label"] === "复制输出");
     expect(copyCmd).toBeDefined();
     expect(copyOut).toBeDefined();
-    copyCmd!.props.onClick();
+    copyCmd!.props.onClick({ currentTarget: { closest: () => null } });
     await flushPromises();
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("git status --short");
-    copyOut!.props.onClick();
+    copyOut!.props.onClick({ currentTarget: { closest: () => null } });
     await flushPromises();
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(" M apps/client/src/components/MobileWorkspace.tsx\n");
 

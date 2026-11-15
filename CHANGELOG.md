@@ -1,3 +1,51 @@
+## 1.3.4
+
+- Add an assistant workspace on mobile and desktop, bind it to an existing native
+  session, and keep received mail as persistent cards with summaries, suggested
+  actions, questions and processing status. Restore cards after reconnect and
+  allow mail references to be sent to the bound session explicitly.
+- Add a single background IMAP Inbox receiver with private local mail storage,
+  read-only mailbox access and macOS Keychain credentials. Provide project-scoped
+  MCP tools to list mail events, read cleaned text, update analysis and set
+  processing status. Automatic mail delivery into native sessions remains disabled;
+  automatic processing, reply drafts and SMTP sending are not included.
+- Share session directories, sheets and settings cards between mobile and desktop.
+  Keep desktop quota settings in their own group, align diagnostics with themed
+  sheets, and preserve bottom safe-area space in mobile settings.
+- Allow sessions to be created from project group headers; preserve project order
+  while scrolling and dragging, and show archived branches only in the archive.
+- Keep each session's current model, effort and permission mode in its header,
+  including narrow layouts. Remove the composer send-mode switch.
+- Render Desktop-sourced CI monitor events as collapsible notification cards while
+  preserving user text outside the event envelope. Hide the Auto-fix bar in
+  sessions without a PR and move its preferences into the action panel.
+- Copy complete text files from previews, including content beyond the displayed
+  excerpt, and keep Markdown previews within the viewport.
+- Show native context compaction state and retain an observed context-window size
+  for the same session and model when a later update omits it.
+- Keep long replies expanded after streaming ends. Expand background command
+  details to show command, output and task state; retain observed subagent model,
+  step count and duration, and clear running hints when background tasks finish.
+- Show cross-session messages with their sender and separate body cards; restore
+  native multi-select question answers in completed cards.
+- Preserve permission requests across delayed native runtime snapshots and
+  session updates; coalesce passive state publication while delivering permission
+  changes immediately.
+- Keep mobile update progress visible across update stages and hide the macOS
+  background service Dock icon again when reopening Bridge.
+- Separate inspector startup attempt history from current connection status. Add
+  native Windows debugger-menu startup and improve macOS permission guidance and
+  menu handling, while respecting native policies, already-open inspectors and
+  manual closure. System permissions still require user approval.
+- Add one-command macOS dogfood installation and Android dogfood APK builds from
+  committed main revisions. Diagnostic tracing defaults on in dogfood builds and
+  off in formal releases; existing saved choices are retained.
+- Retire Linux desktop installers. Continue publishing macOS, Windows and Android
+  packages and retain the generic Web client.
+- The two previously observed out-of-memory crashes remain unattributed; the
+  diagnostics and state-projection changes in this release do not establish that
+  those field incidents are resolved.
+
 ## 1.3.3
 
 - Release unrelated raw transcript content while reading older native history pages;

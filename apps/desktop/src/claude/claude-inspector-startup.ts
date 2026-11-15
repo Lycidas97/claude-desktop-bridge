@@ -42,11 +42,11 @@ on run argv
       if exists menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid) then
         if exists menu item "Enable Main Process Debugger" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid) then
           set debugItem to a reference to menu item "Enable Main Process Debugger" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
-          -- AXPress queues menu tracking; cancelling immediately can leave it open.
+          -- Cancel the pressed heading; cancelling its submenu can leave tracking active.
           -- Electron refreshes checkbox state after the native menu closes.
           click menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
           delay 0.2
-          perform action "AXCancel" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
+          perform action "AXCancel" of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
           delay 0.2
           set marked to false
           if exists attribute "AXMenuItemMarkChar" of debugItem then

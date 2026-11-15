@@ -79,15 +79,16 @@ async function stop() {
 try {
   await start();
   let startup = new ClaudeInspectorStartup({ recordPath, processes });
-  assert.match(await startup.check(false), /等待/);
+  assert.equal((await startup.check(false)).state, 'waiting');
   assert.equal((await control()).presses, 0);
   evidence.steps.push({ step: 'menu-not-ready', presses: 0 });
   await control('/ready');
   const result = await startup.check(false);
-  assert.match(result, /尚未开放/);
+  assert.equal(result.state, 'attempted');
+  assert.equal(typeof result.recordedAt, 'number');
   assert.equal(await listening(), true, 'Native menu callback must open a real Node inspector');
   assert.equal((await control()).presses, 1);
-  assert.equal(await startup.check(true), undefined);
+  assert.deepEqual(await startup.check(true), result);
   evidence.steps.push({ step: 'native-menu-opened-inspector', presses: 1, discovery: true, identity: (await processes())[0].identity });
 
   nativeClient = new ClaudeDesktopInspector({ origin: `http://127.0.0.1:${port}` });
@@ -111,8 +112,8 @@ try {
   await start();
   await control('/ready');
   await control('/deny-policy');
-  assert.match(await startup.check(false), /尚未开放/);
-  assert.match(await startup.check(false), /尚未开放/);
+  assert.equal((await startup.check(false)).state, 'attempted');
+  assert.equal((await startup.check(false)).state, 'attempted');
   assert.equal((await control()).presses, 1);
   assert.equal(await listening(), false);
   evidence.steps.push({ step: 'new-process-native-policy-denied', presses: 1, remainsClosed: true });
@@ -133,10 +134,11 @@ try {
   await control('/ready');
   await control('/disable-menu');
   const disabled = await startup.check(false);
-  assert.match(disabled, /自动开启失败.*菜单不可用/s);
-  assert.doesNotMatch(disabled, /on run argv/, 'Diagnostics should contain the system error without the AppleScript program');
-  assert.equal(await startup.check(false), disabled);
-  assert.equal(await new ClaudeInspectorStartup({ recordPath, processes }).check(false), disabled);
+  assert.equal(disabled.state, 'failed');
+  assert.match(disabled.detail, /自动开启失败.*菜单不可用/s);
+  assert.doesNotMatch(disabled.detail, /on run argv/, 'Diagnostics should contain the system error without the AppleScript program');
+  assert.deepEqual(await startup.check(false), disabled);
+  assert.deepEqual(await new ClaudeInspectorStartup({ recordPath, processes }).check(false), disabled);
   assert.equal((await control()).presses, 0);
   assert.equal(await listening(), false);
   evidence.steps.push({ step: 'disabled-native-menu-error-persists', presses: 0, remainsClosed: true });

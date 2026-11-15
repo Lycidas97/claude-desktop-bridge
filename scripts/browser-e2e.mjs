@@ -262,19 +262,45 @@ async function verifyDesktopDiagnostics(page, host, steps) {
   await page.addInitScript((snapshot) => {
     window.bridgeDesktop = {
       getSnapshot: async () => structuredClone(snapshot),
-      onSnapshot: () => () => {}, onEvent: () => () => {},
+      onSnapshot: receive => { window.receiveDiagnosticsSnapshot = receive; return () => { delete window.receiveDiagnosticsSnapshot; }; }, onEvent: () => () => {},
       checkClaudeDesktopDeveloperSettings: async () => ({ supported: false, enabled: false, profiles: [] }),
       setDiagnosticsEnabled: async (enabled) => {
         snapshot.diagnosticsEnabled = enabled;
         return structuredClone(snapshot);
       },
     };
+    window.updateDiagnosticsInspector = status => {
+      snapshot.claudeInspector = status;
+      window.receiveDiagnosticsSnapshot?.(structuredClone(snapshot));
+    };
   }, { ...host.snapshot, sessions: [], projects: [], diagnosticsEnabled: false, launchAtLogin: false,
     managedDesktopEnabled: false, connection: "connected",
+    claudeInspector: { state: "closed", port: 9229, pollIntervalMs: 3000, clients: [], alerts: [],
+      startup: { state: "failed", recordedAt: 1794697200000, detail: "自动开启失败：历史权限错误 (-2700)" } },
     claudeDesktop: { state: "running", detail: "Isolated fixture", canLaunch: false, canQuit: true } });
   await page.setViewportSize({ width: 1200, height: 900 });
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "设置", exact: true }).click();
+  const inspector = page.getByRole("region", { name: "调试连接监测", exact: true });
+  await inspector.getByRole("status").filter({ hasText: "调试端口未开放" }).waitFor();
+  const guidance = inspector.getByText("如需连接，请在 Claude Desktop 中手动勾选 Developer › Enable Main Process Debugger，Bridge 会自动连接。", { exact: true });
+  await guidance.waitFor();
+  const history = inspector.locator("details").filter({ hasText: "历史启动记录" });
+  assert.equal(await history.getAttribute("open"), null, "Historical startup failures default to collapsed");
+  await history.locator("summary").click();
+  await history.getByText("自动开启失败：历史权限错误 (-2700)", { exact: true }).waitFor();
+  const recordedAt = await history.locator("time").getAttribute("datetime");
+  assert.equal(recordedAt, new Date(1794697200000).toISOString());
+  assert.equal(await inspector.locator(".inline-error").count(), 0, "A historical permission failure is not a current error");
+  await page.evaluate(() => window.updateDiagnosticsInspector({ state: "listening", port: 9229, pollIntervalMs: 3000,
+    clients: [{ pid: 42, name: "Bridge", approved: true, executablePath: "/Applications/Bridge.app/Contents/MacOS/Bridge" }], alerts: [],
+    startup: { state: "failed", recordedAt: 1794697200000, detail: "自动开启失败：历史权限错误 (-2700)" } }));
+  await inspector.getByRole("status").filter({ hasText: "调试端口已开放 · 1 个连接进程" }).waitFor();
+  await inspector.getByText("PID 42 · Bridge · 认可路径", { exact: true }).waitFor();
+  assert.equal(await guidance.count(), 0, "The closed-port action disappears when the port opens");
+  assert.equal(await history.locator("time").getAttribute("datetime"), recordedAt, "Port recovery does not rewrite history time");
+  assert.equal(await inspector.locator(".inline-error").count(), 0);
+  steps.push("Desktop separates timestamped startup history from current socket status and closed-port native menu guidance");
   await page.getByRole("button", { name: "诊断与关于", exact: true }).click();
   const toggle = page.getByRole("checkbox", { name: /后台诊断记录/u });
   assert.equal(await toggle.isChecked(), false);

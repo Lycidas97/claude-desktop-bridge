@@ -96,20 +96,31 @@ describe("background inspector monitor", () => {
     expect(onUpdate).not.toHaveBeenCalled();
   });
 
-  it("publishes persistent startup errors alongside socket and client alerts", async () => {
+  it("does not replay a historical startup failure as a current monitor error", async () => {
     vi.useFakeTimers();
     const onUpdate = vi.fn();
     const onAlert = vi.fn(() => undefined);
-    const startup = vi.fn(async () => "本进程自动开启失败：辅助功能权限不足");
-    const monitor = new ClaudeInspectorMonitor({
-      scan: async () => ({ listening: false, clients: [client] }), startup, onAlert, onUpdate, platform: "darwin",
-    });
+    const failed = { state: "failed" as const, recordedAt: 1794697200000, detail: "自动开启失败：辅助功能权限不足" };
+    const startup = vi.fn(async () => failed);
+    const scan = vi.fn(async () => ({ listening: false, clients: [client] }));
+    const monitor = new ClaudeInspectorMonitor({ scan, startup, onAlert, onUpdate, platform: "darwin" });
     try {
       await monitor.start();
       await vi.advanceTimersByTimeAsync(6_000);
       expect(startup).toHaveBeenCalledTimes(3);
-      expect(onUpdate.mock.lastCall?.[0]).toMatchObject({ state: "closed", error: "本进程自动开启失败：辅助功能权限不足" });
-      expect(onAlert).toHaveBeenCalledOnce();
+      expect(onUpdate.mock.lastCall?.[0]).toMatchObject({ state: "closed", startup: failed });
+      expect(onUpdate.mock.lastCall?.[0].error).toBeUndefined();
+      scan.mockResolvedValueOnce({ listening: true, clients: [client] });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(onUpdate.mock.lastCall?.[0]).toMatchObject({ state: "listening", startup: failed, clients: [client] });
+      expect(onUpdate.mock.lastCall?.[0].error).toBeUndefined();
+      scan.mockRejectedValueOnce(new Error("lsof denied"));
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(onUpdate.mock.lastCall?.[0]).toMatchObject({ state: "error", startup: failed, error: "lsof denied" });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(onUpdate.mock.lastCall?.[0]).toMatchObject({ state: "closed", startup: failed });
+      expect(onUpdate.mock.lastCall?.[0].error).toBeUndefined();
+      expect(onAlert).toHaveBeenCalledTimes(2);
     } finally { monitor.close(); }
   });
 

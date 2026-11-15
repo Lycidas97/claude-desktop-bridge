@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile, writeFile } from "node:fs/promises";
+import type { BridgeInspectorStartupStatus } from "@bridge/protocol";
 import { CLAUDE_DESKTOP_APP, desktopAppPathCandidates } from "../app/desktop-app-definitions.js";
 
 const run = promisify(execFile);
@@ -65,7 +66,7 @@ end run`, String(pid), press ? "press" : "probe"], { timeout: 5_000, maxBuffer: 
 }
 
 export class ClaudeInspectorStartup {
-  private records: Record<string, string> | undefined;
+  private records: Record<string, BridgeInspectorStartupStatus> | undefined;
 
   constructor(private readonly options: {
     recordPath: string;
@@ -73,7 +74,7 @@ export class ClaudeInspectorStartup {
     menu?: (pid: number, press: boolean) => Promise<MenuResult>;
   }) {}
 
-  async check(listening: boolean): Promise<string | undefined> {
+  async check(listening: boolean): Promise<BridgeInspectorStartupStatus | undefined> {
     const processes = await (this.options.processes ?? (async () =>
       parseInspectorDesktopProcesses((await run("/bin/ps", ["-axo", "pid=,lstart=,comm="], {
         env: { ...process.env, LC_ALL: "en_US.UTF-8" },
@@ -82,8 +83,16 @@ export class ClaudeInspectorStartup {
     if (!this.records) {
       try {
         const value: unknown = JSON.parse(await readFile(this.options.recordPath, "utf8"));
-        if (!value || typeof value !== "object" || Array.isArray(value) || !Object.values(value).every(item => typeof item === "string")) throw new Error("Inspector 启动记录格式无效");
-        this.records = value as Record<string, string>;
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Inspector 启动记录格式无效");
+        this.records = Object.fromEntries(Object.entries(value).map(([identity, item]) => {
+          // Old records still consume the automatic attempt; their time is unknown.
+          if (typeof item === "string") return [identity, { state: "legacy", detail: item }];
+          if (!item || typeof item !== "object" || Array.isArray(item)
+            || !["attempted", "enabled", "already-open", "failed", "legacy"].includes(item.state)
+            || typeof item.detail !== "string"
+            || (item.recordedAt === undefined ? item.state !== "legacy" : typeof item.recordedAt !== "number" || !Number.isFinite(item.recordedAt))) throw new Error("Inspector 启动记录格式无效");
+          return [identity, item as BridgeInspectorStartupStatus];
+        }));
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         this.records = {};
@@ -93,24 +102,27 @@ export class ClaudeInspectorStartup {
     this.records = Object.fromEntries(processes.filter(process => Object.hasOwn(this.records!, process.identity)).map(process => [process.identity, this.records![process.identity]!]));
     for (const process of processes) {
       if (!Object.hasOwn(this.records, process.identity)) {
+        const recordedAt = Date.now();
         if (listening) {
-          this.records[process.identity] = "本进程首次发现时调试端口已开放；关闭后不再自动开启。";
+          this.records[process.identity] = { state: "already-open", recordedAt, detail: "首次发现时调试端口已开放，未执行自动开启。" };
           await writeFile(this.options.recordPath, `${JSON.stringify(this.records)}\n`, "utf8");
           continue;
         }
         try {
           const result = await (this.options.menu ?? claudeInspectorMenu)(process.pid, false);
-          if (result === "waiting") return "等待 Claude Desktop 的原生调试菜单就绪；请检查开发者模式与工作区策略。";
+          if (result === "waiting") return { state: "waiting", detail: "等待 Claude Desktop 的原生调试菜单就绪；请检查开发者模式与工作区策略。" };
           // Persist before the checkbox action so a Bridge restart cannot toggle it twice.
-          this.records[process.identity] = "已尝试原生菜单开启；调试端口尚未开放，本进程不再重复操作。";
+          this.records[process.identity] = { state: result === "enabled" ? "enabled" : "attempted", recordedAt,
+            detail: result === "enabled" ? "原生调试菜单已勾选，未重复操作。" : "已通过原生菜单请求开启主进程调试。" };
           await writeFile(this.options.recordPath, `${JSON.stringify(this.records)}\n`, "utf8");
           if (result === "ready") await (this.options.menu ?? claudeInspectorMenu)(process.pid, true);
         } catch (error) {
-          this.records[process.identity] = `本进程自动开启失败：${error instanceof Error ? error.message : String(error)}。请检查 Bridge 的辅助功能和自动化权限；本次启动不再重试，可手动使用原生菜单。`;
+          this.records[process.identity] = { state: "failed", recordedAt, detail: `自动开启失败：${error instanceof Error ? error.message : String(error)}` };
           await writeFile(this.options.recordPath, `${JSON.stringify(this.records)}\n`, "utf8");
         }
       }
       if (!listening) return this.records[process.identity];
     }
+    return processes.length ? this.records[processes[0]!.identity] : undefined;
   }
 }

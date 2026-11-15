@@ -96,6 +96,37 @@ it("uses the local recorder setting and displays the returned state", async () =
   expect(text()).toContain("Local recorder unavailable");
 });
 
+it("keeps timestamped startup history outside current errors after the port recovers", () => {
+  props.snapshot.claudeInspector = { state: "closed", port: 9229, pollIntervalMs: 3000, clients: [], alerts: [],
+    startup: { state: "failed", recordedAt: 1794697200000, detail: "自动开启失败：旧权限错误 (-2700)" } };
+  draw();
+  const history = () => elements().find(element => element.type === "details" && text(element.props.children).includes("历史启动记录"))!;
+  expect(history().props.open).toBeUndefined();
+  expect(text(history())).toContain("旧权限错误 (-2700)");
+  expect(text(history())).toContain("本进程不再自动尝试");
+  expect(elements(history()).find(element => element.type === "time")?.props.dateTime).toBe(new Date(1794697200000).toISOString());
+  expect(elements().filter(element => element.props.className === "inline-error")).toHaveLength(0);
+  props.snapshot.claudeInspector.state = "listening";
+  draw();
+  expect(text()).toContain("调试端口已开放");
+  expect(text(history())).toContain("旧权限错误 (-2700)");
+  expect(elements().filter(element => element.props.className === "inline-error")).toHaveLength(0);
+  props.snapshot.claudeInspector.startup = { state: "legacy", detail: "旧版启动记录" };
+  draw();
+  expect(text(history())).toContain("时间未知");
+});
+
+it("shows the native debugger menu action only while the port is closed", () => {
+  props.snapshot.claudeInspector = { state: "closed", port: 9229, pollIntervalMs: 3000, clients: [], alerts: [] };
+  draw();
+  expect(text()).toContain("调试端口未开放");
+  expect(text()).toContain("Developer › Enable Main Process Debugger");
+  props.snapshot.claudeInspector.state = "listening";
+  draw();
+  expect(text()).toContain("调试端口已开放");
+  expect(text()).not.toContain("Developer › Enable Main Process Debugger");
+});
+
 it("lets the user retry after an enable attempt is canceled or denied", async () => {
   await settle();
   expect(button("一键开启").props.disabled).toBe(false);

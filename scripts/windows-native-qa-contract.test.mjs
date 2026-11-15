@@ -123,12 +123,23 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
   assert.ok(result.ui.includes("新建会话"));
   assert.ok(result.ui.includes("Magpie 额度"));
   assert.ok(result.ui.includes(".magpie-quota-board"));
+  assert.ok(result.ui.includes("Claude 接入"));
+  assert.ok(result.ui.includes("调试连接监测"));
   assert.ok(result.ui.includes("连接与启动"));
   assert.ok(result.ui.includes("诊断与关于"));
   assert.ok(result.ui.some(label => String(label).includes("后台诊断记录")));
   assert.ok(result.ui.includes('dt:text-is("原生中转") + dd'));
   assert.ok(result.ui.includes("已就绪"));
   assert.ok(result.ui.includes("版本更新"));
+});
+
+test("packaged QA checks the closed-port action and historical startup record independently", async () => {
+  const snapshot = nativeSnapshot();
+  snapshot.claudeInspector = { state: "closed", port: 9229, pollIntervalMs: 3000, clients: [], alerts: [],
+    startup: { state: "failed", recordedAt: 1794697200000, detail: "自动开启失败：历史权限错误" } };
+  const result = await runQa(snapshot);
+  assert.ok(result.ui.some(label => String(label).includes("Developer › Enable Main Process Debugger")));
+  assert.ok(result.ui.some(label => String(label).includes("历史启动记录")));
 });
 
 test("packaged QA reads mail only when declared and keeps automatic delivery closed", async () => {

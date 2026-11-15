@@ -16,7 +16,21 @@ CI proves regressions and platform builds on synthetic fixtures. Bugs in real Cl
 - **Rollback**: quit Bridge, then `/usr/bin/trash /Applications/Bridge.app && ditto ~/Library/Application\ Support/Bridge-dogfood/previous/Bridge.app /Applications/Bridge.app`.
 - **Release gate**: the release commit must have run as the dogfood build through several hours of real phone use with no open regression. There is no separate post-release acceptance session.
 
-Not covered yet: Android APK and Windows dogfood builds.
+Windows dogfood installation is not covered yet.
+
+## Android dogfood APK
+
+After a batch of merges, when updating the owner's phone or checking a phone regression, the patrol runs on this Mac:
+
+```bash
+npm run ci:run -- exec -- node scripts/dogfood-android.mjs origin/main
+```
+
+The optional argument can be a specific `main` commit. The command fetches `origin/main`, rejects commits outside its history, and uploads a ZIP of that committed source to `ssh win` (`BRIDGE_WIN_SSH_HOST` overrides the host). Uncommitted files are not included. Windows uses `D:\work\tools\node-26`, `jdk-21`, `python`, and `android-sdk` to build the client and debug APK, verify every DEX and the pinned debug certificate, then copy the APK back and compare SHA-256 hashes. Android version fields stay as committed; the APK filename identifies the source commit.
+
+The printed `apk` path is under `output/dogfood-android/<sha12>-<run-id>/Bridge-Android-<sha12>-debug.apk` in the invoking checkout. This only builds and copies the APK; installation on the phone remains manual. No release signing or Play distribution is involved.
+
+Each run owns `D:\work\bridge-android-dogfood-<run-id>` and a local `.staging-*` directory under `output/dogfood-android/`. Both go to the OS Recycle Bin after copying, or on failure; a recycle failure fails the command and leaves the affected path for inspection. The retained APK and the dedicated dependency caches in `D:\work\cache\android-dogfood` remain. The command does not use CI slots, Git worktrees, emulators, or CI status publication.
 
 ## Runtime incidents (OOM, freeze, leak)
 

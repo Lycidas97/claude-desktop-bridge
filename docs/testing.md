@@ -13,7 +13,7 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 | `npm run test:infra` | Small fixtures for runner failure propagation and recycle-bin behavior |
 | `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture |
 | `npm run ci:run -- run test:desktop:service` | After a current Desktop build: real compiled Electron UI/service with isolated Native fixture; on macOS also verifies developer settings, real random TCP/lsof/proc_pidpath, ASAR helper, injected warning UI, and completed background scans after window close |
-| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (up to 4 parallel isolated slots `D:\work\ci-slot-<n>`: Windows tests, NSIS installer + packaged QA, Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke, and WSL2 `Ubuntu-24.04` Linux `test:infra` + `npm test`), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
+| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (up to 4 parallel isolated slots `D:\work\ci-slot-<n>`: Windows tests, NSIS installer + packaged QA, and Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
 | `npm run ci:run -- run build -w @bridge/protocol` | Example of wrapping another npm command with scoped temporary cleanup and OS recycling |
 
 The quota plugin is outside the `apps/*` and `packages/*` workspaces; root test and
@@ -332,8 +332,8 @@ environment. Manual cleanup and all other deletion paths still use OS Trash.
 ## CI
 
 Routine pull requests and `main` merges are verified locally via `npm run ci:local`,
-which runs the full multi-platform matrix across Mac M4, Windows 11, Android API 36
-WHPX Emulator, and WSL2 `Ubuntu-24.04` without spinning up redundant GitHub-hosted
+which runs the full multi-platform matrix across Mac M4, Windows 11, and Android API 36
+WHPX Emulator without spinning up redundant GitHub-hosted
 runners. Upon a full clean pass (after owned temporary-directory cleanup completes),
 `local-ci.mjs` records a receipt under `<git-common-dir>/local-ci/` and publishes the
 `ci/local-distributed = success` commit status to `Lycidas97/claude-desktop-bridge`

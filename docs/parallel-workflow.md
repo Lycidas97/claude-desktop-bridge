@@ -6,10 +6,12 @@ How the patrol runs Issues through dispatch, implementation, review, CI, and mer
 
 - **Patrol**: the session the owner talks to. Dispatches, sets merge order, settles scheduling conflicts and owner decisions. After merges it runs `main` CI and the dogfood install, and it is the single writer of `LESSONS.md`, `docs/subsystems/*.md`, and shared memory. It makes no code judgments and does not relay review traffic.
   - The patrol never edits code, tests, or scripts, and never diagnoses failures. Any work that needs a code change goes to a fork. Record it as a comment on the Issue it belongs to (the merged PR's Issue for a `main` failure); open a new Issue only when none fits.
+  - The patrol never pushes to `main`. Its `LESSONS.md`, `docs/subsystems/*.md`, and other doc edits land as docs-only PRs, reviewed like any other.
+  - Issue bodies and briefs carry symptoms, the owner's decisions, and subsystem paths. They never carry line-level code locations or root-cause claims; locating the code is the fork's job.
   - In a turn that cannot `start_session` (**Host constraints**), the patrol proposes the session (fork, reviewer, or Astra) as a card and waits for the owner to start it. If it cannot propose one, it sends `BLOCKED` and stops; it never routes around the constraint.
 - **Fork**: implements one Issue in its own worktree. Never reviews or merges its own PR.
 - **Reviewer**: reviews every round of its PRs and merges them (**Merge**). It sees only the PR number and SHA, never the patrol's analysis or the fork brief, and otherwise stays read-only.
-- **Discussion**: a session for retros and process work. It may own docs-only PRs. Anything else it finds becomes an Issue for the patrol; it does not implement, run CI, or coordinate reviewers.
+- **Discussion**: a session for retros and process work. It may own docs-only PRs. Anything else it finds becomes an Issue for the patrol; it does not implement, run CI, or coordinate reviewers. After one of its PRs that changes process rules merges, it sends the patrol a short message listing the changed rules, because a long-running patrol rereads `AGENTS.md` only when it compacts.
 
 Reports to the owner give the conclusion, the decisions the owner must make, and the risks, in the owner's language. SHAs and timings stay in PRs.
 
@@ -59,9 +61,10 @@ Every status change is an explicit `SendMessage`:
 
 | Message | From → to |
 | --- | --- |
-| `READY #<n> <sha>` + checks run / not run. The head is frozen from here except for review fixes and syncs; any other change goes in a new PR. | fork → reviewer |
-| `HEAD CHANGED #<n> <old> → <new>` + why | fork → reviewer |
+| `READY #<n> <sha>` + checks run / not run. The head is frozen from here except for review fixes and syncs; any other change goes in a new PR. | fork → reviewer (and `ui-review`) |
+| `HEAD CHANGED #<n> <old> → <new>` + why | fork → reviewer (and `ui-review`) |
 | `REVIEWED #<n> <sha>: CLEAN — run ci:local` or `…: <k> BLOCKER, <m> NIT — fix` | reviewer → fork |
+| `UI REVIEWED #<n> <sha>: CLEAN` or `…: <k> BLOCKER, <m> NIT` + model | `ui-review` → fork and reviewer |
 | `NIT FIX OK #<n> <sha>` / `MERGE OK #<n> <sha>`: that SHA becomes the reviewed SHA | reviewer → fork |
 | `CI GREEN #<n> <sha>` / `CI FAILED #<n> <sha>` + cause | fork → reviewer |
 | `MERGED #<n> <sha>` + 0–2 verified candidate lessons | reviewer → patrol |
@@ -73,7 +76,7 @@ Every status change is an explicit `SendMessage`:
 ## Dispatch (owner's turn)
 
 1. For each Issue, list the files it should touch, pick its tier, and set a merge order for overlapping Issues. CI and tooling PRs never gate feature PRs.
-2. Start the reviewers (`use_worktree: false`, **Reviewer brief**). Their brief idles until `READY`.
+2. Start the reviewers (`use_worktree: false`, **Reviewer brief**), and for architecture or UI Issues also the `ui-review` reviewer (**ui-review brief**). Start them now, not when the PR appears: a later turn may be one that cannot `start_session`. Their briefs idle until `READY`.
 3. Start each fork with only `Reply "waiting" until the task message arrives.` (`use_worktree: true`). A brief passed to `start_session` would run its whole first turn on the patrol's model.
 4. **Switch and confirm the model** of every session from steps 2–3, and of any session started later (Astra, a sync fork): `set_session_model` with the id from `node scripts/picker-id.mjs "<label>"`, then `get_session` and check that `model` equals that id. Only then send the **Fork brief** or `READY`. Never pass `model` to `start_session`: it is silently ignored for a model pricier than or outside the patrol's family, and the session inherits `bridge-runner`.
 5. Start the patrol checklist.
@@ -96,6 +99,8 @@ gh api repos/Lycidas97/claude-desktop-bridge/pulls/<n>/reviews --input - <<'JSON
 JSON
 ```
 
+The `ui-review` reviewer reviews UI quality and architecture only, posts its own SHA-bound review naming its model, and sends `UI REVIEWED` to the fork and the reviewer directly. After its own `[BLOCKER]` round it re-reviews the new head; other head changes it leaves to the reviewer.
+
 Flag only defects with a concrete trigger. After a `[BLOCKER]` round, re-review the whole new head. After a NIT-only round, check only `git diff <reviewed>..<new>`. After a sync, check only `git show --remerge-diff <new>`.
 
 ## CI (fork)
@@ -108,6 +113,7 @@ Flag only defects with a concrete trigger. After a `[BLOCKER]` round, re-review 
 Merge SHA `X` when all of these hold:
 - the last verdict on `X` is CLEAN, `NIT FIX OK`, or `MERGE OK`;
 - `gh api repos/Lycidas97/claude-desktop-bridge/commits/X/statuses` shows `ci/local-distributed = success`, checked yourself rather than taken from the fork's report (not needed for docs-only, or for a sync head exempted by **After merge** step 2);
+- for a PR with a `ui-review` reviewer, its last verdict on `X` or an earlier head has no open `[BLOCKER]` (a Carbon `[BLOCKER]` counts only once the reviewer confirms it);
 - every earlier PR in the merge order is merged.
 
 Then run:
@@ -138,7 +144,7 @@ Send these verbatim, filling only the `<...>` placeholders. Never add a restrict
 ```text
 You are the fork for Issue #<N> (<link>). Follow docs/parallel-workflow.md as the Fork.
 Paths: <subsystem paths>. Overlaps: <PRs/files>; merge order: <first → last>. Environment: <CHROME_PATH, ...>.
-Reviewer: <reviewer session id>. Patrol: <patrol session id>.
+Reviewer: <reviewer session id>. ui-review: <ui-review session id, or none>. Patrol: <patrol session id>.
 LESSONS.md, docs/subsystems/*.md, and shared memory are read-only.
 ```
 
@@ -147,4 +153,11 @@ LESSONS.md, docs/subsystems/*.md, and shared memory are read-only.
 ```text
 You are the reviewer for <#N, ...> (merge order: <...>). Follow docs/parallel-workflow.md as the Reviewer.
 Do nothing until a fork sends READY. Patrol: <patrol session id>. Never edit files or push. You merge your PRs per Merge.
+```
+
+### ui-review brief
+
+```text
+You are the ui-review reviewer for #<N> (merge order: <...>). Follow docs/parallel-workflow.md as the ui-review reviewer.
+Do nothing until a fork sends READY. Fork: <fork session id>. Reviewer: <reviewer session id>. Patrol: <patrol session id>. Never edit files, push, or merge.
 ```

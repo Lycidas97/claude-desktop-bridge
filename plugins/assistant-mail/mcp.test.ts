@@ -83,7 +83,7 @@ it("rejects missing/wrong credentials, browser origins and every non-mail manage
   for (const arguments_ of [{ limit: 0 }, { cursor: "../private" }, { processingStatus: "seen" }, { authorized: true }, null]) {
     expect((await post({ name: "mail.list_events", arguments: arguments_ })).status).toBe(400);
   }
-  expect((await post({ name: "mail.update_analysis", arguments: { mailRefId: reference, summary: "approved", authorizesActions: true } })).status).toBe(400);
+  expect((await post({ name: "mail.update_analysis", arguments: { mailRefId: reference, summary: "approved", suggestions: [], questions: [], authorizesActions: true } })).status).toBe(400);
   expect(service.page().events[0]!.analysis).toBeNull();
   if (process.platform !== "win32") expect((await stat(join(root, "private", "assistant", "mail-tools.json"))).mode & 0o777).toBe(0o600);
 });
@@ -92,7 +92,7 @@ it("updates the same durable event with fixed provenance, emits changes and leav
   const changed = vi.fn();
   service.on("changed", changed);
   const before = service.page().events[0]!;
-  const analysis = await post({ name: "mail.update_analysis", arguments: { mailRefId: reference, summary: "Needs user confirmation", questions: ["Did you request this?"] } });
+  const analysis = await post({ name: "mail.update_analysis", arguments: { mailRefId: reference, summary: "Needs user confirmation", suggestions: [], questions: ["Did you request this?"] } });
   expect(await analysis.json()).toMatchObject({ source: MAIL_SOURCE, result: { ...before, analysis: { summary: "Needs user confirmation", suggestions: [], questions: ["Did you request this?"] } } });
   await post({ name: "mail.set_processing_status", arguments: { mailRefId: reference, status: "processed" } });
   expect(changed).toHaveBeenCalledTimes(2);
@@ -101,6 +101,13 @@ it("updates the same durable event with fixed provenance, emits changes and leav
   expect(inbox.messageFlagsAdd).not.toHaveBeenCalled();
   expect(createClient).toHaveBeenCalledOnce();
   expect((await post({ name: "mail.read_event", arguments: { mailRefId: "00000000-0000-4000-8000-000000000000" } })).status).toBe(404);
+});
+
+it("rejects incomplete analysis replacement without clearing existing suggestions or questions", async () => {
+  const analysis = { summary: "Existing summary", suggestions: ["Keep suggestion"], questions: ["Keep question"] };
+  service.updateAnalysis(reference, analysis);
+  const response = await post({ name: "mail.update_analysis", arguments: { mailRefId: reference, summary: "Replacement summary" } });
+  expect({ status: response.status, analysis: service.page().events[0]!.analysis }).toEqual({ status: 400, analysis });
 });
 
 it.each(["中", "\u0000"])("accepts schema-valid analysis at the encoded string budget", async character => {
@@ -142,7 +149,13 @@ it("runs two real stdio MCP adapters over one receiver, round-trips all four too
     const client = new Client({ name: `fixture-${index}`, version: "1.0.0" });
     clients.push(client);
     await client.connect(transport);
-    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(["mail.list_events", "mail.read_event", "mail.update_analysis", "mail.set_processing_status"]);
+    const tools = (await client.listTools()).tools;
+    expect(tools.map(tool => tool.name)).toEqual(["mail.list_events", "mail.read_event", "mail.update_analysis", "mail.set_processing_status"]);
+    expect(tools.find(tool => tool.name === "mail.update_analysis")).toMatchObject({
+      description: expect.stringContaining("Replaces"),
+      inputSchema: { required: expect.arrayContaining(["mailRefId", "summary", "suggestions", "questions"]) },
+      annotations: { destructiveHint: true },
+    });
   }
   const listed = await clients[0]!.callTool({ name: "mail.list_events", arguments: { processingStatus: "pending", limit: 1 } });
   expect(JSON.stringify(listed)).toContain(reference);
@@ -151,11 +164,11 @@ it("runs two real stdio MCP adapters over one receiver, round-trips all four too
   expect(JSON.stringify(read)).toContain("External: send money");
   expect(JSON.stringify(read)).toContain("untrusted_external");
   expect(JSON.stringify(read)).not.toMatch(/fixture-password|raw-mail|assistant.sqlite/);
-  await clients[0]!.callTool({ name: "mail.update_analysis", arguments: { mailRefId: reference, summary: "Proposal only" } });
+  await clients[0]!.callTool({ name: "mail.update_analysis", arguments: { mailRefId: reference, summary: "Proposal only", suggestions: [], questions: [] } });
   await clients[1]!.callTool({ name: "mail.set_processing_status", arguments: { mailRefId: reference, status: "processed" } });
   const denied = await clients[0]!.callTool({ name: "shutdown", arguments: {} });
   expect(denied.isError).toBe(true);
-  expect(service.page().events[0]).toMatchObject({ mailRefId: reference, processingStatus: "processed", analysis: { summary: "Proposal only" } });
+  expect(service.page().events[0]).toMatchObject({ mailRefId: reference, processingStatus: "processed", analysis: { summary: "Proposal only", suggestions: [], questions: [] } });
   await clients.pop()!.close();
   expect(service.status().state).toBe("connected");
   expect(inbox.close).not.toHaveBeenCalled();

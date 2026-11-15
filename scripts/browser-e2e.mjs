@@ -128,8 +128,9 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   await page.setViewportSize({ width: 1200, height: 800 });
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   const sidebar = page.locator(".desktop-session-sidebar");
-  const headers = sidebar.locator(".project-group-toggle-copy strong");
+  const headers = sidebar.locator('.project-group-open[aria-controls^="desktop-project-"] .project-group-toggle-copy strong');
   await sidebar.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  assert.equal(await sidebar.locator('.project-group-open[aria-controls="desktop-archived-sessions"] .project-group-toggle-copy strong').textContent(), "已归档");
   const initialOrder = await headers.allTextContents();
   assert.equal(initialOrder.length, 2);
   const selected = sidebar.locator(".session-row-v2.active");

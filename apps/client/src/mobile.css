@@ -754,7 +754,7 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 .agent-settings label:has(input:disabled) { cursor: default; }
 
 .mobile-empty-directory { padding: 60px 12px; text-align: center; }
-.mobile-empty-directory h2 { font-size: 20px; }
+.mobile-empty-directory h2 { font-size: var(--m-fs-title); }
 .mobile-empty-directory p { margin: 12px 0 24px; color: var(--muted); font-size: var(--m-fs-callout); }
 
 .mobile-app-shell .mobile-desktop-control {

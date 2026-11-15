@@ -32,8 +32,6 @@ import {
   Archive,
   ArchiveRestore,
   ArrowDownUp,
-  ChevronDown,
-  ChevronRight,
   ChevronsDown,
   ChevronsUp,
   CircleStop,
@@ -1154,7 +1152,7 @@ export function DesktopSessions({
                   onToggle={() => toggleProject(groupProjectId)}
                 />
                 {expanded && (
-                  <div className="desktop-project-sessions" id={sessionsId}>
+                  <div id={sessionsId}>
                     <SessionFamilyList
                       families={families}
                       projects={snapshot.projects}
@@ -1185,19 +1183,15 @@ export function DesktopSessions({
             const archivedFamilies = groupProjectSessionFamilies(archivedSessions);
             return (
               <section className={archivedExpanded ? "expanded" : "collapsed"}>
-                <button
-                  type="button"
-                  className="desktop-project-toggle"
-                  aria-expanded={archivedExpanded}
-                  aria-controls="desktop-archived-sessions"
-                  onClick={() => setArchivedExpanded((current) => !current)}
-                >
-                  {archivedExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <strong>已归档</strong>
-                  <span>{archivedFamilies.length}</span>
-                </button>
+                <ProjectGroupHeader
+                  title="已归档"
+                  count={archivedFamilies.length}
+                  expanded={archivedExpanded}
+                  controlsId="desktop-archived-sessions"
+                  onToggle={() => setArchivedExpanded((current) => !current)}
+                />
                 {archivedExpanded && (
-                  <div className="desktop-project-sessions" id="desktop-archived-sessions">
+                  <div id="desktop-archived-sessions">
                     <SessionFamilyList
                       families={archivedFamilies}
                       projects={snapshot.projects}
@@ -1337,22 +1331,22 @@ export function DesktopSessions({
               />
             ) : null}
             {selectedTaskDetails?.error && (
-              <p className="desktop-channel-banner session-channel-warning" role="alert">后台任务：{selectedTaskDetails.error}</p>
+              <p className="session-channel-warning" role="alert">后台任务：{selectedTaskDetails.error}</p>
             )}
             {otherNativePromptSession && (
-              <div className="desktop-channel-banner">
+              <div className="session-channel-warning">
                 <AlertTriangle size={18} />
                 <button type="button" className="relay-chain-link" onClick={() => setSelectedId(otherNativePromptSession.sessionId)}>另一会话待确认：{otherNativePromptSession.title}</button>
               </div>
             )}
             {selected.archivedAt && (
-              <div className="desktop-channel-banner">
+              <div className="session-channel-warning">
                 <Archive size={18} />
                 <span><strong>此会话已归档</strong>会话保留全部历史，取消归档后回到会话列表。</span>
               </div>
             )}
             {sessionActionError && (
-              <div className="desktop-channel-banner danger">
+              <div className="session-channel-warning danger">
                 <AlertTriangle size={18} />
                 <span><strong>会话操作失败</strong>{sessionActionError}</span>
               </div>
@@ -1361,16 +1355,15 @@ export function DesktopSessions({
               parentSession={parentSession}
               childForks={childForks}
               onSelectSession={setSelectedId}
-              className="desktop-channel-banner"
             />
             {stopError && (
-              <div className="desktop-channel-banner danger">
+              <div className="session-channel-warning danger">
                 <AlertTriangle size={18} />
                 <span><strong>任务停止失败</strong>{stopError}</span>
               </div>
             )}
             {fileDownloadError && (
-              <div className="desktop-channel-banner danger" role="alert">
+              <div className="session-channel-warning danger" role="alert">
                 <AlertTriangle size={18} />
                 <span><strong>文件下载失败</strong>{fileDownloadError}</span>
                 <button type="button" className="secondary-button goal-action" onClick={() => setFileDownloadError(undefined)}>关闭</button>

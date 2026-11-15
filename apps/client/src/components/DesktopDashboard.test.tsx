@@ -407,8 +407,15 @@ describe("desktop shared catalog", () => {
     snapshot.sessions[0]!.archivedAt = 100;
     await openSessions();
     expect(textContent(tree)).toContain("暂无活跃会话");
+    const archivedHeader = elements(tree).find(element => element.type === ProjectGroupHeader && element.props.title === "已归档")!;
+    expect(archivedHeader.props.count).toBe(1);
+    expect(archivedHeader.props.controlsId).toBe("desktop-archived-sessions");
+    expect(elements(tree).some(element => typeof element.props.className === "string" && element.props.className.includes("desktop-project-toggle"))).toBe(false);
     elements(tree).find(element => element.props["aria-controls"] === "desktop-archived-sessions")!.props.onClick();
     tree = sessions.draw();
+    const archivedGroup = elements(tree).find(element => element.props.id === "desktop-archived-sessions")!;
+    expect(archivedGroup.props.className).toBeUndefined();
+    expect(elements(tree).some(element => typeof element.props.className === "string" && element.props.className.includes("desktop-project-sessions"))).toBe(false);
     expect(elements(tree).filter(element => element.props.className === "session-row-hit")).toHaveLength(1);
     expect(textContent(elements(tree).find(element => element.props.className === "session-row-hit")!)).toContain("已归档");
   });
@@ -972,5 +979,33 @@ describe("desktop conversation parity", () => {
     confirmButtons[0]!.props.onClick();
     await settle();
     expect(apiRequest).toHaveBeenCalledWith({ method: "message.delivery.resolve", params: { commandId: "cmd-matched", action: "confirm" } });
+  });
+
+  it("renders shared session-channel-warning banners and fork chain bar without legacy desktop-channel-banner", async () => {
+    snapshot.host.capabilities.push("session.visibility.v1");
+    snapshot.runtime.desktopIntegration.state = "ready";
+    snapshot.sessions = [
+      { ...snapshot.sessions[0]!, sessionId: "parent-1", title: "Parent Session" },
+      { ...snapshot.sessions[0]!, sessionId: "fork-1", title: "Archived Fork", parentSessionId: "parent-1", archivedAt: 200 },
+    ];
+    await openSessions();
+    elements(tree).find(element => element.props["aria-controls"] === "desktop-archived-sessions")!.props.onClick();
+    tree = sessions.draw();
+    elements(tree).find(element => element.type === "button" && element.props.className === "session-row-hit" && textContent(element).includes("Archived Fork"))!.props.onClick();
+    await settle();
+    tree = sessions.draw();
+
+    const warnings = elements(tree).filter(element => element.props.className === "session-channel-warning");
+    expect(warnings.some(element => textContent(element).includes("此会话已归档"))).toBe(true);
+    const forkBar = elements(tree).find(element => element.props.className === "relay-chain-bar fork-chain-bar")!;
+    expect(textContent(forkBar)).toContain("主会话：Parent Session");
+
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "fork-fail", ok: false, error: { code: "FAILED", message: "分支创建失败" } });
+    await elements(tree).find(element => element.type === IconButton && element.props.label === "Fork 分支会话")!.props.onClick();
+    await settle();
+    tree = sessions.draw();
+    const dangerWarnings = elements(tree).filter(element => element.props.className === "session-channel-warning danger");
+    expect(dangerWarnings.some(element => textContent(element).includes("分支创建失败"))).toBe(true);
+    expect(elements(tree).some(element => typeof element.props.className === "string" && element.props.className.includes("desktop-channel-banner"))).toBe(false);
   });
 });

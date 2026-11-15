@@ -49,6 +49,10 @@ const nativeHosts = [];
 const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
+const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
+assert.ok(themes.every(theme => ["light", "dark"].includes(theme)), "BRIDGE_QA_THEME must be light or dark");
+const themeFamily = process.env.BRIDGE_QA_THEME_FAMILY ?? "sunstone";
+assert.ok(["sunstone", "apple"].includes(themeFamily), "BRIDGE_QA_THEME_FAMILY must be sunstone or apple");
 const enableTrace = process.env.BRIDGE_E2E_TRACE === "1";
 
 // Bounded polling is only for observable browser/protocol state, never a fixed
@@ -135,17 +139,48 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   assert.match(await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').innerText(), /已归档/u);
   await sidebar.locator('[data-session-id="browser-e2e-fork"] .session-row-hit').click();
   assert.equal(await sidebar.locator('[data-session-id="browser-e2e-fork"]').evaluate(element => element.classList.contains("active")), true);
+  await page.evaluate(sessionId => {
+    const snapshot = structuredClone(window.__catalogSnapshot);
+    Object.assign(snapshot.sessions.find(session => session.sessionId === sessionId), { turnState: "running", ownership: "DESKTOP_NATIVE_RUNNING", pendingCount: 2 });
+    window.__updateCatalog(snapshot);
+  }, sessionId);
+  await sidebar.locator(`[data-session-id="${sessionId}"]`).getByLabel("2 条排队消息", { exact: true }).waitFor();
+  assert.match(await sidebar.locator(`[data-session-id="${sessionId}"]`).innerText(), /桌面运行中/u);
   await capture("desktop-catalog");
   steps.push("mobile/Desktop share family rows; Desktop retains archived sidechats, selection and fork navigation");
 
   await sidebar.getByRole("button", { name: "全部折叠", exact: true }).click();
   assert.equal(await sidebar.locator("[data-session-id]").count(), 0);
   await sidebar.getByRole("button", { name: "全部展开", exact: true }).click();
-  await sidebar.getByRole("button", { name: "调整项目顺序", exact: true }).click();
+  const orderTrigger = sidebar.getByRole("button", { name: "调整项目顺序", exact: true });
+  await orderTrigger.focus();
+  await orderTrigger.press("Enter");
   const orderDialog = page.getByRole("dialog", { name: "项目顺序" });
+  await orderDialog.waitFor();
+  assert.equal(await orderDialog.evaluate(element => element.contains(document.activeElement)), true, "Desktop order dialog takes keyboard focus");
+  await orderDialog.getByRole("button", { name: "关闭", exact: true }).focus();
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await orderDialog.getByRole("button", { name: "完成", exact: true }).evaluate(element => element === document.activeElement), true, "Shift+Tab wraps to the last dialog control");
+  await page.keyboard.press("Tab");
+  assert.equal(await orderDialog.getByRole("button", { name: "关闭", exact: true }).evaluate(element => element === document.activeElement), true, "Tab wraps to the first dialog control");
+  await page.keyboard.press("Escape");
+  await orderDialog.waitFor({ state: "detached" });
+  assert.equal(await orderTrigger.evaluate(element => element === document.activeElement), true, "Escape restores focus to the order trigger");
+  await orderTrigger.press("Enter");
+  await orderDialog.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+  const handle = await orderDialog.locator(".project-order-handle").first().boundingBox();
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await orderDialog.locator(".is-placeholder").waitFor();
+  await page.keyboard.press("Escape");
+  await orderDialog.locator(".is-placeholder").waitFor({ state: "detached" });
+  await page.mouse.up();
+  assert.equal(await orderDialog.isVisible(), true, "Escape during drag cancels the drag and keeps the dialog open");
+  assert.deepEqual(await orderDialog.locator(".project-order-row strong").allTextContents(), initialOrder);
   await orderDialog.getByRole("button", { name: `拖动「${initialOrder[1]}」调整顺序`, exact: true }).press("Home");
   await capture("desktop-project-order");
   await orderDialog.getByRole("button", { name: "关闭", exact: true }).click();
+  assert.equal(await orderTrigger.evaluate(element => element === document.activeElement), true, "Close button restores focus to the order trigger");
   const manualOrder = [...initialOrder].reverse();
   await eventually(() => headers.allTextContents(), manualOrder, "Manual project order updates the Desktop catalog");
   await page.reload({ waitUntil: "domcontentloaded" });
@@ -2752,7 +2787,7 @@ async function verifySectionManage(page, host, steps, directory) {
 }
 
 async function runScenario(theme, scenario) {
-  const name = `${theme}-${scenario}`;
+  const name = `${themeFamily === "sunstone" ? "" : `${themeFamily}-`}${theme}-${scenario}`;
   const directory = resolve(runDir, name);
   await mkdir(directory, { recursive: true });
   const errors = [];
@@ -2775,10 +2810,10 @@ async function runScenario(theme, scenario) {
       viewport: { width: 375, height: 812 }, colorScheme: theme,
       serviceWorkers: "block",
     });
-    await context.addInitScript((mode) => {
+    await context.addInitScript(({ mode, family }) => {
       localStorage.setItem("bridge-theme", mode);
-      localStorage.setItem("bridge-theme-family", "sunstone");
-    }, theme);
+      localStorage.setItem("bridge-theme-family", family);
+    }, { mode: theme, family: themeFamily });
     if (scenario === "project-grouping") {
       await context.addInitScript(({ hostId, projectIds }) => {
         const key = `bridge-project-order:${hostId}`;
@@ -2821,7 +2856,8 @@ async function runScenario(theme, scenario) {
     await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
     await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
-    assert.equal(await page.locator("html").getAttribute("data-theme"), theme);
+    assert.equal(await page.locator("html").getAttribute("data-theme"), process.env.BRIDGE_QA_THEME ?? theme);
+    assert.equal(await page.locator("html").getAttribute("data-theme-family"), process.env.BRIDGE_QA_THEME_FAMILY ?? "sunstone");
     assert.equal(await page.locator("[data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the visible session rows");
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
@@ -2878,7 +2914,7 @@ async function runScenario(theme, scenario) {
     }
   }
   const result = {
-    name, theme, viewport: viewports.length ? viewports : "375x812", status: failure || errors.length ? "failed" : "passed",
+    name, theme, themeFamily, viewport: viewports.length ? viewports : "375x812", status: failure || errors.length ? "failed" : "passed",
     durationMs: Date.now() - startedAt, steps, errors,
     ...(failure ? { failure: failure.stack } : {}),
     artifacts: directory,
@@ -3108,7 +3144,7 @@ try {
       headless: true,
       args: ["--disable-background-networking", "--disable-component-update", "--no-first-run"],
     });
-    const pairs = ["light", "dark"].flatMap((theme) => scenarios.map((scenario) => [theme, scenario]));
+    const pairs = themes.flatMap((theme) => scenarios.map((scenario) => [theme, scenario]));
     const concurrency = Math.max(1, Number(process.env.BRIDGE_E2E_CONCURRENCY ?? 4));
     const ordered = new Array(pairs.length);
     let nextPair = 0;
@@ -3139,7 +3175,7 @@ try {
   for (const key of Object.keys(process.env)) if (key.startsWith("VITE_")) delete process.env[key];
   Object.assign(process.env, inheritedVite);
   if (!serve) {
-    const failed = infrastructureErrors.length > 0 || results.length !== scenarios.length * 2 || results.some((result) => result.status === "failed");
+    const failed = infrastructureErrors.length > 0 || results.length !== scenarios.length * themes.length || results.some((result) => result.status === "failed");
     const report = {
       status: failed ? "failed" : "passed", browser: browser?.version(), node: process.version,
       client: resolve(root, "apps/client"), runDir,
@@ -3149,7 +3185,7 @@ try {
     };
     await writeFile(resolve(runDir, "report.json"), JSON.stringify(report, null, 2));
     await writeFile(resolve(artifactRoot, "report.json"), JSON.stringify(report, null, 2));
-    console.log(`Browser E2E ${report.status}: ${report.passed}/${scenarios.length * 2} passed. Report: ${resolve(runDir, "report.json")}`);
+    console.log(`Browser E2E ${report.status}: ${report.passed}/${scenarios.length * themes.length} passed. Report: ${resolve(runDir, "report.json")}`);
     if (failed) process.exitCode = 1;
   }
   if (infrastructureErrors.length) {

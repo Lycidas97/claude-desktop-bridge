@@ -22,6 +22,7 @@ export interface ProjectOrderSheetProps {
   projectsByActivity: readonly string[];
   projects: readonly BridgeProjectInfo[] | undefined;
   sessions: readonly BridgeSessionInfo[];
+  manageFocus?: boolean;
   onPlaceProjects(order: string[]): void;
   onClose(): void;
 }
@@ -47,6 +48,7 @@ export function ProjectOrderSheet({
   projectsByActivity,
   projects,
   sessions,
+  manageFocus = false,
   onPlaceProjects,
   onClose,
 }: ProjectOrderSheetProps) {
@@ -252,6 +254,7 @@ export function ProjectOrderSheet({
 
   return (
     <MobileSheet
+      manageFocus={manageFocus}
       eyebrow={desktopName}
       title="项目顺序"
       onClose={() => {

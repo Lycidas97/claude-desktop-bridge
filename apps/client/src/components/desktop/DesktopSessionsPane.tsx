@@ -1251,6 +1251,7 @@ export function DesktopSessions({
 
       {projectOrderOpen && (
         <ProjectOrderSheet
+          manageFocus
           desktopName={snapshot.host.name}
           projectOrder={projectOrder}
           projectsByActivity={projectsByActivity}

@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { type ButtonHTMLAttributes, type ReactNode, useId } from "react";
+import { type ButtonHTMLAttributes, type ReactNode, useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { IconButton } from "../common/IconButton.js";
 
@@ -12,6 +12,7 @@ export function MobileSheet({
   eyebrow,
   title,
   busy = false,
+  manageFocus = false,
   closeLabel = "关闭",
   onClose,
   children,
@@ -20,17 +21,45 @@ export function MobileSheet({
   eyebrow?: ReactNode;
   title: ReactNode;
   busy?: boolean;
+  manageFocus?: boolean;
   closeLabel?: string;
   onClose(): void;
   children: ReactNode;
   footer?: ReactNode;
 }) {
   const titleId = useId();
+  const sheetRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!manageFocus) return;
+    const opener = document.activeElement as HTMLElement;
+    sheetRef.current!.focus();
+    return () => opener.focus();
+  }, [manageFocus]);
   return createPortal(
     <div className="m-sheet-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget && !busy) onClose();
     }}>
-      <section className="m-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <section ref={sheetRef} className="m-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId}
+        tabIndex={manageFocus ? -1 : undefined}
+        onKeyDown={(event) => {
+          if (!manageFocus) return;
+          if (event.key === "Escape" && !busy) {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          } else if (event.key === "Tab") {
+            const controls = event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]');
+            const first = controls[0]!;
+            const last = controls[controls.length - 1]!;
+            if (event.shiftKey && (document.activeElement === first || document.activeElement === event.currentTarget)) {
+              event.preventDefault();
+              last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first.focus();
+            }
+          }
+        }}>
         <header className="m-sheet-header">
           <div>
             {eyebrow && <span>{eyebrow}</span>}

@@ -77,6 +77,11 @@ export function SessionFamilyList({
                 {badge}
               </span>
             )}
+            {!isArchivedRow && session.pendingCount > 0 && (
+              <span className="session-row-status queued" aria-label={`${session.pendingCount} 条排队消息`}>
+                {session.pendingCount}
+              </span>
+            )}
           </button>
           {onOpenSessionActions && (
             <IconButton

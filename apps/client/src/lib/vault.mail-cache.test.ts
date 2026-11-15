@@ -13,6 +13,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await vault.clear();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -66,6 +67,15 @@ it("restores mail cards and cursor directly after more than 150 ordinary envelop
   expect(await reopened.listMessages(crypto.identity.roomId)).toHaveLength(150);
   expect(await reopened.listMessages(crypto.identity.roomId, 120)).toHaveLength(120);
   expect(await reopened.loadMailCache(restoredHost!.crypto)).toEqual(cache);
+});
+
+it("restores local mail after eight offline days without applying the transport TTL", async () => {
+  const crypto = await pairHost("mail-offline-week");
+  const cache = mailCache([1]);
+  await vault.saveMailCache(crypto, cache);
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 8 * 24 * 60 * 60 * 1_000);
+
+  expect(await new BridgeVault().loadMailCache(crypto)).toEqual(cache);
 });
 
 it("stores only an encrypted envelope for each room without plaintext mail in IndexedDB", async () => {

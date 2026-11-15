@@ -20,6 +20,7 @@ export function MailCard({ card, nativeMessage }: { card: BridgeMailCard; native
     <h3>{card.subject || "无主题"}</h3>
     <p className="assistant-mail-from">{card.from.map(sender => [sender.name, sender.address].filter(Boolean).join(" ")).join("，") || "未知发件人"}</p>
     {card.preview && <p className="assistant-mail-preview">{card.preview}</p>}
+    {card.previewError && <p className="assistant-mail-from" role="status">{card.previewError}</p>}
     <dl className="assistant-mail-status">
       <div><dt>输入</dt><dd>已记录</dd></div>
       <div><dt>原生投递</dt><dd>{DELIVERY_LABELS[card.nativeDelivery.state]}</dd></div>

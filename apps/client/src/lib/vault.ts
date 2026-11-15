@@ -671,7 +671,8 @@ export class BridgeVault {
       transaction.objectStore("mailCache").get(crypto.identity.roomId),
     ) as EncryptedEnvelope | undefined;
     if (!envelope) return undefined;
-    const { payload } = await crypto.decrypt(envelope);
+    // This encrypted local record survives offline periods beyond the transport TTL.
+    const { payload } = await crypto.decrypt(envelope, envelope.sentAt);
     if (payload.kind === "response") return (payload.result as { assistantMailCache: BridgeMailCache }).assistantMailCache;
   }
 

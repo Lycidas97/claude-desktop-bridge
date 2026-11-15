@@ -25,6 +25,7 @@ export interface BridgeMailCard {
   receivedAt: string;
   recordedAt: number;
   preview: string;
+  previewError?: string;
   processingStatus: "pending" | "processing" | "processed";
   analysis?: { summary?: string; suggestions?: string[]; questions?: string[] };
   /** Correlation supplied by the host, never inferred from mail or transcript text. */

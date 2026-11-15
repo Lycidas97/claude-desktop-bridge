@@ -7,6 +7,7 @@ import { hasCapability } from "imapflow/lib/tools.js";
 import { KeychainMailCredentials, type MailCredentials } from "./credentials.js";
 import { AssistantMailStore, type AssistantBinding, type MailAnalysis, type MailProcessingStatus } from "./store.js";
 import { mailBodyText } from "./mime.js";
+export { MailBodyParseError } from "./mime.js";
 
 export interface MailAccount {
   host: string;

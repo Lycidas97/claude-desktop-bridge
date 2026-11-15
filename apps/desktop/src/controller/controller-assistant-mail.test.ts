@@ -161,6 +161,22 @@ describe("assistant mail mobile RPC projections", () => {
     expect(service.binding()).toBeUndefined();
   });
 
+  it("keeps metadata, healthy previews and the cursor when one HTML mail exceeds the parser limit", async () => {
+    const older = await record(1);
+    const normal = await record(2);
+    const oversized = await record(3, `Content-Type: text/html; charset=utf-8\r\n\r\n<p>${"x".repeat(16 * 1024 * 1024 + 1)}</p>`);
+
+    const { mailPage } = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { limit: 2 });
+    expect(mailPage.cards).toMatchObject([
+      { mailRefId: oversized.mailRefId, subject: oversized.subject, preview: "", previewError: "原文无法解析，预览不可用。" },
+      { mailRefId: normal.mailRefId, preview: "Body 2" },
+    ]);
+    expect(mailPage.nextCursor).toBe(String(normal.seq));
+    const next = await run.request<{ mailPage: BridgeMailPage }>("plugin.assistant-mail.list", { cursor: mailPage.nextCursor });
+    expect(next.mailPage.cards.map(card => card.mailRefId)).toEqual([older.mailRefId]);
+    await expect(run.request("plugin.assistant-mail.read", { mailRefId: oversized.mailRefId })).rejects.toThrow(/HTML too long for parsing/u);
+  });
+
   it("reads cleaned MIME text without HTML, attachments, raw bytes or a native ACK", async () => {
     run.broker.capabilities.mockReturnValue([]);
     const event = await record(1, [

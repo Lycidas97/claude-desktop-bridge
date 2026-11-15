@@ -76,9 +76,9 @@ Every status change is an explicit `SendMessage`:
 ## Dispatch (owner's turn)
 
 1. For each Issue, list the files it should touch, pick its tier, and set a merge order for overlapping Issues. CI and tooling PRs never gate feature PRs.
-2. Start the reviewers (`use_worktree: false`, **Reviewer brief**), and for architecture or UI Issues also the `ui-review` reviewer (**ui-review brief**). Start them now, not when the PR appears: a later turn may be one that cannot `start_session`. Their briefs idle until `READY`.
-3. Start each fork with only `Reply "waiting" until the task message arrives.` (`use_worktree: true`). A brief passed to `start_session` would run its whole first turn on the patrol's model.
-4. **Switch and confirm the model** of every session from steps 2–3, and of any session started later (Astra, a sync fork): `set_session_model` with the id from `node scripts/picker-id.mjs "<label>"`, then `get_session` and check that `model` equals that id. Only then send the **Fork brief** or `READY`. Never pass `model` to `start_session`: it is silently ignored for a model pricier than or outside the patrol's family, and the session inherits `bridge-runner`.
+2. Start every session with only `Reply "waiting" until the task message arrives.`: the reviewers (`use_worktree: false`), the `ui-review` reviewer for architecture or UI Issues (`use_worktree: false`), and each fork (`use_worktree: true`). Start them all now, not when the PR appears: a later turn may be one that cannot `start_session`. A brief passed to `start_session` would run its whole first turn on the patrol's model.
+3. **Switch and confirm the model** of every session from step 2, and of any session started later (Astra, a sync fork): `set_session_model` with the id from `node scripts/picker-id.mjs "<label>"`, then `get_session` and check that `model` equals that id. Never pass `model` to `start_session`: it is silently ignored for a model pricier than or outside the patrol's family, and the session inherits `bridge-runner`.
+4. Only then `SendMessage` each session its brief (**Reviewer brief**, **ui-review brief**, **Fork brief**); every session id the templates need now exists. Reviewer and ui-review briefs idle until `READY`.
 5. Start the patrol checklist.
 
 ## Implement (fork)

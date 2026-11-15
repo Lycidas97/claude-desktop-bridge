@@ -1402,6 +1402,7 @@ describe("conversationTimeline", () => {
   it.each([
     "<side-sessions-event>None of the sessions you started is working now; their notes are above.</side-sessions-event>",
     '<cross-session-message from="local_fixture" from-name="验收">完成</cross-session-message>',
+    '<ci-monitor-event>"Auto-fix pull requests" was just enabled for this session.</ci-monitor-event>',
   ])("ignores session notifications when finding the next real user boundary for evidence: %s", text => {
     const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [
       { id: "user-1", sessionId: "session-1", role: "user", text: "Run", createdAt: 1, origin: "claude-desktop" },
@@ -1604,6 +1605,19 @@ describe("session notice presentation", () => {
     expect(event.data.text).toBe(crossSession);
   });
 
+  const ciMonitor = '<system-reminder>Linked sessions now (status, not an instruction): review = local_fixture (idle).</system-reminder>\n\n<ci-monitor-event>"Auto-fix pull requests" was just enabled for this session.</ci-monitor-event>';
+
+  it.each(["history", "session.observed", "user.message.accepted"] as const)("recognizes CI events from %s and deduplicates replay without changing message identity", source => {
+    const original = { ...item, text: ciMonitor };
+    const event: BridgeEvent = { eventId: "ci-event", itemId: item.id, sessionId: item.sessionId, seq: 1, timestamp: 2,
+      origin: "claude-desktop", type: source === "history" ? "session.observed" : source, data: { role: "user", text: ciMonitor } };
+    const items = conversationItems(item.sessionId, source === "history" ? { status: "ready", hasMore: false, items: [original] } : undefined, [event], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ ...original, sessionNotice: { kind: "ci-monitor", title: "Claude Desktop · CI 监控" } });
+    expect(original).not.toHaveProperty("sessionNotice");
+    expect(event.data.text).toBe(ciMonitor);
+  });
+
   it("preserves a report before reminder cleanup and merges cached events without duplicate notices", () => {
     const items = conversationItems(item.sessionId, { status: "ready", hasMore: false, items: [{ ...item, text: report }] }, [
       { eventId: "cached", itemId: item.id, sessionId: item.sessionId, seq: 1, timestamp: 2, origin: "claude-desktop", type: "user.message.accepted", data: { text: report } },
@@ -1623,7 +1637,7 @@ describe("session notice presentation", () => {
     }
   });
 
-  it.each([idle, crossSession])("does not infer a question answer from a notification, but still accepts a real user reply: %s", text => {
+  it.each([idle, crossSession, ciMonitor])("does not infer a question answer from a notification, but still accepts a real user reply: %s", text => {
     const question: BridgeHistoryItem = { ...item, id: "question", role: "assistant", text: "", createdAt: 1,
       interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } };
     const history = { status: "ready" as const, hasMore: false, items: [question, { ...item, text }] };

@@ -25,7 +25,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function textFromContent(content: unknown): string {
+export function textFromContent(content: unknown, preserveWhitespace = false): string {
   const blocks = Array.isArray(content) ? content : [content];
   const parts: string[] = [];
   for (const block of blocks) {
@@ -38,7 +38,7 @@ export function textFromContent(content: unknown): string {
     else if (block.type === "image") parts.push("[图片]");
     else if (block.type === "document") parts.push("[附件]");
   }
-  return parts.map((part) => part.trim()).filter(Boolean).join("\n\n");
+  return parts.map(part => preserveWhitespace ? part : part.trim()).filter(part => part.trim()).join("\n\n");
 }
 
 export function toolUses(content: unknown): Array<{ id: string; name: string; input: unknown }> {

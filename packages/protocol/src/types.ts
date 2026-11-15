@@ -227,6 +227,7 @@ export type BridgeCapability =
   | "transcript.toolDetail.v1"
   | "plugin.magpie-quota.v1"
   | "plugin.assistant-mail.v1"
+  | "plugin.assistant-mail.manual-reference.v1"
   | "system.update.v1";
 
 /**

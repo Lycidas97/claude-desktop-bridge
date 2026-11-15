@@ -116,6 +116,7 @@ import { MobileComposer } from "./mobile/MobileComposer.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
 import { MobileSessionCatalog } from "./mobile/MobileSessionCatalog.js";
 import { useAssistantMail } from "./assistant/AssistantMailProvider.js";
+import { MailReference } from "./assistant/MailReference.js";
 import { MailCard } from "./assistant/MailCard.js";
 import { MobileSheet, SheetAction } from "./mobile/MobileSheet.js";
 import {
@@ -131,7 +132,7 @@ import { useSectionManage } from "./session/SectionManageDialog.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "./conversation/SessionActivityIndicator.js";
 import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
 import { ToolCallGroupRows } from "./conversation/ToolCallDetailSheet.js";
-import { useSessionCommands } from "../hooks/useSessionCommands.js";
+import { sessionCommandName, useSessionCommands } from "../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
 import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
 import { SessionNoticeCard } from "./conversation/SessionNoticeCard.js";
@@ -145,6 +146,8 @@ export function MobileWorkspace({
   permissions,
   focusSessionId,
   visible = true,
+  fixedSessionId,
+  onOpenOtherSession,
   focusRequest,
   onFocusHandled,
   directoryRequest,
@@ -210,6 +213,8 @@ export function MobileWorkspace({
   permissions: BridgePermissionInfo[];
   focusSessionId?: string | undefined;
   visible?: boolean;
+  fixedSessionId?: string | undefined;
+  onOpenOtherSession?(sessionId: string): void;
   focusRequest?: { sessionId: string; key: number };
   onFocusHandled?(): void;
   directoryRequest?: number;
@@ -232,7 +237,7 @@ export function MobileWorkspace({
   onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
   onDownloadSessionFile?(sessionId: string, filePath: string): Promise<void>;
   onUploadFile?: UploadFileHandler;
-  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[]): Promise<{ requestId: string } | void>;
+  onSendTurn(sessionId: string, text: string, attachments: BridgeAttachment[], mailRefId?: string): Promise<{ requestId: string } | void>;
   onInterruptTurn(sessionId: string, commandId?: string): Promise<void>;
   onSteerQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
   onCancelQueuedTurn?(sessionId: string, commandId: string): Promise<void>;
@@ -303,7 +308,13 @@ export function MobileWorkspace({
 }) {
   const [queuedSteers, setQueuedSteers] = useState<Record<string, { state: "pending" | "requested" | "error"; action: "steer" | "cancel"; error?: string }>>({});
   const [promptErrors, setPromptErrors] = useState<Record<string, string>>({});
-  const [selectedSessionId, setSelectedSessionId] = useState<string>();
+  const [pickedSessionId, setPickedSessionId] = useState<string>();
+  const selectedSessionId = fixedSessionId ?? pickedSessionId;
+  function setSelectedSessionId(sessionId: string | undefined): void {
+    if (fixedSessionId) {
+      if (sessionId && sessionId !== fixedSessionId) onOpenOtherSession?.(sessionId);
+    } else setPickedSessionId(sessionId);
+  }
   const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
   const [search, setSearch] = useState("");
   const [drafts, setDrafts] = useState<Record<string, {
@@ -687,6 +698,7 @@ export function MobileWorkspace({
         return true;
       }
       if (selectedSessionId) {
+        if (fixedSessionId) return false;
         setSelectedSessionId(undefined);
         return true;
       }
@@ -913,7 +925,7 @@ export function MobileWorkspace({
     for (const event of events) {
       if (event.type !== "session.reset" || handledCommandResets.current.has(event.eventId)) continue;
       handledCommandResets.current.add(event.eventId);
-      if (event.data.previousSessionId === selectedSessionId && typeof event.data.sessionId === "string") {
+      if (!fixedSessionId && event.data.previousSessionId === selectedSessionId && typeof event.data.sessionId === "string") {
         void selectSession(event.data.sessionId);
       }
     }
@@ -975,8 +987,10 @@ export function MobileWorkspace({
     const nextFiles = fileUploads.files;
     updateDraft((current) => ({ ...current, text: "", attachments: [], sending: true, imageError: undefined }));
     try {
+      const mailRefId = assistantMail?.referenceFor(selectedSession.sessionId);
+      if (mailRefId && sessionCommandName(nextText)) throw new Error("请先清除邮件引用，再执行会话命令。");
       if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) return;
-      await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments);
+      await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, ...(mailRefId ? [mailRefId] as const : []));
       fileUploads.clear(nextFiles);
     } catch (error) {
       updateDraft((current) => ({
@@ -999,8 +1013,12 @@ export function MobileWorkspace({
     ) return;
     updateDraft((current) => ({ ...current, sending: true }));
     try {
-      const receipt = await onSendTurn(selectedSession.sessionId, promptText.trim(), []);
+      const mailRefId = assistantMail?.referenceFor(selectedSession.sessionId);
+      if (mailRefId && sessionCommandName(promptText.trim())) throw new Error("请先清除邮件引用，再执行会话命令。");
+      const receipt = await onSendTurn(selectedSession.sessionId, promptText.trim(), [], ...(mailRefId ? [mailRefId] as const : []));
       setPromptReplies((current) => ({ ...current, [draftKey]: { ...current[draftKey], [promptId]: receipt?.requestId ?? null } }));
+    } catch (error) {
+      updateDraft(current => ({ ...current, imageError: error instanceof Error ? error.message : "发送失败" }));
     } finally {
       updateDraft((current) => ({ ...current, sending: false }));
     }
@@ -1447,6 +1465,8 @@ export function MobileWorkspace({
 
   if (!visible) return null;
 
+  if (fixedSessionId && !selectedSession) return <main className="mobile-workspace"><p role="status">绑定会话暂不可用，请在助理设置中核对绑定。</p></main>;
+
   if (selectedSession) {
     const runtimeName = desktopRuntimeName(desktopRuntimeId(selectedSession));
     const canAttachImages = runtimeSupports(snapshot, selectedSession, "attachment.image");
@@ -1502,6 +1522,7 @@ export function MobileWorkspace({
     return (
       <main className="mobile-workspace conversation-workspace">
         <MobilePageHeader
+          navigation={!fixedSessionId}
           title={selectedSession.title}
           subtitle={canConfigure ? (
             <button
@@ -1962,6 +1983,7 @@ export function MobileWorkspace({
         <>
         <SessionActivityIndicator activity={activity} />
         <SessionContextUsageBar usage={selectedSession.contextUsage} />
+        <MailReference sessionId={selectedSession.sessionId} />
         {MobileComposer({
           selectedSession,
           snapshot,

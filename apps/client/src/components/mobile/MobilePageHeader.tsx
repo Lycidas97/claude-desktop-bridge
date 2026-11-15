@@ -17,6 +17,7 @@ export function MobilePageHeader({
   backLabel = "返回",
   backDisabled = false,
   actions,
+  navigation = true,
 }: {
   title: ReactNode;
   titleHidden?: boolean;
@@ -25,13 +26,14 @@ export function MobilePageHeader({
   backLabel?: string;
   backDisabled?: boolean;
   actions?: ReactNode;
+  navigation?: boolean;
 }) {
   const nav = useMobileNav();
   return (
-    <header className={`m-header${onBack ? " is-pushed" : nav ? " has-menu" : ""}${titleHidden ? " is-title-hidden" : ""}`}>
-      {onBack
+    <header className={`m-header${onBack || !navigation ? " is-pushed" : nav ? " has-menu" : ""}${titleHidden ? " is-title-hidden" : ""}`}>
+      {navigation && (onBack
         ? <IconButton label={backLabel} disabled={backDisabled} onClick={onBack}><ArrowLeft size={22} /></IconButton>
-        : nav && <MobileNavMenu tab={nav.tab} onTabChange={nav.onTabChange} assistantAvailable={nav.assistantAvailable} />}
+        : nav && <MobileNavMenu tab={nav.tab} onTabChange={nav.onTabChange} assistantAvailable={nav.assistantAvailable} />)}
       <div className="m-header-copy">
         <h1>{title}</h1>
         {subtitle && <div className="m-header-subtitle">{subtitle}</div>}

@@ -98,7 +98,7 @@ import { SessionPrActions, SessionPrBar } from "../conversation/SessionPrBar.js"
 import { MobileSheet } from "../mobile/MobileSheet.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "../conversation/SessionActivityIndicator.js";
 import { SlashCommandInput } from "../conversation/SlashCommandInput.js";
-import { useSessionCommands } from "../../hooks/useSessionCommands.js";
+import { sessionCommandName, useSessionCommands } from "../../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "../conversation/SessionCommandDialogs.js";
 import { SessionRewindDialog } from "../conversation/SessionRewindDialog.js";
 import { SessionNoticeCard } from "../conversation/SessionNoticeCard.js";
@@ -109,6 +109,7 @@ import {
 } from "../session/SessionConfigurationDialog.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
+import { MailReference } from "../assistant/MailReference.js";
 import { MailCard } from "../assistant/MailCard.js";
 
 export function unwrap<T>(response: BridgeResponse): T {
@@ -159,8 +160,12 @@ export function DesktopSessions({
   apiRequest,
   onRefreshSnapshot,
   initialSessionId,
+  fixedSessionId,
+  onOpenOtherSession,
 }: {
   initialSessionId?: string | undefined;
+  fixedSessionId?: string | undefined;
+  onOpenOtherSession?(sessionId: string): void;
   snapshot: DesktopControlSnapshot;
   events: BridgeEvent[];
   apiRequest(request: LocalBridgeRequest): Promise<BridgeResponse>;
@@ -169,7 +174,13 @@ export function DesktopSessions({
   onTakeoverDesktop?(sessionId: string, commandId?: string): Promise<void>;
 }) {
   const openMedia = useMediaPreview();
-  const [selectedId, setSelectedId] = useState(initialSessionId ?? snapshot.sessions[0]?.sessionId);
+  const [pickedId, setPickedId] = useState(initialSessionId ?? snapshot.sessions[0]?.sessionId);
+  const selectedId = fixedSessionId ?? pickedId;
+  function setSelectedId(sessionId: string | undefined): void {
+    if (fixedSessionId) {
+      if (sessionId && sessionId !== fixedSessionId) onOpenOtherSession?.(sessionId);
+    } else setPickedId(sessionId);
+  }
   const [history, setHistory] = useState<Record<string, SessionHistoryState>>({});
   const [promptReplies, setPromptReplies] = useState<Record<string, Record<string, string | null>>>({});
   const [evidence, setEvidence] = useState<Record<string, SessionEvidenceState>>({});
@@ -201,7 +212,7 @@ export function DesktopSessions({
     for (const event of events) {
       if ((event.type !== "session.reset" && event.type !== "session.compacted" && event.type !== "session.rewound") || handledCommandEvents.current.has(event.eventId)) continue;
       handledCommandEvents.current.add(event.eventId);
-      if (event.type === "session.reset" && event.data.previousSessionId === selectedId && typeof event.data.sessionId === "string") {
+      if (!fixedSessionId && event.type === "session.reset" && event.data.previousSessionId === selectedId && typeof event.data.sessionId === "string") {
         const sessionId = event.data.sessionId;
         setHistory(current => ({ ...current, [sessionId]: { status: "ready", items: [], hasMore: false } }));
         setText(""); setAttachments([]); setConfigurationOpen(false); setSelectedId(sessionId);
@@ -376,7 +387,7 @@ export function DesktopSessions({
   }, [events]);
 
   useEffect(() => {
-    if (selectedId && snapshot.sessions.some((session) => session.sessionId === selectedId)) return;
+    if (fixedSessionId || (selectedId && snapshot.sessions.some((session) => session.sessionId === selectedId))) return;
     setSelectedId(snapshot.sessions[0]?.sessionId);
   }, [selectedId, snapshot.sessions]);
 
@@ -606,6 +617,8 @@ export function DesktopSessions({
     setSending(true);
     setCommandError(undefined);
     try {
+      const mailRefId = assistantMail?.referenceFor(selected.sessionId);
+      if (mailRefId && sessionCommandName(nextText)) throw new Error("请先清除邮件引用，再执行会话命令。");
       if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) return;
       unwrap(await apiRequest({
         method: "turn.start",
@@ -613,6 +626,7 @@ export function DesktopSessions({
           sessionId: selected.sessionId,
           text: appendUploadedFilePaths(nextText, nextFiles),
           attachments: nextAttachments,
+          ...(mailRefId ? { mailRefId } : {}),
         },
         idempotencyKey: crypto.randomUUID(),
       }));
@@ -631,17 +645,22 @@ export function DesktopSessions({
     if (!selected || !canSendSession(selected, snapshot) || sending || !promptText.trim()) return;
     setSending(true);
     try {
+      const mailRefId = assistantMail?.referenceFor(selected.sessionId);
+      if (mailRefId && sessionCommandName(promptText.trim())) throw new Error("请先清除邮件引用，再执行会话命令。");
       const response = await apiRequest({
         method: "turn.start",
         params: {
           sessionId: selected.sessionId,
           text: promptText.trim(),
           attachments: [],
+          ...(mailRefId ? { mailRefId } : {}),
         },
         idempotencyKey: crypto.randomUUID(),
       });
       unwrap(response);
       setPromptReplies((current) => ({ ...current, [selected.sessionId]: { ...current[selected.sessionId], [promptId]: response.requestId } }));
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : "发送失败");
     } finally {
       setSending(false);
     }
@@ -809,8 +828,8 @@ export function DesktopSessions({
   };
 
   return (
-    <section className="desktop-session-layout">
-      <aside className="desktop-session-sidebar">
+    <section className={`desktop-session-layout${fixedSessionId ? " is-fixed-session" : ""}`}>
+      {!fixedSessionId && <aside className="desktop-session-sidebar">
         <div className="desktop-sidebar-heading">
           <div><span>Bridge 1.0</span><h1>会话</h1></div>
           <div className="desktop-sidebar-actions">
@@ -917,7 +936,7 @@ export function DesktopSessions({
             );
           })()}
         </div>
-      </aside>
+      </aside>}
 
       <section className="desktop-conversation">
         {selected ? (
@@ -1223,6 +1242,7 @@ export function DesktopSessions({
             <>
             <SessionActivityIndicator activity={activity} />
             <SessionContextUsageBar usage={selected.contextUsage} />
+            <MailReference sessionId={selected.sessionId} />
             <div className="desktop-composer">
               {commandError && <div className="composer-error" role="alert">{commandError}</div>}
               <FileAttachmentPicker state={fileUploads} />
@@ -1264,7 +1284,7 @@ export function DesktopSessions({
             )}
           </>
         ) : (
-          <div className="desktop-conversation-empty"><MessageSquare size={24} /><span>从左侧选择会话</span></div>
+          <div className="desktop-conversation-empty"><MessageSquare size={24} /><span>{fixedSessionId ? "绑定会话暂不可用，请在助理设置中核对绑定。" : "从左侧选择会话"}</span></div>
         )}
       </section>
 

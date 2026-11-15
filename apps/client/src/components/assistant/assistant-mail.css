@@ -40,3 +40,18 @@
 .assistant-mail-empty { text-align: center; padding: 48px 8px; color: var(--muted); }
 .assistant-mail-older { display: block; margin: 20px auto 0; }
 .conversation-stream > .assistant-mail-card, .desktop-conversation-stream > .assistant-mail-card { margin: 16px 0; }
+.assistant-page.is-conversation { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.assistant-page.is-conversation > .assistant-page-content { flex: 0 0 auto; padding-bottom: 0; }
+.assistant-view-tabs { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; border-bottom: 1px solid var(--line); }
+.assistant-view-tabs > button { min-height: 40px; padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
+.assistant-view-tabs > button[aria-pressed="true"] { border-bottom-color: var(--accent-ink); color: var(--text); font-weight: 600; }
+.assistant-view-tabs > button:last-child { margin-left: auto; }
+.assistant-view-tabs > button:disabled, .assistant-session-link:disabled { opacity: .5; cursor: default; text-decoration: none; }
+.assistant-conversation { flex: 1; min-height: 0; min-width: 0; }
+.assistant-conversation .desktop-session-layout.is-fixed-session { height: 100%; grid-template-columns: minmax(0, 1fr); }
+.assistant-mail-reference { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 16px; padding: 10px 12px; border-left: 3px solid var(--accent-ink); background: var(--surface); color: var(--text); }
+.assistant-mail-reference > div { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.assistant-mail-reference span, .assistant-mail-reference code { color: var(--muted); font-size: calc(11px * var(--font-scale)); }
+.assistant-mail-reference strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--font-scale)); }
+.assistant-mail-reference code { overflow-wrap: anywhere; }
+.assistant-mail-reference p { flex-basis: 100%; margin: 0; color: var(--danger-ink); font-size: calc(12px * var(--font-scale)); }

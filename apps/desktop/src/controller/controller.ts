@@ -252,7 +252,7 @@ export class DesktopController extends EventEmitter {
           "turn.queue.cancel.v1",
           "transcript.toolDetail.v1",
           "plugin.magpie-quota.v1",
-          ...(this.assistantMail ? ["plugin.assistant-mail.v1" as const] : []),
+          ...(this.assistantMail ? ["plugin.assistant-mail.v1" as const, "plugin.assistant-mail.manual-reference.v1" as const] : []),
           ...(this.updater ? ["system.update.v1" as const] : []),
         ],
       },

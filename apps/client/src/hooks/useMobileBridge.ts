@@ -313,6 +313,7 @@ export function useMobileBridge() {
     sessionId: string,
     text: string,
     attachments: BridgeAttachment[] = [],
+    mailRefId?: string,
   ) => {
     const session = stateRef.current.snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
     if ((!session?.runtimeId || session.runtimeId === "claude-desktop") &&
@@ -320,7 +321,7 @@ export function useMobileBridge() {
       throw new Error("请先连接支持原生中转的 Claude Desktop 会话。");
     }
     const requestId = randomId();
-    await sendRequest("turn.start", { sessionId, text, attachments },
+    await sendRequest("turn.start", { sessionId, text, attachments, ...(mailRefId ? { mailRefId } : {}) },
       { allowOffline: true, requestId, idempotencyKey: randomId() });
     return { requestId };
   }, [sendRequest]);

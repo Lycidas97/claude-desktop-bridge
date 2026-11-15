@@ -175,8 +175,8 @@ export function App() {
     );
   }
   return (
+    <AssistantMailProvider key={mobile.state.activeHostId ?? ""} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={mailRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
     <MobileAppShell
-      assistantAvailable={snapshot?.host.capabilities.includes("plugin.assistant-mail.v1") ?? false}
       tab={tab}
       onTabChange={(next) => {
         setComputerDetailsHostId(undefined);
@@ -188,13 +188,14 @@ export function App() {
     >
       {/* One quota snapshot per computer, shared by the session form and the settings dashboard. */}
       <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled} sourceKey={snapshot?.runtime.detection?.refreshedAt ?? 0}>
-      <AssistantMailProvider key={mobile.state.activeHostId ?? ""} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={mailRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache}>
-      {tab === "assistant" && snapshot && <AssistantPage snapshot={snapshot} mobile onOpenSession={sessionId => { setFocusRequest({ sessionId, key: Date.now() }); setTab("sessions"); }} />}
       {mobile.state.activeHostId ? (
-        <div className="mobile-tab-page" hidden={tab !== "sessions"}>
+        <div className="mobile-tab-page" hidden={tab !== "sessions" && tab !== "assistant"}>
           <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia} supportsFileStat={snapshot?.host.capabilities.includes("artifact.transfer.stat.v1") ?? false}>
+            <AssistantPage snapshot={snapshot} mobile active={tab === "assistant"} onOpenSession={sessionId => { setFocusRequest({ sessionId, key: Date.now() }); setTab("sessions"); }}>
             <MobileWorkspace
-              visible={tab === "sessions"}
+              fixedSessionId={tab === "assistant" ? snapshot?.assistantMail?.binding?.nativeSessionId ?? undefined : undefined}
+              onOpenOtherSession={sessionId => { setFocusRequest({ sessionId, key: Date.now() }); setTab("sessions"); }}
+              visible={tab === "sessions" || tab === "assistant"}
               {...(focusRequest ? { focusRequest } : {})}
               onFocusHandled={handleFocusHandled}
               directoryRequest={directoryRequest}
@@ -288,6 +289,7 @@ export function App() {
               }}
               onRetry={mobile.retryConnection}
             />
+            </AssistantPage>
           </MediaPreviewProvider>
         </div>
       ) : tab === "sessions" ? (
@@ -355,10 +357,10 @@ export function App() {
           {...(quotaDeclared ? { quota: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setQuotaOpen(true) } } : {})}
         />
       ))}
-      </AssistantMailProvider>
       </MagpieQuotaProvider>
       <MobileClientUpdateDialog updater={clientUpdater} />
       <DiagnosticFloatingEntry />
     </MobileAppShell>
+    </AssistantMailProvider>
   );
 }

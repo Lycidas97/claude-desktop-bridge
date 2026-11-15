@@ -36,6 +36,7 @@ const hooks = vi.hoisted(() => ({
   effects: [] as Array<{ deps: unknown[] | undefined; cleanup: (() => void) | undefined }>,
   effectIndex: 0, pending: [] as Array<() => void>,
   readers: [] as any[],
+  mail: undefined as { cache: { cards: never[] }; referenceFor(sessionId: string): string | undefined } | undefined,
 }));
 
 vi.mock("react", async (original) => ({
@@ -70,6 +71,7 @@ vi.mock("react", async (original) => ({
 }));
 
 vi.mock("./evidence/MediaPreviewProvider.js", () => ({ useMediaPreview: () => vi.fn(), useMediaRequest: () => undefined }));
+vi.mock("./assistant/AssistantMailProvider.js", () => ({ useAssistantMail: () => hooks.mail }));
 
 class DeferredFileReader {
   result = "data:image/png;base64,cGljdHVyZQ==";
@@ -131,7 +133,7 @@ function imageNames() {
 }
 
 beforeEach(() => {
-  hooks.slots = []; hooks.effects = []; hooks.pending = []; hooks.readers = []; focusKey = 0;
+  hooks.slots = []; hooks.effects = []; hooks.pending = []; hooks.readers = []; hooks.mail = undefined; focusKey = 0;
   vi.stubGlobal("FileReader", DeferredFileReader);
   // Node's global localStorage has no storage file here; the workspace keeps project order in it.
   const stored = new Map<string, string>();
@@ -167,6 +169,29 @@ beforeEach(() => {
   open("A");
 });
 afterEach(() => { hooks.effects.forEach((e) => e.cleanup?.()); vi.unstubAllGlobals(); });
+
+describe("fixed assistant conversation", () => {
+  it("keeps the binding selected when an explicit link opens another session", () => {
+    props = { ...props, fixedSessionId: "B", onOpenOtherSession: vi.fn() };
+    draw();
+    open("A");
+    expect(props.onOpenOtherSession).toHaveBeenCalledWith("A");
+    expect(elements(tree).some(element => element.props.title === "Session B")).toBe(true);
+  });
+
+  it("keeps a reset event from changing the binding or opening the ordinary directory", () => {
+    props = { ...props, fixedSessionId: "B", onOpenOtherSession: vi.fn(), events: [
+      { eventId: "reset-bound", seq: 1, timestamp: 1, origin: "system", type: "session.reset", data: { previousSessionId: "B", sessionId: "A" } },
+    ] };
+    draw();
+    expect(props.onOpenOtherSession).not.toHaveBeenCalled();
+    expect(elements(tree).some(element => element.props.title === "Session B")).toBe(true);
+    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.filter(session => session.sessionId !== "B") } };
+    draw();
+    expect(elements(tree).some(element => element.props.children === "绑定会话暂不可用，请在助理设置中核对绑定。")).toBe(true);
+    expect(elements(tree).some(element => element.type === SlashCommandInput)).toBe(false);
+  });
+});
 
 describe("Session PR disclosure", () => {
   it("keeps conversation navigation inside the action sheet disabled during a PR write", () => {
@@ -1353,6 +1378,24 @@ describe("native structured approvals", () => {
     const cards = elements(tree).filter(element => element.type === InteractivePromptCard);
     expect(cards.find(card => card.props.prompt.toolUseId === "first-tool")?.props.prompt.answered).toBe(true);
     expect(cards.find(card => card.props.prompt.toolUseId === "second-tool")?.props.prompt.answered).not.toBe(true);
+  });
+
+  it("shows a referenced quick-reply command error without sending a turn", async () => {
+    hooks.mail = { cache: { cards: [] }, referenceFor: () => "host-mail-reference" };
+    const card = nativePrompt({ kind: "wrap-up", blocked: false, ask: "接下来做什么？", actions: [{ label: "帮助", message: "/help" }] });
+    await card.props.onSelectOption("/help");
+    await settle();
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(elements(tree).some(element => element.props.children === "请先清除邮件引用，再执行会话命令。")).toBe(true);
+  });
+
+  it("carries the current mail reference through a non-blocking native quick reply", async () => {
+    hooks.mail = { cache: { cards: [] }, referenceFor: vi.fn(() => "host-mail-reference") };
+    const card = nativePrompt({ kind: "wrap-up", blocked: false, ask: "接下来做什么？", actions: [{ label: "继续调查", message: "继续调查" }] });
+    await card.props.onSelectOption("继续调查");
+    await settle();
+    expect(hooks.mail.referenceFor).toHaveBeenCalledWith("A");
+    expect(props.onSendTurn).toHaveBeenCalledExactlyOnceWith("A", "继续调查", [], "host-mail-reference");
   });
 
   it("preserves non-blocking native quick replies as messages", async () => {

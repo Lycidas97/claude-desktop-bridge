@@ -12,6 +12,19 @@ function card(seq: number, fields: Partial<BridgeMailCard> = {}): BridgeMailCard
 }
 
 describe("refreshMailPages", () => {
+  it("preserves the declared workspace and binding while refreshing paginated mail", async () => {
+    const workspace: NonNullable<BridgeMailCache["workspace"]> = {
+      capabilities: ["plugin.assistant-mail.v1", "plugin.assistant-mail.manual-reference.v1"],
+      assistantMail: { bindingState: "ready", receiverState: "disabled", changeToken: "bound", automaticDelivery: false,
+        binding: { assistantId: "assistant", nativeSessionId: "native", sectionId: null, previousSessionIds: [] } },
+    };
+    const load = vi.fn<(cursor?: string) => Promise<BridgeMailPage>>()
+      .mockResolvedValueOnce({ cards: [card(3), card(2)], nextCursor: "2" })
+      .mockResolvedValueOnce({ cards: [card(1)] });
+    expect(await refreshMailPages(load, { cards: [card(1)], workspace, changeToken: "before" }, "after"))
+      .toEqual({ cards: [card(3), card(2), card(1)], workspace, changeToken: "after" });
+  });
+
   it("walks through multiple pages of arrivals and refreshes the entire previously loaded range", async () => {
     const current: BridgeMailCache = { cards: [card(6), card(5), card(4)], nextCursor: "4", changeToken: "before" };
     const load = vi.fn<(cursor?: string) => Promise<BridgeMailPage>>()

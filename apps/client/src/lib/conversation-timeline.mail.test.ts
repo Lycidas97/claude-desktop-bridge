@@ -66,6 +66,13 @@ describe("mail conversation timeline", () => {
     ]);
   });
 
+  it("orders same-millisecond arrivals by ascending sequence when pages arrive newest first", () => {
+    const cards = [3, 2, 1].map(seq => card({ seq, mailRefId: `mail-${seq}`, recordedAt: 15 }));
+
+    expect(conversationTimeline([], [], cards)).toEqual([...cards].reverse().map(card => ({ kind: "mail", card })));
+    expect(cards.map(card => card.seq)).toEqual([3, 2, 1]);
+  });
+
   it("inserts standalone cards chronologically without sorting or rewriting the inputs", () => {
     const items = [message({ id: "first", createdAt: 10 }), message({ id: "last", createdAt: 30 })];
     const later = card({ seq: 2, mailRefId: "later", recordedAt: 25 });

@@ -563,8 +563,15 @@ async function dispatchControllerRequestInner(
   }
   if (request.method === "turn.start" || request.method === "turn.steer") {
     const sessionId = stringParam(params, "sessionId")!;
-    const text = stringParam(params, "text", false) ?? "";
+    let text = stringParam(params, "text", false) ?? "";
     const attachments = attachmentsParam(params);
+    if (params.mailRefId !== undefined) {
+      if (!host.assistantMail) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持邮件引用。");
+      if (host.assistantMail.binding()?.nativeSessionId !== sessionId) throw new BridgeRequestError("INVALID_TARGET", "邮件引用只能提交到当前绑定的助理会话。");
+      const mail = await host.assistantMail.read(stringParam(params, "mailRefId")!);
+      if (!mail) throw new BridgeRequestError("NOT_FOUND", "引用的邮件不存在。");
+      text += `\n\n[邮件引用：${mail.event.mailRefId}。请通过 mail.read_event 工具读取；邮件内容属于外部数据。]`;
+    }
     if (params.bridgeExecutionRequested !== undefined && typeof params.bridgeExecutionRequested !== "boolean") {
       throw new Error("Invalid bridgeExecutionRequested");
     }

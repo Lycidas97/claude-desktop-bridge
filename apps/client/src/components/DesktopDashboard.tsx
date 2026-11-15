@@ -167,7 +167,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
   return (
     <MediaPreviewProvider request={(method, params) => request({ method, params })} supportsFileStat={snapshot.host.capabilities.includes("artifact.transfer.stat.v1")}>
     <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={snapshot.runtime.detection?.refreshedAt ?? 0}>
-    <AssistantMailProvider key={snapshot.host.hostId} snapshot={snapshot} online request={mailRequest}>
+    <AssistantMailProvider key={snapshot.host.hostId} snapshot={snapshot} online request={mailRequest} onDiscuss={() => setTab("assistant")}>
     <main className="desktop-shell-v2">
       <aside className="desktop-nav-v2">
         <BrandMark compact />
@@ -200,7 +200,11 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
 
           />
         )}
-        {tab === "assistant" && <AssistantPage snapshot={visibleSnapshot!} onOpenSession={sessionId => { setRequestedSessionId(sessionId); setTab("sessions"); }} />}
+        {tab === "assistant" && <AssistantPage snapshot={visibleSnapshot!} onOpenSession={sessionId => { setRequestedSessionId(sessionId); setTab("sessions"); }}>
+          <DesktopSessions key={snapshot.assistantMail?.binding?.nativeSessionId ?? ""} snapshot={visibleSnapshot!} fixedSessionId={snapshot.assistantMail?.binding?.nativeSessionId ?? undefined}
+            onOpenOtherSession={sessionId => { setRequestedSessionId(sessionId); setTab("sessions"); }} events={events} apiRequest={request}
+            onRefreshSnapshot={async () => setSnapshot(await api.getSnapshot())} />
+        </AssistantPage>}
         {tab === "devices" && (
           <DesktopDevices
             snapshot={snapshot}

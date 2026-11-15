@@ -17,5 +17,5 @@ export async function refreshMailPages(load: (cursor?: string) => Promise<Bridge
     cards = mergeMailCards(cards, page.cards);
     cursor = page.nextCursor;
   } while (cursor && oldest !== undefined && page.cards.at(-1)!.seq > oldest);
-  return { cards, changeToken, ...(cursor ? { nextCursor: cursor } : {}) };
+  return { cards, changeToken, ...(current.workspace ? { workspace: current.workspace } : {}), ...(cursor ? { nextCursor: cursor } : {}) };
 }

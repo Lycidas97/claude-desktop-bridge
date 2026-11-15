@@ -709,7 +709,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     Object.assign(session, host.nativeApproval.profile());
     nativeHosts.push(host.nativeApproval);
     if (assistantMail) {
-      snapshot.host.capabilities.push("plugin.assistant-mail.v1");
+      snapshot.host.capabilities.push("plugin.assistant-mail.v1", "plugin.assistant-mail.manual-reference.v1");
       snapshot.assistantMail = host.nativeApproval.mailSnapshot();
       host.mailOffline = true;
       await host.nativeApproval.assistantMail.deliver(60);
@@ -782,8 +782,10 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
         case "plugin.assistant-mail.list":
         case "plugin.assistant-mail.read":
         case "plugin.assistant-mail.bind":
-          try { result = await host.nativeApproval.controllerRequest(request); }
-          catch (failure) { error = { code: failure.code ?? "MAIL_REJECTED", message: failure.message }; }
+          try {
+            if (request.method === "plugin.assistant-mail.list" && host.mailPageFailure) throw new Error("隔离邮件列表读取失败");
+            result = await host.nativeApproval.controllerRequest(request);
+          } catch (failure) { error = { code: failure.code ?? "MAIL_REJECTED", message: failure.message }; }
           break;
         case "plugin.magpie-quota.list":
           result = { status: "available", fetchedAt: Date.now(), accounts: [{ provider: "claude", name: "隔离 Magpie 账号", windows: [{ name: "5 hours", remaining: 73 }, { name: "7 days", remaining: 81 }] }] };
@@ -940,7 +942,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
         }
         case "turn.steer":
         case "turn.start":
-          if (host.nativeQueue) {
+          if (host.nativeQueue || assistantMail) {
             const update = await host.nativeApproval.request(request);
             result = update.result;
             await host.syncNativeQueue(update);
@@ -1003,7 +1005,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
         }
         await host.send({ kind: "snapshot", snapshot });
         if (!remote.nativeWorkActive) await host.completeRemoteCommand(remoteCommand);
-      } else if (request.method === "turn.start" && !remotePreview && !host.nativeQueue) {
+      } else if (request.method === "turn.start" && !remotePreview && !host.nativeQueue && !assistantMail) {
         await host.emit("turn.queued", {
           commandId: "browser-e2e-command", requestId: request.requestId,
           delivery: "host-received", text: userText, pendingCount: 1,
@@ -2969,6 +2971,18 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
     viewports.push({ page: name, ...page.viewportSize() });
     await page.screenshot({ path: resolve(directory, `${name}.png`), fullPage: true });
   }
+  async function evictStartupSnapshot() {
+    assert.equal(await page.evaluate(async roomId => {
+    const { bridgeVault } = await import("/src/lib/vault.ts");
+    const stored = await bridgeVault.getHost(roomId);
+    const sentAt = Date.now();
+    for (let index = 0; index < 170; index++) await bridgeVault.saveMessage(await stored.crypto.encrypt({
+      kind: "response", requestId: `evict-snapshot-${index}`, ok: true, result: {},
+    }, "desktop", "mobile", sentAt + index));
+    const { readStoredHostState } = await import("/src/hooks/bridge/bridge-transport.ts");
+    return (await readStoredHostState(stored.crypto)).snapshot === undefined;
+  }, host.pairing.roomId), true, "Ordinary message traffic evicts every startup snapshot while the mail aggregate remains separate");
+  }
   await openAssistant();
   await eventually(() => cards().count(), 50, "Persisted mail appears before a native message or ACK");
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
@@ -3010,38 +3024,155 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await host.nativeApproval.assistantMail.deliver(1);
   await eventually(() => cards().count(), 123, "A new durable record appears from the live change event without any model response");
   steps.push("reconnect fills 62 arrivals, refreshes an old analysis/status without a new insertion seq, deduplicates by mailRefId, and live arrivals appear without model replies");
+  const oversizedMail = await host.nativeApproval.assistantMail.deliver(1, Buffer.from(`Content-Type: text/html; charset=utf-8\r\n\r\n<p>${"x".repeat(16 * 1024 * 1024 + 1)}</p>`));
+  await eventually(() => cards().count(), 124, "An unparseable mail retains its card and does not block healthy mail");
+  const oversizedCard = page.locator(`[data-mail-id="${oversizedMail.mailRefId}"]`).first();
+  await oversizedCard.getByText("原文无法解析，预览不可用。", { exact: true }).waitFor();
+  await oversizedCard.getByText("原文", { exact: true }).click();
+  await oversizedCard.getByRole("alert").waitFor();
+  steps.push("oversized HTML preserves its persisted card and healthy cards, with the original read error confined to that card");
 
   host.mailOffline = true;
   host.socket.close();
   await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
+  await evictStartupSnapshot();
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).waitFor();
   await openAssistant();
-  await eventually(() => cards().count(), 123, "Reload restores the separately encrypted aggregate while the host is offline");
+  await eventually(() => cards().count(), 124, "Reload restores the separately encrypted aggregate while the host is offline");
   host.mailOffline = false;
   host.socket.connect();
   await eventually(() => page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).count(), 0, "Host reconnects before binding");
   await page.getByLabel("助理会话", { exact: true }).selectOption(sessionId);
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
-  await page.getByRole("button", { name: "更换会话", exact: true }).waitFor();
+  await page.locator('.assistant-view-tabs button[aria-pressed="true"]').getByText("对话", { exact: true }).waitFor();
   const assistantId = host.snapshot.assistantMail.binding.assistantId;
-  await capture("mobile-mail-bound");
-  await page.locator(".assistant-binding-current").getByRole("button", { name: originalTitle, exact: true }).click();
-  await page.locator('.conversation-stream [data-mail-id]').first().waitFor();
+  await page.locator('.assistant-conversation .conversation-stream [data-mail-id]').first().waitFor();
   await eventually(() => page.locator(".conversation-loading").count(), 0, "Native history finishes loading");
-  assert.equal(await page.getByText("这是一个空会话", { exact: true }).count(), 0, "Persisted mail makes the timeline non-empty even without native messages");
+  assert.equal(await page.getByText("这是一个空会话", { exact: true }).count(), 0);
   assert.equal(await page.locator('.conversation-stream .assistant-mail-preview').first().evaluate(element => getComputedStyle(element).webkitLineClamp), "3");
+  assert.equal(await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).count(), 1, "Embedded native view keeps one root navigation menu");
   await capture("mobile-mail-timeline");
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
-  await openAssistant();
+
+  await page.getByRole("button", { name: "邮件", exact: true }).click();
+  await original.getByRole("button", { name: "讨论此邮件", exact: true }).click();
+  const reference = page.getByRole("complementary", { name: "当前邮件引用" });
+  await reference.getByText(oldest.mailRefId, { exact: true }).waitFor();
+  const composer = page.locator(".assistant-conversation textarea");
+  await composer.fill("/help");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await page.getByText("请先清除邮件引用，再执行会话命令。", { exact: true }).waitFor();
+  assert.equal(host.requests.some(request => request.method === "turn.start" || request.method === "session.command"), false);
+  await composer.fill("请帮我拟回复");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "sendMessage").length, 1, "Selected mail reaches native sendMessage once");
+  assert.equal(host.requests.findLast(request => request.method === "turn.start").params.mailRefId, oldest.mailRefId);
+  const firstNativeText = JSON.stringify(host.nativeApproval.calls.findLast(call => call.method === "sendMessage").args[1]);
+  assert.ok(firstNativeText.includes(oldest.mailRefId));
+  assert.ok(firstNativeText.includes("mail.read_event"));
+  assert.ok(!firstNativeText.includes(oldest.subject));
+  assert.ok(!firstNativeText.includes("trusted.example"));
+  await capture("mobile-mail-reference");
+
+  const otherMail = host.nativeApproval.assistantMail.service.page({ limit: 2 }).events[1];
+  await page.getByRole("button", { name: "邮件", exact: true }).click();
+  await page.locator(`.assistant-mail-list [data-mail-id="${otherMail.mailRefId}"]`).getByRole("button", { name: "讨论此邮件", exact: true }).click();
+  await reference.getByText(otherMail.mailRefId, { exact: true }).waitFor();
+  await composer.fill("再看这一封");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "sendMessage").length, 2, "Switching mail changes the native reference");
+  const secondNativeText = JSON.stringify(host.nativeApproval.calls.findLast(call => call.method === "sendMessage").args[1]);
+  assert.ok(secondNativeText.includes(otherMail.mailRefId));
+  assert.ok(!secondNativeText.includes(oldest.mailRefId));
+  await reference.getByRole("button", { name: "清除邮件引用", exact: true }).click();
+  await eventually(() => reference.count(), 0, "Clearing removes the visible reference");
+  await composer.fill("不带邮件的一条消息");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "sendMessage").length, 3, "Cleared reference sends an ordinary native turn");
+  assert.equal(host.requests.findLast(request => request.method === "turn.start").params.mailRefId, undefined);
+  assert.ok(!JSON.stringify(host.nativeApproval.calls.findLast(call => call.method === "sendMessage").args[1]).includes("邮件引用"));
+  assert.equal(host.nativeApproval.assistantMail.service.page({ cursor: "2" }).events[0].processingStatus, "processed");
+  steps.push("assistant opens its bound native conversation; visible selection, switching and clearing control the canonical mail ID in actual native sendMessage; commands cannot bypass the reference and no mail body is inserted");
+
+  await page.getByRole("button", { name: "邮件", exact: true }).click();
+  await page.locator(`.assistant-mail-list [data-mail-id="${otherMail.mailRefId}"]`).getByRole("button", { name: "讨论此邮件", exact: true }).click();
+  const manualCapabilities = [...host.snapshot.host.capabilities];
+  host.snapshot.host.capabilities = manualCapabilities.filter(value => value !== "plugin.assistant-mail.manual-reference.v1");
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await reference.getByRole("alert").waitFor();
+  await composer.fill("旧宿主不能丢失引用");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await page.getByText("当前电脑不支持邮件引用，请先清除引用。", { exact: true }).first().waitFor();
+  assert.equal(host.requests.filter(request => request.method === "turn.start").length, 3);
+  await reference.getByRole("button", { name: "清除邮件引用", exact: true }).click();
+  host.snapshot.host.capabilities = manualCapabilities;
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  steps.push("withdrawing the explicit manual-reference capability keeps the selected mail visible and prevents a silent ordinary turn");
+
   host.nativeApproval.assistantMail.service.setBinding({ assistantId, nativeSessionId: null, sectionId: null, previousSessionIds: [sessionId] });
   await page.getByText("原会话已归档或删除，请重新绑定。", { exact: true }).waitFor();
   assert.equal(host.snapshot.assistantMail.binding.assistantId, assistantId);
-  steps.push("offline reload restores mail; explicit binding adds compact mail to the native session timeline without an empty-session placeholder, and paused binding asks for a rebind");
   await page.getByLabel("助理会话", { exact: true }).selectOption(sessionId);
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
-  await page.getByRole("button", { name: "更换会话", exact: true }).waitFor();
+  await page.locator(".assistant-conversation textarea").waitFor();
+  assert.equal(await reference.count(), 0);
+  steps.push("offline reload without any cached snapshot restores mail; paused binding retains records and explicit rebind opens the same native conversation without resurrecting an old reference");
+
+  await page.getByRole("button", { name: "邮件", exact: true }).click();
+  await page.locator(`.assistant-mail-list [data-mail-id="${otherMail.mailRefId}"]`).getByRole("button", { name: "讨论此邮件", exact: true }).click();
+  await page.getByRole("button", { name: "助理设置", exact: true }).click();
+  await page.getByRole("button", { name: "更换会话", exact: true }).click();
+  await page.getByRole("button", { name: "新建会话", exact: true }).click();
+  const createDialog = page.locator(".session-create-dialog");
+  await createDialog.getByRole("button", { name: "选择文件夹", exact: true }).click();
+  await createDialog.getByRole("button", { name: "浏览电脑文件夹", exact: true }).click();
+  await createDialog.getByRole("button", { name: "输入路径", exact: true }).click();
+  await createDialog.getByLabel("当前路径", { exact: true }).fill(host.nativeApproval.cwd);
+  await createDialog.getByLabel("当前路径", { exact: true }).press("Enter");
+  await createDialog.getByRole("button", { name: "使用此文件夹", exact: true }).click();
+  await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("新建助理会话");
+  await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
+  await createDialog.waitFor({ state: "hidden" });
+  assert.ok(host.requests.filter(request => request.method === "directory.list").length < 12, "Directory browsing stays bounded while bridge request state rerenders the assistant page");
+  await page.locator(".assistant-conversation").getByRole("heading", { name: "新建助理会话", exact: true }).waitFor();
+  const createdSessionId = host.snapshot.assistantMail.binding.nativeSessionId;
+  assert.notEqual(createdSessionId, sessionId);
+  assert.equal(host.snapshot.assistantMail.binding.assistantId, assistantId);
+  assert.ok(host.snapshot.assistantMail.binding.previousSessionIds.includes(sessionId));
+  assert.equal(await reference.count(), 0, "Rebinding clears the former session's selected mail");
+  assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "");
+  await page.getByRole("button", { name: "助理设置", exact: true }).click();
+  await page.getByRole("button", { name: "更换会话", exact: true }).click();
+  await page.getByLabel("助理会话", { exact: true }).selectOption(sessionId);
+  host.mailPageFailure = true;
+  await page.getByRole("button", { name: "绑定会话", exact: true }).click();
+  await page.getByText("隔离邮件列表读取失败", { exact: true }).waitFor();
+  await eventually(() => page.evaluate(async roomId => {
+    const { bridgeVault } = await import("/src/lib/vault.ts");
+    const stored = await bridgeVault.getHost(roomId);
+    const cache = await bridgeVault.loadMailCache(stored.crypto);
+    return cache?.workspace?.assistantMail?.binding?.nativeSessionId;
+  }, host.pairing.roomId), sessionId, "Binding is encrypted and persisted even when mail page refresh fails");
+  host.mailOffline = true;
+  host.socket.close();
+  await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
+  await evictStartupSnapshot();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).waitFor();
+  await openAssistant();
+  await page.getByText(`绑定会话：${sessionId}`, { exact: true }).waitFor();
+  await eventually(() => cards().count(), 124, "Bound workspace and records survive without any ordinary snapshot");
+  assert.equal(await page.locator(".assistant-conversation textarea").count(), 0, "Cached binding never invents a native session or enables sending");
+  assert.equal(await page.getByRole("button", { name: "对话", exact: true }).isDisabled(), true);
+  host.mailPageFailure = false;
+  host.mailOffline = false;
+  host.socket.connect();
+  await page.locator(".assistant-conversation textarea").waitFor();
+  assert.equal(host.snapshot.assistantMail.binding.assistantId, assistantId);
+  assert.equal(host.requests.filter(request => request.method === "turn.start").length, 3);
+  await capture("mobile-mail-bound");
+  steps.push("new native session creation binds explicitly and clears selection; rebinding persists encrypted metadata despite list failure; snapshot eviction/offline restart restores the bound workspace without fabricating a sendable native session");
 
   await page.exposeFunction("assistantDesktopRequest", async input => ({ kind: "response", requestId: randomUUID(), ok: true,
     result: await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), ...input }) }));
@@ -3056,12 +3187,25 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await page.setViewportSize({ width: 1200, height: 800 });
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "助理", exact: true }).click();
+  await page.locator(".assistant-conversation textarea").waitFor();
+  assert.equal(await page.locator(".assistant-conversation .desktop-session-sidebar").count(), 0);
+  await capture("desktop-conversation");
+  await page.getByRole("button", { name: "邮件", exact: true }).click();
   await eventually(() => cards().count(), 50, "Desktop uses the same mail page and RPC");
   const headingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
-  const bindingBounds = await page.locator(".assistant-binding").boundingBox();
-  assert.ok(Math.abs(headingBounds.x - bindingBounds.x) < 1, "Desktop title aligns with the mail content column");
+  const mailBounds = await cards().first().boundingBox();
+  assert.ok(Math.abs(headingBounds.x - mailBounds.x) < 1, "Desktop title aligns with the mail content column");
   await capture("desktop-mail");
-  steps.push("desktop assistant entry uses the shared cards and explicit binding controls");
+  await cards().nth(1).getByRole("button", { name: "讨论此邮件", exact: true }).click();
+  await reference.getByText(otherMail.mailRefId, { exact: true }).waitFor();
+  await page.locator(".assistant-conversation textarea").fill("桌面端核对引用");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "sendMessage").length, 4, "Desktop sends through the same native execution path");
+  assert.ok(JSON.stringify(host.nativeApproval.calls.findLast(call => call.method === "sendMessage").args[1]).includes(otherMail.mailRefId));
+  await capture("desktop-mail-reference");
+  await page.getByRole("button", { name: "助理设置", exact: true }).click();
+  await page.getByRole("button", { name: "更换会话", exact: true }).waitFor();
+  steps.push("real DesktopDashboard defaults to the controlled bound conversation, omits the ordinary directory, shares mail selection and submits the selected reference through Controller to native sendMessage");
 }
 
 async function runScenario(theme, scenario) {

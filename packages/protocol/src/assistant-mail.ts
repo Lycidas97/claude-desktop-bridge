@@ -1,3 +1,5 @@
+import type { BridgeCapability } from "./types.js";
+
 /** Business projections only. Claude Desktop remains the native execution authority. */
 export interface BridgeAssistantBinding {
   assistantId: string;
@@ -51,4 +53,5 @@ export interface BridgeMailDetail {
 /** Bounded, per-host encrypted client cache, independent of the ordinary message ring. */
 export interface BridgeMailCache extends BridgeMailPage {
   changeToken: string;
+  workspace?: { capabilities: BridgeCapability[]; assistantMail?: BridgeAssistantMailSnapshot };
 }

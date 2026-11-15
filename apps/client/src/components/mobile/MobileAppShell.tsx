@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { createPortal } from "react-dom";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { IconButton } from "../common/IconButton.js";
+import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
 
 export type MobileTab = "sessions" | "assistant" | "computers" | "settings";
 
@@ -30,8 +31,9 @@ export function useMobileNav(): MobileNav | undefined {
  * page header, so content keeps the whole screen height.
  */
 export function MobileAppShell({ tab, onTabChange, assistantAvailable, children }: MobileNav & { children: ReactNode }) {
+  const assistant = useAssistantMail();
   return (
-    <MobileNavContext.Provider value={{ tab, onTabChange, assistantAvailable }}>
+    <MobileNavContext.Provider value={{ tab, onTabChange, assistantAvailable: assistantAvailable ?? Boolean(assistant) }}>
       <div className="mobile-app-shell">
         <div className="mobile-app-content">{children}</div>
       </div>

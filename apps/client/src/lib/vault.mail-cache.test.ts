@@ -35,6 +35,11 @@ function mailCache(seqs: number[], marker = "PRIVATE_MAIL_CACHE_MARKER"): Bridge
   return {
     changeToken: `change-${marker}`,
     nextCursor: "0",
+    workspace: {
+      capabilities: ["plugin.assistant-mail.v1", "plugin.assistant-mail.manual-reference.v1"],
+      assistantMail: { bindingState: "ready", receiverState: "disabled", changeToken: marker, automaticDelivery: false,
+        binding: { assistantId: marker, nativeSessionId: `native-${marker}`, sectionId: null, previousSessionIds: [] } },
+    },
     cards: seqs.map(seq => ({
       seq,
       mailRefId: `mail-${seq}`,

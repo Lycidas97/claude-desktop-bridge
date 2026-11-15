@@ -841,7 +841,7 @@ export function conversationTimeline(
       timeline.push({ kind: "evidence", evidence });
     }
   });
-  for (const card of mailCards.filter(candidate => !projected.has(candidate.mailRefId)).sort((left, right) => left.recordedAt - right.recordedAt)) {
+  for (const card of mailCards.filter(candidate => !projected.has(candidate.mailRefId)).sort((left, right) => left.recordedAt - right.recordedAt || left.seq - right.seq)) {
     const index = timeline.findIndex(entry => (entry.kind === "message" ? entry.item.createdAt : entry.kind === "evidence" ? entry.evidence.startedAt : entry.card.recordedAt) > card.recordedAt);
     timeline.splice(index < 0 ? timeline.length : index, 0, { kind: "mail", card });
   }

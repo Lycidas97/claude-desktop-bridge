@@ -9,7 +9,7 @@ const DELIVERY_LABELS = {
 };
 const PROCESSING_LABELS = { pending: "待处理", processing: "处理中", processed: "已处理" };
 
-export function MailCard({ card, nativeMessage }: { card: BridgeMailCard; nativeMessage?: BridgeHistoryItem }) {
+export function MailCard({ card, nativeMessage, onDiscuss }: { card: BridgeMailCard; nativeMessage?: BridgeHistoryItem; onDiscuss?(): void }) {
   const mail = useAssistantMail();
   const [detail, setDetail] = useState<BridgeMailDetail>();
   const [error, setError] = useState("");
@@ -43,5 +43,6 @@ export function MailCard({ card, nativeMessage }: { card: BridgeMailCard; native
       </> : <p role={error ? "alert" : "status"}>{error || (loading ? "正在读取原文…" : mail?.online ? "展开以读取原文" : "连接电脑后可查看原文")}</p>}
     </details>
     {nativeMessage && <details className="assistant-mail-native"><summary>关联原生消息</summary><code>{nativeMessage.id}</code><pre>{nativeMessage.text}</pre></details>}
+    {mail && <button type="button" className="assistant-session-link" disabled={!mail.canReference} onClick={() => { mail.selectMail(card); onDiscuss?.(); }}>讨论此邮件</button>}
   </article>;
 }

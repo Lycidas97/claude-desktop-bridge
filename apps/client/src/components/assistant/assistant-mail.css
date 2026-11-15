@@ -1,7 +1,16 @@
 .assistant-page { min-width: 0; height: 100%; overflow-y: auto; }
-.assistant-page-content { width: min(100%, 860px); margin: 0 auto; padding: 0 24px 40px; }
-.assistant-page-mobile .assistant-page-content { padding: 8px 15px 32px; }
-.assistant-binding { padding: 16px 0 22px; margin-bottom: 20px; border-bottom: 1px solid var(--line); }
+.assistant-page.desktop-page { padding: 0; }
+.assistant-page-content { width: min(100%, 860px); margin: 0 auto; padding: 24px 28px 40px; }
+.assistant-page-mobile .assistant-page-content { padding: 10px 15px 32px; }
+.assistant-page .desktop-page-heading { margin-bottom: 16px; }
+.assistant-binding {
+  padding: 16px;
+  margin-bottom: 18px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--m-r-group);
+  background: var(--card-fill);
+  box-shadow: var(--card-hi);
+}
 .assistant-binding-current { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; }
 .assistant-binding-current > :first-child { min-width: 0; text-align: left; overflow-wrap: anywhere; font-weight: 600; }
 .assistant-binding-current > :last-child { flex-shrink: 0; }
@@ -41,11 +50,49 @@
 .assistant-mail-older { display: block; margin: 20px auto 0; }
 .conversation-stream > .assistant-mail-card, .desktop-conversation-stream > .assistant-mail-card { margin: 16px 0; }
 .assistant-page.is-conversation { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
-.assistant-page.is-conversation > .assistant-page-content { flex: 0 0 auto; padding-bottom: 0; }
-.assistant-view-tabs { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; border-bottom: 1px solid var(--line); }
-.assistant-view-tabs > button { min-height: 40px; padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
-.assistant-view-tabs > button[aria-pressed="true"] { border-bottom-color: var(--accent-ink); color: var(--text); font-weight: 600; }
-.assistant-view-tabs > button:last-child { margin-left: auto; }
+.assistant-page.is-conversation > .assistant-page-content { flex: 0 0 auto; padding-bottom: 4px; }
+.assistant-view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 4px;
+  border: 1px solid var(--card-border);
+  border-radius: calc(var(--m-r-control) + 4px);
+  background: var(--surface-2);
+}
+.assistant-view-tabs > button:not(.icon-button) {
+  min-height: 34px;
+  padding: 6px 16px;
+  border: 0;
+  border-radius: var(--m-r-control);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--m-fs-subhead);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--t-fast) ease, color var(--t-fast) ease, box-shadow var(--t-fast) ease;
+}
+.assistant-view-tabs > button:not(.icon-button):hover:not(:disabled):not([aria-pressed="true"]) { color: var(--text); }
+.assistant-view-tabs > button:not(.icon-button)[aria-pressed="true"] {
+  background: var(--card-fill);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: var(--card-hi), var(--card-shadow);
+}
+.assistant-view-tabs > .icon-button {
+  width: 34px;
+  height: 34px;
+  margin-left: auto;
+  border-radius: var(--m-r-control);
+  color: var(--muted);
+}
+.assistant-view-tabs > .icon-button[aria-pressed="true"] {
+  background: var(--card-fill);
+  color: var(--text);
+  box-shadow: var(--card-hi), var(--card-shadow);
+}
 .assistant-view-tabs > button:disabled, .assistant-session-link:disabled { opacity: .5; cursor: default; text-decoration: none; }
 .assistant-conversation { flex: 1; min-height: 0; min-width: 0; }
 .assistant-conversation > .mobile-workspace,

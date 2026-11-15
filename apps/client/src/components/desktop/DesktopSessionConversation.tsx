@@ -13,6 +13,7 @@ import type {
   BridgePermissionRules,
   BridgePrAutoFixState,
   BridgePrAutoFixUpdate,
+  BridgeProjectInfo,
   BridgePullRequest,
   BridgeResponse,
   BridgeSDKPermissionMode,
@@ -36,6 +37,7 @@ import {
   registerDiagnosticsStateProvider,
 } from "../../lib/diagnostics.js";
 import { uploadSessionFile, type UploadFileHandler } from "../../lib/file-upload.js";
+import { desktopRuntimeId } from "../../lib/runtime-labels.js";
 import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
 import { MailReference } from "../assistant/MailReference.js";
 import {
@@ -80,6 +82,7 @@ export interface DesktopConversationController {
   mountSession(sessionId: string, hostId?: string): () => void;
   resetSessionHistory(sessionId: string, hostId?: string): void;
   openSession(sessionId: string, hostId?: string): Promise<void>;
+  refreshSession(sessionId: string, hostId?: string): Promise<boolean>;
   loadOlderHistory(sessionId: string, hostId?: string): Promise<void>;
   loadOlderEvidence(sessionId: string, hostId?: string): Promise<void>;
   loadEvidenceDetails(evidenceId: string, kind: "tools" | "artifacts", cursor?: string): Promise<BridgeEvidenceDetailPage>;
@@ -114,6 +117,11 @@ export interface DesktopConversationController {
   loadSessionCommands(sessionId: string): Promise<BridgeSlashCommandCatalog>;
   runSessionCommand(sessionId: string, text: string): Promise<BridgeSessionCommandResult>;
   renameSessionByCommand(sessionId: string, title: string): Promise<void>;
+  renameSession(sessionId: string, title: string): Promise<void>;
+  moveSessionSection(
+    sessionId: string,
+    sectionId: string | null,
+  ): Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] }>;
   loadSessionPermissions(sessionId: string): Promise<BridgeSessionPermissions>;
   saveSessionPermissions(
     sessionId: string,
@@ -210,10 +218,11 @@ function useDesktopConversationController(
     });
   }
 
-  async function openSession(
+  async function runOpenSession(
     sessionId: string,
     targetHostId = latestRef.current.snapshot.host.hostId,
-  ): Promise<void> {
+    propagateError = false,
+  ): Promise<boolean> {
     const key = conversationDraftKey(targetHostId, sessionId);
     const seq = (openSeqRef.current.get(key) ?? 0) + 1;
     openSeqRef.current.set(key, seq);
@@ -253,7 +262,7 @@ function useDesktopConversationController(
           response.ok ? response.result as { evidence: BridgeEvidencePage } : undefined
         )).catch(() => undefined),
       ]);
-      if (openSeqRef.current.get(key) !== seq) return;
+      if (openSeqRef.current.get(key) !== seq) return false;
       updateHistories((current) => ({
         ...current,
         [key]: {
@@ -282,15 +291,17 @@ function useDesktopConversationController(
           },
         };
       });
+      return true;
     } catch (failure) {
-      if (openSeqRef.current.get(key) !== seq) return;
+      if (openSeqRef.current.get(key) !== seq) return false;
+      const errorMessage = failure instanceof Error ? failure.message : "会话读取失败";
       updateHistories((current) => ({
         ...current,
         [key]: {
           status: "error",
           items: current[key]?.items ?? [],
           hasMore: false,
-          error: failure instanceof Error ? failure.message : "会话读取失败",
+          error: errorMessage,
         },
       }));
       updateEvidence((current) => ({
@@ -301,7 +312,18 @@ function useDesktopConversationController(
           hasMore: current[key]?.hasMore ?? false,
         },
       }));
+      if (propagateError) {
+        throw new Error(errorMessage);
+      }
+      return false;
     }
+  }
+
+  async function openSession(
+    sessionId: string,
+    targetHostId = latestRef.current.snapshot.host.hostId,
+  ): Promise<void> {
+    await runOpenSession(sessionId, targetHostId, false);
   }
 
   function resetSessionHistory(
@@ -747,6 +769,13 @@ function useDesktopConversationController(
     mountSession,
     resetSessionHistory,
     openSession,
+    async refreshSession(
+      sessionId,
+      targetHostId = latestRef.current.snapshot.host.hostId,
+    ) {
+      await latestRef.current.onRefreshSnapshot();
+      return runOpenSession(sessionId, targetHostId, true);
+    },
     loadOlderHistory,
     loadOlderEvidence,
     loadEvidenceDetails,
@@ -881,6 +910,38 @@ function useDesktopConversationController(
         params: { sessionId, text: `/rename ${title}` },
       }));
       await latestRef.current.onRefreshSnapshot();
+    },
+    async renameSession(sessionId, title) {
+      const trimmed = title.trim();
+      const currentSnapshot = latestRef.current.snapshot;
+      const target = currentSnapshot.sessions.find((candidate) => candidate.sessionId === sessionId);
+      const targetRuntimeId = target ? desktopRuntimeId(target) : "claude-desktop";
+      if (
+        currentSnapshot.host.capabilities.includes("session.command.v1")
+        && targetRuntimeId === "claude-desktop"
+      ) {
+        unwrap(await latestRef.current.apiRequest({
+          method: "session.command",
+          params: { sessionId, text: `/rename ${trimmed}` },
+        }));
+        await latestRef.current.onRefreshSnapshot();
+        return;
+      }
+      unwrap(await latestRef.current.apiRequest({
+        method: "session.rename",
+        params: { sessionId, title: trimmed },
+      }));
+      await latestRef.current.onRefreshSnapshot();
+    },
+    async moveSessionSection(sessionId, sectionId) {
+      const moved = unwrap<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] }>(
+        await latestRef.current.apiRequest({
+          method: "section.move",
+          params: { sessionId, sectionId },
+        }),
+      );
+      await latestRef.current.onRefreshSnapshot();
+      return moved;
     },
     async loadSessionPermissions(sessionId) {
       return unwrap<{ permissions: BridgeSessionPermissions }>(await latestRef.current.apiRequest({
@@ -1059,6 +1120,8 @@ export function DesktopSessionConversation({
   }
 
   const effectiveError = actionError ?? externalActionError;
+  const canCommand = snapshot.host.capabilities.includes("session.command.v1");
+  const canRename = snapshot.host.capabilities.includes("session.rename.v1");
 
   return (
     <ConversationView
@@ -1087,6 +1150,7 @@ export function DesktopSessionConversation({
       composerBanner={<MailReference sessionId={session.sessionId} />}
       resolveMailRefId={() => assistantMail?.referenceFor(session.sessionId)}
       onOpenSession={(targetSessionId) => controller.openSession(targetSessionId, hostId)}
+      onRefresh={(targetSessionId = session.sessionId) => controller.refreshSession(targetSessionId, hostId)}
       onLoadOlderHistory={(targetSessionId) => controller.loadOlderHistory(targetSessionId, hostId)}
       onLoadOlderEvidence={(targetSessionId) => controller.loadOlderEvidence(targetSessionId, hostId)}
       onLoadEvidenceDetails={controller.loadEvidenceDetails}
@@ -1109,7 +1173,12 @@ export function DesktopSessionConversation({
       onConfigureSession={controller.configureSession}
       onLoadSessionCommands={controller.loadSessionCommands}
       onRunSessionCommand={controller.runSessionCommand}
-      onRenameSession={controller.renameSessionByCommand}
+      {...((canCommand && desktopRuntimeId(session) === "claude-desktop") || canRename
+        ? { onRenameSession: controller.renameSession }
+        : {})}
+      {...(snapshot.host.capabilities.includes("section.move.v1")
+        ? { onMoveSessionSection: controller.moveSessionSection }
+        : {})}
       onLoadSessionPermissions={controller.loadSessionPermissions}
       onSaveSessionPermissions={controller.saveSessionPermissions}
       onPreviewRewind={controller.previewRewind}

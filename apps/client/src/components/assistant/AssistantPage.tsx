@@ -27,6 +27,12 @@ export function AssistantPage({ snapshot, mobile = false, active = true, onOpenS
     () => (async (path?: string) => mailResult<{ listing: BridgeDirectoryListing }>(await mail!.request("directory.list", path ? { path } : {})).listing),
     [mail?.request],
   );
+  const createDirectory = useMemo(
+    () => (async (parentPath: string, name: string) => (
+      mailResult<{ path: string }>(await mail!.request("directory.mkdir", { parentPath, name })).path
+    )),
+    [mail?.request],
+  );
   useEffect(() => { if (active) setView("conversation"); }, [active]);
   if (!active) return null;
   if (!mail) return null;
@@ -95,6 +101,10 @@ export function AssistantPage({ snapshot, mobile = false, active = true, onOpenS
     {displayedView === "conversation" && session && <div className="assistant-conversation">{renderConversation(session.sessionId)}</div>}
     {creating && snapshot && <SessionCreateDialog snapshot={snapshot} connected={mail.online}
       {...(snapshot.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: browseDirectory } : {})}
+      {...(snapshot.host.capabilities.includes("directory.mkdir.v1") ? { onCreateDirectory: createDirectory } : {})}
+      {...(!mobile && window.bridgeDesktop?.chooseDirectory
+        ? { onChooseDirectory: () => window.bridgeDesktop!.chooseDirectory!() }
+        : {})}
       onCreate={async (cwd, title, runtimeId, projectId, trustWorkspace) => {
         const { session: created } = mailResult<{ session: BridgeSessionInfo }>(await mail.request("session.create", { cwd, title, runtimeId, projectId, trustWorkspace }));
         if (!await bind(created.sessionId)) throw new Error("会话已创建，绑定失败；可选择该会话重试。");

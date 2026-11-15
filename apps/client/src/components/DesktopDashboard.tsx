@@ -1,4 +1,5 @@
 import type {
+  BridgeDeviceInfo,
   BridgeEvent,
   BridgeResponse,
   DesktopControlSnapshot,
@@ -25,6 +26,7 @@ import { claudeSnapshot } from "../lib/claude-snapshot.js";
 import { BrandMark } from "./common/BrandMark.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 import { DiagnosticFloatingEntry } from "./common/DiagnosticLogDialog.js";
+import { EmptyState } from "./common/EmptyState.js";
 import { IconButton } from "./common/IconButton.js";
 import { ThemeMenu } from "./common/ThemeMenu.js";
 import {
@@ -35,7 +37,7 @@ import { DesktopSessions, unwrap } from "./desktop/DesktopSessionsPane.js";
 import { DesktopSettings } from "./desktop/DesktopSettings.js";
 import { MediaPreviewProvider } from "./evidence/MediaPreviewProvider.js";
 
-import { AssistantMailProvider, type AssistantRequest } from "./assistant/AssistantMailProvider.js";
+import { AssistantMailProvider, useAssistantMail, type AssistantRequest } from "./assistant/AssistantMailProvider.js";
 import { AssistantPage } from "./assistant/AssistantPage.js";
 import { ConversationDraftsProvider } from "./conversation/ConversationDraftsProvider.js";
 
@@ -61,6 +63,35 @@ function connectionLabel(snapshot: DesktopControlSnapshot): string {
   return "局域网连接";
 }
 
+function DesktopAssistantNavButton({
+  active,
+  onSelect,
+}: {
+  active: boolean;
+  onSelect(): void;
+}) {
+  const assistantMail = useAssistantMail();
+  const unreadCount = assistantMail?.unreadCount ?? 0;
+  return (
+    <button
+      className={active ? "active" : ""}
+      type="button"
+      aria-current={active ? "page" : undefined}
+      onClick={onSelect}
+    >
+      <span className="desktop-nav-icon-wrap">
+        <Mail size={19} aria-hidden="true" />
+        {unreadCount > 0 && (
+          <b className="desktop-nav-badge" aria-hidden="true">
+            {unreadCount > 99 ? "99+" : unreadCount}
+          </b>
+        )}
+      </span>
+      <span>助理</span>
+    </button>
+  );
+}
+
 function DesktopDevices({
   snapshot,
   onCreatePairing,
@@ -70,66 +101,135 @@ function DesktopDevices({
   onCreatePairing(): Promise<void>;
   onRevoke(deviceId: string): Promise<void>;
 }) {
-  const [revokeCandidate, setRevokeCandidate] = useState<string>();
+  const [revokeCandidate, setRevokeCandidate] = useState<BridgeDeviceInfo>();
+  const [revokeBusy, setRevokeBusy] = useState(false);
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [deviceError, setDeviceError] = useState<string>();
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const copyTimerRef = useRef<number | undefined>(undefined);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (copyTimerRef.current !== undefined) {
+        window.clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = undefined;
+      }
+    };
+  }, []);
+
+  async function handleCreatePairing(): Promise<void> {
+    if (pairingBusy) return;
+    setPairingBusy(true);
+    setDeviceError(undefined);
+    try {
+      await onCreatePairing();
+    } catch (reason) {
+      setDeviceError(reason instanceof Error ? reason.message : "二维码生成失败");
+    } finally {
+      setPairingBusy(false);
+    }
+  }
 
   async function copyPairingLink(): Promise<void> {
     if (!snapshot.pairingUrl) return;
     try {
       await navigator.clipboard.writeText(snapshot.pairingUrl);
+      if (!mountedRef.current) return;
       setCopyState("copied");
-      window.setTimeout(() => setCopyState("idle"), 2_000);
+      if (copyTimerRef.current !== undefined) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => {
+        copyTimerRef.current = undefined;
+        if (mountedRef.current) setCopyState("idle");
+      }, 2_000);
     } catch {
-      setCopyState("error");
+      if (mountedRef.current) setCopyState("error");
     }
   }
 
+  const activeDevices = snapshot.devices.filter((device) => !device.revokedAt);
+
   return (
     <section className="desktop-page">
-      <header className="desktop-page-heading">
-        <div><span>访问控制</span><h1>设备</h1></div>
-        <button type="button" className="primary-button" onClick={() => void onCreatePairing()}><QrCode size={17} />添加手机</button>
-      </header>
-      {snapshot.pairingUrl && snapshot.pairingExpiresAt && (
-        <section className="device-pairing-band">
-          <div className="qr-wrap"><QRCodeSVG value={snapshot.pairingUrl} size={320} level="M" marginSize={4} title="手机配对二维码" /></div>
-          <div>
-            <span>一次性配对</span>
-            <h2>使用手机 Bridge 扫描</h2>
-            <p>二维码十分钟内有效，首次扫描后绑定到该手机安装。也可以复制配对链接，在手机端粘贴完成配对。</p>
-            <div className="device-pairing-actions">
-              <button type="button" className="secondary-button" onClick={() => void copyPairingLink()}>
-                <Clipboard size={16} />
-                {copyState === "copied" ? "已复制配对链接" : copyState === "error" ? "复制失败，请扫码" : "复制配对链接"}
-              </button>
+      <div className="desktop-page-shell">
+        <header className="desktop-page-heading">
+          <h1>设备</h1>
+          <button type="button" className="primary-button" disabled={pairingBusy} onClick={() => void handleCreatePairing()}>
+            <QrCode size={17} aria-hidden="true" />
+            添加手机
+          </button>
+        </header>
+        {deviceError && <p role="alert" className="inline-error">{deviceError}</p>}
+        {snapshot.pairingUrl && snapshot.pairingExpiresAt && (
+          <section className="device-pairing-band" aria-label="手机扫码配对">
+            <div className="qr-wrap">
+              <QRCodeSVG value={snapshot.pairingUrl} size={320} level="M" marginSize={4} title="手机配对二维码" />
             </div>
-            <small>{Math.max(0, Math.ceil((snapshot.pairingExpiresAt - Date.now()) / 60_000))} 分钟后过期</small>
+            <div className="device-pairing-copy">
+              <h2>使用手机 Bridge 扫描</h2>
+              <p>二维码十分钟内有效，首次扫描后绑定到该手机安装。也可以复制配对链接，在手机端粘贴完成配对。</p>
+              <div className="device-pairing-actions">
+                <button type="button" className="secondary-button" onClick={() => void copyPairingLink()}>
+                  <Clipboard size={16} aria-hidden="true" />
+                  {copyState === "copied" ? "已复制配对链接" : copyState === "error" ? "复制失败，请扫码" : "复制配对链接"}
+                </button>
+              </div>
+              <small>{Math.max(0, Math.ceil((snapshot.pairingExpiresAt - Date.now()) / 60_000))} 分钟后过期</small>
+            </div>
+          </section>
+        )}
+        {activeDevices.length > 0 ? (
+          <div className="m-group desktop-device-list" role="list" aria-label="已配对手机">
+            {activeDevices.map((device) => (
+              <article className="desktop-device-row" role="listitem" key={device.deviceId}>
+                <span className="device-icon" aria-hidden="true"><Smartphone size={19} /></span>
+                <div>
+                  <strong>{device.name}</strong>
+                  <span>{device.platform.toUpperCase()} · {formatLastSeen(device.lastSeenAt, device.online)}</span>
+                </div>
+                <span className={`device-online-state ${device.online ? "online" : ""}`}>
+                  <i aria-hidden="true" />
+                  {device.online ? "在线" : "已授权"}
+                </span>
+                <IconButton label={`撤销 ${device.name}`} disabled={revokeBusy} onClick={() => setRevokeCandidate(device)}>
+                  <Trash2 size={17} />
+                </IconButton>
+              </article>
+            ))}
           </div>
-        </section>
-      )}
-      <div className="desktop-device-list">
-        {snapshot.devices.filter((device) => !device.revokedAt).map((device) => (
-          <article className="desktop-device-row" key={device.deviceId}>
-            <span className="device-icon"><Smartphone size={20} /></span>
-            <div><strong>{device.name}</strong><span>{device.platform.toUpperCase()} · {formatLastSeen(device.lastSeenAt, device.online)}</span></div>
-            <span className={`device-online-state ${device.online ? "online" : ""}`}><i />{device.online ? "在线" : "已授权"}</span>
-            <IconButton label={`撤销 ${device.name}`} onClick={() => setRevokeCandidate(device.deviceId)}><Trash2 size={17} /></IconButton>
-          </article>
-        ))}
-        {snapshot.devices.filter((device) => !device.revokedAt).length === 0 && (
-          <div className="desktop-page-empty"><Smartphone size={24} /><strong>还没有配对手机</strong><span>点击右上角生成十分钟有效的二维码。</span></div>
+        ) : (
+          <EmptyState
+            className="desktop-page-empty m-group"
+            icon={<Smartphone size={24} aria-hidden="true" />}
+            title="还没有配对手机"
+            description="点击右上角生成十分钟有效的二维码。"
+          />
         )}
       </div>
       <ConfirmationDialog
         open={Boolean(revokeCandidate)}
         title="撤销这台手机？"
-        description="撤销后旧密钥会立即失效，手机需要重新扫码才能连接。"
+        description={`撤销「${revokeCandidate?.name ?? "这台手机"}」后旧密钥会立即失效，手机需要重新扫码才能连接。`}
         confirmLabel="撤销权限"
         danger
-        onCancel={() => setRevokeCandidate(undefined)}
+        busy={revokeBusy}
+        onCancel={() => {
+          if (!revokeBusy) setRevokeCandidate(undefined);
+        }}
         onConfirm={() => {
-          if (!revokeCandidate) return;
-          void onRevoke(revokeCandidate).finally(() => setRevokeCandidate(undefined));
+          if (!revokeCandidate || revokeBusy) return;
+          const targetId = revokeCandidate.deviceId;
+          setRevokeBusy(true);
+          setDeviceError(undefined);
+          void onRevoke(targetId)
+            .then(() => setRevokeCandidate(undefined))
+            .catch((reason: unknown) => {
+              setDeviceError(reason instanceof Error ? reason.message : "撤销设备失败");
+              setRevokeCandidate(undefined);
+            })
+            .finally(() => setRevokeBusy(false));
         }}
       />
     </section>
@@ -184,6 +284,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
   if (!api || !snapshot) return <div className="desktop-loading"><BrandMark /><span>正在准备会话主机</span></div>;
 
   const events = eventsByHost[snapshot.host.hostId] ?? EMPTY_EVENTS;
+  const hostOnline = snapshot.connection === "connected" && !snapshot.host.version.startsWith("0.2.");
 
   async function request(input: LocalBridgeRequest): Promise<BridgeResponse> {
     return api!.request(input);
@@ -209,13 +310,42 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
       <aside className="desktop-nav-v2">
         <BrandMark compact />
         <nav aria-label="Bridge 主导航">
-          <button className={tab === "sessions" ? "active" : ""} type="button" onClick={() => setTab("sessions")}><MessageSquare size={19} /><span>会话</span></button>
-          {snapshot.host.capabilities.includes("plugin.assistant-mail.v1") && <button className={tab === "assistant" ? "active" : ""} type="button" onClick={() => setTab("assistant")}><Mail size={19} /><span>助理</span></button>}
-          <button className={tab === "devices" ? "active" : ""} type="button" onClick={() => setTab("devices")}><Smartphone size={19} /><span>设备</span></button>
-          <button className={tab === "settings" ? "active" : ""} type="button" onClick={() => setTab("settings")}><Settings2 size={19} /><span>设置</span></button>
+          <button
+            className={tab === "sessions" ? "active" : ""}
+            type="button"
+            aria-current={tab === "sessions" ? "page" : undefined}
+            onClick={() => setTab("sessions")}
+          >
+            <MessageSquare size={19} aria-hidden="true" />
+            <span>会话</span>
+          </button>
+          {snapshot.host.capabilities.includes("plugin.assistant-mail.v1") && (
+            <DesktopAssistantNavButton active={tab === "assistant"} onSelect={() => setTab("assistant")} />
+          )}
+          <button
+            className={tab === "devices" ? "active" : ""}
+            type="button"
+            aria-current={tab === "devices" ? "page" : undefined}
+            onClick={() => setTab("devices")}
+          >
+            <Smartphone size={19} aria-hidden="true" />
+            <span>设备</span>
+          </button>
+          <button
+            className={tab === "settings" ? "active" : ""}
+            type="button"
+            aria-current={tab === "settings" ? "page" : undefined}
+            onClick={() => setTab("settings")}
+          >
+            <Settings2 size={19} aria-hidden="true" />
+            <span>设置</span>
+          </button>
         </nav>
-        <div className="desktop-host-chip">
-          <Laptop size={17} />
+        <div className="desktop-host-chip" title={`${snapshot.host.name} · ${connectionLabel(snapshot)}`}>
+          <span className="desktop-host-chip-icon">
+            <Laptop size={16} aria-hidden="true" />
+            <i className={`m-status-dot ${hostOnline ? "is-online" : ""}`} aria-hidden="true" />
+          </span>
           <span><strong>{snapshot.host.name}</strong><small>{connectionLabel(snapshot)}</small></span>
         </div>
         <ThemeMenu control={themeControl} side="right" iconSize={18} />

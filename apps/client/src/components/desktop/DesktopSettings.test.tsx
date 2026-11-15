@@ -250,3 +250,14 @@ it("passes the collected renderer diagnostics snapshot to exportDiagnostics whil
     vi.unstubAllGlobals();
   }
 });
+
+it("surfaces launchAtLogin errors cleanly inside connections group", async () => {
+  props.api.setLaunchAtLogin = vi.fn().mockRejectedValueOnce(new Error("登录项写入被系统拒绝"));
+  button("连接与启动").props.onClick();
+  draw();
+  const checkbox = elements().find(element => element.type === "input" && element.props.type === "checkbox")!;
+  checkbox.props.onChange({ target: { checked: true } });
+  await settle();
+  expect(props.api.setLaunchAtLogin).toHaveBeenCalledWith(true);
+  expect(text()).toContain("登录项写入被系统拒绝");
+});

@@ -1265,8 +1265,17 @@ export function ConversationView({
     && session.allowedActions?.canMoveSection,
   );
   const menuSupportsRename = Boolean(
-    (onRenameSession || (onRunSessionCommand && snapshot?.host.capabilities.includes("session.command.v1") && runtimeId === "claude-desktop"))
-    && snapshot?.host.capabilities.includes("session.rename.v1"),
+    onRenameSession
+      ? (
+          !snapshot
+          || snapshot.host.capabilities.includes("session.rename.v1")
+          || (snapshot.host.capabilities.includes("session.command.v1") && runtimeId === "claude-desktop")
+        )
+      : (
+          onRunSessionCommand
+          && snapshot?.host.capabilities.includes("session.command.v1")
+          && runtimeId === "claude-desktop"
+        ),
   );
   const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== session.title && !effectiveActionBusy);
   const menuSupportsFork = Boolean(onForkSession && runtimeId === "claude-desktop");
@@ -1274,6 +1283,26 @@ export function ConversationView({
   const menuSessionBusy = session.turnState === "running" || session.turnState === "queued" || session.turnState === "waiting";
   const canSyncSession = Boolean(onRefresh || !isMobile);
   const effectiveRefreshing = refreshing || internalRefreshing;
+  const renameDialogRef = useRef<HTMLElement>(null);
+  const menuOpenerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!renameOpen || typeof document === "undefined") return;
+    const dialog = renameDialogRef.current;
+    return () => {
+      const opener = menuOpenerRef.current;
+      const active = document.activeElement;
+      const focusReleased = !active || active === document.body || active === document.documentElement || Boolean(dialog?.contains(active));
+      if (opener && opener.isConnected && focusReleased) {
+        opener.focus();
+      }
+    };
+  }, [renameOpen]);
+
+  useEffect(() => {
+    if (!renameOpen || !effectiveActionBusy) return;
+    renameDialogRef.current?.focus();
+  }, [renameOpen, effectiveActionBusy]);
 
   function closeInternalRename(): void {
     if (effectiveActionBusy) return;
@@ -1286,10 +1315,10 @@ export function ConversationView({
     setActionBusy(true);
     setInternalActionError(undefined);
     try {
-      if (onRunSessionCommand && snapshot?.host.capabilities.includes("session.command.v1") && runtimeId === "claude-desktop") {
-        await onRunSessionCommand(session.sessionId, `/rename ${renameTitle.trim()}`);
+      if (onRenameSession) {
+        await onRenameSession(session.sessionId, renameTitle.trim());
       } else {
-        await onRenameSession!(session.sessionId, renameTitle.trim());
+        await onRunSessionCommand!(session.sessionId, `/rename ${renameTitle.trim()}`);
       }
       setRenameOpen(false);
       setInternalMenuOpen(false);
@@ -1440,6 +1469,9 @@ export function ConversationView({
                 if (onOpenSessionMenu) {
                   onOpenSessionMenu();
                 } else {
+                  if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+                    menuOpenerRef.current = document.activeElement;
+                  }
                   setInternalActionError(undefined);
                   setMoveMenuOpen(false);
                   setInternalMenuOpen(true);
@@ -1694,7 +1726,7 @@ export function ConversationView({
       {!onOpenSessionMenu && internalMenuOpen && !renameOpen && (
         <Sheet
           manageFocus
-          focusPaused={deleteSessionOpen}
+          focusPaused={deleteSessionOpen || renameOpen}
           eyebrow={moveMenuOpen ? session.title : `${session.projectName} · ${runtimeName}`}
           title={moveMenuOpen ? "移动到分组" : session.title}
           busy={effectiveActionBusy}
@@ -1898,10 +1930,38 @@ export function ConversationView({
             if (event.key === "Escape") {
               event.stopPropagation();
               closeInternalRename();
+              return;
+            }
+            if (event.key === "Tab" && renameDialogRef.current) {
+              const focusables = [...renameDialogRef.current.querySelectorAll<HTMLElement>(
+                'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+              )];
+              if (focusables.length === 0) {
+                event.preventDefault();
+                renameDialogRef.current.focus();
+                return;
+              }
+              const first = focusables[0]!;
+              const last = focusables[focusables.length - 1]!;
+              const active = typeof document !== "undefined" ? document.activeElement : null;
+              if (event.shiftKey && (active === first || !renameDialogRef.current.contains(active))) {
+                event.preventDefault();
+                last.focus();
+              } else if (!event.shiftKey && (active === last || !renameDialogRef.current.contains(active))) {
+                event.preventDefault();
+                first.focus();
+              }
             }
           }}
         >
-          <section className="create-session-dialog session-create-dialog" role="dialog" aria-modal="true" aria-label="重命名会话">
+          <section
+            ref={renameDialogRef}
+            className="create-session-dialog session-create-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="重命名会话"
+            tabIndex={-1}
+          >
             <header className="session-create-header"><h2>重命名会话</h2></header>
             <form onSubmit={(event) => { event.preventDefault(); void runInternalRename(); }}>
               <div className="session-create-body">

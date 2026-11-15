@@ -11,6 +11,7 @@ export function mailResult<T>(response: BridgeResponse | undefined): T {
 
 interface AssistantMailState {
   cache: BridgeMailCache;
+  unreadCount: number;
   assistant: BridgeAssistantMailSnapshot | undefined;
   selectedMail: BridgeMailCard | undefined;
   canReference: boolean;
@@ -106,9 +107,10 @@ export function AssistantMailProvider({ snapshot, online, request, loadCache, sa
     finally { if (mounted.current) setLoading(false); }
   }
 
+  const unreadCount = cache.cards.reduce((count, card) => count + (card.processingStatus === "pending" ? 1 : 0), 0);
   const selectedMail = selection?.sessionId === assistant?.binding?.nativeSessionId ? cache.cards.find(card => card.mailRefId === selection?.mailRefId) : undefined;
   return <AssistantMailContext.Provider value={enabled ? {
-    cache, assistant, canReference, selectedMail,
+    cache, unreadCount, assistant, canReference, selectedMail,
     referenceFor: sessionId => {
       if (!selectedMail || assistant?.binding?.nativeSessionId !== sessionId) return undefined;
       if (!canReference) throw new Error("当前电脑不支持邮件引用，请先清除引用。");

@@ -31,8 +31,7 @@
   transform: rotate(45deg);
 }
 
-.mobile-composer,
-.desktop-composer {
+.mobile-composer {
   position: relative;
   z-index: 20;
 }

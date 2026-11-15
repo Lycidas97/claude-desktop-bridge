@@ -2,6 +2,7 @@ import type { BridgeArtifactManifest, BridgeEvent, BridgeHistoryItem, BridgePerm
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { downloadBridgeSessionFile } from "../lib/artifact-download.js";
+import { AssistantMailProvider } from "./assistant/AssistantMailProvider.js";
 import { AssistantPage } from "./assistant/AssistantPage.js";
 import { ConversationDraftsProvider } from "./conversation/ConversationDraftsProvider.js";
 import { ConversationView } from "./conversation/ConversationView.js";
@@ -79,10 +80,13 @@ vi.mock("react", async (original) => ({
   useLayoutEffect: recordEffect,
 }));
 const mailContext = vi.hoisted(() => ({ current: undefined as any }));
-vi.mock("./assistant/AssistantMailProvider.js", async (original) => ({
-  ...await original<typeof import("./assistant/AssistantMailProvider.js")>(),
-  useAssistantMail: () => mailContext.current,
-}));
+vi.mock("./assistant/AssistantMailProvider.js", async (original) => {
+  const actual = await original<typeof import("./assistant/AssistantMailProvider.js")>();
+  return {
+    ...actual,
+    useAssistantMail: () => mailContext.current ?? actual.useAssistantMail(),
+  };
+});
 vi.mock("./evidence/MediaPreviewProvider.js", async original => ({ ...await original<typeof import("./evidence/MediaPreviewProvider.js")>(), useMediaPreview: () => vi.fn() }));
 vi.mock("../lib/file-upload.js", async (original) => ({
   ...await original<typeof import("../lib/file-upload.js")>(),
@@ -117,13 +121,15 @@ const stores: HookStore[] = [];
 function renderer(
   component: (props: any) => ReactNode,
   initialProps: any,
-  options?: { expandDashboard?: boolean },
+  options?: { expandDashboard?: boolean; expandMailProvider?: boolean },
 ) {
   const subStores = new Map<string, HookStore>();
   let props = initialProps;
   let tree: ReactNode;
   function shouldExpand(type: unknown): type is (props: any) => ReactNode {
     if (type === DesktopSessionConversation || type === ConversationView) return true;
+    if (typeof type === "function" && type.name === "DesktopAssistantNavButton") return true;
+    if (options?.expandMailProvider && type === AssistantMailProvider) return true;
     if (!options?.expandDashboard) return false;
     return (
       type === ConversationDraftsProvider
@@ -1771,5 +1777,356 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     });
     await expect(createDialog.props.onCreateDirectory("/tmp", "demo")).resolves.toBe("/tmp/demo");
     expect(apiRequest).toHaveBeenLastCalledWith({ method: "directory.mkdir", params: { parentPath: "/tmp", name: "demo" } });
+  });
+
+  it("wires section.move and session.rename end-to-end from DesktopSessionConversation menu", async () => {
+    snapshot.host.capabilities.push("section.move.v1", "session.rename.v1", "session.command.v1");
+    snapshot.runtime.desktopIntegration.state = "ready";
+    snapshot.projects.push({
+      projectId: "sec-1",
+      name: "Lab",
+      cwd: "",
+      kind: "desktop-group",
+      sessionCount: 0,
+      runningCount: 0,
+      pendingCount: 0,
+      lastActivityAt: 2,
+    });
+    snapshot.sessions[0]!.allowedActions = {
+      ...snapshot.sessions[0]!.allowedActions!,
+      canMoveSection: true,
+    };
+    await openSessions();
+
+    // Move session into section sec-1
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "移动到分组")!.props.onClick();
+    tree = sessions.draw();
+    apiRequest.mockResolvedValueOnce({
+      kind: "response",
+      requestId: "move-in",
+      ok: true,
+      result: { session: { ...snapshot.sessions[0]!, projectId: "sec-1", projectName: "Lab" }, projects: snapshot.projects },
+    });
+    await elements(tree).find((element) => element.type === SheetAction && element.props.label === "Lab")!.props.onClick();
+    await settle();
+    expect(apiRequest).toHaveBeenCalledWith({ method: "section.move", params: { sessionId: "A", sectionId: "sec-1" } });
+
+    // Move session out of section (sectionId: null)
+    snapshot.sessions[0] = { ...snapshot.sessions[0]!, projectId: "sec-1", projectName: "Lab" };
+    sessionsProps = elements(dashboard.draw()).find((element) => typeof element.type === "function" && element.type.name === "DesktopSessions")!.props;
+    tree = sessions.draw(sessionsProps);
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "移动到分组")!.props.onClick();
+    tree = sessions.draw();
+    apiRequest.mockResolvedValueOnce({
+      kind: "response",
+      requestId: "move-out",
+      ok: true,
+      result: { session: { ...snapshot.sessions[0]!, projectId: "project", projectName: "Project" }, projects: snapshot.projects },
+    });
+    await elements(tree).find((element) => element.type === SheetAction && element.props.label === "移出分组")!.props.onClick();
+    await settle();
+    expect(apiRequest).toHaveBeenCalledWith({ method: "section.move", params: { sessionId: "A", sectionId: null } });
+
+    // Rename session via /rename when session.command.v1 is supported on claude-desktop
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "重命名")!.props.onClick();
+    tree = sessions.draw();
+    const renameDialog = elements(tree).find((element) => element.props["aria-label"] === "重命名会话")!;
+    elements(renameDialog).find((element) => element.type === "input")!.props.onChange({ target: { value: "  新桌面标题  " } });
+    tree = sessions.draw();
+    apiRequest.mockResolvedValueOnce({
+      kind: "response",
+      requestId: "cmd-rename",
+      ok: true,
+      result: { command: { status: "executed", message: "Renamed" } },
+    });
+    const activeRenameDialog = elements(tree).find((element) => element.props["aria-label"] === "重命名会话")!;
+    elements(activeRenameDialog).find((element) => element.type === "form")!.props.onSubmit({ preventDefault: vi.fn() });
+    await settle();
+    expect(apiRequest).toHaveBeenCalledWith({ method: "session.command", params: { sessionId: "A", text: "/rename 新桌面标题" } });
+
+    // Rename session via session.rename RPC when session.command.v1 is absent
+    snapshot.host.capabilities = snapshot.host.capabilities.filter((cap) => cap !== "session.command.v1");
+    sessionsProps = elements(dashboard.draw()).find((element) => typeof element.type === "function" && element.type.name === "DesktopSessions")!.props;
+    tree = sessions.draw(sessionsProps);
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "重命名")!.props.onClick();
+    tree = sessions.draw();
+    const directDialog = elements(tree).find((element) => element.props["aria-label"] === "重命名会话")!;
+    elements(directDialog).find((element) => element.type === "input")!.props.onChange({ target: { value: "  RPC 标题  " } });
+    tree = sessions.draw();
+    apiRequest.mockResolvedValueOnce({
+      kind: "response",
+      requestId: "rpc-rename",
+      ok: true,
+      result: { session: { ...snapshot.sessions[0]!, title: "RPC 标题" } },
+    });
+    const activeDirectDialog = elements(tree).find((element) => element.props["aria-label"] === "重命名会话")!;
+    elements(activeDirectDialog).find((element) => element.type === "form")!.props.onSubmit({ preventDefault: vi.fn() });
+    await settle();
+    expect(apiRequest).toHaveBeenCalledWith({ method: "session.rename", params: { sessionId: "A", title: "RPC 标题" } });
+
+    // Rename dialog traps Tab focus onto dialog container while saving (all controls disabled)
+    let resolvePendingRename!: (value: BridgeResponse) => void;
+    apiRequest.mockImplementationOnce(() => new Promise<BridgeResponse>((resolve) => {
+      resolvePendingRename = resolve;
+    }));
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "重命名")!.props.onClick();
+    tree = sessions.draw();
+    const busyRenameDialog = elements(tree).find((element) => element.props["aria-label"] === "重命名会话")!;
+    expect(busyRenameDialog.props.tabIndex).toBe(-1);
+    elements(busyRenameDialog).find((element) => element.type === "input")!.props.onChange({ target: { value: "保存中标题" } });
+    tree = sessions.draw();
+    const activeBusyDialog = elements(tree).find((element) => element.props["aria-label"] === "重命名会话")!;
+    const focusDialog = vi.fn();
+    const dialogDomStub = {
+      querySelectorAll: () => [],
+      contains: () => true,
+      focus: focusDialog,
+    };
+    const refObj = (activeBusyDialog.props.ref ?? (activeBusyDialog as unknown as { ref?: { current: unknown } }).ref) as { current: unknown };
+    refObj.current = dialogDomStub;
+    elements(activeBusyDialog).find((element) => element.type === "form")!.props.onSubmit({ preventDefault: vi.fn() });
+    tree = sessions.draw();
+    expect(focusDialog).toHaveBeenCalled();
+    const backdrop = elements(tree).find((element) => String(element.props.className).includes("session-create-backdrop"))!;
+    const preventTabDefault = vi.fn();
+    backdrop.props.onKeyDown({ key: "Tab", shiftKey: false, preventDefault: preventTabDefault, stopPropagation: vi.fn() });
+    expect(preventTabDefault).toHaveBeenCalledOnce();
+    resolvePendingRename({
+      kind: "response",
+      requestId: "rpc-rename-2",
+      ok: true,
+      result: { session: { ...snapshot.sessions[0]!, title: "保存中标题" } },
+    });
+    await settle();
+
+    // Refresh failure propagates error instead of flashing 已同步 when session history was already ready
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    tree = sessions.draw();
+    apiRequest.mockImplementation(async (req: { method: string }) => {
+      if (req.method === "session.open") {
+        return { kind: "response", requestId: "open-fail", ok: false, error: { code: "E_OPEN", message: "同步拉取失败", retryable: true } };
+      }
+      return { kind: "response", requestId: "other", ok: true, result: { evidence: { items: [], hasMore: false } } };
+    });
+    await elements(tree).find((element) => element.type === SheetAction && element.props.label === "同步此会话")!.props.onClick();
+    await settle();
+    tree = sessions.draw();
+    expect(textContent(tree)).toContain("同步拉取失败");
+    expect(textContent(tree)).not.toContain("已同步");
+  });
+
+  it("renders unified DesktopDashboard rail from real AssistantMailProvider cards, DesktopDevices pairing/revoke/unmount-safe copy, and AssistantPage directory mkdir", async () => {
+    snapshot.host.capabilities.push("plugin.assistant-mail.v1", "directory.browse.v1", "directory.mkdir.v1");
+    snapshot.assistantMail = {
+      bindingState: "unbound",
+      receiverState: "connected",
+      changeToken: "tok-1",
+      automaticDelivery: false,
+    };
+    let mailCards = [
+      {
+        seq: 2,
+        mailRefId: "mail-2",
+        accountKey: "acc",
+        mailbox: "INBOX" as const,
+        subject: "Pending A",
+        from: [{ address: "a@example.com" }],
+        receivedAt: "2026-01-01T00:00:00Z",
+        recordedAt: 2,
+        preview: "hi",
+        processingStatus: "pending" as const,
+        nativeDelivery: { state: "not-submitted" as const },
+      },
+      {
+        seq: 1,
+        mailRefId: "mail-1",
+        accountKey: "acc",
+        mailbox: "INBOX" as const,
+        subject: "Processed B",
+        from: [{ address: "b@example.com" }],
+        receivedAt: "2026-01-01T00:00:00Z",
+        recordedAt: 1,
+        preview: "done",
+        processingStatus: "processed" as const,
+        nativeDelivery: { state: "not-submitted" as const },
+      },
+    ];
+    apiRequest.mockImplementation(async (req: { method: string }) => {
+      if (req.method === "plugin.assistant-mail.list") {
+        return {
+          kind: "response",
+          requestId: "mail-list",
+          ok: true,
+          result: { mailPage: { cards: mailCards } },
+        };
+      }
+      return { kind: "response", requestId: "ok", ok: true, result: {} };
+    });
+    const createPairing = vi.fn(async () => ({
+      ...snapshot,
+      pairingUrl: "bridge://pair/demo",
+      pairingExpiresAt: Date.now() + 600_000,
+      devices: [{
+        deviceId: "dev-1",
+        name: "Pixel 9",
+        platform: "android",
+        pairedAt: 1,
+        lastSeenAt: Date.now(),
+        online: true,
+      }],
+    }));
+    const revokeDevice = vi.fn(async () => ({ ...snapshot, devices: [] }));
+    const chooseDirectory = vi.fn(async () => "/Users/demo");
+    let onSnapshotListener: ((next: DesktopControlSnapshot) => void) | undefined;
+    const scheduledTimers = new Set<number>();
+    let nextTimerId = 1;
+    vi.stubGlobal("window", {
+      setTimeout: vi.fn((fn: () => void) => {
+        const id = nextTimerId++;
+        scheduledTimers.add(id);
+        void fn;
+        return id;
+      }),
+      clearTimeout: vi.fn((id: number) => {
+        scheduledTimers.delete(id);
+      }),
+      bridgeDesktop: {
+        getSnapshot: async () => snapshot,
+        onSnapshot: (cb: (next: DesktopControlSnapshot) => void) => {
+          onSnapshotListener = cb;
+          return () => { onSnapshotListener = undefined; };
+        },
+        onEvent: () => () => undefined,
+        request: apiRequest,
+        createPairing,
+        revokeDevice,
+        chooseDirectory,
+      },
+    });
+
+    const fullDashboard = renderer(
+      DesktopDashboard,
+      {
+        themeControl: { theme: "dark", family: "sunstone", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
+      },
+      { expandMailProvider: true },
+    );
+    fullDashboard.draw();
+    await settle();
+    fullDashboard.draw();
+    await settle();
+    let dashTree = fullDashboard.draw();
+
+    // Unread badge on 助理 nav button reflects real pending mail count (1) and updates on changeToken
+    const navBadge = elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")!;
+    expect(navBadge.props["aria-hidden"]).toBe("true");
+    expect(navBadge.props.children).toBe(1);
+    expect(elements(dashTree).some((element) => String(element.props.className).includes("m-status-dot is-online"))).toBe(true);
+
+    mailCards = mailCards.map((card) => ({ ...card, processingStatus: "processed" as const }));
+    snapshot = {
+      ...snapshot,
+      assistantMail: { ...snapshot.assistantMail!, changeToken: "tok-2" },
+    };
+    onSnapshotListener?.(snapshot);
+    dashTree = fullDashboard.draw();
+    await settle();
+    dashTree = fullDashboard.draw();
+    expect(elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")).toBeUndefined();
+
+    // Switch to 设备 tab and verify concise header (no 访问控制 kicker), empty state, pairing QR, unmount-safe clipboard, and revoke
+    const nav = elements(dashTree).find((element) => element.type === "nav" && element.props["aria-label"] === "Bridge 主导航")!;
+    elements(nav).find((element) => element.type === "button" && textContent(element).includes("设备"))!.props.onClick();
+    dashTree = fullDashboard.draw();
+    const devicesFn = elements(dashTree).find((element) => typeof element.type === "function" && element.type.name === "DesktopDevices")!;
+    const devicesRenderer = renderer(devicesFn.type as (props: any) => ReactNode, devicesFn.props);
+    let devTree = devicesRenderer.draw();
+    expect(textContent(devTree)).not.toContain("访问控制");
+    expect(elements(devTree).find((element) => element.type === EmptyState)?.props.title).toBe("还没有配对手机");
+
+    elements(devTree).find((element) => element.type === "button" && textContent(element).includes("添加手机"))!.props.onClick();
+    await settle();
+    expect(createPairing).toHaveBeenCalledOnce();
+    dashTree = fullDashboard.draw();
+    devTree = devicesRenderer.draw(elements(dashTree).find((element) => typeof element.type === "function" && element.type.name === "DesktopDevices")!.props);
+    expect(textContent(devTree)).not.toContain("一次性配对");
+    expect(textContent(devTree)).toContain("使用手机 Bridge 扫描");
+    expect(textContent(devTree)).toContain("Pixel 9");
+
+    // Unmount while clipboard.writeText is pending must not schedule a leaked timer
+    let resolveClipboard!: () => void;
+    vi.stubGlobal("navigator", {
+      clipboard: {
+        writeText: vi.fn(() => new Promise<void>((resolve) => {
+          resolveClipboard = resolve;
+        })),
+      },
+    });
+    const transientDevices = renderer(devicesFn.type as (props: any) => ReactNode, elements(dashTree).find((element) => typeof element.type === "function" && element.type.name === "DesktopDevices")!.props);
+    const transientTree = transientDevices.draw();
+    const transientStore = stores[stores.length - 1]!;
+    elements(transientTree).find((element) => element.type === "button" && textContent(element).includes("复制配对链接"))!.props.onClick();
+    transientStore.effects.forEach((effect) => effect.cleanup?.());
+    resolveClipboard();
+    await settle();
+    expect(scheduledTimers.size).toBe(0);
+
+    elements(devTree).find((element) => element.type === IconButton && element.props.label === "撤销 Pixel 9")!.props.onClick();
+    devTree = devicesRenderer.draw();
+    const revokeDialog = elements(devTree).find((element) => element.type === ConfirmationDialog && element.props.open === true)!;
+    expect(revokeDialog.props.description).toContain("Pixel 9");
+    revokeDialog.props.onConfirm();
+    await settle();
+    expect(revokeDevice).toHaveBeenCalledWith("dev-1");
+
+    // AssistantPage wires onBrowseDirectory, onCreateDirectory (returning path), and onChooseDirectory on desktop
+    const mailReq = vi.fn(async (method: string) => ({
+      kind: "response" as const,
+      requestId: "mail-dir",
+      ok: true,
+      result: method === "directory.mkdir" ? { path: "/Users/demo/sub" } : { listing: { path: "/Users/demo", directories: [], recentPaths: [] } },
+    }));
+    mailContext.current = {
+      cache: { cards: [], changeToken: "tok-2" },
+      unreadCount: 0,
+      assistant: snapshot.assistantMail,
+      selectedMail: undefined,
+      canReference: false,
+      selectMail: vi.fn(),
+      clearReference: vi.fn(),
+      referenceFor: () => undefined,
+      loading: false,
+      error: "",
+      online: true,
+      loadOlder: vi.fn(),
+      refresh: vi.fn(),
+      read: vi.fn(),
+      request: mailReq,
+    };
+    const assistantRenderer = renderer(AssistantPage, {
+      snapshot,
+      mobile: false,
+      onOpenSession: vi.fn(),
+      renderConversation: () => null,
+    });
+    let assistantTree = assistantRenderer.draw();
+    elements(assistantTree).find((element) => element.type === "button" && element.props.children === "新建会话")!.props.onClick();
+    assistantTree = assistantRenderer.draw();
+    const assistantCreateDialog = elements(assistantTree).find((element) => element.type === SessionCreateDialog)!;
+    await expect(assistantCreateDialog.props.onCreateDirectory("/Users/demo", "sub")).resolves.toBe("/Users/demo/sub");
+    expect(mailReq).toHaveBeenCalledWith("directory.mkdir", { parentPath: "/Users/demo", name: "sub" });
+    await expect(assistantCreateDialog.props.onChooseDirectory()).resolves.toBe("/Users/demo");
   });
 });

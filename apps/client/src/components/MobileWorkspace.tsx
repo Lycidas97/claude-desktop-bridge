@@ -65,7 +65,6 @@ import {
   canConfigureSession,
   canSendSession,
   conciseModelName,
-  conciseSessionSubtitle,
   conversationItems,
   conversationTimeline,
   deliveryLabel,
@@ -100,6 +99,7 @@ import {
 import { SubagentCard } from "./conversation/SubagentCard.js";
 import { NativePromptCard } from "./conversation/NativePromptCard.js";
 import { SessionPrActions, SessionPrBar } from "./conversation/SessionPrBar.js";
+import { SessionProfileSummary } from "./session/SessionProfileSummary.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./evidence/EvidencePanel.js";
 import { FileChangesCard } from "./evidence/FileChangesCard.js";
@@ -1508,13 +1508,13 @@ export function MobileWorkspace({
               onClick={() => setConfigurationSessionId(selectedSession.sessionId)}
             >
               <i className={`m-status-dot ${selectedSession.turnState}`} />
-              <span>{conciseSessionSubtitle(selectedSession)}</span>
+              <SessionProfileSummary session={selectedSession} showActivity />
               <ChevronDown size={14} />
             </button>
           ) : (
             <span className="m-presence">
               <i className={`m-status-dot ${selectedSession.turnState}`} />
-              <span>{conciseSessionSubtitle(selectedSession)}</span>
+              <SessionProfileSummary session={selectedSession} showActivity />
             </span>
           )}
           backLabel={sessionView === "evidence" ? "返回对话" : "返回会话列表"}
@@ -1559,14 +1559,12 @@ export function MobileWorkspace({
         {selectedTaskDetails?.error && (
           <p className="session-channel-warning" role="alert">后台任务：{selectedTaskDetails.error}</p>
         )}
-        {selectedSession.nativePermissionModeChange && (
+        {selectedSession.nativePermissionModeChange && selectedSession.nativePermissionModeChange.state !== "confirmed" && (
           <div className="session-channel-warning message-queue-status" role="status" aria-label="Desktop 会话授权变更">
             <ShieldCheck size={17} />
             <span>{selectedSession.nativePermissionModeChange.state === "requested"
               ? `已请求切换为「${NATIVE_MODE_LABELS[selectedSession.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，等待 Desktop 确认`
-              : selectedSession.nativePermissionModeChange.state === "confirmed"
-                ? "Desktop 已确认本次授权变更"
-                : `Desktop 未切换为「${NATIVE_MODE_LABELS[selectedSession.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，后续请求仍需确认`}</span>
+              : `Desktop 未切换为「${NATIVE_MODE_LABELS[selectedSession.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，后续请求仍需确认`}</span>
           </div>
         )}
         {selectedSession.pendingCount > 0 && selectedSession.desktopHandoff?.state !== "close-desktop" && selectedSession.desktopHandoff?.state !== "desktop-inbox" && (

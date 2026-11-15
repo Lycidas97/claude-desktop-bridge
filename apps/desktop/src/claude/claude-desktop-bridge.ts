@@ -382,6 +382,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         turnState: waiting ? "waiting" : running ? "running" : "idle",
         lastActivityAt: native.lastActivityAt ?? native.createdAt ?? 0, pendingCount: pendingCommandIds.length, pendingCommandIds,
         ...(native.model ? { model: native.model, modelDisplayName: this.savedModel(native.model)?.displayName ?? native.model } : {}), ...(native.effort ? { effort: native.effort } : {}),
+        ...(native.permissionMode ? { nativePermissionMode: native.permissionMode } : {}),
         ...(contextUsage ? { contextUsage } : {}),
         ...(running && this.compactingSessions.has(sessionId) ? { isCompacting: true } : {}),
         prs: native.prs ?? [],

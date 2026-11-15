@@ -79,7 +79,6 @@ import {
   conversationTimeline,
   fileToAttachment,
   ownershipLabel,
-  sessionProfile,
   stoppableBridgeTask,
 } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
@@ -87,6 +86,7 @@ import { EmptyState } from "../common/EmptyState.js";
 import { ProjectOrderSheet } from "../mobile/ProjectOrderSheet.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
+import { SessionProfileSummary } from "../session/SessionProfileSummary.js";
 import {
   InteractivePromptCard,
   matchingQuestionPermission,
@@ -928,7 +928,7 @@ export function DesktopSessions({
                     <GitPullRequest size={18} />
                   </IconButton>
                 )}
-                {canConfigure && (
+                {canConfigure ? (
                   <button
                     type="button"
                     className="session-profile-trigger"
@@ -936,9 +936,9 @@ export function DesktopSessions({
                     onClick={() => setConfigurationOpen(true)}
                   >
                     <Settings2 size={15} />
-                    <span>{sessionProfile(selected)}</span>
+                    <SessionProfileSummary session={selected} />
                   </button>
-                )}
+                ) : <SessionProfileSummary session={selected} />}
 
                 {canStop && (
                   <IconButton

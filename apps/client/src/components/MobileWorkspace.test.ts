@@ -429,10 +429,31 @@ describe("mobile workspace directory", () => {
     }
   });
 
+  it.each([false, true])("keeps observed header settings visible when configuration is available=%s", canConfigure => {
+    const useState = vi.mocked(React.useState).getMockImplementation()!;
+    const stateSpy = vi.mocked(React.useState)
+      .mockImplementationOnce(useState)
+      .mockImplementationOnce(useState)
+      .mockReturnValueOnce([session.sessionId, vi.fn()]);
+    try {
+      const html = renderToStaticMarkup(createElement(MobileWorkspace, {
+        ...workspaceProps(),
+        snapshot: { ...snapshot, host: { ...snapshot.host, capabilities: ["claude.native-relay.v1"] }, sessions: [{
+          ...session, transport: "claude-desktop-native", model: "model-id", modelDisplayName: "Claude Opus 5.5 custom model", effort: "high",
+          nativePermissionMode: "plan",
+          nativePermissionModeChange: { requestId: "change", mode: "bypassPermissions", state: "not-applied", observedMode: "plan" },
+          allowedActions: { canSend: true, canSteer: true, canInterrupt: false, canConfigure, canSwitchProvider: false, canContinueOfficial: false },
+        }] },
+      }));
+      expect(html).toContain("Claude Opus 5.5 custom model · 计划模式 · reasoning high");
+      expect(html.includes('aria-label="会话设置"')).toBe(canConfigure);
+      expect(html).toContain("Desktop 未切换为「完全授权」");
+    } finally { stateSpy.mockReset(); }
+  });
+
   it.each([
     ["requested", undefined, "已请求切换为「完全授权」，等待 Desktop 确认"],
     ["requested", "acceptEdits", "已请求切换为「自动接受编辑」，等待 Desktop 确认"],
-    ["confirmed", "default", "Desktop 已确认本次授权变更"],
     ["not-applied", "default", "Desktop 未切换为「逐个确认」，后续请求仍需确认"],
   ] as const)("shows the %s Desktop session mode change (%s) without claiming a permanent mode", (state, mode, label) => {
     const useState = vi.mocked(React.useState).getMockImplementation()!;
@@ -467,7 +488,8 @@ describe("mobile workspace directory", () => {
           nativePermissionModeChange: { requestId: "native-request", state: "confirmed" },
         }] },
       }));
-      expect(html).toContain("Desktop 已确认本次授权变更");
+      expect(html).not.toContain('aria-label="Desktop 会话授权变更"');
+      expect(html).not.toContain("Desktop 已确认本次授权变更");
       expect(html).toContain('aria-label="消息排队状态"');
       expect(html).not.toContain("等待关闭此 Desktop 会话");
       expect(html).not.toContain("旧会话仅供查看");

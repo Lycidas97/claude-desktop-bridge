@@ -65,7 +65,6 @@ import {
   canConfigureSession,
   canSendSession,
   conciseModelName,
-  conciseSessionSubtitle,
   conversationItems,
   conversationTimeline,
   deliveryLabel,
@@ -100,6 +99,7 @@ import {
 import { SubagentCard } from "./conversation/SubagentCard.js";
 import { NativePromptCard } from "./conversation/NativePromptCard.js";
 import { SessionPrActions, SessionPrBar } from "./conversation/SessionPrBar.js";
+import { SessionProfileSummary } from "./session/SessionProfileSummary.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./evidence/EvidencePanel.js";
 import { FileChangesCard } from "./evidence/FileChangesCard.js";
@@ -118,7 +118,7 @@ import { MobileSessionCatalog } from "./mobile/MobileSessionCatalog.js";
 import { useAssistantMail } from "./assistant/AssistantMailProvider.js";
 import { MailReference } from "./assistant/MailReference.js";
 import { MailCard } from "./assistant/MailCard.js";
-import { MobileSheet, SheetAction } from "./mobile/MobileSheet.js";
+import { Sheet, SheetAction } from "./common/Sheet.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
@@ -1201,7 +1201,7 @@ export function MobileWorkspace({
         onSavePermissions={(mode, rules) => onSaveSessionPermissions!(selectedSession.sessionId, mode, rules)}
       />}
       {menuSession && !renameOpen && (
-        <MobileSheet
+        <Sheet
           manageFocus
           eyebrow={moveMenuOpen ? menuSession.title : `${menuSession.projectName} · ${desktopRuntimeName(desktopRuntimeId(menuSession))}`}
           title={moveMenuOpen ? "移动到分组" : menuSession.title}
@@ -1398,7 +1398,7 @@ export function MobileWorkspace({
           )}
           {sessionActionBusy && <p className="m-sheet-note" role="status"><LoaderCircle className="is-spinning" size={15} />正在处理…</p>}
           {sessionActionError && <p className="m-sheet-note is-error" role="alert">{sessionActionError}</p>}
-        </MobileSheet>
+        </Sheet>
       )}
       {renameOpen && menuSession && (
         <div
@@ -1529,16 +1529,17 @@ export function MobileWorkspace({
               type="button"
               className="m-host-chip"
               aria-label="会话设置"
+              aria-describedby="mobile-session-profile-summary"
               onClick={() => setConfigurationSessionId(selectedSession.sessionId)}
             >
               <i className={`m-status-dot ${selectedSession.turnState}`} />
-              <span>{conciseSessionSubtitle(selectedSession)}</span>
+              <SessionProfileSummary session={selectedSession} showActivity id="mobile-session-profile-summary" />
               <ChevronDown size={14} />
             </button>
           ) : (
             <span className="m-presence">
               <i className={`m-status-dot ${selectedSession.turnState}`} />
-              <span>{conciseSessionSubtitle(selectedSession)}</span>
+              <SessionProfileSummary session={selectedSession} showActivity />
             </span>
           )}
           backLabel={sessionView === "evidence" ? "返回对话" : "返回会话列表"}
@@ -1583,14 +1584,12 @@ export function MobileWorkspace({
         {selectedTaskDetails?.error && (
           <p className="session-channel-warning" role="alert">后台任务：{selectedTaskDetails.error}</p>
         )}
-        {selectedSession.nativePermissionModeChange && (
+        {selectedSession.nativePermissionModeChange && selectedSession.nativePermissionModeChange.state !== "confirmed" && (
           <div className="session-channel-warning message-queue-status" role="status" aria-label="Desktop 会话授权变更">
             <ShieldCheck size={17} />
             <span>{selectedSession.nativePermissionModeChange.state === "requested"
               ? `已请求切换为「${NATIVE_MODE_LABELS[selectedSession.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，等待 Desktop 确认`
-              : selectedSession.nativePermissionModeChange.state === "confirmed"
-                ? "Desktop 已确认本次授权变更"
-                : `Desktop 未切换为「${NATIVE_MODE_LABELS[selectedSession.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，后续请求仍需确认`}</span>
+              : `Desktop 未切换为「${NATIVE_MODE_LABELS[selectedSession.nativePermissionModeChange.mode ?? "bypassPermissions"]}」，后续请求仍需确认`}</span>
           </div>
         )}
         {selectedSession.pendingCount > 0 && selectedSession.desktopHandoff?.state !== "close-desktop" && selectedSession.desktopHandoff?.state !== "desktop-inbox" && (
@@ -2016,7 +2015,7 @@ export function MobileWorkspace({
         </>
         )}
         {permissionOpen && (activePermission || activeNativePrompt) && (
-          <MobileSheet
+          <Sheet
             eyebrow="需要处理"
             title={`${runtimeName} ${activePermission ? "等待授权" : "等待确认"}`}
             closeLabel="暂时关闭"
@@ -2046,7 +2045,7 @@ export function MobileWorkspace({
                 />
               </>
             )}
-          </MobileSheet>
+          </Sheet>
         )}
         <ConfirmationDialog
           open={Boolean(pendingFileDownload)}

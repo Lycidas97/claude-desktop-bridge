@@ -1,14 +1,14 @@
 import { X } from "lucide-react";
 import { type ButtonHTMLAttributes, type ReactNode, useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
-import { IconButton } from "../common/IconButton.js";
+import { IconButton } from "./IconButton.js";
 
 /**
- * The one mobile overlay for object actions, forms and prompts: a bottom sheet
+ * The shared overlay for object actions, forms and prompts: a bottom sheet
  * with a title, a scrolling body and optional footer actions. Destructive
  * confirmations stay in ConfirmationDialog so they read as interruptions.
  */
-export function MobileSheet({
+export function Sheet({
   eyebrow,
   title,
   busy = false,

@@ -9,14 +9,16 @@ import { useEffect, useState } from "react";
 import { isClaudeNativeRelay } from "../../hooks/useMobileBridge.js";
 import type { ThemeControl } from "../../hooks/useTheme.js";
 import { setDiagDialogOpen } from "../../lib/diagnostics.js";
-import { AppearanceSettings } from "../mobile/MobileSettings.js";
+import { MagpieQuotaDashboard } from "../../../../../plugins/magpie-quota/client.js";
+import { AppearanceSettings } from "../common/AppearanceSettings.js";
+import { SettingsGroup } from "../common/SettingsGroup.js";
 import { ProviderSettings } from "../session/ProviderSettings.js";
 import { RelaySettings } from "../pairing/RelaySettings.js";
 import { DesktopUpdaterSection } from "../updater/UpdaterSections.js";
 import "../session/settings.css";
 
 const SECTIONS = [
-  ["claude", "Claude 接入"], ["providers", "模型与网关"], ["connections", "连接与启动"], ["appearance", "外观与显示"], ["about", "诊断与关于"],
+  ["claude", "Claude 接入"], ["providers", "模型与网关"], ["quota", "Magpie 额度"], ["connections", "连接与启动"], ["appearance", "外观与显示"], ["about", "诊断与关于"],
 ] as const;
 
 export function DesktopSettings({ snapshot, api, onSnapshot, themeControl }: {
@@ -131,8 +133,8 @@ export function DesktopSettings({ snapshot, api, onSnapshot, themeControl }: {
           onSnapshot(saved);
           return saved;
         } : undefined} />}
-      {section === "connections" && <section className="mobile-settings-group" aria-label="连接与启动">
-        <h2>连接</h2>
+      {section === "quota" && <MagpieQuotaDashboard />}
+      {section === "connections" && <SettingsGroup title="连接" label="连接与启动">
         <dl className="settings-facts">
           <div><dt>主机状态</dt><dd>{snapshot.connection === "connected" ? "已连接" : snapshot.connection === "connecting" || snapshot.connection === "reconnecting" ? "正在连接" : "离线"}</dd></div>
           <div><dt>连接方式</dt><dd>{snapshot.transport ? ({ direct: "直连", "public-relay": "安全中继", "lan-relay": "局域网连接" })[snapshot.transport.path] : "等待连接"} · 端到端加密</dd></div>
@@ -144,10 +146,9 @@ export function DesktopSettings({ snapshot, api, onSnapshot, themeControl }: {
         <section className="provider-settings-profile" aria-label="启动"><h3>启动</h3>
           <label className="toggle-row"><span><strong>开机自动运行</strong><small>登录系统后 Bridge 自动待机</small></span><input type="checkbox" checked={snapshot.launchAtLogin} onChange={event => void api.setLaunchAtLogin(event.target.checked).then(onSnapshot)} /><i aria-hidden="true" /></label>
         </section>
-      </section>}
+      </SettingsGroup>}
       {section === "appearance" && <AppearanceSettings themeControl={themeControl} />}
-      {section === "about" && <section className="mobile-settings-group" aria-label="诊断与关于">
-        <h2>诊断与关于</h2>
+      {section === "about" && <SettingsGroup title="诊断与关于" label="诊断与关于">
         <dl className="settings-facts">
           <div><dt>Bridge 版本</dt><dd>{snapshot.host.version}</dd></div><div><dt>电脑</dt><dd>{snapshot.host.name}</dd></div>
           <div><dt>Claude 版本</dt><dd>{snapshot.runtime.version ?? "未检测到"}</dd></div>
@@ -164,7 +165,7 @@ export function DesktopSettings({ snapshot, api, onSnapshot, themeControl }: {
         </div>
         {exportError && <p role="alert" className="inline-error">{exportError}</p>}
         <DesktopUpdaterSection snapshot={snapshot} api={api} onSnapshot={onSnapshot} />
-      </section>}
+      </SettingsGroup>}
     </div>
   </section>;
 }

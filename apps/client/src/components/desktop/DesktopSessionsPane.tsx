@@ -79,7 +79,6 @@ import {
   conversationTimeline,
   fileToAttachment,
   ownershipLabel,
-  sessionProfile,
   stoppableBridgeTask,
 } from "../../lib/conversation-timeline.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
@@ -87,6 +86,7 @@ import { EmptyState } from "../common/EmptyState.js";
 import { ProjectOrderSheet } from "../mobile/ProjectOrderSheet.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
+import { SessionProfileSummary } from "../session/SessionProfileSummary.js";
 import {
   InteractivePromptCard,
   matchingQuestionPermission,
@@ -95,7 +95,7 @@ import {
 import { SubagentCard } from "../conversation/SubagentCard.js";
 import { NativePromptCard } from "../conversation/NativePromptCard.js";
 import { SessionPrActions, SessionPrBar } from "../conversation/SessionPrBar.js";
-import { MobileSheet } from "../mobile/MobileSheet.js";
+import { Sheet } from "../common/Sheet.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "../conversation/SessionActivityIndicator.js";
 import { SlashCommandInput } from "../conversation/SlashCommandInput.js";
 import { sessionCommandName, useSessionCommands } from "../../hooks/useSessionCommands.js";
@@ -952,17 +952,18 @@ export function DesktopSessions({
                     <GitPullRequest size={18} />
                   </IconButton>
                 )}
-                {canConfigure && (
+                {canConfigure ? (
                   <button
                     type="button"
                     className="session-profile-trigger"
                     aria-label="会话设置"
+                    aria-describedby="desktop-session-profile-summary"
                     onClick={() => setConfigurationOpen(true)}
                   >
                     <Settings2 size={15} />
-                    <span>{sessionProfile(selected)}</span>
+                    <SessionProfileSummary session={selected} id="desktop-session-profile-summary" />
                   </button>
-                )}
+                ) : <span className="session-profile-trigger is-static"><SessionProfileSummary session={selected} /></span>}
 
                 {canStop && (
                   <IconButton
@@ -1289,11 +1290,11 @@ export function DesktopSessions({
       </section>
 
       {prActionsOpen && selected && !selected.prs?.length && prControls.supported && (
-        <MobileSheet title="PR Auto-fix" manageFocus busy={sessionActionBusy} onClose={() => setPrActionsOpen(false)}>
+        <Sheet title="PR Auto-fix" manageFocus busy={sessionActionBusy} onClose={() => setPrActionsOpen(false)}>
           <div className="m-group">
             <SessionPrActions key={selected.sessionId} session={selected} events={events} showHeading={false} onWriteBusyChange={setSessionActionBusy} {...prControls} />
           </div>
-        </MobileSheet>
+        </Sheet>
       )}
       {projectOrderOpen && (
         <ProjectOrderSheet

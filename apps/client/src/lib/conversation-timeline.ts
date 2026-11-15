@@ -95,14 +95,6 @@ export function formatSessionModelLabel(session: BridgeSessionInfo): string {
     .trim() || "默认模型";
 }
 
-export function sessionProfile(session: BridgeSessionInfo): string {
-  const model = formatSessionModelLabel(session);
-  return [
-    model || "默认模型",
-    session.effort?.toLocaleUpperCase(),
-  ].filter(Boolean).join(" · ");
-}
-
 export function ownershipLabel(session: BridgeSessionInfo): string {
   if (session.transport === "claude-desktop-native") {
     if (session.turnState === "running" && session.isCompacting) return "正在压缩上下文";
@@ -149,14 +141,6 @@ export function activeSessionBadgeLabel(session: BridgeSessionInfo): string | un
 
 export function conciseModelName(session: BridgeSessionInfo): string {
   return formatSessionModelLabel(session);
-}
-
-export function conciseSessionSubtitle(session: BridgeSessionInfo): string {
-  const active = activeSessionBadgeLabel(session);
-  const model = conciseModelName(session);
-  const effort = session.effort?.toLocaleUpperCase();
-  const modelPart = effort ? `${model} · ${effort}` : model;
-  return active ? `${active} · ${modelPart}` : modelPart;
 }
 
 export type DisplayTimelineNode =

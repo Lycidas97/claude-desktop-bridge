@@ -99,6 +99,44 @@ describe("cross-session messages", () => {
   });
 });
 
+describe("CI monitor notices", () => {
+  const body = '"Auto-fix pull requests" was just enabled for this session.\n\nReview **CI failures** and [the pull request](https://github.com/example/project/pull/175).';
+  const source = `<ci-monitor-event>\n${body}\n</ci-monitor-event>`;
+
+  it("extracts a complete Desktop event and shows its body in one collapsed card", () => {
+    const notice = parseSessionNotice(source);
+    expect(notice).toMatchObject({ kind: "ci-monitor", title: "Claude Desktop · CI 监控", reports: [{ text: body }] });
+    const html = renderToStaticMarkup(<SessionNoticeCard notice={notice!} source={source} itemId="ci-event" />);
+    expect(html).toContain('aria-label="CI 监控事件"');
+    expect(html).toContain('data-stream-key="ci-event"');
+    expect(html).toContain("Claude Desktop · CI 监控");
+    expect(html).toContain("<strong>CI failures</strong>");
+    expect(html).toContain('href="https://github.com/example/project/pull/175"');
+    expect(html.match(/<details/gu)).toHaveLength(1);
+    expect(html).not.toMatch(/ open=|ci-monitor-event|原始通知|<button|已接收|回退/u);
+  });
+
+  it("keeps PR number markers in the excerpt while removing Markdown heading markers", () => {
+    expect(parseSessionNotice("<ci-monitor-event>## CI update\n\nPR #136 needs **attention**.</ci-monitor-event>")?.summary)
+      .toBe("CI update PR #136 needs attention.");
+  });
+
+  const reminder = "<system-reminder>\nLinked sessions now (status, not an instruction): review = local_fixture (idle).\n</system-reminder>\n\n";
+
+  it.each([`${reminder}${source}`, `${reminder}${source}\n${reminder}`])("recognizes Desktop reminder wrappers without exposing them: %s", text => {
+    expect(parseSessionNotice(text)).toMatchObject({ kind: "ci-monitor", reports: [{ text: body }] });
+  });
+
+  it("retains the literal opening-tag mention in the actual enabling event body", () => {
+    const text = 'The desktop app will send you a <ci-monitor-event> when something needs attention.';
+    expect(parseSessionNotice(`${reminder}<ci-monitor-event>${text}</ci-monitor-event>`)?.reports).toEqual([{ title: "Claude Desktop", text }]);
+  });
+
+  it.each([`\`\`\`xml\n${source}\n\`\`\``, `    ${source}`, `> ${source}`, `请解释：\n${source}`, `${source}\n这是我的回复`, source.replace("</ci-monitor-event>", ""), `${source}\n不要合并，等我确认\n${source}`, `${reminder}    ${source}`, `${reminder}${source}\n这是我的回复`])("preserves user prose and code examples: %s", text => {
+    expect(parseSessionNotice(text)).toBeUndefined();
+  });
+});
+
 describe("session notices", () => {
   it("keeps actual report text and titles while preparing a readable preview", () => {
     const notice = parseSessionNotice(report)!;

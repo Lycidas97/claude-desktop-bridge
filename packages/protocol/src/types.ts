@@ -680,6 +680,8 @@ export interface BridgeSessionInfo {
   configurationPending?: boolean;
   /** Current main-session context window watermark, when observed. */
   contextUsage?: BridgeSessionContextUsage;
+  /** Current permission mode observed from Claude Desktop. */
+  nativePermissionMode?: BridgeSDKPermissionMode;
   nativePermissionModeChange?: BridgeNativePermissionModeChange;
   prs?: BridgePullRequest[];
   /** Last preferences read from Native; absent until requested by the client. */

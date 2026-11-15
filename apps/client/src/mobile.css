@@ -1,5 +1,5 @@
 /* Bridge mobile design system.
-   One header (MobilePageHeader), one overlay (MobileSheet) and one list
+   One header (MobilePageHeader), one overlay (Sheet) and one list
    grammar (inset groups of 56px rows). Sizes come from the --m-* scale;
    colors always come from the theme tokens in styles.css so both theme
    families keep working. docs/MOBILE-NAVIGATION.md explains the rules. */
@@ -207,6 +207,17 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.conversation-workspace .m-header-subtitle,
+.conversation-workspace .m-host-chip > .session-profile-summary,
+.conversation-workspace .m-presence > .session-profile-summary {
+  min-width: 0;
+  overflow: visible;
+  text-align: left;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .m-host-chip > .m-host-status { flex: none; }

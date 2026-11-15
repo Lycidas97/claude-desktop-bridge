@@ -155,6 +155,8 @@ try {
   await page.getByRole("heading", { name: "设备", exact: true }).waitFor();
   await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();
   await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "Magpie 额度", exact: true }).click();
+  await page.locator(".magpie-quota-board").waitFor();
   await page.getByRole("button", { name: "连接与启动", exact: true }).click();
   await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
   await page.getByRole("button", { name: "诊断与关于", exact: true }).click();

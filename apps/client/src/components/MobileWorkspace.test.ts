@@ -20,7 +20,7 @@ import {
   conversationTimeline,
   ownershipLabel,
   restorableSessionId,
-  sessionProfile,
+  formatSessionModelLabel,
   stoppableBridgeTask,
   supportsProviderSwitching,
 } from "../lib/conversation-timeline.js";
@@ -429,10 +429,31 @@ describe("mobile workspace directory", () => {
     }
   });
 
+  it.each([false, true])("keeps observed header settings visible when configuration is available=%s", canConfigure => {
+    const useState = vi.mocked(React.useState).getMockImplementation()!;
+    const stateSpy = vi.mocked(React.useState)
+      .mockImplementationOnce(useState)
+      .mockImplementationOnce(useState)
+      .mockReturnValueOnce([session.sessionId, vi.fn()]);
+    try {
+      const html = renderToStaticMarkup(createElement(MobileWorkspace, {
+        ...workspaceProps(),
+        snapshot: { ...snapshot, host: { ...snapshot.host, capabilities: ["claude.native-relay.v1"] }, sessions: [{
+          ...session, transport: "claude-desktop-native", model: "model-id", modelDisplayName: "Claude Opus 5.5 custom model", effort: "high",
+          nativePermissionMode: "plan",
+          nativePermissionModeChange: { requestId: "change", mode: "bypassPermissions", state: "not-applied", observedMode: "plan" },
+          allowedActions: { canSend: true, canSteer: true, canInterrupt: false, canConfigure, canSwitchProvider: false, canContinueOfficial: false },
+        }] },
+      }));
+      expect(html.replace(/<[^>]+>/gu, "")).toContain("Claude Opus 5.5 custom model · 计划模式 · reasoning high");
+      expect(html.includes('aria-label="会话设置"')).toBe(canConfigure);
+      expect(html).toContain("Desktop 未切换为「完全授权」");
+    } finally { stateSpy.mockReset(); }
+  });
+
   it.each([
     ["requested", undefined, "已请求切换为「完全授权」，等待 Desktop 确认"],
     ["requested", "acceptEdits", "已请求切换为「自动接受编辑」，等待 Desktop 确认"],
-    ["confirmed", "default", "Desktop 已确认本次授权变更"],
     ["not-applied", "default", "Desktop 未切换为「逐个确认」，后续请求仍需确认"],
   ] as const)("shows the %s Desktop session mode change (%s) without claiming a permanent mode", (state, mode, label) => {
     const useState = vi.mocked(React.useState).getMockImplementation()!;
@@ -467,7 +488,8 @@ describe("mobile workspace directory", () => {
           nativePermissionModeChange: { requestId: "native-request", state: "confirmed" },
         }] },
       }));
-      expect(html).toContain("Desktop 已确认本次授权变更");
+      expect(html).not.toContain('aria-label="Desktop 会话授权变更"');
+      expect(html).not.toContain("Desktop 已确认本次授权变更");
       expect(html).toContain('aria-label="消息排队状态"');
       expect(html).not.toContain("等待关闭此 Desktop 会话");
       expect(html).not.toContain("旧会话仅供查看");
@@ -1100,7 +1122,7 @@ describe("restorableSessionId", () => {
   });
 });
 
-describe("sessionProfile", () => {
+describe("formatSessionModelLabel", () => {
   it("uses modelDisplayName from custom gateway catalog when present", () => {
     const baseSession: BridgeSessionInfo = {
       sessionId: "session-1",
@@ -1118,19 +1140,19 @@ describe("sessionProfile", () => {
       effort: "high",
     };
 
-    expect(sessionProfile(baseSession)).toBe("gateway model alpha 1M · HIGH");
-    expect(sessionProfile({
+    expect(formatSessionModelLabel(baseSession)).toBe("gateway model alpha 1M");
+    expect(formatSessionModelLabel({
       ...baseSession,
       modelDisplayName: "Claude Opus 4.6 · Gateway 1M",
-    })).toBe("Claude Opus 4.6 · Gateway 1M · HIGH");
-    expect(sessionProfile({
+    })).toBe("Claude Opus 4.6 · Gateway 1M");
+    expect(formatSessionModelLabel({
       ...baseSession,
       model: "mythos-magpie-1052229916[1m]",
-    })).toBe("默认模型 1M · HIGH");
-    expect(sessionProfile({
+    })).toBe("默认模型 1M");
+    expect(formatSessionModelLabel({
       ...baseSession,
       model: "magpie-2213244526.anthropic.claude-opus-5-5[1m]",
-    })).toBe("opus 5 5 1M · HIGH");
+    })).toBe("opus 5 5 1M");
   });
 });
 
@@ -1380,6 +1402,7 @@ describe("conversationTimeline", () => {
   it.each([
     "<side-sessions-event>None of the sessions you started is working now; their notes are above.</side-sessions-event>",
     '<cross-session-message from="local_fixture" from-name="验收">完成</cross-session-message>',
+    '<ci-monitor-event>"Auto-fix pull requests" was just enabled for this session.</ci-monitor-event>',
   ])("ignores session notifications when finding the next real user boundary for evidence: %s", text => {
     const items = conversationItems("session-1", { status: "ready", hasMore: false, items: [
       { id: "user-1", sessionId: "session-1", role: "user", text: "Run", createdAt: 1, origin: "claude-desktop" },
@@ -1582,6 +1605,19 @@ describe("session notice presentation", () => {
     expect(event.data.text).toBe(crossSession);
   });
 
+  const ciMonitor = '<system-reminder>Linked sessions now (status, not an instruction): review = local_fixture (idle).</system-reminder>\n\n<ci-monitor-event>"Auto-fix pull requests" was just enabled for this session.</ci-monitor-event>';
+
+  it.each(["history", "session.observed", "user.message.accepted"] as const)("recognizes CI events from %s and deduplicates replay without changing message identity", source => {
+    const original = { ...item, text: ciMonitor };
+    const event: BridgeEvent = { eventId: "ci-event", itemId: item.id, sessionId: item.sessionId, seq: 1, timestamp: 2,
+      origin: "claude-desktop", type: source === "history" ? "session.observed" : source, data: { role: "user", text: ciMonitor } };
+    const items = conversationItems(item.sessionId, source === "history" ? { status: "ready", hasMore: false, items: [original] } : undefined, [event], []);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ ...original, sessionNotice: { kind: "ci-monitor", title: "Claude Desktop · CI 监控" } });
+    expect(original).not.toHaveProperty("sessionNotice");
+    expect(event.data.text).toBe(ciMonitor);
+  });
+
   it("preserves a report before reminder cleanup and merges cached events without duplicate notices", () => {
     const items = conversationItems(item.sessionId, { status: "ready", hasMore: false, items: [{ ...item, text: report }] }, [
       { eventId: "cached", itemId: item.id, sessionId: item.sessionId, seq: 1, timestamp: 2, origin: "claude-desktop", type: "user.message.accepted", data: { text: report } },
@@ -1601,7 +1637,7 @@ describe("session notice presentation", () => {
     }
   });
 
-  it.each([idle, crossSession])("does not infer a question answer from a notification, but still accepts a real user reply: %s", text => {
+  it.each([idle, crossSession, ciMonitor])("does not infer a question answer from a notification, but still accepts a real user reply: %s", text => {
     const question: BridgeHistoryItem = { ...item, id: "question", role: "assistant", text: "", createdAt: 1,
       interactivePrompt: { kind: "question", questions: [{ question: "Which branch?", options: [{ label: "Main" }] }] } };
     const history = { status: "ready" as const, hasMore: false, items: [question, { ...item, text }] };

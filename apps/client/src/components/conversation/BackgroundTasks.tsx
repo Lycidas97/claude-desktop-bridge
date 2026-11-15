@@ -2,7 +2,7 @@ import type { BridgeBackgroundTask, BridgeHistoryItem, BridgeSubagentSummary, Br
 import { Bot, Check, ChevronRight, LoaderCircle, MoreHorizontal, Terminal, Workflow, X } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useMediaRequest } from "../evidence/MediaPreviewProvider.js";
-import { MobileSheet } from "../mobile/MobileSheet.js";
+import { Sheet } from "../common/Sheet.js";
 import "./ToolCallDetailSheet.css";
 
 type TaskState = BridgeSubagentSummary["state"];
@@ -317,7 +317,7 @@ export function BackgroundTasksSheet({
       ? focusTask?.workflow?.name ?? focusTask?.description ?? KIND_TITLES.workflow
       : focusTask?.description ?? focusSubagent.description;
     return (
-      <MobileSheet
+      <Sheet
         eyebrow={KIND_TITLES[kind]}
         title={title}
         onClose={onClose}
@@ -350,14 +350,14 @@ export function BackgroundTasksSheet({
         ) : (
           renderSubagent(detailItem)
         )}
-      </MobileSheet>
+      </Sheet>
     );
   }
   const groups = (["workflow", "subagent", "bash"] as const)
     .map((kind) => ({ kind, tasks: tasks.filter((task) => task.kind === kind) }))
     .filter((group) => group.tasks.length > 0);
   return (
-    <MobileSheet title="后台任务" onClose={onClose}>
+    <Sheet title="后台任务" onClose={onClose}>
       {groups.map((group) => (
         <section className="background-task-group" key={group.kind} aria-label={KIND_TITLES[group.kind]}>
           <h3>{KIND_TITLES[group.kind]}</h3>
@@ -398,6 +398,6 @@ export function BackgroundTasksSheet({
           })}
         </section>
       ))}
-    </MobileSheet>
+    </Sheet>
   );
 }

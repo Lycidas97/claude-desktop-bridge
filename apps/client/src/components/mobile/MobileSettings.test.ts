@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { AppearanceSettings, MobileSettings } from "./MobileSettings.js";
+import { AppearanceSettings } from "../common/AppearanceSettings.js";
+import { MobileSettings } from "./MobileSettings.js";
 import type { FontSize } from "../../hooks/useTheme.js";
 
 describe("shared appearance font size control", () => {

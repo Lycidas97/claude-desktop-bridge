@@ -1,7 +1,6 @@
 import type { BridgeHostSnapshot, BridgeMagpieConnectionInput, BridgeMagpieConnectionTestResult, DesktopControlSnapshot } from "@bridge/protocol";
-import { Gauge, LoaderCircle, RefreshCw } from "lucide-react";
+import { LoaderCircle, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
-import { MagpieQuotaDashboard } from "../../../../../plugins/magpie-quota/client.js";
 import "./settings.css";
 
 export function ProviderSettings({ snapshot, connected = true, desktopLocal = false, onRefresh, onSetApiKey, onRemoveApiKey, onTestMagpieConnection, onSaveMagpieConnection }: {
@@ -16,8 +15,6 @@ export function ProviderSettings({ snapshot, connected = true, desktopLocal = fa
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [quotaOpen, setQuotaOpen] = useState(false);
-  const quotaDeclared = snapshot?.host.capabilities.includes("plugin.magpie-quota.v1");
   const magpie = snapshot?.magpie;
   const [magpieDraft, setMagpieDraft] = useState({
     mode: magpie?.mode ?? "auto",
@@ -128,10 +125,6 @@ export function ProviderSettings({ snapshot, connected = true, desktopLocal = fa
           </div>
           {magpieError && <p role="alert" className="inline-error">{magpieError}</p>}
         </div> : <p className="settings-notice">{desktopLocal ? "这台电脑暂不支持编辑 Magpie 连接，请更新电脑端 Bridge。" : "请在这台电脑的 Bridge 设置中管理 Magpie 连接。"}</p>}
-      </section>}
-      {desktopLocal && quotaDeclared && <section className="provider-settings-profile" aria-label="Magpie 额度">
-        <button type="button" className="secondary-button provider-quota-toggle" aria-expanded={quotaOpen} onClick={() => setQuotaOpen(!quotaOpen)}><Gauge size={16} />Magpie 额度</button>
-        {quotaOpen && <MagpieQuotaDashboard />}
       </section>}
       {(snapshot.providers ?? []).filter(profile => !["claude-3p", "anthropic-api", "claude-official"].includes(profile.kind)).map(profile => (
         <section className="provider-settings-profile" key={profile.id} aria-label={profile.name}>

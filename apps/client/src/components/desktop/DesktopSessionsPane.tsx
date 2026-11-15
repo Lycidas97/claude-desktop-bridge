@@ -1264,9 +1264,9 @@ export function DesktopSessions({
       </section>
 
       {prActionsOpen && selected && !selected.prs?.length && prControls.supported && (
-        <MobileSheet title="PR Auto-fix" manageFocus onClose={() => setPrActionsOpen(false)}>
+        <MobileSheet title="PR Auto-fix" manageFocus busy={sessionActionBusy} onClose={() => setPrActionsOpen(false)}>
           <div className="m-group">
-            <SessionPrActions key={selected.sessionId} session={selected} events={events} showHeading={false} {...prControls} />
+            <SessionPrActions key={selected.sessionId} session={selected} events={events} showHeading={false} onWriteBusyChange={setSessionActionBusy} {...prControls} />
           </div>
         </MobileSheet>
       )}

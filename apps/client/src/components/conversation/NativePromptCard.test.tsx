@@ -87,6 +87,39 @@ describe("Native prompt choices", () => {
 });
 
 describe("PR Auto-fix disclosure", () => {
+  it("retains cached preference values when reopened offline after a successful read", async () => {
+    const cached = { ...session, prs: [], prAutoFix: { onlyOwnPrs: true, nextOwnPrArmed: true } };
+    const onRead = vi.fn().mockResolvedValue({ ...state, prs: [], ...cached.prAutoFix });
+    const props = { session: cached, supported: true, online: true, preferencesOnly: true, onRead, onSet: vi.fn() };
+    renderPr(props);
+    await Promise.resolve();
+    expect(elements(renderPr(props)).find(element => element.type === "input")!.props.checked).toBe(true);
+    harness.slots = []; harness.effects = []; harness.pending = [];
+    const reopened = renderPr({ ...props, online: false });
+    const checkbox = elements(reopened).find(element => element.type === "input");
+    expect(checkbox).toBeDefined();
+    expect(checkbox!.props.checked).toBe(true);
+    expect(checkbox!.props.disabled).toBe(true);
+    expect(elements(reopened).find(element => element.type === "button" && text(element) === "已布防下一个 PR")!.props.disabled).toBe(true);
+    expect(onRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a pending write until its rejection is visible in the mounted panel", async () => {
+    let rejectWrite!: (error: Error) => void;
+    const onSet = vi.fn(() => new Promise<BridgePrAutoFixState>((_resolve, reject) => { rejectWrite = reject; }));
+    const onWriteBusyChange = vi.fn();
+    const props = { session: { ...session, prs: [] }, supported: true, online: true, preferencesOnly: true,
+      onRead: vi.fn().mockResolvedValue({ ...state, prs: [] }), onSet, onWriteBusyChange };
+    renderPr(props);
+    await Promise.resolve();
+    elements(renderPr(props)).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.onClick();
+    expect(onWriteBusyChange).toHaveBeenLastCalledWith(true);
+    rejectWrite(new Error("Desktop 拒绝延迟写入"));
+    await Promise.resolve();
+    expect(onWriteBusyChange).toHaveBeenLastCalledWith(false);
+    expect(text(renderPr(props))).toContain("Desktop 拒绝延迟写入");
+  });
+
   it("reads no-PR preferences on mount and retains Native state after a rejected write", async () => {
     const onRead = vi.fn().mockResolvedValue({ ...state, prs: [] });
     const onSet = vi.fn().mockResolvedValueOnce({ ...state, prs: [], onlyOwnPrs: true })

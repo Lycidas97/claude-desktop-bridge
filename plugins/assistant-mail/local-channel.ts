@@ -30,7 +30,8 @@ export async function serveAssistantMailTools(options: { userDataPath: string; s
       let size = 0;
       for await (const chunk of request) {
         size += Buffer.byteLength(chunk);
-        if (size > 1024 * 1024) { reply(response, 413, { error: "MAIL_REQUEST_TOO_LARGE" }); return; }
+        // The schema permits 416,000 UTF-16 units; JSON escaping needs at most ~2.5 MB.
+        if (size > 3 * 1024 * 1024) { reply(response, 413, { error: "MAIL_REQUEST_TOO_LARGE" }); return; }
         chunks.push(Buffer.from(chunk));
       }
       const input = MailToolRequest.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
@@ -48,6 +49,7 @@ export async function serveAssistantMailTools(options: { userDataPath: string; s
       if (result === undefined) { reply(response, 404, { error: "MAIL_NOT_FOUND" }); return; }
       reply(response, 200, { source: MAIL_SOURCE, result });
     })().catch(error => {
+      if (error instanceof Error && "code" in error && error.code === "ECONNRESET") return;
       if (error instanceof z.ZodError || error instanceof SyntaxError) {
         reply(response, 400, { error: "MAIL_INVALID_REQUEST" });
       } else {
@@ -67,5 +69,8 @@ export async function serveAssistantMailTools(options: { userDataPath: string; s
     server.close();
     throw error;
   }
-  return { close: () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) };
+  return { close: () => new Promise<void>((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve());
+    server.closeAllConnections();
+  }) };
 }

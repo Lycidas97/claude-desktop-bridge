@@ -48,6 +48,7 @@
     }
   },
   "devDependencies": {
+    "@types/html-to-text": "^9.0.4",
     "@types/node": "^24.0.0",
     "axe-core": "^4.10.3",
     "concurrently": "^9.2.1",
@@ -60,6 +61,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "html-to-text": "^10.0.1",
     "imapflow": "^2.11.0",
     "mailparser": "^3.14.3",
     "zod": "^4.6.7"

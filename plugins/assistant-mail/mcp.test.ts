@@ -1,4 +1,7 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
+import * as http from "node:http";
+import { createConnection } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,11 +13,16 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AssistantMailService } from "./desktop.js";
 import { serveAssistantMailTools } from "./local-channel.js";
-import { MAIL_SOURCE, MailToolConnection } from "./tool-contract.js";
+import { MAIL_SOURCE, MailToolConnection, MailToolRequest } from "./tool-contract.js";
+
+vi.mock("node:http", async importOriginal => {
+  const actual = await importOriginal<typeof http>();
+  return { ...actual, createServer: vi.fn(actual.createServer) };
+});
 
 let root: string;
 let service: AssistantMailService;
-let channel: Awaited<ReturnType<typeof serveAssistantMailTools>>;
+let channel: Awaited<ReturnType<typeof serveAssistantMailTools>> | undefined;
 let connection: ReturnType<typeof MailToolConnection.parse>;
 const clients: Client[] = [];
 let bundle: string;
@@ -93,6 +101,35 @@ it("updates the same durable event with fixed provenance, emits changes and leav
   expect(inbox.messageFlagsAdd).not.toHaveBeenCalled();
   expect(createClient).toHaveBeenCalledOnce();
   expect((await post({ name: "mail.read_event", arguments: { mailRefId: "00000000-0000-4000-8000-000000000000" } })).status).toBe(404);
+});
+
+it.each(["中", "\u0000"])("accepts schema-valid analysis at the encoded string budget", async character => {
+  const arguments_ = { mailRefId: reference, summary: character.repeat(16000),
+    suggestions: Array.from({ length: 50 }, () => character.repeat(4000)),
+    questions: Array.from({ length: 50 }, () => character.repeat(4000)) };
+  const request = { name: "mail.update_analysis", arguments: arguments_ };
+  expect(MailToolRequest.safeParse(request).success).toBe(true);
+  expect(Buffer.byteLength(JSON.stringify(request))).toBeGreaterThan(1024 * 1024);
+  const response = await post(request);
+  expect(response.status).toBe(200);
+  expect(service.page().events[0]?.analysis).toEqual({ summary: arguments_.summary, suggestions: arguments_.suggestions, questions: arguments_.questions });
+});
+
+it("closes owned connections during a partial authenticated request without dispatching it", async () => {
+  const server = vi.mocked(http.createServer).mock.results.at(-1)!.value as http.Server;
+  const socket = createConnection({ port: connection.port, host: "127.0.0.1" });
+  await once(socket, "connect");
+  const page = vi.spyOn(service, "page");
+  const body = JSON.stringify({ name: "mail.list_events", arguments: {} });
+  const received = once(server, "request");
+  socket.write(`POST /tools HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer ${connection.token}\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body.slice(0, 1)}`);
+  await received;
+  const closing = channel!.close();
+  channel = undefined;
+  try {
+    expect(await Promise.race([closing.then(() => true), delay(150, false)])).toBe(true);
+    expect(page).not.toHaveBeenCalled();
+  } finally { socket.destroy(); await closing; }
 });
 
 it("runs two real stdio MCP adapters over one receiver, round-trips all four tools and closes independently", async () => {

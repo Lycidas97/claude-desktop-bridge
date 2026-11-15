@@ -16,6 +16,32 @@ it("reports an unsupported HTML conversion instead of returning a successful emp
   await expect(mailBodyText(Buffer.from(`Content-Type: text/html\r\n\r\n${html}`))).rejects.toThrow("HTML nested deeper");
 });
 
+it("converts an HTML-only multipart/related body", async () => {
+  const source = [
+    'Content-Type: multipart/related; boundary="b"', "", "--b",
+    "Content-Type: text/html; charset=utf-8", "", "<p>VISIBLE_BODY</p>", "--b--", "",
+  ].join("\r\n");
+  expect(await mailBodyText(Buffer.from(source))).toContain("VISIBLE_BODY");
+});
+
+it("excludes inline message/rfc822 attachments from the outer body", async () => {
+  const source = [
+    'Content-Type: multipart/mixed; boundary="outer"', "", "--outer",
+    "Content-Type: text/plain", "", "OUTER_BODY", "--outer",
+    "Content-Type: message/rfc822", 'Content-Disposition: inline; filename="forward.eml"', "",
+    "From: attached@example.test", "Subject: ATTACHED_HEADER", "Content-Type: text/plain", "", "ATTACHED_SECRET", "--outer--", "",
+  ].join("\r\n");
+  expect(await mailBodyText(Buffer.from(source))).toBe("OUTER_BODY");
+});
+
+it.each([false, true])("rejects oversized HTML without losing the tail, multipart=%s", async multipart => {
+  const part = `Content-Type: text/html\r\n\r\n<p>${"x".repeat(16 * 1024 * 1024)}TAIL_MARKER</p>`;
+  const source = multipart ? `Content-Type: multipart/related; boundary="b"\r\n\r\n--b\r\n${part}\r\n--b--\r\n` : part;
+  const outcome = await mailBodyText(Buffer.from(source))
+    .then(body => ({ length: body.length, hasTail: body.includes("TAIL_MARKER") }), error => ({ error: String(error) }));
+  expect(outcome).toMatchObject({ error: expect.stringMatching(/HTML.*too long/) });
+});
+
 it("selects plain text from alternatives, excludes attachment contents and strips terminal controls", async () => {
   const source = [
     'Content-Type: multipart/mixed; boundary="outer"', "", "--outer",

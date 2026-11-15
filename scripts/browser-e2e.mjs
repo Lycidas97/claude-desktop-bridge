@@ -145,8 +145,9 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   for (const state of ["running", "waiting", "queued"]) {
     for (const selectedId of [sessionId, "browser-e2e-fork", "browser-e2e-btw-archived"]) {
       await page.evaluate(({ snapshot, selectedId, state }) => {
+        for (const session of snapshot.sessions) session.pendingCount = 2;
         const session = snapshot.sessions.find(session => session.sessionId === selectedId);
-        Object.assign(session, { turnState: state, ownership: state === "running" ? "DESKTOP_NATIVE_RUNNING" : "DESKTOP_NATIVE_IDLE", pendingCount: state === "queued" ? 2 : 0 });
+        Object.assign(session, { turnState: state, ownership: state === "running" ? "DESKTOP_NATIVE_RUNNING" : "DESKTOP_NATIVE_IDLE" });
         delete session.archivedAt;
         snapshot.permissions = state === "waiting" ? [{ requestId: "catalog-contrast-permission", sessionId: selectedId, toolUseId: "catalog-contrast-tool", toolName: "Bash", input: { command: "synthetic contrast fixture" }, createdAt: Date.now(), canAllowAlways: false }] : [];
         window.__updateCatalog(snapshot);
@@ -155,9 +156,14 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
       await row.locator(".session-row-hit").click();
       assert.equal(await row.evaluate(element => element.classList.contains("active")), true, "Contrast check uses the selected row");
       await page.waitForFunction(() => document.getAnimations().every(animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished"));
-      const violations = await page.evaluate(async () => (await window.axe.run(document.querySelector(".desktop-session-sidebar"), {
-        runOnly: { type: "rule", values: ["color-contrast"] }, resultTypes: ["violations"],
-      })).violations.map(item => ({ id: item.id, nodes: item.nodes.map(node => ({ target: node.target, detail: node.failureSummary })) })));
+      const violations = await page.evaluate(async () => {
+        const result = await window.axe.run(document.querySelector(".desktop-session-sidebar"), {
+          runOnly: { type: "rule", values: ["color-contrast"] }, resultTypes: ["violations", "incomplete"],
+        });
+        return [...result.violations, ...result.incomplete.filter(item => item.nodes.some(node =>
+          [...node.any, ...node.all, ...node.none].some(check => check.data?.contrastRatio < 4.5)
+        ))].map(item => ({ id: item.id, nodes: item.nodes.map(node => ({ target: node.target, detail: node.failureSummary })) }));
+      });
       contrastChecks.push({ selectedId, state, violations });
       assert.deepEqual(violations, [], `Desktop ${state} status contrast with selected ${selectedId}`);
       if (selectedId === "browser-e2e-fork") await sidebar.screenshot({ path: resolve(directory, `desktop-selected-${state}.png`) });

@@ -213,6 +213,18 @@ Desktop 端被撤回或随会话关闭撤回时记为 `cancelled`。调用途中
 `uncertain`，Bridge 不会自动重发：只有在 transcript 中找到该消息 UUID 才确认送达，
 否则需要用户恢复草稿后显式重新发送。
 
+2026-11-14 的真实 Desktop 实测中，忙碌会话的 `later` 调用没有即时 `queued`
+字段，排队消息直到上一轮完成后才出现在 transcript；这两种暂缺都不表示未送达。
+独立 QA socket 中断后，真实 Bridge 收据通过原 `commandId` / `messageId` 完成
+`uncertain → session-received`，同幂等键没有再次发送。故障注入没有连接或复制生产
+inspector 事件流；生产 inspector 的错误分类仍由契约测试覆盖。
+版本、消息 UUID、方法与证据范围见 [Desktop 实机门禁](testing.md#desktop-自动邮件投递门禁)。
+
+外部邮件自动交给模型处理的阶段 0 门禁尚未通过：项目 allow 配置仍保留其他内建及
+继承 MCP 能力，关窗后的新投递和锁屏投递也尚未实测。后续邮件功能必须保持自动
+投递关闭；纯收件、持久化和卡片展示不依赖此门禁。本阶段不新增邮件执行器、第二条
+队列或恢复循环，启用条件见[安全模型](SECURITY.md#外部邮件自动投递门禁)。
+
 ## 历史与事件
 
 Claude 会话与历史直接通过 `LocalSessions` 原生接口读取，历史默认最近 50 条，

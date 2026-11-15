@@ -98,6 +98,32 @@ Claude 历史通过 Desktop transcript 接口读取，不以旧 JSONL 或 Bridge
 Desktop 不可用时明确显示不可用。附件与成果继续使用现有路径和敏感文件检查，
 证据只被动采集原生事件，不能触发执行。
 
+### 外部邮件自动投递门禁
+
+[Issue 162](https://github.com/Lycidas97/claude-desktop-bridge/issues/162)
+阶段 0 的结论是**不满足自动投递启用条件**。这是一项实测结论和后续邮件实现的
+约束，本次不新增邮件开关或执行路径；纯收件和卡片仍可独立实现。
+
+2026-11-14，Desktop 5.11492.5 / Claude Code 2.1.325 的自有测试会话中：
+
+- `dontAsk` 拒绝了配置为 ask 的 Bash 调用，指定 deny 的 Bash 也被拒绝；允许的
+  Read、Bash 和无害 MCP fixture 实际成功。它决定是否等待权限答复，不定义工具白名单。
+- 项目 allow 列表之外的 `printf GATE162_UNLISTED`、继承的会话查询 MCP 实际成功，
+  后者能查询另一个自有测试会话。指定 deny 的 Write、Edit、跨会话发送/创建及 MCP
+  fixture 工具未被暴露；未暴露不等同于完成了对所有其他工具的拒绝验证。
+- Agent 仍可启动，子代理报告指定 deny 的 Bash 被拒绝。此单次对照不证明所有
+  子代理、继承 MCP、跨会话写入或其他工具都受到同一套完整限制。
+- 项目规则确实加载；`autoMemoryEnabled: false/true` 的新会话对照分别未获得/获得
+  预置自动记忆。关闭后显式 Read 同一自有记忆文件仍然成功，且它位于 cwd 之外。
+  关闭自动记忆只控制自动使用，不替代文件权限。独立目录、规则和 Section 都不是
+  OS 沙盒。
+
+后续启用自动邮件投递前，需在目标 Desktop、实际模型与最终合并配置上，验证所需
+工具的允许和拒绝，包括内建工具、继承 MCP、子代理和跨会话能力；验证项目规则及
+自动记忆策略；完成关窗后的新投递、锁屏投递和原 UUID 断线对账。任一项未知或不
+满足约束时，自动投递保持关闭，不能用模型口头承诺或 synthetic fixture 代替。
+完整实测矩阵及未运行项见[测试文档](testing.md#desktop-自动邮件投递门禁)。
+
 ## 提供方与接力边界
 
 Claude 的 provider 配置和授权由 Desktop 管理，Bridge 不再提供 standalone API Key

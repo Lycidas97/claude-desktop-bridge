@@ -31,8 +31,11 @@ import { EmptyState } from "./common/EmptyState.js";
 import { ProjectGroupHeader } from "./session/ProjectGroupHeader.js";
 import { SessionFamilyList } from "./session/SessionFamilyList.js";
 import { SessionProfileSummary } from "./session/SessionProfileSummary.js";
+import { SectionManageDialog } from "./session/SectionManageDialog.js";
+import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
+import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
 import { ProjectOrderSheet } from "./mobile/ProjectOrderSheet.js";
-import { Sheet } from "./common/Sheet.js";
+import { Sheet, SheetAction } from "./common/Sheet.js";
 
 type HookStore = {
   slots: any[]; index: number; dirty: boolean;
@@ -70,6 +73,7 @@ vi.mock("react", async (original) => ({
     return store.slots[index];
   },
   useMemo: (create: () => unknown) => create(),
+  useId: () => "mock-id",
   useContext: (context: unknown) => contexts.current.get(context),
   useEffect: recordEffect,
   useLayoutEffect: recordEffect,
@@ -96,11 +100,14 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   const children = (
     element.type === EmptyState
     || element.type === ProjectGroupHeader
+    || element.type === SectionManageDialog
     || element.type === SessionFamilyList
     || element.type === SessionProfileSummary
     || element.type === ConversationMessageItem
     || element.type === ConversationToolGroup
     || element.type === ForkChainBar
+    || element.type === MobilePageHeader
+    || element.type === SheetAction
   )
     ? (element.type as (props: any) => ReactNode)(element.props)
     : element.props.children;
@@ -227,6 +234,7 @@ beforeEach(() => {
   vi.stubGlobal("localStorage", {
     getItem: vi.fn((key: string) => saved.get(key) ?? null),
     setItem: vi.fn((key: string, value: string) => saved.set(key, value)),
+    removeItem: vi.fn((key: string) => saved.delete(key)),
   });
   history = [];
   vi.mocked(downloadBridgeSessionFile).mockReset();
@@ -284,7 +292,7 @@ describe("desktop session PR disclosure", () => {
     snapshot.host.capabilities.push("pr.autofix.v1");
     snapshot.runtime.desktopIntegration.state = "ready";
     await openSessions();
-    const trigger = elements(tree).find(element => element.type === IconButton && element.props.label === "PR Auto-fix");
+    const trigger = elements(tree).find(element => element.type === IconButton && element.props.label === "会话操作");
     expect(trigger).toBeDefined();
     trigger!.props.onClick();
     tree = sessions.draw();
@@ -383,7 +391,9 @@ describe("desktop session deletion confirmation", () => {
     await openSessions();
     const session = { ...snapshot.sessions[0]!, runtimeId, transport: runtimeId === "claude-desktop" ? "claude-desktop-native" as const : "bridge-host" as const };
     tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot, sessions: [session] } });
-    elements(tree).find(element => element.type === IconButton && element.props.label === "删除会话")!.props.onClick();
+    elements(tree).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    tree = sessions.draw();
+    elements(tree).find(element => element.type === SheetAction && element.props.label === "删除会话")!.props.onClick();
     tree = sessions.draw();
     const confirmation = elements(tree).find(element => element.type === ConfirmationDialog && element.props.title === "删除会话")!;
     expect(confirmation.props.open).toBe(true);
@@ -533,7 +543,8 @@ describe("desktop shared catalog", () => {
     snapshot.sessions.push({ ...snapshot.sessions[0]!, sessionId: "C", title: "Session C", projectId: "third", projectName: "Third", lastActivityAt: 4 });
     tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot, sessions: [...snapshot.sessions] } });
     expect(titles()).toEqual(["Third", "Second", "Project"]);
-    elements(tree).find(element => element.type === IconButton && element.props.label === "调整项目顺序")!.props.onClick();
+    const openOrder = () => elements(elements(tree).find(element => element.props.className === "project-order-bar")!).find(element => element.type === "button")!;
+    openOrder().props.onClick();
     tree = sessions.draw();
     let order = elements(tree).find(element => element.type === ProjectOrderSheet)!;
     order.props.onPlaceProjects(["project", "third", "second"]);
@@ -541,7 +552,7 @@ describe("desktop shared catalog", () => {
     expect(titles()).toEqual(["Project", "Third", "Second"]);
     await openSessions();
     expect(titles()).toEqual(["Project", "Third", "Second"]);
-    elements(tree).find(element => element.type === IconButton && element.props.label === "调整项目顺序")!.props.onClick();
+    openOrder().props.onClick();
     tree = sessions.draw();
     order = elements(tree).find(element => element.type === ProjectOrderSheet)!;
     order.props.onPlaceProjects([...order.props.projectsByActivity]);
@@ -569,7 +580,7 @@ describe("desktop conversation actions", () => {
     const prompts = elements(tree).filter((element) => element.type === PermissionPrompt);
     expect(prompts.map((element) => element.props.permission.requestId)).toEqual(["other-question", "matching"]);
     const matching = prompts.find((element) => element.props.permission.requestId === "matching")!;
-    expect(matching.props.streamKey).toBe("permission:matching");
+    expect(elements(tree).some((element) => element.props["data-stream-key"] === "question:matching")).toBe(true);
     await matching.props.onResolve("matching", "allow-once", undefined, { ...pending.input, answers: { "Which branch?": "Main" } });
     expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "permission.resolve", params: {
       requestId: "matching", decision: "allow-once", updatedInput: { ...pending.input, answers: { "Which branch?": "Main" } },
@@ -890,14 +901,14 @@ describe("desktop conversation parity", () => {
       getBoundingClientRect: () => ({ top: 0, bottom: 300 }),
       querySelectorAll: () => [anchorEl],
     };
-    let streamDiv = elements(tree).find((element) => element.props.className === "desktop-conversation-stream")!;
+    let streamDiv = elements(tree).find((element) => typeof element.props.className === "string" && element.props.className.includes("desktop-conversation-stream"))!;
     streamDiv.props.ref.current = fakeStream;
     tree = sessions.draw({
       ...sessionsProps,
       events: [{ eventId: "ev-tail", seq: 1, timestamp: 300, sessionId: "A", origin: "claude-desktop", itemId: "m-3", type: "assistant.completed", data: { text: "Tail reply" } }],
     });
     fakeStream.scrollTop = 250;
-    streamDiv = elements(tree).find((element) => element.props.className === "desktop-conversation-stream")!;
+    streamDiv = elements(tree).find((element) => typeof element.props.className === "string" && element.props.className.includes("desktop-conversation-stream"))!;
     streamDiv.props.onScroll();
 
     anchorTop = 140;
@@ -1089,7 +1100,9 @@ describe("desktop conversation parity", () => {
     expect(textContent(forkBar)).toContain("主会话：Parent Session");
 
     apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "fork-fail", ok: false, error: { code: "FAILED", message: "分支创建失败" } });
-    await elements(tree).find(element => element.type === IconButton && element.props.label === "Fork 分支会话")!.props.onClick();
+    elements(tree).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    tree = sessions.draw();
+    await elements(tree).find(element => element.type === SheetAction && element.props.label === "Fork 分支")!.props.onClick();
     await settle();
     tree = sessions.draw();
     const dangerWarnings = elements(tree).filter(element => element.props.className === "session-channel-warning danger");
@@ -1198,7 +1211,7 @@ describe("unified desktop and assistant conversation composition", () => {
 
     expect(elements(fullTree).some((element) => element.type === DesktopSessions)).toBe(true);
     expect(elements(fullTree).some((element) => element.props.className === "desktop-session-sidebar")).toBe(true);
-    expect(textContent(elements(fullTree).find((element) => element.props.className === "desktop-conversation-heading")!)).toContain("Session B");
+    expect(textContent(elements(fullTree).find((element) => typeof element.props.className === "string" && element.props.className.startsWith("m-header"))!)).toContain("Session B");
 
     // Switching back to Session A in 会话 shows the updated draft from 助理
     elements(fullTree).find((element) => element.type === "button" && element.props.className === "session-row-hit" && textContent(element).includes("Session A"))!.props.onClick();
@@ -1510,5 +1523,253 @@ describe("unified desktop and assistant conversation composition", () => {
     // Neither host-2 nor host-1 receives read or close with stale transferIds after the host switch
     expect(host2Api).not.toHaveBeenCalled();
     expect(host1Api).not.toHaveBeenCalled();
+  });
+});
+
+describe("desktop mobile-aligned session sidebar and permission dock", () => {
+  it("filters sessions across title, summary, cwd, and runtime and jumps to pending permissions", async () => {
+    snapshot.sessions.push({
+      ...snapshot.sessions[0]!,
+      sessionId: "B",
+      title: "Backend Worker",
+      currentSummary: "Investigating Redis latency",
+      projectId: "second",
+      projectName: "Service",
+      cwd: "/srv/redis-api",
+      runtimeId: "codex-desktop",
+      transport: "bridge-host",
+      lastActivityAt: 2,
+    });
+    snapshot.projects.push({
+      ...snapshot.projects[0]!,
+      projectId: "second",
+      name: "Service",
+      cwd: "/srv/redis-api",
+      lastActivityAt: 2,
+    });
+    snapshot.permissions = [{
+      requestId: "perm-bash",
+      sessionId: "A",
+      toolUseId: "tool-bash",
+      toolName: "Bash",
+      input: { command: "git status" },
+      createdAt: 5,
+      canAllowAlways: true,
+    }];
+    await openSessions();
+    tree = sessions.draw({ ...sessionsProps, snapshot });
+
+    const searchInput = () => elements(elements(tree).find((element) => element.props.className === "session-search")!)
+      .find((element) => element.type === "input")!;
+    searchInput().props.onChange({ target: { value: "redis latency" } });
+    tree = sessions.draw({ ...sessionsProps, snapshot });
+    expect(elements(tree).filter((element) => element.type === ProjectGroupHeader).map((element) => element.props.title)).toEqual(["Service"]);
+
+    searchInput().props.onChange({ target: { value: "nonexistent-keyword" } });
+    tree = sessions.draw({ ...sessionsProps, snapshot });
+    expect(textContent(tree)).toContain("没有匹配的会话");
+
+    // Clicking host-permission-alert clears search, expands target project, and selects session A
+    const alertBtn = elements(tree).find((element) => element.props.className === "host-permission-alert")!;
+    expect(textContent(alertBtn)).toContain("有操作待你授权");
+    alertBtn.props.onClick();
+    await settle();
+    tree = sessions.draw({ ...sessionsProps, snapshot });
+    expect(searchInput().props.value).toBe("");
+    expect(elements(tree).find((element) => element.props["data-session-id"] === "A")!.props.className).toContain("active");
+
+    // Permission dock opens shared Sheet with PermissionPrompt on Desktop
+    const dockBtn = elements(tree).find((element) => element.props.className === "permission-dock")!;
+    expect(textContent(dockBtn)).toContain("正在等待授权");
+    dockBtn.props.onClick();
+    tree = sessions.draw({ ...sessionsProps, snapshot });
+    const prompt = elements(tree).find((element) => element.type === PermissionPrompt)!;
+    expect(prompt.props.permission.requestId).toBe("perm-bash");
+  });
+
+  it("supports directory menu actions, section create/rename/delete, and directory browse/mkdir in SessionCreateDialog", async () => {
+    snapshot.host.capabilities.push(
+      "section.create.v1",
+      "section.rename.v1",
+      "section.delete.v1",
+      "directory.browse.v1",
+      "directory.mkdir.v1",
+    );
+    snapshot.projects.push({
+      projectId: "sec-1",
+      name: "Research",
+      cwd: "",
+      kind: "desktop-group",
+      sessionCount: 0,
+      runningCount: 0,
+      pendingCount: 0,
+      lastActivityAt: 0,
+    });
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    await openSessions();
+    tree = sessions.draw({ ...sessionsProps, onRefreshSnapshot: refresh });
+
+    // Collapse / expand all via 目录选项 Sheet
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "目录选项")!.props.onClick();
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "折叠全部项目")!.props.onClick();
+    tree = sessions.draw();
+    expect(elements(tree).filter((element) => element.props.className === "session-row-hit")).toHaveLength(0);
+
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "目录选项")!.props.onClick();
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "展开全部项目")!.props.onClick();
+    tree = sessions.draw();
+    expect(elements(tree).filter((element) => element.props.className === "session-row-hit")).toHaveLength(1);
+
+    // Sync host via 目录选项 Sheet
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "目录选项")!.props.onClick();
+    tree = sessions.draw();
+    await elements(tree).find((element) => element.type === SheetAction && element.props.label === "同步当前电脑")!.props.onClick();
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    // Create section via 目录选项 Sheet -> 新建 Section modal
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "新建 Section")!.props.onClick();
+    tree = sessions.draw();
+    const sectionInput = elements(tree).find((element) => element.props["aria-label"] === "Section 名称")!;
+    sectionInput.props.onChange({ target: { value: "Experiments" } });
+    tree = sessions.draw();
+    apiRequest.mockResolvedValueOnce({
+      kind: "response",
+      requestId: "sec-create",
+      ok: true,
+      result: {
+        project: {
+          projectId: "sec-2",
+          name: "Experiments",
+          cwd: "",
+          kind: "desktop-group",
+          sessionCount: 0,
+          runningCount: 0,
+          pendingCount: 0,
+          lastActivityAt: 0,
+        },
+      },
+    });
+    const sectionDialog = elements(tree).find((element) => element.props["aria-label"] === "新建 Section")!;
+    const sectionForm = elements(sectionDialog).find((element) => element.type === "form")!;
+    sectionForm.props.onSubmit({ preventDefault: vi.fn() });
+    await settle();
+    expect(apiRequest).toHaveBeenCalledWith({ method: "section.create", params: { name: "Experiments" } });
+
+    // Rename & delete empty section via per-group 管理分组：<项目名> (with manageFocus enabled on Sheet)
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "管理分组：Research")!.props.onClick();
+    tree = sessions.draw();
+    expect(elements(tree).find((element) => element.type === Sheet && element.props.title === "Research")?.props.manageFocus).toBe(true);
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "重命名分组")!.props.onClick();
+    tree = sessions.draw();
+    elements(tree).find((element) => element.props["aria-label"] === "分组名称")!.props.onChange({ target: { value: "Lab" } });
+    tree = sessions.draw();
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "sec-rename", ok: true, result: {} });
+    const renameSectionDialog = elements(tree).find((element) => element.props["aria-label"] === "重命名分组")!;
+    elements(renameSectionDialog).find((element) => element.type === "form")!.props.onSubmit({ preventDefault: vi.fn() });
+    await settle();
+    expect(apiRequest).toHaveBeenCalledWith({ method: "section.rename", params: { sectionId: "sec-1", name: "Lab" } });
+
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "管理分组：Research")!.props.onClick();
+    tree = sessions.draw();
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "sec-delete", ok: true, result: {} });
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "删除空分组")!.props.onClick();
+    await settle();
+    expect(apiRequest).toHaveBeenCalledWith({ method: "section.delete", params: { sectionId: "sec-1" } });
+
+    // Empty manual sections preserve packaged QA empty-session state while still showing the section group
+    const emptySnapshot: DesktopControlSnapshot = {
+      ...snapshot,
+      sessions: [],
+      projects: [{
+        projectId: "sec-empty",
+        name: "Empty Section",
+        cwd: "",
+        kind: "desktop-group",
+        sessionCount: 0,
+        runningCount: 0,
+        pendingCount: 0,
+        lastActivityAt: 0,
+      }],
+    };
+    tree = sessions.draw({ ...sessionsProps, snapshot: emptySnapshot });
+    expect(elements(tree).find((element) => element.type === EmptyState)?.props.title).toBe("未检测到 Claude Desktop");
+    const readyEmptySnapshot: DesktopControlSnapshot = {
+      ...emptySnapshot,
+      runtime: {
+        ...emptySnapshot.runtime,
+        desktopIntegration: { ...emptySnapshot.runtime.desktopIntegration, state: "ready" },
+      },
+    };
+    tree = sessions.draw({ ...sessionsProps, snapshot: readyEmptySnapshot });
+    expect(elements(tree).find((element) => element.type === EmptyState)?.props.title).toBe("暂无活跃会话");
+    expect(elements(tree).some((element) => element.props.className === "primary-button session-catalog-empty-action")).toBe(true);
+    expect(elements(tree).some((element) => element.props.className === "project-group-empty" && element.props.children === "此分组暂无会话")).toBe(true);
+
+    // Desktop 会话操作 menu includes 同步此会话 via onOpenSession and pauses Sheet focus while delete ConfirmationDialog is open
+    snapshot.host.capabilities.push("session.visibility.v1");
+    tree = sessions.draw(sessionsProps);
+    await settle();
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    tree = sessions.draw();
+    const syncAction = elements(tree).find((element) => element.type === SheetAction && element.props.label === "同步此会话");
+    expect(syncAction).toBeDefined();
+    const openCallsBefore = apiRequest.mock.calls.filter(([req]) => req.method === "session.open").length;
+    await syncAction!.props.onClick();
+    await settle();
+    sessionsProps = elements(dashboard.draw()).find((element) => typeof element.type === "function" && element.type.name === "DesktopSessions")!.props;
+    tree = sessions.draw(sessionsProps);
+    expect(apiRequest.mock.calls.filter(([req]) => req.method === "session.open").length).toBe(openCallsBefore + 1);
+    expect(elements(tree).some((element) => element.type === SheetAction && element.props.label === "已同步")).toBe(true);
+
+    // Sync failure surfaces error alert inside Sheet
+    apiRequest.mockImplementationOnce(async (req: any) => (
+      req.method === "session.open"
+        ? { kind: "response", requestId: "open-fail", ok: false, error: { code: "READ_FAILED", message: "记录同步失败", retryable: true } }
+        : { kind: "response", requestId: "other", ok: true, result: { evidence: { items: [], hasMore: false } } }
+    ));
+    await elements(tree).find((element) => element.type === SheetAction && element.props.label === "已同步")!.props.onClick();
+    await settle();
+    sessionsProps = elements(dashboard.draw()).find((element) => typeof element.type === "function" && element.type.name === "DesktopSessions")!.props;
+    tree = sessions.draw(sessionsProps);
+    expect(elements(tree).some((element) => element.props.role === "alert" && textContent(element).includes("记录同步失败"))).toBe(true);
+
+    // Opening delete confirmation pauses underlying Sheet focus management
+    const activeTitle = snapshot.sessions[0]!.title;
+    elements(tree).find((element) => element.type === SheetAction && element.props.label === "删除会话")!.props.onClick();
+    tree = sessions.draw();
+    const menuSheet = elements(tree).find((element) => element.type === Sheet && element.props.title === activeTitle)!;
+    expect(menuSheet.props.focusPaused).toBe(true);
+    elements(tree).find((element) => element.type === ConfirmationDialog && element.props.title === "删除会话")!.props.onCancel();
+    tree = sessions.draw();
+    expect(elements(tree).find((element) => element.type === Sheet && element.props.title === activeTitle)!.props.focusPaused).toBe(false);
+    elements(tree).find((element) => element.type === Sheet && element.props.title === activeTitle)!.props.onClose();
+    tree = sessions.draw();
+
+    // Per-project 新建会话：<项目名> wires initialProjectId, onBrowseDirectory, and onCreateDirectory
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "新建会话：Project")!.props.onClick();
+    tree = sessions.draw();
+    const createDialog = elements(tree).find((element) => element.type === SessionCreateDialog)!;
+    expect(createDialog.props.initialProjectId).toBe("project");
+    apiRequest.mockResolvedValueOnce({
+      kind: "response",
+      requestId: "dir-list",
+      ok: true,
+      result: { listing: { path: "/tmp", directories: [], recentPaths: [] } },
+    });
+    await expect(createDialog.props.onBrowseDirectory("/tmp")).resolves.toEqual({ path: "/tmp", directories: [], recentPaths: [] });
+    expect(apiRequest).toHaveBeenLastCalledWith({ method: "directory.list", params: { path: "/tmp" } });
+    apiRequest.mockResolvedValueOnce({
+      kind: "response",
+      requestId: "dir-mkdir",
+      ok: true,
+      result: { path: "/tmp/demo" },
+    });
+    await expect(createDialog.props.onCreateDirectory("/tmp", "demo")).resolves.toBe("/tmp/demo");
+    expect(apiRequest).toHaveBeenLastCalledWith({ method: "directory.mkdir", params: { parentPath: "/tmp", name: "demo" } });
   });
 });

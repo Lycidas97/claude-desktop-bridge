@@ -5,7 +5,7 @@ import type {
   SocketState,
 } from "@bridge/protocol";
 import { Eye, EyeOff, LoaderCircle, Pencil, Trash2 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { Sheet, SheetAction } from "../common/Sheet.js";
@@ -296,8 +296,36 @@ export function useSectionManage({
   };
 }
 
-export function SectionManageDialog({ controller }: { controller: SectionManageController }) {
+export function SectionManageDialog({
+  controller,
+  manageFocus = false,
+}: {
+  controller: SectionManageController;
+  manageFocus?: boolean;
+}) {
   const { desktopName, online, supportsRename, supportsDelete, targetProject, state } = controller;
+  const open = Boolean(state && targetProject);
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  const renameBackdropRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!manageFocus || !open || typeof document === "undefined") return;
+    const renameBackdrop = renameBackdropRef;
+    openerRef.current = document.activeElement as HTMLElement | null;
+    return () => {
+      const opener = openerRef.current;
+      openerRef.current = null;
+      const active = document.activeElement;
+      if (
+        opener?.isConnected
+        && (!active || active === document.body || active === document.documentElement || Boolean(renameBackdrop.current?.contains(active)))
+      ) {
+        opener.focus();
+      }
+    };
+  }, [manageFocus, open]);
+
   if (!state || !targetProject) return null;
 
   if (state.mode === "rename") {
@@ -305,6 +333,7 @@ export function SectionManageDialog({ controller }: { controller: SectionManageC
     const canSave = Boolean(online && trimmed && !state.busy);
     return (
       <div
+        ref={renameBackdropRef}
         className="modal-backdrop session-create-backdrop"
         role="presentation"
         onMouseDown={(event) => { if (event.target === event.currentTarget) controller.close(); }}
@@ -312,6 +341,20 @@ export function SectionManageDialog({ controller }: { controller: SectionManageC
           if (event.key === "Escape") {
             event.stopPropagation();
             controller.close();
+          } else if (manageFocus && event.key === "Tab") {
+            const controls = event.currentTarget.querySelectorAll<HTMLElement>(
+              'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]',
+            );
+            const first = controls[0];
+            const last = controls[controls.length - 1];
+            if (!first || !last) return;
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first.focus();
+            }
           }
         }}
       >
@@ -367,7 +410,7 @@ export function SectionManageDialog({ controller }: { controller: SectionManageC
   }
 
   return (
-    <Sheet eyebrow={desktopName} title={targetProject.name} onClose={controller.close}>
+    <Sheet manageFocus={manageFocus} eyebrow={desktopName} title={targetProject.name} onClose={controller.close}>
       <div className="m-group">
         {supportsRename && (
           <SheetAction

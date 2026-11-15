@@ -26,6 +26,7 @@ export interface MobileDraftState {
 }
 
 export interface MobileComposerProps {
+  variant?: "mobile" | "desktop" | undefined;
   selectedSession: BridgeSessionInfo;
   snapshot: BridgeHostSnapshot | undefined;
   connection: SocketState;
@@ -56,6 +57,7 @@ export interface MobileComposerProps {
 }
 
 export function MobileComposer({
+  variant = "mobile",
   selectedSession,
   snapshot,
   connection,
@@ -143,7 +145,9 @@ export function MobileComposer({
                   ? "给这个 Bridge 会话发指令"
                   : `给这个 ${runtimeName} 会话发指令`
               )
-            : "电脑离线，消息会保存在手机并自动送达"}
+            : variant === "desktop"
+              ? "Claude Desktop 连接已断开"
+              : "电脑离线，消息会保存在手机并自动送达"}
           aria-label={`给 ${runtimeName} 发指令`}
         />
         {stopTarget && !hasDraft && !sending ? (

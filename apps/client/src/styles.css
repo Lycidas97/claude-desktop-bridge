@@ -5403,17 +5403,18 @@ button:disabled {
   min-height: 0;
   grid-template-rows: auto minmax(0, 1fr);
   border-right: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--bg);
 }
 
 .desktop-sidebar-heading {
   display: flex;
-  min-height: 78px;
+  min-height: 60px;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: 10px;
+  padding: 8px 10px 8px 16px;
   border-bottom: 1px solid var(--line);
+  background: var(--bg);
 }
 
 .desktop-sidebar-heading span,
@@ -5423,7 +5424,14 @@ button:disabled {
   font-weight: 750;
 }
 
-.desktop-sidebar-heading h1,
+.desktop-sidebar-heading h1 {
+  margin: 0;
+  font-size: calc(20px * var(--font-scale));
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.3px;
+}
+
 .desktop-page-heading h1 {
   margin: 2px 0 0;
   font-size: calc(23px * var(--font-scale));
@@ -5432,45 +5440,135 @@ button:disabled {
 .desktop-sidebar-actions {
   display: flex;
   align-items: center;
-  gap: 1px;
+  gap: 2px;
 }
 
 .desktop-sidebar-actions .icon-button {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
+  color: var(--text);
 }
 
 .desktop-project-list {
   min-height: 0;
-  padding: 12px 10px 20px;
+  padding: 12px 12px 24px;
   overflow-y: auto;
 }
 
-.desktop-project-list > section {
-  margin-bottom: 18px;
+.desktop-project-list .session-search {
+  height: 40px;
+  gap: 9px;
+  margin: 0 0 12px;
+  padding: 0 12px;
+  border-color: var(--card-border);
+  border-radius: var(--m-r-control);
+  background: var(--card-fill);
 }
 
-.desktop-project-list > section.collapsed {
-  margin-bottom: 8px;
+.desktop-project-list .session-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.desktop-project-list .project-order-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: -4px 0 10px;
+  padding: 0 2px 0 4px;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+}
+
+.desktop-project-list .project-order-bar button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--m-r-control);
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.desktop-project-list .project-order-bar button:hover {
+  background: var(--surface-2);
+}
+
+.desktop-project-list .host-permission-alert {
+  min-height: 52px;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: var(--m-r-group);
+}
+
+.desktop-project-list .project-groups {
+  gap: 10px;
+}
+
+.desktop-project-list .project-group {
+  border-color: var(--card-border);
+  border-radius: var(--m-r-group);
+  background: var(--card-fill);
+  box-shadow: none;
+}
+
+.desktop-project-list .project-group-header {
+  background: transparent;
+}
+
+.desktop-project-list .project-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+}
+
+.desktop-project-list .project-group-actions .session-row-action {
+  width: 32px;
+  height: 32px;
+  margin-right: 0;
+  color: var(--muted);
 }
 
 .desktop-project-list .project-group-open {
-  min-height: 40px;
-  padding: 8px;
+  min-height: 44px;
+  padding: 8px 10px 8px 12px;
+}
+
+.desktop-project-list .project-group-empty {
+  padding: 14px 12px;
+  color: var(--muted);
+  font-size: var(--m-fs-footnote);
+  text-align: center;
 }
 
 .desktop-project-list .session-row-v2.active {
   background: var(--surface-2);
 }
 
-.desktop-project-list .session-row-v2.active .session-fork-badge,
-.desktop-project-list .session-row-v2.active .session-row-status {
+.desktop-project-list .session-fork-badge,
+.desktop-project-list .session-fork-badge.is-sidechat {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.desktop-project-list .session-row-v2.active .session-row-status,
+.desktop-project-list .session-row-status.running,
+.desktop-project-list .session-row-status.waiting,
+.desktop-project-list .session-row-status.queued {
   color: var(--text);
 }
 
 .desktop-project-list .session-row-hit {
   min-height: 54px;
-  padding: 8px;
+  padding: 8px 8px 8px 12px;
 }
 
 .desktop-project-list .session-catalog-loading {
@@ -5485,16 +5583,44 @@ button:disabled {
   background: var(--bg);
 }
 
-.desktop-conversation > .session-channel-warning {
+.desktop-conversation > .mobile-workspace {
+  max-width: none;
+  height: 100%;
+  flex: 1 1 0;
+  margin: 0;
+  background: var(--bg);
+}
+
+.desktop-conversation .m-header.is-embedded {
+  min-height: 60px;
+  padding: 10px 14px 10px 20px;
+  background: var(--bg);
+}
+
+.desktop-conversation .session-channel-warning {
   justify-content: flex-start;
   padding-right: 20px;
   padding-left: 20px;
 }
 
+.desktop-conversation .relay-chain-bar,
 .desktop-conversation > .fork-chain-bar {
   padding: 8px 20px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
+}
+
+.desktop-conversation .permission-dock-slot.has-attention {
+  padding: 8px 18px;
+}
+
+.desktop-conversation .mobile-composer {
+  padding: 10px 18px 16px;
+}
+
+.desktop-conversation .mobile-composer textarea {
+  font-size: calc(13px * var(--font-scale));
+  line-height: 1.5;
 }
 
 .desktop-conversation-heading {

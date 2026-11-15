@@ -188,10 +188,12 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   await capture("desktop-catalog");
   steps.push("mobile/Desktop share family rows; Desktop retains archived sidechats, selection and fork navigation");
 
-  await sidebar.getByRole("button", { name: "全部折叠", exact: true }).click();
+  await sidebar.getByRole("button", { name: "目录选项", exact: true }).click();
+  await page.getByRole("dialog", { name: "会话目录", exact: true }).getByRole("button", { name: "折叠全部项目", exact: true }).click();
   assert.equal(await sidebar.locator("[data-session-id]").count(), 0);
-  await sidebar.getByRole("button", { name: "全部展开", exact: true }).click();
-  const orderTrigger = sidebar.getByRole("button", { name: "调整项目顺序", exact: true });
+  await sidebar.getByRole("button", { name: "目录选项", exact: true }).click();
+  await page.getByRole("dialog", { name: "会话目录", exact: true }).getByRole("button", { name: "展开全部项目", exact: true }).click();
+  const orderTrigger = sidebar.getByRole("button", { name: "调整顺序", exact: true });
   await orderTrigger.focus();
   await orderTrigger.press("Enter");
   const orderDialog = page.getByRole("dialog", { name: "项目顺序" });
@@ -231,7 +233,7 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
     window.__updateCatalog(snapshot);
   }, initialOrder[0]);
   assert.deepEqual(await headers.allTextContents(), manualOrder, "Activity does not move fixed projects");
-  await sidebar.getByRole("button", { name: "调整项目顺序", exact: true }).click();
+  await sidebar.getByRole("button", { name: "调整顺序", exact: true }).click();
   await orderDialog.getByRole("button", { name: "按最近活动重排", exact: true }).click();
   await orderDialog.getByRole("button", { name: "关闭", exact: true }).click();
   await eventually(async () => (await headers.allTextContents())[0], initialOrder[0], "Explicit activity reorder moves the newest project first");
@@ -533,7 +535,7 @@ async function verifyDesktopConversation(page, host, steps, directory, viewports
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   const sidebar = page.locator(".desktop-session-sidebar");
   await sidebar.locator(`[data-session-id="${sessionId}"] .session-row-hit`).click();
-  await page.locator(".desktop-conversation-heading").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  await page.locator(".desktop-conversation .m-header").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   assert.equal(await page.locator(".composer-mode").count(), 0, "Desktop conversation does not reintroduce a composer mode selector");
 
   const stream = page.locator(".desktop-conversation-stream");
@@ -667,7 +669,7 @@ async function verifyDesktopConversation(page, host, steps, directory, viewports
   const openCountBefore = host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).length;
   const historyCountBefore = host.requests.filter(request => request.method === "session.history").length;
   await sidebar.locator(`[data-session-id="${sessionId}"] .session-row-hit`).click();
-  await page.locator(".desktop-conversation-heading").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  await page.locator(".desktop-conversation .m-header").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   await eventually(() => host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).length > openCountBefore, true, "Selecting session requests session.open");
   assert.equal(host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).at(-1).params.limit, 50);
   await eventually(() => stream.locator("article.conversation-item").count(), 50, "Desktop renders initial 50 history items");
@@ -725,6 +727,46 @@ async function verifyDesktopConversation(page, host, steps, directory, viewports
   assert.equal(new Set(streamKeys).size, streamKeys.length, "Desktop paginated stream has no duplicate keys");
   await page.screenshot({ path: resolve(directory, "desktop-history-pagination.png"), fullPage: true });
   steps.push("Desktop top-scroll pagination loads 50-item pages via session.history, retains failed cursors for retry, and preserves reading position");
+
+  // Desktop 会话操作 Sheet: 同步此会话 + keyboard-accessible 删除会话 ConfirmationDialog focus trap & restore
+  if (!host.snapshot.host.capabilities.includes("session.visibility.v1")) {
+    host.snapshot.host.capabilities.push("session.visibility.v1");
+  }
+  await page.evaluate(next => window.__desktopReceiveSnapshot?.(next), toDesktopSnapshot(host.snapshot));
+
+  const menuTrigger = page.locator(".desktop-conversation .m-header").getByRole("button", { name: "会话操作", exact: true });
+  await menuTrigger.focus();
+  await page.keyboard.press("Enter");
+  const sessionMenuSheet = page.getByRole("dialog", { name: originalTitle, exact: true });
+  await sessionMenuSheet.waitFor();
+  const syncOpenCountBefore = host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).length;
+  await sessionMenuSheet.getByRole("button", { name: /同步此会话/u }).click();
+  await eventually(() => host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).length, syncOpenCountBefore + 1, "Desktop 同步此会话 re-opens session transcript");
+  await sessionMenuSheet.getByRole("button", { name: /已同步/u }).waitFor();
+
+  const targetSession = host.snapshot.sessions.find(candidate => candidate.sessionId === sessionId);
+  targetSession.turnState = "idle";
+  targetSession.pendingCount = 0;
+  await page.evaluate(next => window.__desktopReceiveSnapshot?.(next), toDesktopSnapshot(host.snapshot));
+
+  const deleteActionButton = sessionMenuSheet.getByRole("button", { name: /删除会话/u });
+  await eventually(() => deleteActionButton.isEnabled(), true, "Idle desktop session enables 删除会话");
+  await deleteActionButton.focus();
+  await page.keyboard.press("Enter");
+  const deleteAlert = page.getByRole("alertdialog", { name: "删除会话", exact: true });
+  await deleteAlert.waitFor();
+  assert.equal(await deleteAlert.evaluate(node => node.contains(document.activeElement)), true, "Opening delete ConfirmationDialog moves focus into alertdialog");
+  await page.keyboard.press("Tab");
+  assert.equal(await deleteAlert.getByRole("button", { name: "删除会话", exact: true }).evaluate(node => node === document.activeElement), true, "Tab moves to confirm button inside alertdialog");
+  await page.keyboard.press("Tab");
+  assert.equal(await deleteAlert.getByRole("button", { name: "取消", exact: true }).evaluate(node => node === document.activeElement), true, "Tab wraps inside alertdialog");
+  await page.keyboard.press("Escape");
+  await deleteAlert.waitFor({ state: "hidden" });
+  assert.equal(await deleteActionButton.evaluate(node => node === document.activeElement), true, "Canceling delete ConfirmationDialog restores focus to 删除会话 menu item");
+  await page.keyboard.press("Escape");
+  await sessionMenuSheet.waitFor({ state: "hidden" });
+  assert.equal(await menuTrigger.evaluate(node => node === document.activeElement), true, "Closing 会话操作 Sheet restores focus to 会话操作 trigger");
+  steps.push("Desktop 会话操作 Sheet supports 同步此会话 and keyboard focus trap/restore across 删除会话 ConfirmationDialog");
 }
 
 async function verifyMobileSafeArea(page, steps, directory, viewports) {
@@ -2088,13 +2130,14 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   await desktop.setViewportSize({ width: 1200, height: 800 });
   await desktop.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await desktop.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
-  await desktop.locator(".desktop-conversation-heading").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  await desktop.locator(".desktop-conversation .m-header").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   assert.equal(await desktop.locator(".session-pr-bar").count(), 0, "Desktop also omits the no-PR header");
-  await desktop.getByRole("button", { name: "PR Auto-fix", exact: true }).click();
-  const desktopMenu = desktop.getByRole("dialog", { name: "PR Auto-fix", exact: true });
+  const desktopMenuTrigger = desktop.locator(".desktop-conversation").getByRole("button", { name: "会话操作", exact: true });
+  await desktopMenuTrigger.click();
+  const desktopMenu = desktop.getByRole("dialog", { name: originalTitle, exact: true });
   const desktopOwn = desktopMenu.getByRole("checkbox", { name: "仅我的 PR", exact: true });
   await eventually(() => desktopOwn.isEnabled(), true, "Desktop actions read Native preferences");
-  assert.equal(await desktopMenu.getByText("PR Auto-fix", { exact: true }).count(), 1, "Desktop labels the feature once in the dialog heading");
+  assert.equal(await desktopMenu.getByText("PR Auto-fix", { exact: true }).count(), 1, "Desktop labels the feature once in the session actions sheet");
   assert.equal(await desktopMenu.getByRole("button", { name: "刷新 PR 状态", exact: true }).count(), 0);
   assert.equal(await desktopOwn.isChecked(), true, "Desktop sees the preference saved by the phone");
   assert.equal(await desktopMenu.getByRole("button", { name: "已布防下一个 PR", exact: true }).isDisabled(), true);
@@ -2110,7 +2153,7 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   assert.equal(await desktop.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await desktopMenu.getByRole("button", { name: "关闭", exact: true }).press("Escape");
   await desktopMenu.waitFor({ state: "hidden" });
-  assert.equal(await desktop.getByRole("button", { name: "PR Auto-fix", exact: true }).evaluate(button => button === document.activeElement), true, "Desktop action sheet restores keyboard focus");
+  assert.equal(await desktopMenuTrigger.evaluate(button => button === document.activeElement), true, "Desktop action sheet restores keyboard focus");
   assert.deepEqual(desktopErrors, []);
   await desktop.close();
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "getPrChecks").length, 0, "No-PR actions on either surface never request checks");
@@ -3836,7 +3879,7 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "桌面跨页共享草稿", "Desktop assistant draft survives 对话/邮件/设置 subview switches");
   await page.getByRole("navigation", { name: "Bridge 主导航" }).getByRole("button", { name: "会话", exact: true }).click();
   await page.locator(`.desktop-session-sidebar [data-session-id="${sessionId}"] .session-row-hit`).click();
-  const desktopSessionComposer = page.locator(".desktop-composer textarea");
+  const desktopSessionComposer = page.locator(".desktop-conversation .mobile-composer textarea");
   await desktopSessionComposer.waitFor();
   assert.equal(await desktopSessionComposer.inputValue(), "桌面跨页共享草稿", "Desktop 会话 and 助理 tabs share the bound session draft");
   await desktopSessionComposer.fill("桌面会话同步草稿");

@@ -31,22 +31,19 @@ import {
   ArchiveRestore,
   Check,
   ChevronDown,
-  CircleStop,
   FilePenLine,
   Folder,
   FolderOpen,
   GitFork,
-  GitPullRequest,
   Layers,
   LoaderCircle,
   MessageSquare,
+  MoreHorizontal,
   PackageCheck,
   RefreshCw,
-  Send,
   Settings2,
   ShieldCheck,
   Trash2,
-  X,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -65,7 +62,6 @@ import {
   conversationItems,
   conversationTimeline,
   groupTimelineTools,
-  ownershipLabel,
   runtimeSupports,
   stoppableBridgeTask,
   type ConversationItem,
@@ -81,7 +77,6 @@ import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { Sheet, SheetAction } from "../common/Sheet.js";
 import { EvidenceInlineSummary, EvidencePanel } from "../evidence/EvidencePanel.js";
-import { ComposerAttachmentMenu, FileAttachmentPicker } from "../evidence/FileAttachmentPicker.js";
 import { FileChangesCard } from "../evidence/FileChangesCard.js";
 import { MediaGallery } from "../evidence/MediaGallery.js";
 import { useMediaPreview } from "../evidence/MediaPreviewProvider.js";
@@ -111,41 +106,7 @@ import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
 import { SessionNoticeCard } from "./SessionNoticeCard.js";
 import { SessionPrActions, SessionPrBar } from "./SessionPrBar.js";
 import { SessionRewindDialog } from "./SessionRewindDialog.js";
-import { SlashCommandInput } from "./SlashCommandInput.js";
 import { SubagentCard } from "./SubagentCard.js";
-import { MoreHorizontal } from "lucide-react";
-
-export function desktopSessionState(session: BridgeSessionInfo): string {
-  if (session.transport === "claude-desktop-native") return ownershipLabel(session);
-  if (session.desktopHandoff) return ownershipLabel(session);
-  const bridgeCreated = session.source === "bridge";
-  if (session.ownership === "OWNERSHIP_CONFLICT") return "写入冲突";
-  if (session.ownership === "FALLBACK_CONFIRMATION_REQUIRED") return "等待接管";
-  if (session.turnState === "running" && session.executionStage === "starting") return "正在启动";
-  if (session.turnState === "running" && session.executionStage === "submitted") return "已提交，等待执行";
-  if (session.ownership === "DESKTOP_OBSERVED" && session.turnState === "running") {
-    return "桌面运行中";
-  }
-  if (session.turnState === "running") return bridgeCreated ? "Bridge 运行中" : "运行中";
-  if (session.turnState === "queued") return bridgeCreated ? "Bridge 排队中" : "排队中";
-  if (bridgeCreated) return "Bridge 待机";
-  if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
-  if (session.ownership === "DESKTOP_OBSERVED") return "桌面待机";
-  return "待机";
-}
-
-export function desktopTransportLabel(session: BridgeSessionInfo): string {
-  if (session.transport === "claude-desktop-native") return "Claude Desktop 原生会话";
-  if (!session.runtimeId || session.runtimeId === "claude-desktop") return "Claude Desktop";
-  if (session.desktopHandoff) return "手动交接";
-  if (session.transport === "claude-desktop-managed") return "Claude Desktop 同步";
-  if (session.source === "bridge") {
-    if (session.desktopRegistration?.state === "registered") return "Claude Desktop 已登记";
-    if (session.desktopRegistration?.state === "restart-required") return "等待 Desktop 重启";
-    return "仅在 Bridge";
-  }
-  return "桌面会话接管";
-}
 
 export interface ConversationViewProps {
   variant?: "mobile" | "desktop" | undefined;
@@ -327,7 +288,9 @@ export function ConversationView({
   const { text, attachments, sending, imageError } = draft;
 
   const [internalSessionView, setInternalSessionView] = useState<"conversation" | "evidence">("conversation");
-  const [internalForkChainOpen, setInternalForkChainOpen] = useState(() => Boolean(session.sidechat));
+  const [internalForkChainOpen, setInternalForkChainOpen] = useState(
+    () => Boolean(!isMobile || session.sidechat),
+  );
   const [internalPermissionOpen, setInternalPermissionOpen] = useState(false);
   const [internalConfigurationOpen, setInternalConfigurationOpen] = useState(false);
   const [internalActionBusy, setInternalActionBusy] = useState(false);
@@ -336,6 +299,8 @@ export function ConversationView({
   const [moveMenuOpen, setMoveMenuOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
+  const [internalRefreshing, setInternalRefreshing] = useState(false);
+  const [syncCheckTick, setSyncCheckTick] = useState(0);
   const [syncFlash, setSyncFlash] = useState(false);
   const [rewindTarget, setRewindTarget] = useState<{ sessionId: string; messageId?: string }>();
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
@@ -358,7 +323,6 @@ export function ConversationView({
   const [pendingFileDownload, setPendingFileDownload] = useState<string>();
   const [fileDownloadBusy, setFileDownloadBusy] = useState(false);
   const [fileDownloadError, setFileDownloadError] = useState<string>();
-  const [prActionsOpen, setPrActionsOpen] = useState(false);
   const [deleteSessionOpen, setDeleteSessionOpen] = useState(false);
 
   const streamRef = useRef<HTMLDivElement>(null);
@@ -366,6 +330,7 @@ export function ConversationView({
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const announcedPermissionsRef = useRef(new Set<string>());
   const autoRetriedSessionRef = useRef<string | undefined>(undefined);
+  const syncPendingKeyRef = useRef<string | undefined>(undefined);
   const previousDraftKeyRef = useRef(draftKey);
 
   const effectiveSessionView = controlledSessionView ?? internalSessionView;
@@ -398,21 +363,35 @@ export function ConversationView({
     if (previousDraftKeyRef.current === draftKey) return;
     previousDraftKeyRef.current = draftKey;
     setInternalSessionView("conversation");
+    setInternalPermissionOpen(false);
     setInternalConfigurationOpen(false);
-    setInternalForkChainOpen(Boolean(session.sidechat));
+    setInternalForkChainOpen(Boolean(!isMobile || session.sidechat));
     setBackgroundTasksOpen(undefined);
     setStopSubagentTarget(undefined);
     setPendingFileDownload(undefined);
     setFileDownloadError(undefined);
     setStopError(undefined);
-    setPrActionsOpen(false);
+    setStopConfirmOpen(false);
     setDeleteSessionOpen(false);
     setInternalMenuOpen(false);
     setMoveMenuOpen(false);
     setRenameOpen(false);
     setInternalActionError(undefined);
+    syncPendingKeyRef.current = undefined;
+    setInternalRefreshing(false);
     setSyncFlash(false);
-  }, [draftKey, session.sidechat]);
+  }, [draftKey, isMobile, session.parentSessionId, session.sidechat]);
+
+  useEffect(() => {
+    if (internalRefreshing || syncPendingKeyRef.current !== draftKey) return;
+    if (history?.status === "loading") return;
+    syncPendingKeyRef.current = undefined;
+    if (history?.status === "error") {
+      setInternalActionError(history.error ?? "同步会话失败");
+    } else {
+      setSyncFlash(true);
+    }
+  }, [draftKey, history?.error, history?.status, internalRefreshing, syncCheckTick]);
 
   useEffect(() => {
     if (!syncFlash) return;
@@ -439,7 +418,7 @@ export function ConversationView({
     onRewind: () => setRewindTarget({ sessionId: session.sessionId }),
     ...(onRequestRename
       ? { onRename: () => onRequestRename(session) }
-      : isMobile && (onRenameSession || onRunSessionCommand)
+      : (onRenameSession || onRunSessionCommand)
         ? {
             onRename: () => {
               setRenameTitle(session.title);
@@ -614,7 +593,6 @@ export function ConversationView({
     : undefined;
 
   const orphanUncertainDeliveries = useMemo(() => {
-    if (isMobile) return [];
     const latest = new Map<string, BridgeEvent>();
     for (const event of events) {
       if (
@@ -630,18 +608,13 @@ export function ConversationView({
       .filter((event) => !items.some((item) => (
         item.delivery === "uncertain" && item.commandId && item.commandId === event.data.commandId
       )));
-  }, [events, isMobile, items, session.sessionId]);
+  }, [events, items, session.sessionId]);
 
-  const streamKeys = useMemo(() => (
-    isMobile
-      ? timelineStreamKeys
-      : [
-          ...timelineStreamKeys,
-          ...sessionPermissions.map((permission) => `permission:${permission.requestId}`),
-          ...sessionNativePrompts.map((prompt) => `prompt:${prompt.promptId}`),
-          ...orphanUncertainDeliveries.map((event) => `uncertain:${event.eventId}`),
-        ]
-  ), [isMobile, orphanUncertainDeliveries, sessionNativePrompts, sessionPermissions, timelineStreamKeys]);
+  const streamKeys = useMemo(() => [
+    ...timelineStreamKeys,
+    ...sessionQuestions.map((permission) => `question:${permission.requestId}`),
+    ...orphanUncertainDeliveries.map((event) => `uncertain:${event.eventId}`),
+  ], [orphanUncertainDeliveries, sessionQuestions, timelineStreamKeys]);
 
   useEffect(() => {
     if (!isMobile || !visible) return;
@@ -667,15 +640,14 @@ export function ConversationView({
 
   useEffect(() => {
     if (
-      isMobile
-      && visible
+      visible
       && effectivePermissionOpen
       && !snapshot?.prompts?.some((prompt) => prompt.sessionId === session.sessionId)
       && !permissions.some((permission) => permission.sessionId === session.sessionId && permission.toolName !== "AskUserQuestion")
     ) {
       setPermissionOpen(false);
     }
-  }, [effectivePermissionOpen, isMobile, permissions, session.sessionId, snapshot?.prompts, visible]);
+  }, [effectivePermissionOpen, permissions, session.sessionId, snapshot?.prompts, visible]);
 
   useEffect(() => {
     if (!isMobile || !visible) return;
@@ -756,7 +728,6 @@ export function ConversationView({
   ]);
 
   useLayoutEffect(() => {
-    if (!isMobile) return;
     const textarea = composerRef.current;
     if (!textarea) return;
     const resize = () => {
@@ -766,7 +737,7 @@ export function ConversationView({
     resize();
     window.addEventListener("resize", resize);
     return () => window.removeEventListener("resize", resize);
-  }, [draftKey, effectiveSessionView, isMobile, text, visible]);
+  }, [draftKey, effectiveSessionView, text, visible]);
 
   const firstHistoryKey = history?.items[0]?.id;
   const historyCount = history?.items.length ?? 0;
@@ -935,12 +906,8 @@ export function ConversationView({
     || session.turnState === "running"
     || session.turnState === "queued"
     || session.turnState === "waiting";
-  const desktopBusy = session.turnState === "running" || session.turnState === "queued" || session.turnState === "waiting";
-  const stopTarget = isMobile
-    ? (selectedBusy ? stoppableBridgeTask(sessions, session.sessionId) : undefined)
-    : stoppableBridgeTask(sessions, session.sessionId);
+  const stopTarget = selectedBusy ? stoppableBridgeTask(sessions, session.sessionId) : undefined;
   const stopping = Boolean(stopTarget && stoppingSessionId === stopTarget.sessionId);
-  const stoppingBlocker = Boolean(stopTarget && stopTarget.sessionId !== session.sessionId);
   const hasDraft = Boolean(text.trim()) || (canAttachImages && attachments.length > 0) || fileUploads.files.length > 0;
 
   const evidenceCount = (evidence?.items.length ?? 0) + (fileChangesSummary ? 1 : 0);
@@ -1006,7 +973,8 @@ export function ConversationView({
         </div>
       )}
       {displayNodes.length === 0
-        && (isMobile || (sessionPermissions.length === 0 && sessionNativePrompts.length === 0 && orphanUncertainDeliveries.length === 0))
+        && sessionQuestions.length === 0
+        && orphanUncertainDeliveries.length === 0
         && history?.status === "ready" && (
           <div className="conversation-empty">
             <strong>这是一个空会话</strong>
@@ -1120,59 +1088,30 @@ export function ConversationView({
           />
         );
       })}
-      {isMobile ? (
-        sessionQuestions.map((permission) => (
-          <article
-            className="conversation-item assistant pending-question"
-            key={`${draftKey}:${permission.requestId}`}
-            data-stream-key={`question:${permission.requestId}`}
-            aria-label="待回答"
-          >
-            <PermissionPrompt key={permission.requestId} permission={permission} onResolve={onResolvePermission} />
-          </article>
-        ))
-      ) : (
-        <>
-          {sessionPermissions.map((permission) => (
-            <PermissionPrompt
-              key={permission.requestId}
-              streamKey={`permission:${permission.requestId}`}
-              permission={permission}
-              onResolve={onResolvePermission}
-              {...(permission.canSetNativeFullAccess ? {
-                onEnableNativeFullAccess: (requestId: string) => (
-                  onResolvePermission(requestId, "allow-once", undefined, undefined, "bypassPermissions")
-                ),
-              } : {})}
-            />
-          ))}
-          {sessionNativePrompts.map((prompt) => (
-            <NativePromptCard
-              key={prompt.promptId}
-              streamKey={`prompt:${prompt.promptId}`}
-              prompt={prompt}
-              online={isNativeReady}
-              {...(onResolvePrompt && snapshot?.host.capabilities.includes("prompt.native.v1") ? {
-                onResolve: onResolvePrompt,
-              } : {})}
-            />
-          ))}
-          {orphanUncertainDeliveries.map((event) => (
-            <article
-              className="conversation-item system uncertain-delivery"
-              key={event.eventId}
-              data-stream-key={`uncertain:${event.eventId}`}
-            >
-              <div className="conversation-item-meta"><strong>发送结果待确认</strong></div>
-              <div className="conversation-text">{typeof event.data.error === "string" ? event.data.error : "Desktop 在确认消息前断开。"}</div>
-              <div className="uncertain-delivery-actions">
-                <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(String(event.data.commandId), "confirm")}>确认已发送</button>
-                <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(String(event.data.commandId), "retry")}>检查后重发</button>
-              </div>
-            </article>
-          ))}
-        </>
-      )}
+      {sessionQuestions.map((permission) => (
+        <article
+          className="conversation-item assistant pending-question"
+          key={`${draftKey}:${permission.requestId}`}
+          data-stream-key={`question:${permission.requestId}`}
+          aria-label="待回答"
+        >
+          <PermissionPrompt key={permission.requestId} permission={permission} onResolve={onResolvePermission} />
+        </article>
+      ))}
+      {orphanUncertainDeliveries.map((event) => (
+        <article
+          className="conversation-item system uncertain-delivery"
+          key={event.eventId}
+          data-stream-key={`uncertain:${event.eventId}`}
+        >
+          <div className="conversation-item-meta"><strong>发送结果待确认</strong></div>
+          <div className="conversation-text">{typeof event.data.error === "string" ? event.data.error : "Desktop 在确认消息前断开。"}</div>
+          <div className="uncertain-delivery-actions">
+            <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(String(event.data.commandId), "confirm")}>确认已发送</button>
+            <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(String(event.data.commandId), "retry")}>检查后重发</button>
+          </div>
+        </article>
+      ))}
     </>
   );
 
@@ -1315,284 +1254,9 @@ export function ConversationView({
     </>
   );
 
-  if (!isMobile) {
-    return (
-      <>
-        <header className="desktop-conversation-heading">
-          <div>
-            <h2>{session.title}</h2>
-            <span>{runtimeName} · {session.projectName} · {desktopSessionState(session)} · {desktopTransportLabel(session)}</span>
-          </div>
-          <div className="desktop-conversation-heading-actions">
-            {backgroundTasks.length > 0 && (
-              <IconButton
-                label={runningBackgroundTasks > 0 ? `后台任务，${runningBackgroundTasks} 个运行中` : "后台任务"}
-                className="background-tasks-button"
-                onClick={() => setBackgroundTasksOpen({})}
-              >
-                <Layers size={17} />
-                {runningBackgroundTasks > 0 && <span className="background-tasks-count">{runningBackgroundTasks}</span>}
-              </IconButton>
-            )}
-            {!session.prs?.length && prSupported && (
-              <IconButton label="PR Auto-fix" onClick={() => setPrActionsOpen(true)}>
-                <GitPullRequest size={18} />
-              </IconButton>
-            )}
-            {canConfigure ? (
-              <button
-                type="button"
-                className="session-profile-trigger"
-                aria-label="会话设置"
-                aria-describedby="desktop-session-profile-summary"
-                onClick={() => setConfigurationOpen(true)}
-              >
-                <Settings2 size={15} />
-                <SessionProfileSummary session={session} id="desktop-session-profile-summary" />
-              </button>
-            ) : (
-              <span className="session-profile-trigger is-static"><SessionProfileSummary session={session} /></span>
-            )}
-            {stopTarget && (
-              <IconButton
-                label={stopping ? "正在停止 Bridge 任务" : stoppingBlocker ? "停止阻塞的 Bridge 任务" : "停止当前 Bridge 任务"}
-                className="session-stop-button"
-                disabled={stopping}
-                onClick={() => void stopTask(stopTarget.sessionId)}
-              >
-                {stopping ? <LoaderCircle className="is-spinning" size={17} /> : <CircleStop size={17} />}
-              </IconButton>
-            )}
-            {onForkSession && runtimeId === "claude-desktop" && (
-              <IconButton
-                label="Fork 分支会话"
-                disabled={effectiveActionBusy}
-                onClick={() => void onForkSession(session.sessionId)}
-              >
-                <GitFork size={16} />
-              </IconButton>
-            )}
-            {visibilityAvailable && (onArchiveSession || onDeleteSession) && (
-              <>
-                {onArchiveSession && (session.archivedAt ? (
-                  <IconButton label="取消归档" disabled={effectiveActionBusy} onClick={() => void onArchiveSession(session.sessionId, false)}>
-                    <ArchiveRestore size={16} />
-                  </IconButton>
-                ) : (
-                  <IconButton label="归档会话" disabled={effectiveActionBusy} onClick={() => void onArchiveSession(session.sessionId, true)}>
-                    <Archive size={16} />
-                  </IconButton>
-                ))}
-                {onDeleteSession && (
-                  <IconButton
-                    label={desktopBusy ? "任务进行中，先停止再删除" : "删除会话"}
-                    disabled={effectiveActionBusy || desktopBusy}
-                    onClick={() => setDeleteSessionOpen(true)}
-                  >
-                    <Trash2 size={16} />
-                  </IconButton>
-                )}
-              </>
-            )}
-          </div>
-        </header>
-        {session.prs?.length ? (
-          <SessionPrBar
-            key={`${hostId}:${session.sessionId}`}
-            session={session}
-            events={events}
-            supported={prSupported}
-            online={isNativeReady}
-            {...(onReadPrAutoFix ? { onRead: onReadPrAutoFix } : {})}
-            {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
-          />
-        ) : null}
-        {selectedTaskDetails?.error && (
-          <p className="session-channel-warning" role="alert">后台任务：{selectedTaskDetails.error}</p>
-        )}
-        {otherNativePromptSession && (
-          <div className="session-channel-warning">
-            <AlertTriangle size={18} />
-            <button type="button" className="relay-chain-link" onClick={() => void onSelectSession(otherNativePromptSession.sessionId)}>
-              另一会话待确认：{otherNativePromptSession.title}
-            </button>
-          </div>
-        )}
-        {session.archivedAt && (
-          <div className="session-channel-warning">
-            <Archive size={18} />
-            <span><strong>此会话已归档</strong>会话保留全部历史，取消归档后回到会话列表。</span>
-          </div>
-        )}
-        {effectiveActionError && (
-          <div className="session-channel-warning danger">
-            <AlertTriangle size={18} />
-            <span><strong>会话操作失败</strong>{effectiveActionError}</span>
-          </div>
-        )}
-        <ForkChainBar
-          parentSession={parentSession}
-          childForks={childForks}
-          onSelectSession={(nextSessionId) => void onSelectSession(nextSessionId)}
-        />
-        {stopError && (
-          <div className="session-channel-warning danger">
-            <AlertTriangle size={18} />
-            <span><strong>任务停止失败</strong>{stopError}</span>
-          </div>
-        )}
-        {fileDownloadError && (
-          <div className="session-channel-warning danger" role="alert">
-            <AlertTriangle size={18} />
-            <span><strong>文件下载失败</strong>{fileDownloadError}</span>
-            <button type="button" className="secondary-button goal-action" onClick={() => setFileDownloadError(undefined)}>关闭</button>
-          </div>
-        )}
-        <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
-          <button
-            type="button"
-            className={effectiveSessionView === "conversation" ? "active" : ""}
-            onClick={() => setSessionView("conversation")}
-          >
-            对话
-          </button>
-          <button
-            type="button"
-            className={effectiveSessionView === "evidence" ? "active" : ""}
-            onClick={() => setSessionView("evidence")}
-          >
-            成果
-            {(evidence?.items.length ?? 0) > 0 && <b>{evidence!.items.length}</b>}
-          </button>
-        </nav>
-        {effectiveSessionView === "conversation" ? (
-          <div
-            className="desktop-conversation-stream"
-            aria-live="polite"
-            ref={streamRef}
-            onScroll={() => {
-              rememberStreamPosition(true);
-              loadOlderNearTop();
-            }}
-          >
-            {streamBody}
-          </div>
-        ) : (
-          <div className="desktop-evidence-view">{evidenceBody}</div>
-        )}
-        {effectiveSessionView === "conversation" && (
-          <>
-            <SessionActivityIndicator activity={activity} />
-            <SessionContextUsageBar usage={session.contextUsage} />
-            {composerBanner}
-            <div className="desktop-composer">
-              {imageError && <div className="composer-error" role="alert">{imageError}</div>}
-              <FileAttachmentPicker state={fileUploads} />
-              {attachments.length > 0 && (
-                <div className="composer-attachments">
-                  {attachments.map((attachment) => (
-                    <span key={attachment.id}>
-                      {attachment.name}
-                      <button
-                        type="button"
-                        onClick={() => updateDraft((current) => ({
-                          ...current,
-                          attachments: current.attachments.filter((item) => item.id !== attachment.id),
-                        }))}
-                      >
-                        <X size={12} />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              <form
-                className="composer-form composer-form--with-attachment"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void sendMessage();
-                }}
-              >
-                <input
-                  ref={fileRef}
-                  type="file"
-                  hidden
-                  multiple
-                  accept="image/jpeg,image/png,image/gif,image/webp"
-                  onChange={(event) => void addImages(event.target.files)}
-                />
-                <ComposerAttachmentMenu
-                  canAttachImages={canAttachImages}
-                  imageDisabled={commandDraft || !canSendSession(session, snapshot)}
-                  onPickImages={() => fileRef.current?.click()}
-                  fileUploads={fileUploads}
-                  fileDisabled={commandDraft || !canSendSession(session, snapshot) || sending || connection !== "connected"}
-                />
-                <SlashCommandInput
-                  key={draftKey}
-                  {...(onLoadSessionCommands && runtimeId === "claude-desktop" && snapshot?.host.capabilities.includes("session.commands.v1") ? {
-                    onLoad: commands.load!,
-                  } : {})}
-                  value={text}
-                  onChange={(value) => updateDraft((current) => ({ ...current, text: value }))}
-                  disabled={!canSendSession(session, snapshot)}
-                  placeholder={session.allowedActions?.reason ?? (
-                    session.source === "bridge"
-                      ? "在这个 Bridge 会话中继续"
-                      : `在这个 ${runtimeName} 会话中继续`
-                  )}
-                />
-                <button
-                  type="submit"
-                  className="send-button"
-                  aria-label="发送"
-                  disabled={!canSendSession(session, snapshot) || sending || fileUploads.uploading || !hasDraft}
-                >
-                  <Send size={18} />
-                </button>
-              </form>
-            </div>
-          </>
-        )}
-        {prActionsOpen && !session.prs?.length && prSupported && (
-          <Sheet title="PR Auto-fix" manageFocus busy={effectiveActionBusy} onClose={() => setPrActionsOpen(false)}>
-            <div className="m-group">
-              <SessionPrActions
-                key={`${hostId}:${session.sessionId}`}
-                session={session}
-                events={events}
-                showHeading={false}
-                onWriteBusyChange={setActionBusy}
-                supported
-                online={isNativeReady}
-                {...(onReadPrAutoFix ? { onRead: onReadPrAutoFix } : {})}
-                {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
-              />
-            </div>
-          </Sheet>
-        )}
-        {onDeleteSession && (
-          <ConfirmationDialog
-            open={deleteSessionOpen}
-            title="删除会话"
-            description={session.transport === "claude-desktop-native"
-              ? `从 Claude Desktop 中删除「${session.title}」会话及其对话记录？此操作不可恢复。`
-              : `从 Bridge 列表中删除「${session.title}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
-            confirmLabel="删除会话"
-            danger
-            busy={effectiveActionBusy}
-            onCancel={() => setDeleteSessionOpen(false)}
-            onConfirm={() => {
-              void onDeleteSession(session.sessionId).then(() => setDeleteSessionOpen(false), () => undefined);
-            }}
-          />
-        )}
-        {sharedDialogs}
-      </>
-    );
-  }
-
-  const MobileRoot = navigation ? "main" : "section";
+  const effectiveNavigation = isMobile ? navigation : false;
+  const MobileRoot = effectiveNavigation ? "main" : "section";
+  const profileSummaryId = `${variant}-session-profile-summary`;
   const manualSections = (snapshot?.projects ?? []).filter((project) => project.kind === "desktop-group");
   const currentMenuSection = manualSections.find((project) => project.projectId === session.projectId);
   const menuSupportsMoveSection = Boolean(
@@ -1606,7 +1270,10 @@ export function ConversationView({
   );
   const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== session.title && !effectiveActionBusy);
   const menuSupportsFork = Boolean(onForkSession && runtimeId === "claude-desktop");
+  const menuSupportsVisibility = isMobile || visibilityAvailable;
   const menuSessionBusy = session.turnState === "running" || session.turnState === "queued" || session.turnState === "waiting";
+  const canSyncSession = Boolean(onRefresh || !isMobile);
+  const effectiveRefreshing = refreshing || internalRefreshing;
 
   function closeInternalRename(): void {
     if (effectiveActionBusy) return;
@@ -1649,8 +1316,31 @@ export function ConversationView({
   }
 
   async function runInternalRefresh(): Promise<void> {
-    if (!onRefresh || refreshing || effectiveActionBusy) return;
-    if (await onRefresh(session.sessionId)) setSyncFlash(true);
+    if (!canSyncSession || effectiveRefreshing || effectiveActionBusy) return;
+    const targetKey = draftKey;
+    setInternalRefreshing(true);
+    setInternalActionError(undefined);
+    setSyncFlash(false);
+    if (!onRefresh) syncPendingKeyRef.current = targetKey;
+    try {
+      if (onRefresh) {
+        if (await onRefresh(session.sessionId)) {
+          if (previousDraftKeyRef.current === targetKey) setSyncFlash(true);
+        }
+      } else {
+        await onOpenSession(session.sessionId);
+      }
+    } catch (error) {
+      if (syncPendingKeyRef.current === targetKey) syncPendingKeyRef.current = undefined;
+      if (previousDraftKeyRef.current === targetKey) {
+        setInternalActionError(error instanceof Error ? error.message : "同步会话失败");
+      }
+    } finally {
+      if (previousDraftKeyRef.current === targetKey) {
+        setInternalRefreshing(false);
+        setSyncCheckTick((value) => value + 1);
+      }
+    }
   }
 
   async function runInternalFork(): Promise<void> {
@@ -1702,18 +1392,18 @@ export function ConversationView({
   return (
     <MobileRoot className="mobile-workspace conversation-workspace">
       <MobilePageHeader
-        navigation={navigation}
+        navigation={effectiveNavigation}
         title={session.title}
         subtitle={canConfigure ? (
           <button
             type="button"
             className="m-host-chip"
             aria-label="会话设置"
-            aria-describedby="mobile-session-profile-summary"
+            aria-describedby={profileSummaryId}
             onClick={() => setConfigurationOpen(true)}
           >
             <i className={`m-status-dot ${session.turnState}`} />
-            <SessionProfileSummary session={session} showActivity id="mobile-session-profile-summary" />
+            <SessionProfileSummary session={session} showActivity id={profileSummaryId} />
             <ChevronDown size={14} />
           </button>
         ) : (
@@ -1722,7 +1412,7 @@ export function ConversationView({
             <SessionProfileSummary session={session} showActivity />
           </span>
         )}
-        {...(navigation ? {
+        {...(effectiveNavigation ? {
           backLabel: effectiveSessionView === "evidence" ? "返回对话" : "返回会话列表",
           onBack: () => {
             if (effectiveSessionView === "evidence") setSessionView("conversation");
@@ -1767,13 +1457,25 @@ export function ConversationView({
           session={session}
           events={events}
           supported={prSupported}
-          online={isOnline}
+          online={isNativeReady}
           {...(onReadPrAutoFix ? { onRead: onReadPrAutoFix } : {})}
           {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
         />
       ) : null}
       {selectedTaskDetails?.error && (
         <p className="session-channel-warning" role="alert">后台任务：{selectedTaskDetails.error}</p>
+      )}
+      {session.archivedAt && (
+        <div className="session-channel-warning">
+          <Archive size={17} />
+          <span><strong>此会话已归档</strong>会话保留全部历史，取消归档后回到会话列表。</span>
+        </div>
+      )}
+      {effectiveActionError && !internalMenuOpen && !renameOpen && (
+        <div className="session-channel-warning danger">
+          <AlertTriangle size={17} />
+          <span><strong>会话操作失败</strong>{effectiveActionError}</span>
+        </div>
       )}
       {session.nativePermissionModeChange && session.nativePermissionModeChange.state !== "confirmed" && (
         <div className="session-channel-warning message-queue-status" role="status" aria-label="Desktop 会话授权变更">
@@ -1792,14 +1494,14 @@ export function ConversationView({
               ? `${session.pendingCount} 条消息已到电脑，轮到后会自动执行，无需重复发送。`
               : `上次同步时有 ${session.pendingCount} 条消息排队，当前进度尚未确认。`}
           </span>
-          {onRefresh && (
+          {canSyncSession && (
             <button
               type="button"
               className="secondary-button"
-              disabled={refreshing || !isOnline}
-              onClick={() => void onRefresh(session.sessionId)}
+              disabled={effectiveRefreshing || !isOnline}
+              onClick={() => void runInternalRefresh()}
             >
-              {refreshing ? "同步中" : "同步状态"}
+              {effectiveRefreshing ? "同步中" : "同步状态"}
             </button>
           )}
         </div>
@@ -1839,15 +1541,34 @@ export function ConversationView({
         </div>
       )}
       {fileDownloadError && (
-        <div className="session-channel-warning danger">
+        <div className="session-channel-warning danger" role="alert">
           <AlertTriangle size={17} />
           <span><strong>文件下载失败</strong>{fileDownloadError}</span>
           <button type="button" className="secondary-button goal-action" onClick={() => setFileDownloadError(undefined)}>关闭</button>
         </div>
       )}
+      {!isMobile && (
+        <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
+          <button
+            type="button"
+            className={effectiveSessionView === "conversation" ? "active" : ""}
+            onClick={() => setSessionView("conversation")}
+          >
+            对话
+          </button>
+          <button
+            type="button"
+            className={effectiveSessionView === "evidence" ? "active" : ""}
+            onClick={() => setSessionView("evidence")}
+          >
+            成果
+            {evidenceCount > 0 && <b>{evidenceCount}</b>}
+          </button>
+        </nav>
+      )}
       {effectiveSessionView === "conversation" ? (
         <section
-          className="conversation-stream"
+          className={isMobile ? "conversation-stream" : "conversation-stream desktop-conversation-stream"}
           aria-live="polite"
           ref={streamRef}
           onScroll={() => {
@@ -1858,7 +1579,7 @@ export function ConversationView({
           {streamBody}
         </section>
       ) : (
-        <section className="mobile-evidence-view">{evidenceBody}</section>
+        <section className={isMobile ? "mobile-evidence-view" : "mobile-evidence-view desktop-evidence-view"}>{evidenceBody}</section>
       )}
       <div className={`permission-dock-slot ${activePermission || activeNativePrompt || otherPermission || otherNativePrompt || (effectiveSessionView === "evidence" && sessionQuestions.length) ? "has-attention" : ""}`}>
         {activePermission ? (
@@ -1899,6 +1620,7 @@ export function ConversationView({
           <SessionContextUsageBar usage={session.contextUsage} />
           {composerBanner}
           {MobileComposer({
+            variant,
             selectedSession: session,
             snapshot,
             connection,
@@ -1931,6 +1653,7 @@ export function ConversationView({
       )}
       {effectivePermissionOpen && (activePermission || activeNativePrompt) && (
         <Sheet
+          manageFocus={!isMobile}
           eyebrow="需要处理"
           title={`${runtimeName} ${activePermission ? "等待授权" : "等待确认"}`}
           closeLabel="暂时关闭"
@@ -1961,7 +1684,7 @@ export function ConversationView({
               <NativePromptCard
                 key={activeNativePrompt.promptId}
                 prompt={activeNativePrompt}
-                online={isOnline}
+                online={isNativeReady}
                 {...(onResolvePrompt && snapshot?.host.capabilities.includes("prompt.native.v1") ? { onResolve: onResolvePrompt } : {})}
               />
             </>
@@ -1971,6 +1694,7 @@ export function ConversationView({
       {!onOpenSessionMenu && internalMenuOpen && !renameOpen && (
         <Sheet
           manageFocus
+          focusPaused={deleteSessionOpen}
           eyebrow={moveMenuOpen ? session.title : `${session.projectName} · ${runtimeName}`}
           title={moveMenuOpen ? "移动到分组" : session.title}
           busy={effectiveActionBusy}
@@ -2099,12 +1823,12 @@ export function ConversationView({
                     }}
                   />
                 )}
-                {onRefresh && (
+                {canSyncSession && (
                   <SheetAction
-                    icon={refreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
-                    label={refreshing ? "正在同步" : syncFlash ? "已同步" : "同步此会话"}
+                    icon={effectiveRefreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
+                    label={effectiveRefreshing ? "正在同步" : syncFlash ? "已同步" : "同步此会话"}
                     detail="重新读取电脑端的最新记录"
-                    disabled={effectiveActionBusy || refreshing}
+                    disabled={effectiveActionBusy || effectiveRefreshing || (!onRefresh && !isOnline)}
                     onClick={() => void runInternalRefresh()}
                   />
                 )}
@@ -2117,7 +1841,7 @@ export function ConversationView({
                     events={events}
                     onWriteBusyChange={setActionBusy}
                     supported
-                    online={isOnline}
+                    online={isNativeReady}
                     {...(onReadPrAutoFix ? { onRead: onReadPrAutoFix } : {})}
                     {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
                   />
@@ -2134,7 +1858,7 @@ export function ConversationView({
                   />
                 </div>
               )}
-              {(onArchiveSession || onDeleteSession) && (
+              {menuSupportsVisibility && (onArchiveSession || onDeleteSession) && (
                 <div className="m-group">
                   {onArchiveSession && (
                     <SheetAction
@@ -2202,7 +1926,7 @@ export function ConversationView({
           </section>
         </div>
       )}
-      {!onOpenSessionMenu && onDeleteSession && (
+      {!onOpenSessionMenu && menuSupportsVisibility && onDeleteSession && (
         <ConfirmationDialog
           open={deleteSessionOpen}
           title="删除会话"

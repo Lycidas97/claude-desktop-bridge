@@ -13,6 +13,7 @@ export function Sheet({
   title,
   busy = false,
   manageFocus = false,
+  focusPaused = false,
   closeLabel = "关闭",
   onClose,
   children,
@@ -22,6 +23,7 @@ export function Sheet({
   title: ReactNode;
   busy?: boolean;
   manageFocus?: boolean;
+  focusPaused?: boolean;
   closeLabel?: string;
   onClose(): void;
   children: ReactNode;
@@ -30,27 +32,42 @@ export function Sheet({
   const titleId = useId();
   const sheetRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    if (!manageFocus) return;
-    const opener = document.activeElement as HTMLElement;
-    sheetRef.current!.focus();
-    return () => opener.focus();
+    if (!manageFocus || typeof document === "undefined") return;
+    const sheet = sheetRef.current;
+    const opener = document.activeElement as HTMLElement | null;
+    sheet?.focus();
+    return () => {
+      const active = document.activeElement;
+      if (
+        opener?.isConnected
+        && (!active || active === document.body || active === document.documentElement || Boolean(sheet?.contains(active)))
+      ) {
+        opener.focus();
+      }
+    };
   }, [manageFocus]);
   return createPortal(
-    <div className="m-sheet-backdrop" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget && !busy) onClose();
-    }}>
+    <div
+      className="m-sheet-backdrop"
+      role="presentation"
+      aria-hidden={focusPaused || undefined}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy && !focusPaused) onClose();
+      }}
+    >
       <section ref={sheetRef} className="m-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId}
         tabIndex={manageFocus ? -1 : undefined}
         onKeyDown={(event) => {
-          if (!manageFocus) return;
+          if (!manageFocus || focusPaused) return;
           if (event.key === "Escape" && !busy) {
             event.preventDefault();
             event.stopPropagation();
             onClose();
           } else if (event.key === "Tab") {
             const controls = event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]');
-            const first = controls[0]!;
-            const last = controls[controls.length - 1]!;
+            const first = controls[0];
+            const last = controls[controls.length - 1];
+            if (!first || !last) return;
             if (event.shiftKey && (document.activeElement === first || document.activeElement === event.currentTarget)) {
               event.preventDefault();
               last.focus();

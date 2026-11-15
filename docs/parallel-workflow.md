@@ -28,22 +28,24 @@ A Light reviewer whose PR grows into Paired scope tells the patrol.
 | --- | --- | --- |
 | Patrol | `group/bridge-runner`: DeepSeek Flash → GPT-6.1-Sol | `bridge-runner` |
 | Fork, reviewer, `LESSONS.md` consolidation, scheduled `bridge-tech-debt-patrol` (no subagents: a weaker scanner's misses cannot be caught by review) | `codex/gpt-6.1-sol` | `GPT-6.1-Sol · Codex` |
-| Extra reviewer for architecture/UI PRs | `group/ui-review`: Opus 5.5 (agy-cli → Claude Code) → Gemini 4 Carbon | `ui-review` |
-| `plan-ideator` / `plan-reviewer` | `group/ideator`: Gemini 4 Argon → Gemini 4 Carbon → GPT-6.1-Sol / `codex/gpt-6.1-sol` | `ideator` / `GPT-6.1-Sol · Codex` |
-| Drafting Issue bodies, PR descriptions, docs | `group/docs`: Gemini 4 Hydrogen → Opus 5.5 → DeepSeek Flash | `docs` |
+| Extra reviewer for architecture/UI PRs | `group/ui-review`: Opus 5.5 (agy-cli → Claude Code) | `ui-review` |
+| `plan-ideator` / `plan-reviewer` | `group/ideator`: GPT-6.1-Sol / `codex/gpt-6.1-sol` | `ideator` / `GPT-6.1-Sol · Codex` |
+| Drafting Issue bodies, PR descriptions, docs | `group/docs`: Opus 5.5 → DeepSeek Flash | `docs` |
 | Hard bugs | `codex/gpt-6-astra` | `GPT-6-Astra · Codex` |
 
-- Fallback lives in Magpie groups with `routing=order`, so sessions carry no fallback logic. Gemini (and the second Opus account) only via `agy-cli/*`; never `antigravity/*`, `antigravity-bridge/*`, or `gemini-web/*`, whose reverse-proxy accounts get banned. One-time setup per machine (the group name is the label):
+- All Gemini models are disabled after account bans, including through `agy-cli/*`, reverse proxies, and Google API keys. Never select them or add them to fallback chains. Keep the global Magpie disable rule below so requests using old model ids are refused too.
+- Fallback lives in Magpie groups with `routing=order`, so sessions carry no fallback logic. The second Opus account uses `agy-cli/*`. One-time setup per machine (the group name is the label):
   ```bash
+  magpie model disable '*gemini*'
   magpie group add bridge-runner models=deepseek/deepseek-flash,codex/gpt-6.1-sol routing=order
-  magpie group add ideator models=agy-cli/gemini-4-argon,agy-cli/gemini-4-carbon,codex/gpt-6.1-sol routing=order
-  magpie group add docs models=agy-cli/gemini-4-hydrogen,agy-cli/claude-opus-5-5,claude/claude-opus-5-5,deepseek/deepseek-flash routing=order
-  magpie group add ui-review models=agy-cli/claude-opus-5-5,claude/claude-opus-5-5,agy-cli/gemini-4-carbon routing=order
+  magpie group add ideator models=codex/gpt-6.1-sol routing=order
+  magpie group add docs models=agy-cli/claude-opus-5-5,claude/claude-opus-5-5,deepseek/deepseek-flash routing=order
+  magpie group add ui-review models=agy-cli/claude-opus-5-5,claude/claude-opus-5-5 routing=order
   ```
 - `set_session_model` and frontmatter take a picker id. Resolve it right before use with `node scripts/picker-id.mjs "<label>"`; never write ids down. A new group needs a Claude Desktop restart before its id works.
 - A session keeps one model for life. `set_session_model` applies only from the session's next turn (see **Dispatch**).
 - Escalate to Astra when a defect survives two fix rounds, `ci:local` fails twice for the same cause, or a merge conflict survives two resolution rounds.
-- The `ui-review` reviewer names the model that wrote its review in the review body. A Gemini Carbon `[BLOCKER]` blocks the merge only after the PR's Sol reviewer confirms it; Opus findings stand on their own.
+- The `ui-review` reviewer names the model that wrote its review in the review body. Opus findings stand on their own.
 - DeepSeek only runs procedures with an objective check (`gh` state, `ci/local-distributed`); it never writes code or tests.
 - When a Sol session reports a quota error, the patrol stops dispatching and asks the owner.
 
@@ -113,7 +115,7 @@ Flag only defects with a concrete trigger. After a `[BLOCKER]` round, re-review 
 Merge SHA `X` when all of these hold:
 - the last verdict on `X` is CLEAN, `NIT FIX OK`, or `MERGE OK`;
 - `gh api repos/Lycidas97/claude-desktop-bridge/commits/X/statuses` shows `ci/local-distributed = success`, checked yourself rather than taken from the fork's report (not needed for docs-only, or for a sync head exempted by **After merge** step 2);
-- for a PR with a `ui-review` reviewer, its last verdict on `X` or an earlier head has no open `[BLOCKER]` (a Carbon `[BLOCKER]` counts only once the reviewer confirms it);
+- for a PR with a `ui-review` reviewer, its last verdict on `X` or an earlier head has no open `[BLOCKER]`;
 - every earlier PR in the merge order is merged.
 
 Then run:

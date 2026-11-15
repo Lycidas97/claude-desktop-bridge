@@ -1505,10 +1505,11 @@ export function MobileWorkspace({
               type="button"
               className="m-host-chip"
               aria-label="会话设置"
+              aria-describedby="mobile-session-profile-summary"
               onClick={() => setConfigurationSessionId(selectedSession.sessionId)}
             >
               <i className={`m-status-dot ${selectedSession.turnState}`} />
-              <SessionProfileSummary session={selectedSession} showActivity />
+              <SessionProfileSummary session={selectedSession} showActivity id="mobile-session-profile-summary" />
               <ChevronDown size={14} />
             </button>
           ) : (

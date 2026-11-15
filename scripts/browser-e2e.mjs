@@ -1189,11 +1189,20 @@ async function verifySessionHeader(page, host, steps, directory) {
   const profile = { ...host.nativeApproval.profile(), modelDisplayName: "Claude Opus 5.5 · custom-model-identifier-with-a-long-unbroken-name-1234567890", effort: "high" };
   host.nativeApproval.profile = () => profile;
   const modes = { default: "逐个确认", acceptEdits: "自动接受编辑", bypassPermissions: "完全授权", plan: "计划模式", auto: "自动模式", dontAsk: "不询问" };
+  const accessibility = await page.context().newCDPSession(page);
+  async function accessibleProfile() {
+    const { root } = await accessibility.send("DOM.getDocument");
+    const { nodeId } = await accessibility.send("DOM.querySelector", { nodeId: root.nodeId, selector: 'button[aria-label="会话设置"]' });
+    const { nodes } = await accessibility.send("Accessibility.getPartialAXTree", { nodeId });
+    const button = nodes.find(node => node.role?.value === "button");
+    return { name: button.name.value, description: button.description?.value };
+  }
   for (const [mode, label] of Object.entries(modes)) {
     profile.nativePermissionMode = mode;
     Object.assign(session, profile);
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
     await eventually(() => page.locator(".m-header .session-profile-summary").innerText(), `${profile.modelDisplayName} · ${label} · reasoning high`, "The header shows the current mode with the complete model and effort");
+    await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · ${label} · reasoning high` }, "Mobile settings announce the current snapshot profile");
   }
   const notice = page.getByRole("status", { name: "Desktop 会话授权变更", exact: true });
   for (const state of ["requested", "not-applied", "confirmed"]) {
@@ -1258,20 +1267,22 @@ async function verifySessionHeader(page, host, steps, directory) {
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await page.locator(`[data-session-id="${sessionId}"] .session-row-hit`).click();
   await page.locator(".desktop-conversation .session-profile-summary").waitFor();
-  for (const canConfigure of [true, false]) {
-    await page.evaluate(({ canConfigure, sessionId }) => {
+  for (const [canConfigure, mode] of [[true, "plan"], [true, "auto"], [false, "dontAsk"]]) {
+    await page.evaluate(({ canConfigure, mode, sessionId }) => {
       const session = window.__headerSnapshot.sessions.find(item => item.sessionId === sessionId);
       session.allowedActions.canConfigure = canConfigure;
-      session.nativePermissionMode = canConfigure ? "plan" : "auto";
+      session.nativePermissionMode = mode;
       window.__headerReceive(structuredClone(window.__headerSnapshot));
-    }, { canConfigure, sessionId });
+    }, { canConfigure, mode, sessionId });
     await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Desktop retains a read-only header when settings are unavailable");
     const summary = page.locator(".desktop-conversation .session-profile-summary");
-    await eventually(() => summary.innerText(), `${profile.modelDisplayName} · ${canConfigure ? "计划模式" : "自动模式"} · reasoning high`, "Desktop receives updated mode without a configuration read");
-    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [canConfigure ? "计划模式" : "自动模式", "reasoning high"], false);
+    await eventually(() => summary.innerText(), `${profile.modelDisplayName} · ${modes[mode]} · reasoning high`, "Desktop receives updated mode without a configuration read");
+    if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · ${modes[mode]} · reasoning high` }, "Desktop settings announce the current snapshot profile");
+    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [modes[mode], "reasoning high"], false);
   }
+  await accessibility.detach();
   await page.screenshot({ path: resolve(directory, "desktop-header-readonly-larger.png"), fullPage: true });
-  steps.push("mobile 375/320px and narrow desktop show complete model/current mode/reasoning at standard/largest font, with or without settings; confirmed notices disappear");
+  steps.push("mobile 375/320px and narrow desktop retain complete profile fields and updated accessible settings descriptions; read-only headers remain visible and confirmed notices disappear");
 }
 
 async function verifyNativeApprovals(page, host, steps, directory) {

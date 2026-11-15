@@ -3,9 +3,9 @@ import { Fragment } from "react";
 import { activeSessionBadgeLabel, formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 import { NATIVE_MODE_LABELS } from "../conversation/PermissionPrompts.js";
 
-export function SessionProfileSummary({ session, showActivity = false }: { session: BridgeSessionInfo; showActivity?: boolean }) {
+export function SessionProfileSummary({ session, showActivity = false, id }: { session: BridgeSessionInfo; showActivity?: boolean; id?: string }) {
   return (
-    <span className="session-profile-summary">
+    <span className="session-profile-summary" id={id}>
       {[
         { text: showActivity ? activeSessionBadgeLabel(session) : undefined },
         { text: formatSessionModelLabel(session), model: true },

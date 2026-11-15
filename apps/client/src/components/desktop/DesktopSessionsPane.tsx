@@ -933,10 +933,11 @@ export function DesktopSessions({
                     type="button"
                     className="session-profile-trigger"
                     aria-label="会话设置"
+                    aria-describedby="desktop-session-profile-summary"
                     onClick={() => setConfigurationOpen(true)}
                   >
                     <Settings2 size={15} />
-                    <SessionProfileSummary session={selected} />
+                    <SessionProfileSummary session={selected} id="desktop-session-profile-summary" />
                   </button>
                 ) : <span className="session-profile-trigger is-static"><SessionProfileSummary session={selected} /></span>}
 

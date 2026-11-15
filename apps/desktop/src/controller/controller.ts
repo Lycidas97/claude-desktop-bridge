@@ -64,7 +64,7 @@ import {
   type ControllerRpcHost,
 } from "./controller-rpc.js";
 import type { SessionEventLog } from "./session-event-log.js";
-import { assistantMailSnapshot, pauseAssistantBinding } from "./assistant-mail.js";
+import { AssistantMailCoordinator } from "./assistant-mail.js";
 import type { DesktopUpdater } from "../updater/desktop-updater.js";
 
 export { acceptsRelayDevice };
@@ -90,14 +90,7 @@ export class DesktopController extends EventEmitter {
   private lastSeenAt = Date.now();
   private transportMetrics: BridgeTransportMetrics | undefined;
   private relayHealthy = false;
-  private assistantMailChangeToken = randomUUID();
-  private readonly onAssistantMailChanged = () => {
-    this.assistantMailChangeToken = randomUUID();
-    void this.eventLog.append({ origin: "system", type: "plugin.assistant-mail.changed", data: {
-      assistantMail: assistantMailSnapshot(this.assistantMail!, this.allSessions(), this.broker.capabilities().includes("turn.start"), this.assistantMailChangeToken),
-    } });
-    this.queuePublish();
-  };
+  readonly assistantMailCoordinator: AssistantMailCoordinator | undefined;
   private lastPublishedSessionKey = "";
   private lastPublishedSessions = new Map<string, string>();
   private lastPublishedPermissions = new Map<string, BridgePermissionInfo>();
@@ -125,6 +118,21 @@ export class DesktopController extends EventEmitter {
   ) {
     super();
     this.updater = updater;
+    this.assistantMailCoordinator = assistantMail
+      ? new AssistantMailCoordinator(assistantMail, {
+          allSessions: () => this.allSessions(),
+          allProjects: () => this.allProjects(),
+          canStartTurn: () => this.broker.capabilities().includes("turn.start"),
+          onChanged: (snapshot) => {
+            void this.eventLog.append({
+              origin: "system",
+              type: "plugin.assistant-mail.changed",
+              data: { assistantMail: snapshot },
+            });
+            this.queuePublish();
+          },
+        })
+      : undefined;
   }
 
   async attachUpdater(updater: DesktopUpdater): Promise<DesktopControlSnapshot> {
@@ -185,13 +193,9 @@ export class DesktopController extends EventEmitter {
       void this.broadcast({ kind: "event", event }, !persistOffline);
       if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") this.queuePublish();
     });
-    this.assistantMail?.on("mail", this.onAssistantMailChanged);
-    this.assistantMail?.on("changed", this.onAssistantMailChanged);
+    this.assistantMailCoordinator?.start();
     this.broker.on("changed", () => {
-      const sessionId = this.assistantMail?.binding()?.nativeSessionId;
-      if (sessionId && this.allSessions().some(session => session.sessionId === sessionId && session.archivedAt)) {
-        pauseAssistantBinding(this.assistantMail, sessionId);
-      }
+      this.assistantMailCoordinator?.pauseIfArchived();
       this.queuePublish();
     });
     await this.broker.initialize();
@@ -252,7 +256,7 @@ export class DesktopController extends EventEmitter {
           "turn.queue.cancel.v1",
           "transcript.toolDetail.v1",
           "plugin.magpie-quota.v1",
-          ...(this.assistantMail ? ["plugin.assistant-mail.v1" as const, "plugin.assistant-mail.manual-reference.v1" as const] : []),
+          ...(this.assistantMailCoordinator ? AssistantMailCoordinator.CAPABILITIES : []),
           ...(this.updater ? ["system.update.v1" as const] : []),
         ],
       },
@@ -282,7 +286,7 @@ export class DesktopController extends EventEmitter {
       managedDesktopEnabled: this.config.managedDesktopEnabled,
       claudeDesktop: await this.claudeDesktop.status(),
       desktopApps: await this.desktopAppStatuses(),
-      ...(this.assistantMail ? { assistantMail: assistantMailSnapshot(this.assistantMail, this.allSessions(), this.broker.capabilities().includes("turn.start"), this.assistantMailChangeToken) } : {}),
+      ...(this.assistantMailCoordinator ? { assistantMail: this.assistantMailCoordinator.snapshot() } : {}),
       ...(this.updater ? { updater: this.updater.snapshot() } : {}),
       ...(this.inspectorStatus ? { claudeInspector: this.inspectorStatus } : {}),
       ...(currentPairing ? {
@@ -464,8 +468,7 @@ export class DesktopController extends EventEmitter {
   }
 
   async close(): Promise<void> {
-    this.assistantMail?.off("mail", this.onAssistantMailChanged);
-    this.assistantMail?.off("changed", this.onAssistantMailChanged);
+    this.assistantMailCoordinator?.close();
     this.uploads.close();
     this.socket?.close();
   }

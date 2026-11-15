@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
-  BridgePendingPrompt, BridgePermissionInfo, BridgePermissionResolution, BridgePullRequest, BridgeRequest, BridgeSDKPermissionMode,
+  BridgeAssistantMailSnapshot, BridgePendingPrompt, BridgePermissionInfo, BridgePermissionResolution, BridgePullRequest, BridgeRequest, BridgeSDKPermissionMode,
 } from "../../packages/protocol/src/index.js";
 import { ClaudeDesktopBridge } from "../../apps/desktop/src/claude/claude-desktop-bridge.js";
 import { InspectorDisconnectedError } from "../../apps/desktop/src/claude/claude-desktop-inspector.js";
@@ -17,7 +17,7 @@ import { discoverSlashCommands } from "../../apps/desktop/src/claude/slash-comma
 import { magpieModelIdHash } from "../../apps/desktop/src/claude/claude-runtime-discovery.js";
 import { createNativeSectionFixture } from "./native-section-store.js";
 import { startAssistantMailFixture } from "./assistant-mail.js";
-import { assistantMailSnapshot } from "../../apps/desktop/src/controller/assistant-mail.js";
+import { AssistantMailCoordinator } from "../../apps/desktop/src/controller/assistant-mail.js";
 
 interface NativeApprovalResult {
   requestId: string;
@@ -45,7 +45,7 @@ export async function startNativeApprovalHost(options: {
   onModelChanged?(model: string): void;
   sections?: boolean;
   assistantMail?: boolean;
-  onMailChanged?(snapshot: ReturnType<typeof assistantMailSnapshot>): void;
+  onMailChanged?(snapshot: BridgeAssistantMailSnapshot): void;
 }) {
   const commandCwd = join(options.directory, "command-project");
   const commandHome = join(options.directory, "command-personal");
@@ -319,14 +319,19 @@ export async function startNativeApprovalHost(options: {
   }) });
   await evidence.initialize();
   const assistantMail = options.assistantMail ? await startAssistantMailFixture(join(options.directory, "mail")) : undefined;
-  let mailChangeToken = randomUUID();
-  const mailSnapshot = () => assistantMail ? assistantMailSnapshot(assistantMail.service, broker.listSessions(), broker.capabilities().includes("turn.start"), mailChangeToken) : undefined;
-  const mailChanged = () => { mailChangeToken = randomUUID(); options.onMailChanged?.(mailSnapshot()!); };
-  assistantMail?.service.on("mail", mailChanged);
-  assistantMail?.service.on("changed", mailChanged);
+  const assistantMailCoordinator = assistantMail
+    ? new AssistantMailCoordinator(assistantMail.service, {
+        allSessions: () => broker.listSessions(),
+        allProjects: () => broker.listProjects(),
+        canStartTurn: () => broker.capabilities().includes("turn.start"),
+        onChanged: snapshot => options.onMailChanged?.(snapshot),
+      })
+    : undefined;
+  assistantMailCoordinator?.start();
+  const mailSnapshot = () => assistantMailCoordinator?.snapshot();
   const controller = Object.assign(Object.create(DesktopController.prototype), {
     routesToExternalRuntime: () => false,
-    broker, evidence, assistantMail: assistantMail?.service,
+    broker, evidence, assistantMailCoordinator,
     allSessions: () => broker.listSessions(), allProjects: () => broker.listProjects(),
     publish: async () => ({ assistantMail: mailSnapshot() }),
     config: { hostDeviceId: "synthetic-desktop", desktopName: "隔离电脑", devices: [{ deviceId: options.deviceId, name: "隔离手机", platform: "android", pairedAt: 1 }] },
@@ -553,8 +558,7 @@ export async function startNativeApprovalHost(options: {
       return result;
     },
     async close() {
-      assistantMail?.service.off("mail", mailChanged);
-      assistantMail?.service.off("changed", mailChanged);
+      assistantMailCoordinator?.close();
       await assistantMail?.service.close();
       await broker.close();
       await evidence.close();

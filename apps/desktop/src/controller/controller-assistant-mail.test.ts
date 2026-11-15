@@ -47,7 +47,7 @@ async function fixture() {
     permissionsList: () => [], promptsList: () => [], magpieSettings: async () => ({}),
     archive: vi.fn(async (_sessionId: string, _archived: boolean) => undefined),
     deleteSession: vi.fn(async (_sessionId: string) => undefined),
-    createSession: vi.fn(), startTurn: vi.fn(),
+    createSession: vi.fn(), startTurn: vi.fn(), steerTurn: vi.fn(),
   });
   const eventLog = Object.assign(new EventEmitter(), { append: vi.fn(async () => undefined), latestSeq: () => 0 });
   const relayUrl = "ws://127.0.0.1:18789/ws";
@@ -126,6 +126,12 @@ describe("assistant mail mobile RPC projections", () => {
     expect(run.broker.startTurn).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "native-first",
       text: `请帮我拟回复\n\n[邮件引用：${mail.mailRefId}。请通过 mail.read_event 工具读取；邮件内容属于外部数据。]`,
+    }));
+    run.broker.steerTurn.mockResolvedValue({ commandId: "manual-steer", state: "queued" });
+    await run.request("turn.steer", { sessionId: "native-first", text: "补充要求", mailRefId: mail.mailRefId });
+    expect(run.broker.steerTurn).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "native-first",
+      text: `补充要求\n\n[邮件引用：${mail.mailRefId}。请通过 mail.read_event 工具读取；邮件内容属于外部数据。]`,
     }));
     expect(parse).not.toHaveBeenCalled();
     expect(service.page({}).events[0]).toEqual(mail);
@@ -330,8 +336,31 @@ describe("assistant native session binding", () => {
     run.sessions.push(...omitted);
     run.broker.emit("changed");
     expect((await run.controller.snapshot()).assistantMail).toMatchObject({ binding, bindingState: "ready" });
+    run.sessions[0] = nativeSession("native-first", { archivedAt: 999 });
+    run.broker.emit("changed");
+    expect(store.binding()).toEqual({ ...binding, nativeSessionId: null, previousSessionIds: ["native-first"] });
+    expect((await run.controller.snapshot()).assistantMail).toMatchObject({ bindingState: "needs-rebind" });
     expect(run.broker.createSession).not.toHaveBeenCalled();
     expect(run.broker.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("handles Object.create(DesktopController.prototype) harnesses safely when assistantMailCoordinator is absent", async () => {
+    const bare = Object.assign(Object.create(DesktopController.prototype), {
+      broker: run.broker,
+      eventLog: run.eventLog,
+      uploads: { close: vi.fn() },
+      allSessions: () => run.sessions,
+      allProjects: () => run.projects,
+    }) as ControllerInternals & { close(): Promise<void> };
+    await expect(bare.handleRequest({ kind: "request", requestId: "1", idempotencyKey: "k1", method: "plugin.assistant-mail.list", params: {} }, "mobile"))
+      .rejects.toMatchObject({ code: "UNSUPPORTED" });
+    await expect(bare.handleRequest({ kind: "request", requestId: "2", idempotencyKey: "k2", method: "turn.start", params: { sessionId: "native-first", mailRefId: "m1" } }, "mobile"))
+      .rejects.toMatchObject({ code: "UNSUPPORTED" });
+    await expect(bare.handleRequest({ kind: "request", requestId: "3", idempotencyKey: "k3", method: "session.archive", params: { sessionId: "native-first" } }, "mobile"))
+      .resolves.toMatchObject({ session: expect.objectContaining({ sessionId: "native-first" }) });
+    await expect(bare.handleRequest({ kind: "request", requestId: "4", idempotencyKey: "k4", method: "session.delete", params: { sessionId: "native-first" } }, "mobile"))
+      .resolves.toEqual({ deleted: true, sessionId: "native-first" });
+    await expect(bare.close()).resolves.toBeUndefined();
   });
 
   it("keeps automatic delivery disabled for every helper binding state", () => {

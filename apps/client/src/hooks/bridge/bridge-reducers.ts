@@ -16,6 +16,7 @@ import {
   type BridgePendingPrompt,
   type BridgePermissionInfo,
   type BridgePrAutoFixState,
+  type BridgeProjectInfo,
   type BridgeProviderProfile,
   type BridgeResponse,
   type BridgeRuntimeGoalInfo,
@@ -1421,4 +1422,311 @@ export function applyEventsToSnapshot(
     snapshot: snapshotWithPermissions(current, currentPermissions),
     permissions: currentPermissions,
   };
+}
+
+export interface ApplySessionResultOptions {
+  sessions?: BridgeSessionInfo[] | undefined;
+  history?: {
+    sessionId: string;
+    page: BridgeHistoryPage;
+  } | undefined;
+  titleOnly?: boolean | undefined;
+  prepend?: boolean | undefined;
+  syncHostSummary?: boolean | undefined;
+}
+
+export interface ProjectCatalogPatch {
+  upsertProject?: BridgeProjectInfo | undefined;
+  project?: BridgeProjectInfo | undefined;
+  projects?: BridgeProjectInfo[] | undefined;
+  deletedProjectId?: string | undefined;
+  session?: BridgeSessionInfo | undefined;
+  sessions?: BridgeSessionInfo[] | undefined;
+}
+
+export interface ApplyEvidencePageOptions {
+  mergeHasMore?: boolean | undefined;
+  error?: boolean | undefined;
+  hasMoreOnError?: boolean | undefined;
+  forceErrorStatus?: boolean | undefined;
+  preserveCursorOnError?: boolean | undefined;
+}
+
+export interface ApplyIncomingEventsOptions {
+  roomId?: string | undefined;
+  cursor?: number | undefined;
+}
+
+/**
+ * Recomputes the paired-host list entry for the active (or specified) host from
+ * the current snapshot and permissions so card summaries stay aligned with
+ * incremental RPC or event updates.
+ */
+export function syncActiveHostRuntimeSummary(
+  current: MobileBridgeState,
+  roomId: string | undefined = current.activeHostId,
+): MobileBridgeState {
+  if (!roomId || !current.hosts.some((host) => host.roomId === roomId)) return current;
+  return {
+    ...current,
+    hosts: current.hosts.map((host) => host.roomId === roomId
+      ? hostWithRuntimeState(host, current.snapshot, current.permissions)
+      : host),
+  };
+}
+
+/**
+ * Applies a session-level RPC result (single session metadata/title/fork,
+ * full `session.list` replacement, and/or initial `session.open` history page)
+ * and optionally syncs the active host runtime summary.
+ */
+export function applySessionResultToState(
+  current: MobileBridgeState,
+  session?: BridgeSessionInfo,
+  options: ApplySessionResultOptions = {},
+): MobileBridgeState {
+  let snapshot = current.snapshot;
+  if (snapshot) {
+    if (Array.isArray(options.sessions)) {
+      snapshot = { ...snapshot, sessions: options.sessions };
+    } else if (session) {
+      if (options.titleOnly) {
+        let matched = false;
+        const sessions = snapshot.sessions.map((candidate) => {
+          if (candidate.sessionId !== session.sessionId) return candidate;
+          matched = true;
+          return { ...candidate, title: session.title };
+        });
+        if (matched) snapshot = { ...snapshot, sessions };
+      } else if (options.prepend) {
+        snapshot = {
+          ...snapshot,
+          sessions: [
+            session,
+            ...snapshot.sessions.filter((candidate) => candidate.sessionId !== session.sessionId),
+          ],
+        };
+      } else {
+        snapshot = applySessionToSnapshot(snapshot, session);
+      }
+    }
+  }
+  const histories = options.history
+    ? {
+        ...current.histories,
+        [options.history.sessionId]: {
+          status: "ready" as const,
+          items: options.history.page.items,
+          hasMore: options.history.page.hasMore,
+          ...(options.history.page.nextCursor ? { nextCursor: options.history.page.nextCursor } : {}),
+        },
+      }
+    : current.histories;
+  if (snapshot === current.snapshot && histories === current.histories) return current;
+  const next: MobileBridgeState = {
+    ...current,
+    snapshot,
+    histories,
+  };
+  return options.syncHostSummary === false ? next : syncActiveHostRuntimeSummary(next);
+}
+
+/**
+ * Applies project/section catalog mutations (`section.create`,
+ * `section.assignSession`, `section.rename`, `section.delete`) to the active
+ * snapshot and syncs the active host runtime summary.
+ */
+export function applyProjectCatalogPatchToState(
+  current: MobileBridgeState,
+  patch: ProjectCatalogPatch,
+): MobileBridgeState {
+  if (!current.snapshot) return current;
+  let snapshot = current.snapshot;
+  if (patch.session) {
+    snapshot = applySessionToSnapshot(snapshot, patch.session) ?? snapshot;
+  }
+  if (Array.isArray(patch.sessions)) {
+    snapshot = { ...snapshot, sessions: patch.sessions };
+  }
+  let projects = snapshot.projects;
+  let projectsChanged = false;
+  if (Array.isArray(patch.projects)) {
+    projects = patch.projects;
+    projectsChanged = true;
+  } else if (patch.upsertProject) {
+    const upsertProject = patch.upsertProject;
+    projects = [upsertProject, ...projects.filter((item) => item.projectId !== upsertProject.projectId)];
+    projectsChanged = true;
+  } else if (patch.project) {
+    const updated = patch.project;
+    projects = projects.map((item) => {
+      if (item.projectId !== updated.projectId) return item;
+      projectsChanged = true;
+      return updated;
+    });
+  } else if (patch.deletedProjectId) {
+    const nextProjects = projects.filter((item) => item.projectId !== patch.deletedProjectId);
+    if (nextProjects.length !== projects.length) {
+      projects = nextProjects;
+      projectsChanged = true;
+    }
+  }
+  if (projectsChanged) {
+    snapshot = { ...snapshot, projects };
+  }
+  if (snapshot === current.snapshot) return current;
+  return syncActiveHostRuntimeSummary({
+    ...current,
+    snapshot,
+  });
+}
+
+/**
+ * Removes a resolved (or `ALREADY_RESOLVED`) permission request from both the
+ * active permission list and snapshot, then updates the active host summary.
+ */
+export function dismissResolvedPermissionInState(
+  current: MobileBridgeState,
+  requestId: string,
+): MobileBridgeState {
+  const permissions = current.permissions.filter((permission) => permission.requestId !== requestId);
+  const removedFromSnapshot = current.snapshot?.permissions.some((permission) => permission.requestId === requestId) ?? false;
+  if (permissions.length === current.permissions.length && !removedFromSnapshot) return current;
+  const snapshot = snapshotWithPermissions(current.snapshot, permissions);
+  return syncActiveHostRuntimeSummary({
+    ...current,
+    snapshot,
+    permissions,
+  });
+}
+
+/**
+ * Projects a desktop RPC response onto matching optimistic `localTurns` records
+ * without mutating the input array when no `requestId` matches.
+ */
+export function applyResponseToTurns(
+  turns: LocalTurn[],
+  response: BridgeResponse,
+): LocalTurn[] {
+  const index = turns.findIndex((turn) => turn.requestId === response.requestId);
+  if (index < 0) return turns;
+  const localTurns = [...turns];
+  const turn = localTurns[index]!;
+  if (response.ok) {
+    const result = response.result as { commandId?: unknown; state?: unknown } | undefined;
+    const terminalDelivery: BridgeDeliveryState | undefined = result?.state === "completed"
+      ? "completed"
+      : result?.state === "failed"
+        ? "failed"
+        : result?.state === "cancelled"
+          ? "cancelled"
+          : undefined;
+    localTurns[index] = {
+      ...turn,
+      delivery: terminalDelivery ?? (result?.state === "submitted"
+        ? mergeAcceptedDelivery(turn.delivery, "submitted")
+        : turn.delivery === "local-saved" || turn.delivery === "relay-received"
+          ? "host-received"
+          : turn.delivery),
+      ...(typeof result?.commandId === "string" ? { commandId: result.commandId } : {}),
+    };
+  } else {
+    localTurns[index] = {
+      ...turn,
+      delivery: "failed",
+      error: response.error?.message ?? "请求失败",
+    };
+  }
+  return localTurns;
+}
+
+/**
+ * Merges an `evidence.*` bridge event summary into the per-session evidence
+ * map, preserving existing pagination state.
+ */
+export function applyEvidenceEventToPages(
+  evidence: Record<string, SessionEvidenceState>,
+  event: BridgeEvent,
+): Record<string, SessionEvidenceState> {
+  const item = evidenceFromEvent(event);
+  if (!item) return evidence;
+  const existing = evidence[item.sessionId];
+  return {
+    ...evidence,
+    [item.sessionId]: {
+      status: "ready",
+      items: mergeEvidence(existing?.items ?? [], [item]),
+      hasMore: existing?.hasMore ?? false,
+      ...(existing?.nextCursor ? { nextCursor: existing.nextCursor } : {}),
+    },
+  };
+}
+
+/**
+ * Applies a fetched/cached `BridgeEvidencePage` (or error/missing page
+ * fallback) to `evidence[sessionId]`.
+ */
+export function applyEvidencePageResult(
+  evidence: Record<string, SessionEvidenceState>,
+  sessionId: string,
+  page?: BridgeEvidencePage,
+  options: ApplyEvidencePageOptions = {},
+): Record<string, SessionEvidenceState> {
+  const existing = evidence[sessionId];
+  if (!page || options.error) {
+    const items = existing?.items ?? [];
+    const status: SessionEvidenceState["status"] =
+      options.forceErrorStatus || items.length === 0 ? "error" : "ready";
+    const nextCursor = options.preserveCursorOnError ? existing?.nextCursor : undefined;
+    return {
+      ...evidence,
+      [sessionId]: {
+        status,
+        items,
+        hasMore: options.hasMoreOnError ?? (existing?.hasMore ?? false),
+        ...(nextCursor ? { nextCursor } : {}),
+      },
+    };
+  }
+  return {
+    ...evidence,
+    [sessionId]: {
+      status: "ready",
+      items: mergeEvidence(existing?.items ?? [], page.items),
+      hasMore: options.mergeHasMore ? Boolean(existing?.hasMore || page.hasMore) : page.hasMore,
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    },
+  };
+}
+
+/**
+ * Applies one or more ordered incoming bridge events (live push or
+ * `events.resume` catch-up) onto permissions, snapshot, evidence, optimistic
+ * turns, cursor, and active host runtime summary.
+ */
+export function applyIncomingEventsToState(
+  current: MobileBridgeState,
+  events: BridgeEvent[],
+  options: ApplyIncomingEventsOptions = {},
+): MobileBridgeState {
+  if (events.length === 0 && (options.cursor ?? 0) <= current.latestSeq) return current;
+  let localTurns = current.localTurns;
+  let evidence = current.evidence;
+  for (const event of events) {
+    localTurns = applyEventToTurns(localTurns, event);
+    evidence = applyEvidenceEventToPages(evidence, event);
+  }
+  const applied = applyEventsToSnapshot(current.snapshot, events, current.permissions);
+  const permissions = applyUnseenPermissionEvents(current.permissions, events, current.events, current.snapshotSeq);
+  const snapshot = snapshotWithPermissions(applied.snapshot, permissions);
+  const maxEventSeq = events.reduce((max, event) => Math.max(max, event.seq), 0);
+  return syncActiveHostRuntimeSummary({
+    ...current,
+    snapshot,
+    permissions,
+    events: mergeBridgeEvents(current.events, events),
+    evidence,
+    localTurns,
+    latestSeq: Math.max(current.latestSeq, maxEventSeq, options.cursor ?? 0),
+  }, options.roomId ?? current.activeHostId);
 }

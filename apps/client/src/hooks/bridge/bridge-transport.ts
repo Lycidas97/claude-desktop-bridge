@@ -20,7 +20,6 @@ import {
   type BridgeEvent,
   type BridgeHostSnapshot,
   type BridgePayload,
-  type BridgePermissionInfo,
   type BridgeRequest,
   type BridgeResponse,
   type BridgeSessionInfo,
@@ -44,25 +43,24 @@ import {
   HOME_LEARN_FRESHNESS_MS,
   LOCAL_EVIDENCE_CACHE_TTL_MS,
   advancePairingSync,
+  applyEvidenceEventToPages,
+  applyEvidencePageResult,
   applyEventToSnapshot,
   applyEventToTurns,
-  applyEventsToSnapshot,
+  applyIncomingEventsToState,
   applyPermissionEvent,
-  applyUnseenPermissionEvents,
+  applyResponseToTurns,
+  applySessionResultToState,
   beginHostSessionState,
   clearActiveHostState,
   confirmedPairingSnapshot,
-  evidenceFromEvent,
   evidencePageFromResponse,
   hostSummary,
-  hostWithRuntimeState,
   hydrateStoredHostState,
   isBridgeResponse,
   isClaudeNativeRelay,
   isLoopbackRelay,
-  mergeAcceptedDelivery,
   mergeBridgeEvents,
-  mergeEvidence,
   permissionFromEvent,
   previewFromResponse,
   relayIssue,
@@ -198,48 +196,11 @@ export async function readStoredHostState(
   for (const event of events) appliedTurns = applyEventToTurns(appliedTurns, event);
   for (const message of messages) {
     if (!isBridgeResponse(message.payload)) continue;
-    const response = message.payload;
-    const turnIndex = appliedTurns.findIndex((turn) => turn.requestId === response.requestId);
-    if (turnIndex < 0) continue;
-    const turn = appliedTurns[turnIndex]!;
-    if (response.ok) {
-      const result = response.result as { commandId?: unknown; state?: unknown } | undefined;
-      const terminalDelivery: BridgeDeliveryState | undefined = result?.state === "completed"
-        ? "completed"
-        : result?.state === "failed"
-          ? "failed"
-          : result?.state === "cancelled"
-            ? "cancelled"
-            : undefined;
-      appliedTurns[turnIndex] = {
-        ...turn,
-        delivery: terminalDelivery ?? (result?.state === "submitted" ? mergeAcceptedDelivery(turn.delivery, "submitted")
-          : turn.delivery === "local-saved" ? "host-received" : turn.delivery),
-        ...(typeof result?.commandId === "string" ? { commandId: result.commandId } : {}),
-      };
-    } else {
-      appliedTurns[turnIndex] = {
-        ...turn,
-        delivery: "failed",
-        error: response.error?.message ?? "请求失败",
-      };
-    }
+    appliedTurns = applyResponseToTurns(appliedTurns, message.payload);
   }
   const storedSnapshot = snapshotWithPermissions(replayedSnapshot, permissions);
-  const evidence = events.reduce<Record<string, SessionEvidenceState>>((result, event) => {
-    const item = evidenceFromEvent(event);
-    if (!item) return result;
-    const current = result[item.sessionId] ?? {
-      status: "ready" as const,
-      items: [],
-      hasMore: false,
-    };
-    result[item.sessionId] = {
-      ...current,
-      items: mergeEvidence(current.items, [item]),
-    };
-    return result;
-  }, {});
+  let evidence: Record<string, SessionEvidenceState> = {};
+  for (const event of events) evidence = applyEvidenceEventToPages(evidence, event);
   const artifactPreviews: Record<string, BridgeArtifactPreview> = {};
   for (const message of messages) {
     if (!isBridgeResponse(message.payload)) continue;
@@ -247,17 +208,7 @@ export async function readStoredHostState(
     if (preview) artifactPreviews[preview.artifactId] = preview;
     const page = evidencePageFromResponse(message.payload);
     if (!page) continue;
-    const current = evidence[page.sessionId] ?? {
-      status: "ready" as const,
-      items: [],
-      hasMore: page.hasMore,
-    };
-    evidence[page.sessionId] = {
-      status: "ready",
-      items: mergeEvidence(current.items, page.items),
-      hasMore: current.hasMore || page.hasMore,
-      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-    };
+    evidence = applyEvidencePageResult(evidence, page.sessionId, page, { mergeHasMore: true });
   }
   return {
     ...(storedSnapshot ? { snapshot: storedSnapshot } : {}),
@@ -421,20 +372,6 @@ export function teardownActiveTransport(
   }
 }
 
-export function updateBridgeHostCache(
-  setState: Dispatch<SetStateAction<MobileBridgeState>>,
-  roomId: string,
-  snapshot: BridgeHostSnapshot,
-  permissions: BridgePermissionInfo[] = snapshot.permissions,
-): void {
-  setState((current) => ({
-    ...current,
-    hosts: current.hosts.map((host) => host.roomId === roomId
-      ? hostWithRuntimeState(host, snapshot, permissions)
-      : host),
-  }));
-}
-
 export function applyBridgeLanRelayAdvertisement(roomId: string, snapshot: BridgeHostSnapshot): void {
   const url = snapshot.host.lanRelayUrl;
   if (!url) return;
@@ -473,68 +410,15 @@ export function handleBridgePayload(
         sessionId: event.sessionId,
       }, dropped);
     }
-    setState((current) => {
-      const permissions = applyUnseenPermissionEvents(current.permissions, [event], current.events, current.snapshotSeq);
-      const snapshot = snapshotWithPermissions(applyEventToSnapshot(current.snapshot, event, permissions), permissions);
-      const evidenceItem = evidenceFromEvent(payload.event);
-      const evidence = evidenceItem ? {
-        ...current.evidence,
-        [evidenceItem.sessionId]: {
-          status: "ready" as const,
-          items: mergeEvidence(
-            current.evidence[evidenceItem.sessionId]?.items ?? [],
-            [evidenceItem],
-          ),
-          hasMore: current.evidence[evidenceItem.sessionId]?.hasMore ?? false,
-          ...(current.evidence[evidenceItem.sessionId]?.nextCursor
-            ? { nextCursor: current.evidence[evidenceItem.sessionId]!.nextCursor }
-            : {}),
-        },
-      } : current.evidence;
-      return {
-        ...current,
-        snapshot,
-        permissions,
-        events: mergeBridgeEvents(current.events, [payload.event]),
-        evidence,
-        localTurns: applyEventToTurns(current.localTurns, payload.event),
-        latestSeq: Math.max(current.latestSeq, payload.event.seq),
-        hosts: current.hosts.map((host) => host.roomId === crypto.identity.roomId
-          ? hostWithRuntimeState(host, snapshot, permissions)
-          : host),
-      };
-    });
+    setState((current) => applyIncomingEventsToState(current, [payload.event], {
+      roomId: crypto.identity.roomId,
+    }));
     return;
   }
   if (payload.kind !== "response") return;
   setState((current) => {
-    const index = current.localTurns.findIndex((turn) => turn.requestId === payload.requestId);
-    if (index < 0) return current;
-    const localTurns = [...current.localTurns];
-    const turn = localTurns[index]!;
-    if (payload.ok) {
-      const result = payload.result as { commandId?: unknown; state?: unknown } | undefined;
-      const terminalDelivery: BridgeDeliveryState | undefined = result?.state === "completed"
-        ? "completed"
-        : result?.state === "failed"
-          ? "failed"
-          : result?.state === "cancelled"
-            ? "cancelled"
-            : undefined;
-      localTurns[index] = {
-        ...turn,
-        delivery: terminalDelivery ?? (result?.state === "submitted" ? mergeAcceptedDelivery(turn.delivery, "submitted")
-          : turn.delivery === "local-saved" || turn.delivery === "relay-received" ? "host-received" : turn.delivery),
-        ...(typeof result?.commandId === "string" ? { commandId: result.commandId } : {}),
-      };
-    } else {
-      localTurns[index] = {
-        ...turn,
-        delivery: "failed",
-        error: payload.error?.message ?? "请求失败",
-      };
-    }
-    return { ...current, localTurns };
+    const localTurns = applyResponseToTurns(current.localTurns, payload);
+    return localTurns === current.localTurns ? current : { ...current, localTurns };
   });
   const pending = pendingResponsesRef.current.get(payload.requestId);
   if (pending) {
@@ -751,43 +635,9 @@ export async function resumeBridgeEvents(
       if (result.hasMore !== true || cursor >= latestSeq) break;
     }
     if (crypto) notifyCompletedTurns(events, crypto);
-    setState((current) => {
-      if (!isCurrent()) return current;
-      let turns = current.localTurns;
-      let evidence = current.evidence;
-      for (const event of events) {
-        turns = applyEventToTurns(turns, event);
-        const item = evidenceFromEvent(event);
-        if (item) {
-          evidence = {
-            ...evidence,
-            [item.sessionId]: {
-              status: "ready",
-              items: mergeEvidence(evidence[item.sessionId]?.items ?? [], [item]),
-              hasMore: evidence[item.sessionId]?.hasMore ?? false,
-              ...(evidence[item.sessionId]?.nextCursor
-                ? { nextCursor: evidence[item.sessionId]!.nextCursor }
-                : {}),
-            },
-          };
-        }
-      }
-      const applied = applyEventsToSnapshot(current.snapshot, events, current.permissions);
-      const permissions = applyUnseenPermissionEvents(current.permissions, events, current.events, current.snapshotSeq);
-      const snapshot = snapshotWithPermissions(applied.snapshot, permissions);
-      return {
-        ...current,
-        snapshot,
-        permissions,
-        events: mergeBridgeEvents(current.events, events),
-        evidence,
-        localTurns: turns,
-        latestSeq: Math.max(current.latestSeq, cursor),
-        hosts: current.hosts.map((host) => host.roomId === current.activeHostId
-          ? hostWithRuntimeState(host, snapshot, permissions)
-          : host),
-      };
-    });
+    setState((current) => isCurrent()
+      ? applyIncomingEventsToState(current, events, { cursor })
+      : current);
   } catch {
     // The next reconnect retries from the same cursor.
   }
@@ -808,10 +658,9 @@ export async function refreshBridgeSessionList(
   if (!isCurrent() || !response?.ok) return false;
   const result = response.result as { sessions?: BridgeSessionInfo[] };
   if (!result.sessions) return false;
-  setState((current) => isCurrent() && current.snapshot ? {
-    ...current,
-    snapshot: { ...current.snapshot, sessions: result.sessions! },
-  } : current);
+  setState((current) => isCurrent()
+    ? applySessionResultToState(current, undefined, { sessions: result.sessions })
+    : current);
   return true;
 }
 
@@ -867,7 +716,6 @@ export interface StartBridgeCallbacks {
   refreshSessionList: () => Promise<boolean>;
   refreshSnapshot: (verifiedSnapshot?: BridgeHostSnapshot) => Promise<boolean>;
   resumeEvents: (bootstrap?: boolean, fromSeq?: number) => Promise<void>;
-  updateHostCache: (roomId: string, snapshot: BridgeHostSnapshot, permissions?: BridgePermissionInfo[]) => void;
 }
 
 export async function startBridgeConnection(

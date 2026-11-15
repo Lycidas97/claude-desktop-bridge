@@ -1,9 +1,25 @@
-import type { BridgeEvent, BridgeHostSnapshot, BridgeResponse, PairingBundle } from "@bridge/protocol";
+import type {
+  BridgeEvent,
+  BridgeEvidenceBundle,
+  BridgeEvidencePage,
+  BridgeHostSnapshot,
+  BridgePermissionInfo,
+  BridgeProjectInfo,
+  BridgeResponse,
+  BridgeSessionInfo,
+  PairingBundle,
+} from "@bridge/protocol";
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_ACTIVE_HOST_STATE,
   INITIAL_STATE,
+  applyEvidenceEventToPages,
+  applyEvidencePageResult,
   applyEventsToSnapshot,
+  applyIncomingEventsToState,
+  applyProjectCatalogPatchToState,
+  applyResponseToTurns,
+  applySessionResultToState,
   applySessionToSnapshot,
   applyEventToTurns,
   applyEventToSnapshot,
@@ -11,6 +27,7 @@ import {
   beginHostSessionState,
   clearActiveHostState,
   confirmedPairingSnapshot,
+  dismissResolvedPermissionInState,
   freshActiveHostState,
   hydrateStoredHostState,
   mergeBridgeEvents,
@@ -18,8 +35,10 @@ import {
   rebaseSnapshot,
   relayLinkAllowsSend,
   replaceActiveHostSnapshot,
+  syncActiveHostRuntimeSummary,
   type LocalTurn,
   type MobileBridgeState,
+  type SessionEvidenceState,
 } from "./useMobileBridge.js";
 
 describe("native queue delivery projection", () => {
@@ -1961,5 +1980,381 @@ describe("active-host state transition reducers", () => {
     expect(cleared.transportMetrics).toBeUndefined();
     expect(cleared.pendingOutbound).toBe(0);
     expect(cleared.pairingSync).toBeUndefined();
+  });
+});
+
+describe("Module 5 pure session, project, event, turn, and evidence projection reducers", () => {
+  function baseSession(overrides: {
+    sessionId?: string;
+    projectId?: string;
+    title?: string;
+    ownership?: BridgeSessionInfo["ownership"];
+    turnState?: BridgeSessionInfo["turnState"];
+    pendingCount?: number;
+    model?: string;
+  } = {}): BridgeSessionInfo {
+    const { model, ...rest } = overrides;
+    return {
+      sessionId: "sess-1",
+      projectId: "proj-1",
+      projectName: "Bridge",
+      cwd: "/work/bridge",
+      title: "Original Title",
+      source: "bridge",
+      ownership: "BRIDGE_IDLE",
+      transport: "bridge-host",
+      turnState: "idle",
+      lastActivityAt: 100,
+      pendingCount: 0,
+      ...rest,
+      ...(model !== undefined ? { model } : {}),
+    };
+  }
+
+  function baseProject(projectId: string, name: string): BridgeProjectInfo {
+    return {
+      projectId,
+      name,
+      kind: "desktop-group",
+      cwd: "/work/bridge",
+      sessionCount: 1,
+      runningCount: 0,
+      pendingCount: 0,
+      lastActivityAt: 100,
+    };
+  }
+
+  function basePermission(requestId: string, sessionId = "sess-1"): BridgePermissionInfo {
+    return {
+      requestId,
+      sessionId,
+      toolUseId: `tool-${requestId}`,
+      toolName: "Bash",
+      input: { command: "ls" },
+      createdAt: 50,
+      canAllowAlways: true,
+    };
+  }
+
+  function baseState(overrides: {
+    permissions?: BridgePermissionInfo[];
+    snapshot?: BridgeHostSnapshot;
+    hosts?: MobileBridgeState["hosts"];
+    localTurns?: LocalTurn[];
+  } = {}): MobileBridgeState {
+    const s1 = baseSession();
+    const s2 = baseSession({ sessionId: "sess-2", title: "Second" });
+    const snapshot: BridgeHostSnapshot = {
+      host: {
+        hostId: "h1",
+        pairingEpoch: 1,
+        name: "Mac A",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        version: "1.4.0",
+        lastSeenAt: 10,
+        capabilities: [],
+      },
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "ready",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: { state: "ready", detail: "ready", enabled: true, canRestart: false },
+      },
+      projects: [baseProject("proj-1", "Bridge")],
+      sessions: [s1, s2],
+      permissions: [],
+      latestSeq: 5,
+    };
+    return {
+      ...INITIAL_STATE,
+      loading: false,
+      activeHostId: "room-a",
+      desktopName: "Mac A",
+      hosts: [{
+        hostId: "h1",
+        roomId: "room-a",
+        desktopName: "Mac A",
+        relayUrl: "wss://relay.example/ws",
+        needsRepair: false,
+        status: "standby",
+        activeTurns: 0,
+        path: "public-relay",
+      }],
+      snapshot,
+      snapshotSeq: 5,
+      latestSeq: 5,
+      ...overrides,
+    };
+  }
+
+  function baseBundle(id: string, startedAt: number, sessionId = "sess-1"): BridgeEvidenceBundle {
+    return {
+      id,
+      sessionId,
+      source: "bridge-host",
+      confidence: "exact",
+      state: "ready",
+      startedAt,
+      toolCount: 0,
+      changeCount: 0,
+      artifactCount: 0,
+      tools: [],
+      artifacts: [],
+      warnings: [],
+    };
+  }
+
+  it("syncActiveHostRuntimeSummary updates matching host from snapshot/permissions and bails on missing roomId", () => {
+    const idle = baseState();
+    expect(syncActiveHostRuntimeSummary(idle, "missing-room")).toBe(idle);
+    expect(syncActiveHostRuntimeSummary({ ...idle, activeHostId: undefined })).toEqual({
+      ...idle,
+      activeHostId: undefined,
+    });
+
+    const permission = basePermission("perm-1");
+    const waitingState = baseState({
+      permissions: [permission],
+      snapshot: {
+        ...idle.snapshot!,
+        sessions: [baseSession({ turnState: "waiting", ownership: "BRIDGE_RUNNING" })],
+        permissions: [permission],
+      },
+    });
+    const synced = syncActiveHostRuntimeSummary(waitingState);
+    expect(synced.hosts[0]).toMatchObject({
+      roomId: "room-a",
+      status: "attention",
+      activeTurns: 1,
+      attentionSessionId: "sess-1",
+    });
+  });
+
+  it("applySessionResultToState handles upsert, prepend fork, titleOnly rename, session.list replacement, and open history", () => {
+    const start = baseState();
+
+    const forked = baseSession({ sessionId: "sess-fork", title: "Forked", turnState: "running", ownership: "BRIDGE_RUNNING" });
+    const afterFork = applySessionResultToState(start, forked, { prepend: true });
+    expect(afterFork.snapshot?.sessions.map((s) => s.sessionId)).toEqual(["sess-fork", "sess-1", "sess-2"]);
+    expect(afterFork.hosts[0]?.status).toBe("running");
+
+    const afterPrependExisting = applySessionResultToState(afterFork, baseSession({ sessionId: "sess-2", title: "Promoted" }), { prepend: true });
+    expect(afterPrependExisting.snapshot?.sessions.map((s) => s.sessionId)).toEqual(["sess-2", "sess-fork", "sess-1"]);
+
+    const partialRename = { ...baseSession({ sessionId: "sess-1", title: "Renamed", turnState: "idle" }), model: "other" };
+    const beforeRename = applySessionResultToState(start, baseSession({ sessionId: "sess-1", model: "opus", turnState: "running" }));
+    const afterRename = applySessionResultToState(beforeRename, partialRename, { titleOnly: true });
+    expect(afterRename.snapshot?.sessions[0]).toMatchObject({ sessionId: "sess-1", title: "Renamed", model: "opus", turnState: "running" });
+    expect(applySessionResultToState(start, baseSession({ sessionId: "missing" }), { titleOnly: true })).toBe(start);
+
+    const listed = applySessionResultToState(start, undefined, {
+      sessions: [baseSession({ sessionId: "sess-only", turnState: "running" })],
+    });
+    expect(listed.snapshot?.sessions.map((s) => s.sessionId)).toEqual(["sess-only"]);
+    expect(listed.hosts[0]?.status).toBe("running");
+
+    const opened = applySessionResultToState(start, baseSession({ sessionId: "sess-1", title: "Refreshed" }), {
+      history: {
+        sessionId: "sess-1",
+        page: {
+          sessionId: "sess-1",
+          items: [{ id: "m1", sessionId: "sess-1", role: "user", text: "hi", createdAt: 1, origin: "claude-desktop" }],
+          hasMore: true,
+          nextCursor: "hist-2",
+        },
+      },
+      syncHostSummary: false,
+    });
+    expect(opened.histories["sess-1"]).toMatchObject({ status: "ready", hasMore: true, nextCursor: "hist-2" });
+    expect(opened.snapshot?.sessions[0]?.title).toBe("Refreshed");
+  });
+
+  it("applyProjectCatalogPatchToState applies section create, move, rename, and delete consistently", () => {
+    const start = baseState();
+    const sec2 = baseProject("sec-2", "Research");
+
+    const created = applyProjectCatalogPatchToState(start, { upsertProject: sec2 });
+    expect(created.snapshot?.projects.map((p) => p.projectId)).toEqual(["sec-2", "proj-1"]);
+
+    const moved = applyProjectCatalogPatchToState(created, {
+      session: baseSession({ sessionId: "sess-1", projectId: "sec-2", turnState: "running", ownership: "BRIDGE_RUNNING" }),
+      projects: [sec2, baseProject("proj-1", "Bridge")],
+    });
+    expect(moved.snapshot?.sessions[0]?.projectId).toBe("sec-2");
+    expect(moved.hosts[0]?.status).toBe("running");
+
+    const renamed = applyProjectCatalogPatchToState(moved, {
+      project: baseProject("sec-2", "Core Research"),
+      sessions: moved.snapshot!.sessions,
+    });
+    expect(renamed.snapshot?.projects.find((p) => p.projectId === "sec-2")?.name).toBe("Core Research");
+
+    const deleted = applyProjectCatalogPatchToState(renamed, { deletedProjectId: "sec-2" });
+    expect(deleted.snapshot?.projects.map((p) => p.projectId)).toEqual(["proj-1"]);
+    expect(applyProjectCatalogPatchToState({ ...start, snapshot: undefined }, { upsertProject: sec2 })).toEqual({
+      ...start,
+      snapshot: undefined,
+    });
+  });
+
+  it("dismissResolvedPermissionInState removes resolved permissions from state, snapshot, and host summary", () => {
+    const p1 = basePermission("perm-1", "sess-1");
+    const p2 = basePermission("perm-2", "sess-2");
+    const start = baseState({
+      permissions: [p1, p2],
+      snapshot: {
+        ...baseState().snapshot!,
+        sessions: [
+          baseSession({ sessionId: "sess-1", ownership: "BRIDGE_IDLE", turnState: "waiting", pendingCount: 0 }),
+          baseSession({ sessionId: "sess-2", ownership: "BRIDGE_RUNNING", turnState: "waiting", pendingCount: 0 }),
+        ],
+        permissions: [p1, p2],
+      },
+      hosts: [{
+        ...baseState().hosts[0]!,
+        status: "attention",
+        attentionSessionId: "sess-1",
+      }],
+    });
+
+    expect(dismissResolvedPermissionInState(start, "non-existent")).toBe(start);
+
+    const afterOne = dismissResolvedPermissionInState(start, "perm-1");
+    expect(afterOne.permissions.map((p) => p.requestId)).toEqual(["perm-2"]);
+    expect(afterOne.snapshot?.sessions[0]?.turnState).toBe("idle");
+    expect(afterOne.hosts[0]).toMatchObject({ status: "attention", attentionSessionId: "sess-2" });
+
+    const afterTwo = dismissResolvedPermissionInState(afterOne, "perm-2");
+    expect(afterTwo.permissions).toEqual([]);
+    expect(afterTwo.snapshot?.sessions[1]?.turnState).toBe("running");
+    expect(afterTwo.hosts[0]?.status).toBe("running");
+    expect(afterTwo.hosts[0]?.attentionSessionId).toBeUndefined();
+  });
+
+  it("applyResponseToTurns projects responses immutably without losing delivery precedence", () => {
+    const turns: LocalTurn[] = [
+      { requestId: "r-local", idempotencyKey: "i1", sessionId: "s", text: "1", attachments: [], createdAt: 1, delivery: "local-saved" },
+      { requestId: "r-relay", idempotencyKey: "i2", sessionId: "s", text: "2", attachments: [], createdAt: 2, delivery: "relay-received" },
+      { requestId: "r-sess", idempotencyKey: "i3", sessionId: "s", text: "3", attachments: [], createdAt: 3, delivery: "session-received" },
+    ];
+    const unmatched: BridgeResponse = { kind: "response", requestId: "other", ok: true, result: {} };
+    expect(applyResponseToTurns(turns, unmatched)).toBe(turns);
+
+    const afterRelayOk = applyResponseToTurns(turns, { kind: "response", requestId: "r-relay", ok: true, result: { commandId: "cmd-2" } });
+    expect(afterRelayOk[1]).toMatchObject({ delivery: "host-received", commandId: "cmd-2" });
+    expect(turns[1]?.delivery).toBe("relay-received");
+
+    const afterSubmitted = applyResponseToTurns(afterRelayOk, { kind: "response", requestId: "r-sess", ok: true, result: { state: "submitted", commandId: "cmd-3" } });
+    expect(afterSubmitted[2]).toMatchObject({ delivery: "session-received", commandId: "cmd-3" });
+
+    const afterCompleted = applyResponseToTurns(afterSubmitted, { kind: "response", requestId: "r-local", ok: true, result: { state: "completed" } });
+    expect(afterCompleted[0]?.delivery).toBe("completed");
+
+    const afterError = applyResponseToTurns(afterCompleted, {
+      kind: "response",
+      requestId: "r-relay",
+      ok: false,
+      error: { code: "ERR", message: "Rejected", retryable: false },
+    });
+    expect(afterError[1]).toMatchObject({ delivery: "failed", error: "Rejected" });
+  });
+
+  it("applyEvidenceEventToPages and applyEvidencePageResult merge live events, cached pages, and error states", () => {
+    const initial: Record<string, SessionEvidenceState> = {
+      "sess-1": { status: "ready", items: [baseBundle("ev-1", 10)], hasMore: true, nextCursor: "cur-1" },
+    };
+    const nonEvidence: BridgeEvent = { eventId: "e1", seq: 1, timestamp: 1, origin: "desktop", sessionId: "sess-1", type: "turn.completed", data: {} };
+    expect(applyEvidenceEventToPages(initial, nonEvidence)).toBe(initial);
+
+    const evEvent: BridgeEvent = {
+      eventId: "e2",
+      seq: 2,
+      timestamp: 20,
+      origin: "desktop",
+      sessionId: "sess-1",
+      type: "evidence.updated",
+      data: { evidence: baseBundle("ev-2", 20) },
+    };
+    const withEvent = applyEvidenceEventToPages(initial, evEvent);
+    expect(withEvent["sess-1"]?.items.map((item) => item.id)).toEqual(["ev-2", "ev-1"]);
+    expect(withEvent["sess-1"]?.nextCursor).toBe("cur-1");
+
+    const fetchedPage: BridgeEvidencePage = {
+      sessionId: "sess-1",
+      items: [baseBundle("ev-0", 5)],
+      hasMore: false,
+    };
+    const storedMerged = applyEvidencePageResult(withEvent, "sess-1", fetchedPage, { mergeHasMore: true });
+    expect(storedMerged["sess-1"]).toMatchObject({ status: "ready", hasMore: true });
+    expect(storedMerged["sess-1"]?.nextCursor).toBeUndefined();
+
+    const missingWithCached = applyEvidencePageResult(withEvent, "sess-1", undefined, { hasMoreOnError: false });
+    expect(missingWithCached["sess-1"]).toMatchObject({ status: "ready", hasMore: false });
+
+    const emptyMissing = applyEvidencePageResult({}, "sess-1", undefined, { hasMoreOnError: false });
+    expect(emptyMissing["sess-1"]).toMatchObject({ status: "error", items: [], hasMore: false });
+
+    const loadOlderError = applyEvidencePageResult(withEvent, "sess-1", undefined, {
+      error: true,
+      forceErrorStatus: true,
+      preserveCursorOnError: true,
+    });
+    expect(loadOlderError["sess-1"]).toMatchObject({ status: "error", nextCursor: "cur-1", hasMore: true });
+  });
+
+  it("applyIncomingEventsToState updates permissions, snapshot, evidence, turns, latestSeq, and host summary together", () => {
+    const start = baseState({
+      localTurns: [{
+        requestId: "req-turn",
+        idempotencyKey: "idem-turn",
+        sessionId: "sess-1",
+        text: "run tests",
+        attachments: [],
+        createdAt: 10,
+        delivery: "host-received",
+      }],
+    });
+    expect(applyIncomingEventsToState(start, [])).toBe(start);
+
+    const events: BridgeEvent[] = [
+      {
+        eventId: "ev-turn-start",
+        seq: 6,
+        timestamp: 100,
+        origin: "desktop",
+        sessionId: "sess-1",
+        turnId: "turn-6",
+        type: "turn.started",
+        data: { requestId: "req-turn", commandId: "cmd-6" },
+      },
+      {
+        eventId: "ev-perm",
+        seq: 7,
+        timestamp: 101,
+        origin: "desktop",
+        sessionId: "sess-1",
+        type: "permission.requested",
+        data: { requestId: "perm-7", toolUseId: "tu-7", toolName: "Bash", input: { command: "rm -rf /tmp/x" }, canAllowAlways: false },
+      },
+      {
+        eventId: "ev-evidence",
+        seq: 8,
+        timestamp: 102,
+        origin: "desktop",
+        sessionId: "sess-1",
+        type: "evidence.updated",
+        data: { evidence: baseBundle("ev-8", 102) },
+      },
+    ];
+    const next = applyIncomingEventsToState(start, events, { cursor: 12 });
+    expect(next.latestSeq).toBe(12);
+    expect(next.permissions.map((p) => p.requestId)).toEqual(["perm-7"]);
+    expect(next.snapshot?.sessions[0]?.turnState).toBe("waiting");
+    expect(next.localTurns[0]).toMatchObject({ delivery: "running", commandId: "cmd-6", lastEventSeq: 6 });
+    expect(next.evidence["sess-1"]?.items.map((item) => item.id)).toEqual(["ev-8"]);
+    expect(next.hosts[0]).toMatchObject({ status: "attention", attentionSessionId: "sess-1" });
   });
 });

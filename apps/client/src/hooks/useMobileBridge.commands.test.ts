@@ -1,4 +1,4 @@
-import type { BridgeProjectInfo, BridgeRequest, BridgeSessionInfo, BridgeSlashCommandCatalog } from "@bridge/protocol";
+import type { BridgeHostSnapshot, BridgePermissionInfo, BridgeProjectInfo, BridgeRequest, BridgeSessionInfo, BridgeSlashCommandCatalog } from "@bridge/protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useMobileBridge } from "./useMobileBridge.js";
 
@@ -22,13 +22,15 @@ vi.mock("react", async (original) => ({
       harness.state,
       (updater: unknown) => {
         harness.state = typeof updater === "function" ? (updater as (prev: unknown) => unknown)(harness.state) : updater;
+        if (harness.refs[0]) harness.refs[0].current = harness.state;
       },
     ];
   },
   useRef(initial: unknown) {
     const index = harness.refs.length;
     const ref = { current: initial as any };
-    if (index === 1) ref.current = { encrypt: harness.encrypt };
+    if (index === 0 && harness.state !== undefined) ref.current = harness.state;
+    if (index === 1) ref.current = { encrypt: harness.encrypt, identity: { roomId: "room-a" } };
     if (index === 3) ref.current = {
       state: "connected",
       sendEnvelope: async ({ request }: { request: BridgeRequest }) => {
@@ -269,5 +271,342 @@ describe("loadBackgroundTasks", () => {
       runningSubagents: { count: 1, lastUpdatedAt: 120 },
     });
     expect(harness.state.snapshot.sessions[0].backgroundTasks).toBeUndefined();
+  });
+});
+
+describe("RPC state projection & host summary sync", () => {
+  it("projects section create/move/rename/delete and fork/rename into snapshot and active host summary", async () => {
+    const session: BridgeSessionInfo = {
+      sessionId: "sess-1",
+      projectId: "proj-1",
+      projectName: "Bridge",
+      cwd: "/work/bridge",
+      title: "Initial",
+      source: "bridge",
+      ownership: "BRIDGE_IDLE",
+      transport: "bridge-host",
+      turnState: "idle",
+      model: "sonnet",
+      lastActivityAt: 100,
+      pendingCount: 0,
+    };
+    const runningFork: BridgeSessionInfo = {
+      ...session,
+      sessionId: "sess-fork",
+      title: "Forked Branch",
+      ownership: "BRIDGE_RUNNING",
+      turnState: "running",
+      lastActivityAt: 110,
+    };
+    const createdSection: BridgeProjectInfo = {
+      projectId: "sec-new",
+      name: "Research",
+      kind: "desktop-group",
+      cwd: "",
+      sessionCount: 0,
+      runningCount: 0,
+      pendingCount: 0,
+      lastActivityAt: 0,
+    };
+    const bridge = useMobileBridge();
+    const snapshot: BridgeHostSnapshot = {
+      host: {
+        hostId: "h1",
+        pairingEpoch: 1,
+        name: "Mac",
+        relayUrl: "wss://relay.example/ws",
+        online: true,
+        version: "1.4.0",
+        lastSeenAt: 120,
+        capabilities: [],
+      },
+      devices: [],
+      runtime: {
+        state: "ready",
+        detail: "ready",
+        activeTurns: 0,
+        maxParallelTurns: 2,
+        desktopIntegration: { state: "ready", detail: "ready", enabled: true, canRestart: false },
+      },
+      projects: [{ ...createdSection, projectId: "proj-1", name: "Bridge" }],
+      sessions: [session],
+      permissions: [],
+      latestSeq: 5,
+    };
+    harness.state = {
+      ...harness.state,
+      activeHostId: "room-a",
+      hosts: [{
+        hostId: "h1",
+        roomId: "room-a",
+        desktopName: "Mac",
+        relayUrl: "wss://relay.example/ws",
+        needsRepair: false,
+        status: "standby",
+        activeTurns: 0,
+        path: "public-relay",
+      }],
+      snapshot,
+    };
+    harness.refs[0]!.current = harness.state;
+
+    harness.response = { project: createdSection };
+    await bridge.createSection("Research");
+    expect(harness.state.snapshot.projects.map((p: BridgeProjectInfo) => p.projectId)).toEqual(["sec-new", "proj-1"]);
+
+    harness.response = { session: runningFork };
+    await bridge.forkSession("sess-1", "Forked Branch");
+    expect(harness.state.snapshot.sessions.map((s: BridgeSessionInfo) => s.sessionId)).toEqual(["sess-fork", "sess-1"]);
+    expect(harness.state.hosts[0]).toMatchObject({ status: "running", activeTurns: 1 });
+
+    harness.response = { session: { sessionId: "sess-fork", title: "Renamed Fork" } };
+    await bridge.renameSession("sess-fork", "Renamed Fork");
+    expect(harness.state.snapshot.sessions[0]).toMatchObject({
+      sessionId: "sess-fork",
+      title: "Renamed Fork",
+      model: "sonnet",
+      turnState: "running",
+    });
+
+    harness.response = {
+      session: { ...session, projectId: "sec-new", projectName: "Research" },
+      projects: [{ ...createdSection, sessionCount: 1 }, { ...createdSection, projectId: "proj-1", name: "Bridge" }],
+    };
+    await bridge.moveSessionSection("sess-1", "sec-new");
+    expect(harness.state.snapshot.sessions.find((s: BridgeSessionInfo) => s.sessionId === "sess-1")?.projectId).toBe("sec-new");
+
+    harness.response = { project: { ...createdSection, name: "Core Research" } };
+    await bridge.renameSection("sec-new", "Core Research");
+    expect(harness.state.snapshot.projects[0]?.name).toBe("Core Research");
+
+    harness.response = {};
+    await bridge.deleteSection("sec-new");
+    expect(harness.state.snapshot.projects.map((p: BridgeProjectInfo) => p.projectId)).toEqual(["proj-1"]);
+  });
+
+  it("dismisses resolved permission and clears ALREADY_RESOLVED permissions while syncing host status", async () => {
+    const p1: BridgePermissionInfo = {
+      requestId: "perm-1",
+      sessionId: "sess-1",
+      toolUseId: "tu-1",
+      toolName: "Bash",
+      input: { command: "ls" },
+      createdAt: 1,
+      canAllowAlways: false,
+    };
+    const p2: BridgePermissionInfo = { ...p1, requestId: "perm-2", toolUseId: "tu-2" };
+    const bridge = useMobileBridge();
+    harness.state = {
+      ...harness.state,
+      activeHostId: "room-a",
+      permissions: [p1, p2],
+      hosts: [{
+        hostId: "h1",
+        roomId: "room-a",
+        desktopName: "Mac",
+        relayUrl: "wss://relay.example/ws",
+        needsRepair: false,
+        status: "attention",
+        activeTurns: 1,
+        attentionSessionId: "sess-1",
+        path: "public-relay",
+      }],
+      snapshot: {
+        host: { hostId: "h1", name: "Mac", platform: "darwin", version: "1.4.0", lastSeenAt: 120, capabilities: [] },
+        runtime: { state: "ready", detail: "ready", activeTurns: 0, maxParallelTurns: 2 },
+        projects: [],
+        sessions: [{
+          sessionId: "sess-1",
+          projectId: "proj-1",
+          projectName: "Bridge",
+          cwd: "/work/bridge",
+          title: "Waiting",
+          source: "bridge",
+          ownership: "BRIDGE_IDLE",
+          turnState: "waiting",
+          lastActivityAt: 100,
+          pendingCount: 0,
+        }],
+        permissions: [p1, p2],
+        latestSeq: 5,
+      },
+    };
+    harness.refs[0]!.current = harness.state;
+
+    harness.response = {};
+    await bridge.resolvePermission("perm-1", "allow-once");
+    expect(harness.state.permissions.map((p: BridgePermissionInfo) => p.requestId)).toEqual(["perm-2"]);
+    expect(harness.state.snapshot.permissions.map((p: BridgePermissionInfo) => p.requestId)).toEqual(["perm-2"]);
+    expect(harness.state.hosts[0]?.status).toBe("attention");
+
+    // ALREADY_RESOLVED removes the stale permission, calls events.resume, and restores standby summary.
+    let callCount = 0;
+    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+      harness.requests.push(request);
+      callCount += 1;
+      const pending = harness.refs[6]!.current.get(request.requestId);
+      clearTimeout(pending.timer);
+      harness.refs[6]!.current.delete(request.requestId);
+      if (callCount === 1) {
+        pending.resolve({
+          kind: "response",
+          requestId: request.requestId,
+          ok: false,
+          error: { code: "ALREADY_RESOLVED", message: "Permission already handled" },
+        });
+      } else {
+        pending.resolve({
+          kind: "response",
+          requestId: request.requestId,
+          ok: true,
+          result: { events: [], latestSeq: 5, nextSeq: 5, hasMore: false },
+        });
+      }
+    };
+    await expect(bridge.resolvePermission("perm-2", "allow-once")).rejects.toThrow("Permission already handled");
+    expect(harness.requests.map((r) => r.method)).toEqual(["permission.resolve", "permission.resolve", "events.resume"]);
+    expect(harness.state.permissions).toEqual([]);
+    expect(harness.state.snapshot.sessions[0]?.turnState).toBe("idle");
+    expect(harness.state.hosts[0]?.status).toBe("standby");
+    expect(harness.state.hosts[0]?.attentionSessionId).toBeUndefined();
+  });
+
+  it("projects openSession history + evidence and preserves nextCursor on loadOlderEvidence failure", async () => {
+    const bundle = (id: string, startedAt: number) => ({
+      id,
+      sessionId: "sess-1",
+      source: "bridge-host" as const,
+      confidence: "exact" as const,
+      state: "ready" as const,
+      startedAt,
+      toolCount: 0,
+      changeCount: 0,
+      artifactCount: 0,
+      tools: [],
+      artifacts: [],
+      warnings: [],
+    });
+    const session: BridgeSessionInfo = {
+      sessionId: "sess-1",
+      projectId: "proj-1",
+      projectName: "Bridge",
+      cwd: "/work/bridge",
+      title: "Opened",
+      source: "bridge",
+      ownership: "BRIDGE_IDLE",
+      transport: "bridge-host",
+      turnState: "idle",
+      lastActivityAt: 200,
+      pendingCount: 0,
+    };
+    const bridge = useMobileBridge();
+    harness.state = {
+      ...harness.state,
+      activeHostId: "room-a",
+      hosts: [{
+        hostId: "h1",
+        roomId: "room-a",
+        desktopName: "Mac",
+        relayUrl: "wss://relay.example/ws",
+        needsRepair: false,
+        status: "standby",
+        activeTurns: 0,
+        path: "public-relay",
+      }],
+      snapshot: {
+        host: {
+          hostId: "h1",
+          pairingEpoch: 1,
+          name: "Mac",
+          relayUrl: "wss://relay.example/ws",
+          online: true,
+          version: "1.4.0",
+          lastSeenAt: 200,
+          capabilities: [],
+        },
+        devices: [],
+        runtime: {
+          state: "ready",
+          detail: "ready",
+          activeTurns: 0,
+          maxParallelTurns: 2,
+          desktopIntegration: { state: "ready", detail: "ready", enabled: true, canRestart: false },
+        },
+        projects: [],
+        sessions: [{ ...session, title: "Before Open" }],
+        permissions: [],
+        latestSeq: 5,
+      },
+    };
+    harness.refs[0]!.current = harness.state;
+
+    let failEvidenceLoad = false;
+    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+      harness.requests.push(request);
+      const pending = harness.refs[6]!.current.get(request.requestId);
+      clearTimeout(pending.timer);
+      harness.refs[6]!.current.delete(request.requestId);
+      if (request.method === "session.open") {
+        pending.resolve({
+          kind: "response",
+          requestId: request.requestId,
+          ok: true,
+          result: {
+            session,
+            history: {
+              sessionId: "sess-1",
+              items: [{ id: "h-1", sessionId: "sess-1", role: "user", text: "hi", createdAt: 1, origin: "claude-desktop" }],
+              hasMore: false,
+            },
+          },
+        });
+        return;
+      }
+      if (failEvidenceLoad) {
+        pending.resolve({
+          kind: "response",
+          requestId: request.requestId,
+          ok: false,
+          error: { code: "ERR", message: "Evidence page unavailable" },
+        });
+        return;
+      }
+      const cursor = request.params.cursor as string | undefined;
+      pending.resolve({
+        kind: "response",
+        requestId: request.requestId,
+        ok: true,
+        result: {
+          evidence: cursor === "ev-cur-1"
+            ? { sessionId: "sess-1", items: [bundle("ev-1", 10)], hasMore: false }
+            : { sessionId: "sess-1", items: [bundle("ev-2", 20)], hasMore: true, nextCursor: "ev-cur-1" },
+        },
+      });
+    };
+
+    await bridge.openSession("sess-1");
+    await vi.waitFor(() => expect(harness.state.evidence["sess-1"]?.status).toBe("ready"));
+    expect(harness.state.snapshot.sessions[0]?.title).toBe("Opened");
+    expect(harness.state.histories["sess-1"]?.items.map((item: { id: string }) => item.id)).toEqual(["h-1"]);
+    expect(harness.state.evidence["sess-1"]).toMatchObject({
+      status: "ready",
+      hasMore: true,
+      nextCursor: "ev-cur-1",
+    });
+
+    failEvidenceLoad = true;
+    await bridge.loadOlderEvidence("sess-1");
+    expect(harness.state.evidence["sess-1"]).toMatchObject({
+      status: "error",
+      hasMore: true,
+      nextCursor: "ev-cur-1",
+    });
+    expect(harness.state.error).toBe("Evidence page unavailable");
+
+    failEvidenceLoad = false;
+    await bridge.loadOlderEvidence("sess-1");
+    expect(harness.state.evidence["sess-1"]?.status).toBe("ready");
+    expect(harness.state.evidence["sess-1"]?.items.map((item: { id: string }) => item.id)).toEqual(["ev-2", "ev-1"]);
+    expect(harness.state.evidence["sess-1"]?.nextCursor).toBeUndefined();
   });
 });

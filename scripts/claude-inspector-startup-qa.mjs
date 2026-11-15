@@ -72,21 +72,24 @@ async function start() {
   assert.equal(await listening(), false);
 }
 async function stop(fixture = { child, origin }) {
-  if (!fixture.child || fixture.child.exitCode !== null || fixture.child.signalCode !== null) return;
-  const exited = once(fixture.child, 'exit');
-  const timer = setTimeout(() => fixture.child.kill('SIGKILL'), 5_000);
-  try {
-    await fetch(fixture.origin + '/quit', { signal: AbortSignal.timeout(5_000) });
-    const [code, signal] = await exited;
-    evidence.steps.push({ step: 'process-exited', pid: fixture.child.pid, code, signal });
-    assert.deepEqual([code, signal], [0, null], 'Fixture must exit normally; forced cleanup is a failure');
-  } finally {
-    clearTimeout(timer);
-    if (fixture.child.exitCode === null && fixture.child.signalCode === null) {
-      fixture.child.kill('SIGKILL');
+  if (!fixture.child) return;
+  if (fixture.child.exitCode === null && fixture.child.signalCode === null) {
+    const exited = once(fixture.child, 'exit');
+    const timer = setTimeout(() => fixture.child.kill('SIGKILL'), 5_000);
+    try {
+      await fetch(fixture.origin + '/quit', { signal: AbortSignal.timeout(5_000) });
       await exited;
+    } finally {
+      clearTimeout(timer);
+      if (fixture.child.exitCode === null && fixture.child.signalCode === null) {
+        fixture.child.kill('SIGKILL');
+        await exited;
+      }
     }
   }
+  const { exitCode: code, signalCode: signal } = fixture.child;
+  evidence.steps.push({ step: 'process-exited', pid: fixture.child.pid, code, signal });
+  assert.deepEqual([code, signal], [0, null], 'Fixture must exit normally; forced cleanup is a failure');
 }
 try {
   await start();

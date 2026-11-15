@@ -111,17 +111,18 @@ export async function windowsInspectorProcesses(): Promise<InspectorDesktopProce
 export function parseWindowsInspectorSockets(output: string, port = 9229): { listening: boolean; pids: number[] } {
   let listening = false;
   const clients = new Set<number>();
+  const loopback = [`127.0.0.1:${port}`, `[::1]:${port}`];
   for (const line of output.split("\n")) {
     const [protocol, local, remote, state, pid] = line.trim().split(/\s+/u);
     if (protocol !== "TCP") continue;
-    if (state === "LISTENING" && local?.endsWith(`:${port}`)) listening = true;
-    if (state === "ESTABLISHED" && remote?.endsWith(`:${port}`)) clients.add(Number(pid));
+    if (state === "LISTENING" && [...loopback, `0.0.0.0:${port}`, `[::]:${port}`].includes(local ?? "")) listening = true;
+    if (state === "ESTABLISHED" && loopback.includes(remote ?? "")) clients.add(Number(pid));
   }
   return { listening, pids: [...clients] };
 }
 
 export async function readWindowsInspectorConnections(port = 9229): Promise<{ listening: boolean; clients: BridgeInspectorClient[] }> {
-  const sockets = parseWindowsInspectorSockets((await run("netstat.exe", ["-ano", "-p", "TCP"], { timeout: 2_500, maxBuffer: 4 * 1024 * 1024, windowsHide: true })).stdout, port);
+  const sockets = parseWindowsInspectorSockets((await run("netstat.exe", ["-ano"], { timeout: 2_500, maxBuffer: 4 * 1024 * 1024, windowsHide: true })).stdout, port);
   if (!sockets.pids.length) return { listening: sockets.listening, clients: [] };
   const rows: unknown = JSON.parse(await windowsInspectorCommand(`
     ConvertTo-Json -Compress -InputObject @(Get-Process -Id ${sockets.pids.join(",")} -ErrorAction SilentlyContinue |
@@ -132,16 +133,16 @@ export async function readWindowsInspectorConnections(port = 9229): Promise<{ li
     if (!row || !Number.isInteger(row.pid) || typeof row.name !== "string" || (row.path !== null && typeof row.path !== "string")) throw new Error("Windows 调试连接进程信息无效");
     return [row.pid, { name: row.name, path: row.path ?? undefined }];
   }));
-  const approvedRoots = [win32.dirname(process.execPath),
-    ...[process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.LOCALAPPDATA]
-      .filter((root): root is string => Boolean(root)).map(root => win32.join(root, "Google", "Chrome", "Application"))];
+  const approvedRoots = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.LOCALAPPDATA]
+    .filter((root): root is string => Boolean(root)).map(root => win32.join(root, "Google", "Chrome", "Application"));
   return {
     listening: sockets.listening,
     clients: sockets.pids.map(pid => {
-      const process = paths.get(pid);
-      return { pid, name: process?.name ?? "未知进程",
-        ...(process?.path ? { executablePath: process.path } : { pathError: "进程已退出或无权读取可执行文件路径" }),
-        approved: Boolean(process?.path && approvedRoots.some(root => process.path!.toLowerCase().startsWith(`${root.toLowerCase()}\\`))),
+      const client = paths.get(pid);
+      return { pid, name: client?.name ?? "未知进程",
+        ...(client?.path ? { executablePath: client.path } : { pathError: "进程已退出或无权读取可执行文件路径" }),
+        approved: Boolean(client?.path && (client.path.toLowerCase() === process.execPath.toLowerCase()
+          || approvedRoots.some(root => client.path!.toLowerCase().startsWith(`${root.toLowerCase()}\\`)))),
       };
     }),
   };

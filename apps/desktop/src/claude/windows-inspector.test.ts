@@ -18,6 +18,28 @@ it("reads TCP listeners and only established client ends, including IPv6 and dup
   `)).toEqual({ listening: true, pids: [42] });
 });
 
+it.each(["192.168.1.10", "[fe80::1]"])("ignores a listener bound only to %s", address => {
+  expect(parseWindowsInspectorSockets(`TCP ${address}:9229 0.0.0.0:0 LISTENING 10`)).toEqual({ listening: false, pids: [] });
+});
+
+it("ignores connections to a remote machine's inspector port", () => {
+  expect(parseWindowsInspectorSockets("TCP 192.168.1.10:50001 203.0.113.5:9229 ESTABLISHED 42")).toEqual({ listening: false, pids: [] });
+});
+
+it.each(["127.0.0.1", "0.0.0.0", "[::1]", "[::]"])("recognizes %s listeners covering loopback", address => {
+  expect(parseWindowsInspectorSockets(`TCP ${address}:9229 0.0.0.0:0 LISTENING 10`)).toEqual({ listening: true, pids: [] });
+});
+
+it("collects both address families and identifies a real IPv6 client", async () => {
+  vi.stubGlobal("process", { ...process, execPath: "D:\\Tools\\Bridge\\Bridge.exe" });
+  mocks.run.mockResolvedValueOnce({ stdout: "TCP [::1]:9229 [::]:0 LISTENING 10\nTCP [::1]:50001 [::1]:9229 ESTABLISHED 42" });
+  mocks.run.mockResolvedValueOnce({ stdout: JSON.stringify([{ pid: 42, name: "Bridge", path: "D:\\Tools\\Bridge\\Bridge.exe" }]) });
+  const result = await readWindowsInspectorConnections();
+  expect(result.listening).toBe(true);
+  expect(result.clients).toEqual([{ pid: 42, name: "Bridge", executablePath: "D:\\Tools\\Bridge\\Bridge.exe", approved: true }]);
+  expect(mocks.run.mock.calls[0]?.[1]).toEqual(["-ano"]);
+});
+
 it("classifies real Windows executable paths, rejecting lookalike roots and unavailable paths", async () => {
   vi.stubGlobal("process", { ...process, execPath: "D:\\Tools\\Bridge\\Bridge.exe" });
   vi.stubEnv("ProgramFiles", "C:\\Program Files");
@@ -32,6 +54,13 @@ it("classifies real Windows executable paths, rejecting lookalike roots and unav
   expect(result.clients.map(client => client.approved)).toEqual([true,true,false,false]);
   expect(result.clients[3]?.pathError).toContain("无权");
   expect(mocks.run.mock.calls[0]?.[0]).toBe("netstat.exe");
+});
+
+it("does not approve an unrelated executable beside Bridge in a shared directory", async () => {
+  vi.stubGlobal("process", { ...process, execPath: "C:\\Users\\alice\\Downloads\\Bridge.exe" });
+  mocks.run.mockResolvedValueOnce({ stdout: "TCP 127.0.0.1:50001 127.0.0.1:9229 ESTABLISHED 42" });
+  mocks.run.mockResolvedValueOnce({ stdout: JSON.stringify([{ pid: 42, name: "other", path: "C:\\Users\\alice\\Downloads\\other.exe" }]) });
+  expect((await readWindowsInspectorConnections()).clients[0]?.approved).toBe(false);
 });
 
 it("uses PID, creation time and MSIX executable path as the persistent process identity", async () => {

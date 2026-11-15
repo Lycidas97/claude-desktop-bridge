@@ -11,6 +11,7 @@ import { SlashCommandInput } from "./conversation/SlashCommandInput.js";
 import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
 import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
 import { SessionNoticeCard } from "./conversation/SessionNoticeCard.js";
+import { SessionPrActions, SessionPrBar } from "./conversation/SessionPrBar.js";
 import { EmptyState } from "./common/EmptyState.js";
 import { ProjectGroupHeader } from "./session/ProjectGroupHeader.js";
 import { SessionFamilyList } from "./session/SessionFamilyList.js";
@@ -147,6 +148,41 @@ function questionPermission(requestId: string, question: string, sessionId = "A"
 function textContent(node: ReactNode): string {
   return elements(node).flatMap(element => element.props.children).filter(child => typeof child === "string").join(" ");
 }
+
+describe("desktop session PR disclosure", () => {
+  it("opens no-PR preferences and routes reads and writes through the desktop API", async () => {
+    snapshot.host.capabilities.push("pr.autofix.v1");
+    snapshot.runtime.desktopIntegration.state = "ready";
+    await openSessions();
+    elements(tree).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    tree = sessions.draw();
+    const actions = elements(tree).find(element => element.type === SessionPrActions)!;
+    expect(actions.props.session.sessionId).toBe("A");
+    expect(actions.props.online).toBe(true);
+    const state = { sessionId: "A", prs: [], onlyOwnPrs: true, nextOwnPrArmed: false,
+      capabilities: { bound: true, onlyOwnPrs: true, nextPr: true, checks: true } };
+    apiRequest.mockResolvedValue({ kind: "response", requestId: "pr", ok: true, result: state });
+    await expect(actions.props.onRead("A", undefined, false)).resolves.toEqual(state);
+    expect(apiRequest).toHaveBeenLastCalledWith({ method: "pr.autoFix.read", params: { sessionId: "A", includeChecks: false } });
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    tree = sessions.draw({ ...sessionsProps, onRefreshSnapshot: refresh });
+    await elements(tree).find(element => element.type === SessionPrActions)!.props.onSet({ sessionId: "A", target: "own-prs", enabled: true });
+    expect(apiRequest).toHaveBeenLastCalledWith({ method: "pr.autoFix.set", params: { sessionId: "A", target: "own-prs", enabled: true } });
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the header bar for a session without PRs even when Auto-fix is supported", async () => {
+    snapshot.host.capabilities.push("pr.autofix.v1");
+    await openSessions();
+    expect(elements(tree).filter(element => element.type === SessionPrBar)).toHaveLength(0);
+  });
+
+  it("keeps the header bar for a session with a PR on an older host", async () => {
+    snapshot.sessions[0]!.prs = [{ repo: "owner/project", prNumber: 42, url: "https://github.com/owner/project/pull/42", state: "OPEN" }];
+    await openSessions();
+    expect(elements(tree).find(element => element.type === SessionPrBar)!.props.supported).toBe(false);
+  });
+});
 
 describe("desktop file stat capability", () => {
   it.each([false, true])("uses the snapshot capability when supported=%s regardless of version", async supported => {

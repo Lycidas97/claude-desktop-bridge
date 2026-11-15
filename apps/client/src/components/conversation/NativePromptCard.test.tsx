@@ -87,6 +87,38 @@ describe("Native prompt choices", () => {
 });
 
 describe("PR Auto-fix disclosure", () => {
+  it("reads no-PR preferences on mount and retains Native state after a rejected write", async () => {
+    const onRead = vi.fn().mockResolvedValue({ ...state, prs: [] });
+    const onSet = vi.fn().mockResolvedValueOnce({ ...state, prs: [], onlyOwnPrs: true })
+      .mockRejectedValue(new Error("Desktop 拒绝布防"));
+    const props = { session: { ...session, prs: [] }, supported: true, online: true, preferencesOnly: true, onRead, onSet };
+    renderPr(props);
+    await Promise.resolve();
+    let tree = renderPr(props);
+    expect(onRead).toHaveBeenCalledExactlyOnceWith("session-1", undefined, false);
+    expect(elements(tree).filter(element => element.type === "details")).toHaveLength(0);
+    elements(tree).find(element => element.type === "input")!.props.onChange({ target: { checked: true } });
+    await Promise.resolve();
+    tree = renderPr(props);
+    expect(onSet).toHaveBeenLastCalledWith({ sessionId: "session-1", target: "own-prs", enabled: true });
+    expect(elements(tree).find(element => element.type === "input")!.props.checked).toBe(true);
+    elements(tree).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.onClick();
+    await Promise.resolve();
+    tree = renderPr(props);
+    expect(onSet).toHaveBeenLastCalledWith({ sessionId: "session-1", target: "next-pr", enabled: true });
+    expect(text(tree)).toContain("Desktop 拒绝布防");
+    expect(elements(tree).find(element => element.type === "input")!.props.checked).toBe(true);
+    expect(elements(tree).find(element => element.type === "button" && text(element) === "布防下一个 PR")!.props.disabled).toBe(false);
+    expect(onRead).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([{ supported: false, online: true }, { supported: true, online: false }])("keeps unavailable no-PR preferences read only: %s", availability => {
+    const onRead = vi.fn();
+    const tree = renderPr({ session: { ...session, prs: [] }, ...availability, preferencesOnly: true, onRead, onSet: vi.fn() });
+    expect(onRead).not.toHaveBeenCalled();
+    expect(elements(tree).find(element => element.type === "button")!.props.disabled).toBe(true);
+  });
+
   it("reads only after expansion and fetches checks only for the selected PR", async () => {
     const onRead = vi.fn().mockResolvedValue(state);
     const onSet = vi.fn();

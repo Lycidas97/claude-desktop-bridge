@@ -99,7 +99,7 @@ import {
 } from "./conversation/PermissionPrompts.js";
 import { SubagentCard } from "./conversation/SubagentCard.js";
 import { NativePromptCard } from "./conversation/NativePromptCard.js";
-import { SessionPrBar } from "./conversation/SessionPrBar.js";
+import { SessionPrActions, SessionPrBar } from "./conversation/SessionPrBar.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./evidence/EvidencePanel.js";
 import { FileChangesCard } from "./evidence/FileChangesCard.js";
@@ -1317,6 +1317,19 @@ export function MobileWorkspace({
               onClick={() => void runRefresh(menuSession.sessionId)}
             />
           </div>
+          {!menuSession.prs?.length && snapshot?.host.capabilities.includes("pr.autofix.v1") && (
+            <div className="m-group">
+              <SessionPrActions
+                key={`${activeHostId}:${menuSession.sessionId}`}
+                session={menuSession}
+                events={events}
+                supported
+                online={connection === "connected" && desktopOnline}
+                {...(onReadPrAutoFix ? { onRead: onReadPrAutoFix } : {})}
+                {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
+              />
+            </div>
+          )}
           {menuSupportsFork && (
             <div className="m-group">
               {menuSupportsFork && (
@@ -1528,7 +1541,7 @@ export function MobileWorkspace({
             </>
           )}
         />
-        {(snapshot?.host.capabilities.includes("pr.autofix.v1") || selectedSession.prs?.length) ? (
+        {selectedSession.prs?.length ? (
           <SessionPrBar
             key={`${activeHostId}:${selectedSession.sessionId}`}
             session={selectedSession}

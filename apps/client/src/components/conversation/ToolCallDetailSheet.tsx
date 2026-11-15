@@ -5,7 +5,7 @@ import type { ConversationItem } from "../../lib/conversation-timeline.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { MessageCopyButton } from "../common/MessageCopyButton.js";
 import { useMediaRequest } from "../evidence/MediaPreviewProvider.js";
-import { MobileSheet } from "../mobile/MobileSheet.js";
+import { Sheet } from "../common/Sheet.js";
 import "./ToolCallDetailSheet.css";
 
 const MAX_CACHED_TOOL_DETAILS = 200;
@@ -193,7 +193,7 @@ export function ToolCallDetailSheet({
     : undefined;
 
   return (
-    <MobileSheet
+    <Sheet
       eyebrow={(
         <span className={`tool-detail-status is-${status}`}>
           {status === "running"
@@ -313,7 +313,7 @@ export function ToolCallDetailSheet({
           </section>
         )}
       </div>
-    </MobileSheet>
+    </Sheet>
   );
 }
 

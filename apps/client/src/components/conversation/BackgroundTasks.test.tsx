@@ -28,8 +28,8 @@ vi.mock("react", async (original) => ({
   useEffect(effect: () => void) { hooks.effects.push(effect); },
 }));
 
-vi.mock("../mobile/MobileSheet.js", () => ({
-  MobileSheet: ({ eyebrow, title, onClose, children, footer }: {
+vi.mock("../common/Sheet.js", () => ({
+  Sheet: ({ eyebrow, title, onClose, children, footer }: {
     eyebrow?: ReactNode;
     title: ReactNode;
     onClose(): void;

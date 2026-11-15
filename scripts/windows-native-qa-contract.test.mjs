@@ -121,6 +121,8 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
   assert.ok(result.ui.includes("未检测到 Claude Desktop"));
   assert.ok(result.ui.includes(".session-catalog-empty-action"));
   assert.ok(result.ui.includes("新建会话"));
+  assert.ok(result.ui.includes("Magpie 额度"));
+  assert.ok(result.ui.includes(".magpie-quota-board"));
   assert.ok(result.ui.includes("连接与启动"));
   assert.ok(result.ui.includes("诊断与关于"));
   assert.ok(result.ui.some(label => String(label).includes("后台诊断记录")));

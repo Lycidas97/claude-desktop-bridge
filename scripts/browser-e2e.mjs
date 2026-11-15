@@ -46,7 +46,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-diagnostics", "desktop-quota", "mobile-safe-area"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
@@ -284,6 +284,98 @@ async function verifyDesktopDiagnostics(page, host, steps) {
   await eventually(() => toggle.isChecked(), false, "Desktop uses the returned disabled state");
   assert.equal(await page.evaluate(async () => (await window.bridgeDesktop.getSnapshot()).diagnosticsEnabled), false);
   steps.push("Desktop recorder checkbox defaults off and renders returned local setting states");
+}
+
+async function verifyDesktopQuota(page, host, steps, directory, viewports) {
+  const requests = [];
+  let failure = "";
+  let finishRead;
+  let holdRead = false;
+  await page.exposeFunction("settingsRequest", input => {
+    assert.equal(input.method, "plugin.magpie-quota.list");
+    requests.push(input.params);
+    const response = failure ? { ok: false, error: { code: "INTERNAL", message: failure } } : {
+      ok: true, result: { status: "available", fetchedAt: Date.now(), accounts: [{
+        provider: "claude", name: "隔离额度账号", windows: [{ name: "5 hours", remaining: 73 }],
+      }] },
+    };
+    return holdRead ? new Promise(resolveRead => { finishRead = () => resolveRead(response); }) : response;
+  });
+  await page.addInitScript(snapshot => {
+    window.settingsSnapshot = snapshot;
+    window.bridgeDesktop = {
+      getSnapshot: async () => structuredClone(window.settingsSnapshot),
+      onSnapshot: receive => { window.receiveSettingsSnapshot = receive; return () => { delete window.receiveSettingsSnapshot; }; },
+      onEvent: () => () => {},
+      request: input => window.settingsRequest(input),
+      checkClaudeDesktopDeveloperSettings: async () => ({ supported: false, enabled: false, profiles: [] }),
+    };
+  }, { ...host.snapshot, sessions: [], projects: [], devices: [], diagnosticsEnabled: false, launchAtLogin: false,
+    host: { ...host.snapshot.host, capabilities: [...host.snapshot.host.capabilities, "plugin.magpie-quota.v1"] },
+    updater: { platform: "darwin", arch: "arm64", currentVersion: host.snapshot.host.version, channel: "stable", autoCheck: true, applyMode: "prompt", canAutoRestart: false, phase: "idle" },
+    managedDesktopEnabled: false, connection: "connected",
+    claudeDesktop: { state: "running", detail: "Isolated fixture", canLaunch: false, canQuit: true } });
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("heading", { name: "开发者工具", exact: true }).waitFor();
+  assert.deepEqual(requests, [], "Settings do not read quota before entering its group");
+  await page.getByRole("button", { name: "模型与网关", exact: true }).click();
+  assert.equal(await page.getByRole("navigation", { name: "设置分组", exact: true }).getByRole("button", { name: "Magpie 额度", exact: true }).count(), 1, "Quota has its own settings group");
+  assert.equal(await page.getByRole("button", { name: "Magpie 额度", exact: true }).count(), 1, "Quota has one settings entry");
+  assert.equal(await page.locator(".magpie-quota-board").count(), 0, "Model settings do not duplicate the quota dashboard");
+  await page.getByRole("button", { name: "Magpie 额度", exact: true }).click();
+  await page.locator(".magpie-quota-account > header > strong").filter({ hasText: "隔离额度账号" }).waitFor();
+  assert.deepEqual(requests, [{ refresh: false }], "First dashboard mount makes an ordinary read");
+  assert.equal(await page.locator(".magpie-quota-board").count(), 1);
+  viewports.push({ page: "desktop-quota", ...page.viewportSize() });
+  await page.screenshot({ path: resolve(directory, "desktop-quota.png"), fullPage: true });
+
+  holdRead = true;
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await eventually(() => requests.length, 2, "Manual refresh reaches the existing quota RPC");
+  assert.deepEqual(requests[1], { refresh: true });
+  assert.equal(await page.getByRole("button", { name: "读取中…", exact: true }).isDisabled(), true);
+  finishRead();
+  holdRead = false;
+  await page.getByRole("button", { name: "刷新", exact: true }).waitFor();
+  failure = "隔离额度读取失败";
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "隔离额度读取失败" }).waitFor();
+  await page.locator(".magpie-quota-account > header > strong").filter({ hasText: "隔离额度账号" }).waitFor();
+  steps.push("The unique desktop quota group lazily reads refresh:false, refreshes with refresh:true, disables during a pending read, and retains prior data on refresh errors");
+
+  for (const [group, heading] of [["Claude 接入", "开发者工具"], ["连接与启动", "启动"], ["外观与显示", "外观"], ["诊断与关于", "版本更新"]]) {
+    await page.getByRole("button", { name: group, exact: true }).click();
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    assert.equal(await page.locator(".magpie-quota-board").count(), 0);
+  }
+  await page.getByRole("button", { name: "设备", exact: true }).click();
+  await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();
+  steps.push("Leaving quota preserves developer tools, startup, appearance, diagnostics, updates and the device pairing entry");
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "Magpie 额度", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: failure }).waitFor();
+  assert.equal(await page.locator(".magpie-quota-account").count(), 0, "First-read failure has no stale data from a prior page");
+  const beforeDisabled = requests.length;
+  await page.evaluate(() => {
+    window.settingsSnapshot.host.capabilities = window.settingsSnapshot.host.capabilities.filter(value => value !== "plugin.magpie-quota.v1");
+    window.receiveSettingsSnapshot(structuredClone(window.settingsSnapshot));
+  });
+  await page.getByText("电脑连接后读取额度", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "刷新", exact: true }).isDisabled(), true);
+  await page.getByRole("button", { name: "连接与启动", exact: true }).click();
+  await page.getByRole("heading", { name: "启动", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Magpie 额度", exact: true }).click();
+  await page.getByText("电脑连接后读取额度", { exact: true }).waitFor();
+  assert.equal(requests.length, beforeDisabled, "Missing quota capability prevents requests across navigation");
+  await page.setViewportSize({ width: 860, height: 620 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Six settings groups fit a compact desktop");
+  viewports.push({ page: "desktop-quota-disabled", ...page.viewportSize() });
+  await page.screenshot({ path: resolve(directory, "desktop-quota-disabled.png"), fullPage: true });
+  steps.push("First-read errors are visible; absent capability disables refresh and makes no request, including after returning to quota");
 }
 
 async function verifyMobileSafeArea(page, steps, directory, viewports) {
@@ -2904,6 +2996,7 @@ async function runScenario(theme, scenario) {
     if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
     else if (scenario === "session-catalog") await verifySessionCatalog(page, host, steps, directory, viewports);
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
+    else if (scenario === "desktop-quota") await verifyDesktopQuota(page, host, steps, directory, viewports);
     else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory);
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);

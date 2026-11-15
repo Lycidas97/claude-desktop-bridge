@@ -6,7 +6,7 @@ import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
-import { MobileSheet, SheetAction } from "../mobile/MobileSheet.js";
+import { Sheet, SheetAction } from "../common/Sheet.js";
 
 function statusLabel(host: PairedHost): string {
   if (host.needsRepair) return "需重配";
@@ -145,7 +145,7 @@ export function HostBrowser({
         <p className="host-browser-hint">点电脑查看它的会话；连接、桌面应用和默认授权在“⋯”中设置。</p>
       </section>
       {menuHost && (
-        <MobileSheet
+        <Sheet
           eyebrow={menuHost.roomId === activeHostId ? "当前电脑" : "已配对电脑"}
           title={menuHost.desktopName}
           onClose={() => setMenuHost(undefined)}
@@ -185,7 +185,7 @@ export function HostBrowser({
               }}
             />
           </div>
-        </MobileSheet>
+        </Sheet>
       )}
       <ConfirmationDialog
         open={Boolean(removeCandidate)}

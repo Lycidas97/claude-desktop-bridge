@@ -6,6 +6,7 @@ import { EvidenceStore } from "../evidence/evidence-store.js";
 import { DesktopController } from "../controller/controller.js";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 import { ClaudeDesktopBridge, WorkspaceTrustRequiredError, nativeHistoryItems } from "./claude-desktop-bridge.js";
 import { InspectorDisconnectedError, NativeCallError } from "./claude-desktop-inspector.js";
@@ -139,14 +140,46 @@ class NativeDesktop extends EventEmitter {
   }
 }
 
+function withDatabase<T>(databasePath: string, run: (db: DatabaseSync) => T): T {
+  const db = new DatabaseSync(databasePath);
+  try {
+    return run(db);
+  } finally {
+    db.close();
+  }
+}
+
 async function fixture(legacy = false, evidence?: ConstructorParameters<typeof ClaudeDesktopBridge>[0]["evidence"]) {
   const directory = await mkdtemp(join(tmpdir(), "bridge-native-"));
-  const state = new ConversationStateStore({ databasePath: join(directory, "state.sqlite"), sessionsPath: join(directory, "sessions.json"), queuePath: join(directory, "queue.json"), masterSecret: Buffer.alloc(32, 7).toString("base64url") });
+  const databasePath = join(directory, "state.sqlite");
+  const state = new ConversationStateStore({ databasePath, sessionsPath: join(directory, "sessions.json"), queuePath: join(directory, "queue.json"), masterSecret: Buffer.alloc(32, 7).toString("base64url") });
   await state.initialize();
   if (legacy) {
-    state.saveBrokerSessions([{ sessionId: "legacy-unlinked", cwd: "/legacy", title: "Native", createdAt: 1 }], []);
-    const lane = state.listLanes("legacy-unlinked")[0]!;
-    state.saveBrokerQueue([{ sessionId: "legacy-unlinked", laneId: lane.laneId, commandId: "old-command", requestId: "old-request", idempotencyKey: "old-key", state: "pending", text: "Never replay" }], [], []);
+    withDatabase(databasePath, (db) => {
+      db.prepare(`
+        INSERT INTO provider_profiles(id, kind, name, status, detail, configured, local_only_configuration, read_only, models_json)
+        VALUES ('provider:claude-3p:default', 'claude-3p', 'Claude-3p', 'unavailable', '', 0, 0, 0, '[]')
+      `).run();
+      db.prepare(`
+        INSERT INTO conversations(id, cwd, title, source, active_lane_id, active_provider_profile_id, route_state, created_at, updated_at)
+        VALUES ('legacy-unlinked', '/legacy', 'Native', 'bridge', 'lane:claude-3p:legacy-unlinked', 'provider:claude-3p:default', 'ready', 1, 1)
+      `).run();
+      db.prepare(`
+        INSERT INTO lanes(id, conversation_id, provider_profile_id, provider_kind, native_session_id, status, access, model, created_at, updated_at, last_used_at)
+        VALUES ('lane:claude-3p:legacy-unlinked', 'legacy-unlinked', 'provider:claude-3p:default', 'claude-3p', 'legacy-unlinked', 'active', 'read-write', NULL, 1, 1, 1)
+      `).run();
+      db.prepare("INSERT INTO bridge_sessions(session_id, session_json) VALUES (?, ?)").run(
+        "legacy-unlinked",
+        JSON.stringify({ sessionId: "legacy-unlinked", cwd: "/legacy", title: "Native", createdAt: 1 }),
+      );
+      db.prepare(`
+        INSERT INTO turn_queue(command_id, session_id, lane_id, idempotency_key, state, turn_json)
+        VALUES ('old-command', 'legacy-unlinked', 'lane:claude-3p:legacy-unlinked', 'old-key', 'pending', ?)
+      `).run(JSON.stringify({
+        sessionId: "legacy-unlinked", laneId: "lane:claude-3p:legacy-unlinked", commandId: "old-command",
+        requestId: "old-request", idempotencyKey: "old-key", state: "pending", text: "Never replay",
+      }));
+    });
   }
   const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
   await eventLog.initialize();
@@ -156,7 +189,7 @@ async function fixture(legacy = false, evidence?: ConstructorParameters<typeof C
   const bridge = new ClaudeDesktopBridge(options);
   await bridge.initialize();
   return {
-    bridge, native, state, eventLog, options, directory,
+    bridge, native, state, eventLog, options, directory, databasePath,
     async message(message: Record<string, unknown>) {
       const changed = once(bridge, "changed");
       native.emit("event", { type: "message", sessionId: "local-native", message });
@@ -1654,7 +1687,8 @@ describe("Claude native relay", () => {
     try {
       expect(f.bridge.session("local-native")?.transport).toBe("claude-desktop-native");
       expect(f.bridge.session("legacy-unlinked")).toBeUndefined();
-      expect(f.state.loadBrokerState().pending[0]?.commandId).toBe("old-command");
+      const queued = withDatabase(f.databasePath, (db) => db.prepare("SELECT command_id FROM turn_queue").all() as Array<{ command_id: string }>);
+      expect(queued[0]?.command_id).toBe("old-command");
       expect(f.native.calls.some(call => call.method === "sendMessage")).toBe(false);
       expect(f.bridge.session("local-native")?.turnState).toBe("idle"); // A warm CLI is not an active turn.
     } finally { await f.close(); }
@@ -2013,7 +2047,7 @@ describe("Claude native relay", () => {
       expect(f.native.calls.find(call => call.method === "sendMessage")?.args.slice(0, 2)).toEqual(["local-child", "Why does this work?"]);
       expect(f.native.sessions.find(session => session.sessionId === "local-child")?.spawnedFrom).toMatchObject({ sessionId: "local-native", btw: true });
       expect(f.eventLog.replay(0).some(event => event.type === "session.observed")).toBe(false);
-      expect(f.state.loadBrokerState().sessions).toEqual([]);
+      expect(withDatabase(f.databasePath, (db) => db.prepare("SELECT session_id FROM bridge_sessions").all())).toEqual([]);
       expect(await f.bridge.runCommand(command)).toMatchObject({ action: "session", session: { sessionId: "local-child" } });
       expect(f.native.calls.filter(call => call.method === "startBtwChild")).toHaveLength(1);
       expect(f.native.calls.filter(call => call.method === "sendMessage")).toHaveLength(1);
@@ -3186,7 +3220,8 @@ describe("Claude native relay", () => {
       expect(f.state.nativeDesktopReceipt("crash")?.state).toBe("uncertain");
       expect((await restarted.startTurn({ ...input, idempotencyKey: "crash" })).commandId).toBe("crash-command");
       expect(f.native.calls.filter(call => call.method === "sendMessage")).toEqual([]);
-      expect(f.state.loadBrokerState().pending[0]?.commandId).toBe("old-command");
+      const queued = withDatabase(f.databasePath, (db) => db.prepare("SELECT command_id FROM turn_queue").all() as Array<{ command_id: string }>);
+      expect(queued[0]?.command_id).toBe("old-command");
     } finally { await restarted?.close(); await f.close(); }
   });
 

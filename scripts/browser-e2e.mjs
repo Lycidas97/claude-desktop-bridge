@@ -2081,6 +2081,7 @@ async function verifyNativeCompaction(page, host, steps, directory) {
 
 async function verifyNativeBoundaries(page, host, steps, directory) {
   const markdownName = "NATIVE-CHAIN-author-database-current.zh.md";
+  await writeFile(resolve(host.nativeApproval.harnessCwd, "empty.txt"), "");
   await writeFile(resolve(host.nativeApproval.harnessCwd, markdownName), [
     "# 手机文件预览",
     ...Array.from({ length: 4 }, () => "段首可见，中文长段落应当在手机宽度内自然换行，段尾也必须完整显示。".repeat(15)),
@@ -2094,7 +2095,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     { ...tool("child-plan", { scope: "first_task", items: [{ content: "子代理内部计划", status: "in_progress" }] }), isSidechain: true },
     { ...tool("child-wrap", { recap: "Child done" }, "mcp__ccd_turn__wrap_up"), isSidechain: true },
     ...["isCompactSummary", "isMeta", "isSynthetic", "isVisibleInTranscriptOnly"].map(flag => ({ type: "user", uuid: `hidden-${flag}`, [flag]: true, message: { content: "INTERNAL_COMPACT_SUMMARY_MUST_STAY_HIDDEN" } })),
-    { type: "assistant", uuid: "boundary-files", timestamp: Date.now(), message: { id: "boundary-files", content: [{ type: "text", text: `[相对报告](report.json) · [绝对报告](<${host.nativeApproval.harnessCwd}/report.json:12:3>) · [说明预览](<说明 notes.md>) · [长文预览](${markdownName})` }] } },
+    { type: "assistant", uuid: "boundary-files", timestamp: Date.now(), message: { id: "boundary-files", content: [{ type: "text", text: `[相对报告](report.json) · [绝对报告](<${host.nativeApproval.harnessCwd}/report.json:12:3>) · [说明预览](<说明 notes.md>) · [长文预览](${markdownName}) · [空文件预览](empty.txt)` }] } },
   ];
   for (const message of initial) await host.nativeApproval.message(message);
   const subagentStartAt = Date.now() - 30_000;
@@ -2190,18 +2191,50 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     assert.ok((await content.innerText()).includes("worktree"), "The original project-root namesake must not be read");
     assert.equal((await content.innerText()).includes("wrong project root"), false);
     assert.equal(await page.locator(".media-viewer [role=alert]").count(), 0);
+    if (label === "相对报告") {
+      await page.evaluate(() => {
+        window.__previewCopies = [];
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+          writeText: async text => { window.__previewCopies.push(text); },
+        } });
+      });
+      await page.getByRole("button", { name: "复制文件内容", exact: true }).click();
+      await page.locator(".media-viewer-toolbar").getByRole("button", { name: "已复制", exact: true }).waitFor();
+      assert.deepEqual(await page.evaluate(() => window.__previewCopies), [await readFile(resolve(host.nativeApproval.harnessCwd, "report.json"), "utf8")]);
+    }
     if (label === "相对报告") await page.screenshot({ path: resolve(directory, "native-worktree-report.png"), fullPage: true });
     await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
   }
   await stream.getByRole("button", { name: "说明预览", exact: true }).click();
   await page.locator(".media-viewer").getByRole("heading", { name: "Worktree preview", exact: true }).waitFor();
+  await page.getByRole("button", { name: "复制文件内容", exact: true }).click();
+  await page.locator(".media-viewer-toolbar").getByRole("button", { name: "已复制", exact: true }).waitFor();
   await page.getByRole("tab", { name: "源码", exact: true }).click();
   assert.ok((await page.locator("#text-preview-content").innerText()).includes("# Worktree preview"));
+  await page.locator(".media-viewer-toolbar").getByRole("button", { name: "已复制", exact: true }).click();
+  assert.deepEqual((await page.evaluate(() => window.__previewCopies)).slice(-2), Array(2).fill(await readFile(resolve(host.nativeApproval.harnessCwd, "说明 notes.md"), "utf8")));
   await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
   steps.push("real Native facade + Controller resolve relative/absolute report links and Chinese spaced Markdown paths in the worktree");
+  await stream.getByRole("button", { name: "空文件预览", exact: true }).click();
+  await page.locator(".media-viewer footer").filter({ hasText: "空文件 · UTF-8" }).waitFor();
+  await page.getByRole("button", { name: "复制文件内容", exact: true }).click();
+  await page.locator(".media-viewer-toolbar").getByRole("button", { name: "已复制", exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.__previewCopies.at(-1)), "", "Empty text files can clear the clipboard");
+  await page.getByRole("button", { name: "关闭查看器", exact: true }).click();
   await stream.getByRole("button", { name: "长文预览", exact: true }).click();
   const markdownViewer = page.locator(".media-viewer");
   await markdownViewer.getByRole("heading", { name: "手机文件预览", exact: true }).waitFor();
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    window.__fallbackCopies = [];
+    document.addEventListener("copy", () => {
+      const input = document.activeElement;
+      window.__fallbackCopies.push(input instanceof HTMLTextAreaElement ? input.value.slice(input.selectionStart, input.selectionEnd) : "");
+    });
+  });
+  await markdownViewer.getByRole("button", { name: "复制文件内容", exact: true }).click();
+  await eventually(() => page.evaluate(() => window.__fallbackCopies), [await readFile(resolve(host.nativeApproval.harnessCwd, markdownName), "utf8")], "WebView fallback selects the complete file inside the modal dialog");
+  await markdownViewer.getByRole("button", { name: "已复制", exact: true }).waitFor();
   for (const width of [375, 320, 1200]) {
     await page.setViewportSize({ width, height: 812 });
     const layout = await markdownViewer.evaluate(dialog => {
@@ -2211,7 +2244,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
       };
       return {
         dialog: bounds(dialog),
-        regions: [".media-viewer-shell > header", ".media-viewer-toolbar", ".media-viewer-viewport", ".media-viewer-shell > footer", "#media-viewer-title", '[aria-label="关闭查看器"]'].map(selector => ({ selector, ...bounds(dialog.querySelector(selector)) })),
+        regions: [".media-viewer-shell > header", ".media-viewer-toolbar", ".media-viewer-viewport", ".media-viewer-shell > footer", "#media-viewer-title", '[aria-label="关闭查看器"]', ".media-viewer-toolbar .message-copy-button"].map(selector => ({ selector, ...bounds(dialog.querySelector(selector)) })),
         paragraphs: [...dialog.querySelectorAll(".markdown-paragraph")].map(bounds),
         scrollLeft: dialog.scrollLeft,
       };

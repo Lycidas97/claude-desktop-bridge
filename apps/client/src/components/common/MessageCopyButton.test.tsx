@@ -27,7 +27,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 function click() {
-  MessageCopyButton({ text, label: "复制这条回复" }).props.onClick();
+  MessageCopyButton({ text, label: "复制这条回复" }).props.onClick({ currentTarget: { closest: () => null } });
 }
 
 describe("message copy", () => {

@@ -11,6 +11,8 @@ import type {
   BridgeDesktopRuntimeId,
   BridgeNativePermissionMode,
   BridgePrAutoFixState,
+  BridgePrAutoFixUpdate,
+  BridgePullRequest,
   BridgeProviderProfile,
   BridgeResponse,
   BridgeSessionCommandResult,
@@ -35,6 +37,7 @@ import {
   CircleStop,
   Forward,
   GitFork,
+  GitPullRequest,
   LoaderCircle,
   MessageSquare,
   Plus,
@@ -91,7 +94,8 @@ import {
 } from "../conversation/PermissionPrompts.js";
 import { SubagentCard } from "../conversation/SubagentCard.js";
 import { NativePromptCard } from "../conversation/NativePromptCard.js";
-import { SessionPrBar } from "../conversation/SessionPrBar.js";
+import { SessionPrActions, SessionPrBar } from "../conversation/SessionPrBar.js";
+import { MobileSheet } from "../mobile/MobileSheet.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "../conversation/SessionActivityIndicator.js";
 import { SlashCommandInput } from "../conversation/SlashCommandInput.js";
 import { useSessionCommands } from "../../hooks/useSessionCommands.js";
@@ -181,6 +185,7 @@ export function DesktopSessions({
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const [sessionActionError, setSessionActionError] = useState<string>();
   const [projectOrderOpen, setProjectOrderOpen] = useState(false);
+  const [prActionsOpen, setPrActionsOpen] = useState(false);
   const projectOrderKey = `bridge-project-order:${snapshot.host.hostId}`;
   const [placedProjects, setPlacedProjects] = useState<string[]>(() => (
     JSON.parse(localStorage.getItem(projectOrderKey) ?? "[]") as string[]
@@ -330,6 +335,7 @@ export function DesktopSessions({
     if (!selectedId) return;
     setSessionView("conversation");
     setConfigurationOpen(false);
+    setPrActionsOpen(false);
     setStopError(undefined);
     void openSession(selectedId);
   }, [selectedId]);
@@ -783,6 +789,20 @@ export function DesktopSessions({
     }
   }
 
+  const prControls = {
+    supported: snapshot.host.capabilities.includes("pr.autofix.v1"),
+    online: snapshot.runtime.desktopIntegration.state === "ready",
+    onRead: async (sessionId: string, pr?: BridgePullRequest, includeChecks?: boolean) => unwrap<BridgePrAutoFixState>(await apiRequest({
+      method: "pr.autoFix.read",
+      params: { sessionId, ...(pr ? { repo: pr.repo, prNumber: pr.prNumber, ...(pr.host ? { host: pr.host } : {}) } : {}), includeChecks },
+    })),
+    onSet: async (update: BridgePrAutoFixUpdate) => {
+      const next = unwrap<BridgePrAutoFixState>(await apiRequest({ method: "pr.autoFix.set", params: update }));
+      await onRefreshSnapshot();
+      return next;
+    },
+  };
+
   return (
     <section className="desktop-session-layout">
       <aside className="desktop-session-sidebar">
@@ -903,7 +923,11 @@ export function DesktopSessions({
                 <span>{selectedRuntimeName} · {selected.projectName} · {sessionState(selected)} · {transportLabel(selected)}</span>
               </div>
               <div className="desktop-conversation-heading-actions">
-
+                {!selected.prs?.length && prControls.supported && (
+                  <IconButton label="PR Auto-fix" onClick={() => setPrActionsOpen(true)}>
+                    <GitPullRequest size={18} />
+                  </IconButton>
+                )}
                 {canConfigure && (
                   <button
                     type="button"
@@ -957,22 +981,12 @@ export function DesktopSessions({
                 )}
               </div>
             </header>
-            {(snapshot.host.capabilities.includes("pr.autofix.v1") || selected.prs?.length) ? (
+            {selected.prs?.length ? (
               <SessionPrBar
                 key={selected.sessionId}
                 session={selected}
                 events={events}
-                supported={snapshot.host.capabilities.includes("pr.autofix.v1")}
-                online={snapshot.runtime.desktopIntegration.state === "ready"}
-                onRead={async (sessionId, pr, includeChecks) => unwrap<BridgePrAutoFixState>(await apiRequest({
-                  method: "pr.autoFix.read",
-                  params: { sessionId, ...(pr ? { repo: pr.repo, prNumber: pr.prNumber, ...(pr.host ? { host: pr.host } : {}) } : {}), includeChecks },
-                }))}
-                onSet={async update => {
-                  const next = unwrap<BridgePrAutoFixState>(await apiRequest({ method: "pr.autoFix.set", params: update }));
-                  await onRefreshSnapshot();
-                  return next;
-                }}
+                {...prControls}
               />
             ) : null}
             {otherNativePromptSession && (
@@ -1249,6 +1263,13 @@ export function DesktopSessions({
         )}
       </section>
 
+      {prActionsOpen && selected && !selected.prs?.length && prControls.supported && (
+        <MobileSheet title="PR Auto-fix" manageFocus busy={sessionActionBusy} onClose={() => setPrActionsOpen(false)}>
+          <div className="m-group">
+            <SessionPrActions key={selected.sessionId} session={selected} events={events} showHeading={false} onWriteBusyChange={setSessionActionBusy} {...prControls} />
+          </div>
+        </MobileSheet>
+      )}
       {projectOrderOpen && (
         <ProjectOrderSheet
           manageFocus

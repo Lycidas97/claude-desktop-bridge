@@ -99,7 +99,7 @@ import {
 } from "./conversation/PermissionPrompts.js";
 import { SubagentCard } from "./conversation/SubagentCard.js";
 import { NativePromptCard } from "./conversation/NativePromptCard.js";
-import { SessionPrBar } from "./conversation/SessionPrBar.js";
+import { SessionPrActions, SessionPrBar } from "./conversation/SessionPrBar.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./evidence/EvidencePanel.js";
 import { FileChangesCard } from "./evidence/FileChangesCard.js";
@@ -1181,6 +1181,7 @@ export function MobileWorkspace({
       />}
       {menuSession && !renameOpen && (
         <MobileSheet
+          manageFocus
           eyebrow={moveMenuOpen ? menuSession.title : `${menuSession.projectName} · ${desktopRuntimeName(desktopRuntimeId(menuSession))}`}
           title={moveMenuOpen ? "移动到分组" : menuSession.title}
           busy={sessionActionBusy}
@@ -1241,6 +1242,7 @@ export function MobileWorkspace({
               <SheetAction
                 icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
                 label={sessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
+                disabled={sessionActionBusy}
                 detail={sessionView === "evidence" ? "回到对话记录" : "文件变更、产物与图片"}
                 onClick={() => {
                   setSessionView(sessionView === "evidence" ? "conversation" : "evidence");
@@ -1257,6 +1259,7 @@ export function MobileWorkspace({
                           ? `分支与侧聊 ${childForks.length}`
                           : `分支 ${childForks.length}`)
                     : "主会话"}
+                  disabled={sessionActionBusy}
                   detail={childForks.length > 0
                     ? (childForks.every((fork) => fork.sidechat)
                         ? "查看此会话的 /btw 侧聊"
@@ -1317,6 +1320,20 @@ export function MobileWorkspace({
               onClick={() => void runRefresh(menuSession.sessionId)}
             />
           </div>
+          {!menuSession.prs?.length && snapshot?.host.capabilities.includes("pr.autofix.v1") && (
+            <div className="m-group">
+              <SessionPrActions
+                key={`${activeHostId}:${menuSession.sessionId}`}
+                session={menuSession}
+                events={events}
+                onWriteBusyChange={setSessionActionBusy}
+                supported
+                online={connection === "connected" && desktopOnline}
+                {...(onReadPrAutoFix ? { onRead: onReadPrAutoFix } : {})}
+                {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
+              />
+            </div>
+          )}
           {menuSupportsFork && (
             <div className="m-group">
               {menuSupportsFork && (
@@ -1528,7 +1545,7 @@ export function MobileWorkspace({
             </>
           )}
         />
-        {(snapshot?.host.capabilities.includes("pr.autofix.v1") || selectedSession.prs?.length) ? (
+        {selectedSession.prs?.length ? (
           <SessionPrBar
             key={`${activeHostId}:${selectedSession.sessionId}`}
             session={selectedSession}

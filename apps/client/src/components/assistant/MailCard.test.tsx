@@ -14,6 +14,17 @@ function card(fields: Partial<BridgeMailCard> = {}): BridgeMailCard {
 }
 
 describe("MailCard plain text rendering", () => {
+  it("shows the received time when catch-up records a mail much later", () => {
+    const receivedAt = "2026-11-13T02:14:00.000Z";
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({
+      receivedAt, recordedAt: Date.parse("2026-11-14T10:45:00.000Z"),
+    }) }));
+
+    expect(html).toContain(`<time dateTime="${receivedAt}">${new Date(receivedAt).toLocaleString("zh-CN", {
+      month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
+    })}</time>`);
+  });
+
   it("escapes subject, sender, and preview instead of rendering HTML, Markdown, or remote resources", () => {
     const html = renderToStaticMarkup(createElement(MailCard, { card: card({
       subject: '<script>alert("subject")</script>',
@@ -43,6 +54,8 @@ describe("MailCard plain text rendering", () => {
     expect(html).toContain("[reply](https://mail.example.invalid/reply)");
     expect(html).toContain('&lt;video src=&quot;https://mail.example.invalid/movie&quot;&gt;&lt;/video&gt;');
     expect(html).not.toMatch(/<(?:style|object|video|a|img|iframe|script)\b/u);
+    expect(html).toContain("<h4>建议</h4><ul><li>&lt;object");
+    expect(html).toContain("<h4>问题</h4><ul><li>&lt;video");
     expect(html).toContain("已处理");
     expect(html).toContain("未提交");
   });

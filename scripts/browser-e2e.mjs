@@ -2977,11 +2977,16 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   const oldest = host.nativeApproval.assistantMail.service.page({ cursor: "2" }).events[0];
   const original = page.locator(`[data-mail-id="${oldest.mailRefId}"]`).first();
   await original.getByText("原文", { exact: true }).click();
-  await original.getByRole("link", { name: "actual.example.test", exact: true }).waitFor();
+  await original.getByRole("link", { name: /actual\.example\.test.*\/path/u }).waitFor();
+  await original.getByRole("link", { name: /actual\.example\.test.*\/unsubscribe/u }).waitFor();
+  assert.equal(await original.locator("time").getAttribute("datetime"), oldest.receivedAt);
+  assert.equal(await original.locator("time").innerText(), await page.evaluate(receivedAt => new Date(receivedAt).toLocaleString("zh-CN", {
+    month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
+  }), oldest.receivedAt));
   assert.match(await original.locator("pre").innerText(), /<script>window.mailInjected=1<\/script>/u);
   assert.equal(await original.locator("img, iframe, script").count(), 0);
   assert.equal(await page.evaluate(() => window.mailInjected), undefined);
-  assert.match(await original.getByRole("link", { name: "actual.example.test", exact: true }).getAttribute("href"), /trusted.example@actual.example.test/u);
+  assert.match(await original.getByRole("link", { name: /actual\.example\.test.*\/path/u }).getAttribute("href"), /trusted.example@actual.example.test/u);
   await capture("mobile-mail");
   steps.push("60 stored mail cards render without a turn request; untrusted content stays text and explicit links show the destination host");
 
@@ -2989,7 +2994,7 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   host.socket.close();
   await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
   await host.nativeApproval.assistantMail.deliver(62);
-  host.nativeApproval.assistantMail.service.updateAnalysis(oldest.mailRefId, { summary: '<img src="https://tracker.invalid/analysis">旧邮件分析已更新' });
+  host.nativeApproval.assistantMail.service.updateAnalysis(oldest.mailRefId, { summary: '<img src="https://tracker.invalid/analysis">旧邮件分析已更新', suggestions: ["核对附件后回复"], questions: ["是否需要补充材料？"] });
   host.nativeApproval.assistantMail.service.setProcessingStatus(oldest.mailRefId, "processed");
   host.mailOffline = false;
   host.socket.connect();
@@ -2997,6 +3002,8 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await original.getByText("分析结果", { exact: true }).click();
   await original.getByText("已处理", { exact: true }).waitFor();
   await original.getByText('<img src="https://tracker.invalid/analysis">旧邮件分析已更新', { exact: true }).waitFor();
+  await original.getByRole("heading", { name: "建议", exact: true }).waitFor();
+  await original.getByRole("heading", { name: "问题", exact: true }).waitFor();
   assert.equal(await original.locator("img, iframe, script").count(), 0);
   const cardIds = await cards().evaluateAll(elements => elements.map(element => element.dataset.mailId));
   assert.equal(new Set(cardIds).size, 122);
@@ -3018,15 +3025,23 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.getByRole("button", { name: "更换会话", exact: true }).waitFor();
   const assistantId = host.snapshot.assistantMail.binding.assistantId;
+  await capture("mobile-mail-bound");
   await page.locator(".assistant-binding-current").getByRole("button", { name: originalTitle, exact: true }).click();
   await page.locator('.conversation-stream [data-mail-id]').first().waitFor();
+  await eventually(() => page.locator(".conversation-loading").count(), 0, "Native history finishes loading");
+  assert.equal(await page.getByText("这是一个空会话", { exact: true }).count(), 0, "Persisted mail makes the timeline non-empty even without native messages");
+  assert.equal(await page.locator('.conversation-stream .assistant-mail-preview').first().evaluate(element => getComputedStyle(element).webkitLineClamp), "3");
+  await capture("mobile-mail-timeline");
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
   await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
   await openAssistant();
   host.nativeApproval.assistantMail.service.setBinding({ assistantId, nativeSessionId: null, sectionId: null, previousSessionIds: [sessionId] });
-  await page.getByText("原会话已归档或删除，投递已暂停，请重新绑定。", { exact: true }).waitFor();
+  await page.getByText("原会话已归档或删除，请重新绑定。", { exact: true }).waitFor();
   assert.equal(host.snapshot.assistantMail.binding.assistantId, assistantId);
-  steps.push("offline reload restores mail; explicit binding adds mail to the native session timeline, and paused binding asks for a rebind");
+  steps.push("offline reload restores mail; explicit binding adds compact mail to the native session timeline without an empty-session placeholder, and paused binding asks for a rebind");
+  await page.getByLabel("助理会话", { exact: true }).selectOption(sessionId);
+  await page.getByRole("button", { name: "绑定会话", exact: true }).click();
+  await page.getByRole("button", { name: "更换会话", exact: true }).waitFor();
 
   await page.exposeFunction("assistantDesktopRequest", async input => ({ kind: "response", requestId: randomUUID(), ok: true,
     result: await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), ...input }) }));
@@ -3042,6 +3057,9 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "助理", exact: true }).click();
   await eventually(() => cards().count(), 50, "Desktop uses the same mail page and RPC");
+  const headingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
+  const bindingBounds = await page.locator(".assistant-binding").boundingBox();
+  assert.ok(Math.abs(headingBounds.x - bindingBounds.x) < 1, "Desktop title aligns with the mail content column");
   await capture("desktop-mail");
   steps.push("desktop assistant entry uses the shared cards and explicit binding controls");
 }

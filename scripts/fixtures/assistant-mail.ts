@@ -31,10 +31,10 @@ export async function startAssistantMailFixture(directory: string) {
     async deliver(count: number) {
       const next = messages.length + 1;
       for (let uid = next; uid < next + count; uid++) messages.push({
-        uid, seq: uid, internalDate: new Date(),
+        uid, seq: uid, internalDate: new Date(Date.UTC(2026, 10, 12, 2, uid)),
         envelope: { subject: uid === 1 ? '<img src="https://tracker.invalid/pixel" onerror="window.mailInjected=1">' : `收件记录 ${uid}`,
           from: [{ name: "研究协作", address: "sender@example.test" }] },
-        source: Buffer.from('Content-Type: text/plain; charset=utf-8\r\n\r\n邮件正文 <script>window.mailInjected=1</script>\n<img src="https://tracker.invalid/body">\nhttps://trusted.example@actual.example.test/path\nhttps://[invalid'),
+        source: Buffer.from('Content-Type: text/plain; charset=utf-8\r\n\r\n邮件正文 <script>window.mailInjected=1</script>\n<img src="https://tracker.invalid/body">\nhttps://trusted.example@actual.example.test/path\nhttps://actual.example.test/unsubscribe\nhttps://[invalid'),
       });
       const received = new Promise<void>(resolve => {
         const onMail = (event: { uid: number }) => {

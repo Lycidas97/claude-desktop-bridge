@@ -39,15 +39,16 @@ export function AssistantPage({ snapshot, mobile = false, onOpenSession }: {
 
   const refresh = <IconButton label="刷新邮件" disabled={!mail.online || mail.loading} onClick={mail.refresh}><RefreshCw size={18} /></IconButton>;
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}`}>
-    {mobile ? <MobilePageHeader title="助理" actions={refresh} /> : <header className="desktop-page-heading"><h1>助理</h1>{refresh}</header>}
+    {mobile && <MobilePageHeader title="助理" actions={refresh} />}
     <div className="assistant-page-content">
+      {!mobile && <header className="desktop-page-heading"><h1>助理</h1>{refresh}</header>}
       <section className="assistant-binding" aria-label="助理会话绑定">
         <div className="assistant-binding-current">
-          {session && !session.archivedAt ? <button type="button" className="text-button" onClick={() => onOpenSession(session.sessionId)}>{session.title || "助理会话"}</button> : <strong>{binding?.nativeSessionId || binding?.previousSessionIds.length ? "重新绑定会话" : "选择助理会话"}</strong>}
-          {binding?.nativeSessionId && <button type="button" className="text-button" onClick={() => setConfiguring(value => !value)}>更换会话</button>}
+          {session && !session.archivedAt ? <button type="button" className="assistant-session-link" onClick={() => onOpenSession(session.sessionId)}>{session.title || "助理会话"}</button> : <strong>{binding?.nativeSessionId || binding?.previousSessionIds.length ? "重新绑定会话" : "选择助理会话"}</strong>}
+          {binding?.nativeSessionId && <button type="button" className="assistant-session-link" onClick={() => setConfiguring(value => !value)}>更换会话</button>}
         </div>
-        {state === "needs-rebind" && <p role="status">原会话已归档或删除，投递已暂停，请重新绑定。</p>}
-        {state === "missing" && <p role="status">未找到绑定会话，投递已暂停。连接恢复后可再次核对，或更换会话。</p>}
+        {state === "needs-rebind" && <p role="status">原会话已归档或删除，请重新绑定。</p>}
+        {state === "missing" && <p role="status">未找到绑定会话。连接恢复后可再次核对，或更换会话。</p>}
         {state === "unavailable" && <p role="status">原生会话暂不可用。</p>}
         {(configuring || !binding?.nativeSessionId) && <div className="assistant-binding-form">
           <label>助理会话<select aria-label="助理会话" value={selectedId} onChange={event => setSelectedId(event.target.value)} disabled={!mail.online || bindingBusy}>
@@ -61,7 +62,7 @@ export function AssistantPage({ snapshot, mobile = false, onOpenSession }: {
         <span className="assistant-delivery-disabled">自动投递未启用</span>
         {binding?.previousSessionIds.length ? <details><summary>以前的会话</summary><ul>{binding.previousSessionIds.map(sessionId => {
           const previous = snapshot.sessions.find(candidate => candidate.sessionId === sessionId);
-          return <li key={sessionId}>{previous ? <button type="button" className="text-button" onClick={() => onOpenSession(sessionId)}>{previous.title || sessionId}</button> : <span>{sessionId}</span>}</li>;
+          return <li key={sessionId}>{previous ? <button type="button" className="assistant-session-link" onClick={() => onOpenSession(sessionId)}>{previous.title || sessionId}</button> : <span>{sessionId}</span>}</li>;
         })}</ul></details> : null}
       </section>
       {!mail.online && <p role="status">电脑离线，显示已缓存邮件。</p>}

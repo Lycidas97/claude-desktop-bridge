@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { conversationItems } from "../lib/conversation-timeline.js";
 import { InteractivePromptCard, PermissionPrompt } from "./conversation/PermissionPrompts.js";
 import { NativePromptCard } from "./conversation/NativePromptCard.js";
+import { SessionPrActions, SessionPrBar } from "./conversation/SessionPrBar.js";
 import { SubagentCard } from "./conversation/SubagentCard.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAttachmentPicker.js";
@@ -28,6 +29,7 @@ import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
 import { SessionConfigurationDialog } from "./session/SessionConfigurationDialog.js";
 import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
+import { MobileSheet } from "./mobile/MobileSheet.js";
 
 const hooks = vi.hoisted(() => ({
   slots: [] as any[], index: 0, dirty: false,
@@ -165,6 +167,57 @@ beforeEach(() => {
   open("A");
 });
 afterEach(() => { hooks.effects.forEach((e) => e.cleanup?.()); vi.unstubAllGlobals(); });
+
+describe("Session PR disclosure", () => {
+  it("keeps conversation navigation inside the action sheet disabled during a PR write", () => {
+    props.snapshot!.host.capabilities.push("pr.autofix.v1");
+    draw();
+    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+    elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    draw();
+    elements(tree).find(element => element.type === SessionPrActions)!.props.onWriteBusyChange(true);
+    draw();
+    expect(elements(tree).find(element => element.props.label === "成果")!.props.disabled).toBe(true);
+  });
+
+  it("opens preferences for the menu session from the directory and preserves offline gating", () => {
+    props.snapshot!.host.capabilities.push("pr.autofix.v1");
+    props = { ...props, onReadPrAutoFix: vi.fn(), onSetPrAutoFix: vi.fn(), desktopOnline: false };
+    draw();
+    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack();
+    draw();
+    const row = elements(tree).find(element => element.props["data-session-id"] === "B")!;
+    elements(row).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    draw();
+    const actions = elements(tree).find(element => element.type === SessionPrActions)!;
+    expect(actions.props.session.sessionId).toBe("B");
+    expect(actions.props.online).toBe(false);
+    expect(actions.props.onRead).toBe(props.onReadPrAutoFix);
+    expect(actions.props.onSet).toBe(props.onSetPrAutoFix);
+    expect(elements(tree).find(element => element.type === MobileSheet)!.props.manageFocus).toBe(true);
+    actions.props.onWriteBusyChange(true);
+    draw();
+    expect(elements(tree).find(element => element.type === MobileSheet)!.props.busy).toBe(true);
+    expect(dispatchMobileBack()).toBe(true);
+    draw();
+    expect(elements(tree).some(element => element.type === SessionPrActions)).toBe(true);
+    actions.props.onWriteBusyChange(false);
+    draw();
+    expect(elements(tree).find(element => element.type === MobileSheet)!.props.busy).toBe(false);
+  });
+
+  it("hides the header bar for a session without PRs even when Auto-fix is supported", () => {
+    props.snapshot!.host.capabilities.push("pr.autofix.v1");
+    draw();
+    expect(elements(tree).filter(element => element.type === SessionPrBar)).toHaveLength(0);
+  });
+
+  it("keeps the header bar for a session with a PR on an older host", () => {
+    props.snapshot!.sessions[0]!.prs = [{ repo: "owner/project", prNumber: 42, url: "https://github.com/owner/project/pull/42", state: "OPEN" }];
+    draw();
+    expect(elements(tree).find(element => element.type === SessionPrBar)!.props.supported).toBe(false);
+  });
+});
 
 describe("Native prompt queue review regression", () => {
   it("keeps a read-only first prompt visible and lets the user reach an answerable second prompt", () => {

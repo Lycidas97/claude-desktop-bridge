@@ -3,11 +3,18 @@ import { ChevronDown, GitPullRequest, LoaderCircle, RefreshCw } from "lucide-rea
 import { useEffect, useState } from "react";
 import "./session-pr-bar.css";
 
-export function SessionPrBar({ session, events, supported, online, onRead, onSet }: {
+export function SessionPrActions(props: Omit<Parameters<typeof SessionPrBar>[0], "preferencesOnly">) {
+  return <SessionPrBar {...props} preferencesOnly />;
+}
+
+export function SessionPrBar({ session, events, supported, online, onRead, onSet, onWriteBusyChange, preferencesOnly = false, showHeading = true }: {
   session: BridgeSessionInfo;
   events?: BridgeEvent[];
   supported: boolean;
   online: boolean;
+  preferencesOnly?: boolean;
+  showHeading?: boolean;
+  onWriteBusyChange?(busy: boolean): void;
   onRead?(sessionId: string, pr?: BridgePullRequest, includeChecks?: boolean): Promise<BridgePrAutoFixState>;
   onSet?(update: BridgePrAutoFixUpdate): Promise<BridgePrAutoFixState>;
 }) {
@@ -17,6 +24,7 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
   const [error, setError] = useState<string>();
   const [initialChecks, setInitialChecks] = useState<Record<string, "pending" | "attempted">>({});
   const available = supported && online && Boolean(onRead && onSet);
+  const preferences = state ?? session.prAutoFix;
   const prs = state?.prs ?? session.prs ?? [];
   const prUpdate = events?.filter(event => event.sessionId === session.sessionId && event.type === "pr.autoFix.updated").at(-1);
   useEffect(() => {
@@ -43,6 +51,10 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
   }
 
   useEffect(() => {
+    if (preferencesOnly && available) void read();
+  }, [preferencesOnly, available, session.sessionId]);
+
+  useEffect(() => {
     if (busy || !available || !state?.capabilities.checks) return;
     const pr = prs.find(pr => initialChecks[`${pr.host ?? ""}/${pr.repo}/${pr.prNumber}`] === "pending");
     if (!pr) return;
@@ -52,6 +64,7 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
 
   async function update(change: BridgePrAutoFixUpdate): Promise<void> {
     setBusy("write");
+    onWriteBusyChange?.(true);
     setError(undefined);
     try {
       setState(await onSet!(change));
@@ -59,38 +72,32 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
       setError(failure instanceof Error ? failure.message : "Auto-fix 设置失败");
     } finally {
       setBusy(undefined);
+      onWriteBusyChange?.(false);
     }
   }
 
-  return (
-    <details className="session-pr-bar" onToggle={event => {
-      if (event.target === event.currentTarget && event.currentTarget.open && !busy && available) void read();
-    }}>
-      <summary>
-        <GitPullRequest size={15} aria-hidden="true" />
-        <span>{prs.length ? `PR · ${prs.length}` : "PR Auto-fix"}</span>
-        <ChevronDown size={14} className="session-pr-chevron" aria-hidden="true" />
-      </summary>
+  const body = (
       <div className="session-pr-body">
+        {preferencesOnly && showHeading && <div className="session-pr-actions-heading"><GitPullRequest size={19} aria-hidden="true" /><strong>PR Auto-fix</strong></div>}
         {!supported ? <p>当前电脑端不支持 PR Auto-fix</p> : !online ? <p>电脑离线，连接后再操作</p> : null}
-        {busy && <span className="session-pr-loading" role="status"><LoaderCircle size={14} className="is-spinning" />正在同步</span>}
+        {busy && (!preferencesOnly || !preferences) && <span className="session-pr-loading" role="status"><LoaderCircle size={14} className="is-spinning" />正在同步</span>}
         {error && <div className="permission-error" role="alert">{error}</div>}
-        {state && (
+        {preferences && (
           <div className="session-pr-preferences">
             <label>
-              <input type="checkbox" checked={state.onlyOwnPrs === true}
-                disabled={!available || Boolean(busy) || !state.capabilities.onlyOwnPrs || state.onlyOwnPrs === undefined}
+              <input type="checkbox" checked={preferences.onlyOwnPrs === true}
+                disabled={!available || Boolean(busy) || !state?.capabilities.onlyOwnPrs || preferences.onlyOwnPrs === undefined}
                 onChange={event => void update({ sessionId: session.sessionId, target: "own-prs", enabled: event.target.checked })} />
               <span>仅我的 PR</span>
             </label>
             <button type="button" className="message-copy-button"
-              disabled={!available || Boolean(busy) || !state.capabilities.nextPr || state.nextOwnPrArmed === undefined || state.nextOwnPrArmed}
+              disabled={!available || Boolean(busy) || !state?.capabilities.nextPr || preferences.nextOwnPrArmed === undefined || preferences.nextOwnPrArmed}
               onClick={() => void update({ sessionId: session.sessionId, target: "next-pr", enabled: true })}>
-              {state.nextOwnPrArmed ? "已布防下一个 PR" : "布防下一个 PR"}
+              {preferences.nextOwnPrArmed ? "已布防下一个 PR" : "布防下一个 PR"}
             </button>
           </div>
         )}
-        {prs.map(pr => {
+        {!preferencesOnly && prs.map(pr => {
           const key = `${pr.host ?? ""}/${pr.repo}/${pr.prNumber}`;
           const detail = details[key];
           return (
@@ -136,8 +143,20 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
             </details>
           );
         })}
-        <button type="button" className="message-copy-button" disabled={!available || Boolean(busy)} onClick={() => void read()}><RefreshCw size={13} />刷新 PR 状态</button>
+        {(!preferencesOnly || error) && <button type="button" className="message-copy-button" disabled={!available || Boolean(busy)} onClick={() => void read()}><RefreshCw size={13} />刷新 PR 状态</button>}
       </div>
+  );
+
+  return preferencesOnly ? <div className="session-pr-actions">{body}</div> : (
+    <details className="session-pr-bar" onToggle={event => {
+      if (event.target === event.currentTarget && event.currentTarget.open && !busy && available) void read();
+    }}>
+      <summary>
+        <GitPullRequest size={15} aria-hidden="true" />
+        <span>{`PR · ${prs.length}`}</span>
+        <ChevronDown size={14} className="session-pr-chevron" aria-hidden="true" />
+      </summary>
+      {body}
     </details>
   );
 }

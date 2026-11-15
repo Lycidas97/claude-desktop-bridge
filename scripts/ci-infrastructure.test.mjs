@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as fs from 'node:fs';
 import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,6 +13,7 @@ import { transform } from 'esbuild';
 import { runSuites } from './test.mjs';
 import { recycleEnv } from './ci-run.mjs';
 import { LOCAL_CI_STATUS_CONTEXT, recordAndPublishLocalCi, validateStatusRepo } from './local-ci.mjs';
+import { buildAndroidDogfood } from './dogfood-android.mjs';
 
 const require = createRequire(import.meta.url);
 const preload = await readFile(new URL('./recycle-cleanup.cjs', import.meta.url), 'utf8');
@@ -518,6 +520,134 @@ process.stdout.write('{"state":"success"}\\n');
     });
     assert.notEqual(pub3.status, 0);
     assert.equal(await readFile(ghLog, 'utf8'), '');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Android dogfood exports the main commit and recycles staging after transfer and failures', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-android-dogfood-'));
+  try {
+    const git = (...args) => execFileSync('git', args, { cwd: directory, encoding: 'utf8' }).trim();
+    git('init', '-q');
+    await writeFile(join(directory, 'tracked.txt'), 'committed main source');
+    git('add', '.');
+    git('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'main');
+    const commit = git('rev-parse', 'HEAD');
+    git('update-ref', 'refs/remotes/origin/main', commit);
+    await writeFile(join(directory, 'tracked.txt'), 'uncommitted edit must not ship');
+    const expectedArchive = execFileSync('git', ['archive', '--format=zip', commit], { cwd: directory });
+    const apk = Buffer.from('APK transport fixture');
+    for (const failure of ['', 'upload', 'build', 'copy', 'checksum', 'recycle']) {
+      await t.test(failure || 'success', async () => {
+        const events = [];
+        const exec = (command, args, options) => {
+          if (command === 'git') return args[0] === 'fetch' ? '' : execFileSync(command, args, options);
+          if (command === 'ssh') {
+            const commandLine = args.at(-1);
+            const source = commandLine.includes('-EncodedCommand')
+              ? Buffer.from(commandLine.split(' ').at(-1), 'base64').toString('utf16le') : commandLine;
+            assert.doesNotMatch(source, /ci-slot|refs\/ci|WinCi|win-local-ci/);
+            const phase = source.includes('Add-Type') ? 'recycle' : source.includes('New-Item') ? 'allocate' : 'build';
+            events.push(phase);
+            if (failure === phase) throw new Error(`fixture ${phase} failed`);
+            return '';
+          }
+          if (command === 'scp') {
+            const download = args.some(arg => arg.endsWith('/app-debug.apk'));
+            const phase = download ? 'copy' : 'upload';
+            events.push(phase);
+            if (failure === phase) throw new Error(`fixture ${phase} failed`);
+            if (download) {
+              fs.writeFileSync(join(args.at(-1), 'app-debug.apk'), apk);
+              fs.writeFileSync(join(args.at(-1), 'sha256.txt'), failure === 'checksum' ? 'wrong' : createHash('sha256').update(apk).digest('hex'));
+            } else {
+              const archive = args.find(arg => arg.endsWith('source.zip'));
+              assert.deepEqual(fs.readFileSync(archive), expectedArchive);
+            }
+            return '';
+          }
+          assert.equal(command, '/usr/bin/trash');
+          events.push('local-recycle');
+          fs.rmSync(args[0], { recursive: true });
+          return '';
+        };
+        if (failure) {
+          await assert.rejects(buildAndroidDogfood({ revision: commit, cwd: directory, exec }),
+            failure === 'checksum' ? /SHA-256 differs/ : new RegExp(`fixture ${failure} failed`));
+          assert.deepEqual(events.slice(-2), ['recycle', 'local-recycle']);
+          if (failure === 'upload' || failure === 'build') assert.ok(!events.includes('copy'));
+        } else {
+          const result = await buildAndroidDogfood({ revision: commit, cwd: directory, exec });
+          assert.equal(result.commit, commit);
+          assert.deepEqual(fs.readFileSync(result.apk), apk);
+          assert.deepEqual(events, ['allocate', 'upload', 'build', 'copy', 'recycle', 'local-recycle']);
+        }
+        assert.ok(!fs.readdirSync(join(directory, 'output/dogfood-android')).some(name => name.startsWith('.staging-')));
+      });
+    }
+    git('add', 'tracked.txt');
+    git('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'unmerged branch');
+    await assert.rejects(buildAndroidDogfood({ revision: git('rev-parse', 'HEAD'), cwd: directory,
+      exec: (command, args, options) => {
+        assert.equal(command, 'git', 'non-main revision must fail before any SSH or SCP call');
+        return args[0] === 'fetch' ? '' : execFileSync(command, args, options);
+      } }));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Android dogfood SIGINT during SSH build reaches both recyclers', { skip: process.platform !== 'darwin', timeout: 15000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bridge-dogfood-interrupt-'));
+  try {
+    const bin = join(directory, 'bin');
+    const events = join(directory, 'events.log');
+    await mkdir(bin);
+    await writeFile(join(directory, 'tracked.txt'), 'main source');
+    for (const args of [['init', '-q'], ['add', 'tracked.txt'],
+      ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'main'],
+      ['remote', 'add', 'origin', directory]]) {
+      execFileSync('git', args, { cwd: directory });
+    }
+    const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: directory, encoding: 'utf8' }).trim();
+    execFileSync('git', ['update-ref', 'refs/heads/main', commit], { cwd: directory });
+    await writeFile(join(bin, 'ssh'), `#!${process.execPath}
+      const { appendFileSync } = require('node:fs');
+      const arg = process.argv.at(-1);
+      const source = arg.includes('-EncodedCommand') ? Buffer.from(arg.split(' ').at(-1), 'base64').toString('utf16le') : arg;
+      if (source.includes('Add-Type')) appendFileSync(${JSON.stringify(events)}, 'remote recycle\\n');
+      else if (source.includes('win-dogfood-android.ps1')) {
+        console.log('DOGFOOD_BUILD_STARTED');
+        setTimeout(() => {}, 1500);
+      }
+    `, { mode: 0o755 });
+    await writeFile(join(bin, 'scp'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const runner = join(directory, 'runner.mjs');
+    await writeFile(runner, `import { buildAndroidDogfood } from ${JSON.stringify(new URL('./dogfood-android.mjs', import.meta.url).href)};
+      await buildAndroidDogfood({ revision: ${JSON.stringify(commit)}, cwd: ${JSON.stringify(directory)} });`);
+    const child = spawn(process.execPath, [runner], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    let interrupted = false;
+    child.stdout.on('data', chunk => {
+      output += chunk;
+      if (!interrupted && output.includes('DOGFOOD_BUILD_STARTED')) {
+        interrupted = true;
+        child.kill('SIGINT');
+      }
+    });
+    child.stderr.on('data', chunk => { output += chunk; });
+    const outcome = await new Promise((resolveExit, rejectExit) => {
+      child.on('error', rejectExit);
+      child.on('close', (code, signal) => resolveExit({ code, signal }));
+    });
+    assert.ok(interrupted, output);
+    assert.equal(outcome.signal, null, 'SIGINT must enter cleanup instead of terminating Node immediately');
+    assert.notEqual(outcome.code, 0, output);
+    assert.match(await readFile(events, 'utf8'), /remote recycle/);
+    assert.ok(!(await readdir(join(directory, 'output/dogfood-android'))).some(name => name.startsWith('.staging-')));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

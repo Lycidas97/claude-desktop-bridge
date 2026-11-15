@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import type { BridgeBackgroundTask, BridgeEvent, BridgeHistoryItem, BridgePermissionInfo, BridgeSessionInfo, BridgeSubagentSummary } from "@bridge/protocol";
 import { readClaudeSessionHistoryPage } from "../../../desktop/src/transcript/claude-history.js";
 import { BackgroundTaskMarker, BackgroundTasksSheet } from "./conversation/BackgroundTasks.js";
+import { ConversationMessageItem } from "./conversation/ConversationMessageItem.js";
+import { ConversationToolGroup } from "./conversation/ConversationToolGroup.js";
+import { ForkChainBar } from "./conversation/ForkChainBar.js";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { conversationItems } from "../lib/conversation-timeline.js";
@@ -95,7 +98,12 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Record<string, any>>;
   return [element, ...elements(
-    element.type === SessionFamilyList || element.type === ProjectGroupHeader || element.type === EmptyState
+    element.type === SessionFamilyList
+      || element.type === ProjectGroupHeader
+      || element.type === EmptyState
+      || element.type === ConversationToolGroup
+      || element.type === ConversationMessageItem
+      || element.type === ForkChainBar
       ? (element.type as (props: any) => ReactNode)(element.props)
       : element.props.children,
   )];

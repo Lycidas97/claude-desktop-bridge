@@ -49,8 +49,6 @@ import {
   Settings2,
   ShieldCheck,
   Trash2,
-  Wrench,
-  X,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -67,9 +65,7 @@ import {
   conciseModelName,
   conversationItems,
   conversationTimeline,
-  deliveryLabel,
   fileToAttachment,
-  formatTime,
   groupTimelineTools,
   ownershipLabel,
   relativeTime,
@@ -90,6 +86,9 @@ import { desktopRuntimeId, desktopRuntimeName } from "../lib/runtime-labels.js";
 import { useStreamEntrance } from "../lib/stream-entrance.js";
 import { sessionActivity, sessionQueueLabel } from "../lib/session-activity.js";
 import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "./conversation/BackgroundTasks.js";
+import { ConversationMessageItem, type QueuedTurnActionState } from "./conversation/ConversationMessageItem.js";
+import { ConversationToolGroup } from "./conversation/ConversationToolGroup.js";
+import { ForkChainBar } from "./conversation/ForkChainBar.js";
 import {
   InteractivePromptCard,
   matchingQuestionPermission,
@@ -109,9 +108,6 @@ import { MediaGallery } from "./evidence/MediaGallery.js";
 import { useMediaPreview } from "./evidence/MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
 import { IconButton } from "./common/IconButton.js";
-import { ImageAttachment } from "./evidence/ImageAttachment.js";
-import { MarkdownText } from "./common/MarkdownText.js";
-import { MessageCopyButton } from "./common/MessageCopyButton.js";
 import { MobileComposer } from "./mobile/MobileComposer.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
 import { MobileSessionCatalog } from "./mobile/MobileSessionCatalog.js";
@@ -126,8 +122,6 @@ import {
 import "./session/section-create.css";
 import { useSectionManage } from "./session/SectionManageDialog.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "./conversation/SessionActivityIndicator.js";
-import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
-import { ToolCallGroupRows } from "./conversation/ToolCallDetailSheet.js";
 import { sessionCommandName, useSessionCommands } from "../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
 import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
@@ -288,7 +282,7 @@ export function MobileWorkspace({
   onBackToHosts(): void;
   onRetry(): Promise<void>;
 }) {
-  const [queuedSteers, setQueuedSteers] = useState<Record<string, { state: "pending" | "requested" | "error"; action: "steer" | "cancel"; error?: string }>>({});
+  const [queuedSteers, setQueuedSteers] = useState<Record<string, QueuedTurnActionState>>({});
   const [promptErrors, setPromptErrors] = useState<Record<string, string>>({});
   const [pickedSessionId, setPickedSessionId] = useState<string>();
   const selectedSessionId = fixedSessionId ?? pickedSessionId;
@@ -1591,38 +1585,15 @@ export function MobileWorkspace({
 
 
         {forkChainOpen && relatedForkCount > 0 && (
-          <div className="relay-chain-bar fork-chain-bar">
-            {parentSession && (
-              <button
-                type="button"
-                className="relay-chain-link"
-                onClick={() => {
-                  setForkChainOpen(false);
-                  void selectSession(parentSession.sessionId);
-                }}
-              >
-                <GitFork size={14} />
-                {`主会话：${parentSession.title}`}
-              </button>
-            )}
-            {childForks.map((fork) => (
-              <button
-                type="button"
-                className="relay-chain-link outbound"
-                key={fork.sessionId}
-                onClick={() => {
-                  setForkChainOpen(false);
-                  void selectSession(fork.sessionId);
-                }}
-              >
-                <GitFork size={14} />
-                {`${fork.sidechat ? "/btw" : (fork.forkLabel || "fork")} · ${fork.title}`}
-              </button>
-            ))}
-            <button type="button" className="relay-chain-link" aria-label="收起分支" onClick={() => setForkChainOpen(false)}>
-              <X size={14} />
-            </button>
-          </div>
+          <ForkChainBar
+            parentSession={parentSession}
+            childForks={childForks}
+            onSelectSession={(sessionId) => {
+              setForkChainOpen(false);
+              void selectSession(sessionId);
+            }}
+            onClose={() => setForkChainOpen(false)}
+          />
         )}
         <ConfirmationDialog
           open={stopConfirmOpen && Boolean(stopTarget)}
@@ -1732,26 +1703,14 @@ export function MobileWorkspace({
               );
             }
             if (node.kind === "tool-group") {
-              const uniqueNames = [...new Set(node.tools.map((t) => t.toolName || "工具"))].slice(0, 3);
-              const anyRunning = node.tools.some((t) => t.state === "running");
-              const singleTool = node.tools.length === 1 ? node.tools[0] : undefined;
-              const summaryText = singleTool
-                ? `${singleTool.toolName || "工具"}${singleTool.text && singleTool.text !== singleTool.toolName ? ` · ${singleTool.text}` : ""}`
-                : `${anyRunning ? "正在执行" : "已调用"} ${node.tools.length} 个工具 (${uniqueNames.join("、")})`;
               return (
-                <details className={`conversation-tool-group ${anyRunning ? "is-running" : ""}`} data-stream-key={`tool-group:${node.tools.at(-1)!.id}`} key={node.id}>
-                  <summary>
-                    <Wrench size={13} aria-hidden="true" />
-                    <span>{summaryText}</span>
-                    <ChevronDown size={13} className="tool-group-chevron" aria-hidden="true" />
-                  </summary>
-                  <ToolCallGroupRows
-                    {...(activeHostId ? { hostId: activeHostId } : {})}
-                    sessionId={selectedSession.sessionId}
-                    tools={node.tools}
-                    supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))}
-                  />
-                </details>
+                <ConversationToolGroup
+                  key={node.id}
+                  {...(activeHostId ? { hostId: activeHostId } : {})}
+                  sessionId={selectedSession.sessionId}
+                  tools={node.tools}
+                  supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))}
+                />
               );
             }
             if (node.kind === "background-task") {
@@ -1771,15 +1730,7 @@ export function MobileWorkspace({
               <SessionNoticeCard key={item.id} itemId={item.id} notice={item.sessionNotice} source={item.text} entering={streamEntering(item.id)}
                 {...(onDownloadSessionFile ? { onFileClick: openSessionFile } : {})} />
             );
-            const showDelivery = Boolean(item.delivery);
-            const messageQueued = (item.delivery === "queued" || item.delivery === "host-received")
-              && item.commandId && selectedSession.pendingCommandIds?.includes(item.commandId);
             const queueActionKey = JSON.stringify([activeHostId, selectedSession.sessionId, item.commandId]);
-            const queueAction = queuedSteers[queueActionKey];
-            const canActOnQueued = item.role === "user" && item.commandId
-              && (messageQueued || item.delivery === "submitted" || item.delivery === "session-received")
-              && desktopRuntimeId(selectedSession) === "claude-desktop" && canSendSession(selectedSession, snapshot);
-            const copyable = (item.role === "assistant" || item.role === "user") && Boolean(item.text.trim());
             const peerMessages = selectedSession.transport === "claude-desktop-native" || selectedSession.transport === "claude-desktop-managed" || selectedSession.desktopHandoff?.state === "desktop-inbox";
             const pendingQuestion = item.interactivePrompt ? matchingQuestionPermission(
               item.interactivePrompt, sessionPermissions, item.interactivePrompt.toolUseId ?? (peerMessages ? "" : undefined),
@@ -1789,104 +1740,40 @@ export function MobileWorkspace({
                 : item.interactivePrompt.kind === "wrap-up" && item.interactivePrompt.blocked ? "需在电脑端确认" : undefined
               : undefined;
             const promptKey = `${draftKey}:${item.id}`;
-            const content = (
-              <>
-                {item.text && (
-                  item.role === "assistant" || item.role === "user" ? (
-                    <MarkdownText
-                      text={item.text}
-                      collapsible={!item.live}
-                      {...(onDownloadSessionFile ? {
-                        onFileClick: openSessionFile,
-                      } : {})}
-                    />
-                  ) : (
-                    <div className="conversation-text">{item.text}</div>
-                  )
-                )}
-                {item.taskPlan && <TaskPlanCard key={`${item.sessionId}:${item.taskPlan.id}`} plan={item.taskPlan} />}
-                {item.interactivePrompt && (!pendingQuestion || item.interactivePrompt.answered) && (
-                  <InteractivePromptCard
-                    prompt={item.interactivePrompt}
-                    {...(item.replyDelivery ? { replyDelivery: item.replyDelivery } : {})}
-                    {...(item.replyPending ? { replyPending: true } : {})}
-                    canSend={canSendSession(selectedSession, snapshot)}
-                    busy={sending}
-                    {...(unavailableReason ? { unavailableReason } : {})}
-                    {...(promptErrors[promptKey] ? { error: promptErrors[promptKey] } : {})}
-                    onSelectOption={async (replyText) => {
-                      if (unavailableReason || sending) return;
-                      await sendQuickReply(item.id, replyText);
-                    }}
-                  />
-                )}
-                {item.attachments?.length ? (
-                  <div className="conversation-attachments">
-                    {item.attachments.map((attachment) => attachment.data || attachment.nativeImage ? (
-                      <ImageAttachment key={attachment.id} attachment={attachment} sessionId={item.sessionId} />
-                    ) : (
-                      <span className="attachment-chip" key={attachment.id}>{attachment.name}</span>
-                    ))}
-                  </div>
-                ) : null}
-              </>
-            );
+            const interactivePrompt = item.interactivePrompt && (!pendingQuestion || item.interactivePrompt.answered) ? (
+              <InteractivePromptCard
+                prompt={item.interactivePrompt}
+                {...(item.replyDelivery ? { replyDelivery: item.replyDelivery } : {})}
+                {...(item.replyPending ? { replyPending: true } : {})}
+                canSend={canSendSession(selectedSession, snapshot)}
+                busy={sending}
+                {...(unavailableReason ? { unavailableReason } : {})}
+                {...(promptErrors[promptKey] ? { error: promptErrors[promptKey] } : {})}
+                onSelectOption={async (replyText) => {
+                  if (unavailableReason || sending) return;
+                  await sendQuickReply(item.id, replyText);
+                }}
+              />
+            ) : undefined;
             return (
-              <article
-                className={`conversation-item ${item.role} ${item.live ? "live" : ""}${streamEntering(item.id) ? " is-entering" : ""}`}
-                data-stream-key={item.id}
+              <ConversationMessageItem
                 key={item.id}
-              >
-                {item.role === "system" && (
-                  <div className="conversation-item-meta">
-                    <strong>Bridge</strong>
-                    <time>{formatTime(item.createdAt)}</time>
-                  </div>
-                )}
-                {/* A sent message's bubble holds only what was sent; status and copy sit under it. */}
-                {item.role === "user" ? <div className="conversation-bubble">{content}</div> : content}
-                {(copyable || showDelivery || (rewindAvailable && item.role === "user")) && (
-                  <div className="conversation-message-actions">
-                    {showDelivery && <span className={`delivery-state ${item.delivery}`} role="status">{messageQueued ? `已排队 · ${sessionQueueLabel(selectedSession)}` : deliveryLabel(item.delivery!)}</span>}
-                    {canActOnQueued && ([
-                      { label: "Send now", action: "steer", callback: onSteerQueuedTurn, className: "queued-steer-button" },
-                      { label: "撤回", action: "cancel", callback: onCancelQueuedTurn, className: "queued-cancel-button" },
-                    ] as const).map(({ label, action, callback, className }) => callback && (
-                      <button key={label} type="button" className={`message-copy-button ${className}`}
-                        disabled={connection !== "connected" || !desktopOnline || queueAction?.state === "pending"
-                          || (queueAction?.state === "requested" && (queueAction.action === "cancel" || queueAction.action === action))}
-                        aria-busy={queueAction?.state === "pending" && queueAction.action === action}
-                        title={connection !== "connected" || !desktopOnline ? "电脑离线，连接后再操作" : label === "Send now" ? "立即发送这条排队消息" : "撤回这条排队消息"}
-                        onClick={async () => {
-                          setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "pending", action } }));
-                          try {
-                            await callback(selectedSession.sessionId, item.commandId!);
-                            setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "requested", action } }));
-                          } catch (error) {
-                            setQueuedSteers((current) => ({ ...current, [queueActionKey]: { state: "error", action, error: error instanceof Error ? error.message : `${label}失败` } }));
-                          }
-                        }}>
-                        {label}
-                      </button>
-                    ))}
-                    {copyable && <MessageCopyButton text={item.text} label={item.role === "assistant" ? "复制这条回复" : "复制这条消息"} />}
-                    {rewindAvailable && item.role === "user" && !item.id.startsWith("local:") && <button
-                      type="button" className="message-copy-button" aria-label="回退到这条消息之前" disabled={rewindDisabled}
-                      onClick={() => setRewindTarget({ sessionId: selectedSession.sessionId, messageId: item.id })}
-                    >回退</button>}
-                  </div>
-                )}
-                {queueAction?.error && <div className="delivery-error-detail" role="alert">{queueAction.error}</div>}
-                {item.delivery === "failed" && item.error && (
-                  <div className="delivery-error-detail">{item.error}</div>
-                )}
-                {item.delivery === "uncertain" && item.commandId && (
-                  <div className="uncertain-delivery-actions">
-                    <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(item.commandId!, "confirm")}>确认已发送</button>
-                    <button type="button" className="secondary-button" onClick={() => void onResolveUncertain(item.commandId!, "retry")}>检查后重发</button>
-                  </div>
-                )}
-              </article>
+                item={item}
+                session={selectedSession}
+                entering={streamEntering(item.id)}
+                online={connection === "connected" && desktopOnline}
+                canSend={canSendSession(selectedSession, snapshot)}
+                queueAction={queuedSteers[queueActionKey]}
+                onSteerQueuedTurn={onSteerQueuedTurn}
+                onCancelQueuedTurn={onCancelQueuedTurn}
+                onQueueActionChange={(next) => setQueuedSteers((current) => ({ ...current, [queueActionKey]: next }))}
+                rewindAvailable={rewindAvailable}
+                rewindDisabled={rewindDisabled}
+                onRewind={(messageId) => setRewindTarget({ sessionId: selectedSession.sessionId, messageId })}
+                onResolveUncertain={onResolveUncertain}
+                {...(onDownloadSessionFile ? { onFileClick: openSessionFile } : {})}
+                interactivePrompt={interactivePrompt}
+              />
             );
           })}
           {sessionQuestions.map(permission => (

@@ -124,10 +124,25 @@ describe("background inspector monitor", () => {
     } finally { monitor.close(); }
   });
 
-  it("does not run macOS tools on other platforms", async () => {
-    const scan = vi.fn();
+  it("reports actual Windows inspector state and keeps polling", async () => {
+    vi.useFakeTimers();
+    const scan = vi.fn().mockResolvedValue({ listening: true, clients: [client] });
     const onUpdate = vi.fn();
     const monitor = new ClaudeInspectorMonitor({ scan, onAlert: () => undefined, onUpdate, platform: "win32" });
+    try {
+      await monitor.start();
+      expect(scan).toHaveBeenCalledOnce();
+      expect(onUpdate.mock.lastCall?.[0]).toMatchObject({ state: "listening", clients: [client] });
+      scan.mockResolvedValue({ listening: false, clients: [] });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(onUpdate.mock.lastCall?.[0].state).toBe("closed");
+    } finally { monitor.close(); }
+  });
+
+  it("does not run inspector tools on unsupported platforms", async () => {
+    const scan = vi.fn();
+    const onUpdate = vi.fn();
+    const monitor = new ClaudeInspectorMonitor({ scan, onAlert: () => undefined, onUpdate, platform: "linux" });
     await monitor.start();
     expect(scan).not.toHaveBeenCalled();
     expect(onUpdate.mock.lastCall?.[0].state).toBe("unsupported");

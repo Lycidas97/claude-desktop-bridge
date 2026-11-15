@@ -80,6 +80,30 @@ describe("one native inspector action per Desktop process start", () => {
     expect(f.menu).toHaveBeenCalledOnce();
   });
 
+  it("waits for Accessibility consent without consuming the process attempt, then acts once", async () => {
+    const f = await fixture();
+    const accessibility = vi.fn(() => ({ trusted: false, applicationPath: "/Applications/Bridge.app" }));
+    const startup = new ClaudeInspectorStartup({ ...f.options, accessibility });
+    expect(await startup.check(false)).toEqual({ state: "accessibility-required", detail: expect.stringContaining("/Applications/Bridge.app") });
+    await startup.check(false);
+    expect(f.menu).not.toHaveBeenCalled();
+    await expect(readFile(f.recordPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    accessibility.mockReturnValue({ trusted: true, applicationPath: "/Applications/Bridge.app" });
+    await startup.check(false);
+    await new ClaudeInspectorStartup({ ...f.options, accessibility }).check(false);
+    expect(f.menu.mock.calls.filter(([, press]) => press)).toHaveLength(1);
+  });
+
+  it("respects already-open and historical attempts before checking Accessibility", async () => {
+    const f = await fixture();
+    const accessibility = vi.fn(() => ({ trusted: false, applicationPath: "/Applications/Bridge.app" }));
+    const startup = new ClaudeInspectorStartup({ ...f.options, accessibility });
+    expect(await startup.check(true)).toMatchObject({ state: "already-open" });
+    await startup.check(false);
+    expect(accessibility).not.toHaveBeenCalled();
+    expect(f.menu).not.toHaveBeenCalled();
+  });
+
   it("keeps old string records as time-unknown history without granting another automatic attempt", async () => {
     const f = await fixture();
     await writeFile(f.recordPath, JSON.stringify({ "42:first-start": "本进程自动开启失败：旧权限错误 (-2700)" }));

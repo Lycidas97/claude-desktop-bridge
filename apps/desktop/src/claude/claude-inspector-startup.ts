@@ -4,6 +4,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import type { BridgeInspectorStartupStatus } from "@bridge/protocol";
 import { CLAUDE_DESKTOP_APP, desktopAppPathCandidates } from "../app/desktop-app-definitions.js";
 
+import { windowsInspectorMenu, windowsInspectorProcesses } from "./windows-inspector.js";
+
 const run = promisify(execFile);
 export interface InspectorDesktopProcess {
   pid: number;
@@ -29,34 +31,40 @@ export function parseInspectorDesktopProcesses(
 
 /** Only presses the native debugger checkbox; Native still owns its policy checks. */
 export async function claudeInspectorMenu(pid: number, press: boolean): Promise<MenuResult> {
+  if (process.platform === "win32") return windowsInspectorMenu(pid, press);
   const { stdout } = await run("/usr/bin/osascript", ["-e", `
 on run argv
   tell application "System Events"
     if not UI elements enabled then error "请在系统设置中授予 Bridge 辅助功能权限"
-    set targetProcess to first application process whose unix id is (item 1 of argv as integer)
-    tell targetProcess
-      if not (exists menu bar 1) then return "waiting"
-      repeat with heading in menu bar items of menu bar 1
-        if exists menu 1 of heading then
-          if exists menu item "Enable Main Process Debugger" of menu 1 of heading then
-            set debugItem to menu item "Enable Main Process Debugger" of menu 1 of heading
-            if exists attribute "AXMenuItemMarkChar" of debugItem then
-              set mark to value of attribute "AXMenuItemMarkChar" of debugItem
-              if mark is not missing value and mark is not "" then return "enabled"
-            end if
-            if not enabled of debugItem then error "Native 的主进程调试菜单不可用；请检查账号与工作区开发者策略"
-            if item 2 of argv is "press" then
-              click debugItem
-              return "clicked"
-            end if
-            return "ready"
+    set targetPid to item 1 of argv as integer
+    if not (exists menu bar 1 of (first application process whose unix id is targetPid)) then return "waiting"
+    repeat with headingIndex from 1 to count of menu bar items of menu bar 1 of (first application process whose unix id is targetPid)
+      if exists menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid) then
+        if exists menu item "Enable Main Process Debugger" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid) then
+          set debugItem to a reference to menu item "Enable Main Process Debugger" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
+          -- NSMenu refreshes its Accessibility checkbox value when the menu opens.
+          click menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
+          set marked to false
+          if exists attribute "AXMenuItemMarkChar" of debugItem then
+            set mark to value of attribute "AXMenuItemMarkChar" of debugItem
+            set marked to mark is not missing value and mark is not ""
           end if
+          set menuEnabled to enabled of debugItem
+          perform action "AXCancel" of menu 1 of menu bar item headingIndex of menu bar 1 of (first application process whose unix id is targetPid)
+          if marked then return "enabled"
+          if not menuEnabled then error "Native 的主进程调试菜单不可用；请检查账号与工作区开发者策略"
+          if item 2 of argv is "press" then
+            click debugItem
+            return "clicked"
+          end if
+          return "ready"
         end if
-      end repeat
-    end tell
+      end if
+    end repeat
     return "waiting"
   end tell
 end run`, String(pid), press ? "press" : "probe"], { timeout: 5_000, maxBuffer: 64 * 1024 }).catch((error: Error & { stderr?: string }) => {
+    if (error.stderr?.includes("(-1743)")) throw new Error("请在系统设置 › 隐私与安全性 › 自动化中允许 Bridge 控制 System Events（系统事件）。");
     if (error.stderr?.trim()) throw new Error(error.stderr.trim());
     throw error;
   });
@@ -72,13 +80,15 @@ export class ClaudeInspectorStartup {
     recordPath: string;
     processes?: () => Promise<InspectorDesktopProcess[]>;
     menu?: (pid: number, press: boolean) => Promise<MenuResult>;
+    accessibility?: () => { trusted: boolean; applicationPath: string };
   }) {}
 
   async check(listening: boolean): Promise<BridgeInspectorStartupStatus | undefined> {
-    const processes = await (this.options.processes ?? (async () =>
-      parseInspectorDesktopProcesses((await run("/bin/ps", ["-axo", "pid=,lstart=,comm="], {
-        env: { ...process.env, LC_ALL: "en_US.UTF-8" },
-      })).stdout)
+    const processes = await (this.options.processes ?? (async () => process.platform === "win32"
+      ? windowsInspectorProcesses()
+      : parseInspectorDesktopProcesses((await run("/bin/ps", ["-axo", "pid=,lstart=,comm="], {
+          env: { ...process.env, LC_ALL: "en_US.UTF-8" },
+        })).stdout)
     ))();
     if (!this.records) {
       try {
@@ -108,6 +118,11 @@ export class ClaudeInspectorStartup {
           await writeFile(this.options.recordPath, `${JSON.stringify(this.records)}\n`, "utf8");
           continue;
         }
+        const accessibility = this.options.accessibility?.();
+        if (accessibility && !accessibility.trusted) return {
+          state: "accessibility-required",
+          detail: `请在系统设置 › 隐私与安全性 › 辅助功能中添加并开启 ${accessibility.applicationPath}。授权后 Bridge 会自动继续。`,
+        };
         try {
           const result = await (this.options.menu ?? claudeInspectorMenu)(process.pid, false);
           if (result === "waiting") return { state: "waiting", detail: "等待 Claude Desktop 的原生调试菜单就绪；请检查开发者模式与工作区策略。" };
@@ -115,7 +130,10 @@ export class ClaudeInspectorStartup {
           this.records[process.identity] = { state: result === "enabled" ? "enabled" : "attempted", recordedAt,
             detail: result === "enabled" ? "原生调试菜单已勾选，未重复操作。" : "已通过原生菜单请求开启主进程调试。" };
           await writeFile(this.options.recordPath, `${JSON.stringify(this.records)}\n`, "utf8");
-          if (result === "ready") await (this.options.menu ?? claudeInspectorMenu)(process.pid, true);
+          if (result === "ready" && await (this.options.menu ?? claudeInspectorMenu)(process.pid, true) === "enabled") {
+            this.records[process.identity] = { state: "enabled", recordedAt, detail: "原生调试菜单已勾选，未重复操作。" };
+            await writeFile(this.options.recordPath, `${JSON.stringify(this.records)}\n`, "utf8");
+          }
         } catch (error) {
           this.records[process.identity] = { state: "failed", recordedAt, detail: `自动开启失败：${error instanceof Error ? error.message : String(error)}` };
           await writeFile(this.options.recordPath, `${JSON.stringify(this.records)}\n`, "utf8");

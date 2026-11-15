@@ -3,6 +3,8 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import type { BridgeInspectorAlert, BridgeInspectorClient, BridgeInspectorStatus } from "@bridge/protocol";
 
+import { readWindowsInspectorConnections } from "./windows-inspector.js";
+
 const run = promisify(execFile);
 
 /** lsof lists both ends: only sockets whose destination is the debug port are clients. */
@@ -80,11 +82,11 @@ export class ClaudeInspectorMonitor {
     intervalMs?: number;
     port?: number;
   }) {
-    this.status = { state: "starting", port: options.port ?? 9229, pollIntervalMs: options.intervalMs ?? 3_000, clients: [], alerts: [] };
+    this.status = { platform: options.platform ?? process.platform, state: "starting", port: options.port ?? 9229, pollIntervalMs: options.intervalMs ?? 3_000, clients: [], alerts: [] };
   }
 
   async start(): Promise<void> {
-    if ((this.options.platform ?? process.platform) !== "darwin") {
+    if (!["darwin", "win32"].includes(this.options.platform ?? process.platform)) {
       this.status = { ...this.status, state: "unsupported" };
       this.options.onUpdate(this.status);
       return;
@@ -105,7 +107,9 @@ export class ClaudeInspectorMonitor {
   private async poll(): Promise<void> {
     let next: BridgeInspectorStatus;
     try {
-      const observed = await (this.options.scan ?? (() => readInspectorConnections({ port: this.status.port })))();
+      const observed = await (this.options.scan ?? (() => this.status.platform === "win32"
+        ? readWindowsInspectorConnections(this.status.port)
+        : readInspectorConnections({ port: this.status.port })))();
       if (this.closed) return;
       const startup = await this.options.startup?.(observed.listening);
       if (this.closed) return;
@@ -118,7 +122,7 @@ export class ClaudeInspectorMonitor {
         notificationError = this.options.onAlert(alert);
       }
       next = {
-        state: observed.listening ? "listening" : "closed", port: this.status.port, pollIntervalMs: this.status.pollIntervalMs,
+        platform: this.options.platform ?? process.platform, state: observed.listening ? "listening" : "closed", port: this.status.port, pollIntervalMs: this.status.pollIntervalMs,
         clients: observed.clients, alerts: alerts.slice(0, 20), ...(notificationError ? { notificationError } : {}),
         ...(startup ? { startup } : {}),
       };

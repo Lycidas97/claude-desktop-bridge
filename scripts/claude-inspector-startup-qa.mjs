@@ -25,6 +25,7 @@ let child;
 let origin;
 let port;
 let nativeClient;
+let otherProcess;
 async function control(path = '/status') { return (await fetch(origin + path)).json(); }
 async function listening() {
   try {
@@ -142,6 +143,25 @@ try {
   assert.equal((await control()).presses, 0);
   assert.equal(await listening(), false);
   evidence.steps.push({ step: 'disabled-native-menu-error-persists', presses: 0, remainsClosed: true });
+  await stop();
+
+  await start();
+  await control('/ready');
+  assert.equal(await claudeInspectorMenu(child.pid, true), 'clicked');
+  otherProcess = { child, origin };
+  await start();
+  await control('/ready');
+  assert.equal((await startup.check(false)).state, 'attempted');
+  assert.equal((await control()).presses, 1);
+  assert.equal(await listening(), true);
+  assert.equal(await claudeInspectorMenu(child.pid, true), 'enabled');
+  assert.equal((await control()).presses, 1);
+  const otherStatus = await (await fetch(otherProcess.origin + '/status')).json();
+  assert.equal(otherStatus.presses, 1, 'The same-name process must not receive the target action');
+  assert.equal(otherStatus.enabled, true);
+  await control('/manual-close');
+  assert.equal(await claudeInspectorMenu(child.pid, false), 'ready', 'Read the target checkbox instead of the same-name process');
+  evidence.steps.push({ step: 'same-name-processes-targeted-by-pid', presses: 1, otherPresses: 1 });
   evidence.passed = true;
 } catch (error) {
   evidence.passed = false;
@@ -150,6 +170,11 @@ try {
 } finally {
   await nativeClient?.close();
   await stop();
+  if (otherProcess) {
+    const exited = once(otherProcess.child, 'exit');
+    await fetch(otherProcess.origin + '/quit');
+    await exited;
+  }
   await writeFile(join(output, 'result.json'), JSON.stringify(evidence, null, 2) + '\n');
   console.log(JSON.stringify(evidence, null, 2));
 }

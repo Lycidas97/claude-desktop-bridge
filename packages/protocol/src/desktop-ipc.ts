@@ -29,6 +29,7 @@ export interface ClaudeDesktopDeveloperSettings {
 export interface DesktopApi {
   checkClaudeDesktopDeveloperSettings(profile?: ClaudeDesktopProfile): Promise<ClaudeDesktopDeveloperSettings>;
   enableClaudeDesktopDeveloperSettings(profile: ClaudeDesktopProfile): Promise<ClaudeDesktopDeveloperSettings>;
+  openAccessibilitySettings?(): Promise<void>;
   getSnapshot(): Promise<DesktopControlSnapshot>;
   chooseDirectory?(initialPath?: string): Promise<string | undefined>;
   createPairing(): Promise<DesktopControlSnapshot>;

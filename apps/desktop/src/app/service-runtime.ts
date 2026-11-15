@@ -6,7 +6,7 @@ import {
   parseBridgeIceServers,
   relayPathForUrl,
 } from "@bridge/protocol";
-import { app, Notification, powerMonitor, safeStorage, shell } from "electron";
+import { app, Notification, powerMonitor, safeStorage, shell, systemPreferences } from "electron";
 import { ClaudeInspectorMonitor } from "../claude/claude-inspector-monitor.js";
 import { ClaudeInspectorStartup } from "../claude/claude-inspector-startup.js";
 import {
@@ -228,7 +228,13 @@ export async function createServiceRuntime(options: {
       resources.defer("Desktop updater", () => updater.close());
       await controller.attachUpdater(updater);
     }
-    const inspectorStartup = new ClaudeInspectorStartup({ recordPath: join(userDataPath, "claude-inspector-startup-v1.json") });
+    const inspectorStartup = new ClaudeInspectorStartup({
+      recordPath: join(userDataPath, "claude-inspector-startup-v1.json"),
+      ...(process.platform === "darwin" ? { accessibility: () => ({
+        trusted: systemPreferences.isTrustedAccessibilityClient(false),
+        applicationPath: process.execPath.match(/^(.*\.app)\/Contents\//u)?.[1] ?? process.execPath,
+      }) } : {}),
+    });
     const inspector = new ClaudeInspectorMonitor({
       ...(!process.env.BRIDGE_CLAUDE_INSPECTOR_URL ? { startup: (listening: boolean) => inspectorStartup.check(listening) } : {}),
       onUpdate: (status) => controller.updateInspectorStatus(status),

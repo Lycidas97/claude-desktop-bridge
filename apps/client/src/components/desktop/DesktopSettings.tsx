@@ -34,6 +34,7 @@ export function DesktopSettings({ snapshot, api, onSnapshot, themeControl }: {
   const [developerProfile, setDeveloperProfile] = useState<ClaudeDesktopProfile | "">("");
   const [developerBusy, setDeveloperBusy] = useState(false);
   const [developerError, setDeveloperError] = useState("");
+  const [permissionError, setPermissionError] = useState("");
   const [desktopAction, setDesktopAction] = useState<"launch" | "quit">();
   const [desktopError, setDesktopError] = useState("");
   const desktopApp = snapshot.desktopApps?.find(app => app.id === "claude-desktop") ?? { name: "Claude Desktop", ...snapshot.claudeDesktop };
@@ -108,11 +109,18 @@ export function DesktopSettings({ snapshot, api, onSnapshot, themeControl }: {
         <section className="inspector-connections" aria-label="调试连接监测">
           <h3>调试连接 · 127.0.0.1:{inspector?.port ?? 9229}</h3>
           {!inspector ? <p className="settings-notice">后台未提供监测状态，请在任务结束后停止 Bridge 后台服务，再打开新版 Bridge。</p>
-            : inspector.state === "unsupported" ? <p className="settings-notice">目前仅支持 macOS。</p> : <>
+            : inspector.state === "unsupported" ? <p className="settings-notice">目前仅支持 macOS 与 Windows。</p> : <>
               <p role="status" className="settings-notice">{inspector.state === "starting" ? "正在启动监测…" : inspector.state === "error" ? "监测不可用" : inspector.state === "closed" ? "调试端口未开放，后台持续检查。" : `调试端口已开放 · ${inspector.clients.length} 个连接进程`}</p>
-              {inspector.state === "closed" && <p className="settings-notice">如需连接，请在 Claude Desktop 中手动勾选 Developer › Enable Main Process Debugger，Bridge 会自动连接。</p>}
+              {inspector.state === "closed" && <p className="settings-notice">如需连接，请在 Claude Desktop 中{inspector.platform === "win32" ? "按 Alt 显示菜单，再" : "手动"}勾选 Developer › Enable Main Process Debugger，Bridge 会自动连接。</p>}
               {inspector.error && <p className="inline-error">{inspector.error}</p>}
-              {inspector.startup?.state === "waiting" ? inspector.state === "closed" && <p className="settings-notice">{inspector.startup.detail}</p>
+              {inspector.startup?.state === "accessibility-required" ? inspector.state === "closed" && <>
+                <p className="settings-notice">{inspector.startup.detail}</p>
+                {api.openAccessibilitySettings && <button type="button" className="secondary-button" onClick={() => {
+                  setPermissionError("");
+                  void api.openAccessibilitySettings!().catch((reason: unknown) => setPermissionError(reason instanceof Error ? reason.message : "无法打开辅助功能设置"));
+                }}>打开辅助功能设置</button>}
+                {permissionError && <p role="alert" className="inline-error">{permissionError}</p>}
+              </> : inspector.startup?.state === "waiting" ? inspector.state === "closed" && <p className="settings-notice">{inspector.startup.detail}</p>
                 : inspector.startup && <details className="settings-detection"><summary>历史启动记录 · {inspector.startup.recordedAt !== undefined ? <time dateTime={new Date(inspector.startup.recordedAt).toISOString()}>{new Date(inspector.startup.recordedAt).toLocaleString("zh-CN")}</time> : "时间未知"}</summary>
                   <p className="settings-notice">{inspector.startup.detail}</p>
                   <p className="settings-notice">本进程不再自动尝试开启调试端口。</p>

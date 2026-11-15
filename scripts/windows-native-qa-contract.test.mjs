@@ -133,11 +133,12 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
   assert.ok(result.ui.includes("版本更新"));
 });
 
-test("packaged QA checks the closed-port action and historical startup record independently", async () => {
+test("packaged QA checks Windows Alt guidance and historical startup record independently", async () => {
   const snapshot = nativeSnapshot();
-  snapshot.claudeInspector = { state: "closed", port: 9229, pollIntervalMs: 3000, clients: [], alerts: [],
+  snapshot.claudeInspector = { platform: "win32", state: "closed", port: 9229, pollIntervalMs: 3000, clients: [], alerts: [],
     startup: { state: "failed", recordedAt: 1794697200000, detail: "自动开启失败：历史权限错误" } };
   const result = await runQa(snapshot);
+  assert.ok(result.ui.some(label => String(label).includes("按 Alt 显示菜单")));
   assert.ok(result.ui.some(label => String(label).includes("Developer › Enable Main Process Debugger")));
   assert.ok(result.ui.some(label => String(label).includes("历史启动记录")));
 });

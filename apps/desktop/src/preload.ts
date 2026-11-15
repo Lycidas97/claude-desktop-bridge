@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld("bridgeDesktop", {
   enableClaudeDesktopDeveloperSettings: (profile: string) => (
     ipcRenderer.invoke("bridge:enable-claude-developer-settings", profile)
   ),
+  openAccessibilitySettings: () => ipcRenderer.invoke("bridge:open-accessibility-settings") as Promise<void>,
   exportDiagnostics: () => (
     ipcRenderer.invoke("bridge:export-diagnostics") as Promise<{ saved: boolean; path?: string }>
   ),

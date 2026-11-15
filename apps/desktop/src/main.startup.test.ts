@@ -44,7 +44,8 @@ vi.mock("electron", async () => {
     dialog: { showErrorBox: vi.fn(), showOpenDialog: vi.fn(), showMessageBox: vi.fn() },
     protocol: { registerSchemesAsPrivileged: vi.fn() }, ipcMain: { handle: vi.fn() },
     Menu: { buildFromTemplate: vi.fn(() => ({ getMenuItemById: vi.fn(() => ({ checked: false })) })) },
-    nativeImage: { createFromPath: vi.fn(() => ({ resize: vi.fn(), setTemplateImage: vi.fn() })) }, shell: {},
+    nativeImage: { createFromPath: vi.fn(() => ({ resize: vi.fn(), setTemplateImage: vi.fn() })) }, shell: { openExternal: vi.fn(async () => {}) },
+    systemPreferences: { isTrustedAccessibilityClient: vi.fn(() => false) },
   };
 });
 
@@ -77,6 +78,22 @@ afterEach(() => {
   for (const [signal, listeners] of originalSignals) {
     for (const listener of process.listeners(signal)) if (!listeners.includes(listener)) process.removeListener(signal, listener);
   }
+});
+
+it("opens only the fixed Accessibility pane through trusted local IPC", async () => {
+  process.argv = originalArgv;
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  const { EventEmitter } = await import("node:events");
+  const { ipcMain, shell, systemPreferences } = await import("electron");
+  mocks.connect.mockResolvedValueOnce(Object.assign(new EventEmitter(), { call: vi.fn(async () => ({ launchAtLogin: false, sessions: [] })), close: vi.fn() }));
+  await import("./main.js");
+  await vi.waitFor(() => expect(ipcMain.handle).toHaveBeenCalledWith("bridge:open-accessibility-settings", expect.any(Function)));
+  const open = vi.mocked(ipcMain.handle).mock.calls.find(([channel]) => channel === "bridge:open-accessibility-settings")![1];
+  const event = { senderFrame: { url: process.env.BRIDGE_DEV_SERVER_URL || "file:///bridge/index.html" } } as Electron.IpcMainInvokeEvent;
+  await open(event);
+  expect(systemPreferences.isTrustedAccessibilityClient).toHaveBeenCalledExactlyOnceWith(true);
+  expect(shell.openExternal).toHaveBeenCalledExactlyOnceWith("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+  expect(() => open({ senderFrame: { url: "https://untrusted.invalid" } } as Electron.IpcMainInvokeEvent)).toThrow("Untrusted renderer");
 });
 
 it("exposes the native directory picker only through trusted local renderer IPC", async () => {

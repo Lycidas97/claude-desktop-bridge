@@ -25,7 +25,8 @@ let child;
 let origin;
 let port;
 let nativeClient;
-async function control(path = '/status') { return (await fetch(origin + path)).json(); }
+let otherProcess;
+async function control(path = '/status') { return (await fetch(origin + path, { signal: AbortSignal.timeout(5_000) })).json(); }
 async function listening() {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(500) });
@@ -70,11 +71,25 @@ async function start() {
   child.once('exit', () => { void writeFile(join(directory, 'electron.log'), logs); });
   assert.equal(await listening(), false);
 }
-async function stop() {
-  if (!child || child.exitCode !== null) return;
-  const exited = once(child, 'exit');
-  await control('/quit');
-  await exited;
+async function stop(fixture = { child, origin }) {
+  if (!fixture.child) return;
+  if (fixture.child.exitCode === null && fixture.child.signalCode === null) {
+    const exited = once(fixture.child, 'exit');
+    const timer = setTimeout(() => fixture.child.kill('SIGKILL'), 5_000);
+    try {
+      await fetch(fixture.origin + '/quit', { signal: AbortSignal.timeout(5_000) });
+      await exited;
+    } finally {
+      clearTimeout(timer);
+      if (fixture.child.exitCode === null && fixture.child.signalCode === null) {
+        fixture.child.kill('SIGKILL');
+        await exited;
+      }
+    }
+  }
+  const { exitCode: code, signalCode: signal } = fixture.child;
+  evidence.steps.push({ step: 'process-exited', pid: fixture.child.pid, code, signal });
+  assert.deepEqual([code, signal], [0, null], 'Fixture must exit normally; forced cleanup is a failure');
 }
 try {
   await start();
@@ -101,6 +116,7 @@ try {
 
   await control('/manual-close');
   assert.equal(await listening(), false);
+  assert.equal(await claudeInspectorMenu(child.pid, false), 'ready', 'Native checkbox must refresh after manual closure');
   await startup.check(false);
   startup = new ClaudeInspectorStartup({ recordPath, processes });
   await startup.check(false);
@@ -142,14 +158,54 @@ try {
   assert.equal((await control()).presses, 0);
   assert.equal(await listening(), false);
   evidence.steps.push({ step: 'disabled-native-menu-error-persists', presses: 0, remainsClosed: true });
+  await stop();
+
+  await start();
+  await control('/ready');
+  assert.equal(await claudeInspectorMenu(child.pid, true), 'clicked');
+  otherProcess = { child, origin };
+  await start();
+  await control('/ready');
+  assert.equal((await startup.check(false)).state, 'attempted');
+  assert.equal((await control()).presses, 1);
+  assert.equal(await listening(), true);
+  assert.equal(await claudeInspectorMenu(child.pid, true), 'enabled');
+  assert.equal((await control()).presses, 1);
+  const otherStatus = await (await fetch(otherProcess.origin + '/status')).json();
+  assert.equal(otherStatus.presses, 1, 'The same-name process must not receive the target action');
+  assert.equal(otherStatus.enabled, true);
+  await control('/manual-close');
+  assert.equal(await claudeInspectorMenu(child.pid, false), 'ready', 'Read the target checkbox instead of the same-name process');
+  await startup.check(false);
+  await new ClaudeInspectorStartup({ recordPath, processes }).check(false);
+  const targetStatus = await control();
+  assert.equal(targetStatus.presses, 1);
+  assert.equal(targetStatus.enabled, false);
+  assert.equal(await listening(), false);
+  assert.equal(await claudeInspectorMenu(otherProcess.child.pid, true), 'enabled');
+  const otherAfterClose = await (await fetch(otherProcess.origin + '/status', { signal: AbortSignal.timeout(5_000) })).json();
+  assert.equal(otherAfterClose.presses, 1);
+  assert.equal(otherAfterClose.enabled, true);
+  evidence.steps.push({ step: 'same-name-processes-targeted-by-pid', target: targetStatus, other: otherAfterClose });
   evidence.passed = true;
 } catch (error) {
   evidence.passed = false;
   evidence.failure = String(error.stack ?? error);
   throw error;
 } finally {
-  await nativeClient?.close();
-  await stop();
-  await writeFile(join(output, 'result.json'), JSON.stringify(evidence, null, 2) + '\n');
-  console.log(JSON.stringify(evidence, null, 2));
+  try {
+    await nativeClient?.close();
+  } finally {
+    for (const fixture of [{ child, origin }, ...(otherProcess ? [otherProcess] : [])]) {
+      try {
+        await stop(fixture);
+      } catch (error) {
+        evidence.passed = false;
+        (evidence.cleanupFailures ??= []).push(String(error.stack ?? error));
+        process.exitCode = 1;
+      }
+    }
+    await writeFile(join(output, 'result.json'), JSON.stringify(evidence, null, 2) + '\n');
+    console.log(JSON.stringify(evidence, null, 2));
+  }
 }

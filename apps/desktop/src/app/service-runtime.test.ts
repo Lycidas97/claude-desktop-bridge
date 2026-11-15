@@ -26,6 +26,7 @@ const resources = vi.hoisted(() => {
 });
 vi.mock("electron", () => ({
   app: { getVersion: () => resources.version, isPackaged: false }, safeStorage: {}, shell: {}, powerMonitor: new EventEmitter(),
+  systemPreferences: { isTrustedAccessibilityClient: vi.fn(() => true) },
   Notification: class extends EventEmitter {
     static isSupported() { return resources.notificationSupported(); }
     show = resources.showNotification;

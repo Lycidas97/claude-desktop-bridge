@@ -158,8 +158,9 @@ try {
   await page.getByRole("button", { name: "Claude 接入", exact: true }).click();
   const inspector = page.getByRole("region", { name: "调试连接监测", exact: true });
   await inspector.waitFor();
-  if (snapshot.claudeInspector?.state === "closed") await inspector.getByText("如需连接，请在 Claude Desktop 中手动勾选 Developer › Enable Main Process Debugger，Bridge 会自动连接。", { exact: true }).waitFor();
-  if (snapshot.claudeInspector?.startup && snapshot.claudeInspector.startup.state !== "waiting") await inspector.getByText(/历史启动记录/u).waitFor();
+  if (snapshot.claudeInspector?.state === "closed") await inspector.getByText(`如需连接，请在 Claude Desktop 中${snapshot.claudeInspector.platform === "win32" ? "按 Alt 显示菜单，再" : "手动"}勾选 Developer › Enable Main Process Debugger，Bridge 会自动连接。`, { exact: true }).waitFor();
+  if (snapshot.claudeInspector?.startup?.state === "accessibility-required" && snapshot.claudeInspector.state === "closed") await inspector.getByRole("button", { name: "打开辅助功能设置", exact: true }).waitFor();
+  if (snapshot.claudeInspector?.startup && !["waiting", "accessibility-required"].includes(snapshot.claudeInspector.startup.state)) await inspector.getByText(/历史启动记录/u).waitFor();
   await page.getByRole("button", { name: "Magpie 额度", exact: true }).click();
   await page.locator(".magpie-quota-board").waitFor();
   await page.getByRole("button", { name: "连接与启动", exact: true }).click();

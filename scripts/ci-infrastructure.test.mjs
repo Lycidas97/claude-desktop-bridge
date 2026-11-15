@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -17,6 +18,27 @@ import { buildAndroidDogfood } from './dogfood-android.mjs';
 
 const require = createRequire(import.meta.url);
 const preload = await readFile(new URL('./recycle-cleanup.cjs', import.meta.url), 'utf8');
+
+test('native inspector QA validates fixtures that already exited, including SIGKILL', async () => {
+  const source = await readFile(new URL('./claude-inspector-startup-qa.mjs', import.meta.url), 'utf8');
+  const stopSource = source.match(/async function stop\([\s\S]*?\n\}/u)[0];
+  for (const termination of ['SIGKILL', 0, 2]) {
+    const child = spawn(process.execPath, ['-e', typeof termination === 'number' ? `process.exit(${termination})` : 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    const exited = once(child, 'exit');
+    if (termination === 'SIGKILL') {
+      await once(child, 'spawn');
+      child.kill('SIGKILL');
+    }
+    await exited;
+    const evidence = { passed: true, steps: [] };
+    const stop = vm.runInNewContext(`(${stopSource})`, { assert, once, evidence, setTimeout, clearTimeout, fetch });
+    if (termination === 0) await stop({ child });
+    else await assert.rejects(stop({ child }), /Fixture must exit normally/u);
+    assert.equal(evidence.steps.length, 1, 'An exit that already happened must still be recorded');
+    assert.equal(evidence.steps[0].code, child.exitCode);
+    assert.equal(evidence.steps[0].signal, child.signalCode);
+  }
+});
 
 function mockCleanup(platform, { missing = false, failure = false, directory = false, extraEnv = {} } = {}) {
   const calls = [];

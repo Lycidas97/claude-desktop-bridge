@@ -1250,12 +1250,13 @@ export interface BridgeInspectorAlert extends BridgeInspectorClient {
 }
 
 export interface BridgeInspectorStartupStatus {
-  state: "waiting" | "attempted" | "enabled" | "already-open" | "failed" | "legacy";
+  state: "waiting" | "accessibility-required" | "attempted" | "enabled" | "already-open" | "failed" | "legacy";
   recordedAt?: number;
   detail: string;
 }
 
 export interface BridgeInspectorStatus {
+  platform?: string;
   state: "starting" | "unsupported" | "closed" | "listening" | "error";
   port: number;
   pollIntervalMs: number;

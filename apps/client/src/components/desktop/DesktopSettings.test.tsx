@@ -127,6 +127,33 @@ it("shows the native debugger menu action only while the port is closed", () => 
   expect(text()).not.toContain("Developer › Enable Main Process Debugger");
 });
 
+it("renders Windows Alt instructions with live connection state", () => {
+  props.snapshot.claudeInspector = { platform: "win32", state: "closed", port: 9229, pollIntervalMs: 3000, clients: [], alerts: [] };
+  draw();
+  expect(text()).toContain("按 Alt 显示菜单");
+  expect(text()).not.toContain("仅支持 macOS");
+  props.snapshot.claudeInspector.state = "listening";
+  props.snapshot.claudeInspector.clients = [{ pid: 42, name: "Bridge", approved: true, executablePath: "D:\\Tools\\Bridge\\Bridge.exe" }];
+  draw();
+  expect(text()).toContain("调试端口已开放 · 1 个连接进程");
+  expect(text()).not.toContain("按 Alt 显示菜单");
+});
+
+it("shows actionable Accessibility consent separately from historical attempts", async () => {
+  props.api.openAccessibilitySettings = vi.fn().mockResolvedValue(undefined);
+  props.snapshot.claudeInspector = { platform: "darwin", state: "closed", port: 9229, pollIntervalMs: 3000, clients: [], alerts: [],
+    startup: { state: "accessibility-required", detail: "请添加 /Applications/Bridge.app，授权后自动继续。" } };
+  draw();
+  expect(text()).toContain("/Applications/Bridge.app");
+  expect(text()).not.toContain("历史启动记录");
+  expect(text()).not.toContain("本进程不再自动尝试");
+  button("打开辅助功能设置").props.onClick(); await settle();
+  expect(props.api.openAccessibilitySettings).toHaveBeenCalledOnce();
+  vi.mocked(props.api.openAccessibilitySettings).mockRejectedValueOnce(new Error("系统设置不可用"));
+  button("打开辅助功能设置").props.onClick(); await settle();
+  expect(text()).toContain("系统设置不可用");
+});
+
 it("lets the user retry after an enable attempt is canceled or denied", async () => {
   await settle();
   expect(button("一键开启").props.disabled).toBe(false);

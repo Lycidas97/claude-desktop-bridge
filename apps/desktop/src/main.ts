@@ -3,7 +3,7 @@ import { mkdir, open, writeFile } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { BridgeDesktopRuntimeId, BridgeEvent, DesktopControlSnapshot, LocalBridgeRequest } from "@bridge/protocol";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell, systemPreferences, Tray } from "electron";
 import { connectDesktopService, serveDesktopService } from "./app/service-connection.js";
 import { createServiceRuntime } from "./app/service-runtime.js";
 import { ServiceResources } from "./app/service-resources.js";
@@ -222,6 +222,11 @@ async function desktopMain(): Promise<void> {
         if (resolve(result.filePaths[0]) !== resolve(directory)) throw new Error(`请选择 ${directory}，原配置未修改。`);
       },
     }));
+    handle("bridge:open-accessibility-settings", async () => {
+      if (process.platform !== "darwin") throw new Error("辅助功能设置仅适用于 macOS");
+      systemPreferences.isTrustedAccessibilityClient(true);
+      await shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+    });
     handle("bridge:create-pairing", () => controller.call("createPairing"));
     handle("bridge:choose-directory", async (initialPath?: string) => {
       if (initialPath !== undefined && typeof initialPath !== "string") throw new Error("initialPath must be a string");

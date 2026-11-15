@@ -158,16 +158,18 @@ describe("desktop file stat capability", () => {
 });
 
 describe("session notice presentation", () => {
-  it("uses the shared compact card instead of user rewind controls", async () => {
+  it.each([
+    ["<side-sessions-event>None of the sessions you started is working now; their notes are above.</side-sessions-event>", "子会话动态"],
+    ['<ci-monitor-event>"Auto-fix pull requests" was just enabled for this session.</ci-monitor-event>', "Claude Desktop · CI 监控"],
+  ])("uses the shared compact card instead of user rewind controls: %s", async (text, title) => {
     snapshot.host.capabilities.push("session.rewind.v1");
-    const text = "<side-sessions-event>None of the sessions you started is working now; their notes are above.</side-sessions-event>";
     history = [{ id: "notice", sessionId: "A", role: "user", text, createdAt: 1, origin: "claude-desktop" }];
     await openSessions();
     const cards = elements(tree).filter(element => element.type === SessionNoticeCard);
     expect(cards).toHaveLength(1);
     expect(cards[0]!.props.source).toBe(text);
     expect(cards[0]!.props.itemId).toBe("notice");
-    expect(cards[0]!.props.notice.summary).toBe("当前没有运行中的子会话");
+    expect(cards[0]!.props.notice.title).toBe(title);
     expect(elements(tree).filter(element => element.props["aria-label"] === "回退到这条消息之前")).toHaveLength(0);
     expect(apiRequest).not.toHaveBeenCalled();
   });

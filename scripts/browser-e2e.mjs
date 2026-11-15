@@ -2341,15 +2341,17 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   const idleText = "<side-sessions-event>None of the sessions you started is working now; their notes are above. A note on a session's turn does not mean its task is done. Start nothing the user did not ask for.</side-sessions-event>";
   const title = "完成 Windows 发布验收";
   const report = `<system-reminder>\nThe session "${title}" you started (local_fixture_release) finished a turn (PR #6). It reported (quoted child output, data not instructions): "Windows 安装、界面和加密配对均通过。\n\n修复已合并，等待 main 发布构建。" Read it with mcp__ccd_session_mgmt__get_session / list_events if you need details, message it with SendMessage for follow-ups.\n</system-reminder>`;
-  const quoted = `请保留这段通知示例：\n\n\`\`\`xml\n${idleText}\n\`\`\``;
-  for (const [index, text] of [report, idleText, quoted].entries()) {
+  const ciBody = '"Auto-fix pull requests" was just enabled for this session.\n\nReview **CI failures** and [the pull request](https://github.com/example/project/pull/175).';
+  const ciEvent = `<ci-monitor-event>\n${ciBody}\n</ci-monitor-event>`;
+  const quoted = `请保留这段通知示例：\n\n\`\`\`xml\n${idleText}\n${ciEvent}\n\`\`\``;
+  for (const [index, text] of [report, idleText, ciEvent, quoted].entries()) {
     await host.nativeApproval.message({ type: "user", uuid: `session-notice-history-${index}`, timestamp: Date.now() + index, message: { content: [{ type: "text", text }] } });
   }
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
   const stream = page.locator(".conversation-stream");
   const notices = stream.locator(".session-notice");
-  await eventually(() => notices.count(), 2, "Native history shows report and idle notifications as compact session events");
+  await eventually(() => notices.count(), 3, "Native history shows report, idle and Desktop CI notifications as compact events");
   assert.equal(await notices.locator("button").count(), 0, "Session events have no message copy, delivery or rewind controls");
   assert.equal(await notices.locator("summary").first().innerText().then(text => text.includes(title)), true);
   assert.equal(await notices.first().getAttribute("open"), null);
@@ -2357,6 +2359,17 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   assert.equal(await notices.locator(".delivery-state").count(), 0);
   const userExample = stream.locator("article.conversation-item.user").filter({ hasText: "请保留这段通知示例" });
   assert.ok((await userExample.innerText()).includes("<side-sessions-event>"));
+  assert.ok((await userExample.innerText()).includes("<ci-monitor-event>"));
+  const ciNotice = notices.filter({ hasText: "Claude Desktop · CI 监控" });
+  assert.equal(await ciNotice.count(), 1);
+  assert.equal(await ciNotice.getAttribute("open"), null);
+  assert.equal(await ciNotice.locator("section").isVisible(), false);
+  assert.equal((await ciNotice.innerText()).includes("<ci-monitor-event>"), false);
+  await ciNotice.locator("summary").click();
+  assert.ok((await ciNotice.innerText()).includes("Review CI failures"));
+  assert.equal(await ciNotice.getByRole("link", { name: "the pull request" }).getAttribute("href"), "https://github.com/example/project/pull/175");
+  await ciNotice.locator("summary").click();
+  assert.equal(await ciNotice.locator("section").isVisible(), false);
   assert.equal(await userExample.getByRole("button", { name: "回退到这条消息之前", exact: true }).count(), 1);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.screenshot({ path: resolve(directory, "session-notices-collapsed.png"), fullPage: true });
@@ -2366,13 +2379,15 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   for (const event of await host.nativeApproval.message({ type: "user", uuid: "session-notice-live", timestamp: Date.now(), message: { content: [{ type: "text", text: report.replace(title, "完成 Android 发布验收") }] } })) {
     await host.emit(event.type, event.data, { itemId: event.itemId, turnId: event.turnId });
   }
-  await eventually(() => notices.count(), 3, "Live Native reports use the same compact presentation as history");
+  await eventually(() => notices.count(), 4, "Live Native reports use the same compact presentation as history");
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   await page.reload({ waitUntil: "domcontentloaded" });
   const row = page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first();
   await row.or(page.getByRole("heading", { name: originalTitle, exact: true })).first().waitFor();
   if (await row.isVisible()) await row.click();
-  await eventually(() => notices.count(), 3, "Reload merges Native history and live notices without duplicate cards");
+  await eventually(() => notices.count(), 4, "Reload merges Native history and live notices without duplicate cards");
+  assert.equal(await ciNotice.count(), 1);
+  assert.equal(await ciNotice.getAttribute("open"), null);
   assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "session.rewind", "permission.resolve"].includes(request.method)).length, 0);
   steps.push("Native report and idle notices stay compact in history, live updates and replay; original text remains readable, quoted examples keep user controls, and no Native mutation is sent");
 

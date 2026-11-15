@@ -30,7 +30,7 @@ export function MobilePageHeader({
 }) {
   const nav = useMobileNav();
   return (
-    <header className={`m-header${onBack || !navigation ? " is-pushed" : nav ? " has-menu" : ""}${titleHidden ? " is-title-hidden" : ""}`}>
+    <header className={`m-header${!navigation ? " is-embedded" : onBack ? " is-pushed" : nav ? " has-menu" : ""}${titleHidden ? " is-title-hidden" : ""}`}>
       {navigation && (onBack
         ? <IconButton label={backLabel} disabled={backDisabled} onClick={onBack}><ArrowLeft size={22} /></IconButton>
         : nav && <MobileNavMenu tab={nav.tab} onTabChange={nav.onTabChange} assistantAvailable={nav.assistantAvailable} />)}

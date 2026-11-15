@@ -3305,6 +3305,10 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   assert.equal(await page.getByText("这是一个空会话", { exact: true }).count(), 0);
   assert.equal(await page.locator('.conversation-stream .assistant-mail-preview').first().evaluate(element => getComputedStyle(element).webkitLineClamp), "3");
   assert.equal(await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).count(), 1, "Embedded native view keeps one root navigation menu");
+  assert.ok(await page.locator(".assistant-conversation .m-header").evaluate(header => (
+    header.querySelector(".m-header-copy").getBoundingClientRect().left - header.getBoundingClientRect().left
+      >= parseFloat(getComputedStyle(header).getPropertyValue("--m-gutter"))
+  )), "Embedded header without a navigation button retains the mobile gutter");
   await capture("mobile-mail-timeline");
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
 

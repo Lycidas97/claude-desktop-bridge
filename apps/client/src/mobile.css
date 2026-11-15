@@ -138,7 +138,8 @@
   white-space: nowrap;
 }
 
-.m-header.is-pushed h1 {
+.m-header.is-pushed h1,
+.m-header.is-embedded h1 {
   font-size: var(--m-fs-title);
   font-weight: 650;
   line-height: 1.3;

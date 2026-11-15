@@ -8,6 +8,7 @@ import { MobileSettings } from "./components/mobile/MobileSettings.js";
 import { MobileWorkspace } from "./components/MobileWorkspace.js";
 import { MobileClientUpdateDialog } from "./components/updater/UpdaterSections.js";
 import { MediaPreviewProvider } from "./components/evidence/MediaPreviewProvider.js";
+import { AssistantPage } from "./components/assistant/AssistantPage.js";
 import { ConversationDraftsProvider } from "./components/conversation/ConversationDraftsProvider.js";
 import { dispatchMobileBack } from "./lib/mobile-back-navigation.js";
 
@@ -172,5 +173,20 @@ describe("mobile app parent navigation", () => {
     await component(HostBrowser)!.props.onRemove("host");
     expect(hooks.mobile.forgetHost).toHaveBeenCalledWith("host");
     expect(clearHost).toHaveBeenCalledWith("host");
+  });
+  it("mounts sibling mobile tab pages for sessions and assistant without fixedSessionId coupling", () => {
+    const tabPages = elements(tree).filter((element) => element.type === "div" && element.props.className === "mobile-tab-page");
+    expect(tabPages).toHaveLength(2);
+    expect(tabPages.map((page) => page.props.hidden)).toEqual([false, true]);
+    expect(component(MobileWorkspace)!.props.visible).toBe(true);
+    expect("fixedSessionId" in component(MobileWorkspace)!.props).toBe(false);
+    expect(component(AssistantPage)!.props.active).toBe(false);
+    expect(typeof component(AssistantPage)!.props.renderConversation).toBe("function");
+    component(MobileAppShell)!.props.onTabChange("assistant");
+    draw();
+    const switchedPages = elements(tree).filter((element) => element.type === "div" && element.props.className === "mobile-tab-page");
+    expect(switchedPages.map((page) => page.props.hidden)).toEqual([true, false]);
+    expect(component(MobileWorkspace)!.props.visible).toBe(false);
+    expect(component(AssistantPage)!.props.active).toBe(true);
   });
 });

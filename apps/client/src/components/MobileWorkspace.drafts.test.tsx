@@ -16,6 +16,7 @@ import { InteractivePromptCard, PermissionPrompt } from "./conversation/Permissi
 import { NativePromptCard } from "./conversation/NativePromptCard.js";
 import { SessionPrActions, SessionPrBar } from "./conversation/SessionPrBar.js";
 import { SubagentCard } from "./conversation/SubagentCard.js";
+import { ConversationView } from "./conversation/ConversationView.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAttachmentPicker.js";
 import { IconButton } from "./common/IconButton.js";
@@ -109,6 +110,17 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   )];
 }
 
+function expandStateful(node: ReactNode): ReactNode {
+  if (Array.isArray(node)) return node.map(expandStateful);
+  if (!node || typeof node !== "object" || !("props" in node)) return node;
+  const element = node as ReactElement<Record<string, any>>;
+  if (element.type === ConversationView) {
+    return expandStateful(ConversationView(element.props as ComponentProps<typeof ConversationView>));
+  }
+  if (!("children" in element.props) || element.props.children === undefined) return element;
+  return { ...element, props: { ...element.props, children: expandStateful(element.props.children) } };
+}
+
 let props: ComponentProps<typeof MobileWorkspace>;
 let tree: ReactElement;
 let focusKey = 0;
@@ -117,7 +129,9 @@ function draw() {
     hooks.dirty = false;
     hooks.index = 0;
     hooks.effectIndex = 0;
-    tree = MobileWorkspace(props) as ReactElement;
+    tree = expandStateful(MobileWorkspace(props)) as ReactElement;
+    hooks.slots.length = hooks.index;
+    hooks.effects.splice(hooks.effectIndex).forEach((effect) => effect?.cleanup?.());
     hooks.pending.splice(0).forEach((effect) => effect());
     if (!hooks.dirty) return;
   }
@@ -177,26 +191,217 @@ beforeEach(() => {
 });
 afterEach(() => { hooks.effects.forEach((e) => e.cleanup?.()); vi.unstubAllGlobals(); });
 
-describe("fixed assistant conversation", () => {
-  it("keeps the binding selected when an explicit link opens another session", () => {
-    props = { ...props, fixedSessionId: "B", onOpenOtherSession: vi.fn() };
-    draw();
-    open("A");
-    expect(props.onOpenOtherSession).toHaveBeenCalledWith("A");
-    expect(elements(tree).some(element => element.props.title === "Session B")).toBe(true);
+describe("controlled ConversationView", () => {
+  function drawView(viewProps: ComponentProps<typeof ConversationView>) {
+    for (let i = 0; i < 12; i++) {
+      hooks.dirty = false;
+      hooks.index = 0;
+      hooks.effectIndex = 0;
+      tree = ConversationView(viewProps) as ReactElement;
+      hooks.slots.length = hooks.index;
+      hooks.effects.splice(hooks.effectIndex).forEach((effect) => effect?.cleanup?.());
+      hooks.pending.splice(0).forEach((effect) => effect());
+      if (!hooks.dirty) return;
+    }
+    throw new Error("ConversationView did not settle");
+  }
+
+  function controlledProps(overrides: Partial<ComponentProps<typeof ConversationView>> = {}): ComponentProps<typeof ConversationView> {
+    const sessionB = props.snapshot!.sessions.find((candidate) => candidate.sessionId === "B")!;
+    return {
+      variant: "mobile",
+      hostId: props.activeHostId,
+      session: sessionB,
+      sessions: props.snapshot!.sessions,
+      snapshot: props.snapshot,
+      connection: props.connection,
+      desktopOnline: props.desktopOnline,
+      navigation: false,
+      onSelectSession: vi.fn(),
+      history: props.histories.B,
+      evidence: props.evidence.B,
+      artifactPreviews: props.artifactPreviews,
+      artifactTransfers: props.artifactTransfers,
+      permissions: props.permissions,
+      events: props.events,
+      localTurns: props.localTurns,
+      onOpenSession: props.onOpenSession,
+      onLoadOlderHistory: props.onLoadOlderHistory,
+      onLoadOlderEvidence: props.onLoadOlderEvidence,
+      onPreviewArtifact: props.onPreviewArtifact,
+      onDownloadArtifact: props.onDownloadArtifact,
+      onSendTurn: props.onSendTurn,
+      onInterruptTurn: props.onInterruptTurn,
+      onResolveUncertain: props.onResolveUncertain,
+      onResolvePermission: props.onResolvePermission,
+      onLoadSessionConfiguration: props.onLoadSessionConfiguration,
+      onConfigureSession: props.onConfigureSession,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    hooks.effects.forEach((effect) => effect?.cleanup?.());
+    hooks.slots = [];
+    hooks.effects = [];
+    hooks.pending = [];
   });
 
-  it("keeps a reset event from changing the binding or opening the ordinary directory", () => {
-    props = { ...props, fixedSessionId: "B", onOpenOtherSession: vi.fn(), events: [
-      { eventId: "reset-bound", seq: 1, timestamp: 1, origin: "system", type: "session.reset", data: { previousSessionId: "B", sessionId: "A" } },
-    ] };
+  it("renders a bound session without catalog back navigation and delegates other-session jumps", () => {
+    const onSelectSession = vi.fn();
+    const viewProps = controlledProps({
+      onSelectSession,
+      permissions: [{
+        requestId: "perm-A",
+        sessionId: "A",
+        toolUseId: "tool-A",
+        toolName: "Bash",
+        input: {},
+        createdAt: 1,
+        canAllowAlways: false,
+      }],
+    });
+    drawView(viewProps);
+    const header = elements(tree).find((element) => element.props.title === "Session B")!;
+    expect(header.props.navigation).toBe(false);
+    expect(header.props.backLabel).toBeUndefined();
+    elements(tree).find((element) => element.type === "button" && element.props.className === "permission-dock")!.props.onClick();
+    drawView(viewProps);
+    expect(onSelectSession).toHaveBeenCalledWith("A");
+    expect(elements(tree).some((element) => element.props.title === "Session B")).toBe(true);
+  });
+
+  it("ignores session.reset events and provides built-in session menu, no-PR Auto-fix, evidence toggle, and back navigation", () => {
+    const onSelectSession = vi.fn();
+    const onReadPrAutoFix = vi.fn();
+    const onSetPrAutoFix = vi.fn();
+    props.snapshot!.host.capabilities.push("pr.autofix.v1");
+    const viewProps = controlledProps({
+      onSelectSession,
+      onReadPrAutoFix,
+      onSetPrAutoFix,
+      events: [{
+        eventId: "reset-bound",
+        seq: 1,
+        timestamp: 1,
+        origin: "system",
+        type: "session.reset",
+        data: { previousSessionId: "B", sessionId: "A" },
+      }],
+    });
+    drawView(viewProps);
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(elements(tree).some((element) => element.props.title === "Session B")).toBe(true);
+    expect(dispatchMobileBack()).toBe(false);
+    const header = elements(tree).find((element) => element.props.title === "Session B")!;
+    elements(header.props.actions).find((element) => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    drawView(viewProps);
+    const prActions = elements(tree).find((element) => element.type === SessionPrActions)!;
+    expect(prActions.props.session.sessionId).toBe("B");
+    expect(prActions.props.onRead).toBe(onReadPrAutoFix);
+    expect(prActions.props.onSet).toBe(onSetPrAutoFix);
+    expect(dispatchMobileBack()).toBe(true);
+    drawView(viewProps);
+    expect(elements(tree).find((element) => element.type === SessionPrActions)).toBeUndefined();
+    const reopenedHeader = elements(tree).find((element) => element.props.title === "Session B")!;
+    elements(reopenedHeader.props.actions).find((element) => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    drawView(viewProps);
+    elements(tree).find((element) => element.props.label === "成果")!.props.onClick();
+    drawView(viewProps);
+    expect(elements(tree).some((element) => element.props.className === "mobile-evidence-view")).toBe(true);
+    expect(dispatchMobileBack()).toBe(true);
+    drawView(viewProps);
+    expect(elements(tree).some((element) => element.props.className === "conversation-stream")).toBe(true);
+    expect(dispatchMobileBack()).toBe(false);
+  });
+});
+
+describe("conversation unmount and remount safety", () => {
+  it("ignores a delayed /fork command reply after returning to directory and opening another session", async () => {
+    let resolveFork!: (result: unknown) => void;
+    const onRunSessionCommand = vi.fn(() => new Promise<any>((resolve) => {
+      resolveFork = resolve;
+    }));
+    props = {
+      ...props,
+      onRunSessionCommand,
+      snapshot: {
+        ...props.snapshot!,
+        host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "session.command.v1"] },
+        sessions: [
+          ...props.snapshot!.sessions,
+          { ...props.snapshot!.sessions[0]!, sessionId: "forked-A", title: "Forked A", parentSessionId: "A" },
+        ],
+      },
+    };
     draw();
-    expect(props.onOpenOtherSession).not.toHaveBeenCalled();
-    expect(elements(tree).some(element => element.props.title === "Session B")).toBe(true);
-    props = { ...props, snapshot: { ...props.snapshot!, sessions: props.snapshot!.sessions.filter(session => session.sessionId !== "B") } };
+    text("/fork");
+    void form().props.onSubmit({ preventDefault() {} });
+    await settle();
+    expect(onRunSessionCommand).toHaveBeenCalledWith("A", "/fork");
+
+    elements(tree).find((element) => element.props.backLabel === "返回会话列表")!.props.onBack();
     draw();
-    expect(elements(tree).some(element => element.props.children === "绑定会话暂不可用，请在助理设置中核对绑定。")).toBe(true);
-    expect(elements(tree).some(element => element.type === SlashCommandInput)).toBe(false);
+    open("B");
+    expect(elements(tree).some((element) => element.props.title === "Session B")).toBe(true);
+    vi.mocked(props.onOpenSession).mockClear();
+
+    resolveFork({ action: "session", session: props.snapshot!.sessions.find((candidate) => candidate.sessionId === "forked-A")! });
+    await settle();
+    expect(elements(tree).some((element) => element.props.title === "Session B")).toBe(true);
+    expect(props.onOpenSession).not.toHaveBeenCalledWith("forked-A");
+  });
+
+  it("preserves in-flight queued steer state across directory round-trips", async () => {
+    let resolveSteer!: () => void;
+    const onSteerQueuedTurn = vi.fn(() => new Promise<void>((resolve) => {
+      resolveSteer = resolve;
+    }));
+    props = {
+      ...props,
+      onSteerQueuedTurn,
+      snapshot: {
+        ...props.snapshot!,
+        host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "turn.queue.steer.v1"] },
+        sessions: [
+          { ...props.snapshot!.sessions[0]!, pendingCount: 1, pendingCommandIds: ["cmd-queued-A"] },
+          props.snapshot!.sessions[1]!,
+        ],
+      },
+      histories: {
+        ...props.histories,
+        A: {
+          status: "ready",
+          items: [{
+            id: "queued-item",
+            sessionId: "A",
+            role: "user",
+            text: "Queued turn",
+            createdAt: 1,
+            origin: "mobile",
+            delivery: "queued",
+            commandId: "cmd-queued-A",
+          }],
+          hasMore: false,
+        },
+      },
+    };
+    draw();
+    const steerBtn = () => elements(tree).find((element) => element.type === "button" && element.props.children === "Send now")!;
+    expect(steerBtn().props.disabled).toBe(false);
+    void steerBtn().props.onClick();
+    draw();
+    expect(steerBtn().props.disabled).toBe(true);
+
+    elements(tree).find((element) => element.props.backLabel === "返回会话列表")!.props.onBack();
+    draw();
+    open("A");
+    expect(steerBtn().props.disabled).toBe(true);
+    expect(onSteerQueuedTurn).toHaveBeenCalledTimes(1);
+
+    resolveSteer();
+    await settle();
+    expect(steerBtn().props.disabled).toBe(true);
   });
 });
 

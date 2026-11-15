@@ -1,4 +1,4 @@
-import type { BridgeSystemUpdateParams, BridgeUpdaterSnapshot } from "@bridge/protocol";
+import type { BridgeHostSnapshot, BridgeSessionInfo, BridgeSystemUpdateParams, BridgeUpdaterSnapshot } from "@bridge/protocol";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { claudeSnapshot } from "./lib/claude-snapshot.js";
 import { useClientUpdater } from "./lib/client-updater.js";
@@ -25,9 +25,134 @@ import { ProviderSettings } from "./components/session/ProviderSettings.js";
 import { MobileClientUpdateDialog, type RemoteDesktopUpdateControl } from "./components/updater/UpdaterSections.js";
 import { MAGPIE_QUOTA_METHOD, type QuotaLoader, type QuotaSnapshot } from "../../../plugins/magpie-quota/contract.js";
 import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
-import { AssistantMailProvider, type AssistantRequest } from "./components/assistant/AssistantMailProvider.js";
+import { AssistantMailProvider, useAssistantMail, type AssistantRequest } from "./components/assistant/AssistantMailProvider.js";
 import { AssistantPage } from "./components/assistant/AssistantPage.js";
+import { MailReference } from "./components/assistant/MailReference.js";
 import { ConversationDraftsProvider, type ConversationDraftsHandle } from "./components/conversation/ConversationDraftsProvider.js";
+import { ConversationView } from "./components/conversation/ConversationView.js";
+import { desktopRuntimeId } from "./lib/runtime-labels.js";
+
+function MobileAssistantConversation({
+  activeHostId,
+  session,
+  snapshot,
+  visible,
+  mobile,
+  onOpenOtherSession,
+}: {
+  activeHostId: string;
+  session: BridgeSessionInfo;
+  snapshot: BridgeHostSnapshot | undefined;
+  visible: boolean;
+  mobile: ReturnType<typeof useMobileBridge>;
+  onOpenOtherSession(sessionId: string): void;
+}) {
+  const assistantMail = useAssistantMail();
+  const sessions = snapshot?.sessions ?? [];
+  const mailCards = useMemo(() => (
+    assistantMail?.cache.cards.filter((card) => (
+      (card.nativeDelivery.nativeSessionId ?? snapshot?.assistantMail?.binding?.nativeSessionId) === session.sessionId
+    )) ?? []
+  ), [assistantMail?.cache.cards, session.sessionId, snapshot?.assistantMail?.binding?.nativeSessionId]);
+  const [refreshing, setRefreshing] = useState(false);
+  async function handleRefresh(targetSessionId?: string): Promise<boolean> {
+    if (refreshing) return false;
+    setRefreshing(true);
+    try {
+      return await mobile.refresh(targetSessionId);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+  const canCommand = Boolean(snapshot?.host.capabilities.includes("session.command.v1"));
+  const canRename = Boolean(snapshot?.host.capabilities.includes("session.rename.v1"));
+  return (
+    <ConversationView
+      variant="mobile"
+      hostId={activeHostId}
+      session={session}
+      sessions={sessions}
+      snapshot={snapshot}
+      connection={mobile.state.connection}
+      desktopOnline={mobile.state.desktopOnline}
+      visible={visible}
+      navigation={false}
+      onSelectSession={(nextSessionId) => {
+        if (nextSessionId !== session.sessionId) onOpenOtherSession(nextSessionId);
+      }}
+      refreshing={refreshing}
+      onRefresh={handleRefresh}
+      onRetry={mobile.retryConnection}
+      history={mobile.state.histories[session.sessionId]}
+      evidence={mobile.state.evidence[session.sessionId]}
+      artifactPreviews={mobile.state.artifactPreviews}
+      artifactTransfers={mobile.state.artifactTransfers}
+      permissions={mobile.state.permissions.filter((permission) => sessions.some((candidate) => candidate.sessionId === permission.sessionId))}
+      events={mobile.state.events}
+      localTurns={mobile.state.localTurns}
+      connectionIssue={mobile.state.connectionIssue}
+      mailCards={mailCards}
+      composerBanner={<MailReference sessionId={session.sessionId} />}
+      resolveMailRefId={() => assistantMail?.referenceFor(session.sessionId)}
+      onOpenSession={mobile.openSession}
+      onLoadOlderHistory={mobile.loadOlderHistory}
+      onLoadOlderEvidence={mobile.loadOlderEvidence}
+      onLoadEvidenceDetails={mobile.loadEvidenceDetails}
+      onPreviewArtifact={mobile.previewArtifact}
+      onDownloadArtifact={mobile.downloadArtifact}
+      onDownloadSessionFile={mobile.downloadSessionFile}
+      onUploadFile={mobile.uploadFile}
+      onSendTurn={mobile.sendTurn}
+      onInterruptTurn={mobile.interruptTurn}
+      {...(mobile.state.snapshot?.host.capabilities.includes("turn.queue.steer.v1")
+        ? { onSteerQueuedTurn: mobile.steerQueuedTurn }
+        : {})}
+      {...(mobile.state.snapshot?.host.capabilities.includes("turn.queue.cancel.v1")
+        ? { onCancelQueuedTurn: mobile.cancelQueuedTurn }
+        : {})}
+      {...(mobile.state.snapshot?.host.capabilities.includes("subagent.stop.v1")
+        ? { onStopSubagent: mobile.stopSubagent }
+        : {})}
+      onResolveUncertain={mobile.resolveUncertainDelivery}
+      onResolvePermission={mobile.resolvePermission}
+      onResolvePrompt={mobile.resolvePrompt}
+      onReadPrAutoFix={mobile.readPrAutoFix}
+      onSetPrAutoFix={mobile.setPrAutoFix}
+      {...(snapshot?.host.capabilities.includes("claude.native-relay.v1") ? { onLoadBackgroundTasks: mobile.loadBackgroundTasks } : {})}
+      onLoadSessionConfiguration={mobile.loadSessionConfiguration}
+      onConfigureSession={mobile.configureSession}
+      {...(snapshot?.host.capabilities.includes("session.commands.v1")
+        ? { onLoadSessionCommands: mobile.loadSessionCommands }
+        : {})}
+      {...(canCommand ? {
+        onRunSessionCommand: mobile.runSessionCommand,
+        onLoadSessionPermissions: mobile.loadSessionPermissions,
+        onSaveSessionPermissions: mobile.saveSessionPermissions,
+      } : {})}
+      {...(canCommand || canRename ? {
+        onRenameSession: async (targetSessionId, title) => {
+          if (canCommand && desktopRuntimeId(session) === "claude-desktop") {
+            await mobile.runSessionCommand(targetSessionId, `/rename ${title.trim()}`);
+          } else if (canRename) {
+            await mobile.renameSession(targetSessionId, title.trim());
+          }
+        },
+      } : {})}
+      onPreviewRewind={mobile.previewRewind}
+      onRewindSession={mobile.rewindSession}
+      onForkSession={mobile.forkSession}
+      {...(snapshot?.host.capabilities.includes("section.move.v1")
+        ? { onMoveSessionSection: mobile.moveSessionSection }
+        : {})}
+      {...(snapshot?.host.capabilities.includes("session.visibility.v1")
+        ? {
+            onArchiveSession: mobile.archiveSession,
+            onDeleteSession: mobile.deleteSession,
+          }
+        : {})}
+    />
+  );
+}
 
 export function App() {
   const themeControl = useTheme();
@@ -188,13 +313,10 @@ export function App() {
       {/* One quota snapshot per computer, shared by the session form and the settings dashboard. */}
       <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled} sourceKey={snapshot?.runtime.detection?.refreshedAt ?? 0}>
       {mobile.state.activeHostId ? (
-        <div className="mobile-tab-page" hidden={tab !== "sessions" && tab !== "assistant"}>
-          <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia} supportsFileStat={snapshot?.host.capabilities.includes("artifact.transfer.stat.v1") ?? false}>
-            <AssistantPage snapshot={snapshot} mobile active={tab === "assistant"} onOpenSession={sessionId => { setFocusRequest({ sessionId, key: Date.now() }); setTab("sessions"); }}>
+        <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia} supportsFileStat={snapshot?.host.capabilities.includes("artifact.transfer.stat.v1") ?? false}>
+          <div className="mobile-tab-page" hidden={tab !== "sessions"}>
             <MobileWorkspace
-              fixedSessionId={tab === "assistant" ? snapshot?.assistantMail?.binding?.nativeSessionId ?? undefined : undefined}
-              onOpenOtherSession={sessionId => { setFocusRequest({ sessionId, key: Date.now() }); setTab("sessions"); }}
-              visible={tab === "sessions" || tab === "assistant"}
+              visible={tab === "sessions"}
               {...(focusRequest ? { focusRequest } : {})}
               onFocusHandled={handleFocusHandled}
               directoryRequest={directoryRequest}
@@ -282,9 +404,37 @@ export function App() {
               }}
               onRetry={mobile.retryConnection}
             />
-            </AssistantPage>
-          </MediaPreviewProvider>
-        </div>
+          </div>
+          <div className="mobile-tab-page" hidden={tab !== "assistant"}>
+            <AssistantPage
+              snapshot={snapshot}
+              mobile
+              active={tab === "assistant"}
+              onOpenSession={(sessionId) => {
+                setFocusRequest({ sessionId, key: Date.now() });
+                setTab("sessions");
+              }}
+              renderConversation={(sessionId) => {
+                const boundSession = snapshot?.sessions.find((candidate) => candidate.sessionId === sessionId);
+                return boundSession ? (
+                  <MobileAssistantConversation
+                    activeHostId={mobile.state.activeHostId!}
+                    session={boundSession}
+                    snapshot={snapshot}
+                    visible={tab === "assistant"}
+                    mobile={mobile}
+                    onOpenOtherSession={(otherSessionId) => {
+                      setFocusRequest({ sessionId: otherSessionId, key: Date.now() });
+                      setTab("sessions");
+                    }}
+                  />
+                ) : (
+                  <main className="mobile-workspace"><p role="status">绑定会话暂不可用，请在助理设置中核对绑定。</p></main>
+                );
+              }}
+            />
+          </div>
+        </MediaPreviewProvider>
       ) : tab === "sessions" ? (
         <main className="mobile-settings-page">
           <MobilePageHeader title="会话" />

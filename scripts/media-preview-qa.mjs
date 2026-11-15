@@ -47,8 +47,14 @@ const history = { sessionId: session.sessionId, items: [{ id: "question", role: 
 const snapshot = { host: { hostId: "qa", pairingEpoch: 1, name: "Preview Mac", relayUrl: "ws://127.0.0.1:8788/ws", online: true, lastSeenAt: now, version: "1.0.2", capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1", "artifact.transfer.stat.v1"] }, projects: [{ projectId: session.projectId, name: "Reports", cwd: session.cwd, sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: now }], sessions: [session], devices: [], permissions: [], providers: [], runtime: { state: "ready", detail: "Ready", activeTurns: 0, pendingTurns: 0 }, latestSeq: 0, connection: "connected", launchAtLogin: false, managedDesktopEnabled: false, claudeDesktop: { state: "running", canLaunch: false, canQuit: true, detail: "Running" } };
 const packaged = process.argv.includes("--electron");
 const mobile = process.argv.includes("--mobile");
-const mobileModule = mobile ? await (await fetch("http://127.0.0.1:5188/src/components/MobileWorkspace.tsx")).text() : "";
-const providerModule = mobileModule.match(/from "([^"]*MediaPreviewProvider\.tsx[^"]*)"/u)?.[1] ?? "/src/components/evidence/MediaPreviewProvider.tsx";
+const mobileSourceUrl = "http://127.0.0.1:5188/src/components/conversation/ConversationView.tsx";
+const mobileModule = mobile
+  ? await (await fetch(mobileSourceUrl)).text()
+  : "";
+const rawProviderModule = mobileModule.match(/from "([^"]*MediaPreviewProvider\.tsx[^"]*)"/u)?.[1];
+const providerModule = rawProviderModule
+  ? (() => { const url = new URL(rawProviderModule, mobileSourceUrl); return `${url.pathname}${url.search}`; })()
+  : "/src/components/evidence/MediaPreviewProvider.tsx";
 const browser = packaged
   ? await _electron.launch({ ...(process.env.BRIDGE_ELECTRON_PATH ? { executablePath: process.env.BRIDGE_ELECTRON_PATH } : {}), args: [resolve(output, "electron-media-main.cjs")] })
   : await chromium.launch({ channel: "chrome", headless: true });

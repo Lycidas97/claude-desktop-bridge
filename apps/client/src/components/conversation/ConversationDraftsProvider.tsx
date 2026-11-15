@@ -10,6 +10,7 @@ import { sessionCommandName } from "../../hooks/useSessionCommands.js";
 import { canSendSession, fileToAttachment } from "../../lib/conversation-timeline.js";
 import { appendUploadedFilePaths, type UploadFileHandler } from "../../lib/file-upload.js";
 import type { useFileAttachments } from "../evidence/FileAttachmentPicker.js";
+import type { QueuedTurnActionState } from "./ConversationMessageItem.js";
 
 export interface ConversationDraftState {
   text: string;
@@ -60,6 +61,8 @@ export interface SessionConversationDraft {
   draft: ConversationDraftState;
   promptReplies: Record<string, string | null> | undefined;
   promptError(promptId: string): string | undefined;
+  queuedActions: Record<string, QueuedTurnActionState> | undefined;
+  setQueuedAction(commandId: string, next: QueuedTurnActionState): void;
   fileUploads: ReturnType<typeof useFileAttachments>;
   updateDraft(change: (current: ConversationDraftState) => ConversationDraftState): void;
   setText(text: string): void;
@@ -116,6 +119,7 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
   const [entries, setEntries] = useState<ConversationFileEntry[]>([]);
   const [promptReplies, setPromptReplies] = useState<Record<string, Record<string, string | null>>>({});
   const [promptErrors, setPromptErrors] = useState<Record<string, Record<string, string>>>({});
+  const [queuedActions, setQueuedActions] = useState<Record<string, Record<string, QueuedTurnActionState>>>({});
 
   const draftsRef = useRef(drafts);
   draftsRef.current = drafts;
@@ -210,6 +214,7 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
     });
     setPromptReplies((current) => stripHostKeys(current, hostId));
     setPromptErrors((current) => stripHostKeys(current, hostId));
+    setQueuedActions((current) => stripHostKeys(current, hostId));
   }
 
   function resetSession(hostId: string | undefined, sessionId: string | undefined): void {
@@ -229,6 +234,12 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
       return next;
     });
     setPromptErrors((current) => {
+      if (!(key in current)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    setQueuedActions((current) => {
       if (!(key in current)) return current;
       const next = { ...current };
       delete next[key];
@@ -333,6 +344,14 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
       draft,
       promptReplies: promptReplies[key],
       promptError: (promptId: string) => promptErrors[key]?.[promptId],
+      queuedActions: queuedActions[key],
+      setQueuedAction: (commandId, next) => {
+        if (!commandId || currentHostEpoch(hostId) !== renderEpoch) return;
+        setQueuedActions((current) => ({
+          ...current,
+          [key]: { ...current[key], [commandId]: next },
+        }));
+      },
       fileUploads,
       updateDraft: (change) => updateDraftOnKey(key, change),
       setText: (nextText) => updateDraftOnKey(key, (current) => ({ ...current, text: nextText })),
@@ -491,7 +510,7 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
     session,
     resetSession,
     clearHost,
-  }), [drafts, entries, promptErrors, promptReplies]);
+  }), [drafts, entries, promptErrors, promptReplies, queuedActions]);
 }
 
 export function ConversationDraftsProvider({

@@ -1,6 +1,6 @@
 import type { BridgeDirectoryListing, BridgeHostSnapshot, BridgeSessionInfo } from "@bridge/protocol";
 import { RefreshCw, Settings } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { IconButton } from "../common/IconButton.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
@@ -9,11 +9,12 @@ import { MailCard } from "./MailCard.js";
 import { MailReference } from "./MailReference.js";
 import "./assistant-mail.css";
 
-export function AssistantPage({ snapshot, mobile = false, active = true, onOpenSession, children }: {
+export function AssistantPage({ snapshot, mobile = false, active = true, onOpenSession, renderConversation, children }: {
   snapshot: BridgeHostSnapshot | undefined;
   mobile?: boolean;
   active?: boolean;
   onOpenSession(sessionId: string): void;
+  renderConversation?: ((sessionId: string) => ReactNode) | undefined;
   children?: ReactNode;
 }) {
   const mail = useAssistantMail();
@@ -23,7 +24,10 @@ export function AssistantPage({ snapshot, mobile = false, active = true, onOpenS
   const [creating, setCreating] = useState(false);
   const [bindingBusy, setBindingBusy] = useState(false);
   const [bindingError, setBindingError] = useState("");
-  const browseDirectory = useCallback(async (path?: string) => mailResult<{ listing: BridgeDirectoryListing }>(await mail!.request("directory.list", path ? { path } : {})).listing, [mail?.request]);
+  const browseDirectory = useMemo(
+    () => (async (path?: string) => mailResult<{ listing: BridgeDirectoryListing }>(await mail!.request("directory.list", path ? { path } : {})).listing),
+    [mail?.request],
+  );
   useEffect(() => { if (active) setView("conversation"); }, [active]);
   if (!active) return children ?? null;
   if (!mail) return null;
@@ -89,7 +93,7 @@ export function AssistantPage({ snapshot, mobile = false, active = true, onOpenS
         {mail.cache.nextCursor && <button type="button" className="secondary-button assistant-mail-older" disabled={!mail.online || mail.loading} onClick={() => void mail.loadOlder()}>{mail.loading ? "正在读取…" : "更早邮件"}</button>}
       </>}
     </div>
-    {displayedView === "conversation" && <div className="assistant-conversation">{children}</div>}
+    {displayedView === "conversation" && <div className="assistant-conversation">{session && renderConversation ? renderConversation(session.sessionId) : children}</div>}
     {creating && snapshot && <SessionCreateDialog snapshot={snapshot} connected={mail.online}
       {...(snapshot.host.capabilities.includes("directory.browse.v1") ? { onBrowseDirectory: browseDirectory } : {})}
       onCreate={async (cwd, title, runtimeId, projectId, trustWorkspace) => {

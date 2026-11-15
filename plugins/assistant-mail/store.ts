@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { MailPageParameters } from "./tool-contract.js";
 
 export interface AssistantBinding {
   assistantId: string;
@@ -19,6 +20,12 @@ export interface MailIdentity {
 
 export type MailProcessingStatus = "pending" | "processing" | "processed";
 
+export interface MailAnalysis {
+  summary: string;
+  suggestions: string[];
+  questions: string[];
+}
+
 export interface MailEvent extends MailIdentity {
   seq: number;
   mailRefId: string;
@@ -27,6 +34,7 @@ export interface MailEvent extends MailIdentity {
   receivedAt: string;
   recordedAt: number;
   processingStatus: MailProcessingStatus;
+  analysis: MailAnalysis | null;
 }
 
 type EventRow = {
@@ -41,6 +49,7 @@ type EventRow = {
   received_at: string;
   recorded_at: number;
   processing_status: MailProcessingStatus;
+  analysis_json: string | null;
   raw_file: string;
 };
 
@@ -51,6 +60,7 @@ function eventFromRow(row: EventRow): MailEvent {
     subject: row.subject, from: JSON.parse(row.from_json) as MailEvent["from"],
     receivedAt: row.received_at, recordedAt: row.recorded_at,
     processingStatus: row.processing_status,
+    analysis: row.analysis_json ? JSON.parse(row.analysis_json) as MailAnalysis : null,
   };
 }
 
@@ -100,10 +110,14 @@ export class AssistantMailStore {
         received_at TEXT NOT NULL,
         recorded_at INTEGER NOT NULL,
         processing_status TEXT NOT NULL DEFAULT 'pending',
+        analysis_json TEXT,
         raw_file TEXT NOT NULL,
         UNIQUE (account_key, mailbox, uid_validity, uid)
       ) STRICT;
     `);
+    if (!this.database.prepare("PRAGMA table_info(mail_events)").all().some(column => column.name === "analysis_json")) {
+      this.database.exec("ALTER TABLE mail_events ADD COLUMN analysis_json TEXT");
+    }
   }
 
   private db(): DatabaseSync {
@@ -171,22 +185,27 @@ export class AssistantMailStore {
     }
   }
 
-  page(options: { cursor?: string; limit?: number; processingStatus?: MailProcessingStatus } = {}): { events: MailEvent[]; nextCursor?: string } {
-    const limit = options.limit ?? 50;
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid mail page limit");
-    if (options.cursor !== undefined && (!/^[1-9]\d*$/.test(options.cursor) || !Number.isSafeInteger(Number(options.cursor)))) {
-      throw new Error("Invalid mail page cursor");
-    }
-    if (options.processingStatus !== undefined && !["pending", "processing", "processed"].includes(options.processingStatus)) {
-      throw new Error("Invalid mail processing status");
-    }
+  page(input: unknown = {}): { events: MailEvent[]; nextCursor?: string } {
+    const { cursor, limit = 50, processingStatus } = MailPageParameters.parse(input);
     const rows = this.db().prepare(`
       SELECT * FROM mail_events WHERE seq < ? AND (? IS NULL OR processing_status = ?)
       ORDER BY seq DESC LIMIT ?
-    `).all(options.cursor ? Number(options.cursor) : Number.MAX_SAFE_INTEGER,
-      options.processingStatus ?? null, options.processingStatus ?? null, limit + 1) as EventRow[];
+    `).all(cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER,
+      processingStatus ?? null, processingStatus ?? null, limit + 1) as EventRow[];
     const events = rows.slice(0, limit).map(eventFromRow);
     return { events, ...(rows.length > limit ? { nextCursor: String(events.at(-1)!.seq) } : {}) };
+  }
+
+  updateAnalysis(mailRefId: string, analysis: MailAnalysis): MailEvent | undefined {
+    const row = this.db().prepare("UPDATE mail_events SET analysis_json = ? WHERE mail_ref_id = ? RETURNING *")
+      .get(JSON.stringify(analysis), mailRefId) as EventRow | undefined;
+    return row ? eventFromRow(row) : undefined;
+  }
+
+  setProcessingStatus(mailRefId: string, status: MailProcessingStatus): MailEvent | undefined {
+    const row = this.db().prepare("UPDATE mail_events SET processing_status = ? WHERE mail_ref_id = ? RETURNING *")
+      .get(status, mailRefId) as EventRow | undefined;
+    return row ? eventFromRow(row) : undefined;
   }
 
   async read(mailRefId: string): Promise<{ event: MailEvent; source: Buffer } | undefined> {

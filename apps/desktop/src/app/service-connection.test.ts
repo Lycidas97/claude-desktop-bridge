@@ -12,6 +12,8 @@ import { DesktopServiceClient, connectDesktopService, serveDesktopService, type 
 import { DesktopController } from "../controller/controller.js";
 import { DesktopConfigRepository } from "../transport/config.js";
 import { diagnostics } from "./diag.js";
+import { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
+import { serveAssistantMailTools } from "../../../../plugins/assistant-mail/local-channel.js";
 
 vi.mock("node:http", async (importOriginal) => {
   const actual = await importOriginal<typeof http>();
@@ -117,6 +119,31 @@ it("requires the local bearer token and refuses non-allowlisted methods", async 
     await expect(client.call("setLaunchAtLogin", "false" as unknown as boolean)).rejects.toThrow("Expected one boolean");
     await expect(client.call("setDiagnosticsEnabled", "false" as unknown as boolean)).rejects.toThrow("Expected one boolean");
   } finally { client.close(); await server.close(); }
+});
+
+it("keeps mail credentials disjoint from management IPC and its snapshot broadcasts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-mail-auth-"));
+  directories.push(root);
+  const service = new AssistantMailService({ userDataPath: root });
+  await service.initialize();
+  const mail = await serveAssistantMailTools({ userDataPath: root, service });
+  const controller = Object.assign(new EventEmitter(), { snapshot: vi.fn(async () => ({})), dispatchLocal: vi.fn() });
+  const shutdown = vi.fn();
+  const management = await serveDesktopService({ addressPath: join(root, "management.json"), controller: controller as unknown as ServiceController, shutdown });
+  try {
+    const mailAddress = JSON.parse(await readFile(join(root, "private", "assistant", "mail-tools.json"), "utf8"));
+    const fullAddress = JSON.parse(await readFile(join(root, "management.json"), "utf8"));
+    expect(mailAddress.token).not.toBe(fullAddress.token);
+    const rejected = new WebSocket(`ws://127.0.0.1:${fullAddress.port}`, { headers: { Authorization: `Bearer ${mailAddress.token}` } });
+    expect(await new Promise<string>(resolve => rejected.once("error", error => resolve(error.message)))).toContain("401");
+    expect((await fetch(`http://127.0.0.1:${mailAddress.port}/tools`, { method: "POST", headers: { Authorization: `Bearer ${fullAddress.token}` }, body: JSON.stringify({ name: "mail.list_events", arguments: {} }) })).status).toBe(403);
+    controller.emit("snapshot", { secret: "management-only" });
+    controller.emit("event", { secret: "management-only" });
+    expect(management.hasConnectedClients()).toBe(false);
+    expect(controller.snapshot).not.toHaveBeenCalled();
+    expect(controller.dispatchLocal).not.toHaveBeenCalled();
+    expect(shutdown).not.toHaveBeenCalled();
+  } finally { await mail.close(); await management.close(); await service.close(); }
 });
 
 it("routes Magpie testing and saving only through the authenticated local service", async () => {

@@ -121,6 +121,29 @@ it("persists the single assistant binding and previous native session references
   expect(store.binding()).toEqual(binding);
 });
 
+it("migrates an existing event and persists analysis/status on the same identity without changing raw bytes or watermark", async () => {
+  store.openMailbox("test-account", "1", 5);
+  const event = (await store.record(message()))!;
+  store.close();
+  const legacy = new DatabaseSync(join(root, "private", "assistant", "assistant.sqlite"));
+  legacy.exec("ALTER TABLE mail_events DROP COLUMN analysis_json");
+  legacy.close();
+  store = new AssistantMailStore(root);
+  await store.initialize();
+  expect(store.page().events[0]?.analysis).toBeNull();
+  const analysis = { summary: "External email asks for a payment", suggestions: ["Check with the user"], questions: ["Is this expected?"] };
+  expect(store.updateAnalysis(event.mailRefId, analysis)).toEqual({ ...event, analysis });
+  expect(store.setProcessingStatus(event.mailRefId, "processed")).toEqual({ ...event, analysis, processingStatus: "processed" });
+  expect(store.updateAnalysis("missing", analysis)).toBeUndefined();
+  expect(store.setProcessingStatus("missing", "pending")).toBeUndefined();
+  store.close();
+  store = new AssistantMailStore(root);
+  await store.initialize();
+  expect(store.page().events).toEqual([{ ...event, analysis, processingStatus: "processed" }]);
+  expect((await store.read(event.mailRefId))?.source).toEqual(message().source);
+  expect(store.openMailbox("test-account", "1", 100)).toBe(5);
+});
+
 it("creates exactly the three business tables and private POSIX files including WAL/SHM", async () => {
   store.openMailbox("test-account", "1", 5);
   await store.record(message());

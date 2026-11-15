@@ -593,9 +593,11 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
       if (update.runtimeCapabilities.includes("prompt.resolve")) snapshot.host.capabilities.push("prompt.native.v1");
       if (update.runtimeCapabilities.includes("pr.autofix")) snapshot.host.capabilities.push("pr.autofix.v1");
       snapshot.runtimes[0].capabilities = update.runtimeCapabilities;
-      for (const key of ["turnState", "ownership", "prs", "autoArchiveOnPrClose", "allowedActions"]) session[key] = update.session[key];
       const target = snapshot.sessions.find(candidate => candidate.sessionId === sessionId);
-      if (target !== session) Object.assign(target, session);
+      for (const key of ["turnState", "ownership", "prs", "prAutoFix", "autoArchiveOnPrClose", "allowedActions"]) {
+        session[key] = update.session[key];
+        target[key] = update.session[key];
+      }
       for (const event of update.events) await host.emit(event.type, event.data, {
         ...(event.itemId ? { itemId: event.itemId } : {}), ...(event.turnId ? { turnId: event.turnId } : {}),
       });
@@ -838,6 +840,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
         case "pr.autoFix.read":
         case "pr.autoFix.set":
           try {
+            if (request.method === "pr.autoFix.set" && host.prWriteGate) await host.prWriteGate;
             const update = await host.nativeApproval.request(request);
             result = update.result;
             await host.syncNativeDialogs(update);
@@ -1436,6 +1439,31 @@ async function verifyNativeApprovals(page, host, steps, directory) {
 }
 
 async function verifyNativePromptsPr(page, host, steps, directory) {
+  async function rejectPendingPrWrite(surface, sheet, control) {
+    await host.nativeApproval.setPromptsPrPolicy({ applyPrWrites: false });
+    const audits = host.nativeApproval.dialogs().events.filter(event => event.type === "pr.autoFix.updated").length;
+    let release;
+    host.prWriteGate = new Promise(resolve => { release = resolve; });
+    try {
+      await control.click();
+      const close = sheet.getByRole("button", { name: "关闭", exact: true });
+      await eventually(() => close.isDisabled(), true, "A pending PR write disables sheet dismissal");
+      await sheet.press("Escape");
+      assert.equal(await sheet.isVisible(), true, "Escape cannot discard a pending PR write result");
+      await surface.locator(".m-sheet-backdrop").click({ position: { x: 1, y: 1 } });
+      assert.equal(await sheet.isVisible(), true, "Backdrop cannot discard a pending PR write result");
+      await close.evaluate(button => button.click());
+      assert.equal(await sheet.isVisible(), true, "Close control cannot discard a pending PR write result");
+    } finally {
+      release();
+      host.prWriteGate = undefined;
+    }
+    await sheet.getByRole("alert").waitFor();
+    await eventually(() => sheet.getByRole("button", { name: "关闭", exact: true }).isEnabled(), true, "A rejected PR write leaves its error visible and unlocks dismissal");
+    assert.equal(host.nativeApproval.dialogs().events.filter(event => event.type === "pr.autoFix.updated").length, audits);
+    await host.nativeApproval.setPromptsPrPolicy({ applyPrWrites: true });
+  }
+
   await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const kinds = ["refusal-fallback", "auto-mode-server-fallback", "lanyard-consent", "violin-bow", "cwd-trust"];
@@ -1504,19 +1532,102 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   assert.equal(host.nativeApproval.calls.filter(call => ["getPrOverview", "getPrChecks"].includes(call.method)).length, 0, "Snapshot refresh never fetches GitHub PR checks");
   assert.equal(host.requests.filter(request => request.method === "pr.autoFix.read").length, 0, "Collapsed PR controls do not query PR state");
   const bar = page.locator(".session-pr-bar");
-  await bar.locator(":scope > summary").click();
-  const own = bar.getByRole("checkbox", { name: "仅我的 PR", exact: true });
-  const next = bar.getByRole("button", { name: "布防下一个 PR", exact: true });
-  await eventually(() => own.isEnabled(), true, "Native preference reads enable the supported controls");
+  assert.equal(await bar.count(), 0, "A capable host does not add a PR header to a session without PRs");
+  await page.screenshot({ path: resolve(directory, "native-no-pr-conversation.png"), fullPage: true });
+  const menuTrigger = page.getByRole("button", { name: "会话操作", exact: true });
+  await menuTrigger.press("Enter");
+  const menu = page.getByRole("dialog", { name: originalTitle, exact: true });
+  const menuOwn = menu.getByRole("checkbox", { name: "仅我的 PR", exact: true });
+  const next = menu.getByRole("button", { name: "布防下一个 PR", exact: true });
+  await eventually(() => menuOwn.isEnabled(), true, "Opening session actions reads Native PR preferences");
+  await menu.getByText("PR Auto-fix", { exact: true }).waitFor();
+  assert.equal(await menu.evaluate(element => document.activeElement === element), true, "Mobile actions focus the sheet after keyboard opening");
+  await page.keyboard.press("Tab");
+  assert.equal(await menu.getByRole("button", { name: "关闭", exact: true }).evaluate(button => document.activeElement === button), true);
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await menu.locator("button:not(:disabled), input:not(:disabled)").last().evaluate(control => document.activeElement === control), true, "Shift+Tab wraps within mobile actions");
+  await page.keyboard.press("Tab");
+  assert.equal(await menu.getByRole("button", { name: "关闭", exact: true }).evaluate(button => document.activeElement === button), true, "Tab wraps within mobile actions");
+  assert.equal(await menu.getByRole("button", { name: "刷新 PR 状态", exact: true }).count(), 0, "Loaded preferences omit the redundant refresh action");
+  const preferenceAlignment = await menu.evaluate(element => {
+    const action = element.querySelector(".m-sheet-action-copy strong");
+    const heading = element.querySelector(".session-pr-actions-heading strong");
+    const label = element.querySelector(".session-pr-preferences label span");
+    return { actionLeft: action.getBoundingClientRect().left, headingLeft: heading.getBoundingClientRect().left,
+      labelLeft: label.getBoundingClientRect().left, actionFont: getComputedStyle(action).fontSize, labelFont: getComputedStyle(label).fontSize };
+  });
+  assert.ok(Math.abs(preferenceAlignment.headingLeft - preferenceAlignment.actionLeft) <= 1, "PR heading aligns with session action labels");
+  assert.ok(Math.abs(preferenceAlignment.labelLeft - preferenceAlignment.actionLeft) <= 1, "PR preference labels align with session action labels");
+  assert.equal(preferenceAlignment.labelFont, preferenceAlignment.actionFont, "PR preferences use the session action body size");
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "getPrChecks").length, 0);
-  await own.click();
-  await eventually(() => own.isChecked(), true, "Only-own-PR preference reflects Native readback");
+  await rejectPendingPrWrite(page, menu, next);
+  assert.equal(await menuOwn.isChecked(), false, "Rejected next-PR write retains the read Native preferences");
+  await menuOwn.click();
+  await eventually(() => menuOwn.isChecked(), true, "Only-own-PR preference reflects Native readback without a bound PR");
   await eventually(() => next.isEnabled(), true, "PR preference update completes before the next action");
   await next.click();
-  await eventually(() => bar.getByRole("button", { name: "已布防下一个 PR", exact: true }).isDisabled(), true, "Next-PR branch latch reflects Native readback without offering an unsupported cancel action");
+  await eventually(() => menu.getByRole("button", { name: "已布防下一个 PR", exact: true }).isDisabled(), true, "Next-PR branch latch reflects Native readback without offering an unsupported cancel action");
   assert.deepEqual(host.nativeApproval.dialogs().prefs, { onlyOwnPrs: true, nextOwnPrArmed: true });
   assert.deepEqual(host.nativeApproval.calls.findLast(call => call.method === "armAutoFixOnNextPr").args, [sessionId, "feature/owned"]);
+  await page.screenshot({ path: resolve(directory, "native-no-pr-preferences.png"), fullPage: true });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "No-PR preferences fit the phone viewport");
+  await eventually(() => menu.getByRole("button", { name: "关闭", exact: true }).isEnabled(), true, "Next-PR write finishes before keyboard dismissal");
+  await menu.getByRole("button", { name: "关闭", exact: true }).press("Escape");
+  await menu.waitFor({ state: "hidden" });
+  assert.equal(await menuTrigger.evaluate(button => document.activeElement === button), true, "Mobile actions restore keyboard focus");
 
+  const desktop = await page.context().newPage();
+  const desktopErrors = [];
+  desktop.on("pageerror", error => desktopErrors.push(error.message));
+  await desktop.exposeFunction("prSnapshot", () => ({ ...host.snapshot, connection: "connected", launchAtLogin: false,
+    diagnosticsEnabled: false, managedDesktopEnabled: false,
+    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true } }));
+  await desktop.exposeFunction("prRequest", async input => {
+    if (input.method === "pr.autoFix.set" && host.prWriteGate) await host.prWriteGate;
+    const update = await host.nativeApproval.request({ kind: "request", requestId: randomUUID(), ...input });
+    await host.syncNativeDialogs(update);
+    return { kind: "response", requestId: randomUUID(), ok: true, result: update.result };
+  });
+  await desktop.addInitScript(() => {
+    window.bridgeDesktop = { getSnapshot: () => window.prSnapshot(), request: input => window.prRequest(input),
+      onSnapshot: () => () => {}, onEvent: () => () => {} };
+  });
+  await desktop.setViewportSize({ width: 1200, height: 800 });
+  await desktop.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await desktop.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await desktop.locator(".desktop-conversation-heading").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  assert.equal(await desktop.locator(".session-pr-bar").count(), 0, "Desktop also omits the no-PR header");
+  await desktop.getByRole("button", { name: "PR Auto-fix", exact: true }).click();
+  const desktopMenu = desktop.getByRole("dialog", { name: "PR Auto-fix", exact: true });
+  const desktopOwn = desktopMenu.getByRole("checkbox", { name: "仅我的 PR", exact: true });
+  await eventually(() => desktopOwn.isEnabled(), true, "Desktop actions read Native preferences");
+  assert.equal(await desktopMenu.getByText("PR Auto-fix", { exact: true }).count(), 1, "Desktop labels the feature once in the dialog heading");
+  assert.equal(await desktopMenu.getByRole("button", { name: "刷新 PR 状态", exact: true }).count(), 0);
+  assert.equal(await desktopOwn.isChecked(), true, "Desktop sees the preference saved by the phone");
+  assert.equal(await desktopMenu.getByRole("button", { name: "已布防下一个 PR", exact: true }).isDisabled(), true);
+  await rejectPendingPrWrite(desktop, desktopMenu, desktopOwn);
+  assert.equal(await desktopOwn.isChecked(), true, "Desktop retains Native state after the delayed rejection");
+  await desktopOwn.click();
+  await eventually(() => desktopOwn.isChecked(), false, "Desktop writes use Native readback");
+  await eventually(() => desktopOwn.isEnabled(), true, "Desktop write finishes before restoring the preference");
+  await desktopOwn.click();
+  await eventually(() => desktopOwn.isChecked(), true, "Desktop restores the shared preference");
+  await eventually(() => desktopOwn.isEnabled(), true, "Desktop preference readback finishes before closing the sheet");
+  await desktop.screenshot({ path: resolve(directory, "desktop-no-pr-preferences.png"), fullPage: true });
+  assert.equal(await desktop.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await desktopMenu.getByRole("button", { name: "关闭", exact: true }).press("Escape");
+  await desktopMenu.waitFor({ state: "hidden" });
+  assert.equal(await desktop.getByRole("button", { name: "PR Auto-fix", exact: true }).evaluate(button => button === document.activeElement), true, "Desktop action sheet restores keyboard focus");
+  assert.deepEqual(desktopErrors, []);
+  await desktop.close();
+  assert.equal(host.nativeApproval.calls.filter(call => call.method === "getPrChecks").length, 0, "No-PR actions on either surface never request checks");
+  steps.push("no-PR mobile and desktop conversations omit the header; session actions read and write shared Native preferences, including pre-arming the next PR");
+
+  await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
+  await bar.locator(":scope > summary").getByText("PR · 1", { exact: true }).waitFor();
+  await bar.locator(":scope > summary").click();
+  const own = bar.getByRole("checkbox", { name: "仅我的 PR", exact: true });
+  await eventually(() => own.isEnabled(), true, "Bound PR disclosure reads Native state only after expansion");
   const entry = bar.locator(".session-pr-entry");
   await eventually(() => own.isEnabled(), true, "Next-PR dispatch is acknowledged before opening checks");
   await entry.locator(":scope > summary").click();
@@ -1555,7 +1666,7 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   assert.deepEqual(host.nativeApproval.dialogs().prefs, { onlyOwnPrs: true, nextOwnPrArmed: true });
   assert.equal(host.nativeApproval.dialogs().prs[0].autoFix, true);
   assert.equal(host.nativeApproval.dialogs().events.filter(event => event.type === "pr.autoFix.updated").length, audits, "Failed Native writes do not record a successful device audit");
-  assert.equal(host.requests.filter(request => request.method === "pr.autoFix.set").length, 5);
+  assert.equal(host.requests.filter(request => request.method === "pr.autoFix.set").length, 6);
   await page.screenshot({ path: resolve(directory, "native-pr-not-applied.png"), fullPage: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Native prompts and PR controls fit the mobile viewport");
   steps.push("ignored bound and own-PR Native writes return an error, retain Native state, and create no successful audit event; an armed next-PR latch offers no unsupported cancel action");
@@ -2933,7 +3044,6 @@ async function runScenario(theme, scenario) {
   let failure;
   try {
     host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
-    if (scenario === "native-prompts-pr") await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
     if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (["project-grouping", "session-catalog"].includes(scenario)) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
     if (scenario === "section-manage") await syncNativeSections(host);

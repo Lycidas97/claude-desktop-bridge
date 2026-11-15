@@ -96,6 +96,8 @@ describe("PR Auto-fix disclosure", () => {
     await Promise.resolve();
     let tree = renderPr(props);
     expect(onRead).toHaveBeenCalledExactlyOnceWith("session-1", undefined, false);
+    expect(text(tree)).toContain("PR Auto-fix");
+    expect(text(tree)).not.toContain("刷新 PR 状态");
     expect(elements(tree).filter(element => element.type === "details")).toHaveLength(0);
     elements(tree).find(element => element.type === "input")!.props.onChange({ target: { checked: true } });
     await Promise.resolve();
@@ -116,7 +118,7 @@ describe("PR Auto-fix disclosure", () => {
     const onRead = vi.fn();
     const tree = renderPr({ session: { ...session, prs: [] }, ...availability, preferencesOnly: true, onRead, onSet: vi.fn() });
     expect(onRead).not.toHaveBeenCalled();
-    expect(elements(tree).find(element => element.type === "button")!.props.disabled).toBe(true);
+    expect(elements(tree).filter(element => element.type === "button").every(button => button.props.disabled)).toBe(true);
   });
 
   it("reads only after expansion and fetches checks only for the selected PR", async () => {

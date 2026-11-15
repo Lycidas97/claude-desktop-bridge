@@ -22,8 +22,14 @@
 .session-pr-checks li.is-failed, .session-pr-checks li.is-failed a, .session-pr-checks li.is-failed small { color: var(--danger-ink); }
 .session-pr-empty, .native-prompt-unavailable { color: var(--muted); }
 .session-pr-bar .message-copy-button, .session-pr-actions .message-copy-button { justify-self: start; min-height: 36px; }
-.session-pr-actions { padding: 8px 16px; color: var(--text); font-size: calc(13px * var(--font-scale)); }
-.session-pr-actions .session-pr-body { max-height: none; overflow: visible; padding: 0; gap: 8px; }
+.session-pr-actions { padding: 8px 16px; color: var(--text); font-size: var(--m-fs-body); }
+.session-pr-actions .session-pr-body { max-height: none; min-height: 40px; overflow: visible; padding: 0; gap: 0; }
+.session-pr-actions-heading { display: flex; align-items: center; gap: 14px; min-height: 40px; }
+.session-pr-actions-heading > svg { flex: none; width: 22px; color: var(--muted); }
+.session-pr-actions .session-pr-body label { gap: 14px; }
+.session-pr-actions .session-pr-body input[type="checkbox"] { margin: 0 2px; }
+.session-pr-actions .message-copy-button { font: inherit; }
+.session-pr-actions .session-pr-loading { min-height: 40px; }
 .session-pr-bar summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .native-prompt p { margin: 0; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .native-prompt-selector { width: 100%; min-width: 0; min-height: 44px; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card-fill); color: var(--text); font: inherit; flex-shrink: 0; }

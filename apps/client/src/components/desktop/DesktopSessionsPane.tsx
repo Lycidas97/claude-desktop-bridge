@@ -37,9 +37,9 @@ import {
   CircleStop,
   Forward,
   GitFork,
+  GitPullRequest,
   LoaderCircle,
   MessageSquare,
-  MoreHorizontal,
   Plus,
   RefreshCw,
   Send,
@@ -924,8 +924,8 @@ export function DesktopSessions({
               </div>
               <div className="desktop-conversation-heading-actions">
                 {!selected.prs?.length && prControls.supported && (
-                  <IconButton label="会话操作" onClick={() => setPrActionsOpen(true)}>
-                    <MoreHorizontal size={18} />
+                  <IconButton label="PR Auto-fix" onClick={() => setPrActionsOpen(true)}>
+                    <GitPullRequest size={18} />
                   </IconButton>
                 )}
                 {canConfigure && (
@@ -1264,9 +1264,9 @@ export function DesktopSessions({
       </section>
 
       {prActionsOpen && selected && !selected.prs?.length && prControls.supported && (
-        <MobileSheet title="会话操作" manageFocus onClose={() => setPrActionsOpen(false)}>
+        <MobileSheet title="PR Auto-fix" manageFocus onClose={() => setPrActionsOpen(false)}>
           <div className="m-group">
-            <SessionPrActions key={selected.sessionId} session={selected} events={events} {...prControls} />
+            <SessionPrActions key={selected.sessionId} session={selected} events={events} showHeading={false} {...prControls} />
           </div>
         </MobileSheet>
       )}

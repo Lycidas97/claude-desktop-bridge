@@ -154,7 +154,9 @@ describe("desktop session PR disclosure", () => {
     snapshot.host.capabilities.push("pr.autofix.v1");
     snapshot.runtime.desktopIntegration.state = "ready";
     await openSessions();
-    elements(tree).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    const trigger = elements(tree).find(element => element.type === IconButton && element.props.label === "PR Auto-fix");
+    expect(trigger).toBeDefined();
+    trigger!.props.onClick();
     tree = sessions.draw();
     const actions = elements(tree).find(element => element.type === SessionPrActions)!;
     expect(actions.props.session.sessionId).toBe("A");

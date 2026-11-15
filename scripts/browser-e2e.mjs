@@ -1421,6 +1421,18 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   const menuOwn = menu.getByRole("checkbox", { name: "仅我的 PR", exact: true });
   const next = menu.getByRole("button", { name: "布防下一个 PR", exact: true });
   await eventually(() => menuOwn.isEnabled(), true, "Opening session actions reads Native PR preferences");
+  await menu.getByText("PR Auto-fix", { exact: true }).waitFor();
+  assert.equal(await menu.getByRole("button", { name: "刷新 PR 状态", exact: true }).count(), 0, "Loaded preferences omit the redundant refresh action");
+  const preferenceAlignment = await menu.evaluate(element => {
+    const action = element.querySelector(".m-sheet-action-copy strong");
+    const heading = element.querySelector(".session-pr-actions-heading strong");
+    const label = element.querySelector(".session-pr-preferences label span");
+    return { actionLeft: action.getBoundingClientRect().left, headingLeft: heading.getBoundingClientRect().left,
+      labelLeft: label.getBoundingClientRect().left, actionFont: getComputedStyle(action).fontSize, labelFont: getComputedStyle(label).fontSize };
+  });
+  assert.ok(Math.abs(preferenceAlignment.headingLeft - preferenceAlignment.actionLeft) <= 1, "PR heading aligns with session action labels");
+  assert.ok(Math.abs(preferenceAlignment.labelLeft - preferenceAlignment.actionLeft) <= 1, "PR preference labels align with session action labels");
+  assert.equal(preferenceAlignment.labelFont, preferenceAlignment.actionFont, "PR preferences use the session action body size");
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "getPrChecks").length, 0);
   await menuOwn.click();
   await eventually(() => menuOwn.isChecked(), true, "Only-own-PR preference reflects Native readback without a bound PR");
@@ -1454,10 +1466,12 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   await desktop.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
   await desktop.locator(".desktop-conversation-heading").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   assert.equal(await desktop.locator(".session-pr-bar").count(), 0, "Desktop also omits the no-PR header");
-  await desktop.getByRole("button", { name: "会话操作", exact: true }).click();
-  const desktopMenu = desktop.getByRole("dialog", { name: "会话操作", exact: true });
+  await desktop.getByRole("button", { name: "PR Auto-fix", exact: true }).click();
+  const desktopMenu = desktop.getByRole("dialog", { name: "PR Auto-fix", exact: true });
   const desktopOwn = desktopMenu.getByRole("checkbox", { name: "仅我的 PR", exact: true });
   await eventually(() => desktopOwn.isEnabled(), true, "Desktop actions read Native preferences");
+  assert.equal(await desktopMenu.getByText("PR Auto-fix", { exact: true }).count(), 1, "Desktop labels the feature once in the dialog heading");
+  assert.equal(await desktopMenu.getByRole("button", { name: "刷新 PR 状态", exact: true }).count(), 0);
   assert.equal(await desktopOwn.isChecked(), true, "Desktop sees the preference saved by the phone");
   assert.equal(await desktopMenu.getByRole("button", { name: "已布防下一个 PR", exact: true }).isDisabled(), true);
   await desktopOwn.click();
@@ -1470,7 +1484,7 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   assert.equal(await desktop.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await desktopMenu.getByRole("button", { name: "关闭", exact: true }).press("Escape");
   await desktopMenu.waitFor({ state: "hidden" });
-  assert.equal(await desktop.getByRole("button", { name: "会话操作", exact: true }).evaluate(button => button === document.activeElement), true, "Desktop action sheet restores keyboard focus");
+  assert.equal(await desktop.getByRole("button", { name: "PR Auto-fix", exact: true }).evaluate(button => button === document.activeElement), true, "Desktop action sheet restores keyboard focus");
   assert.deepEqual(desktopErrors, []);
   await desktop.close();
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "getPrChecks").length, 0, "No-PR actions on either surface never request checks");

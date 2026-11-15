@@ -7,12 +7,13 @@ export function SessionPrActions(props: Omit<Parameters<typeof SessionPrBar>[0],
   return <SessionPrBar {...props} preferencesOnly />;
 }
 
-export function SessionPrBar({ session, events, supported, online, onRead, onSet, preferencesOnly = false }: {
+export function SessionPrBar({ session, events, supported, online, onRead, onSet, preferencesOnly = false, showHeading = true }: {
   session: BridgeSessionInfo;
   events?: BridgeEvent[];
   supported: boolean;
   online: boolean;
   preferencesOnly?: boolean;
+  showHeading?: boolean;
   onRead?(sessionId: string, pr?: BridgePullRequest, includeChecks?: boolean): Promise<BridgePrAutoFixState>;
   onSet?(update: BridgePrAutoFixUpdate): Promise<BridgePrAutoFixState>;
 }) {
@@ -73,8 +74,9 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
 
   const body = (
       <div className="session-pr-body">
+        {preferencesOnly && showHeading && <div className="session-pr-actions-heading"><GitPullRequest size={19} aria-hidden="true" /><strong>PR Auto-fix</strong></div>}
         {!supported ? <p>当前电脑端不支持 PR Auto-fix</p> : !online ? <p>电脑离线，连接后再操作</p> : null}
-        {busy && <span className="session-pr-loading" role="status"><LoaderCircle size={14} className="is-spinning" />正在同步</span>}
+        {busy && (!preferencesOnly || !state) && <span className="session-pr-loading" role="status"><LoaderCircle size={14} className="is-spinning" />正在同步</span>}
         {error && <div className="permission-error" role="alert">{error}</div>}
         {state && (
           <div className="session-pr-preferences">
@@ -137,7 +139,7 @@ export function SessionPrBar({ session, events, supported, online, onRead, onSet
             </details>
           );
         })}
-        <button type="button" className="message-copy-button" disabled={!available || Boolean(busy)} onClick={() => void read()}><RefreshCw size={13} />刷新 PR 状态</button>
+        {(!preferencesOnly || error) && <button type="button" className="message-copy-button" disabled={!available || Boolean(busy)} onClick={() => void read()}><RefreshCw size={13} />刷新 PR 状态</button>}
       </div>
   );
 

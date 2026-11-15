@@ -115,6 +115,8 @@ import { MessageCopyButton } from "./common/MessageCopyButton.js";
 import { MobileComposer } from "./mobile/MobileComposer.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
 import { MobileSessionCatalog } from "./mobile/MobileSessionCatalog.js";
+import { useAssistantMail } from "./assistant/AssistantMailProvider.js";
+import { MailCard } from "./assistant/MailCard.js";
 import { MobileSheet, SheetAction } from "./mobile/MobileSheet.js";
 import {
   SessionConfigurationDialog,
@@ -456,6 +458,7 @@ export function MobileWorkspace({
     void refresh();
     return () => { active = false; clearTimeout(timer); };
   }, [draftKey, selectedSession?.sessionId, selectedSession?.runtimeId, visible, sessionView, connection, desktopOnline, taskHistoryReady, onLoadBackgroundTasks]);
+  const assistantMail = useAssistantMail();
   const selectedEvidence = selectedSessionId ? evidence[selectedSessionId] : undefined;
   const items = useMemo(
     () => selectedSessionId
@@ -465,11 +468,11 @@ export function MobileWorkspace({
   );
   const fileChangesSummary = useMemo(() => aggregateFileChanges(items), [items]);
   const timeline = useMemo(
-    () => conversationTimeline(items, selectedEvidence?.items ?? []),
-    [items, selectedEvidence?.items],
+    () => conversationTimeline(items, selectedEvidence?.items ?? [], selectedSessionId ? assistantMail?.cache.cards.filter(card => (card.nativeDelivery.nativeSessionId ?? snapshot?.assistantMail?.binding?.nativeSessionId) === selectedSessionId) ?? [] : []),
+    [items, selectedEvidence?.items, assistantMail?.cache.cards, snapshot?.assistantMail?.binding?.nativeSessionId, selectedSessionId],
   );
   const streamKeys = useMemo(() => timeline.map((entry) => (
-    entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.item.id
+    entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.kind === "mail" ? `mail:${entry.card.mailRefId}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(selectedSessionId, streamKeys);
   const selectedTaskDetails = backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails : undefined;
@@ -1698,6 +1701,7 @@ export function MobileWorkspace({
             </div>
           )}
           {displayNodes.map((node) => {
+            if (node.kind === "mail") return <MailCard key={`mail:${node.card.mailRefId}`} card={node.card} {...(node.nativeMessage ? { nativeMessage: node.nativeMessage } : {})} />;
             if (node.kind === "evidence") {
               return (
                 <EvidenceInlineSummary

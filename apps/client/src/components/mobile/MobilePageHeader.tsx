@@ -31,7 +31,7 @@ export function MobilePageHeader({
     <header className={`m-header${onBack ? " is-pushed" : nav ? " has-menu" : ""}${titleHidden ? " is-title-hidden" : ""}`}>
       {onBack
         ? <IconButton label={backLabel} disabled={backDisabled} onClick={onBack}><ArrowLeft size={22} /></IconButton>
-        : nav && <MobileNavMenu tab={nav.tab} onTabChange={nav.onTabChange} />}
+        : nav && <MobileNavMenu tab={nav.tab} onTabChange={nav.onTabChange} assistantAvailable={nav.assistantAvailable} />}
       <div className="m-header-copy">
         <h1>{title}</h1>
         {subtitle && <div className="m-header-subtitle">{subtitle}</div>}

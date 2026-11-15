@@ -2,6 +2,7 @@ import {
   evidenceSummary,
   summarizeEvidenceEvent,
   type BridgeArtifactPreview,
+  type BridgeAssistantMailSnapshot,
   type BridgeConversationRoute,
   type BridgeDeliveryState,
   type BridgeEvent,
@@ -723,6 +724,9 @@ export function applyEventToSnapshot(
     providers.set(profile.id, profile);
     return { ...current, providers: [...providers.values()] };
   }
+  if (event.type === "plugin.assistant-mail.changed" && current.host.capabilities.includes("plugin.assistant-mail.v1")) {
+    return { ...current, assistantMail: event.data.assistantMail as BridgeAssistantMailSnapshot };
+  }
   if (!event.sessionId) return current;
   const hasPendingPermission = permissions.some((permission) => permission.sessionId === event.sessionId)
     || current.prompts?.some(prompt => prompt.sessionId === event.sessionId) === true;
@@ -964,6 +968,7 @@ export function applyEventsToSnapshot(
   const byId = new Map(current.sessions.map((session) => [session.sessionId, session]));
   let providers = current.providers ?? [];
   let prompts = current.prompts;
+  let assistantMail = current.assistantMail;
   let providersDirty = false;
   let sessionsDirty = false;
   let latestSeq = current.latestSeq;
@@ -983,6 +988,10 @@ export function applyEventsToSnapshot(
         }
         providersDirty = true;
       }
+      continue;
+    }
+    if (event.type === "plugin.assistant-mail.changed" && current.host.capabilities.includes("plugin.assistant-mail.v1")) {
+      assistantMail = event.data.assistantMail as BridgeAssistantMailSnapshot;
       continue;
     }
     if (!event.sessionId) continue;
@@ -1006,6 +1015,7 @@ export function applyEventsToSnapshot(
     latestSeq,
     ...(sessionsDirty ? { sessions: [...byId.values()] } : {}),
     ...(providersDirty ? { providers } : {}),
+    ...(assistantMail ? { assistantMail } : {}),
     ...(prompts ? { prompts } : {}),
   };
   return {

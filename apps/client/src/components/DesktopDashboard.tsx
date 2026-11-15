@@ -10,6 +10,7 @@ import {
   Clipboard,
   Laptop,
   MessageSquare,
+  Mail,
   QrCode,
   Settings2,
   Smartphone,
@@ -30,7 +31,10 @@ import { DesktopSessions, unwrap } from "./desktop/DesktopSessionsPane.js";
 import { DesktopSettings } from "./desktop/DesktopSettings.js";
 import { MediaPreviewProvider } from "./evidence/MediaPreviewProvider.js";
 
-type DesktopTab = "sessions" | "devices" | "settings";
+import { AssistantMailProvider, type AssistantRequest } from "./assistant/AssistantMailProvider.js";
+import { AssistantPage } from "./assistant/AssistantPage.js";
+
+type DesktopTab = "sessions" | "assistant" | "devices" | "settings";
 
 function formatLastSeen(value: number | undefined, online: boolean): string {
   if (online) return "当前在线";
@@ -131,6 +135,8 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
   const [snapshot, setSnapshot] = useState<DesktopControlSnapshot>();
   const [events, setEvents] = useState<BridgeEvent[]>([]);
   const [tab, setTab] = useState<DesktopTab>("sessions");
+  const [requestedSessionId, setRequestedSessionId] = useState<string>();
+  const mailRequest = useMemo<AssistantRequest>(() => (method, params) => api!.request({ method, params }), [api]);
   const visibleSnapshot = useMemo(() => snapshot ? claudeSnapshot(snapshot) : undefined, [snapshot]);
 
   useEffect(() => {
@@ -161,11 +167,13 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
   return (
     <MediaPreviewProvider request={(method, params) => request({ method, params })} supportsFileStat={snapshot.host.capabilities.includes("artifact.transfer.stat.v1")}>
     <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={snapshot.runtime.detection?.refreshedAt ?? 0}>
+    <AssistantMailProvider key={snapshot.host.hostId} snapshot={snapshot} online request={mailRequest}>
     <main className="desktop-shell-v2">
       <aside className="desktop-nav-v2">
         <BrandMark compact />
         <nav aria-label="Bridge 主导航">
           <button className={tab === "sessions" ? "active" : ""} type="button" onClick={() => setTab("sessions")}><MessageSquare size={19} /><span>会话</span></button>
+          {snapshot.host.capabilities.includes("plugin.assistant-mail.v1") && <button className={tab === "assistant" ? "active" : ""} type="button" onClick={() => setTab("assistant")}><Mail size={19} /><span>助理</span></button>}
           <button className={tab === "devices" ? "active" : ""} type="button" onClick={() => setTab("devices")}><Smartphone size={19} /><span>设备</span></button>
           <button className={tab === "settings" ? "active" : ""} type="button" onClick={() => setTab("settings")}><Settings2 size={19} /><span>设置</span></button>
         </nav>
@@ -183,6 +191,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
         {tab === "sessions" && (
           <DesktopSessions
             snapshot={visibleSnapshot!}
+            initialSessionId={requestedSessionId}
             events={events}
             apiRequest={request}
             onRefreshSnapshot={async () => {
@@ -191,6 +200,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
 
           />
         )}
+        {tab === "assistant" && <AssistantPage snapshot={visibleSnapshot!} onOpenSession={sessionId => { setRequestedSessionId(sessionId); setTab("sessions"); }} />}
         {tab === "devices" && (
           <DesktopDevices
             snapshot={snapshot}
@@ -204,6 +214,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
       </section>
       <DiagnosticFloatingEntry desktopSnapshot={snapshot} />
     </main>
+    </AssistantMailProvider>
     </MagpieQuotaProvider>
     </MediaPreviewProvider>
   );

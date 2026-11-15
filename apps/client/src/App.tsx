@@ -25,6 +25,8 @@ import { ProviderSettings } from "./components/session/ProviderSettings.js";
 import { MobileClientUpdateDialog, type RemoteDesktopUpdateControl } from "./components/updater/UpdaterSections.js";
 import { MAGPIE_QUOTA_METHOD, type QuotaLoader, type QuotaSnapshot } from "../../../plugins/magpie-quota/contract.js";
 import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
+import { AssistantMailProvider, type AssistantRequest } from "./components/assistant/AssistantMailProvider.js";
+import { AssistantPage } from "./components/assistant/AssistantPage.js";
 
 export function App() {
   const themeControl = useTheme();
@@ -43,6 +45,7 @@ export function App() {
   const handleFocusHandled = useCallback(() => setFocusRequest(undefined), []);
   // requestMedia is the hook's plain request function; its identity never changes.
   const request = mobile.requestMedia;
+  const mailRequest = useCallback<AssistantRequest>((method, params) => request(method, params, { wait: true, allowOffline: false }), [request]);
   const loadMagpieQuota = useCallback<QuotaLoader>(async (options) => {
     // Manual refresh has a shared 60 s desktop budget; ordinary reads still use 15 s.
     const response = await request(MAGPIE_QUOTA_METHOD, { refresh: options?.refresh ?? false }, {
@@ -173,6 +176,7 @@ export function App() {
   }
   return (
     <MobileAppShell
+      assistantAvailable={snapshot?.host.capabilities.includes("plugin.assistant-mail.v1") ?? false}
       tab={tab}
       onTabChange={(next) => {
         setComputerDetailsHostId(undefined);
@@ -184,6 +188,8 @@ export function App() {
     >
       {/* One quota snapshot per computer, shared by the session form and the settings dashboard. */}
       <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled} sourceKey={snapshot?.runtime.detection?.refreshedAt ?? 0}>
+      <AssistantMailProvider key={mobile.state.activeHostId ?? ""} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={mailRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache}>
+      {tab === "assistant" && snapshot && <AssistantPage snapshot={snapshot} mobile onOpenSession={sessionId => { setFocusRequest({ sessionId, key: Date.now() }); setTab("sessions"); }} />}
       {mobile.state.activeHostId ? (
         <div className="mobile-tab-page" hidden={tab !== "sessions"}>
           <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia} supportsFileStat={snapshot?.host.capabilities.includes("artifact.transfer.stat.v1") ?? false}>
@@ -349,6 +355,7 @@ export function App() {
           {...(quotaDeclared ? { quota: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setQuotaOpen(true) } } : {})}
         />
       ))}
+      </AssistantMailProvider>
       </MagpieQuotaProvider>
       <MobileClientUpdateDialog updater={clientUpdater} />
       <DiagnosticFloatingEntry />

@@ -11,6 +11,7 @@ import {
   type BridgeEvent,
   type BridgeEvidenceDetailPage,
   type BridgeHostSnapshot,
+  type BridgeMailCache,
   type BridgeNativePermissionMode,
   type BridgePayload,
   type BridgePermissionInfo,
@@ -40,6 +41,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { diagLog } from "../lib/diagnostics.js";
 import type { UploadFileHandler } from "../lib/file-upload.js";
 import { onNativePushWake } from "../lib/push-wake.js";
+import { bridgeVault } from "../lib/vault.js";
 import {
   downloadBridgeSessionArtifact,
   downloadBridgeSessionPathFile,
@@ -856,6 +858,16 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "删除会话失败");
   }, [sendRequest]);
 
+  const loadMailCache = useCallback(async (): Promise<BridgeMailCache | undefined> => {
+    const crypto = cryptoRef.current;
+    if (crypto) return bridgeVault.loadMailCache(crypto);
+  }, []);
+
+  const saveMailCache = useCallback(async (cache: BridgeMailCache): Promise<void> => {
+    const crypto = cryptoRef.current;
+    if (crypto) await bridgeVault.saveMailCache(crypto, cache);
+  }, []);
+
   return {
     state,
     pair,
@@ -914,5 +926,7 @@ export function useMobileBridge() {
     refresh,
     forgetHost,
     retryConnection,
+    loadMailCache,
+    saveMailCache,
   };
 }

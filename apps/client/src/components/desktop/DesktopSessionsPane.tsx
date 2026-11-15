@@ -104,6 +104,8 @@ import {
   type SessionConfigurationChange,
 } from "../session/SessionConfigurationDialog.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
+import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
+import { MailCard } from "../assistant/MailCard.js";
 
 export function unwrap<T>(response: BridgeResponse): T {
   if (!response.ok) {
@@ -152,7 +154,9 @@ export function DesktopSessions({
   events,
   apiRequest,
   onRefreshSnapshot,
+  initialSessionId,
 }: {
+  initialSessionId?: string | undefined;
   snapshot: DesktopControlSnapshot;
   events: BridgeEvent[];
   apiRequest(request: LocalBridgeRequest): Promise<BridgeResponse>;
@@ -161,7 +165,7 @@ export function DesktopSessions({
   onTakeoverDesktop?(sessionId: string, commandId?: string): Promise<void>;
 }) {
   const openMedia = useMediaPreview();
-  const [selectedId, setSelectedId] = useState(snapshot.sessions[0]?.sessionId);
+  const [selectedId, setSelectedId] = useState(initialSessionId ?? snapshot.sessions[0]?.sessionId);
   const [history, setHistory] = useState<Record<string, SessionHistoryState>>({});
   const [promptReplies, setPromptReplies] = useState<Record<string, Record<string, string | null>>>({});
   const [evidence, setEvidence] = useState<Record<string, SessionEvidenceState>>({});
@@ -251,6 +255,7 @@ export function DesktopSessions({
   const canConfigure = Boolean(selected && canConfigureSession(selected, snapshot));
   const rewindAvailable = selected?.transport === "claude-desktop-native" && snapshot.host.capabilities.includes("session.rewind.v1");
   const rewindDisabled = selected?.turnState === "running" || selected?.turnState === "waiting" || Boolean(selected?.pendingCount);
+  const assistantMail = useAssistantMail();
   const selectedEvidence = selectedId ? evidence[selectedId] : undefined;
   const stopTarget = stoppableBridgeTask(snapshot.sessions, selected?.sessionId);
   const canStop = Boolean(stopTarget);
@@ -261,11 +266,11 @@ export function DesktopSessions({
   ), [events, history, promptReplies, selectedId]);
   const fileChangesSummary = useMemo(() => aggregateFileChanges(items), [items]);
   const timeline = useMemo(
-    () => conversationTimeline(items, selectedEvidence?.items ?? []),
-    [items, selectedEvidence?.items],
+    () => conversationTimeline(items, selectedEvidence?.items ?? [], selectedId ? assistantMail?.cache.cards.filter(card => (card.nativeDelivery.nativeSessionId ?? snapshot.assistantMail?.binding?.nativeSessionId) === selectedId) ?? [] : []),
+    [items, selectedEvidence?.items, assistantMail?.cache.cards, snapshot.assistantMail?.binding?.nativeSessionId, selectedId],
   );
   const streamKeys = useMemo(() => timeline.map((entry) => (
-    entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.item.id
+    entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : entry.kind === "mail" ? `mail:${entry.card.mailRefId}` : entry.item.id
   )), [timeline]);
   const streamEntering = useStreamEntrance(selectedId, streamKeys);
   const activity = useMemo(() => sessionActivity(selected, items), [selected, items]);
@@ -1056,7 +1061,7 @@ export function DesktopSessions({
             {sessionView === "conversation" ? (
             <div className="desktop-conversation-stream" ref={streamRef}>
               {history[selected.sessionId]?.status === "loading" && items.length === 0 && <div className="desktop-conversation-empty">正在读取会话</div>}
-              {timeline.map((entry) => entry.kind === "evidence" ? (
+              {timeline.map((entry) => entry.kind === "mail" ? <MailCard key={`mail:${entry.card.mailRefId}`} card={entry.card} {...(entry.nativeMessage ? { nativeMessage: entry.nativeMessage } : {})} /> : entry.kind === "evidence" ? (
                 <EvidenceInlineSummary
                   evidence={entry.evidence}
                   key={`evidence:${entry.evidence.id}`}

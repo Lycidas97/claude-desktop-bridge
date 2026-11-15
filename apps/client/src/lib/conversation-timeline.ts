@@ -6,6 +6,7 @@ import type {
   BridgeEvent,
   BridgeFileChangeSummary,
   BridgeHistoryItem,
+  BridgeMailCard,
   BridgeHostSnapshot,
   BridgeInteractivePrompt,
   BridgeSessionInfo,
@@ -49,7 +50,8 @@ export function restorableSessionId(
 
 export type ConversationTimelineEntry =
   | { kind: "message"; item: ConversationItem }
-  | { kind: "evidence"; evidence: BridgeEvidenceBundle };
+  | { kind: "evidence"; evidence: BridgeEvidenceBundle }
+  | { kind: "mail"; card: BridgeMailCard; nativeMessage?: ConversationItem };
 
 export function formatTime(value: number): string {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(value);
@@ -787,6 +789,7 @@ export function conversationItems(
 export function conversationTimeline(
   items: ConversationItem[],
   evidenceItems: BridgeEvidenceBundle[],
+  mailCards: BridgeMailCard[] = [],
 ): ConversationTimelineEntry[] {
   const latestByTurn = new Map<string, BridgeEvidenceBundle>();
   for (const evidence of evidenceItems) {
@@ -821,10 +824,16 @@ export function conversationTimeline(
   }
 
   const timeline: ConversationTimelineEntry[] = [];
+  const projected = new Set<string>();
   items.forEach((item, index) => {
+    const card = item.role === "user" ? mailCards.find(candidate => candidate.nativeDelivery.messageId === item.id && candidate.nativeDelivery.nativeSessionId === item.sessionId) : undefined;
+    if (card) {
+      projected.add(card.mailRefId);
+      timeline.push({ kind: "mail", card, nativeMessage: item });
+    }
     // File-change tool cards are aggregated Codex-style into the 成果 tab;
     // one card per edit would flood the conversation.
-    if (!(item.role === "tool" && item.toolName === "File change")) {
+    if (!card && !(item.role === "tool" && item.toolName === "File change")) {
       timeline.push({ kind: "message", item });
     }
     for (const evidence of (evidenceAfter.get(index) ?? [])
@@ -832,6 +841,10 @@ export function conversationTimeline(
       timeline.push({ kind: "evidence", evidence });
     }
   });
+  for (const card of mailCards.filter(candidate => !projected.has(candidate.mailRefId)).sort((left, right) => left.recordedAt - right.recordedAt)) {
+    const index = timeline.findIndex(entry => (entry.kind === "message" ? entry.item.createdAt : entry.kind === "evidence" ? entry.evidence.startedAt : entry.card.recordedAt) > card.recordedAt);
+    timeline.splice(index < 0 ? timeline.length : index, 0, { kind: "mail", card });
+  }
   return timeline;
 }
 

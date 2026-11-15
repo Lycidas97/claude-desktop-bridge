@@ -1,18 +1,20 @@
-import { Check, Laptop, Menu, MessageSquare, Settings } from "lucide-react";
+import { Check, Laptop, Mail, Menu, MessageSquare, Settings } from "lucide-react";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { IconButton } from "../common/IconButton.js";
 
-export type MobileTab = "sessions" | "computers" | "settings";
+export type MobileTab = "sessions" | "assistant" | "computers" | "settings";
 
 const TABS = [
   { id: "sessions", label: "会话", icon: MessageSquare },
+  { id: "assistant", label: "助理", icon: Mail },
   { id: "computers", label: "电脑", icon: Laptop },
   { id: "settings", label: "设置", icon: Settings },
 ] as const;
 
 interface MobileNav {
+  assistantAvailable?: boolean | undefined;
   tab: MobileTab;
   onTabChange(tab: MobileTab): void;
 }
@@ -27,9 +29,9 @@ export function useMobileNav(): MobileNav | undefined {
  * Top-level destinations live behind the menu button that leads every root
  * page header, so content keeps the whole screen height.
  */
-export function MobileAppShell({ tab, onTabChange, children }: MobileNav & { children: ReactNode }) {
+export function MobileAppShell({ tab, onTabChange, assistantAvailable, children }: MobileNav & { children: ReactNode }) {
   return (
-    <MobileNavContext.Provider value={{ tab, onTabChange }}>
+    <MobileNavContext.Provider value={{ tab, onTabChange, assistantAvailable }}>
       <div className="mobile-app-shell">
         <div className="mobile-app-content">{children}</div>
       </div>
@@ -37,7 +39,7 @@ export function MobileAppShell({ tab, onTabChange, children }: MobileNav & { chi
   );
 }
 
-export function MobileNavMenu({ tab, onTabChange }: MobileNav) {
+export function MobileNavMenu({ tab, onTabChange, assistantAvailable }: MobileNav) {
   const [position, setPosition] = useState<{ top: number; left: number }>();
 
   useEffect(() => {
@@ -65,7 +67,7 @@ export function MobileNavMenu({ tab, onTabChange }: MobileNav) {
           if (event.target === event.currentTarget) setPosition(undefined);
         }}>
           <nav className="m-nav-menu" aria-label="主要导航" style={position}>
-            {TABS.map(({ id, label, icon: Icon }) => (
+            {TABS.filter(item => item.id !== "assistant" || assistantAvailable).map(({ id, label, icon: Icon }) => (
               <button
                 type="button"
                 key={id}

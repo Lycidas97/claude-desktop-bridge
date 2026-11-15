@@ -98,6 +98,9 @@ const METHODS = new Set([
   "runtime.goal.resume",
   "device.revoke",
   "plugin.magpie-quota.list",
+  "plugin.assistant-mail.list",
+  "plugin.assistant-mail.read",
+  "plugin.assistant-mail.bind",
   "system.update",
 ]);
 

@@ -18,16 +18,18 @@ import {
   selectBridgeEndpoint,
   type BridgeEndpoint,
   type BridgeIceServer,
+  type BridgeMailCache,
   type EncryptedEnvelope,
   type PairingBundle,
   type StoredIdentity,
 } from "@bridge/protocol";
 
 const DATABASE_NAME = "claude-bridge";
-const DATABASE_VERSION = 4;
+const DATABASE_VERSION = 5;
 const LEGACY_IDENTITY_KEY = "current";
 const HOST_KEY_PREFIX = "host:";
 const MESSAGE_LIMIT = 150;
+const MAIL_CACHE_LIMIT = 200;
 
 interface StoredCrypto {
   key: string;
@@ -215,6 +217,7 @@ export class BridgeVault {
         if (!messages.indexNames.contains("sentAt")) messages.createIndex("sentAt", "envelope.sentAt");
         if (!messages.indexNames.contains("roomSentAt")) messages.createIndex("roomSentAt", ["envelope.roomId", "envelope.sentAt"]);
         if (!database.objectStoreNames.contains("outbox")) database.createObjectStore("outbox", { keyPath: "id" });
+        if (!database.objectStoreNames.contains("mailCache")) database.createObjectStore("mailCache", { keyPath: "roomId" });
       });
       request.addEventListener("success", () => resolve(request.result));
       request.addEventListener("error", () => reject(request.error ?? new Error("Could not open secure storage")));
@@ -297,7 +300,8 @@ export class BridgeVault {
         message.to === "mobile" ? crypto.identity.deviceId : undefined,
       )
     )));
-    const transaction = database.transaction(["identity", "messages", "outbox"], "readwrite");
+    const transaction = database.transaction(["identity", "messages", "outbox", "mailCache"], "readwrite");
+    for (const roomId of replacedRooms) transaction.objectStore("mailCache").delete(roomId);
     const identityStore = transaction.objectStore("identity");
     for (const stored of storedIdentities.filter(isStoredCrypto)) {
       if (replacedRooms.has(stored.identity.roomId)) identityStore.delete(stored.key);
@@ -638,6 +642,39 @@ export class BridgeVault {
     });
   }
 
+  async saveMailCache(crypto: BridgeCrypto, cache: BridgeMailCache): Promise<void> {
+    const cards = cache.cards.length > MAIL_CACHE_LIMIT
+      ? [...cache.cards].sort((left, right) => right.seq - left.seq).slice(0, MAIL_CACHE_LIMIT)
+      : cache.cards;
+    const envelope = await crypto.encrypt({
+      kind: "response",
+      requestId: "assistant-mail-cache",
+      ok: true,
+      result: {
+        assistantMailCache: {
+          ...cache,
+          cards,
+          ...(cache.cards.length > MAIL_CACHE_LIMIT ? { nextCursor: String(cards.at(-1)!.seq) } : {}),
+        },
+      },
+    }, "mobile", "mobile", Date.now(), undefined, crypto.identity.deviceId);
+    const database = await this.open();
+    const transaction = database.transaction("mailCache", "readwrite");
+    transaction.objectStore("mailCache").put(envelope);
+    await transactionDone(transaction);
+  }
+
+  async loadMailCache(crypto: BridgeCrypto): Promise<BridgeMailCache | undefined> {
+    const database = await this.open();
+    const transaction = database.transaction("mailCache", "readonly");
+    const envelope = await requestResult(
+      transaction.objectStore("mailCache").get(crypto.identity.roomId),
+    ) as EncryptedEnvelope | undefined;
+    if (!envelope) return undefined;
+    const { payload } = await crypto.decrypt(envelope);
+    if (payload.kind === "response") return (payload.result as { assistantMailCache: BridgeMailCache }).assistantMailCache;
+  }
+
   async addOutbox(envelope: EncryptedEnvelope): Promise<void> {
     const database = await this.open();
     const transaction = database.transaction("outbox", "readwrite");
@@ -667,7 +704,8 @@ export class BridgeVault {
     const database = await this.open();
     await Promise.all([
       (async () => {
-        const transaction = database.transaction("identity", "readwrite");
+        const transaction = database.transaction(["identity", "mailCache"], "readwrite");
+        transaction.objectStore("mailCache").delete(roomId);
         const store = transaction.objectStore("identity");
         const records = await requestResult(store.getAll()) as unknown[];
         for (const stored of records.filter(isStoredCrypto)) {
@@ -689,7 +727,11 @@ export class BridgeVault {
 
   async removeDeviceArtifacts(roomId: string, deviceId: string): Promise<void> {
     const database = await this.open();
-    const transaction = database.transaction(["messages", "outbox"], "readwrite");
+    const transaction = database.transaction(["messages", "outbox", "mailCache"], "readwrite");
+    const mailCache = await requestResult(transaction.objectStore("mailCache").get(roomId)) as EncryptedEnvelope | undefined;
+    if (mailCache && (mailCache.fromDeviceId === deviceId || mailCache.toDeviceId === deviceId)) {
+      transaction.objectStore("mailCache").delete(roomId);
+    }
     for (const storeName of ["messages", "outbox"] as const) {
       const store = transaction.objectStore(storeName);
       const records = await requestResult(store.getAll()) as StoredMessage[];
@@ -707,10 +749,11 @@ export class BridgeVault {
 
   async clear(): Promise<void> {
     const database = await this.open();
-    const transaction = database.transaction(["identity", "messages", "outbox"], "readwrite");
+    const transaction = database.transaction(["identity", "messages", "outbox", "mailCache"], "readwrite");
     transaction.objectStore("identity").clear();
     transaction.objectStore("messages").clear();
     transaction.objectStore("outbox").clear();
+    transaction.objectStore("mailCache").clear();
     await transactionDone(transaction);
   }
 }

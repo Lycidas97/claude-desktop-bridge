@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -32,6 +33,8 @@ import type { LoadedDesktopConfig } from "../transport/config.js";
 import type { ConversationStateStore } from "./conversation-state-store.js";
 import type { SessionEventLog } from "./session-event-log.js";
 import type { DesktopUpdater } from "../updater/desktop-updater.js";
+import type { AssistantMailService } from "../../../../plugins/assistant-mail/desktop.js";
+import { assistantMailPage, pauseAssistantBinding } from "./assistant-mail.js";
 
 export class BridgeRequestError extends Error {
   constructor(
@@ -157,6 +160,7 @@ export interface ControllerRpcHost {
   readonly uploads: FileUploadManager;
   readonly magpieQuota: ReturnType<typeof createMagpieQuotaPlugin>;
   readonly updater?: DesktopUpdater;
+  readonly assistantMail?: AssistantMailService;
   snapshot(): Promise<DesktopControlSnapshot>;
   publish(): Promise<DesktopControlSnapshot>;
   launchClaudeDesktop(): Promise<DesktopControlSnapshot>;
@@ -191,6 +195,33 @@ async function dispatchControllerRequestInner(
   sourceDeviceId?: string,
 ): Promise<unknown> {
   const params = request.params;
+  if (request.method.startsWith("plugin.assistant-mail.")) {
+    const mail = host.assistantMail;
+    if (!mail) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持邮件助理。");
+    if (request.method === "plugin.assistant-mail.list") {
+      return { mailPage: await assistantMailPage(mail, params as Parameters<AssistantMailService["page"]>[0]) };
+    }
+    if (request.method === "plugin.assistant-mail.read") {
+      const mailRefId = stringParam(params, "mailRefId")!;
+      const detail = await mail.readEvent(mailRefId);
+      if (!detail) throw new BridgeRequestError("NOT_FOUND", "邮件不存在。");
+      return { mailDetail: { mailRefId, bodyText: detail.bodyText.slice(0, 256_000), truncated: detail.bodyText.length > 256_000 } };
+    }
+    if (request.method === "plugin.assistant-mail.bind") {
+      const sessionId = stringParam(params, "sessionId")!;
+      const session = host.allSessions().find(candidate => candidate.sessionId === sessionId);
+      if (!session || session.archivedAt || session.transport !== "claude-desktop-native") {
+        throw new BridgeRequestError("INVALID_SESSION", "请选择未归档的 Claude Desktop 原生会话。");
+      }
+      const previous = mail.binding();
+      mail.setBinding({
+        assistantId: previous?.assistantId ?? randomUUID(), nativeSessionId: sessionId,
+        sectionId: host.allProjects().find(project => project.projectId === session.projectId)?.kind === "desktop-group" ? session.projectId : null,
+        previousSessionIds: [...new Set([...(previous?.previousSessionIds ?? []), ...(previous?.nativeSessionId && previous.nativeSessionId !== sessionId ? [previous.nativeSessionId] : [])])],
+      });
+      return { assistantMail: (await host.publish()).assistantMail };
+    }
+  }
   if (
     (typeof params.sessionId === "string" && /^(?:codex|hermes|dsh)-desktop:/u.test(params.sessionId)) ||
     request.method.startsWith("runtime.handoff.") || request.method.startsWith("runtime.goal.") ||
@@ -477,6 +508,7 @@ async function dispatchControllerRequestInner(
     ];
     for (const targetId of targetIds) {
       await host.broker.archive(targetId, archived);
+      if (archived) pauseAssistantBinding(host.assistantMail, targetId);
       await host.eventLog.append({
         sessionId: targetId,
         origin,
@@ -496,6 +528,7 @@ async function dispatchControllerRequestInner(
       throw new Error("任务仍在进行中，请先停止再删除会话");
     }
     await host.broker.deleteSession(sessionId);
+    pauseAssistantBinding(host.assistantMail, sessionId);
     await host.eventLog.append({
       sessionId,
       origin,

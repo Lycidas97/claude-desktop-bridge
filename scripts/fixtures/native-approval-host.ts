@@ -410,7 +410,8 @@ export async function startNativeApprovalHost(options: {
     failRewindReadback(method: "getSession" | "getTranscriptPage") { rewindReadbackFailure = method; rewindCompleted = false; },
     profile() {
       const session = broker.session(options.sessionId)!;
-      return { model: session.model, modelDisplayName: session.modelDisplayName };
+      return { model: session.model, modelDisplayName: session.modelDisplayName, effort: session.effort,
+        nativePermissionMode: session.nativePermissionMode, nativePermissionModeChange: session.nativePermissionModeChange };
     },
     async projectCatalog() {
       const project = join(options.directory, "claude-desktop-bridge");

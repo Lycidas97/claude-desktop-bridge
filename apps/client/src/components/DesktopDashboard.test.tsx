@@ -15,6 +15,7 @@ import { SessionPrActions, SessionPrBar } from "./conversation/SessionPrBar.js";
 import { EmptyState } from "./common/EmptyState.js";
 import { ProjectGroupHeader } from "./session/ProjectGroupHeader.js";
 import { SessionFamilyList } from "./session/SessionFamilyList.js";
+import { SessionProfileSummary } from "./session/SessionProfileSummary.js";
 import { ProjectOrderSheet } from "./mobile/ProjectOrderSheet.js";
 import { MobileSheet } from "./mobile/MobileSheet.js";
 
@@ -64,7 +65,7 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Record<string, any>>;
-  const children = element.type === EmptyState || element.type === ProjectGroupHeader || element.type === SessionFamilyList
+  const children = element.type === EmptyState || element.type === ProjectGroupHeader || element.type === SessionFamilyList || element.type === SessionProfileSummary
     ? (element.type as (props: any) => ReactNode)(element.props)
     : element.props.children;
   return [element, ...elements(children)];
@@ -149,6 +150,20 @@ function questionPermission(requestId: string, question: string, sessionId = "A"
 function textContent(node: ReactNode): string {
   return elements(node).flatMap(element => element.props.children).filter(child => typeof child === "string").join(" ");
 }
+
+describe("desktop session header", () => {
+  it.each([false, true])("keeps observed settings visible when configuration is available=%s", async canConfigure => {
+    Object.assign(snapshot.sessions[0]!, { model: "model-id", modelDisplayName: "Claude Opus 5.5 custom model", effort: "high", nativePermissionMode: "auto" });
+    snapshot.sessions[0]!.allowedActions!.canConfigure = canConfigure;
+    await openSessions();
+    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · 自动模式 · reasoning high");
+    expect(elements(tree).some(element => element.props["aria-label"] === "会话设置")).toBe(canConfigure);
+    const updated = { ...snapshot, sessions: [{ ...snapshot.sessions[0]!, nativePermissionMode: "dontAsk" as const }] };
+    tree = sessions.draw({ ...sessionsProps, snapshot: updated });
+    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · 不询问 · reasoning high");
+    expect(apiRequest).not.toHaveBeenCalled();
+  });
+});
 
 describe("desktop session PR disclosure", () => {
   it("opens no-PR preferences and routes reads and writes through the desktop API", async () => {

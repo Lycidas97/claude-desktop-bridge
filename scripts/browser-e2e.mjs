@@ -1184,6 +1184,107 @@ async function verifyDelivery(page, host, steps) {
   steps.push("completed response clears the queue; request and user message stay unique");
 }
 
+async function verifySessionHeader(page, host, steps, directory) {
+  const session = host.snapshot.sessions.find(session => session.sessionId === sessionId);
+  const profile = { ...host.nativeApproval.profile(), modelDisplayName: "Claude Opus 5.5 · custom-model-identifier-with-a-long-unbroken-name-1234567890", effort: "high" };
+  host.nativeApproval.profile = () => profile;
+  const modes = { default: "逐个确认", acceptEdits: "自动接受编辑", bypassPermissions: "完全授权", plan: "计划模式", auto: "自动模式", dontAsk: "不询问" };
+  const accessibility = await page.context().newCDPSession(page);
+  async function accessibleProfile() {
+    const { root } = await accessibility.send("DOM.getDocument");
+    const { nodeId } = await accessibility.send("DOM.querySelector", { nodeId: root.nodeId, selector: 'button[aria-label="会话设置"]' });
+    const { nodes } = await accessibility.send("Accessibility.getPartialAXTree", { nodeId });
+    const button = nodes.find(node => node.role?.value === "button");
+    return { name: button.name.value, description: button.description?.value };
+  }
+  for (const [mode, label] of Object.entries(modes)) {
+    profile.nativePermissionMode = mode;
+    Object.assign(session, profile);
+    await host.send({ kind: "snapshot", snapshot: host.snapshot });
+    await eventually(() => page.locator(".m-header .session-profile-summary").innerText(), `${profile.modelDisplayName} · ${label} · reasoning high`, "The header shows the current mode with the complete model and effort");
+    await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · ${label} · reasoning high` }, "Mobile settings announce the current snapshot profile");
+  }
+  const notice = page.getByRole("status", { name: "Desktop 会话授权变更", exact: true });
+  for (const state of ["requested", "not-applied", "confirmed"]) {
+    profile.nativePermissionModeChange = { requestId: "header-mode", mode: "bypassPermissions", state, observedMode: "dontAsk" };
+    Object.assign(session, profile);
+    await host.send({ kind: "snapshot", snapshot: host.snapshot });
+    await eventually(() => notice.count(), state === "confirmed" ? 0 : 1, `Permission notice state ${state}`);
+    assert.ok((await page.locator(".m-header .session-profile-summary").innerText()).includes("不询问"), "A requested mode never replaces the observed header mode");
+  }
+  async function checkWrapping(selector, surface, labels, requireMultipleLines = true) {
+    const layout = await page.locator(selector).evaluate((element, labels) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const rect = element.getBoundingClientRect();
+      const segments = labels.map(label => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const start = node.textContent.indexOf(label);
+          if (start < 0) continue;
+          const segment = document.createRange();
+          segment.setStart(node, start);
+          segment.setEnd(node, start + label.length);
+          return { label, lines: new Set([...segment.getClientRects()].map(rect => rect.top)).size };
+        }
+        return { label, lines: 0 };
+      });
+      return { whiteSpace: getComputedStyle(element).whiteSpace, lines: range.getClientRects().length, segments,
+        client: element.clientWidth, scroll: element.scrollWidth, left: rect.left, right: rect.right, width: innerWidth };
+    }, labels);
+    assert.equal(layout.whiteSpace, "normal", `${surface} wraps text`);
+    assert.ok((!requireMultipleLines || layout.lines > 1) && layout.scroll <= layout.client + 1, `${surface} retains every line without clipping: ${JSON.stringify(layout)}`);
+    assert.ok(layout.left >= 0 && layout.right <= layout.width + 1, `${surface} fits the viewport`);
+    for (const segment of layout.segments) assert.equal(segment.lines, 1, `${surface} keeps ${segment.label} on one line`);
+  }
+  for (const width of [375, 320]) {
+    await page.setViewportSize({ width, height: 812 });
+    for (const font of ["standard", "larger"]) {
+      await page.evaluate(font => { document.documentElement.dataset.fontSize = font; }, font);
+      for (const canConfigure of [true, false]) {
+        session.allowedActions.canConfigure = canConfigure;
+        await host.send({ kind: "snapshot", snapshot: host.snapshot });
+        await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Settings availability changes only the header action");
+        await checkWrapping(".m-header .session-profile-summary", `Mobile ${width}px ${font} configure=${canConfigure}`, ["不询问", "reasoning high"]);
+      }
+    }
+  }
+  await page.screenshot({ path: resolve(directory, "mobile-header-larger-320.png"), fullPage: true });
+  session.allowedActions.canConfigure = true;
+  await page.exposeFunction("headerRequest", async input => ({ kind: "response", requestId: randomUUID(), ok: true,
+    result: await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), ...input }) }));
+  await page.addInitScript(snapshot => {
+    window.__headerSnapshot = snapshot;
+    window.bridgeDesktop = {
+      getSnapshot: async () => structuredClone(window.__headerSnapshot),
+      onSnapshot: receive => { window.__headerReceive = receive; return () => { delete window.__headerReceive; }; },
+      onEvent: () => () => {}, request: input => window.headerRequest(input),
+    };
+    localStorage.setItem("bridge-font-size", "larger");
+  }, { ...host.snapshot, connection: "connected", launchAtLogin: false, diagnosticsEnabled: false, managedDesktopEnabled: false,
+    claudeDesktop: { state: "running", detail: "Synthetic Native", canLaunch: false, canQuit: true } });
+  await page.setViewportSize({ width: 1000, height: 800 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await page.locator(`[data-session-id="${sessionId}"] .session-row-hit`).click();
+  await page.locator(".desktop-conversation .session-profile-summary").waitFor();
+  for (const [canConfigure, mode] of [[true, "plan"], [true, "auto"], [false, "dontAsk"]]) {
+    await page.evaluate(({ canConfigure, mode, sessionId }) => {
+      const session = window.__headerSnapshot.sessions.find(item => item.sessionId === sessionId);
+      session.allowedActions.canConfigure = canConfigure;
+      session.nativePermissionMode = mode;
+      window.__headerReceive(structuredClone(window.__headerSnapshot));
+    }, { canConfigure, mode, sessionId });
+    await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Desktop retains a read-only header when settings are unavailable");
+    const summary = page.locator(".desktop-conversation .session-profile-summary");
+    await eventually(() => summary.innerText(), `${profile.modelDisplayName} · ${modes[mode]} · reasoning high`, "Desktop receives updated mode without a configuration read");
+    if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · ${modes[mode]} · reasoning high` }, "Desktop settings announce the current snapshot profile");
+    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [modes[mode], "reasoning high"], false);
+  }
+  await accessibility.detach();
+  await page.screenshot({ path: resolve(directory, "desktop-header-readonly-larger.png"), fullPage: true });
+  steps.push("mobile 375/320px and narrow desktop retain complete profile fields and updated accessible settings descriptions; read-only headers remain visible and confirmed notices disappear");
+}
+
 async function verifyNativeApprovals(page, host, steps, directory) {
   await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
@@ -1320,6 +1421,8 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     await configuration.waitFor({ state: "hidden" });
     assert.equal(host.nativeApproval.permissionMode(), mode);
     assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "setPermissionMode").at(-1).args, [sessionId, mode]);
+    assert.equal(await page.getByRole("status", { name: "Desktop 会话授权变更", exact: true }).count(), 0, "Confirmed permission changes leave no persistent banner");
+    await eventually(async () => (await page.locator(".m-header .session-profile-summary").innerText()).includes(mode === "auto" ? "自动模式" : "完全授权"), true, "The updated Native snapshot reaches the header");
     await page.getByRole("button", { name: "会话设置", exact: true }).click();
     await eventually(() => configuration.getByLabel("Desktop 授权模式").inputValue(), mode, "Configuration reflects the native Desktop mode");
     await page.screenshot({ path: resolve(directory, `native-mode-${mode}.png`), fullPage: true });
@@ -1344,6 +1447,7 @@ async function verifyNativeApprovals(page, host, steps, directory) {
   await planDialog.waitFor({ state: "hidden" });
   steps.push("ExitPlanMode renders the plan and configures native acceptEdits before responding to the same request");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Native approval must fit the phone viewport");
+  await verifySessionHeader(page, host, steps, directory);
 }
 
 async function verifyNativePromptsPr(page, host, steps, directory) {

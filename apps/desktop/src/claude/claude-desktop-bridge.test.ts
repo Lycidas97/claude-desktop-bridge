@@ -1798,6 +1798,19 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it.each(["default", "acceptEdits", "bypassPermissions", "plan", "auto", "dontAsk"])("projects the current native %s mode without a prior mode change", async mode => {
+    const f = await fixture();
+    try {
+      f.native.sessions[0]!.permissionMode = mode;
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")).toMatchObject({ nativePermissionMode: mode });
+      expect(f.bridge.session("local-native")?.nativePermissionModeChange).toBeUndefined();
+      delete f.native.sessions[0]!.permissionMode;
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("local-native")).not.toHaveProperty("nativePermissionMode");
+    } finally { await f.close(); }
+  });
+
   it("forwards permission IDs and native modes without a Bridge auto-approval policy", async () => {
     const f = await fixture();
     try {
@@ -1862,6 +1875,7 @@ describe("Claude native relay", () => {
       await f.bridge.refreshRuntime();
       await f.bridge.resolvePermission("exit-plan", "allow-once", undefined, undefined, undefined, "acceptEdits");
       expect(f.bridge.session("local-native")?.nativePermissionModeChange).toEqual({ requestId: "exit-plan", mode: "acceptEdits", state: "not-applied", observedMode: "plan" });
+      expect(f.bridge.session("local-native")?.nativePermissionMode).toBe("plan");
       f.native.sessions[0]!.permissionMode = "acceptEdits";
       await f.bridge.refreshRuntime();
       expect(f.bridge.session("local-native")?.nativePermissionModeChange?.state).toBe("confirmed");

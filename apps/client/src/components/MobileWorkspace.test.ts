@@ -1389,7 +1389,7 @@ describe("conversationTimeline", () => {
     ]);
 
     expect(timeline.map((entry) => (
-      entry.kind === "message" ? entry.item.id : `evidence:${entry.evidence.id}`
+      entry.kind === "message" ? entry.item.id : entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : `mail:${entry.card.mailRefId}`
     ))).toEqual([
       "desktop-user-1",
       "desktop-assistant-1",
@@ -1411,7 +1411,7 @@ describe("conversationTimeline", () => {
       { id: "answer-2", sessionId: "session-1", role: "assistant", text: "Final result", createdAt: 4, origin: "claude-desktop" },
       { id: "user-2", sessionId: "session-1", role: "user", text: "Next task", createdAt: 5, origin: "claude-desktop" },
     ] }, [], []);
-    expect(conversationTimeline(items, [evidence("result", "user-1", "ready", 4)]).map(entry => entry.kind === "message" ? entry.item.id : `evidence:${entry.evidence.id}`))
+    expect(conversationTimeline(items, [evidence("result", "user-1", "ready", 4)]).map(entry => entry.kind === "message" ? entry.item.id : entry.kind === "evidence" ? `evidence:${entry.evidence.id}` : `mail:${entry.card.mailRefId}`))
       .toEqual(["user-1", "answer-1", "notice", "answer-2", "evidence:result", "user-2"]);
   });
 

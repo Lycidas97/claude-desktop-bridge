@@ -11,6 +11,7 @@ import {
   type BridgeEvent,
   type BridgeEvidenceDetailPage,
   type BridgeHostSnapshot,
+  type BridgeMailCache,
   type BridgeNativePermissionMode,
   type BridgePayload,
   type BridgePermissionInfo,
@@ -40,6 +41,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { diagLog } from "../lib/diagnostics.js";
 import type { UploadFileHandler } from "../lib/file-upload.js";
 import { onNativePushWake } from "../lib/push-wake.js";
+import { bridgeVault } from "../lib/vault.js";
 import {
   downloadBridgeSessionArtifact,
   downloadBridgeSessionPathFile,
@@ -311,6 +313,7 @@ export function useMobileBridge() {
     sessionId: string,
     text: string,
     attachments: BridgeAttachment[] = [],
+    mailRefId?: string,
   ) => {
     const session = stateRef.current.snapshot?.sessions.find(candidate => candidate.sessionId === sessionId);
     if ((!session?.runtimeId || session.runtimeId === "claude-desktop") &&
@@ -318,7 +321,7 @@ export function useMobileBridge() {
       throw new Error("请先连接支持原生中转的 Claude Desktop 会话。");
     }
     const requestId = randomId();
-    await sendRequest("turn.start", { sessionId, text, attachments },
+    await sendRequest("turn.start", { sessionId, text, attachments, ...(mailRefId ? { mailRefId } : {}) },
       { allowOffline: true, requestId, idempotencyKey: randomId() });
     return { requestId };
   }, [sendRequest]);
@@ -856,6 +859,16 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "删除会话失败");
   }, [sendRequest]);
 
+  const loadMailCache = useCallback(async (): Promise<BridgeMailCache | undefined> => {
+    const crypto = cryptoRef.current;
+    if (crypto) return bridgeVault.loadMailCache(crypto);
+  }, []);
+
+  const saveMailCache = useCallback(async (cache: BridgeMailCache): Promise<void> => {
+    const crypto = cryptoRef.current;
+    if (crypto) await bridgeVault.saveMailCache(crypto, cache);
+  }, []);
+
   return {
     state,
     pair,
@@ -914,5 +927,7 @@ export function useMobileBridge() {
     refresh,
     forgetHost,
     retryConnection,
+    loadMailCache,
+    saveMailCache,
   };
 }

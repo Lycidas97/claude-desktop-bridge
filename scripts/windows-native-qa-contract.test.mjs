@@ -131,6 +131,19 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
   assert.ok(result.ui.includes("版本更新"));
 });
 
+test("packaged QA reads mail only when declared and keeps automatic delivery closed", async () => {
+  const withoutMail = await runQa(nativeSnapshot());
+  assert.equal(withoutMail.requests.includes("plugin.assistant-mail.list"), false);
+  const snapshot = nativeSnapshot();
+  snapshot.host.capabilities.push("plugin.assistant-mail.v1");
+  snapshot.assistantMail = { bindingState: "unbound", receiverState: "disabled", changeToken: "fixture", automaticDelivery: false };
+  const result = await runQa(snapshot, { "plugin.assistant-mail.list": { ok: true, result: { mailPage: { cards: [] } } } });
+  assert.ok(result.requests.includes("plugin.assistant-mail.list"));
+  assert.equal(result.requests.some(method => ["plugin.assistant-mail.bind", "turn.start"].includes(method)), false);
+  snapshot.assistantMail.automaticDelivery = true;
+  await assert.rejects(runQa(snapshot), /true !== false/u);
+});
+
 test("packaged QA distinguishes a ready Native host with no active sessions", async () => {
   const snapshot = nativeSnapshot();
   snapshot.runtime.desktopIntegration.state = "ready";

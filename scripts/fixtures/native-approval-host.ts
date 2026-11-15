@@ -16,6 +16,8 @@ import { EvidenceStore } from "../../apps/desktop/src/evidence/evidence-store.js
 import { discoverSlashCommands } from "../../apps/desktop/src/claude/slash-command-catalog.js";
 import { magpieModelIdHash } from "../../apps/desktop/src/claude/claude-runtime-discovery.js";
 import { createNativeSectionFixture } from "./native-section-store.js";
+import { startAssistantMailFixture } from "./assistant-mail.js";
+import { assistantMailSnapshot } from "../../apps/desktop/src/controller/assistant-mail.js";
 
 interface NativeApprovalResult {
   requestId: string;
@@ -42,6 +44,8 @@ export async function startNativeApprovalHost(options: {
   onModeChanged?(mode: BridgeSDKPermissionMode): void;
   onModelChanged?(model: string): void;
   sections?: boolean;
+  assistantMail?: boolean;
+  onMailChanged?(snapshot: ReturnType<typeof assistantMailSnapshot>): void;
 }) {
   const commandCwd = join(options.directory, "command-project");
   const commandHome = join(options.directory, "command-personal");
@@ -314,9 +318,17 @@ export async function startNativeApprovalHost(options: {
     masterSecret: Buffer.alloc(32, 5).toString("base64url"),
   }) });
   await evidence.initialize();
+  const assistantMail = options.assistantMail ? await startAssistantMailFixture(join(options.directory, "mail")) : undefined;
+  let mailChangeToken = randomUUID();
+  const mailSnapshot = () => assistantMail ? assistantMailSnapshot(assistantMail.service, broker.listSessions(), broker.capabilities().includes("turn.start"), mailChangeToken) : undefined;
+  const mailChanged = () => { mailChangeToken = randomUUID(); options.onMailChanged?.(mailSnapshot()!); };
+  assistantMail?.service.on("mail", mailChanged);
+  assistantMail?.service.on("changed", mailChanged);
   const controller = Object.assign(Object.create(DesktopController.prototype), {
     routesToExternalRuntime: () => false,
-    broker, evidence, allSessions: () => broker.listSessions(), allProjects: () => broker.listProjects(), publish: async () => {},
+    broker, evidence, assistantMail: assistantMail?.service,
+    allSessions: () => broker.listSessions(), allProjects: () => broker.listProjects(),
+    publish: async () => ({ assistantMail: mailSnapshot() }),
     config: { hostDeviceId: "synthetic-desktop", desktopName: "隔离电脑", devices: [{ deviceId: options.deviceId, name: "隔离手机", platform: "android", pairedAt: 1 }] },
   }) as { handleRequest(request: BridgeRequest, origin: "mobile", deviceId: string): Promise<unknown> };
   let sequence = 0;
@@ -336,7 +348,7 @@ export async function startNativeApprovalHost(options: {
     return dialogs(after);
   }
   return {
-    cwd: commandCwd, harnessCwd, miscRoot, calls, failedRewindReadbacks, sections,
+    cwd: commandCwd, harnessCwd, miscRoot, calls, failedRewindReadbacks, sections, assistantMail, mailSnapshot,
     untrustedDir, manualTrustDir,
     dialogs,
     async openPrompt(kind: BridgePendingPrompt["kind"]) {
@@ -541,6 +553,9 @@ export async function startNativeApprovalHost(options: {
       return result;
     },
     async close() {
+      assistantMail?.service.off("mail", mailChanged);
+      assistantMail?.service.off("changed", mailChanged);
+      await assistantMail?.service.close();
       await broker.close();
       await evidence.close();
       await eventLog.close();

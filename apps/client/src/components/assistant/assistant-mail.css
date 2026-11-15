@@ -1,0 +1,57 @@
+.assistant-page { min-width: 0; height: 100%; overflow-y: auto; }
+.assistant-page-content { width: min(100%, 860px); margin: 0 auto; padding: 0 24px 40px; }
+.assistant-page-mobile .assistant-page-content { padding: 8px 15px 32px; }
+.assistant-binding { padding: 16px 0 22px; margin-bottom: 20px; border-bottom: 1px solid var(--line); }
+.assistant-binding-current { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-width: 0; }
+.assistant-binding-current > :first-child { min-width: 0; text-align: left; overflow-wrap: anywhere; font-weight: 600; }
+.assistant-binding-current > :last-child { flex-shrink: 0; }
+.assistant-session-link { min-height: 36px; padding: 4px 0; border: 0; background: transparent; color: var(--accent-ink); font: inherit; font-size: calc(13px * var(--font-scale)); cursor: pointer; }
+.assistant-session-link:hover { text-decoration: underline; }
+.assistant-binding p, .assistant-page-content > p { color: var(--muted); font-size: calc(13px * var(--font-scale)); line-height: 1.6; }
+.assistant-binding p[role="alert"], .assistant-page-content > p[role="alert"] { color: var(--danger-ink); }
+.assistant-binding-form { display: grid; gap: 12px; margin: 14px 0; }
+.assistant-binding-form label { display: grid; gap: 6px; font-size: calc(13px * var(--font-scale)); color: var(--muted); }
+.assistant-binding-form select { width: 100%; min-width: 0; max-width: 100%; padding: 10px 12px; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-input); font: inherit; }
+.assistant-binding-form > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.assistant-delivery-disabled { display: block; margin-top: 12px; color: var(--muted); font-size: calc(12px * var(--font-scale)); }
+.assistant-binding details { margin-top: 12px; font-size: calc(13px * var(--font-scale)); }
+.assistant-mail-list { display: grid; gap: 16px; }
+.assistant-mail-card { min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--card-border); border-radius: var(--r-card); background: var(--card-fill); box-shadow: var(--card-hi); color: var(--text); overflow-wrap: anywhere; }
+.assistant-mail-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: calc(11px * var(--font-scale)); }
+.assistant-mail-card > header span { display: inline-flex; align-items: center; gap: 6px; }
+.assistant-mail-card > header time { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.assistant-mail-card h3 { margin: 12px 0 5px; font-size: calc(16px * var(--font-scale)); line-height: 1.5; font-weight: 600; }
+.assistant-mail-from { margin: 0 0 12px; color: var(--muted); font-size: calc(12px * var(--font-scale)); line-height: 1.5; }
+.assistant-mail-preview { margin: 0; font-size: calc(14px * var(--font-scale)); line-height: 1.65; white-space: pre-wrap; }
+.assistant-mail-status { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 16px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: calc(11px * var(--font-scale)); line-height: 1.6; }
+.assistant-mail-status > div { display: grid; gap: 2px; }
+.assistant-mail-status dt { color: var(--muted); }
+.assistant-mail-status dd { margin: 0; }
+.assistant-mail-card details { margin-top: 12px; min-width: 0; font-size: calc(13px * var(--font-scale)); }
+.assistant-mail-card summary, .assistant-binding summary { cursor: pointer; min-height: 30px; padding: 5px 0; color: var(--muted); }
+.assistant-mail-card pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-height: 480px; overflow-y: auto; padding: 10px 0; margin: 0; font-family: var(--font-sans); font-size: calc(13px * var(--font-scale)); line-height: 1.7; }
+.assistant-mail-card code { font-size: calc(11px * var(--font-scale)); overflow-wrap: anywhere; }
+.assistant-mail-card h4 { margin: 12px 0 4px; font-size: inherit; font-weight: 600; }
+.assistant-mail-card ul { margin: 4px 0; padding-left: 20px; }
+.assistant-mail-links a { display: flex; align-items: baseline; gap: 8px; color: var(--accent-ink); }
+.assistant-mail-links a > :first-child { max-width: 60%; }
+.assistant-mail-link-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.conversation-stream .assistant-mail-preview, .desktop-conversation-stream .assistant-mail-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; white-space: normal; }
+.assistant-mail-empty { text-align: center; padding: 48px 8px; color: var(--muted); }
+.assistant-mail-older { display: block; margin: 20px auto 0; }
+.conversation-stream > .assistant-mail-card, .desktop-conversation-stream > .assistant-mail-card { margin: 16px 0; }
+.assistant-page.is-conversation { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.assistant-page.is-conversation > .assistant-page-content { flex: 0 0 auto; padding-bottom: 0; }
+.assistant-view-tabs { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; border-bottom: 1px solid var(--line); }
+.assistant-view-tabs > button { min-height: 40px; padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
+.assistant-view-tabs > button[aria-pressed="true"] { border-bottom-color: var(--accent-ink); color: var(--text); font-weight: 600; }
+.assistant-view-tabs > button:last-child { margin-left: auto; }
+.assistant-view-tabs > button:disabled, .assistant-session-link:disabled { opacity: .5; cursor: default; text-decoration: none; }
+.assistant-conversation { flex: 1; min-height: 0; min-width: 0; }
+.assistant-conversation .desktop-session-layout.is-fixed-session { height: 100%; grid-template-columns: minmax(0, 1fr); }
+.assistant-mail-reference { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 16px; padding: 10px 12px; border-left: 3px solid var(--accent-ink); background: var(--surface); color: var(--text); }
+.assistant-mail-reference > div { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.assistant-mail-reference span, .assistant-mail-reference code { color: var(--muted); font-size: calc(11px * var(--font-scale)); }
+.assistant-mail-reference strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--font-scale)); }
+.assistant-mail-reference code { overflow-wrap: anywhere; }
+.assistant-mail-reference p { flex-basis: 100%; margin: 0; color: var(--danger-ink); font-size: calc(12px * var(--font-scale)); }

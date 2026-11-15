@@ -1,3 +1,4 @@
+export * from "./assistant-mail.js";
 export * from "./crypto.js";
 export * from "./desktop-ipc.js";
 export * from "./encoding.js";

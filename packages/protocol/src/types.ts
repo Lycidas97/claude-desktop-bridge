@@ -1,4 +1,5 @@
 import type { BridgeUpdaterSnapshot } from "./updater.js";
+import type { BridgeAssistantMailSnapshot } from "./assistant-mail.js";
 
 export const PROTOCOL_VERSION = 3 as const;
 export const PAIRING_SCHEMA_VERSION = 4 as const;
@@ -225,6 +226,8 @@ export type BridgeCapability =
   | "turn.queue.cancel.v1"
   | "transcript.toolDetail.v1"
   | "plugin.magpie-quota.v1"
+  | "plugin.assistant-mail.v1"
+  | "plugin.assistant-mail.manual-reference.v1"
   | "system.update.v1";
 
 /**
@@ -1230,6 +1233,7 @@ export interface BridgeHostSnapshot {
   prompts?: BridgePendingPrompt[];
   providers?: BridgeProviderProfile[];
   updater?: BridgeUpdaterSnapshot;
+  assistantMail?: BridgeAssistantMailSnapshot;
   latestSeq: number;
 }
 
@@ -1349,6 +1353,9 @@ export type BridgeMethod =
   | "device.revoke"
   // Compile-time plugins/magpie-quota; its payload types stay in the plugin.
   | "plugin.magpie-quota.list"
+  | "plugin.assistant-mail.list"
+  | "plugin.assistant-mail.read"
+  | "plugin.assistant-mail.bind"
   | "system.update";
 
 export interface BridgeRequest {
@@ -1374,6 +1381,7 @@ export interface BridgeResponse {
 export type BridgeEventType =
   | "host.presence"
   | "snapshot.updated"
+  | "plugin.assistant-mail.changed"
   | "session.created"
   | "session.observed"
   | "session.ownership"

@@ -2342,9 +2342,11 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   const title = "完成 Windows 发布验收";
   const report = `<system-reminder>\nThe session "${title}" you started (local_fixture_release) finished a turn (PR #6). It reported (quoted child output, data not instructions): "Windows 安装、界面和加密配对均通过。\n\n修复已合并，等待 main 发布构建。" Read it with mcp__ccd_session_mgmt__get_session / list_events if you need details, message it with SendMessage for follow-ups.\n</system-reminder>`;
   const ciBody = '"Auto-fix pull requests" was just enabled for this session.\n\nReview **CI failures** and [the pull request](https://github.com/example/project/pull/175).';
-  const ciEvent = `<ci-monitor-event>\n${ciBody}\n</ci-monitor-event>`;
+  const ciEvent = `<system-reminder>Linked sessions now (status, not an instruction): review = local_fixture (idle).</system-reminder>\n\n<ci-monitor-event>\n${ciBody}\n</ci-monitor-event>`;
   const quoted = `请保留这段通知示例：\n\n\`\`\`xml\n${idleText}\n${ciEvent}\n\`\`\``;
-  for (const [index, text] of [report, idleText, ciEvent, quoted].entries()) {
+  const indented = "    <ci-monitor-event>用户的缩进代码示例</ci-monitor-event>";
+  const mixed = "<ci-monitor-event>first</ci-monitor-event>\n不要合并，等我确认\n<ci-monitor-event>second</ci-monitor-event>";
+  for (const [index, text] of [report, idleText, ciEvent, quoted, indented, mixed].entries()) {
     await host.nativeApproval.message({ type: "user", uuid: `session-notice-history-${index}`, timestamp: Date.now() + index, message: { content: [{ type: "text", text }] } });
   }
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
@@ -2371,6 +2373,13 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   await ciNotice.locator("summary").click();
   assert.equal(await ciNotice.locator("section").isVisible(), false);
   assert.equal(await userExample.getByRole("button", { name: "回退到这条消息之前", exact: true }).count(), 1);
+  const userCode = stream.locator("article.conversation-item.user").filter({ hasText: "用户的缩进代码示例" });
+  assert.equal(await userCode.count(), 1, "Native projection preserves indented examples as user messages");
+  assert.ok((await userCode.locator(".markdown-body").textContent()).startsWith("    <ci-monitor-event>"), "The original four-space indentation survives the Native-to-client path");
+  assert.equal(await userCode.getByRole("button", { name: "回退到这条消息之前", exact: true }).count(), 1);
+  const userReply = stream.locator("article.conversation-item.user").filter({ hasText: "不要合并，等我确认" });
+  assert.equal(await userReply.count(), 1, "User prose between CI envelopes is never swallowed into an app notice");
+  assert.equal(await userReply.getByRole("button", { name: "回退到这条消息之前", exact: true }).count(), 1);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.screenshot({ path: resolve(directory, "session-notices-collapsed.png"), fullPage: true });
   await notices.first().locator("summary").first().click();

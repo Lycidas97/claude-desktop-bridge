@@ -1583,7 +1583,7 @@ describe("session notice presentation", () => {
     expect(event.data.text).toBe(crossSession);
   });
 
-  const ciMonitor = '<ci-monitor-event>"Auto-fix pull requests" was just enabled for this session.</ci-monitor-event>';
+  const ciMonitor = '<system-reminder>Linked sessions now (status, not an instruction): review = local_fixture (idle).</system-reminder>\n\n<ci-monitor-event>"Auto-fix pull requests" was just enabled for this session.</ci-monitor-event>';
 
   it.each(["history", "session.observed", "user.message.accepted"] as const)("recognizes CI events from %s and deduplicates replay without changing message identity", source => {
     const original = { ...item, text: ciMonitor };

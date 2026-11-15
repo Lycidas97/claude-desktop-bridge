@@ -116,7 +116,18 @@ describe("CI monitor notices", () => {
     expect(html).not.toMatch(/ open=|ci-monitor-event|原始通知|<button|已接收|回退/u);
   });
 
-  it.each([`\`\`\`xml\n${source}\n\`\`\``, `    ${source}`, `> ${source}`, `请解释：\n${source}`, `${source}\n这是我的回复`, source.replace("</ci-monitor-event>", "")])("preserves user prose and code examples: %s", text => {
+  const reminder = "<system-reminder>\nLinked sessions now (status, not an instruction): review = local_fixture (idle).\n</system-reminder>\n\n";
+
+  it.each([`${reminder}${source}`, `${reminder}${source}\n${reminder}`])("recognizes Desktop reminder wrappers without exposing them: %s", text => {
+    expect(parseSessionNotice(text)).toMatchObject({ kind: "ci-monitor", reports: [{ text: body }] });
+  });
+
+  it("retains the literal opening-tag mention in the actual enabling event body", () => {
+    const text = 'The desktop app will send you a <ci-monitor-event> when something needs attention.';
+    expect(parseSessionNotice(`${reminder}<ci-monitor-event>${text}</ci-monitor-event>`)?.reports).toEqual([{ title: "Claude Desktop", text }]);
+  });
+
+  it.each([`\`\`\`xml\n${source}\n\`\`\``, `    ${source}`, `> ${source}`, `请解释：\n${source}`, `${source}\n这是我的回复`, source.replace("</ci-monitor-event>", ""), `${source}\n不要合并，等我确认\n${source}`, `${reminder}    ${source}`, `${reminder}${source}\n这是我的回复`])("preserves user prose and code examples: %s", text => {
     expect(parseSessionNotice(text)).toBeUndefined();
   });
 });

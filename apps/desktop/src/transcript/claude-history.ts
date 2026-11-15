@@ -115,10 +115,10 @@ export interface ClaudeTranscriptSnapshot extends ClaudeHistoryReadResult {
 
 function cleanUserText(value: string): string {
   return value
-    .replace(/^\s*\[来自手机 Bridge\]\s*/u, "")
+    .replace(/^\[来自手机 Bridge\](?:\r?\n)*/u, "")
     .replace(/\s*<!--\s*bridge-command:[A-Za-z0-9_-]{1,64}\s*-->\s*/gu, "\n")
     .replace(/\n{3,}/gu, "\n\n")
-    .trim();
+    .trimEnd();
 }
 
 export function visibleMessage(value: Record<string, unknown>): Pick<TranscriptNode, "role" | "text"> | undefined {
@@ -135,7 +135,7 @@ export function visibleMessage(value: Record<string, unknown>): Pick<TranscriptN
       value.isVisibleInTranscriptOnly === true
     )
   ) return undefined;
-  const text = textFromContent(value.message.content);
+  const text = textFromContent(value.message.content, value.type === "user");
   if (!text) return undefined;
   const role = value.type;
   const cleaned = role === "user" ? cleanUserText(text) : text.trim();

@@ -1,0 +1,62 @@
+import type { BridgeHistoryItem, BridgeMailCard } from "@bridge/protocol";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+import { MailCard } from "./MailCard.js";
+
+function card(fields: Partial<BridgeMailCard> = {}): BridgeMailCard {
+  return {
+    seq: 1, mailRefId: "mail-1", accountKey: "account", mailbox: "INBOX",
+    subject: "Mail subject", from: [{ address: "sender@example.invalid" }],
+    receivedAt: "2026-11-14T00:00:00.000Z", recordedAt: 1, preview: "Mail preview",
+    processingStatus: "pending", nativeDelivery: { state: "not-submitted" }, ...fields,
+  };
+}
+
+describe("MailCard plain text rendering", () => {
+  it("escapes subject, sender, and preview instead of rendering HTML, Markdown, or remote resources", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({
+      subject: '<script>alert("subject")</script>',
+      from: [{ name: '<img src="https://mail.example.invalid/pixel">', address: "sender<address>@example.invalid" }],
+      preview: '<iframe src="https://mail.example.invalid/frame"></iframe> **bold** [remote](https://mail.example.invalid)',
+    }) }));
+
+    expect(html).toContain('<h3>&lt;script&gt;alert(&quot;subject&quot;)&lt;/script&gt;</h3>');
+    expect(html).toContain('&lt;img src=&quot;https://mail.example.invalid/pixel&quot;&gt; sender&lt;address&gt;@example.invalid');
+    expect(html).toContain('&lt;iframe src=&quot;https://mail.example.invalid/frame&quot;&gt;&lt;/iframe&gt; **bold** [remote](https://mail.example.invalid)');
+    expect(html).not.toMatch(/<(?:script|img|iframe|a|strong)\b/u);
+    expect(html).toContain("连接电脑后可查看原文");
+  });
+
+  it("escapes analysis summary, suggestions, and questions as plain text", () => {
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card({
+      processingStatus: "processed",
+      analysis: {
+        summary: '<style>body{background:url("https://mail.example.invalid/bg")}</style>',
+        suggestions: ['<object data="https://mail.example.invalid/file"></object>', "[reply](https://mail.example.invalid/reply)"],
+        questions: ['<video src="https://mail.example.invalid/movie"></video>'],
+      },
+    }) }));
+
+    expect(html).toContain('&lt;style&gt;body{background:url(&quot;https://mail.example.invalid/bg&quot;)}&lt;/style&gt;');
+    expect(html).toContain('&lt;object data=&quot;https://mail.example.invalid/file&quot;&gt;&lt;/object&gt;');
+    expect(html).toContain("[reply](https://mail.example.invalid/reply)");
+    expect(html).toContain('&lt;video src=&quot;https://mail.example.invalid/movie&quot;&gt;&lt;/video&gt;');
+    expect(html).not.toMatch(/<(?:style|object|video|a|img|iframe|script)\b/u);
+    expect(html).toContain("已处理");
+    expect(html).toContain("未提交");
+  });
+
+  it("keeps the correlated native message ID and text escaped in its own disclosure", () => {
+    const nativeMessage: BridgeHistoryItem = {
+      id: "native<message>", sessionId: "native-session", role: "user", createdAt: 1, origin: "claude-desktop",
+      text: '<img src="https://mail.example.invalid/native-pixel" onerror="alert(1)"> **native**',
+    };
+    const html = renderToStaticMarkup(createElement(MailCard, { card: card(), nativeMessage }));
+
+    expect(html).toContain('<details class="assistant-mail-native"><summary>关联原生消息</summary>');
+    expect(html).toContain("<code>native&lt;message&gt;</code>");
+    expect(html).toContain('&lt;img src=&quot;https://mail.example.invalid/native-pixel&quot; onerror=&quot;alert(1)&quot;&gt; **native**');
+    expect(html).not.toMatch(/<(?:img|a|strong|script|iframe)\b/u);
+  });
+});

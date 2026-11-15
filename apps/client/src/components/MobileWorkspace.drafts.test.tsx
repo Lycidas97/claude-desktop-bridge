@@ -54,6 +54,7 @@ vi.mock("react", async (original) => ({
     return hooks.slots[index];
   },
   useMemo: (create: () => unknown) => create(),
+  useContext: () => undefined,
   useEffect(effect: () => (() => void) | void, deps?: unknown[]) {
     const index = hooks.effectIndex++;
     const previous = hooks.effects[index];

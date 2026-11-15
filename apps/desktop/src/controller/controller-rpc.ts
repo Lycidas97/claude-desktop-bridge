@@ -199,7 +199,8 @@ async function dispatchControllerRequestInner(
     const mail = host.assistantMail;
     if (!mail) throw new BridgeRequestError("UNSUPPORTED", "当前电脑不支持邮件助理。");
     if (request.method === "plugin.assistant-mail.list") {
-      return { mailPage: await assistantMailPage(mail, params as Parameters<AssistantMailService["page"]>[0]) };
+      const { client: _client, ...pageParams } = params;
+      return { mailPage: await assistantMailPage(mail, pageParams) };
     }
     if (request.method === "plugin.assistant-mail.read") {
       const mailRefId = stringParam(params, "mailRefId")!;

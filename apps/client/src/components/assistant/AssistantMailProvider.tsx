@@ -40,7 +40,7 @@ export function AssistantMailProvider({ snapshot, online, request, loadCache, sa
   const cacheRef = useRef(cache);
   cacheRef.current = cache;
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     if (!enabled || !loadCache) return;
     let active = true;

@@ -50,7 +50,7 @@ export function AssistantPage({ snapshot, mobile = false, onOpenSession }: {
         {state === "missing" && <p role="status">未找到绑定会话，投递已暂停。连接恢复后可再次核对，或更换会话。</p>}
         {state === "unavailable" && <p role="status">原生会话暂不可用。</p>}
         {(configuring || !binding?.nativeSessionId) && <div className="assistant-binding-form">
-          <label>助理会话<select value={selectedId} onChange={event => setSelectedId(event.target.value)} disabled={!mail.online || bindingBusy}>
+          <label>助理会话<select aria-label="助理会话" value={selectedId} onChange={event => setSelectedId(event.target.value)} disabled={!mail.online || bindingBusy}>
             <option value="">选择现有会话</option>
             {snapshot.sessions.filter(candidate => candidate.transport === "claude-desktop-native" && !candidate.archivedAt).map(candidate => <option key={candidate.sessionId} value={candidate.sessionId}>{candidate.title || candidate.sessionId}</option>)}
           </select></label>

@@ -21,7 +21,8 @@ const remotePreview = serve && process.argv.includes("--remote-execution-preview
 const projectGroupingPreview = serve && !remotePreview && process.argv.includes("--project-grouping-preview");
 const sectionCreatePreview = serve && !remotePreview && process.argv.includes("--section-create-preview");
 const nativePromptsPreview = serve && !remotePreview && process.argv.includes("--native-prompts-preview");
-const nativePreview = serve && !remotePreview && (sectionCreatePreview || projectGroupingPreview || nativePromptsPreview || process.argv.includes("--native-permissions-preview"));
+const assistantMailPreview = serve && process.argv.includes("--assistant-mail-preview");
+const nativePreview = serve && !remotePreview && (assistantMailPreview || sectionCreatePreview || projectGroupingPreview || nativePromptsPreview || process.argv.includes("--native-permissions-preview"));
 let previewHost;
 let previewApproval;
 const port = serve ? Number(process.env.BRIDGE_E2E_PORT ?? 0) : 0;
@@ -46,7 +47,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-diagnostics", "mobile-safe-area"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-diagnostics", "mobile-safe-area", "assistant-mail"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
@@ -345,7 +346,7 @@ async function verifyMobileSafeArea(page, steps, directory, viewports) {
   await emulation.detach();
 }
 
-async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview) {
+async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview, assistantMail = assistantMailPreview) {
   const now = Date.now();
   const clientRelayUrl = `${baseUrl.replace("http:", "ws:")}/ws`;
   const { crypto, pairing } = await BridgeCrypto.createDesktop(clientRelayUrl, "Browser E2E 隔离电脑");
@@ -668,7 +669,15 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     await mkdir(directory, { recursive: true });
     host.sectionsEnabled = sections;
     host.nativeApproval = await startNativeApprovalHost({
-      directory, sessionId, title: originalTitle, deviceId: pairing.deviceId, sections,
+      directory, sessionId, title: originalTitle, deviceId: pairing.deviceId, sections, assistantMail,
+      onMailChanged(assistantMail) {
+        snapshot.assistantMail = assistantMail;
+        const event = { eventId: randomUUID(), seq: ++snapshot.latestSeq, timestamp: Date.now(), origin: "system",
+          type: "plugin.assistant-mail.changed", data: { assistantMail } };
+        events.push(event);
+        if (host.mailOffline || !host.nativeApproval) return;
+        void host.send({ kind: "event", event }).catch(error => errors.push(`mail event: ${error.stack}`));
+      },
       onRequested(request) {
         snapshot.permissions.push(request);
         session.turnState = "waiting";
@@ -697,6 +706,13 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     });
     Object.assign(session, host.nativeApproval.profile());
     nativeHosts.push(host.nativeApproval);
+    if (assistantMail) {
+      snapshot.host.capabilities.push("plugin.assistant-mail.v1");
+      snapshot.assistantMail = host.nativeApproval.mailSnapshot();
+      host.mailOffline = true;
+      await host.nativeApproval.assistantMail.deliver(60);
+      host.mailOffline = false;
+    }
   }
   hosts.add(host);
   socket.onFrame((frame) => {
@@ -760,6 +776,12 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           result = { events: resumed, latestSeq: snapshot.latestSeq, hasMore: false };
           break;
         }
+        case "plugin.assistant-mail.list":
+        case "plugin.assistant-mail.read":
+        case "plugin.assistant-mail.bind":
+          try { result = await host.nativeApproval.controllerRequest(request); }
+          catch (failure) { error = { code: failure.code ?? "MAIL_REJECTED", message: failure.message }; }
+          break;
         case "plugin.magpie-quota.list":
           result = { status: "available", fetchedAt: Date.now(), accounts: [{ provider: "claude", name: "隔离 Magpie 账号", windows: [{ name: "5 hours", remaining: 73 }, { name: "7 days", remaining: 81 }] }] };
           break;
@@ -2825,6 +2847,94 @@ async function verifySectionManage(page, host, steps, directory) {
   steps.push("deleting a non-empty section requires confirmation, calls native delete_section, and safely returns sessions to their folder project");
 }
 
+async function verifyAssistantMail(page, host, steps, directory, viewports) {
+  const cards = () => page.locator('.assistant-mail-list > [data-mail-id]');
+  async function openAssistant() {
+    await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).click();
+    await page.getByRole("button", { name: "助理", exact: true }).click();
+  }
+  async function capture(name) {
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, `${name} fits the viewport`);
+    viewports.push({ page: name, ...page.viewportSize() });
+    await page.screenshot({ path: resolve(directory, `${name}.png`), fullPage: true });
+  }
+  await openAssistant();
+  await eventually(() => cards().count(), 50, "Persisted mail appears before a native message or ACK");
+  assert.equal(host.requests.some(request => request.method === "turn.start"), false);
+  await page.getByRole("button", { name: "更早邮件", exact: true }).click();
+  await eventually(() => cards().count(), 60, "Older mail pages remain visible");
+  const oldest = host.nativeApproval.assistantMail.service.page({ cursor: "2" }).events[0];
+  const original = page.locator(`[data-mail-id="${oldest.mailRefId}"]`).first();
+  await original.getByText("原文", { exact: true }).click();
+  await original.getByRole("link", { name: "actual.example.test", exact: true }).waitFor();
+  assert.match(await original.locator("pre").innerText(), /<script>window.mailInjected=1<\/script>/u);
+  assert.equal(await original.locator("img, iframe, script").count(), 0);
+  assert.equal(await page.evaluate(() => window.mailInjected), undefined);
+  assert.match(await original.getByRole("link", { name: "actual.example.test", exact: true }).getAttribute("href"), /trusted.example@actual.example.test/u);
+  await capture("mobile-mail");
+  steps.push("60 stored mail cards render without a turn request; untrusted content stays text and explicit links show the destination host");
+
+  host.mailOffline = true;
+  host.socket.close();
+  await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
+  await host.nativeApproval.assistantMail.deliver(62);
+  host.nativeApproval.assistantMail.service.updateAnalysis(oldest.mailRefId, { summary: '<img src="https://tracker.invalid/analysis">旧邮件分析已更新' });
+  host.nativeApproval.assistantMail.service.setProcessingStatus(oldest.mailRefId, "processed");
+  host.mailOffline = false;
+  host.socket.connect();
+  await eventually(() => cards().count(), 122, "Reconnect fills more than one new page down to the oldest loaded mail");
+  await original.getByText("分析结果", { exact: true }).click();
+  await original.getByText("已处理", { exact: true }).waitFor();
+  await original.getByText('<img src="https://tracker.invalid/analysis">旧邮件分析已更新', { exact: true }).waitFor();
+  assert.equal(await original.locator("img, iframe, script").count(), 0);
+  const cardIds = await cards().evaluateAll(elements => elements.map(element => element.dataset.mailId));
+  assert.equal(new Set(cardIds).size, 122);
+  await host.nativeApproval.assistantMail.deliver(1);
+  await eventually(() => cards().count(), 123, "A new durable record appears from the live change event without any model response");
+  steps.push("reconnect fills 62 arrivals, refreshes an old analysis/status without a new insertion seq, deduplicates by mailRefId, and live arrivals appear without model replies");
+
+  host.mailOffline = true;
+  host.socket.close();
+  await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  await openAssistant();
+  await eventually(() => cards().count(), 123, "Reload restores the separately encrypted aggregate while the host is offline");
+  host.mailOffline = false;
+  host.socket.connect();
+  await eventually(() => page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).count(), 0, "Host reconnects before binding");
+  await page.getByLabel("助理会话", { exact: true }).selectOption(sessionId);
+  await page.getByRole("button", { name: "绑定会话", exact: true }).click();
+  await page.getByRole("button", { name: "更换会话", exact: true }).waitFor();
+  const assistantId = host.snapshot.assistantMail.binding.assistantId;
+  await page.locator(".assistant-binding-current").getByRole("button", { name: originalTitle, exact: true }).click();
+  await page.locator('.conversation-stream [data-mail-id]').first().waitFor();
+  assert.equal(host.requests.some(request => request.method === "turn.start"), false);
+  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openAssistant();
+  host.nativeApproval.assistantMail.service.setBinding({ assistantId, nativeSessionId: null, sectionId: null, previousSessionIds: [sessionId] });
+  await page.getByText("原会话已归档或删除，投递已暂停，请重新绑定。", { exact: true }).waitFor();
+  assert.equal(host.snapshot.assistantMail.binding.assistantId, assistantId);
+  steps.push("offline reload restores mail; explicit binding adds mail to the native session timeline, and paused binding asks for a rebind");
+
+  await page.exposeFunction("assistantDesktopRequest", async input => ({ kind: "response", requestId: randomUUID(), ok: true,
+    result: await host.nativeApproval.controllerRequest({ kind: "request", requestId: randomUUID(), ...input }) }));
+  await page.addInitScript(snapshot => {
+    window.bridgeDesktop = {
+      getSnapshot: async () => structuredClone(snapshot), onSnapshot: () => () => {}, onEvent: () => () => {},
+      request: input => window.assistantDesktopRequest(input),
+    };
+  }, { ...host.snapshot, connection: "connected", launchAtLogin: false, diagnosticsEnabled: false, managedDesktopEnabled: false,
+    host: { ...host.snapshot.host, capabilities: host.snapshot.host.capabilities.filter(value => value !== "plugin.magpie-quota.v1") },
+    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true } });
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "助理", exact: true }).click();
+  await eventually(() => cards().count(), 50, "Desktop uses the same mail page and RPC");
+  await capture("desktop-mail");
+  steps.push("desktop assistant entry uses the shared cards and explicit binding controls");
+}
+
 async function runScenario(theme, scenario) {
   const name = `${themeFamily === "sunstone" ? "" : `${themeFamily}-`}${theme}-${scenario}`;
   const directory = resolve(runDir, name);
@@ -2840,7 +2950,7 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "assistant-mail"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "assistant-mail"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage", scenario === "assistant-mail");
     if (scenario === "native-prompts-pr") await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
     if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (["project-grouping", "session-catalog"].includes(scenario)) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
@@ -2901,7 +3011,8 @@ async function runScenario(theme, scenario) {
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
-    if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
+    if (scenario === "assistant-mail") await verifyAssistantMail(page, host, steps, directory, viewports);
+    else if (scenario === "mobile-safe-area") await verifyMobileSafeArea(page, steps, directory, viewports);
     else if (scenario === "session-catalog") await verifySessionCatalog(page, host, steps, directory, viewports);
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
     else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
@@ -2916,6 +3027,7 @@ async function runScenario(theme, scenario) {
     else if (scenario === "section-manage") await verifySectionManage(page, host, steps, directory);
     else if (scenario === "delivery-approval-reconnect") await verifyDelivery(page, host, steps);
     else await verifyRename(page, host, scenario === "rename-list" ? "list" : "chat", steps);
+    if (scenario !== "assistant-mail") assert.equal(host.requests.some(request => request.method.startsWith("plugin.assistant-mail.")), false, "Hosts without the capability receive no assistant mail RPC");
     assert.deepEqual(errors, [], "Browser runtime, console, network isolation, or host errors");
   } catch (error) {
     failure = error;
@@ -3022,6 +3134,9 @@ try {
             let result;
             if (request.method === "GET" && url.pathname === "/pairing") {
               result = { url: buildPairingUrl(baseUrl, previewHost.pairing) };
+            } else if (assistantMailPreview && url.pathname === "/mail") {
+              if (request.method === "POST") await previewHost.nativeApproval.assistantMail.deliver(1);
+              result = { assistantMail: previewHost.snapshot.assistantMail, count: previewHost.nativeApproval.assistantMail.service.page({ limit: 100 }).events.length };
             } else if (sectionCreatePreview && url.pathname === "/sections") {
               const fixture = previewHost.nativeApproval.sections;
               if (request.method === "POST") {
@@ -3165,7 +3280,7 @@ try {
     if (projectGroupingPreview && process.argv.includes("--project-order-scroll-preview")) addScrollProjects(host, 30);
     if (sectionCreatePreview) await syncNativeSections(host);
     if (nativePromptsPreview) await host.syncNativeDialogs(await host.nativeApproval.seedPullRequest());
-    if (nativePreview && !projectGroupingPreview && !sectionCreatePreview && !nativePromptsPreview) {
+    if (nativePreview && !assistantMailPreview && !projectGroupingPreview && !sectionCreatePreview && !nativePromptsPreview) {
       for (const [index, message] of [
         { type: "user", uuid: "preview-first", message: { content: "检查模型和额度" } },
         { type: "assistant", uuid: "preview-checkpoint", message: { content: [{ type: "text", text: "已建立回退检查点。" }] } },

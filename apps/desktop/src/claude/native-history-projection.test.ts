@@ -30,6 +30,14 @@ function expectSelected(items: ReturnType<typeof nativeHistoryItems>, id: string
   expect(items.find(item => item.id === id)?.interactivePrompt?.questions?.[0]?.options[0]?.selected).toBeUndefined();
 }
 
+describe("native user code examples", () => {
+  const text = "    <ci-monitor-event>example</ci-monitor-event>";
+  it.each([{ content: text }, { content: [{ type: "text", text }] }, { content: `[来自手机 Bridge]\n\n${text}\n\n<!-- bridge-command:phone-code -->` }])("preserves Markdown indentation from $content before client notice classification", ({ content }) => {
+    expect(nativeHistoryItems("session", [{ type: "user", uuid: "code-example", timestamp: 1, message: { content } }]))
+      .toMatchObject([{ id: "code-example", role: "user", text }]);
+  });
+});
+
 describe("native question answers", () => {
   it.each([{ checks: "类型检查, 回归测试" }, { checks: ["类型检查", "回归测试"] }])("restores every selection from a native history tool result ($checks)", ({ checks }) => {
     expectSelected(nativeHistoryItems("session", [ask("question", "ask-1"), answer("ask-1", checks)]), "question");

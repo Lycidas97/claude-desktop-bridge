@@ -5939,6 +5939,7 @@ button:disabled {
 
 .desktop-conversation-heading {
   display: flex;
+  flex-wrap: wrap;
   min-height: 78px;
   align-items: center;
   justify-content: space-between;
@@ -5946,6 +5947,12 @@ button:disabled {
   padding: 13px 20px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
+}
+
+.desktop-conversation-heading > div:first-child {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .desktop-conversation-heading h2 {
@@ -5960,6 +5967,9 @@ button:disabled {
 
 .desktop-conversation-heading-actions {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
   gap: 8px;
 }
@@ -6000,6 +6010,37 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.session-profile-trigger {
+  max-width: min(360px, 100%);
+  padding-top: 6px;
+  padding-bottom: 6px;
+  overflow: visible;
+}
+
+.session-profile-trigger > svg { flex: none; }
+
+.desktop-conversation-heading .session-profile-summary {
+  min-width: 0;
+  overflow: visible;
+  text-align: left;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.session-profile-summary > .session-profile-part {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.session-profile-summary > .is-model {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* Mobile conversation action strip: every session action lives here as a

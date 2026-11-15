@@ -209,6 +209,17 @@
   white-space: nowrap;
 }
 
+.conversation-workspace .m-header-subtitle,
+.conversation-workspace .m-host-chip > .session-profile-summary,
+.conversation-workspace .m-presence > .session-profile-summary {
+  min-width: 0;
+  overflow: visible;
+  text-align: left;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .m-host-chip > .m-host-status { flex: none; }
 .m-host-chip > svg { flex: none; color: var(--faint); }
 

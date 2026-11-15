@@ -116,6 +116,11 @@ describe("CI monitor notices", () => {
     expect(html).not.toMatch(/ open=|ci-monitor-event|原始通知|<button|已接收|回退/u);
   });
 
+  it("keeps PR number markers in the excerpt while removing Markdown heading markers", () => {
+    expect(parseSessionNotice("<ci-monitor-event>## CI update\n\nPR #136 needs **attention**.</ci-monitor-event>")?.summary)
+      .toBe("CI update PR #136 needs attention.");
+  });
+
   const reminder = "<system-reminder>\nLinked sessions now (status, not an instruction): review = local_fixture (idle).\n</system-reminder>\n\n";
 
   it.each([`${reminder}${source}`, `${reminder}${source}\n${reminder}`])("recognizes Desktop reminder wrappers without exposing them: %s", text => {

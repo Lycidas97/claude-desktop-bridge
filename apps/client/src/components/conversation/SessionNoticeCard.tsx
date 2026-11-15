@@ -76,7 +76,7 @@ export function parseSessionNotice(text: string): SessionNotice | undefined {
       ? commonSender ? `来自 ${commonSender}` : `${reports.length} 条跨会话消息`
       : reports.length === 1 ? reports[0]!.title : reports.length ? `${reports.length} 个子会话更新` : "子会话动态",
     summary: reports.length
-      ? reports.map(report => report.text).join("\n\n").replace(/\[([^\]]+)\]\([^)]+\)/gu, "$1").replace(/[*`#]/gu, "").replace(/\s+/gu, " ").trim()
+      ? reports.map(report => report.text).join("\n\n").replace(/\[([^\]]+)\]\([^)]+\)/gu, "$1").replace(/^ {0,3}#{1,6}[ \t]+/gmu, "").replace(/[*`]/gu, "").replace(/\s+/gu, " ").trim()
       : "当前没有运行中的子会话",
     reports,
   };

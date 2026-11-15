@@ -139,6 +139,34 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   assert.match(await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').innerText(), /已归档/u);
   await sidebar.locator('[data-session-id="browser-e2e-fork"] .session-row-hit').click();
   assert.equal(await sidebar.locator('[data-session-id="browser-e2e-fork"]').evaluate(element => element.classList.contains("active")), true);
+  const savedCatalog = await page.evaluate(() => structuredClone(window.__catalogSnapshot));
+  const contrastChecks = [];
+  await page.evaluate(axeSource);
+  for (const state of ["running", "waiting", "queued"]) {
+    for (const selectedId of [sessionId, "browser-e2e-fork", "browser-e2e-btw-archived"]) {
+      await page.evaluate(({ snapshot, selectedId, state }) => {
+        const session = snapshot.sessions.find(session => session.sessionId === selectedId);
+        Object.assign(session, { turnState: state, ownership: state === "running" ? "DESKTOP_NATIVE_RUNNING" : "DESKTOP_NATIVE_IDLE", pendingCount: state === "queued" ? 2 : 0 });
+        delete session.archivedAt;
+        snapshot.permissions = state === "waiting" ? [{ requestId: "catalog-contrast-permission", sessionId: selectedId, toolUseId: "catalog-contrast-tool", toolName: "Bash", input: { command: "synthetic contrast fixture" }, createdAt: Date.now(), canAllowAlways: false }] : [];
+        window.__updateCatalog(snapshot);
+      }, { snapshot: savedCatalog, selectedId, state });
+      const row = sidebar.locator(`[data-session-id="${selectedId}"]`);
+      await row.locator(".session-row-hit").click();
+      assert.equal(await row.evaluate(element => element.classList.contains("active")), true, "Contrast check uses the selected row");
+      await page.waitForFunction(() => document.getAnimations().every(animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished"));
+      const violations = await page.evaluate(async () => (await window.axe.run(document.querySelector(".desktop-session-sidebar"), {
+        runOnly: { type: "rule", values: ["color-contrast"] }, resultTypes: ["violations"],
+      })).violations.map(item => ({ id: item.id, nodes: item.nodes.map(node => ({ target: node.target, detail: node.failureSummary })) })));
+      contrastChecks.push({ selectedId, state, violations });
+      assert.deepEqual(violations, [], `Desktop ${state} status contrast with selected ${selectedId}`);
+      if (selectedId === "browser-e2e-fork") await sidebar.screenshot({ path: resolve(directory, `desktop-selected-${state}.png`) });
+    }
+  }
+  await writeFile(resolve(directory, "desktop-status-contrast.json"), JSON.stringify(contrastChecks, null, 2));
+  await page.evaluate(snapshot => window.__updateCatalog(snapshot), savedCatalog);
+  await sidebar.locator('[data-session-id="browser-e2e-fork"] .session-row-hit').click();
+  steps.push("Desktop status contrast passes for selected main/fork/sidechat rows in running, waiting and queued states");
   await page.evaluate(sessionId => {
     const snapshot = structuredClone(window.__catalogSnapshot);
     Object.assign(snapshot.sessions.find(session => session.sessionId === sessionId), { turnState: "running", ownership: "DESKTOP_NATIVE_RUNNING", pendingCount: 2 });
@@ -146,6 +174,9 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   }, sessionId);
   await sidebar.locator(`[data-session-id="${sessionId}"]`).getByLabel("2 条排队消息", { exact: true }).waitFor();
   assert.match(await sidebar.locator(`[data-session-id="${sessionId}"]`).innerText(), /桌面运行中/u);
+  const runningBadge = await sidebar.locator(`[data-session-id="${sessionId}"] .session-row-status.running`).boundingBox();
+  const pendingBadge = await sidebar.locator(`[data-session-id="${sessionId}"]`).getByLabel("2 条排队消息", { exact: true }).boundingBox();
+  assert.ok(Math.abs(runningBadge.y - pendingBadge.y) < 2, "Running status and pending count stay on the same row");
   await capture("desktop-catalog");
   steps.push("mobile/Desktop share family rows; Desktop retains archived sidechats, selection and fork navigation");
 

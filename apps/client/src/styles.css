@@ -5896,7 +5896,8 @@ button:disabled {
   background: var(--surface-2);
 }
 
-.desktop-project-list .session-row-v2.active .session-fork-badge {
+.desktop-project-list .session-row-v2.active .session-fork-badge,
+.desktop-project-list .session-row-v2.active .session-row-status {
   color: var(--text);
 }
 
@@ -7139,6 +7140,12 @@ button:disabled {
   padding: 8px 6px 8px 12px;
 }
 
+.session-row-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .session-row-status {
   padding: 2px 7px;
   border-radius: 999px;
@@ -7156,7 +7163,7 @@ button:disabled {
 .session-row-status.waiting,
 .session-row-status.queued {
   background: var(--warm-soft);
-  color: var(--warm);
+  color: var(--warm-ink);
 }
 
 .desktop-agents-drawer {

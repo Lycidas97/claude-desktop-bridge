@@ -8,6 +8,7 @@ import type {
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { sessionCommandName } from "../../hooks/useSessionCommands.js";
 import { canSendSession, fileToAttachment } from "../../lib/conversation-timeline.js";
+import { registerDiagnosticsStateProvider } from "../../lib/diagnostics.js";
 import { appendUploadedFilePaths, type UploadFileHandler } from "../../lib/file-upload.js";
 import type { useFileAttachments } from "../evidence/FileAttachmentPicker.js";
 import type { QueuedTurnActionState } from "./ConversationMessageItem.js";
@@ -194,6 +195,38 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
       }
       controllersRef.current.clear();
     };
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    return registerDiagnosticsStateProvider("conversationDrafts", () => {
+      const draftValues = Object.values(draftsRef.current);
+      const currentEntries = entriesRef.current;
+      let nonEmptyTextDrafts = 0;
+      let totalTextCodeUnits = 0;
+      let attachmentsCount = currentEntries.length;
+      let attachmentsBytes = currentEntries.reduce((sum, entry) => sum + entry.size, 0);
+      for (const draft of draftValues) {
+        if (draft.text.length > 0) nonEmptyTextDrafts += 1;
+        totalTextCodeUnits += draft.text.length;
+        attachmentsCount += draft.attachments.length;
+        for (const attachment of draft.attachments) {
+          attachmentsBytes += attachment.size;
+        }
+      }
+      const uploadingKeys = new Set<string>();
+      for (const entry of currentEntries) {
+        if (!entry.result && !entry.error) uploadingKeys.add(entry.key);
+      }
+      return {
+        draftEntries: draftValues.length,
+        nonEmptyTextDrafts,
+        totalTextCodeUnits,
+        attachmentsCount,
+        attachmentsBytes,
+        uploadingDraftsCount: uploadingKeys.size,
+      };
+    });
   }, [enabled]);
 
   function clearFilesOnKey(key: string, filesToClear: BridgeUploadedFile[]): void {

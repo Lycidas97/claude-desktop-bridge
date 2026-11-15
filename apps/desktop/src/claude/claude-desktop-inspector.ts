@@ -91,6 +91,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
     reject(error: Error): void;
     timer?: ReturnType<typeof setTimeout>;
     traceName: DiagBucket;
+    startedAt: number;
     settled(): void;
   }>();
   private webContentsId: number | undefined;
@@ -100,6 +101,37 @@ export class ClaudeDesktopInspector extends EventEmitter {
 
   constructor(private readonly options: { origin?: string; fetchImpl?: typeof fetch; rpcTimeoutMs?: number } = {}) {
     super();
+  }
+
+  diagnosticsGauges(): {
+    state: "connected" | "connecting" | "disconnected";
+    pendingCalls: { count: number; oldestMs: number };
+    eventStreamWaiting: boolean;
+    supportedMethods: number;
+  } {
+    const now = Date.now();
+    let count = 0;
+    let oldestMs = 0;
+    let eventStreamWaiting = false;
+    for (const entry of this.pending.values()) {
+      if (entry.traceName === "native.stream") {
+        eventStreamWaiting = true;
+        continue;
+      }
+      count += 1;
+      oldestMs = Math.max(oldestMs, Math.max(0, now - entry.startedAt));
+    }
+    const state = this.ready
+      ? "connected"
+      : this.socket && this.socket.readyState === WebSocket.CONNECTING
+        ? "connecting"
+        : "disconnected";
+    return {
+      state,
+      pendingCalls: { count, oldestMs },
+      eventStreamWaiting,
+      supportedMethods: this.methods.size,
+    };
   }
 
   supports(method: string): boolean {
@@ -369,7 +401,7 @@ export class ClaudeDesktopInspector extends EventEmitter {
         settled();
         reject(new InspectorDisconnectedError("Desktop inspector RPC timed out; delivery is unconfirmed"));
       }, this.options.rpcTimeoutMs ?? 15_000) : undefined;
-      this.pending.set(id, { resolve, reject, traceName, settled, ...(timer ? { timer } : {}) });
+      this.pending.set(id, { resolve, reject, traceName, startedAt: Date.now(), settled, ...(timer ? { timer } : {}) });
       socket.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression, awaitPromise: true, returnByValue: true } }));
     });
   }

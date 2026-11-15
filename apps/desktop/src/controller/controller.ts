@@ -439,6 +439,18 @@ export class DesktopController extends EventEmitter {
 
   diagnostics(): Record<string, unknown> {
     if (!this.config) throw new Error("Desktop controller is not initialized");
+    const now = Date.now();
+    const activeDevices = this.config.devices.filter((device) => !device.revokedAt).length;
+    const hasPendingPairing = Boolean(
+      (this.currentPairingDeviceId && this.config.devices.some((device) => (
+        device.deviceId === this.currentPairingDeviceId && !device.revokedAt && !device.pairedAt && device.expiresAt > now
+      )))
+      || this.config.devices.some((device) => !device.revokedAt && !device.pairedAt && device.expiresAt > now),
+    );
+    const mailGauges = this.assistantMail?.diagnosticsGauges?.() ?? {
+      configured: Boolean(this.assistantMail?.status?.().account),
+      unreadCount: 0,
+    };
     return {
       generatedAt: new Date().toISOString(),
       bridgeVersion: this.app.getVersion(),
@@ -459,10 +471,79 @@ export class DesktopController extends EventEmitter {
       counts: {
         projects: this.allProjects().length,
         sessions: this.allSessions().length,
-        devices: this.config.devices.filter((device) => !device.revokedAt).length,
+        devices: activeDevices,
         pendingPermissions: this.claudePermissions().length,
       },
       latestEventSeq: this.eventLog.latestSeq(),
+      processMemory: process.memoryUsage(),
+      traceRecorder: {
+        enabled: diagnostics.enabled,
+        ...diagnostics.snapshot(),
+      },
+      stateGauges: {
+        controller: {
+          devicesTotal: this.config.devices.length,
+          activeDevices,
+          onlineDevices: this.onlineDevices?.size ?? 0,
+          deviceCryptos: this.deviceCryptos?.size ?? 0,
+          deflateDevices: this.deflateDevices?.size ?? 0,
+          responseCacheEntries: this.responseCache?.size ?? 0,
+          sessionVisibilityOverrides: this.sessionVisibility?.size ?? 0,
+          hasPendingPairing,
+        },
+        uploads: this.uploads?.diagnosticsGauges?.() ?? {
+          activeSessions: 0,
+          retainedSessions: 0,
+          committedReceipts: 0,
+          bufferedChunks: 0,
+          bufferedBytes: 0,
+        },
+        broker: this.broker.diagnosticsGauges?.() ?? {
+          closed: false,
+          inspectorState: "disconnected",
+          pendingInspectorCalls: { count: 0, oldestMs: 0 },
+          inspectorEventStreamWaiting: false,
+          inspectorSupportedMethods: 0,
+          pendingEvents: 0,
+          nativeSessions: 0,
+          projectedSessions: 0,
+          activeTurns: 0,
+          permissions: 0,
+          resolvingPermissions: 0,
+          prompts: 0,
+          receipts: 0,
+          streams: 0,
+          inFlightTools: 0,
+          compactingSessions: 0,
+          cachedCatalogs: {
+            projectDirectories: 0,
+            sections: 0,
+            sectionAssignments: 0,
+            models: 0,
+            messageProjections: 0,
+            contextStates: 0,
+            backgroundTaskSessions: 0,
+            prPreferences: 0,
+          },
+        },
+        evidence: this.evidence?.diagnosticsGauges?.() ?? {
+          inFlightPreviewRenders: 0,
+          cachedPreviews: 0,
+          storedBundles: 0,
+          storedBlobs: 0,
+          storedBlobBytes: 0,
+          activeCaptures: 0,
+          activeToolOutputBytes: 0,
+          activeTransfers: 0,
+          retainedTransfers: 0,
+          retainedTransferBytes: 0,
+        },
+        assistantMail: {
+          available: Boolean(this.assistantMail),
+          configured: mailGauges.configured,
+          unreadCount: mailGauges.unreadCount,
+        },
+      },
       ...(this.memoryRecorder ? { memory: this.memoryRecorder.diagnostics() } : {}),
     };
   }

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, open, writeFile } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { BridgeDesktopRuntimeId, BridgeEvent, DesktopControlSnapshot, LocalBridgeRequest } from "@bridge/protocol";
@@ -256,13 +256,33 @@ async function desktopMain(): Promise<void> {
       return quitDesktopAppWithConfirmation(runtimeId);
     });
     handle("bridge:request", (request: LocalBridgeRequest) => controller.call("dispatchLocal", request));
-    handle("bridge:export-diagnostics", async () => {
+    handle("bridge:export-diagnostics", async (rendererDiagnostics?: unknown) => {
+      if (
+        rendererDiagnostics !== undefined && (
+          typeof rendererDiagnostics !== "object"
+          || rendererDiagnostics === null
+          || Array.isArray(rendererDiagnostics)
+          || (Object.getPrototypeOf(rendererDiagnostics) !== Object.prototype && Object.getPrototypeOf(rendererDiagnostics) !== null)
+        )
+      ) {
+        throw new Error("rendererDiagnostics must be a plain object");
+      }
       const result = await dialog.showSaveDialog({
         title: "导出 Bridge 诊断", defaultPath: `bridge-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
         filters: [{ name: "JSON", extensions: ["json"] }],
       });
       if (result.canceled || !result.filePath) return { saved: false };
-      await writeFile(result.filePath, `${JSON.stringify(await controller.call("diagnostics"), null, 2)}\n`, "utf8");
+      const combined = {
+        ...await controller.call("diagnostics"),
+        ...(rendererDiagnostics ? { renderer: rendererDiagnostics } : {}),
+      };
+      const handle = await open(result.filePath, "w", 0o600);
+      try {
+        await handle.chmod(0o600);
+        await handle.writeFile(`${JSON.stringify(combined, null, 2)}\n`, "utf8");
+      } finally {
+        await handle.close();
+      }
       return { saved: true, path: result.filePath };
     });
 

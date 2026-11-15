@@ -15,6 +15,16 @@ type RequestArtifact = (
   options?: { wait?: boolean; timeoutMs?: number },
 ) => Promise<BridgeResponse | undefined>;
 
+let activeDownloadsCount = 0;
+let activeDownloadsCachedBytes = 0;
+
+export function getActiveArtifactDownloadGauges(): { activeCount: number; cachedBytes: number } {
+  return {
+    activeCount: activeDownloadsCount,
+    cachedBytes: activeDownloadsCachedBytes,
+  };
+}
+
 function unwrap<T>(response: BridgeResponse | undefined): T {
   if (!response?.ok) throw new Error(response?.error?.message ?? "成果传输失败");
   return response.result as T;
@@ -89,6 +99,8 @@ async function runArtifactTransfer(
   const nativePath = `bridge-evidence/${transfer.transferId}/${filename}`;
   let nativeFileCreated = false;
   let transferCompleted = false;
+  let bufferedBytes = 0;
+  activeDownloadsCount += 1;
   try {
     for (let index = 0; index < transfer.totalChunks; index += 1) {
       const chunk = await readChunkWithResume(request, transfer, index);
@@ -97,6 +109,8 @@ async function runArtifactTransfer(
       }
       const bytes = base64Bytes(chunk.data);
       chunks.push(bytes);
+      bufferedBytes += bytes.byteLength;
+      activeDownloadsCachedBytes += bytes.byteLength;
       if (native) {
         if (index === 0) {
           await Filesystem.writeFile({
@@ -138,6 +152,8 @@ async function runArtifactTransfer(
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
   } finally {
+    activeDownloadsCount = Math.max(0, activeDownloadsCount - 1);
+    activeDownloadsCachedBytes = Math.max(0, activeDownloadsCachedBytes - bufferedBytes);
     await request(
       "artifact.transfer.close",
       { transferId: transfer.transferId },

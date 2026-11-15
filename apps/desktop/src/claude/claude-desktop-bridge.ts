@@ -95,6 +95,12 @@ interface InspectorTransport {
   close(): Promise<void>;
   call(method: string, args?: unknown[]): Promise<unknown>;
   availableCodeModels(): Promise<string[]>;
+  diagnosticsGauges?(): {
+    state: "connected" | "connecting" | "disconnected";
+    pendingCalls: { count: number; oldestMs: number };
+    eventStreamWaiting: boolean;
+    supportedMethods: number;
+  };
   sections?(sessionIds: string[]): Promise<NativeSectionCatalog | undefined>;
   prPreferences?(sessionId: string): Promise<{ onlyOwnPrs: boolean; nextOwnPrArmed: boolean } | undefined>;
   promptChoices?(sessionId: string, promptId: string): Promise<string[] | undefined>;
@@ -1320,5 +1326,46 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (!repository) throw new Error("Magpie connection settings are unavailable");
     await repository.save(repository.resolve(input));
     await this.gatewayConfig();
+  }
+
+  diagnosticsGauges() {
+    const inspectorGauges = this.inspector.diagnosticsGauges?.() ?? {
+      state: this.inspector.ready ? "connected" as const : "disconnected" as const,
+      pendingCalls: { count: 0, oldestMs: 0 },
+      eventStreamWaiting: false,
+      supportedMethods: 0,
+    };
+    let activeTurns = 0;
+    for (const session of this.sessions.values()) {
+      if (session.turnState === "running" || session.turnState === "waiting") activeTurns += 1;
+    }
+    return {
+      closed: this.closed,
+      inspectorState: inspectorGauges.state,
+      pendingInspectorCalls: inspectorGauges.pendingCalls,
+      inspectorEventStreamWaiting: inspectorGauges.eventStreamWaiting,
+      inspectorSupportedMethods: inspectorGauges.supportedMethods,
+      pendingEvents: this.pendingEvents,
+      nativeSessions: this.native.size,
+      projectedSessions: this.sessions.size,
+      activeTurns,
+      permissions: this.permissions.size,
+      resolvingPermissions: this.resolvingPermissions.size,
+      prompts: this.prompts.size,
+      receipts: this.receipts.size,
+      streams: this.streams.size,
+      inFlightTools: this.tools.size,
+      compactingSessions: this.compactingSessions.size,
+      cachedCatalogs: {
+        projectDirectories: this.projectDirectories.size,
+        sections: this.sectionCatalog?.sections.length ?? 0,
+        sectionAssignments: Object.keys(this.sectionCatalog?.assignments ?? {}).length,
+        models: this.models?.length ?? 0,
+        messageProjections: this.messageProjection.size,
+        contextStates: this.contextStates.size,
+        backgroundTaskSessions: this.backgroundTasks.size,
+        prPreferences: this.prPreferences.size,
+      },
+    };
   }
 }

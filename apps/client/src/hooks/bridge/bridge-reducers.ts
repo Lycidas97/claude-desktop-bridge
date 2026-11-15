@@ -126,6 +126,7 @@ export interface PendingResponse {
   resolve(response: BridgeResponse): void;
   reject(error: Error): void;
   timer: ReturnType<typeof setTimeout>;
+  startedAt?: number;
 }
 
 export interface PairingConnectionPhase {

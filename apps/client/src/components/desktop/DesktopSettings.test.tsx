@@ -1,6 +1,7 @@
 import type { DesktopControlSnapshot } from "@bridge/protocol";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
+import { registerDiagnosticsStateProvider } from "../../lib/diagnostics.js";
 import { DesktopSettings } from "./DesktopSettings.js";
 
 const hooks = vi.hoisted(() => ({ slots: [] as any[], index: 0, dirty: false, effects: [] as unknown[][], effectIndex: 0, pending: [] as Array<() => void> }));
@@ -199,4 +200,53 @@ it("renders desktop updater controls and OS silent-restart boundary in about sec
   expect(text()).toContain("macOS 未公证/DMG 包不支持后台静默覆盖系统目录");
   expect(button("空闲静默重启").props.disabled).toBe(true);
   expect(text()).toContain("打开安装包 (v1.3.3)");
+});
+
+it("passes the collected renderer diagnostics snapshot to exportDiagnostics while preserving diagnostic labels", async () => {
+  const dispose = registerDiagnosticsStateProvider("desktopConversations", () => ({
+    trackedHosts: 1,
+    totalBufferedEvents: 7,
+  }));
+  vi.stubGlobal("performance", {
+    memory: {
+      usedJSHeapSize: 10_000_000,
+      totalJSHeapSize: 20_000_000,
+      jsHeapSizeLimit: 500_000_000,
+    },
+  });
+  props.api.exportDiagnostics = vi.fn().mockResolvedValue({ saved: true, path: "/tmp/diag.json" });
+  try {
+    button("诊断与关于").props.onClick();
+    draw();
+    expect(text()).toContain("后台诊断记录");
+    expect(button("连接诊断与日志")).toBeDefined();
+    expect(button("导出诊断")).toBeDefined();
+
+    button("导出诊断").props.onClick();
+    await settle();
+    expect(props.api.exportDiagnostics).toHaveBeenCalledOnce();
+    const payload = vi.mocked(props.api.exportDiagnostics).mock.calls[0]![0]!;
+    expect(payload).toMatchObject({
+      schemaVersion: 1,
+      rendererMemory: {
+        usedJSHeapSize: 10_000_000,
+        totalJSHeapSize: 20_000_000,
+        jsHeapSizeLimit: 500_000_000,
+      },
+      stateGauges: expect.objectContaining({
+        desktopConversations: {
+          trackedHosts: 1,
+          totalBufferedEvents: 7,
+        },
+      }),
+    });
+
+    vi.mocked(props.api.exportDiagnostics).mockRejectedValueOnce(new Error("磁盘写入权限不足"));
+    button("导出诊断").props.onClick();
+    await settle();
+    expect(text()).toContain("磁盘写入权限不足");
+  } finally {
+    dispose();
+    vi.unstubAllGlobals();
+  }
 });

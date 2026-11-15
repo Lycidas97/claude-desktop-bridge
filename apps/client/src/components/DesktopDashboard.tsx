@@ -201,7 +201,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
 
   return (
     <ConversationDraftsProvider activeHostId={snapshot.host.hostId}>
-    <DesktopConversationProvider snapshot={visibleSnapshot!} events={events} apiRequest={request} onRefreshSnapshot={refreshSnapshot}>
+    <DesktopConversationProvider snapshot={visibleSnapshot!} events={events} eventsByHost={eventsByHost} apiRequest={request} onRefreshSnapshot={refreshSnapshot}>
     <MediaPreviewProvider request={(method, params) => request({ method, params })} supportsFileStat={snapshot.host.capabilities.includes("artifact.transfer.stat.v1")}>
     <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={snapshot.runtime.detection?.refreshedAt ?? 0}>
     <AssistantMailProvider key={snapshot.host.hostId} snapshot={snapshot} online request={mailRequest} onDiscuss={() => setTab("assistant")}>

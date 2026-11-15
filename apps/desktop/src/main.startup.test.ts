@@ -41,7 +41,7 @@ vi.mock("electron", async () => {
   }
   return {
     app, BrowserWindow, Tray,
-    dialog: { showErrorBox: vi.fn(), showOpenDialog: vi.fn(), showMessageBox: vi.fn() },
+    dialog: { showErrorBox: vi.fn(), showOpenDialog: vi.fn(), showMessageBox: vi.fn(), showSaveDialog: vi.fn() },
     protocol: { registerSchemesAsPrivileged: vi.fn() }, ipcMain: { handle: vi.fn() },
     Menu: { buildFromTemplate: vi.fn(() => ({ getMenuItemById: vi.fn(() => ({ checked: false })) })) },
     nativeImage: { createFromPath: vi.fn(() => ({ resize: vi.fn(), setTemplateImage: vi.fn() })) }, shell: { openExternal: vi.fn(async () => {}) },
@@ -338,4 +338,69 @@ it("shows startup before connecting and reports connection errors to the UI", as
   await import("./main.js");
   await vi.waitFor(() => expect(dialog.showErrorBox).toHaveBeenCalled());
   expect(vi.mocked(dialog.showErrorBox).mock.calls[0]?.[1]).toContain("service authentication failed: 401");
+});
+
+it("validates rendererDiagnostics at the IPC boundary, merges service + renderer snapshots, and enforces mode 0600 even when overwriting a 0644 file", async () => {
+  process.argv = originalArgv;
+  const { EventEmitter } = await import("node:events");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const realFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  const { dialog, ipcMain } = await import("electron");
+  const call = vi.fn(async (method: string) => {
+    if (method === "snapshot") return { launchAtLogin: false, sessions: [] };
+    if (method === "diagnostics") {
+      return {
+        bridgeVersion: "1.3.4",
+        stateGauges: { controller: { activeDevices: 1 } },
+      };
+    }
+    throw new Error(`Unexpected method: ${method}`);
+  });
+  mocks.connect.mockResolvedValueOnce(Object.assign(new EventEmitter(), { call, close: vi.fn() }));
+  await import("./main.js");
+  await vi.waitFor(() => expect(ipcMain.handle).toHaveBeenCalledWith("bridge:export-diagnostics", expect.any(Function)));
+  const exportDiag = vi.mocked(ipcMain.handle).mock.calls.find(([channel]) => channel === "bridge:export-diagnostics")![1];
+  const event = { senderFrame: { url: process.env.BRIDGE_DEV_SERVER_URL || "file:///bridge/index.html" } } as Electron.IpcMainInvokeEvent;
+
+  expect(() => exportDiag({ senderFrame: { url: "https://untrusted.invalid" } } as Electron.IpcMainInvokeEvent)).toThrow("Untrusted renderer");
+  for (const invalid of ["string", 42, null, ["array"], new Date()]) {
+    await expect(exportDiag(event, invalid)).rejects.toThrow("rendererDiagnostics must be a plain object");
+  }
+  expect(dialog.showSaveDialog).not.toHaveBeenCalled();
+
+  const openCallsBeforeExport = mocks.logOpen.mock.calls.length;
+  vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ canceled: true, filePath: "" });
+  await expect(exportDiag(event, { schemaVersion: 1 })).resolves.toEqual({ saved: false });
+  expect(mocks.logOpen).toHaveBeenCalledTimes(openCallsBeforeExport);
+
+  const tempDir = await realFs.mkdtemp(join(tmpdir(), "bridge-export-diag-"));
+  const targetPath = join(tempDir, "existing-0644-diag.json");
+  await realFs.writeFile(targetPath, '{"stale":true}\n', { encoding: "utf8", mode: 0o644 });
+  if (process.platform !== "win32") {
+    await realFs.chmod(targetPath, 0o644);
+    expect((await realFs.stat(targetPath)).mode & 0o777).toBe(0o644);
+  }
+
+  mocks.logOpen.mockImplementationOnce((path: string, flags: string, mode: number) => realFs.open(path, flags, mode));
+  vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ canceled: false, filePath: targetPath });
+  const rendererPayload = {
+    schemaVersion: 1,
+    rendererMemory: { usedJSHeapSize: 1234, totalJSHeapSize: 5678, jsHeapSizeLimit: 9999 },
+    stateGauges: { desktopConversations: { trackedHosts: 1 } },
+  };
+  await expect(exportDiag(event, rendererPayload)).resolves.toEqual({
+    saved: true,
+    path: targetPath,
+  });
+  expect(mocks.logOpen).toHaveBeenLastCalledWith(targetPath, "w", 0o600);
+  if (process.platform !== "win32") {
+    expect((await realFs.stat(targetPath)).mode & 0o777).toBe(0o600);
+  }
+  const written = JSON.parse(await realFs.readFile(targetPath, "utf8"));
+  expect(written).toEqual({
+    bridgeVersion: "1.3.4",
+    stateGauges: { controller: { activeDevices: 1 } },
+    renderer: rendererPayload,
+  });
 });

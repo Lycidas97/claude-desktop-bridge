@@ -281,3 +281,19 @@ it("rejects unsupported platform credentials before connecting or writing accoun
   expect(createClient).not.toHaveBeenCalled();
   await expect(readFile(join(root, "private", "assistant", "account.json"))).rejects.toMatchObject({ code: "ENOENT" });
 });
+
+it("exposes numeric unread gauges without leaking account addresses, passwords, or mail contents", async () => {
+  const inbox = new Inbox();
+  const { service } = await createService([inbox]);
+  expect(service.diagnosticsGauges()).toEqual({ configured: false, unreadCount: 0 });
+  await service.enable(account);
+  await vi.waitFor(() => expect(inbox.idle).toHaveBeenCalledOnce());
+  inbox.deliver(5);
+  inbox.deliver(6);
+  await vi.waitFor(() => expect(service.page().events).toHaveLength(2));
+  expect(service.diagnosticsGauges()).toEqual({ configured: true, unreadCount: 2 });
+  const firstRef = service.page().events[0]!.mailRefId;
+  service.setProcessingStatus(firstRef, "processed");
+  expect(service.diagnosticsGauges()).toEqual({ configured: true, unreadCount: 1 });
+  expect(JSON.stringify(service.diagnosticsGauges())).not.toMatch(/example\.test|private-password|message 5|message 6/);
+});

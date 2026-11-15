@@ -31,6 +31,10 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import { HISTORY_PAGE_SIZE, mergeHistoryPages } from "../../hooks/bridge/bridge-reducers.js";
 import type { SessionEvidenceState, SessionHistoryState } from "../../hooks/useMobileBridge.js";
 import { downloadBridgeArtifact, downloadBridgeSessionFile } from "../../lib/artifact-download.js";
+import {
+  estimateArtifactPreviewBytes,
+  registerDiagnosticsStateProvider,
+} from "../../lib/diagnostics.js";
 import { uploadSessionFile, type UploadFileHandler } from "../../lib/file-upload.js";
 import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
 import { MailReference } from "../assistant/MailReference.js";
@@ -59,6 +63,7 @@ export function unwrap<T>(response: BridgeResponse): T {
 export interface DesktopConversationInput {
   snapshot: DesktopControlSnapshot;
   events: BridgeEvent[];
+  eventsByHost?: Record<string, BridgeEvent[]> | undefined;
   apiRequest(request: LocalBridgeRequest): Promise<BridgeResponse>;
   onRefreshSnapshot(): Promise<void>;
 }
@@ -148,6 +153,11 @@ function useDesktopConversationController(
   evidenceRef.current = evidence;
   const previewsRef = useRef(artifactPreviewsByHost);
   previewsRef.current = artifactPreviewsByHost;
+  const transfersRef = useRef(artifactTransfersByHost);
+  transfersRef.current = artifactTransfersByHost;
+  const selectedByHostRef = useRef(selectedByHost);
+  selectedByHostRef.current = selectedByHost;
+  const activeUploadsRef = useRef(0);
 
   const loadingHistoryRef = useRef(new Set<string>());
   const loadingEvidenceRef = useRef(new Set<string>());
@@ -617,26 +627,103 @@ function useDesktopConversationController(
     }
   }
 
-  const uploadFile: UploadFileHandler = (sessionId, file, onProgress, signal) => {
+  const uploadFile: UploadFileHandler = async (sessionId, file, onProgress, signal) => {
     const startingHostId = latestRef.current.snapshot.host.hostId;
     const startingRequest = latestRef.current.apiRequest;
-    return uploadSessionFile(
-      async (method, params) => {
-        if (latestRef.current.snapshot.host.hostId !== startingHostId) {
-          throw new Error("主机已切换，文件上传已取消");
-        }
-        const response = await startingRequest({ method, params });
-        if (latestRef.current.snapshot.host.hostId !== startingHostId) {
-          throw new Error("主机已切换，文件上传已取消");
-        }
-        return response;
-      },
-      sessionId,
-      file,
-      onProgress,
-      signal,
-    );
+    activeUploadsRef.current += 1;
+    try {
+      return await uploadSessionFile(
+        async (method, params) => {
+          if (latestRef.current.snapshot.host.hostId !== startingHostId) {
+            throw new Error("主机已切换，文件上传已取消");
+          }
+          const response = await startingRequest({ method, params });
+          if (latestRef.current.snapshot.host.hostId !== startingHostId) {
+            throw new Error("主机已切换，文件上传已取消");
+          }
+          return response;
+        },
+        sessionId,
+        file,
+        onProgress,
+        signal,
+      );
+    } finally {
+      activeUploadsRef.current = Math.max(0, activeUploadsRef.current - 1);
+    }
   };
+
+  useEffect(() => {
+    if (!enabled) return;
+    return registerDiagnosticsStateProvider("desktopConversations", () => {
+      const currentInput = latestRef.current;
+      const bufferedByHost = currentInput.eventsByHost ?? {
+        [currentInput.snapshot.host.hostId]: currentInput.events,
+      };
+      const trackedHostIds = new Set<string>([currentInput.snapshot.host.hostId]);
+      let totalBufferedEvents = 0;
+      let maxEventsPerHost = 0;
+      for (const [hostId, hostEvents] of Object.entries(bufferedByHost)) {
+        trackedHostIds.add(hostId);
+        totalBufferedEvents += hostEvents.length;
+        maxEventsPerHost = Math.max(maxEventsPerHost, hostEvents.length);
+      }
+      for (const hostId of Object.keys(selectedByHostRef.current)) trackedHostIds.add(hostId);
+      for (const hostId of Object.keys(previewsRef.current)) trackedHostIds.add(hostId);
+      for (const hostId of Object.keys(transfersRef.current)) trackedHostIds.add(hostId);
+
+      const historyEntries = Object.entries(historiesRef.current);
+      let historyItemsTotal = 0;
+      for (const [key, state] of historyEntries) {
+        historyItemsTotal += state.items.length;
+        try {
+          const [hostId] = JSON.parse(key) as [string | undefined, string | undefined];
+          if (hostId) trackedHostIds.add(hostId);
+        } catch {
+          // Ignore malformed key.
+        }
+      }
+
+      let evidenceCached = 0;
+      for (const [key, state] of Object.entries(evidenceRef.current)) {
+        evidenceCached += state.items.length;
+        try {
+          const [hostId] = JSON.parse(key) as [string | undefined, string | undefined];
+          if (hostId) trackedHostIds.add(hostId);
+        } catch {
+          // Ignore malformed key.
+        }
+      }
+
+      let artifactPreviewsCached = 0;
+      let artifactPreviewBytes = 0;
+      for (const hostPreviews of Object.values(previewsRef.current)) {
+        const values = Object.values(hostPreviews);
+        artifactPreviewsCached += values.length;
+        for (const preview of values) {
+          artifactPreviewBytes += estimateArtifactPreviewBytes(preview);
+        }
+      }
+
+      let artifactTransfersCount = 0;
+      for (const hostTransfers of Object.values(transfersRef.current)) {
+        artifactTransfersCount += Object.keys(hostTransfers).length;
+      }
+
+      return {
+        trackedHosts: trackedHostIds.size,
+        totalBufferedEvents,
+        maxEventsPerHost,
+        historiesCached: historyEntries.length,
+        historyItemsTotal,
+        evidenceCached,
+        artifactPreviewsCached,
+        artifactPreviewBytes,
+        artifactTransfersCount,
+        activeUploads: activeUploadsRef.current,
+      };
+    });
+  }, [enabled]);
 
   const currentHostId = input.snapshot.host.hostId;
 
@@ -853,12 +940,13 @@ function useDesktopConversationController(
 export function DesktopConversationProvider({
   snapshot,
   events,
+  eventsByHost,
   apiRequest,
   onRefreshSnapshot,
   children,
 }: DesktopConversationInput & { children: ReactNode }) {
   const controller = useDesktopConversationController(
-    { snapshot, events, apiRequest, onRefreshSnapshot },
+    { snapshot, events, eventsByHost, apiRequest, onRefreshSnapshot },
     true,
   );
   return (

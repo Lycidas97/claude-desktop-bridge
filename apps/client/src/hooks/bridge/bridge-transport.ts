@@ -544,7 +544,7 @@ export async function sendBridgeRequest(
       pendingResponsesRef.current.delete(request.requestId);
       reject(new Error("电脑响应超时"));
     }, options.timeoutMs ?? 20_000);
-    pendingResponsesRef.current.set(request.requestId, { resolve, reject, timer });
+    pendingResponsesRef.current.set(request.requestId, { resolve, reject, timer, startedAt: Date.now() });
   }) : undefined;
   // Prevent Node/Vitest unhandledRejection if teardown rejects while `sendEnvelope` is still yielding.
   responsePromise?.catch(() => undefined);

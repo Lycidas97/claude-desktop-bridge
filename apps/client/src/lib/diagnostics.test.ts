@@ -5,8 +5,12 @@ import {
   BUILD_DIAG_TAG,
   buildDiagnosticReportText,
   clearDiagEntries,
+  collectDiagnosticsStateSnapshot,
+  collectRendererDiagnosticsSnapshot,
+  diagLog,
   getDiagEntries,
   inspectIndexedDbSummary,
+  registerDiagnosticsStateProvider,
   runRelayConnectivityProbe,
 } from "./diagnostics.js";
 import type { DesktopControlSnapshot } from "@bridge/protocol";
@@ -83,4 +87,96 @@ it("probes the BIS relay health and WebSocket subpath by default", async () => {
   expect(fetchUrls).toEqual(["https://bis.zju.edu.cn/bridge-relay/health"]);
   expect(wsUrls).toEqual(["wss://bis.zju.edu.cn/bridge-relay/ws"]);
   expect(getDiagEntries().some((entry) => entry.message.includes("https://bis.zju.edu.cn/bridge-relay/health"))).toBe(true);
+});
+
+it("pulls state gauges lazily without idle timers, guards against stale disposers, and strips non-numeric secrets", async () => {
+  const intervalSpy = vi.spyOn(globalThis, "setInterval");
+  const collectFirst = vi.fn(() => ({
+    count: 3,
+    active: true,
+    connection: "connected",
+    secretTitle: "SECRET_SESSION_TITLE",
+    secretPath: "/Users/secret/file.ts",
+    secretList: ["SECRET_ITEM"],
+    nested: {
+      bytes: 1024,
+      leakedDraft: "SECRET_DRAFT_BODY",
+    },
+  }));
+  const disposeFirst = registerDiagnosticsStateProvider("testOwner", collectFirst);
+  expect(collectFirst).not.toHaveBeenCalled();
+  expect(intervalSpy).not.toHaveBeenCalled();
+
+  const stateSnapshot = collectDiagnosticsStateSnapshot();
+  expect(collectFirst).toHaveBeenCalledOnce();
+  expect(stateSnapshot.testOwner).toEqual({
+    count: 3,
+    active: true,
+    connection: "connected",
+    nested: { bytes: 1024 },
+  });
+  expect(JSON.stringify(stateSnapshot)).not.toMatch(/SECRET_SESSION_TITLE|\/Users\/secret|SECRET_ITEM|SECRET_DRAFT_BODY/);
+
+  const collectSecond = vi.fn(() => ({ count: 9 }));
+  const disposeSecond = registerDiagnosticsStateProvider("testOwner", collectSecond);
+  // Stale disposer from an earlier mount must not delete a newer registration.
+  disposeFirst();
+  expect(collectDiagnosticsStateSnapshot().testOwner).toEqual({ count: 9 });
+
+  disposeSecond();
+  expect(collectDiagnosticsStateSnapshot()).not.toHaveProperty("testOwner");
+});
+
+it("captures renderer JS heap metrics and includes stateGauges in both structured snapshot and report text", async () => {
+  clearDiagEntries();
+  diagLog("warn", "net", "synthetic warning", undefined, true);
+  diagLog("error", "ws", "synthetic failure", undefined, true);
+  vi.stubGlobal("performance", {
+    memory: {
+      usedJSHeapSize: 12_345_678,
+      totalJSHeapSize: 23_456_789,
+      jsHeapSizeLimit: 2_147_483_648,
+    },
+  });
+  const dispose = registerDiagnosticsStateProvider("customGauge", () => ({
+    bufferedItems: 42,
+    uploading: false,
+  }));
+  try {
+    const desktopFixture = {
+      host: { name: "Fixture Mac", online: true },
+      connection: "connected",
+      latestSeq: 19,
+      runtime: { state: "ready" },
+      transport: { path: "direct", rttMs: 3 },
+    } as DesktopControlSnapshot;
+    const structured = await collectRendererDiagnosticsSnapshot(desktopFixture);
+    expect(structured).toMatchObject({
+      schemaVersion: 1,
+      buildTag: BUILD_DIAG_TAG,
+      rendererMemory: {
+        usedJSHeapSize: 12_345_678,
+        totalJSHeapSize: 23_456_789,
+        jsHeapSizeLimit: 2_147_483_648,
+      },
+      stateGauges: expect.objectContaining({
+        customGauge: { bufferedItems: 42, uploading: false },
+      }),
+      eventLog: {
+        count: 2,
+        warnCount: 1,
+        errorCount: 1,
+      },
+    });
+    expect(structured).not.toHaveProperty("indexedDb");
+
+    const report = await buildDiagnosticReportText(desktopFixture);
+    expect(report).toContain('"rendererMemory"');
+    expect(report).toContain('"usedJSHeapSize": 12345678');
+    expect(report).toContain('"customGauge"');
+    expect(report).toContain('"bufferedItems": 42');
+  } finally {
+    dispose();
+    clearDiagEntries();
+  }
 });

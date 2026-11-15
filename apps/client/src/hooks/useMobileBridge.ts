@@ -36,8 +36,14 @@ import {
   type PairingBundle,
 } from "@bridge/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { diagLog } from "../lib/diagnostics.js";
+import { getActiveArtifactDownloadGauges } from "../lib/artifact-download.js";
+import {
+  diagLog,
+  estimateArtifactPreviewBytes,
+  registerDiagnosticsStateProvider,
+} from "../lib/diagnostics.js";
 import type { UploadFileHandler } from "../lib/file-upload.js";
+import { getActiveMediaTransferGauges } from "../lib/media-preview.js";
 import { onNativePushWake } from "../lib/push-wake.js";
 import { bridgeVault } from "../lib/vault.js";
 import {
@@ -312,20 +318,105 @@ export function useMobileBridge() {
   );
 
   const downloadArtifact = useCallback(
-    (artifact: BridgeArtifactManifest) => downloadBridgeSessionArtifact(artifactCtx, artifact),
+    async (artifact: BridgeArtifactManifest) => {
+      transferGaugesRef.current.activeDownloads += 1;
+      try {
+        await downloadBridgeSessionArtifact(artifactCtx, artifact);
+      } finally {
+        transferGaugesRef.current.activeDownloads = Math.max(0, transferGaugesRef.current.activeDownloads - 1);
+      }
+    },
     [sendRequest],
   );
 
   const downloadSessionFile = useCallback(
-    (sessionId: string, filePath: string) => downloadBridgeSessionPathFile(artifactCtx, sessionId, filePath),
+    async (sessionId: string, filePath: string) => {
+      transferGaugesRef.current.activeDownloads += 1;
+      try {
+        await downloadBridgeSessionPathFile(artifactCtx, sessionId, filePath);
+      } finally {
+        transferGaugesRef.current.activeDownloads = Math.max(0, transferGaugesRef.current.activeDownloads - 1);
+      }
+    },
     [sendRequest],
   );
 
   const loadingHistoryRef = useRef(new Map<string, BridgeTransport | undefined>());
+  const transferGaugesRef = useRef({ activeUploads: 0, activeDownloads: 0 });
   const loadOlderHistory = useCallback(
     (sessionId: string) => loadOlderBridgeHistory({ ...artifactCtx, loadingHistoryRef }, sessionId),
     [sendRequest],
   );
+
+  useEffect(() => registerDiagnosticsStateProvider("bridgeState", () => {
+    const current = stateRef.current;
+    const historyStates = Object.values(current.histories);
+    let historyTotalItems = 0;
+    let historyLoadingSessions = 0;
+    for (const history of historyStates) {
+      historyTotalItems += history.items.length;
+      if (history.status === "loading") historyLoadingSessions += 1;
+    }
+    let evidenceBundlesCached = 0;
+    let evidenceTotalArtifacts = 0;
+    for (const sessionEvidence of Object.values(current.evidence)) {
+      evidenceBundlesCached += sessionEvidence.items.length;
+      for (const bundle of sessionEvidence.items) {
+        evidenceTotalArtifacts += Math.max(bundle.artifactCount ?? 0, bundle.artifacts.length);
+      }
+    }
+    const previews = Object.values(current.artifactPreviews);
+    let estimatedDataUrlBytes = 0;
+    for (const preview of previews) {
+      estimatedDataUrlBytes += estimateArtifactPreviewBytes(preview);
+    }
+    const stateTransfers = Object.values(current.artifactTransfers);
+    const downloadGauges = getActiveArtifactDownloadGauges();
+    const mediaGauges = getActiveMediaTransferGauges();
+    const now = Date.now();
+    let oldestPendingRpcMs = 0;
+    for (const pending of pendingResponsesRef.current.values()) {
+      if (typeof pending.startedAt === "number") {
+        oldestPendingRpcMs = Math.max(oldestPendingRpcMs, Math.max(0, now - pending.startedAt));
+      }
+    }
+    return {
+      hostsCount: current.hosts.length,
+      hasActiveHost: Boolean(current.activeHostId),
+      connection: current.connection,
+      desktopOnline: current.desktopOnline,
+      latestSeq: current.latestSeq,
+      pendingOutbound: current.pendingOutbound,
+      sessionsCount: current.snapshot?.sessions.length ?? 0,
+      projectsCount: current.snapshot?.projects.length ?? 0,
+      permissionsCount: current.permissions.length,
+      promptsCount: current.snapshot?.prompts?.length ?? 0,
+      histories: {
+        sessionsCached: historyStates.length,
+        totalItems: historyTotalItems,
+        loadingSessions: historyLoadingSessions,
+      },
+      eventsCount: current.events.length,
+      localTurnsCount: current.localTurns.length,
+      evidence: {
+        bundlesCached: evidenceBundlesCached,
+        totalArtifacts: evidenceTotalArtifacts,
+      },
+      artifactPreviews: {
+        cachedCount: previews.length,
+        estimatedDataUrlBytes,
+      },
+      artifactTransfers: {
+        count: Math.max(stateTransfers.length, downloadGauges.activeCount) + mediaGauges.activeCount,
+        activeCount: stateTransfers.filter((progress) => progress < 1).length + mediaGauges.activeCount,
+        totalCachedBytes: downloadGauges.cachedBytes + mediaGauges.cachedBytes,
+      },
+      pendingRpcCount: pendingResponsesRef.current.size,
+      oldestPendingRpcMs,
+      activeUploads: transferGaugesRef.current.activeUploads,
+      activeDownloads: Math.max(transferGaugesRef.current.activeDownloads, downloadGauges.activeCount),
+    };
+  }), []);
 
   const sendTurn = useCallback(async (
     sessionId: string,
@@ -746,9 +837,14 @@ export function useMobileBridge() {
     if (!response?.ok) throw new Error(response?.error?.message ?? "归档设置失败");
   }, [sendRequest]);
 
-  const uploadFile = useCallback<UploadFileHandler>((sessionId, file, onProgress, signal) => (
-    uploadBridgeSessionFile(cryptoRef, sendRequest, sessionId, file, onProgress, signal)
-  ), [sendRequest]);
+  const uploadFile = useCallback<UploadFileHandler>(async (sessionId, file, onProgress, signal) => {
+    transferGaugesRef.current.activeUploads += 1;
+    try {
+      return await uploadBridgeSessionFile(cryptoRef, sendRequest, sessionId, file, onProgress, signal);
+    } finally {
+      transferGaugesRef.current.activeUploads = Math.max(0, transferGaugesRef.current.activeUploads - 1);
+    }
+  }, [sendRequest]);
 
   const renameSession = useCallback(async (sessionId: string, title: string): Promise<void> => {
     const response = await sendRequest("session.rename", { sessionId, title }, { wait: true });

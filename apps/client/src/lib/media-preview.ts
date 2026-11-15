@@ -97,6 +97,16 @@ function unwrap<T>(response: BridgeResponse | undefined): T {
   return response.result as T;
 }
 
+let activeMediaTransfersCount = 0;
+let activeMediaTransfersCachedBytes = 0;
+
+export function getActiveMediaTransferGauges(): { activeCount: number; cachedBytes: number } {
+  return {
+    activeCount: activeMediaTransfersCount,
+    cachedBytes: activeMediaTransfersCachedBytes,
+  };
+}
+
 export async function openMediaTransfer(target: MediaTarget, request: MediaRequest, onProgress?: (loaded: number, total: number) => void) {
   const { transfer } = unwrap<{ transfer: BridgeArtifactTransferInfo }>(await request(
     "artifact.transfer.open",
@@ -111,6 +121,8 @@ export async function openMediaTransfer(target: MediaTarget, request: MediaReque
   const chunks = new Map<number, Promise<Uint8Array>>();
   let loaded = 0;
   let closed = false;
+  let released = false;
+  activeMediaTransfersCount += 1;
   onProgress?.(0, transfer.size);
   return {
     transfer,
@@ -126,8 +138,11 @@ export async function openMediaTransfer(target: MediaTarget, request: MediaReque
             const { chunk } = unwrap<{ chunk: BridgeArtifactTransferChunk }>(response);
             if (chunk.transferId !== transfer.transferId || chunk.index !== index) throw new Error("文件分块校验失败");
             const bytes = Uint8Array.from(atob(chunk.data), (char) => char.charCodeAt(0));
-            loaded += bytes.length;
-            onProgress?.(loaded, transfer.size);
+            if (!released) {
+              loaded += bytes.length;
+              activeMediaTransfersCachedBytes += bytes.byteLength;
+              onProgress?.(loaded, transfer.size);
+            }
             return bytes;
           });
           chunks.set(index, pending);
@@ -142,6 +157,11 @@ export async function openMediaTransfer(target: MediaTarget, request: MediaReque
     },
     async close(): Promise<void> {
       closed = true;
+      if (!released) {
+        released = true;
+        activeMediaTransfersCount = Math.max(0, activeMediaTransfersCount - 1);
+        activeMediaTransfersCachedBytes = Math.max(0, activeMediaTransfersCachedBytes - loaded);
+      }
       chunks.clear();
       await request("artifact.transfer.close", { transferId: transfer.transferId }, {
         wait: true, timeoutMs: 20_000,

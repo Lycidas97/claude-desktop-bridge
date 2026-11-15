@@ -213,6 +213,14 @@ export class AssistantMailStore {
     return row ? { event: eventFromRow(row), source: await readFile(join(this.directory, "raw-mail", row.raw_file)) } : undefined;
   }
 
+  unreadCount(): number {
+    if (!this.database) return 0;
+    const row = this.database
+      .prepare("SELECT COUNT(*) AS count FROM mail_events WHERE processing_status = 'pending'")
+      .get() as { count: number | bigint } | undefined;
+    return Number(row?.count ?? 0);
+  }
+
   close(): void {
     this.database?.close();
     this.database = undefined;

@@ -152,6 +152,39 @@ export class FileUploadManager {
     this.uploads.clear();
   }
 
+  diagnosticsGauges(): {
+    activeSessions: number;
+    retainedSessions: number;
+    committedReceipts: number;
+    bufferedChunks: number;
+    bufferedBytes: number;
+  } {
+    const now = Date.now();
+    let activeSessions = 0;
+    let committedReceipts = 0;
+    let bufferedChunks = 0;
+    let bufferedBytes = 0;
+    for (const upload of this.uploads.values()) {
+      bufferedChunks += upload.chunks.size;
+      for (const chunk of upload.chunks.values()) {
+        bufferedBytes += chunk.byteLength;
+      }
+      if (upload.info.expiresAt <= now) continue;
+      if (upload.receipt) {
+        committedReceipts += 1;
+        continue;
+      }
+      activeSessions += 1;
+    }
+    return {
+      activeSessions,
+      retainedSessions: this.uploads.size,
+      committedReceipts,
+      bufferedChunks,
+      bufferedBytes,
+    };
+  }
+
   private get(uploadId: string, owner: string): UploadRecord {
     this.prune();
     const upload = this.uploads.get(uploadId);

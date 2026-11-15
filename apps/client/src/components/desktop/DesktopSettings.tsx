@@ -8,7 +8,7 @@ import { Activity, Download, Play, Power } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isClaudeNativeRelay } from "../../hooks/useMobileBridge.js";
 import type { ThemeControl } from "../../hooks/useTheme.js";
-import { setDiagDialogOpen } from "../../lib/diagnostics.js";
+import { collectRendererDiagnosticsSnapshot, setDiagDialogOpen } from "../../lib/diagnostics.js";
 import { MagpieQuotaDashboard } from "../../../../../plugins/magpie-quota/client.js";
 import { AppearanceSettings } from "../common/AppearanceSettings.js";
 import { SettingsGroup } from "../common/SettingsGroup.js";
@@ -175,7 +175,13 @@ export function DesktopSettings({ snapshot, api, onSnapshot, themeControl }: {
         <label className="toggle-row"><span><strong>后台诊断记录</strong><small>仅本机保存，内存快照可能包含会话内容</small></span><input type="checkbox" checked={snapshot.diagnosticsEnabled} onChange={event => { setExportError(""); void api.setDiagnosticsEnabled(event.target.checked).then(onSnapshot).catch((reason: unknown) => setExportError(reason instanceof Error ? reason.message : "诊断设置失败")); }} /><i aria-hidden="true" /></label>
         <div className="settings-inline-actions">
           <button type="button" className="secondary-button" onClick={() => setDiagDialogOpen(true)}><Activity size={16} />连接诊断与日志</button>
-          <button type="button" className="secondary-button" onClick={() => { setExportError(""); void api.exportDiagnostics().catch((reason: unknown) => setExportError(reason instanceof Error ? reason.message : "诊断导出失败")); }}><Download size={16} />导出诊断</button>
+          <button type="button" className="secondary-button" onClick={() => {
+            setExportError("");
+            void (async () => {
+              const rendererDiagnostics = await collectRendererDiagnosticsSnapshot(snapshot);
+              await api.exportDiagnostics(rendererDiagnostics);
+            })().catch((reason: unknown) => setExportError(reason instanceof Error ? reason.message : "诊断导出失败"));
+          }}><Download size={16} />导出诊断</button>
         </div>
         {exportError && <p role="alert" className="inline-error">{exportError}</p>}
         <DesktopUpdaterSection snapshot={snapshot} api={api} onSnapshot={onSnapshot} />

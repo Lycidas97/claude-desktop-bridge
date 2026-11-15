@@ -8,6 +8,7 @@ import { MobileSettings } from "./components/mobile/MobileSettings.js";
 import { MobileWorkspace } from "./components/MobileWorkspace.js";
 import { MobileClientUpdateDialog } from "./components/updater/UpdaterSections.js";
 import { MediaPreviewProvider } from "./components/evidence/MediaPreviewProvider.js";
+import { ConversationDraftsProvider } from "./components/conversation/ConversationDraftsProvider.js";
 import { dispatchMobileBack } from "./lib/mobile-back-navigation.js";
 
 const hooks = vi.hoisted(() => ({
@@ -162,5 +163,14 @@ describe("mobile app parent navigation", () => {
     expect(back()).toBe(false);
     hooks.mobile.state.pairingSync = { stage: "syncing" }; draw();
     expect(back()).toBe(true);
+  });
+  it("clears conversation drafts for a forgotten computer on both list and detail removal", async () => {
+    hooks.mobile.forgetHost = vi.fn().mockResolvedValue(undefined);
+    tab("computers");
+    const clearHost = vi.fn();
+    component(ConversationDraftsProvider)!.props.controllerRef.clearHost = clearHost;
+    await component(HostBrowser)!.props.onRemove("host");
+    expect(hooks.mobile.forgetHost).toHaveBeenCalledWith("host");
+    expect(clearHost).toHaveBeenCalledWith("host");
   });
 });

@@ -396,7 +396,28 @@ export async function loadOlderBridgeHistory(
   }
 }
 
-export const uploadBridgeSessionFile = (
+export const uploadBridgeSessionFile = async (
+  cryptoRef: MutableRefObject<BridgeCrypto | undefined>,
   sendRequest: BridgeSendRequest,
   ...args: Parameters<UploadFileHandler>
-): ReturnType<UploadFileHandler> => uploadSessionFile(sendRequest, ...args);
+): ReturnType<UploadFileHandler> => {
+  const startingCrypto = cryptoRef.current;
+  const ensureSameHost = () => {
+    if (!startingCrypto || cryptoRef.current !== startingCrypto) {
+      throw new Error("已切换电脑，上传已中断");
+    }
+  };
+  try {
+    const uploaded = await uploadSessionFile(async (method, params, options) => {
+      ensureSameHost();
+      const response = await sendRequest(method, params, options);
+      ensureSameHost();
+      return response;
+    }, ...args);
+    ensureSameHost();
+    return uploaded;
+  } catch (error) {
+    ensureSameHost();
+    throw error;
+  }
+};

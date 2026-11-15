@@ -27,6 +27,7 @@ import { MAGPIE_QUOTA_METHOD, type QuotaLoader, type QuotaSnapshot } from "../..
 import { MagpieQuotaProvider } from "../../../plugins/magpie-quota/client.js";
 import { AssistantMailProvider, type AssistantRequest } from "./components/assistant/AssistantMailProvider.js";
 import { AssistantPage } from "./components/assistant/AssistantPage.js";
+import { ConversationDraftsProvider, type ConversationDraftsHandle } from "./components/conversation/ConversationDraftsProvider.js";
 
 export function App() {
   const themeControl = useTheme();
@@ -42,7 +43,12 @@ export function App() {
   const [providersOpen, setProvidersOpen] = useState(false);
   const [focusRequest, setFocusRequest] = useState<{ sessionId: string; key: number }>();
   const [directoryRequest, setDirectoryRequest] = useState(0);
+  const [draftsHandle] = useState<ConversationDraftsHandle>(() => ({}));
   const handleFocusHandled = useCallback(() => setFocusRequest(undefined), []);
+  const forgetHost = useCallback(async (roomId: string) => {
+    await mobile.forgetHost(roomId);
+    draftsHandle.clearHost?.(roomId);
+  }, [draftsHandle, mobile.forgetHost]);
   // requestMedia is the hook's plain request function; its identity never changes.
   const request = mobile.requestMedia;
   const mailRequest = useCallback<AssistantRequest>((method, params) => request(method, params, { wait: true, allowOffline: false }), [request]);
@@ -137,44 +143,37 @@ export function App() {
   ]);
 
   if (window.bridgeDesktop) return <DesktopDashboard themeControl={themeControl} />;
-  if (mobile.state.pairingSync) {
-    return (
-      <>
-        <PairingSyncScreen sync={mobile.state.pairingSync} />
-        <MobileClientUpdateDialog updater={clientUpdater} />
-        <DiagnosticFloatingEntry />
-      </>
-    );
-  }
-  if (mobile.state.loading && mobile.state.hosts.length === 0 && !pairingOpen) {
-    return (
-      <>
-        <main className="mobile-loading"><span className="spinner" /><span>正在读取已配对电脑</span></main>
-        <MobileClientUpdateDialog updater={clientUpdater} />
-        <DiagnosticFloatingEntry />
-      </>
-    );
-  }
-  if (pairingOpen || mobile.state.hosts.length === 0) {
-    return (
-      <>
-        <PairingScreen
-          loading={mobile.state.loading}
-          error={mobile.state.error}
-          onPair={async (pairing) => {
-            if (await mobile.pair(pairing)) {
-              setPairingOpen(false);
-              setTab("sessions");
-            }
-          }}
-          {...(mobile.state.hosts.length > 0 ? { onCancel: () => setPairingOpen(false) } : {})}
-        />
-        <MobileClientUpdateDialog updater={clientUpdater} />
-        <DiagnosticFloatingEntry />
-      </>
-    );
-  }
   return (
+    <ConversationDraftsProvider activeHostId={mobile.state.activeHostId} controllerRef={draftsHandle}>
+      {mobile.state.pairingSync ? (
+        <>
+          <PairingSyncScreen sync={mobile.state.pairingSync} />
+          <MobileClientUpdateDialog updater={clientUpdater} />
+          <DiagnosticFloatingEntry />
+        </>
+      ) : mobile.state.loading && mobile.state.hosts.length === 0 && !pairingOpen ? (
+        <>
+          <main className="mobile-loading"><span className="spinner" /><span>正在读取已配对电脑</span></main>
+          <MobileClientUpdateDialog updater={clientUpdater} />
+          <DiagnosticFloatingEntry />
+        </>
+      ) : pairingOpen || mobile.state.hosts.length === 0 ? (
+        <>
+          <PairingScreen
+            loading={mobile.state.loading}
+            error={mobile.state.error}
+            onPair={async (pairing) => {
+              if (await mobile.pair(pairing)) {
+                setPairingOpen(false);
+                setTab("sessions");
+              }
+            }}
+            {...(mobile.state.hosts.length > 0 ? { onCancel: () => setPairingOpen(false) } : {})}
+          />
+          <MobileClientUpdateDialog updater={clientUpdater} />
+          <DiagnosticFloatingEntry />
+        </>
+      ) : (
     <AssistantMailProvider key={mobile.state.activeHostId ?? ""} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={mailRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
     <MobileAppShell
       tab={tab}
@@ -315,7 +314,7 @@ export function App() {
           onDesktopAppAction={mobile.controlDesktopApp}
           remoteUpdate={remoteDesktopUpdate}
           onRemove={async () => {
-            await mobile.forgetHost(mobile.state.activeHostId!);
+            await forgetHost(mobile.state.activeHostId!);
             setComputerDetailsHostId(undefined);
           }}
           onBack={() => setComputerDetailsHostId(undefined)}
@@ -330,7 +329,7 @@ export function App() {
             setComputerDetailsHostId(hostId);
             if (hostId !== mobile.state.activeHostId) void mobile.selectHost(hostId);
           }}
-          onRemove={mobile.forgetHost}
+          onRemove={forgetHost}
           onAdd={() => setPairingOpen(true)}
           onRepair={() => setPairingOpen(true)}
         />
@@ -356,5 +355,7 @@ export function App() {
       <DiagnosticFloatingEntry />
     </MobileAppShell>
     </AssistantMailProvider>
+      )}
+    </ConversationDraftsProvider>
   );
 }

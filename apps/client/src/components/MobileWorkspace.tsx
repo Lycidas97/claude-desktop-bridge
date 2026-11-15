@@ -65,7 +65,6 @@ import {
   conciseModelName,
   conversationItems,
   conversationTimeline,
-  fileToAttachment,
   groupTimelineTools,
   ownershipLabel,
   relativeTime,
@@ -102,8 +101,7 @@ import { SessionProfileSummary } from "./session/SessionProfileSummary.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "./evidence/EvidencePanel.js";
 import { FileChangesCard } from "./evidence/FileChangesCard.js";
-import { useFileAttachments } from "./evidence/FileAttachmentPicker.js";
-import { appendUploadedFilePaths, type UploadFileHandler } from "../lib/file-upload.js";
+import type { UploadFileHandler } from "../lib/file-upload.js";
 import { MediaGallery } from "./evidence/MediaGallery.js";
 import { useMediaPreview } from "./evidence/MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../lib/media-preview.js";
@@ -122,7 +120,8 @@ import {
 import "./session/section-create.css";
 import { useSectionManage } from "./session/SectionManageDialog.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "./conversation/SessionActivityIndicator.js";
-import { sessionCommandName, useSessionCommands } from "../hooks/useSessionCommands.js";
+import { useConversationDrafts } from "./conversation/ConversationDraftsProvider.js";
+import { useSessionCommands } from "../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
 import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
 import { SessionNoticeCard } from "./conversation/SessionNoticeCard.js";
@@ -283,7 +282,7 @@ export function MobileWorkspace({
   onRetry(): Promise<void>;
 }) {
   const [queuedSteers, setQueuedSteers] = useState<Record<string, QueuedTurnActionState>>({});
-  const [promptErrors, setPromptErrors] = useState<Record<string, string>>({});
+  const [refreshing, setRefreshing] = useState(false);
   const [pickedSessionId, setPickedSessionId] = useState<string>();
   const selectedSessionId = fixedSessionId ?? pickedSessionId;
   function setSelectedSessionId(sessionId: string | undefined): void {
@@ -293,19 +292,7 @@ export function MobileWorkspace({
   }
   const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
   const [search, setSearch] = useState("");
-  const [drafts, setDrafts] = useState<Record<string, {
-    text: string;
-    attachments: BridgeAttachment[];
-    sending: boolean;
-    imageError?: string | undefined;
-  }>>({});
-  const [promptReplies, setPromptReplies] = useState<Record<string, Record<string, string | null>>>({});
-  const draftKey = JSON.stringify([activeHostId, selectedSessionId]);
-  const draft = drafts[draftKey] ?? { text: "", attachments: [], sending: false };
-  const { text, attachments, sending, imageError } = draft;
-  function updateDraft(change: (current: typeof draft) => typeof draft): void {
-    setDrafts((current) => ({ ...current, [draftKey]: change(current[draftKey] ?? draft) }));
-  }
+  const conversationDrafts = useConversationDrafts(activeHostId);
   const [sectionCreate, setSectionCreate] = useState<{ name: string; busy: boolean; error: string }>();
   const sectionCanCreate = Boolean(onCreateSection && snapshot?.host.capabilities.includes("section.create.v1") && connection === "connected" && desktopOnline && sectionCreate?.name.trim() && !sectionCreate?.busy);
   function closeSectionCreate(): void { if (!sectionCreate?.busy) setSectionCreate(undefined); }
@@ -340,7 +327,6 @@ export function MobileWorkspace({
   /** Open background task sheet, with the stream item it was opened from. */
   const [backgroundTasksOpen, setBackgroundTasksOpen] = useState<{ focus?: ConversationItem }>();
   const [permissionOpen, setPermissionOpen] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [syncFlash, setSyncFlash] = useState(false);
   const [menuSessionId, setMenuSessionId] = useState<string>();
   const [moveMenuSessionId, setMoveMenuSessionId] = useState<string>();
@@ -362,8 +348,6 @@ export function MobileWorkspace({
     Boolean(selectedSessionId && snapshot?.sessions.find((session) => session.sessionId === selectedSessionId)?.sidechat)
   ));
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
-  const activeDraftKey = useRef(draftKey);
-  activeDraftKey.current = draftKey;
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [projectSearch, setProjectSearch] = useState("");
   const openMedia = useMediaPreview();
@@ -400,7 +384,13 @@ export function MobileWorkspace({
     onDeleteSection,
   });
   const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
-  const fileUploads = useFileAttachments(selectedSession?.sessionId, onUploadFile);
+  const sessionDraft = conversationDrafts.session(
+    activeHostId,
+    selectedSessionId,
+    selectedSession ? onUploadFile : undefined,
+  );
+  const { draftKey, draft, promptReplies: sessionPromptReplies, fileUploads, updateDraft } = sessionDraft;
+  const { text, attachments, sending, imageError } = draft;
   const commands = useSessionCommands({
     sessionId: selectedSession?.sessionId,
     sessionKey: draftKey,
@@ -449,9 +439,9 @@ export function MobileWorkspace({
   const selectedEvidence = selectedSessionId ? evidence[selectedSessionId] : undefined;
   const items = useMemo(
     () => selectedSessionId
-      ? conversationItems(selectedSessionId, selectedHistory, events, localTurns, true, promptReplies[draftKey])
+      ? conversationItems(selectedSessionId, selectedHistory, events, localTurns, true, sessionPromptReplies)
       : [],
-    [draftKey, events, localTurns, promptReplies, selectedHistory, selectedSessionId],
+    [events, localTurns, selectedHistory, selectedSessionId, sessionPromptReplies],
   );
   const fileChangesSummary = useMemo(() => aggregateFileChanges(items), [items]);
   const timeline = useMemo(
@@ -902,6 +892,7 @@ export function MobileWorkspace({
       if (event.type !== "session.reset" || handledCommandResets.current.has(event.eventId)) continue;
       handledCommandResets.current.add(event.eventId);
       if (!fixedSessionId && event.data.previousSessionId === selectedSessionId && typeof event.data.sessionId === "string") {
+        conversationDrafts.resetSession(activeHostId, event.data.sessionId);
         void selectSession(event.data.sessionId);
       }
     }
@@ -952,52 +943,38 @@ export function MobileWorkspace({
   }
 
   async function sendMessage(): Promise<void> {
-    if (
-      !selectedSession ||
-      !canSendSession(selectedSession, snapshot) ||
-      sending || fileUploads.uploading ||
-      (!text.trim() && (!runtimeSupports(snapshot, selectedSession, "attachment.image") || attachments.length === 0) && fileUploads.files.length === 0)
-    ) return;
-    const nextText = text.trim();
-    const nextAttachments = runtimeSupports(snapshot, selectedSession, "attachment.image") ? attachments : [];
-    const nextFiles = fileUploads.files;
-    updateDraft((current) => ({ ...current, text: "", attachments: [], sending: true, imageError: undefined }));
-    try {
-      const mailRefId = assistantMail?.referenceFor(selectedSession.sessionId);
-      if (mailRefId && sessionCommandName(nextText)) throw new Error("请先清除邮件引用，再执行会话命令。");
-      if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) return;
-      await onSendTurn(selectedSession.sessionId, appendUploadedFilePaths(nextText, nextFiles), nextAttachments, ...(mailRefId ? [mailRefId] as const : []));
-      fileUploads.clear(nextFiles);
-    } catch (error) {
-      updateDraft((current) => ({
-        ...current,
-        imageError: error instanceof Error ? error.message : "发送失败",
-        text: [nextText, current.text].filter(Boolean).join("\n"),
-        attachments: [...nextAttachments, ...current.attachments],
-      }));
-    } finally {
-      updateDraft((current) => ({ ...current, sending: false }));
-    }
+    await sessionDraft.submitMessage({
+      session: selectedSession,
+      snapshot,
+      canAttachImages: Boolean(selectedSession && runtimeSupports(snapshot, selectedSession, "attachment.image")),
+      resolveMailRefId: selectedSession ? () => assistantMail?.referenceFor(selectedSession.sessionId) : undefined,
+      executeCommand: commands.execute,
+      sendTurn: (turnText, nextAttachments, mailRefId) => onSendTurn(
+        selectedSession!.sessionId,
+        turnText,
+        nextAttachments,
+        ...(mailRefId ? [mailRefId] as const : []),
+      ),
+    });
   }
 
   async function sendQuickReply(promptId: string, promptText: string): Promise<void> {
-    if (
-      !selectedSession ||
-      !canSendSession(selectedSession, snapshot) ||
-      sending ||
-      !promptText.trim()
-    ) return;
-    updateDraft((current) => ({ ...current, sending: true }));
-    try {
-      const mailRefId = assistantMail?.referenceFor(selectedSession.sessionId);
-      if (mailRefId && sessionCommandName(promptText.trim())) throw new Error("请先清除邮件引用，再执行会话命令。");
-      const receipt = await onSendTurn(selectedSession.sessionId, promptText.trim(), [], ...(mailRefId ? [mailRefId] as const : []));
-      setPromptReplies((current) => ({ ...current, [draftKey]: { ...current[draftKey], [promptId]: receipt?.requestId ?? null } }));
-    } catch (error) {
-      updateDraft(current => ({ ...current, imageError: error instanceof Error ? error.message : "发送失败" }));
-    } finally {
-      updateDraft((current) => ({ ...current, sending: false }));
-    }
+    await sessionDraft.submitQuickReply({
+      session: selectedSession,
+      snapshot,
+      promptId,
+      promptText,
+      resolveMailRefId: selectedSession ? () => assistantMail?.referenceFor(selectedSession.sessionId) : undefined,
+      sendTurn: async (trimmedText, mailRefId) => {
+        const receipt = await onSendTurn(
+          selectedSession!.sessionId,
+          trimmedText,
+          [],
+          ...(mailRefId ? [mailRefId] as const : []),
+        );
+        return receipt?.requestId ?? null;
+      },
+    });
   }
 
   async function stopTask(sessionId: string): Promise<void> {
@@ -1124,20 +1101,7 @@ export function MobileWorkspace({
   }
 
   async function addImages(files: FileList | null): Promise<void> {
-    if (!files?.length) return;
-    updateDraft((current) => ({ ...current, imageError: undefined }));
-    try {
-      const candidates = [...files];
-      if (candidates.some((file) => file.size > 4 * 1024 * 1024)) throw new Error("单张图片不能超过 4 MB");
-      const total = candidates.reduce((sum, file) => sum + file.size, attachments.reduce((sum, item) => sum + item.size, 0));
-      if (total > 6 * 1024 * 1024) throw new Error("图片总大小不能超过 6 MB");
-      const next = await Promise.all(candidates.map(fileToAttachment));
-      updateDraft((current) => ({ ...current, attachments: [...current.attachments, ...next] }));
-    } catch (error) {
-      updateDraft((current) => ({ ...current, imageError: error instanceof Error ? error.message : "图片读取失败" }));
-    } finally {
-      if (fileRef.current) fileRef.current.value = "";
-    }
+    await sessionDraft.addImages(files, fileRef.current);
   }
 
   const evidenceCount = (selectedEvidence?.items.length ?? 0) + (fileChangesSummary ? 1 : 0);
@@ -1159,10 +1123,7 @@ export function MobileWorkspace({
         onPreview={messageId => onPreviewRewind!(selectedSession.sessionId, messageId)}
         onRewind={(messageId, scope) => onRewindSession!(selectedSession.sessionId, messageId, scope)}
         onComplete={result => {
-          if (result.scope !== "files") {
-            updateDraft(current => ({ ...current, text: result.prefill ?? "", attachments: [] }));
-            fileUploads.clear(fileUploads.files);
-          }
+          sessionDraft.applyRewindPrefill(result);
           setRewindTarget(undefined);
         }}
         onClose={() => setRewindTarget(undefined)}
@@ -1739,7 +1700,7 @@ export function MobileWorkspace({
               ? item.interactivePrompt.kind === "question" && !pendingQuestion ? "提问已不在待回答列表"
                 : item.interactivePrompt.kind === "wrap-up" && item.interactivePrompt.blocked ? "需在电脑端确认" : undefined
               : undefined;
-            const promptKey = `${draftKey}:${item.id}`;
+            const promptError = sessionDraft.promptError(item.id);
             const interactivePrompt = item.interactivePrompt && (!pendingQuestion || item.interactivePrompt.answered) ? (
               <InteractivePromptCard
                 prompt={item.interactivePrompt}
@@ -1748,7 +1709,7 @@ export function MobileWorkspace({
                 canSend={canSendSession(selectedSession, snapshot)}
                 busy={sending}
                 {...(unavailableReason ? { unavailableReason } : {})}
-                {...(promptErrors[promptKey] ? { error: promptErrors[promptKey] } : {})}
+                {...(promptError ? { error: promptError } : {})}
                 onSelectOption={async (replyText) => {
                   if (unavailableReason || sending) return;
                   await sendQuickReply(item.id, replyText);

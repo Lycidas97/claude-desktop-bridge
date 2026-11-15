@@ -1,7 +1,6 @@
 import { isClaudeNativeRelay } from "../../hooks/useMobileBridge.js";
 import { HISTORY_PAGE_SIZE, mergeHistoryPages } from "../../hooks/bridge/bridge-reducers.js";
 import type {
-  BridgeAttachment,
   BridgeArtifactManifest,
   BridgeArtifactPreview,
   BridgeBackgroundTask,
@@ -63,8 +62,8 @@ import {
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { EvidenceInlineSummary, EvidencePanel } from "../evidence/EvidencePanel.js";
 import { FileChangesCard } from "../evidence/FileChangesCard.js";
-import { ComposerAttachmentMenu, FileAttachmentPicker, useFileAttachments } from "../evidence/FileAttachmentPicker.js";
-import { appendUploadedFilePaths, uploadSessionFile } from "../../lib/file-upload.js";
+import { ComposerAttachmentMenu, FileAttachmentPicker } from "../evidence/FileAttachmentPicker.js";
+import { uploadSessionFile } from "../../lib/file-upload.js";
 import { MediaGallery } from "../evidence/MediaGallery.js";
 import { useMediaPreview } from "../evidence/MediaPreviewProvider.js";
 import { mediaArtifacts, mediaKind } from "../../lib/media-preview.js";
@@ -75,7 +74,6 @@ import {
   canSendSession,
   conversationItems,
   conversationTimeline,
-  fileToAttachment,
   groupTimelineTools,
   ownershipLabel,
   stoppableBridgeTask,
@@ -102,7 +100,8 @@ import { SessionPrActions, SessionPrBar } from "../conversation/SessionPrBar.js"
 import { Sheet } from "../common/Sheet.js";
 import { SessionActivityIndicator, SessionContextUsageBar } from "../conversation/SessionActivityIndicator.js";
 import { SlashCommandInput } from "../conversation/SlashCommandInput.js";
-import { sessionCommandName, useSessionCommands } from "../../hooks/useSessionCommands.js";
+import { useConversationDrafts } from "../conversation/ConversationDraftsProvider.js";
+import { useSessionCommands } from "../../hooks/useSessionCommands.js";
 import { SessionCommandDialogs } from "../conversation/SessionCommandDialogs.js";
 import { SessionRewindDialog } from "../conversation/SessionRewindDialog.js";
 import { SessionNoticeCard } from "../conversation/SessionNoticeCard.js";
@@ -187,16 +186,12 @@ export function DesktopSessions({
   const historyRef = useRef(history);
   historyRef.current = history;
   const loadingHistoryRef = useRef(new Set<string>());
-  const [promptReplies, setPromptReplies] = useState<Record<string, Record<string, string | null>>>({});
-  const [promptErrors, setPromptErrors] = useState<Record<string, string>>({});
+  const conversationDrafts = useConversationDrafts(snapshot.host.hostId);
   const [queuedSteers, setQueuedSteers] = useState<Record<string, QueuedTurnActionState>>({});
   const [evidence, setEvidence] = useState<Record<string, SessionEvidenceState>>({});
   const [artifactPreviews, setArtifactPreviews] = useState<Record<string, BridgeArtifactPreview>>({});
   const [artifactTransfers, setArtifactTransfers] = useState<Record<string, number>>({});
   const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
-  const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<BridgeAttachment[]>([]);
-  const [sending, setSending] = useState(false);
   const [stoppingSessionId, setStoppingSessionId] = useState<string>();
   const [stopError, setStopError] = useState<string>();
   const [createOpen, setCreateOpen] = useState(false);
@@ -229,7 +224,8 @@ export function DesktopSessions({
       if (!fixedSessionId && event.type === "session.reset" && event.data.previousSessionId === selectedId && typeof event.data.sessionId === "string") {
         const sessionId = event.data.sessionId;
         setHistory(current => ({ ...current, [sessionId]: { status: "ready", items: [], hasMore: false } }));
-        setText(""); setAttachments([]); setConfigurationOpen(false); setSelectedId(sessionId);
+        conversationDrafts.resetSession(snapshot.host.hostId, sessionId);
+        setConfigurationOpen(false); setSelectedId(sessionId);
         void onRefreshSnapshot().then(() => openSession(sessionId)).catch(reason => setStopError(reason instanceof Error ? reason.message : "新会话打开失败"));
       } else if (event.type === "session.rewound" && event.sessionId) {
         const sessionId = event.sessionId;
@@ -253,17 +249,18 @@ export function DesktopSessions({
     setPendingFileDownload(filePath);
   }
   const otherNativePromptSession = snapshot.sessions.find(session => session.sessionId !== selectedId && snapshot.prompts?.some(prompt => prompt.sessionId === session.sessionId));
-  const fileUploads = useFileAttachments(selected?.sessionId, (sessionId, file, onProgress, signal) =>
-    uploadSessionFile(async (method, params) => apiRequest({ method, params }), sessionId, file, onProgress, signal));
+  const sessionDraft = conversationDrafts.session(
+    snapshot.host.hostId,
+    selectedId,
+    selected ? (sessionId, file, onProgress, signal) => (
+      uploadSessionFile(async (method, params) => apiRequest({ method, params }), sessionId, file, onProgress, signal)
+    ) : undefined,
+  );
+  const { draftKey: composerKey, draft, promptReplies: sessionPromptReplies, fileUploads, updateDraft } = sessionDraft;
+  const { text, attachments, sending, imageError: commandError } = draft;
   const selectedRuntime = selected ? desktopRuntimeId(selected) : "claude-desktop";
   const selectedRuntimeName = desktopRuntimeName(selectedRuntime);
-  const [commandError, setCommandError] = useState<string>();
-  const composerKey = JSON.stringify([snapshot.host.hostId, selectedId]);
-  const composerKeyRef = useRef(composerKey);
-  composerKeyRef.current = composerKey;
   useEffect(() => {
-    setSending(false);
-    setCommandError(undefined);
     setBackgroundTasksOpen(undefined);
     setStopSubagentTarget(undefined);
     setPendingFileDownload(undefined);
@@ -338,8 +335,8 @@ export function DesktopSessions({
   const stopping = stopTarget?.sessionId === stoppingSessionId;
   const stoppingBlocker = Boolean(stopTarget && stopTarget.sessionId !== selected?.sessionId);
   const items = useMemo(() => (
-    selectedId ? conversationItems(selectedId, selectedHistory, events, [], true, promptReplies[selectedId]) : []
-  ), [events, promptReplies, selectedHistory, selectedId]);
+    selectedId ? conversationItems(selectedId, selectedHistory, events, [], true, sessionPromptReplies) : []
+  ), [events, selectedHistory, selectedId, sessionPromptReplies]);
   const fileChangesSummary = useMemo(() => aggregateFileChanges(items), [items]);
   const timeline = useMemo(
     () => conversationTimeline(items, selectedEvidence?.items ?? [], selectedId ? assistantMail?.cache.cards.filter(card => (card.nativeDelivery.nativeSessionId ?? snapshot.assistantMail?.binding?.nativeSessionId) === selectedId) ?? [] : []),
@@ -882,72 +879,49 @@ export function DesktopSessions({
   }
 
   async function send(): Promise<void> {
-    if (!selected || !canSendSession(selected, snapshot) || sending || fileUploads.uploading
-      || (!text.trim() && (!canAttachImages || attachments.length === 0) && fileUploads.files.length === 0)) return;
-    const nextText = text.trim();
-    const nextAttachments = canAttachImages ? attachments : [];
-    const nextFiles = fileUploads.files;
-    setText("");
-    setAttachments([]);
-    setSending(true);
-    setCommandError(undefined);
-    try {
-      const mailRefId = assistantMail?.referenceFor(selected.sessionId);
-      if (mailRefId && sessionCommandName(nextText)) throw new Error("请先清除邮件引用，再执行会话命令。");
-      if (await commands.execute(nextText, attachments.length > 0 || nextFiles.length > 0)) return;
-      unwrap(await apiRequest({
-        method: "turn.start",
-        params: {
-          sessionId: selected.sessionId,
-          text: appendUploadedFilePaths(nextText, nextFiles),
-          attachments: nextAttachments,
-          ...(mailRefId ? { mailRefId } : {}),
-        },
-        idempotencyKey: crypto.randomUUID(),
-      }));
-      fileUploads.clear(nextFiles);
-    } catch (error) {
-      if (composerKeyRef.current !== composerKey) return;
-      setCommandError(error instanceof Error ? error.message : "发送失败");
-      setText(current => [nextText, current].filter(Boolean).join("\n"));
-      setAttachments(current => [...nextAttachments, ...current]);
-    } finally {
-      if (composerKeyRef.current === composerKey) setSending(false);
-    }
+    await sessionDraft.submitMessage({
+      session: selected,
+      snapshot,
+      canAttachImages,
+      resolveMailRefId: selected ? () => assistantMail?.referenceFor(selected.sessionId) : undefined,
+      executeCommand: commands.execute,
+      sendTurn: async (turnText, nextAttachments, mailRefId) => {
+        unwrap(await apiRequest({
+          method: "turn.start",
+          params: {
+            sessionId: selected!.sessionId,
+            text: turnText,
+            attachments: nextAttachments,
+            ...(mailRefId ? { mailRefId } : {}),
+          },
+          idempotencyKey: crypto.randomUUID(),
+        }));
+      },
+    });
   }
 
   async function sendQuickReply(promptId: string, promptText: string): Promise<void> {
-    if (!selected || !canSendSession(selected, snapshot) || sending || !promptText.trim()) return;
-    const promptKey = `${composerKey}:${promptId}`;
-    setSending(true);
-    setPromptErrors((current) => {
-      if (!(promptKey in current)) return current;
-      const next = { ...current };
-      delete next[promptKey];
-      return next;
+    await sessionDraft.submitQuickReply({
+      session: selected,
+      snapshot,
+      promptId,
+      promptText,
+      resolveMailRefId: selected ? () => assistantMail?.referenceFor(selected.sessionId) : undefined,
+      sendTurn: async (trimmedText, mailRefId) => {
+        const response = await apiRequest({
+          method: "turn.start",
+          params: {
+            sessionId: selected!.sessionId,
+            text: trimmedText,
+            attachments: [],
+            ...(mailRefId ? { mailRefId } : {}),
+          },
+          idempotencyKey: crypto.randomUUID(),
+        });
+        unwrap(response);
+        return response.requestId;
+      },
     });
-    try {
-      const mailRefId = assistantMail?.referenceFor(selected.sessionId);
-      if (mailRefId && sessionCommandName(promptText.trim())) throw new Error("请先清除邮件引用，再执行会话命令。");
-      const response = await apiRequest({
-        method: "turn.start",
-        params: {
-          sessionId: selected.sessionId,
-          text: promptText.trim(),
-          attachments: [],
-          ...(mailRefId ? { mailRefId } : {}),
-        },
-        idempotencyKey: crypto.randomUUID(),
-      });
-      unwrap(response);
-      setPromptReplies((current) => ({ ...current, [selected.sessionId]: { ...current[selected.sessionId], [promptId]: response.requestId } }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "发送失败";
-      setPromptErrors((current) => ({ ...current, [promptKey]: message }));
-      setCommandError(message);
-    } finally {
-      setSending(false);
-    }
   }
 
   async function stopCurrentTask(): Promise<void> {
@@ -993,11 +967,7 @@ export function DesktopSessions({
   }
 
   async function addImages(files: FileList | null): Promise<void> {
-    if (!files?.length) return;
-    const candidates = [...files].filter((file) => file.size <= 4 * 1024 * 1024);
-    const next = await Promise.all(candidates.map(fileToAttachment));
-    setAttachments((current) => [...current, ...next].slice(0, 4));
-    if (fileRef.current) fileRef.current.value = "";
+    await sessionDraft.addImages(files, fileRef.current);
   }
 
   async function resolvePermission(
@@ -1510,7 +1480,7 @@ export function DesktopSessions({
                   ? item.interactivePrompt.kind === "question" && !pendingQuestion ? "提问已不在待回答列表"
                     : item.interactivePrompt.kind === "wrap-up" && item.interactivePrompt.blocked ? "需在电脑端确认" : undefined
                   : undefined;
-                const promptKey = `${composerKey}:${item.id}`;
+                const promptError = sessionDraft.promptError(item.id);
                 const interactivePrompt = item.interactivePrompt && (!pendingQuestion || item.interactivePrompt.answered) ? (
                   <InteractivePromptCard
                     prompt={item.interactivePrompt}
@@ -1519,7 +1489,7 @@ export function DesktopSessions({
                     canSend={canSendSession(selected, snapshot)}
                     busy={sending}
                     {...(unavailableReason ? { unavailableReason } : {})}
-                    {...(promptErrors[promptKey] ? { error: promptErrors[promptKey] } : {})}
+                    {...(promptError ? { error: promptError } : {})}
                     onSelectOption={async (replyText) => {
                       if (unavailableReason || sending) return;
                       await sendQuickReply(item.id, replyText);
@@ -1626,7 +1596,7 @@ export function DesktopSessions({
               <FileAttachmentPicker state={fileUploads} />
               {attachments.length > 0 && (
                 <div className="composer-attachments">
-                  {attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={12} /></button></span>)}
+                  {attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" onClick={() => updateDraft((current) => ({ ...current, attachments: current.attachments.filter((item) => item.id !== attachment.id) }))}><X size={12} /></button></span>)}
                 </div>
               )}
               <form
@@ -1647,7 +1617,7 @@ export function DesktopSessions({
                     onLoad: commands.load!,
                   } : {})}
                   value={text}
-                  onChange={setText}
+                  onChange={(value) => updateDraft((current) => ({ ...current, text: value }))}
                   disabled={!canSendSession(selected, snapshot)}
                   placeholder={selected.allowedActions?.reason ?? (
                     selected.source === "bridge"
@@ -1711,7 +1681,7 @@ export function DesktopSessions({
           return result.rewind;
         }}
         onComplete={result => {
-          if (result.scope !== "files") { setText(result.prefill ?? ""); setAttachments([]); fileUploads.clear(fileUploads.files); }
+          sessionDraft.applyRewindPrefill(result);
           setRewindTarget(undefined);
         }}
         onClose={() => setRewindTarget(undefined)}

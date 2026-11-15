@@ -610,3 +610,104 @@ describe("RPC state projection & host summary sync", () => {
     expect(harness.state.evidence["sess-1"]?.nextCursor).toBeUndefined();
   });
 });
+
+describe("uploadFile host-switch guard", () => {
+  it("aborts cleanly when cryptoRef switches hosts mid-upload without writing or cancelling on the new host", async () => {
+    const bridge = useMobileBridge();
+    const newCrypto = { encrypt: vi.fn(), identity: { roomId: "room-b" } };
+    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+      harness.requests.push(request);
+      const pending = harness.refs[6]!.current.get(request.requestId);
+      clearTimeout(pending.timer);
+      harness.refs[6]!.current.delete(request.requestId);
+      if (request.method === "file.upload.open") {
+        // Switch active host crypto immediately after open resolves.
+        harness.refs[1]!.current = newCrypto;
+        pending.resolve({
+          kind: "response",
+          requestId: request.requestId,
+          ok: true,
+          result: { upload: { uploadId: "up-host-a", chunkBytes: 4, totalChunks: 2 } },
+        });
+        return;
+      }
+      pending.resolve({ kind: "response", requestId: request.requestId, ok: true, result: {} });
+    };
+
+    const file = new File([new Uint8Array([1, 2, 3, 4, 5, 6])], "notes.txt", { type: "text/plain" });
+    await expect(bridge.uploadFile("sess-1", file, () => undefined, new AbortController().signal)).rejects.toThrow("已切换电脑，上传已中断");
+    expect(harness.requests.map((request) => request.method)).toEqual(["file.upload.open"]);
+    expect(newCrypto.encrypt).not.toHaveBeenCalled();
+  });
+
+  it("rejects immediately if cryptoRef already changed before the first upload request", async () => {
+    const bridge = useMobileBridge();
+    harness.refs[1]!.current = undefined;
+    const file = new File(["hello"], "hello.txt", { type: "text/plain" });
+    await expect(bridge.uploadFile("sess-1", file, () => undefined, new AbortController().signal)).rejects.toThrow("已切换电脑，上传已中断");
+    expect(harness.requests).toEqual([]);
+    expect(harness.encrypt).not.toHaveBeenCalled();
+  });
+
+  it("normalizes transport reset rejections and cancel-phase host switches to the host-switch error", async () => {
+    const bridge = useMobileBridge();
+    const newCrypto = { encrypt: vi.fn(), identity: { roomId: "room-b" } };
+    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+      harness.requests.push(request);
+      const pending = harness.refs[6]!.current.get(request.requestId);
+      clearTimeout(pending.timer);
+      harness.refs[6]!.current.delete(request.requestId);
+      if (request.method === "file.upload.open") {
+        harness.refs[1]!.current = newCrypto;
+        pending.reject(new Error("连接已重置"));
+        return;
+      }
+    };
+    const file = new File(["hello"], "reset.txt", { type: "text/plain" });
+    await expect(bridge.uploadFile("sess-1", file, () => undefined, new AbortController().signal)).rejects.toThrow("已切换电脑，上传已中断");
+    expect(harness.requests.map((request) => request.method)).toEqual(["file.upload.open"]);
+
+    // Reset to host A and switch during final cleanup after commit succeeds.
+    const hostACrypto = { encrypt: harness.encrypt, identity: { roomId: "room-a" } };
+    harness.refs[1]!.current = hostACrypto;
+    harness.requests = [];
+    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+      harness.requests.push(request);
+      const pending = harness.refs[6]!.current.get(request.requestId);
+      clearTimeout(pending.timer);
+      harness.refs[6]!.current.delete(request.requestId);
+      if (request.method === "file.upload.open") {
+        pending.resolve({
+          kind: "response",
+          requestId: request.requestId,
+          ok: true,
+          result: { upload: { uploadId: "up-1", chunkBytes: 64, totalChunks: 1 } },
+        });
+        return;
+      }
+      if (request.method === "file.upload.write") {
+        pending.resolve({ kind: "response", requestId: request.requestId, ok: true, result: { written: 5 } });
+        return;
+      }
+      if (request.method === "file.upload.commit") {
+        const committed = {
+          uploadId: "up-1",
+          sessionId: "sess-1",
+          name: "reset.txt",
+          path: ".bridge-uploads/up-1/reset.txt",
+          size: 5,
+          sha256: "abc",
+        };
+        pending.resolve({ kind: "response", requestId: request.requestId, ok: true, result: { file: committed } });
+        return;
+      }
+      if (request.method === "file.upload.cancel") {
+        harness.refs[1]!.current = newCrypto;
+        pending.reject(new Error("连接已重置"));
+        return;
+      }
+      pending.resolve({ kind: "response", requestId: request.requestId, ok: true, result: {} });
+    };
+    await expect(bridge.uploadFile("sess-1", file, () => undefined, new AbortController().signal)).rejects.toThrow("已切换电脑，上传已中断");
+  });
+});

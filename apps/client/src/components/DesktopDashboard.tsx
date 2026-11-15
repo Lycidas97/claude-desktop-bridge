@@ -33,6 +33,7 @@ import { MediaPreviewProvider } from "./evidence/MediaPreviewProvider.js";
 
 import { AssistantMailProvider, type AssistantRequest } from "./assistant/AssistantMailProvider.js";
 import { AssistantPage } from "./assistant/AssistantPage.js";
+import { ConversationDraftsProvider } from "./conversation/ConversationDraftsProvider.js";
 
 type DesktopTab = "sessions" | "assistant" | "devices" | "settings";
 
@@ -165,6 +166,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
   }
 
   return (
+    <ConversationDraftsProvider activeHostId={snapshot.host.hostId}>
     <MediaPreviewProvider request={(method, params) => request({ method, params })} supportsFileStat={snapshot.host.capabilities.includes("artifact.transfer.stat.v1")}>
     <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={snapshot.runtime.detection?.refreshedAt ?? 0}>
     <AssistantMailProvider key={snapshot.host.hostId} snapshot={snapshot} online request={mailRequest} onDiscuss={() => setTab("assistant")}>
@@ -221,5 +223,6 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
     </AssistantMailProvider>
     </MagpieQuotaProvider>
     </MediaPreviewProvider>
+    </ConversationDraftsProvider>
   );
 }

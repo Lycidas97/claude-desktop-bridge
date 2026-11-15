@@ -747,7 +747,7 @@ export function useMobileBridge() {
   }, [sendRequest]);
 
   const uploadFile = useCallback<UploadFileHandler>((sessionId, file, onProgress, signal) => (
-    uploadBridgeSessionFile(sendRequest, sessionId, file, onProgress, signal)
+    uploadBridgeSessionFile(cryptoRef, sendRequest, sessionId, file, onProgress, signal)
   ), [sendRequest]);
 
   const renameSession = useCallback(async (sessionId: string, title: string): Promise<void> => {

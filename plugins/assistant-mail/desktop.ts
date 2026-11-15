@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { ImapFlow, type ImapFlowOptions } from "imapflow";
 import { hasCapability } from "imapflow/lib/tools.js";
 import { KeychainMailCredentials, type MailCredentials } from "./credentials.js";
-import { AssistantMailStore, type AssistantBinding } from "./store.js";
+import { AssistantMailStore, type AssistantBinding, type MailAnalysis, type MailProcessingStatus } from "./store.js";
+import { mailBodyText } from "./mime.js";
 
 export interface MailAccount {
   host: string;
@@ -95,6 +96,20 @@ export class AssistantMailService extends EventEmitter {
   setBinding(binding: AssistantBinding): void { this.store.setBinding(binding); this.emit("changed"); }
   page(options?: Parameters<AssistantMailStore["page"]>[0]): ReturnType<AssistantMailStore["page"]> { return this.store.page(options); }
   read(mailRefId: string): ReturnType<AssistantMailStore["read"]> { return this.store.read(mailRefId); }
+  async readEvent(mailRefId: string) {
+    const mail = await this.store.read(mailRefId);
+    return mail ? { event: mail.event, bodyText: await mailBodyText(mail.source) } : undefined;
+  }
+  updateAnalysis(mailRefId: string, analysis: MailAnalysis) {
+    const event = this.store.updateAnalysis(mailRefId, analysis);
+    if (event) this.emit("changed");
+    return event;
+  }
+  setProcessingStatus(mailRefId: string, status: MailProcessingStatus) {
+    const event = this.store.setProcessingStatus(mailRefId, status);
+    if (event) this.emit("changed");
+    return event;
+  }
 
   private accountKey(account: MailAccount): string {
     return createHash("sha256").update(JSON.stringify([account.host, account.port, account.user])).digest("hex");

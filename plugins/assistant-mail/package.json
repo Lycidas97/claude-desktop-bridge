@@ -4,10 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "node build.mjs",
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "imapflow": "^2.11.0"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "imapflow": "^2.11.0",
+    "mailparser": "^3.14.3",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.9"
   }
 }

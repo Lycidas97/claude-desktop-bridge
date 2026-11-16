@@ -32,6 +32,7 @@ import {
   Check,
   ChevronDown,
   FilePenLine,
+  FileText,
   Folder,
   FolderOpen,
   GitFork,
@@ -832,6 +833,12 @@ export function ConversationView({
     const firstKey = timelineStreamKeys[0];
     const lastKey = streamKeys.at(-1);
     const entering = previous.sessionId !== session.sessionId || !previous.lastKey;
+    const scrolledUpSynchronously = (
+      previous.scrollTop !== undefined
+      && stream.scrollTop < previous.scrollTop - 4
+      && stream.scrollHeight - stream.scrollTop - stream.clientHeight > 4
+    );
+    const shouldFollowBottom = scrolledUpSynchronously ? false : previous.pinnedToBottom;
     const historyPrepended = (
       firstHistoryKey !== undefined
       && previous.firstHistoryKey !== undefined
@@ -845,10 +852,10 @@ export function ConversationView({
         .find((element) => element.dataset.streamKey === previous.anchorKey);
       if (anchor) {
         stream.scrollTop += anchor.getBoundingClientRect().top - stream.getBoundingClientRect().top - previous.anchorOffset;
-      } else if (previous.pinnedToBottom) {
+      } else if (shouldFollowBottom) {
         stream.scrollTop = stream.scrollHeight;
       }
-    } else if (previous.pinnedToBottom) {
+    } else if (shouldFollowBottom) {
       stream.scrollTop = stream.scrollHeight;
     }
     streamScrollState.current = {
@@ -858,7 +865,7 @@ export function ConversationView({
       firstHistoryKey,
       historyCount,
       lastKey,
-      pinnedToBottom: entering || previous.pinnedToBottom,
+      pinnedToBottom: entering || shouldFollowBottom,
     };
     rememberStreamPosition();
   }, [effectiveSessionView, firstHistoryKey, historyCount, session.sessionId, streamKeys, timelineStreamKeys]);
@@ -1549,19 +1556,29 @@ export function ConversationView({
             <SessionProfileSummary session={session} />
           </span>
         )}
-        {...(effectiveNavigation ? {
+        {...(effectiveNavigation && onBackToCatalog ? {
           backLabel: effectiveSessionView === "evidence" ? "返回对话" : "返回会话列表",
           onBack: () => {
             if (effectiveSessionView === "evidence") setSessionView("conversation");
             else {
               setForkChainOpen(false);
-              onBackToCatalog?.();
+              onBackToCatalog();
             }
           },
         } : {})}
         actions={(
           <>
-            {!isMobile && (
+            {isMobile ? (
+              <button
+                type="button"
+                className={`mobile-evidence-toggle${effectiveSessionView === "evidence" ? " is-active" : ""}`}
+                aria-pressed={effectiveSessionView === "evidence"}
+                onClick={() => setSessionView(effectiveSessionView === "evidence" ? "conversation" : "evidence")}
+              >
+                <FileText size={13} aria-hidden="true" />
+                <span>成果{evidenceCount > 0 ? ` ${evidenceCount}` : ""}</span>
+              </button>
+            ) : (
               <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
                 <button
                   type="button"

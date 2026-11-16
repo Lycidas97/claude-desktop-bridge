@@ -39,12 +39,12 @@ export function SessionFamilyList({
     const isArchivedRow = archivedList || Boolean(session.archivedAt);
     const pendingPermission = isArchivedRow ? undefined : permissions.find(permission => permission.sessionId === session.sessionId);
     const rawTurnBadge = isArchivedRow ? "已归档" : pendingPermission ? pendingPermission.toolName === "AskUserQuestion" ? "待回答" : "待授权" : activeSessionBadgeLabel(session);
-    const suppressRunningPill = flat
+    const suppressTurnPill = flat
       && !isArchivedRow
       && !pendingPermission
-      && session.turnState === "running"
+      && (session.turnState === "running" || session.turnState === "queued")
       && !session.isCompacting;
-    const turnBadge = suppressRunningPill ? undefined : rawTurnBadge;
+    const turnBadge = suppressTurnPill ? undefined : rawTurnBadge;
     const subagentBadge = isArchivedRow || rawTurnBadge ? undefined : backgroundSubagentBadge(session);
     const badge = turnBadge ?? subagentBadge?.label;
     const statusTone = pendingPermission ? "waiting" : subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState;

@@ -96,14 +96,14 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* 深色旗舰：纯黑基底 + rgba 白不透明度递进 */
-  --bg: #000000;
-  --surface: rgba(255, 255, 255, 0.06);
-  --surface-2: rgba(255, 255, 255, 0.1);
-  --surface-3: rgba(255, 255, 255, 0.15);
-  --text: rgba(255, 255, 255, 0.92);
-  --muted: rgba(255, 255, 255, 0.62);
-  --faint: rgba(255, 255, 255, 0.42);
+  /* 深色旗舰：暖深炭灰画布 #1b1a18 + 侧栏 #141311 + 悬浮输入框 #23221f */
+  --bg: #1b1a18;
+  --surface: #22211e;
+  --surface-2: #2b2926;
+  --surface-3: #35332f;
+  --text: rgba(248, 246, 241, 0.94);
+  --muted: rgba(242, 238, 230, 0.68);
+  --faint: rgba(242, 238, 230, 0.56);
   --line: rgba(255, 255, 255, 0.09);
   --line-strong: rgba(255, 255, 255, 0.17);
 
@@ -112,7 +112,7 @@
   --clay-active: #d97757;
   --accent: var(--clay);
   --accent-hover: var(--clay-hover);
-  --accent-soft: rgba(224, 136, 95, 0.15);
+  --accent-soft: rgba(224, 136, 95, 0.16);
   --accent-bright: #e0885f;
 
   --warm: #d9a45b;
@@ -122,14 +122,14 @@
   --success: #93a878;
   --info: #8ab4d9;
 
-  /* 雾面底上的语义文字色（深色档） */
-  --accent-ink: #e0885f;
-  --warm-ink: #d9a45b;
-  --danger-ink: #e57368;
-  --success-ink: #93a878;
+  /* 暖深炭灰底与表面（#1b1a18/#23221f/#2b2926）均 ≥4.5:1 */
+  --accent-ink: #e5936c;
+  --warm-ink: #e2b067;
+  --danger-ink: #ef8479;
+  --success-ink: #a2ba86;
 
-  /* 卡片四件套 G2：填色 + 9% 描边 + 顶部 1px 高光 + 极淡投影（暗色阴影翻倍） */
-  --card-fill: rgba(255, 255, 255, 0.05);
+  /* 卡片四件套 G2：填色 + 9% 描边 + 顶部 1px 高光 + 极淡投影 */
+  --card-fill: #22211e;
   --card-border: rgba(255, 255, 255, 0.09);
   --card-hi: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 32px rgba(0, 0, 0, 0.38);
@@ -866,7 +866,7 @@ button:disabled {
   grid-template-rows: auto 1fr auto;
   margin: 0 auto;
   overflow: hidden;
-  background: var(--surface);
+  background: var(--bg);
 }
 
 .topbar-actions {
@@ -1832,10 +1832,6 @@ button:disabled {
   .session-channel-warning,
   .relay-chain-bar,
   .session-activity,
-  .host-rows > *,
-  .session-rows > *,
-  .project-groups > *,
-  .desktop-device-list > *,
   .timeline > *,
   .pairing-visual .device,
   .confirm-dialog,
@@ -6328,54 +6324,16 @@ button:disabled {
   }
 }
 
-.host-rows > *,
-.session-rows > *,
-.project-groups > *,
-.desktop-device-list > *,
 .timeline > *:not(.is-entering) {
   animation: bridge-rise-in var(--t-enter) var(--ease-out) both;
 }
 
-.host-rows > *:nth-child(2),
-.session-rows > *:nth-child(2),
-.project-groups > *:nth-child(2),
-.desktop-device-list > *:nth-child(2),
 .timeline > *:nth-child(2) { animation-delay: 55ms; }
-
-.host-rows > *:nth-child(3),
-.session-rows > *:nth-child(3),
-.project-groups > *:nth-child(3),
-.desktop-device-list > *:nth-child(3),
 .timeline > *:nth-child(3) { animation-delay: 110ms; }
-
-.host-rows > *:nth-child(4),
-.session-rows > *:nth-child(4),
-.project-groups > *:nth-child(4),
-.desktop-device-list > *:nth-child(4),
 .timeline > *:nth-child(4) { animation-delay: 165ms; }
-
-.host-rows > *:nth-child(5),
-.session-rows > *:nth-child(5),
-.project-groups > *:nth-child(5),
-.desktop-device-list > *:nth-child(5),
 .timeline > *:nth-child(5) { animation-delay: 220ms; }
-
-.host-rows > *:nth-child(6),
-.session-rows > *:nth-child(6),
-.project-groups > *:nth-child(6),
-.desktop-device-list > *:nth-child(6),
 .timeline > *:nth-child(6) { animation-delay: 275ms; }
-
-.host-rows > *:nth-child(7),
-.session-rows > *:nth-child(7),
-.project-groups > *:nth-child(7),
-.desktop-device-list > *:nth-child(7),
 .timeline > *:nth-child(7) { animation-delay: 330ms; }
-
-.host-rows > *:nth-child(n+8),
-.session-rows > *:nth-child(n+8),
-.project-groups > *:nth-child(n+8),
-.desktop-device-list > *:nth-child(n+8),
 .timeline > *:nth-child(n+8) { animation-delay: 385ms; }
 
 /* 瞬态层入场：浮层 pop（scale .97 起，禁 scale(0)），幕布淡入 */
@@ -6583,8 +6541,8 @@ button:disabled {
   --success: #34c759;
   --info: #5ac8fa;
 
-  /* 语义文字色（浅色底 ≥4.5:1） */
-  --accent-ink: #0066cc;
+  /* 语义文字色（浅色底与表面 #E5E5EA/#EBEBF0 均 ≥4.5:1） */
+  --accent-ink: #0055b3;
   --warm-ink: #9a4a00;
   --danger-ink: #d70015;
   --success-ink: #1e7b34;
@@ -6629,19 +6587,17 @@ button:disabled {
   --t-enter: 240ms;
 }
 
-/* ---- Apple 家族 token（深色 = iOS 纯黑分组） ---- */
+/* ---- Apple 家族 token（深色 = #1c1c1e 画布 + #141416 侧栏 + #242426 悬浮层） ---- */
 [data-theme-family="apple"][data-theme="dark"] {
   color-scheme: dark;
 
-  /* 深色：纯黑底 + #1C1C1E 组卡阶梯 */
-  --bg: #000000;
-  --surface: #1c1c1e;
-  --surface-2: #2c2c2e;
-  --surface-3: #3a3a3c;
+  --bg: #1c1c1e;
+  --surface: #242426;
+  --surface-2: #2f2f32;
+  --surface-3: #3c3c40;
   --text: #f5f5f7;
-  --muted: rgba(235, 235, 245, 0.6);
-  /* iOS tertiaryLabel .25/.30 在组卡上不足 4.5:1；提到 .55 过 axe 门 */
-  --faint: rgba(235, 235, 245, 0.55);
+  --muted: rgba(235, 235, 245, 0.68);
+  --faint: rgba(235, 235, 245, 0.58);
   --line: rgba(84, 84, 88, 0.55);
   --line-strong: rgba(120, 120, 128, 0.7);
 
@@ -6660,13 +6616,13 @@ button:disabled {
   --success: #30d158;
   --info: #64d2ff;
 
-  /* 语义文字色（#1C1C1E 卡上 ≥4.5:1） */
-  --accent-ink: #409cff;
-  --warm-ink: #ff9f0a;
-  --danger-ink: #ff6961;
-  --success-ink: #30d158;
+  /* 语义文字色（#1C1C1E/#242426/#2F2F32 上均 ≥4.5:1） */
+  --accent-ink: #52a8ff;
+  --warm-ink: #ffb340;
+  --danger-ink: #ff7b73;
+  --success-ink: #38d962;
 
-  --card-fill: #1c1c1e;
+  --card-fill: #242426;
   --card-border: rgba(255, 255, 255, 0.07);
   --card-hi: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
@@ -6869,26 +6825,47 @@ button:disabled {
   color: var(--warm-ink);
 }
 
-/* Tool group collapsible pill in conversation stream */
+/* Tool group collapsible trigger in conversation stream (compact & borderless when collapsed; card around body when expanded) */
 .conversation-tool-group {
-  width: fit-content;
-  max-width: min(92%, 640px);
-  margin: 4px 0 10px;
-  border: 1px solid var(--line);
+  width: 100%;
+  max-width: min(100%, 640px);
+  margin: 2px 0 8px;
+  border: 0;
   border-radius: 8px;
-  background: var(--surface);
+  background: transparent;
   color: var(--muted);
-  font-size: calc(11px * var(--font-scale));
+  font-size: calc(12px * var(--font-scale));
+  box-shadow: none;
+}
+
+.conversation-tool-group[open] {
+  margin: 4px 0 12px;
 }
 
 .conversation-tool-group > summary {
-  display: flex;
+  display: inline-flex;
+  max-width: 100%;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px;
+  margin-left: -4px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
   cursor: pointer;
   list-style: none;
   user-select: none;
+  transition: background var(--t-fast) ease, color var(--t-fast) ease;
+}
+
+.conversation-tool-group > summary > svg:first-child {
+  flex: none;
+}
+
+.conversation-tool-group > summary:hover {
+  background: color-mix(in srgb, var(--text) 5.5%, transparent);
+  color: var(--text);
 }
 
 .conversation-tool-group > summary::-webkit-details-marker {
@@ -6903,7 +6880,6 @@ button:disabled {
 
 .conversation-tool-group .tool-group-chevron {
   flex: none;
-  margin-left: auto;
   transition: transform 140ms ease;
 }
 
@@ -6914,10 +6890,12 @@ button:disabled {
 .conversation-tool-group-list {
   display: grid;
   gap: 4px;
-  padding: 6px 10px 8px;
-  border-top: 1px solid var(--line);
-  background: var(--surface-2);
-  font-size: calc(11px * var(--font-scale));
+  margin-top: 4px;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: calc(11.5px * var(--font-scale));
 }
 
 .conversation-tool-row {
@@ -7939,6 +7917,9 @@ button:disabled {
 }
 
 .evidence-file-actions .evidence-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: auto;
   height: 30px;
   min-width: 0;
@@ -7949,6 +7930,7 @@ button:disabled {
   border-radius: 7px;
   font-size: calc(12px * var(--font-scale));
   font-weight: 530;
+  white-space: nowrap;
 }
 
 .evidence-file-actions .evidence-action-btn.is-preview {
@@ -8061,7 +8043,7 @@ button:disabled {
 }
 
 [data-theme="dark"] .mobile-composer .composer-form {
-  background: color-mix(in srgb, var(--bg) 86%, #ffffff 14%);
+  background: var(--composer-fill, #23221f);
   border-color: var(--line-strong);
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.38), 0 1px 3px rgba(0, 0, 0, 0.25);
 }
@@ -8418,6 +8400,7 @@ button:disabled {
 
 [data-theme="dark"] {
   --sidebar-fill: #141311;
+  --composer-fill: #23221f;
   --user-bubble: #2a2824;
 }
 
@@ -8427,7 +8410,8 @@ button:disabled {
 }
 
 [data-theme-family="apple"][data-theme="dark"] {
-  --sidebar-fill: #161618;
+  --sidebar-fill: #141416;
+  --composer-fill: #242426;
   --user-bubble: #2c2c2e;
 }
 
@@ -8786,12 +8770,14 @@ button:disabled {
   padding-right: 2px;
 }
 
-.is-flat-tree .project-group-header:not(:hover):not(:focus-within) .project-group-actions {
-  position: absolute;
+.desktop-session-sidebar.is-flat-tree .project-group-header:not(:hover):not(:focus-within) .project-group-actions {
+  position: fixed;
+  top: 0;
+  left: -9999px;
   width: 1px;
   height: 1px;
   overflow: hidden;
-  clip-path: inset(50%);
+  pointer-events: none;
 }
 
 .is-flat-tree .project-group-actions .session-row-action {
@@ -8812,6 +8798,7 @@ button:disabled {
   border: 0;
   border-radius: 0;
   background: transparent;
+  box-shadow: none;
 }
 
 .is-flat-tree .session-row-v2 {
@@ -8872,8 +8859,31 @@ button:disabled {
   font-weight: 560;
 }
 
+.is-flat-tree .session-fork-badge {
+  padding: 0;
+  margin-right: 5px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: calc(10.5px * var(--font-scale));
+  font-weight: 550;
+}
+
+.is-flat-tree .session-row-v2.active .session-fork-badge {
+  color: var(--text);
+}
+
 .is-flat-tree .session-row-copy small {
-  display: none;
+  position: fixed;
+  top: 0;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .is-flat-tree .session-row-badges {
@@ -8902,12 +8912,14 @@ button:disabled {
   color: var(--muted);
 }
 
-.is-flat-tree .session-row-v2:not(:hover):not(:focus-within) > .session-row-action {
-  position: absolute;
+.desktop-session-sidebar.is-flat-tree .session-row-v2:not(:hover):not(:focus-within) > .session-row-action {
+  position: fixed;
+  top: 0;
+  left: -9999px;
   width: 1px;
   height: 1px;
   overflow: hidden;
-  clip-path: inset(50%);
+  pointer-events: none;
 }
 
 .is-flat-tree .mobile-session-family {
@@ -9153,13 +9165,7 @@ button:disabled {
 
 /* Centered 740px Conversation Stream + Soft Borderless User Bubbles + Hover-Revealed Actions */
 .desktop-conversation-stream {
-  padding: 18px 24px 16px;
-}
-
-.desktop-conversation-stream > * {
-  width: min(100%, 740px);
-  max-width: 740px;
-  margin-inline: auto;
+  padding: 18px max(24px, calc((100% - 740px) / 2)) 16px;
 }
 
 .conversation-bubble {
@@ -9172,23 +9178,38 @@ button:disabled {
   box-shadow: none;
 }
 
+.conversation-workspace .delivery-state.completed,
 .desktop-conversation .delivery-state.completed {
-  position: absolute;
+  position: fixed;
+  top: 0;
+  left: -9999px;
   width: 1px;
   height: 1px;
   overflow: hidden;
-  clip-path: inset(50%);
+  pointer-events: none;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .desktop-conversation .conversation-item:not(:hover):not(:focus-within) .conversation-message-actions:not(:has(.queued, .failed, .uncertain, .queued-steer-button, .is-copied)) {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: 0;
-    overflow: hidden;
-    clip-path: inset(50%);
+    opacity: 0;
   }
+}
+
+.desktop-devices-section .desktop-device-row {
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.desktop-devices-section .device-icon {
+  display: inline-flex;
+  width: auto;
+  height: auto;
+  align-self: start;
+  margin-top: 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
 }
 
 /* Shared New Chat Canvas (Desktop & Mobile) */

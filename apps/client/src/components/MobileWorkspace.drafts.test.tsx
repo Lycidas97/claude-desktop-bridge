@@ -24,6 +24,8 @@ import { EmptyState } from "./common/EmptyState.js";
 import { MessageCopyButton } from "./common/MessageCopyButton.js";
 import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
 import { SessionActivityIndicator } from "./conversation/SessionActivityIndicator.js";
+import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
+import { NewChatCanvas } from "./session/NewChatCanvas.js";
 import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
 import { SessionFamilyList } from "./session/SessionFamilyList.js";
 import { ProjectGroupHeader } from "./session/ProjectGroupHeader.js";
@@ -117,6 +119,9 @@ function expandStateful(node: ReactNode): ReactNode {
   if (element.type === ConversationView) {
     return expandStateful(ConversationView(element.props as ComponentProps<typeof ConversationView>));
   }
+  if (element.type === NewChatCanvas) {
+    return expandStateful(NewChatCanvas(element.props as ComponentProps<typeof NewChatCanvas>));
+  }
   if (!("children" in element.props) || element.props.children === undefined) return element;
   return { ...element, props: { ...element.props, children: expandStateful(element.props.children) } };
 }
@@ -138,6 +143,11 @@ function draw() {
   throw new Error("Workspace did not settle");
 }
 function input() { return elements(tree).find((e) => e.type === SlashCommandInput)!; }
+function conversationHeader() { return elements(tree).find((e) => e.type === MobilePageHeader && !e.props.titleHidden)!; }
+function startNewChatFromDrawer() {
+  elements(tree).find((e) => e.type === IconButton && e.props.label === "新建会话")!.props.onClick();
+  draw();
+}
 function form() { return elements(tree).find((e) => e.type === "form" && e.props.className.startsWith("composer-form"))!; }
 function sendButton() { return elements(tree).find((e) => e.type === "button" && e.props["aria-label"] === "发送")!; }
 function text(value: string) { input().props.onChange(value); draw(); }
@@ -340,8 +350,7 @@ describe("conversation unmount and remount safety", () => {
     await settle();
     expect(onRunSessionCommand).toHaveBeenCalledWith("A", "/fork");
 
-    elements(tree).find((element) => element.props.backLabel === "返回会话列表")!.props.onBack();
-    draw();
+    startNewChatFromDrawer();
     open("B");
     expect(elements(tree).some((element) => element.props.title === "Session B")).toBe(true);
     vi.mocked(props.onOpenSession).mockClear();
@@ -393,8 +402,7 @@ describe("conversation unmount and remount safety", () => {
     draw();
     expect(steerBtn().props.disabled).toBe(true);
 
-    elements(tree).find((element) => element.props.backLabel === "返回会话列表")!.props.onBack();
-    draw();
+    startNewChatFromDrawer();
     open("A");
     expect(steerBtn().props.disabled).toBe(true);
     expect(onSteerQueuedTurn).toHaveBeenCalledTimes(1);
@@ -409,7 +417,7 @@ describe("Session PR disclosure", () => {
   it("keeps conversation navigation inside the action sheet disabled during a PR write", () => {
     props.snapshot!.host.capabilities.push("pr.autofix.v1");
     draw();
-    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+    const header = conversationHeader();
     elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
     draw();
     elements(tree).find(element => element.type === SessionPrActions)!.props.onWriteBusyChange(true);
@@ -417,11 +425,9 @@ describe("Session PR disclosure", () => {
     expect(elements(tree).find(element => element.props.label === "成果")!.props.disabled).toBe(true);
   });
 
-  it("opens preferences for the menu session from the directory and preserves offline gating", () => {
+  it("opens preferences for the menu session from the drawer and preserves offline gating", () => {
     props.snapshot!.host.capabilities.push("pr.autofix.v1");
     props = { ...props, onReadPrAutoFix: vi.fn(), onSetPrAutoFix: vi.fn(), desktopOnline: false };
-    draw();
-    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack();
     draw();
     const row = elements(tree).find(element => element.props["data-session-id"] === "B")!;
     elements(row).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
@@ -566,7 +572,7 @@ describe("mobile session deletion confirmation", () => {
       ...session, runtimeId, transport: runtimeId === "claude-desktop" ? "claude-desktop-native" : "bridge-host",
     })) } };
     draw();
-    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+    const header = conversationHeader();
     elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick(); draw();
     const action = elements(tree).find(element => element.props.label === "删除会话")!;
     action.props.onClick(); draw();
@@ -655,22 +661,27 @@ describe("native relay composer", () => {
 });
 
 describe("session back navigation", () => {
-  it("returns to the directory without sending or losing the draft, then releases root back", () => {
+  it("closes the slide-over drawer first, preserves drafts across NewChatCanvas round-trips, and releases root back", () => {
     text("保留这条未发送的草稿");
+    elements(conversationHeader().props.leading).find(element => element.type === IconButton && element.props.label === "菜单")!.props.onClick();
+    draw();
     expect(dispatchMobileBack()).toBe(true); draw();
+    expect(dispatchMobileBack()).toBe(false);
+    startNewChatFromDrawer();
     expect(input()).toBeUndefined();
     expect(dispatchMobileBack()).toBe(false);
     open("A");
     expect(input().props.value).toBe("保留这条未发送的草稿");
     expect(props.onSendTurn).not.toHaveBeenCalled();
   });
-  it("closes session actions before leaving the conversation", () => {
-    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+  it("closes session actions and evidence view before releasing root back", () => {
+    const header = conversationHeader();
     elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick(); draw();
     expect(dispatchMobileBack()).toBe(true); draw();
     expect(input()).toBeDefined();
+    elements(conversationHeader().props.actions).find(element => element.type === "button" && String(element.props.className).includes("mobile-evidence-toggle"))!.props.onClick(); draw();
     expect(dispatchMobileBack()).toBe(true); draw();
-    expect(input()).toBeUndefined();
+    expect(dispatchMobileBack()).toBe(false);
   });
 });
 
@@ -691,7 +702,7 @@ describe("background tasks", () => {
   const markers = () => elements(tree).filter(element => element.type === BackgroundTaskMarker);
   const traySheet = () => elements(tree).find(element => element.type === BackgroundTasksSheet);
   const trayButton = () => {
-    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+    const header = conversationHeader();
     return elements(header.props.actions).find(element => element.type === IconButton && element.props.label.startsWith("后台任务"));
   };
   const running: BridgeBackgroundTask = {
@@ -889,11 +900,10 @@ describe("mobile session creation", () => {
   it("opens creation from an empty computer without historical projects", () => {
     props = { ...props, snapshot: { ...props.snapshot!, sessions: [], projects: [] } };
     draw();
-    const header = elements(tree).find(element => element.props.title === "会话" && element.props.actions)!;
-    const create = elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "新建会话")!;
-    expect(create.props.disabled).toBe(false);
+    const create = elements(tree).find(element => element.type === "button" && String(element.props.className).includes("session-catalog-empty-action"))!;
+    expect(create.props.disabled).not.toBe(true);
     create.props.onClick(); draw();
-    expect(elements(tree).find(element => element.type === SessionCreateDialog)?.props.initialProjectId).toBe("");
+    expect(elements(tree).find(element => element.type === SessionCreateDialog)?.props.initialProjectId).toBeUndefined();
   });
   it("passes the selected logical project when two projects share a cwd", async () => {
     props = { ...props, snapshot: { ...props.snapshot!,
@@ -907,14 +917,11 @@ describe("mobile session creation", () => {
     } };
     vi.mocked(props.onCreateSession).mockResolvedValue(undefined);
     draw();
-    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack();
-    draw();
-    const header = elements(tree).find(element => element.props.title === "会话" && element.props.actions)!;
-    elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "新建会话")!.props.onClick();
+    elements(tree).find(element => element.type === IconButton && element.props.label === "新建会话：First project")!.props.onClick();
     draw();
     const dialog = elements(tree).find(element => element.type === SessionCreateDialog)!;
     expect(dialog.props.snapshot.projects.map((project: { projectId: string }) => project.projectId)).toEqual(["project-1", "project-2"]);
-    expect(dialog.props.initialProjectId).toBe("");
+    expect(dialog.props.initialProjectId).toBe("project-1");
     expect(dialog.props.connected).toBe(true);
     await dialog.props.onCreate("/tmp/project", "Created", "claude-desktop", "project-2");
     expect(props.onCreateSession).toHaveBeenCalledOnce();
@@ -924,7 +931,7 @@ describe("mobile session creation", () => {
 
 describe("mobile section creation", () => {
   let create: ReturnType<typeof vi.fn>;
-  const createAction = () => elements(tree).find(element => element.props.label === "新建 Section");
+  const createAction = () => elements(tree).find(element => element.type === "button" && element.props.children === "+ 分组");
   const dialog = () => elements(tree).find(element => element.props.role === "dialog" && element.props["aria-label"] === "新建 Section");
   const nameInput = () => elements(dialog()).find(element => element.type === "input")!;
   const submitButton = () => elements(dialog()).find(element => element.type === "button" && element.props.type === "submit")!;
@@ -934,9 +941,6 @@ describe("mobile section creation", () => {
       ...props.snapshot!.host, capabilities: ["claude.native-relay.v1" as const, ...(capable ? ["section.create.v1" as const] : [])],
     } } }, { onCreateSection: create });
     draw();
-    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
-    const header = elements(tree).find(element => element.props.title === "会话" && element.props.actions)!;
-    elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "目录选项")!.props.onClick(); draw();
   }
   function openCreate() { enable(); createAction()!.props.onClick(); draw(); }
   function editName(value: string) { nameInput().props.onChange({ target: { value } }); draw(); }
@@ -1020,11 +1024,10 @@ describe("mobile session renaming", () => {
   }
   function openMenu(entry: "list" | "conversation") {
     if (entry === "list") {
-      elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
       const row = elements(tree).find(element => element.props["data-session-id"] === "A")!;
       elements(row).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
     } else {
-      const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+      const header = conversationHeader();
       elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
     }
     draw();
@@ -1114,14 +1117,10 @@ describe("session update timestamps", () => {
       ...session, lastActivityAt: now - (session.sessionId === "A" ? 21 : 3) * 3_600_000,
     })) } };
     draw();
-    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack();
-    draw();
     expect(elements(tree).filter(element => element.props["data-session-id"]).map(element => element.props["data-session-id"])).toEqual(["B", "A"]);
     const row = elements(tree).find(element => element.props["data-session-id"] === "A")!;
     row.props.children[0].props.onClick();
     await settle();
-    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack();
-    draw();
     expect(elements(tree).filter(element => element.props["data-session-id"]).map(element => element.props["data-session-id"])).toEqual(["B", "A"]);
     expect(elements(tree).filter(element => element.type === "small").flatMap(element => element.props.children)).toContain("21 小时前");
     expect(localStorage.getItem("bridge-session-opened:computer-1")).toBe(opened);
@@ -1424,7 +1423,7 @@ describe("native structured approvals", () => {
 
   it.each(["Bash", "AskUserQuestion"])("marks the session's current %s request without requiring loaded history or inferred native state", toolName => {
     props = { ...props, permissions: [{ requestId: "list-request", sessionId: "B", toolUseId: "list-tool", toolName, input: {}, createdAt: 1, canAllowAlways: false }] };
-    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
+    draw();
     const row = elements(tree).find(element => element.props["data-session-id"] === "B")!;
     expect(elements(row).find(element => String(element.props.className).startsWith("session-row-status"))?.props.children).toBe(toolName === "AskUserQuestion" ? "待回答" : "待授权");
     expect(props.snapshot!.sessions.find(session => session.sessionId === "B")!.turnState).toBe("idle");
@@ -1432,7 +1431,6 @@ describe("native structured approvals", () => {
     expect(props.onOpenSession).toHaveBeenCalledWith("B");
     expect(elements(tree).some(element => element.type === PermissionPrompt && element.props.permission.requestId === "list-request")).toBe(true);
     props = { ...props, permissions: [] }; draw();
-    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
     const clearedRow = elements(tree).find(element => element.props["data-session-id"] === "B")!;
     expect(elements(clearedRow).some(element => String(element.props.className).startsWith("session-row-status"))).toBe(false);
   });
@@ -1483,7 +1481,6 @@ describe("native structured approvals", () => {
       draw();
     };
 
-    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
     setRunningSubagents({ count: 1, lastUpdatedAt: now - 30_000 });
     const activeRow = elements(tree).find(element => element.props["data-session-id"] === "B")!;
     expect(elements(activeRow).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot running");
@@ -1491,10 +1488,9 @@ describe("native structured approvals", () => {
     expect(activeBadge.props.className).toBe("session-row-status running");
     expect(activeBadge.props.children).toBe("后台子代理");
 
-    // Open session detail, verify detail activity indicator, then return to catalog and confirm sync persists.
+    // Open session detail, verify detail activity indicator, and confirm drawer row sync persists.
     elements(activeRow).find(element => element.props.className === "session-row-hit")!.props.onClick(); draw();
     expect(elements(tree).some(element => String(element.props.activity?.label ?? "").includes("子代理运行中 · Run full local distributed CI"))).toBe(true);
-    elements(tree).find(element => element.props.backLabel === "返回会话列表")!.props.onBack(); draw();
     const returnedRow = elements(tree).find(element => element.props["data-session-id"] === "B")!;
     expect(elements(returnedRow).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot running");
     expect(elements(returnedRow).find(element => String(element.props.className).startsWith("session-row-status"))?.props.children).toBe("后台子代理");
@@ -2066,7 +2062,7 @@ describe("sidechat and slash command integration", () => {
     const activeSidechat: BridgeSessionInfo = { ...props.snapshot!.sessions[1]!, sessionId: "btw-live", title: "btw: Live", parentSessionId: "A", sidechat: true };
     const archivedSidechat: BridgeSessionInfo = { ...props.snapshot!.sessions[1]!, sessionId: "btw-done", title: "btw: Done", parentSessionId: "A", sidechat: true, archivedAt: 100 };
     const clickHeaderMenu = () => {
-      const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+      const header = conversationHeader();
       elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
       draw();
     };
@@ -2317,12 +2313,11 @@ describe("mobile section movement and subfolder labels", () => {
   };
 
   function toDirectory() {
-    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表");
-    if (header) { header.props.onBack(); draw(); }
+    draw();
   }
 
   function openHeaderSessionMenu() {
-    const header = elements(tree).find(element => element.props.backLabel === "返回会话列表")!;
+    const header = conversationHeader();
     elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
     draw();
   }
@@ -2405,7 +2400,7 @@ describe("mobile section movement and subfolder labels", () => {
     expect(onMoveSessionSection).toHaveBeenLastCalledWith("A", null);
   });
 
-  it("returns from an emptied directory group page when its project disappears after moving", () => {
+  it("updates the flat drawer project tree cleanly when a folder project's sessions all move into a Section", () => {
     const base = props.snapshot!.sessions[0]!;
     props = {
       ...props,
@@ -2416,9 +2411,8 @@ describe("mobile section movement and subfolder labels", () => {
       },
     };
     toDirectory();
-    elements(tree).find(element => element.props.className === "project-group-more-button")!.props.onClick();
-    draw();
-    expect(elements(tree).some(element => element.props.className === "host-detail project-detail-view")).toBe(true);
+    expect(elements(tree).filter(element => element.props["data-session-id"])).toHaveLength(6);
+    expect(elements(tree).some(element => element.type === ProjectGroupHeader && element.props.title === "Project")).toBe(true);
 
     // Remove "project" from snapshot.projects (simulating all sessions moved into a Section)
     props = {
@@ -2430,8 +2424,9 @@ describe("mobile section movement and subfolder labels", () => {
       },
     };
     draw();
-    expect(elements(tree).some(element => element.props.className === "host-detail project-detail-view")).toBe(false);
-    expect(elements(tree).some(element => element.props.title === "会话")).toBe(true);
+    expect(elements(tree).some(element => element.type === ProjectGroupHeader && element.props.title === "Project")).toBe(false);
+    expect(elements(tree).some(element => element.type === ProjectGroupHeader && element.props.title === "杂活")).toBe(true);
+    expect(elements(tree).filter(element => element.props["data-session-id"])).toHaveLength(6);
   });
 
   it("shows subfolder name only for desktop-group sessions whose folder differs from the group name", () => {
@@ -2459,7 +2454,7 @@ describe("mobile section movement and subfolder labels", () => {
     expect(rowSmall("same")).not.toContain("杂活 ·");
     expect(rowSmall("plain")).not.toContain("plain-repo ·");
 
-    // Also verify projectSearch inside a desktop-group matches subfolder names
+    // Also verify unified drawer search matches subfolder names inside a desktop-group
     props = {
       ...props,
       snapshot: {
@@ -2471,9 +2466,7 @@ describe("mobile section movement and subfolder labels", () => {
       },
     };
     draw();
-    elements(tree).find(element => element.props.className === "project-group-more-button")!.props.onClick();
-    draw();
-    elements(tree).find(element => element.type === "input" && element.props.placeholder === "搜索「杂活」")!.props.onChange({ target: { value: "colab-connect" } });
+    elements(tree).find(element => element.type === "input" && element.props.placeholder === "搜索项目或会话")!.props.onChange({ target: { value: "colab-connect" } });
     draw();
     expect(elements(tree).filter(element => element.props["data-session-id"]).map(element => element.props["data-session-id"])).toEqual(["sub"]);
   });

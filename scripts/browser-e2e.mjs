@@ -85,6 +85,18 @@ async function syncNativeSections(host) {
   if (host.snapshot.runtimes?.[0]) host.snapshot.runtimes[0].capabilities = runtimeCapabilities;
 }
 
+async function openMobileDrawer(page) {
+  if (await page.locator(".mobile-drawer.is-open").count() === 0) {
+    await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).click();
+    await page.locator(".mobile-drawer.is-open").waitFor();
+  }
+}
+
+async function openMobileSession(page, targetSessionId = sessionId) {
+  await openMobileDrawer(page);
+  await page.locator(`.mobile-drawer.is-open [data-session-id="${targetSessionId}"] .session-row-hit`).click();
+}
+
 async function verifySessionCatalog(page, host, steps, directory, viewports) {
   await page.emulateMedia({ reducedMotion: "reduce" });
   const axeSource = await readFile(resolve(root, "node_modules/axe-core/axe.min.js"), "utf8");
@@ -99,6 +111,7 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
     viewports.push({ page: name, ...page.viewportSize() });
     await page.screenshot({ path: resolve(directory, `${name}.png`), fullPage: true });
   }
+  await openMobileDrawer(page);
   await capture("mobile-catalog");
   await page.getByRole("button", { name: "调整顺序", exact: true }).click();
   await page.getByRole("dialog", { name: "项目顺序" }).waitFor();
@@ -783,17 +796,41 @@ async function verifyDesktopConversation(page, host, steps, directory, viewports
 
 async function verifyMobileSafeArea(page, steps, directory, viewports) {
   const emulation = await page.context().newCDPSession(page);
+  await page.setViewportSize({ width: 375, height: 640 });
+  viewports.push({ page: "会话", ...page.viewportSize() });
+  const composer = page.locator(".mobile-composer");
+  await composer.waitFor();
+  const composerPaddings = [];
+  for (const bottom of [0, 48]) {
+    await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom, left: 0 } });
+    const metrics = await composer.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        padding: parseFloat(getComputedStyle(element).paddingBottom),
+        bottom: bounds.bottom,
+        viewport: innerHeight,
+        pageScroll: window.scrollY,
+        documentHeight: document.documentElement.scrollHeight,
+      };
+    });
+    assert.ok(metrics.padding >= bottom, `会话 composer bottom padding must cover ${bottom}px safe area (got ${metrics.padding}px)`);
+    assert.ok(metrics.bottom <= metrics.viewport, "会话 composer stays inside viewport");
+    assert.equal(metrics.pageScroll, 0, "会话 does not scroll the document");
+    assert.equal(metrics.documentHeight, metrics.viewport, "会话 does not grow the document");
+    composerPaddings.push(metrics.padding);
+  }
+  assert.ok(composerPaddings[1] > composerPaddings[0], "会话 composer padding grows with nonzero safe area");
+  await page.screenshot({ path: resolve(directory, "会话-safe-area.png"), fullPage: true });
+  steps.push(`会话: env(safe-area-inset-bottom) 0 → 48px changes composer padding ${composerPaddings[0]} → ${composerPaddings[1]}px`);
+
   for (const [tab, selector, height] of [
-    ["会话", ".host-detail", 240],
-    ["电脑", ".host-browser", 240],
-    ["设置", ".mobile-settings-content", 520],
+    ["电脑", ".host-browser", 190],
+    ["设置", ".mobile-settings-content", 460],
   ]) {
     await page.setViewportSize({ width: 375, height });
     viewports.push({ page: tab, ...page.viewportSize() });
-    if (tab !== "会话") {
-      await page.getByRole("button", { name: "菜单", exact: true }).click();
-      await page.getByRole("navigation", { name: "主要导航", exact: true }).getByRole("button", { name: tab, exact: true }).click();
-    }
+    await openMobileDrawer(page);
+    await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: tab, exact: true }).click();
     const content = page.locator(selector);
     await content.waitFor();
     const header = page.locator(".m-header:visible");
@@ -1310,15 +1347,28 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           break;
         }
         case "session.commands": result = await host.nativeApproval.commands(request); break;
-        case "session.configuration":
+        case "session.configuration": {
           if (host.taskDetailsError && request.params.includeBackgroundTasks === true) {
             error = { code: "TASK_DETAILS_UNAVAILABLE", message: host.taskDetailsError };
             break;
           }
-          if (!host.nativeApproval && request.params.includeBackgroundTasks === true) {
+          if ((!host.nativeApproval || request.params.sessionId !== sessionId) && request.params.includeBackgroundTasks === true) {
             result = { session: snapshot.sessions.find(candidate => candidate.sessionId === request.params.sessionId) };
             break;
           }
+          const readResult = await host.nativeApproval.configuration(request);
+          result = readResult?.session && request.params.sessionId === sessionId
+            ? {
+                ...readResult,
+                session: {
+                  ...readResult.session,
+                  ...host.nativeApproval.profile(),
+                  ...(readResult.session.backgroundTasks ? { backgroundTasks: readResult.session.backgroundTasks } : {}),
+                },
+              }
+            : readResult;
+          break;
+        }
         case "session.configure":
           result = await host.nativeApproval.configuration(request);
           Object.assign(session, host.nativeApproval.profile());
@@ -1546,9 +1596,12 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
 }
 
 async function openRename(page, entry) {
-  await (entry === "list"
-    ? page.locator(`[data-session-id="${sessionId}"]`).getByRole("button", { name: "会话操作", exact: true })
-    : page.getByRole("button", { name: "会话操作", exact: true })).click();
+  if (entry === "list") {
+    await openMobileDrawer(page);
+    await page.locator(`.mobile-drawer.is-open [data-session-id="${sessionId}"]`).getByRole("button", { name: "会话操作", exact: true }).click();
+  } else {
+    await page.getByRole("button", { name: "会话操作", exact: true }).click();
+  }
   await page.getByRole("button", { name: "重命名", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "重命名会话", exact: true });
   await dialog.waitFor();
@@ -1556,13 +1609,14 @@ async function openRename(page, entry) {
 }
 
 async function verifyRename(page, host, entry, steps) {
-  const row = page.locator(`[data-session-id="${sessionId}"]`);
+  await openMobileDrawer(page);
+  const row = page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`);
   const beforeTime = await row.locator("small").innerText();
-  const beforeBadge = await row.locator(".session-row-status:not([aria-label])").innerText();
-  const beforeOrder = await page.locator("[data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId));
+  const beforeStateDot = await row.locator(".session-state-dot").getAttribute("class");
+  const beforeOrder = await page.locator(".mobile-drawer [data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId));
   const beforeSession = structuredClone(host.session);
   if (entry === "chat") {
-    await row.getByRole("button").first().click();
+    await row.locator(".session-row-hit").click();
     await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
     await page.getByRole("status", { name: "消息排队状态" }).waitFor();
   }
@@ -1596,17 +1650,18 @@ async function verifyRename(page, host, entry, steps) {
   steps.push("failed RPC retains input; retry succeeds with a trimmed title");
 
   if (entry === "list") {
+    await openMobileDrawer(page);
     await eventually(() => row.locator("strong").innerText(), renamedTitle, "List title must update");
-    await row.getByRole("button").first().click();
+    await row.locator(".session-row-hit").click();
   }
   await page.getByRole("heading", { name: renamedTitle, exact: true }).waitFor();
   assert.match(await page.getByRole("status", { name: "消息排队状态" }).innerText(), /1 条消息已到电脑/u);
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   await eventually(() => row.locator("strong").innerText(), renamedTitle, "Renamed chat must update its list row");
   assert.equal(await row.locator("small").innerText(), beforeTime, "Rename must not change displayed activity time");
-  assert.equal(await row.locator(".session-row-status:not([aria-label])").innerText(), beforeBadge, "Rename must preserve queue state");
+  assert.equal(await row.locator(".session-state-dot").getAttribute("class"), beforeStateDot, "Rename must preserve queue state");
   assert.equal(await row.getByLabel(`${beforeSession.pendingCount} 条排队消息`, { exact: true }).innerText(), String(beforeSession.pendingCount), "Rename must preserve the independent pending count");
-  assert.deepEqual(await page.locator("[data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId)), beforeOrder, "Rename must not reorder sessions");
+  assert.deepEqual(await page.locator(".mobile-drawer [data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId)), beforeOrder, "Rename must not reorder sessions");
   assert.deepEqual(host.session, { ...beforeSession, title: renamedTitle }, "Host rename changes only the title");
   assert.equal(host.requests.filter((request) => request.method.startsWith("turn.")).length, 0, "Rename must not alter queued turns");
   steps.push("list/header title updates; activity, order, and existing queue unchanged");
@@ -1656,13 +1711,15 @@ async function verifyRename(page, host, entry, steps) {
 }
 
 async function verifyDelivery(page, host, steps) {
-  const row = page.locator(`[data-session-id="${sessionId}"]`);
+  await openMobileDrawer(page);
+  const row = page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`);
   const dialog = await openRename(page, "list");
   await dialog.getByRole("textbox", { name: "会话名称", exact: true }).fill(renamedTitle);
   await dialog.getByRole("button", { name: "保存", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
+  await openMobileDrawer(page);
   await eventually(() => row.locator("strong").innerText(), renamedTitle, "Display name must update before sending");
-  await row.getByRole("button").first().click();
+  await row.locator(".session-row-hit").click();
   await page.getByRole("heading", { name: renamedTitle, exact: true }).waitFor();
   await page.getByRole("textbox", { name: /^给 .+ 发指令$/u }).fill(userText);
   await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -1723,7 +1780,7 @@ async function verifySessionHeader(page, host, steps, directory) {
   const session = host.snapshot.sessions.find(session => session.sessionId === sessionId);
   const profile = { ...host.nativeApproval.profile(), modelDisplayName: "Claude Opus 5.5 · custom-model-identifier-with-a-long-unbroken-name-1234567890", effort: "high" };
   host.nativeApproval.profile = () => profile;
-  const modes = { default: "逐个确认", acceptEdits: "自动接受编辑", bypassPermissions: "完全授权", plan: "计划模式", auto: "自动模式", dontAsk: "不询问" };
+  const modes = { default: "Manual", acceptEdits: "Accept Edits", bypassPermissions: "Bypass", plan: "Plan", auto: "Auto", dontAsk: "Don't Ask" };
   const accessibility = await page.context().newCDPSession(page);
   async function accessibleProfile() {
     const { root } = await accessibility.send("DOM.getDocument");
@@ -1736,8 +1793,8 @@ async function verifySessionHeader(page, host, steps, directory) {
     profile.nativePermissionMode = mode;
     Object.assign(session, profile);
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
-    await eventually(() => page.locator(".m-header .session-profile-summary").innerText(), `${profile.modelDisplayName} · ${label} · reasoning high`, "The header shows the current mode with the complete model and effort");
-    await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · ${label} · reasoning high` }, "Mobile settings announce the current snapshot profile");
+    await eventually(() => page.locator(".m-header .session-profile-summary").innerText(), `${profile.modelDisplayName} · High · ${label}`, "The header shows the current mode with the complete model and effort");
+    await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${label}` }, "Mobile settings announce the current snapshot profile");
   }
   const notice = page.getByRole("status", { name: "Desktop 会话授权变更", exact: true });
   for (const state of ["requested", "not-applied", "confirmed"]) {
@@ -1745,7 +1802,7 @@ async function verifySessionHeader(page, host, steps, directory) {
     Object.assign(session, profile);
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
     await eventually(() => notice.count(), state === "confirmed" ? 0 : 1, `Permission notice state ${state}`);
-    assert.ok((await page.locator(".m-header .session-profile-summary").innerText()).includes("不询问"), "A requested mode never replaces the observed header mode");
+    assert.ok((await page.locator(".m-header .session-profile-summary").innerText()).includes("Don't Ask"), "A requested mode never replaces the observed header mode");
   }
   async function checkWrapping(selector, surface, labels, requireMultipleLines = true) {
     const layout = await page.locator(selector).evaluate((element, labels) => {
@@ -1780,7 +1837,7 @@ async function verifySessionHeader(page, host, steps, directory) {
         session.allowedActions.canConfigure = canConfigure;
         await host.send({ kind: "snapshot", snapshot: host.snapshot });
         await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Settings availability changes only the header action");
-        await checkWrapping(".m-header .session-profile-summary", `Mobile ${width}px ${font} configure=${canConfigure}`, ["不询问", "reasoning high"]);
+        await checkWrapping(".m-header .session-profile-summary", `Mobile ${width}px ${font} configure=${canConfigure}`, ["Don't Ask", "High"]);
       }
     }
   }
@@ -1811,9 +1868,9 @@ async function verifySessionHeader(page, host, steps, directory) {
     }, { canConfigure, mode, sessionId });
     await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Desktop retains a read-only header when settings are unavailable");
     const summary = page.locator(".desktop-conversation .session-profile-summary");
-    await eventually(() => summary.innerText(), `${profile.modelDisplayName} · ${modes[mode]} · reasoning high`, "Desktop receives updated mode without a configuration read");
-    if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · ${modes[mode]} · reasoning high` }, "Desktop settings announce the current snapshot profile");
-    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [modes[mode], "reasoning high"], false);
+    await eventually(() => summary.innerText(), `${profile.modelDisplayName} · High · ${modes[mode]}`, "Desktop receives updated mode without a configuration read");
+    if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${modes[mode]}` }, "Desktop settings announce the current snapshot profile");
+    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [modes[mode], "High"], false);
   }
   await accessibility.detach();
   await page.screenshot({ path: resolve(directory, "desktop-header-readonly-larger.png"), fullPage: true });
@@ -1821,7 +1878,7 @@ async function verifySessionHeader(page, host, steps, directory) {
 }
 
 async function verifyNativeApprovals(page, host, steps, directory) {
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const slashInput = page.getByRole("combobox", { name: "给 Claude 发指令" });
   await slashInput.fill("/r");
@@ -1889,16 +1946,16 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     { question: "选择执行范围", multiSelect: false, options: [{ label: "仅本机", description: "使用隔离测试目录" }, { label: "稍后处理" }] },
     { question: "选择检查项目", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }] },
   ] };
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   const question = await host.nativeApproval.open("AskUserQuestion", input);
   for (const event of await host.nativeApproval.message({ type: "assistant", uuid: "native-question-card", timestamp: Date.now(), message: { content: [
     { type: "tool_use", id: question.request.toolUseId, name: "AskUserQuestion", input },
   ] } })) await host.emit(event.type, event.data, { itemId: event.itemId });
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
-  const sessionRow = page.locator(`[data-session-id="${sessionId}"]`);
+  const sessionRow = page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`);
   await sessionRow.getByText("待回答", { exact: true }).waitFor();
-  await page.getByText("有提问待你回答", { exact: true }).waitFor();
-  await sessionRow.getByRole("button").first().click();
+  await page.locator(".mobile-drawer").getByText("有提问待你回答", { exact: true }).waitFor();
+  await sessionRow.locator(".session-row-hit").click();
   const questionCard = page.locator(".conversation-stream .pending-question");
   await questionCard.waitFor();
   assert.equal(await page.getByRole("dialog", { name: "Claude 等待授权", exact: true }).count(), 0, "Questions are answered inline without another approval sheet");
@@ -1932,12 +1989,12 @@ async function verifyNativeApprovals(page, host, steps, directory) {
   assert.equal(await answeredQuestion.locator(".interactive-question-block").filter({ hasText: "选择检查项目" }).getByRole("button", { name: "稍后处理", exact: true }).getAttribute("class").then(value => value.includes("is-selected")), false);
   await page.screenshot({ path: resolve(directory, "native-question-answered.png"), fullPage: true });
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   await sessionRow.getByText("待回答", { exact: true }).waitFor({ state: "hidden" });
-  await sessionRow.getByRole("button").first().click();
+  await sessionRow.locator(".session-row-hit").click();
   await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reopened native history retains every selection");
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reloaded native history retains every selection");
   const resolutions = host.requests.filter((request) => request.method === "permission.resolve");
   assert.equal(resolutions.length, 3);
@@ -1957,7 +2014,7 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     assert.equal(host.nativeApproval.permissionMode(), mode);
     assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "setPermissionMode").at(-1).args, [sessionId, mode]);
     assert.equal(await page.getByRole("status", { name: "Desktop 会话授权变更", exact: true }).count(), 0, "Confirmed permission changes leave no persistent banner");
-    await eventually(async () => (await page.locator(".m-header .session-profile-summary").innerText()).includes(mode === "auto" ? "自动模式" : "完全授权"), true, "The updated Native snapshot reaches the header");
+    await eventually(async () => (await page.locator(".m-header .session-profile-summary").innerText()).includes(mode === "auto" ? "Auto" : "Bypass"), true, "The updated Native snapshot reaches the header");
     await page.getByRole("button", { name: "会话设置", exact: true }).click();
     await eventually(() => configuration.getByLabel("Desktop 授权模式").inputValue(), mode, "Configuration reflects the native Desktop mode");
     await page.screenshot({ path: resolve(directory, `native-mode-${mode}.png`), fullPage: true });
@@ -2011,7 +2068,7 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
     await host.nativeApproval.setPromptsPrPolicy({ applyPrWrites: true });
   }
 
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const kinds = ["refusal-fallback", "auto-mode-server-fallback", "lanyard-consent", "violin-bow", "cwd-trust"];
   const opened = [];
@@ -2249,7 +2306,7 @@ async function verifyNativeMessages(page, host, steps, directory) {
     { id: fiveId, sessionId, role: "user", text: "五图隔离消息", createdAt: Date.now(), origin: "claude-desktop", delivery: "queued", attachments },
     { id: correctedId, sessionId, role: "user", text: "终态纠正消息", createdAt: Date.now() + 1, origin: "claude-desktop", delivery: "queued" },
   );
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const five = page.locator("article.conversation-item.user").filter({ hasText: "五图隔离消息" });
   async function loadFiveThumbnails() {
@@ -2342,9 +2399,8 @@ async function verifyNativeMessages(page, host, steps, directory) {
   steps.push("native internal aliases resolve to saved header labels before configuration, picker selection uses the canonical ID, and long-context selection keeps its full ID");
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  const row = page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first();
-  await page.getByRole("heading", { name: originalTitle, exact: true }).or(row).first().waitFor();
-  if (await row.isVisible()) await row.click();
+  await openMobileSession(page);
+  await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   await loadFiveThumbnails();
   await eventually(async () => (await page.getByRole("button", { name: "会话设置", exact: true }).innerText()).includes("隔离模型 · 长上下文"), true, "Reloaded native alias snapshot retains the saved header label");
   assert.match(await five.innerText(), /已完成/u);
@@ -2381,7 +2437,7 @@ async function verifyHistoryPagination(page, host, steps, directory) {
     text: `历史条目 ${String(index + 1).padStart(3, "0")}。${"这段内容仅用于隔离分页与滚动位置验收。".repeat(3)}`,
     createdAt: now - (120 - index) * 1000, origin: "claude-desktop",
   });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const stream = page.locator(".conversation-stream");
   await eventually(() => stream.locator("article.conversation-item").count(), 50, "Opening a session renders the larger first page");
@@ -2499,19 +2555,20 @@ async function verifyHistoryPagination(page, host, steps, directory) {
 }
 
 async function verifyNativeCompaction(page, host, steps, directory) {
-  const row = page.locator(`[data-session-id="${sessionId}"]`);
-  await row.getByRole("button").first().click();
+  const row = page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`);
+  await openMobileSession(page);
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: "compacting" } }));
   await eventually(() => page.locator(".session-activity-label").innerText(), "正在压缩上下文", "Native compaction replaces generic activity even with queued input");
   assert.equal(await page.locator(".session-activity-elapsed").count(), 0, "User turn age is not shown as compaction duration");
   await page.screenshot({ path: resolve(directory, "native-compaction.png"), fullPage: true });
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   await eventually(() => row.locator(".session-row-status:not([aria-label])").innerText(), "正在压缩上下文", "Catalog badge shares the observed compaction status");
   await page.reload({ waitUntil: "domcontentloaded" });
+  await openMobileDrawer(page);
   await row.waitFor();
   await eventually(() => row.locator(".session-row-status:not([aria-label])").innerText(), "正在压缩上下文", "Reconnect snapshot retains current compaction status");
   assert.equal(await row.getByLabel("1 条排队消息", { exact: true }).innerText(), "1", "Compaction retains the independent pending count after reconnect");
-  await row.getByRole("button").first().click();
+  await row.locator(".session-row-hit").click();
   await eventually(() => page.locator(".session-activity-label").innerText(), "正在压缩上下文", "Reopening a compacting session restores its activity line");
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: null, compact_result: "success" } }));
   await eventually(() => page.locator(".session-activity.compacting").count(), 0, "Native status clear restores regular activity");
@@ -2554,7 +2611,8 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   host.session.runningSubagents = host.nativeApproval.session().runningSubagents;
   assert.deepEqual(host.session.runningSubagents, { count: 1, lastUpdatedAt: subagentStartAt });
   await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
-  const catalogRow = page.locator(`[data-session-id="${sessionId}"]`);
+  await openMobileDrawer(page);
+  const catalogRow = page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`);
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Catalog row dot reflects running background subagent when main turn is idle");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Catalog row badge displays running background subagent");
   host.history.push(...(await host.nativeApproval.history()).items);
@@ -2576,12 +2634,12 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     }
     return result;
   };
-  await catalogRow.getByRole("button").first().click();
+  await catalogRow.locator(".session-row-hit").click();
   await eventually(() => taskDetailsReads >= 2, true, "Native empty task details have been loaded and polled again");
   assert.ok((await page.locator(".session-activity-label").innerText()).includes("子代理运行中 · Run full local distributed CI"), "Native running metadata preserves activity when catalog transcript is unavailable");
   useTrayFixture = true;
   await page.getByRole("button", { name: "后台任务，1 个运行中", exact: true }).waitFor();
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Returning from detail keeps catalog row dot running");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Returning from detail keeps catalog row badge synchronized");
   host.session.runningSubagents = { count: 1, lastUpdatedAt: Date.now() - 11 * 60_000 };
@@ -2606,7 +2664,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await eventually(() => catalogRow.locator(".session-state-dot.idle").count(), 1, "Completed background subagent restores idle catalog dot");
   await eventually(() => catalogRow.locator(".session-row-status").count(), 0, "Completed background subagent clears catalog badge");
   steps.push("session catalog state dot and status badge stay synchronized with active, stalled, and completed background subagents before opening and after returning from detail");
-  await catalogRow.getByRole("button").first().click();
+  await catalogRow.locator(".session-row-hit").click();
   const stream = page.locator(".conversation-stream");
   await stream.locator(".background-task-marker.is-completed").waitFor();
   await eventually(() => page.locator(".session-activity").count(), 0, "Settled task tray clears stale running subagent activity and timer");
@@ -2777,9 +2835,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     ["rewindFiles", [sessionId, "rewind-target", false, true]], ["rewindV2", [sessionId, "rewind-target"]],
   ]);
   await page.reload({ waitUntil: "domcontentloaded" });
-  const row = page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first();
-  await row.or(page.getByRole("heading", { name: originalTitle, exact: true })).first().waitFor();
-  if (await row.isVisible()) await row.click();
+  await openMobileSession(page);
   await page.getByText("保留的检查点回复", { exact: true }).waitFor();
   assert.equal(await page.getByText("回退后应消失的回复", { exact: true }).count(), 0);
   assert.equal(await page.getByText("重写这条请求", { exact: true }).count(), 0);
@@ -2800,7 +2856,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.screenshot({ path: resolve(directory, "native-tool-names-completion-only.png"), fullPage: true });
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await eventually(async () => (await toolRows.locator("strong").allTextContents()).sort(), ["Bash", "Edit", "Read", "Write"], "Native history and replay keep one named row per original call after reload");
   assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 0, "Timeline rendering never eagerly fetches full tool outputs");
   await stream.locator(".conversation-tool-group").last().locator("summary").click();
@@ -2850,15 +2906,14 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     assert.equal(host.nativeApproval.failedRewindReadbacks.filter(failed => failed === method).length, 1, "The intended post-success Native readback actually failed");
     await page.screenshot({ path: resolve(directory, `native-rewind-${method}-disconnected.png`), fullPage: true });
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+    await openMobileSession(page);
     await page.getByText(`${method} 保留的检查点`, { exact: true }).waitFor();
     assert.equal(await target.count(), 0, "Refreshed history and replay must not revive the successfully rewound target");
   }
   steps.push("successful Native rewind preserves prefill and closes confirmation when subsequent getSession or getTranscriptPage disconnects; each mutation executes once and discarded history stays absent after reload");
 
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
-  await page.getByRole("button", { name: "菜单", exact: true }).click();
-  await page.getByRole("navigation", { name: "主要导航", exact: true }).getByRole("button", { name: "设置", exact: true }).click();
+  await openMobileDrawer(page);
+  await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
   await page.getByRole("heading", { name: "远端桌面状态", exact: true }).waitFor();
   await page.getByRole("heading", { name: "版本与更新", exact: true }).waitFor();
   assert.ok((await page.locator(".mobile-settings-page").innerText()).includes("v1.1.1"));
@@ -2872,20 +2927,21 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
         const style = getComputedStyle(element);
         return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, background: style.backgroundColor,
           topRadius: [style.borderTopLeftRadius, style.borderTopRightRadius], bottomRadius: [style.borderBottomLeftRadius, style.borderBottomRightRadius],
-          topBorder: style.borderTopWidth, sideBorders: [style.borderLeftColor, style.borderRightColor] };
+          topBorder: style.borderTopWidth, bottomBorder: style.borderBottomWidth, sideBorderWidths: [style.borderLeftWidth, style.borderRightWidth] };
       }));
       assert.ok(rows.length >= 4, `${title} includes version, details, and actions`);
       for (const [index, row] of rows.entries()) {
-        assert.equal(row.left, rows[0].left, `${title} rows share the left card edge`);
-        assert.equal(row.right, rows[0].right, `${title} rows share the right card edge`);
-        assert.equal(row.background, rows[0].background, `${title} details stay inside the card background`);
-        assert.deepEqual(row.sideBorders, rows[0].sideBorders, `${title} rows share the card border color`);
+        assert.equal(row.left, rows[0].left, `${title} rows share the left hairline edge`);
+        assert.equal(row.right, rows[0].right, `${title} rows share the right hairline edge`);
+        assert.equal(row.background, rows[0].background, `${title} rows stay flat without boxed cards`);
+        assert.deepEqual(row.sideBorderWidths, ["0px", "0px"], `${title} rows have no vertical card borders`);
+        assert.deepEqual(row.topRadius, ["0px", "0px"], `${title} rows are cardless`);
+        assert.deepEqual(row.bottomRadius, ["0px", "0px"], `${title} rows are cardless`);
+        assert.equal(row.topBorder, "0px", `${title} rows use bottom hairlines only`);
+        assert.equal(row.bottomBorder, "1px", `${title} rows render 1px hairline dividers`);
         if (index > 0) {
-          assert.equal(row.top, rows[index - 1].bottom, `${title} has no gaps between rows`);
-          assert.deepEqual(row.topRadius, ["0px", "0px"], `${title} only rounds the first row's top corners`);
-          assert.equal(row.topBorder, "0px", `${title} inner rows do not start a separate box`);
+          assert.ok(Math.abs(row.top - rows[index - 1].bottom) <= 1, `${title} has no gaps between rows`);
         }
-        if (index < rows.length - 1) assert.deepEqual(row.bottomRadius, ["0px", "0px"], `${title} only rounds the last row's bottom corners`);
       }
     }
   }
@@ -2906,7 +2962,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
 }
 
 async function verifyNativeQueueActions(page, host, steps, directory) {
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const composer = page.getByRole("combobox", { name: "给 Claude 发指令" });
   const draft = "保留草稿：queue actions must never submit this";
@@ -3014,7 +3070,7 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   const missedRekeyId = randomUUID();
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "steers_rekeyed", rekeyedSteers: [{ from: rekeyedId, to: missedRekeyId }] }), { pushEvents: false });
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await eventually(() => localMessage.getAttribute("data-stream-key"), missedRekeyId, "Fresh history reconciles the cached UUID without its missing rekey event");
   assert.equal(await localMessage.count(), 1, "Stable receipt identity must collapse the old cached bubble and current native history");
   await composer.fill(draft);
@@ -3029,7 +3085,7 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   assert.equal(steered.receipt.queueMode, "steered");
   // A fresh page must recover native history/receipt controls without local turns or delivery events for this seed.
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const steeredMessage = page.locator("article.conversation-item.user").filter({ hasText: "历史中的 steered 排队消息" });
   await steeredMessage.getByRole("status").filter({ hasText: /已排队|排队中/u }).waitFor();
@@ -3114,7 +3170,7 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "sendMessage").length, 4);
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "interrupt").length, 0);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByText("保留的原生回退锚点", { exact: true }).waitFor();
   assert.equal(await receivedMessage.count(), 0, "Replayed pre-rewind events cannot revive the discarded received message");
   await page.screenshot({ path: resolve(directory, "queue-running-rewind-complete.png"), fullPage: true });
@@ -3134,7 +3190,7 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
     await host.nativeApproval.message({ type: "user", uuid: `session-notice-history-${index}`, timestamp: Date.now() + index, message: { content: [{ type: "text", text }] } });
   }
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   const stream = page.locator(".conversation-stream");
   const notices = stream.locator(".session-notice");
   await eventually(() => notices.count(), 3, "Native history shows report, idle and Desktop CI notifications as compact events");
@@ -3175,16 +3231,14 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   await eventually(() => notices.count(), 4, "Live Native reports use the same compact presentation as history");
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   await page.reload({ waitUntil: "domcontentloaded" });
-  const row = page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first();
-  await row.or(page.getByRole("heading", { name: originalTitle, exact: true })).first().waitFor();
-  if (await row.isVisible()) await row.click();
+  await openMobileSession(page);
   await eventually(() => notices.count(), 4, "Reload merges Native history and live notices without duplicate cards");
   assert.equal(await ciNotice.count(), 1);
   assert.equal(await ciNotice.getAttribute("open"), null);
   assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "session.rewind", "permission.resolve"].includes(request.method)).length, 0);
   steps.push("Native report and idle notices stay compact in history, live updates and replay; original text remains readable, quoted examples keep user controls, and no Native mutation is sent");
 
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   const { untrustedDir, manualTrustDir } = host.nativeApproval;
   const createDialog = page.locator(".session-create-dialog");
   const chooseFolderByPath = async (targetDir) => {
@@ -3196,7 +3250,7 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
     await createDialog.getByRole("button", { name: "使用此文件夹", exact: true }).click();
   };
 
-  await page.getByRole("button", { name: "新建会话", exact: true }).click();
+  await page.locator('.mobile-drawer.is-open button[aria-label^="新建会话："]').first().click();
   await chooseFolderByPath(untrustedDir);
   await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("受信任目录会话");
   await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
@@ -3215,9 +3269,9 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
     [[untrustedDir]],
   );
 
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   host.nativeApproval.setTrustPolicy({ keepUntrustedAfterSave: true });
-  await page.getByRole("button", { name: "新建会话", exact: true }).click();
+  await page.locator('.mobile-drawer.is-open button[aria-label^="新建会话："]').first().click();
   await chooseFolderByPath(manualTrustDir);
   await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("手动信任兜底会话");
   await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
@@ -3245,7 +3299,9 @@ function addScrollProjects(host, count) {
 }
 
 async function verifyProjectGrouping(page, host, steps, directory) {
-  const groups = page.locator(".project-groups > .project-group:not(.archived-group)");
+  await openMobileDrawer(page);
+  const drawer = page.locator(".mobile-drawer");
+  const groups = drawer.locator(".project-groups > .project-group:not(.archived-group)");
   const headers = groups.locator(".project-group-open strong");
   const mainGroup = groups.filter({ has: page.locator(`[data-session-id="${sessionId}"]`) });
   const parent = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-parent");
@@ -3261,49 +3317,51 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.equal(await mainGroup.locator('[data-session-id="browser-e2e-parent"]').count(), 1);
   assert.equal(await mainGroup.locator(".project-count-pill").innerText(), "2");
   const primaryForkToggle = mainGroup.locator(".mobile-fork-toggle");
-  const archiveEntry = page.locator(".archived-group .project-group-open");
+  const archiveEntry = drawer.locator(".archived-group .project-group-open");
   assert.equal(await primaryForkToggle.count(), 1);
   assert.equal((await primaryForkToggle.innerText()).trim(), "1 个 Fork 分支");
-  assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
-  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  assert.equal(await drawer.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
+  assert.equal(await drawer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
   await primaryForkToggle.click();
   await mainGroup.locator('[data-session-id="browser-e2e-fork"]').waitFor();
   assert.equal(await primaryForkToggle.getAttribute("aria-expanded"), "true");
-  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  assert.equal(await drawer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
   assert.equal(await mainGroup.locator(".is-archived-fold").count(), 0);
   assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "1");
   await page.screenshot({ path: resolve(directory, "project-fork-expanded.png"), fullPage: true });
   steps.push("Native fixture projection groups linked worktrees under the repository; active forks exclude archived sidechats, which appear only in the archive area");
 
   const archivedSidechat = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-btw-archived");
-  const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
+  const search = drawer.getByPlaceholder("搜索项目或会话", { exact: true });
   await search.fill(archivedSidechat.title);
-  await eventually(() => page.locator("[data-session-id]").count(), 0, "Searching an archived sidechat cannot surface it as an active root");
+  await eventually(() => drawer.locator("[data-session-id]").count(), 0, "Searching an archived sidechat cannot surface it as an active root");
   assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "1");
   await search.fill(worktree.title);
   await eventually(() => headers.allTextContents(), ["claude-desktop-bridge"], "Searching the worktree title keeps its repository project");
-  assert.equal(await page.locator(`[data-session-id="${sessionId}"]`).count(), 1);
+  assert.equal(await drawer.locator(`[data-session-id="${sessionId}"]`).count(), 1);
   await search.fill("");
   await eventually(() => headers.allTextContents(), ["other-project", "claude-desktop-bridge"], "Clearing search restores saved project order");
   assert.equal(await page.evaluate(key => localStorage.getItem(key), orderKey), savedOrder);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  await openMobileDrawer(page);
+  await drawer.locator(`[data-session-id="${sessionId}"]`).waitFor();
   assert.deepEqual(await headers.allTextContents(), ["other-project", "claude-desktop-bridge"]);
   assert.equal(await page.evaluate(key => localStorage.getItem(key), orderKey), savedOrder);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Project list fits the phone viewport");
 
   await archiveEntry.click();
-  await page.locator('[data-session-id="browser-e2e-btw-archived"]').getByRole("button").first().click();
+  const archivedContainer = drawer.locator("#mobile-archived-sessions");
+  await archivedContainer.locator('[data-session-id="browser-e2e-btw-archived"] .session-row-hit').click();
   const parentChainButton = page.locator(".fork-chain-bar").getByRole("button", { name: "主会话：主会话", exact: true });
   await parentChainButton.waitFor();
   await parentChainButton.click();
   await page.getByRole("heading", { name: "主会话", exact: true }).waitFor();
-  await page.getByRole("button", { name: "会话操作", exact: true }).click();
+  await page.locator(".m-header:visible").getByRole("button", { name: "会话操作", exact: true }).click();
   await page.getByRole("button", { name: /分支 1/u }).waitFor();
   await page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
-  await page.getByRole("button", { name: "返回会话目录", exact: true }).click();
-  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  await openMobileDrawer(page);
+  if ((await archiveEntry.getAttribute("aria-expanded")) === "true") await archiveEntry.click();
+  await drawer.locator(`[data-session-id="${sessionId}"]`).waitFor();
 
   const forkSnapshot = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-fork");
   forkSnapshot.archivedAt = Date.now();
@@ -3312,27 +3370,27 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.equal(await mainGroup.locator(".mobile-fork-group").count(), 0);
   assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "2");
   await archiveEntry.click();
-  await page.locator('[data-session-id="browser-e2e-fork"]').waitFor();
-  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
-  assert.deepEqual(await page.locator(".session-row-status").allTextContents(), ["已归档", "已归档"]);
-  const archiveSearch = page.getByPlaceholder("搜索「已归档会话」", { exact: true });
-  await archiveSearch.fill(forkSnapshot.title);
-  assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 1);
-  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
-  await archiveSearch.fill(archivedSidechat.title);
-  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
-  assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
-  await archiveSearch.fill("");
+  await archivedContainer.locator('[data-session-id="browser-e2e-fork"]').waitFor();
+  assert.equal(await archivedContainer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
+  assert.deepEqual(await archivedContainer.locator(".session-row-status").allTextContents(), ["已归档", "已归档"]);
+  await search.fill(forkSnapshot.title);
+  assert.equal(await archivedContainer.locator('[data-session-id="browser-e2e-fork"]').count(), 1);
+  assert.equal(await archivedContainer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  await search.fill(archivedSidechat.title);
+  assert.equal(await archivedContainer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
+  assert.equal(await archivedContainer.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
+  await search.fill("");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Archived sessions fit the phone viewport");
   await page.screenshot({ path: resolve(directory, "archived-sessions.png"), fullPage: true });
-  await page.getByRole("button", { name: "返回会话目录", exact: true }).click();
+  await archiveEntry.click();
   steps.push("archivedAt forks and sidechats remain searchable in the archive area with the correct count and archived badges; the active parent has no empty fold");
 
   assert.equal(host.requests.filter(request => request.method.startsWith("turn.")).length, 0);
   await writeFile(resolve(directory, "project-catalog.json"), JSON.stringify({ projects: host.snapshot.projects, sessions: host.snapshot.sessions }, null, 2));
   await page.screenshot({ path: resolve(directory, "project-list.png"), fullPage: true });
 
-  await page.locator(".project-order-bar button").click();
+  const openOrderSheet = () => drawer.getByRole("button", { name: "调整顺序", exact: true }).click();
+  await openOrderSheet();
   const orderSheet = page.getByRole("dialog", { name: "项目顺序" });
   await orderSheet.waitFor();
   await orderSheet.evaluate((el) => Promise.all(el.getAnimations().map((animation) => animation.finished)));
@@ -3370,7 +3428,7 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
   await eventually(() => headers.allTextContents(), ["claude-desktop-bridge", "other-project"], "Handle drag persists reordered projects");
 
-  await page.locator(".project-order-bar button").click();
+  await openOrderSheet();
   await orderSheet.waitFor();
   await orderSheet.evaluate((el) => Promise.all(el.getAnimations().map((animation) => animation.finished)));
   const targetRowText = orderSheet.locator(".project-order-row").nth(1).locator("strong");
@@ -3395,7 +3453,7 @@ async function verifyProjectGrouping(page, host, steps, directory) {
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
     await eventually(() => headers.count(), count, "Long project catalog arrives through the encrypted snapshot");
     await page.setViewportSize({ width, height: 568 });
-    await page.locator(".project-order-bar button").click();
+    await openOrderSheet();
     await orderSheet.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
     assert.equal(await orderRowTitles.count(), count);
     const body = orderSheet.locator(".m-sheet-body");
@@ -3442,7 +3500,7 @@ async function verifyProjectGrouping(page, host, steps, directory) {
       await orderSheet.locator("select").waitFor();
       assert.equal(await orderSheet.locator("select").inputValue(), String(edgeIndex), "Handle click still opens position selection");
       await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
-      await page.locator(".project-order-bar button").click();
+      await openOrderSheet();
       await orderSheet.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
       const centerHandle = await orderSheet.locator(".project-order-handle").nth(1).boundingBox();
       await page.mouse.move(centerHandle.x + centerHandle.width / 2, centerHandle.y + centerHandle.height / 2);
@@ -3506,17 +3564,18 @@ async function verifyProjectGrouping(page, host, steps, directory) {
 }
 
 async function verifySectionManage(page, host, steps, directory) {
-  const groups = page.locator(".project-groups > .project-group:not(.archived-group)");
+  await openMobileDrawer(page);
+  const drawer = page.locator(".mobile-drawer");
+  const groups = drawer.locator(".project-groups > .project-group:not(.archived-group)");
   const headers = groups.locator(".project-group-open strong");
-  const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
+  const search = drawer.getByPlaceholder("搜索项目或会话", { exact: true });
   const folderNames = host.snapshot.projects.filter(project => project.kind !== "desktop-group").map(project => project.name).sort();
   const { projectId: originalProjectId, projectName: originalProjectName } = host.snapshot.sessions.find(item => item.sessionId === "browser-e2e-misc-sub");
   assert.ok(folderNames.length > 0, "Section management starts with folder projects");
   assert.deepEqual((await headers.allTextContents()).sort(), folderNames);
 
   async function createSectionFromDirectory(name) {
-    await page.getByRole("button", { name: "目录选项", exact: true }).click();
-    await page.getByRole("button", { name: "新建 Section", exact: true }).click();
+    await drawer.getByRole("button", { name: "+ 分组", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "新建 Section" });
     await dialog.getByLabel("Section 名称").fill(name);
     await dialog.getByRole("button", { name: "创建 Section", exact: true }).click();
@@ -3535,27 +3594,30 @@ async function verifySectionManage(page, host, steps, directory) {
   );
 
   // Folder groups do not render custom section management actions; custom sections do.
-  assert.equal(await page.getByRole("button", { name: "管理分组：待办分组", exact: true }).count(), 1);
+  assert.equal(await drawer.getByRole("button", { name: "管理分组：待办分组", exact: true }).count(), 1);
   for (const name of folderNames) {
-    assert.equal(await page.getByRole("button", { name: `管理分组：${name}`, exact: true }).count(), 0);
+    assert.equal(await drawer.getByRole("button", { name: `管理分组：${name}`, exact: true }).count(), 0);
   }
 
-  // Toggle "隐藏空分组（2）" and verify persistence + search + auto-reveal on new section creation.
-  await page.getByRole("button", { name: "目录选项", exact: true }).click();
-  await page.getByRole("button", { name: "隐藏空分组（2）", exact: true }).click();
-  await eventually(
-    async () => (await headers.allTextContents()).sort(),
-    folderNames,
-    "Hiding empty sections removes empty desktop-group headers while preserving all folder groups",
-  );
+  // Empty manual groups collapse by default, except the just-created revealedEmptySectionKey; across reload all 0-session manual groups start collapsed.
+  assert.equal(await groups.filter({ hasText: "待办分组" }).locator(".project-group-open").getAttribute("aria-expanded"), "false");
+  assert.equal(await groups.filter({ hasText: "临时空组" }).locator(".project-group-open").getAttribute("aria-expanded"), "true");
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
-  assert.equal((await headers.allTextContents()).includes("临时空组"), false, "Hidden empty sections persist across reload");
+  await openMobileDrawer(page);
+  await drawer.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  assert.equal(await groups.filter({ hasText: "待办分组" }).locator(".project-group-open").getAttribute("aria-expanded"), "false");
+  assert.equal(await groups.filter({ hasText: "临时空组" }).locator(".project-group-open").getAttribute("aria-expanded"), "false");
 
   await search.fill("临时空组");
   await eventually(() => headers.allTextContents(), ["临时空组"], "Search still surfaces matching empty custom sections");
+  assert.equal(await groups.filter({ hasText: "临时空组" }).locator(".project-group-open").getAttribute("aria-expanded"), "true");
   await search.fill("");
-  await eventually(() => (headers.allTextContents()).then(names => names.includes("临时空组")), false, "Clearing search hides empty sections again");
+  await eventually(
+    async () => (await headers.allTextContents()).includes("临时空组"),
+    true,
+    "Clearing search restores catalog groups",
+  );
+  assert.equal(await groups.filter({ hasText: "临时空组" }).locator(".project-group-open").getAttribute("aria-expanded"), "false");
 
   await createSectionFromDirectory("新建即现");
   await eventually(
@@ -3564,12 +3626,16 @@ async function verifySectionManage(page, host, steps, directory) {
       return names.includes("新建即现") && names.includes("待办分组") && names.includes("临时空组");
     },
     true,
-    "Creating a new section reveals empty sections automatically",
+    "Creating a new section reveals the newly created empty section",
   );
-  steps.push("empty custom sections can be hidden per host, remain searchable, persist across reloads, and reveal automatically when creating a new section");
+  assert.equal(await groups.filter({ hasText: "新建即现" }).locator(".project-group-open").getAttribute("aria-expanded"), "true");
+  await drawer.getByRole("button", { name: "管理分组：新建即现", exact: true }).click();
+  await page.getByRole("button", { name: "删除空分组", exact: true }).click();
+  await eventually(async () => (await headers.allTextContents()).includes("新建即现"), false, "Temporary section cleaned up");
+  steps.push("empty custom sections default to collapsed across reloads, remain searchable, and auto-expand the newly created section");
 
   // 1-tap delete on empty section ("删除空分组") without ConfirmationDialog.
-  await page.getByRole("button", { name: "管理分组：临时空组", exact: true }).click();
+  await drawer.getByRole("button", { name: "管理分组：临时空组", exact: true }).click();
   await page.getByRole("button", { name: "删除空分组", exact: true }).click();
   assert.equal(await page.getByRole("alertdialog").count(), 0, "Empty section deletion skips confirmation dialog");
   await eventually(
@@ -3579,7 +3645,7 @@ async function verifySectionManage(page, host, steps, directory) {
   );
 
   // Rename custom section ("待办分组" -> "重点推进").
-  await page.getByRole("button", { name: "管理分组：待办分组", exact: true }).click();
+  await drawer.getByRole("button", { name: "管理分组：待办分组", exact: true }).click();
   await page.getByRole("button", { name: "重命名分组", exact: true }).click();
   const renameDialog = page.getByRole("dialog", { name: "重命名分组" });
   await renameDialog.getByLabel("分组名称").fill("重点推进");
@@ -3596,7 +3662,7 @@ async function verifySectionManage(page, host, steps, directory) {
   steps.push("empty sections delete in one tap and custom sections rename via native section.rename");
 
   // Move a session into "重点推进", then verify non-empty delete requires confirmation and returns session to folder.
-  await page.locator('[data-session-id="browser-e2e-misc-sub"]').locator("..").getByRole("button", { name: "会话操作", exact: true }).click();
+  await drawer.locator('[data-session-id="browser-e2e-misc-sub"]').getByRole("button", { name: "会话操作", exact: true }).click();
   await page.getByRole("button", { name: /移动到分组/u }).click();
   await page.locator(".m-sheet").getByRole("button", { name: /重点推进/u }).click();
   await eventually(
@@ -3605,7 +3671,7 @@ async function verifySectionManage(page, host, steps, directory) {
     "Session moved into renamed section",
   );
 
-  await page.getByRole("button", { name: "管理分组：重点推进", exact: true }).click();
+  await drawer.getByRole("button", { name: "管理分组：重点推进", exact: true }).click();
   await page.getByRole("button", { name: "删除分组", exact: true }).click();
   const confirmDialog = page.getByRole("alertdialog");
   await confirmDialog.waitFor();
@@ -3620,7 +3686,7 @@ async function verifySectionManage(page, host, steps, directory) {
     "Confirmed non-empty section deletion removes custom section",
   );
   await eventually(
-    () => page.locator('[data-session-id="browser-e2e-misc-sub"]').count(),
+    () => drawer.locator('[data-session-id="browser-e2e-misc-sub"]').count(),
     1,
     "Session inside deleted section remains intact and returns to its folder group",
   );
@@ -3628,7 +3694,7 @@ async function verifySectionManage(page, host, steps, directory) {
   assert.equal(restoredSession.projectId, originalProjectId);
   assert.equal(restoredSession.projectName, originalProjectName);
   assert.equal(host.requests.some(request => request.method === "section.rename"), true);
-  assert.equal(host.requests.filter(request => request.method === "section.delete").length, 2);
+  assert.equal(host.requests.filter(request => request.method === "section.delete").length, 3);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Section manage UI fits 375px viewport");
   steps.push("deleting a non-empty section requires confirmation, calls native delete_section, and safely returns sessions to their folder project");
 }
@@ -3636,8 +3702,8 @@ async function verifySectionManage(page, host, steps, directory) {
 async function verifyAssistantMail(page, host, steps, directory, viewports) {
   const cards = () => page.locator('.assistant-mail-list > [data-mail-id]');
   async function openAssistant() {
-    await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).click();
-    await page.getByRole("button", { name: "助理", exact: true }).click();
+    await openMobileDrawer(page);
+    await page.locator(".mobile-drawer.is-open").getByRole("button", { name: "助理", exact: true }).click();
   }
   async function capture(name) {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, `${name} fits the viewport`);
@@ -3736,14 +3802,11 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
   assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "手机跨页共享草稿", "Mobile assistant draft survives 对话/邮件/设置 subview switches");
-  await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).click();
-  await page.getByRole("button", { name: "会话", exact: true }).click();
-  await page.locator(`.mobile-tab-page:not([hidden]) [data-session-id="${sessionId}"] .session-row-hit`).click();
+  await openMobileSession(page, sessionId);
   const mobileSessionComposer = page.locator(".mobile-tab-page:not([hidden]) textarea");
   await mobileSessionComposer.waitFor();
   assert.equal(await mobileSessionComposer.inputValue(), "手机跨页共享草稿", "Mobile 会话 and 助理 tabs share the bound session draft");
   await mobileSessionComposer.fill("手机会话同步草稿");
-  await page.locator(".mobile-tab-page:not([hidden])").getByRole("button", { name: "返回会话列表", exact: true }).click();
   await openAssistant();
   assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "手机会话同步草稿", "Draft edited in mobile 会话 reflects back in 助理");
   await page.locator(".assistant-conversation textarea").fill("");
@@ -3983,11 +4046,12 @@ async function runScenario(theme, scenario) {
     // Visiting the real pairing URL imports identity via the production hook and
     // stores it in this context's own IndexedDB; no vault or hook is replaced.
     await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
-    await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+    await page.locator(".m-header:visible").waitFor();
+    await page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`).waitFor({ state: "attached" });
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
     assert.equal(await page.locator("html").getAttribute("data-theme"), process.env.BRIDGE_QA_THEME ?? theme);
     assert.equal(await page.locator("html").getAttribute("data-theme-family"), process.env.BRIDGE_QA_THEME_FAMILY ?? "sunstone");
-    assert.equal(await page.locator("[data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the visible session rows");
+    assert.equal(await page.locator(".mobile-drawer [data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the drawer session rows");
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");

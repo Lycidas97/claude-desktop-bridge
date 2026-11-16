@@ -37,6 +37,7 @@ import {
   FolderOpen,
   GitFork,
   LoaderCircle,
+  Menu,
   MessageSquare,
   PackageCheck,
   RefreshCw,
@@ -44,9 +45,11 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type {
   LocalTurn,
   MobileConnectionIssue,
+  PairedHost,
   SessionEvidenceState,
   SessionHistoryState,
 } from "../hooks/useMobileBridge.js";
@@ -71,11 +74,14 @@ import { desktopRuntimeId, desktopRuntimeName } from "../lib/runtime-labels.js";
 import { useAssistantMail } from "./assistant/AssistantMailProvider.js";
 import { MailReference } from "./assistant/MailReference.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
+import { IconButton } from "./common/IconButton.js";
 import { Sheet, SheetAction } from "./common/Sheet.js";
 import { useConversationDrafts } from "./conversation/ConversationDraftsProvider.js";
 import { ConversationView } from "./conversation/ConversationView.js";
 import { SessionPrActions } from "./conversation/SessionPrBar.js";
+import { useMobileNav, type MobileTab } from "./mobile/MobileAppShell.js";
 import { MobileSessionCatalog } from "./mobile/MobileSessionCatalog.js";
+import { NewChatCanvas, type NewChatDirectoryPickerRequest } from "./session/NewChatCanvas.js";
 import "./session/section-create.css";
 import { useSectionManage } from "./session/SectionManageDialog.js";
 import {
@@ -85,6 +91,11 @@ import {
 
 export function MobileWorkspace({
   activeHostId,
+  hosts,
+  onSelectHost,
+  onAddHost,
+  activeTab = "sessions",
+  onSelectTab,
   desktopName,
   connection,
   desktopOnline,
@@ -104,8 +115,8 @@ export function MobileWorkspace({
   connectionIssue,
   onInspectConnection,
   transportMetrics,
-  pendingOutbound,
-  themeControl: _themeControl,
+  pendingOutbound: _pendingOutbound,
+  themeControl,
   onOpenSession,
   onLoadOlderHistory,
   onLoadOlderEvidence,
@@ -150,6 +161,11 @@ export function MobileWorkspace({
   onRetry,
 }: {
   activeHostId: string;
+  hosts?: readonly PairedHost[] | undefined;
+  onSelectHost?: ((hostId: string) => Promise<void> | void) | undefined;
+  onAddHost?: (() => void) | undefined;
+  activeTab?: MobileTab | undefined;
+  onSelectTab?: ((tab: MobileTab) => void) | undefined;
   desktopName: string;
   connection: SocketState;
   desktopOnline: boolean;
@@ -206,6 +222,7 @@ export function MobileWorkspace({
     title?: string,
     runtimeId?: BridgeDesktopRuntimeId,
     projectId?: string,
+    trustWorkspace?: boolean,
   ): Promise<BridgeSessionInfo | undefined>;
   onForkSession?(
     sessionId: string,
@@ -234,44 +251,22 @@ export function MobileWorkspace({
   onBackToHosts(): void;
   onRetry(): Promise<void>;
 }) {
+  const mobileNav = useMobileNav();
   const [refreshing, setRefreshing] = useState(false);
   const [syncFlash, setSyncFlash] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [sessionView, setSessionView] = useState<"conversation" | "evidence">("conversation");
   const [search, setSearch] = useState("");
+  const [localDrawerOpen, setLocalDrawerOpen] = useState(false);
+  const [hostSwitcherOpen, setHostSwitcherOpen] = useState(false);
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [revealedEmptySectionKey, setRevealedEmptySectionKey] = useState<string>();
+  const [expandedEmptyProjectIds, setExpandedEmptyProjectIds] = useState<Set<string>>(() => new Set());
+  const [newChatMode, setNewChatMode] = useState(false);
+  const [createDialogState, setCreateDialogState] = useState<NewChatDirectoryPickerRequest>();
   const conversationDrafts = useConversationDrafts(activeHostId);
   const assistantMail = useAssistantMail();
   const [sectionCreate, setSectionCreate] = useState<{ name: string; busy: boolean; error: string }>();
-  const sectionCanCreate = Boolean(
-    onCreateSection
-    && snapshot?.host.capabilities.includes("section.create.v1")
-    && connection === "connected"
-    && desktopOnline
-    && sectionCreate?.name.trim()
-    && !sectionCreate?.busy,
-  );
-  function closeSectionCreate(): void {
-    if (!sectionCreate?.busy) setSectionCreate(undefined);
-  }
-  async function createSection(): Promise<void> {
-    if (!sectionCanCreate || !sectionCreate || !onCreateSection) return;
-    setSectionCreate({ ...sectionCreate, busy: true, error: "" });
-    try {
-      const project = await onCreateSection(sectionCreate.name.trim());
-      if (!project) throw new Error("Section 未创建，请重试。");
-      sectionManage.revealEmptySections();
-      setCollapsedProjectIds((current) => expandProject(current, project.projectId));
-      setActiveProjectId(undefined);
-      setSearch("");
-      setSectionCreate(undefined);
-    } catch (reason) {
-      setSectionCreate({
-        ...sectionCreate,
-        busy: false,
-        error: reason instanceof Error ? reason.message : "Section 创建失败",
-      });
-    }
-  }
   const [createOpen, setCreateOpen] = useState(false);
   const [createProjectId, setCreateProjectId] = useState("");
   const [configurationSessionId, setConfigurationSessionId] = useState<string>();
@@ -283,7 +278,6 @@ export function MobileWorkspace({
   const [deleteSessionConfirmOpen, setDeleteSessionConfirmOpen] = useState(false);
   const [sessionActionBusy, setSessionActionBusy] = useState(false);
   const [sessionActionError, setSessionActionError] = useState<string>();
-  const [directoryMenuOpen, setDirectoryMenuOpen] = useState(false);
   const [projectOrderOpen, setProjectOrderOpen] = useState(false);
   const projectOrderKey = `bridge-project-order:${activeHostId}`;
   const [placedProjects, setPlacedProjects] = useState<string[]>(() => (
@@ -294,16 +288,42 @@ export function MobileWorkspace({
   const [forkChainOpen, setForkChainOpen] = useState(() => (
     Boolean(selectedSessionId && snapshot?.sessions.find((session) => session.sessionId === selectedSessionId)?.sidechat)
   ));
-  const [activeProjectId, setActiveProjectId] = useState<string>();
-  const [projectSearch, setProjectSearch] = useState("");
 
   const directoryRef = useRef<HTMLElement>(null);
   const directoryScrollPositions = useRef(new Map<string, number>());
   const handledFocusRef = useRef<string | undefined>(undefined);
   const handledFocusRequestRef = useRef<number | undefined>(undefined);
-  const handledDirectoryRequestRef = useRef<number | undefined>(undefined);
+  const handledDirectoryRequestRef = useRef<number | undefined>(directoryRequest);
+  const autoOpenedSessionRef = useRef<string | undefined>(undefined);
+  const latestHostIdRef = useRef(activeHostId);
+  latestHostIdRef.current = activeHostId;
+
+  const drawerOpen = mobileNav?.drawerOpen ?? localDrawerOpen;
+  function setDrawerOpen(next: boolean | ((current: boolean) => boolean)): void {
+    if (mobileNav?.setDrawerOpen) {
+      mobileNav.setDrawerOpen(next);
+    } else {
+      setLocalDrawerOpen(next);
+    }
+  }
+
+  useEffect(() => {
+    if (!drawerOpen) setHostSwitcherOpen(false);
+  }, [drawerOpen]);
+
+  useEffect(() => {
+    if (mobileNav || !localDrawerOpen) return;
+    return registerMobileBackHandler(() => {
+      setLocalDrawerOpen(false);
+      return true;
+    }, 300);
+  }, [localDrawerOpen, mobileNav]);
 
   const sessions = snapshot?.sessions ?? [];
+  const activeSessions = useMemo(
+    () => sessions.filter((session) => !session.archivedAt),
+    [sessions],
+  );
   const sectionManage = useSectionManage({
     activeHostId,
     desktopName,
@@ -313,22 +333,67 @@ export function MobileWorkspace({
     onRenameSection,
     onDeleteSection,
   });
-  const selectedSession = sessions.find((session) => session.sessionId === selectedSessionId);
+
+  const sectionCanCreate = Boolean(
+    onCreateSection
+    && snapshot?.host.capabilities.includes("section.create.v1")
+    && connection === "connected"
+    && desktopOnline
+    && sectionCreate?.name.trim()
+    && !sectionCreate?.busy,
+  );
+
+  function closeSectionCreate(): void {
+    if (!sectionCreate?.busy) setSectionCreate(undefined);
+  }
+
+  async function createSection(): Promise<void> {
+    if (!sectionCanCreate || !sectionCreate || !onCreateSection) return;
+    setSectionCreate({ ...sectionCreate, busy: true, error: "" });
+    try {
+      const project = await onCreateSection(sectionCreate.name.trim());
+      if (!project) throw new Error("Section 未创建，请重试。");
+      sectionManage.revealEmptySections();
+      placeProjects([project.projectId, ...placedProjects.filter((id) => id !== project.projectId)]);
+      setCollapsedProjectIds((current) => expandProject(current, project.projectId));
+      setRevealedEmptySectionKey(project.projectId);
+      setSearch("");
+      setSectionCreate(undefined);
+    } catch (reason) {
+      setSectionCreate({
+        ...sectionCreate,
+        busy: false,
+        error: reason instanceof Error ? reason.message : "Section 创建失败",
+      });
+    }
+  }
+
+  const defaultSessionId = (
+    focusSessionId && sessions.some((candidate) => candidate.sessionId === focusSessionId)
+      ? focusSessionId
+      : undefined
+  ) ?? activeSessions[0]?.sessionId;
+  const effectiveSelectedId = selectedSessionId && restorableSessionId(selectedSessionId, sessions)
+    ? selectedSessionId
+    : (newChatMode ? undefined : defaultSessionId);
+  const selectedSession = effectiveSelectedId
+    ? sessions.find((session) => session.sessionId === effectiveSelectedId)
+    : undefined;
   const configurationSession = sessions.find((session) => session.sessionId === configurationSessionId);
-  const selectedHistory = selectedSessionId ? histories[selectedSessionId] : undefined;
-  const selectedEvidence = selectedSessionId ? evidence[selectedSessionId] : undefined;
+  const selectedHistory = effectiveSelectedId ? histories[effectiveSelectedId] : undefined;
+  const selectedEvidence = effectiveSelectedId ? evidence[effectiveSelectedId] : undefined;
   const menuFileChangesCount = useMemo(() => {
-    if (!selectedSessionId || menuSessionId !== selectedSessionId) return 0;
-    const items = conversationItems(selectedSessionId, selectedHistory, events, localTurns, true);
+    if (!effectiveSelectedId || menuSessionId !== effectiveSelectedId) return 0;
+    const items = conversationItems(effectiveSelectedId, selectedHistory, events, localTurns, true);
     return aggregateFileChanges(items) ? 1 : 0;
-  }, [events, localTurns, menuSessionId, selectedHistory, selectedSessionId]);
+  }, [effectiveSelectedId, events, localTurns, menuSessionId, selectedHistory]);
   const mailCards = useMemo(() => (
-    selectedSessionId
+    effectiveSelectedId
       ? assistantMail?.cache.cards.filter((card) => (
-          (card.nativeDelivery.nativeSessionId ?? snapshot?.assistantMail?.binding?.nativeSessionId) === selectedSessionId
+          (card.nativeDelivery.nativeSessionId ?? snapshot?.assistantMail?.binding?.nativeSessionId) === effectiveSelectedId
         )) ?? []
       : []
-  ), [assistantMail?.cache.cards, selectedSessionId, snapshot?.assistantMail?.binding?.nativeSessionId]);
+  ), [assistantMail?.cache.cards, effectiveSelectedId, snapshot?.assistantMail?.binding?.nativeSessionId]);
 
   const projectsByActivity = useMemo(() => {
     const latest = new Map<string, number>(
@@ -345,14 +410,10 @@ export function MobileWorkspace({
     if (unplaced.length) placeProjects([...unplaced, ...placedProjects]);
   }, [placedProjects, projectOrder]);
 
-  const activeParentProjects = useMemo(
-    () => new Map(sessions.filter((session) => !session.archivedAt).map((session) => [session.sessionId, session.projectId])),
-    [sessions],
-  );
   const grouped = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const matches = sessions.filter((session) => (
-      !query || `${session.title}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query)
+      !query || `${session.title}\n${session.currentSummary ?? ""}\n${session.projectName}\n${session.cwd}`.toLocaleLowerCase().includes(query)
     ));
     const matchingActiveParents = new Map(
       matches.filter((session) => !session.archivedAt).map((session) => [session.sessionId, session.projectId]),
@@ -371,17 +432,12 @@ export function MobileWorkspace({
       groups.set(session.projectId, list);
     }
     return projectOrder
-      .filter((projectId) => {
-        const groupSessions = groups.get(projectId);
-        if (!groupSessions) return false;
-        const project = snapshot?.projects.find((candidate) => candidate.projectId === projectId);
-        return !sectionManage.shouldHideEmpty(project, groupSessions.length, query);
-      })
+      .filter((projectId) => groups.has(projectId))
       .map((projectId) => ({
         project: snapshot?.projects.find((project) => project.projectId === projectId),
         sessions: sortProjectSessionsByRecent(groups.get(projectId)!),
       }));
-  }, [projectOrder, search, sectionManage.hideEmptySections, sessions, snapshot?.projects]);
+  }, [projectOrder, search, sessions, snapshot?.projects]);
 
   const archivedSessions = useMemo(() => sortProjectSessionsByRecent(sessions.filter((session) => (
     Boolean(session.archivedAt)
@@ -406,12 +462,6 @@ export function MobileWorkspace({
     || menuSession.turnState === "queued"
     || menuSession.turnState === "waiting"
   ));
-  const groupedProjectIds = useMemo(
-    () => grouped.map((group) => group.project?.projectId ?? group.sessions[0]!.projectId),
-    [grouped],
-  );
-  const allProjectsCollapsed = groupedProjectIds.length > 0
-    && groupedProjectIds.every((projectId) => collapsedProjectIds.has(projectId));
 
   async function runRefresh(sessionId?: string): Promise<void> {
     if (refreshing) return;
@@ -435,18 +485,20 @@ export function MobileWorkspace({
     setSelectedSessionId(undefined);
   }, [activeHostId, selectedSessionId, sessions, snapshot]);
 
-  useEffect(() => {
-    if (!snapshot || !activeProjectId || activeProjectId === "__archived__") return;
-    if (!snapshot.projects.some((project) => project.projectId === activeProjectId)) {
-      setProjectSearch("");
-      setActiveProjectId(undefined);
-    }
-  }, [activeProjectId, snapshot]);
+  const hasPortalOverlay = drawerOpen
+    || createOpen
+    || Boolean(createDialogState)
+    || Boolean(menuSession)
+    || deleteSessionConfirmOpen
+    || Boolean(configurationSessionId)
+    || Boolean(sectionCreate)
+    || Boolean(sectionManage.state)
+    || projectOrderOpen;
 
   useEffect(() => {
-    if (!visible) return;
-    const unregisterOverlays = registerMobileBackHandler(() => {
-      if (!selectedSession && configurationSessionId) {
+    if (!visible && !hasPortalOverlay) return;
+    return registerMobileBackHandler(() => {
+      if (configurationSessionId && (!visible || configurationSessionId !== selectedSession?.sessionId)) {
         setConfigurationSessionId(undefined);
         return true;
       }
@@ -454,8 +506,9 @@ export function MobileWorkspace({
         closeSectionCreate();
         return true;
       }
-      if (createOpen) {
+      if (createOpen || createDialogState) {
         setCreateOpen(false);
+        setCreateDialogState(undefined);
         return true;
       }
       if (renameOpen) {
@@ -477,30 +530,14 @@ export function MobileWorkspace({
         setProjectOrderOpen(false);
         return true;
       }
-      if (directoryMenuOpen) {
-        setDirectoryMenuOpen(false);
-        return true;
-      }
       return false;
     }, 110);
-    const unregisterDirectoryGroup = registerMobileBackHandler(() => {
-      if (!selectedSession && activeProjectId) {
-        setActiveProjectId(undefined);
-        setProjectSearch("");
-        return true;
-      }
-      return false;
-    }, 90);
-    return () => {
-      unregisterOverlays();
-      unregisterDirectoryGroup();
-    };
   }, [
-    activeProjectId,
     configurationSessionId,
+    createDialogState,
     createOpen,
     deleteSessionConfirmOpen,
-    directoryMenuOpen,
+    hasPortalOverlay,
     menuSessionId,
     moveMenuSessionId,
     projectOrderOpen,
@@ -512,10 +549,10 @@ export function MobileWorkspace({
   ]);
 
   useLayoutEffect(() => {
-    if (visible && !selectedSession && directoryRef.current) {
-      directoryRef.current.scrollTop = directoryScrollPositions.current.get(activeProjectId ?? "") ?? 0;
+    if (drawerOpen && directoryRef.current) {
+      directoryRef.current.scrollTop = directoryScrollPositions.current.get("") ?? 0;
     }
-  }, [activeProjectId, Boolean(selectedSession), visible]);
+  }, [drawerOpen]);
 
   useEffect(() => {
     if (search.trim()) setCollapsedProjectIds(new Set());
@@ -526,7 +563,7 @@ export function MobileWorkspace({
     const parentsToExpand: string[] = [];
     for (const session of sessions) {
       if (!session.parentSessionId) continue;
-      const isSelected = session.sessionId === selectedSessionId;
+      const isSelected = session.sessionId === effectiveSelectedId;
       const selectedKey = `selected:${session.sessionId}`;
       if (isSelected) {
         if (!autoExpandedForkKeysRef.current.has(selectedKey)) {
@@ -554,20 +591,19 @@ export function MobileWorkspace({
         return next.size === current.size ? current : next;
       });
     }
-  }, [selectedSessionId, sessions]);
+  }, [effectiveSelectedId, sessions]);
 
   useEffect(() => {
     if (!visible || directoryRequest === undefined || handledDirectoryRequestRef.current === directoryRequest) return;
     handledDirectoryRequestRef.current = directoryRequest;
+    setNewChatMode(true);
     setSelectedSessionId(undefined);
-    setActiveProjectId(undefined);
-    setProjectSearch("");
     setSessionView("conversation");
     setConfigurationSessionId(undefined);
     setMenuSessionId(undefined);
-    setDirectoryMenuOpen(false);
     setPermissionOpen(false);
     setCreateOpen(false);
+    setCreateDialogState(undefined);
     setRenameOpen(false);
     setDeleteSessionConfirmOpen(false);
   }, [directoryRequest, visible]);
@@ -605,12 +641,27 @@ export function MobileWorkspace({
     );
   }, [focusRequest, focusSessionId, permissions, sessions, snapshot?.prompts, visible]);
 
+  useEffect(() => {
+    if (!visible || focusRequest) return;
+    if (!selectedSession) {
+      autoOpenedSessionRef.current = undefined;
+      return;
+    }
+    if (selectedSessionId !== selectedSession.sessionId) {
+      setSelectedSessionId(selectedSession.sessionId);
+    }
+    if (autoOpenedSessionRef.current !== selectedSession.sessionId) {
+      autoOpenedSessionRef.current = selectedSession.sessionId;
+      void onOpenSession(selectedSession.sessionId);
+    }
+  }, [focusRequest, selectedSession?.sessionId, selectedSessionId, visible]);
+
   const handledCommandResets = useRef(new Set<string>());
   useEffect(() => {
     for (const event of events) {
       if (event.type !== "session.reset" || handledCommandResets.current.has(event.eventId)) continue;
       handledCommandResets.current.add(event.eventId);
-      if (event.data.previousSessionId === selectedSessionId && typeof event.data.sessionId === "string") {
+      if (event.data.previousSessionId === effectiveSelectedId && typeof event.data.sessionId === "string") {
         conversationDrafts.resetSession(activeHostId, event.data.sessionId);
         void selectSession(event.data.sessionId);
       }
@@ -618,11 +669,69 @@ export function MobileWorkspace({
   }, [events]);
 
   async function selectSession(sessionId: string): Promise<void> {
+    autoOpenedSessionRef.current = sessionId;
+    setNewChatMode(false);
     setConfigurationSessionId(undefined);
-    setForkChainOpen(Boolean(sessions.find((session) => session.sessionId === sessionId)?.sidechat));
+    const target = sessions.find((session) => session.sessionId === sessionId);
+    if (target?.archivedAt) setArchivedExpanded(true);
+    setForkChainOpen(Boolean(target?.sidechat));
     setSessionView("conversation");
     setSelectedSessionId(sessionId);
+    if ((activeTab ?? mobileNav?.tab) !== "sessions") {
+      (onSelectTab ?? mobileNav?.onTabChange)?.("sessions");
+    }
     await onOpenSession(sessionId);
+  }
+
+  function startNewChat(): void {
+    autoOpenedSessionRef.current = undefined;
+    setNewChatMode(true);
+    setSelectedSessionId(undefined);
+    setForkChainOpen(false);
+    setSessionView("conversation");
+    setDrawerOpen(false);
+    if ((activeTab ?? mobileNav?.tab) !== "sessions") {
+      (onSelectTab ?? mobileNav?.onTabChange)?.("sessions");
+    }
+  }
+
+  function deliverInitialPromptToSession(created: BridgeSessionInfo, rawPrompt: string): void {
+    const trimmed = rawPrompt.trim();
+    if (!trimmed) return;
+    const startingHostId = activeHostId;
+    const targetDraft = conversationDrafts.session(startingHostId, created.sessionId, onUploadFile);
+    targetDraft.updateDraft((current) => ({
+      ...current,
+      text: "",
+      sending: true,
+      imageError: undefined,
+    }));
+    void Promise.resolve(onSendTurn(created.sessionId, trimmed, []))
+      .then(async () => {
+        if (latestHostIdRef.current !== startingHostId) return;
+        targetDraft.updateDraft((current) => ({ ...current, sending: false }));
+        await onRefresh(created.sessionId);
+      })
+      .catch((error: unknown) => {
+        if (latestHostIdRef.current !== startingHostId) return;
+        const message = error instanceof Error ? error.message : "发送失败";
+        targetDraft.updateDraft((current) => ({
+          ...current,
+          sending: false,
+          imageError: message,
+          text: [trimmed, current.text].filter(Boolean).join("\n"),
+        }));
+      });
+  }
+
+  async function quickStartSession(cwd: string, prompt: string, projectId?: string): Promise<void> {
+    const created = await onCreateSession(cwd, undefined, "claude-desktop", projectId);
+    if (!created) throw new Error("会话未创建，请重试。");
+    setCollapsedProjectIds((current) => expandProject(current, created.projectId));
+    if (search.trim()) setSearch("");
+    deliverInitialPromptToSession(created, prompt);
+    await Promise.resolve(onRefresh());
+    await selectSession(created.sessionId);
   }
 
   function placeProjects(order: string[]): void {
@@ -630,7 +739,22 @@ export function MobileWorkspace({
     setPlacedProjects(order);
   }
 
-  function toggleProject(projectId: string): void {
+  function toggleProject(projectId: string, isEmptyManualGroup = false): void {
+    if (isEmptyManualGroup) {
+      const currentlyExpanded = projectId === revealedEmptySectionKey || expandedEmptyProjectIds.has(projectId);
+      if (currentlyExpanded) {
+        if (revealedEmptySectionKey === projectId) setRevealedEmptySectionKey(undefined);
+        setExpandedEmptyProjectIds((current) => {
+          if (!current.has(projectId)) return current;
+          const next = new Set(current);
+          next.delete(projectId);
+          return next;
+        });
+      } else {
+        setExpandedEmptyProjectIds((current) => new Set([...current, projectId]));
+      }
+      return;
+    }
     setCollapsedProjectIds((current) => toggleCollapsedProject(current, projectId));
   }
 
@@ -638,22 +762,18 @@ export function MobileWorkspace({
     setExpandedForkParents((current) => toggleCollapsedProject(current, parentSessionId));
   }
 
-  function openProjectGroup(projectId: string): void {
-    setProjectSearch("");
-    setActiveProjectId(projectId);
-  }
-
-  function closeProjectGroup(): void {
-    setProjectSearch("");
-    setActiveProjectId(undefined);
-  }
-
   function openCreateDialogForProject(targetProjectId?: string): void {
     const targetProject = targetProjectId
       ? snapshot?.projects.find((project) => project.projectId === targetProjectId)
       : undefined;
     setCreateProjectId(targetProject?.projectId ?? "");
+    setCreateDialogState(undefined);
     setCreateOpen(true);
+  }
+
+  function openDirectoryPickerFromCanvas(request?: NewChatDirectoryPickerRequest): void {
+    setCreateOpen(false);
+    setCreateDialogState(request ?? {});
   }
 
   async function archiveSessionById(sessionId: string, archived: boolean): Promise<void> {
@@ -743,6 +863,7 @@ export function MobileWorkspace({
         ]));
         setCollapsedProjectIds((current) => expandProject(current, created.projectId));
         setMenuSessionId(undefined);
+        setDrawerOpen(false);
         await selectSession(created.sessionId);
       }
     } catch (error) {
@@ -827,7 +948,7 @@ export function MobileWorkspace({
                     icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
                     label={sessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
                     disabled={sessionActionBusy}
-                    detail={sessionView === "evidence" ? "回到对话记录" : "文件变更、产物与图片"}
+                    detail={sessionView === "evidence" ? "回到对话记录" : "查看产出文件与最新快照"}
                     onClick={() => {
                       setSessionView(sessionView === "evidence" ? "conversation" : "evidence");
                       setMenuSessionId(undefined);
@@ -1010,7 +1131,7 @@ export function MobileWorkspace({
         onConfirm={() => menuSession && void deleteSessionById(menuSession.sessionId)}
       />
       {configurationSession
-        && configurationSession.sessionId !== selectedSession?.sessionId
+        && (!visible || configurationSession.sessionId !== selectedSession?.sessionId)
         && canConfigureSession(configurationSession, snapshot) && (
           <SessionConfigurationDialog
             key={`configuration:${configurationSession.sessionId}`}
@@ -1027,104 +1148,55 @@ export function MobileWorkspace({
     </>
   );
 
-  if (!visible) return null;
+  const fallbackMenuButton = !mobileNav ? (
+    <IconButton
+      label="菜单"
+      aria-expanded={drawerOpen}
+      onClick={() => setDrawerOpen((current) => !current)}
+    >
+      <Menu size={20} />
+    </IconButton>
+  ) : undefined;
 
-  if (selectedSession) {
-    return (
-      <>
-        <ConversationView
-          variant="mobile"
-          hostId={activeHostId}
-          session={selectedSession}
-          sessions={sessions}
-          snapshot={snapshot}
-          connection={connection}
-          desktopOnline={desktopOnline}
-          visible={visible}
-          navigation
-          onBackToCatalog={() => {
-            setForkChainOpen(false);
-            setSelectedSessionId(undefined);
-          }}
-          onSelectSession={selectSession}
-          conversationDrafts={conversationDrafts}
-          sessionView={sessionView}
-          onSessionViewChange={setSessionView}
-          forkChainOpen={forkChainOpen}
-          onForkChainOpenChange={setForkChainOpen}
-          permissionOpen={permissionOpen}
-          onPermissionOpenChange={setPermissionOpen}
-          configurationOpen={configurationSessionId === selectedSession.sessionId}
-          onConfigurationOpenChange={(open) => setConfigurationSessionId(open ? selectedSession.sessionId : undefined)}
-          onOpenSessionMenu={() => {
-            setSessionActionError(undefined);
-            setMoveMenuSessionId(undefined);
-            setMenuSessionId(selectedSession.sessionId);
-          }}
-          onRequestRename={(target) => {
-            setMenuSessionId(target.sessionId);
-            setRenameTitle(target.title);
-            setSessionActionError(undefined);
-            setRenameOpen(true);
-          }}
-          refreshing={refreshing}
-          onRefresh={runRefresh}
-          onRetry={onRetry}
-          history={selectedHistory}
-          evidence={selectedEvidence}
-          artifactPreviews={artifactPreviews}
-          artifactTransfers={artifactTransfers}
-          permissions={permissions}
-          events={events}
-          localTurns={localTurns}
-          connectionIssue={connectionIssue}
-          mailCards={mailCards}
-          composerBanner={<MailReference sessionId={selectedSession.sessionId} />}
-          resolveMailRefId={() => assistantMail?.referenceFor(selectedSession.sessionId)}
-          onOpenSession={onOpenSession}
-          onLoadOlderHistory={onLoadOlderHistory}
-          onLoadOlderEvidence={onLoadOlderEvidence}
-          onLoadEvidenceDetails={onLoadEvidenceDetails}
-          onPreviewArtifact={onPreviewArtifact}
-          onDownloadArtifact={onDownloadArtifact}
-          onDownloadSessionFile={onDownloadSessionFile}
-          onUploadFile={onUploadFile}
-          onSendTurn={onSendTurn}
-          onInterruptTurn={onInterruptTurn}
-          onSteerQueuedTurn={onSteerQueuedTurn}
-          onCancelQueuedTurn={onCancelQueuedTurn}
-          onStopSubagent={onStopSubagent}
-          onResolveUncertain={onResolveUncertain}
-          onResolvePermission={onResolvePermission}
-          onResolvePrompt={onResolvePrompt}
-          onReadPrAutoFix={onReadPrAutoFix}
-          onSetPrAutoFix={onSetPrAutoFix}
-          onLoadBackgroundTasks={onLoadBackgroundTasks}
-          onLoadSessionConfiguration={onLoadSessionConfiguration}
-          onConfigureSession={onConfigureSession}
-          onLoadSessionCommands={onLoadSessionCommands}
-          onRunSessionCommand={onRunSessionCommand}
-          onLoadSessionPermissions={onLoadSessionPermissions}
-          onSaveSessionPermissions={onSaveSessionPermissions}
-          onPreviewRewind={onPreviewRewind}
-          onRewindSession={onRewindSession}
-        />
-        {sessionOverlays}
-      </>
-    );
-  }
+  const assistantAvailable = Boolean(
+    mobileNav?.assistantAvailable
+    ?? snapshot?.host.capabilities.includes("plugin.assistant-mail.v1"),
+  );
+  const assistantUnreadCount = assistantMail?.unreadCount ?? 0;
 
-  return MobileSessionCatalog({
+  const drawerElement = MobileSessionCatalog({
+    open: drawerOpen,
+    onClose: () => setDrawerOpen(false),
+    hosts,
+    activeHostId,
+    onSelectHost,
+    onAddHost,
+    hostSwitcherOpen,
+    onToggleHostSwitcher: () => setHostSwitcherOpen((current) => !current),
+    activeTab,
+    onSelectTab: onSelectTab ?? mobileNav?.onTabChange,
+    assistantAvailable,
+    assistantUnreadCount,
+    themeControl,
+    onStartNewChat: startNewChat,
+    selectedSessionId: selectedSession?.sessionId,
+    archivedExpanded,
+    onToggleArchived: () => setArchivedExpanded((current) => !current),
+    expandedEmptyProjectIds,
+    revealedEmptySectionKey,
+    createDialogState,
+    onCloseCreateDialog: () => {
+      setCreateOpen(false);
+      setCreateDialogState(undefined);
+    },
+    onDeliverInitialPrompt: deliverInitialPromptToSession,
     desktopName,
     connection,
     desktopOnline,
     snapshot,
     sessions,
     archivedSessions,
-    activeParentProjects,
     grouped,
-    groupedProjectIds,
-    allProjectsCollapsed,
     collapsedProjectIds,
     expandedForkParents,
     projectOrder,
@@ -1133,16 +1205,10 @@ export function MobileWorkspace({
     connectionIssue,
     onInspectConnection,
     transportMetrics,
-    pendingOutbound,
-    activeProjectId,
     search,
-    projectSearch,
     directoryRef,
     directoryScrollPositions,
-    directoryMenuOpen,
     projectOrderOpen,
-    refreshing,
-    syncFlash,
     sectionCreate,
     sectionCanCreate,
     sectionManage,
@@ -1158,8 +1224,6 @@ export function MobileWorkspace({
     onCreateSession,
     selectSession,
     setSearch,
-    setProjectSearch,
-    setDirectoryMenuOpen,
     setProjectOrderOpen,
     setCollapsedProjectIds,
     setSectionCreate,
@@ -1171,12 +1235,115 @@ export function MobileWorkspace({
     },
     toggleProject,
     toggleForkGroup,
-    openProjectGroup,
-    closeProjectGroup,
     openCreateDialogForProject,
     placeProjects,
-    runRefresh,
     closeSectionCreate,
     createSection,
   });
+
+  if (!visible) {
+    if (hasPortalOverlay && typeof document !== "undefined" && document.body) {
+      return createPortal(drawerElement, document.body);
+    }
+    return null;
+  }
+
+  return (
+    <>
+      <div
+        className="mobile-workspace-canvas"
+        inert={drawerOpen || undefined}
+        aria-hidden={drawerOpen || undefined}
+      >
+        {selectedSession ? (
+          <ConversationView
+            variant="mobile"
+            hostId={activeHostId}
+            session={selectedSession}
+            sessions={sessions}
+            snapshot={snapshot}
+            connection={connection}
+            desktopOnline={desktopOnline}
+            visible={visible}
+            navigation
+            {...(fallbackMenuButton ? { headerLeading: fallbackMenuButton } : {})}
+            onSelectSession={selectSession}
+            conversationDrafts={conversationDrafts}
+            sessionView={sessionView}
+            onSessionViewChange={setSessionView}
+            forkChainOpen={forkChainOpen}
+            onForkChainOpenChange={setForkChainOpen}
+            permissionOpen={permissionOpen}
+            onPermissionOpenChange={setPermissionOpen}
+            configurationOpen={configurationSessionId === selectedSession.sessionId}
+            onConfigurationOpenChange={(open) => setConfigurationSessionId(open ? selectedSession.sessionId : undefined)}
+            onOpenSessionMenu={() => {
+              setSessionActionError(undefined);
+              setMoveMenuSessionId(undefined);
+              setMenuSessionId(selectedSession.sessionId);
+            }}
+            onRequestRename={(target) => {
+              setMenuSessionId(target.sessionId);
+              setRenameTitle(target.title);
+              setSessionActionError(undefined);
+              setRenameOpen(true);
+            }}
+            refreshing={refreshing}
+            onRefresh={runRefresh}
+            onRetry={onRetry}
+            history={selectedHistory}
+            evidence={selectedEvidence}
+            artifactPreviews={artifactPreviews}
+            artifactTransfers={artifactTransfers}
+            permissions={permissions}
+            events={events}
+            localTurns={localTurns}
+            connectionIssue={connectionIssue}
+            mailCards={mailCards}
+            composerBanner={<MailReference sessionId={selectedSession.sessionId} />}
+            resolveMailRefId={() => assistantMail?.referenceFor(selectedSession.sessionId)}
+            onOpenSession={onOpenSession}
+            onLoadOlderHistory={onLoadOlderHistory}
+            onLoadOlderEvidence={onLoadOlderEvidence}
+            onLoadEvidenceDetails={onLoadEvidenceDetails}
+            onPreviewArtifact={onPreviewArtifact}
+            onDownloadArtifact={onDownloadArtifact}
+            onDownloadSessionFile={onDownloadSessionFile}
+            onUploadFile={onUploadFile}
+            onSendTurn={onSendTurn}
+            onInterruptTurn={onInterruptTurn}
+            onSteerQueuedTurn={onSteerQueuedTurn}
+            onCancelQueuedTurn={onCancelQueuedTurn}
+            onStopSubagent={onStopSubagent}
+            onResolveUncertain={onResolveUncertain}
+            onResolvePermission={onResolvePermission}
+            onResolvePrompt={onResolvePrompt}
+            onReadPrAutoFix={onReadPrAutoFix}
+            onSetPrAutoFix={onSetPrAutoFix}
+            onLoadBackgroundTasks={onLoadBackgroundTasks}
+            onLoadSessionConfiguration={onLoadSessionConfiguration}
+            onConfigureSession={onConfigureSession}
+            onLoadSessionCommands={onLoadSessionCommands}
+            onRunSessionCommand={onRunSessionCommand}
+            onLoadSessionPermissions={onLoadSessionPermissions}
+            onSaveSessionPermissions={onSaveSessionPermissions}
+            onPreviewRewind={onPreviewRewind}
+            onRewindSession={onRewindSession}
+          />
+        ) : (
+          <main className="mobile-workspace new-chat-workspace">
+            <NewChatCanvas
+              mobile
+              snapshot={snapshot}
+              connected={connection === "connected" && desktopOnline}
+              {...(fallbackMenuButton ? { headerLeading: fallbackMenuButton } : {})}
+              onOpenDirectoryPicker={openDirectoryPickerFromCanvas}
+              onQuickStart={quickStartSession}
+            />
+          </main>
+        )}
+      </div>
+      {drawerElement}
+    </>
+  );
 }

@@ -5,8 +5,8 @@ import { IconButton } from "../common/IconButton.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 import { SessionProfileSummary } from "./SessionProfileSummary.js";
 
-function formatDisplayDirectory(path: string): string {
-  const trimmed = path.trim();
+function formatDisplayDirectory(path: string | undefined): string {
+  const trimmed = typeof path === "string" ? path.trim() : "";
   if (!trimmed) return "选择工作目录…";
   const macMatch = /^\/Users\/[^/]+(\/.*)$/u.exec(trimmed);
   if (macMatch) return `~${macMatch[1]}`;
@@ -50,11 +50,14 @@ export function NewChatCanvas({
     .filter((project) => Boolean(project.cwd?.trim()))
     .sort((left, right) => right.lastActivityAt - left.lastActivityAt)[0];
 
-  const [selectedCwd, setSelectedCwd] = useState<string>(() => defaultFolderProject?.cwd ?? "");
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(() => (
+  const [rawSelectedCwd, setSelectedCwd] = useState<string>(() => defaultFolderProject?.cwd ?? "");
+  const [rawSelectedProjectId, setSelectedProjectId] = useState<string>(() => (
     defaultFolderProject?.kind === "desktop-group" ? defaultFolderProject.projectId : ""
   ));
-  const [prompt, setPrompt] = useState("");
+  const [rawPrompt, setPrompt] = useState("");
+  const selectedCwd = typeof rawSelectedCwd === "string" ? rawSelectedCwd : (defaultFolderProject?.cwd ?? "");
+  const selectedProjectId = typeof rawSelectedProjectId === "string" ? rawSelectedProjectId : "";
+  const prompt = typeof rawPrompt === "string" ? rawPrompt : "";
   const [busy, setBusy] = useState(false);
   const [choosingDirectory, setChoosingDirectory] = useState(false);
   const [error, setError] = useState<string>();

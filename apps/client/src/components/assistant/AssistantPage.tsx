@@ -56,17 +56,22 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
     } finally { setBindingBusy(false); }
   }
 
-  const refresh = <IconButton label="刷新邮件" disabled={!mail.online || mail.loading} onClick={mail.refresh}><RefreshCw size={18} /></IconButton>;
-  return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${displayedView === "conversation" ? " is-conversation" : ""}`}>
-    {mobile && <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={refresh} />}
-    {!mobile && headerLeading && <div className="assistant-desktop-topbar">{headerLeading}</div>}
-    <div className="assistant-page-content">
-      {!mobile && <header className="desktop-page-heading"><h1>助理</h1>{refresh}</header>}
-      <nav className="assistant-view-tabs" aria-label="助理工作台">
+  const refresh = <IconButton label="刷新邮件" disabled={!mail.online || mail.loading} onClick={mail.refresh}><RefreshCw size={16} /></IconButton>;
+  const viewTabs = (
+    <nav className="assistant-view-tabs" aria-label="助理工作台">
+      <div className="assistant-view-switch">
         <button type="button" aria-pressed={displayedView === "conversation"} disabled={!session} onClick={() => setView("conversation")}>对话</button>
         <button type="button" aria-pressed={displayedView === "mail"} onClick={() => setView("mail")}>邮件</button>
-        <IconButton label="助理设置" aria-pressed={displayedView === "settings"} onClick={() => setView("settings")}><Settings size={18} /></IconButton>
-      </nav>
+      </div>
+      <IconButton label="助理设置" aria-pressed={displayedView === "settings"} onClick={() => setView("settings")}><Settings size={16} /></IconButton>
+      {refresh}
+    </nav>
+  );
+  return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${displayedView === "conversation" ? " is-conversation" : ""}`}>
+    {mobile && <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={viewTabs} />}
+    {!mobile && headerLeading && <div className="assistant-desktop-leading">{headerLeading}</div>}
+    <div className="assistant-page-content">
+      {!mobile && <header className="desktop-page-heading"><h1>助理</h1>{viewTabs}</header>}
       {(displayedView === "settings" || !binding?.nativeSessionId || state === "needs-rebind" || state === "missing") && <section className="assistant-binding" aria-label="助理会话绑定">
         <div className="assistant-binding-current">
           {binding?.nativeSessionId ? <button type="button" className="assistant-session-link" onClick={() => setView("conversation")}>{session?.title || binding.nativeSessionId}</button> : <strong>{binding?.previousSessionIds.length ? "重新绑定会话" : "选择助理会话"}</strong>}

@@ -282,7 +282,6 @@ export function DesktopSessions({
       placeProjects([project.projectId, ...placedProjects.filter((id) => id !== project.projectId)]);
       setCollapsedProjectIds((current) => expandProject(current, project.projectId));
       setRevealedEmptySectionKey(project.projectId);
-      setExpandedEmptyProjectIds((current) => new Set([...current, project.projectId]));
       setSearch("");
       setSectionCreate(undefined);
       await onRefreshSnapshot();

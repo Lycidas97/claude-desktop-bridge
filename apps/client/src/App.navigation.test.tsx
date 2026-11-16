@@ -134,23 +134,26 @@ describe("mobile app parent navigation", () => {
     expect(component(MobileAppShell)!.props.tab).toBe("sessions");
     expect(back()).toBe(false);
   });
-  it.each(["providers", "quota"])("returns from the %s subpage to settings, then the session directory", page => {
+  it.each(["providers", "quota"])("returns from the %s subpage to settings, then the active session canvas", page => {
     tab("settings");
     component(MobileSettings)!.props[page].onOpen(); draw();
     expect(component(MobileSettings)).toBeUndefined();
     expect(back()).toBe(true);
     expect(component(MobileAppShell)!.props.tab).toBe("settings");
     expect(component(MobileSettings)).toBeDefined();
-    const directoryRequest = component(MobileWorkspace)!.props.directoryRequest;
     expect(back()).toBe(true);
     expect(component(MobileAppShell)!.props.tab).toBe("sessions");
-    expect(component(MobileWorkspace)!.props.directoryRequest).not.toBe(directoryRequest);
     expect(back()).toBe(false);
   });
-  it("makes the sessions menu destination open the directory instead of a retained conversation", () => {
-    const initial = component(MobileWorkspace)!.props.directoryRequest;
-    tab("settings"); tab("sessions");
-    expect(component(MobileWorkspace)!.props.directoryRequest).not.toBe(initial);
+  it("passes paired hosts, quick host switcher callbacks, and tab navigation into MobileWorkspace", () => {
+    const workspace = component(MobileWorkspace)!;
+    expect(workspace.props.hosts).toBe(hooks.mobile.state.hosts);
+    expect(typeof workspace.props.onSelectHost).toBe("function");
+    expect(typeof workspace.props.onAddHost).toBe("function");
+    expect(workspace.props.activeTab).toBe("sessions");
+    workspace.props.onSelectTab("settings");
+    draw();
+    expect(component(MobileAppShell)!.props.tab).toBe("settings");
   });
   it("opens active computer connection details directly from workspace inspection callback", () => {
     component(MobileWorkspace)!.props.onInspectConnection(); draw();

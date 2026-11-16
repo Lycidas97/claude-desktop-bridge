@@ -202,10 +202,9 @@ try {
     await page.locator(".media-viewer").waitFor({ state: "detached" });
     if (mobile) {
       await page.getByRole("button", { name: /^成果/u }).click();
-      const first = await page.locator(".mobile-evidence-view > :first-child").getAttribute("class");
-      if (!first?.includes("media-gallery")) throw new Error("Media gallery is not first in mobile outputs");
+      await page.locator(".mobile-evidence-view .evidence-panel").waitFor();
       await page.screenshot({ path: `${output}/mobile-media-gallery.png` });
-      await page.locator(".mobile-evidence-view .media-file.pdf").click();
+      await page.locator(".mobile-evidence-view .evidence-file-row").filter({ hasText: "Research report.pdf" }).getByRole("button", { name: /预览/u }).click();
       await page.getByRole("button", { name: "下载并预览", exact: true }).click();
       await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector(".media-viewer canvas")?.width > 0);
       await page.evaluate(() => window.__mobileBack());

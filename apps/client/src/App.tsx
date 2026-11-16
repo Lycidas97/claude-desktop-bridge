@@ -219,7 +219,6 @@ export function App() {
   async function openComputer(hostId: string, sessionId?: string): Promise<void> {
     if (hostId !== mobile.state.activeHostId) await mobile.selectHost(hostId);
     if (sessionId) setFocusRequest({ sessionId, key: Date.now() });
-    else setDirectoryRequest(value => value + 1);
     setComputerDetailsHostId(undefined);
     setTab("sessions");
   }
@@ -252,7 +251,6 @@ export function App() {
     if (tab !== "sessions") {
       setComputerDetailsHostId(undefined);
       setQuotaOpen(false);
-      setDirectoryRequest(value => value + 1);
       setTab("sessions");
       return true;
     }
@@ -302,11 +300,12 @@ export function App() {
     <AssistantMailProvider key={mobile.state.activeHostId ?? ""} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={mailRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
     <MobileAppShell
       tab={tab}
+      hasWorkspaceDrawer={Boolean(mobile.state.activeHostId)}
+      themeControl={themeControl}
       onTabChange={(next) => {
         setComputerDetailsHostId(undefined);
         setQuotaOpen(false);
         setProvidersOpen(false);
-        if (next === "sessions") setDirectoryRequest(value => value + 1);
         setTab(next);
       }}
     >
@@ -322,6 +321,16 @@ export function App() {
               directoryRequest={directoryRequest}
               key={mobile.state.activeHostId}
               activeHostId={mobile.state.activeHostId}
+              hosts={mobile.state.hosts}
+              onSelectHost={(hostId) => openComputer(hostId)}
+              onAddHost={() => setPairingOpen(true)}
+              activeTab={tab}
+              onSelectTab={(nextTab) => {
+                setComputerDetailsHostId(undefined);
+                setQuotaOpen(false);
+                setProvidersOpen(false);
+                setTab(nextTab);
+              }}
               desktopName={mobile.state.desktopName ?? "我的电脑"}
               connection={mobile.state.connection}
               desktopOnline={mobile.state.desktopOnline}

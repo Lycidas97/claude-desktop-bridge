@@ -4,10 +4,9 @@ import { IconButton } from "../common/IconButton.js";
 import { MobileNavMenu, useMobileNav } from "./MobileAppShell.js";
 
 /**
- * Root pages lead with the navigation menu and a large title; pages pushed on
- * top of a root show a back button with a compact title. A hidden title stays
- * available to screen readers and lets the subtitle lead. Trailing actions are
- * icon buttons only.
+ * Root pages lead with the slide-over drawer menu button and a compact title;
+ * pages pushed on top of a root show a back button. A hidden title stays
+ * available to screen readers and lets the subtitle lead.
  */
 export function MobilePageHeader({
   title,
@@ -34,8 +33,8 @@ export function MobilePageHeader({
   return (
     <header className={`m-header${!navigation ? " is-embedded" : onBack ? " is-pushed" : nav ? " has-menu" : ""}${leading ? " has-leading" : ""}${titleHidden ? " is-title-hidden" : ""}`}>
       {leading ?? (navigation && (onBack
-        ? <IconButton label={backLabel} disabled={backDisabled} onClick={onBack}><ArrowLeft size={22} /></IconButton>
-        : nav && <MobileNavMenu tab={nav.tab} onTabChange={nav.onTabChange} assistantAvailable={nav.assistantAvailable} />))}
+        ? <IconButton label={backLabel} disabled={backDisabled} onClick={onBack}><ArrowLeft size={20} /></IconButton>
+        : nav && <MobileNavMenu {...nav} />))}
       <div className="m-header-copy">
         <h1>{title}</h1>
         {subtitle && <div className="m-header-subtitle">{subtitle}</div>}

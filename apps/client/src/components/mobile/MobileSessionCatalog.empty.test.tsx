@@ -257,19 +257,17 @@ describe("MobileSessionCatalog empty states", () => {
     draw();
 
     expect(elements(tree).find(el => el.type === SessionCreateDialog)?.props.initialProjectId).toBe("target-project");
-    expect(elements(tree).filter(el => el.props.className === "project-group-header")).toHaveLength(2);
-    expect(props.onOpenSession).not.toHaveBeenCalled();
+    expect(elements(tree).filter(el => String(el.props.className).includes("project-group-header"))).toHaveLength(2);
+    expect(props.onOpenSession).toHaveBeenCalledWith("session-1");
   });
 
-  it("opens creation for a collapsed empty Desktop group without expanding it", () => {
+  it(" keeps an empty Desktop group collapsed by default and opens creation without expanding it", () => {
     props = {
       ...props,
       snapshot: makeSnapshot({
         projects: [{ projectId: "empty-section", name: "Empty", kind: "desktop-group", cwd: "", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 10 }],
       }),
     };
-    draw();
-    elements(tree).find(el => el.props.className === "project-group-open")!.props.onClick();
     draw();
     expect(elements(tree).find(el => el.props.className === "project-group-open")?.props["aria-expanded"]).toBe(false);
     const createButton = elements(tree).find(el => el.props.label === "新建会话：Empty");
@@ -309,7 +307,7 @@ describe("MobileSessionCatalog empty states", () => {
     const box = emptyStateBox()!;
     expect(elements(box).find((el) => el.type === "strong")?.props.children).toBe("暂无活跃会话");
     expect(textContent(elements(box).find((el) => el.type === "button"))).toBe("新建会话");
-    expect(elements(tree).some((el) => el.type === "strong" && el.props.children === "已归档会话")).toBe(true);
+    expect(elements(tree).some((el) => el.type === "strong" && el.props.children === "已归档")).toBe(true);
     expect(elements(tree).some(el => el.props.label?.startsWith("新建会话："))).toBe(false);
   });
 

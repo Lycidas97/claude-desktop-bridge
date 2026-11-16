@@ -117,6 +117,7 @@ export interface ConversationViewProps {
   nativeReady?: boolean | undefined;
   visible?: boolean | undefined;
   navigation?: boolean | undefined;
+  headerLeading?: ReactNode | undefined;
   onBackToCatalog?: (() => void) | undefined;
   onSelectSession(sessionId: string): void | Promise<void>;
   conversationDrafts?: ConversationDraftsValue | undefined;
@@ -214,6 +215,7 @@ export function ConversationView({
   nativeReady,
   visible = true,
   navigation = true,
+  headerLeading,
   onBackToCatalog,
   onSelectSession,
   conversationDrafts: externalDrafts,
@@ -1529,6 +1531,7 @@ export function ConversationView({
     <MobileRoot className="mobile-workspace conversation-workspace">
       <MobilePageHeader
         navigation={effectiveNavigation}
+        {...(headerLeading ? { leading: headerLeading } : {})}
         title={session.title}
         subtitle={canConfigure ? (
           <button
@@ -1558,13 +1561,32 @@ export function ConversationView({
         } : {})}
         actions={(
           <>
+            {!isMobile && (
+              <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
+                <button
+                  type="button"
+                  className={effectiveSessionView === "conversation" ? "active" : ""}
+                  onClick={() => setSessionView("conversation")}
+                >
+                  对话
+                </button>
+                <button
+                  type="button"
+                  className={effectiveSessionView === "evidence" ? "active" : ""}
+                  onClick={() => setSessionView("evidence")}
+                >
+                  成果
+                  {evidenceCount > 0 && <b>{evidenceCount}</b>}
+                </button>
+              </nav>
+            )}
             {backgroundTasks.length > 0 && (
               <IconButton
                 label={runningBackgroundTasks > 0 ? `后台任务，${runningBackgroundTasks} 个运行中` : "后台任务"}
                 className="background-tasks-button"
                 onClick={() => setBackgroundTasksOpen({})}
               >
-                <Layers size={20} />
+                <Layers size={18} />
                 {runningBackgroundTasks > 0 && <span className="background-tasks-count">{runningBackgroundTasks}</span>}
               </IconButton>
             )}
@@ -1583,7 +1605,7 @@ export function ConversationView({
                 }
               }}
             >
-              <MoreHorizontal size={22} />
+              <MoreHorizontal size={isMobile ? 22 : 18} />
             </IconButton>
           </>
         )}
@@ -1683,25 +1705,6 @@ export function ConversationView({
           <span><strong>文件下载失败</strong>{fileDownloadError}</span>
           <button type="button" className="secondary-button goal-action" onClick={() => setFileDownloadError(undefined)}>关闭</button>
         </div>
-      )}
-      {!isMobile && (
-        <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">
-          <button
-            type="button"
-            className={effectiveSessionView === "conversation" ? "active" : ""}
-            onClick={() => setSessionView("conversation")}
-          >
-            对话
-          </button>
-          <button
-            type="button"
-            className={effectiveSessionView === "evidence" ? "active" : ""}
-            onClick={() => setSessionView("evidence")}
-          >
-            成果
-            {evidenceCount > 0 && <b>{evidenceCount}</b>}
-          </button>
-        </nav>
       )}
       {effectiveSessionView === "conversation" ? (
         <section

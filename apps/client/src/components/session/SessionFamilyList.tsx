@@ -13,9 +13,11 @@ export interface SessionFamilyListProps {
   expandedForkParents: ReadonlySet<string>;
   archivedList?: boolean;
   includeArchivedInline?: boolean;
+  flat?: boolean;
   selectedId?: string | undefined;
   onSelectSession(sessionId: string): void | Promise<void>;
   onOpenSessionActions?: (sessionId: string) => void;
+  actionLabel?: (session: BridgeSessionInfo) => string;
   onToggleForkGroup(parentSessionId: string): void;
 }
 
@@ -26,16 +28,24 @@ export function SessionFamilyList({
   expandedForkParents,
   archivedList = false,
   includeArchivedInline = false,
+  flat = false,
   selectedId,
   onSelectSession,
   onOpenSessionActions,
+  actionLabel,
   onToggleForkGroup,
 }: SessionFamilyListProps) {
   function renderSessionFamily({ primary: session, forks }: SessionFamily<BridgeSessionInfo>, isForkChild = false): ReactNode {
     const isArchivedRow = archivedList || Boolean(session.archivedAt);
     const pendingPermission = isArchivedRow ? undefined : permissions.find(permission => permission.sessionId === session.sessionId);
-    const turnBadge = isArchivedRow ? "已归档" : pendingPermission ? pendingPermission.toolName === "AskUserQuestion" ? "待回答" : "待授权" : activeSessionBadgeLabel(session);
-    const subagentBadge = isArchivedRow || turnBadge ? undefined : backgroundSubagentBadge(session);
+    const rawTurnBadge = isArchivedRow ? "已归档" : pendingPermission ? pendingPermission.toolName === "AskUserQuestion" ? "待回答" : "待授权" : activeSessionBadgeLabel(session);
+    const suppressRunningPill = flat
+      && !isArchivedRow
+      && !pendingPermission
+      && session.turnState === "running"
+      && !session.isCompacting;
+    const turnBadge = suppressRunningPill ? undefined : rawTurnBadge;
+    const subagentBadge = isArchivedRow || rawTurnBadge ? undefined : backgroundSubagentBadge(session);
     const badge = turnBadge ?? subagentBadge?.label;
     const statusTone = pendingPermission ? "waiting" : subagentBadge ? (subagentBadge.stalled ? "queued" : "running") : session.turnState;
     const forksExpanded = expandedForkParents.has(session.sessionId);
@@ -87,7 +97,7 @@ export function SessionFamilyList({
           </button>
           {onOpenSessionActions && (
             <IconButton
-              label="会话操作"
+              label={actionLabel ? actionLabel(session) : "会话操作"}
               className="session-row-action"
               onClick={() => onOpenSessionActions(session.sessionId)}
             >

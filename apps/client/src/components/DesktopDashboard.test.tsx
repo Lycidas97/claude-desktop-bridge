@@ -12,7 +12,9 @@ import {
   DesktopSessionConversation,
 } from "./desktop/DesktopSessionConversation.js";
 import { DesktopSessions } from "./desktop/DesktopSessionsPane.js";
+import { DesktopDevices, DesktopSettings } from "./desktop/DesktopSettings.js";
 import { EvidencePanel } from "./evidence/EvidencePanel.js";
+import { NewChatCanvas } from "./session/NewChatCanvas.js";
 import { MediaPreviewProvider } from "./evidence/MediaPreviewProvider.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAttachmentPicker.js";
@@ -127,7 +129,7 @@ function renderer(
   let props = initialProps;
   let tree: ReactNode;
   function shouldExpand(type: unknown): type is (props: any) => ReactNode {
-    if (type === DesktopSessionConversation || type === ConversationView) return true;
+    if (type === DesktopSessionConversation || type === ConversationView || type === NewChatCanvas) return true;
     if (typeof type === "function" && type.name === "DesktopAssistantNavButton") return true;
     if (options?.expandMailProvider && type === AssistantMailProvider) return true;
     if (!options?.expandDashboard) return false;
@@ -135,6 +137,8 @@ function renderer(
       type === ConversationDraftsProvider
       || type === DesktopConversationProvider
       || type === DesktopSessions
+      || type === DesktopSettings
+      || type === DesktopDevices
       || type === AssistantPage
     );
   }
@@ -553,7 +557,7 @@ describe("desktop shared catalog", () => {
     snapshot.sessions.push({ ...snapshot.sessions[0]!, sessionId: "C", title: "Session C", projectId: "third", projectName: "Third", lastActivityAt: 4 });
     tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot, sessions: [...snapshot.sessions] } });
     expect(titles()).toEqual(["Third", "Second", "Project"]);
-    const openOrder = () => elements(elements(tree).find(element => element.props.className === "project-order-bar")!).find(element => element.type === "button")!;
+    const openOrder = () => elements(elements(tree).find(element => String(element.props.className).includes("project-order-bar"))!).find(element => element.props["aria-label"] === "调整顺序")!;
     openOrder().props.onClick();
     tree = sessions.draw();
     let order = elements(tree).find(element => element.type === ProjectOrderSheet)!;
@@ -1170,7 +1174,8 @@ describe("unified desktop and assistant conversation composition", () => {
 
     const composerInput = () => elements(fullTree).find((element) => element.type === SlashCommandInput)!;
     expect(elements(fullTree).some((element) => element.type === DesktopSessions)).toBe(true);
-    expect(elements(fullTree).some((element) => element.props.className === "desktop-session-sidebar")).toBe(true);
+    expect(elements(fullTree).some((element) => String(element.props.className).includes("desktop-session-sidebar"))).toBe(true);
+    expect(elements(fullTree).some((element) => element.props.className === "desktop-nav-v2")).toBe(false);
     expect(elements(fullTree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id)).toEqual(["msg-shared-1"]);
 
     composerInput().props.onChange("从会话页输入的草稿");
@@ -1179,7 +1184,6 @@ describe("unified desktop and assistant conversation composition", () => {
 
     const navButton = (label: string) => elements(fullTree).find((element) => (
       element.type === "button"
-      && Array.isArray(element.props.children)
       && elements(element).some((child) => child.type === "span" && child.props.children === label)
     ))!;
 
@@ -1187,11 +1191,12 @@ describe("unified desktop and assistant conversation composition", () => {
     await settle();
     fullTree = fullDashboard.draw();
 
-    expect(elements(fullTree).some((element) => element.type === AssistantPage)).toBe(true);
+    const assistantEl = elements(fullTree).find((element) => element.type === AssistantPage)!;
+    expect(assistantEl).toBeDefined();
     expect(elements(fullTree).some((element) => element.type === DesktopSessionConversation)).toBe(true);
     expect(elements(fullTree).some((element) => element.type === ConversationView)).toBe(true);
-    expect(elements(fullTree).some((element) => element.type === DesktopSessions)).toBe(false);
-    expect(elements(fullTree).some((element) => element.props.className === "desktop-session-sidebar")).toBe(false);
+    expect(elements(fullTree).some((element) => element.type === DesktopSessions)).toBe(true);
+    expect(elements(assistantEl).some((element) => String(element.props.className).includes("desktop-session-sidebar"))).toBe(false);
     expect(elements(fullTree).some((element) => typeof element.props.className === "string" && element.props.className.includes("is-fixed-session"))).toBe(false);
     expect(composerInput().props.value).toBe("从会话页输入的草稿");
     expect(elements(fullTree).filter((element) => element.type === ConversationMessageItem).map((element) => element.props.item.id)).toEqual(["msg-shared-1"]);
@@ -1220,7 +1225,7 @@ describe("unified desktop and assistant conversation composition", () => {
     fullTree = fullDashboard.draw();
 
     expect(elements(fullTree).some((element) => element.type === DesktopSessions)).toBe(true);
-    expect(elements(fullTree).some((element) => element.props.className === "desktop-session-sidebar")).toBe(true);
+    expect(elements(fullTree).some((element) => String(element.props.className).includes("desktop-session-sidebar"))).toBe(true);
     expect(textContent(elements(fullTree).find((element) => typeof element.props.className === "string" && element.props.className.startsWith("m-header"))!)).toContain("Session B");
 
     // Switching back to Session A in 会话 shows the updated draft from 助理
@@ -1619,27 +1624,24 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     await openSessions();
     tree = sessions.draw({ ...sessionsProps, onRefreshSnapshot: refresh });
 
-    // Collapse / expand all via 目录选项 Sheet
-    elements(tree).find((element) => element.type === IconButton && element.props.label === "目录选项")!.props.onClick();
+    // Sidebar collapse & expand toggle via right-pane header leading button; no ⋯ 目录选项 next to hostname
+    expect(elements(tree).some((element) => element.type === IconButton && element.props.label === "目录选项")).toBe(false);
+    expect(textContent(tree)).not.toContain("项目顺序已固定");
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "收起侧栏")!.props.onClick();
     tree = sessions.draw();
-    elements(tree).find((element) => element.type === SheetAction && element.props.label === "折叠全部项目")!.props.onClick();
+    expect(elements(tree).some((element) => String(element.props.className).includes("desktop-session-sidebar"))).toBe(false);
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "展开侧栏")!.props.onClick();
     tree = sessions.draw();
-    expect(elements(tree).filter((element) => element.props.className === "session-row-hit")).toHaveLength(0);
+    expect(elements(tree).some((element) => String(element.props.className).includes("desktop-session-sidebar"))).toBe(true);
 
-    elements(tree).find((element) => element.type === IconButton && element.props.label === "目录选项")!.props.onClick();
+    // 0-session manual group (Research) defaults to collapsed until explicitly expanded or newly created
+    expect(elements(tree).some((element) => element.props.className === "project-group-empty")).toBe(false);
+    elements(tree).find((element) => element.type === ProjectGroupHeader && element.props.title === "Research")!.props.onToggle();
     tree = sessions.draw();
-    elements(tree).find((element) => element.type === SheetAction && element.props.label === "展开全部项目")!.props.onClick();
-    tree = sessions.draw();
-    expect(elements(tree).filter((element) => element.props.className === "session-row-hit")).toHaveLength(1);
+    expect(elements(tree).some((element) => element.props.className === "project-group-empty" && element.props.children === "此分组暂无会话")).toBe(true);
 
-    // Sync host via 目录选项 Sheet
-    elements(tree).find((element) => element.type === IconButton && element.props.label === "目录选项")!.props.onClick();
-    tree = sessions.draw();
-    await elements(tree).find((element) => element.type === SheetAction && element.props.label === "同步当前电脑")!.props.onClick();
-    expect(refresh).toHaveBeenCalledTimes(1);
-
-    // Create section via 目录选项 Sheet -> 新建 Section modal
-    elements(tree).find((element) => element.type === SheetAction && element.props.label === "新建 Section")!.props.onClick();
+    // Create section via 项目 micro-header + 分组 -> 新建 Section modal (auto-expanded via revealedEmptySectionKey)
+    elements(tree).find((element) => element.type === "button" && element.props.children === "+ 分组")!.props.onClick();
     tree = sessions.draw();
     const sectionInput = elements(tree).find((element) => element.props["aria-label"] === "Section 名称")!;
     sectionInput.props.onChange({ target: { value: "Experiments" } });
@@ -1666,6 +1668,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     sectionForm.props.onSubmit({ preventDefault: vi.fn() });
     await settle();
     expect(apiRequest).toHaveBeenCalledWith({ method: "section.create", params: { name: "Experiments" } });
+    expect(refresh).toHaveBeenCalledTimes(1);
 
     // Rename & delete empty section via per-group 管理分组：<项目名> (with manageFocus enabled on Sheet)
     tree = sessions.draw();
@@ -1690,7 +1693,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     await settle();
     expect(apiRequest).toHaveBeenCalledWith({ method: "section.delete", params: { sectionId: "sec-1" } });
 
-    // Empty manual sections preserve packaged QA empty-session state while still showing the section group
+    // When !hasActiveSessions && !searchQuery, sidebar shows ONLY clean EmptyState and right pane renders NewChatCanvas
     const emptySnapshot: DesktopControlSnapshot = {
       ...snapshot,
       sessions: [],
@@ -1717,7 +1720,9 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     tree = sessions.draw({ ...sessionsProps, snapshot: readyEmptySnapshot });
     expect(elements(tree).find((element) => element.type === EmptyState)?.props.title).toBe("暂无活跃会话");
     expect(elements(tree).some((element) => element.props.className === "primary-button session-catalog-empty-action")).toBe(true);
-    expect(elements(tree).some((element) => element.props.className === "project-group-empty" && element.props.children === "此分组暂无会话")).toBe(true);
+    expect(elements(tree).some((element) => element.type === ProjectGroupHeader)).toBe(false);
+    expect(elements(tree).some((element) => element.type === NewChatCanvas)).toBe(true);
+    expect(textContent(tree)).toContain("准备在哪个目录开始？");
 
     // Desktop 会话操作 menu includes 同步此会话 via onOpenSession and pauses Sheet focus while delete ConfirmationDialog is open
     snapshot.host.capabilities.push("session.visibility.v1");
@@ -2025,7 +2030,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
       {
         themeControl: { theme: "dark", family: "sunstone", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
       },
-      { expandMailProvider: true },
+      { expandDashboard: true, expandMailProvider: true },
     );
     fullDashboard.draw();
     await settle();
@@ -2033,7 +2038,8 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     await settle();
     let dashTree = fullDashboard.draw();
 
-    // Unread badge on 助理 nav button reflects real pending mail count (1) and updates on changeToken
+    // Unread badge on pinned sidebar 助理 row reflects real pending mail count (1) and updates on changeToken
+    expect(elements(dashTree).some((element) => element.props.className === "desktop-nav-v2")).toBe(false);
     const navBadge = elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")!;
     expect(navBadge.props["aria-hidden"]).toBe("true");
     expect(navBadge.props.children).toBe(1);
@@ -2050,21 +2056,18 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     dashTree = fullDashboard.draw();
     expect(elements(dashTree).find((element) => element.props.className === "desktop-nav-badge")).toBeUndefined();
 
-    // Switch to 设备 tab and verify concise header (no 访问控制 kicker), empty state, pairing QR, unmount-safe clipboard, and revoke
-    const nav = elements(dashTree).find((element) => element.type === "nav" && element.props["aria-label"] === "Bridge 主导航")!;
-    elements(nav).find((element) => element.type === "button" && textContent(element).includes("设备"))!.props.onClick();
+    // Switch to 设置 -> 手机配对与设备 and verify folded DesktopDevices, empty state, pairing QR, unmount-safe clipboard, and revoke
+    elements(dashTree).find((element) => element.type === "button" && String(element.props.className).includes("desktop-dock-settings"))!.props.onClick();
     dashTree = fullDashboard.draw();
-    const devicesFn = elements(dashTree).find((element) => typeof element.type === "function" && element.type.name === "DesktopDevices")!;
-    const devicesRenderer = renderer(devicesFn.type as (props: any) => ReactNode, devicesFn.props);
-    let devTree = devicesRenderer.draw();
+    elements(dashTree).find((element) => element.type === "button" && element.props.children === "手机配对与设备")!.props.onClick();
+    let devTree = fullDashboard.draw();
     expect(textContent(devTree)).not.toContain("访问控制");
     expect(elements(devTree).find((element) => element.type === EmptyState)?.props.title).toBe("还没有配对手机");
 
     elements(devTree).find((element) => element.type === "button" && textContent(element).includes("添加手机"))!.props.onClick();
     await settle();
     expect(createPairing).toHaveBeenCalledOnce();
-    dashTree = fullDashboard.draw();
-    devTree = devicesRenderer.draw(elements(dashTree).find((element) => typeof element.type === "function" && element.type.name === "DesktopDevices")!.props);
+    devTree = fullDashboard.draw();
     expect(textContent(devTree)).not.toContain("一次性配对");
     expect(textContent(devTree)).toContain("使用手机 Bridge 扫描");
     expect(textContent(devTree)).toContain("Pixel 9");
@@ -2078,7 +2081,16 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
         })),
       },
     });
-    const transientDevices = renderer(devicesFn.type as (props: any) => ReactNode, elements(dashTree).find((element) => typeof element.type === "function" && element.type.name === "DesktopDevices")!.props);
+    const transientDevices = renderer(DesktopDevices, {
+      snapshot: {
+        ...snapshot,
+        pairingUrl: "bridge://pair/demo",
+        pairingExpiresAt: Date.now() + 600_000,
+        devices: [],
+      },
+      onCreatePairing: async () => undefined,
+      onRevoke: async () => undefined,
+    });
     const transientTree = transientDevices.draw();
     const transientStore = stores[stores.length - 1]!;
     elements(transientTree).find((element) => element.type === "button" && textContent(element).includes("复制配对链接"))!.props.onClick();
@@ -2088,7 +2100,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     expect(scheduledTimers.size).toBe(0);
 
     elements(devTree).find((element) => element.type === IconButton && element.props.label === "撤销 Pixel 9")!.props.onClick();
-    devTree = devicesRenderer.draw();
+    devTree = fullDashboard.draw();
     const revokeDialog = elements(devTree).find((element) => element.type === ConfirmationDialog && element.props.open === true)!;
     expect(revokeDialog.props.description).toContain("Pixel 9");
     revokeDialog.props.onConfirm();
@@ -2132,5 +2144,137 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     await expect(assistantCreateDialog.props.onCreateDirectory("/Users/demo", "sub")).resolves.toBe("/Users/demo/sub");
     expect(mailReq).toHaveBeenCalledWith("directory.mkdir", { parentPath: "/Users/demo", name: "sub" });
     await expect(assistantCreateDialog.props.onChooseDirectory()).resolves.toBe("/Users/demo");
+  });
+
+  it("preserves NewChatCanvas prompts across empty-cwd creation, directory picker handoff, delayed turn.start failure, and legacy hide-empty-sections state", async () => {
+    localStorage.setItem("bridge-hide-empty-sections:computer", "1");
+    snapshot.projects = [{
+      projectId: "group-empty",
+      name: "reproAPA",
+      cwd: "",
+      kind: "desktop-group",
+      sessionCount: 0,
+      runningCount: 0,
+      pendingCount: 0,
+      lastActivityAt: 2,
+    }];
+    snapshot.sessions = [];
+    await openSessions();
+
+    // Empty workspace NewChatCanvas shows honest runtime name rather than hardcoded model/effort/mode
+    expect(textContent(tree)).not.toContain("Opus 4.6");
+
+    // Empty workspace submitting prompt with no cwd opens SessionCreateDialog and hands prompt to newly created session
+    const canvasTextarea = () => elements(tree).find(
+      (element) => element.type === "textarea" && element.props["aria-label"] === "给 Claude 发指令",
+    )!;
+    canvasTextarea().props.onChange({ target: { value: "首条空目录指令" } });
+    tree = sessions.draw();
+
+    // Directory pill without native chooseDirectory opens folder-picker dialog and returns cwd while keeping draft
+    elements(tree).find((element) => element.type === "button" && element.props.className === "new-chat-dir-pill")!.props.onClick();
+    tree = sessions.draw();
+    const pickerDialog = elements(tree).find((element) => element.type === SessionCreateDialog)!;
+    expect(typeof pickerDialog.props.onPickDirectory).toBe("function");
+    pickerDialog.props.onPickDirectory("/Users/demo/repo");
+    pickerDialog.props.onClose();
+    tree = sessions.draw();
+    expect(textContent(tree)).toContain("~/repo");
+    expect(canvasTextarea().props.value).toBe("首条空目录指令");
+
+    // Clear cwd scenario via empty workspace and test SessionCreateDialog onCreated prompt handoff
+    snapshot.projects = [];
+    await openSessions();
+    canvasTextarea().props.onChange({ target: { value: "弹窗接力指令" } });
+    tree = sessions.draw();
+    elements(tree).find((element) => element.type === "form" && element.props.className === "composer-form")!.props.onSubmit({
+      preventDefault() {},
+    });
+    tree = sessions.draw();
+    const createDialog = elements(tree).find((element) => element.type === SessionCreateDialog)!;
+    expect(createDialog.props.onPickDirectory).toBeUndefined();
+
+    const createdSession: BridgeSessionInfo = {
+      sessionId: "new-1",
+      title: "New Session",
+      projectId: "folder-1",
+      projectName: "repo",
+      cwd: "/Users/demo/repo",
+      source: "desktop",
+      ownership: "DESKTOP_NATIVE_IDLE",
+      transport: "claude-desktop-native",
+      turnState: "idle",
+      lastActivityAt: 10,
+      pendingCount: 0,
+      allowedActions: {
+        canSend: true,
+        canSteer: true,
+        canInterrupt: true,
+        canConfigure: true,
+        canSwitchProvider: false,
+        canContinueOfficial: false,
+      },
+    };
+    let rejectTurnStart!: (reason?: unknown) => void;
+    apiRequest.mockImplementation((req: { method: string }) => {
+      if (req.method === "turn.start") {
+        return new Promise<BridgeResponse>((_, reject) => {
+          rejectTurnStart = reject;
+        });
+      }
+      if (req.method === "session.open") {
+        return Promise.resolve({ kind: "response", requestId: "open", ok: true, result: { history: { items: [], hasMore: false } } });
+      }
+      if (req.method === "evidence.list") {
+        return Promise.resolve({ kind: "response", requestId: "ev", ok: true, result: { evidence: { items: [], hasMore: false } } });
+      }
+      return Promise.resolve({ kind: "response", requestId: "ok", ok: true, result: {} });
+    });
+
+    snapshot.projects = [{
+      projectId: "group-empty",
+      name: "reproAPA",
+      cwd: "",
+      kind: "desktop-group",
+      sessionCount: 0,
+      runningCount: 0,
+      pendingCount: 0,
+      lastActivityAt: 2,
+    }, {
+      projectId: "folder-1",
+      name: "repo",
+      cwd: "/Users/demo/repo",
+      sessionCount: 1,
+      runningCount: 0,
+      pendingCount: 0,
+      lastActivityAt: 10,
+    }];
+    snapshot.sessions = [createdSession];
+
+    createDialog.props.onCreated(createdSession);
+    createDialog.props.onClose();
+    tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot } });
+    await settle();
+    tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot } });
+
+    // NewChatCanvas is now unmounted and DesktopSessionConversation is mounted while turn.start is still pending
+    expect(elements(tree).some((element) => element.type === NewChatCanvas)).toBe(false);
+    expect(apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      method: "turn.start",
+      params: { sessionId: "new-1", text: "弹窗接力指令", attachments: [] },
+    }));
+
+    // Legacy bridge-hide-empty-sections=1 does not hide empty manual group on Desktop; it renders collapsed by default
+    const emptyHeader = elements(tree).find((element) => element.type === ProjectGroupHeader && element.props.title === "reproAPA");
+    expect(emptyHeader).toBeDefined();
+    expect(emptyHeader!.props.expanded).toBe(false);
+
+    // Delayed turn.start failure surfaces alert and restores prompt text in the newly mounted conversation composer
+    rejectTurnStart(new Error("首次发送超时"));
+    await settle();
+    tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot } });
+    expect(textContent(tree)).toContain("首次发送超时");
+    const composerInput = elements(tree).find((element) => element.type === SlashCommandInput)!;
+    expect(composerInput.props.value).toBe("弹窗接力指令");
   });
 });

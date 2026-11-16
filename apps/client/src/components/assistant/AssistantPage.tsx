@@ -9,10 +9,11 @@ import { MailCard } from "./MailCard.js";
 import { MailReference } from "./MailReference.js";
 import "./assistant-mail.css";
 
-export function AssistantPage({ snapshot, mobile = false, active = true, onOpenSession, renderConversation }: {
+export function AssistantPage({ snapshot, mobile = false, active = true, headerLeading, onOpenSession, renderConversation }: {
   snapshot: BridgeHostSnapshot | undefined;
   mobile?: boolean;
   active?: boolean;
+  headerLeading?: ReactNode | undefined;
   onOpenSession(sessionId: string): void;
   renderConversation(sessionId: string): ReactNode;
 }) {
@@ -57,7 +58,8 @@ export function AssistantPage({ snapshot, mobile = false, active = true, onOpenS
 
   const refresh = <IconButton label="刷新邮件" disabled={!mail.online || mail.loading} onClick={mail.refresh}><RefreshCw size={18} /></IconButton>;
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${displayedView === "conversation" ? " is-conversation" : ""}`}>
-    {mobile && <MobilePageHeader title="助理" actions={refresh} />}
+    {mobile && <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={refresh} />}
+    {!mobile && headerLeading && <div className="assistant-desktop-topbar">{headerLeading}</div>}
     <div className="assistant-page-content">
       {!mobile && <header className="desktop-page-heading"><h1>助理</h1>{refresh}</header>}
       <nav className="assistant-view-tabs" aria-label="助理工作台">

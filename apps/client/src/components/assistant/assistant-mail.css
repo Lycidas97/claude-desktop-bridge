@@ -1,5 +1,14 @@
 .assistant-page { min-width: 0; height: 100%; overflow-y: auto; }
 .assistant-page.desktop-page { padding: 0; }
+.assistant-desktop-topbar {
+  display: flex;
+  flex: none;
+  min-height: 52px;
+  align-items: center;
+  padding: 0 20px 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
 .assistant-page-content { width: min(100%, 860px); margin: 0 auto; padding: 24px 28px 40px; }
 .assistant-page-mobile .assistant-page-content { padding: 10px 15px 32px; }
 .assistant-page .desktop-page-heading { margin-bottom: 16px; }

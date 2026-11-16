@@ -1034,6 +1034,7 @@ export function DesktopSessionConversation({
   onRefreshSnapshot,
   onSelectSession,
   onForkCreated,
+  headerLeading,
   controller: externalController,
   conversationDrafts: externalDrafts,
   externalActionError,
@@ -1041,6 +1042,7 @@ export function DesktopSessionConversation({
   session: BridgeSessionInfo;
   onSelectSession(sessionId: string): void | Promise<void>;
   onForkCreated?(parentSessionId: string, created: BridgeSessionInfo): void;
+  headerLeading?: ReactNode | undefined;
   controller?: DesktopConversationController | undefined;
   conversationDrafts?: ConversationDraftsController | undefined;
   externalActionError?: string | undefined;
@@ -1128,6 +1130,7 @@ export function DesktopSessionConversation({
       variant="desktop"
       hostId={hostId}
       session={session}
+      {...(headerLeading ? { headerLeading } : {})}
       sessions={snapshot.sessions}
       snapshot={snapshot}
       connection={snapshot.connection}

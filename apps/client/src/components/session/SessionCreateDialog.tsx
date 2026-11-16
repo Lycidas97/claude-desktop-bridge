@@ -14,10 +14,12 @@ import "./session-create.css";
 export interface SessionCreateDialogProps {
   snapshot: BridgeHostSnapshot;
   initialProjectId?: string;
+  initialCwd?: string;
   connected: boolean;
   onBrowseDirectory?(path?: string): Promise<BridgeDirectoryListing>;
   onCreateDirectory?(parentPath: string, name: string): Promise<string>;
   onChooseDirectory?(initialPath?: string): Promise<string | undefined>;
+  onPickDirectory?(cwd: string): void;
   onCreate(cwd: string, title?: string, runtimeId?: BridgeDesktopRuntimeId, projectId?: string, trustWorkspace?: boolean): Promise<BridgeSessionInfo | undefined>;
   onCreated(session: BridgeSessionInfo): void;
   onClose(): void;
@@ -28,25 +30,34 @@ function folderName(path: string): string {
 }
 
 /** Mount with the host ID as key so each computer owns its creation draft. */
-export function SessionCreateDialog({ snapshot, initialProjectId, connected, onBrowseDirectory, onCreateDirectory, onChooseDirectory, onCreate, onCreated, onClose }: SessionCreateDialogProps) {
+export function SessionCreateDialog({ snapshot, initialProjectId, initialCwd, connected, onBrowseDirectory, onCreateDirectory, onChooseDirectory, onPickDirectory, onCreate, onCreated, onClose }: SessionCreateDialogProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLElement>(null);
   const runtimeId = "claude-desktop";
   const projects = snapshot.projects.filter((project) => (project.runtimeId ?? "claude-desktop") === runtimeId);
   const initialProject = projects.find((project) => project.projectId === initialProjectId);
-  const [cwd, setCwd] = useState(initialProject?.cwd ?? "");
+  const resolvedInitialCwd = initialCwd ?? initialProject?.cwd ?? "";
+  const isDirectoryPickerOnly = Boolean(onPickDirectory);
+  const initialFolderView = projects.some((project) => Boolean(project.cwd?.trim())) ? "recent" : "browse";
+  const [cwd, setCwd] = useState(resolvedInitialCwd);
   const [projectId, setProjectId] = useState(initialProject?.kind === "desktop-group" ? initialProject.projectId : "");
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const [error, setError] = useState("");
-  const [view, setView] = useState<"form" | "recent" | "browse">("form");
-  const [browseTarget, setBrowseTarget] = useState<{ path: string | undefined }>();
-  const [browseInput, setBrowseInput] = useState("");
+  const [view, setView] = useState<"form" | "recent" | "browse">(() => (
+    isDirectoryPickerOnly ? initialFolderView : "form"
+  ));
+  const [browseTarget, setBrowseTarget] = useState<{ path: string | undefined } | undefined>(() => (
+    isDirectoryPickerOnly ? { path: resolvedInitialCwd.trim() || undefined } : undefined
+  ));
+  const [browseInput, setBrowseInput] = useState(() => (
+    isDirectoryPickerOnly ? resolvedInitialCwd : ""
+  ));
   const [listing, setListing] = useState<BridgeDirectoryListing>();
-  const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseLoading, setBrowseLoading] = useState(() => isDirectoryPickerOnly && Boolean(onBrowseDirectory));
   const [browseError, setBrowseError] = useState("");
-  const [pathEditing, setPathEditing] = useState(false);
+  const [pathEditing, setPathEditing] = useState(() => isDirectoryPickerOnly && !onBrowseDirectory);
   const [mkdirOpen, setMkdirOpen] = useState(false);
   const [mkdirName, setMkdirName] = useState("");
   const [mkdirBusy, setMkdirBusy] = useState(false);
@@ -84,7 +95,7 @@ export function SessionCreateDialog({ snapshot, initialProjectId, connected, onB
       resetMkdir();
       return;
     }
-    if (view === "form") onClose();
+    if (isDirectoryPickerOnly || view === "form") onClose();
     else {
       resetMkdir();
       setView("form");
@@ -127,6 +138,11 @@ export function SessionCreateDialog({ snapshot, initialProjectId, connected, onB
 
   function selectFolder(path: string): void {
     resetMkdir();
+    if (onPickDirectory) {
+      onPickDirectory(path);
+      onClose();
+      return;
+    }
     setCwd(path);
     setView("form");
     setBrowseTarget(undefined);
@@ -212,12 +228,12 @@ export function SessionCreateDialog({ snapshot, initialProjectId, connected, onB
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); back(); } }}>
       <section ref={dialogRef} tabIndex={-1} className={`create-session-dialog session-create-dialog${view !== "form" ? " is-folder-picker" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <header className="session-create-header">
-          {view !== "form" && <button type="button" className="session-create-back" aria-label="返回新建会话" onClick={back}><ChevronLeft size={22} /></button>}
+          {view !== "form" && !isDirectoryPickerOnly && <button type="button" className="session-create-back" aria-label="返回新建会话" onClick={back}><ChevronLeft size={22} /></button>}
           <div className="session-create-heading">
             <h2 id={titleId}>{view === "form" ? "新建会话" : "选择文件夹"}</h2>
             <p className="session-create-host"><Monitor size={13} />{snapshot.host.name}</p>
           </div>
-          {view === "form" && <IconButton label="关闭" disabled={locked} onClick={onClose}><X size={18} /></IconButton>}
+          {(view === "form" || isDirectoryPickerOnly) && <IconButton label="关闭" disabled={locked} onClick={onClose}><X size={18} /></IconButton>}
         </header>
         <form onSubmit={(event) => {
           event.preventDefault();

@@ -460,7 +460,11 @@ describe("deduplicated chronological output-file evidence list", () => {
             const element = node as ReactElement<Record<string, any>>;
             if (
               typeof element.type === "function"
-              && (element.type.name === "DesktopSessionConversation" || element.type.name === "ConversationView")
+              && (
+                element.type.name === "DesktopSessionConversation"
+                || element.type.name === "ConversationView"
+                || element.type.name === "MobilePageHeader"
+              )
             ) {
               const key = `${path}/${element.type.name}:${element.key ?? ""}`;
               visited.add(key);

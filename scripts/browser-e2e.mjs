@@ -181,18 +181,30 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
     window.__updateCatalog(snapshot);
   }, sessionId);
   await sidebar.locator(`[data-session-id="${sessionId}"]`).getByLabel("2 条排队消息", { exact: true }).waitFor();
-  assert.match(await sidebar.locator(`[data-session-id="${sessionId}"]`).innerText(), /桌面运行中/u);
-  const runningBadge = await sidebar.locator(`[data-session-id="${sessionId}"] .session-row-status.running`).boundingBox();
+  assert.doesNotMatch(await sidebar.locator(`[data-session-id="${sessionId}"]`).innerText(), /桌面运行中/u);
+  const runningDot = await sidebar.locator(`[data-session-id="${sessionId}"] .session-state-dot.running`).boundingBox();
   const pendingBadge = await sidebar.locator(`[data-session-id="${sessionId}"]`).getByLabel("2 条排队消息", { exact: true }).boundingBox();
-  assert.ok(Math.abs(runningBadge.y - pendingBadge.y) < 2, "Running status and pending count stay on the same row");
+  assert.ok(Math.abs((runningDot.y + runningDot.height / 2) - (pendingBadge.y + pendingBadge.height / 2)) < 4, "Running dot and pending count stay on the same row");
   await capture("desktop-catalog");
   steps.push("mobile/Desktop share family rows; Desktop retains archived sidechats, selection and fork navigation");
 
-  await sidebar.getByRole("button", { name: "目录选项", exact: true }).click();
-  await page.getByRole("dialog", { name: "会话目录", exact: true }).getByRole("button", { name: "折叠全部项目", exact: true }).click();
+  const activeGroupToggles = sidebar.locator(".project-group:not(.archived-group) .project-group-open");
+  const toggleCount = await activeGroupToggles.count();
+  for (let index = 0; index < toggleCount; index += 1) {
+    if ((await activeGroupToggles.nth(index).getAttribute("aria-expanded")) === "true") {
+      await activeGroupToggles.nth(index).click();
+    }
+  }
   assert.equal(await sidebar.locator("[data-session-id]").count(), 0);
-  await sidebar.getByRole("button", { name: "目录选项", exact: true }).click();
-  await page.getByRole("dialog", { name: "会话目录", exact: true }).getByRole("button", { name: "展开全部项目", exact: true }).click();
+  for (let index = 0; index < toggleCount; index += 1) {
+    if ((await activeGroupToggles.nth(index).getAttribute("aria-expanded")) === "false") {
+      await activeGroupToggles.nth(index).click();
+    }
+  }
+  await page.getByRole("button", { name: "收起侧栏", exact: true }).click();
+  await sidebar.waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "展开侧栏", exact: true }).click();
+  await sidebar.waitFor({ state: "visible" });
   const orderTrigger = sidebar.getByRole("button", { name: "调整顺序", exact: true });
   await orderTrigger.focus();
   await orderTrigger.press("Enter");
@@ -387,7 +399,7 @@ async function verifyDesktopQuota(page, host, steps, directory, viewports) {
     await page.getByRole("heading", { name: heading, exact: true }).waitFor();
     assert.equal(await page.locator(".magpie-quota-board").count(), 0);
   }
-  await page.getByRole("button", { name: "设备", exact: true }).click();
+  await page.getByRole("button", { name: "手机配对与设备", exact: true }).click();
   await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();
   steps.push("Leaving quota preserves developer tools, startup, appearance, diagnostics, updates and the device pairing entry");
 
@@ -409,7 +421,7 @@ async function verifyDesktopQuota(page, host, steps, directory, viewports) {
   await page.getByText("电脑连接后读取额度", { exact: true }).waitFor();
   assert.equal(requests.length, beforeDisabled, "Missing quota capability prevents requests across navigation");
   await page.setViewportSize({ width: 860, height: 620 });
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Six settings groups fit a compact desktop");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Seven settings groups fit a compact desktop");
   viewports.push({ page: "desktop-quota-disabled", ...page.viewportSize() });
   await page.screenshot({ path: resolve(directory, "desktop-quota-disabled.png"), fullPage: true });
   steps.push("First-read errors are visible; absent capability disables refresh and makes no request, including after returning to quota");
@@ -3877,13 +3889,12 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
   await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
   assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "桌面跨页共享草稿", "Desktop assistant draft survives 对话/邮件/设置 subview switches");
-  await page.getByRole("navigation", { name: "Bridge 主导航" }).getByRole("button", { name: "会话", exact: true }).click();
   await page.locator(`.desktop-session-sidebar [data-session-id="${sessionId}"] .session-row-hit`).click();
   const desktopSessionComposer = page.locator(".desktop-conversation .mobile-composer textarea");
   await desktopSessionComposer.waitFor();
   assert.equal(await desktopSessionComposer.inputValue(), "桌面跨页共享草稿", "Desktop 会话 and 助理 tabs share the bound session draft");
   await desktopSessionComposer.fill("桌面会话同步草稿");
-  await page.getByRole("navigation", { name: "Bridge 主导航" }).getByRole("button", { name: "助理", exact: true }).click();
+  await page.locator(".desktop-session-sidebar").getByRole("button", { name: "助理", exact: true }).click();
   assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "桌面会话同步草稿", "Draft edited in desktop 会话 reflects back in 助理");
   await page.locator(".assistant-conversation textarea").fill("");
   await capture("desktop-conversation");

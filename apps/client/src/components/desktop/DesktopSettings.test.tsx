@@ -4,7 +4,14 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { registerDiagnosticsStateProvider } from "../../lib/diagnostics.js";
 import { DesktopSettings } from "./DesktopSettings.js";
 
-const hooks = vi.hoisted(() => ({ slots: [] as any[], index: 0, dirty: false, effects: [] as unknown[][], effectIndex: 0, pending: [] as Array<() => void> }));
+const hooks = vi.hoisted(() => ({
+  slots: [] as any[],
+  index: 0,
+  dirty: false,
+  effects: [] as Array<{ deps: unknown[]; cleanup?: (() => void) | undefined }>,
+  effectIndex: 0,
+  pending: [] as Array<() => void>,
+}));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useState(initial: any) {
@@ -16,10 +23,19 @@ vi.mock("react", async (original) => ({
       hooks.slots[index] = next;
     }];
   },
-  useEffect(effect: () => void, deps: unknown[]) {
+  useRef(initial: unknown) {
+    const index = hooks.index++;
+    hooks.slots[index] ??= { current: initial };
+    return hooks.slots[index];
+  },
+  useId: () => "settings-test-id",
+  useEffect(effect: () => (() => void) | void, deps: unknown[]) {
     const index = hooks.effectIndex++;
-    if (hooks.effects[index]?.every((value, i) => Object.is(value, deps[i]))) return;
-    hooks.pending.push(() => { hooks.effects[index] = deps; effect(); });
+    if (hooks.effects[index]?.deps.every((value, i) => Object.is(value, deps[i]))) return;
+    hooks.pending.push(() => {
+      hooks.effects[index]?.cleanup?.();
+      hooks.effects[index] = { deps, cleanup: effect() || undefined };
+    });
   },
 }));
 vi.mock("../../../../../plugins/magpie-quota/client.js", () => ({
@@ -260,4 +276,33 @@ it("surfaces launchAtLogin errors cleanly inside connections group", async () =>
   await settle();
   expect(props.api.setLaunchAtLogin).toHaveBeenCalledWith(true);
   expect(text()).toContain("登录项写入被系统拒绝");
+});
+
+it("folds phone pairing and paired devices into 手机配对与设备 without outer card groups", async () => {
+  props.api.createPairing = vi.fn().mockResolvedValue({
+    ...props.snapshot,
+    pairingUrl: "bridge://pair/settings-test",
+    pairingExpiresAt: Date.now() + 600_000,
+    devices: [{
+      deviceId: "iphone-1",
+      name: "Lycidas 的 iPhone",
+      platform: "ios",
+      pairedAt: 1,
+      lastSeenAt: Date.now(),
+      online: true,
+    }],
+  });
+  button("手机配对与设备").props.onClick();
+  draw();
+  expect(text()).toContain("手机配对与端到端加密通道");
+  expect(text()).toContain("还没有配对手机");
+  expect(elements().some((element) => String(element.props.className ?? "").includes("m-group"))).toBe(false);
+
+  elements().find((element) => element.type === "button" && text(element.props.children).includes("添加手机"))!.props.onClick();
+  await settle();
+  expect(props.api.createPairing).toHaveBeenCalledOnce();
+  props.snapshot = vi.mocked(props.onSnapshot).mock.calls.at(-1)![0];
+  draw();
+  expect(text()).toContain("使用手机 Bridge 扫描");
+  expect(text()).toContain("Lycidas 的 iPhone");
 });

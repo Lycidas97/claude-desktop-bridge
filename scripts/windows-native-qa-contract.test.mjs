@@ -118,6 +118,11 @@ test("packaged QA accepts a disconnected Native snapshot and checks live IPC con
   for (const method of ["runtime.list", "project.list", "session.list", "system.update", "provider.list", "conversation.route.get"]) {
     assert.ok(result.requests.includes(method), `${method} was not verified`);
   }
+  assert.ok(result.ui.includes(".desktop-session-sidebar"));
+  assert.equal(result.ui.includes("设备"), false);
+  assert.ok(result.ui.includes("设置"));
+  assert.ok(result.ui.includes("手机配对与设备"));
+  assert.ok(result.ui.includes("添加手机"));
   assert.ok(result.ui.includes("未检测到 Claude Desktop"));
   assert.ok(result.ui.includes(".session-catalog-empty-action"));
   assert.ok(result.ui.includes("新建会话"));

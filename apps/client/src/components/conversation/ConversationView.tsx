@@ -31,6 +31,7 @@ import {
   ArchiveRestore,
   Check,
   ChevronDown,
+  CornerUpLeft,
   FilePenLine,
   FileText,
   Folder,
@@ -290,7 +291,7 @@ export function ConversationView({
 
   const [internalSessionView, setInternalSessionView] = useState<"conversation" | "evidence">("conversation");
   const [internalForkChainOpen, setInternalForkChainOpen] = useState(
-    () => Boolean(!isMobile || session.sidechat),
+    () => Boolean(session.parentSessionId),
   );
   const [internalPermissionOpen, setInternalPermissionOpen] = useState(false);
   const [internalConfigurationOpen, setInternalConfigurationOpen] = useState(false);
@@ -375,7 +376,7 @@ export function ConversationView({
     setInternalSessionView("conversation");
     setInternalPermissionOpen(false);
     setInternalConfigurationOpen(false);
-    setInternalForkChainOpen(Boolean(!isMobile || session.sidechat));
+    setInternalForkChainOpen(Boolean(session.parentSessionId));
     setBackgroundTasksOpen(undefined);
     setStopSubagentTarget(undefined);
     setPendingFileDownload(undefined);
@@ -1028,11 +1029,6 @@ export function ConversationView({
   const parentSession = session.parentSessionId
     ? sessions.find((candidate) => candidate.sessionId === session.parentSessionId)
     : undefined;
-  const childForks = sessions.filter((candidate) => (
-    candidate.parentSessionId === session.sessionId
-    && (!candidate.archivedAt || (!isMobile && Boolean(candidate.sidechat)) || Boolean(session.archivedAt))
-  ));
-  const relatedForkCount = (parentSession ? 1 : 0) + childForks.length;
   const backgroundTasks = activityTasks ?? [];
   const runningBackgroundTasks = backgroundTasks.filter((task) => task.state === "running").length;
   const prSupported = Boolean(snapshot?.host.capabilities.includes("pr.autofix.v1"));
@@ -1682,10 +1678,10 @@ export function ConversationView({
           )}
         </div>
       )}
-      {effectiveForkChainOpen && relatedForkCount > 0 && (
+      {effectiveForkChainOpen && parentSession && (
         <ForkChainBar
           parentSession={parentSession}
-          childForks={childForks}
+          isSidechat={Boolean(session.sidechat)}
           onSelectSession={(nextSessionId) => {
             setForkChainOpen(false);
             void onSelectSession(nextSessionId);
@@ -1923,27 +1919,15 @@ export function ConversationView({
                     setInternalMenuOpen(false);
                   }}
                 />
-                {relatedForkCount > 0 && (
+                {parentSession && (
                   <SheetAction
-                    icon={<GitFork size={19} />}
-                    label={childForks.length > 0
-                      ? (childForks.every((fork) => fork.sidechat)
-                          ? `侧聊 ${childForks.length}`
-                          : childForks.some((fork) => fork.sidechat)
-                            ? `分支与侧聊 ${childForks.length}`
-                            : `分支 ${childForks.length}`)
-                      : "主会话"}
+                    icon={session.sidechat ? <CornerUpLeft size={19} /> : <GitFork size={19} />}
+                    label="主会话"
                     disabled={effectiveActionBusy}
-                    detail={childForks.length > 0
-                      ? (childForks.every((fork) => fork.sidechat)
-                          ? "查看此会话的 /btw 侧聊"
-                          : childForks.some((fork) => fork.sidechat)
-                            ? "查看由此会话派生的分支与 /btw 侧聊"
-                            : "查看由此会话 fork 出的分支")
-                      : `来自：${parentSession?.title ?? ""}`}
+                    detail={`来自：${parentSession.title}`}
                     onClick={() => {
-                      setForkChainOpen(true);
                       setInternalMenuOpen(false);
+                      void onSelectSession(parentSession.sessionId);
                     }}
                   />
                 )}

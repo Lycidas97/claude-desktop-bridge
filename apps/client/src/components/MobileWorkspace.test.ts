@@ -345,7 +345,7 @@ describe("mobile workspace directory", () => {
     expect(threeLevelActiveHtml).not.toContain("1 个已结束侧聊");
     expect(threeLevelActiveHtml).not.toContain(sidechatArchived.title);
     const liveRow = /data-session-id="live-fork"([\s\S]*?)<\/button>/u.exec(threeLevelActiveHtml)![1]!;
-    expect(liveRow).toContain("session-state-dot running");
+    expect(liveRow).toContain("session-fork-icon running");
     expect(liveRow).not.toContain("桌面运行中");
     expect(liveRow).not.toContain("已归档");
     expect(threeLevelActiveHtml.match(/data-session-id="live-fork"/gu)).toHaveLength(1);

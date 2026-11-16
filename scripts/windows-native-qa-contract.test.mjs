@@ -373,6 +373,7 @@ test("Windows QA keeps the local public relay, allocates dynamic ports, and isol
 test("Android installed pairing smoke waits for delayed WebView pairing input mount before screenshot and fill", async () => {
   let mounted = false;
   let paired = false;
+  let drawerOpened = false;
   let evaluateCalls = 0;
   let filledValue = null;
   let socketClosed = false;
@@ -397,7 +398,7 @@ test("Android installed pairing smoke waits for delayed WebView pairing input mo
       const { id, method, params } = JSON.parse(raw);
       let result = {};
       if (method === "Page.captureScreenshot") {
-        screenshots.push({ path: screenshots.length, mounted });
+        screenshots.push({ path: screenshots.length, mounted, drawerOpened });
         result = { data: Buffer.from("png").toString("base64") };
       } else if (method === "Runtime.evaluate") {
         evaluateCalls += 1;
@@ -419,7 +420,16 @@ test("Android installed pairing smoke waits for delayed WebView pairing input mo
           result = { result: { value: undefined } };
         } else if (expr.includes(".m-host-chip .m-status-dot.is-online")) {
           result = { result: { value: paired } };
+        } else if (expr.includes("if (document.querySelector('.mobile-drawer.is-open')) return;")) {
+          assert.equal(paired, true, "Drawer must be opened after pairing succeeds");
+          drawerOpened = true;
+          result = { result: { value: undefined } };
+        } else if (expr.includes('button[aria-label="菜单"]')) {
+          result = { result: { value: paired } };
+        } else if (expr.includes("Boolean(document.querySelector('.mobile-drawer.is-open'))")) {
+          result = { result: { value: drawerOpened } };
         } else if (expr.includes(".m-host-name")) {
+          assert.equal(drawerOpened, true, "Host name must be read from the open drawer");
           result = { result: { value: "DESKTOP-CI" } };
         } else {
           throw new Error(`Unexpected Android WebView expression: ${expr}`);
@@ -487,6 +497,7 @@ test("Android installed pairing smoke waits for delayed WebView pairing input mo
   assert.equal(report?.mode, "pairing-only");
   assert.equal(filledValue, "encoded:dev-android-1:ws://10.0.2.2:8788/ws");
   assert.equal(screenshots[0]?.mounted, true, "01-pairing.png must be captured after the pairing input mounts");
+  assert.equal(screenshots[1]?.drawerOpened, true, "02-paired-smoke.png must be captured with the mobile drawer open");
   assert.equal(socketClosed, true);
   assert.equal(desktopClosed, true);
 });
@@ -515,7 +526,12 @@ test("Android installed pairing smoke polls DevTools /json when initial 200 resp
         result = { data: Buffer.from("png").toString("base64") };
       } else if (method === "Runtime.evaluate") {
         const expr = params.expression;
-        if (expr.includes('Boolean(document.querySelector(\'input[aria-label="配对链接"]\'))') || expr.includes(".m-host-chip .m-status-dot.is-online")) {
+        if (
+          expr.includes('Boolean(document.querySelector(\'input[aria-label="配对链接"]\'))')
+          || expr.includes(".m-host-chip .m-status-dot.is-online")
+          || expr.includes('button[aria-label="菜单"]')
+          || expr.includes("Boolean(document.querySelector('.mobile-drawer.is-open'))")
+        ) {
           result = { result: { value: true } };
         } else if (expr.includes(".m-host-name")) {
           result = { result: { value: "DESKTOP-CI" } };

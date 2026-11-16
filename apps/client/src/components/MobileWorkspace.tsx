@@ -32,6 +32,7 @@ import {
   Archive,
   ArchiveRestore,
   Check,
+  CornerUpLeft,
   FilePenLine,
   Folder,
   FolderOpen,
@@ -285,9 +286,13 @@ export function MobileWorkspace({
   ));
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
-  const [forkChainOpen, setForkChainOpen] = useState(() => (
-    Boolean(selectedSessionId && snapshot?.sessions.find((session) => session.sessionId === selectedSessionId)?.sidechat)
-  ));
+  const [forkChainOpen, setForkChainOpen] = useState(() => {
+    const initialId = selectedSessionId
+      ?? (focusSessionId && snapshot?.sessions.some((session) => session.sessionId === focusSessionId)
+        ? focusSessionId
+        : snapshot?.sessions.find((session) => !session.archivedAt)?.sessionId);
+    return Boolean(initialId && snapshot?.sessions.find((session) => session.sessionId === initialId)?.parentSessionId);
+  });
 
   const directoryRef = useRef<HTMLElement>(null);
   const directoryScrollPositions = useRef(new Map<string, number>());
@@ -649,6 +654,7 @@ export function MobileWorkspace({
     }
     if (selectedSessionId !== selectedSession.sessionId) {
       setSelectedSessionId(selectedSession.sessionId);
+      setForkChainOpen(Boolean(selectedSession.parentSessionId));
     }
     if (autoOpenedSessionRef.current !== selectedSession.sessionId) {
       autoOpenedSessionRef.current = selectedSession.sessionId;
@@ -674,7 +680,7 @@ export function MobileWorkspace({
     setConfigurationSessionId(undefined);
     const target = sessions.find((session) => session.sessionId === sessionId);
     if (target?.archivedAt) setArchivedExpanded(true);
-    setForkChainOpen(Boolean(target?.sidechat));
+    setForkChainOpen(Boolean(target?.parentSessionId));
     setSessionView("conversation");
     setSelectedSessionId(sessionId);
     if ((activeTab ?? mobileNav?.tab) !== "sessions") {
@@ -877,10 +883,6 @@ export function MobileWorkspace({
   const parentSession = selectedSession?.parentSessionId
     ? sessions.find((candidate) => candidate.sessionId === selectedSession.parentSessionId)
     : undefined;
-  const childForks = selectedSession ? sessions.filter((candidate) => (
-    candidate.parentSessionId === selectedSession.sessionId && (!candidate.archivedAt || Boolean(selectedSession.archivedAt))
-  )) : [];
-  const relatedForkCount = (parentSession ? 1 : 0) + childForks.length;
 
   const sessionOverlays = (
     <>
@@ -954,27 +956,15 @@ export function MobileWorkspace({
                       setMenuSessionId(undefined);
                     }}
                   />
-                  {relatedForkCount > 0 && (
+                  {parentSession && (
                     <SheetAction
-                      icon={<GitFork size={19} />}
-                      label={childForks.length > 0
-                        ? (childForks.every((fork) => fork.sidechat)
-                            ? `侧聊 ${childForks.length}`
-                            : childForks.some((fork) => fork.sidechat)
-                              ? `分支与侧聊 ${childForks.length}`
-                              : `分支 ${childForks.length}`)
-                        : "主会话"}
+                      icon={selectedSession.sidechat ? <CornerUpLeft size={19} /> : <GitFork size={19} />}
+                      label="主会话"
                       disabled={sessionActionBusy}
-                      detail={childForks.length > 0
-                        ? (childForks.every((fork) => fork.sidechat)
-                            ? "查看此会话的 /btw 侧聊"
-                            : childForks.some((fork) => fork.sidechat)
-                              ? "查看由此会话派生的分支与 /btw 侧聊"
-                              : "查看由此会话 fork 出的分支")
-                        : `来自：${parentSession?.title ?? ""}`}
+                      detail={`来自：${parentSession.title}`}
                       onClick={() => {
-                        setForkChainOpen(true);
                         setMenuSessionId(undefined);
+                        void selectSession(parentSession.sessionId);
                       }}
                     />
                   )}

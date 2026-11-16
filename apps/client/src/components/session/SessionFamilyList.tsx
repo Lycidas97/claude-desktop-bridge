@@ -1,5 +1,5 @@
 import type { BridgePermissionInfo, BridgeProjectInfo, BridgeSessionInfo } from "@bridge/protocol";
-import { ChevronDown, ChevronRight, GitFork, MoreHorizontal } from "lucide-react";
+import { ChevronDown, ChevronRight, GitFork, MessageCircle, MoreHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 import { activeSessionBadgeLabel, forkGroupToggleLabel, relativeTime, visibleSessionForks } from "../../lib/conversation-timeline.js";
 import type { SessionFamily } from "../../lib/project-groups.js";
@@ -12,7 +12,6 @@ export interface SessionFamilyListProps {
   permissions: readonly BridgePermissionInfo[];
   expandedForkParents: ReadonlySet<string>;
   archivedList?: boolean;
-  includeArchivedInline?: boolean;
   flat?: boolean;
   selectedId?: string | undefined;
   onSelectSession(sessionId: string): void | Promise<void>;
@@ -27,7 +26,6 @@ export function SessionFamilyList({
   permissions,
   expandedForkParents,
   archivedList = false,
-  includeArchivedInline = false,
   flat = false,
   selectedId,
   onSelectSession,
@@ -51,6 +49,7 @@ export function SessionFamilyList({
     const forksExpanded = expandedForkParents.has(session.sessionId);
     const badgeLabel = session.sidechat ? "/btw" : (session.forkLabel || "fork");
     const badgeClassName = `session-fork-badge${session.sidechat ? " is-sidechat" : ""}`;
+    const showForkIcon = flat && (isForkChild || Boolean(session.parentSessionId));
     const sessionProject = !isArchivedRow
       ? projects?.find(candidate => candidate.projectId === session.projectId)
       : undefined;
@@ -58,7 +57,8 @@ export function SessionFamilyList({
     const subfolderLabel = sessionProject?.kind === "desktop-group" && sessionFolder && sessionFolder !== sessionProject.name
       ? sessionFolder
       : "";
-    const visibleForks = visibleSessionForks(forks, includeArchivedInline || isArchivedRow);
+    const visibleForks = visibleSessionForks(forks, isArchivedRow);
+    const allSidechats = visibleForks.every(fork => Boolean(fork.primary.sidechat));
     return (
       <div className="mobile-session-family" key={session.sessionId}>
         <div className={`session-row-v2 ${isForkChild ? "is-fork-child" : ""}${session.sessionId === selectedId ? " active" : ""}`} data-session-id={session.sessionId}>
@@ -67,15 +67,30 @@ export function SessionFamilyList({
             className="session-row-hit"
             onClick={() => void onSelectSession(session.sessionId)}
           >
-            <span className={`session-state-dot ${statusTone}`} />
+            {showForkIcon ? (
+              <span className={`session-fork-icon ${statusTone}`} aria-hidden="true">
+                {session.sidechat ? <MessageCircle size={12} /> : <GitFork size={12} />}
+              </span>
+            ) : (
+              <span className={`session-state-dot ${statusTone}`} />
+            )}
             <span className="session-row-copy">
-              <strong>
-                {isForkChild && <em className={badgeClassName}>{badgeLabel}</em>}
-                {session.title}
-                {!isForkChild && session.parentSessionId && (
-                  <em className={badgeClassName}>{badgeLabel}</em>
-                )}
-              </strong>
+              {flat ? (
+                <strong>
+                  {session.title}
+                  {(isForkChild || session.parentSessionId) && (
+                    <em className={`${badgeClassName} is-sr-only`}>{badgeLabel}</em>
+                  )}
+                </strong>
+              ) : (
+                <strong>
+                  {isForkChild && <em className={badgeClassName}>{badgeLabel}</em>}
+                  {session.title}
+                  {!isForkChild && session.parentSessionId && (
+                    <em className={badgeClassName}>{badgeLabel}</em>
+                  )}
+                </strong>
+              )}
               <small>
                 {subfolderLabel ? `${subfolderLabel} · ` : ""}
                 {relativeTime(session.lastActivityAt)}
@@ -113,9 +128,9 @@ export function SessionFamilyList({
               aria-expanded={forksExpanded}
               onClick={() => onToggleForkGroup(session.sessionId)}
             >
-              <GitFork size={12} />
+              {allSidechats ? <MessageCircle size={12} aria-hidden="true" /> : <GitFork size={12} aria-hidden="true" />}
               <span>{forkGroupToggleLabel(visibleForks)}</span>
-              {forksExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              {forksExpanded ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} />}
             </button>
             {forksExpanded && (
               <div className="mobile-fork-children">

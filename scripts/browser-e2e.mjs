@@ -150,8 +150,13 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   assert.equal(await selected.count(), 1, "Desktop highlights the selected shared row");
   assert.notEqual(await selected.evaluate(element => getComputedStyle(element).backgroundColor), "rgba(0, 0, 0, 0)");
   await sidebar.locator(".mobile-fork-toggle").click();
-  await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').waitFor();
-  assert.match(await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').innerText(), /已归档/u);
+  await sidebar.locator('[data-session-id="browser-e2e-fork"]').waitFor();
+  assert.equal(await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0, "Archived sidechats do not appear inline under active parent branches");
+  const desktopArchivedToggle = sidebar.locator('.project-group-open[aria-controls="desktop-archived-sessions"]');
+  await desktopArchivedToggle.click();
+  await sidebar.locator('#desktop-archived-sessions [data-session-id="browser-e2e-btw-archived"]').waitFor();
+  assert.match(await sidebar.locator('#desktop-archived-sessions [data-session-id="browser-e2e-btw-archived"]').innerText(), /已归档/u);
+  await desktopArchivedToggle.click();
   await sidebar.locator('[data-session-id="browser-e2e-fork"] .session-row-hit').click();
   assert.equal(await sidebar.locator('[data-session-id="browser-e2e-fork"]').evaluate(element => element.classList.contains("active")), true);
   const savedCatalog = await page.evaluate(() => structuredClone(window.__catalogSnapshot));
@@ -3356,8 +3361,9 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   await parentChainButton.waitFor();
   await parentChainButton.click();
   await page.getByRole("heading", { name: "主会话", exact: true }).waitFor();
+  assert.equal(await page.locator(".fork-chain-bar").count(), 0, "Parent session does not render outbound child fork chain bar");
   await page.locator(".m-header:visible").getByRole("button", { name: "会话操作", exact: true }).click();
-  await page.getByRole("button", { name: /分支 1/u }).waitFor();
+  assert.equal(await page.getByRole("button", { name: /^(?:分支|侧聊|分支与侧聊)\s+\d+/u }).count(), 0, "Parent session menu does not duplicate child forks");
   await page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
   await openMobileDrawer(page);
   if ((await archiveEntry.getAttribute("aria-expanded")) === "true") await archiveEntry.click();

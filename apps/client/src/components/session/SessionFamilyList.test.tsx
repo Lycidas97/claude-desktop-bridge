@@ -1,4 +1,5 @@
 import type { BridgePermissionInfo, BridgeSessionInfo } from "@bridge/protocol";
+import { GitFork, MessageCircle } from "lucide-react";
 import type { ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -89,30 +90,56 @@ describe("SessionFamilyList", () => {
     expect(elements(collapsed).filter(element => element.props["data-session-id"])).toHaveLength(1);
     const toggle = elements(collapsed).find(element => element.props.className === "mobile-fork-toggle")!;
     expect(toggle.props["aria-expanded"]).toBe(false);
+    expect(elements(toggle).some(element => element.type === GitFork)).toBe(true);
     expect(elements(toggle).find(element => element.type === "span")?.props.children).toBe("2 个分支与侧聊");
     toggle.props.onClick();
     expect(onToggleForkGroup).toHaveBeenCalledWith("root");
+
+    const sidechatOnlyToggle = elements(render({
+      families: groupProjectSessionFamilies([
+        session,
+        { ...session, sessionId: "btw", title: "Sidechat", parentSessionId: "root", sidechat: true, lastActivityAt: 3 },
+      ]),
+    })).find(element => element.props.className === "mobile-fork-toggle")!;
+    expect(elements(sidechatOnlyToggle).some(element => element.type === MessageCircle)).toBe(true);
+    expect(elements(sidechatOnlyToggle).some(element => element.type === GitFork)).toBe(false);
+
     const expanded = render({ families, expandedForkParents: new Set(["root"]) });
     expect(elements(expanded).filter(element => element.props["data-session-id"]).map(element => element.props["data-session-id"])).toEqual(["root", "btw", "fork"]);
     expect(elements(row(expanded, "btw")).find(element => element.type === "em")?.props.children).toBe("/btw");
     expect(elements(row(expanded, "fork")).find(element => element.type === "em")?.props.children).toBe("experiment");
+
+    const flatExpanded = render({
+      families: groupProjectSessionFamilies([
+        session,
+        { ...session, sessionId: "fork", title: "Fork session", parentSessionId: "root", forkLabel: "fork-1", lastActivityAt: 2 },
+        { ...session, sessionId: "btw", title: "Sidechat", parentSessionId: "root", sidechat: true, turnState: "running" as const, ownership: "DESKTOP_NATIVE_RUNNING" as const, lastActivityAt: 3 },
+      ]),
+      flat: true,
+      expandedForkParents: new Set(["root"]),
+    });
+    const flatBtwIcon = elements(row(flatExpanded, "btw")).find(element => String(element.props.className).startsWith("session-fork-icon"))!;
+    expect(flatBtwIcon.props.className).toBe("session-fork-icon running");
+    expect(elements(flatBtwIcon).some(element => element.type === MessageCircle)).toBe(true);
+    const flatForkIcon = elements(row(flatExpanded, "fork")).find(element => String(element.props.className).startsWith("session-fork-icon"))!;
+    expect(flatForkIcon.props.className).toBe("session-fork-icon idle");
+    expect(elements(flatForkIcon).some(element => element.type === GitFork)).toBe(true);
+    expect(elements(row(flatExpanded, "btw")).find(element => element.type === "em")?.props.className).toContain("is-sr-only");
+    expect(elements(row(flatExpanded, "fork")).find(element => element.type === "em")?.props.className).toContain("is-sr-only");
   });
 
-  it("separates inline archived forks from archived row mode and keeps live descendants reachable", () => {
+  it("excludes archived forks from active families while keeping live descendants reachable and rendering archived rows in archive mode", () => {
     const families = groupProjectSessionFamilies([
       session,
       { ...session, sessionId: "archived", title: "Archived sidechat", parentSessionId: "root", sidechat: true, archivedAt: 3 },
       { ...session, sessionId: "live", title: "Live descendant", parentSessionId: "archived", turnState: "running" as const, ownership: "DESKTOP_NATIVE_RUNNING" as const, lastActivityAt: 4 },
     ]);
-    const mobile = render({ families, expandedForkParents: new Set(["root"]) });
-    expect(row(mobile, "archived")).toBeUndefined();
-    expect(status(row(mobile, "live"))?.props.children).toBe("桌面运行中");
-    const inline = render({ families, includeArchivedInline: true, expandedForkParents: new Set(["root", "archived"]) });
-    expect(status(row(inline))).toBeUndefined();
-    expect(status(row(inline, "archived"))?.props.children).toBe("已归档");
-    expect(status(row(inline, "live"))?.props.children).toBe("桌面运行中");
+    const active = render({ families, expandedForkParents: new Set(["root"]) });
+    expect(row(active, "archived")).toBeUndefined();
+    expect(status(row(active, "live"))?.props.children).toBe("桌面运行中");
     const archivedList = render({ families, archivedList: true, expandedForkParents: new Set(["root", "archived"]) });
     expect(status(row(archivedList))?.props.children).toBe("已归档");
+    expect(status(row(archivedList, "archived"))?.props.children).toBe("已归档");
     expect(status(row(archivedList, "live"))?.props.children).toBe("已归档");
   });
 

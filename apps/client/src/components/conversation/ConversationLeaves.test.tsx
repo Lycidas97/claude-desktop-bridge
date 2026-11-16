@@ -60,28 +60,29 @@ describe("shared hookless conversation leaf components", () => {
     expect(multiRunningHtml).toContain("正在执行 2 个工具 (Read、Edit)");
   });
 
-  it("renders ForkChainBar with optional close button and returns empty when no links exist", () => {
+  it("renders ForkChainBar only when parentSession exists with semantic icon and optional close button", () => {
     expect(renderToStaticMarkup(createElement(ForkChainBar, {
-      childForks: [],
       onSelectSession: vi.fn(),
     }))).toBe("");
 
-    const withoutCloseHtml = renderToStaticMarkup(createElement(ForkChainBar, {
+    const sidechatHtml = renderToStaticMarkup(createElement(ForkChainBar, {
       parentSession: baseSession,
-      childForks: [{ ...baseSession, sessionId: "fork-1", title: "Side note", sidechat: true }],
+      isSidechat: true,
       onSelectSession: vi.fn(),
     }));
-    expect(withoutCloseHtml).toContain("主会话：Primary session");
-    expect(withoutCloseHtml).toContain("/btw · Side note");
-    expect(withoutCloseHtml).not.toContain('aria-label="收起分支"');
+    expect(sidechatHtml).toContain("主会话：Primary session");
+    expect(sidechatHtml).toContain("lucide-corner-up-left");
+    expect(sidechatHtml).not.toContain('aria-label="收起分支"');
 
-    const withCloseHtml = renderToStaticMarkup(createElement(ForkChainBar, {
+    const forkWithCloseHtml = renderToStaticMarkup(createElement(ForkChainBar, {
       parentSession: baseSession,
-      childForks: [],
       onSelectSession: vi.fn(),
       onClose: vi.fn(),
     }));
-    expect(withCloseHtml).toContain('aria-label="收起分支"');
+    expect(forkWithCloseHtml).toContain("主会话：Primary session");
+    expect(forkWithCloseHtml).toContain("lucide-git-fork");
+    expect(forkWithCloseHtml).toContain('aria-label="收起分支"');
+    expect(forkWithCloseHtml).toContain("relay-chain-dismiss");
   });
 
   it("renders ConversationMessageItem user bubble, stream key, and uncertain delivery actions", () => {

@@ -659,7 +659,8 @@ describe("desktop conversation actions", () => {
     expect(apiRequest).not.toHaveBeenCalled();
   });
 
-  it("displays /btw sidechats under their active parent and navigates between parent and sidechats", async () => {
+  it("displays active /btw sidechats under their parent, moves archived sidechats to archive, and shows ForkChainBar only on child sessions", async () => {
+    snapshot.host.capabilities.push("session.visibility.v1");
     snapshot.sessions = [
       snapshot.sessions[0]!,
       {
@@ -681,14 +682,29 @@ describe("desktop conversation actions", () => {
       },
     ];
     await openSessions();
-    expect(textContent(tree)).toContain("2 个 /btw 侧聊");
-    expect(textContent(tree)).toContain("/btw · btw: 检查 IPv6 转发");
-    expect(textContent(tree)).toContain("/btw · btw: 收集白名单域名");
+    expect(textContent(tree)).toContain("1 个 /btw 侧聊");
+    expect(textContent(tree)).not.toContain("2 个 /btw 侧聊");
+    expect(textContent(tree)).not.toContain("btw: 收集白名单域名");
+    expect(elements(tree).some((element) => element.props?.className === "relay-chain-bar fork-chain-bar")).toBe(false);
     const toggle = elements(tree).find((element) => element.type === "button" && element.props.className === "mobile-fork-toggle")!;
     toggle.props.onClick();
     tree = sessions.draw();
+    expect(textContent(tree)).toContain("btw: 检查 IPv6 转发");
+    expect(textContent(tree)).not.toContain("btw: 收集白名单域名");
     const badges = elements(tree).filter((element) => element.type === "em" && String(element.props.className).includes("is-sidechat"));
-    expect(badges.map((badge) => badge.props.children)).toEqual(["/btw", "/btw"]);
+    expect(badges.map((badge) => badge.props.children)).toEqual(["/btw"]);
+
+    elements(tree).find((element) => element.props["aria-controls"] === "desktop-archived-sessions")!.props.onClick();
+    tree = sessions.draw();
+    const archivedGroup = elements(tree).find((element) => element.props.id === "desktop-archived-sessions")!;
+    expect(textContent(archivedGroup)).toContain("btw: 收集白名单域名");
+    expect(textContent(archivedGroup)).toContain("已归档");
+
+    elements(tree).find((element) => element.type === "button" && element.props.className === "session-row-hit" && textContent(element).includes("btw: 检查 IPv6 转发"))!.props.onClick();
+    await settle();
+    tree = sessions.draw();
+    const forkBar = elements(tree).find((element) => element.props.className === "relay-chain-bar fork-chain-bar")!;
+    expect(textContent(forkBar)).toContain("主会话：Session A");
   });
 });
 

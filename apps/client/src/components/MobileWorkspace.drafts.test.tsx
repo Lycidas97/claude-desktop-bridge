@@ -10,6 +10,7 @@ import { ConversationMessageItem } from "./conversation/ConversationMessageItem.
 import { ConversationToolGroup } from "./conversation/ConversationToolGroup.js";
 import { ForkChainBar } from "./conversation/ForkChainBar.js";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
+import { CornerUpLeft } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { conversationItems } from "../lib/conversation-timeline.js";
 import { InteractivePromptCard, PermissionPrompt } from "./conversation/PermissionPrompts.js";
@@ -2058,7 +2059,7 @@ describe("sidechat and slash command integration", () => {
     expect(props.onSendTurn).not.toHaveBeenCalled();
   });
 
-  it("excludes archived sidechats from the active parent session menu and fork chain once archived", async () => {
+  it("never shows outbound child forks in parent conversation or menu while keeping parent link on child sessions", async () => {
     const activeSidechat: BridgeSessionInfo = { ...props.snapshot!.sessions[1]!, sessionId: "btw-live", title: "btw: Live", parentSessionId: "A", sidechat: true };
     const archivedSidechat: BridgeSessionInfo = { ...props.snapshot!.sessions[1]!, sessionId: "btw-done", title: "btw: Done", parentSessionId: "A", sidechat: true, archivedAt: 100 };
     const clickHeaderMenu = () => {
@@ -2068,27 +2069,49 @@ describe("sidechat and slash command integration", () => {
     };
     props = { ...props, snapshot: { ...props.snapshot!, sessions: [props.snapshot!.sessions[0]!, activeSidechat, archivedSidechat] } };
     draw();
-    clickHeaderMenu();
-    const menuLabelsBefore = elements(tree).map(element => element.props?.label).filter(Boolean);
-    expect(menuLabelsBefore).toContain("侧聊 1");
-    expect(menuLabelsBefore).not.toContain("侧聊 2");
-    elements(tree).find(element => element.props?.label === "侧聊 1")!.props.onClick();
-    draw();
-    expect(elements(tree).some(element => Array.isArray(element.props?.children) && element.props.children.includes("/btw · btw: Live"))).toBe(true);
-    expect(elements(tree).some(element => Array.isArray(element.props?.children) && element.props.children.includes("/btw · btw: Done"))).toBe(false);
-
-    props = {
-      ...props,
-      snapshot: {
-        ...props.snapshot!,
-        sessions: [props.snapshot!.sessions[0]!, { ...activeSidechat, archivedAt: 200 }, archivedSidechat],
-      },
-    };
-    draw();
     expect(elements(tree).some(element => element.props?.className === "relay-chain-bar fork-chain-bar")).toBe(false);
     clickHeaderMenu();
-    const menuLabelsAfter = elements(tree).map(element => element.props?.label).filter(Boolean);
-    expect(menuLabelsAfter.some(label => String(label).startsWith("侧聊"))).toBe(false);
+    const menuLabelsOnParent = elements(tree).map(element => element.props?.label).filter(Boolean);
+    expect(menuLabelsOnParent.some(label => /^(?:分支|侧聊|分支与侧聊)\s+\d+/u.test(String(label)))).toBe(false);
+
+    open("btw-live");
+    expect(elements(tree).some(element => Array.isArray(element.props?.children) && element.props.children.includes("主会话：Session A"))).toBe(true);
+    clickHeaderMenu();
+    const parentMenuAction = elements(tree).find(element => element.props?.label === "主会话")!;
+    expect((parentMenuAction.props.icon as ReactElement).type).toBe(CornerUpLeft);
+    parentMenuAction.props.onClick();
+    await settle();
+    expect(props.onOpenSession).toHaveBeenLastCalledWith("A");
+    expect(elements(tree).some(element => element.props?.className === "relay-chain-bar fork-chain-bar")).toBe(false);
+  });
+
+  it.each([false, true])("shows the parent ForkChainBar when auto-opening a child session by default (sidechat=%s)", async sidechat => {
+    const initialSnapshot = props.snapshot!;
+    const parent = { ...initialSnapshot.sessions[0]!, sessionId: "A", title: "Session A", lastActivityAt: 10 };
+    const child = {
+      ...initialSnapshot.sessions[1]!,
+      sessionId: "child-first",
+      title: "Child First",
+      parentSessionId: "A",
+      ...(sidechat ? { sidechat: true } : { forkLabel: "fork-1" }),
+      lastActivityAt: 20,
+    };
+    hooks.slots = [];
+    hooks.effects = [];
+    hooks.pending = [];
+    const { focusRequest: _omitted, ...restProps } = props;
+    props = {
+      ...restProps,
+      snapshot: undefined,
+    };
+    draw();
+    props = {
+      ...props,
+      snapshot: { ...initialSnapshot, sessions: [child, parent] },
+    };
+    draw();
+    await settle();
+    expect(elements(tree).some(element => Array.isArray(element.props?.children) && element.props.children.includes("主会话：Session A"))).toBe(true);
   });
 });
 

@@ -5592,12 +5592,6 @@ button:disabled {
   background: var(--surface-2);
 }
 
-.desktop-project-list .session-fork-badge,
-.desktop-project-list .session-fork-badge.is-sidechat {
-  background: var(--surface);
-  color: var(--text);
-}
-
 .desktop-project-list .session-row-v2.active .session-row-status,
 .desktop-project-list .session-row-status.running,
 .desktop-project-list .session-row-status.waiting,
@@ -5642,8 +5636,7 @@ button:disabled {
   padding-left: 20px;
 }
 
-.desktop-conversation .relay-chain-bar,
-.desktop-conversation > .fork-chain-bar {
+.desktop-conversation .relay-chain-bar:not(.fork-chain-bar) {
   padding: 8px 20px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
@@ -7673,9 +7666,9 @@ button:disabled {
 
 .mobile-fork-children {
   display: grid;
-  margin-top: 6px;
+  margin-top: 4px;
   padding-left: 10px;
-  border-left: 2px solid color-mix(in srgb, var(--accent) 38%, var(--line-strong));
+  border-left: 1px solid var(--line-strong);
 }
 
 .session-row-v2.is-fork-child {
@@ -8859,9 +8852,52 @@ button:disabled {
   font-weight: 560;
 }
 
-.is-flat-tree .session-fork-badge {
+.is-flat-tree .session-fork-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.is-flat-tree .session-fork-icon.running {
+  color: var(--accent-ink);
+}
+
+.is-flat-tree .session-fork-icon.waiting,
+.is-flat-tree .session-fork-icon.queued {
+  color: var(--warm-ink);
+}
+
+:root:not([data-theme="dark"]):not([data-theme-family="apple"]) .is-flat-tree .session-row-v2.active .session-fork-icon.waiting,
+:root:not([data-theme="dark"]):not([data-theme-family="apple"]) .is-flat-tree .session-row-v2.active .session-fork-icon.queued {
+  color: #7f5610;
+}
+
+.is-flat-tree .session-row-v2.active .session-fork-icon.idle {
+  color: var(--text);
+}
+
+.session-fork-badge.is-sr-only {
+  position: fixed;
+  top: 0;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  margin: 0;
   padding: 0;
-  margin-right: 5px;
+  border: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.is-flat-tree .session-fork-badge {
+  flex: none;
+  padding: 0;
+  margin: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -8933,12 +8969,20 @@ button:disabled {
 
 .is-flat-tree .session-row-v2.is-fork-child .session-row-hit {
   min-height: 32px;
-  padding: 6px 8px 6px 10px;
+  gap: 7px;
+  padding: 6px 8px 6px 7px;
 }
 
 .is-flat-tree .mobile-fork-group {
   padding: 0 4px 4px 18px;
   background: transparent;
+}
+
+.is-flat-tree .mobile-fork-children {
+  margin-top: 2px;
+  margin-left: 8px;
+  padding-left: 6px;
+  border-left: 1px solid var(--line-strong);
 }
 
 .is-flat-tree .mobile-fork-toggle {
@@ -9349,4 +9393,63 @@ button:disabled {
   background: color-mix(in srgb, var(--text) 8%, transparent);
   color: var(--text);
   font-weight: 580;
+}
+
+/* M18: De-pilled, borderless lightweight ForkChainBar aligned with reading column */
+.fork-chain-bar {
+  gap: 6px;
+  padding: 6px max(16px, env(safe-area-inset-right)) 2px max(16px, env(safe-area-inset-left));
+  border-bottom: 0;
+  background: transparent;
+}
+
+.desktop-conversation .fork-chain-bar,
+.desktop-conversation > .fork-chain-bar {
+  width: 100%;
+  margin: 0;
+  padding: 8px max(24px, calc((100% - 740px) / 2)) 2px;
+  border-bottom: 0;
+  background: transparent;
+}
+
+.fork-chain-bar .relay-chain-link {
+  min-height: 24px;
+  gap: 5px;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text) 4.5%, transparent);
+  color: var(--muted);
+  font-size: calc(12px * var(--font-scale));
+  font-weight: 480;
+  line-height: 1.35;
+  transition: background var(--t-fast) ease, color var(--t-fast) ease;
+}
+
+.fork-chain-bar .relay-chain-link > svg {
+  color: currentColor;
+}
+
+.fork-chain-bar .relay-chain-link:hover {
+  border: 0;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
+.fork-chain-bar .relay-chain-link.relay-chain-dismiss {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  justify-content: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.fork-chain-bar .relay-chain-link.relay-chain-dismiss:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
 }

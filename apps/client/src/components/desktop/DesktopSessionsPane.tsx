@@ -701,7 +701,6 @@ export function DesktopSessions({
                               permissions={snapshot.permissions}
                               expandedForkParents={expandedForkParents}
                               selectedId={activeTab === "sessions" ? selectedId : undefined}
-                              includeArchivedInline
                               flat
                               actionLabel={(session) => `会话操作：${session.title}`}
                               onSelectSession={selectSessionFromSidebar}

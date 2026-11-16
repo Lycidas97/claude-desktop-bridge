@@ -250,7 +250,9 @@ async function launchUI() {
   ui.page = await waitFor(() => instance.windows().find(page => page.url().startsWith('file:')), Boolean, 'compiled renderer window', 45_000);
   ui.page.on('pageerror', error => uiErrors.push(String(error)));
   await ui.page.waitForFunction(async sessionId => Boolean((await window.bridgeDesktop?.getSnapshot())?.sessions.some(session => session.sessionId === sessionId)), desktop.sessionId, { timeout: 45_000 });
-  await ui.page.getByRole('button', { name: '会话', exact: true }).click();
+  const sessionHit = ui.page.locator(`[data-session-id="${desktop.sessionId}"] .session-row-hit`);
+  await sessionHit.waitFor();
+  await sessionHit.click();
   return ui.page.evaluate(() => window.bridgeDesktop.getSnapshot());
 }
 
@@ -359,7 +361,8 @@ try {
       backgroundMonitorStarted: true, bannerUsesInjectedTcpFixture: true, monitorPathsVisible: true,
       monitorAlertHistoryVisible: true, inspector: inspectorCheck.proof,
     });
-    await page.getByRole('button', { name: '会话', exact: true }).click();
+    await page.locator(`[data-session-id="${desktop.sessionId}"] .session-row-hit`).click();
+    await page.locator('.conversation-workspace').waitFor();
     checkpoints.push('developer settings and monitor display coexist with isolated Native sessions');
     console.log('PASS developer settings, real TCP/helper and injected monitor UI');
   }

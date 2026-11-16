@@ -5,7 +5,14 @@ const mocks = vi.hoisted(() => ({
   runtimeClose: vi.fn(async () => {}), serverClose: vi.fn(async () => {}),
   spawn: vi.fn(), logOpen: vi.fn(), logClose: vi.fn(async () => {}),
   developerSettings: vi.fn(), memoryInitialize: vi.fn(), memoryClose: vi.fn(),
-  windows: [] as Array<{ loadURL: ReturnType<typeof vi.fn>; show: ReturnType<typeof vi.fn>; webContents: { executeJavaScript: ReturnType<typeof vi.fn> } }>,
+  shouldUseDarkColors: true,
+  windows: [] as Array<{
+    options?: Record<string, unknown> | undefined;
+    loadURL: ReturnType<typeof vi.fn>;
+    show: ReturnType<typeof vi.fn>;
+    setBackgroundColor: ReturnType<typeof vi.fn>;
+    webContents: { emit(event: string, ...args: unknown[]): boolean; executeJavaScript: ReturnType<typeof vi.fn> };
+  }>,
 }));
 vi.mock("./app/claude-desktop-developer-settings.js", () => ({ claudeDesktopDeveloperSettings: mocks.developerSettings }));
 vi.mock("./app/service-runtime.js", () => ({ createServiceRuntime: mocks.runtime }));
@@ -31,9 +38,10 @@ vi.mock("electron", async () => {
     focus = vi.fn();
     hide = vi.fn();
     removeMenu = vi.fn();
+    setBackgroundColor = vi.fn();
     isDestroyed() { return false; }
     destroy = vi.fn();
-    constructor() { super(); mocks.windows.push(this); }
+    constructor(readonly options?: Record<string, unknown>) { super(); mocks.windows.push(this); }
   }
   class Tray extends EventEmitter {
     setToolTip = vi.fn();
@@ -44,7 +52,9 @@ vi.mock("electron", async () => {
     dialog: { showErrorBox: vi.fn(), showOpenDialog: vi.fn(), showMessageBox: vi.fn(), showSaveDialog: vi.fn() },
     protocol: { registerSchemesAsPrivileged: vi.fn() }, ipcMain: { handle: vi.fn() },
     Menu: { buildFromTemplate: vi.fn(() => ({ getMenuItemById: vi.fn(() => ({ checked: false })) })) },
-    nativeImage: { createFromPath: vi.fn(() => ({ resize: vi.fn(), setTemplateImage: vi.fn() })) }, shell: { openExternal: vi.fn(async () => {}) },
+    nativeImage: { createFromPath: vi.fn(() => ({ resize: vi.fn(), setTemplateImage: vi.fn() })) },
+    nativeTheme: { get shouldUseDarkColors() { return mocks.shouldUseDarkColors; }, themeSource: "system" as "system" | "light" | "dark" },
+    shell: { openExternal: vi.fn(async () => {}) },
     systemPreferences: { isTrustedAccessibilityClient: vi.fn(() => false) },
   };
 });
@@ -403,4 +413,32 @@ it("validates rendererDiagnostics at the IPC boundary, merges service + renderer
     stateGauges: { controller: { activeDevices: 1 } },
     renderer: rendererPayload,
   });
+});
+
+it("configures macOS hiddenInset titlebar and syncs nativeTheme + backgroundColor with renderer theme-color", async () => {
+  process.argv = originalArgv;
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  const { EventEmitter } = await import("node:events");
+  const { nativeTheme } = await import("electron");
+  mocks.shouldUseDarkColors = true;
+  nativeTheme.themeSource = "system";
+  mocks.connect.mockResolvedValueOnce(Object.assign(new EventEmitter(), {
+    call: vi.fn(async () => ({ launchAtLogin: false, sessions: [] })),
+    close: vi.fn(),
+  }));
+  await import("./main.js");
+  await vi.waitFor(() => expect(mocks.windows.length).toBeGreaterThanOrEqual(2));
+  const mainWin = mocks.windows[1]!;
+  expect(mainWin.options).toMatchObject({
+    backgroundColor: "#191816",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 16, y: 16 },
+  });
+  mainWin.webContents.emit("did-change-theme-color", {}, "#faf9f5");
+  expect(nativeTheme.themeSource).toBe("light");
+  expect(mainWin.setBackgroundColor).toHaveBeenCalledWith("#faf9f5");
+  mainWin.webContents.executeJavaScript.mockResolvedValueOnce("#1c1c1e");
+  mainWin.webContents.emit("did-finish-load");
+  await vi.waitFor(() => expect(nativeTheme.themeSource).toBe("dark"));
+  expect(mainWin.setBackgroundColor).toHaveBeenLastCalledWith("#1c1c1e");
 });

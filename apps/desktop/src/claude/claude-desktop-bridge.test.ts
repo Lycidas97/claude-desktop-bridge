@@ -13,6 +13,7 @@ import { InspectorDisconnectedError, NativeCallError } from "./claude-desktop-in
 import { ConversationStateStore } from "../controller/conversation-state-store.js";
 import { SessionEventLog } from "../controller/session-event-log.js";
 import { magpieModelIdHash } from "./claude-runtime-discovery.js";
+import { MagpieConnectionRepository } from "./magpie-connection.js";
 import type { ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
 import { createNativeSectionFixture } from "../../../../scripts/fixtures/native-section-store.js";
 
@@ -1573,7 +1574,7 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("does not label an unknown native alias as an unrelated saved model", async () => {
+  it("does not label an unknown native alias as an unrelated saved model or expose raw synthetic hashes", async () => {
     const f = await fixture();
     try {
       const alias = "mythos-magpie-0000000000";
@@ -1582,8 +1583,10 @@ describe("Claude native relay", () => {
         { model: "fixture-provider/model-alpha", label: "Unrelated model" },
       ] } }));
       await f.bridge.refreshRuntime();
-      expect(f.bridge.session("local-native")?.modelDisplayName).toBe(alias);
-      expect(await f.bridge.configuration("local-native")).toMatchObject({ model: alias, modelDisplayName: alias });
+      expect(f.bridge.session("local-native")?.modelDisplayName).toBeUndefined();
+      const config = await f.bridge.configuration("local-native");
+      expect(config.model).toBe(alias);
+      expect(config.modelDisplayName).toBeUndefined();
     } finally { await f.close(); }
   });
 
@@ -3838,5 +3841,141 @@ describe("Claude native relay", () => {
       expect(changed).toBe(1);
       expect(f.bridge.session("local-native")?.runningSubagents).toBeUndefined();
     } finally { await f.close(); }
+  });
+
+  it("discovers configLibrary Magpie gateways, caches /v1/models across refreshes, and resolves Windows/Mac synthetic model labels", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-magpie-runtime-"));
+    const state = new ConversationStateStore({ databasePath: join(root, "state.sqlite") });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    const deepseekId = "remote-magpie/deepseek/deepseek-flash";
+    const deepseekAlias = `mythos-magpie-${magpieModelIdHash(deepseekId)}`;
+    const fableAlias = `magpie-${magpieModelIdHash("claude/claude-fable-5-2")}.anthropic.claude-fable-5-2[1m]`;
+    native.sessions = [
+      { sessionId: "win-session", cwd: "/project", title: "Win", isRunning: true, turnRunning: false, permissionMode: "default", model: deepseekAlias, pendingToolPermissions: [] },
+      { sessionId: "mac-session", cwd: "/project", title: "Mac", isRunning: true, turnRunning: false, permissionMode: "default", model: fableAlias, pendingToolPermissions: [] },
+    ];
+    const localAppData = join(root, "AppData", "Local");
+    const roamingAppData = join(root, "AppData", "Roaming");
+    const configLib = join(localAppData, "Claude-3p", "configLibrary");
+    await mkdir(configLib, { recursive: true });
+    await writeFile(join(configLib, "_meta.json"), JSON.stringify({ appliedId: "active" }));
+    await writeFile(join(configLib, "active.json"), JSON.stringify({
+      inferenceProvider: "gateway",
+      inferenceGatewayBaseUrl: "http://127.0.0.1:3425",
+      inferenceGatewayAuthScheme: "bearer",
+      inferenceGatewayApiKey: "test-magpie-token",
+      inferenceModels: [
+        { name: "magpie-5782219464.anthropic.claude-fable-5-2", labelOverride: "Claude Fable 5.2 · Offline", prefer1m: true, supports1m: true },
+      ],
+    }), { mode: 0o600 });
+
+    const magpieConnection = new MagpieConnectionRepository(join(root, "magpie-connection-v1.json"), {
+      isEncryptionAvailable: () => true,
+      encryptString: text => Buffer.from(text, "utf8"),
+      decryptString: buf => buf.toString("utf8"),
+    });
+    let currentTime = 1_000;
+    let failGateway = true;
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      if (failGateway) throw new Error("offline");
+      if (String(url).includes("/magpie/quotas")) {
+        return Response.json({ data: [{ provider: "deepseek", user: "synthetic", windows: [] }] });
+      }
+      return Response.json({
+        data: [
+          { id: deepseekId, display_name: "DeepSeek-V4.1-Flash", magpie_label: "DeepSeek-V4.1-Flash · DeepSeek · Remote magpie", max_input_tokens: 1_048_576 },
+          { id: "claude/claude-fable-5-2", display_name: "Claude Fable 5.2", magpie_label: "Claude Fable 5.2 · Claude Code", max_input_tokens: 1_000_000, supports_1m: true },
+        ],
+      });
+    }) as unknown as typeof fetch;
+
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath: join(root, "settings.json"),
+      eventLog,
+      conversationState: state,
+      inspector: native,
+      magpieConnection,
+      platform: "win32",
+      home: root,
+      environment: { APPDATA: roamingAppData, LOCALAPPDATA: localAppData, ANTHROPIC_BASE_URL: "https://ambient.other.invalid" },
+      fetchImpl,
+      now: () => currentTime,
+      gatewayModelsCacheMs: 60_000,
+      refreshIntervalMs: 60_000,
+    });
+    try {
+      await bridge.initialize();
+      // Even when initial /v1/models fails, snapshot.magpie is populated and offline configLibrary inferenceModels + humanized slug avoid raw IDs.
+      expect(bridge.magpieSettings()).toEqual({
+        magpie: { mode: "auto", baseUrl: "http://127.0.0.1:3425", authScheme: "bearer", keyConfigured: true },
+      });
+      expect(bridge.session("mac-session")?.modelDisplayName).toBe("Claude Fable 5.2 · Offline");
+      expect(bridge.session("win-session")?.modelDisplayName).toBeUndefined();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+      // Background refresh within negative cache TTL does not hammer /v1/models.
+      currentTime += 2_000;
+      await bridge.refreshRuntime();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+      // Explicit configuration() retries a failed initial fetch immediately and loads full Windows Magpie catalog.
+      failGateway = false;
+      const winConfig = await bridge.configuration("win-session");
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(winConfig.modelsComplete).toBe(true);
+      expect(winConfig.model).toBe(deepseekId);
+      expect(winConfig.modelDisplayName).toBe("DeepSeek-V4.1-Flash");
+      expect(bridge.session("win-session")?.modelDisplayName).toBe("DeepSeek-V4.1-Flash");
+
+      // Subsequent configuration() and refreshRuntime() within 60s reuse the cached catalog without extra HTTP calls.
+      currentTime += 5_000;
+      await bridge.refreshRuntime();
+      await bridge.configuration("mac-session");
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+      // If a later post-TTL background refresh fails, stale models are retained with ok=false so explicit configuration() retries immediately.
+      currentTime += 65_000;
+      failGateway = true;
+      await bridge.refreshRuntime();
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      expect(bridge.session("win-session")?.modelDisplayName).toBe("DeepSeek-V4.1-Flash");
+      currentTime += 1_000;
+      await bridge.refreshRuntime();
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      failGateway = false;
+      await bridge.configuration("win-session");
+      expect(fetchImpl).toHaveBeenCalledTimes(4);
+
+      // Unsaved testMagpieConnection({ mode: "auto" }) uses full configLibrary gateway discovery even while saved mode is manual.
+      await bridge.saveMagpieConnection({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "bearer", apiKey: "manual-key" });
+      expect(fetchImpl).toHaveBeenCalledTimes(5);
+      await expect(bridge.testMagpieConnection({ mode: "auto" })).resolves.toEqual({
+        models: { state: "ready", count: 4 },
+        quota: { state: "available" },
+      });
+      await bridge.saveMagpieConnection({ mode: "auto" });
+
+      // When settings.json saves unprefixed claude-fable-5-2[1m], slug fallback matches both session display and configureSession.
+      await writeFile(join(root, "settings.json"), JSON.stringify({
+        modelPicker: { options: [{ model: "claude-fable-5-2[1m]", label: "Claude Fable 5.2 · Claude Code" }] },
+      }));
+      await bridge.refreshRuntime();
+      expect(bridge.session("mac-session")?.modelDisplayName).toBe("Claude Fable 5.2 · Claude Code");
+      native.codeModels = ["magpie-5782219464.anthropic.claude-fable-5-2"];
+      const updated = await bridge.configureSession({ sessionId: "mac-session", model: "claude-fable-5-2[1m]" });
+      expect(native.calls.find(call => call.method === "setModel")?.args).toEqual([
+        "mac-session",
+        "magpie-5782219464.anthropic.claude-fable-5-2[1m]",
+      ]);
+      expect(updated.modelDisplayName).toBe("Claude Fable 5.2 · Claude Code");
+    } finally {
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

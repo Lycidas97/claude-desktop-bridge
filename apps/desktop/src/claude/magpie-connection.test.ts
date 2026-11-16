@@ -102,4 +102,29 @@ describe("Magpie connection storage and authentication", () => {
     expect(result.quota.state).toBe("error");
     expect(JSON.stringify(result)).not.toContain(manual.apiKey);
   });
+
+  it("recovers cleanly when safeStorage decryption fails after app re-signing instead of crashing startup", async () => {
+    const { path, repository } = await fixture();
+    await repository.save(repository.resolve(manual));
+    const reSignedStorage: SafeStorageLike = {
+      isEncryptionAvailable: () => true,
+      encryptString: storage.encryptString,
+      decryptString: () => { throw new Error("Keychain access denied after re-signing"); },
+    };
+    const recovered = new MagpieConnectionRepository(path, reSignedStorage);
+    await expect(recovered.initialize()).resolves.toBeUndefined();
+    expect(recovered.isManual()).toBe(true);
+    expect(recovered.settings()).toEqual({
+      mode: "manual",
+      baseUrl: manual.baseUrl,
+      authScheme: manual.authScheme,
+      keyConfigured: false,
+    });
+    const stripped = recovered.apply(automatic);
+    expect(stripped.credentialPath).toBeUndefined();
+    expect(stripped.environment.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(stripped.environment.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    await expect(resolveClaudeGatewayConfig(stripped)).resolves.toBeUndefined();
+    expect(() => recovered.resolve({ ...manual, apiKey: "" })).toThrow("重新输入");
+  });
 });

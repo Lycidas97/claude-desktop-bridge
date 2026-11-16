@@ -2,9 +2,10 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { BridgeEffort, BridgeModelInfo, BridgeRuntimeDetection } from "@bridge/protocol";
+import { claudeDesktopProfileDirectories } from "../app/platform.js";
 
 const execFileAsync = promisify(execFile);
 const GATEWAY_EFFORT_LEVELS = new Set<BridgeEffort>(["low", "medium", "high", "xhigh", "max"]);
@@ -81,20 +82,10 @@ async function isExecutable(path: string, platform = process.platform): Promise<
 function credentialRoots(
   home: string,
   environment: NodeJS.ProcessEnv,
-  platform = process.platform,
+  platform: NodeJS.Platform = process.platform,
 ): string[] {
-  if (platform === "darwin") {
-    return [
-      join(home, "Library", "Application Support", "Claude-3p"),
-      join(home, "Library", "Application Support", "Claude"),
-    ];
-  }
-  if (platform === "win32") {
-    const appData = environment.APPDATA ?? join(home, "AppData", "Roaming");
-    return [join(appData, "Claude-3p"), join(appData, "Claude")];
-  }
-  const configHome = environment.XDG_CONFIG_HOME ?? join(home, ".config");
-  return [join(configHome, "Claude-3p"), join(configHome, "Claude")];
+  const profiles = claudeDesktopProfileDirectories(platform, environment, home);
+  return [...new Set([...profiles["Claude-3p"], ...profiles.Claude])];
 }
 
 async function protectedCredential(
@@ -239,40 +230,17 @@ export async function prepareClaudeRuntime(
   } else {
     // Desktop passes fixed gateway keys directly; recent versions no longer
     // materialize host-creds files for this credential source.
-    for (const root of credentialRoots(home, prepared, platform)) {
-      let entry: ConfigLibraryEntryFile;
-      let path: string;
-      try {
-        const library = join(root, "configLibrary");
-        const meta = JSON.parse(await readFile(join(library, "_meta.json"), "utf8")) as ConfigLibraryMetaFile;
-        const appliedId = nonEmptyString(meta?.appliedId);
-        if (!appliedId || !/^[a-z0-9._-]+$/iu.test(appliedId)) continue;
-        path = join(library, `${appliedId}.json`);
-        if (!await protectedCredential(path, platform)) continue;
-        entry = JSON.parse(await readFile(path, "utf8")) as ConfigLibraryEntryFile;
-      } catch {
-        // A profile may have no saved gateway configuration.
-        continue;
-      }
-      const baseUrl = nonEmptyString(entry?.inferenceGatewayBaseUrl);
-      const key = nonEmptyString(entry?.inferenceGatewayApiKey);
-      const scheme = entry?.inferenceGatewayAuthScheme;
-      if (
-        entry?.inferenceProvider !== "gateway" || !baseUrl || !key ||
-        (scheme !== "bearer" && scheme !== "x-api-key")
-      ) continue;
-      const url = URL.parse(baseUrl);
-      if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) continue;
-      credentialPath = path;
+    const fixed = await findClaudeFixedGateway(prepared, home, undefined, platform);
+    if (fixed) {
+      credentialPath = fixed.path;
       configType = "fixed-gateway";
-      prepared.ANTHROPIC_BASE_URL = baseUrl;
-      prepared.ANTHROPIC_AUTH_TOKEN = scheme === "bearer" ? key : "";
-      prepared.ANTHROPIC_API_KEY = scheme === "x-api-key" ? key : "";
-      prepared.CLAUDE_CODE_HOST_AUTH_ENV_VAR = scheme === "bearer" ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY";
+      prepared.ANTHROPIC_BASE_URL = fixed.gateway.baseUrl;
+      prepared.ANTHROPIC_AUTH_TOKEN = fixed.gateway.authScheme === "bearer" ? fixed.gateway.authToken ?? "" : "";
+      prepared.ANTHROPIC_API_KEY = fixed.gateway.authScheme === "x-api-key" ? fixed.gateway.apiKey ?? "" : "";
+      prepared.CLAUDE_CODE_HOST_AUTH_ENV_VAR = fixed.gateway.authScheme === "bearer" ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY";
       prepared.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = "1";
       delete prepared.CLAUDE_CODE_HOST_CREDS_FILE;
       delete prepared.CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH;
-      break;
     }
   }
   const executablePath = await findClaudeExecutable(prepared, home, platform);
@@ -296,7 +264,7 @@ export async function prepareClaudeRuntime(
     configSource: {
       type: configType === "none" && prepared.ANTHROPIC_BASE_URL ? "environment" : configType,
       profile: credentialPath && /(?:^|[\\/])Claude-3p(?:[\\/]|$)/iu.test(credentialPath) ? "claude-3p"
-        : credentialPath && /(?:^|[\\/])Claude(?:[\\/]|$)/iu.test(credentialPath) ? "claude" : "unknown",
+        : credentialPath && /(?:^|[\\/])(?:Claude|claude_[^\\/]+)(?:[\\/]|$)/iu.test(credentialPath) ? "claude" : "unknown",
       ...(credentialPath ? { path: credentialPath } : {}),
     },
     ...(executablePath ? { executablePath } : {}),
@@ -324,11 +292,19 @@ interface ConfigLibraryMetaFile {
   appliedId?: unknown;
 }
 
+interface ConfigLibraryInferenceModel {
+  name?: unknown;
+  labelOverride?: unknown;
+  prefer1m?: unknown;
+  supports1m?: unknown;
+}
+
 interface ConfigLibraryEntryFile {
   inferenceProvider?: unknown;
   inferenceGatewayBaseUrl?: unknown;
   inferenceGatewayAuthScheme?: unknown;
   inferenceGatewayApiKey?: unknown;
+  inferenceModels?: unknown;
 }
 
 interface GatewayModelPayload {
@@ -370,12 +346,160 @@ export function parseMagpieSyntheticModelId(
   };
 }
 
+export function normalizeAnthropicModelSlug(rawModel: string | undefined): string | undefined {
+  const trimmed = rawModel?.trim().replace(/\[1m\]$/iu, "");
+  if (!trimmed) return undefined;
+  const alias = parseMagpieSyntheticModelId(trimmed);
+  let candidate = alias ? alias.anthropicModel : trimmed;
+  if (!candidate) return undefined;
+  const slash = candidate.indexOf("/");
+  if (slash >= 0) {
+    const provider = candidate.slice(0, slash).toLowerCase();
+    if (provider !== "claude" && provider !== "anthropic") return undefined;
+    candidate = candidate.slice(slash + 1);
+  }
+  const normalized = candidate
+    .toLowerCase()
+    .replace(/^(?:us|eu|apac|au|global)\.anthropic\./u, "")
+    .replace(/-v\d+:\d+$/u, "")
+    .replace(/-(?:20\d{6}|latest)$/u, "")
+    .replace(/(\d)\.(\d)/gu, "$1-$2");
+  return normalized || undefined;
+}
+
+export function humanizeMagpieAnthropicModel(rawModel: string | undefined): string | undefined {
+  const alias = parseMagpieSyntheticModelId(rawModel);
+  if (!alias) return rawModel?.trim() || undefined;
+  if (!alias.anthropicModel) return undefined;
+  const cleaned = alias.anthropicModel
+    .trim()
+    .replace(/^(?:us|eu|apac|au|global)\.anthropic\./iu, "")
+    .replace(/-v\d+:\d+$/iu, "")
+    .replace(/-(?:20\d{6}|latest)$/iu, "")
+    .replace(/(\d)-(\d)/gu, "$1.$2");
+  const label = cleaned
+    .split(/[-_]+/u)
+    .filter(Boolean)
+    .map((part) => (/^[a-z]/iu.test(part) ? part[0]!.toUpperCase() + part.slice(1) : part))
+    .join(" ");
+  if (!label) return undefined;
+  return alias.longContext ? `${label} · 1M` : label;
+}
+
 interface GatewayModelsResponsePayload {
   data?: unknown;
 }
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function parseFixedGatewayEntry(entry: ConfigLibraryEntryFile | undefined): ClaudeGatewayConfig | undefined {
+  const baseUrl = nonEmptyString(entry?.inferenceGatewayBaseUrl);
+  const key = nonEmptyString(entry?.inferenceGatewayApiKey);
+  const scheme = entry?.inferenceGatewayAuthScheme;
+  if (
+    entry?.inferenceProvider !== "gateway" || !baseUrl || !key ||
+    (scheme !== "bearer" && scheme !== "x-api-key")
+  ) return undefined;
+  const url = URL.parse(baseUrl);
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) return undefined;
+  return {
+    baseUrl,
+    authScheme: scheme,
+    ...(scheme === "bearer" ? { authToken: key } : { apiKey: key }),
+  };
+}
+
+function parseConfigLibraryInferenceModels(rawModels: unknown): BridgeModelInfo[] {
+  if (!Array.isArray(rawModels)) return [];
+  const results: BridgeModelInfo[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawModels) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as ConfigLibraryInferenceModel;
+    const name = nonEmptyString(item.name);
+    const label = nonEmptyString(item.labelOverride);
+    if (!name || !label) continue;
+    const value = item.prefer1m === true && !/\[1m\]$/iu.test(name) ? `${name}[1m]` : name;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    const supports1m = item.supports1m === true || item.prefer1m === true || /\[1m\]$/iu.test(value);
+    results.push({
+      value,
+      displayName: label,
+      ...(supports1m ? { maxInputTokens: GATEWAY_LONG_CONTEXT_TOKENS } : {}),
+    });
+  }
+  return results;
+}
+
+export async function findClaudeFixedGateway(
+  environment: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+  roots?: string[],
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ path: string; gateway: ClaudeGatewayConfig; inferenceModels: BridgeModelInfo[] } | undefined> {
+  for (const root of roots ?? credentialRoots(home, environment, platform)) {
+    let entry: ConfigLibraryEntryFile;
+    let path: string;
+    try {
+      const library = join(root, "configLibrary");
+      const meta = JSON.parse(await readFile(join(library, "_meta.json"), "utf8")) as ConfigLibraryMetaFile;
+      const appliedId = nonEmptyString(meta?.appliedId);
+      if (!appliedId || !/^[a-z0-9._-]+$/iu.test(appliedId)) continue;
+      path = join(library, `${appliedId}.json`);
+      if (!await protectedCredential(path, platform)) continue;
+      entry = JSON.parse(await readFile(path, "utf8")) as ConfigLibraryEntryFile;
+    } catch {
+      // A profile may have no saved gateway configuration.
+      continue;
+    }
+    const gateway = parseFixedGatewayEntry(entry);
+    if (gateway) return { path, gateway, inferenceModels: parseConfigLibraryInferenceModels(entry.inferenceModels) };
+  }
+  return undefined;
+}
+
+export async function discoverClaudeGatewayConfig(options: {
+  environment?: NodeJS.ProcessEnv;
+  home?: string;
+  platform?: NodeJS.Platform;
+  roots?: string[];
+  settingsPath?: string;
+} = {}): Promise<ClaudeGatewayConfig | undefined> {
+  const environment = options.environment ?? process.env;
+  const home = options.home ?? homedir();
+  const platform = options.platform ?? process.platform;
+  const credentialPath = await findClaudeHostCredentials(environment, home, options.roots, platform);
+  if (credentialPath) {
+    const hostGateway = await resolveClaudeGatewayConfig({ credentialPath, environment: {} });
+    if (hostGateway) return hostGateway;
+  }
+  const fixed = await findClaudeFixedGateway(environment, home, options.roots, platform);
+  if (fixed) return fixed.gateway;
+  if (options.settingsPath) {
+    try {
+      const parsed = JSON.parse(await readFile(options.settingsPath, "utf8")) as HostCredentialsFile;
+      if (parsed && typeof parsed.env === "object" && parsed.env !== null && !Array.isArray(parsed.env)) {
+        const settingsEnv: NodeJS.ProcessEnv = {};
+        for (const key of [
+          "ANTHROPIC_BASE_URL",
+          "ANTHROPIC_AUTH_TOKEN",
+          "ANTHROPIC_API_KEY",
+          "CLAUDE_CODE_HOST_AUTH_ENV_VAR",
+        ] as const) {
+          const value = nonEmptyString(parsed.env[key]);
+          if (value) settingsEnv[key] = value;
+        }
+        const settingsGateway = await resolveClaudeGatewayConfig({ environment: settingsEnv });
+        if (settingsGateway) return settingsGateway;
+      }
+    } catch {
+      // Optional settings.json may not exist or may be mid-edit.
+    }
+  }
+  return resolveClaudeGatewayConfig({ ...(credentialPath ? { credentialPath } : {}), environment });
 }
 
 export async function resolveClaudeGatewayConfig(
@@ -389,20 +513,29 @@ export async function resolveClaudeGatewayConfig(
 
   if (runtime.credentialPath) {
     try {
-      const parsed = JSON.parse(await readFile(runtime.credentialPath, "utf8")) as HostCredentialsFile;
-      const env = parsed && typeof parsed.env === "object" && parsed.env !== null && !Array.isArray(parsed.env)
-        ? parsed.env
-        : (parsed as Record<string, unknown>);
-      baseUrl = nonEmptyString(env?.ANTHROPIC_BASE_URL);
-      authToken = nonEmptyString(env?.ANTHROPIC_AUTH_TOKEN);
-      apiKey = nonEmptyString(env?.ANTHROPIC_API_KEY);
-      if (env?.CLAUDE_CODE_HOST_AUTH_ENV_VAR === "ANTHROPIC_API_KEY") authScheme = "x-api-key";
-      else if (env?.CLAUDE_CODE_HOST_AUTH_ENV_VAR === "ANTHROPIC_AUTH_TOKEN") authScheme = "bearer";
+      const parsed = JSON.parse(await readFile(runtime.credentialPath, "utf8")) as HostCredentialsFile & ConfigLibraryEntryFile;
+      const directFixed = parseFixedGatewayEntry(parsed);
+      if (directFixed) {
+        baseUrl = directFixed.baseUrl;
+        authToken = directFixed.authToken;
+        apiKey = directFixed.apiKey;
+        authScheme = directFixed.authScheme;
+      } else {
+        const env = parsed && typeof parsed.env === "object" && parsed.env !== null && !Array.isArray(parsed.env)
+          ? parsed.env
+          : (parsed as Record<string, unknown>);
+        baseUrl = nonEmptyString(env?.ANTHROPIC_BASE_URL);
+        authToken = nonEmptyString(env?.ANTHROPIC_AUTH_TOKEN);
+        apiKey = nonEmptyString(env?.ANTHROPIC_API_KEY);
+        if (env?.CLAUDE_CODE_HOST_AUTH_ENV_VAR === "ANTHROPIC_API_KEY") authScheme = "x-api-key";
+        else if (env?.CLAUDE_CODE_HOST_AUTH_ENV_VAR === "ANTHROPIC_AUTH_TOKEN") authScheme = "bearer";
+      }
     } catch {
       // Ignore unreadable or missing credential files and fall back to configLibrary / environment.
     }
 
-    const configLibraryDir = join(dirname(runtime.credentialPath), "configLibrary");
+    const parentDir = dirname(runtime.credentialPath);
+    const configLibraryDir = basename(parentDir) === "configLibrary" ? parentDir : join(parentDir, "configLibrary");
     try {
       const meta = JSON.parse(await readFile(join(configLibraryDir, "_meta.json"), "utf8")) as ConfigLibraryMetaFile;
       const appliedId = nonEmptyString(meta?.appliedId);
@@ -410,14 +543,16 @@ export async function resolveClaudeGatewayConfig(
         const entry = JSON.parse(
           await readFile(join(configLibraryDir, `${appliedId}.json`), "utf8"),
         ) as ConfigLibraryEntryFile;
-        baseUrl ??= nonEmptyString(entry?.inferenceGatewayBaseUrl);
-        if (entry?.inferenceGatewayAuthScheme === "bearer" || entry?.inferenceGatewayAuthScheme === "x-api-key") {
-          authScheme ??= entry.inferenceGatewayAuthScheme;
-        }
-        const gatewayKey = nonEmptyString(entry?.inferenceGatewayApiKey);
-        if (gatewayKey) {
-          if (authScheme === "x-api-key") apiKey ??= gatewayKey;
-          else authToken ??= gatewayKey;
+        if (entry?.inferenceProvider === "gateway") {
+          baseUrl ??= nonEmptyString(entry.inferenceGatewayBaseUrl);
+          if (entry.inferenceGatewayAuthScheme === "bearer" || entry.inferenceGatewayAuthScheme === "x-api-key") {
+            authScheme ??= entry.inferenceGatewayAuthScheme;
+          }
+          const gatewayKey = nonEmptyString(entry.inferenceGatewayApiKey);
+          if (gatewayKey) {
+            if (authScheme === "x-api-key") apiKey ??= gatewayKey;
+            else authToken ??= gatewayKey;
+          }
         }
       }
     } catch {
@@ -535,12 +670,11 @@ export function parseClaudeGatewayModels(items: unknown[]): BridgeModelInfo[] {
   return results;
 }
 
-export async function discoverClaudeGatewayModels(
-  runtime: Pick<ClaudeRuntime, "credentialPath" | "environment"> | undefined,
+export async function fetchClaudeGatewayModels(
+  gateway: ClaudeGatewayConfig | undefined,
   fetchImpl: typeof fetch = fetch,
   timeoutMs = GATEWAY_MODELS_TIMEOUT_MS,
 ): Promise<BridgeModelInfo[]> {
-  const gateway = await resolveClaudeGatewayConfig(runtime);
   if (!gateway) return [];
   const trimmedBase = gateway.baseUrl.replace(/\/+$/u, "");
   const endpoint = `${trimmedBase.endsWith("/v1") ? trimmedBase : `${trimmedBase}/v1`}/models?limit=1000`;
@@ -575,4 +709,12 @@ export async function discoverClaudeGatewayModels(
   }
   if (!Array.isArray(payload?.data)) throw new Error("Gateway model discovery returned invalid data");
   return parseClaudeGatewayModels(payload.data);
+}
+
+export async function discoverClaudeGatewayModels(
+  runtime: Pick<ClaudeRuntime, "credentialPath" | "environment"> | undefined,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = GATEWAY_MODELS_TIMEOUT_MS,
+): Promise<BridgeModelInfo[]> {
+  return fetchClaudeGatewayModels(await resolveClaudeGatewayConfig(runtime), fetchImpl, timeoutMs);
 }

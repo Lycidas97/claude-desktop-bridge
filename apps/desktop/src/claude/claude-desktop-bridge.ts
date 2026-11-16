@@ -16,7 +16,19 @@ import { claudeRuntimePaths } from "../app/platform.js";
 import type { SessionEventLog, BridgeEventDraft } from "../controller/session-event-log.js";
 import type { EvidenceManager, ObservedDesktopTool } from "../evidence/evidence-manager.js";
 import { oldestLiveProcessStart, projectIdForCwd, scanClaudeCatalog, type ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
-import { discoverClaudeProjectDirectory, findClaudeHostCredentials, magpieModelIdHash, parseMagpieSyntheticModelId, resolveClaudeGatewayConfig, type ClaudeGatewayConfig, type ClaudeProjectDirectory, type ClaudeRuntime } from "./claude-runtime-discovery.js";
+import {
+  discoverClaudeGatewayConfig,
+  discoverClaudeProjectDirectory,
+  fetchClaudeGatewayModels,
+  findClaudeFixedGateway,
+  humanizeMagpieAnthropicModel,
+  magpieModelIdHash,
+  normalizeAnthropicModelSlug,
+  parseMagpieSyntheticModelId,
+  resolveClaudeGatewayConfig,
+  type ClaudeGatewayConfig,
+  type ClaudeProjectDirectory,
+} from "./claude-runtime-discovery.js";
 import { MagpieConnectionRepository, testMagpieGateway } from "./magpie-connection.js";
 import { readClaudeModelOptions } from "./connector.js";
 import {
@@ -132,6 +144,48 @@ function nativeSession(value: unknown): NativeSession {
   return { ...session, prs: nativePullRequests(session.prs) } as unknown as NativeSession;
 }
 
+function modelOptionHash(value: string): string {
+  return parseMagpieSyntheticModelId(value)?.hash ?? magpieModelIdHash(value);
+}
+
+function mergeModelCatalog(
+  saved: BridgeModelInfo[] | undefined,
+  discovered: BridgeModelInfo[] | undefined,
+): BridgeModelInfo[] | undefined {
+  if (!discovered?.length) return saved;
+  if (!saved?.length) return discovered;
+  const findDiscovered = (option: BridgeModelInfo): BridgeModelInfo | undefined => {
+    const longContext = /\[1m\]$/iu.test(option.value);
+    const hash = modelOptionHash(option.value);
+    const slug = normalizeAnthropicModelSlug(option.value);
+    return discovered.find(item => item.value === option.value)
+      ?? discovered.find(item => modelOptionHash(item.value) === hash && /\[1m\]$/iu.test(item.value) === longContext)
+      ?? (slug ? discovered.find(item => normalizeAnthropicModelSlug(item.value) === slug && /\[1m\]$/iu.test(item.value) === longContext) : undefined);
+  };
+  const merged = saved.map((option) => {
+    const match = findDiscovered(option);
+    if (!match) return option;
+    return {
+      ...option,
+      ...(match.maxInputTokens ? { maxInputTokens: match.maxInputTokens } : {}),
+      ...(match.supportsEffort !== undefined ? { supportsEffort: match.supportsEffort } : {}),
+      ...(match.supportedEffortLevels?.length ? { supportedEffortLevels: match.supportedEffortLevels } : {}),
+    };
+  });
+  // Keep saved picker context choices authoritative so Desktop's base -> 1M preference check stays intact; append only models absent from settings.json.
+  const coveredHashes = new Set(saved.map(option => modelOptionHash(option.value)));
+  const coveredSlugs = new Set(
+    saved.map(option => normalizeAnthropicModelSlug(option.value)).filter((slug): slug is string => Boolean(slug)),
+  );
+  for (const item of discovered) {
+    const hash = modelOptionHash(item.value);
+    const slug = normalizeAnthropicModelSlug(item.value);
+    if (coveredHashes.has(hash) || (slug && coveredSlugs.has(slug))) continue;
+    merged.push(item);
+  }
+  return merged;
+}
+
 /** Protocol translation and transport receipts only. Desktop owns every Claude execution. */
 export class ClaudeDesktopBridge extends EventEmitter {
   private readonly inspector: InspectorTransport;
@@ -157,6 +211,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private closed = false;
   private lastError = "Claude Desktop inspector 尚未连接";
   private gateway: ClaudeGatewayConfig | undefined;
+  private gatewayModelsCache: { gatewayKey: string; fetchedAt: number; ok: boolean; models: BridgeModelInfo[] } | undefined;
   private models: BridgeModelInfo[] | undefined;
   private snapshotQueue: Promise<unknown> = Promise.resolve();
 
@@ -166,6 +221,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
     conversationState: ConversationStateStore;
     evidence?: Pick<EvidenceManager, "upsertDesktopEvidence">;
     magpieConnection?: MagpieConnectionRepository;
+    environment?: NodeJS.ProcessEnv;
+    home?: string;
+    platform?: NodeJS.Platform;
+    fetchImpl?: typeof fetch;
+    now?: () => number;
+    gatewayModelsCacheMs?: number;
     inspector?: InspectorTransport;
     scanCatalog?: () => Promise<ClaudeCatalogSnapshot>;
     refreshIntervalMs?: number;
@@ -232,6 +293,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   private async applyRuntimeSnapshot(): Promise<boolean> {
     diag("refresh.start", { ready: this.inspector.ready });
+    if (this.options.magpieConnection) await this.gatewayConfig();
     try {
       if (!this.inspector.ready) await this.inspector.connect();
       diag("refresh.connected");
@@ -241,7 +303,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const sessions = result.map(nativeSession);
       this.sectionCatalog = await this.inspector.sections?.(sessions.map(session => session.sessionId));
       diag("refresh.sections");
-      this.models = await readClaudeModelOptions(this.options.settingsPath);
+      await this.refreshModelCatalog("cached");
       diag("refresh.models");
       this.native.clear();
       for (const session of sessions) await this.observeNativeSession(session);
@@ -299,6 +361,52 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   private savedModel(model: string): BridgeModelInfo | undefined {
     return savedModelOption(this.models, model);
+  }
+
+  private modelDisplayName(model: string | undefined): string | undefined {
+    if (!model) return undefined;
+    return this.savedModel(model)?.displayName ?? humanizeMagpieAnthropicModel(model);
+  }
+
+  private async refreshModelCatalog(mode: "cached" | "retry-failed" | "force"): Promise<void> {
+    const saved = await readClaudeModelOptions(this.options.settingsPath);
+    if (!this.options.magpieConnection && !this.options.fetchImpl) {
+      this.models = saved;
+      return;
+    }
+    const gateway = await this.gatewayConfig();
+    if (!gateway) {
+      this.gatewayModelsCache = undefined;
+      this.models = saved;
+      return;
+    }
+    const now = (this.options.now ?? Date.now)();
+    const ttl = this.options.gatewayModelsCacheMs ?? 60_000;
+    const gatewayKey = JSON.stringify(gateway);
+    const cached = this.gatewayModelsCache?.gatewayKey === gatewayKey ? this.gatewayModelsCache : undefined;
+    const canReuse = Boolean(cached && now - cached.fetchedAt < ttl && (
+      mode === "cached" || (mode === "retry-failed" && cached.ok)
+    ));
+    let discovered = canReuse ? cached!.models : undefined;
+    if (!canReuse) {
+      try {
+        const fetched = await fetchClaudeGatewayModels(gateway, this.options.fetchImpl);
+        discovered = fetched;
+        this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: true, models: fetched };
+      } catch {
+        if (cached && cached.models.length > 0) {
+          discovered = cached.models;
+          this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: false, models: cached.models };
+        } else {
+          const offline = !this.options.magpieConnection?.isManual()
+            ? (await findClaudeFixedGateway(this.options.environment, this.options.home, undefined, this.options.platform))?.inferenceModels ?? []
+            : [];
+          discovered = offline;
+          this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: false, models: offline };
+        }
+      }
+    }
+    this.models = mergeModelCatalog(saved, discovered);
   }
 
   private async observeNativeSession(session: NativeSession): Promise<void> {
@@ -380,6 +488,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const parentSessionId = native.forkedFromSessionId ?? native.spawnedFrom?.sessionId;
       const projectCwd = this.projectCwd(native.cwd);
       const section = this.sectionCatalog?.sections.find(section => section.id === this.sectionCatalog?.assignments[sessionId]);
+      const modelDisplayName = this.modelDisplayName(native.model);
       this.sessions.set(sessionId, {
         sessionId, nativeSessionId: native.sessionId, desktopSessionId: native.sessionId, runtimeId: "claude-desktop",
         projectId: section?.id ?? projectIdForCwd(projectCwd), projectName: section?.name ?? (basename(projectCwd) || projectCwd), cwd: native.cwd,
@@ -387,7 +496,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         ownership: running ? "DESKTOP_NATIVE_RUNNING" : "DESKTOP_NATIVE_IDLE",
         turnState: waiting ? "waiting" : running ? "running" : "idle",
         lastActivityAt: native.lastActivityAt ?? native.createdAt ?? 0, pendingCount: pendingCommandIds.length, pendingCommandIds,
-        ...(native.model ? { model: native.model, modelDisplayName: this.savedModel(native.model)?.displayName ?? native.model } : {}), ...(native.effort ? { effort: native.effort } : {}),
+        ...(native.model ? { model: native.model, ...(modelDisplayName ? { modelDisplayName } : {}) } : {}), ...(native.effort ? { effort: native.effort } : {}),
         ...(native.permissionMode ? { nativePermissionMode: native.permissionMode } : {}),
         ...(contextUsage ? { contextUsage } : {}),
         ...(running && this.compactingSessions.has(sessionId) ? { isCompacting: true } : {}),
@@ -821,7 +930,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const id = this.desktopId(sessionId);
     const previousUsage = JSON.stringify(this.session(sessionId)?.contextUsage);
     const native = nativeSession(await this.inspector.call("getSession", [id]));
-    this.models = await readClaudeModelOptions(this.options.settingsPath);
+    await this.refreshModelCatalog("retry-failed");
     await this.observeNativeSession(native);
     if (native.turnRunning === true) {
       const live = await this.readLiveContextUsage(id);
@@ -831,12 +940,16 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const context = this.session(sessionId)?.contextUsage;
     if (JSON.stringify(context) !== previousUsage) this.emit("changed");
     const model = native.model ? this.savedModel(native.model) : undefined;
+    const modelDisplayName = native.model ? model?.displayName ?? humanizeMagpieAnthropicModel(native.model) : undefined;
+    const fallbackLabel = modelDisplayName ?? (native.model && /\[1m\]$/iu.test(native.model) ? "默认模型 · 1M" : "默认模型");
     return {
-      sessionId, ...(native.model ? { model: model?.value ?? native.model, modelDisplayName: model?.displayName ?? native.model } : {}), ...(native.effort ? { effort: native.effort } : {}),
+      sessionId,
+      ...(native.model ? { model: model?.value ?? native.model, ...(modelDisplayName ? { modelDisplayName } : {}) } : {}),
+      ...(native.effort ? { effort: native.effort } : {}),
       ...(native.permissionMode ? { nativePermissionMode: native.permissionMode } : {}),
       modelSource: "claude-desktop", effortSource: "claude-desktop",
       availableModels: this.models ? [...this.models, ...(model && !this.models.some(option => option.value === model.value) ? [model] : [])]
-        : native.model ? [{ value: native.model, displayName: native.model }] : [],
+        : native.model ? [{ value: native.model, displayName: fallbackLabel }] : [],
       availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
       modelsComplete: this.models !== undefined, appliesAfterTurn: native.turnRunning === true,
       ...(context ? { context } : {}),
@@ -852,17 +965,24 @@ export class ClaudeDesktopBridge extends EventEmitter {
         if (directory.length && !directory.includes(input.model)) {
           const base = input.model.replace(/\[1m\]$/iu, "");
           const longContext = /\[1m\]$/iu.test(input.model);
-          const hash = magpieModelIdHash(base);
-          const found = directory.find(candidate => candidate === base) ?? directory.find(candidate => {
-            const alias = parseMagpieSyntheticModelId(candidate);
-            return alias?.hash === hash && alias.longContext === longContext;
-          }) ?? (longContext ? directory.find(candidate => {
-            const alias = parseMagpieSyntheticModelId(candidate);
-            return alias?.hash === hash && !alias.longContext;
-          }) : directory.find(candidate => {
-            const alias = parseMagpieSyntheticModelId(candidate);
-            return candidate === `${base}[1m]` || (alias?.hash === hash && alias.longContext);
-          }));
+          const hash = modelOptionHash(base);
+          const slug = normalizeAnthropicModelSlug(base);
+          const findByPredicate = (match: (alias: NonNullable<ReturnType<typeof parseMagpieSyntheticModelId>>) => boolean) => (
+            directory.find(candidate => {
+              const alias = parseMagpieSyntheticModelId(candidate);
+              return Boolean(alias && match(alias) && alias.longContext === longContext);
+            }) ?? (longContext ? directory.find(candidate => {
+              const alias = parseMagpieSyntheticModelId(candidate);
+              return Boolean(alias && match(alias) && !alias.longContext);
+            }) : directory.find(candidate => {
+              const alias = parseMagpieSyntheticModelId(candidate);
+              return Boolean(alias && match(alias) && alias.longContext);
+            }))
+          );
+          const found = directory.find(candidate => candidate === base)
+            ?? (!longContext ? directory.find(candidate => candidate === `${base}[1m]`) : undefined)
+            ?? findByPredicate(alias => alias.hash === hash)
+            ?? (slug ? findByPredicate(alias => Boolean(alias.anthropicModel && normalizeAnthropicModelSlug(alias.anthropicModel) === slug)) : undefined);
           if (!found) throw new NativeCallError("Selected model is unavailable in Claude Desktop's native model directory");
           nativeModel = longContext && !/\[1m\]$/iu.test(found) ? `${found}[1m]` : found;
         }
@@ -1309,23 +1429,43 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async gatewayConfig(): Promise<ClaudeGatewayConfig | undefined> {
     // Gateway credentials are used only by the optional quota/model query plugin, never to execute Claude.
-    const credentialPath = await findClaudeHostCredentials();
-    const base: ClaudeRuntime = { environment: { ...process.env }, ...(credentialPath ? { credentialPath } : {}) };
-    this.gateway = await resolveClaudeGatewayConfig(this.options.magpieConnection?.apply(base) ?? base);
+    if (this.options.magpieConnection?.isManual()) {
+      this.gateway = await resolveClaudeGatewayConfig(this.options.magpieConnection.apply({ environment: {} }));
+      return this.gateway;
+    }
+    this.gateway = await discoverClaudeGatewayConfig({
+      ...(this.options.environment ? { environment: this.options.environment } : {}),
+      ...(this.options.home ? { home: this.options.home } : {}),
+      ...(this.options.platform ? { platform: this.options.platform } : {}),
+      settingsPath: this.options.settingsPath,
+    });
     return this.gateway;
   }
   magpieSettings() { return this.options.magpieConnection ? { magpie: this.options.magpieConnection.settings(this.gateway) } : {}; }
   async testMagpieConnection(input: unknown) {
     const repository = this.options.magpieConnection;
     if (!repository) throw new Error("Magpie connection settings are unavailable");
-    const candidate = repository.apply({ environment: {} }, repository.resolve(input));
-    return testMagpieGateway(candidate, await resolveClaudeGatewayConfig(candidate));
+    const resolved = repository.resolve(input);
+    if (resolved.mode === "auto") {
+      const gateway = await discoverClaudeGatewayConfig({
+        ...(this.options.environment ? { environment: this.options.environment } : {}),
+        ...(this.options.home ? { home: this.options.home } : {}),
+        ...(this.options.platform ? { platform: this.options.platform } : {}),
+        settingsPath: this.options.settingsPath,
+      });
+      return testMagpieGateway({ environment: {} }, gateway, this.options.fetchImpl);
+    }
+    const candidate = repository.apply({ environment: {} }, resolved);
+    return testMagpieGateway(candidate, await resolveClaudeGatewayConfig(candidate), this.options.fetchImpl);
   }
   async saveMagpieConnection(input: unknown): Promise<void> {
     const repository = this.options.magpieConnection;
     if (!repository) throw new Error("Magpie connection settings are unavailable");
     await repository.save(repository.resolve(input));
-    await this.gatewayConfig();
+    this.gatewayModelsCache = undefined;
+    await this.refreshModelCatalog("force");
+    this.projectSessions();
+    this.emit("changed");
   }
 
   diagnosticsGauges() {

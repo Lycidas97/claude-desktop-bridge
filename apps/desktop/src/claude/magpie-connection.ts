@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { BridgeMagpieConnectionTestResult, BridgeMagpieSettings } from "@bridge/protocol";
 import type { SafeStorageLike } from "../transport/config.js";
-import { discoverClaudeGatewayModels, type ClaudeGatewayConfig, type ClaudeRuntime } from "./claude-runtime-discovery.js";
+import { fetchClaudeGatewayModels, type ClaudeGatewayConfig, type ClaudeRuntime } from "./claude-runtime-discovery.js";
 import { createMagpieQuotaPlugin } from "../../../../plugins/magpie-quota/desktop.js";
 import { MAGPIE_QUOTA_METHOD } from "../../../../plugins/magpie-quota/contract.js";
 
@@ -13,11 +13,33 @@ type MagpieConnection = { mode: "auto" } | {
   apiKey: string;
 };
 
+function validateManualEndpoint(value: Record<string, unknown>): {
+  baseUrl: string;
+  authScheme: "bearer" | "x-api-key";
+} {
+  if (
+    value.mode !== "manual" || typeof value.baseUrl !== "string" ||
+    (value.authScheme !== "bearer" && value.authScheme !== "x-api-key") ||
+    (value.apiKey !== undefined && typeof value.apiKey !== "string")
+  ) throw new Error("Magpie 接入配置无效");
+  let url: URL;
+  try { url = new URL(value.baseUrl.trim()); }
+  catch { throw new Error("请输入有效的 Magpie 网关地址"); }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error("Magpie 地址须为 HTTP 或 HTTPS，且不包含用户名、密码、查询参数或片段");
+  }
+  return { baseUrl: url.href.replace(/\/+$/u, ""), authScheme: value.authScheme };
+}
+
 /** Bridge owns these credentials; native Desktop profiles are only read by automatic discovery. */
 export class MagpieConnectionRepository {
   private connection: MagpieConnection = { mode: "auto" };
 
   constructor(private readonly path: string, private readonly storage: SafeStorageLike) {}
+
+  isManual(): boolean {
+    return this.connection.mode === "manual";
+  }
 
   async initialize(): Promise<void> {
     let file: Record<string, unknown>;
@@ -31,34 +53,32 @@ export class MagpieConnectionRepository {
     if (typeof file.protectedKey !== "string" || !file.protectedKey.startsWith("os:")) {
       throw new Error("Magpie Key 存储格式无效");
     }
-    if (!this.storage.isEncryptionAvailable()) throw new Error("系统安全存储不可用，无法读取 Magpie Key");
-    this.connection = this.resolve({
-      mode: file.mode, baseUrl: file.baseUrl, authScheme: file.authScheme,
-      apiKey: this.storage.decryptString(Buffer.from(file.protectedKey.slice(3), "base64")),
-    });
+    const { baseUrl, authScheme } = validateManualEndpoint(file);
+    let apiKey = "";
+    if (this.storage.isEncryptionAvailable()) {
+      try {
+        apiKey = this.storage.decryptString(Buffer.from(file.protectedKey.slice(3), "base64")).trim();
+      } catch {
+        // App re-signing or OS keychain reset invalidates safeStorage ciphertext; keep manual endpoint unconfigured so the service still starts.
+        apiKey = "";
+      }
+    }
+    if (apiKey && (apiKey.length > 8192 || /[\u0000- \u007f]/u.test(apiKey))) apiKey = "";
+    this.connection = { mode: "manual", baseUrl, authScheme, apiKey };
   }
 
   resolve(input: unknown): MagpieConnection {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Magpie 接入配置无效");
     const value = input as Record<string, unknown>;
     if (value.mode === "auto") return { mode: "auto" };
-    if (value.mode !== "manual" || typeof value.baseUrl !== "string" ||
-      (value.authScheme !== "bearer" && value.authScheme !== "x-api-key") ||
-      (value.apiKey !== undefined && typeof value.apiKey !== "string")) throw new Error("Magpie 接入配置无效");
-    let url: URL;
-    try { url = new URL(value.baseUrl.trim()); }
-    catch { throw new Error("请输入有效的 Magpie 网关地址"); }
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-      throw new Error("Magpie 地址须为 HTTP 或 HTTPS，且不包含用户名、密码、查询参数或片段");
-    }
-    const baseUrl = url.href.replace(/\/+$/u, "");
+    const { baseUrl, authScheme } = validateManualEndpoint(value);
     const apiKey = (value.apiKey as string | undefined)?.trim() ||
       (this.connection.mode === "manual" && this.connection.baseUrl === baseUrl &&
-        this.connection.authScheme === value.authScheme ? this.connection.apiKey : "");
+        this.connection.authScheme === authScheme ? this.connection.apiKey : "");
     if (!apiKey || apiKey.length > 8192 || /[\u0000- \u007f]/u.test(apiKey)) {
       throw new Error("请输入 Magpie Key；更换网关或认证方式后需要重新输入");
     }
-    return { mode: "manual", baseUrl, authScheme: value.authScheme, apiKey };
+    return { mode: "manual", baseUrl, authScheme, apiKey };
   }
 
   async save(connection: MagpieConnection): Promise<void> {
@@ -78,7 +98,10 @@ export class MagpieConnectionRepository {
 
   settings(gateway?: ClaudeGatewayConfig): BridgeMagpieSettings {
     if (this.connection.mode === "manual") return {
-      mode: "manual", baseUrl: this.connection.baseUrl, authScheme: this.connection.authScheme, keyConfigured: true,
+      mode: "manual",
+      baseUrl: this.connection.baseUrl,
+      authScheme: this.connection.authScheme,
+      keyConfigured: Boolean(this.connection.apiKey),
     };
     const url = gateway ? new URL(gateway.baseUrl) : undefined;
     return {
@@ -96,6 +119,14 @@ export class MagpieConnectionRepository {
       "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_HOST_CREDS_FILE", "CLAUDE_CODE_HOST_SESSION_ID",
       "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_VERTEX",
     ]) delete environment[key];
+    if (!connection.apiKey) {
+      delete environment.ANTHROPIC_BASE_URL;
+      delete environment.CLAUDE_CODE_HOST_AUTH_ENV_VAR;
+      delete environment.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST;
+      const cleared: ClaudeRuntime = { ...runtime, environment, configSource: { type: "none", profile: "unknown" } };
+      delete cleared.credentialPath;
+      return cleared;
+    }
     environment.ANTHROPIC_BASE_URL = connection.baseUrl;
     const authVariable = connection.authScheme === "bearer" ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY";
     environment[authVariable] = connection.apiKey;
@@ -108,7 +139,7 @@ export class MagpieConnectionRepository {
 }
 
 export async function testMagpieGateway(
-  runtime: ClaudeRuntime,
+  _runtime: ClaudeRuntime,
   gateway: ClaudeGatewayConfig | undefined,
   fetchImpl: typeof fetch = fetch,
 ): Promise<BridgeMagpieConnectionTestResult> {
@@ -117,7 +148,7 @@ export async function testMagpieGateway(
     quota: { state: "unsupported" },
   };
   const [models, quota] = await Promise.all([
-    discoverClaudeGatewayModels(runtime, fetchImpl).then((items): BridgeMagpieConnectionTestResult["models"] => (
+    fetchClaudeGatewayModels(gateway, fetchImpl).then((items): BridgeMagpieConnectionTestResult["models"] => (
       items.length ? { state: "ready", count: items.length } : { state: "error", count: 0, error: "网关未返回可用模型" }
     )).catch((): BridgeMagpieConnectionTestResult["models"] => ({ state: "error", count: 0, error: "模型列表读取失败，请检查地址、认证方式和 Key" })),
     createMagpieQuotaPlugin({ getGateway: () => gateway, fetchImpl }).handle({ method: MAGPIE_QUOTA_METHOD })

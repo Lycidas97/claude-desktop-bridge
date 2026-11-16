@@ -3,12 +3,13 @@ import { mkdir, open } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { BridgeDesktopRuntimeId, BridgeEvent, DesktopControlSnapshot, LocalBridgeRequest } from "@bridge/protocol";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell, systemPreferences, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, protocol, shell, systemPreferences, Tray } from "electron";
 import { connectDesktopService, serveDesktopService } from "./app/service-connection.js";
 import { createServiceRuntime } from "./app/service-runtime.js";
 import { ServiceResources } from "./app/service-resources.js";
 import { MemoryRecorder } from "./app/memory-recorder.js";
 import { claudeDesktopDeveloperSettings } from "./app/claude-desktop-developer-settings.js";
+import { parseWindowThemeColor } from "./app/platform.js";
 
 protocol.registerSchemesAsPrivileged([{
   scheme: "bridge-artifact",
@@ -34,6 +35,13 @@ function reportStartup(stage: string): void {
       process.stderr.write(`Bridge startup display failed: ${String(error)}\n`);
     });
   }
+}
+
+function applyWindowThemeColor(win: BrowserWindow, rawColor: string | null | undefined): void {
+  const parsed = parseWindowThemeColor(rawColor);
+  if (!parsed) return;
+  nativeTheme.themeSource = parsed.themeSource;
+  if (!win.isDestroyed()) win.setBackgroundColor(parsed.backgroundColor);
 }
 
 async function serviceMain(): Promise<void> {
@@ -289,10 +297,25 @@ async function desktopMain(): Promise<void> {
     mainWindow = new BrowserWindow({
       width: 1180, height: 780, minWidth: 860, minHeight: 620,
       show: !process.argv.includes("--hidden") && !(process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin),
-      backgroundColor: "#f5f6f7", title: "Bridge",
+      backgroundColor: nativeTheme.shouldUseDarkColors ? "#191816" : "#faf9f5",
+      title: "Bridge",
+      ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 16, y: 16 } } : {}),
       webPreferences: { preload: join(__dirname, "preload.cjs"), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
     });
     mainWindow.removeMenu();
+    mainWindow.webContents.on("did-change-theme-color", (_event, color) => {
+      if (mainWindow) applyWindowThemeColor(mainWindow, color);
+    });
+    mainWindow.webContents.on("did-finish-load", () => {
+      const target = mainWindow;
+      if (!target || target.isDestroyed()) return;
+      void target.webContents
+        .executeJavaScript("document.querySelector('meta[name=\"theme-color\"]')?.getAttribute('content') ?? null")
+        .then((color: unknown) => {
+          if (typeof color === "string") applyWindowThemeColor(target, color);
+        })
+        .catch(() => {});
+    });
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
       if (url.startsWith("https://")) void shell.openExternal(url);
       return { action: "deny" };

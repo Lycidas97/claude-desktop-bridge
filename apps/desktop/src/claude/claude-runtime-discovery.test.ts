@@ -3,11 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  discoverClaudeGatewayConfig,
   discoverClaudeGatewayModels,
   findClaudeHostCredentials,
   findClaudeExecutable,
+  humanizeMagpieAnthropicModel,
   isSafeForBackgroundRuntimeScan,
   magpieModelIdHash,
+  normalizeAnthropicModelSlug,
   parseMagpieSyntheticModelId,
   prepareClaudeRuntime,
   parseClaudeGatewayModels,
@@ -332,5 +335,86 @@ describe("Claude runtime discovery privacy", () => {
         supportedEffortLevels: ["low", "medium", "high"],
       },
     ]);
+  });
+
+  it("discovers active configLibrary gateways across macOS and Windows LocalAppData/MSIX profiles and falls back to settings.json", async () => {
+    const home = await mkdtemp(join(tmpdir(), "bridge-discover-gateway-"));
+    directories.push(home);
+    const localAppData = join(home, "AppData", "Local");
+    const roamingAppData = join(home, "AppData", "Roaming");
+    const winConfigLib = join(localAppData, "Claude-3p", "configLibrary");
+    const claudeRoaming = join(roamingAppData, "Claude");
+    await mkdir(winConfigLib, { recursive: true });
+    await mkdir(claudeRoaming, { recursive: true });
+    // An official Claude host-creds file without a gateway base URL must not block Claude-3p's active fixed gateway.
+    await writeFile(join(claudeRoaming, "host-creds-official.json"), JSON.stringify({ env: { ANTHROPIC_OAUTH_TOKEN: "oauth-only" } }), { mode: 0o600 });
+    const entryPath = join(winConfigLib, "win-magpie.json");
+    await writeFile(join(winConfigLib, "_meta.json"), JSON.stringify({ appliedId: "win-magpie" }));
+    await writeFile(entryPath, JSON.stringify({
+      inferenceProvider: "gateway",
+      inferenceGatewayBaseUrl: "http://127.0.0.1:3425",
+      inferenceGatewayAuthScheme: "bearer",
+      inferenceGatewayApiKey: "win-local-token",
+    }), { mode: 0o600 });
+
+    // Direct credentialPath inside configLibrary resolves without environment duplication.
+    await expect(resolveClaudeGatewayConfig({ credentialPath: entryPath, environment: {} })).resolves.toEqual({
+      baseUrl: "http://127.0.0.1:3425",
+      authScheme: "bearer",
+      authToken: "win-local-token",
+    });
+
+    // Windows LocalAppData Claude-3p wins over ambient process.env.ANTHROPIC_BASE_URL.
+    await expect(discoverClaudeGatewayConfig({
+      platform: "win32",
+      home,
+      environment: {
+        APPDATA: roamingAppData,
+        LOCALAPPDATA: localAppData,
+        ANTHROPIC_BASE_URL: "https://ambient.other.invalid/api/anthropic",
+        ANTHROPIC_AUTH_TOKEN: "ambient-other-token",
+      },
+    })).resolves.toEqual({
+      baseUrl: "http://127.0.0.1:3425",
+      authScheme: "bearer",
+      authToken: "win-local-token",
+    });
+
+    // When neither host-creds nor configLibrary defines a gateway, settings.json env wins cleanly without mixing ambient tokens.
+    const emptyHome = await mkdtemp(join(tmpdir(), "bridge-discover-settings-"));
+    directories.push(emptyHome);
+    const settingsPath = join(emptyHome, "settings.json");
+    await writeFile(settingsPath, JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:3425/",
+        ANTHROPIC_API_KEY: "settings-api-key",
+        CLAUDE_CODE_HOST_AUTH_ENV_VAR: "ANTHROPIC_API_KEY",
+      },
+    }));
+    await expect(discoverClaudeGatewayConfig({
+      platform: "darwin",
+      home: emptyHome,
+      settingsPath,
+      environment: {
+        ANTHROPIC_BASE_URL: "https://ambient.other.invalid",
+        ANTHROPIC_AUTH_TOKEN: "ambient-bearer-should-not-leak",
+      },
+    })).resolves.toEqual({
+      baseUrl: "http://127.0.0.1:3425/",
+      apiKey: "settings-api-key",
+      authScheme: "x-api-key",
+    });
+  });
+
+  it("normalizes and humanizes synthetic Magpie Anthropic model slugs without exposing opaque hashes", () => {
+    expect(normalizeAnthropicModelSlug("magpie-5782219464.anthropic.claude-fable-5-2[1m]")).toBe("claude-fable-5-2");
+    expect(normalizeAnthropicModelSlug("claude-fable-5.2[1m]")).toBe("claude-fable-5-2");
+    expect(normalizeAnthropicModelSlug("claude/claude-fable-5-2")).toBe("claude-fable-5-2");
+    expect(normalizeAnthropicModelSlug("mythos-magpie-3436308304")).toBeUndefined();
+    expect(normalizeAnthropicModelSlug("deepseek/deepseek-flash")).toBeUndefined();
+    expect(humanizeMagpieAnthropicModel("magpie-5782219464.anthropic.claude-fable-5-2[1m]")).toBe("Claude Fable 5.2 · 1M");
+    expect(humanizeMagpieAnthropicModel("magpie-2213244526.anthropic.claude-opus-4-7")).toBe("Claude Opus 4.7");
+    expect(humanizeMagpieAnthropicModel("mythos-magpie-3436308304")).toBeUndefined();
+    expect(humanizeMagpieAnthropicModel("claude-sonnet-4-5")).toBe("claude-sonnet-4-5");
   });
 });

@@ -216,21 +216,9 @@ export function MobileSessionCatalog({
 
   return (
     <>
-      {open && (
-        <div
-          className="mobile-drawer-scrim"
-          role="presentation"
-          onClick={() => onClose?.()}
-        />
-      )}
       <div
-        className={`mobile-drawer is-flat-tree${open ? " is-open" : ""}`}
-        role={open ? "dialog" : undefined}
-        aria-modal={open ? "true" : undefined}
-        aria-label="会话与导航抽屉"
-        aria-hidden={!open || undefined}
-        inert={!open}
-        tabIndex={-1}
+        className="mobile-home-catalog is-flat-tree"
+        aria-label="会话列表"
       >
         <div className="mobile-drawer-topbar">
           <button

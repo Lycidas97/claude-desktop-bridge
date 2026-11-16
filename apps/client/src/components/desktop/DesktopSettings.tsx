@@ -16,6 +16,7 @@ import { AppearanceSettings } from "../common/AppearanceSettings.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { EmptyState } from "../common/EmptyState.js";
 import { IconButton } from "../common/IconButton.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { SettingsGroup } from "../common/SettingsGroup.js";
 import { ProviderSettings } from "../session/ProviderSettings.js";
 import { RelaySettings } from "../pairing/RelaySettings.js";
@@ -326,24 +327,27 @@ export function DesktopSettings({
                     <>
                       {((developerSettings?.profiles.length ?? 0) > 1 || (!developerSettings && developerError)) && (
                         <div className="provider-key-settings">
-                          <label htmlFor="claude-developer-profile">
-                            <span>配置目录</span>
-                            <select
+                          <div className="provider-select-field">
+                            <label htmlFor="claude-developer-profile">
+                              <span>配置目录</span>
+                            </label>
+                            <SelectMenu
                               id="claude-developer-profile"
+                              ariaLabel="配置目录"
                               value={developerProfile}
+                              placeholder="请选择正在使用的 Claude 配置"
                               disabled={developerBusy}
-                              onChange={(event) => {
-                                const profile = event.target.value as ClaudeDesktopProfile;
+                              options={(developerSettings?.profiles ?? [{ id: "Claude" }, { id: "Claude-3p" }]).map((profile) => ({
+                                value: profile.id,
+                                label: profile.id,
+                              }))}
+                              onChange={(nextId) => {
+                                const profile = nextId as ClaudeDesktopProfile;
                                 setDeveloperProfile(profile);
                                 void updateDeveloperSettings(profile);
                               }}
-                            >
-                              <option value="" disabled>请选择正在使用的 Claude 配置</option>
-                              {(developerSettings?.profiles ?? [{ id: "Claude" }, { id: "Claude-3p" }]).map((profile) => (
-                                <option key={profile.id} value={profile.id}>{profile.id}</option>
-                              ))}
-                            </select>
-                          </label>
+                            />
+                          </div>
                         </div>
                       )}
                       {developerSettings?.supported && developerSettings.profiles.length === 0 && (

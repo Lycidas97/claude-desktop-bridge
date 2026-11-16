@@ -1,5 +1,5 @@
 import type { BridgePermissionInfo, BridgeSessionInfo } from "@bridge/protocol";
-import { GitFork, MessageCircle } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -36,6 +36,19 @@ function row(tree: ReactNode, sessionId = "root") {
 
 function status(tree: ReactNode) {
   return elements(tree).find(element => String(element.props.className).startsWith("session-row-status"));
+}
+
+function hasNestedButtonHtml(html: string): boolean {
+  let depth = 0;
+  for (const match of html.matchAll(/<\/?button\b[^>]*>/giu)) {
+    if (match[0].startsWith("</")) {
+      depth = Math.max(0, depth - 1);
+    } else {
+      depth += 1;
+      if (depth > 1) return true;
+    }
+  }
+  return false;
 }
 
 describe("SessionFamilyList", () => {
@@ -79,35 +92,46 @@ describe("SessionFamilyList", () => {
     expect(row(render()).props.className).not.toContain("active");
   });
 
-  it("keeps fork expansion controlled and distinguishes forks from sidechats", () => {
+  it("renders inline parent chevron without nested buttons, summary toggle when collapsed, and direct tree children when expanded", () => {
     const families = groupProjectSessionFamilies([
       session,
       { ...session, sessionId: "fork", title: "Fork session", parentSessionId: "root", forkLabel: "experiment", lastActivityAt: 2 },
       { ...session, sessionId: "btw", title: "Sidechat", parentSessionId: "root", sidechat: true, lastActivityAt: 3 },
     ]);
+    const onSelectSession = vi.fn();
     const onToggleForkGroup = vi.fn();
-    const collapsed = render({ families, onToggleForkGroup });
+    expect(hasNestedButtonHtml("<button type=\"button\"><span><button type=\"button\">bad</button></span></button>")).toBe(true);
+    const collapsed = render({ families, onSelectSession, onToggleForkGroup });
+    const collapsedHtml = renderToStaticMarkup(collapsed);
+    expect(hasNestedButtonHtml(collapsedHtml)).toBe(false);
     expect(elements(collapsed).filter(element => element.props["data-session-id"])).toHaveLength(1);
+
+    const parentChevron = elements(row(collapsed, "root")).find(element => element.props.className === "session-family-chevron")!;
+    expect(parentChevron.props["aria-expanded"]).toBe(false);
+    expect(elements(parentChevron).some(element => element.type === ChevronRight)).toBe(true);
+    parentChevron.props.onClick();
+    expect(onToggleForkGroup).toHaveBeenCalledWith("root");
+    expect(onSelectSession).not.toHaveBeenCalled();
+
     const toggle = elements(collapsed).find(element => element.props.className === "mobile-fork-toggle")!;
     expect(toggle.props["aria-expanded"]).toBe(false);
-    expect(elements(toggle).some(element => element.type === GitFork)).toBe(true);
     expect(elements(toggle).find(element => element.type === "span")?.props.children).toBe("2 个分支与侧聊");
+    expect(collapsedHtml).toContain("session-tree-elbow");
     toggle.props.onClick();
-    expect(onToggleForkGroup).toHaveBeenCalledWith("root");
+    expect(onToggleForkGroup).toHaveBeenCalledTimes(2);
 
-    const sidechatOnlyToggle = elements(render({
-      families: groupProjectSessionFamilies([
-        session,
-        { ...session, sessionId: "btw", title: "Sidechat", parentSessionId: "root", sidechat: true, lastActivityAt: 3 },
-      ]),
-    })).find(element => element.props.className === "mobile-fork-toggle")!;
-    expect(elements(sidechatOnlyToggle).some(element => element.type === MessageCircle)).toBe(true);
-    expect(elements(sidechatOnlyToggle).some(element => element.type === GitFork)).toBe(false);
-
-    const expanded = render({ families, expandedForkParents: new Set(["root"]) });
+    const expanded = render({ families, expandedForkParents: new Set(["root"]), onToggleForkGroup });
+    const expandedHtml = renderToStaticMarkup(expanded);
+    expect(hasNestedButtonHtml(expandedHtml)).toBe(false);
+    expect(elements(expanded).some(element => element.props.className === "mobile-fork-toggle")).toBe(false);
+    const expandedChevron = elements(row(expanded, "root")).find(element => element.props.className === "session-family-chevron")!;
+    expect(expandedChevron.props["aria-expanded"]).toBe(true);
+    expect(elements(expandedChevron).some(element => element.type === ChevronDown)).toBe(true);
     expect(elements(expanded).filter(element => element.props["data-session-id"]).map(element => element.props["data-session-id"])).toEqual(["root", "btw", "fork"]);
     expect(elements(row(expanded, "btw")).find(element => element.type === "em")?.props.children).toBe("/btw");
     expect(elements(row(expanded, "fork")).find(element => element.type === "em")?.props.children).toBe("experiment");
+    const branches = elements(expanded).filter(element => String(element.props.className).startsWith("session-fork-branch"));
+    expect(branches.map(element => element.props.className)).toEqual(["session-fork-branch", "session-fork-branch is-last"]);
 
     const flatExpanded = render({
       families: groupProjectSessionFamilies([
@@ -118,14 +142,24 @@ describe("SessionFamilyList", () => {
       flat: true,
       expandedForkParents: new Set(["root"]),
     });
-    const flatBtwIcon = elements(row(flatExpanded, "btw")).find(element => String(element.props.className).startsWith("session-fork-icon"))!;
-    expect(flatBtwIcon.props.className).toBe("session-fork-icon running");
-    expect(elements(flatBtwIcon).some(element => element.type === MessageCircle)).toBe(true);
-    const flatForkIcon = elements(row(flatExpanded, "fork")).find(element => String(element.props.className).startsWith("session-fork-icon"))!;
-    expect(flatForkIcon.props.className).toBe("session-fork-icon idle");
-    expect(elements(flatForkIcon).some(element => element.type === GitFork)).toBe(true);
+    expect(elements(flatExpanded).some(element => element.props.className === "mobile-fork-toggle")).toBe(false);
+    expect(elements(row(flatExpanded, "btw")).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot running");
+    const btwBadges = elements(row(flatExpanded, "btw")).find(element => element.props.className === "session-row-badges")!;
+    expect(elements(btwBadges).some(element => element.props.className === "session-state-dot running")).toBe(true);
+    expect(elements(row(flatExpanded, "fork")).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot idle");
     expect(elements(row(flatExpanded, "btw")).find(element => element.type === "em")?.props.className).toContain("is-sr-only");
     expect(elements(row(flatExpanded, "fork")).find(element => element.type === "em")?.props.className).toContain("is-sr-only");
+
+    const singleChildExpanded = render({
+      families: groupProjectSessionFamilies([
+        session,
+        { ...session, sessionId: "only-child", title: "Only child", parentSessionId: "root", lastActivityAt: 2 },
+      ]),
+      flat: true,
+      expandedForkParents: new Set(["root"]),
+    });
+    const onlyBranch = elements(singleChildExpanded).find(element => String(element.props.className).startsWith("session-fork-branch"))!;
+    expect(onlyBranch.props.className).toBe("session-fork-branch is-last is-only");
   });
 
   it("excludes archived forks from active families while keeping live descendants reachable and rendering archived rows in archive mode", () => {

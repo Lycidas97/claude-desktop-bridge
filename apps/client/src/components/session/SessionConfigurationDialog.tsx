@@ -3,13 +3,15 @@ import type {
   BridgeSessionConfiguration,
   BridgeSessionInfo,
 } from "@bridge/protocol";
-import { LoaderCircle, Settings2, ShieldCheck, X } from "lucide-react";
+import { LoaderCircle, Settings2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { MagpieModelQuota, useOptionalMagpieQuota } from "../../../../../plugins/magpie-quota/client.js";
 import { modelQuotaLabel } from "../../../../../plugins/magpie-quota/presentation.js";
+import { sanitizeModelDisplayName } from "../../lib/conversation-timeline.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { formatContextPercentage, formatContextTokens } from "../conversation/SessionActivityIndicator.js";
 
 const EFFORT_LABELS: Record<string, string> = {
@@ -201,61 +203,49 @@ export function SessionConfigurationDialog({
           </div>
         ) : (
           <>
-            {configuration?.context && configuration.context.totalTokens > 0 && (() => {
-              const context = configuration.context;
-              const hasCapacity = typeof context.maxTokens === "number" && context.maxTokens > 0
-                && typeof context.percentage === "number" && Number.isFinite(context.percentage);
-              return (
-                <div className="session-context-usage">
-                  <div>
-                    <span>上下文</span>
-                    <strong>
-                      {formatContextTokens(context.totalTokens)}
-                      {hasCapacity && (
-                        <small> / {formatContextTokens(context.maxTokens!)} · {formatContextPercentage(context.percentage!)}</small>
-                      )}
-                    </strong>
-                  </div>
-                  {hasCapacity && (
-                    <div
-                      className="session-context-track"
-                      role="progressbar"
-                      aria-label="上下文使用量"
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={Math.round(context.percentage!)}
-                    >
-                      <i style={{ width: `${Math.min(100, Math.max(0, context.percentage!))}%` }} />
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-
             {configuration?.availableProviders?.length ? (
-              <label className="session-model-field">
+              <div className="session-model-field">
                 <span>Provider</span>
-                <select value={provider} onChange={(event) => chooseProvider(event.target.value)}>
-                  {configuration.availableProviders.map((candidate) => (
-                    <option value={candidate.value} key={candidate.value}>{candidate.displayName}</option>
-                  ))}
-                </select>
+                <SelectMenu
+                  ariaLabel="Provider"
+                  value={provider}
+                  options={configuration.availableProviders.map((candidate) => ({
+                    value: candidate.value,
+                    label: candidate.displayName,
+                  }))}
+                  onChange={chooseProvider}
+                />
                 <small>{provider || "跟随 Desktop 当前配置"}</small>
-              </label>
+              </div>
             ) : null}
 
-            {modelOptions.length > 0 && <label className="session-model-field">
-              <span>模型</span>
-              <select value={model} disabled={!modelOptions.length} onChange={(event) => chooseModel(event.target.value)}>
-                {modelOptions.map((candidate) => (
-                  <option value={candidate.value} key={`${candidate.provider ?? ""}:${candidate.value}`}>
-                    {[candidate.displayName, quota?.snapshot && modelQuotaLabel(quota.snapshot, candidate)].filter(Boolean).join(" · ")}
-                  </option>
-                ))}
-              </select>
-              <small>{selectedModel?.description || (!configuration?.modelsComplete ? "仅显示当前主机已发现的模型" : model)}</small>
-              {configuration && <small>配置来源：{{ bridge: "当前会话", "claude-desktop": "Claude Desktop", project: "项目配置", default: "电脑默认" }[configuration.modelSource]}</small>}
-            </label>}
+            {modelOptions.length > 0 && (
+              <div className="session-model-field">
+                <span>模型</span>
+                <SelectMenu
+                  ariaLabel="模型"
+                  value={model}
+                  disabled={!modelOptions.length}
+                  options={modelOptions.map((candidate) => ({
+                    value: candidate.value,
+                    label: sanitizeModelDisplayName(candidate.displayName, candidate.resolvedModel ?? candidate.value),
+                    meta: quota?.snapshot ? (modelQuotaLabel(quota.snapshot, candidate) || undefined) : undefined,
+                  }))}
+                  onChange={chooseModel}
+                />
+                <small>
+                  {selectedModel?.description
+                    || (!configuration?.modelsComplete
+                      ? "仅显示当前主机已发现的模型"
+                      : sanitizeModelDisplayName(model, selectedModel?.resolvedModel))}
+                </small>
+                {configuration && (
+                  <small>
+                    配置来源：{{ bridge: "当前会话", "claude-desktop": "Claude Desktop", project: "项目配置", default: "电脑默认" }[configuration.modelSource]}
+                  </small>
+                )}
+              </div>
+            )}
             {quota && selectedModel && <MagpieModelQuota model={selectedModel} />}
 
             {effortLevels.length > 0 && selectedModel?.supportsEffort !== false && (
@@ -294,18 +284,54 @@ export function SessionConfigurationDialog({
             )}
 
             {claudeSession && configuration?.nativePermissionMode && (
-              <label className="session-model-field">
+              <div className="session-model-field">
                 <span>Desktop 授权模式</span>
-                <select aria-label="Desktop 授权模式" value={nativePermissionMode} onChange={event => setNativePermissionMode(event.target.value as BridgeSDKPermissionMode)}>
-                  <option value="default">默认</option>
-                  <option value="acceptEdits">允许文件修改</option>
-                  <option value="plan">计划模式</option>
-                  <option value="auto">自动模式</option>
-                  <option value="dontAsk">不询问</option>
-                  <option value="bypassPermissions">完全授权</option>
-                </select>
-              </label>
+                <SelectMenu<BridgeSDKPermissionMode>
+                  ariaLabel="Desktop 授权模式"
+                  value={nativePermissionMode ?? configuration.nativePermissionMode}
+                  options={[
+                    { value: "default", label: "默认" },
+                    { value: "acceptEdits", label: "允许文件修改" },
+                    { value: "plan", label: "计划模式" },
+                    { value: "auto", label: "自动模式" },
+                    { value: "dontAsk", label: "不询问" },
+                    { value: "bypassPermissions", label: "完全授权" },
+                  ]}
+                  onChange={(nextMode) => setNativePermissionMode(nextMode)}
+                />
+              </div>
             )}
+
+            {configuration?.context && configuration.context.totalTokens > 0 && (() => {
+              const context = configuration.context;
+              const hasCapacity = typeof context.maxTokens === "number" && context.maxTokens > 0
+                && typeof context.percentage === "number" && Number.isFinite(context.percentage);
+              return (
+                <div className="session-context-usage">
+                  <div>
+                    <span>上下文</span>
+                    <strong>
+                      {formatContextTokens(context.totalTokens)}
+                      {hasCapacity && (
+                        <small> / {formatContextTokens(context.maxTokens!)} · {formatContextPercentage(context.percentage!)}</small>
+                      )}
+                    </strong>
+                  </div>
+                  {hasCapacity && (
+                    <div
+                      className="session-context-track"
+                      role="progressbar"
+                      aria-label="上下文使用量"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.round(context.percentage!)}
+                    >
+                      <i style={{ width: `${Math.min(100, Math.max(0, context.percentage!))}%` }} />
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {appliesAfterTurn && <div className="session-configuration-notice">当前任务不会中断，修改从下一轮生效。</div>}
             {error && <div className="session-configuration-error" role="alert">{error}</div>}

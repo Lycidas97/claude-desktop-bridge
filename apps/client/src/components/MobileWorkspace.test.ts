@@ -21,6 +21,7 @@ import {
   ownershipLabel,
   restorableSessionId,
   formatSessionModelLabel,
+  sanitizeModelDisplayName,
   stoppableBridgeTask,
 } from "../lib/conversation-timeline.js";
 import { groupProjectSessionFamilies } from "../lib/project-groups.js";
@@ -91,11 +92,12 @@ describe("mobile workspace directory", () => {
     };
   }
 
-  it("lands directly on the active session canvas with a closed slide-over drawer and collapsed archive group", () => {
+  it("lands directly on the full-screen Layer-1 Home Session List without auto-opening a conversation", () => {
     const props = workspaceProps();
     const html = renderToStaticMarkup(createElement(MobileWorkspace, props));
-    expect(html).toContain("<h1>Visible session</h1>");
-    expect(html).toContain('aria-label="菜单"');
+    expect(html).toContain('class="mobile-home-catalog is-flat-tree"');
+    expect(html).not.toContain("<h1>Visible session</h1>");
+    expect(html).not.toContain('aria-label="菜单"');
     expect(html).toContain('aria-label="当前电脑：My computer，切换电脑"');
     expect(html).toContain('aria-label="新建会话"');
     expect(html).not.toContain('aria-label="目录选项"');
@@ -344,8 +346,8 @@ describe("mobile workspace directory", () => {
     expect(threeLevelActiveHtml).toContain(liveGrandchild.title);
     expect(threeLevelActiveHtml).not.toContain("1 个已结束侧聊");
     expect(threeLevelActiveHtml).not.toContain(sidechatArchived.title);
-    const liveRow = /data-session-id="live-fork"([\s\S]*?)<\/button>/u.exec(threeLevelActiveHtml)![1]!;
-    expect(liveRow).toContain("session-fork-icon running");
+    const liveRow = /data-session-id="live-fork"([\s\S]*?)<\/div>/u.exec(threeLevelActiveHtml)![1]!;
+    expect(liveRow).toContain("session-state-dot running");
     expect(liveRow).not.toContain("桌面运行中");
     expect(liveRow).not.toContain("已归档");
     expect(threeLevelActiveHtml.match(/data-session-id="live-fork"/gu)).toHaveLength(1);
@@ -359,8 +361,10 @@ describe("mobile workspace directory", () => {
     const archivedParent: BridgeSessionInfo = { ...session, sessionId: "archived-parent", title: "已归档父会话", archivedAt: 50 };
     const archivedChild: BridgeSessionInfo = { ...session, sessionId: "btw-of-archived-parent", title: "btw: 归档父会话的侧聊", parentSessionId: "archived-parent", sidechat: true, archivedAt: 60 };
     expect(groupProjectSessionFamilies([archivedParent, archivedChild])[0]!.forks).toHaveLength(1);
+    const archivedCollapsedHtml = renderCatalog(new Set(), "__archived__", [archivedParent, archivedChild]);
+    expect(archivedCollapsedHtml).toContain("1 个 /btw 侧聊");
     const archivedPageHtml = renderCatalog(new Set(["archived-parent"]), "__archived__", [archivedParent, archivedChild]);
-    expect(archivedPageHtml).toContain("1 个 /btw 侧聊");
+    expect(archivedPageHtml).not.toContain("mobile-fork-toggle");
     expect(archivedPageHtml).toContain("btw: 归档父会话的侧聊");
     expect(archivedPageHtml).not.toContain("is-archived-fold");
 
@@ -1148,11 +1152,22 @@ describe("formatSessionModelLabel", () => {
     expect(formatSessionModelLabel({
       ...baseSession,
       model: "mythos-magpie-1052229916[1m]",
-    })).toBe("默认模型 1M");
+    })).toBe("默认模型 · 1M");
     expect(formatSessionModelLabel({
       ...baseSession,
       model: "magpie-2213244526.anthropic.claude-opus-5-5[1m]",
-    })).toBe("opus 5 5 1M");
+    })).toBe("Claude Opus 5.5 · 1M");
+    expect(formatSessionModelLabel({
+      ...baseSession,
+      model: "magpie-5782219464.anthropic.claude-fable-5-2[1m]",
+      modelDisplayName: "magpie-5782219464.anthropic.claude-fable-5-2[1m]",
+    })).toBe("Claude Fable 5.2 · 1M");
+    expect(formatSessionModelLabel({
+      ...baseSession,
+      model: "mythos-magpie-3436308304",
+      modelDisplayName: "mythos-magpie-3436308304",
+    })).toBe("默认模型");
+    expect(sanitizeModelDisplayName("mythos-magpie-3436308304", "anthropic/claude-opus-4-7")).toBe("Claude Opus 4.7");
   });
 });
 

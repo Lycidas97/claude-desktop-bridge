@@ -3,7 +3,7 @@ import type { ThemeControl } from "../../hooks/useTheme.js";
 import { AppearanceSettings } from "../common/AppearanceSettings.js";
 import { SettingsGroup } from "../common/SettingsGroup.js";
 import { useClientUpdater } from "../../lib/client-updater.js";
-import { setDiagDialogOpen } from "../../lib/diagnostics.js";
+import { setDiagDialogOpen, useDiagnosticLogs } from "../../lib/diagnostics.js";
 import {
   MobileClientUpdaterSection,
   RemoteDesktopUpdaterSection,
@@ -21,6 +21,7 @@ export function MobileSettings({ themeControl, quota, providers, remoteDesktop, 
 }) {
   const fallbackUpdater = useClientUpdater(false);
   const resolvedUpdater = clientUpdater ?? fallbackUpdater;
+  const { enabled: diagEnabled } = useDiagnosticLogs();
   return <main className="mobile-workspace mobile-settings-page">
     <MobilePageHeader title="设置" />
     <div className="mobile-settings-content">
@@ -32,7 +33,15 @@ export function MobileSettings({ themeControl, quota, providers, remoteDesktop, 
       <AppearanceSettings themeControl={themeControl} />
       <MobileClientUpdaterSection updater={resolvedUpdater} />
       <SettingsGroup title="诊断与支持" titleId="mobile-support-title">
-        <button type="button" className="mobile-settings-row" onClick={() => setDiagDialogOpen(true)}><Activity size={18} aria-hidden="true" /><div><strong>连接诊断与日志</strong><small>检查连接，记录和导出诊断日志</small></div><ChevronRight size={18} aria-hidden="true" /></button>
+        <button type="button" className="mobile-settings-row" onClick={() => setDiagDialogOpen(true)}>
+          <Activity size={18} aria-hidden="true" />
+          <div>
+            <strong>连接诊断与日志</strong>
+            <small>检查连接，记录和导出诊断日志</small>
+          </div>
+          {diagEnabled && <b className="settings-diag-badge">记录中</b>}
+          <ChevronRight size={18} aria-hidden="true" />
+        </button>
       </SettingsGroup>
     </div>
   </main>;

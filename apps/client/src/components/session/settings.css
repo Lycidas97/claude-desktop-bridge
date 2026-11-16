@@ -72,20 +72,25 @@
   transition: background var(--t-fast) ease, color var(--t-fast) ease;
 }
 
+.settings-sections button:focus:not(:focus-visible):not(.active) {
+  background: transparent;
+}
+
 .settings-sections button:hover:not(.active) {
-  background: var(--surface-2);
-  color: var(--text);
+  background: color-mix(in srgb, var(--text) 3.8%, transparent);
+  color: color-mix(in srgb, var(--text) 78%, var(--muted));
 }
 
 .settings-sections button.active {
-  background: color-mix(in srgb, var(--text) 7.5%, transparent);
+  background: color-mix(in srgb, var(--text) 9.5%, transparent);
   color: var(--text);
   font-weight: 600;
-  box-shadow: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 7%, transparent);
 }
 
 [data-theme="dark"] .settings-sections button.active {
-  background: color-mix(in srgb, var(--text) 10%, transparent);
+  background: color-mix(in srgb, var(--text) 13%, transparent);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -597,6 +602,17 @@
 
 .inspector-warning p {
   margin: 4px 0 0;
+}
+
+.provider-select-field {
+  display: grid;
+  gap: 6px;
+}
+
+.provider-select-field > label > span {
+  color: var(--muted);
+  font-size: calc(12px * var(--font-scale));
+  font-weight: 600;
 }
 
 .settings-section-content .host-permission-settings {

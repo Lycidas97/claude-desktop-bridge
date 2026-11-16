@@ -145,8 +145,9 @@ describe("mobile app parent navigation", () => {
     expect(component(MobileAppShell)!.props.tab).toBe("sessions");
     expect(back()).toBe(false);
   });
-  it("passes paired hosts, quick host switcher callbacks, and tab navigation into MobileWorkspace", () => {
+  it("passes paired hosts, quick host switcher callbacks, and tab navigation into MobileWorkspace", async () => {
     const workspace = component(MobileWorkspace)!;
+    const initialDirReq = workspace.props.directoryRequest;
     expect(workspace.props.hosts).toBe(hooks.mobile.state.hosts);
     expect(typeof workspace.props.onSelectHost).toBe("function");
     expect(typeof workspace.props.onAddHost).toBe("function");
@@ -154,6 +155,10 @@ describe("mobile app parent navigation", () => {
     workspace.props.onSelectTab("settings");
     draw();
     expect(component(MobileAppShell)!.props.tab).toBe("settings");
+    await component(MobileWorkspace)!.props.onSelectHost("host");
+    draw();
+    expect(component(MobileAppShell)!.props.tab).toBe("sessions");
+    expect(component(MobileWorkspace)!.props.directoryRequest).not.toBe(initialDirReq);
   });
   it("opens active computer connection details directly from workspace inspection callback", () => {
     component(MobileWorkspace)!.props.onInspectConnection(); draw();
@@ -185,11 +190,16 @@ describe("mobile app parent navigation", () => {
     expect("fixedSessionId" in component(MobileWorkspace)!.props).toBe(false);
     expect(component(AssistantPage)!.props.active).toBe(false);
     expect(typeof component(AssistantPage)!.props.renderConversation).toBe("function");
+    const beforeBackDirReq = component(MobileWorkspace)!.props.directoryRequest;
     component(MobileAppShell)!.props.onTabChange("assistant");
     draw();
     const switchedPages = elements(tree).filter((element) => element.type === "div" && element.props.className === "mobile-tab-page");
     expect(switchedPages.map((page) => page.props.hidden)).toEqual([true, false]);
     expect(component(MobileWorkspace)!.props.visible).toBe(false);
     expect(component(AssistantPage)!.props.active).toBe(true);
+    component(MobileAppShell)!.props.onTabChange("sessions");
+    draw();
+    expect(component(MobileAppShell)!.props.tab).toBe("sessions");
+    expect(component(MobileWorkspace)!.props.directoryRequest).toBe(beforeBackDirReq + 1);
   });
 });

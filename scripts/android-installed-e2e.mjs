@@ -113,17 +113,8 @@ try {
     button.click();
   })()`);
 
-  async function openMobileDrawerIfClosed() {
-    await androidPage.waitFor(
-      "Boolean(document.querySelector('button[aria-label=\"菜单\"]') || document.querySelector('.mobile-drawer.is-open'))",
-      30_000,
-    );
-    await androidPage.evaluate(`(() => {
-      if (document.querySelector('.mobile-drawer.is-open')) return;
-      const menu = document.querySelector('button[aria-label="菜单"]');
-      if (menu) menu.click();
-    })()`);
-    await androidPage.waitFor("Boolean(document.querySelector('.mobile-drawer.is-open'))", 10_000);
+  async function waitForMobileCatalog() {
+    await androidPage.waitFor("Boolean(document.querySelector('.mobile-home-catalog'))", 30_000);
   }
 
   if (smokePairingOnly) {
@@ -131,10 +122,10 @@ try {
       "Boolean(document.querySelector('.m-host-chip .m-status-dot.is-online')) && (['暂无会话', '暂无活跃会话', '未检测到 Claude Desktop'].includes(document.querySelector('.session-catalog-loading strong')?.textContent?.trim() ?? '') || Boolean(document.querySelector('.session-row-v2')))",
       30_000,
     );
-    await openMobileDrawerIfClosed();
+    await waitForMobileCatalog();
     await androidPage.screenshot(resolve(artifacts, "02-paired-smoke.png"));
     const renderedHostName = await androidPage.evaluate(
-      "document.querySelector('.mobile-drawer.is-open .m-host-name')?.textContent?.trim() ?? ''",
+      "document.querySelector('.mobile-home-catalog .m-host-name')?.textContent?.trim() ?? ''",
     );
     assert.equal(renderedHostName, pairingSnapshot.host.name, "Android WebView must render the paired Desktop host name");
     const pairedSnapshot = await desktopPage.evaluate(() => window.bridgeDesktop.getSnapshot());
@@ -153,11 +144,11 @@ try {
       artifacts,
     }, null, 2)}\n`);
   } else {
-  await androidPage.waitFor("Boolean(document.querySelector('.session-row-v2'))");
-  await openMobileDrawerIfClosed();
+  await androidPage.waitFor("Boolean(document.querySelector('.mobile-home-catalog .session-row-v2'))");
+  await waitForMobileCatalog();
   await androidPage.screenshot(resolve(artifacts, "02-session-list.png"));
   const selectedSession = await androidPage.evaluate(`(() => {
-    const rows = [...document.querySelectorAll('.mobile-drawer.is-open .session-row-v2')];
+    const rows = [...document.querySelectorAll('.mobile-home-catalog .session-row-v2')];
     const targetTitle = ${JSON.stringify(targetSessionTitle ?? "")};
     const row = targetTitle
       ? rows.find((candidate) => candidate.textContent.includes(targetTitle))

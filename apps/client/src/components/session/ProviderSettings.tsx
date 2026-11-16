@@ -1,6 +1,7 @@
 import type { BridgeHostSnapshot, BridgeMagpieConnectionInput, BridgeMagpieConnectionTestResult, DesktopControlSnapshot } from "@bridge/protocol";
 import { LoaderCircle, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
+import { SelectMenu } from "../common/SelectMenu.js";
 import "./settings.css";
 
 export function ProviderSettings({ snapshot, connected = true, desktopLocal = false, onRefresh, onSetApiKey, onRemoveApiKey, onTestMagpieConnection, onSaveMagpieConnection }: {
@@ -99,14 +100,36 @@ export function ProviderSettings({ snapshot, connected = true, desktopLocal = fa
           <div><dt>API Key</dt><dd>{magpie.keyConfigured ? "已配置" : "未配置"}</dd></div>
         </dl>
         {desktopLocal && onTestMagpieConnection && onSaveMagpieConnection ? <div className="provider-key-settings provider-magpie-settings">
-          <label htmlFor="magpie-mode"><span>配置来源</span><select id="magpie-mode" value={magpieDraft.mode} disabled={busy} onChange={(event) => editMagpie({ mode: event.target.value as typeof magpieDraft.mode })}>
-            <option value="auto">沿用 Claude/Claude-3p 配置</option><option value="manual">手动配置 Magpie</option>
-          </select></label>
+          <div className="provider-select-field">
+            <label htmlFor="magpie-mode"><span>配置来源</span></label>
+            <SelectMenu
+              id="magpie-mode"
+              ariaLabel="配置来源"
+              value={magpieDraft.mode}
+              disabled={busy}
+              options={[
+                { value: "auto", label: "沿用 Claude/Claude-3p 配置" },
+                { value: "manual", label: "手动配置 Magpie" },
+              ]}
+              onChange={(nextMode) => editMagpie({ mode: nextMode as typeof magpieDraft.mode })}
+            />
+          </div>
           {magpieDraft.mode === "manual" && <>
             <label htmlFor="magpie-base-url"><span>网关 URL</span><input id="magpie-base-url" type="url" autoComplete="off" spellCheck={false} placeholder="https://gateway.example.com" value={magpieDraft.baseUrl} disabled={busy} onChange={(event) => editMagpie({ baseUrl: event.target.value })} /></label>
-            <label htmlFor="magpie-auth-scheme"><span>认证方式</span><select id="magpie-auth-scheme" value={magpieDraft.authScheme} disabled={busy} onChange={(event) => editMagpie({ authScheme: event.target.value as typeof magpieDraft.authScheme })}>
-              <option value="bearer">Bearer</option><option value="x-api-key">x-api-key</option>
-            </select></label>
+            <div className="provider-select-field">
+              <label htmlFor="magpie-auth-scheme"><span>认证方式</span></label>
+              <SelectMenu
+                id="magpie-auth-scheme"
+                ariaLabel="认证方式"
+                value={magpieDraft.authScheme}
+                disabled={busy}
+                options={[
+                  { value: "bearer", label: "Bearer" },
+                  { value: "x-api-key", label: "x-api-key" },
+                ]}
+                onChange={(nextScheme) => editMagpie({ authScheme: nextScheme as typeof magpieDraft.authScheme })}
+              />
+            </div>
             <label htmlFor="magpie-api-key"><span>Magpie API Key</span><input id="magpie-api-key" type="password" autoComplete="off" spellCheck={false} value={magpieDraft.apiKey} placeholder={canKeepMagpieKey ? "留空保留已保存的 Key" : "输入 API Key"} aria-describedby="magpie-key-notice" disabled={busy} onChange={(event) => editMagpie({ apiKey: event.target.value })} /></label>
             <p className="settings-notice" id="magpie-key-notice">{canKeepMagpieKey ? "已保存的 Key 不会回填；留空可继续使用。" : "首次配置或更换网关、认证方式时，请输入 API Key。"}</p>
           </>}

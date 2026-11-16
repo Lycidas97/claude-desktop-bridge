@@ -62,62 +62,25 @@
   min-height: 0;
   background: var(--bg);
 }
-.mobile-drawer:focus { outline: none; }
+.mobile-home-catalog:focus { outline: none; }
 .mobile-app-shell button:focus-visible,
-.mobile-drawer button:focus-visible,
+.mobile-home-catalog button:focus-visible,
 .m-sheet button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .mobile-app-shell .icon-button,
 .m-sheet .icon-button { min-width: var(--m-touch); min-height: var(--m-touch); }
 
-/* ---- Slide-over Flat Left Drawer (min(82vw, 308px)) ---- */
+/* ---- Layer-1 Full-Screen Expanded Home Session Catalog ---- */
 
-.mobile-drawer-scrim {
-  position: fixed;
-  z-index: 68;
-  inset: 0;
-  background: color-mix(in srgb, var(--scrim) 58%, transparent);
-  animation: m-fade var(--t-enter) var(--ease-out);
-}
-
-.mobile-drawer {
-  position: fixed;
-  z-index: 69;
-  top: 0;
-  bottom: 0;
-  left: 0;
+.mobile-home-catalog {
   display: flex;
-  width: min(82vw, 308px);
-  max-width: 100vw;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid var(--line);
-  background: var(--sidebar-fill, var(--surface));
+  background: var(--bg);
   color: var(--text);
-  transform: translateX(-104%);
-  visibility: hidden;
-  pointer-events: none;
-  transition:
-    transform var(--t-enter) var(--ease-out),
-    visibility 0s linear var(--t-enter);
-}
-
-.mobile-drawer.is-open {
-  transform: translateX(0);
-  visibility: visible;
-  pointer-events: auto;
-  box-shadow: 16px 0 44px rgba(0, 0, 0, 0.24);
-  transition:
-    transform var(--t-enter) var(--ease-out),
-    visibility 0s;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .mobile-drawer,
-  .mobile-drawer.is-open,
-  .mobile-drawer-scrim {
-    transition: none;
-    animation: none;
-  }
 }
 
 .mobile-drawer-topbar {
@@ -280,42 +243,84 @@
   background: transparent;
 }
 
-.mobile-drawer.is-flat-tree .project-group {
+.mobile-home-catalog.is-flat-tree .project-group {
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
 
-.mobile-drawer.is-flat-tree .project-group-open {
+.mobile-home-catalog.is-flat-tree .project-group-open {
   min-height: 36px;
-  padding: 6px 8px;
+  padding: 6px 8px 6px 6px;
 }
 
-.mobile-drawer.is-flat-tree .project-group-actions .session-row-action {
+.mobile-home-catalog.is-flat-tree .project-group-actions .session-row-action {
   width: 32px;
   height: 32px;
   min-width: 32px;
   min-height: 32px;
 }
 
-.mobile-drawer.is-flat-tree .session-row-v2,
-.mobile-drawer.is-flat-tree .session-row-hit,
-.mobile-drawer.is-flat-tree .session-row-v2.is-fork-child,
-.mobile-drawer.is-flat-tree .session-row-v2.is-fork-child .session-row-hit {
+.mobile-home-catalog.is-flat-tree .session-row-v2:not(.is-fork-child) {
+  margin-left: 16px;
+}
+
+.mobile-home-catalog.is-flat-tree .session-row-v2,
+.mobile-home-catalog.is-flat-tree .session-row-hit {
   min-height: 38px;
 }
 
-.mobile-drawer.is-flat-tree .session-row-hit {
-  padding: 7px 6px 7px 12px;
+.mobile-home-catalog.is-flat-tree .session-row-v2.is-fork-child,
+.mobile-home-catalog.is-flat-tree .session-row-v2.is-fork-child .session-row-hit {
+  min-height: 36px;
 }
 
-.mobile-drawer.is-flat-tree .session-row-v2.is-fork-child .session-row-hit {
-  gap: 7px;
-  padding: 7px 6px 7px 7px;
+.mobile-home-catalog.is-flat-tree .session-row-hit {
+  gap: 6px;
+  padding: 7px 6px 7px 10px;
 }
 
-.mobile-drawer.is-flat-tree .session-row-v2 > .session-row-action {
+.mobile-home-catalog.is-flat-tree .session-row-copy strong {
+  font-size: calc(14px * var(--font-scale));
+}
+
+.mobile-home-catalog.is-flat-tree .session-row-v2.is-fork-child .session-row-copy strong {
+  font-size: calc(13.25px * var(--font-scale));
+}
+
+.mobile-home-catalog.is-flat-tree .session-row-v2.is-fork-child .session-row-hit {
+  gap: 6px;
+  padding: 6px 6px 6px 7px;
+}
+
+.mobile-home-catalog.is-flat-tree .session-family-chevron {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+}
+
+.mobile-home-catalog.is-flat-tree .mobile-fork-group.collapsed {
+  padding: 0 6px 0 30px;
+}
+
+.mobile-home-catalog.is-flat-tree .mobile-fork-toggle {
+  min-height: 30px;
+  gap: 5px;
+  padding: 2px 6px 2px 0;
+  font-size: calc(12px * var(--font-scale));
+}
+
+.mobile-home-catalog.is-flat-tree .session-fork-branch {
+  padding-left: 40px;
+}
+
+.mobile-home-catalog.is-flat-tree .session-fork-branch:not(.is-last)::before {
+  left: 30.875px;
+}
+
+.mobile-home-catalog.is-flat-tree .session-row-v2 > .session-row-action {
   width: 32px;
   height: 32px;
   min-width: 32px;
@@ -553,11 +558,10 @@
 .desktop-conversation .m-host-chip > .session-profile-summary,
 .desktop-conversation .m-presence > .session-profile-summary {
   min-width: 0;
-  overflow: visible;
+  overflow: hidden;
   text-align: left;
-  text-overflow: clip;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .m-host-chip > .m-host-status { flex: none; }
@@ -940,7 +944,8 @@
 
 @media (max-width: 720px) {
   .session-configuration-dialog {
-    border-radius: var(--m-r-sheet) var(--m-r-sheet) 0 0;
+    border: 1px solid var(--line-strong);
+    border-radius: 14px;
     background: var(--m-sheet-fill);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
@@ -1224,24 +1229,24 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 .mobile-app-shell .permission-dock-slot.has-attention { padding: 8px var(--m-gutter); }
 
 .mobile-app-shell .permission-dock,
-.mobile-drawer .host-permission-alert {
+.mobile-home-catalog .host-permission-alert {
   min-height: var(--m-row);
   gap: 10px;
   padding: 8px 12px;
   border-radius: 12px;
 }
 
-.mobile-drawer .host-permission-alert { margin: 4px 2px 8px; }
+.mobile-home-catalog .host-permission-alert { margin: 4px 2px 8px; }
 .mobile-app-shell .permission-dock-icon,
-.mobile-drawer .permission-dock-icon { border-radius: var(--m-r-control); }
+.mobile-home-catalog .permission-dock-icon { border-radius: var(--m-r-control); }
 .mobile-app-shell .permission-dock strong,
-.mobile-drawer .host-permission-alert strong { font-size: var(--m-fs-callout); }
+.mobile-home-catalog .host-permission-alert strong { font-size: var(--m-fs-callout); }
 .mobile-app-shell .permission-dock small,
-.mobile-drawer .host-permission-alert small { font-size: var(--m-fs-footnote); }
+.mobile-home-catalog .host-permission-alert small { font-size: var(--m-fs-footnote); }
 .mobile-app-shell .permission-dock b,
-.mobile-drawer .host-permission-alert b { font-size: var(--m-fs-subhead); }
+.mobile-home-catalog .host-permission-alert b { font-size: var(--m-fs-subhead); }
 
-.mobile-drawer .host-connection-issue {
+.mobile-home-catalog .host-connection-issue {
   padding: 10px 12px;
   border-radius: var(--m-r-control);
   font-size: var(--m-fs-subhead);

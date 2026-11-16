@@ -291,7 +291,8 @@ try {
     await card.getByLabel('配置目录').waitFor();
     assert.equal(await enable.isDisabled(), true, 'Two profiles require an explicit choice');
     assert.equal(await readFile(targetPath, 'utf8'), originalDeveloperSettings, 'Checking must not write');
-    await card.getByLabel('配置目录').selectOption('Claude-3p');
+    await card.getByLabel('配置目录').click();
+    await page.getByRole('listbox').getByRole('option', { name: 'Claude-3p', exact: true }).click();
     await card.getByRole('status').filter({ hasText: '配置未开启' }).waitFor();
     await enable.click();
     await card.getByRole('status').filter({ hasText: '配置已开启，重启 Claude Desktop 后生效。' }).waitFor();
@@ -311,7 +312,8 @@ try {
     await card.getByRole('alert').filter({ hasText: '不是有效 JSON' }).waitFor();
     assert.equal(await readFile(targetPath, 'utf8'), '{broken');
     await page.screenshot({ path: join(root, 'developer-invalid-json.png'), fullPage: true });
-    await card.getByLabel('配置目录').selectOption('Claude');
+    await card.getByLabel('配置目录').click();
+    await page.getByRole('listbox').getByRole('option', { name: 'Claude', exact: true }).click();
     await card.getByRole('status').filter({ hasText: '配置未开启' }).waitFor();
     assert.equal(await enable.isEnabled(), true);
     const snapshot = await page.evaluate(() => window.bridgeDesktop.getSnapshot());

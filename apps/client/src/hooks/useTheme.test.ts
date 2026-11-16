@@ -88,10 +88,10 @@ describe("native system bars follow the app theme", () => {
     let control = draw();
     expect(SystemBars.setStyle).toHaveBeenLastCalledWith({ style: "DARK" });
     expect(root.dataset).toEqual({ theme: "dark", themeFamily: family, fontSize: "standard" });
-    expect(meta).toHaveBeenLastCalledWith("content", "#000000");
+    expect(meta).toHaveBeenLastCalledWith("content", family === "apple" ? "#1c1c1e" : "#191816");
     control.setTheme("light"); control = draw();
     expect(SystemBars.setStyle).toHaveBeenLastCalledWith({ style: "LIGHT" });
-    expect(meta).toHaveBeenLastCalledWith("content", family === "apple" ? "#f2f2f7" : "#f6f4f0");
+    expect(meta).toHaveBeenLastCalledWith("content", family === "apple" ? "#ffffff" : "#faf9f5");
     expect(stored.get("bridge-theme")).toBe("light");
     control.toggleTheme(); draw();
     expect(SystemBars.setStyle).toHaveBeenLastCalledWith({ style: "DARK" });
@@ -103,16 +103,28 @@ describe("native system bars follow the app theme", () => {
     expect(SystemBars.setStyle).toHaveBeenLastCalledWith({ style: "LIGHT" });
     control.setFamily("apple"); draw();
     expect(root.dataset).toEqual({ theme: "light", themeFamily: "apple", fontSize: "standard" });
-    expect(meta).toHaveBeenLastCalledWith("content", "#f2f2f7");
+    expect(meta).toHaveBeenLastCalledWith("content", "#ffffff");
     expect(SystemBars.setStyle).toHaveBeenLastCalledWith({ style: "LIGHT" });
   });
 
-  it("keeps updating browser theme colors without calling an Android plugin", () => {
+  it("keeps updating browser theme colors, creates missing meta tag, and flags macOS desktop Electron", () => {
     vi.mocked(Capacitor.getPlatform).mockReturnValue("web");
+    const appendChild = vi.fn();
+    const createdMeta = { setAttribute: meta };
+    vi.stubGlobal("window", { bridgeDesktop: {} });
+    vi.stubGlobal("navigator", { platform: "MacIntel", userAgent: "Macintosh" });
+    vi.stubGlobal("document", {
+      documentElement: root,
+      head: { appendChild },
+      querySelector: () => null,
+      createElement: () => createdMeta,
+    });
     const control = draw();
+    expect(appendChild).toHaveBeenCalledWith(createdMeta);
+    expect(root.dataset.macDesktop).toBe("true");
     control.setTheme("light"); draw();
     expect(SystemBars.setStyle).not.toHaveBeenCalled();
     expect(root.dataset.theme).toBe("light");
-    expect(meta).toHaveBeenLastCalledWith("content", "#f6f4f0");
+    expect(meta).toHaveBeenLastCalledWith("content", "#faf9f5");
   });
 });

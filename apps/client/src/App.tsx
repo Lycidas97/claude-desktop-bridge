@@ -219,6 +219,7 @@ export function App() {
   async function openComputer(hostId: string, sessionId?: string): Promise<void> {
     if (hostId !== mobile.state.activeHostId) await mobile.selectHost(hostId);
     if (sessionId) setFocusRequest({ sessionId, key: Date.now() });
+    else setDirectoryRequest((value) => value + 1);
     setComputerDetailsHostId(undefined);
     setTab("sessions");
   }
@@ -251,6 +252,7 @@ export function App() {
     if (tab !== "sessions") {
       setComputerDetailsHostId(undefined);
       setQuotaOpen(false);
+      setDirectoryRequest((value) => value + 1);
       setTab("sessions");
       return true;
     }
@@ -306,6 +308,7 @@ export function App() {
         setComputerDetailsHostId(undefined);
         setQuotaOpen(false);
         setProvidersOpen(false);
+        if (next === "sessions") setDirectoryRequest((value) => value + 1);
         setTab(next);
       }}
     >

@@ -2,6 +2,7 @@ import type { BridgeHostSnapshot, BridgeMagpieConnectionInput, BridgeMagpieConne
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopSettings } from "../desktop/DesktopSettings.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { ProviderSettings } from "./ProviderSettings.js";
 
 // Match the existing settings tests: drive hooks and public controls without a DOM dependency.
@@ -63,7 +64,11 @@ function text(node: ReactNode = tree): string {
 }
 function field(id: string) { return elements().find((element) => element.props.id === id)!; }
 function button(label: string) { return elements().find((element) => element.type === "button" && text(element.props.children) === label)!; }
-function edit(id: string, value: string) { field(id).props.onChange({ target: { value } }); draw(); }
+function edit(id: string, value: string) {
+  const el = field(id);
+  el.props.onChange(el.type === SelectMenu ? value : { target: { value } });
+  draw();
+}
 function click(label: string) {
   expect(button(label).props.disabled).not.toBe(true);
   button(label).props.onClick(); draw();

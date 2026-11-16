@@ -258,7 +258,7 @@ describe("MobileSessionCatalog empty states", () => {
 
     expect(elements(tree).find(el => el.type === SessionCreateDialog)?.props.initialProjectId).toBe("target-project");
     expect(elements(tree).filter(el => String(el.props.className).includes("project-group-header"))).toHaveLength(2);
-    expect(props.onOpenSession).toHaveBeenCalledWith("session-1");
+    expect(props.onOpenSession).not.toHaveBeenCalled();
   });
 
   it(" keeps an empty Desktop group collapsed by default and opens creation without expanding it", () => {

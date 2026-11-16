@@ -77,6 +77,7 @@ import { useStreamEntrance } from "../../lib/stream-entrance.js";
 import { MailCard } from "../assistant/MailCard.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { Sheet, SheetAction } from "../common/Sheet.js";
 import { EvidenceInlineSummary, EvidencePanel } from "../evidence/EvidencePanel.js";
 import { countSessionOutputFiles } from "../evidence/FileChangesCard.js";
@@ -1828,16 +1829,16 @@ export function ConversationView({
           ) : activeNativePrompt && (
             <>
               {sessionNativePrompts.length > 1 && (
-                <select
+                <SelectMenu
                   className="native-prompt-selector"
-                  aria-label="待处理提示"
+                  ariaLabel="待处理提示"
                   value={activeNativePrompt.promptId}
-                  onChange={(event) => setSelectedNativePromptId(event.target.value)}
-                >
-                  {sessionNativePrompts.map((prompt) => (
-                    <option key={prompt.promptId} value={prompt.promptId}>{prompt.title}</option>
-                  ))}
-                </select>
+                  options={sessionNativePrompts.map((prompt) => ({
+                    value: prompt.promptId,
+                    label: prompt.title,
+                  }))}
+                  onChange={setSelectedNativePromptId}
+                />
               )}
               <NativePromptCard
                 key={activeNativePrompt.promptId}

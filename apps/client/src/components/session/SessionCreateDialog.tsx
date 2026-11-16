@@ -9,6 +9,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { IconButton } from "../common/IconButton.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import "./session-create.css";
 
 export interface SessionCreateDialogProps {
@@ -334,11 +335,22 @@ export function SessionCreateDialog({ snapshot, initialProjectId, initialCwd, co
                     setView("recent"); setPathEditing(!onBrowseDirectory); openDirectory(cwd.trim() || undefined);
                   }}>最近使用或输入路径</button>}
                 </div>
-                {(groups.length > 0 || groupUnavailable) && <label><span>项目分组（可选）</span><select aria-label="项目分组（可选）" value={projectId} disabled={locked} onChange={(event) => setProjectId(event.target.value)}>
-                  <option value="">未分组</option>
-                  {groupUnavailable && <option value={projectId} disabled>分组已不可用</option>}
-                  {groups.map((project) => <option key={project.projectId} value={project.projectId}>{project.name}</option>)}
-                </select></label>}
+                {(groups.length > 0 || groupUnavailable) && (
+                  <div className="session-create-field-group">
+                    <span className="session-create-field-label">项目分组（可选）</span>
+                    <SelectMenu
+                      ariaLabel="项目分组（可选）"
+                      value={projectId}
+                      disabled={locked}
+                      options={[
+                        { value: "", label: "未分组" },
+                        ...(groupUnavailable ? [{ value: projectId, label: "分组已不可用", disabled: true }] : []),
+                        ...groups.map((project) => ({ value: project.projectId, label: project.name })),
+                      ]}
+                      onChange={setProjectId}
+                    />
+                  </div>
+                )}
                 <label><span>会话名称（可选）</span><input aria-label="会话名称（可选）" value={title} disabled={locked} placeholder="可留空，稍后命名" onChange={(event) => setTitle(event.target.value)} /></label>
                 {groupUnavailable && <p className="session-create-error" role="alert">所选分组已不可用，请重新选择。</p>}
                 {connected && !runtimeAvailable && <p className="session-create-error" role="alert">{desktopRuntimeName(runtimeId)} 当前无法创建会话。</p>}

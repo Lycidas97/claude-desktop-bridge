@@ -2,6 +2,7 @@ import type { BridgeDirectoryListing, BridgeHostSnapshot, BridgeSessionInfo } fr
 import { RefreshCw, Settings } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { IconButton } from "../common/IconButton.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { mailResult, useAssistantMail } from "./AssistantMailProvider.js";
@@ -80,10 +81,22 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
         {state === "needs-rebind" && <p role="status">原会话已归档或删除，请重新绑定。</p>}
         {state === "missing" && <p role="status">未找到绑定会话。连接恢复后可再次核对，或更换会话。</p>}
         {(configuring || !binding?.nativeSessionId) && <div className="assistant-binding-form">
-          <label>助理会话<select aria-label="助理会话" value={selectedId} onChange={event => setSelectedId(event.target.value)} disabled={!mail.online || bindingBusy}>
-            <option value="">选择现有会话</option>
-            {snapshot?.sessions.filter(candidate => candidate.transport === "claude-desktop-native" && !candidate.archivedAt).map(candidate => <option key={candidate.sessionId} value={candidate.sessionId}>{candidate.title || candidate.sessionId}</option>)}
-          </select></label>
+          <div className="assistant-binding-select">
+            <span>助理会话</span>
+            <SelectMenu
+              ariaLabel="助理会话"
+              value={selectedId}
+              placeholder="选择现有会话"
+              disabled={!mail.online || bindingBusy}
+              options={[
+                { value: "", label: "选择现有会话" },
+                ...(snapshot?.sessions
+                  .filter(candidate => candidate.transport === "claude-desktop-native" && !candidate.archivedAt)
+                  .map(candidate => ({ value: candidate.sessionId, label: candidate.title || candidate.sessionId })) ?? []),
+              ]}
+              onChange={setSelectedId}
+            />
+          </div>
           <div><button type="button" className="primary-button" disabled={!mail.online || bindingBusy || !selectedId} onClick={() => { void bind(selectedId); }}>绑定会话</button>
             <button type="button" className="secondary-button" disabled={!mail.online || bindingBusy} onClick={() => setCreating(true)}>新建会话</button></div>
         </div>}

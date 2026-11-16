@@ -79,20 +79,74 @@ export function mobileConnectionLabel(
   return "局域网连接";
 }
 
-export function formatSessionModelLabel(session: BridgeSessionInfo): string {
-  if (session.modelDisplayName) return session.modelDisplayName;
-  const raw = session.model?.trim();
-  if (!raw) return "默认模型";
-  const magpieAnthropic = /^magpie-\d+\.anthropic\.(.+)$/iu.exec(raw);
-  const candidate = magpieAnthropic ? magpieAnthropic[1]! : raw;
-  if (/^(?:(?:mythos|claude)-magpie-|anthropic\/magpie-|magpie-)\d+(?:\[1m\])?$/iu.test(candidate)) {
-    return /\[1m\]/iu.test(candidate) ? "默认模型 1M" : "默认模型";
+const SYNTHETIC_MAGPIE_RE = /^(?:(?:mythos|claude)-magpie-|anthropic\/magpie-|magpie-)\d+/iu;
+const KNOWN_MODEL_WORDS: Record<string, string> = {
+  claude: "Claude",
+  opus: "Opus",
+  sonnet: "Sonnet",
+  haiku: "Haiku",
+  fable: "Fable",
+  mythos: "Mythos",
+  gpt: "GPT",
+  gemini: "Gemini",
+};
+
+function humanizeAnthropicSlug(slug: string): string {
+  const withoutDate = slug.trim().replace(/-\d{8}$/u, "");
+  const withDottedVersions = withoutDate.replace(/(^|-)(\d+)-(\d+)(?=-|$)/gu, "$1$2.$3");
+  return withDottedVersions
+    .split(/[-_]+/u)
+    .filter(Boolean)
+    .map((part) => KNOWN_MODEL_WORDS[part.toLowerCase()] ?? (/^[a-z]/iu.test(part) ? `${part.charAt(0).toUpperCase()}${part.slice(1)}` : part))
+    .join(" ");
+}
+
+export function sanitizeModelDisplayName(
+  label: string | undefined,
+  fallbackModel?: string | undefined,
+): string {
+  const trimmedLabel = label?.trim();
+  const trimmedFallback = fallbackModel?.trim();
+  if (trimmedLabel && !SYNTHETIC_MAGPIE_RE.test(trimmedLabel)) {
+    return trimmedLabel;
   }
-  return candidate
+  if (trimmedFallback && !SYNTHETIC_MAGPIE_RE.test(trimmedFallback)) {
+    if (trimmedFallback.includes("/")) {
+      const slug = trimmedFallback.split("/").at(-1)!;
+      const longCtx = /\[1m\]/iu.test(slug) || /\[1m\]/iu.test(trimmedLabel ?? "");
+      const cleanSlug = slug.replace(/\[1m\]/giu, "");
+      const formatted = humanizeAnthropicSlug(cleanSlug);
+      return formatted ? (longCtx ? `${formatted} · 1M` : formatted) : "默认模型";
+    }
+    return trimmedFallback
+      .replace(/^claude-/iu, "")
+      .replace(/\[1m\]/giu, " 1M")
+      .replaceAll("-", " ")
+      .trim() || "默认模型";
+  }
+  const source = [trimmedLabel, trimmedFallback].find((value) => value && /\.anthropic\./iu.test(value))
+    ?? trimmedLabel
+    ?? trimmedFallback;
+  if (!source) return "默认模型";
+  const has1M = /\[1m\]/iu.test(source);
+  const stripped = source.replace(/\[1m\]/giu, "").trim();
+  const magpieAnthropic = /^(?:(?:mythos|claude)-magpie-|anthropic\/magpie-|magpie-)\d+\.anthropic\.(.+)$/iu.exec(stripped);
+  if (magpieAnthropic?.[1]) {
+    const formatted = humanizeAnthropicSlug(magpieAnthropic[1]);
+    if (formatted) return has1M ? `${formatted} · 1M` : formatted;
+  }
+  if (SYNTHETIC_MAGPIE_RE.test(stripped)) {
+    return has1M ? "默认模型 · 1M" : "默认模型";
+  }
+  return source
     .replace(/^claude-/iu, "")
     .replace(/\[1m\]/giu, " 1M")
     .replaceAll("-", " ")
     .trim() || "默认模型";
+}
+
+export function formatSessionModelLabel(session: BridgeSessionInfo): string {
+  return sanitizeModelDisplayName(session.modelDisplayName, session.model);
 }
 
 export function ownershipLabel(session: BridgeSessionInfo): string {

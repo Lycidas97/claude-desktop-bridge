@@ -86,15 +86,31 @@ async function syncNativeSections(host) {
 }
 
 async function openMobileDrawer(page) {
-  if (await page.locator(".mobile-drawer.is-open").count() === 0) {
-    await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).click();
-    await page.locator(".mobile-drawer.is-open").waitFor();
-  }
+  await page.locator('.mobile-home-catalog, .m-header button[aria-label="返回会话列表"], .m-header button[aria-label="返回"], button[aria-label="返回对话"]').filter({ visible: true }).first().waitFor();
+  if (await page.locator(".mobile-home-catalog").filter({ visible: true }).count() > 0) return;
+  const backToChat = page.getByRole("button", { name: "返回对话", exact: true }).filter({ visible: true });
+  if (await backToChat.count() > 0) await backToChat.first().click();
+  await page.locator(".m-header:visible").getByRole("button", { name: /^(?:返回会话列表|返回)$/u }).first().click();
+  await page.locator(".mobile-home-catalog").filter({ visible: true }).waitFor();
 }
 
 async function openMobileSession(page, targetSessionId = sessionId) {
   await openMobileDrawer(page);
-  await page.locator(`.mobile-drawer.is-open [data-session-id="${targetSessionId}"] .session-row-hit`).click();
+  await page.locator(`.mobile-home-catalog [data-session-id="${targetSessionId}"] .session-row-hit`).click();
+}
+
+async function selectCustomOption(page, triggerLocator, value) {
+  await triggerLocator.click();
+  const listbox = page.getByRole("listbox");
+  await listbox.waitFor();
+  const options = listbox.getByRole("option");
+  const idx = await options.evaluateAll((els, target) => els.findIndex((el) => el.getAttribute("data-option-value") === target), String(value));
+  assert.ok(idx >= 0, `Custom select option "${value}" must exist`);
+  await options.nth(idx).click();
+}
+
+async function customSelectValue(triggerLocator) {
+  return triggerLocator.getAttribute("data-value");
 }
 
 async function verifySessionCatalog(page, host, steps, directory, viewports) {
@@ -803,6 +819,7 @@ async function verifyMobileSafeArea(page, steps, directory, viewports) {
   const emulation = await page.context().newCDPSession(page);
   await page.setViewportSize({ width: 375, height: 640 });
   viewports.push({ page: "会话", ...page.viewportSize() });
+  await openMobileSession(page);
   const composer = page.locator(".mobile-composer");
   await composer.waitFor();
   const composerPaddings = [];
@@ -1603,7 +1620,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
 async function openRename(page, entry) {
   if (entry === "list") {
     await openMobileDrawer(page);
-    await page.locator(`.mobile-drawer.is-open [data-session-id="${sessionId}"]`).getByRole("button", { name: "会话操作", exact: true }).click();
+    await page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`).getByRole("button", { name: "会话操作", exact: true }).click();
   } else {
     await page.getByRole("button", { name: "会话操作", exact: true }).click();
   }
@@ -1615,10 +1632,10 @@ async function openRename(page, entry) {
 
 async function verifyRename(page, host, entry, steps) {
   await openMobileDrawer(page);
-  const row = page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`);
+  const row = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
   const beforeTime = await row.locator("small").innerText();
   const beforeStateDot = await row.locator(".session-state-dot").getAttribute("class");
-  const beforeOrder = await page.locator(".mobile-drawer [data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId));
+  const beforeOrder = await page.locator(".mobile-home-catalog [data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId));
   const beforeSession = structuredClone(host.session);
   if (entry === "chat") {
     await row.locator(".session-row-hit").click();
@@ -1666,7 +1683,7 @@ async function verifyRename(page, host, entry, steps) {
   assert.equal(await row.locator("small").innerText(), beforeTime, "Rename must not change displayed activity time");
   assert.equal(await row.locator(".session-state-dot").getAttribute("class"), beforeStateDot, "Rename must preserve queue state");
   assert.equal(await row.getByLabel(`${beforeSession.pendingCount} 条排队消息`, { exact: true }).innerText(), String(beforeSession.pendingCount), "Rename must preserve the independent pending count");
-  assert.deepEqual(await page.locator(".mobile-drawer [data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId)), beforeOrder, "Rename must not reorder sessions");
+  assert.deepEqual(await page.locator(".mobile-home-catalog [data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId)), beforeOrder, "Rename must not reorder sessions");
   assert.deepEqual(host.session, { ...beforeSession, title: renamedTitle }, "Host rename changes only the title");
   assert.equal(host.requests.filter((request) => request.method.startsWith("turn.")).length, 0, "Rename must not alter queued turns");
   steps.push("list/header title updates; activity, order, and existing queue unchanged");
@@ -1717,7 +1734,7 @@ async function verifyRename(page, host, entry, steps) {
 
 async function verifyDelivery(page, host, steps) {
   await openMobileDrawer(page);
-  const row = page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`);
+  const row = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
   const dialog = await openRename(page, "list");
   await dialog.getByRole("textbox", { name: "会话名称", exact: true }).fill(renamedTitle);
   await dialog.getByRole("button", { name: "保存", exact: true }).click();
@@ -1809,30 +1826,25 @@ async function verifySessionHeader(page, host, steps, directory) {
     await eventually(() => notice.count(), state === "confirmed" ? 0 : 1, `Permission notice state ${state}`);
     assert.ok((await page.locator(".m-header .session-profile-summary").innerText()).includes("Don't Ask"), "A requested mode never replaces the observed header mode");
   }
-  async function checkWrapping(selector, surface, labels, requireMultipleLines = true) {
-    const layout = await page.locator(selector).evaluate((element, labels) => {
+  async function checkWrapping(selector, surface) {
+    const layout = await page.locator(selector).evaluate((element) => {
       const range = document.createRange();
       range.selectNodeContents(element);
       const rect = element.getBoundingClientRect();
-      const segments = labels.map(label => {
-        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-          const start = node.textContent.indexOf(label);
-          if (start < 0) continue;
-          const segment = document.createRange();
-          segment.setStart(node, start);
-          segment.setEnd(node, start + label.length);
-          return { label, lines: new Set([...segment.getClientRects()].map(rect => rect.top)).size };
-        }
-        return { label, lines: 0 };
-      });
-      return { whiteSpace: getComputedStyle(element).whiteSpace, lines: range.getClientRects().length, segments,
-        client: element.clientWidth, scroll: element.scrollWidth, left: rect.left, right: rect.right, width: innerWidth };
-    }, labels);
-    assert.equal(layout.whiteSpace, "normal", `${surface} wraps text`);
-    assert.ok((!requireMultipleLines || layout.lines > 1) && layout.scroll <= layout.client + 1, `${surface} retains every line without clipping: ${JSON.stringify(layout)}`);
+      return {
+        whiteSpace: getComputedStyle(element).whiteSpace,
+        textOverflow: getComputedStyle(element).textOverflow,
+        lines: new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size,
+        height: rect.height,
+        left: rect.left,
+        right: rect.right,
+        width: innerWidth,
+      };
+    });
+    assert.equal(layout.whiteSpace, "nowrap", `${surface} keeps profile summary on one single line`);
+    assert.equal(layout.textOverflow, "ellipsis", `${surface} truncates cleanly with ellipsis`);
+    assert.equal(layout.lines, 1, `${surface} never wraps onto a second line: ${JSON.stringify(layout)}`);
     assert.ok(layout.left >= 0 && layout.right <= layout.width + 1, `${surface} fits the viewport`);
-    for (const segment of layout.segments) assert.equal(segment.lines, 1, `${surface} keeps ${segment.label} on one line`);
   }
   for (const width of [375, 320]) {
     await page.setViewportSize({ width, height: 812 });
@@ -1957,9 +1969,9 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     { type: "tool_use", id: question.request.toolUseId, name: "AskUserQuestion", input },
   ] } })) await host.emit(event.type, event.data, { itemId: event.itemId });
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
-  const sessionRow = page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`);
+  const sessionRow = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
   await sessionRow.getByText("待回答", { exact: true }).waitFor();
-  await page.locator(".mobile-drawer").getByText("有提问待你回答", { exact: true }).waitFor();
+  await page.locator(".mobile-home-catalog").getByText("有提问待你回答", { exact: true }).waitFor();
   await sessionRow.locator(".session-row-hit").click();
   const questionCard = page.locator(".conversation-stream .pending-question");
   await questionCard.waitFor();
@@ -2010,7 +2022,7 @@ async function verifyNativeApprovals(page, host, steps, directory) {
   for (const mode of ["bypassPermissions", "auto"]) {
     await page.getByRole("button", { name: "会话设置", exact: true }).click();
     const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });
-    await configuration.getByLabel("Desktop 授权模式").selectOption(mode);
+    await selectCustomOption(page, configuration.getByLabel("Desktop 授权模式"), mode);
     await configuration.getByRole("button", { name: "保存配置", exact: true }).click();
     if (mode === "bypassPermissions") {
       await page.getByRole("alertdialog", { name: "启用完全授权", exact: true }).getByRole("button", { name: "启用完全授权", exact: true }).click();
@@ -2021,7 +2033,7 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     assert.equal(await page.getByRole("status", { name: "Desktop 会话授权变更", exact: true }).count(), 0, "Confirmed permission changes leave no persistent banner");
     await eventually(async () => (await page.locator(".m-header .session-profile-summary").innerText()).includes(mode === "auto" ? "Auto" : "Bypass"), true, "The updated Native snapshot reaches the header");
     await page.getByRole("button", { name: "会话设置", exact: true }).click();
-    await eventually(() => configuration.getByLabel("Desktop 授权模式").inputValue(), mode, "Configuration reflects the native Desktop mode");
+    await eventually(() => customSelectValue(configuration.getByLabel("Desktop 授权模式")), mode, "Configuration reflects the native Desktop mode");
     await page.screenshot({ path: resolve(directory, `native-mode-${mode}.png`), fullPage: true });
     await configuration.getByRole("button", { name: "关闭", exact: true }).click();
     assert.equal(host.snapshot.host.defaultPermissionMode, undefined);
@@ -2128,7 +2140,7 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   await unavailableCard.getByText("请在电脑端处理", { exact: true }).waitFor();
   assert.equal(await unavailableCard.getByRole("button").count(), 0);
   const reachable = await host.syncNativeDialogs(await host.nativeApproval.openPrompt("cwd-trust"));
-  await page.getByRole("combobox", { name: "待处理提示", exact: true }).selectOption(reachable.prompt.promptId);
+  await selectCustomOption(page, page.getByRole("combobox", { name: "待处理提示", exact: true }), reachable.prompt.promptId);
   const reachableCard = page.getByRole("region", { name: reachable.prompt.title, exact: true });
   await reachableCard.getByRole("button", { name: "信任目录", exact: true }).click();
   await reachableCard.waitFor({ state: "hidden" });
@@ -2388,13 +2400,23 @@ async function verifyNativeMessages(page, host, steps, directory) {
   await eventually(async () => (await page.getByRole("button", { name: "会话设置", exact: true }).innerText()).includes("隔离模型 · 标准"), true, "Initial native alias snapshot uses its saved header label before opening configuration");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
   const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });
-  const modelSelect = configuration.locator("select").first();
-  await eventually(() => modelSelect.inputValue(), "synthetic-model", "Native alias selects the matching original model ID in the picker");
-  await eventually(() => modelSelect.locator("option").evaluateAll(options => options.filter(option => option.value.startsWith("synthetic-model")).map(option => ({ value: option.value, text: option.textContent }))), [
+  const modelSelect = configuration.getByRole("combobox", { name: "模型", exact: true });
+  await eventually(() => customSelectValue(modelSelect), "synthetic-model", "Native alias selects the matching original model ID in the picker");
+  await modelSelect.click();
+  const modelListbox = page.getByRole("listbox");
+  await modelListbox.waitFor();
+  await eventually(() => modelListbox.getByRole("option").evaluateAll(options => options
+    .map(option => ({
+      value: option.getAttribute("data-option-value") ?? "",
+      text: option.querySelector(".select-menu-option-label")?.textContent ?? option.textContent ?? "",
+    }))
+    .filter(option => option.value.startsWith("synthetic-model"))), [
     { value: "synthetic-model", text: "隔离模型 · 标准" },
     { value: "synthetic-model-large[1m]", text: "隔离模型 · 长上下文" },
   ], "Saved model labels and original IDs are shown in saved order");
-  await modelSelect.selectOption("synthetic-model-large[1m]");
+  const largeOptionIdx = await modelListbox.getByRole("option").evaluateAll(els => els.findIndex(el => el.getAttribute("data-option-value") === "synthetic-model-large[1m]"));
+  assert.ok(largeOptionIdx >= 0, "Long-context model option must exist");
+  await modelListbox.getByRole("option").nth(largeOptionIdx).click();
   await configuration.getByRole("button", { name: "保存配置", exact: true }).click();
   await configuration.waitFor({ state: "hidden" });
   assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "setModel").at(-1).args, [sessionId, "mythos-magpie-1826500494[1m]"]);
@@ -2421,14 +2443,14 @@ async function verifyNativeMessages(page, host, steps, directory) {
 
   const geminiModel = ["antigravity", "gemini-4-argon"].join("/");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
-  await modelSelect.selectOption(geminiModel);
+  await selectCustomOption(page, modelSelect, geminiModel);
   await configuration.getByRole("button", { name: "保存配置", exact: true }).click();
   await configuration.waitFor({ state: "hidden" });
   assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "setModel").at(-1).args, [sessionId, ["mythos", "magpie", "1052229916"].join("-")]);
   await eventually(async () => (await page.getByRole("button", { name: "会话设置", exact: true }).innerText()).includes("Gemini 4 Argon · Antigravity · 1M"), true, "Native preferred 1M normalization succeeds and the header shows the actual context");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
-  await eventually(() => modelSelect.inputValue(), `${geminiModel}[1m]`, "Reopening configuration selects the observed Gemini 1M variant");
-  assert.ok((await modelSelect.locator("option:checked").innerText()).includes("1M"));
+  await eventually(() => customSelectValue(modelSelect), `${geminiModel}[1m]`, "Reopening configuration selects the observed Gemini 1M variant");
+  assert.ok((await modelSelect.innerText()).includes("1M"));
   assert.equal((await configuration.innerText()).includes("Desktop did not apply"), false);
   await page.screenshot({ path: resolve(directory, "native-gemini-preferred-context.png"), fullPage: true });
   steps.push("Gemini saves through the real Native facade when Desktop prefers 1M, and reopening configuration shows its observed model and context without a false failure");
@@ -2560,7 +2582,7 @@ async function verifyHistoryPagination(page, host, steps, directory) {
 }
 
 async function verifyNativeCompaction(page, host, steps, directory) {
-  const row = page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`);
+  const row = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
   await openMobileSession(page);
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: "compacting" } }));
   await eventually(() => page.locator(".session-activity-label").innerText(), "正在压缩上下文", "Native compaction replaces generic activity even with queued input");
@@ -2617,7 +2639,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   assert.deepEqual(host.session.runningSubagents, { count: 1, lastUpdatedAt: subagentStartAt });
   await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
   await openMobileDrawer(page);
-  const catalogRow = page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`);
+  const catalogRow = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Catalog row dot reflects running background subagent when main turn is idle");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Catalog row badge displays running background subagent");
   host.history.push(...(await host.nativeApproval.history()).items);
@@ -2801,7 +2823,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
 
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
   const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });
-  await configuration.locator("select").first().selectOption("claude/claude-opus-5-5");
+  await selectCustomOption(page, configuration.getByRole("combobox", { name: "模型", exact: true }), "claude/claude-opus-5-5");
   await eventually(() => configuration.locator(".magpie-quota-model summary").innerText(), "单账号最高可用 73%", "Native Claude model picker shows the Magpie response");
   await configuration.locator(".magpie-quota-model summary").click();
   assert.ok((await configuration.innerText()).includes("隔离 Magpie 账号"));
@@ -2825,7 +2847,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   const target = stream.locator("article.conversation-item").filter({ hasText: "重写这条请求" });
   await target.getByRole("button", { name: "回退到这条消息之前", exact: true }).click();
   const rewind = page.getByRole("dialog", { name: "回退会话", exact: true });
-  await rewind.getByRole("combobox", { name: "回退范围", exact: true }).selectOption("both");
+  await selectCustomOption(page, rewind.getByRole("combobox", { name: "回退范围", exact: true }), "both");
   assert.ok((await rewind.innerText()).includes("report.json"));
   assert.equal(JSON.parse(await readFile(resolve(host.nativeApproval.harnessCwd, "report.json"), "utf8")).source, "worktree", "Dry-run leaves the actual fixture file intact");
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "rewindV2").length, 0);
@@ -3159,7 +3181,7 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   await receivedMessage.getByRole("button", { name: "回退到这条消息之前", exact: true }).click();
   const rewind = page.getByRole("dialog", { name: "回退会话", exact: true });
   await eventually(() => rewind.getByRole("button", { name: "确认回退", exact: true }).isEnabled(), true, "Native conversation rewind remains available while its file preview reports busy");
-  assert.equal(await rewind.getByRole("combobox", { name: "回退范围", exact: true }).inputValue(), "conversation");
+  assert.equal(await customSelectValue(rewind.getByRole("combobox", { name: "回退范围", exact: true })), "conversation");
   assert.ok((await rewind.innerText()).includes("停止当前任务"));
   await page.screenshot({ path: resolve(directory, "queue-running-rewind-preview.png"), fullPage: true });
   await rewind.getByRole("button", { name: "确认回退", exact: true }).click();
@@ -3255,7 +3277,7 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
     await createDialog.getByRole("button", { name: "使用此文件夹", exact: true }).click();
   };
 
-  await page.locator('.mobile-drawer.is-open button[aria-label^="新建会话："]').first().click();
+  await page.locator('.mobile-home-catalog button[aria-label^="新建会话："]').first().click();
   await chooseFolderByPath(untrustedDir);
   await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("受信任目录会话");
   await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
@@ -3276,7 +3298,7 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
 
   await openMobileDrawer(page);
   host.nativeApproval.setTrustPolicy({ keepUntrustedAfterSave: true });
-  await page.locator('.mobile-drawer.is-open button[aria-label^="新建会话："]').first().click();
+  await page.locator('.mobile-home-catalog button[aria-label^="新建会话："]').first().click();
   await chooseFolderByPath(manualTrustDir);
   await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("手动信任兜底会话");
   await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
@@ -3305,7 +3327,7 @@ function addScrollProjects(host, count) {
 
 async function verifyProjectGrouping(page, host, steps, directory) {
   await openMobileDrawer(page);
-  const drawer = page.locator(".mobile-drawer");
+  const drawer = page.locator(".mobile-home-catalog");
   const groups = drawer.locator(".project-groups > .project-group:not(.archived-group)");
   const headers = groups.locator(".project-group-open strong");
   const mainGroup = groups.filter({ has: page.locator(`[data-session-id="${sessionId}"]`) });
@@ -3329,7 +3351,8 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.equal(await drawer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
   await primaryForkToggle.click();
   await mainGroup.locator('[data-session-id="browser-e2e-fork"]').waitFor();
-  assert.equal(await primaryForkToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(await primaryForkToggle.count(), 0, "Expanded fork tree omits the extra toggle header row");
+  assert.equal(await mainGroup.locator('[data-session-id="browser-e2e-parent"] .session-family-chevron').getAttribute("aria-expanded"), "true");
   assert.equal(await drawer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
   assert.equal(await mainGroup.locator(".is-archived-fold").count(), 0);
   assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "1");
@@ -3372,8 +3395,9 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   const forkSnapshot = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-fork");
   forkSnapshot.archivedAt = Date.now();
   await host.emit("session.archived", { archived: true, archivedAt: forkSnapshot.archivedAt }, { sessionId: "browser-e2e-fork" });
-  await eventually(() => primaryForkToggle.count(), 0, "Archiving the last active fork removes the parent's fork fold");
-  assert.equal(await mainGroup.locator(".mobile-fork-group").count(), 0);
+  await eventually(() => mainGroup.locator(".mobile-fork-group").count(), 0, "Archiving the last active fork removes the parent's fork fold");
+  assert.equal(await primaryForkToggle.count(), 0);
+  assert.equal(await mainGroup.locator('[data-session-id="browser-e2e-parent"] .session-family-chevron').count(), 0);
   assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "2");
   await archiveEntry.click();
   await archivedContainer.locator('[data-session-id="browser-e2e-fork"]').waitFor();
@@ -3503,8 +3527,9 @@ async function verifyProjectGrouping(page, host, steps, directory) {
       assert.equal(await body.evaluate(el => el.scrollTop), 0, "A stationary edge handle press does not scroll");
       await page.mouse.up();
       assert.deepEqual(await orderRowTitles.allTextContents(), beforeClick, "A stationary handle click does not reorder");
-      await orderSheet.locator("select").waitFor();
-      assert.equal(await orderSheet.locator("select").inputValue(), String(edgeIndex), "Handle click still opens position selection");
+      const orderSelect = orderSheet.locator(".select-menu-trigger");
+      await orderSelect.waitFor();
+      assert.equal(await customSelectValue(orderSelect), String(edgeIndex), "Handle click still opens position selection");
       await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
       await openOrderSheet();
       await orderSheet.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
@@ -3571,7 +3596,7 @@ async function verifyProjectGrouping(page, host, steps, directory) {
 
 async function verifySectionManage(page, host, steps, directory) {
   await openMobileDrawer(page);
-  const drawer = page.locator(".mobile-drawer");
+  const drawer = page.locator(".mobile-home-catalog");
   const groups = drawer.locator(".project-groups > .project-group:not(.archived-group)");
   const headers = groups.locator(".project-group-open strong");
   const search = drawer.getByPlaceholder("搜索项目或会话", { exact: true });
@@ -3709,7 +3734,7 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   const cards = () => page.locator('.assistant-mail-list > [data-mail-id]');
   async function openAssistant() {
     await openMobileDrawer(page);
-    await page.locator(".mobile-drawer.is-open").getByRole("button", { name: "助理", exact: true }).click();
+    await page.locator(".mobile-home-catalog").getByRole("button", { name: "助理", exact: true }).click();
   }
   async function capture(name) {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, `${name} fits the viewport`);
@@ -3782,13 +3807,13 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
   await evictStartupSnapshot();
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).waitFor();
+  await page.locator(".mobile-home-catalog").waitFor();
   await openAssistant();
   await eventually(() => cards().count(), 124, "Reload restores the separately encrypted aggregate while the host is offline");
   host.mailOffline = false;
   host.socket.connect();
   await eventually(() => page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).count(), 0, "Host reconnects before binding");
-  await page.getByLabel("助理会话", { exact: true }).selectOption(sessionId);
+  await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.locator('.assistant-view-tabs button[aria-pressed="true"]').getByText("对话", { exact: true }).waitFor();
   const assistantId = host.snapshot.assistantMail.binding.assistantId;
@@ -3796,7 +3821,7 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await eventually(() => page.locator(".conversation-loading").count(), 0, "Native history finishes loading");
   assert.equal(await page.getByText("这是一个空会话", { exact: true }).count(), 0);
   assert.equal(await page.locator('.conversation-stream .assistant-mail-preview').first().evaluate(element => getComputedStyle(element).webkitLineClamp), "3");
-  assert.equal(await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).count(), 1, "Embedded native view keeps one root navigation menu");
+  assert.equal(await page.getByRole("button", { name: "返回", exact: true }).filter({ visible: true }).count(), 1, "Embedded native view keeps one root back navigation control");
   assert.ok(await page.locator(".assistant-conversation .m-header").evaluate(header => (
     header.querySelector(".m-header-copy").getBoundingClientRect().left - header.getBoundingClientRect().left
       >= parseFloat(getComputedStyle(header).getPropertyValue("--m-gutter"))
@@ -3875,7 +3900,7 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   host.nativeApproval.assistantMail.service.setBinding({ assistantId, nativeSessionId: null, sectionId: null, previousSessionIds: [sessionId] });
   await page.getByText("原会话已归档或删除，请重新绑定。", { exact: true }).waitFor();
   assert.equal(host.snapshot.assistantMail.binding.assistantId, assistantId);
-  await page.getByLabel("助理会话", { exact: true }).selectOption(sessionId);
+  await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.locator(".assistant-conversation textarea").waitFor();
   assert.equal(await reference.count(), 0);
@@ -3906,7 +3931,7 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "");
   await page.getByRole("button", { name: "助理设置", exact: true }).click();
   await page.getByRole("button", { name: "更换会话", exact: true }).click();
-  await page.getByLabel("助理会话", { exact: true }).selectOption(sessionId);
+  await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
   host.mailPageFailure = true;
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.getByText("隔离邮件列表读取失败", { exact: true }).waitFor();
@@ -3921,7 +3946,7 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
   await evictStartupSnapshot();
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).waitFor();
+  await page.locator(".mobile-home-catalog").waitFor();
   await openAssistant();
   await page.getByText(`绑定会话：${sessionId}`, { exact: true }).waitFor();
   await eventually(() => cards().count(), 124, "Bound workspace and records survive without any ordinary snapshot");
@@ -4052,12 +4077,12 @@ async function runScenario(theme, scenario) {
     // Visiting the real pairing URL imports identity via the production hook and
     // stores it in this context's own IndexedDB; no vault or hook is replaced.
     await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
-    await page.locator(".m-header:visible").waitFor();
-    await page.locator(`.mobile-drawer [data-session-id="${sessionId}"]`).waitFor({ state: "attached" });
+    await page.locator(".mobile-home-catalog").waitFor();
+    await page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`).waitFor({ state: "attached" });
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
     assert.equal(await page.locator("html").getAttribute("data-theme"), process.env.BRIDGE_QA_THEME ?? theme);
     assert.equal(await page.locator("html").getAttribute("data-theme-family"), process.env.BRIDGE_QA_THEME_FAMILY ?? "sunstone");
-    assert.equal(await page.locator(".mobile-drawer [data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the drawer session rows");
+    assert.equal(await page.locator(".mobile-home-catalog [data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the home catalog session rows");
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");

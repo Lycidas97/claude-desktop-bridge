@@ -1,12 +1,13 @@
 import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 import { IconButton } from "../common/IconButton.js";
-import { MobileNavMenu, useMobileNav } from "./MobileAppShell.js";
+import { useMobileNav } from "./MobileAppShell.js";
 
 /**
- * Root pages lead with the slide-over drawer menu button and a compact title;
- * pages pushed on top of a root show a back button. A hidden title stays
- * available to screen readers and lets the subtitle lead.
+ * Pushed mobile screens (`ConversationView`, `NewChatCanvas`, `助理`, `电脑`, `设置`,
+ * and sub-pages) lead with a `←` Back button returning to their parent or the
+ * Layer-1 Home Session List. A hidden title stays available to screen readers
+ * and lets the subtitle lead.
  */
 export function MobilePageHeader({
   title,
@@ -30,11 +31,14 @@ export function MobilePageHeader({
   navigation?: boolean;
 }) {
   const nav = useMobileNav();
+  const effectiveOnBack = onBack ?? (nav && nav.tab !== "sessions" ? () => nav.onTabChange("sessions") : undefined);
   return (
-    <header className={`m-header${!navigation ? " is-embedded" : onBack ? " is-pushed" : nav ? " has-menu" : ""}${leading ? " has-leading" : ""}${titleHidden ? " is-title-hidden" : ""}`}>
-      {leading ?? (navigation && (onBack
-        ? <IconButton label={backLabel} disabled={backDisabled} onClick={onBack}><ArrowLeft size={20} /></IconButton>
-        : nav && <MobileNavMenu {...nav} />))}
+    <header className={`m-header${!navigation ? " is-embedded" : effectiveOnBack ? " is-pushed" : ""}${leading ? " has-leading" : ""}${titleHidden ? " is-title-hidden" : ""}`}>
+      {leading ?? (navigation && effectiveOnBack && (
+        <IconButton label={backLabel} disabled={backDisabled} onClick={effectiveOnBack}>
+          <ArrowLeft size={20} />
+        </IconButton>
+      ))}
       <div className="m-header-copy">
         <h1>{title}</h1>
         {subtitle && <div className="m-header-subtitle">{subtitle}</div>}

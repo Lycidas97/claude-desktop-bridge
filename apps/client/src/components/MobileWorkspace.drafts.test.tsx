@@ -21,6 +21,7 @@ import { ConversationView } from "./conversation/ConversationView.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
 import { ComposerAttachmentMenu, FileAttachmentPicker } from "./evidence/FileAttachmentPicker.js";
 import { IconButton } from "./common/IconButton.js";
+import { SelectMenu } from "./common/SelectMenu.js";
 import { EmptyState } from "./common/EmptyState.js";
 import { MessageCopyButton } from "./common/MessageCopyButton.js";
 import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
@@ -145,7 +146,15 @@ function draw() {
 }
 function input() { return elements(tree).find((e) => e.type === SlashCommandInput)!; }
 function conversationHeader() { return elements(tree).find((e) => e.type === MobilePageHeader && !e.props.titleHidden)!; }
+function backToCatalog() {
+  const header = elements(tree).find((e) => e.type === MobilePageHeader && e.props.backLabel === "返回会话列表");
+  if (header?.props.onBack) {
+    header.props.onBack();
+    draw();
+  }
+}
 function startNewChatFromDrawer() {
+  backToCatalog();
   elements(tree).find((e) => e.type === IconButton && e.props.label === "新建会话")!.props.onClick();
   draw();
 }
@@ -426,10 +435,11 @@ describe("Session PR disclosure", () => {
     expect(elements(tree).find(element => element.props.label === "成果")!.props.disabled).toBe(true);
   });
 
-  it("opens preferences for the menu session from the drawer and preserves offline gating", () => {
+  it("opens preferences for the menu session from the catalog and preserves offline gating", () => {
     props.snapshot!.host.capabilities.push("pr.autofix.v1");
     props = { ...props, onReadPrAutoFix: vi.fn(), onSetPrAutoFix: vi.fn(), desktopOnline: false };
     draw();
+    backToCatalog();
     const row = elements(tree).find(element => element.props["data-session-id"] === "B")!;
     elements(row).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
     draw();
@@ -473,10 +483,10 @@ describe("Native prompt queue review regression", () => {
     elements(tree).find(element => element.type === "button" && element.props.className === "permission-dock")!.props.onClick();
     draw();
     expect(elements(tree).find(element => element.type === NativePromptCard)!.props.prompt.promptId).toBe("unsupported-first");
-    const selector = elements(tree).find(element => element.type === "select" && element.props["aria-label"] === "待处理提示");
+    const selector = elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "待处理提示");
     expect(selector).toBeDefined();
-    expect(elements(selector).filter(element => element.type === "option").map(element => element.props.value)).toEqual(["unsupported-first", "answerable-second"]);
-    selector!.props.onChange({ target: { value: "answerable-second" } });
+    expect(selector!.props.options.map((opt: { value: string }) => opt.value)).toEqual(["unsupported-first", "answerable-second"]);
+    selector!.props.onChange("answerable-second");
     draw();
     expect(elements(tree).find(element => element.type === NativePromptCard)!.props.prompt).toMatchObject({ promptId: "answerable-second", canRespond: true });
     props = { ...props, snapshot: { ...props.snapshot!, prompts: props.snapshot!.prompts!.slice(0, 1) } };
@@ -662,26 +672,31 @@ describe("native relay composer", () => {
 });
 
 describe("session back navigation", () => {
-  it("closes the slide-over drawer first, preserves drafts across NewChatCanvas round-trips, and releases root back", () => {
+  it("returns from ConversationView and NewChatCanvas to the Layer-1 Home Session List while preserving drafts, then releases root back", () => {
     text("保留这条未发送的草稿");
-    elements(conversationHeader().props.leading).find(element => element.type === IconButton && element.props.label === "菜单")!.props.onClick();
-    draw();
     expect(dispatchMobileBack()).toBe(true); draw();
+    expect(input()).toBeUndefined();
+    expect(elements(tree).some((el) => el.props.className === "mobile-home-catalog is-flat-tree")).toBe(true);
     expect(dispatchMobileBack()).toBe(false);
     startNewChatFromDrawer();
     expect(input()).toBeUndefined();
+    expect(dispatchMobileBack()).toBe(true); draw();
+    expect(elements(tree).some((el) => el.props.className === "mobile-home-catalog is-flat-tree")).toBe(true);
     expect(dispatchMobileBack()).toBe(false);
     open("A");
     expect(input().props.value).toBe("保留这条未发送的草稿");
     expect(props.onSendTurn).not.toHaveBeenCalled();
   });
-  it("closes session actions and evidence view before releasing root back", () => {
+  it("closes session actions and evidence view before leaving the conversation, then releases root back", () => {
     const header = conversationHeader();
     elements(header.props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick(); draw();
     expect(dispatchMobileBack()).toBe(true); draw();
     expect(input()).toBeDefined();
     elements(conversationHeader().props.actions).find(element => element.type === "button" && String(element.props.className).includes("mobile-evidence-toggle"))!.props.onClick(); draw();
     expect(dispatchMobileBack()).toBe(true); draw();
+    expect(input()).toBeDefined();
+    expect(dispatchMobileBack()).toBe(true); draw();
+    expect(input()).toBeUndefined();
     expect(dispatchMobileBack()).toBe(false);
   });
 });
@@ -918,6 +933,7 @@ describe("mobile session creation", () => {
     } };
     vi.mocked(props.onCreateSession).mockResolvedValue(undefined);
     draw();
+    backToCatalog();
     elements(tree).find(element => element.type === IconButton && element.props.label === "新建会话：First project")!.props.onClick();
     draw();
     const dialog = elements(tree).find(element => element.type === SessionCreateDialog)!;
@@ -942,6 +958,7 @@ describe("mobile section creation", () => {
       ...props.snapshot!.host, capabilities: ["claude.native-relay.v1" as const, ...(capable ? ["section.create.v1" as const] : [])],
     } } }, { onCreateSection: create });
     draw();
+    backToCatalog();
   }
   function openCreate() { enable(); createAction()!.props.onClick(); draw(); }
   function editName(value: string) { nameInput().props.onChange({ target: { value } }); draw(); }
@@ -1025,6 +1042,7 @@ describe("mobile session renaming", () => {
   }
   function openMenu(entry: "list" | "conversation") {
     if (entry === "list") {
+      backToCatalog();
       const row = elements(tree).find(element => element.props["data-session-id"] === "A")!;
       elements(row).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
     } else {
@@ -1118,10 +1136,12 @@ describe("session update timestamps", () => {
       ...session, lastActivityAt: now - (session.sessionId === "A" ? 21 : 3) * 3_600_000,
     })) } };
     draw();
+    backToCatalog();
     expect(elements(tree).filter(element => element.props["data-session-id"]).map(element => element.props["data-session-id"])).toEqual(["B", "A"]);
     const row = elements(tree).find(element => element.props["data-session-id"] === "A")!;
-    row.props.children[0].props.onClick();
+    elements(row).find(element => element.props.className === "session-row-hit")!.props.onClick();
     await settle();
+    backToCatalog();
     expect(elements(tree).filter(element => element.props["data-session-id"]).map(element => element.props["data-session-id"])).toEqual(["B", "A"]);
     expect(elements(tree).filter(element => element.type === "small").flatMap(element => element.props.children)).toContain("21 小时前");
     expect(localStorage.getItem("bridge-session-opened:computer-1")).toBe(opened);
@@ -1425,6 +1445,7 @@ describe("native structured approvals", () => {
   it.each(["Bash", "AskUserQuestion"])("marks the session's current %s request without requiring loaded history or inferred native state", toolName => {
     props = { ...props, permissions: [{ requestId: "list-request", sessionId: "B", toolUseId: "list-tool", toolName, input: {}, createdAt: 1, canAllowAlways: false }] };
     draw();
+    backToCatalog();
     const row = elements(tree).find(element => element.props["data-session-id"] === "B")!;
     expect(elements(row).find(element => String(element.props.className).startsWith("session-row-status"))?.props.children).toBe(toolName === "AskUserQuestion" ? "待回答" : "待授权");
     expect(props.snapshot!.sessions.find(session => session.sessionId === "B")!.turnState).toBe("idle");
@@ -1432,6 +1453,7 @@ describe("native structured approvals", () => {
     expect(props.onOpenSession).toHaveBeenCalledWith("B");
     expect(elements(tree).some(element => element.type === PermissionPrompt && element.props.permission.requestId === "list-request")).toBe(true);
     props = { ...props, permissions: [] }; draw();
+    backToCatalog();
     const clearedRow = elements(tree).find(element => element.props["data-session-id"] === "B")!;
     expect(elements(clearedRow).some(element => String(element.props.className).startsWith("session-row-status"))).toBe(false);
   });
@@ -1482,6 +1504,7 @@ describe("native structured approvals", () => {
       draw();
     };
 
+    backToCatalog();
     setRunningSubagents({ count: 1, lastUpdatedAt: now - 30_000 });
     const activeRow = elements(tree).find(element => element.props["data-session-id"] === "B")!;
     expect(elements(activeRow).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot running");
@@ -1489,9 +1512,10 @@ describe("native structured approvals", () => {
     expect(activeBadge.props.className).toBe("session-row-status running");
     expect(activeBadge.props.children).toBe("后台子代理");
 
-    // Open session detail, verify detail activity indicator, and confirm drawer row sync persists.
+    // Open session detail, verify detail activity indicator, then return to catalog and confirm sync persists.
     elements(activeRow).find(element => element.props.className === "session-row-hit")!.props.onClick(); draw();
     expect(elements(tree).some(element => String(element.props.activity?.label ?? "").includes("子代理运行中 · Run full local distributed CI"))).toBe(true);
+    backToCatalog();
     const returnedRow = elements(tree).find(element => element.props["data-session-id"] === "B")!;
     expect(elements(returnedRow).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot running");
     expect(elements(returnedRow).find(element => String(element.props.className).startsWith("session-row-status"))?.props.children).toBe("后台子代理");
@@ -2107,6 +2131,7 @@ describe("sidechat and slash command integration", () => {
     draw();
     props = {
       ...props,
+      focusSessionId: "child-first",
       snapshot: { ...initialSnapshot, sessions: [child, parent] },
     };
     draw();
@@ -2337,6 +2362,7 @@ describe("mobile section movement and subfolder labels", () => {
 
   function toDirectory() {
     draw();
+    backToCatalog();
   }
 
   function openHeaderSessionMenu() {

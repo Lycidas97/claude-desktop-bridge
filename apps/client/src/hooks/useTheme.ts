@@ -43,10 +43,11 @@ function initialFamily(): ThemeFamily {
   return "sunstone";
 }
 
-// Safari chrome / task-switcher tint per family × mode.
-const META_THEME_COLOR: Record<ThemeFamily, Record<Theme, string>> = {
-  sunstone: { light: "#f6f4f0", dark: "#000000" },
-  apple: { light: "#f2f2f7", dark: "#000000" },
+// Exact canvas --bg hex per family × mode so Electron's did-change-theme-color
+// and mobile system chrome match the active workspace background seamlessly.
+export const META_THEME_COLOR: Record<ThemeFamily, Record<Theme, string>> = {
+  sunstone: { light: "#faf9f5", dark: "#191816" },
+  apple: { light: "#ffffff", dark: "#1c1c1e" },
 };
 
 export function useTheme() {
@@ -61,9 +62,24 @@ export function useTheme() {
     const root = document.documentElement;
     root.dataset.theme = theme;
     root.dataset.themeFamily = family;
+    if (
+      typeof window !== "undefined"
+      && Boolean((window as Window & { bridgeDesktop?: unknown }).bridgeDesktop)
+      && typeof navigator !== "undefined"
+      && /Mac/i.test(navigator.platform || navigator.userAgent || "")
+    ) {
+      root.dataset.macDesktop = "true";
+    }
     localStorage.setItem(THEME_KEY, theme);
     localStorage.setItem(FAMILY_KEY, family);
-    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", META_THEME_COLOR[family][theme]);
+    const color = META_THEME_COLOR[family][theme];
+    let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    if (!meta && document.head) {
+      meta = document.createElement("meta");
+      meta.setAttribute("name", "theme-color");
+      document.head.appendChild(meta);
+    }
+    meta?.setAttribute("content", color);
     if (Capacitor.getPlatform() === "android") {
       void SystemBars.setStyle({ style: theme === "dark" ? SystemBarsStyle.Dark : SystemBarsStyle.Light });
     }

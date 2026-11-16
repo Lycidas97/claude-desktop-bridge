@@ -27,6 +27,8 @@ export interface NewChatCanvasProps {
   connected: boolean;
   mobile?: boolean | undefined;
   headerLeading?: ReactNode | undefined;
+  onBack?: (() => void) | undefined;
+  backLabel?: string | undefined;
   runtimeName?: string | undefined;
   onChooseDirectory?(initialPath?: string): Promise<string | undefined>;
   onOpenDirectoryPicker(request?: NewChatDirectoryPickerRequest): void;
@@ -38,6 +40,8 @@ export function NewChatCanvas({
   connected,
   mobile = false,
   headerLeading,
+  onBack,
+  backLabel = "返回会话列表",
   runtimeName = "Claude",
   onChooseDirectory,
   onOpenDirectoryPicker,
@@ -178,6 +182,7 @@ export function NewChatCanvas({
         title="新建会话"
         titleHidden
         {...(headerLeading ? { leading: headerLeading } : {})}
+        {...(onBack ? { onBack, backLabel } : {})}
         subtitle={(
           <span className="m-presence new-chat-profile-pill">
             {referenceSession ? (

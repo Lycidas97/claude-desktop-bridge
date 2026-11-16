@@ -133,6 +133,7 @@ try {
           supportsFileStat: snapshot.host.capabilities.includes("artifact.transfer.stat.v1"),
         }, React.createElement(MobileWorkspace, {
           activeHostId: "qa", desktopName: "Preview Mac", connection: "connected", desktopOnline: true,
+          focusSessionId: "media-session",
           snapshot, permissions: [], histories: { "media-session": { ...history, status: "ready" } },
           evidence: { "media-session": { ...evidence, status: "ready" } }, artifactPreviews: {}, artifactTransfers: {},
           events: [], localTurns: [], pendingOutbound: 0,

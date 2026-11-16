@@ -3,14 +3,20 @@ import type {
   BridgeHostSnapshot,
   BridgeSessionInfo,
   BridgeSlashCommandCatalog,
+  BridgeTokenUsage,
   SocketState,
 } from "@bridge/protocol";
-import { LoaderCircle, Send, Square, X } from "lucide-react";
+import { ArrowUp, LoaderCircle, Square, X } from "lucide-react";
 import type { RefObject } from "react";
 import type { MobileConnectionIssue } from "../../hooks/useMobileBridge.js";
 import { canSendSession } from "../../lib/conversation-timeline.js";
 import type { UploadFileHandler } from "../../lib/file-upload.js";
 import { desktopRuntimeId } from "../../lib/runtime-labels.js";
+import type { SessionActivity } from "../../lib/session-activity.js";
+import {
+  SessionActivityIndicator,
+  SessionContextUsageBar,
+} from "../conversation/SessionActivityIndicator.js";
 import { SlashCommandInput } from "../conversation/SlashCommandInput.js";
 import {
   ComposerAttachmentMenu,
@@ -27,6 +33,7 @@ export interface MobileDraftState {
 
 export interface MobileComposerProps {
   variant?: "mobile" | "desktop" | undefined;
+  sessionView?: "conversation" | "evidence" | undefined;
   selectedSession: BridgeSessionInfo;
   snapshot: BridgeHostSnapshot | undefined;
   connection: SocketState;
@@ -43,6 +50,16 @@ export interface MobileComposerProps {
   hasDraft: boolean;
   stopTarget: BridgeSessionInfo | undefined;
   stopping: boolean;
+  activity?: SessionActivity | undefined;
+  turnUsage?: BridgeTokenUsage | undefined;
+  contextPopoverOpen?: boolean | undefined;
+  onToggleContextPopover?: (() => void) | undefined;
+  onCompactContext?: (() => void) | undefined;
+  compactContextDisabled?: boolean | undefined;
+  compactContextBusy?: boolean | undefined;
+  contextTriggerRef?: RefObject<HTMLButtonElement | null> | undefined;
+  contextPopoverRef?: RefObject<HTMLDivElement | null> | undefined;
+  contextContainerRef?: RefObject<HTMLDivElement | null> | undefined;
   fileUploads: ReturnType<typeof useFileAttachments>;
   fileRef: RefObject<HTMLInputElement | null>;
   composerRef: RefObject<HTMLTextAreaElement | null>;
@@ -58,6 +75,7 @@ export interface MobileComposerProps {
 
 export function MobileComposer({
   variant = "mobile",
+  sessionView = "conversation",
   selectedSession,
   snapshot,
   connection,
@@ -74,6 +92,16 @@ export function MobileComposer({
   hasDraft,
   stopTarget,
   stopping,
+  activity,
+  turnUsage,
+  contextPopoverOpen = false,
+  onToggleContextPopover,
+  onCompactContext,
+  compactContextDisabled = false,
+  compactContextBusy = false,
+  contextTriggerRef,
+  contextPopoverRef,
+  contextContainerRef,
   fileUploads,
   fileRef,
   composerRef,
@@ -86,6 +114,13 @@ export function MobileComposer({
   onOpenStopConfirm,
   onRetry,
 }: MobileComposerProps) {
+  const hasAttach = canAttachImages || Boolean(onUploadFile);
+  const defaultOnlinePlaceholder = variant === "desktop"
+    ? (sessionView === "evidence"
+        ? "针对产出文件继续提问，或输入修改要求…"
+        : "继续追问，或输入 / 调用技能…")
+    : "继续追问…";
+
   return (
     <section className="mobile-composer">
       {connectionIssue && (
@@ -99,7 +134,14 @@ export function MobileComposer({
           {attachments.map((attachment) => (
             <span key={attachment.id}>
               {attachment.name}
-              <button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => updateDraft((current) => ({ ...current, attachments: current.attachments.filter((item) => item.id !== attachment.id) }))}>
+              <button
+                type="button"
+                aria-label={`移除 ${attachment.name}`}
+                onClick={() => updateDraft((current) => ({
+                  ...current,
+                  attachments: current.attachments.filter((item) => item.id !== attachment.id),
+                }))}
+              >
                 <X size={13} />
               </button>
             </span>
@@ -108,8 +150,11 @@ export function MobileComposer({
       )}
       {imageError && <div className="composer-error" role="alert">{imageError}</div>}
       <form
-        className={(canAttachImages || Boolean(onUploadFile)) ? "composer-form composer-form--with-attachment" : "composer-form"}
-        onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}
+        className={hasAttach ? "composer-form composer-form--with-attachment" : "composer-form"}
+        onSubmit={(event) => {
+          event.preventDefault();
+          void sendMessage();
+        }}
       >
         <input
           ref={fileRef}
@@ -119,57 +164,89 @@ export function MobileComposer({
           hidden
           onChange={(event) => void addImages(event.target.files)}
         />
-        {(canAttachImages || Boolean(onUploadFile)) && (
-          <ComposerAttachmentMenu
-            canAttachImages={canAttachImages}
-            imageDisabled={commandDraft || !canSendSession(selectedSession, snapshot)}
-            onPickImages={() => fileRef.current?.click()}
-            {...(onUploadFile ? {
-              fileUploads,
-              fileDisabled: commandDraft || !canSendSession(selectedSession, snapshot) || sending || connection !== "connected" || !desktopOnline,
-            } : {})}
-          />
-        )}
         <SlashCommandInput
           key={draftKey}
           textareaRef={composerRef}
-          {...(onLoadSessionCommands && snapshot?.host.capabilities.includes("session.commands.v1") && desktopRuntimeId(selectedSession) === "claude-desktop" && loadCommands ? {
-            onLoad: loadCommands,
-          } : {})}
+          {...(onLoadSessionCommands
+            && snapshot?.host.capabilities.includes("session.commands.v1")
+            && desktopRuntimeId(selectedSession) === "claude-desktop"
+            && loadCommands
+            ? { onLoad: loadCommands }
+            : {})}
           value={text}
           onChange={(value) => updateDraft((current) => ({ ...current, text: value }))}
           disabled={!canSendSession(selectedSession, snapshot)}
-          placeholder={desktopRuntimeId(selectedSession) === "claude-desktop" && !canSendSession(selectedSession, snapshot) ? "请连接 Claude Desktop 原生会话" : desktopOnline
-            ? selectedSession.allowedActions?.reason ?? (
-                selectedSession.source === "bridge"
-                  ? "给这个 Bridge 会话发指令"
-                  : `给这个 ${runtimeName} 会话发指令`
-              )
-            : variant === "desktop"
-              ? "Claude Desktop 连接已断开"
-              : "电脑离线，消息会保存在手机并自动送达"}
+          placeholder={
+            desktopRuntimeId(selectedSession) === "claude-desktop" && !canSendSession(selectedSession, snapshot)
+              ? "请连接 Claude Desktop 原生会话"
+              : desktopOnline
+                ? selectedSession.allowedActions?.reason ?? defaultOnlinePlaceholder
+                : variant === "desktop"
+                  ? "Claude Desktop 连接已断开"
+                  : "电脑离线，消息会保存在手机并自动送达"
+          }
           aria-label={`给 ${runtimeName} 发指令`}
         />
-        {stopTarget && !hasDraft && !sending ? (
-          <button
-            type="button"
-            className="send-button is-stop"
-            aria-label={stopTarget.sessionId === selectedSession.sessionId ? "停止任务" : "停止阻塞任务"}
-            disabled={stopping}
-            onClick={onOpenStopConfirm}
-          >
-            {stopping ? <LoaderCircle className="is-spinning" size={19} /> : <Square size={15} fill="currentColor" />}
-          </button>
-        ) : (
-          <button
-            type="submit"
-            className="send-button"
-            aria-label="发送"
-            disabled={!canSendSession(selectedSession, snapshot) || sending || fileUploads.uploading || !hasDraft}
-          >
-            {sending ? <LoaderCircle className="is-spinning" size={19} /> : <Send size={19} />}
-          </button>
-        )}
+        <div className="composer-bar">
+          <div className="composer-bar-left">
+            {hasAttach && (
+              <ComposerAttachmentMenu
+                canAttachImages={canAttachImages}
+                imageDisabled={commandDraft || !canSendSession(selectedSession, snapshot)}
+                onPickImages={() => fileRef.current?.click()}
+                {...(onUploadFile
+                  ? {
+                      fileUploads,
+                      fileDisabled: commandDraft
+                        || !canSendSession(selectedSession, snapshot)
+                        || sending
+                        || connection !== "connected"
+                        || !desktopOnline,
+                    }
+                  : {})}
+              />
+            )}
+            <SessionActivityIndicator activity={activity} />
+          </div>
+          <div className="composer-bar-right">
+            <SessionContextUsageBar
+              usage={selectedSession.contextUsage}
+              turnUsage={turnUsage}
+              open={contextPopoverOpen}
+              {...(onToggleContextPopover ? { onToggle: onToggleContextPopover } : {})}
+              {...(onCompactContext ? { onCompact: onCompactContext } : {})}
+              compactDisabled={compactContextDisabled}
+              compactBusy={compactContextBusy}
+              triggerRef={contextTriggerRef}
+              popoverRef={contextPopoverRef}
+              containerRef={contextContainerRef}
+            />
+            {stopTarget && !hasDraft && !sending ? (
+              <button
+                type="button"
+                className="send-button is-stop"
+                aria-label={stopTarget.sessionId === selectedSession.sessionId ? "停止任务" : "停止阻塞任务"}
+                disabled={stopping}
+                onClick={onOpenStopConfirm}
+              >
+                {stopping
+                  ? <LoaderCircle className="is-spinning" size={16} />
+                  : <Square size={10} fill="currentColor" />}
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="send-button"
+                aria-label="发送"
+                disabled={!canSendSession(selectedSession, snapshot) || sending || fileUploads.uploading || !hasDraft}
+              >
+                {sending
+                  ? <LoaderCircle className="is-spinning" size={16} />
+                  : <ArrowUp size={16} strokeWidth={2.4} />}
+              </button>
+            )}
+          </div>
+        </div>
       </form>
     </section>
   );

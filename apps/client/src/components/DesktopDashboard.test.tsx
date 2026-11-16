@@ -284,11 +284,15 @@ describe("desktop session header", () => {
     Object.assign(snapshot.sessions[0]!, { model: "model-id", modelDisplayName: "Claude Opus 5.5 custom model", effort: "high", nativePermissionMode: "auto" });
     snapshot.sessions[0]!.allowedActions!.canConfigure = canConfigure;
     await openSessions();
-    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · 自动模式 · reasoning high");
+    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · High · Auto");
     expect(elements(tree).some(element => element.props["aria-label"] === "会话设置")).toBe(canConfigure);
     const updated = { ...snapshot, sessions: [{ ...snapshot.sessions[0]!, nativePermissionMode: "dontAsk" as const }] };
     tree = sessions.draw({ ...sessionsProps, snapshot: updated });
-    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · 不询问 · reasoning high");
+    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · High · Don't Ask");
+    const bypassed = { ...snapshot, sessions: [{ ...snapshot.sessions[0]!, nativePermissionMode: "bypassPermissions" as const }] };
+    tree = sessions.draw({ ...sessionsProps, snapshot: bypassed });
+    expect(textContent(tree).replace(/\s+/gu, " ")).toContain("Claude Opus 5.5 custom model · High · Bypass");
+    expect(elements(tree).some(element => typeof element.props.className === "string" && element.props.className.includes("is-bypass"))).toBe(true);
     expect(apiRequest).not.toHaveBeenCalled();
   });
 });

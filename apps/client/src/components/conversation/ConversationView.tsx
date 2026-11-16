@@ -67,7 +67,7 @@ import {
   type ConversationItem,
 } from "../../lib/conversation-timeline.js";
 import type { UploadFileHandler } from "../../lib/file-upload.js";
-import { mediaArtifacts, mediaKind } from "../../lib/media-preview.js";
+import { mediaKind } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { sessionActivity, sessionQueueLabel } from "../../lib/session-activity.js";
@@ -77,8 +77,7 @@ import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { Sheet, SheetAction } from "../common/Sheet.js";
 import { EvidenceInlineSummary, EvidencePanel } from "../evidence/EvidencePanel.js";
-import { FileChangesCard } from "../evidence/FileChangesCard.js";
-import { MediaGallery } from "../evidence/MediaGallery.js";
+import { countSessionOutputFiles } from "../evidence/FileChangesCard.js";
 import { useMediaPreview } from "../evidence/MediaPreviewProvider.js";
 import { MobileComposer } from "../mobile/MobileComposer.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
@@ -101,7 +100,6 @@ import {
   NATIVE_MODE_LABELS,
   PermissionPrompt,
 } from "./PermissionPrompts.js";
-import { SessionActivityIndicator, SessionContextUsageBar } from "./SessionActivityIndicator.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
 import { SessionNoticeCard } from "./SessionNoticeCard.js";
 import { SessionPrActions, SessionPrBar } from "./SessionPrBar.js";
@@ -324,10 +322,19 @@ export function ConversationView({
   const [fileDownloadBusy, setFileDownloadBusy] = useState(false);
   const [fileDownloadError, setFileDownloadError] = useState<string>();
   const [deleteSessionOpen, setDeleteSessionOpen] = useState(false);
+  const [contextPopoverOpen, setContextPopoverOpen] = useState(false);
+  const [compactBusy, setCompactBusy] = useState(false);
+  const [resolvedEvidenceFileCount, setResolvedEvidenceFileCount] = useState<{
+    sourceKey: string;
+    count: number;
+  }>();
 
   const streamRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const contextTriggerRef = useRef<HTMLButtonElement>(null);
+  const contextPopoverRef = useRef<HTMLDivElement>(null);
+  const contextContainerRef = useRef<HTMLDivElement>(null);
   const announcedPermissionsRef = useRef(new Set<string>());
   const autoRetriedSessionRef = useRef<string | undefined>(undefined);
   const syncPendingKeyRef = useRef<string | undefined>(undefined);
@@ -373,6 +380,9 @@ export function ConversationView({
     setStopError(undefined);
     setStopConfirmOpen(false);
     setDeleteSessionOpen(false);
+    setContextPopoverOpen(false);
+    setCompactBusy(false);
+    setResolvedEvidenceFileCount(undefined);
     setInternalMenuOpen(false);
     setMoveMenuOpen(false);
     setRenameOpen(false);
@@ -381,6 +391,41 @@ export function ConversationView({
     setInternalRefreshing(false);
     setSyncFlash(false);
   }, [draftKey, isMobile, session.parentSessionId, session.sidechat]);
+
+  useEffect(() => {
+    if (!contextPopoverOpen) return;
+    if (!session.contextUsage || !(session.contextUsage.totalTokens > 0)) {
+      setContextPopoverOpen(false);
+    }
+  }, [contextPopoverOpen, session.contextUsage]);
+
+  useEffect(() => {
+    if (!contextPopoverOpen || typeof document === "undefined") return;
+    contextPopoverRef.current?.focus();
+    const onPointerDown = (event: PointerEvent) => {
+      if (
+        contextContainerRef.current
+        && event.target instanceof Node
+        && !contextContainerRef.current.contains(event.target)
+      ) {
+        setContextPopoverOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setContextPopoverOpen(false);
+        contextTriggerRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextPopoverOpen]);
 
   useEffect(() => {
     if (internalRefreshing || syncPendingKeyRef.current !== draftKey) return;
@@ -652,6 +697,10 @@ export function ConversationView({
   useEffect(() => {
     if (!isMobile || !visible) return;
     const unregisterOverlays = registerMobileBackHandler(() => {
+      if (contextPopoverOpen) {
+        setContextPopoverOpen(false);
+        return true;
+      }
       if (effectivePermissionOpen) {
         setPermissionOpen(false);
         return true;
@@ -709,6 +758,7 @@ export function ConversationView({
     };
   }, [
     backgroundTasksOpen,
+    contextPopoverOpen,
     deleteSessionOpen,
     effectiveActionBusy,
     effectiveConfigurationOpen,
@@ -910,7 +960,62 @@ export function ConversationView({
   const stopping = Boolean(stopTarget && stoppingSessionId === stopTarget.sessionId);
   const hasDraft = Boolean(text.trim()) || (canAttachImages && attachments.length > 0) || fileUploads.files.length > 0;
 
-  const evidenceCount = (evidence?.items.length ?? 0) + (fileChangesSummary ? 1 : 0);
+  const evidenceSourceKey = useMemo(() => {
+    const bundlePart = (evidence?.items ?? [])
+      .map((bundle) => `${bundle.id}:${bundle.state}:${bundle.completedAt ?? 0}:${bundle.artifactCount}:${bundle.artifacts.length}`)
+      .join("|");
+    const changePart = (fileChangesSummary?.files ?? [])
+      .map((file) => `${file.path}:${file.kind}:${file.additions}:${file.deletions}`)
+      .join("|");
+    return `${draftKey}::${bundlePart}::${changePart}`;
+  }, [draftKey, evidence?.items, fileChangesSummary]);
+  const baseOutputFileCount = useMemo(
+    () => countSessionOutputFiles({
+      bundles: evidence?.items,
+      conversationItems: items,
+      fileChanges: fileChangesSummary,
+      cwd: session.cwd,
+    }),
+    [evidence?.items, fileChangesSummary, items, session.cwd],
+  );
+  const evidenceCount = resolvedEvidenceFileCount?.sourceKey === evidenceSourceKey
+    ? resolvedEvidenceFileCount.count
+    : baseOutputFileCount;
+  const latestTurnUsage = useMemo(
+    () => [...(evidence?.items ?? [])]
+      .sort((left, right) => (right.completedAt ?? right.startedAt) - (left.completedAt ?? left.startedAt))
+      .find((bundle) => Boolean(bundle.usage))?.usage,
+    [evidence?.items],
+  );
+  const canCompactContext = Boolean(
+    onRunSessionCommand
+    && runtimeId === "claude-desktop"
+    && (!snapshot || snapshot.host.capabilities.includes("session.command.v1")),
+  );
+  const compactContextDisabled = !isOnline
+    || Boolean(session.isCompacting)
+    || session.turnState === "running"
+    || session.turnState === "waiting";
+
+  async function runCompactContext(): Promise<void> {
+    if (!canCompactContext || compactBusy || compactContextDisabled) return;
+    const targetKey = draftKey;
+    setContextPopoverOpen(false);
+    contextTriggerRef.current?.focus();
+    setCompactBusy(true);
+    setInternalActionError(undefined);
+    try {
+      await commands.execute("/compact", false);
+    } catch (error) {
+      if (previousDraftKeyRef.current === targetKey) {
+        setInternalActionError(error instanceof Error ? error.message : "压缩上下文失败");
+      }
+    } finally {
+      if (previousDraftKeyRef.current === targetKey) {
+        setCompactBusy(false);
+      }
+    }
+  }
   const parentSession = session.parentSessionId
     ? sessions.find((candidate) => candidate.sessionId === session.parentSessionId)
     : undefined;
@@ -1116,34 +1221,36 @@ export function ConversationView({
   );
 
   const evidenceBody = (
-    <>
-      <MediaGallery artifacts={mediaArtifacts(evidence?.items ?? [])} online={isOnline} />
-      {fileChangesSummary && (
-        <FileChangesCard
-          summary={fileChangesSummary}
-          onPreviewFile={openSessionFile}
-          transfers={artifactTransfers}
-          online={isOnline}
-          {...(onDownloadSessionFile ? {
-            onDownloadFile: (filePath) => {
+    <EvidencePanel
+      variant={variant}
+      sessionId={session.sessionId}
+      cwd={session.cwd}
+      state={evidence}
+      conversationItems={items}
+      fileChanges={fileChangesSummary}
+      previews={artifactPreviews}
+      transfers={artifactTransfers}
+      online={isOnline}
+      onLoadMore={() => onLoadOlderEvidence(session.sessionId)}
+      {...(onLoadEvidenceDetails ? { onLoadDetails: onLoadEvidenceDetails } : {})}
+      onPreview={onPreviewArtifact}
+      onDownload={onDownloadArtifact}
+      {...(onDownloadSessionFile
+        ? {
+            onRequestSessionFileDownload: (filePath) => {
               setFileDownloadError(undefined);
               setPendingFileDownload(filePath);
             },
-          } : {})}
-        />
-      )}
-      <EvidencePanel
-        state={evidence}
-        previews={artifactPreviews}
-        transfers={artifactTransfers}
-        online={isOnline}
-        suppressEmpty={Boolean(fileChangesSummary)}
-        onLoadMore={() => onLoadOlderEvidence(session.sessionId)}
-        {...(onLoadEvidenceDetails ? { onLoadDetails: onLoadEvidenceDetails } : {})}
-        onPreview={onPreviewArtifact}
-        onDownload={onDownloadArtifact}
-      />
-    </>
+          }
+        : {})}
+      onResolvedFileCountChange={(count) => {
+        setResolvedEvidenceFileCount((previous) => (
+          previous?.sourceKey === evidenceSourceKey && previous.count === count
+            ? previous
+            : { sourceKey: evidenceSourceKey, count }
+        ));
+      }}
+    />
   );
 
   const sharedDialogs = (
@@ -1431,14 +1538,12 @@ export function ConversationView({
             aria-describedby={profileSummaryId}
             onClick={() => setConfigurationOpen(true)}
           >
-            <i className={`m-status-dot ${session.turnState}`} />
-            <SessionProfileSummary session={session} showActivity id={profileSummaryId} />
-            <ChevronDown size={14} />
+            <SessionProfileSummary session={session} id={profileSummaryId} />
+            <ChevronDown size={13} />
           </button>
         ) : (
           <span className="m-presence">
-            <i className={`m-status-dot ${session.turnState}`} />
-            <SessionProfileSummary session={session} showActivity />
+            <SessionProfileSummary session={session} />
           </span>
         )}
         {...(effectiveNavigation ? {
@@ -1646,43 +1751,48 @@ export function ConversationView({
           </button>
         ) : null}
       </div>
-      {effectiveSessionView === "conversation" && (
-        <>
-          <SessionActivityIndicator activity={activity} />
-          <SessionContextUsageBar usage={session.contextUsage} />
-          {composerBanner}
-          {MobileComposer({
-            variant,
-            selectedSession: session,
-            snapshot,
-            connection,
-            desktopOnline,
-            connectionIssue,
-            runtimeName,
-            draftKey,
-            text,
-            attachments,
-            sending,
-            imageError,
-            canAttachImages,
-            commandDraft,
-            hasDraft,
-            stopTarget,
-            stopping,
-            fileUploads,
-            fileRef,
-            composerRef,
-            onUploadFile,
-            onLoadSessionCommands,
-            loadCommands: commands.load,
-            updateDraft,
-            addImages,
-            sendMessage,
-            onOpenStopConfirm: () => setStopConfirmOpen(true),
-            onRetry: onRetry ?? (async () => {}),
-          })}
-        </>
-      )}
+      {composerBanner}
+      {MobileComposer({
+        variant,
+        sessionView: effectiveSessionView,
+        selectedSession: session,
+        snapshot,
+        connection,
+        desktopOnline,
+        connectionIssue,
+        runtimeName,
+        draftKey,
+        text,
+        attachments,
+        sending,
+        imageError,
+        canAttachImages,
+        commandDraft,
+        hasDraft,
+        stopTarget,
+        stopping,
+        activity,
+        turnUsage: latestTurnUsage,
+        contextPopoverOpen,
+        onToggleContextPopover: () => setContextPopoverOpen((current) => !current),
+        ...(canCompactContext ? { onCompactContext: () => void runCompactContext() } : {}),
+        compactContextDisabled,
+        compactContextBusy: compactBusy || Boolean(session.isCompacting),
+        contextTriggerRef,
+        contextPopoverRef,
+        contextContainerRef,
+        fileUploads,
+        fileRef,
+        composerRef,
+        onUploadFile,
+        onLoadSessionCommands,
+        loadCommands: commands.load,
+        updateDraft,
+        addImages,
+        sendMessage,
+        onOpenStopConfirm: () => setStopConfirmOpen(true),
+        onRetry: onRetry ?? (async () => {}),
+      })}
       {effectivePermissionOpen && (activePermission || activeNativePrompt) && (
         <Sheet
           manageFocus={!isMobile}

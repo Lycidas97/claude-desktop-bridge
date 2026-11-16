@@ -349,6 +349,8 @@ test("Windows QA keeps the local public relay, allocates dynamic ports, and isol
   assert.match(windowsSource, /SetEnvironmentVariable\("BRIDGE_PUBLIC_RELAY_URL", \$relayUrl, "Process"\)/u);
   assert.match(windowsSource, /SetEnvironmentVariable\("BRIDGE_ANDROID_RELAY", "ws:\/\/10\.0\.2\.2:\$relayPort\/ws", "Process"\)/u);
   assert.match(windowsSource, /& \$adb forward tcp:0 "localabstract:\$webviewSocket"/u);
+  assert.doesNotMatch(windowsSource, /webview_devtools_remote_\\d\+/u, "Windows QA must scope WebView DevTools socket discovery to Bridge PID");
+  assert.match(windowsSource, /pidof com\.localbridge\.mobile[\s\S]*?webview_devtools_remote_\(\?:/u);
   assert.match(windowsSource, /forward --remove tcp:\$androidPort/u);
   for (const key of [
     "BRIDGE_RELAY_PORT", "BRIDGE_ANDROID_CDP", "BRIDGE_ANDROID_RELAY",
@@ -807,6 +809,55 @@ ${acquisition}
     for (const child of children) {
       if (child.exitCode === null) child.kill();
     }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Windows QA WebView socket discovery ignores unrelated PIDs and waits for Bridge PID socket", { skip: process.platform !== "win32" }, async () => {
+  const socketStart = windowsSource.indexOf("    $webviewSocket = $null");
+  const socketEnd = windowsSource.indexOf("    $androidPort =");
+  assert.notEqual(socketStart, -1, "Missing $webviewSocket loop start in windows-packaged-qa.ps1");
+  assert.notEqual(socketEnd, -1, "Missing $androidPort boundary in windows-packaged-qa.ps1");
+  const discoverySlice = windowsSource.slice(socketStart, socketEnd).replaceAll("Start-Sleep -Milliseconds 300", "Start-Sleep -Milliseconds 20");
+
+  const directory = await mkdtemp(join(tmpdir(), "bridge-webview-socket-"));
+  try {
+    const stateFile = join(directory, "adb-state.json");
+    const fakeAdbJs = join(directory, "fake-adb.mjs");
+    const fakeAdbCmd = join(directory, "adb.cmd");
+    const probeScript = join(directory, "probe.ps1");
+    await writeFile(stateFile, JSON.stringify({ unixPolls: 0 }));
+    await writeFile(fakeAdbJs, `
+      import { readFileSync, writeFileSync } from "node:fs";
+      const statePath = ${JSON.stringify(stateFile)};
+      const args = process.argv.slice(2).join(" ");
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      if (args.includes("pidof com.localbridge.mobile")) {
+        process.stdout.write("3106\\r\\n");
+      } else if (args.includes("cat /proc/net/unix")) {
+        state.unixPolls += 1;
+        writeFileSync(statePath, JSON.stringify(state));
+        const lines = ["00000000: 00000002 00000000 00010000 0001 01 12345 @webview_devtools_remote_1790"];
+        if (state.unixPolls >= 2) {
+          lines.push("00000000: 00000002 00000000 00010000 0001 01 12346 @webview_devtools_remote_31060");
+          lines.push("00000000: 00000002 00000000 00010000 0001 01 12347 @webview_devtools_remote_3106");
+        }
+        process.stdout.write(lines.join("\\r\\n") + "\\r\\n");
+      }
+    `);
+    await writeFile(fakeAdbCmd, `@"${process.execPath}" "${fakeAdbJs}" %*\r\n`);
+    await writeFile(probeScript, `
+      $ErrorActionPreference = "Stop"
+      $adb = ${JSON.stringify(fakeAdbCmd)}
+      ${discoverySlice}
+    `);
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", probeScript], { encoding: "utf8" });
+    assert.equal(result.status, 0, `WebView socket discovery script failed:\n${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /Android WebView DevTools socket: webview_devtools_remote_3106/u);
+    assert.match(result.stdout, /Android Bridge PID: 3106/u);
+    const finalState = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(finalState.unixPolls, 2, "Must ignore PID 1790 on poll 1 and select PID 3106 (not 31060) on poll 2");
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });

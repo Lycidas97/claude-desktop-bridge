@@ -226,20 +226,29 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Failed to launch com.localbridge.mobile/.MainActivity" }
 
     $webviewSocket = $null
+    $bridgePids = @()
     $socketDeadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $socketDeadline -and -not $webviewSocket) {
-      $unixSockets = & cmd.exe /c "`"$adb`" shell cat /proc/net/unix 2>nul"
-      $match = ($unixSockets | Select-String -Pattern "@(webview_devtools_remote_\d+)" | Select-Object -First 1)
-      if ($match) {
-        $webviewSocket = $match.Matches[0].Groups[1].Value
-      } else {
+      $pidText = ((& cmd.exe /c "`"$adb`" shell pidof com.localbridge.mobile 2>nul") -join " ").Trim()
+      $bridgePids = @($pidText -split "\s+" | Where-Object { $_ -match "^\d+$" })
+      if ($bridgePids.Count -gt 0) {
+        $unixSockets = & cmd.exe /c "`"$adb`" shell cat /proc/net/unix 2>nul"
+        $pidPattern = "@(webview_devtools_remote_(?:" + ($bridgePids -join "|") + "))\b"
+        $match = ($unixSockets | Select-String -Pattern $pidPattern | Select-Object -First 1)
+        if ($match) {
+          $webviewSocket = $match.Matches[0].Groups[1].Value
+        }
+      }
+      if (-not $webviewSocket) {
         Start-Sleep -Milliseconds 300
       }
     }
-    if (-not $webviewSocket) { throw "Timed out waiting for Android WebView DevTools socket" }
+    if (-not $webviewSocket) {
+      throw "Timed out waiting for Android WebView DevTools socket (Bridge PID: $($bridgePids -join ' '))"
+    }
 
     Write-Output "Android WebView DevTools socket: $webviewSocket"
-    Write-Output ("Android Bridge PID: " + ((& $adb shell pidof com.localbridge.mobile) -join " "))
+    Write-Output ("Android Bridge PID: " + ($bridgePids -join " "))
     $androidPort = ((& $adb forward tcp:0 "localabstract:$webviewSocket") -join "").Trim()
     if ($LASTEXITCODE -ne 0 -or $androidPort -notmatch "^\d+$") {
       throw "adb forward tcp:0 failed with exit code $LASTEXITCODE ($androidPort)"

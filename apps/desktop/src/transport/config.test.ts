@@ -177,6 +177,28 @@ describe("desktop configuration", () => {
     expect(safeProtector.unprotect(protectedValue)).toBe("evidence-master-key");
   });
 
+  it("keeps a config using OS-protected evidence when OS storage is unavailable", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const defaults = { relayUrl: "wss://relay.example/ws", desktopName: "Test PC" };
+    const file = fileSecretProtector();
+    const storage = {
+      isEncryptionAvailable: vi.fn(() => true),
+      encryptString: (value: string) => Buffer.from(value),
+      decryptString: (value: Buffer) => value.toString(),
+    };
+    const original = new DesktopConfigRepository(path, file, defaults, safeStorageSecretProtector(storage));
+    await original.loadOrCreate();
+    const raw = await readFile(path, "utf8");
+
+    storage.isEncryptionAvailable.mockReturnValue(false);
+    await expect(original.loadOrCreate()).rejects.toThrow("OS secret storage is unavailable");
+    await expect(new DesktopConfigRepository(path, file, defaults).loadOrCreate())
+      .rejects.toThrow("OS secret storage is unavailable");
+    expect(await readFile(path, "utf8")).toBe(raw);
+  });
+
   it("keeps transport identities in the mode-0600 config and seals only the evidence key", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);
@@ -780,6 +802,26 @@ describe("desktop configuration", () => {
     await writeFile(path, raw);
 
     await expect(repository.loadOrCreate()).resolves.toMatchObject({ relayUrl: "wss://relay.example/ws" });
+    const archive = (await readdir(directory)).find((name) => name.startsWith("bridge-config.json.v1-archive-"));
+    expect(archive).toBeDefined();
+    expect(await readFile(join(directory, archive!), "utf8")).toBe(raw);
+  });
+
+  it("archives a V4 config with an unknown secret protection format", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(path, fileSecretProtector(), {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const original = await repository.loadOrCreate();
+    const raw = JSON.stringify({
+      ...JSON.parse(await readFile(path, "utf8")), protectedHostSecret: "unknown:fixture",
+    });
+    await writeFile(path, raw);
+
+    expect((await repository.loadOrCreate()).roomId).not.toBe(original.roomId);
     const archive = (await readdir(directory)).find((name) => name.startsWith("bridge-config.json.v1-archive-"));
     expect(archive).toBeDefined();
     expect(await readFile(join(directory, archive!), "utf8")).toBe(raw);

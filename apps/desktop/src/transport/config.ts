@@ -43,12 +43,15 @@ export interface SecretProtector {
   unprotect(value: string): string;
 }
 
+class InvalidDesktopConfigError extends Error {}
+
 export function fileSecretProtector(): SecretProtector {
   return {
     available: () => true,
     protect: (value) => `file:${Buffer.from(value, "utf8").toString("base64")}`,
     unprotect: (value) => {
-      if (!value.startsWith("file:")) throw new Error("Unsupported secret protection format");
+      if (value.startsWith("os:")) throw new Error("OS secret storage is unavailable");
+      if (!value.startsWith("file:")) throw new InvalidDesktopConfigError("Unsupported secret protection format");
       return Buffer.from(value.slice(5), "base64").toString("utf8");
     },
   };
@@ -436,10 +439,17 @@ export class DesktopConfigRepository {
   }
 
   async loadOrCreate(): Promise<LoadedDesktopConfig> {
-    return (await this.loadExisting(true)) ?? this.regenerate(false);
+    let existing: LoadedDesktopConfig | undefined;
+    try {
+      existing = await this.loadExisting(true);
+    } catch (error) {
+      if (!(error instanceof InvalidDesktopConfigError)) throw error;
+      await rename(this.path, `${this.path}.v1-archive-${Date.now()}`);
+    }
+    return existing ?? this.regenerate(false);
   }
 
-  private async loadExisting(archiveInvalid: boolean): Promise<LoadedDesktopConfig | undefined> {
+  private async loadExisting(classifyInvalid: boolean): Promise<LoadedDesktopConfig | undefined> {
     let raw: string;
     try {
       raw = await readFile(this.path, "utf8");
@@ -455,9 +465,8 @@ export class DesktopConfigRepository {
         ? normalizeRelayUrl(config.relayUrlOverride)
         : undefined;
     } catch (error) {
-      if (!archiveInvalid) throw error;
-      await rename(this.path, `${this.path}.v1-archive-${Date.now()}`);
-      return undefined;
+      if (!classifyInvalid) throw error;
+      throw new InvalidDesktopConfigError("Desktop config is invalid", { cause: error });
     }
     const savedEndpoint = config.version === 2
       ? undefined

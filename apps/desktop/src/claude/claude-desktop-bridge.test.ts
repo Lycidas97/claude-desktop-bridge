@@ -4522,6 +4522,59 @@ describe("Claude native relay", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("uses the saved Magpie gateway when a paused inspector refresh resumes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-magpie-save-"));
+    const state = new ConversationStateStore({ databasePath: join(root, "state.sqlite") });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    const magpieConnection = new MagpieConnectionRepository(join(root, "magpie-connection-v1.json"), {
+      isEncryptionAvailable: () => true,
+      encryptString: text => Buffer.from(text, "utf8"),
+      decryptString: buf => buf.toString("utf8"),
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async url => Response.json({
+      data: [{ id: "native-model", display_name: new URL(String(url)).hostname }],
+    }));
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath: join(root, "settings.json"), eventLog, conversationState: state, inspector: native,
+      magpieConnection, environment: {}, home: root, fetchImpl, refreshIntervalMs: 60_000,
+    });
+    const saveGateway = (baseUrl: string) => bridge.saveMagpieConnection({ mode: "manual", baseUrl, authScheme: "bearer", apiKey: "fixture-gateway-key" });
+    try {
+      await bridge.initialize();
+      await saveGateway("https://old.example.test");
+      expect(bridge.session("local-native")?.modelDisplayName).toBe("old.example.test");
+      fetchImpl.mockClear();
+
+      let resumeGetAll!: () => void;
+      const holdGetAll = new Promise<void>(resolve => { resumeGetAll = resolve; });
+      let enterGetAll!: () => void;
+      const getAllEntered = new Promise<void>(resolve => { enterGetAll = resolve; });
+      vi.spyOn(native, "call").mockImplementationOnce(async () => {
+        enterGetAll();
+        await holdGetAll;
+        return structuredClone(native.sessions);
+      });
+      const refresh = bridge.refreshRuntime();
+      try {
+        await getAllEntered;
+        await saveGateway("https://new.example.test");
+      } finally {
+        resumeGetAll();
+        expect(await refresh).toBe(true);
+      }
+      expect.soft(fetchImpl.mock.calls.map(([url]) => url)).toEqual(["https://new.example.test/v1/models?limit=1000"]);
+      expect(bridge.session("local-native")?.modelDisplayName).toBe("new.example.test");
+    } finally {
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("manual session title persistence and automatic first-turn title generation", () => {

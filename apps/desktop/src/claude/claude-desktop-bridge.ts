@@ -321,16 +321,22 @@ export class ClaudeDesktopBridge extends EventEmitter {
     diag("refresh.start", { ready: this.inspector.ready });
     let settings: ReturnType<typeof readClaudeConfig> | undefined;
     const readSettings = () => settings ??= readClaudeConfig(this.options.settingsPath);
-    const discovery = this.options.magpieConnection ? await this.discoverGateway(readSettings) : undefined;
     try {
-      if (!this.inspector.ready) await this.inspector.connect();
-      diag("refresh.connected");
-      const result = await this.inspector.call("getAll");
-      if (!Array.isArray(result)) throw new NativeCallError("Desktop getAll did not return a session list");
-      diag("refresh.getAll", { count: result.length });
-      const sessions = result.map(nativeSession);
-      this.sectionCatalog = await this.inspector.sections?.(sessions.map(session => session.sessionId));
-      diag("refresh.sections");
+      let sessions: NativeSession[];
+      let discovery: ClaudeGatewayDiscovery | undefined;
+      try {
+        if (!this.inspector.ready) await this.inspector.connect();
+        diag("refresh.connected");
+        const result = await this.inspector.call("getAll");
+        if (!Array.isArray(result)) throw new NativeCallError("Desktop getAll did not return a session list");
+        diag("refresh.getAll", { count: result.length });
+        sessions = result.map(nativeSession);
+        this.sectionCatalog = await this.inspector.sections?.(sessions.map(session => session.sessionId));
+        diag("refresh.sections");
+      } finally {
+        // Use the gateway saved during inspector reads and publish settings even if those reads fail.
+        if (this.options.magpieConnection) discovery = await this.discoverGateway(readSettings);
+      }
       await this.refreshModelCatalog("cached", readSettings, discovery);
       diag("refresh.models");
       this.native.clear();

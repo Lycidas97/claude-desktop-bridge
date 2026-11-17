@@ -1400,7 +1400,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
       const { gateway, profileModels } = titleGateway;
       const catalogModels = !this.options.magpieConnection?.isManual()
-        && this.gatewayModelsCache?.gatewayKey === JSON.stringify(gateway)
+        && this.gatewayModelsCache?.ok
+        && this.gatewayModelsCache.gatewayKey === JSON.stringify(gateway)
         ? this.models
         : mergeModelCatalog(this.desktopPickerModels, profileModels);
       const nativeModel = this.native.get(id)?.model;

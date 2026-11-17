@@ -4740,7 +4740,7 @@ describe("manual session title persistence and automatic first-turn title genera
     }
   });
 
-  it("uses the fixed Desktop profile model for titles in both Magpie modes", async () => {
+  it.each(["fixed", "host-auth", "host-url"] as const)("uses the matching Desktop profile models for %s titles in both Magpie modes", async (source) => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-profile-"));
     const state = new ConversationStateStore({ databasePath: join(directory, "state.sqlite") });
     await state.initialize();
@@ -4759,11 +4759,20 @@ describe("manual session title persistence and automatic first-turn title genera
       inferenceModels: [{ name: "desktop-profile-model", labelOverride: "Desktop profile model" }],
     }), { mode: 0o600 });
 
+    const hostPath = join(appData, "Claude-3p", "host-creds-title.json");
+    const baseUrl = source === "host-url" ? "https://host.example.test" : "https://desktop.example.test";
+    if (source !== "fixed") {
+      await writeFile(hostPath, JSON.stringify({ env: {
+        ANTHROPIC_API_KEY: "host-key",
+        CLAUDE_CODE_HOST_AUTH_ENV_VAR: "ANTHROPIC_API_KEY",
+        ...(source === "host-url" ? { ANTHROPIC_BASE_URL: baseUrl } : {}),
+      } }), { mode: 0o600 });
+    }
     const fetchImpl = vi.fn<typeof fetch>(async (url) => {
       if (url === "https://manual.example.test/v1/models?limit=1000") {
         return Response.json({ data: [{ id: "manual-only-model" }] });
       }
-      if (url === "https://desktop.example.test/v1/messages") {
+      if (url === `${baseUrl}/v1/messages`) {
         return Response.json({ content: [{ type: "text", text: "Desktop profile title" }] });
       }
       return new Response(null, { status: 503 });
@@ -4775,7 +4784,7 @@ describe("manual session title persistence and automatic first-turn title genera
         encryptString: text => Buffer.from(text, "utf8"),
         decryptString: buffer => buffer.toString("utf8"),
       }),
-      fetchImpl, platform: "win32", environment: { APPDATA: appData }, home: directory,
+      fetchImpl, platform: "win32", environment: { APPDATA: appData, ...(source === "fixed" ? {} : { CLAUDE_CODE_HOST_CREDS_FILE: hostPath }) }, home: directory,
       scanCatalog: async () => ({ projects: [], sessions: [], observedAt: 0 }), refreshIntervalMs: 60_000, autoTitleGraceMs: 0,
     });
     try {
@@ -4789,8 +4798,9 @@ describe("manual session title persistence and automatic first-turn title genera
         await bridge.startTurn({ ...input, sessionId: session.sessionId, requestId: mode, idempotencyKey: mode });
         await vi.waitFor(() => expect(bridge.session(session.sessionId)?.title).toBe("Desktop profile title"));
         expect.soft(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"), mode).toEqual([
-          ["https://desktop.example.test/v1/messages", expect.objectContaining({
-            body: expect.stringContaining('"model":"desktop-profile-model"'),
+          [`${baseUrl}/v1/messages`, expect.objectContaining({
+            headers: expect.objectContaining({ "x-api-key": source === "fixed" ? "desktop-key" : "host-key" }),
+            body: expect.stringContaining(`"model":"${source === "host-url" ? "claude-3-5-haiku-latest" : "desktop-profile-model"}"`),
           })],
         ]);
       }

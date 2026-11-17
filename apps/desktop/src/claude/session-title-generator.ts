@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 import type { BridgeModelInfo } from "@bridge/protocol";
 import {
   findClaudeFixedGateway,
@@ -192,6 +193,11 @@ async function readSettingsDirectApiKey(settingsPath: string | undefined): Promi
   return undefined;
 }
 
+function titleMessagesEndpoint(baseUrl: string): string {
+  const trimmedBase = baseUrl.replace(/\/+$/u, "");
+  return `${trimmedBase.endsWith("/v1") ? trimmedBase : `${trimmedBase}/v1`}/messages`;
+}
+
 export async function resolveActiveClaudeGateway({
   environment = process.env, home, platform, roots, settingsPath, allowAmbientDiscovery = true,
 }: {
@@ -207,7 +213,17 @@ export async function resolveActiveClaudeGateway({
     : undefined;
   if (credentialPath) {
     const host = await resolveClaudeGatewayConfig({ credentialPath, environment: {} });
-    if (host && (host.authToken || host.apiKey)) return { gateway: host };
+    if (host && (host.authToken || host.apiKey)) {
+      const parent = dirname(credentialPath);
+      const profileRoot = basename(parent) === "configLibrary" ? dirname(parent) : parent;
+      const profile = await findClaudeFixedGateway(environment, home, [profileRoot], platform);
+      return {
+        gateway: host,
+        ...(profile && titleMessagesEndpoint(profile.gateway.baseUrl) === titleMessagesEndpoint(host.baseUrl)
+          ? { profileModels: profile.inferenceModels }
+          : {}),
+      };
+    }
   }
   if (allowAmbientDiscovery) {
     const fixed = await findClaudeFixedGateway(environment, home, roots, platform);
@@ -246,8 +262,7 @@ export async function generateSessionTitle(options: {
     return fallback;
   }
 
-  const trimmedBase = options.gateway.baseUrl.replace(/\/+$/u, "");
-  const endpoint = `${trimmedBase.endsWith("/v1") ? trimmedBase : `${trimmedBase}/v1`}/messages`;
+  const endpoint = titleMessagesEndpoint(options.gateway.baseUrl);
   const headers: Record<string, string> = {
     "content-type": "application/json",
     accept: "application/json",

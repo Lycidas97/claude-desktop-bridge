@@ -4,19 +4,21 @@ Read the routed document **before** exploring or modifying any path or executing
 
 ## Subsystem Routing
 
-| Subsystem | Owned Paths | Read Before Editing | Subsystem Suites (inside `ci:local`; run alone only when `ci:local` cannot run) |
+| Subsystem | Owned Paths | Read Before Editing | Subsystem checks (run standalone only when `ci:local` cannot run) |
 | --- | --- | --- | --- |
-| Protocol & Transport | `packages/protocol/src/` | `docs/subsystems/protocol-transport.md` | `npm run ci:run -- run build -w @bridge/protocol && npm run ci:run -- test -w @bridge/protocol && npm run typecheck` |
-| Desktop App & Service | `apps/desktop/src/main.ts`, `apps/desktop/src/preload.ts`, `apps/desktop/src/app/` | `docs/subsystems/desktop-app-service.md` | `npm run ci:run -- test -w @bridge/desktop && npm run ci:run -- run build:bundle -w @bridge/desktop` |
+| Protocol & Transport | `packages/protocol/src/` (including shared updater types and release selection) | `docs/subsystems/protocol-transport.md` | `npm run ci:run -- run build -w @bridge/protocol && npm run ci:run -- test -w @bridge/protocol && npm run typecheck` |
+| Desktop App & Service | `apps/desktop/src/main.ts`, `apps/desktop/src/preload.ts`, `apps/desktop/src/app/`, `apps/desktop/src/updater/` | `docs/subsystems/desktop-app-service.md` | `npm run ci:run -- test -w @bridge/desktop && npm run ci:run -- run build:bundle -w @bridge/desktop` |
 | Desktop Claude Native | `apps/desktop/src/claude/` | `docs/subsystems/desktop-claude-native.md` | `npm run ci:run -- test -w @bridge/desktop && npm run test:browser` |
 | Desktop Transcript & Context | `apps/desktop/src/transcript/` | `docs/subsystems/desktop-transcript.md` | `npm run ci:run -- test -w @bridge/desktop && npm run test:browser` |
 | Desktop Evidence & Previews | `apps/desktop/src/evidence/` | `docs/subsystems/desktop-evidence.md` | `npm run ci:run -- test -w @bridge/desktop && npm run test:html-preview && npm run test:browser` |
 | Desktop Controller, RPC & Host Transport | `apps/desktop/src/controller/`, `apps/desktop/src/transport/` | `docs/subsystems/desktop-controller-rpc.md` | `npm run ci:run -- test -w @bridge/desktop && npm run test:infra && npm run test:browser` |
-| Client Conversation & Workspace UI | `apps/client/src/components/`, `apps/client/src/lib/conversation-timeline.ts` | `docs/subsystems/client-conversation-ui.md` | `npm run ci:run -- test -w @bridge/client && npm run typecheck && npm run test:infra && npm run test:browser` |
-| Client Bridge State & Vault | `apps/client/src/hooks/`, `apps/client/src/lib/` | `docs/subsystems/client-bridge-state.md` | `npm run ci:run -- test -w @bridge/client && npm run typecheck && npm run test:browser` |
+| Client Conversation & Workspace UI | `apps/client/src/App.tsx` and its tests, `apps/client/src/components/` (including updater UI), `apps/client/src/lib/conversation-timeline.ts` | `docs/subsystems/client-conversation-ui.md` | `npm run ci:run -- test -w @bridge/client && npm run typecheck && npm run test:infra && npm run test:browser` |
+| Client Bridge State & Vault | `apps/client/src/hooks/`, `apps/client/src/lib/` (including client updater state, excluding `conversation-timeline.ts`) | `docs/subsystems/client-bridge-state.md` | `npm run ci:run -- test -w @bridge/client && npm run typecheck && npm run test:browser` |
 | Relay Server & Quota Plugin | `apps/relay/src/`, `plugins/magpie-quota/` | `docs/subsystems/relay-and-plugins.md` | `npm run ci:run -- test -w @bridge/relay && npm run ci:run -- --prefix plugins/magpie-quota test && npm run typecheck` |
 | Assistant Mail | `plugins/assistant-mail/` | `plugins/assistant-mail/README.md`, `docs/subsystems/desktop-app-service.md` | `npm run ci:run -- --prefix plugins/assistant-mail test && npm run typecheck` |
 | CI, Release & Packaged QA | `.github/workflows/`, `scripts/` | `docs/subsystems/ci-release-qa.md` | `npm run test:infra && npm run verify` |
+
+For the Android updater (`BridgeUpdaterPlugin.java` under `apps/mobile/android/`), follow the CI, Release & Packaged QA route and the Android build instructions in `docs/RELEASE.md`.
 
 ## Task & Workflow Routing
 

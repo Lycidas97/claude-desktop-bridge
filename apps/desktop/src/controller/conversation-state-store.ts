@@ -29,15 +29,7 @@ export interface ConversationStateStoreOptions {
   masterSecret?: string;
 }
 
-export type SessionVisibility = "archived" | "deleted";
-
-export interface StoredSessionVisibility {
-  sessionId: string;
-  visibility: SessionVisibility;
-  updatedAt: number;
-}
-
-/** SQLite-backed store for active session titles, visibility overrides, and native send receipts. */
+/** SQLite-backed store for session titles and native send receipts. */
 export class ConversationStateStore {
   private database: DatabaseSync | undefined;
   private readonly sessionTitles = new Map<string, string>();
@@ -264,37 +256,6 @@ export class ConversationStateStore {
       ON CONFLICT(session_id) DO UPDATE SET title = excluded.title
     `).run(sessionId, title);
     this.sessionTitles.set(sessionId, title);
-  }
-
-  setSessionVisibility(sessionId: string, visibility: SessionVisibility | null): void {
-    if (visibility === null) {
-      this.db.prepare("DELETE FROM session_visibility WHERE session_id = ?").run(sessionId);
-      return;
-    }
-    this.db.prepare(`
-      INSERT INTO session_visibility(session_id, visibility, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(session_id) DO UPDATE SET
-        visibility = excluded.visibility,
-        updated_at = excluded.updated_at
-    `).run(sessionId, visibility, Date.now());
-  }
-
-  listSessionVisibility(): StoredSessionVisibility[] {
-    const rows = this.db.prepare(
-      "SELECT * FROM session_visibility ORDER BY updated_at ASC, session_id ASC",
-    ).all() as SqlRow[];
-    const entries: StoredSessionVisibility[] = [];
-    for (const row of rows) {
-      const visibility = String(row.visibility);
-      if (visibility !== "archived" && visibility !== "deleted") continue;
-      entries.push({
-        sessionId: String(row.session_id),
-        visibility,
-        updatedAt: Number(row.updated_at),
-      });
-    }
-    return entries;
   }
 
   nativeDesktopReceipt(idempotencyKey: string): NativeDesktopReceipt | undefined {

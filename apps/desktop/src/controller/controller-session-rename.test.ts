@@ -2,31 +2,31 @@ import type { BridgeRequest, BridgeSessionInfo, BridgeTurnState, DesktopControlS
 import { describe, expect, it, vi } from "vitest";
 import { createControllerFixture } from "./controller-fixture.js";
 
-function fixture(turnState: BridgeTurnState = "running", sessionId = "native-1") {
+function fixture(turnState: BridgeTurnState = "running", archivedAt?: number) {
   const session: BridgeSessionInfo = {
-    sessionId, title: "原生标题", cwd: "/workspace/project", projectId: "group-1", projectName: "Project",
-    source: "desktop", transport: "bridge-host", ownership: "DESKTOP_OBSERVED", turnState,
+    sessionId: "native-1", title: "原生标题", cwd: "/workspace/project", projectId: "group-1", projectName: "Project",
+    source: "desktop", runtimeId: "claude-desktop", transport: "claude-desktop-native",
+    ownership: turnState === "idle" ? "DESKTOP_NATIVE_IDLE" : "DESKTOP_NATIVE_RUNNING", turnState,
     lastActivityAt: 123, pendingCount: 2, pendingCommandIds: ["queued-1", "queued-2"],
     parentSessionId: "parent-1", forkLabel: "fork", model: "model-1", effort: "high",
+    ...(archivedAt !== undefined ? { archivedAt } : {}),
   };
   const titles = new Map<string, string>();
-  const row = () => ({ ...session, title: titles.get(sessionId) ?? session.title });
-  const external = sessionId.includes(":");
+  const row = () => ({ ...session, title: titles.get(session.sessionId) ?? session.title });
   const setSessionTitle = vi.fn((id: string, title: string) => titles.set(id, title));
   const controller = createControllerFixture({
     broker: {
-      listSessions: () => external ? [] : [row()], session: () => row(),
+      listSessions: () => [row()], session: () => row(),
       refreshDesktopConfiguration: vi.fn(async () => undefined), history: vi.fn(async () => ({ items: [] })),
       rename: vi.fn(async (id: string, title: string) => { setSessionTitle(id, title); }),
     },
-    runtimeSessions: external ? { listSessions: () => [row()], session: () => row(), history: vi.fn(async () => ({ items: [] })) } : undefined,
     conversationState: { setSessionTitle },
     snapshot: async (): Promise<Pick<DesktopControlSnapshot, "sessions" | "permissions">> => ({ sessions: controller.allSessions(), permissions: [] }),
     claudePermissions: () => [],
     eventLog: { latestSeq: () => 7, append: vi.fn() },
     broadcast: vi.fn(async () => undefined),
   });
-  const rename = (title: unknown, id = sessionId) => controller.handleRequest({
+  const rename = (title: unknown, id = session.sessionId) => controller.handleRequest({
     kind: "request", method: "session.rename", requestId: "rename-1", idempotencyKey: "rename-1", params: { sessionId: id, title },
   } as BridgeRequest, "mobile");
   return { controller, session, rename };
@@ -48,8 +48,8 @@ describe("session.rename", () => {
   });
 
   it.each(["codex-desktop:native-1", "hermes-desktop:native-1"])("rejects saved external runtime identity for %s", async id => {
-    const { controller, session, rename } = fixture("running", id);
-    await expect(rename("外部显示名")).rejects.toMatchObject({ code: "UNSUPPORTED" });
+    const { controller, rename } = fixture();
+    await expect(rename("外部显示名", id)).rejects.toMatchObject({ code: "UNSUPPORTED" });
     expect(controller.conversationState.setSessionTitle).not.toHaveBeenCalled();
     expect(controller.broker.rename).not.toHaveBeenCalled();
   });
@@ -68,14 +68,15 @@ describe("session.rename", () => {
     expect(controller.broadcast).not.toHaveBeenCalled();
   });
 
-  it("rejects unknown and deleted IDs while preserving archived metadata", async () => {
-    const { controller, session, rename } = fixture();
+  it("rejects an unknown session ID without writing", async () => {
+    const { controller, rename } = fixture();
     await expect(rename("Name", "missing")).rejects.toThrow("Session not found");
-    controller.sessionVisibility.set(session.sessionId, { visibility: "deleted", updatedAt: 10 });
-    await expect(rename("Name")).rejects.toThrow("Session not found");
     expect(controller.conversationState.setSessionTitle).not.toHaveBeenCalled();
-    controller.sessionVisibility.set(session.sessionId, { visibility: "archived", updatedAt: 11 });
-    expect(await rename("归档名称")).toEqual({ session: { ...session, title: "归档名称", archivedAt: 11 } });
+  });
+
+  it("preserves native archive metadata when renaming", async () => {
+    const { session, rename } = fixture("idle", 11);
+    expect(await rename("归档名称")).toEqual({ session: { ...session, title: "归档名称" } });
   });
 
   it("reports persistence failure without publishing success", async () => {
@@ -86,7 +87,7 @@ describe("session.rename", () => {
     expect(controller.allSessions()[0]?.title).toBe("原生标题");
   });
 
-  it("does not publish a title when SDK persistence fails", async () => {
+  it("does not publish a title when native rename fails", async () => {
     const { controller, rename } = fixture();
     controller.broker.rename.mockRejectedValueOnce(new Error("transcript is unavailable"));
     await expect(rename("Name")).rejects.toThrow("transcript is unavailable");

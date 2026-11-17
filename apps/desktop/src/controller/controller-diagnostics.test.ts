@@ -410,7 +410,6 @@ describe("DesktopController unified diagnostics & redaction", () => {
             deviceCryptos: 2,
             deflateDevices: 0,
             responseCacheEntries: 0,
-            sessionVisibilityOverrides: 0,
             hasPendingPairing: true,
           },
           uploads: {

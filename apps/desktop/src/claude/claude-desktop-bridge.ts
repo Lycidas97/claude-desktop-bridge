@@ -236,6 +236,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private gateway: ClaudeGatewayConfig | undefined;
   private gatewayModelsCache: { gatewayKey: string; fetchedAt: number; ok: boolean; models: BridgeModelInfo[] } | undefined;
   private models: BridgeModelInfo[] | undefined;
+  private desktopPickerModels: BridgeModelInfo[] | undefined;
   private defaultModel: string | undefined;
   private snapshotQueue: Promise<unknown> = Promise.resolve();
 
@@ -393,14 +394,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  private savedModel(model: string): BridgeModelInfo | undefined {
-    return savedModelOption(this.models, model);
+  private savedModel(model: string, models = this.models): BridgeModelInfo | undefined {
+    return savedModelOption(models, model);
   }
 
-  private directModelDisplayName(model: string | undefined): string | undefined {
+  private directModelDisplayName(model: string | undefined, models = this.models): string | undefined {
     const trimmed = model?.trim();
     if (!trimmed || trimmed.toLowerCase() === "default") return undefined;
-    const saved = this.savedModel(trimmed);
+    const saved = this.savedModel(trimmed, models);
     if (saved) return saved.displayName;
     if (trimmed.includes("/") || /^(?:claude|gpt|gemini)-/iu.test(trimmed)) {
       return humanizeUpstreamModelId(trimmed);
@@ -411,6 +412,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private resolveSessionModel(
     sessionId: string | undefined,
     rawNativeModel: string | undefined,
+    models = this.models,
   ): {
     sessionModel?: string;
     configModel?: string;
@@ -423,8 +425,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const contextModel = rawContextModel && rawContextModel.toLowerCase() !== "default" ? rawContextModel : undefined;
 
     if (explicitNative) {
-      const saved = this.savedModel(explicitNative);
-      const directDisplay = this.directModelDisplayName(explicitNative);
+      const saved = this.savedModel(explicitNative, models);
+      const directDisplay = this.directModelDisplayName(explicitNative, models);
       if (directDisplay) {
         return {
           sessionModel: explicitNative,
@@ -437,7 +439,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         const effectiveContext = /\[1m\]$/iu.test(explicitNative) && !/\[1m\]$/iu.test(contextModel)
           ? `${contextModel}[1m]`
           : contextModel;
-        const contextSaved = this.savedModel(effectiveContext);
+        const contextSaved = this.savedModel(effectiveContext, models);
         const contextDisplay = contextSaved?.displayName ?? humanizeUpstreamModelId(effectiveContext);
         return {
           sessionModel: explicitNative,
@@ -451,11 +453,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
     const fallbackRaw = (contextModel && !parseMagpieSyntheticModelId(contextModel) ? contextModel : undefined)
       ?? this.defaultModel
-      ?? this.models?.[0]?.value;
+      ?? models?.[0]?.value;
     if (!fallbackRaw) return {};
-    const saved = this.savedModel(fallbackRaw);
+    const saved = this.savedModel(fallbackRaw, models);
     const resolvedValue = saved?.value ?? fallbackRaw;
-    const displayName = saved?.displayName ?? this.directModelDisplayName(resolvedValue) ?? humanizeUpstreamModelId(resolvedValue);
+    const displayName = saved?.displayName ?? this.directModelDisplayName(resolvedValue, models) ?? humanizeUpstreamModelId(resolvedValue);
     return {
       sessionModel: resolvedValue,
       configModel: resolvedValue,
@@ -486,6 +488,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   ): Promise<void> {
     const settings = readSettings();
     const { models: saved, defaultModel } = claudeModelSettings(await settings);
+    this.desktopPickerModels = saved;
     this.defaultModel = defaultModel;
     if (!this.options.magpieConnection && !this.options.fetchImpl) {
       this.models = saved;
@@ -1395,14 +1398,18 @@ export class ClaudeDesktopBridge extends EventEmitter {
       });
       if (!gateway || this.isSessionUnavailableForAutoTitle(id)) return;
 
-      const currentNative = this.native.get(id);
-      const preferredModel = this.resolveSessionModel(id, currentNative?.model).configModel ?? currentNative?.model;
+      const catalogModels = !this.options.magpieConnection?.isManual()
+        && this.gatewayModelsCache?.gatewayKey === JSON.stringify(gateway)
+        ? this.models
+        : this.desktopPickerModels;
+      const nativeModel = this.native.get(id)?.model;
+      const preferredModel = this.resolveSessionModel(id, nativeModel, catalogModels ?? []).configModel ?? nativeModel;
       const generatedTitle = await generateSessionTitle({
         text,
         hasAttachments,
         gateway,
         ...(preferredModel ? { preferredModel } : {}),
-        ...(this.models ? { catalogModels: this.models } : {}),
+        ...(catalogModels ? { catalogModels } : {}),
         ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
         signal: this.closeAbort.signal,
       });

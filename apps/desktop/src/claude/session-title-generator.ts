@@ -162,16 +162,15 @@ async function readSettingsDirectApiKey(settingsPath: string | undefined): Promi
     const parsed = JSON.parse(await readFile(settingsPath, "utf8")) as { env?: Record<string, unknown> };
     const env = parsed?.env;
     if (!env || typeof env !== "object" || Array.isArray(env)) return undefined;
-    const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" && env.ANTHROPIC_BASE_URL.trim()
-      ? env.ANTHROPIC_BASE_URL.trim()
-      : undefined;
+    const baseUrl = env.ANTHROPIC_BASE_URL;
     const authToken = typeof env.ANTHROPIC_AUTH_TOKEN === "string" && env.ANTHROPIC_AUTH_TOKEN.trim()
       ? env.ANTHROPIC_AUTH_TOKEN.trim()
       : undefined;
     const apiKey = typeof env.ANTHROPIC_API_KEY === "string" && env.ANTHROPIC_API_KEY.trim()
       ? env.ANTHROPIC_API_KEY.trim()
       : undefined;
-    if (baseUrl) {
+    if (baseUrl !== undefined) {
+      if (typeof baseUrl !== "string") return undefined;
       const resolved = await resolveClaudeGatewayConfig({
         environment: {
           ANTHROPIC_BASE_URL: baseUrl,
@@ -182,7 +181,7 @@ async function readSettingsDirectApiKey(settingsPath: string | undefined): Promi
             : {}),
         },
       });
-      if (resolved && (resolved.authToken || resolved.apiKey)) return resolved;
+      return resolved && (resolved.authToken || resolved.apiKey) ? resolved : undefined;
     }
     if (apiKey) {
       return { baseUrl: "https://api.anthropic.com", apiKey, authScheme: "x-api-key" };
@@ -203,12 +202,14 @@ export async function resolveActiveClaudeGateway({
   settingsPath?: string;
   allowAmbientDiscovery?: boolean;
 } = {}): Promise<ClaudeGatewayConfig | undefined> {
+  const credentialPath = allowAmbientDiscovery
+    ? await findClaudeHostCredentials(environment, home, roots, platform)
+    : undefined;
+  if (credentialPath) {
+    const host = await resolveClaudeGatewayConfig({ credentialPath, environment: {} });
+    if (host && (host.authToken || host.apiKey)) return host;
+  }
   if (allowAmbientDiscovery) {
-    const credentialPath = await findClaudeHostCredentials(environment, home, roots, platform);
-    if (credentialPath) {
-      const host = await resolveClaudeGatewayConfig({ credentialPath, environment: {} });
-      if (host && (host.authToken || host.apiKey)) return host;
-    }
     const fixed = await findClaudeFixedGateway(environment, home, roots, platform);
     if (fixed) return fixed.gateway;
   }
@@ -216,10 +217,12 @@ export async function resolveActiveClaudeGateway({
   const fromSettings = await readSettingsDirectApiKey(settingsPath);
   if (fromSettings || !allowAmbientDiscovery) return fromSettings;
 
-  const fromEnvironment = await resolveClaudeGatewayConfig({ environment });
+  const fromEnvironment = await resolveClaudeGatewayConfig({ ...(credentialPath ? { credentialPath } : {}), environment });
   if (fromEnvironment && (fromEnvironment.authToken || fromEnvironment.apiKey)) return fromEnvironment;
   const apiKey = environment.ANTHROPIC_API_KEY?.trim();
-  return apiKey ? { baseUrl: "https://api.anthropic.com", apiKey, authScheme: "x-api-key" } : undefined;
+  return apiKey && environment.ANTHROPIC_BASE_URL === undefined
+    ? { baseUrl: "https://api.anthropic.com", apiKey, authScheme: "x-api-key" }
+    : undefined;
 }
 
 export async function generateSessionTitle(options: {

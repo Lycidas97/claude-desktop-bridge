@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { magpieModelIdHash } from "./claude-runtime-discovery.js";
+import { discoverClaudeGatewayConfig, magpieModelIdHash } from "./claude-runtime-discovery.js";
 import {
   deriveFallbackSessionTitle,
   generateSessionTitle,
@@ -124,6 +124,44 @@ describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
     await expect(resolveActiveClaudeGateway({ ...options, roots: [] })).resolves.toEqual({
       baseUrl: environment.ANTHROPIC_BASE_URL,
       authToken: environment.ANTHROPIC_AUTH_TOKEN,
+    });
+  });
+
+  it.each(["custom.example.test", ""])("skips invalid explicit gateway URL %j in settings and environment", async (baseUrl) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-title-gateway-"));
+    directories.push(root);
+    const settingsPath = join(root, "settings.json");
+    await writeFile(settingsPath, JSON.stringify({ env: {
+      ANTHROPIC_BASE_URL: baseUrl,
+      ANTHROPIC_API_KEY: "settings-key",
+    } }));
+
+    const environment = { ANTHROPIC_BASE_URL: "https://ambient.example.test", ANTHROPIC_API_KEY: "ambient-key" };
+    await expect.soft(resolveActiveClaudeGateway({ roots: [], settingsPath, environment })).resolves.toEqual({
+      baseUrl: environment.ANTHROPIC_BASE_URL, apiKey: environment.ANTHROPIC_API_KEY,
+    });
+    await expect.soft(resolveActiveClaudeGateway({ roots: [], environment: {
+      ...environment, ANTHROPIC_BASE_URL: baseUrl,
+    } })).resolves.toBeUndefined();
+    await expect(resolveActiveClaudeGateway({ roots: [], environment: { ANTHROPIC_API_KEY: "ambient-key" } })).resolves.toEqual({
+      baseUrl: "https://api.anthropic.com", apiKey: "ambient-key", authScheme: "x-api-key",
+    });
+  });
+
+  it("preserves Desktop Host credentials completed by the environment after settings", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-title-gateway-"));
+    directories.push(root);
+    const hostPath = join(root, "host-creds-test.json");
+    await writeFile(hostPath, JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "host-title-token" } }), { mode: 0o600 });
+    const options = { roots: [root], environment: { ANTHROPIC_BASE_URL: "https://ambient.example.test" } };
+    const gateway = await discoverClaudeGatewayConfig(options);
+    expect(gateway).toEqual({ baseUrl: options.environment.ANTHROPIC_BASE_URL, authToken: "host-title-token" });
+    await expect(resolveActiveClaudeGateway(options)).resolves.toEqual(gateway);
+
+    const settingsPath = join(root, "settings.json");
+    await writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_API_KEY: "settings-key" } }));
+    await expect(resolveActiveClaudeGateway({ ...options, settingsPath })).resolves.toEqual({
+      baseUrl: "https://api.anthropic.com", apiKey: "settings-key", authScheme: "x-api-key",
     });
   });
 

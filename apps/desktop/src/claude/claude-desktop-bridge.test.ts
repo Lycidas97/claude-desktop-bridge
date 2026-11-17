@@ -4620,8 +4620,8 @@ describe("manual session title persistence and automatic first-turn title genera
 
     let releaseTitleResponse!: (response: Response) => void;
     const fetchImpl = vi.fn<typeof fetch>((url) => {
-      if (String(url).endsWith("/v1/models?limit=1000")) {
-        return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+      if (url === "https://manual.example.test/v1/models?limit=1000") {
+        return Promise.resolve(Response.json({ data: [{ id: "manual-only-model" }] }));
       }
       return new Promise<Response>((resolve) => {
         releaseTitleResponse = resolve;
@@ -4675,6 +4675,7 @@ describe("manual session title persistence and automatic first-turn title genera
       expect.soft(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST")).toEqual([
         ["https://gateway.example.test/v1/messages", expect.objectContaining({
           headers: expect.objectContaining({ authorization: `Bearer ${titleToken}`, "x-api-key": titleToken }),
+          body: expect.stringContaining('"model":"claude-3-5-haiku-latest"'),
         })],
       ]);
       expect(bridge.session(blank.sessionId)?.title).toBe("Claude 会话");

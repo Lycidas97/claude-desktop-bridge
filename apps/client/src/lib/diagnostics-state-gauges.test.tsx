@@ -164,7 +164,8 @@ vi.mock("./artifact-download.js", async (original) => ({
   downloadBridgeSessionFile: (...args: unknown[]) => runtime.downloadFileImpl(...args),
 }));
 
-vi.mock("./session-notifications.js", () => ({
+vi.mock("./session-notifications.js", async (original) => ({
+  ...await original<typeof import("./session-notifications.js")>(),
   ensureSessionNotificationPermission: vi.fn().mockResolvedValue(true),
   showSessionNotification: vi.fn(),
 }));

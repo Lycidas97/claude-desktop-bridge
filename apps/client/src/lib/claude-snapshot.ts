@@ -1,4 +1,14 @@
-import type { BridgeHostSnapshot } from "@bridge/protocol";
+import type { BridgeHostSnapshot, BridgeInspectorStatus } from "@bridge/protocol";
+
+export type HostSnapshotWithInspector = BridgeHostSnapshot & {
+  claudeInspector?: BridgeInspectorStatus | undefined;
+};
+
+export function readClaudeInspector(
+  snapshot: BridgeHostSnapshot | undefined,
+): BridgeInspectorStatus | undefined {
+  return (snapshot as HostSnapshotWithInspector | undefined)?.claudeInspector;
+}
 
 /** Keep saved snapshots from retired hosts within the current Claude UI. */
 export function claudeSnapshot<T extends BridgeHostSnapshot>(snapshot: T): T {

@@ -8,7 +8,7 @@ import {
   installMobileBackNavigation,
   registerMobileBackHandler,
 } from "./lib/mobile-back-navigation.js";
-import { onSessionNotificationTap } from "./lib/session-notifications.js";
+import { onSessionNotificationTap, setActiveViewedSession } from "./lib/session-notifications.js";
 import { DesktopDashboard } from "./components/DesktopDashboard.js";
 import { DiagnosticFloatingEntry } from "./components/common/DiagnosticLogDialog.js";
 import { HostBrowser } from "./components/pairing/HostBrowser.js";
@@ -59,6 +59,13 @@ function MobileAssistantConversation({
     )) ?? []
   ), [assistantMail?.cache.cards, session.sessionId, snapshot?.assistantMail?.binding?.nativeSessionId]);
   const [refreshing, setRefreshing] = useState(false);
+  useEffect(() => {
+    if (!visible) return;
+    setActiveViewedSession({ hostId: activeHostId, sessionId: session.sessionId });
+    return () => {
+      setActiveViewedSession(undefined);
+    };
+  }, [activeHostId, session.sessionId, visible]);
   async function handleRefresh(targetSessionId?: string): Promise<boolean> {
     if (refreshing) return false;
     setRefreshing(true);
@@ -535,7 +542,18 @@ export function App() {
           themeControl={themeControl}
           remoteDesktop={remoteDesktopUpdate}
           clientUpdater={clientUpdater}
-          {...(mobile.state.activeHostId ? { providers: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setProvidersOpen(true) } } : {})}
+          {...(mobile.state.activeHostId ? {
+            providers: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setProvidersOpen(true) },
+            claudeRuntime: {
+              desktopName: mobile.state.desktopName ?? "我的电脑",
+              snapshot,
+              connected: mobile.state.connection === "connected" && mobile.state.desktopOnline,
+              onActivate: async () => {
+                await mobile.controlDesktopApp("claude-desktop", "launch");
+                await mobile.refresh();
+              },
+            },
+          } : {})}
           {...(quotaDeclared ? { quota: { desktopName: mobile.state.desktopName ?? "我的电脑", onOpen: () => setQuotaOpen(true) } } : {})}
         />
       ))}

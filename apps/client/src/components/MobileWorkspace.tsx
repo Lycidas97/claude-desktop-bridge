@@ -72,6 +72,7 @@ import {
   toggleCollapsedProject,
 } from "../lib/project-groups.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../lib/runtime-labels.js";
+import { setActiveViewedSession } from "../lib/session-notifications.js";
 import { useAssistantMail } from "./assistant/AssistantMailProvider.js";
 import { MailReference } from "./assistant/MailReference.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
@@ -89,6 +90,7 @@ import {
   type SessionConfigurationChange,
 } from "./session/SessionConfigurationDialog.js";
 import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
+import { useSessionSectionDrag } from "./session/useSessionSectionDrag.js";
 
 export function MobileWorkspace({
   activeHostId,
@@ -156,7 +158,7 @@ export function MobileWorkspace({
   onArchiveSession,
   onRenameSession,
   onDeleteSession,
-  onDesktopAppAction: _onDesktopAppAction,
+  onDesktopAppAction,
   onRefresh,
   onBackToHosts,
   onRetry,
@@ -364,6 +366,16 @@ export function MobileWorkspace({
     ? sessions.find((session) => session.sessionId === effectiveSelectedId)
     : undefined;
   const showingHomeCatalog = !selectedSession && !newChatMode;
+  const activeConversationSessionId = visible && !showingHomeCatalog && selectedSession && sessionView === "conversation"
+    ? selectedSession.sessionId
+    : undefined;
+  useEffect(() => {
+    if (!activeConversationSessionId) return;
+    setActiveViewedSession({ hostId: activeHostId, sessionId: activeConversationSessionId });
+    return () => {
+      setActiveViewedSession(undefined);
+    };
+  }, [activeConversationSessionId, activeHostId]);
   const configurationSession = sessions.find((session) => session.sessionId === configurationSessionId);
   const selectedHistory = effectiveSelectedId ? histories[effectiveSelectedId] : undefined;
   const selectedEvidence = effectiveSelectedId ? evidence[effectiveSelectedId] : undefined;
@@ -767,8 +779,13 @@ export function MobileWorkspace({
     await selectSession(created.sessionId);
   }
 
-  async function quickStartSession(cwd: string, prompt: string, projectId?: string): Promise<void> {
-    const created = await onCreateSession(cwd, undefined, "claude-desktop", projectId);
+  async function quickStartSession(
+    cwd: string,
+    prompt: string,
+    projectId?: string,
+    title?: string,
+  ): Promise<void> {
+    const created = await onCreateSession(cwd, title, "claude-desktop", projectId);
     if (!created) throw new Error("会话未创建，请重试。");
     await handleNewChatCreated(created, { initialPrompt: prompt });
   }
@@ -830,7 +847,7 @@ export function MobileWorkspace({
     setSessionActionError(undefined);
     try {
       const updated = await onMoveSessionSection(sessionId, sectionId);
-      const targetProjectId = sectionId ?? updated.session?.projectId;
+      const targetProjectId = sectionId ?? updated.session?.projectId ?? "claude-unsectioned";
       if (targetProjectId) {
         setCollapsedProjectIds((current) => expandProject(current, targetProjectId));
       }
@@ -842,6 +859,21 @@ export function MobileWorkspace({
       setSessionActionBusy(false);
     }
   }
+
+  const sessionDrag = useSessionSectionDrag({
+    hostOnline: connection === "connected" && desktopOnline,
+    capabilities: snapshot?.host.capabilities,
+    manualSections,
+    scrollContainerRef: directoryRef,
+    onMoveSessionSection: onMoveSessionSection ? moveSessionToSection : undefined,
+  });
+
+  const activateClaudeRemote = onDesktopAppAction
+    ? async () => {
+        await onDesktopAppAction("claude-desktop", "launch");
+        await onRefresh();
+      }
+    : undefined;
 
   function closeRename(): void {
     if (sessionActionBusy) return;
@@ -1253,6 +1285,10 @@ export function MobileWorkspace({
     placeProjects,
     closeSectionCreate,
     createSection,
+    sessionDrag,
+    manualSections,
+    sessionActionError: !menuSession && !renameOpen ? sessionActionError : undefined,
+    onActivateClaude: activateClaudeRemote,
   });
 
   if (!visible) {
@@ -1363,6 +1399,7 @@ export function MobileWorkspace({
               onCreateSession={onCreateSession}
               onSessionCreated={handleNewChatCreated}
               onQuickStart={quickStartSession}
+              {...(activateClaudeRemote ? { onActivateClaude: activateClaudeRemote } : {})}
             />
           </main>
         )}

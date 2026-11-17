@@ -20,6 +20,7 @@ import {
   type BridgeEvent,
   type BridgeHostSnapshot,
   type BridgePayload,
+  type BridgePendingPrompt,
   type BridgeRequest,
   type BridgeResponse,
   type BridgeSessionInfo,
@@ -36,7 +37,12 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { diagLog, setDiagBridgeStateSummary } from "../../lib/diagnostics.js";
 import { isReplayableMobileEnvelope } from "../../lib/outbox.js";
 import { nativePushRegistration } from "../../lib/push-wake.js";
-import { ensureSessionNotificationPermission, showSessionNotification } from "../../lib/session-notifications.js";
+import {
+  ensureSessionNotificationPermission,
+  isActivelyViewingSession,
+  isSessionNotificationsEnabled,
+  showSessionNotification,
+} from "../../lib/session-notifications.js";
 import { bridgeVault } from "../../lib/vault.js";
 import type { BridgeSendRequest } from "./bridge-artifacts.js";
 import {
@@ -564,25 +570,102 @@ export async function sendBridgeRequest(
   return responsePromise;
 }
 
+export interface NotifyCompletedTurnsOptions {
+  fromResume?: boolean | undefined;
+  bootstrap?: boolean | undefined;
+}
+
+const NOTIFICATION_MAX_AGE_MS = 30 * 60_000;
+const EPOCH_MS_FLOOR = 1_000_000_000_000;
+
+function singleLineNotificationPreview(raw: unknown, maxChars = 60): string {
+  if (typeof raw !== "string") return "";
+  const compact = raw.replace(/\s+/gu, " ").trim();
+  if (!compact) return "";
+  const chars = Array.from(compact);
+  return chars.length > maxChars ? `${chars.slice(0, maxChars).join("")}…` : compact;
+}
+
+function isEventNotificationStale(event: BridgeEvent): boolean {
+  const rawEventTime = typeof event.data?.createdAt === "number" ? event.data.createdAt : event.timestamp;
+  return (
+    typeof rawEventTime === "number"
+    && rawEventTime >= EPOCH_MS_FLOOR
+    && Date.now() - rawEventTime > NOTIFICATION_MAX_AGE_MS
+  );
+}
+
+function extractCompletedTurnAssistantPreview(
+  event: BridgeEvent,
+  batchEvents: readonly BridgeEvent[],
+  stateEvents: readonly BridgeEvent[],
+): string {
+  const direct = singleLineNotificationPreview(event.data?.text, 60);
+  if (direct) return direct;
+  if (!event.sessionId) return "";
+  const combined = [...(stateEvents ?? []), ...batchEvents]
+    .filter((candidate) => candidate.sessionId === event.sessionId && candidate.seq <= event.seq)
+    .sort((left, right) => left.seq - right.seq);
+  for (let i = combined.length - 1; i >= 0; i -= 1) {
+    const candidate = combined[i]!;
+    if (candidate.eventId === event.eventId) continue;
+    if (
+      candidate.type === "turn.completed"
+      || candidate.type === "turn.failed"
+      || candidate.type === "turn.interrupted"
+    ) {
+      break;
+    }
+    if (event.turnId && candidate.turnId && candidate.turnId !== event.turnId) {
+      continue;
+    }
+    if (candidate.type === "assistant.completed") {
+      const preview = singleLineNotificationPreview(candidate.data?.text, 60);
+      if (preview) return preview;
+    }
+  }
+  return "";
+}
+
+function formatCompletedTurnBody(
+  event: BridgeEvent,
+  batchEvents: readonly BridgeEvent[],
+  stateEvents: readonly BridgeEvent[],
+): string {
+  if (event.type === "turn.completed") {
+    const preview = extractCompletedTurnAssistantPreview(event, batchEvents, stateEvents);
+    return preview || "任务已完成，点击查看结果";
+  }
+  const errorPreview = singleLineNotificationPreview(event.data?.error ?? event.data?.message, 60);
+  return errorPreview ? `任务失败：${errorPreview}` : "任务执行失败，点击查看详情";
+}
+
 export function notifyBridgeCompletedTurns(
   refs: Pick<BridgeTransportRefs, "stateRef" | "pendingCompletionNotificationsRef">,
   events: BridgeEvent[],
   crypto: BridgeCrypto,
+  options: NotifyCompletedTurnsOptions = {},
 ): void {
+  if (typeof window !== "undefined" && window.bridgeDesktop) return;
   const completed = events.filter((event) => event.type === "turn.completed" || event.type === "turn.failed");
   if (completed.length === 0) return;
-  const seen = new Set(refs.stateRef.current.events.map((event) => event.eventId));
+  const stateEvents = refs.stateRef.current.events ?? [];
+  const seen = new Set(stateEvents.map((event) => event.eventId));
   const pending = refs.pendingCompletionNotificationsRef.current;
   // The state event list owns committed IDs. Keep only IDs awaiting a React
   // commit so queued delivery and resume cannot notify twice in the same batch.
   for (const id of pending) if (seen.has(id)) pending.delete(id);
+  const notificationsEnabled = isSessionNotificationsEnabled();
+  const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
   for (const event of completed) {
     if (seen.has(event.eventId) || pending.has(event.eventId)) continue;
     pending.add(event.eventId);
-    if (document.visibilityState === "visible") continue;
+    if (options.bootstrap || !notificationsEnabled) continue;
+    if (isEventNotificationStale(event)) continue;
+    if (isVisible && isActivelyViewingSession(crypto.identity.roomId, event.sessionId)) continue;
     const title = refs.stateRef.current.snapshot?.sessions.find((session) => session.sessionId === event.sessionId)?.title
       ?? crypto.identity.desktopName;
-    const body = event.type === "turn.completed" ? "任务已完成" : "任务失败";
+    const body = formatCompletedTurnBody(event, events, stateEvents);
     if (Capacitor.isNativePlatform()) {
       void showSessionNotification(
         { hostId: crypto.identity.roomId, ...(event.sessionId ? { sessionId: event.sessionId } : {}) },
@@ -598,7 +681,7 @@ export function notifyBridgeCompletedTurns(
 export async function resumeBridgeEvents(
   refs: Pick<BridgeTransportRefs, "setState" | "stateRef" | "cryptoRef" | "socketRef">,
   sendRequest: BridgeSendRequest,
-  notifyCompletedTurns: (events: BridgeEvent[], crypto: BridgeCrypto) => void,
+  notifyCompletedTurns: (events: BridgeEvent[], crypto: BridgeCrypto, options?: NotifyCompletedTurnsOptions) => void,
   bootstrap = false,
   fromSeq?: number,
 ): Promise<void> {
@@ -634,7 +717,7 @@ export async function resumeBridgeEvents(
       const latestSeq = typeof result.latestSeq === "number" ? result.latestSeq : cursor;
       if (result.hasMore !== true || cursor >= latestSeq) break;
     }
-    if (crypto) notifyCompletedTurns(events, crypto);
+    if (crypto) notifyCompletedTurns(events, crypto, { fromResume: true, bootstrap });
     setState((current) => isCurrent()
       ? applyIncomingEventsToState(current, events, { cursor })
       : current);
@@ -712,7 +795,7 @@ export async function refreshBridgeSnapshot(
 
 export interface StartBridgeCallbacks {
   handlePayload: (payload: BridgePayload, encrypted: EncryptedEnvelope, crypto: BridgeCrypto) => void;
-  notifyCompletedTurns: (events: BridgeEvent[], crypto: BridgeCrypto) => void;
+  notifyCompletedTurns: (events: BridgeEvent[], crypto: BridgeCrypto, options?: NotifyCompletedTurnsOptions) => void;
   refreshSessionList: () => Promise<boolean>;
   refreshSnapshot: (verifiedSnapshot?: BridgeHostSnapshot) => Promise<boolean>;
   resumeEvents: (bootstrap?: boolean, fromSeq?: number) => Promise<void>;
@@ -1193,10 +1276,40 @@ export async function startBridgeConnection(
       : message.payload.kind === "response" && message.payload.ok
         ? (message.payload.result as { snapshot?: BridgeHostSnapshot } | undefined)?.snapshot
         : undefined;
-    const requestedPermission = event ? permissionFromEvent(event) : undefined;
+    const currentState = stateRef.current;
+    const currentEvents = currentState.events ?? [];
+    const isFreshActionableEvent = Boolean(
+      event
+      && !isEventNotificationStale(event)
+      && event.seq > (currentState.snapshotSeq ?? 0)
+      && !currentEvents.some((seenEvent) => seenEvent.eventId === event.eventId),
+    );
+    const candidatePermission = isFreshActionableEvent && event ? permissionFromEvent(event) : undefined;
+    const requestedPermission = candidatePermission && !currentEvents.some((seenEvent) => (
+      (seenEvent.type === "permission.resolved" || seenEvent.type === "question.resolved")
+      && seenEvent.data.requestId === candidatePermission.requestId
+    ))
+      ? candidatePermission
+      : undefined;
     const newPermissions = (incomingSnapshot?.permissions ?? (requestedPermission ? [requestedPermission] : []))
-      .filter((permission) => !stateRef.current.permissions.some((current) => current.requestId === permission.requestId));
+      .filter((permission) => !(currentState.permissions ?? []).some((current) => current.requestId === permission.requestId));
+    const candidatePrompt = isFreshActionableEvent && event?.type === "prompt.requested" && typeof event.data.promptId === "string"
+      ? (event.data as unknown as BridgePendingPrompt)
+      : undefined;
+    const requestedPrompt = candidatePrompt && !currentEvents.some((seenEvent) => (
+      seenEvent.type === "prompt.resolved"
+      && seenEvent.sessionId === candidatePrompt.sessionId
+      && seenEvent.data.promptId === candidatePrompt.promptId
+    ))
+      ? candidatePrompt
+      : undefined;
+    const existingPrompts = currentState.snapshot?.prompts ?? [];
+    const newPrompts = (incomingSnapshot?.prompts ?? (requestedPrompt ? [requestedPrompt] : []))
+      .filter((prompt) => !existingPrompts.some(
+        (current) => current.promptId === prompt.promptId && current.sessionId === prompt.sessionId,
+      ));
     const isNewPermission = newPermissions.length > 0;
+    const isNewPrompt = newPrompts.length > 0;
     // Drop stale queued RPC responses (>60s old with no active waiter) before
     // they trigger redundant state Churn on reconnect.
     if (message.payload.kind === "response" && Date.now() - message.header.sentAt > 60_000) {
@@ -1221,33 +1334,60 @@ export async function startBridgeConnection(
       payloadDeflateRef.current = message.payload.snapshot.host.capabilities.includes(PAYLOAD_DEFLATE_CAPABILITY);
       void flushOutbox();
     }
-    if (event) notifyCompletedTurns([event], crypto);
+    if (event) notifyCompletedTurns([event], crypto, { bootstrap: isProvisionalPairing() });
     handlePayload(message.payload, encrypted, crypto);
-    if (isNewPermission && document.visibilityState === "visible") {
+    const isVisible = typeof document !== "undefined" && document.visibilityState === "visible";
+    if ((isNewPermission || isNewPrompt) && isVisible) {
       navigator.vibrate?.([120, 60, 120]);
     }
-    if (Capacitor.isNativePlatform()) {
-      if (document.visibilityState !== "visible") {
+    const isDesktopApp = typeof window !== "undefined" && Boolean(window.bridgeDesktop);
+    if (!isDesktopApp && !isProvisionalPairing() && isSessionNotificationsEnabled()) {
+      const sourceSessions = (incomingSnapshot ?? stateRef.current.snapshot)?.sessions;
+      if (Capacitor.isNativePlatform()) {
         for (const permission of newPermissions) {
+          if (isVisible && isActivelyViewingSession(roomId, permission.sessionId)) continue;
           void showSessionNotification(
             { hostId: roomId, sessionId: permission.sessionId },
-            (incomingSnapshot ?? stateRef.current.snapshot)?.sessions.find((session) => session.sessionId === permission.sessionId)?.title
+            sourceSessions?.find((session) => session.sessionId === permission.sessionId)?.title
               ?? crypto.identity.desktopName,
             "Claude 正在等待你处理",
           );
         }
+        for (const prompt of newPrompts) {
+          if (isVisible && isActivelyViewingSession(roomId, prompt.sessionId)) continue;
+          void showSessionNotification(
+            { hostId: roomId, sessionId: prompt.sessionId },
+            sourceSessions?.find((session) => session.sessionId === prompt.sessionId)?.title
+              ?? crypto.identity.desktopName,
+            "Claude 正在等待你确认",
+          );
+        }
+      } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        for (const permission of newPermissions) {
+          if (isVisible && isActivelyViewingSession(roomId, permission.sessionId)) continue;
+          new Notification(
+            sourceSessions?.find((session) => session.sessionId === permission.sessionId)?.title
+              ?? crypto.identity.desktopName,
+            {
+              body: "Claude 正在等待你处理",
+              icon: "/icon-192.png",
+              tag: `perm:${permission.requestId}`,
+            },
+          );
+        }
+        for (const prompt of newPrompts) {
+          if (isVisible && isActivelyViewingSession(roomId, prompt.sessionId)) continue;
+          new Notification(
+            sourceSessions?.find((session) => session.sessionId === prompt.sessionId)?.title
+              ?? crypto.identity.desktopName,
+            {
+              body: "Claude 正在等待你确认",
+              icon: "/icon-192.png",
+              tag: `prompt:${prompt.promptId}`,
+            },
+          );
+        }
       }
-    } else if (
-      document.visibilityState !== "visible" &&
-      typeof Notification !== "undefined" &&
-      Notification.permission === "granted" &&
-      event && (event.type === "permission.requested" || event.type === "question.requested")
-    ) {
-      new Notification(crypto.identity.desktopName, {
-        body: "Claude 正在等待你处理",
-        icon: "/icon-192.png",
-        tag: encrypted.id,
-      });
     }
     // Avoid flooding IndexedDB with stale catch-up events during a queued
     // replay burst; refreshSnapshot() + resumeEvents() persists the rebased
@@ -1256,7 +1396,8 @@ export async function startBridgeConnection(
       message.payload.kind === "event" &&
       Date.now() - message.header.sentAt > 60_000 &&
       message.payload.event.type !== "permission.requested" &&
-      message.payload.event.type !== "question.requested"
+      message.payload.event.type !== "question.requested" &&
+      message.payload.event.type !== "prompt.requested"
     );
     if (
       !isStaleReplayEvent &&

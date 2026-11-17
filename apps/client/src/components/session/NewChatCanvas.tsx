@@ -21,7 +21,12 @@ import {
   useConversationDrafts,
   type ConversationDraftsController,
 } from "../conversation/ConversationDraftsProvider.js";
+import {
+  MobileInspectorCallout,
+  resolveClaudeRemoteActivationStatus,
+} from "../mobile/MobileInspectorCallout.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
+import "./new-chat-canvas.css";
 import {
   PERMISSION_MODE_OPTIONS,
   effortLabel,
@@ -94,7 +99,8 @@ export interface NewChatCanvasProps {
     created: BridgeSessionInfo,
     options?: { initialPrompt?: string | undefined; configurationError?: string | undefined },
   ): Promise<void> | void;
-  onQuickStart?(cwd: string, prompt: string, projectId?: string): Promise<void>;
+  onQuickStart?(cwd: string, prompt: string, projectId?: string, title?: string): Promise<void>;
+  onActivateClaude?: (() => Promise<void>) | undefined;
 }
 
 export function NewChatCanvas({
@@ -117,6 +123,7 @@ export function NewChatCanvas({
   onCreateSession,
   onSessionCreated,
   onQuickStart,
+  onActivateClaude,
 }: NewChatCanvasProps) {
   const runtimeId = "claude-desktop";
   const effectiveHostId = hostId ?? snapshot?.host.hostId;
@@ -156,6 +163,7 @@ export function NewChatCanvas({
 
   const [rawSelectedCwd, setSelectedCwd] = useState<string>(resolvedDefaultCwd);
   const [rawSelectedProjectId, setSelectedProjectId] = useState<string>(resolvedDefaultProjectId);
+  const [sessionTitle, setSessionTitle] = useState<string>("");
   const selectedCwd = typeof rawSelectedCwd === "string" ? rawSelectedCwd : resolvedDefaultCwd;
   const selectedProjectId = typeof rawSelectedProjectId === "string" ? rawSelectedProjectId : resolvedDefaultProjectId;
 
@@ -468,6 +476,7 @@ export function NewChatCanvas({
 
   async function executeCreate(withPrompt: boolean, trustWorkspace = false): Promise<void> {
     const trimmedPrompt = prompt.trim();
+    const trimmedTitle = sessionTitle.trim() || undefined;
     if (!canSubmitBase) return;
     if (withPrompt && !trimmedPrompt) return;
     const trimmedCwd = selectedCwd.trim();
@@ -492,7 +501,8 @@ export function NewChatCanvas({
       setBusy(true);
       setError(undefined);
       try {
-        await onQuickStart(trimmedCwd, trimmedPrompt, selectedProjectId || undefined);
+        await onQuickStart(trimmedCwd, trimmedPrompt, selectedProjectId || undefined, trimmedTitle);
+        setSessionTitle("");
         drafts.resetSession(effectiveHostId, NEW_CHAT_DRAFT_SESSION_ID);
       } catch (reason) {
         const { isTrust, code } = isWorkspaceTrustError(reason);
@@ -516,8 +526,8 @@ export function NewChatCanvas({
     try {
       const selectedGroup = selectedProjectId || undefined;
       const created = trustWorkspace
-        ? await onCreateSession(trimmedCwd, undefined, runtimeId, selectedGroup, true)
-        : await onCreateSession(trimmedCwd, undefined, runtimeId, selectedGroup);
+        ? await onCreateSession(trimmedCwd, trimmedTitle, runtimeId, selectedGroup, true)
+        : await onCreateSession(trimmedCwd, trimmedTitle, runtimeId, selectedGroup);
       if (!created) {
         setTrustState(undefined);
         setError("会话未创建，请重试。");
@@ -544,6 +554,7 @@ export function NewChatCanvas({
         }
       }
 
+      setSessionTitle("");
       if (withPrompt) {
         drafts.resetSession(effectiveHostId, NEW_CHAT_DRAFT_SESSION_ID);
       }
@@ -584,6 +595,11 @@ export function NewChatCanvas({
     )?.cwd.trim();
   }
 
+  const remoteActivation = resolveClaudeRemoteActivationStatus(snapshot);
+  const showMobileInspectorCallout = Boolean(
+    mobile && connected && snapshot && remoteActivation.nativeUnavailable && onActivateClaude,
+  );
+
   return (
     <section className={`new-chat-canvas${mobile ? " is-mobile" : " is-desktop"}`}>
       <MobilePageHeader
@@ -607,6 +623,13 @@ export function NewChatCanvas({
 
       <div className="new-chat-canvas-body">
         <div className="new-chat-canvas-hero">
+          {showMobileInspectorCallout && (
+            <MobileInspectorCallout
+              snapshot={snapshot}
+              connected={connected}
+              onActivate={onActivateClaude}
+            />
+          )}
           <div className="new-chat-config-card" role="group" aria-label="新建会话配置">
             <div className="new-chat-config-row">
               <span className="new-chat-config-label">工作目录</span>
@@ -679,6 +702,23 @@ export function NewChatCanvas({
               </div>
             )}
 
+            <div className="new-chat-config-row">
+              <span className="new-chat-config-label">会话标题</span>
+              <input
+                type="text"
+                className="new-chat-title-input"
+                aria-label="会话标题"
+                placeholder="留空自动生成"
+                maxLength={200}
+                value={sessionTitle}
+                disabled={!connected || locked}
+                onChange={(event) => {
+                  setSessionTitle(event.target.value);
+                  if (error) setError(undefined);
+                }}
+              />
+            </div>
+
             <div
               className="new-chat-config-row"
               onPointerDown={() => setQuotaRequested(true)}
@@ -738,7 +778,7 @@ export function NewChatCanvas({
           {groupUnavailable && (
             <p className="session-create-error new-chat-inline-alert" role="alert">所选分组已不可用，请重新选择。</p>
           )}
-          {connected && !runtimeAvailable && (
+          {connected && !runtimeAvailable && !showMobileInspectorCallout && (
             <p className="session-create-error new-chat-inline-alert" role="alert">
               {desktopRuntimeName(runtimeId)} 当前无法创建会话。
             </p>

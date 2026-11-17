@@ -31,8 +31,10 @@ vi.mock("@capacitor/core", async original => {
   const value = await original<typeof import("@capacitor/core")>();
   return { ...value, Capacitor: { ...value.Capacitor, isNativePlatform: () => harness.native } };
 });
-vi.mock("../lib/session-notifications.js", () => ({
-  ensureSessionNotificationPermission: vi.fn().mockResolvedValue(true), showSessionNotification: vi.fn(),
+vi.mock("../lib/session-notifications.js", async (original) => ({
+  ...await original<typeof import("../lib/session-notifications.js")>(),
+  ensureSessionNotificationPermission: vi.fn().mockResolvedValue(true),
+  showSessionNotification: vi.fn(),
 }));
 vi.mock("../lib/vault.js", () => ({ bridgeVault: {
   listHosts: vi.fn(async () => harness.hosts),

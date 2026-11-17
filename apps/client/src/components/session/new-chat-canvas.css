@@ -1,0 +1,50 @@
+.new-chat-title-input {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  height: auto;
+  box-sizing: border-box;
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: calc(14px * var(--font-scale, 1));
+  line-height: 1.38;
+  transition: background var(--t-fast) ease, border-color var(--t-fast) ease, box-shadow var(--t-fast) ease;
+}
+
+.new-chat-canvas.is-desktop .new-chat-title-input {
+  min-height: 34px;
+  padding: 6px 12px;
+  font-size: calc(13px * var(--font-scale, 1));
+}
+
+.new-chat-canvas.is-mobile .new-chat-title-input {
+  min-height: 40px;
+  font-size: max(16px, calc(14.5px * var(--font-scale, 1)));
+}
+
+.new-chat-title-input::placeholder {
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+.new-chat-title-input:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line-strong));
+  background: color-mix(in srgb, var(--text) 3%, var(--surface));
+}
+
+.new-chat-title-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.new-chat-title-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

@@ -33,7 +33,13 @@ import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SectionManageDialog, type SectionManageController } from "../session/SectionManageDialog.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
+import {
+  SessionSectionDragGhost,
+  UNSECTIONED_DROP_ID,
+  type SessionSectionDragController,
+} from "../session/useSessionSectionDrag.js";
 import type { MobileTab } from "./MobileAppShell.js";
+import { MobileInspectorCallout } from "./MobileInspectorCallout.js";
 import { ProjectOrderSheet } from "./ProjectOrderSheet.js";
 
 function hostQuickMeta(
@@ -130,6 +136,10 @@ export interface MobileSessionCatalogProps {
   placeProjects(order: string[]): void;
   closeSectionCreate(): void;
   createSection(): Promise<void>;
+  sessionDrag?: SessionSectionDragController | undefined;
+  manualSections?: readonly BridgeProjectInfo[] | undefined;
+  sessionActionError?: string | undefined;
+  onActivateClaude?: (() => Promise<void>) | undefined;
 }
 
 export function MobileSessionCatalog({
@@ -200,6 +210,10 @@ export function MobileSessionCatalog({
   placeProjects,
   closeSectionCreate,
   createSection,
+  sessionDrag,
+  manualSections = [],
+  sessionActionError,
+  onActivateClaude,
 }: MobileSessionCatalogProps) {
   const searchQuery = search.trim().toLocaleLowerCase();
   const supportsCreateSection = Boolean(onCreateSection && snapshot?.host.capabilities.includes("section.create.v1"));
@@ -213,6 +227,14 @@ export function MobileSessionCatalog({
     : archivedSessions;
   const archivedFamilies = groupProjectSessionFamilies(filteredArchivedSessions);
   const effectiveCreateDialog = createDialogState ?? (createOpen ? { initialProjectId: createProjectId || undefined } : undefined);
+  const hasRenderedUnsectionedGroup = grouped.some(
+    (group) => (group.project?.projectId ?? group.sessions[0]?.projectId) === "claude-unsectioned",
+  );
+  const showUnsectionedDropZone = Boolean(
+    sessionDrag?.dragState
+    && sessionDrag.dragState.originSectionId !== UNSECTIONED_DROP_ID
+    && !hasRenderedUnsectionedGroup,
+  );
 
   return (
     <>
@@ -388,6 +410,18 @@ export function MobileSessionCatalog({
             </button>
           )}
 
+          {onActivateClaude && (
+            <MobileInspectorCallout
+              snapshot={snapshot}
+              connected={connection === "connected" && desktopOnline}
+              onActivate={onActivateClaude}
+            />
+          )}
+
+          {sessionActionError && (
+            <p className="m-sheet-note is-error sidebar-action-error" role="alert">{sessionActionError}</p>
+          )}
+
           {!snapshot && connection === "connected" && desktopOnline && (
             <EmptyState
               icon={<LoaderCircle className="is-spinning" size={20} />}
@@ -488,10 +522,17 @@ export function MobileSessionCatalog({
                     ? (projectId === revealedEmptySectionKey || Boolean(expandedEmptyProjectIds?.has(projectId)))
                     : !collapsedProjectIds.has(projectId);
                 const sessionsId = `mobile-project-${encodeURIComponent(projectId)}`;
+                const dropSectionId = group.project?.kind === "desktop-group"
+                  ? projectId
+                  : projectId === "claude-unsectioned"
+                    ? UNSECTIONED_DROP_ID
+                    : undefined;
+                const dropState = sessionDrag?.dropZoneState(dropSectionId);
                 return (
                   <section
-                    className={`project-group ${expanded ? "expanded" : "collapsed"}${isEmptyManualGroup ? " is-empty-group" : ""}`}
+                    className={`project-group ${expanded ? "expanded" : "collapsed"}${isEmptyManualGroup ? " is-empty-group" : ""}${dropState === "target" ? " is-drop-target" : ""}${dropState === "origin" ? " is-drop-origin" : ""}`}
                     key={projectId}
+                    {...(dropSectionId ? { "data-drop-section-id": dropSectionId } : {})}
                   >
                     <ProjectGroupHeader
                       title={projectName}
@@ -535,6 +576,7 @@ export function MobileSessionCatalog({
                             permissions={permissions}
                             expandedForkParents={expandedForkParents}
                             flat
+                            sessionDrag={sessionDrag}
                             selectedId={selectedSessionId}
                             onSelectSession={(targetSessionId) => {
                               onClose?.();
@@ -549,6 +591,15 @@ export function MobileSessionCatalog({
                   </section>
                 );
               })}
+
+              {showUnsectionedDropZone && (
+                <div
+                  className={`project-group-unsectioned-dropzone${sessionDrag?.dropZoneState(UNSECTIONED_DROP_ID) === "target" ? " is-drop-target" : ""}`}
+                  data-drop-section-id={UNSECTIONED_DROP_ID}
+                >
+                  拖到这里移出分组（未分组）
+                </div>
+              )}
 
               {archivedSessions.length > 0 && (
                 <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
@@ -620,6 +671,7 @@ export function MobileSessionCatalog({
         </footer>
       </div>
 
+      <SessionSectionDragGhost dragState={sessionDrag?.dragState} manualSections={manualSections} />
       {sessionOverlays}
       {projectOrderOpen && (
         <ProjectOrderSheet

@@ -77,6 +77,7 @@ import {
   forgetBridgeHost,
   handleBridgePayload,
   notifyBridgeCompletedTurns,
+  type NotifyCompletedTurnsOptions,
   pairBridgeHost,
   reconnectAndResumeBridge,
   refreshBridgeHostState,
@@ -196,7 +197,8 @@ export function useMobileBridge() {
   ) => sendBridgeRequest(transportRefs, method, params, options), []);
 
   const notifyCompletedTurns = useCallback(
-    (events: BridgeEvent[], crypto: BridgeCrypto) => notifyBridgeCompletedTurns(transportRefs, events, crypto),
+    (events: BridgeEvent[], crypto: BridgeCrypto, options?: NotifyCompletedTurnsOptions) =>
+      notifyBridgeCompletedTurns(transportRefs, events, crypto, options),
     [],
   );
 

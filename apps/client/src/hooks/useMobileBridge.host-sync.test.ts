@@ -2,7 +2,11 @@ import type { BridgeCrypto, BridgeEvent, BridgeHostSnapshot, BridgeRequest, Brid
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useMobileBridge } from "./useMobileBridge.js";
 import { bridgeVault } from "../lib/vault.js";
-import { ensureSessionNotificationPermission } from "../lib/session-notifications.js";
+import {
+  ensureSessionNotificationPermission,
+  setActiveViewedSession,
+  setSessionNotificationsEnabled,
+} from "../lib/session-notifications.js";
 import { PROTOCOL_VERSION, BridgeCrypto as ActualBridgeCrypto, BridgeSocket } from "@bridge/protocol";
 
 const harness = vi.hoisted(() => ({
@@ -27,7 +31,8 @@ vi.mock("@capacitor/core", async (importOriginal) => {
   const original = await importOriginal<typeof import("@capacitor/core")>();
   return { ...original, Capacitor: { ...original.Capacitor, isNativePlatform: () => harness.native } };
 });
-vi.mock("../lib/session-notifications.js", () => ({
+vi.mock("../lib/session-notifications.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/session-notifications.js")>(),
   ensureSessionNotificationPermission: vi.fn().mockResolvedValue(true),
   showSessionNotification: harness.notify,
 }));
@@ -145,6 +150,7 @@ function switchHost(host: string, replaceCrypto = true) {
 
 beforeEach(() => {
   vi.stubGlobal("document", { visibilityState: "visible" });
+  setActiveViewedSession(undefined);
   vi.mocked(ensureSessionNotificationPermission).mockClear();
   harness.refs = [];
   harness.native = false;
@@ -529,10 +535,15 @@ function nativeSnapshot(): BridgeHostSnapshot {
 }
 
 describe("native snapshot approval notifications", () => {
-  it.each(["hidden", "visible"])("notifies new pending requests only once while %s", async visibilityState => {
+  it.each([
+    { label: "hidden", visibilityState: "hidden", viewingSessionId: "session-1", shouldNotify: true },
+    { label: "visible on catalog / another session", visibilityState: "visible", viewingSessionId: "session-2", shouldNotify: true },
+    { label: "visible while actively viewing the requesting session", visibilityState: "visible", viewingSessionId: "session-1", shouldNotify: false },
+  ])("notifies new pending requests and prompts once ($label)", async ({ visibilityState, viewingSessionId, shouldNotify }) => {
     vi.useFakeTimers();
     vi.stubGlobal("document", { visibilityState });
     vi.stubGlobal("navigator", { vibrate: vi.fn() });
+    setActiveViewedSession(viewingSessionId ? { hostId: "A", sessionId: viewingSessionId } : undefined);
     harness.native = true;
     vi.mocked(bridgeVault.getHost).mockResolvedValueOnce({
       relayEndpoints: [{ id: "public", kind: "public-relay", url: "wss://relay.example/ws", priority: 1 }],
@@ -542,14 +553,27 @@ describe("native snapshot approval notifications", () => {
     const current = nativeSnapshot();
     current.sessions[0]!.title = "Native task";
     current.permissions = [{ requestId: "native-request", sessionId: "session-1", toolUseId: "tool", toolName: "Bash", input: {}, createdAt: 1, canAllowAlways: false }];
+    current.prompts = [{
+      promptId: "prompt-1",
+      sessionId: "session-1",
+      kind: "cwd-trust",
+      directory: "/tmp/project",
+      sources: [],
+      title: "Trust workspace",
+      choices: [{ value: "allow", label: "Allow" }],
+      canRespond: true,
+    }];
     const message = { header: { sentAt: Date.now() }, payload: { kind: "snapshot", snapshot: current } } as DecryptedEnvelope;
     harness.receive(message, { id: "first-native-snapshot" } as EncryptedEnvelope);
     harness.receive(message, { id: "repeated-native-snapshot" } as EncryptedEnvelope);
-    if (visibilityState === "hidden") {
-      expect(harness.notify).toHaveBeenCalledExactlyOnceWith({ hostId: "A", sessionId: "session-1" }, "Native task", "Claude 正在等待你处理");
+    if (shouldNotify) {
+      expect(harness.notify).toHaveBeenCalledTimes(2);
+      expect(harness.notify).toHaveBeenNthCalledWith(1, { hostId: "A", sessionId: "session-1" }, "Native task", "Claude 正在等待你处理");
+      expect(harness.notify).toHaveBeenNthCalledWith(2, { hostId: "A", sessionId: "session-1" }, "Native task", "Claude 正在等待你确认");
     } else {
       expect(harness.notify).not.toHaveBeenCalled();
     }
+    bridge.backToHosts();
   });
 });
 
@@ -572,7 +596,7 @@ describe("main-turn completion notifications", () => {
     return bridge;
   }
 
-  it("checks local notification permission when the first native pairing completes", async () => {
+  it("checks local notification permission when the first native pairing completes and notifies live events after pairing", async () => {
     vi.useFakeTimers();
     harness.native = true;
     const paired = await ActualBridgeCrypto.createDevicePairing({ hostId: "A", roomId: "A", relayUrl: "wss://relay.example/ws", desktopName: "Synthetic desktop" });
@@ -580,16 +604,98 @@ describe("main-turn completion notifications", () => {
     const fromPairing = vi.spyOn(ActualBridgeCrypto, "fromPairing").mockResolvedValueOnce(crypto);
     const verified = nativeSnapshot();
     verified.host.pairingEpoch = paired.pairing.pairingEpoch;
+    verified.sessions[0]!.title = "Paired session";
+    verified.latestSeq = 100;
     verified.runtime = { state: "ready", activeTurns: 0 } as BridgeHostSnapshot["runtime"];
-    harness.respond = async request => request.method === "snapshot.get" ? { snapshot: verified } : { events: [], nextSeq: 0, latestSeq: 0 };
+    harness.respond = async request => request.method === "snapshot.get" ? { snapshot: verified } : { events: [completion], nextSeq: 95, latestSeq: 95 };
     const bridge = useMobileBridge();
     try {
       expect(await bridge.pair(paired.pairing)).toBe(true);
       expect(ensureSessionNotificationPermission).toHaveBeenCalledOnce();
+      expect(harness.notify).not.toHaveBeenCalled();
+
+      // Replayed prompt.requested older than verified snapshotSeq (seq 90 <= 100) must NOT notify
+      receive({
+        eventId: "old-prompt",
+        seq: 90,
+        timestamp: Date.now(),
+        origin: "claude-desktop",
+        sessionId: "session-1",
+        type: "prompt.requested",
+        data: {
+          promptId: "resolved-prompt",
+          sessionId: "session-1",
+          kind: "cwd-trust",
+          directory: "/tmp",
+          sources: [],
+          title: "Trust",
+          choices: [{ value: "allow", label: "Allow" }],
+          canRespond: true,
+        },
+      });
+      expect(harness.notify).not.toHaveBeenCalled();
+
+      // Live assistant.completed + turn.completed (with production empty data: {}) on the same post-pairing socket MUST notify with extracted reply preview!
+      receive({
+        eventId: "live-assistant-reply",
+        seq: 101,
+        timestamp: Date.now(),
+        origin: "claude-desktop",
+        sessionId: "session-1",
+        turnId: "t-live",
+        type: "assistant.completed",
+        data: { text: "配对后首条后台任务顺利完成！\n详情如下" },
+      });
+      receive({
+        eventId: "live-turn-done",
+        seq: 102,
+        timestamp: Date.now(),
+        origin: "claude-desktop",
+        sessionId: "session-1",
+        turnId: "t-live",
+        type: "turn.completed",
+        data: {},
+      });
+      expect(harness.notify).toHaveBeenCalledExactlyOnceWith(
+        { hostId: "A", sessionId: "session-1" },
+        "Paired session",
+        "配对后首条后台任务顺利完成！ 详情如下",
+      );
+
+      // Live fresh prompt.requested (seq 103 > 100) on the post-pairing socket MUST also notify!
+      receive({
+        eventId: "fresh-prompt",
+        seq: 103,
+        timestamp: Date.now(),
+        origin: "claude-desktop",
+        sessionId: "session-1",
+        type: "prompt.requested",
+        data: {
+          promptId: "live-prompt",
+          sessionId: "session-1",
+          kind: "cwd-trust",
+          directory: "/tmp",
+          sources: [],
+          title: "Trust",
+          choices: [{ value: "allow", label: "Allow" }],
+          canRespond: true,
+        },
+      });
+      expect(harness.notify).toHaveBeenLastCalledWith(
+        { hostId: "A", sessionId: "session-1" },
+        "Paired session",
+        "Claude 正在等待你确认",
+      );
     } finally { fromPairing.mockRestore(); bridge.backToHosts(); }
   });
 
-  it.each(["hidden", "visible"])("catches up from 90 when the refreshed snapshot is already 100 while %s", async visibilityState => {
+  it.each([
+    { label: "hidden wake-resume", visibilityState: "hidden", activeSessionId: "session-1", shouldNotify: true },
+    { label: "visible wake-resume on home catalog", visibilityState: "visible", activeSessionId: undefined, shouldNotify: true },
+    { label: "visible wake-resume on another session", visibilityState: "visible", activeSessionId: "session-2", shouldNotify: true },
+    { label: "visible while actively viewing completed session", visibilityState: "visible", activeSessionId: "session-1", shouldNotify: false },
+  ])("catches up from 90 when the refreshed snapshot is already 100 ($label)", async ({ visibilityState, activeSessionId, shouldNotify }) => {
+    setActiveViewedSession(activeSessionId ? { hostId: "A", sessionId: activeSessionId } : undefined);
     const bridge = await connect(visibilityState);
     const refreshed = { ...harness.state.snapshot, latestSeq: 100 };
     harness.respond = async request => request.method === "snapshot.get" ? { snapshot: refreshed }
@@ -597,8 +703,15 @@ describe("main-turn completion notifications", () => {
     harness.frame({ type: "presence", role: "desktop", deviceId: "synthetic-desktop", online: true });
     await vi.waitFor(() => expect(harness.requests.some(({ request }) => request.method === "events.resume" && request.params.afterSeq === 90)).toBe(true));
     await vi.waitFor(() => expect(harness.state.events).toContainEqual(completion));
-    if (visibilityState === "hidden") expect(harness.notify).toHaveBeenCalledExactlyOnceWith({ hostId: "A", sessionId: "session-1" }, "Synthetic task", "任务已完成");
-    else expect(harness.notify).not.toHaveBeenCalled();
+    if (shouldNotify) {
+      expect(harness.notify).toHaveBeenCalledExactlyOnceWith(
+        { hostId: "A", sessionId: "session-1" },
+        "Synthetic task",
+        "任务已完成，点击查看结果",
+      );
+    } else {
+      expect(harness.notify).not.toHaveBeenCalled();
+    }
     bridge.backToHosts();
   });
 
@@ -615,16 +728,36 @@ describe("main-turn completion notifications", () => {
     bridge.backToHosts();
   });
 
-  it("does not notify cached history, assistant messages or child tool completions", async () => {
+  it("does not notify cached history, stale events (>30m), disabled preference, assistant messages, or child tool completions, and formats previews", async () => {
     const bridge = await connect();
     harness.state.events = [completion];
     harness.respond = async request => request.method === "events.resume" ? { events: [completion], nextSeq: 95, latestSeq: 95 } : {};
     await bridge.resolveUncertainDelivery("synthetic-command", "confirm");
     receive({ ...completion, eventId: "assistant-message", seq: 96, type: "assistant.completed" });
     receive({ ...completion, eventId: "child-tool", seq: 97, type: "tool.completed" });
+    receive({ ...completion, eventId: "stale-turn", seq: 98, timestamp: Date.now() - 35 * 60_000, type: "turn.completed" });
+    setSessionNotificationsEnabled(false);
+    receive({ ...completion, eventId: "muted-turn", seq: 99, type: "turn.completed" });
+    setSessionNotificationsEnabled(true);
     expect(harness.notify).not.toHaveBeenCalled();
-    receive({ ...completion, eventId: "failed-main-turn", seq: 98, type: "turn.failed", turnId: "phone-turn" });
-    expect(harness.notify).toHaveBeenCalledExactlyOnceWith({ hostId: "A", sessionId: "session-1" }, "Synthetic task", "任务失败");
+    receive({ ...completion, eventId: "failed-main-turn", seq: 100, type: "turn.failed", turnId: "phone-turn", data: { error: "网络超时" } });
+    expect(harness.notify).toHaveBeenCalledExactlyOnceWith(
+      { hostId: "A", sessionId: "session-1" },
+      "Synthetic task",
+      "任务失败：网络超时",
+    );
+    receive({
+      ...completion,
+      eventId: "completed-with-preview",
+      seq: 101,
+      type: "turn.completed",
+      data: { text: "已完成所有单元测试并通过类型检查\n第二行汇总" },
+    });
+    expect(harness.notify).toHaveBeenLastCalledWith(
+      { hostId: "A", sessionId: "session-1" },
+      "Synthetic task",
+      "已完成所有单元测试并通过类型检查 第二行汇总",
+    );
     bridge.backToHosts();
   });
 

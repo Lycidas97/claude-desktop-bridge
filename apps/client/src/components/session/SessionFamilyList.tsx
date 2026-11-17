@@ -5,6 +5,7 @@ import { activeSessionBadgeLabel, forkGroupToggleLabel, relativeTime, visibleSes
 import type { SessionFamily } from "../../lib/project-groups.js";
 import { backgroundSubagentBadge } from "../../lib/session-activity.js";
 import { IconButton } from "../common/IconButton.js";
+import type { SessionSectionDragController } from "./useSessionSectionDrag.js";
 
 type TreeConnectorVariant = "summary" | "branch" | "last" | "only";
 
@@ -56,6 +57,7 @@ export interface SessionFamilyListProps {
   onOpenSessionActions?: (sessionId: string) => void;
   actionLabel?: (session: BridgeSessionInfo) => string;
   onToggleForkGroup(parentSessionId: string): void;
+  sessionDrag?: Pick<SessionSectionDragController, "dragState" | "canMoveToSection" | "onSessionPointerDown"> | undefined;
 }
 
 export function SessionFamilyList({
@@ -70,6 +72,7 @@ export function SessionFamilyList({
   onOpenSessionActions,
   actionLabel,
   onToggleForkGroup,
+  sessionDrag,
 }: SessionFamilyListProps) {
   function renderSessionFamily(
     { primary: session, forks }: SessionFamily<BridgeSessionInfo>,
@@ -121,11 +124,19 @@ export function SessionFamilyList({
       </span>
     ) : null;
 
+    const canDragRow = Boolean(!isArchivedRow && sessionDrag?.canMoveToSection(session));
+    const isDraggingSource = Boolean(
+      sessionDrag?.dragState?.session.sessionId === session.sessionId,
+    );
+
     return (
       <div className="mobile-session-family" key={session.sessionId}>
         <div
-          className={`session-row-v2 ${isForkChild ? "is-fork-child" : ""}${hasForks ? " has-forks" : ""}${session.sessionId === selectedId ? " active" : ""}`}
+          className={`session-row-v2 session-tree-item ${isForkChild ? "is-fork-child" : ""}${hasForks ? " has-forks" : ""}${session.sessionId === selectedId ? " active" : ""}${canDragRow ? " is-draggable" : ""}${isDraggingSource ? " is-dragging-source" : ""}`}
           data-session-id={session.sessionId}
+          {...(canDragRow && sessionDrag ? {
+            onPointerDown: (event) => sessionDrag.onSessionPointerDown(session, event),
+          } : {})}
         >
           {forkBranchVariant && <SessionTreeConnector variant={forkBranchVariant} />}
           <button
@@ -164,6 +175,7 @@ export function SessionFamilyList({
             <button
               type="button"
               className="session-family-chevron"
+              data-no-session-drag="true"
               aria-expanded={forksExpanded}
               aria-label={`${forksExpanded ? "收起" : "展开"}「${session.title}」的${toggleSummary}`}
               onClick={() => onToggleForkGroup(session.sessionId)}

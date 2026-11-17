@@ -105,4 +105,49 @@ describe("session notifications", () => {
     unsubscribe();
     await vi.waitFor(() => expect(remove).toHaveBeenCalled());
   });
+
+  it("persists notification preference, tracks active foreground session, and supports Web Notification fallback", async () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+    });
+    const notifications = await load();
+    expect(notifications.isSessionNotificationsEnabled()).toBe(true);
+    notifications.setSessionNotificationsEnabled(false);
+    expect(notifications.isSessionNotificationsEnabled()).toBe(false);
+    await notifications.showSessionNotification({ hostId: "room", sessionId: "s1" }, "Muted", "Body");
+    expect(native.plugin.schedule).not.toHaveBeenCalled();
+
+    notifications.setSessionNotificationsEnabled(true);
+    notifications.setActiveViewedSession({ hostId: "room", sessionId: "s1" });
+    expect(notifications.isActivelyViewingSession("room", "s1")).toBe(true);
+    expect(notifications.isActivelyViewingSession("room", "s2")).toBe(false);
+    expect(notifications.isActivelyViewingSession("other", "s1")).toBe(false);
+    notifications.setActiveViewedSession(undefined);
+    expect(notifications.isActivelyViewingSession("room", "s1")).toBe(false);
+
+    native.enabled = false;
+    const webNotify = Object.assign(vi.fn(), {
+      permission: "default",
+      requestPermission: vi.fn().mockResolvedValue("granted"),
+    });
+    vi.stubGlobal("Notification", webNotify);
+    vi.stubGlobal("window", {});
+    expect(await notifications.getSessionNotificationPermissionState()).toBe("prompt");
+    expect(await notifications.requestSessionNotificationPermission()).toBe("granted");
+    webNotify.permission = "granted";
+    await notifications.showSessionNotification({ hostId: "room", sessionId: "s1" }, "Web Title", "Web Body");
+    expect(webNotify).toHaveBeenCalledWith("Web Title", {
+      body: "Web Body",
+      icon: "/icon-192.png",
+      tag: "room:s1",
+    });
+
+    vi.stubGlobal("window", { bridgeDesktop: {} });
+    expect(await notifications.getSessionNotificationPermissionState()).toBe("unsupported");
+    await notifications.showSessionNotification({ hostId: "room", sessionId: "s1" }, "Desktop", "Suppressed");
+    expect(webNotify).toHaveBeenCalledTimes(1);
+  });
 });

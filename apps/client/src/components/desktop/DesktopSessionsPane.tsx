@@ -12,6 +12,10 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
+  Check,
+  FilePenLine,
+  Folder,
+  FolderOpen,
   FolderPlus,
   GitFork,
   Mail,
@@ -47,6 +51,11 @@ import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SectionManageDialog, useSectionManage } from "../session/SectionManageDialog.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
+import {
+  SessionSectionDragGhost,
+  UNSECTIONED_DROP_ID,
+  useSessionSectionDrag,
+} from "../session/useSessionSectionDrag.js";
 import "../session/section-create.css";
 import {
   DesktopSessionConversation,
@@ -171,9 +180,13 @@ export function DesktopSessions({
   const [projectOrderOpen, setProjectOrderOpen] = useState(false);
   const [resetError, setResetError] = useState<string>();
   const [rowMenuSessionId, setRowMenuSessionId] = useState<string>();
+  const [rowMoveMenuSessionId, setRowMoveMenuSessionId] = useState<string>();
+  const [rowRenameSessionId, setRowRenameSessionId] = useState<string>();
+  const [rowRenameTitle, setRowRenameTitle] = useState("");
   const [rowDeleteSessionId, setRowDeleteSessionId] = useState<string>();
   const [rowActionBusy, setRowActionBusy] = useState(false);
   const [rowActionError, setRowActionError] = useState<string>();
+  const desktopProjectListRef = useRef<HTMLDivElement>(null);
 
   const projectOrderKey = `bridge-project-order:${hostId}`;
   const [placedProjects, setPlacedProjects] = useState<string[]>(() => (
@@ -244,6 +257,8 @@ export function DesktopSessions({
 
   function startNewChat(targetProjectId?: string, targetCwd?: string): void {
     setCreateDialogState(undefined);
+    setRowMoveMenuSessionId(undefined);
+    setRowRenameSessionId(undefined);
     setRowMenuSessionId(undefined);
     setNewChatTarget((previous) => ({
       key: (previous?.key ?? 0) + 1,
@@ -529,9 +544,69 @@ export function DesktopSessions({
     selectSessionFromSidebar(created.sessionId);
   }
 
-  async function quickStartSession(cwd: string, prompt: string, projectId?: string): Promise<void> {
-    const created = await createSession(cwd, undefined, "claude-desktop", projectId);
+  async function quickStartSession(
+    cwd: string,
+    prompt: string,
+    projectId?: string,
+    title?: string,
+  ): Promise<void> {
+    const created = await createSession(cwd, title, "claude-desktop", projectId);
     await handleNewChatCreated(created, { initialPrompt: prompt });
+  }
+
+  const manualSections = useMemo(
+    () => snapshot.projects.filter((project) => project.kind === "desktop-group"),
+    [snapshot.projects],
+  );
+
+  async function moveSessionToSection(sessionId: string, sectionId: string | null): Promise<void> {
+    if (rowActionBusy || !hostOnline) return;
+    setRowActionBusy(true);
+    setRowActionError(undefined);
+    try {
+      const moved = await controller.moveSessionSection(sessionId, sectionId);
+      const targetProjectId = sectionId ?? moved.session?.projectId ?? "claude-unsectioned";
+      setCollapsedProjectIds((current) => expandProject(current, targetProjectId));
+      setRowMoveMenuSessionId(undefined);
+      setRowMenuSessionId(undefined);
+    } catch (error) {
+      setRowActionError(error instanceof Error ? error.message : "移动分组失败");
+    } finally {
+      setRowActionBusy(false);
+    }
+  }
+
+  const sessionDrag = useSessionSectionDrag({
+    hostOnline,
+    capabilities: snapshot.host.capabilities,
+    manualSections,
+    scrollContainerRef: desktopProjectListRef,
+    onMoveSessionSection: moveSessionToSection,
+  });
+
+  function closeRowRename(): void {
+    if (rowActionBusy) return;
+    setRowRenameSessionId(undefined);
+    setRowMenuSessionId(undefined);
+  }
+
+  async function submitRowRename(): Promise<void> {
+    const target = rowRenameSessionId
+      ? snapshot.sessions.find((candidate) => candidate.sessionId === rowRenameSessionId)
+      : undefined;
+    const trimmed = rowRenameTitle.trim();
+    if (!target || !trimmed || trimmed === target.title || rowActionBusy) return;
+    setRowActionBusy(true);
+    setRowActionError(undefined);
+    try {
+      await controller.renameSession(target.sessionId, trimmed);
+      setRowRenameSessionId(undefined);
+      setRowMenuSessionId(undefined);
+    } catch (error) {
+      setRowActionError(error instanceof Error ? error.message : "重命名会话失败");
+    } finally {
+      setRowActionBusy(false);
+    }
   }
 
   function toggleProject(projectId: string, isEmptyGroup: boolean): void {
@@ -570,6 +645,30 @@ export function DesktopSessions({
   const rowMenuSession = rowMenuSessionId
     ? snapshot.sessions.find((candidate) => candidate.sessionId === rowMenuSessionId)
     : undefined;
+  const rowRenameSession = rowRenameSessionId
+    ? snapshot.sessions.find((candidate) => candidate.sessionId === rowRenameSessionId)
+    : undefined;
+  const rowMoveMenuOpen = Boolean(rowMenuSession && rowMoveMenuSessionId === rowMenuSession.sessionId);
+  const currentMenuSection = rowMenuSession
+    ? manualSections.find((project) => project.projectId === rowMenuSession.projectId)
+    : undefined;
+  const rowMenuSupportsRename = Boolean(
+    rowMenuSession && (
+      (snapshot.host.capabilities.includes("session.command.v1") && desktopRuntimeId(rowMenuSession) === "claude-desktop")
+      || snapshot.host.capabilities.includes("session.rename.v1")
+    ),
+  );
+  const rowMenuSupportsMoveSection = Boolean(
+    rowMenuSession
+    && snapshot.host.capabilities.includes("section.move.v1")
+    && rowMenuSession.allowedActions?.canMoveSection,
+  );
+  const rowRenameCanSave = Boolean(
+    rowRenameSession
+    && rowRenameTitle.trim()
+    && rowRenameTitle.trim() !== rowRenameSession.title
+    && !rowActionBusy,
+  );
   const rowDeleteSession = rowDeleteSessionId
     ? snapshot.sessions.find((candidate) => candidate.sessionId === rowDeleteSessionId)
     : undefined;
@@ -579,6 +678,12 @@ export function DesktopSessions({
   );
 
   const showProjectTree = hasActiveSessions || Boolean(searchQuery);
+  const hasRenderedUnsectionedGroup = grouped.some((group) => group.projectId === "claude-unsectioned");
+  const showUnsectionedDropZone = Boolean(
+    sessionDrag.dragState
+    && sessionDrag.dragState.originSectionId !== UNSECTIONED_DROP_ID
+    && !hasRenderedUnsectionedGroup,
+  );
 
   return (
     <section className={`desktop-session-layout${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`}>
@@ -619,7 +724,7 @@ export function DesktopSessions({
             </label>
           </div>
 
-          <div className="desktop-project-list">
+          <div className="desktop-project-list" ref={desktopProjectListRef}>
             {!searchQuery && (supportsCreateSection || projectOrder.length > 1 || hasActiveSessions) && (
               <div className="project-order-bar sidebar-section-bar">
                 <span className="sidebar-section-label">项目</span>
@@ -662,6 +767,10 @@ export function DesktopSessions({
               </button>
             )}
 
+            {!rowMenuSession && !rowRenameSession && rowActionError && (
+              <p className="m-sheet-note is-error sidebar-action-error" role="alert">{rowActionError}</p>
+            )}
+
             {searchQuery ? (
               grouped.length === 0 && (
                 <EmptyState title="没有匹配的会话" description="换一个关键词试试。" />
@@ -700,8 +809,18 @@ export function DesktopSessions({
                       : !collapsedProjectIds.has(groupProjectId)
                   );
                   const sessionsId = `desktop-project-${encodeURIComponent(groupProjectId)}`;
+                  const dropSectionId = project?.kind === "desktop-group"
+                    ? groupProjectId
+                    : groupProjectId === "claude-unsectioned"
+                      ? UNSECTIONED_DROP_ID
+                      : undefined;
+                  const dropState = sessionDrag.dropZoneState(dropSectionId);
                   return (
-                    <section className={`project-group ${expanded ? "expanded" : "collapsed"}${isEmptyGroup ? " is-empty-group" : ""}`} key={groupProjectId}>
+                    <section
+                      className={`project-group ${expanded ? "expanded" : "collapsed"}${isEmptyGroup ? " is-empty-group" : ""}${dropState === "target" ? " is-drop-target" : ""}${dropState === "origin" ? " is-drop-origin" : ""}`}
+                      key={groupProjectId}
+                      {...(dropSectionId ? { "data-drop-section-id": dropSectionId } : {})}
+                    >
                       <ProjectGroupHeader
                         title={projectName}
                         count={families.length}
@@ -739,10 +858,12 @@ export function DesktopSessions({
                               expandedForkParents={expandedForkParents}
                               selectedId={activeTab === "sessions" ? selectedId : undefined}
                               flat
+                              sessionDrag={sessionDrag}
                               actionLabel={(session) => `会话操作：${session.title}`}
                               onSelectSession={selectSessionFromSidebar}
                               onOpenSessionActions={(targetSessionId) => {
                                 setRowActionError(undefined);
+                                setRowMoveMenuSessionId(undefined);
                                 setRowMenuSessionId(targetSessionId);
                               }}
                               onToggleForkGroup={toggleForkGroup}
@@ -755,6 +876,14 @@ export function DesktopSessions({
                     </section>
                   );
                 })}
+                {showUnsectionedDropZone && (
+                  <div
+                    className={`project-group-unsectioned-dropzone${sessionDrag.dropZoneState(UNSECTIONED_DROP_ID) === "target" ? " is-drop-target" : ""}`}
+                    data-drop-section-id={UNSECTIONED_DROP_ID}
+                  >
+                    拖到这里移出分组（未分组）
+                  </div>
+                )}
                 {!searchQuery && visibilityAvailable && archivedSessions.length > 0 && (() => {
                   const archivedFamilies = groupProjectSessionFamilies(archivedSessions);
                   return (
@@ -778,8 +907,9 @@ export function DesktopSessions({
                             flat
                             actionLabel={(session) => `会话操作：${session.title}`}
                             onSelectSession={selectSessionFromSidebar}
-                            onOpenSessionActions={(targetSessionId) => {
+                             onOpenSessionActions={(targetSessionId) => {
                               setRowActionError(undefined);
+                              setRowMoveMenuSessionId(undefined);
                               setRowMenuSessionId(targetSessionId);
                             }}
                             onToggleForkGroup={toggleForkGroup}
@@ -863,88 +993,207 @@ export function DesktopSessions({
         </section>
       )}
 
-      {rowMenuSession && (
+      <SessionSectionDragGhost dragState={sessionDrag.dragState} manualSections={manualSections} />
+
+      {rowMenuSession && !rowRenameSession && (
         <Sheet
           manageFocus
           focusPaused={Boolean(rowDeleteSession)}
-          eyebrow={`${rowMenuSession.projectName} · ${desktopRuntimeName(desktopRuntimeId(rowMenuSession))}`}
-          title={rowMenuSession.title}
+          eyebrow={rowMoveMenuOpen ? rowMenuSession.title : `${rowMenuSession.projectName} · ${desktopRuntimeName(desktopRuntimeId(rowMenuSession))}`}
+          title={rowMoveMenuOpen ? "移动到分组" : rowMenuSession.title}
           busy={rowActionBusy}
           onClose={() => {
-            if (!rowActionBusy) setRowMenuSessionId(undefined);
+            if (!rowActionBusy) {
+              setRowMoveMenuSessionId(undefined);
+              setRowMenuSessionId(undefined);
+            }
           }}
-        >
-          <div className="m-group">
-            {desktopRuntimeId(rowMenuSession) === "claude-desktop" && (
-              <SheetAction
-                icon={<GitFork size={19} />}
-                label="Fork 分支"
+          {...(rowMoveMenuOpen ? {
+            footer: (
+              <button
+                type="button"
+                className="secondary-button"
                 disabled={rowActionBusy}
                 onClick={() => {
-                  if (rowActionBusy) return;
-                  const sourceId = rowMenuSession.sessionId;
-                  setRowActionBusy(true);
                   setRowActionError(undefined);
-                  void controller.forkSession(sourceId)
-                    .then(async (created) => {
-                      setExpandedForkParents((current) => new Set([
-                        ...current,
-                        ...getSessionAncestorIds(snapshot.sessions, sourceId),
-                        sourceId,
-                      ]));
-                      await onRefreshSnapshot();
-                      setRowMenuSessionId(undefined);
-                      selectSessionFromSidebar(created.sessionId);
-                    })
-                    .catch((error: unknown) => {
-                      setRowActionError(error instanceof Error ? error.message : "Fork 分支创建失败");
-                    })
-                    .finally(() => setRowActionBusy(false));
+                  setRowMoveMenuSessionId(undefined);
                 }}
-              />
-            )}
-            {visibilityAvailable && (
-              <>
+              >
+                返回
+              </button>
+            ),
+          } : {})}
+        >
+          {rowMoveMenuOpen ? (
+            <>
+              {manualSections.length > 0 && (
+                <div className="m-group">
+                  {manualSections.map((section) => {
+                    const isCurrent = currentMenuSection?.projectId === section.projectId;
+                    return (
+                      <SheetAction
+                        key={section.projectId}
+                        icon={isCurrent ? <Check size={19} /> : <Folder size={19} />}
+                        label={section.name}
+                        detail={isCurrent ? "当前所在分组" : undefined}
+                        disabled={rowActionBusy || !hostOnline || isCurrent}
+                        onClick={() => void moveSessionToSection(rowMenuSession.sessionId, section.projectId)}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+              {currentMenuSection && (
+                <div className="m-group">
+                  <SheetAction
+                    icon={<FolderOpen size={19} />}
+                    label="移出分组"
+                    disabled={rowActionBusy || !hostOnline}
+                    onClick={() => void moveSessionToSection(rowMenuSession.sessionId, null)}
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="m-group">
+              {rowMenuSupportsRename && (
                 <SheetAction
-                  icon={rowMenuSession.archivedAt ? <ArchiveRestore size={19} /> : <Archive size={19} />}
-                  label={rowMenuSession.archivedAt ? "恢复会话" : "归档会话"}
+                  icon={<FilePenLine size={19} />}
+                  label="重命名"
+                  disabled={rowActionBusy || !hostOnline}
+                  onClick={() => {
+                    setRowRenameTitle(rowMenuSession.title);
+                    setRowActionError(undefined);
+                    setRowRenameSessionId(rowMenuSession.sessionId);
+                  }}
+                />
+              )}
+              {rowMenuSupportsMoveSection && (
+                <SheetAction
+                  icon={<Folder size={19} />}
+                  label="移动到分组"
+                  detail={currentMenuSection ? currentMenuSection.name : manualSections.length > 0 ? "未分组" : "暂无可用分组"}
+                  disabled={rowActionBusy || !hostOnline || (!currentMenuSection && manualSections.length === 0)}
+                  onClick={() => {
+                    setRowActionError(undefined);
+                    setRowMoveMenuSessionId(rowMenuSession.sessionId);
+                  }}
+                />
+              )}
+              {desktopRuntimeId(rowMenuSession) === "claude-desktop" && (
+                <SheetAction
+                  icon={<GitFork size={19} />}
+                  label="Fork 分支"
                   disabled={rowActionBusy}
                   onClick={() => {
                     if (rowActionBusy) return;
+                    const sourceId = rowMenuSession.sessionId;
                     setRowActionBusy(true);
                     setRowActionError(undefined);
-                    void controller.archiveSession(rowMenuSession.sessionId, !rowMenuSession.archivedAt)
-                      .then(() => setRowMenuSessionId(undefined))
+                    void controller.forkSession(sourceId)
+                      .then(async (created) => {
+                        setExpandedForkParents((current) => new Set([
+                          ...current,
+                          ...getSessionAncestorIds(snapshot.sessions, sourceId),
+                          sourceId,
+                        ]));
+                        await onRefreshSnapshot();
+                        setRowMenuSessionId(undefined);
+                        selectSessionFromSidebar(created.sessionId);
+                      })
                       .catch((error: unknown) => {
-                        setRowActionError(error instanceof Error ? error.message : "归档设置失败");
+                        setRowActionError(error instanceof Error ? error.message : "Fork 分支创建失败");
                       })
                       .finally(() => setRowActionBusy(false));
                   }}
                 />
+              )}
+              {visibilityAvailable && (
+                <>
+                  <SheetAction
+                    icon={rowMenuSession.archivedAt ? <ArchiveRestore size={19} /> : <Archive size={19} />}
+                    label={rowMenuSession.archivedAt ? "恢复会话" : "归档会话"}
+                    disabled={rowActionBusy}
+                    onClick={() => {
+                      if (rowActionBusy) return;
+                      setRowActionBusy(true);
+                      setRowActionError(undefined);
+                      void controller.archiveSession(rowMenuSession.sessionId, !rowMenuSession.archivedAt)
+                        .then(() => setRowMenuSessionId(undefined))
+                        .catch((error: unknown) => {
+                          setRowActionError(error instanceof Error ? error.message : "归档设置失败");
+                        })
+                        .finally(() => setRowActionBusy(false));
+                    }}
+                  />
+                  <SheetAction
+                    icon={<Trash2 size={19} />}
+                    label="删除会话"
+                    danger
+                    disabled={rowActionBusy || rowMenuBusy}
+                    detail={rowMenuBusy ? "任务进行中，先停止再删除" : undefined}
+                    onClick={() => setRowDeleteSessionId(rowMenuSession.sessionId)}
+                  />
+                </>
+              )}
+              {!visibilityAvailable && desktopRuntimeId(rowMenuSession) !== "claude-desktop" && !rowMenuSupportsRename && !rowMenuSupportsMoveSection && (
                 <SheetAction
-                  icon={<Trash2 size={19} />}
-                  label="删除会话"
-                  danger
-                  disabled={rowActionBusy || rowMenuBusy}
-                  detail={rowMenuBusy ? "任务进行中，先停止再删除" : undefined}
-                  onClick={() => setRowDeleteSessionId(rowMenuSession.sessionId)}
+                  icon={<FolderPlus size={19} />}
+                  label="打开此会话"
+                  onClick={() => {
+                    const targetId = rowMenuSession.sessionId;
+                    setRowMenuSessionId(undefined);
+                    selectSessionFromSidebar(targetId);
+                  }}
                 />
-              </>
-            )}
-            {!visibilityAvailable && desktopRuntimeId(rowMenuSession) !== "claude-desktop" && (
-              <SheetAction
-                icon={<FolderPlus size={19} />}
-                label="打开此会话"
-                onClick={() => {
-                  const targetId = rowMenuSession.sessionId;
-                  setRowMenuSessionId(undefined);
-                  selectSessionFromSidebar(targetId);
-                }}
-              />
-            )}
-          </div>
+              )}
+            </div>
+          )}
           {rowActionError && <p className="m-sheet-note is-error" role="alert">{rowActionError}</p>}
         </Sheet>
+      )}
+
+      {rowRenameSession && (
+        <div
+          className="modal-backdrop session-create-backdrop"
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) closeRowRename(); }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.stopPropagation();
+              closeRowRename();
+            }
+          }}
+        >
+          <section className="create-session-dialog session-create-dialog" role="dialog" aria-modal="true" aria-label="重命名会话">
+            <header className="session-create-header"><h2>重命名会话</h2></header>
+            <form onSubmit={(event) => { event.preventDefault(); void submitRowRename(); }}>
+              <div className="session-create-body">
+                <label>
+                  <span>会话名称</span>
+                  <input
+                    aria-label="会话名称"
+                    value={rowRenameTitle}
+                    autoFocus
+                    required
+                    maxLength={200}
+                    disabled={rowActionBusy}
+                    onFocus={(event) => event.target.select()}
+                    onChange={(event) => {
+                      setRowRenameTitle(event.target.value);
+                      if (rowActionError) setRowActionError(undefined);
+                    }}
+                  />
+                </label>
+                {rowActionError && <p className="session-create-error" role="alert">{rowActionError}</p>}
+              </div>
+              <footer className="dialog-actions session-create-actions">
+                <button type="button" className="secondary-button" disabled={rowActionBusy} onClick={closeRowRename}>取消</button>
+                <button type="submit" className="primary-button" disabled={!rowRenameCanSave}>{rowActionBusy ? "正在保存…" : "保存"}</button>
+              </footer>
+            </form>
+          </section>
+        </div>
       )}
 
       <ConfirmationDialog

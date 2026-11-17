@@ -1651,3 +1651,83 @@ main.mobile-workspace .select-menu-option-meta,
   min-width: 32px;
   min-height: 32px;
 }
+
+/* Remote Claude Desktop & Port 9229 One-Tap Callout + Mobile Notification Settings */
+.mobile-inspector-callout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  margin: 2px 0 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  background: var(--card-fill);
+  box-shadow: var(--card-hi), var(--card-shadow);
+}
+
+.mobile-inspector-callout-copy {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: 4px;
+}
+
+.mobile-inspector-callout-copy strong {
+  color: var(--text);
+  font-size: calc(14.5px * var(--font-scale, 1));
+  font-weight: 630;
+  line-height: 1.35;
+}
+
+.mobile-inspector-callout-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: calc(13px * var(--font-scale, 1));
+  line-height: 1.48;
+  overflow-wrap: anywhere;
+}
+
+.mobile-inspector-callout-copy p.is-error {
+  color: var(--danger-ink);
+}
+
+.mobile-inspector-callout-btn.primary-button {
+  display: inline-flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: calc(14px * var(--font-scale, 1));
+  font-weight: 600;
+}
+
+.mobile-settings-inline-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mobile-settings-compact-btn.primary-button,
+.mobile-settings-compact-btn.secondary-button {
+  display: inline-flex;
+  flex: none;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: calc(13px * var(--font-scale, 1));
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mobile-settings-row .segmented.mobile-settings-compact-segmented {
+  flex: 0 0 auto;
+  min-width: 118px;
+}

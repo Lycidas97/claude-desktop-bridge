@@ -1,4 +1,5 @@
 import { chromium, _electron } from "playwright-core";
+import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -36,25 +37,35 @@ function samplePdf() {
 
 const pdf = samplePdf();
 const now = Date.now();
-const session = { sessionId: "media-session", projectId: "media-project", projectName: "Reports", cwd: "/work/reports", title: "Images and PDF", source: "desktop", ownership: "DESKTOP_OBSERVED", transport: "bridge-host", turnState: "idle", lastActivityAt: now, pendingCount: 0 };
+// Synthetic read-only session. The host advertises media capabilities only.
+const session = { sessionId: "media-session", projectId: "media-project", projectName: "Reports", cwd: "/work/reports", title: "Images and PDF", source: "desktop", ownership: "DESKTOP_OBSERVED", transport: "claude-desktop-native", turnState: "idle", lastActivityAt: now, pendingCount: 0 };
 const artifacts = [
   { id: "pdf", name: "Research report.pdf", relativePath: "output/Research report.pdf", kind: "pdf", mimeType: "application/pdf", previewMode: "none" },
   { id: "image", name: "Figure.png", relativePath: "output/Figure.png", kind: "image", mimeType: "image/png", previewMode: "image" },
   { id: "svg", name: "Diagram.svg", relativePath: "output/Diagram.svg", kind: "binary", mimeType: "application/octet-stream", previewMode: "none" },
 ].map((file) => ({ ...file, evidenceId: "media-evidence", changeKind: "created", size: file.id === "pdf" ? Buffer.from(pdf, "base64").length : 1024, availability: "snapshot", downloadAllowed: true }));
 const evidence = { sessionId: session.sessionId, items: [{ id: "media-evidence", sessionId: session.sessionId, turnId: "media-turn", source: "claude-desktop", confidence: "exact", state: "ready", startedAt: now - 1000, completedAt: now, toolCount: 1, changeCount: 2, artifactCount: 2, tools: [], artifacts, warnings: [] }], hasMore: false };
-const history = { sessionId: session.sessionId, items: [{ id: "question", role: "user", text: "Show the report and image.", createdAt: now - 1000, turnId: "media-turn" }, { id: "answer", role: "assistant", text: "Created [Research report](<output/Research report.pdf>) and [Figure](output/Figure.png).", createdAt: now, turnId: "media-turn" }], hasMore: false };
+const history = {
+  sessionId: session.sessionId,
+  items: [
+    { id: "question", role: "user", text: "Show the report and image.", createdAt: now - 1000 },
+    { id: "answer", role: "assistant", text: "Created [Research report](<output/Research report.pdf>) and [Figure](output/Figure.png).", createdAt: now },
+  ].map((item) => ({ ...item, sessionId: session.sessionId, turnId: "media-turn", origin: "claude-desktop" })),
+  hasMore: false,
+};
 const snapshot = { host: { hostId: "qa", pairingEpoch: 1, name: "Preview Mac", relayUrl: "ws://127.0.0.1:8788/ws", online: true, lastSeenAt: now, version: "1.0.2", capabilities: ["evidence.v1", "artifact.preview.v1", "artifact.transfer.v1", "artifact.transfer.stat.v1"] }, projects: [{ projectId: session.projectId, name: "Reports", cwd: session.cwd, sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: now }], sessions: [session], devices: [], permissions: [], providers: [], runtime: { state: "ready", detail: "Ready", activeTurns: 0, pendingTurns: 0 }, latestSeq: 0, connection: "connected", launchAtLogin: false, managedDesktopEnabled: false, claudeDesktop: { state: "running", canLaunch: false, canQuit: true, detail: "Running" } };
 const packaged = process.argv.includes("--electron");
 const mobile = process.argv.includes("--mobile");
-const mobileSourceUrl = "http://127.0.0.1:5188/src/components/conversation/ConversationView.tsx";
-const mobileModule = mobile
-  ? await (await fetch(mobileSourceUrl)).text()
-  : "";
-const rawProviderModule = mobileModule.match(/from "([^"]*MediaPreviewProvider\.tsx[^"]*)"/u)?.[1];
-const providerModule = rawProviderModule
-  ? (() => { const url = new URL(rawProviderModule, mobileSourceUrl); return `${url.pathname}${url.search}`; })()
-  : "/src/components/evidence/MediaPreviewProvider.tsx";
+const clientUrl = "http://127.0.0.1:5188";
+let providerModule;
+if (mobile) {
+  const appUrl = `${clientUrl}/src/App.tsx`;
+  const appModule = await (await fetch(appUrl)).text();
+  const providerImport = appModule.match(/import \{\s*MediaPreviewProvider\s*\} from "([^"]+)"/u)?.[1];
+  if (!providerImport) throw new Error(`Missing MediaPreviewProvider import in Vite module ${appUrl}`);
+  const url = new URL(providerImport, appUrl);
+  providerModule = `${url.pathname}${url.search}`;
+}
 const browser = packaged
   ? await _electron.launch({ ...(process.env.BRIDGE_ELECTRON_PATH ? { executablePath: process.env.BRIDGE_ELECTRON_PATH } : {}), args: [resolve(output, "electron-media-main.cjs")] })
   : await chromium.launch({ channel: "chrome", headless: true });
@@ -147,7 +158,7 @@ try {
       ` }));
     }
     if (packaged) await page.reload();
-    else await page.goto("http://127.0.0.1:5188");
+    else await page.goto(clientUrl);
     await page.locator(".media-file.pdf").first().waitFor({ timeout: 15_000 }).catch(async (error) => {
       await page.screenshot({ path: `${output}/media-failure.png` });
       console.error(JSON.stringify({ errors, body: await page.locator("body").innerText() }));
@@ -168,7 +179,7 @@ try {
     });
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector("canvas")?.width > 0);
     const pageOne = await page.evaluate(() => ({ reads: window.__mediaRequests.filter((r) => r.method === "artifact.transfer.read").map((r) => r.params.index), width: document.querySelector("canvas").width, pages: document.querySelector(".media-page-controls").textContent }));
-    if (new Set(pageOne.reads).size > 4) throw new Error("First page fetched unrelated PDF content");
+    assert.ok(pageOne.reads.length > 0 && new Set(pageOne.reads).size <= 4, "First page must fetch only the PDF ranges it needs");
     await page.screenshot({ path: `${output}/${packaged ? "electron-" : mobile ? "mobile-" : ""}media-pdf-${viewport.width}.png` });
     await page.getByRole("button", { name: "下一页", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector('[aria-label="页码"]').value === "2");
@@ -196,9 +207,16 @@ try {
     await page.waitForFunction(() => document.querySelector(".media-viewer img")?.naturalWidth > 0 || document.querySelector('.media-viewer [role="alert"]'));
     if (await page.getByRole("alert").count()) throw new Error("SVG transfer preview failed to render");
     await page.getByRole("button", { name: "关闭查看器" }).click();
+    const beforeMarkdown = await page.evaluate(() => window.__mediaRequests.length);
     await page.locator(".markdown-file-link").filter({ hasText: "Research report" }).click();
     await page.getByRole("button", { name: "下载并预览", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".media-viewer-status") && document.querySelector(".media-viewer canvas")?.width > 0);
+    const markdownOpens = await page.evaluate((offset) => window.__mediaRequests.slice(offset)
+      .filter(({ method }) => method === "artifact.transfer.open").map(({ params }) => params), beforeMarkdown);
+    assert.deepEqual(markdownOpens, [
+      { sessionId: session.sessionId, path: artifacts[0].relativePath, purpose: "stat" },
+      { sessionId: session.sessionId, path: artifacts[0].relativePath },
+    ], "Markdown PDF stat and content opens must use the conversation's session and path");
     await page.keyboard.press("Escape");
     await page.locator(".media-viewer").waitFor({ state: "detached" });
     if (mobile) {

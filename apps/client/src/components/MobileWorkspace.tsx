@@ -83,9 +83,6 @@ import { useProjectSessionGroups } from "./session/useProjectSessionGroups.js";
 import { useSessionMenuAction } from "./session/useSessionMenuAction.js";
 import { useSessionSectionDrag } from "./session/useSessionSectionDrag.js";
 
-// Keep MediaPreviewProvider import reference visible if QA scripts inspect MobileWorkspace.tsx.
-export type { MediaPreviewProvider } from "./evidence/MediaPreviewProvider.js";
-
 export function MobileWorkspace({
   activeHostId,
   hosts,

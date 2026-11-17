@@ -1,13 +1,13 @@
 import { expect, it, vi } from "vitest";
 import type { BridgeEvent, BridgeEvidenceBundle, BridgeRequest } from "@bridge/protocol";
-import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
 
 it("routes native image refs to transcript bytes and the existing owner-bound transfer table", async () => {
   const nativeImage = { messageUuid: "user-uuid", imageIndex: 4 };
   const image = { artifactId: "native-image:user-uuid:4", name: "photo.jpg", mimeType: "image/jpeg", bytes: Buffer.from("native original") };
   const broker = { readNativeImage: vi.fn().mockResolvedValue(image) };
   const evidence = { openBytesTransfer: vi.fn().mockReturnValue({ transferId: "transfer" }), openFileTransfer: vi.fn() };
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker, evidence });
+  const controller = createControllerFixture({ broker, evidence });
   const request: BridgeRequest = { kind: "request", requestId: "image", idempotencyKey: "image", method: "artifact.transfer.open", params: { sessionId: "native-session", nativeImage } };
   expect(await controller.handleRequest(request, "mobile", "phone")).toEqual({ transfer: { transferId: "transfer" } });
   expect(broker.readNativeImage).toHaveBeenCalledWith("native-session", nativeImage);
@@ -26,7 +26,7 @@ it("routes metadata-only preview requests without opening a content transfer", a
     openTransfer: vi.fn(), openFileTransfer: vi.fn(), openBytesTransfer: vi.fn(),
   };
   const broker = { executionCwd: vi.fn(() => "/preview/project/worktree") };
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
+  const controller = createControllerFixture({
     broker, evidence, allSessions: () => [{ sessionId: "preview_session", cwd: "/preview/project" }],
   });
   const request: BridgeRequest = { kind: "request", requestId: "preview", idempotencyKey: "preview", method: "artifact.transfer.open", params: { artifactId: "preview_artifact", purpose: "stat" } };
@@ -49,7 +49,7 @@ it("keeps a legacy 15076-artifact event below the reconnect page budget", async 
     })),
   };
   const event: BridgeEvent = { eventId: "event-1", seq: 1, timestamp: 2, sessionId: "session-1", origin: "claude-host", type: "evidence.ready", data: { evidence } };
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
+  const controller = createControllerFixture({
     eventLog: { replay: vi.fn(() => [event]), latestSeq: () => 1 },
   }) as { handleRequest(request: BridgeRequest, origin: "mobile"): Promise<{ events: BridgeEvent[]; nextSeq: number; hasMore: boolean }> };
   const result = await controller.handleRequest({ kind: "request", requestId: "resume", idempotencyKey: "resume", method: "events.resume", params: { afterSeq: 0, limit: 1 } }, "mobile");

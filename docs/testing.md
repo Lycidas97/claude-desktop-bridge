@@ -65,6 +65,14 @@ These checks do not attach to real Claude Desktop, launch an Android WebView or
 exercise an IME; they do not establish which events a particular installed Desktop
 version emits.
 
+Controller unit tests and the Native browser fixture share
+[`createControllerFixture`](../apps/desktop/src/controller/controller-fixture.ts).
+It runs the controller constructor so tests start with the real publication
+caches, visibility state and event emitter. Each scenario supplies the dependencies
+its code path calls. The transport tests also call `initialize()` to exercise
+startup with their synthetic broker and socket. The Native browser fixture starts
+its own local dependencies and routes requests through the constructed controller.
+
 The service QA uses an owned random-port inspector fixture and passes its origin
 through `BRIDGE_CLAUDE_INSPECTOR_URL` to the background process. On macOS it operates
 only temporary Claude/Claude-3p developer settings, checks real monitor scans after

@@ -1,12 +1,12 @@
 import type { BridgeRequest } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
 
 const retiredRuntimeIds = ["codex-desktop", "hermes-desktop", "dsh-desktop"] as const;
 
 function fixture() {
   const accessClaude = vi.fn(() => { throw new Error("Claude broker reached by a retired request"); });
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
+  const controller = createControllerFixture({
     broker: new Proxy({}, { get: accessClaude }),
   }) as { handleRequest(request: BridgeRequest, origin: "desktop" | "mobile"): Promise<unknown> };
   return { controller, accessClaude };

@@ -1,5 +1,6 @@
+import type { BridgeMethod } from "@bridge/protocol";
 import { expect, it, vi } from "vitest";
-import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
 
 vi.mock("electron", () => ({ shell: {} }));
 
@@ -7,7 +8,7 @@ it("routes discovery by logical session and ignores caller-supplied directories"
   const catalog = { sessionId: "fork", commands: [{ name: "review", description: "Review changes" }] };
   const commands = vi.fn(async () => catalog);
   const configuration = vi.fn(() => { throw new Error("Listing must not initialize a query"); });
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
+  const controller = createControllerFixture({
     broker: { commands, configuration },
   });
   await expect(controller.handleRequest({ kind: "request", method: "session.commands", requestId: "commands", idempotencyKey: "commands",
@@ -21,10 +22,10 @@ it("routes paired mobile rewind preview and execution with exact response contra
   const rewind = { sessionId: "native", messageId: "raw-uuid", scope: "conversation", prefill: "Draft" };
   const previewRewind = vi.fn(async () => preview), rewindSession = vi.fn(async () => rewind);
   const session = { sessionId: "native", turnState: "idle" };
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
+  const controller = createControllerFixture({
     broker: { previewRewind, rewindSession, session: () => session },
   });
-  const request = { kind: "request", requestId: "rewind", idempotencyKey: "rewind", params: { sessionId: "native", messageId: "raw-uuid", scope: "conversation" } };
+  const request = { kind: "request" as const, requestId: "rewind", idempotencyKey: "rewind", params: { sessionId: "native", messageId: "raw-uuid", scope: "conversation" } };
   await expect(controller.handleRequest({ ...request, method: "session.rewind.preview" }, "mobile", "phone")).resolves.toEqual({ rewind: preview });
   expect(previewRewind).toHaveBeenCalledExactlyOnceWith("native", "raw-uuid");
   await expect(controller.handleRequest({ ...request, method: "session.rewind" }, "mobile", "phone")).resolves.toEqual({ rewind, session });
@@ -33,7 +34,7 @@ it("routes paired mobile rewind preview and execution with exact response contra
 
 it.each(["conversation", "files", "both"])("accepts native rewind scope %s", async scope => {
   const rewindSession = vi.fn(async () => ({ scope }));
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { rewindSession, session: () => undefined } });
+  const controller = createControllerFixture({ broker: { rewindSession, session: () => undefined } });
   await controller.handleRequest({ kind: "request", method: "session.rewind", requestId: "rewind", idempotencyKey: "rewind", params: { sessionId: "native", messageId: "raw", scope } }, "mobile");
   expect(rewindSession).toHaveBeenCalledExactlyOnceWith("native", "raw", scope);
 });
@@ -48,13 +49,13 @@ it.each([
   { sessionId: "native", messageId: "raw" },
 ])("rejects malformed rewind params %j at the controller boundary", async params => {
   const rewindSession = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { rewindSession } });
+  const controller = createControllerFixture({ broker: { rewindSession } });
   await expect(controller.handleRequest({ kind: "request", method: "session.rewind", requestId: "rewind", idempotencyKey: "rewind", params }, "mobile")).rejects.toThrow();
   expect(rewindSession).not.toHaveBeenCalled();
 });
 
 it.each([false, true])("advertises native rewind only when the broker supports it (%s)", async available => {
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
+  const controller = createControllerFixture({
     config: { devices: [], relayEndpoints: [], hostDeviceId: "host", desktopName: "test", relayUrl: "ws://localhost:1" },
     app: { getVersion: () => "test" }, allProjects: () => [], allSessions: () => [], deviceSnapshots: () => [],
     broker: { runtimeStatus: () => ({}), magpieSettings: async () => ({}), promptsList: () => [] }, desktopRuntimes: () => [{ id: "claude-desktop", capabilities: available ? ["session.rewind"] : [] }], claudePermissions: () => [],
@@ -65,7 +66,7 @@ it.each([false, true])("advertises native rewind only when the broker supports i
 
 it("routes explicit command execution with its original request identity", async () => {
   const runCommand = vi.fn(async () => ({ action: "sent" }));
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { runCommand } });
+  const controller = createControllerFixture({ broker: { runCommand } });
   await expect(controller.handleRequest({ kind: "request", method: "session.command", requestId: "request", idempotencyKey: "key", params: { sessionId: "fork", text: "/compact preserve names", cwd: "/unapproved" } }, "mobile", "phone")).resolves.toEqual({ command: { action: "sent" } });
   expect(runCommand).toHaveBeenCalledExactlyOnceWith({ sessionId: "fork", text: "/compact preserve names", requestId: "request", idempotencyKey: "key", origin: "mobile", sourceDeviceId: "phone" });
 });
@@ -76,24 +77,24 @@ it.each([
   "provider.list", "provider.refresh", "conversation.route.get", "conversation.switch.preview",
   "conversation.switch.commit", "conversation.switch.cancel", "handoff.get",
 ])("rejects unsupported legacy execution entry %s", async method => {
-  const controller = Object.create(DesktopController.prototype);
-  await expect(controller.handleRequest({ kind: "request", method, requestId: "legacy", idempotencyKey: "legacy",
+  const controller = createControllerFixture({});
+  await expect(controller.handleRequest({ kind: "request", method: method as BridgeMethod, requestId: "legacy", idempotencyKey: "legacy",
     params: { sessionId: "native" } }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
 });
 
-it.each(["turn.start", "turn.steer"])("relays %s with original identity and preserves the native acknowledgement", async method => {
+it.each(["turn.start", "turn.steer"] as const)("relays %s with original identity and preserves the native acknowledgement", async method => {
   const startTurn = vi.fn(async () => ({ commandId: "command", state: "queued" }));
   const steerTurn = vi.fn(async () => ({ commandId: "command", state: "queued" }));
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { startTurn, steerTurn } });
+  const controller = createControllerFixture({ broker: { startTurn, steerTurn } });
   await expect(controller.handleRequest({ kind: "request", method, requestId: "remote", idempotencyKey: "key",
     params: { sessionId: "native", text: "Continue" } }, "mobile", "phone")).resolves.toEqual({ commandId: "command", state: "queued" });
   expect(method === "turn.start" ? startTurn : steerTurn).toHaveBeenCalledExactlyOnceWith({ sessionId: "native", text: "Continue", attachments: [],
     requestId: "remote", idempotencyKey: "key", origin: "mobile", sourceDeviceId: "phone" });
 });
 
-it.each(["turn.start", "turn.steer"])("rejects legacy Bridge execution through %s", async method => {
+it.each(["turn.start", "turn.steer"] as const)("rejects legacy Bridge execution through %s", async method => {
   const startTurn = vi.fn(), steerTurn = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { startTurn, steerTurn } });
+  const controller = createControllerFixture({ broker: { startTurn, steerTurn } });
   await expect(controller.handleRequest({ kind: "request", method, requestId: "remote", idempotencyKey: "key",
     params: { sessionId: "native", text: "Continue", bridgeExecutionRequested: true } }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
   expect(startTurn).not.toHaveBeenCalled();
@@ -102,7 +103,7 @@ it.each(["turn.start", "turn.steer"])("rejects legacy Bridge execution through %
 
 it.each(["true", null, 1])("rejects invalid remote choice %j before creating a turn", async bridgeExecutionRequested => {
   const startTurn = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { startTurn } });
+  const controller = createControllerFixture({ broker: { startTurn } });
   await expect(controller.handleRequest({ kind: "request", method: "turn.start", requestId: "invalid", idempotencyKey: "key",
     params: { sessionId: "native", text: "Continue", bridgeExecutionRequested } }, "mobile")).rejects.toThrow("Invalid bridgeExecutionRequested");
   expect(startTurn).not.toHaveBeenCalled();
@@ -111,7 +112,7 @@ it.each(["true", null, 1])("rejects invalid remote choice %j before creating a t
 it.each(["allow-once", "allow-always", "deny"])("awaits the native permission result for %s", async decision => {
   let finish!: (resolved: boolean) => void;
   const resolvePermission = vi.fn((..._args: unknown[]) => new Promise<boolean>(resolve => { finish = resolve; }));
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { resolvePermission } });
+  const controller = createControllerFixture({ broker: { resolvePermission } });
   let settled = false;
   const result = controller.handleRequest({ kind: "request", method: "permission.resolve", requestId: "phone-request", idempotencyKey: "permission-key",
     params: { requestId: "desktop-native-request-id", decision } }, "mobile", "phone").finally(() => { settled = true; });
@@ -124,7 +125,7 @@ it.each(["allow-once", "allow-always", "deny"])("awaits the native permission re
 
 it("does not apply the old host full-access default to Claude", async () => {
   const save = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), { repository: { save }, config: { defaultPermissionMode: "standard" } });
+  const controller = createControllerFixture({ repository: { save }, config: { defaultPermissionMode: "standard" } });
   await expect(controller.handleRequest({ kind: "request", method: "permission.policy.configure", requestId: "policy", idempotencyKey: "policy",
     params: { scope: "host", runtimeId: "claude-desktop", mode: "full-access" } }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
   expect(controller.config.defaultPermissionMode).toBe("standard");
@@ -134,7 +135,7 @@ it("does not apply the old host full-access default to Claude", async () => {
 it.each(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto"])("routes native session permission mode %s without applying a Bridge policy", async permissionMode => {
   const configuration = { nativePermissionMode: permissionMode };
   const configureSession = vi.fn(async () => configuration);
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
+  const controller = createControllerFixture({
     broker: { configureSession, session: () => ({ sessionId: "native" }) },
   });
   await expect(controller.handleRequest({ kind: "request", method: "session.configure", requestId: "configure", idempotencyKey: "configure",
@@ -144,7 +145,7 @@ it.each(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto
 
 it.each(["full-access", "unknown", "", null, 1])("rejects invalid native session permission mode %j", async permissionMode => {
   const configureSession = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { configureSession } });
+  const controller = createControllerFixture({ broker: { configureSession } });
   await expect(controller.handleRequest({ kind: "request", method: "session.configure", requestId: "configure", idempotencyKey: "configure",
     params: { sessionId: "native", permissionMode } }, "mobile")).rejects.toThrow();
   expect(configureSession).not.toHaveBeenCalled();

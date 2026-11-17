@@ -177,7 +177,7 @@ describe("desktop configuration", () => {
     expect(safeProtector.unprotect(protectedValue)).toBe("evidence-master-key");
   });
 
-  it("keeps a config using OS-protected evidence when OS storage is unavailable", async () => {
+  it("keeps OS-protected evidence when safeStorage is unavailable and archives it in file-only mode", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);
     const path = join(directory, "bridge-config.json");
@@ -188,15 +188,21 @@ describe("desktop configuration", () => {
       encryptString: (value: string) => Buffer.from(value),
       decryptString: (value: Buffer) => value.toString(),
     };
-    const original = new DesktopConfigRepository(path, file, defaults, safeStorageSecretProtector(storage));
-    await original.loadOrCreate();
+    const repository = new DesktopConfigRepository(path, file, defaults, safeStorageSecretProtector(storage));
+    const original = await repository.loadOrCreate();
     const raw = await readFile(path, "utf8");
 
     storage.isEncryptionAvailable.mockReturnValue(false);
-    await expect(original.loadOrCreate()).rejects.toThrow("OS secret storage is unavailable");
-    await expect(new DesktopConfigRepository(path, file, defaults).loadOrCreate())
-      .rejects.toThrow("OS secret storage is unavailable");
+    await expect(repository.loadOrCreate()).rejects.toThrow("OS secret storage is unavailable");
     expect(await readFile(path, "utf8")).toBe(raw);
+
+    const fileOnly = new DesktopConfigRepository(path, file, defaults);
+    const recovered = await fileOnly.loadOrCreate();
+    expect(recovered.roomId).not.toBe(original.roomId);
+    expect(await fileOnly.loadOrCreate()).toMatchObject({ roomId: recovered.roomId, evidenceKey: recovered.evidenceKey });
+    const archive = (await readdir(directory)).find((name) => name.startsWith("bridge-config.json.v1-archive-"));
+    expect(archive).toBeDefined();
+    expect(await readFile(join(directory, archive!), "utf8")).toBe(raw);
   });
 
   it("keeps transport identities in the mode-0600 config and seals only the evidence key", async () => {

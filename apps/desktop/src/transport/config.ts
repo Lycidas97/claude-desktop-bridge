@@ -50,7 +50,6 @@ export function fileSecretProtector(): SecretProtector {
     available: () => true,
     protect: (value) => `file:${Buffer.from(value, "utf8").toString("base64")}`,
     unprotect: (value) => {
-      if (value.startsWith("os:")) throw new Error("OS secret storage is unavailable");
       if (!value.startsWith("file:")) throw new InvalidDesktopConfigError("Unsupported secret protection format");
       return Buffer.from(value.slice(5), "base64").toString("utf8");
     },

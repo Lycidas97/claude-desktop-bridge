@@ -53,7 +53,11 @@ import {
 } from "../lib/conversation-timeline.js";
 import type { UploadFileHandler } from "../lib/file-upload.js";
 import { registerMobileBackHandler } from "../lib/mobile-back-navigation.js";
-import { expandProject, getSessionAncestorIds } from "../lib/project-groups.js";
+import {
+  CLAUDE_UNSECTIONED_PROJECT_ID,
+  expandProject,
+  getSessionAncestorIds,
+} from "../lib/project-groups.js";
 import { desktopRuntimeId } from "../lib/runtime-labels.js";
 import { setActiveViewedSession } from "../lib/session-notifications.js";
 import { useAssistantMail } from "./assistant/AssistantMailProvider.js";
@@ -74,7 +78,6 @@ import {
   type SessionConfigurationChange,
 } from "./session/SessionConfigurationDialog.js";
 import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
-import { CLAUDE_UNSECTIONED_PROJECT_ID } from "./session/session-constants.js";
 import { useProjectSessionGroups } from "./session/useProjectSessionGroups.js";
 import { useSessionSectionDrag } from "./session/useSessionSectionDrag.js";
 
@@ -383,10 +386,7 @@ export function MobileWorkspace({
     : undefined;
   useEffect(() => {
     if (!activeConversationSessionId) return;
-    setActiveViewedSession({ hostId: activeHostId, sessionId: activeConversationSessionId });
-    return () => {
-      setActiveViewedSession(undefined);
-    };
+    return setActiveViewedSession({ hostId: activeHostId, sessionId: activeConversationSessionId });
   }, [activeConversationSessionId, activeHostId]);
 
   const configurationSession = sessions.find((session) => session.sessionId === configurationSessionId);

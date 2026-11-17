@@ -61,10 +61,7 @@ function MobileAssistantConversation({
   const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
     if (!visible) return;
-    setActiveViewedSession({ hostId: activeHostId, sessionId: session.sessionId });
-    return () => {
-      setActiveViewedSession(undefined);
-    };
+    return setActiveViewedSession({ hostId: activeHostId, sessionId: session.sessionId });
   }, [activeHostId, session.sessionId, visible]);
   async function handleRefresh(targetSessionId?: string): Promise<boolean> {
     if (refreshing) return false;

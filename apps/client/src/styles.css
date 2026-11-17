@@ -8949,7 +8949,8 @@ button:disabled {
   color: var(--accent-ink);
 }
 
-.sidebar-assistant-unread {
+.sidebar-assistant-unread,
+.drawer-assistant-unread {
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -8963,7 +8964,8 @@ button:disabled {
   background: var(--accent);
 }
 
-.sidebar-assistant-unread .desktop-nav-badge {
+.sidebar-assistant-unread .desktop-nav-badge,
+.drawer-assistant-unread .desktop-nav-badge {
   position: static;
   min-width: 0;
   height: auto;

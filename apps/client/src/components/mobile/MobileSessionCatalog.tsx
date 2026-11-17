@@ -19,14 +19,17 @@ import {
 import type { ReactNode, RefObject } from "react";
 import type { MobileConnectionIssue, PairedHost } from "../../hooks/useMobileBridge.js";
 import type { ThemeControl } from "../../hooks/useTheme.js";
-import { groupProjectSessionFamilies, type SessionFamily } from "../../lib/project-groups.js";
+import {
+  CLAUDE_UNSECTIONED_PROJECT_ID,
+  groupProjectSessionFamilies,
+  type SessionFamily,
+} from "../../lib/project-groups.js";
 import { EmptyState } from "../common/EmptyState.js";
 import { IconButton } from "../common/IconButton.js";
 import { ThemeMenu } from "../common/ThemeMenu.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
 import { SectionCreateDialog, type SectionCreateState } from "../session/SectionCreateDialog.js";
 import { SectionManageDialog, type SectionManageController } from "../session/SectionManageDialog.js";
-import { CLAUDE_UNSECTIONED_PROJECT_ID } from "../session/session-constants.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
 import {
   SessionSectionDragGhost,

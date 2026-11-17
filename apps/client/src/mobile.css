@@ -177,16 +177,9 @@
   white-space: nowrap;
 }
 
-.drawer-assistant-unread {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-}
-
 .drawer-assistant-slot {
-  flex: 1 1 auto;
-  min-width: 12px;
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .mobile-drawer-topbar .drawer-compose-button.icon-button {

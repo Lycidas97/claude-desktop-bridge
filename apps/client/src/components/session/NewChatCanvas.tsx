@@ -1,11 +1,14 @@
-import type {
-  BridgeDesktopRuntimeId,
-  BridgeEffort,
-  BridgeHostSnapshot,
-  BridgeProjectInfo,
-  BridgeSDKPermissionMode,
-  BridgeSessionConfiguration,
-  BridgeSessionInfo,
+import {
+  CLAUDE_UNSECTIONED_PROJECT_ID,
+  CLAUDE_UNSECTIONED_PROJECT_NAME,
+  DEFAULT_CONFIGURATION_SESSION_ID,
+  type BridgeDesktopRuntimeId,
+  type BridgeEffort,
+  type BridgeHostSnapshot,
+  type BridgeProjectInfo,
+  type BridgeSDKPermissionMode,
+  type BridgeSessionConfiguration,
+  type BridgeSessionInfo,
 } from "@bridge/protocol";
 import { ArrowUp, ChevronDown, Folder, LoaderCircle, Plus } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -34,13 +37,9 @@ import {
   supportedEffort,
   type SessionConfigurationChange,
 } from "./SessionConfigurationDialog.js";
-import {
-  CLAUDE_UNSECTIONED_PROJECT_ID,
-  CREATE_SECTION_OPTION_VALUE,
-  DEFAULT_CONFIGURATION_SESSION_ID,
-} from "./session-constants.js";
 
 export const NEW_CHAT_DRAFT_SESSION_ID = "__new__";
+const CREATE_SECTION_OPTION_VALUE = "__create_section__";
 const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 function formatDisplayDirectory(path: string | undefined): string {
@@ -708,7 +707,7 @@ export function NewChatCanvas({
                   value={selectedProjectId}
                   disabled={!connected || locked}
                   options={[
-                    { value: "", label: "未分组" },
+                    { value: "", label: CLAUDE_UNSECTIONED_PROJECT_NAME },
                     ...(groupUnavailable ? [{ value: selectedProjectId, label: "分组已不可用", disabled: true }] : []),
                     ...manualGroups.map((project) => ({ value: project.projectId, label: project.name })),
                     ...(canCreateSection ? [{ value: CREATE_SECTION_OPTION_VALUE, label: "＋ 新建分组…" }] : []),

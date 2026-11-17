@@ -21,6 +21,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ThemeControl } from "../../hooks/useTheme.js";
 import {
+  CLAUDE_UNSECTIONED_PROJECT_ID,
   expandProject,
   getSessionAncestorIds,
   groupProjectSessionFamilies,
@@ -38,7 +39,6 @@ import { SectionCreateDialog, type SectionCreateState } from "../session/Section
 import { SectionManageDialog, useSectionManage } from "../session/SectionManageDialog.js";
 import { SessionActionSheets } from "../session/SessionActionSheets.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
-import { CLAUDE_UNSECTIONED_PROJECT_ID } from "../session/session-constants.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
 import { useProjectSessionGroups } from "../session/useProjectSessionGroups.js";
 import {

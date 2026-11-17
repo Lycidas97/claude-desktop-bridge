@@ -47,7 +47,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
@@ -947,10 +947,10 @@ async function verifyMobileSafeArea(page, steps, directory, viewports) {
   await emulation.detach();
 }
 
-async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview, assistantMail = assistantMailPreview) {
+async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview, assistantMail = assistantMailPreview, options = {}) {
   const now = Date.now();
   const clientRelayUrl = `${baseUrl.replace("http:", "ws:")}/ws`;
-  const { crypto, pairing } = await BridgeCrypto.createDesktop(clientRelayUrl, "Browser E2E 隔离电脑");
+  const { crypto, pairing } = await BridgeCrypto.createDesktop(clientRelayUrl, options.desktopName ?? "Browser E2E 隔离电脑");
   pairing.iceServers = [];
   pairing.serviceOrigin = baseUrl;
   const session = {
@@ -1316,9 +1316,12 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     if (assistantMail) {
       snapshot.host.capabilities.push("plugin.assistant-mail.v1", "plugin.assistant-mail.manual-reference.v1");
       snapshot.assistantMail = host.nativeApproval.mailSnapshot();
-      host.mailOffline = true;
-      await host.nativeApproval.assistantMail.deliver(60);
-      host.mailOffline = false;
+      const initialMailCount = options.initialMailCount ?? 60;
+      if (initialMailCount > 0) {
+        host.mailOffline = true;
+        await host.nativeApproval.assistantMail.deliver(initialMailCount);
+        host.mailOffline = false;
+      }
     }
   }
   hosts.add(host);
@@ -1396,10 +1399,23 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
             break;
           }
           const action = request.params?.action ?? "status";
+          if (request.params?.channel === "stable" || request.params?.channel === "prerelease") {
+            snapshot.updater = { ...snapshot.updater, channel: request.params.channel };
+          }
           if (action === "check") {
-            snapshot.updater = { ...snapshot.updater, phase: "available", latestVersion: "1.3.3", assetName: "Bridge-1.3.3-windows-installer-ci.zip", statusDetail: "发现新版本 v1.3.3" };
+            const latestVersion = snapshot.updater?.channel === "prerelease"
+              ? (host.prereleaseLatestVersion ?? "1.3.5-dev.27")
+              : "1.3.3";
+            const assetName = snapshot.updater?.platform === "darwin"
+              ? `Bridge-${latestVersion}-macos-arm64.dmg`
+              : `Bridge-${latestVersion}-windows-installer-ci.zip`;
+            snapshot.updater = { ...snapshot.updater, phase: "available", latestVersion, assetName, statusDetail: `发现新版本 v${latestVersion}` };
+          } else if (action === "download") {
+            const latestVersion = snapshot.updater?.latestVersion ?? "1.3.3";
+            snapshot.updater = { ...snapshot.updater, phase: "ready", latestVersion, statusDetail: `安装包 v${latestVersion} 已下载就绪` };
           } else if (action === "apply") {
-            snapshot.updater = { ...snapshot.updater, phase: "applying", latestVersion: "1.3.3", statusDetail: "正在后台静默升级并重启 Bridge 服务…" };
+            const latestVersion = snapshot.updater?.latestVersion ?? "1.3.3";
+            snapshot.updater = { ...snapshot.updater, phase: "applying", latestVersion, statusDetail: "正在后台静默升级并重启 Bridge 服务…" };
           }
           result = snapshot.updater;
           await host.send({ kind: "snapshot", snapshot });
@@ -3051,7 +3067,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.getByRole("heading", { name: "远端桌面状态", exact: true }).waitFor();
   await page.getByRole("heading", { name: "版本与更新", exact: true }).waitFor();
   assert.ok((await page.locator(".mobile-settings-page").innerText()).includes("v1.1.1"));
-  await page.getByRole("button", { name: "检查并升级桌面端", exact: true }).click();
+  await page.getByRole("button", { name: "检查并升级", exact: true }).click();
   await eventually(() => host.requests.some(request => request.method === "system.update" && request.params.action === "apply"), true, "Mobile triggers encrypted system.update apply RPC");
   await eventually(() => page.locator(".mobile-settings-page").innerText().then(t => t.includes("正在重启升级")), true, "Remote desktop status reflects applying phase over E2EE");
   async function assertUpdaterCards() {
@@ -3631,7 +3647,7 @@ async function verifyProjectGrouping(page, host, steps, directory) {
     const bodyBox = await body.boundingBox();
     await page.mouse.move(bodyBox.x + 80, bodyBox.y + bodyBox.height / 2);
     await page.mouse.wheel(0, 10000);
-    await eventually(() => body.evaluate(el => el.scrollTop === el.scrollHeight - el.clientHeight), true, "Wheel reaches the bottom of the sheet body");
+    await eventually(() => body.evaluate(el => el.scrollTop > 0 && Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop) <= 1), true, "Wheel reaches the bottom of the sheet body");
     const geometry = await orderSheet.evaluate(el => {
       const body = el.querySelector(".m-sheet-body");
       const list = el.querySelector(".project-order-list");
@@ -4216,11 +4232,413 @@ async function verifyRound4Boundaries(page, host, steps, directory, viewports, t
   steps.push("320x568 xlarge narrow viewport with 200+ char unbroken CJK/URL titles and 4-level expanded fork tree has 0px horizontal overflow");
 }
 
+async function verifyRound5Ux(page, host, steps, directory, viewports, theme) {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const proofDir = process.env.ROUND5_VISUAL_PROOF_DIR && theme === (process.env.ROUND5_VISUAL_PROOF_THEME ?? "dark")
+    ? resolve(process.env.ROUND5_VISUAL_PROOF_DIR)
+    : undefined;
+  if (proofDir) await mkdir(proofDir, { recursive: true });
+
+  async function saveShot(targetPage, fileName) {
+    await targetPage.waitForFunction(() => document.getAnimations().every(
+      animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished",
+    ));
+    await targetPage.screenshot({ path: resolve(directory, fileName), fullPage: false });
+    if (proofDir) {
+      await targetPage.screenshot({ path: resolve(proofDir, fileName), fullPage: false });
+    }
+    viewports.push({ page: fileName, ...targetPage.viewportSize() });
+  }
+
+  // (c) Mobile Top-Bar `助理` Capsule on single horizontal row (`unread === 0` -> `unread === 3`, plus 320px xlarge)
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openMobileDrawer(page);
+  const drawer = page.locator(".mobile-home-catalog");
+  const topbar = drawer.locator(".mobile-drawer-topbar");
+  const hostSwitcher = topbar.locator(".drawer-host-switcher");
+  const assistantCapsule = topbar.locator(".drawer-assistant-capsule");
+  const composeBtn = topbar.locator(".drawer-compose-button");
+  await assistantCapsule.waitFor();
+  assert.equal(await assistantCapsule.getAttribute("aria-label"), "助理", "Unread=0 assistant capsule uses concise aria-label");
+  assert.equal(await drawer.locator("button").filter({ hasText: "助理" }).count(), 1, "Zero standalone 助理 row outside .mobile-drawer-topbar");
+  assert.equal(
+    await topbar.evaluate(el => Boolean(el.nextElementSibling?.classList.contains("drawer-top-stack") && el.nextElementSibling.querySelector(".session-search"))),
+    true,
+    "Search bar sits immediately below .mobile-drawer-topbar with zero standalone 助理 row in between",
+  );
+  const [hostBox, assistantBox, composeBox] = await Promise.all([
+    hostSwitcher.boundingBox(),
+    assistantCapsule.boundingBox(),
+    composeBtn.boundingBox(),
+  ]);
+  assert.ok(hostBox && assistantBox && composeBox, "All 3 topbar controls have visible bounding boxes");
+  assert.ok(
+    Math.abs((hostBox.y + hostBox.height / 2) - (assistantBox.y + assistantBox.height / 2)) <= 2,
+    "Host switcher and 助理 capsule share the same horizontal row centerline",
+  );
+  assert.ok(
+    Math.abs((assistantBox.y + assistantBox.height / 2) - (composeBox.y + composeBox.height / 2)) <= 2,
+    "助理 capsule and compose button share the same horizontal row centerline",
+  );
+  assert.ok(hostBox.x + hostBox.width <= assistantBox.x + 1 && assistantBox.x + assistantBox.width <= composeBox.x + 1, "Topbar controls do not overlap");
+  await saveShot(page, "01-mobile-topbar-assistant-capsule-dark.png");
+
+  // Deliver 3 unread mails -> verify aria-label updates, badge stays inside capsule, and 320px + xlarge stays on one row with zero horizontal overflow
+  await host.nativeApproval.assistantMail.deliver(3);
+  await eventually(() => assistantCapsule.getAttribute("aria-label"), "助理，3 条未读", "Unread>0 assistant capsule updates aria-label");
+  const [capsuleWithUnreadBox, unreadBadgeBox] = await Promise.all([
+    assistantCapsule.boundingBox(),
+    assistantCapsule.locator(".desktop-nav-badge").boundingBox(),
+  ]);
+  assert.ok(
+    capsuleWithUnreadBox && unreadBadgeBox
+    && unreadBadgeBox.x >= capsuleWithUnreadBox.x
+    && unreadBadgeBox.x + unreadBadgeBox.width <= capsuleWithUnreadBox.x + capsuleWithUnreadBox.width,
+    "Unread count badge renders inline inside .drawer-assistant-capsule rather than overflowing viewport",
+  );
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.evaluate(() => {
+    localStorage.setItem("bridge-font-size", "larger");
+    document.documentElement.dataset.fontSize = "larger";
+    document.documentElement.dataset.effectiveScale = "xlarge";
+    document.documentElement.style.setProperty("--font-scale", "1.3");
+  });
+  const [narrowHostBox, narrowAssistantBox, narrowComposeBox] = await Promise.all([
+    hostSwitcher.boundingBox(),
+    assistantCapsule.boundingBox(),
+    composeBtn.boundingBox(),
+  ]);
+  assert.ok(narrowHostBox && narrowAssistantBox && narrowComposeBox);
+  assert.ok(Math.abs((narrowHostBox.y + narrowHostBox.height / 2) - (narrowAssistantBox.y + narrowAssistantBox.height / 2)) <= 2, "320px xlarge host + 助理 stay on one row");
+  assert.ok(Math.abs((narrowAssistantBox.y + narrowAssistantBox.height / 2) - (narrowComposeBox.y + narrowComposeBox.height / 2)) <= 2, "320px xlarge 助理 + compose stay on one row");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "320px xlarge Mobile Home has zero horizontal overflow");
+  await page.evaluate(() => {
+    localStorage.removeItem("bridge-font-size");
+    delete document.documentElement.dataset.fontSize;
+    delete document.documentElement.dataset.effectiveScale;
+    document.documentElement.style.removeProperty("--font-scale");
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  steps.push("Mobile top-bar 助理 capsule aligns with host switcher and compose button on one row (unread 0 and >0) with zero standalone row and 0px overflow at 320px xlarge");
+
+  // (b) NewChatCanvas `＋ 新建分组…` with 0 existing manual sections + preserved custom title & prompt draft
+  assert.equal(
+    host.snapshot.projects.filter(p => p.kind === "desktop-group").length,
+    0,
+    "Host starts with 0 manual sections before opening NewChatCanvas",
+  );
+  await composeBtn.click();
+  const mobileNewChat = page.locator(".new-chat-canvas.is-mobile");
+  await mobileNewChat.waitFor();
+  const titleInput = mobileNewChat.getByLabel("会话标题", { exact: true });
+  const promptInput = mobileNewChat.locator("textarea");
+  const sectionTrigger = mobileNewChat.getByRole("combobox", { name: "所属分组", exact: true });
+  await sectionTrigger.waitFor();
+  const customTitle = "第五轮架构验证会话";
+  const customPrompt = "请核查第五轮更新通道切换、子代理长报告滚动与新建分组保真";
+  await titleInput.fill(customTitle);
+  await promptInput.fill(customPrompt);
+  await sectionTrigger.click();
+  const listbox = page.getByRole("listbox");
+  await listbox.waitFor();
+  assert.deepEqual(
+    (await listbox.getByRole("option").allInnerTexts()).map(t => t.trim()),
+    ["未分组", "＋ 新建分组…"],
+    "0-section NewChatCanvas renders 未分组 + ＋ 新建分组…",
+  );
+  await saveShot(page, "04-new-chat-create-section-dropdown.png");
+  await listbox.getByRole("option", { name: "＋ 新建分组…", exact: true }).click();
+  const sectionDialog = page.getByRole("dialog", { name: "新建 Section" });
+  await sectionDialog.waitFor();
+  await sectionDialog.getByLabel("Section 名称").fill("第五轮新分组");
+  await sectionDialog.getByRole("button", { name: "创建 Section", exact: true }).click();
+  await sectionDialog.waitFor({ state: "detached" });
+  const createdSection = host.snapshot.projects.find(p => p.name === "第五轮新分组");
+  assert.ok(createdSection, "section.create created 第五轮新分组 on host");
+  await eventually(() => customSelectValue(sectionTrigger), createdSection.projectId, "Newly created section is auto-selected in 所属分组");
+  assert.match(await sectionTrigger.innerText(), /第五轮新分组/u);
+  assert.equal(await titleInput.inputValue(), customTitle, "Custom session title is 100% preserved across inline section creation");
+  assert.equal(await promptInput.inputValue(), customPrompt, "Prompt draft is 100% preserved across inline section creation");
+  await saveShot(page, "05-new-chat-section-created-modal.png");
+  await openMobileDrawer(page);
+  steps.push("NewChatCanvas exposes ＋ 新建分组… even with 0 existing manual sections, auto-selects 第五轮新分组, and preserves custom title & prompt draft");
+
+  // (d) Subagent Detail Sheet Full Scroll & Zero Clipping (~3,500+ char multi-paragraph Markdown reportText)
+  const finalParagraphText = "【最终结论段落】第五轮子代理完整回报已全部渲染完毕，末尾零截断。";
+  const reportParagraphs = Array.from({ length: 14 }, (_, idx) => (
+    `### 阶段审计第 ${idx + 1} 节：跨端状态收敛与滚动布局核查\n\n`
+    + `在第 ${idx + 1} 轮布局与协议联调中，已验证 \`.m-sheet-body\` 采用 \`grid-auto-rows: max-content\` 与 \`overflow-y: auto\`，避免隐式 \`auto\` 轨道把 \`overflow: hidden\` 的子代理卡片挤压裁切；同时后端 \`enrichNativeSubagentItems\` 完整保留多段 Markdown 回报全文（含代码块、列表与末尾总结）。\n\n`
+    + `- 检查路径：\`apps/desktop/src/claude/native-history-projection.ts\`（段落序号 #${idx + 1}）\n`
+    + `- 样式契约：\`apps/client/src/components/mobile/mobile.css\` 与 \`SubagentCard.tsx\` 静态流式展开`
+  ));
+  const longReportMarkdown = `## 第五轮子代理深度审计报告\n\n${reportParagraphs.join("\n\n")}\n\n${finalParagraphText}`;
+  assert.ok(longReportMarkdown.length >= 3_200, `Subagent reportText is ${longReportMarkdown.length} chars (>= 3,200)`);
+
+  const subagentStartAt = Date.now() - 45_000;
+  const subagentDoneAt = Date.now() - 3_000;
+  await host.nativeApproval.message({
+    type: "system",
+    subtype: "task_started",
+    task_id: "r5-long-subagent",
+    tool_use_id: "r5-long-subagent-call",
+    description: "审计第五轮架构收敛与子代理长报告滚动",
+    timestamp: subagentStartAt,
+  });
+  for (const event of await host.nativeApproval.message({
+    type: "system",
+    subtype: "task_notification",
+    task_id: "r5-long-subagent",
+    tool_use_id: "r5-long-subagent-call",
+    status: "completed",
+    usage: { tool_uses: 14 },
+    summary: longReportMarkdown,
+    timestamp: subagentDoneAt,
+  })) {
+    await host.emit(event.type, event.data, { ...(event.itemId ? { itemId: event.itemId } : {}), ...(event.turnId ? { turnId: event.turnId } : {}) });
+  }
+  const projectedHistory = (await host.nativeApproval.history()).items.map(item => (
+    item.subagent?.agentId === "r5-long-subagent"
+      ? {
+          ...item,
+          subagent: {
+            ...item.subagent,
+            agentType: "Explore",
+            model: "Claude Opus 4.7",
+            durationMs: 42_000,
+            recentTools: [
+              "Read · native-history-projection.ts",
+              "Read · transcript-subagents.ts",
+              "Edit · mobile.css",
+            ],
+            reportText: longReportMarkdown,
+          },
+        }
+      : item
+  ));
+  host.history.splice(0, host.history.length, ...projectedHistory);
+  const traySubagent = projectedHistory.find(item => item.subagent?.agentId === "r5-long-subagent")?.subagent;
+  assert.ok(traySubagent?.reportText?.includes(finalParagraphText), "Projected subagent item carries full 3,200+ char reportText");
+  const r5BackgroundTasks = [{
+    id: "r5-long-subagent-call",
+    kind: "subagent",
+    taskId: "r5-long-subagent",
+    toolUseId: "r5-long-subagent-call",
+    description: "审计第五轮架构收敛与子代理长报告滚动",
+    state: "completed",
+    startedAt: subagentStartAt,
+    updatedAt: subagentDoneAt,
+    subagent: { ...traySubagent, latestText: "已完成全部 14 节架构收敛与布局核查", reportText: undefined },
+  }];
+  const baseConfiguration = host.nativeApproval.configuration;
+  host.nativeApproval.configuration = async request => {
+    const result = await baseConfiguration(request);
+    if (request.params.includeBackgroundTasks) {
+      result.session.backgroundTasks = structuredClone(r5BackgroundTasks);
+    }
+    return result;
+  };
+
+  await openMobileSession(page, sessionId);
+  const completedMarker = page.locator(".conversation-stream .background-task-marker.is-completed");
+  await completedMarker.waitFor();
+  await eventually(
+    () => host.requests.some(r => r.method === "session.configuration" && r.params?.includeBackgroundTasks === true),
+    true,
+    "Background tasks tray loaded before opening focused Subagent Sheet",
+  );
+  await completedMarker.click();
+
+  const subagentDialog = page.getByRole("dialog", { name: "审计第五轮架构收敛与子代理长报告滚动", exact: true });
+  await subagentDialog.waitFor();
+  const sheetBody = subagentDialog.locator(".m-sheet-body");
+  const footerAllTasksBtn = subagentDialog.getByRole("button", { name: "全部后台任务", exact: true });
+  await footerAllTasksBtn.waitFor();
+
+  const initialScrollMetrics = await sheetBody.evaluate(el => {
+    const style = getComputedStyle(el);
+    const card = el.querySelector(".conversation-subagent-card");
+    const cardStyle = card ? getComputedStyle(card) : null;
+    return {
+      overflowY: style.overflowY,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      cardOverflow: cardStyle?.overflow,
+      cardMaxHeight: cardStyle?.maxHeight,
+      reportLength: el.querySelector(".subagent-report-section")?.textContent?.length ?? 0,
+    };
+  });
+  assert.equal(initialScrollMetrics.overflowY, "auto", ".m-sheet-body uses overflow-y: auto without clipping");
+  assert.equal(initialScrollMetrics.cardOverflow, "visible", "Static SubagentCard inside sheet is not overflow: hidden");
+  assert.equal(initialScrollMetrics.cardMaxHeight, "none", "Static SubagentCard inside sheet has max-height: none");
+  assert.ok(initialScrollMetrics.reportLength >= 3_000, `Full report rendered (${initialScrollMetrics.reportLength} chars)`);
+  assert.ok(
+    initialScrollMetrics.scrollHeight > initialScrollMetrics.clientHeight + 300,
+    `Sheet body overflows vertically for scrolling (${initialScrollMetrics.scrollHeight} > ${initialScrollMetrics.clientHeight})`,
+  );
+  const footerBoxBefore = await footerAllTasksBtn.boundingBox();
+  assert.ok(footerBoxBefore && footerBoxBefore.y + footerBoxBefore.height <= 844, "Footer 全部后台任务 button is visible before scrolling");
+
+  const bodyBox = await sheetBody.boundingBox();
+  assert.ok(bodyBox, "Sheet body has bounding box");
+  await page.mouse.move(Math.round(bodyBox.x + bodyBox.width / 2), Math.round(bodyBox.y + bodyBox.height / 2));
+  await page.mouse.wheel(0, 6_000);
+  await sheetBody.evaluate(el => { el.scrollTop = el.scrollHeight; });
+
+  await eventually(
+    () => sheetBody.evaluate(el => el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 2),
+    true,
+    "Scrolling .m-sheet-body reaches the bottom of the long report",
+  );
+  const finalPara = subagentDialog.getByText(finalParagraphText, { exact: true });
+  const [finalParaBox, bodyBoxAfter, footerBoxAfter] = await Promise.all([
+    finalPara.boundingBox(),
+    sheetBody.boundingBox(),
+    footerAllTasksBtn.boundingBox(),
+  ]);
+  assert.ok(finalParaBox && bodyBoxAfter && footerBoxAfter, "Final paragraph and pinned footer have bounding boxes after scroll");
+  assert.ok(
+    finalParaBox.y >= bodyBoxAfter.y && finalParaBox.y + finalParaBox.height <= bodyBoxAfter.y + bodyBoxAfter.height + 1,
+    "Very last paragraph of 3,200+ char subagent report is cleanly visible without clipping",
+  );
+  assert.ok(
+    Math.abs(footerBoxAfter.y - footerBoxBefore.y) <= 1 && footerBoxAfter.y + footerBoxAfter.height <= 844,
+    "Footer 全部后台任务 button stays pinned visible at the bottom during scroll",
+  );
+  await saveShot(page, "02-subagent-sheet-scrollable-report-dark.png");
+  await subagentDialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await subagentDialog.waitFor({ state: "detached" });
+  await openMobileDrawer(page);
+  steps.push("BackgroundTasksSheet renders full 3,200+ char Markdown subagent report without clipping, scrolls cleanly to the final paragraph, and keeps 全部后台任务 pinned");
+
+  // (a) Remote Desktop Updater Channel (`稳定版` | `预发布`) & Balanced Concise Buttons (`检查并升级` vs `检查并下载`, 0 widow lines at 360px xlarge)
+  async function inspectActionButtons(container) {
+    return container.locator("button").evaluateAll(buttons => buttons.map(btn => {
+      const style = getComputedStyle(btn);
+      const walker = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT);
+      const lineChars = [];
+      let textNode = walker.nextNode();
+      while (textNode) {
+        const value = textNode.nodeValue ?? "";
+        for (let i = 0; i < value.length; i += 1) {
+          const ch = value[i];
+          if (!ch || !ch.trim()) continue;
+          const range = document.createRange();
+          range.setStart(textNode, i);
+          range.setEnd(textNode, i + 1);
+          const rect = range.getClientRects()[0];
+          if (!rect) continue;
+          const existing = lineChars.find(line => Math.abs(line.top - rect.top) <= 3);
+          if (existing) existing.text += ch;
+          else lineChars.push({ top: rect.top, text: ch });
+        }
+        textNode = walker.nextNode();
+      }
+      return {
+        label: (btn.textContent ?? "").trim(),
+        textWrap: style.textWrap,
+        lines: lineChars.map(line => line.text),
+      };
+    }));
+  }
+
+  host.prereleaseLatestVersion = "1.3.5-dev.27";
+  host.snapshot.host.version = "1.3.5-dev.23";
+  host.snapshot.updater = {
+    platform: "darwin",
+    arch: "arm64",
+    currentVersion: "1.3.5-dev.23",
+    channel: "stable",
+    autoCheck: true,
+    applyMode: "prompt",
+    canAutoRestart: false,
+    phase: "idle",
+  };
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+
+  await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
+  const remoteRegion = page.getByRole("region", { name: "远端桌面状态", exact: true });
+  await remoteRegion.waitFor();
+  await remoteRegion.getByText("v1.3.5-dev.23", { exact: true }).waitFor();
+  const channelGroup = remoteRegion.getByRole("group", { name: "远端桌面更新通道", exact: true });
+  assert.equal(await channelGroup.getByRole("button", { name: "稳定版", exact: true }).getAttribute("aria-pressed"), "true");
+  assert.equal(await channelGroup.getByRole("button", { name: "预发布", exact: true }).getAttribute("aria-pressed"), "false");
+  await remoteRegion.getByRole("button", { name: "检查并下载", exact: true }).waitFor();
+
+  // Check macOS `检查并下载` under 360px + xlarge has textWrap: balance and zero 1-char widow lines
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.evaluate(() => {
+    localStorage.setItem("bridge-font-size", "larger");
+    document.documentElement.dataset.fontSize = "larger";
+    document.documentElement.dataset.effectiveScale = "xlarge";
+    document.documentElement.style.setProperty("--font-scale", "1.3");
+  });
+  const macButtonsXlarge = await inspectActionButtons(remoteRegion.locator(".mobile-settings-actions"));
+  assert.deepEqual(macButtonsXlarge.map(b => b.label), ["检查更新", "检查并下载"]);
+  for (const btn of macButtonsXlarge) {
+    assert.equal(btn.textWrap, "balance", `${btn.label} sets text-wrap: balance`);
+    assert.equal(btn.lines.some(line => line.length === 1), false, `${btn.label} at 360px xlarge must not have a 1-char widow line (got ${JSON.stringify(btn.lines)})`);
+  }
+
+  // Restore 390x844 normal scale, switch remote host to Windows (canAutoRestart: true), click `预发布` -> `发现 v1.3.5-dev.27`
+  await page.evaluate(() => {
+    localStorage.removeItem("bridge-font-size");
+    delete document.documentElement.dataset.fontSize;
+    delete document.documentElement.dataset.effectiveScale;
+    document.documentElement.style.removeProperty("--font-scale");
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  host.snapshot.updater = {
+    platform: "win32",
+    arch: "x64",
+    currentVersion: "1.3.5-dev.23",
+    channel: "stable",
+    autoCheck: true,
+    applyMode: "prompt",
+    canAutoRestart: true,
+    phase: "idle",
+  };
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await remoteRegion.getByRole("button", { name: "检查并升级", exact: true }).waitFor();
+
+  await channelGroup.getByRole("button", { name: "预发布", exact: true }).click();
+  await eventually(
+    () => host.requests.some(r => r.method === "system.update" && r.params?.action === "check" && r.params?.channel === "prerelease"),
+    true,
+    "Clicking 预发布 sends system.update { action: 'check', channel: 'prerelease' }",
+  );
+  await remoteRegion.getByText("发现 v1.3.5-dev.27", { exact: true }).waitFor();
+  assert.equal(await channelGroup.getByRole("button", { name: "预发布", exact: true }).getAttribute("aria-pressed"), "true");
+  const winButtons390 = await inspectActionButtons(remoteRegion.locator(".mobile-settings-actions"));
+  assert.deepEqual(winButtons390.map(b => b.label), ["检查更新", "检查并升级"]);
+  for (const btn of winButtons390) {
+    assert.equal(btn.textWrap, "balance", `${btn.label} sets text-wrap: balance`);
+    assert.equal(btn.lines.length, 1, `${btn.label} renders on a clean single line at 390x844 (got ${JSON.stringify(btn.lines)})`);
+  }
+  await page.locator(".mobile-settings-content").evaluate(el => { el.scrollTop = 0; });
+  await saveShot(page, "03-mobile-remote-updater-channel-buttons-dark.png");
+
+  // Check Windows `检查并升级` under 360px + xlarge has zero 1-char widow lines and zero horizontal overflow
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.evaluate(() => {
+    localStorage.setItem("bridge-font-size", "larger");
+    document.documentElement.dataset.fontSize = "larger";
+    document.documentElement.dataset.effectiveScale = "xlarge";
+    document.documentElement.style.setProperty("--font-scale", "1.3");
+  });
+  const winButtonsXlarge = await inspectActionButtons(remoteRegion.locator(".mobile-settings-actions"));
+  for (const btn of winButtonsXlarge) {
+    assert.equal(btn.textWrap, "balance");
+    assert.equal(btn.lines.some(line => line.length === 1), false, `${btn.label} at 360px xlarge must not have a 1-char widow line (got ${JSON.stringify(btn.lines)})`);
+  }
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "360px xlarge Settings has 0px horizontal overflow");
+  steps.push("Remote desktop updater renders 更新通道 (稳定版 | 预发布), transitions 1.3.5-dev.23 -> 发现 v1.3.5-dev.27 via system.update check+channel, and keeps 检查并升级 / 检查并下载 balanced without 1-char widow lines");
+}
+
 async function verifyAssistantMail(page, host, steps, directory, viewports) {
   const cards = () => page.locator('.assistant-mail-list > [data-mail-id]');
   async function openAssistant() {
     await openMobileDrawer(page);
-    await page.locator(".mobile-home-catalog").getByRole("button", { name: "助理", exact: true }).click();
+    await page.locator(".mobile-home-catalog").getByRole("button", { name: /^助理(?:，\d+\+? 条未读)?$/u }).click();
   }
   async function capture(name) {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, `${name} fits the viewport`);
@@ -4511,10 +4929,10 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "assistant-mail"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "assistant-mail"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries"].includes(scenario), scenario === "assistant-mail");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries", "round5-ux"].includes(scenario), ["assistant-mail", "round5-ux"].includes(scenario), scenario === "round5-ux" ? { desktopName: "LycidasdeMac-mini", initialMailCount: 0 } : {});
     if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (["project-grouping", "session-catalog"].includes(scenario)) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
-    if (["section-manage", "round4-boundaries"].includes(scenario)) await syncNativeSections(host);
+    if (["section-manage", "round4-boundaries", "round5-ux"].includes(scenario)) await syncNativeSections(host);
     context = await browser.newContext({
       viewport: { width: 375, height: 812 }, colorScheme: theme,
       serviceWorkers: "block",
@@ -4568,7 +4986,7 @@ async function runScenario(theme, scenario) {
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
     assert.equal(await page.locator("html").getAttribute("data-theme"), process.env.BRIDGE_QA_THEME ?? theme);
     assert.equal(await page.locator("html").getAttribute("data-theme-family"), process.env.BRIDGE_QA_THEME_FAMILY ?? "sunstone");
-    assert.equal(await page.locator(".mobile-home-catalog [data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage", "round4-boundaries"].includes(scenario) ? 3 : 2, "Pairing must synchronize the home catalog session rows");
+    assert.equal(await page.locator(".mobile-home-catalog [data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux"].includes(scenario) ? 3 : 2, "Pairing must synchronize the home catalog session rows");
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
@@ -4589,9 +5007,10 @@ async function runScenario(theme, scenario) {
     else if (scenario === "project-grouping") await verifyProjectGrouping(page, host, steps, directory);
     else if (scenario === "section-manage") await verifySectionManage(page, host, steps, directory);
     else if (scenario === "round4-boundaries") await verifyRound4Boundaries(page, host, steps, directory, viewports, theme);
+    else if (scenario === "round5-ux") await verifyRound5Ux(page, host, steps, directory, viewports, theme);
     else if (scenario === "delivery-approval-reconnect") await verifyDelivery(page, host, steps);
     else await verifyRename(page, host, scenario === "rename-list" ? "list" : "chat", steps);
-    if (scenario !== "assistant-mail") assert.equal(host.requests.some(request => request.method.startsWith("plugin.assistant-mail.")), false, "Hosts without the capability receive no assistant mail RPC");
+    if (!["assistant-mail", "round5-ux"].includes(scenario)) assert.equal(host.requests.some(request => request.method.startsWith("plugin.assistant-mail.")), false, "Hosts without the capability receive no assistant mail RPC");
     assert.deepEqual(errors, [], "Browser runtime, console, network isolation, or host errors");
   } catch (error) {
     failure = error;

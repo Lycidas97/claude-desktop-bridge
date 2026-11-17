@@ -1,5 +1,8 @@
-export const CLAUDE_UNSECTIONED_PROJECT_ID = "claude-unsectioned";
-export const DEFAULT_CONFIGURATION_SESSION_ID = "__default__";
+export {
+  CLAUDE_UNSECTIONED_PROJECT_ID,
+  CLAUDE_UNSECTIONED_PROJECT_NAME,
+  DEFAULT_CONFIGURATION_SESSION_ID,
+} from "@bridge/protocol";
 
 export function toggleCollapsedProject(
   current: Set<string>,

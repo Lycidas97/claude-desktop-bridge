@@ -582,11 +582,13 @@ describe("Round-4 Boundary 2B.1: localStorage corruption, QuotaExceededError, Se
 describe("Round-4 Boundary 2B.2: Drafts 100-entry LRU, 100KB paste, delete cleanup & mid-IME session switch", () => {
   afterEach(() => {
     rt.contextValue = undefined;
-    vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("enforces 100-entry LRU eviction across 105 sessions, handles 100KB emoji paste, and cleans draft on resetSession", () => {
+    vi.useFakeTimers();
     const map = new Map<string, string>();
     const storage = {
       getItem: (key: string) => map.get(key) ?? null,
@@ -618,6 +620,7 @@ describe("Round-4 Boundary 2B.2: Drafts 100-entry LRU, 100KB paste, delete clean
       renderDrafts();
     }
 
+    vi.runOnlyPendingTimers();
     const persisted = JSON.parse(map.get(CONVERSATION_DRAFTS_STORAGE_KEY)!);
     expect(persisted.entries).toHaveLength(100);
     const persistedKeys = new Set(persisted.entries.map((e: { key: string }) => e.key));

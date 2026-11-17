@@ -205,6 +205,8 @@ describe("ConversationDraftsProvider", () => {
     unmountStore(consumerStore);
     unmountStore(providerStore);
     runtime.contextValue = undefined;
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -386,13 +388,61 @@ describe("ConversationDraftsProvider", () => {
     }
   });
 
-  it("persists per-session and __new__ drafts synchronously to localStorage across full app reload, clears on send/reset/clearHost, caps at 100 entries, and tolerates storage errors", async () => {
+  it("updates the composer immediately and saves a burst of edits in one write", () => {
+    vi.useFakeTimers();
+    const setItem = vi.spyOn(localStorage, "setItem");
+    const session = renderConsumer().session("host-a", "sess-1");
+    session.setText("草");
+    expect(renderConsumer().session("host-a", "sess-1").draft.text).toBe("草");
+    vi.advanceTimersByTime(100);
+    session.setText("草稿");
+    expect(renderConsumer().session("host-a", "sess-1").draft.text).toBe("草稿");
+    vi.advanceTimersByTime(100);
+    session.setText("草稿完成");
+    expect(renderConsumer().session("host-a", "sess-1").draft.text).toBe("草稿完成");
+    expect(setItem).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(50);
+    expect(setItem).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)!)).toMatchObject({
+      version: 1,
+      entries: [{ key: JSON.stringify(["host-a", "sess-1"]), text: "草稿完成" }],
+    });
+  });
+
+  it.each(["pagehide", "visibilitychange"])("flushes pending text immediately on %s", (event) => {
+    vi.useFakeTimers();
+    const page = new EventTarget();
+    const document = Object.assign(new EventTarget(), { visibilityState: "visible" });
+    vi.stubGlobal("window", page);
+    vi.stubGlobal("document", document);
+    const setItem = vi.spyOn(localStorage, "setItem");
+    const session = renderConsumer().session("host-a", "sess-1");
+    session.setText("第一版");
+    session.setText("离开前的草稿");
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(setItem).not.toHaveBeenCalled();
+
+    if (event === "pagehide") {
+      page.dispatchEvent(new Event(event));
+    } else {
+      document.visibilityState = "hidden";
+      document.dispatchEvent(new Event(event));
+    }
+    expect(JSON.parse(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)!).entries[0].text).toBe("离开前的草稿");
+    vi.runOnlyPendingTimers();
+    page.dispatchEvent(new Event("pagehide"));
+    expect(setItem).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists per-session and __new__ drafts across full app reload, clears on send/reset/clearHost, caps at 100 entries, and tolerates storage errors", async () => {
+    vi.useFakeTimers();
     let drafts = renderConsumer();
     drafts.session("host-a", "sess-A").setText("Draft for Session A");
     drafts.session("host-a", "sess-B").setText("Draft for Session B");
     drafts.session("host-a", "__new__").setText("新建会话草稿");
     drafts.session("host-b", "sess-A").setText("Host B Session A");
-    expect(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)).toBeTruthy();
 
     // Simulate full app exit and cold restart (unmounting both consumer & provider, keeping only localStorage).
     unmountStore(consumerStore);
@@ -416,6 +466,7 @@ describe("ConversationDraftsProvider", () => {
       executeCommand: async () => false,
       sendTurn: async () => undefined,
     });
+    expect(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)).not.toContain("Draft for Session A");
 
     unmountStore(consumerStore);
     unmountStore(providerStore);
@@ -428,10 +479,18 @@ describe("ConversationDraftsProvider", () => {
     expect(drafts.session("host-a", "__new__").draft.text).toBe("新建会话草稿");
     expect(drafts.session("host-b", "sess-A").draft.text).toBe("Host B Session A");
 
-    // resetSession and clearHost remove persisted entries cleanly; emptying all removes the storage key.
+    // Deleting a draft must also discard any pending write for it.
+    drafts.session("host-a", "__new__").setText("暂未落盘的修改");
     drafts.resetSession("host-a", "__new__");
+    expect(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)).not.toContain("__new__");
     drafts.session("host-a", "sess-B").setText("");
+    expect(JSON.parse(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)!).entries).toMatchObject([
+      { key: JSON.stringify(["host-b", "sess-A"]), text: "Host B Session A" },
+    ]);
+    drafts.session("host-b", "sess-A").setText("忘记主机前尚未落盘的修改");
     handle.clearHost?.("host-b");
+    expect(stored.has(CONVERSATION_DRAFTS_STORAGE_KEY)).toBe(false);
+    vi.runOnlyPendingTimers();
     expect(stored.has(CONVERSATION_DRAFTS_STORAGE_KEY)).toBe(false);
 
     // LRU cap keeps the 100 most recently updated drafts.
@@ -439,27 +498,28 @@ describe("ConversationDraftsProvider", () => {
     for (let index = 0; index < 105; index += 1) {
       drafts.session("host-a", `bulk-${index}`).setText(`draft-${index}`);
     }
+    vi.runOnlyPendingTimers();
     const parsedCap = JSON.parse(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)!) as { entries: Array<{ text: string }> };
     expect(parsedCap.entries).toHaveLength(100);
     expect(parsedCap.entries[0]?.text).toBe("draft-104");
     expect(parsedCap.entries.some((entry) => entry.text === "draft-0")).toBe(false);
 
     // Corrupt storage JSON & QuotaExceededError never crash rendering or typing.
-    stored.set(CONVERSATION_DRAFTS_STORAGE_KEY, "{not-valid-json");
     unmountStore(consumerStore);
     unmountStore(providerStore);
+    stored.set(CONVERSATION_DRAFTS_STORAGE_KEY, "{not-valid-json");
     runtime.contextValue = undefined;
     providerStore = createStore();
     consumerStore = createStore();
     drafts = renderConsumer();
     expect(drafts.session("host-a", "sess-B").draft.text).toBe("");
 
-    vi.stubGlobal("localStorage", {
-      getItem: () => null,
-      setItem: () => { throw new Error("QuotaExceededError"); },
-      removeItem: () => { throw new Error("QuotaExceededError"); },
+    const failWrite = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage quota exceeded", "QuotaExceededError");
     });
-    expect(() => drafts.session("host-a", "sess-quota").setText("仍能在内存中正常输入")).not.toThrow();
+    drafts.session("host-a", "sess-quota").setText("仍能在内存中正常输入");
+    vi.runOnlyPendingTimers();
+    expect(failWrite).toHaveBeenCalledTimes(1);
     drafts = renderConsumer();
     expect(drafts.session("host-a", "sess-quota").draft.text).toBe("仍能在内存中正常输入");
   });

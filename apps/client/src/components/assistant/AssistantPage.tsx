@@ -70,9 +70,13 @@ export function AssistantPage({ snapshot, mobile = false, active = true, headerL
   );
   return <section className={`assistant-page ${mobile ? "assistant-page-mobile" : "desktop-page"}${displayedView === "conversation" ? " is-conversation" : ""}`}>
     {mobile && <MobilePageHeader title="助理" {...(headerLeading ? { leading: headerLeading } : {})} actions={viewTabs} />}
-    {!mobile && headerLeading && <div className="assistant-desktop-leading">{headerLeading}</div>}
+    {!mobile && <div className="assistant-desktop-header-band">
+      {headerLeading && <div className="assistant-desktop-leading">{headerLeading}</div>}
+      <div className="assistant-page-header-inner">
+        <header className="desktop-page-heading"><h1>助理</h1>{viewTabs}</header>
+      </div>
+    </div>}
     <div className="assistant-page-content">
-      {!mobile && <header className="desktop-page-heading"><h1>助理</h1>{viewTabs}</header>}
       {(displayedView === "settings" || !binding?.nativeSessionId || state === "needs-rebind" || state === "missing") && <section className="assistant-binding" aria-label="助理会话绑定">
         <div className="assistant-binding-current">
           {binding?.nativeSessionId ? <button type="button" className="assistant-session-link" onClick={() => setView("conversation")}>{session?.title || binding.nativeSessionId}</button> : <strong>{binding?.previousSessionIds.length ? "重新绑定会话" : "选择助理会话"}</strong>}

@@ -328,8 +328,6 @@ export function App() {
     <AssistantMailProvider key={mobile.state.activeHostId ?? ""} snapshot={snapshot} online={mobile.state.connection === "connected" && mobile.state.desktopOnline} request={mailRequest} loadCache={mobile.loadMailCache} saveCache={mobile.saveMailCache} onDiscuss={() => setTab("assistant")}>
     <MobileAppShell
       tab={tab}
-      hasWorkspaceDrawer={Boolean(mobile.state.activeHostId)}
-      themeControl={themeControl}
       onTabChange={(next) => {
         setComputerDetailsHostId(undefined);
         setQuotaOpen(false);

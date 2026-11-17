@@ -41,6 +41,7 @@ import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
 import { ProjectOrderSheet } from "./mobile/ProjectOrderSheet.js";
 import { Sheet, SheetAction } from "./common/Sheet.js";
+import { MagpieQuotaProvider } from "../../../../plugins/magpie-quota/client.js";
 
 type HookStore = {
   slots: any[]; index: number; dirty: boolean;
@@ -2315,5 +2316,129 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     expect(textContent(tree)).toContain("首次发送超时");
     const composerInput = elements(tree).find((element) => element.type === SlashCommandInput)!;
     expect(composerInput.props.value).toBe("弹窗接力指令");
+  });
+
+  it("derives MagpieQuotaProvider sourceKey from snapshot.magpie and evicts DesktopConversationProvider history/evidence on deleteSession and session.deleted", async () => {
+    let onSnapshotListener: ((next: DesktopControlSnapshot) => void) | undefined;
+    let onEventListener: ((event: BridgeEvent) => void) | undefined;
+    snapshot.magpie = {
+      mode: "auto",
+      baseUrl: "http://127.0.0.1:4190",
+      authScheme: "bearer",
+      keyConfigured: true,
+    };
+    apiRequest.mockImplementation(async (req: { method: string; params?: Record<string, unknown> }) => {
+      if (req.method === "session.open") {
+        return {
+          kind: "response",
+          requestId: "open",
+          ok: true,
+          result: { history: { items: [{ id: "h-1", role: "assistant", text: "cached", createdAt: 1 }], hasMore: false } },
+        };
+      }
+      if (req.method === "evidence.list") {
+        return {
+          kind: "response",
+          requestId: "ev",
+          ok: true,
+          result: {
+            evidence: {
+              items: [{
+                id: "ev-1",
+                sessionId: String(req.params?.sessionId ?? "s-1"),
+                startedAt: 1,
+                status: "completed",
+                tools: [],
+                artifacts: [],
+              }],
+              hasMore: false,
+            },
+          },
+        };
+      }
+      return { kind: "response", requestId: "ok", ok: true, result: {} };
+    });
+    vi.stubGlobal("window", {
+      setTimeout: vi.fn(() => 1),
+      clearTimeout: vi.fn(),
+      bridgeDesktop: {
+        getSnapshot: async () => snapshot,
+        onSnapshot: (cb: (next: DesktopControlSnapshot) => void) => {
+          onSnapshotListener = cb;
+          return () => { onSnapshotListener = undefined; };
+        },
+        onEvent: (cb: (event: BridgeEvent) => void) => {
+          onEventListener = cb;
+          return () => { onEventListener = undefined; };
+        },
+        request: apiRequest,
+      },
+    });
+
+    const dash = renderer(
+      DesktopDashboard,
+      { themeControl: { theme: "dark", family: "sunstone", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() } },
+      { expandDashboard: true },
+    );
+    dash.draw();
+    await settle();
+    let dashTree = dash.draw();
+    await settle();
+    dashTree = dash.draw();
+
+    const quotaProvider = () => elements(dashTree).find((element) => element.type === MagpieQuotaProvider)!;
+    expect(quotaProvider().props.sourceKey).toBe("auto|http://127.0.0.1:4190|bearer|1");
+
+    snapshot = {
+      ...snapshot,
+      magpie: {
+        mode: "manual",
+        baseUrl: "http://127.0.0.1:8080",
+        authScheme: "x-api-key",
+        keyConfigured: false,
+      },
+    };
+    onSnapshotListener?.(snapshot);
+    dashTree = dash.draw();
+    expect(quotaProvider().props.sourceKey).toBe("manual|http://127.0.0.1:8080|x-api-key|0");
+
+    const convProviderValue = () => elements(dashTree).find(
+      (element) => element.props?.value && typeof element.props.value === "object" && "deleteSession" in element.props.value && "historyFor" in element.props.value,
+    )!.props.value;
+
+    const firstId = snapshot.sessions[0]!.sessionId;
+    await convProviderValue().openSession(firstId);
+    await settle();
+    dashTree = dash.draw();
+    expect(convProviderValue().historyFor(firstId)?.items).toHaveLength(1);
+    expect(convProviderValue().evidenceFor(firstId)?.items).toHaveLength(1);
+
+    await convProviderValue().deleteSession(firstId);
+    await settle();
+    dashTree = dash.draw();
+    expect(convProviderValue().historyFor(firstId)).toBeUndefined();
+    expect(convProviderValue().evidenceFor(firstId)).toBeUndefined();
+
+    // Also evicts when session.deleted arrives as a live event
+    await convProviderValue().openSession(firstId);
+    await settle();
+    dashTree = dash.draw();
+    expect(convProviderValue().historyFor(firstId)?.items).toHaveLength(1);
+    expect(convProviderValue().evidenceFor(firstId)?.items).toHaveLength(1);
+
+    onEventListener?.({
+      seq: 99,
+      eventId: "ev-deleted-1",
+      sessionId: firstId,
+      origin: "system",
+      type: "session.deleted",
+      timestamp: Date.now(),
+      data: {},
+    });
+    dashTree = dash.draw();
+    await settle();
+    dashTree = dash.draw();
+    expect(convProviderValue().historyFor(firstId)).toBeUndefined();
+    expect(convProviderValue().evidenceFor(firstId)).toBeUndefined();
   });
 });

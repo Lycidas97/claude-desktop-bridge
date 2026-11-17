@@ -1,14 +1,25 @@
 .assistant-page { position: relative; min-width: 0; height: 100%; overflow-y: auto; background: var(--bg); }
 .assistant-page.desktop-page { padding: 0; }
+.assistant-desktop-header-band {
+  position: relative;
+  flex-shrink: 0;
+  width: 100%;
+  min-height: 52px;
+}
 .assistant-desktop-leading {
   position: absolute;
   z-index: 2;
-  top: 11px;
+  top: 10px;
   left: 14px;
   display: flex;
   align-items: center;
 }
-.assistant-page-content { width: min(100%, 860px); margin: 0 auto; padding: 12px 32px 40px 56px; }
+.assistant-page-header-inner {
+  width: min(100%, 860px);
+  margin: 0 auto;
+  padding: 8px 32px 8px 56px;
+}
+.assistant-page-content { width: min(100%, 860px); margin: 0 auto; padding: 4px 32px 40px 56px; }
 .assistant-page-mobile .assistant-page-content { padding: 10px 16px 32px; }
 .assistant-page .desktop-page-heading {
   display: flex;
@@ -16,7 +27,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 0;
 }
 .assistant-page .desktop-page-heading h1 {
   margin: 0;
@@ -75,7 +86,7 @@
 .conversation-stream > .assistant-mail-card, .desktop-conversation-stream > .assistant-mail-card { margin: 16px 0; }
 .assistant-page.is-conversation { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
 .assistant-page.is-conversation > .assistant-page-content { flex: 0 0 auto; padding-bottom: 0; }
-.assistant-page-mobile.is-conversation > .assistant-page-content:empty { display: none; }
+.assistant-page.is-conversation > .assistant-page-content:empty { display: none; }
 .assistant-view-tabs {
   display: inline-flex;
   align-items: center;

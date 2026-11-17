@@ -670,5 +670,3 @@ export function MobileSessionCatalog({
     </>
   );
 }
-
-export { MobileSessionCatalog as MobileSessionDrawer };

@@ -1504,6 +1504,7 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
                 ...readResult,
                 session: {
                   ...readResult.session,
+                  allowedActions: session.allowedActions,
                   ...host.nativeApproval.profile(),
                   ...(readResult.session.backgroundTasks ? { backgroundTasks: readResult.session.backgroundTasks } : {}),
                 },
@@ -4922,8 +4923,37 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "桌面会话同步草稿", "Draft edited in desktop 会话 reflects back in 助理");
   await page.locator(".assistant-conversation textarea").fill("");
   await capture("desktop-conversation");
+
+  // Verify macOS hiddenInset drag region and collapsed-sidebar layout on Desktop AssistantPage across 对话 and 邮件 views
+  await page.evaluate(() => { document.documentElement.dataset.macDesktop = "true"; });
+  const dragStylesExpanded = await page.evaluate(() => ({
+    topBand: getComputedStyle(document.querySelector(".assistant-desktop-header-band")).webkitAppRegion,
+    embeddedSubheader: getComputedStyle(document.querySelector(".assistant-conversation .m-header.is-embedded")).webkitAppRegion,
+  }));
+  assert.equal(dragStylesExpanded.topBand, "drag", "Top AssistantPage header band owns macOS window drag");
+  assert.equal(dragStylesExpanded.embeddedSubheader, "none", "Mid-page bound conversation header is not marked draggable");
+
+  await page.getByRole("button", { name: "收起侧栏", exact: true }).click();
+  await page.setViewportSize({ width: 860, height: 620 });
+  const collapsedConvPadding = await page.locator(".assistant-conversation .m-header.is-embedded").evaluate(
+    el => getComputedStyle(el).paddingLeft,
+  );
+  assert.notEqual(collapsedConvPadding, "84px", "Mid-page bound conversation header does not inherit 84px traffic-light indent");
+
   await page.getByRole("button", { name: "邮件", exact: true }).click();
   await eventually(() => cards().count(), 50, "Desktop uses the same mail page and RPC");
+  const expandBtnBounds = await page.getByRole("button", { name: "展开侧栏", exact: true }).boundingBox();
+  const collapsedHeadingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
+  const collapsedMailBounds = await cards().first().boundingBox();
+  assert.ok(expandBtnBounds && collapsedHeadingBounds && collapsedMailBounds, "Collapsed macOS AssistantPage elements have bounding boxes");
+  assert.ok(expandBtnBounds.x >= 84, `展开侧栏 clears macOS traffic lights (x=${expandBtnBounds.x})`);
+  assert.ok(collapsedHeadingBounds.x >= expandBtnBounds.x + expandBtnBounds.width + 8, `助理 heading clears 展开侧栏 at 860px minWidth (heading.x=${collapsedHeadingBounds.x}, btnRight=${expandBtnBounds.x + expandBtnBounds.width})`);
+  assert.ok(Math.abs(collapsedHeadingBounds.x - collapsedMailBounds.x) < 1, "Collapsed macOS Desktop title aligns with the mail content column");
+
+  await page.getByRole("button", { name: "展开侧栏", exact: true }).click();
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.evaluate(() => { delete document.documentElement.dataset.macDesktop; });
+
   const headingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
   const mailBounds = await cards().first().boundingBox();
   assert.ok(Math.abs(headingBounds.x - mailBounds.x) < 1, "Desktop title aligns with the mail content column");

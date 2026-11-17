@@ -9854,10 +9854,10 @@ button:disabled {
 }
 
 html[data-mac-desktop="true"] .desktop-session-sidebar.is-flat-tree .desktop-sidebar-heading,
-html[data-mac-desktop="true"] .desktop-conversation .m-header.is-embedded,
+html[data-mac-desktop="true"] .desktop-session-layout > .desktop-conversation .m-header.is-embedded,
 html[data-mac-desktop="true"] .new-chat-canvas.is-desktop .m-header.is-embedded,
-html[data-mac-desktop="true"] .desktop-workspace-canvas .m-header.is-embedded,
-html[data-mac-desktop="true"] .assistant-desktop-leading {
+html[data-mac-desktop="true"] .desktop-settings-topbar.m-header.is-embedded,
+html[data-mac-desktop="true"] .assistant-desktop-header-band {
   -webkit-app-region: drag;
 }
 
@@ -9875,7 +9875,13 @@ html[data-mac-desktop="true"] .m-header.is-embedded select,
 html[data-mac-desktop="true"] .m-header.is-embedded [role="button"],
 html[data-mac-desktop="true"] .m-header.is-embedded [role="combobox"],
 html[data-mac-desktop="true"] .m-header.is-embedded .theme-menu-anchor,
-html[data-mac-desktop="true"] .assistant-desktop-leading button {
+html[data-mac-desktop="true"] .assistant-desktop-header-band button,
+html[data-mac-desktop="true"] .assistant-desktop-header-band input,
+html[data-mac-desktop="true"] .assistant-desktop-header-band label,
+html[data-mac-desktop="true"] .assistant-desktop-header-band a,
+html[data-mac-desktop="true"] .assistant-desktop-header-band select,
+html[data-mac-desktop="true"] .assistant-desktop-header-band [role="button"],
+html[data-mac-desktop="true"] .assistant-desktop-header-band [role="combobox"] {
   -webkit-app-region: no-drag;
 }
 
@@ -9884,9 +9890,18 @@ html[data-mac-desktop="true"] .desktop-session-sidebar.is-flat-tree .desktop-sid
   padding: 6px 10px 6px 82px;
 }
 
-html[data-mac-desktop="true"] .desktop-session-layout.is-sidebar-collapsed .m-header.is-embedded,
-html[data-mac-desktop="true"] .desktop-session-layout.is-sidebar-collapsed .assistant-desktop-leading {
+html[data-mac-desktop="true"] .desktop-session-layout.is-sidebar-collapsed > .desktop-conversation .m-header.is-embedded,
+html[data-mac-desktop="true"] .desktop-session-layout.is-sidebar-collapsed .desktop-settings-topbar.m-header.is-embedded {
   padding-left: 84px;
+}
+
+html[data-mac-desktop="true"] .desktop-session-layout.is-sidebar-collapsed .assistant-desktop-leading {
+  left: 84px;
+}
+
+html[data-mac-desktop="true"] .desktop-session-layout.is-sidebar-collapsed .assistant-page-header-inner,
+html[data-mac-desktop="true"] .desktop-session-layout.is-sidebar-collapsed .assistant-page-content {
+  padding-left: 132px;
 }
 
 .sidebar-action-error {

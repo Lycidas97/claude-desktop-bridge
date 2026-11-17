@@ -83,6 +83,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
   }
 
   const events = eventsByHost[snapshot.host.hostId] ?? EMPTY_EVENTS;
+  const quotaSourceKey = `${snapshot.magpie?.mode ?? ""}|${snapshot.magpie?.baseUrl ?? ""}|${snapshot.magpie?.authScheme ?? ""}|${snapshot.magpie?.keyConfigured ? 1 : 0}`;
 
   async function request(input: LocalBridgeRequest): Promise<BridgeResponse> {
     return api!.request(input);
@@ -102,7 +103,7 @@ export function DesktopDashboard({ themeControl }: { themeControl: ThemeControl 
     <ConversationDraftsProvider activeHostId={snapshot.host.hostId}>
       <DesktopConversationProvider snapshot={visibleSnapshot!} events={events} eventsByHost={eventsByHost} apiRequest={request} onRefreshSnapshot={refreshSnapshot}>
         <MediaPreviewProvider request={(method, params) => request({ method, params })} supportsFileStat={snapshot.host.capabilities.includes("artifact.transfer.stat.v1")}>
-          <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={snapshot.runtime.detection?.refreshedAt ?? 0}>
+          <MagpieQuotaProvider loader={loadMagpieQuota} enabled={snapshot.host.capabilities.includes("plugin.magpie-quota.v1")} sourceKey={quotaSourceKey}>
             <AssistantMailProvider key={snapshot.host.hostId} snapshot={snapshot} online request={mailRequest} onDiscuss={() => setTab("assistant")}>
               <main className="desktop-shell-v2">
                 <section className="desktop-content-v2">

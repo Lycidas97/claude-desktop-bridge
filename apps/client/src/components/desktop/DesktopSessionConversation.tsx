@@ -339,6 +339,31 @@ function useDesktopConversationController(
     }));
   }
 
+  function evictSessionState(
+    sessionId: string,
+    targetHostId = latestRef.current.snapshot.host.hostId,
+  ): void {
+    const key = conversationDraftKey(targetHostId, sessionId);
+    openSeqRef.current.delete(key);
+    loadingHistoryRef.current.delete(key);
+    loadingEvidenceRef.current.delete(key);
+    updateHistories((current) => {
+      if (!(key in current)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    updateEvidence((current) => {
+      if (!(key in current)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    setSelectedByHost((current) => (
+      current[targetHostId] === sessionId ? { ...current, [targetHostId]: undefined } : current
+    ));
+  }
+
   function mountSession(
     sessionId: string,
     targetHostId = latestRef.current.snapshot.host.hostId,
@@ -392,11 +417,15 @@ function useDesktopConversationController(
     const hostId = input.snapshot.host.hostId;
     const hostEvents = filterEvents(input.events, hostId);
     for (const event of hostEvents) {
-      if (event.type !== "session.rewound" && event.type !== "session.compacted") continue;
+      if (event.type !== "session.rewound" && event.type !== "session.compacted" && event.type !== "session.deleted") continue;
       const eventKey = `${hostId}:${event.eventId}`;
       if (handledEventsRef.current.has(eventKey)) continue;
       handledEventsRef.current.add(eventKey);
       if (!event.sessionId) continue;
+      if (event.type === "session.deleted") {
+        evictSessionState(event.sessionId, hostId);
+        continue;
+      }
       const key = conversationDraftKey(hostId, event.sessionId);
       if (event.type === "session.rewound") {
         openSeqRef.current.set(key, (openSeqRef.current.get(key) ?? 0) + 1);
@@ -444,7 +473,7 @@ function useDesktopConversationController(
         method: "session.history",
         params: { sessionId, cursor: requestedCursor, limit: HISTORY_PAGE_SIZE },
       }));
-      if ((openSeqRef.current.get(key) ?? 0) !== startSeq) return;
+      if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
       updateHistories((value) => {
         const existingItems = value[key]?.items ?? current.items;
         return {
@@ -458,7 +487,7 @@ function useDesktopConversationController(
         };
       });
     } catch (failure) {
-      if ((openSeqRef.current.get(key) ?? 0) !== startSeq) return;
+      if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
       updateHistories((value) => ({
         ...value,
         [key]: {
@@ -493,7 +522,7 @@ function useDesktopConversationController(
         method: "evidence.list",
         params: { sessionId, cursor: requestedCursor, limit: 30 },
       }));
-      if ((openSeqRef.current.get(key) ?? 0) !== startSeq) return;
+      if (!loadingEvidenceRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
       updateEvidence((value) => {
         const existing = value[key]?.items ?? current.items;
         const merged = new Map(existing.map((item) => [item.id, item]));
@@ -509,7 +538,7 @@ function useDesktopConversationController(
         };
       });
     } catch {
-      if ((openSeqRef.current.get(key) ?? 0) !== startSeq) return;
+      if (!loadingEvidenceRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
       updateEvidence((value) => ({
         ...value,
         [key]: { ...(value[key] ?? current), status: "error" },
@@ -981,10 +1010,12 @@ function useDesktopConversationController(
       await latestRef.current.onRefreshSnapshot();
     },
     async deleteSession(sessionId) {
+      const targetHostId = latestRef.current.snapshot.host.hostId;
       unwrap(await latestRef.current.apiRequest({
         method: "session.delete",
         params: { sessionId },
       }));
+      evictSessionState(sessionId, targetHostId);
       await latestRef.current.onRefreshSnapshot();
     },
     onRefreshSnapshot: () => latestRef.current.onRefreshSnapshot(),

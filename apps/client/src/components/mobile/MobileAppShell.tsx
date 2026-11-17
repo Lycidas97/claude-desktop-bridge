@@ -1,5 +1,4 @@
 import { createContext, useContext, type ReactNode } from "react";
-import type { ThemeControl } from "../../hooks/useTheme.js";
 import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
 
 export type MobileTab = "sessions" | "assistant" | "computers" | "settings";
@@ -30,8 +29,6 @@ export function MobileAppShell({
   tab: MobileTab;
   onTabChange(tab: MobileTab): void;
   assistantAvailable?: boolean | undefined;
-  hasWorkspaceDrawer?: boolean | undefined;
-  themeControl?: ThemeControl | undefined;
   children: ReactNode;
 }) {
   const assistant = useAssistantMail();

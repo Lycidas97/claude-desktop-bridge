@@ -212,6 +212,13 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private readonly messageProjection = new Map<string, NativeMessageProjection>();
   private readonly contextStates = new Map<string, NativeContextState>();
   private readonly backgroundTasks = new Map<string, BridgeBackgroundTask[]>();
+  private readonly transcriptSubagentsInFlight = new Map<string, Promise<{
+    transcriptPath: string;
+    liveSince: number | undefined;
+    subagents: BridgeSubagentSummary[];
+  } | undefined>>();
+  private readonly backgroundTasksInFlight = new Map<string, Promise<BridgeBackgroundTask[]>>();
+  private catalogScanInFlight: Promise<ClaudeCatalogSnapshot> | undefined;
   private readonly permissionModeChanges = new Map<string, BridgeNativePermissionModeChange>();
   private readonly resolvingPermissions = new Set<string>();
   private readonly streams = new Map<string, string>();
@@ -809,13 +816,30 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async refreshDesktopConfiguration(sessionId: string): Promise<void> { await this.configuration(sessionId); }
 
-  private async transcriptSubagents(sessionId: string) {
+  private readCatalogSnapshot(): Promise<ClaudeCatalogSnapshot> {
+    if (this.catalogScanInFlight) return this.catalogScanInFlight;
+    const run = (this.options.scanCatalog?.() ?? scanClaudeCatalog(claudeRuntimePaths())).finally(() => {
+      if (this.catalogScanInFlight === run) this.catalogScanInFlight = undefined;
+    });
+    this.catalogScanInFlight = run;
+    return run;
+  }
+
+  private transcriptSubagents(sessionId: string) {
     const id = this.desktopId(sessionId);
-    const observed = (await (this.options.scanCatalog?.() ?? scanClaudeCatalog(claudeRuntimePaths())))
-      .sessions.find(session => session.desktopSessionId === id);
-    if (!observed?.transcriptPath) return undefined;
-    const liveSince = oldestLiveProcessStart(observed.activeProcesses);
-    return { transcriptPath: observed.transcriptPath, liveSince, subagents: await readClaudeTranscriptSubagents(observed.transcriptPath, liveSince) };
+    const existing = this.transcriptSubagentsInFlight.get(id);
+    if (existing) return existing;
+    const run = (async () => {
+      const observed = (await this.readCatalogSnapshot())
+        .sessions.find(session => session.desktopSessionId === id);
+      if (!observed?.transcriptPath) return undefined;
+      const liveSince = oldestLiveProcessStart(observed.activeProcesses);
+      return { transcriptPath: observed.transcriptPath, liveSince, subagents: await readClaudeTranscriptSubagents(observed.transcriptPath, liveSince) };
+    })().finally(() => {
+      if (this.transcriptSubagentsInFlight.get(id) === run) this.transcriptSubagentsInFlight.delete(id);
+    });
+    this.transcriptSubagentsInFlight.set(id, run);
+    return run;
   }
 
   private async enrichSubagentItems(sessionId: string, items: BridgeHistoryItem[]): Promise<BridgeSubagentSummary[] | undefined> {
@@ -825,21 +849,29 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return local?.subagents;
   }
 
-  async backgroundTaskDetails(sessionId: string): Promise<BridgeBackgroundTask[]> {
+  backgroundTaskDetails(sessionId: string): Promise<BridgeBackgroundTask[]> {
     const id = this.desktopId(sessionId);
-    const previousSession = JSON.stringify(this.session(id));
-    const local = await this.transcriptSubagents(sessionId);
-    let tasks: BridgeBackgroundTask[] = [];
-    if (local) {
-      tasks = await readClaudeTranscriptBackgroundTasks(local.transcriptPath, local.subagents, local.liveSince);
-      const projection = this.messageProjection.get(id) ?? {};
-      projection.tasks = new Map(local.subagents.map(task => [task.agentId, task]));
-      this.messageProjection.set(id, projection);
-    }
-    this.backgroundTasks.set(id, tasks);
-    this.projectSessions();
-    if (JSON.stringify(this.session(id)) !== previousSession) this.emit("changed");
-    return tasks;
+    const existing = this.backgroundTasksInFlight.get(id);
+    if (existing) return existing;
+    const run = (async () => {
+      const previousSession = JSON.stringify(this.session(id));
+      const local = await this.transcriptSubagents(sessionId);
+      let tasks: BridgeBackgroundTask[] = [];
+      if (local) {
+        tasks = await readClaudeTranscriptBackgroundTasks(local.transcriptPath, local.subagents, local.liveSince);
+        const projection = this.messageProjection.get(id) ?? {};
+        projection.tasks = new Map(local.subagents.map(task => [task.agentId, task]));
+        this.messageProjection.set(id, projection);
+      }
+      this.backgroundTasks.set(id, tasks);
+      this.projectSessions();
+      if (JSON.stringify(this.session(id)) !== previousSession) this.emit("changed");
+      return tasks;
+    })().finally(() => {
+      if (this.backgroundTasksInFlight.get(id) === run) this.backgroundTasksInFlight.delete(id);
+    });
+    this.backgroundTasksInFlight.set(id, run);
+    return run;
   }
 
   private async rewindTarget(sessionId: string, messageId: string): Promise<string> {
@@ -1023,7 +1055,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   async readToolDetail(sessionId: string, toolUseId: string, agentId?: string): Promise<BridgeToolCallDetail> {
     const id = this.desktopId(sessionId);
     if (agentId !== undefined) {
-      const observed = (await (this.options.scanCatalog?.() ?? scanClaudeCatalog(claudeRuntimePaths())))
+      const observed = (await this.readCatalogSnapshot())
         .sessions.find(session => session.desktopSessionId === id);
       if (!observed?.transcriptPath) throw new NativeCallError("Subagent transcript not found");
       const detail = await readSubagentToolCallDetail({

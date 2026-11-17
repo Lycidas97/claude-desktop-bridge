@@ -777,41 +777,34 @@ function useDesktopConversationController(
   }, [enabled]);
 
   const currentHostId = input.snapshot.host.hostId;
-
-  return useMemo<DesktopConversationController>(() => ({
-    hostId: currentHostId,
-    filterEvents,
-    selectedSessionFor: (hostId) => selectedByHost[hostId],
-    selectSession: (hostId, sessionId) => {
-      setSelectedByHost((current) => (
-        Object.is(current[hostId], sessionId) ? current : { ...current, [hostId]: sessionId }
-      ));
-    },
-    historyFor: (sessionId, hostId = latestRef.current.snapshot.host.hostId) => (
-      histories[conversationDraftKey(hostId, sessionId)]
-    ),
-    evidenceFor: (sessionId, hostId = latestRef.current.snapshot.host.hostId) => (
-      evidence[conversationDraftKey(hostId, sessionId)]
-    ),
-    artifactPreviews: artifactPreviewsByHost[currentHostId] ?? EMPTY_PREVIEWS,
-    artifactTransfers: artifactTransfersByHost[currentHostId] ?? EMPTY_TRANSFERS,
-    mountSession,
-    resetSessionHistory,
-    openSession,
-    async refreshSession(
-      sessionId,
-      targetHostId = latestRef.current.snapshot.host.hostId,
-    ) {
-      await latestRef.current.onRefreshSnapshot();
-      return runOpenSession(sessionId, targetHostId, true);
-    },
-    loadOlderHistory,
-    loadOlderEvidence,
-    loadEvidenceDetails,
-    previewArtifact,
-    downloadArtifact,
-    downloadSessionFile,
-    uploadFile,
+  const stableActions = useRef<Pick<
+    DesktopConversationController,
+    | "sendTurn"
+    | "interruptTurn"
+    | "steerQueuedTurn"
+    | "cancelQueuedTurn"
+    | "stopSubagent"
+    | "resolveUncertainDelivery"
+    | "resolvePermission"
+    | "resolvePrompt"
+    | "readPrAutoFix"
+    | "setPrAutoFix"
+    | "loadBackgroundTasks"
+    | "loadSessionConfiguration"
+    | "configureSession"
+    | "loadSessionCommands"
+    | "runSessionCommand"
+    | "renameSessionByCommand"
+    | "renameSession"
+    | "moveSessionSection"
+    | "loadSessionPermissions"
+    | "saveSessionPermissions"
+    | "previewRewind"
+    | "rewindSession"
+    | "forkSession"
+    | "archiveSession"
+    | "onRefreshSnapshot"
+  >>({
     async sendTurn(sessionId, text, attachments, mailRefId) {
       const response = await latestRef.current.apiRequest({
         method: "turn.start",
@@ -1009,6 +1002,44 @@ function useDesktopConversationController(
       }));
       await latestRef.current.onRefreshSnapshot();
     },
+    onRefreshSnapshot: () => latestRef.current.onRefreshSnapshot(),
+  }).current;
+
+  return useMemo<DesktopConversationController>(() => ({
+    hostId: currentHostId,
+    filterEvents,
+    selectedSessionFor: (hostId) => selectedByHost[hostId],
+    selectSession: (hostId, sessionId) => {
+      setSelectedByHost((current) => (
+        Object.is(current[hostId], sessionId) ? current : { ...current, [hostId]: sessionId }
+      ));
+    },
+    historyFor: (sessionId, hostId = latestRef.current.snapshot.host.hostId) => (
+      histories[conversationDraftKey(hostId, sessionId)]
+    ),
+    evidenceFor: (sessionId, hostId = latestRef.current.snapshot.host.hostId) => (
+      evidence[conversationDraftKey(hostId, sessionId)]
+    ),
+    artifactPreviews: artifactPreviewsByHost[currentHostId] ?? EMPTY_PREVIEWS,
+    artifactTransfers: artifactTransfersByHost[currentHostId] ?? EMPTY_TRANSFERS,
+    mountSession,
+    resetSessionHistory,
+    openSession,
+    async refreshSession(
+      sessionId,
+      targetHostId = latestRef.current.snapshot.host.hostId,
+    ) {
+      await latestRef.current.onRefreshSnapshot();
+      return runOpenSession(sessionId, targetHostId, true);
+    },
+    loadOlderHistory,
+    loadOlderEvidence,
+    loadEvidenceDetails,
+    previewArtifact,
+    downloadArtifact,
+    downloadSessionFile,
+    uploadFile,
+    ...stableActions,
     async deleteSession(sessionId) {
       const targetHostId = latestRef.current.snapshot.host.hostId;
       unwrap(await latestRef.current.apiRequest({
@@ -1018,7 +1049,6 @@ function useDesktopConversationController(
       evictSessionState(sessionId, targetHostId);
       await latestRef.current.onRefreshSnapshot();
     },
-    onRefreshSnapshot: () => latestRef.current.onRefreshSnapshot(),
   }), [
     artifactPreviewsByHost,
     artifactTransfersByHost,
@@ -1026,6 +1056,7 @@ function useDesktopConversationController(
     evidence,
     histories,
     selectedByHost,
+    stableActions,
   ]);
 }
 

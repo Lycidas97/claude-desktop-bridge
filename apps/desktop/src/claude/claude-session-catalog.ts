@@ -330,9 +330,25 @@ async function hasActiveTask(tasksRoot: string, sessionId: string): Promise<bool
   return false;
 }
 
-export async function scanClaudeCatalog(
+const inFlightCatalogScans = new Map<string, Promise<ClaudeCatalogSnapshot>>();
+
+export function scanClaudeCatalog(
   paths: ClaudeRuntimePaths,
   platform = process.platform,
+): Promise<ClaudeCatalogSnapshot> {
+  const key = JSON.stringify([platform, paths.sessions, paths.tasks, paths.projects, paths.desktopSessions]);
+  const existing = inFlightCatalogScans.get(key);
+  if (existing) return existing;
+  const run = scanClaudeCatalogOnce(paths, platform).finally(() => {
+    if (inFlightCatalogScans.get(key) === run) inFlightCatalogScans.delete(key);
+  });
+  inFlightCatalogScans.set(key, run);
+  return run;
+}
+
+async function scanClaudeCatalogOnce(
+  paths: ClaudeRuntimePaths,
+  platform: NodeJS.Platform,
 ): Promise<ClaudeCatalogSnapshot> {
   diag("catalog.start");
   const [desktopState, activeSessions] = await Promise.all([

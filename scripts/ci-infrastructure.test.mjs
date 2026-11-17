@@ -318,7 +318,7 @@ test('Desktop startup leaves relay diagnostics to the configured Native connecti
     const probes = [], timers = [];
     vm.runInNewContext(code.replace(/^import .*;\r?\n/gmu, ''), {
       window: desktop ? { bridgeDesktop: {} } : {}, navigator: {},
-      document: { getElementById: () => ({}) },
+      document: { documentElement: { setAttribute() {} }, getElementById: () => ({}) },
       jsx: () => ({}), StrictMode: {}, App: {}, createRoot: () => ({ render() {} }),
       installDiagnostics() {}, installSpecularHighlight() {},
       setTimeout(callback) { timers.push(callback); },

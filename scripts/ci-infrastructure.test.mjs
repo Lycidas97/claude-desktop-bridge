@@ -353,11 +353,12 @@ test('scenario cleanup closes the page facade before late ACKs can see OPEN', as
 });
 
 test('browser receipt assertion waits for a Native reply after the receipt is created', async () => {
-  const source = await readFile(new URL('./browser-e2e.mjs', import.meta.url), 'utf8');
+  const helpers = await readFile(new URL('./browser-e2e/helpers.mjs', import.meta.url), 'utf8');
+  const source = await readFile(new URL('./browser-e2e/scenarios/native-queue.mjs', import.meta.url), 'utf8');
   const start = source.indexOf('  await eventually(() => host.nativeApproval.receipts().length, 4,');
   let state = 'dispatching';
   await vm.runInNewContext(`(async () => {
-    ${source.match(/async function eventually\([\s\S]*?\n\}/u)[0]}
+    ${helpers.match(/async function eventually\([\s\S]*?\n\}/u)[0]}
     ${source.slice(start, source.indexOf('  await host.syncNativeQueue(await host.nativeApproval.event(', start))}
   })()`, {
     assert, isDeepStrictEqual: require('node:util').isDeepStrictEqual,

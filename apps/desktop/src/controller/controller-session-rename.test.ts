@@ -11,16 +11,14 @@ function fixture(turnState: BridgeTurnState = "running", archivedAt?: number) {
     parentSessionId: "parent-1", forkLabel: "fork", model: "model-1", effort: "high",
     ...(archivedAt !== undefined ? { archivedAt } : {}),
   };
-  const titles = new Map<string, string>();
-  const row = () => ({ ...session, title: titles.get(session.sessionId) ?? session.title });
-  const setSessionTitle = vi.fn((id: string, title: string) => titles.set(id, title));
+  let nativeSession = session;
   const controller = createControllerFixture({
     broker: {
-      listSessions: () => [row()], session: () => row(),
+      listSessions: () => [nativeSession], session: () => nativeSession,
       refreshDesktopConfiguration: vi.fn(async () => undefined), history: vi.fn(async () => ({ items: [] })),
-      rename: vi.fn(async (id: string, title: string) => { setSessionTitle(id, title); }),
+      rename: vi.fn(async (_id: string, title: string) => { nativeSession = { ...nativeSession, title }; }),
     },
-    conversationState: { setSessionTitle },
+    conversationState: {},
     snapshot: async (): Promise<Pick<DesktopControlSnapshot, "sessions" | "permissions">> => ({ sessions: controller.allSessions(), permissions: [] }),
     claudePermissions: () => [],
     eventLog: { latestSeq: () => 7, append: vi.fn() },
@@ -39,7 +37,6 @@ describe("session.rename", () => {
     controller.broadcast.mockClear();
     expect(await rename("  手机显示名  ")).toEqual({ session: { ...session, title: "手机显示名" } });
     expect(controller.broker.rename).toHaveBeenCalledExactlyOnceWith(session.sessionId, "手机显示名");
-    expect(controller.conversationState.setSessionTitle).toHaveBeenCalledExactlyOnceWith(session.sessionId, "手机显示名");
     expect(controller.broadcast).toHaveBeenCalledExactlyOnceWith({ kind: "snapshot", snapshot: { sessions: [{ ...session, title: "手机显示名" }], permissions: [] } }, true);
     expect(controller.eventLog.append).not.toHaveBeenCalled();
     expect(await controller.handleRequest({ kind: "request", requestId: "listing", idempotencyKey: "listing", method: "session.list", params: { search: "手机显示名" } }, "mobile")).toEqual({ sessions: [{ ...session, title: "手机显示名" }] });
@@ -50,28 +47,27 @@ describe("session.rename", () => {
   it.each(["codex-desktop:native-1", "hermes-desktop:native-1"])("rejects saved external runtime identity for %s", async id => {
     const { controller, rename } = fixture();
     await expect(rename("外部显示名", id)).rejects.toMatchObject({ code: "UNSUPPORTED" });
-    expect(controller.conversationState.setSessionTitle).not.toHaveBeenCalled();
     expect(controller.broker.rename).not.toHaveBeenCalled();
   });
 
   it.each(["", " \n\t ", null, 42, undefined])("rejects invalid title %j before writing", async title => {
     const { controller, rename } = fixture();
     await expect(rename(title)).rejects.toThrow(/title/u);
-    expect(controller.conversationState.setSessionTitle).not.toHaveBeenCalled();
+    expect(controller.broker.rename).not.toHaveBeenCalled();
     expect(controller.broadcast).not.toHaveBeenCalled();
   });
 
   it("does not write or broadcast an unchanged normalized title", async () => {
     const { controller, session, rename } = fixture();
     expect(await rename(`  ${session.title}  `)).toEqual({ session });
-    expect(controller.conversationState.setSessionTitle).not.toHaveBeenCalled();
+    expect(controller.broker.rename).not.toHaveBeenCalled();
     expect(controller.broadcast).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown session ID without writing", async () => {
     const { controller, rename } = fixture();
     await expect(rename("Name", "missing")).rejects.toThrow("Session not found");
-    expect(controller.conversationState.setSessionTitle).not.toHaveBeenCalled();
+    expect(controller.broker.rename).not.toHaveBeenCalled();
   });
 
   it("preserves native archive metadata when renaming", async () => {
@@ -79,19 +75,10 @@ describe("session.rename", () => {
     expect(await rename("归档名称")).toEqual({ session: { ...session, title: "归档名称" } });
   });
 
-  it("reports persistence failure without publishing success", async () => {
-    const { controller, rename } = fixture();
-    controller.conversationState.setSessionTitle.mockImplementation(() => { throw new Error("database write failed"); });
-    await expect(rename("Name")).rejects.toThrow("database write failed");
-    expect(controller.broadcast).not.toHaveBeenCalled();
-    expect(controller.allSessions()[0]?.title).toBe("原生标题");
-  });
-
   it("does not publish a title when native rename fails", async () => {
     const { controller, rename } = fixture();
-    controller.broker.rename.mockRejectedValueOnce(new Error("transcript is unavailable"));
-    await expect(rename("Name")).rejects.toThrow("transcript is unavailable");
-    expect(controller.conversationState.setSessionTitle).not.toHaveBeenCalled();
+    controller.broker.rename.mockRejectedValueOnce(new Error("Native rename unavailable"));
+    await expect(rename("Name")).rejects.toThrow("Native rename unavailable");
     expect(controller.broadcast).not.toHaveBeenCalled();
   });
 
@@ -99,6 +86,7 @@ describe("session.rename", () => {
     const { controller, rename } = fixture();
     Object.assign(controller, { conversationState: undefined });
     await expect(rename("Name")).rejects.toThrow(/unavailable/u);
+    expect(controller.broker.rename).not.toHaveBeenCalled();
     expect(controller.broadcast).not.toHaveBeenCalled();
   });
 

@@ -578,6 +578,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
     diag("project.start", { count: this.native.size });
     this.sessions.clear();
     const ready = this.inspector.ready;
+    const queuedBySession = new Map<string, string[]>();
+    for (const receipt of this.native.size ? this.receipts.values() : []) {
+      if (receipt.state !== "queued") continue;
+      const { sessionId, commandId } = receipt;
+      const ids = queuedBySession.get(sessionId);
+      if (ids) ids.push(commandId);
+      else queuedBySession.set(sessionId, [commandId]);
+    }
     for (const native of this.native.values()) {
       const sessionId = native.sessionId;
       const tasks = [...this.messageProjection.get(sessionId)?.tasks?.values() ?? []].filter(task => task.state === "running");
@@ -588,7 +596,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
           : undefined;
       const waiting = [...this.permissions.values()].some(permission => permission.sessionId === sessionId) || [...this.prompts.values()].some(prompt => prompt.sessionId === sessionId);
       const running = native.turnRunning === true;
-      const pendingCommandIds = [...this.receipts.values()].filter(receipt => receipt.sessionId === sessionId && receipt.state === "queued").map(receipt => receipt.commandId);
+      const pendingCommandIds = queuedBySession.get(sessionId) ?? [];
       const modeChange = this.permissionModeChanges.get(sessionId);
       const contextUsage = this.projectedContextUsage(sessionId, native.model);
       const parentSessionId = native.forkedFromSessionId ?? native.spawnedFrom?.sessionId;

@@ -1895,6 +1895,40 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it.each([[4, 32], [16, 32], [16, 128]])("projects %i sessions with at most one pass over %i receipts", async (sessionCount, receiptCount) => {
+    const f = await fixture();
+    const native = new NativeDesktop();
+    const bridge = new ClaudeDesktopBridge({ ...f.options, inspector: native });
+    try {
+      native.sessions = Array.from({ length: sessionCount }, (_, index) => ({ ...native.sessions[0], sessionId: `local-${index}` }));
+      for (let index = 0; index < receiptCount; index++) {
+        f.state.saveNativeDesktopReceipt({
+          idempotencyKey: `key-${index}`, commandId: `command-${index}`, requestId: `request-${index}`, messageId: `message-${index}`,
+          sessionId: index === 3 ? "local-hidden" : `local-${index % 2}`,
+          state: index < 4 ? "queued" : index === 4 ? "dispatching" : "completed",
+        });
+      }
+      let reads = 0;
+      const receipts = f.state.listNativeDesktopReceipts().map(receipt => new Proxy(receipt, {
+        get(target, key, receiver) {
+          if (key === "sessionId" || key === "state") reads++;
+          return Reflect.get(target, key, receiver);
+        },
+      }));
+      vi.spyOn(f.state, "listNativeDesktopReceipts").mockReturnValue(receipts);
+      await bridge.initialize();
+      expect(f.state.nativeDesktopReceipt("key-4")?.state).toBe("uncertain");
+      reads = 0;
+      expect(await bridge.refreshRuntime()).toBe(true);
+      expect(bridge.listSessions()).toHaveLength(sessionCount);
+      expect(bridge.session("local-0")).toMatchObject({ pendingCount: 2, pendingCommandIds: ["command-0", "command-2"] });
+      expect(bridge.session("local-1")).toMatchObject({ pendingCount: 1, pendingCommandIds: ["command-1"] });
+      expect(bridge.session("local-2")).toMatchObject({ pendingCount: 0, pendingCommandIds: [] });
+      // Each receipt needs at most its state and session ID, independent of session count.
+      expect(reads).toBeLessThanOrEqual(2 * receiptCount);
+    } finally { await bridge.close(); await f.close(); }
+  });
+
   it("persists queued, started and correlated results on exact UUID history snapshots across restarts", async () => {
     const f = await fixture();
     let restarted: ClaudeDesktopBridge | undefined;
@@ -1906,8 +1940,10 @@ describe("Claude native relay", () => {
       expect(f.state.nativeDesktopReceipt("key")?.state).toBe("submitted");
       await f.message({ type: "command_lifecycle", command_uuid: first.messageId, state: "queued" });
       expect(f.state.nativeDesktopReceipt("key")?.state).toBe("queued");
+      expect(f.bridge.session("local-native")).toMatchObject({ pendingCount: 1, pendingCommandIds: [first.commandId] });
       expect((await f.bridge.history("local-native")).items[0]).toMatchObject({ delivery: "queued", commandId: first.commandId, requestId: first.requestId });
       await f.message({ type: "command_lifecycle", command_uuid: first.messageId, state: "started" });
+      expect(f.bridge.session("local-native")).toMatchObject({ pendingCount: 0, pendingCommandIds: [] });
       await f.message({ type: "user", uuid: first.messageId, message: { content: "hello" } });
       expect(f.eventLog.latestItem("local-native", "user.message.accepted", first.messageId)?.data.delivery).toBe("running");
       expect((await f.bridge.history("local-native")).items[0]?.delivery).toBe("running");

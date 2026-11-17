@@ -201,27 +201,28 @@ export async function resolveActiveClaudeGateway({
   roots?: string[];
   settingsPath?: string;
   allowAmbientDiscovery?: boolean;
-} = {}): Promise<ClaudeGatewayConfig | undefined> {
+} = {}): Promise<{ gateway: ClaudeGatewayConfig; profileModels?: BridgeModelInfo[] } | undefined> {
   const credentialPath = allowAmbientDiscovery
     ? await findClaudeHostCredentials(environment, home, roots, platform)
     : undefined;
   if (credentialPath) {
     const host = await resolveClaudeGatewayConfig({ credentialPath, environment: {} });
-    if (host && (host.authToken || host.apiKey)) return host;
+    if (host && (host.authToken || host.apiKey)) return { gateway: host };
   }
   if (allowAmbientDiscovery) {
     const fixed = await findClaudeFixedGateway(environment, home, roots, platform);
-    if (fixed) return fixed.gateway;
+    if (fixed) return { gateway: fixed.gateway, profileModels: fixed.inferenceModels };
   }
 
   const fromSettings = await readSettingsDirectApiKey(settingsPath);
-  if (fromSettings || !allowAmbientDiscovery) return fromSettings;
+  if (fromSettings) return { gateway: fromSettings };
+  if (!allowAmbientDiscovery) return undefined;
 
   const fromEnvironment = await resolveClaudeGatewayConfig({ ...(credentialPath ? { credentialPath } : {}), environment });
-  if (fromEnvironment && (fromEnvironment.authToken || fromEnvironment.apiKey)) return fromEnvironment;
+  if (fromEnvironment && (fromEnvironment.authToken || fromEnvironment.apiKey)) return { gateway: fromEnvironment };
   const apiKey = environment.ANTHROPIC_API_KEY?.trim();
   return apiKey && environment.ANTHROPIC_BASE_URL === undefined
-    ? { baseUrl: "https://api.anthropic.com", apiKey, authScheme: "x-api-key" }
+    ? { gateway: { baseUrl: "https://api.anthropic.com", apiKey, authScheme: "x-api-key" } }
     : undefined;
 }
 

@@ -4740,6 +4740,68 @@ describe("manual session title persistence and automatic first-turn title genera
     }
   });
 
+  it("uses the fixed Desktop profile model for titles in both Magpie modes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-profile-"));
+    const state = new ConversationStateStore({ databasePath: join(directory, "state.sqlite") });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    const appData = join(directory, "AppData", "Roaming");
+    const library = join(appData, "Claude-3p", "configLibrary");
+    await mkdir(library, { recursive: true });
+    await writeFile(join(library, "_meta.json"), JSON.stringify({ appliedId: "active" }));
+    await writeFile(join(library, "active.json"), JSON.stringify({
+      inferenceProvider: "gateway",
+      inferenceGatewayBaseUrl: "https://desktop.example.test",
+      inferenceGatewayAuthScheme: "x-api-key",
+      inferenceGatewayApiKey: "desktop-key",
+      inferenceModels: [{ name: "desktop-profile-model", labelOverride: "Desktop profile model" }],
+    }), { mode: 0o600 });
+
+    const fetchImpl = vi.fn<typeof fetch>(async (url) => {
+      if (url === "https://manual.example.test/v1/models?limit=1000") {
+        return Response.json({ data: [{ id: "manual-only-model" }] });
+      }
+      if (url === "https://desktop.example.test/v1/messages") {
+        return Response.json({ content: [{ type: "text", text: "Desktop profile title" }] });
+      }
+      return new Response(null, { status: 503 });
+    });
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath: join(directory, "settings.json"), eventLog, conversationState: state, inspector: native,
+      magpieConnection: new MagpieConnectionRepository(join(directory, "magpie.json"), {
+        isEncryptionAvailable: () => true,
+        encryptString: text => Buffer.from(text, "utf8"),
+        decryptString: buffer => buffer.toString("utf8"),
+      }),
+      fetchImpl, platform: "win32", environment: { APPDATA: appData }, home: directory,
+      scanCatalog: async () => ({ projects: [], sessions: [], observedAt: 0 }), refreshIntervalMs: 60_000, autoTitleGraceMs: 0,
+    });
+    try {
+      await bridge.initialize();
+      for (const mode of ["auto", "manual"]) {
+        if (mode === "manual") {
+          await bridge.saveMagpieConnection({ mode, baseUrl: "https://manual.example.test", authScheme: "x-api-key", apiKey: "manual-key" });
+        }
+        fetchImpl.mockClear();
+        const session = await bridge.createSession("/new-project");
+        await bridge.startTurn({ ...input, sessionId: session.sessionId, requestId: mode, idempotencyKey: mode });
+        await vi.waitFor(() => expect(bridge.session(session.sessionId)?.title).toBe("Desktop profile title"));
+        expect.soft(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"), mode).toEqual([
+          ["https://desktop.example.test/v1/messages", expect.objectContaining({
+            body: expect.stringContaining('"model":"desktop-profile-model"'),
+          })],
+        ]);
+      }
+    } finally {
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("never overwrites a title populated natively or via user rename while auto-title generation is in flight", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-race-"));
     const state = new ConversationStateStore({

@@ -1389,19 +1389,20 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const allowAmbientDiscovery = Boolean(
         this.options.magpieConnection || this.options.fetchImpl || this.options.environment || this.options.home,
       );
-      const gateway = await resolveActiveClaudeGateway({
+      const titleGateway = await resolveActiveClaudeGateway({
         ...(this.options.environment ? { environment: this.options.environment } : {}),
         ...(this.options.home ? { home: this.options.home } : {}),
         ...(this.options.platform ? { platform: this.options.platform } : {}),
         settingsPath: this.options.settingsPath,
         allowAmbientDiscovery,
       });
-      if (!gateway || this.isSessionUnavailableForAutoTitle(id)) return;
+      if (!titleGateway || this.isSessionUnavailableForAutoTitle(id)) return;
 
+      const { gateway, profileModels } = titleGateway;
       const catalogModels = !this.options.magpieConnection?.isManual()
         && this.gatewayModelsCache?.gatewayKey === JSON.stringify(gateway)
         ? this.models
-        : this.desktopPickerModels;
+        : mergeModelCatalog(this.desktopPickerModels, profileModels);
       const nativeModel = this.native.get(id)?.model;
       const preferredModel = this.resolveSessionModel(id, nativeModel, catalogModels ?? []).configModel ?? nativeModel;
       const generatedTitle = await generateSessionTitle({

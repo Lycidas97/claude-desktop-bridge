@@ -4604,7 +4604,7 @@ describe("manual session title persistence and automatic first-turn title genera
     }
   });
 
-  it("auto-titles a blank session non-blockingly on first turn via gateway /v1/messages at most once, and skips sidechats", async () => {
+  it("auto-titles the first turn asynchronously via the Desktop gateway with a manual Magpie gateway saved, and skips sidechats", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-"));
     const state = new ConversationStateStore({
       databasePath: join(directory, "state.sqlite"),
@@ -4620,26 +4620,34 @@ describe("manual session title persistence and automatic first-turn title genera
 
     let releaseTitleResponse!: (response: Response) => void;
     const fetchImpl = vi.fn<typeof fetch>((url) => {
-      if (String(url).endsWith("/v1/models?limit=1000")) {
-        return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+      if (url === "https://manual.example.test/v1/models?limit=1000") {
+        return Promise.resolve(Response.json({ data: [{ id: "manual-only-model" }] }));
       }
       return new Promise<Response>((resolve) => {
         releaseTitleResponse = resolve;
       });
     });
 
+    const titleToken = "fixture-title-key";
     await writeFile(join(directory, "settings.json"), JSON.stringify({
       env: {
         ANTHROPIC_BASE_URL: "https://gateway.example.test",
-        ANTHROPIC_AUTH_TOKEN: "test-gateway-token",
+        ANTHROPIC_AUTH_TOKEN: titleToken,
       },
     }));
 
+    const magpieConnection = new MagpieConnectionRepository(join(directory, "magpie.json"), {
+      isEncryptionAvailable: () => true,
+      encryptString: text => Buffer.from(text, "utf8"),
+      decryptString: buffer => buffer.toString("utf8"),
+    });
+    await magpieConnection.save({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "x-api-key", apiKey: "manual-key" });
     const bridge = new ClaudeDesktopBridge({
       settingsPath: join(directory, "settings.json"),
       eventLog,
       conversationState: state,
       inspector: native,
+      magpieConnection,
       fetchImpl,
       environment: {},
       home: directory,
@@ -4664,6 +4672,12 @@ describe("manual session title persistence and automatic first-turn title genera
       });
       expect(receipt.state).toBe("submitted");
       await vi.waitFor(() => expect(releaseTitleResponse).toBeTypeOf("function"));
+      expect.soft(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST")).toEqual([
+        ["https://gateway.example.test/v1/messages", expect.objectContaining({
+          headers: expect.objectContaining({ authorization: `Bearer ${titleToken}`, "x-api-key": titleToken }),
+          body: expect.stringContaining('"model":"claude-3-5-haiku-latest"'),
+        })],
+      ]);
       expect(bridge.session(blank.sessionId)?.title).toBe("Claude 会话");
 
       const changed = once(bridge, "changed");
@@ -4708,6 +4722,108 @@ describe("manual session title persistence and automatic first-turn title genera
       });
       await new Promise(resolve => setTimeout(resolve, 25));
       expect(native.calls.some(call => call.method === "updateSession" && call.args[0] === "side-1")).toBe(false);
+
+      await writeFile(join(directory, "settings.json"), "{}");
+      fetchImpl.mockClear().mockResolvedValue(Response.json({ content: [{ type: "text", text: "来自手动网关" }] }));
+      const noGateway = await bridge.createSession("/new-project");
+      const titleTask = vi.spyOn(bridge as unknown as { autoTitleSession(): Promise<void> }, "autoTitleSession");
+      await bridge.startTurn({ ...input, sessionId: noGateway.sessionId, text: "没有可用的 Desktop 网关" });
+      expect(titleTask).toHaveBeenCalledOnce();
+      await titleTask.mock.results[0]!.value;
+      expect.soft(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST")).toEqual([]);
+      expect(bridge.session(noGateway.sessionId)?.title).toBe("Claude 会话");
+    } finally {
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["fixed", "host-auth", "host-url"] as const)("uses the matching Desktop profile models for %s titles in both Magpie modes", async (source) => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-profile-"));
+    const state = new ConversationStateStore({ databasePath: join(directory, "state.sqlite") });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    const appData = join(directory, "AppData", "Roaming");
+    const library = join(appData, "Claude-3p", "configLibrary");
+    await mkdir(library, { recursive: true });
+    await writeFile(join(library, "_meta.json"), JSON.stringify({ appliedId: "active" }));
+    await writeFile(join(library, "active.json"), JSON.stringify({
+      inferenceProvider: "gateway",
+      inferenceGatewayBaseUrl: "https://desktop.example.test",
+      inferenceGatewayAuthScheme: "x-api-key",
+      inferenceGatewayApiKey: "desktop-key",
+      inferenceModels: [{ name: "desktop-profile-model", labelOverride: "Desktop profile model" }],
+    }), { mode: 0o600 });
+
+    const hostPath = join(appData, "Claude-3p", "host-creds-title.json");
+    const baseUrl = source === "host-url" ? "https://host.example.test" : "https://desktop.example.test";
+    if (source !== "fixed") {
+      await writeFile(hostPath, JSON.stringify({ env: {
+        ANTHROPIC_API_KEY: "host-key",
+        CLAUDE_CODE_HOST_AUTH_ENV_VAR: "ANTHROPIC_API_KEY",
+        ...(source === "host-url" ? { ANTHROPIC_BASE_URL: baseUrl } : {}),
+      } }), { mode: 0o600 });
+    }
+    let now = 1_000;
+    let desktopCatalogAvailable = false;
+    const desktopModelsUrl = `${baseUrl}/v1/models?limit=1000`;
+    const fetchImpl = vi.fn<typeof fetch>(async (url) => {
+      if (url === "https://manual.example.test/v1/models?limit=1000") {
+        return Response.json({ data: [{ id: "manual-only-model" }] });
+      }
+      if (url === desktopModelsUrl && desktopCatalogAvailable) {
+        return Response.json({ data: [{ id: "host-only-model" }] });
+      }
+      if (url === `${baseUrl}/v1/messages`) {
+        return Response.json({ content: [{ type: "text", text: "Desktop profile title" }] });
+      }
+      return new Response(null, { status: 503 });
+    });
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath: join(directory, "settings.json"), eventLog, conversationState: state, inspector: native,
+      magpieConnection: new MagpieConnectionRepository(join(directory, "magpie.json"), {
+        isEncryptionAvailable: () => true,
+        encryptString: text => Buffer.from(text, "utf8"),
+        decryptString: buffer => buffer.toString("utf8"),
+      }),
+      fetchImpl, platform: "win32", environment: { APPDATA: appData, ...(source === "fixed" ? {} : { CLAUDE_CODE_HOST_CREDS_FILE: hostPath }) }, home: directory,
+      scanCatalog: async () => ({ projects: [], sessions: [], observedAt: 0 }), refreshIntervalMs: 60_000, autoTitleGraceMs: 0,
+      now: () => now,
+    });
+    async function expectTitleModel(requestId: string, model: string) {
+      fetchImpl.mockClear();
+      const session = await bridge.createSession("/new-project");
+      await bridge.startTurn({ ...input, sessionId: session.sessionId, requestId, idempotencyKey: requestId });
+      await vi.waitFor(() => expect(bridge.session(session.sessionId)?.title).toBe("Desktop profile title"));
+      expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"), requestId).toEqual([
+        [`${baseUrl}/v1/messages`, expect.objectContaining({
+          headers: expect.objectContaining({ "x-api-key": source === "fixed" ? "desktop-key" : "host-key" }),
+          body: expect.stringContaining(`"model":"${model}"`),
+        })],
+      ]);
+    }
+    try {
+      await bridge.initialize();
+      const offlineModel = source === "host-url" ? "claude-3-5-haiku-latest" : "desktop-profile-model";
+      await expectTitleModel("auto", offlineModel);
+      await bridge.saveMagpieConnection({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "x-api-key", apiKey: "manual-key" });
+      await expectTitleModel("manual", offlineModel);
+
+      if (source === "host-url") {
+        desktopCatalogAvailable = true;
+        await bridge.saveMagpieConnection({ mode: "auto" });
+        await expectTitleModel("after-fetch", "host-only-model");
+
+        desktopCatalogAvailable = false;
+        now += 65_000;
+        expect(await bridge.refreshRuntime()).toBe(true);
+        expect(fetchImpl).toHaveBeenLastCalledWith(desktopModelsUrl, expect.anything());
+        await expectTitleModel("after-failed-refresh", "host-only-model");
+      }
     } finally {
       await bridge.close();
       await eventLog.close();

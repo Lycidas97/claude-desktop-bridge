@@ -1706,6 +1706,27 @@ describe("unified desktop and assistant conversation composition", () => {
 });
 
 describe("desktop mobile-aligned session sidebar and permission dock", () => {
+  it("keeps the sidebar delete confirmation open on rejection and closes it after retry", async () => {
+    snapshot.host.capabilities.push("session.visibility.v1");
+    await openSessions();
+    elements(tree).find((element) => element.type === IconButton && element.props.label === `会话操作：${snapshot.sessions[0]!.title}`)!.props.onClick();
+    elements(sessions.draw()).find((element) => element.type === SheetAction && element.props.label === "删除会话")!.props.onClick();
+    const confirmation = () => elements(sessions.draw()).find((element) => element.type === ConfirmationDialog && element.props.open);
+    apiRequest.mockClear().mockResolvedValueOnce({
+      kind: "response", requestId: "delete", ok: false, error: { code: "FAILED", message: "侧栏删除失败" },
+    });
+
+    confirmation()!.props.onConfirm();
+    await settle();
+    expect(confirmation()?.props).toMatchObject({ open: true, busy: false, error: "侧栏删除失败" });
+    expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "session.delete", params: { sessionId: "A" } });
+
+    confirmation()!.props.onConfirm();
+    await settle();
+    expect(confirmation()).toBeUndefined();
+    expect(elements(sessions.draw()).some((element) => element.type === Sheet)).toBe(false);
+  });
+
   it("filters sessions across title, summary, cwd, and runtime and jumps to pending permissions", async () => {
     snapshot.sessions.push({
       ...snapshot.sessions[0]!,

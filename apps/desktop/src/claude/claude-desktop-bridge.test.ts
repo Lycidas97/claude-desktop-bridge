@@ -1,5 +1,6 @@
 import { EventEmitter, once } from "node:events";
-import { rm, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { appendFile, rm, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import * as platform from "../app/platform.js";
 import { BridgeCrypto, isEncryptedEnvelope } from "@bridge/protocol";
 import { EvidenceManager } from "../evidence/evidence-manager.js";
 import { EvidenceStore } from "../evidence/evidence-store.js";
@@ -23,6 +24,11 @@ import { magpieModelIdHash } from "./claude-runtime-discovery.js";
 import { MagpieConnectionRepository } from "./magpie-connection.js";
 import type { ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
 import { createNativeSectionFixture } from "../../../../scripts/fixtures/native-section-store.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...fs, readFile: vi.fn(fs.readFile) };
+});
 
 class NativeDesktop extends EventEmitter {
   ready = false;
@@ -167,7 +173,7 @@ function withDatabase<T>(databasePath: string, run: (db: DatabaseSync) => T): T 
   }
 }
 
-async function fixture(legacy = false, evidence?: ConstructorParameters<typeof ClaudeDesktopBridge>[0]["evidence"]) {
+async function fixture(legacy = false, evidence?: ConstructorParameters<typeof ClaudeDesktopBridge>[0]["evidence"], useRuntimeFiles = false) {
   const directory = await mkdtemp(join(tmpdir(), "bridge-native-"));
   const databasePath = join(directory, "state.sqlite");
   const state = new ConversationStateStore({ databasePath, sessionsPath: join(directory, "sessions.json"), queuePath: join(directory, "queue.json"), masterSecret: Buffer.alloc(32, 7).toString("base64url") });
@@ -203,11 +209,11 @@ async function fixture(legacy = false, evidence?: ConstructorParameters<typeof C
   await eventLog.initialize();
   const native = new NativeDesktop();
   const scanCatalog = vi.fn<() => Promise<ClaudeCatalogSnapshot>>().mockResolvedValue({ projects: [], sessions: [], observedAt: 0 });
-  const options = { eventLog, conversationState: state, inspector: native, scanCatalog, settingsPath: join(directory, "settings.json"), ...(evidence ? { evidence } : {}), refreshIntervalMs: 60_000 };
-  const bridge = new ClaudeDesktopBridge(options);
+  const options = { eventLog, conversationState: state, inspector: native, settingsPath: join(directory, "settings.json"), ...(evidence ? { evidence } : {}), refreshIntervalMs: 60_000 };
+  const bridge = new ClaudeDesktopBridge(useRuntimeFiles ? options : { ...options, scanCatalog });
   await bridge.initialize();
   return {
-    bridge, native, state, eventLog, options, directory, databasePath,
+    bridge, native, state, eventLog, options: { ...options, scanCatalog }, directory, databasePath,
     async message(message: Record<string, unknown>) {
       const changed = once(bridge, "changed");
       native.emit("event", { type: "message", sessionId: "local-native", message });
@@ -2242,6 +2248,48 @@ describe("Claude native relay", () => {
       expect(f.native.calls.some(call => call.method === "getAll")).toBe(false);
       expect(f.options.scanCatalog).not.toHaveBeenCalled();
     } finally { await f.close(); }
+  });
+
+  it("reads only the selected session metadata on sequential task polls", async () => {
+    const f = await fixture(false, undefined, true);
+    const paths = platform.claudeRuntimePaths("darwin", {}, f.directory);
+    const resolvePaths = vi.spyOn(platform, "claudeRuntimePaths").mockReturnValue(paths);
+    const reads = vi.mocked(readFile);
+    reads.mockClear();
+    vi.stubEnv("BRIDGE_DISABLE_PROCESS_SCAN", "1");
+    try {
+      const desktopRoot = paths.desktopSessions[0]!;
+      const sessionId = "local-native";
+      const sessionDir = join(desktopRoot, "profile", "account");
+      const target = join(sessionDir, `${sessionId}.json`);
+      const cwd = f.directory;
+      await Promise.all([mkdir(sessionDir, { recursive: true }), mkdir(paths.projects, { recursive: true })]);
+      await Promise.all([
+        writeFile(target, JSON.stringify({ sessionId, cliSessionId: "target-cli", cwd })),
+        ...Array.from({ length: 12 }, (_, index) => {
+          const otherId = `local_11111111-1111-4111-8111-${String(index).padStart(12, "0")}`;
+          return writeFile(join(sessionDir, `${otherId}.json`), JSON.stringify({ sessionId: otherId, cliSessionId: `other-${index}`, cwd }));
+        }),
+      ]);
+      const transcript = join(paths.projects, "target-cli.jsonl");
+      await writeFile(transcript, [
+        { type: "assistant", uuid: "use", timestamp: new Date(10_000).toISOString(), message: { content: [{ type: "tool_use", id: "agent", name: "Agent", input: { description: "Inspect", prompt: "Inspect" } }] } },
+        { type: "user", uuid: "result", parentUuid: "use", timestamp: new Date(11_000).toISOString(), message: { content: [{ type: "tool_result", tool_use_id: "agent", content: "Async agent launched successfully. agentId: ag-1" }] } },
+      ].map(row => JSON.stringify(row)).join("\n") + "\n");
+
+      expect(await f.bridge.backgroundTaskDetails(sessionId)).toMatchObject([{ id: "agent", state: "stopped" }]);
+      await appendFile(transcript, JSON.stringify({
+        type: "user", uuid: "done", parentUuid: "result", timestamp: new Date(12_000).toISOString(),
+        message: { role: "user", content: "<task-notification>\n<task-id>ag-1</task-id>\n<status>completed</status>\n</task-notification>" },
+      }) + "\n");
+      expect(await f.bridge.backgroundTaskDetails(sessionId)).toMatchObject([{ id: "agent", state: "completed" }]);
+      expect(reads.mock.calls.map(([path]) => path).filter(path => typeof path === "string" && path.startsWith(desktopRoot) && path.endsWith(".json"))).toEqual([target, target]);
+    } finally {
+      reads.mockClear();
+      resolvePaths.mockRestore();
+      vi.unstubAllEnvs();
+      await f.close();
+    }
   });
 
   it("keeps task detail reads optional and lets conversation opening finish independently", async () => {

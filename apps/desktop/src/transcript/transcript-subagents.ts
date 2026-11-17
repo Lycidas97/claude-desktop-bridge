@@ -85,6 +85,11 @@ function subagentProcessLive(startedAt: number, liveSince: number | undefined): 
   return liveSince !== undefined && startedAt >= liveSince;
 }
 
+// Only an error emitted by the file stream is eligible for the unreadable-file fallback.
+function isTranscriptReadError(stream: ReturnType<typeof createReadStream> | undefined, error: unknown): boolean {
+  return stream?.errored === error && typeof (error as NodeJS.ErrnoException | undefined)?.errno === "number";
+}
+
 const subagentSummaryCache = new Map<string, {
   signature: string;
   summary: BridgeSubagentSummary;
@@ -156,7 +161,8 @@ async function parseSingleSubagentFileOnce(
       let value: unknown;
       try {
         value = JSON.parse(line) as unknown;
-      } catch {
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
         continue;
       }
       if (!isRecord(value)) continue;
@@ -205,7 +211,8 @@ async function parseSingleSubagentFileOnce(
         }
       }
     }
-  } catch {
+  } catch (error) {
+    if (!isTranscriptReadError(stream, error)) throw error;
     return undefined;
   } finally {
     lines?.close();
@@ -335,7 +342,8 @@ async function parseParentTranscriptSubagentsOnce(transcriptPath: string): Promi
       let value: unknown;
       try {
         value = JSON.parse(line) as unknown;
-      } catch {
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
         continue;
       }
       if (!isRecord(value) || isNonDagTranscriptRecord(value)) continue;
@@ -347,7 +355,7 @@ async function parseParentTranscriptSubagentsOnce(transcriptPath: string): Promi
         }
         if (Array.isArray(message?.content)) {
           for (const block of message.content) {
-            if (!isRecord(block) || block.type !== "tool_result" || !excludedTasks.has(String(block.tool_use_id))) continue;
+            if (!isRecord(block) || block.type !== "tool_result" || typeof block.tool_use_id !== "string" || !excludedTasks.has(block.tool_use_id)) continue;
             const agentId = /agentId:\s*([^\s(]+)/u.exec(textFromContent(block.content))?.[1];
             if (agentId) excludedTasks.add(agentId);
           }
@@ -516,7 +524,8 @@ async function parseParentTranscriptSubagentsOnce(transcriptPath: string): Promi
         }
       }
     }
-  } catch {
+  } catch (error) {
+    if (!isTranscriptReadError(stream, error)) throw error;
     return { summaries: [], launches: [], compactedAt: 0, taskStates: new Map(), excludedTasks };
   } finally {
     lines?.close();

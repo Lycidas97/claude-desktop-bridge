@@ -367,6 +367,17 @@ export function normalizeAnthropicModelSlug(rawModel: string | undefined): strin
   return normalized || undefined;
 }
 
+const KNOWN_UPSTREAM_MODEL_WORDS: Record<string, string> = {
+  claude: "Claude",
+  opus: "Opus",
+  sonnet: "Sonnet",
+  haiku: "Haiku",
+  fable: "Fable",
+  mythos: "Mythos",
+  gpt: "GPT",
+  gemini: "Gemini",
+};
+
 export function humanizeMagpieAnthropicModel(rawModel: string | undefined): string | undefined {
   const alias = parseMagpieSyntheticModelId(rawModel);
   if (!alias) return rawModel?.trim() || undefined;
@@ -380,10 +391,35 @@ export function humanizeMagpieAnthropicModel(rawModel: string | undefined): stri
   const label = cleaned
     .split(/[-_]+/u)
     .filter(Boolean)
-    .map((part) => (/^[a-z]/iu.test(part) ? part[0]!.toUpperCase() + part.slice(1) : part))
+    .map((part) => KNOWN_UPSTREAM_MODEL_WORDS[part.toLowerCase()] ?? (/^[a-z]/iu.test(part) ? part[0]!.toUpperCase() + part.slice(1) : part))
     .join(" ");
   if (!label) return undefined;
   return alias.longContext ? `${label} · 1M` : label;
+}
+
+export function humanizeUpstreamModelId(rawModel: string | undefined): string | undefined {
+  const trimmed = rawModel?.trim();
+  if (!trimmed || trimmed.toLowerCase() === "default" || trimmed === "<synthetic>") return undefined;
+  if (parseMagpieSyntheticModelId(trimmed)) return humanizeMagpieAnthropicModel(trimmed);
+  const longContext = /\[1m\]$/iu.test(trimmed);
+  const withoutContext = trimmed.replace(/\[1m\]$/iu, "").trim();
+  if (!withoutContext) return undefined;
+  const slug = withoutContext.includes("/")
+    ? withoutContext.slice(withoutContext.lastIndexOf("/") + 1)
+    : withoutContext;
+  const cleaned = slug
+    .trim()
+    .replace(/^(?:us|eu|apac|au|global)\.anthropic\./iu, "")
+    .replace(/-v\d+:\d+$/iu, "")
+    .replace(/-(?:20\d{6}|latest)$/iu, "")
+    .replace(/(^|-)(\d+)-(\d+)(?=-|$)/gu, "$1$2.$3");
+  const label = cleaned
+    .split(/[-_]+/u)
+    .filter(Boolean)
+    .map((part) => KNOWN_UPSTREAM_MODEL_WORDS[part.toLowerCase()] ?? (/^[a-z]/iu.test(part) ? part[0]!.toUpperCase() + part.slice(1) : part))
+    .join(" ");
+  if (!label) return undefined;
+  return longContext ? `${label} · 1M` : label;
 }
 
 interface GatewayModelsResponsePayload {

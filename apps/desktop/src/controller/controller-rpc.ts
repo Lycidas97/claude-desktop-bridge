@@ -25,7 +25,7 @@ import { MAGPIE_QUOTA_METHOD } from "../../../../plugins/magpie-quota/contract.j
 import type { createMagpieQuotaPlugin } from "../../../../plugins/magpie-quota/desktop.js";
 import type { ClaudeDesktopLifecycle } from "../app/claude-desktop-lifecycle.js";
 import { accessibleDirectory } from "../app/working-directory.js";
-import { WorkspaceTrustRequiredError, type ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
+import { DEFAULT_CONFIGURATION_SESSION_ID, WorkspaceTrustRequiredError, type ClaudeDesktopBridge } from "../claude/claude-desktop-bridge.js";
 import type { EvidenceManager } from "../evidence/evidence-manager.js";
 import type { FileUploadManager } from "../evidence/file-upload.js";
 import type { LoadedDesktopConfig } from "../transport/config.js";
@@ -417,6 +417,9 @@ async function dispatchControllerRequestInner(
   }
   if (request.method === "session.configuration") {
     const sessionId = stringParam(params, "sessionId")!;
+    if (sessionId === DEFAULT_CONFIGURATION_SESSION_ID) {
+      return { configuration: await host.broker.defaultConfiguration() };
+    }
 
     const configuration = await host.broker.configuration(sessionId);
     const backgroundTasks = nullableBooleanParam(params, "includeBackgroundTasks") === true

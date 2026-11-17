@@ -22,6 +22,7 @@ import {
   fetchClaudeGatewayModels,
   findClaudeFixedGateway,
   humanizeMagpieAnthropicModel,
+  humanizeUpstreamModelId,
   magpieModelIdHash,
   normalizeAnthropicModelSlug,
   parseMagpieSyntheticModelId,
@@ -30,7 +31,7 @@ import {
   type ClaudeProjectDirectory,
 } from "./claude-runtime-discovery.js";
 import { MagpieConnectionRepository, testMagpieGateway } from "./magpie-connection.js";
-import { readClaudeModelOptions } from "./connector.js";
+import { readClaudeDefaultModel, readClaudeModelOptions } from "./connector.js";
 import {
   applyAssistantMessageContext,
   applyCompactBoundaryContext,
@@ -40,6 +41,8 @@ import {
   applyStreamStartContext,
   buildTranscriptContextState,
   createNativeContextState,
+  extractLatestTranscriptModel,
+  hydrateObservedContextModel,
   parseLiveContextUsage,
   projectedContextUsage,
   projectContextMessages,
@@ -58,6 +61,10 @@ import {
 import { NATIVE_PROMPTS, nativePendingPrompts, nativePullRequests, type NativePromptSession } from "./native-prompts.js";
 
 export { nativeHistoryItems };
+
+export const CLAUDE_UNSECTIONED_PROJECT_ID = "claude-unsectioned";
+export const CLAUDE_UNSECTIONED_PROJECT_NAME = "未分组";
+export const DEFAULT_CONFIGURATION_SESSION_ID = "__default__";
 
 export class WorkspaceTrustRequiredError extends NativeCallError {
   constructor(readonly manual: boolean) {
@@ -213,6 +220,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private gateway: ClaudeGatewayConfig | undefined;
   private gatewayModelsCache: { gatewayKey: string; fetchedAt: number; ok: boolean; models: BridgeModelInfo[] } | undefined;
   private models: BridgeModelInfo[] | undefined;
+  private defaultModel: string | undefined;
   private snapshotQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: {
@@ -363,13 +371,94 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return savedModelOption(this.models, model);
   }
 
-  private modelDisplayName(model: string | undefined): string | undefined {
-    if (!model) return undefined;
-    return this.savedModel(model)?.displayName ?? humanizeMagpieAnthropicModel(model);
+  private directModelDisplayName(model: string | undefined): string | undefined {
+    const trimmed = model?.trim();
+    if (!trimmed || trimmed.toLowerCase() === "default") return undefined;
+    const saved = this.savedModel(trimmed);
+    if (saved) return saved.displayName;
+    if (trimmed.includes("/") || /^(?:claude|gpt|gemini)-/iu.test(trimmed)) {
+      return humanizeUpstreamModelId(trimmed);
+    }
+    return humanizeMagpieAnthropicModel(trimmed);
+  }
+
+  private resolveSessionModel(
+    sessionId: string | undefined,
+    rawNativeModel: string | undefined,
+  ): {
+    sessionModel?: string;
+    configModel?: string;
+    modelDisplayName?: string;
+    extraOption?: BridgeModelInfo;
+  } {
+    const trimmedNative = rawNativeModel?.trim();
+    const explicitNative = trimmedNative && trimmedNative.toLowerCase() !== "default" ? trimmedNative : undefined;
+    const rawContextModel = sessionId ? this.contextStates.get(sessionId)?.model?.trim() : undefined;
+    const contextModel = rawContextModel && rawContextModel.toLowerCase() !== "default" ? rawContextModel : undefined;
+
+    if (explicitNative) {
+      const saved = this.savedModel(explicitNative);
+      const directDisplay = this.directModelDisplayName(explicitNative);
+      if (directDisplay) {
+        return {
+          sessionModel: explicitNative,
+          configModel: saved?.value ?? explicitNative,
+          modelDisplayName: directDisplay,
+          ...(saved ? { extraOption: saved } : {}),
+        };
+      }
+      if (contextModel && !parseMagpieSyntheticModelId(contextModel)) {
+        const effectiveContext = /\[1m\]$/iu.test(explicitNative) && !/\[1m\]$/iu.test(contextModel)
+          ? `${contextModel}[1m]`
+          : contextModel;
+        const contextSaved = this.savedModel(effectiveContext);
+        const contextDisplay = contextSaved?.displayName ?? humanizeUpstreamModelId(effectiveContext);
+        return {
+          sessionModel: explicitNative,
+          configModel: contextSaved?.value ?? explicitNative,
+          ...(contextDisplay ? { modelDisplayName: contextDisplay } : {}),
+          ...(contextSaved ? { extraOption: contextSaved } : {}),
+        };
+      }
+      return { sessionModel: explicitNative, configModel: explicitNative };
+    }
+
+    const fallbackRaw = (contextModel && !parseMagpieSyntheticModelId(contextModel) ? contextModel : undefined)
+      ?? this.defaultModel
+      ?? this.models?.[0]?.value;
+    if (!fallbackRaw) return {};
+    const saved = this.savedModel(fallbackRaw);
+    const resolvedValue = saved?.value ?? fallbackRaw;
+    const displayName = saved?.displayName ?? this.directModelDisplayName(resolvedValue) ?? humanizeUpstreamModelId(resolvedValue);
+    return {
+      sessionModel: resolvedValue,
+      configModel: resolvedValue,
+      ...(displayName ? { modelDisplayName: displayName } : {}),
+      ...(saved ? { extraOption: saved } : {}),
+    };
+  }
+
+  private async hydrateContextModelFromTail(sessionId: string): Promise<void> {
+    if (!this.inspector.ready || !this.inspector.supports("getTranscriptPage")) return;
+    try {
+      const tail = record(await this.inspector.call("getTranscriptPage", [sessionId, "", 20, { window: "accept" }]));
+      if (!Array.isArray(tail.messages) || tail.messages.length === 0) return;
+      const tailModel = extractLatestTranscriptModel(tail.messages);
+      if (tailModel) {
+        hydrateObservedContextModel(this.ensureContextState(sessionId), tailModel);
+      }
+    } catch (error) {
+      if (error instanceof InspectorDisconnectedError || error instanceof NativeCallError) return;
+      throw error;
+    }
   }
 
   private async refreshModelCatalog(mode: "cached" | "retry-failed" | "force"): Promise<void> {
-    const saved = await readClaudeModelOptions(this.options.settingsPath);
+    const [saved, defaultModel] = await Promise.all([
+      readClaudeModelOptions(this.options.settingsPath),
+      readClaudeDefaultModel(this.options.settingsPath),
+    ]);
+    this.defaultModel = defaultModel;
     if (!this.options.magpieConnection && !this.options.fetchImpl) {
       this.models = saved;
       return;
@@ -488,15 +577,21 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const parentSessionId = native.forkedFromSessionId ?? native.spawnedFrom?.sessionId;
       const projectCwd = this.projectCwd(native.cwd);
       const section = this.sectionCatalog?.sections.find(section => section.id === this.sectionCatalog?.assignments[sessionId]);
-      const modelDisplayName = this.modelDisplayName(native.model);
+      const projectId = this.sectionCatalog
+        ? section?.id ?? CLAUDE_UNSECTIONED_PROJECT_ID
+        : projectIdForCwd(projectCwd);
+      const projectName = this.sectionCatalog
+        ? section?.name ?? CLAUDE_UNSECTIONED_PROJECT_NAME
+        : (basename(projectCwd) || projectCwd);
+      const resolvedModel = this.resolveSessionModel(sessionId, native.model);
       this.sessions.set(sessionId, {
         sessionId, nativeSessionId: native.sessionId, desktopSessionId: native.sessionId, runtimeId: "claude-desktop",
-        projectId: section?.id ?? projectIdForCwd(projectCwd), projectName: section?.name ?? (basename(projectCwd) || projectCwd), cwd: native.cwd,
+        projectId, projectName, cwd: native.cwd,
         title: native.title || "Claude 会话", source: "desktop", transport: "claude-desktop-native",
         ownership: running ? "DESKTOP_NATIVE_RUNNING" : "DESKTOP_NATIVE_IDLE",
         turnState: waiting ? "waiting" : running ? "running" : "idle",
         lastActivityAt: native.lastActivityAt ?? native.createdAt ?? 0, pendingCount: pendingCommandIds.length, pendingCommandIds,
-        ...(native.model ? { model: native.model, ...(modelDisplayName ? { modelDisplayName } : {}) } : {}), ...(native.effort ? { effort: native.effort } : {}),
+        ...(resolvedModel.sessionModel ? { model: resolvedModel.sessionModel, ...(resolvedModel.modelDisplayName ? { modelDisplayName: resolvedModel.modelDisplayName } : {}) } : {}), ...(native.effort ? { effort: native.effort } : {}),
         ...(native.permissionMode ? { nativePermissionMode: native.permissionMode } : {}),
         ...(contextUsage ? { contextUsage } : {}),
         ...(running && this.compactingSessions.has(sessionId) ? { isCompacting: true } : {}),
@@ -534,9 +629,16 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const projects = new Map<string, BridgeProjectInfo>((this.sectionCatalog?.sections ?? []).map(section => [section.id, {
       projectId: section.id, name: section.name, kind: "desktop-group", cwd: "", runtimeId: "claude-desktop", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0,
     }]));
+    const cwdPriority = new Map<string, { active: boolean; lastActivityAt: number }>();
     for (const session of this.sessions.values()) {
-      const project = projects.get(session.projectId) ?? { projectId: session.projectId, name: session.projectName, cwd: this.projectCwd(session.cwd), runtimeId: "claude-desktop", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 };
-      if (!project.cwd) project.cwd = this.projectCwd(session.cwd);
+      const projectCwd = this.projectCwd(session.cwd);
+      const project = projects.get(session.projectId) ?? { projectId: session.projectId, name: session.projectName, cwd: projectCwd, runtimeId: "claude-desktop", sessionCount: 0, runningCount: 0, pendingCount: 0, lastActivityAt: 0 };
+      const active = session.archivedAt === undefined;
+      const previous = cwdPriority.get(session.projectId);
+      if (!previous || (active && !previous.active) || (active === previous.active && session.lastActivityAt > previous.lastActivityAt)) {
+        project.cwd = projectCwd;
+        cwdPriority.set(session.projectId, { active, lastActivityAt: session.lastActivityAt });
+      }
       project.sessionCount++;
       project.runningCount += session.turnState === "running" ? 1 : 0;
       project.pendingCount += session.pendingCount;
@@ -596,9 +698,10 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   async createSession(cwd: string, title?: string, projectId?: string, trustWorkspace?: boolean): Promise<BridgeSessionInfo> {
-    if (projectId && !await this.refreshRuntime()) throw new NativeCallError(this.lastError);
-    const project = projectId ? this.listProjects().find(project => project.projectId === projectId) : undefined;
-    if (projectId && !project) throw new NativeCallError("Selected Desktop project is no longer available");
+    const targetProjectId = projectId === CLAUDE_UNSECTIONED_PROJECT_ID ? undefined : projectId;
+    if (targetProjectId && !await this.refreshRuntime()) throw new NativeCallError(this.lastError);
+    const project = targetProjectId ? this.listProjects().find(project => project.projectId === targetProjectId) : undefined;
+    if (targetProjectId && !project) throw new NativeCallError("Selected Desktop project is no longer available");
     if (trustWorkspace) {
       if (!this.inspector.supports("saveTrust")) throw new WorkspaceTrustRequiredError(true);
       await this.inspector.call("saveTrust", [cwd]);
@@ -926,9 +1029,46 @@ export class ClaudeDesktopBridge extends EventEmitter {
     return { action: "sent" };
   }
 
+  async defaultConfiguration(): Promise<BridgeSessionConfiguration> {
+    await this.refreshModelCatalog("retry-failed");
+    const reference = [...this.native.values()].sort((left, right) => (
+      Number(Boolean(left.isArchived)) - Number(Boolean(right.isArchived))
+      || (right.lastActivityAt ?? right.createdAt ?? 0) - (left.lastActivityAt ?? left.createdAt ?? 0)
+    ))[0];
+    const fromReference = reference ? this.resolveSessionModel(reference.sessionId, reference.model) : undefined;
+    const resolved = fromReference && !(
+      !fromReference.modelDisplayName
+      && fromReference.configModel
+      && parseMagpieSyntheticModelId(fromReference.configModel)
+      && this.models?.length
+    )
+      ? fromReference
+      : this.resolveSessionModel(undefined, undefined);
+    const fallbackLabel = resolved.modelDisplayName
+      ?? (resolved.configModel && /\[1m\]$/iu.test(resolved.configModel) ? "默认模型 · 1M" : "默认模型");
+    const availableModels = this.models
+      ? [
+          ...this.models,
+          ...(resolved.extraOption && !this.models.some(option => option.value === resolved.extraOption!.value) ? [resolved.extraOption] : []),
+        ]
+      : resolved.configModel ? [{ value: resolved.configModel, displayName: fallbackLabel }] : [];
+    const defaultModel = resolved.configModel ?? availableModels[0]?.value;
+    const defaultDisplayName = resolved.modelDisplayName ?? (resolved.configModel ? undefined : availableModels[0]?.displayName);
+    return {
+      sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
+      ...(defaultModel ? { model: defaultModel, ...(defaultDisplayName ? { modelDisplayName: defaultDisplayName } : {}) } : {}),
+      effort: reference?.effort ?? "high",
+      nativePermissionMode: reference?.permissionMode ?? "default",
+      modelSource: "claude-desktop", effortSource: "claude-desktop",
+      availableModels,
+      availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      modelsComplete: this.models !== undefined, appliesAfterTurn: false,
+    };
+  }
+
   async configuration(sessionId: string): Promise<BridgeSessionConfiguration> {
     const id = this.desktopId(sessionId);
-    const previousUsage = JSON.stringify(this.session(sessionId)?.contextUsage);
+    const previousSnapshot = JSON.stringify(this.session(sessionId));
     const native = nativeSession(await this.inspector.call("getSession", [id]));
     await this.refreshModelCatalog("retry-failed");
     await this.observeNativeSession(native);
@@ -936,20 +1076,32 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const live = await this.readLiveContextUsage(id);
       if (live) this.applyLiveContextUsage(sessionId, live);
     }
+    const rawTrimmed = native.model?.trim();
+    const needsTailModel = !rawTrimmed
+      || rawTrimmed.toLowerCase() === "default"
+      || !this.directModelDisplayName(rawTrimmed);
+    if (needsTailModel && !this.contextStates.get(sessionId)?.model) {
+      await this.hydrateContextModelFromTail(id);
+    }
     this.projectSessions();
-    const context = this.session(sessionId)?.contextUsage;
-    if (JSON.stringify(context) !== previousUsage) this.emit("changed");
-    const model = native.model ? this.savedModel(native.model) : undefined;
-    const modelDisplayName = native.model ? model?.displayName ?? humanizeMagpieAnthropicModel(native.model) : undefined;
-    const fallbackLabel = modelDisplayName ?? (native.model && /\[1m\]$/iu.test(native.model) ? "默认模型 · 1M" : "默认模型");
+    const projected = this.session(sessionId);
+    const context = projected?.contextUsage;
+    if (JSON.stringify(projected) !== previousSnapshot) this.emit("changed");
+    const resolved = this.resolveSessionModel(sessionId, native.model);
+    const fallbackLabel = resolved.modelDisplayName
+      ?? (resolved.configModel && /\[1m\]$/iu.test(resolved.configModel) ? "默认模型 · 1M" : "默认模型");
     return {
       sessionId,
-      ...(native.model ? { model: model?.value ?? native.model, ...(modelDisplayName ? { modelDisplayName } : {}) } : {}),
+      ...(resolved.configModel ? { model: resolved.configModel, ...(resolved.modelDisplayName ? { modelDisplayName: resolved.modelDisplayName } : {}) } : {}),
       ...(native.effort ? { effort: native.effort } : {}),
       ...(native.permissionMode ? { nativePermissionMode: native.permissionMode } : {}),
       modelSource: "claude-desktop", effortSource: "claude-desktop",
-      availableModels: this.models ? [...this.models, ...(model && !this.models.some(option => option.value === model.value) ? [model] : [])]
-        : native.model ? [{ value: native.model, displayName: fallbackLabel }] : [],
+      availableModels: this.models
+        ? [
+            ...this.models,
+            ...(resolved.extraOption && !this.models.some(option => option.value === resolved.extraOption!.value) ? [resolved.extraOption] : []),
+          ]
+        : resolved.configModel ? [{ value: resolved.configModel, displayName: fallbackLabel }] : [],
       availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
       modelsComplete: this.models !== undefined, appliesAfterTurn: native.turnRunning === true,
       ...(context ? { context } : {}),
@@ -995,12 +1147,22 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (input.permissionMode !== undefined) await this.inspector.call("setPermissionMode", [id, input.permissionMode]);
     await this.refreshRuntime();
     const configuration = await this.configuration(input.sessionId);
-    // Accept only Desktop's known base -> preferred-1M normalization when the
-    // picker did not offer that context as an independent saved choice.
-    if (typeof input.model === "string" && configuration.model !== input.model && !(
-      !/\[1m\]$/iu.test(input.model) && configuration.model === `${input.model}[1m]`
-      && !this.models?.some(option => option.value === configuration.model)
-    )) throw new NativeCallError(`Desktop did not apply the selected model: ${input.model}; observed ${configuration.model ?? "default"}`);
+    const observedNativeModel = this.native.get(input.sessionId)?.model?.trim();
+    const observedResolvedModel = observedNativeModel && observedNativeModel.toLowerCase() !== "default"
+      ? (this.savedModel(observedNativeModel)?.value ?? observedNativeModel)
+      : undefined;
+    // Validate against raw native readback (never transcript/default fallbacks), accepting
+    // only Desktop's known base -> preferred-1M normalization when 1M was not a separate option.
+    if (
+      typeof input.model === "string"
+      && (
+        !observedResolvedModel
+        || (observedResolvedModel !== input.model && !(
+          !/\[1m\]$/iu.test(input.model) && observedResolvedModel === `${input.model}[1m]`
+          && !this.models?.some(option => option.value === observedResolvedModel)
+        ))
+      )
+    ) throw new NativeCallError(`Desktop did not apply the selected model: ${input.model}; observed ${observedNativeModel ?? "default"}`);
     return configuration;
   }
 

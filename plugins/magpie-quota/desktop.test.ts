@@ -74,10 +74,70 @@ describe("standalone Magpie quota desktop plugin", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it.each([404, 405])("reports unsupported when a gateway lacks the API (%s)", async (status) => {
-    const { plugin, fetchImpl } = setup();
-    fetchImpl.mockResolvedValue(new Response("not supported", { status }));
+  it.each([404, 405])("reports unsupported when a gateway lacks the API (%s) without caching unsupported", async (status) => {
+    const { plugin, fetchImpl, now } = setup();
+    fetchImpl.mockResolvedValueOnce(new Response("not supported", { status }));
     expect(await plugin.handle(request)).toMatchObject({ status: "unsupported", accounts: [] });
+    now.mockReturnValue(2_000);
+    expect(await plugin.handle(request)).toMatchObject({ status: "available" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("performs a one-time cold-start refresh on passive read when local accounts have empty windows and deduplicates remote kept rows", async () => {
+    const coldLocal = { provider: "claude", user: "cold@example.test", windows: [] };
+    const remoteRow = { provider: "remote-magpie/codex", from: "Remote magpie", windows: [{ name: "5 hours", remaining: 80 }] };
+    const warmedLocal = { provider: "claude", user: "cold@example.test", readAt: "2026-11-16T10:00:00Z", windows: [{ name: "5 hours", remaining: 90 }] };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input));
+      if (init?.method === "POST") return Response.json({ data: [] });
+      if (url.searchParams.has("kept")) {
+        // Real Magpie ?kept=1 includes both local and remote-magpie/* accounts.
+        return Response.json({ data: [warmedLocal, remoteRow] });
+      }
+      return Response.json({ data: [coldLocal, remoteRow] });
+    });
+    const now = vi.fn(() => 1_000);
+    const plugin = createMagpieQuotaPlugin({
+      getGateway: () => ({ baseUrl: "http://127.0.0.1:3425", authToken: "local-key" }),
+      fetchImpl,
+      now,
+    });
+    const first = await plugin.handle(request);
+    expect(first).toEqual({
+      status: "available",
+      fetchedAt: 1_000,
+      accounts: [
+        warmedLocal,
+        { ...remoteRow, readDeferred: true },
+      ],
+    });
+    expect(fetchImpl.mock.calls.map(([input, init]) => [init?.method ?? "GET", new URL(String(input)).pathname, new URL(String(input)).searchParams.get("kept")])).toEqual([
+      ["GET", "/v1/magpie/quotas", null],
+      ["POST", "/v1/magpie/quotas/refresh", null],
+      ["GET", "/v1/magpie/quotas", "1"],
+    ]);
+
+    // Read-only gateway keys fall back gracefully to passive accounts once and do not retry POST on subsequent polls.
+    const readonlyFetch = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.method === "POST") {
+        return Response.json({ error: { code: "gateway_key_read_only" } }, { status: 403 });
+      }
+      return Response.json({ data: [coldLocal, remoteRow] });
+    });
+    let tick = 1_000;
+    const readonlyPlugin = createMagpieQuotaPlugin({
+      getGateway: () => ({ baseUrl: "http://127.0.0.1:3425", authToken: "readonly-key" }),
+      fetchImpl: readonlyFetch,
+      now: () => tick,
+    });
+    expect(await readonlyPlugin.handle(request)).toEqual({
+      status: "available",
+      fetchedAt: 1_000,
+      accounts: [coldLocal, remoteRow],
+    });
+    tick = 40_000;
+    await readonlyPlugin.handle(request);
+    expect(readonlyFetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
   });
 
   it.each([401, 403, 500])("surfaces HTTP %s without leaking the response body", async (status) => {

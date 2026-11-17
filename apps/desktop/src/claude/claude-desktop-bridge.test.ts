@@ -8,7 +8,14 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
-import { ClaudeDesktopBridge, WorkspaceTrustRequiredError, nativeHistoryItems } from "./claude-desktop-bridge.js";
+import {
+  CLAUDE_UNSECTIONED_PROJECT_ID,
+  CLAUDE_UNSECTIONED_PROJECT_NAME,
+  ClaudeDesktopBridge,
+  DEFAULT_CONFIGURATION_SESSION_ID,
+  WorkspaceTrustRequiredError,
+  nativeHistoryItems,
+} from "./claude-desktop-bridge.js";
 import { InspectorDisconnectedError, NativeCallError } from "./claude-desktop-inspector.js";
 import { ConversationStateStore } from "../controller/conversation-state-store.js";
 import { SessionEventLog } from "../controller/session-event-log.js";
@@ -594,6 +601,85 @@ describe("native Sections", () => {
 
       await expect(f.bridge.renameSection(created.projectId, "Gone")).rejects.toThrow("no longer available");
       await expect(f.bridge.deleteSection(created.projectId)).rejects.toThrow("no longer available");
+    } finally { await f.close(); }
+  });
+
+  it("unifies unsectioned sessions under 未分组 when Sections are active, avoids same-name folder collisions, and allows creating into claude-unsectioned", async () => {
+    const f = await fixture();
+    try {
+      const zahuoDir = join(f.directory, "work", "杂活");
+      const latestActiveDir = join(f.directory, "work", "bridge-latest");
+      const archivedDir = join(f.directory, "work", "archived-newer");
+      await Promise.all([mkdir(zahuoDir, { recursive: true }), mkdir(latestActiveDir, { recursive: true }), mkdir(archivedDir, { recursive: true })]);
+      f.native.sessions = [
+        { sessionId: "sectioned-zahuo", cwd: join(zahuoDir, "subtool"), title: "Sectioned task", lastActivityAt: 100, turnRunning: false },
+        { sessionId: "unsectioned-zahuo", cwd: zahuoDir, title: "Unsectioned same-name folder", lastActivityAt: 200, turnRunning: false },
+        { sessionId: "unsectioned-latest", cwd: latestActiveDir, title: "Latest active unsectioned", lastActivityAt: 400, turnRunning: false },
+        { sessionId: "unsectioned-archived", cwd: archivedDir, title: "Archived unsectioned", isArchived: true, lastActivityAt: 900, turnRunning: false },
+      ];
+
+      // Legacy Desktop without Sections keeps per-directory project IDs and folder basenames.
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.session("unsectioned-zahuo")).toMatchObject({ projectName: "杂活", cwd: zahuoDir });
+      expect(f.bridge.session("unsectioned-zahuo")?.projectId).not.toBe(CLAUDE_UNSECTIONED_PROJECT_ID);
+
+      // Enabling Sections unifies all unassigned sessions under 未分组 without altering session.cwd.
+      const sections = await createNativeSectionFixture(f.directory);
+      Object.assign(f.native, {
+        sections: sections.sections,
+        createSection: sections.createSection,
+        assignSection: sections.assignSection,
+        renameSection: sections.renameSection,
+        deleteSection: sections.deleteSection,
+      });
+      await f.bridge.refreshRuntime();
+      const zahuoSection = await f.bridge.createSection("杂活");
+      await f.bridge.moveSessionSection("sectioned-zahuo", zahuoSection.projectId);
+
+      expect(f.bridge.session("sectioned-zahuo")).toMatchObject({
+        projectId: zahuoSection.projectId,
+        projectName: "杂活",
+        cwd: join(zahuoDir, "subtool"),
+      });
+      expect(f.bridge.session("unsectioned-zahuo")).toMatchObject({
+        projectId: CLAUDE_UNSECTIONED_PROJECT_ID,
+        projectName: CLAUDE_UNSECTIONED_PROJECT_NAME,
+        cwd: zahuoDir,
+      });
+      expect(f.bridge.session("unsectioned-latest")).toMatchObject({
+        projectId: CLAUDE_UNSECTIONED_PROJECT_ID,
+        projectName: CLAUDE_UNSECTIONED_PROJECT_NAME,
+        cwd: latestActiveDir,
+      });
+
+      const projects = f.bridge.listProjects();
+      expect(projects.filter(project => project.name === "杂活")).toHaveLength(1);
+      expect(projects.find(project => project.projectId === zahuoSection.projectId)).toMatchObject({
+        name: "杂活",
+        kind: "desktop-group",
+        sessionCount: 1,
+      });
+      const unsectionedProject = projects.find(project => project.projectId === CLAUDE_UNSECTIONED_PROJECT_ID);
+      expect(unsectionedProject).toMatchObject({
+        projectId: CLAUDE_UNSECTIONED_PROJECT_ID,
+        name: CLAUDE_UNSECTIONED_PROJECT_NAME,
+        cwd: latestActiveDir,
+        sessionCount: 3,
+      });
+      expect(unsectionedProject?.kind).toBeUndefined();
+
+      // When 0 unsectioned sessions exist, claude-unsectioned is omitted from listProjects(), yet createSession(..., CLAUDE_UNSECTIONED_PROJECT_ID) succeeds without assignSection.
+      f.native.sessions = [f.native.sessions[0]!];
+      await f.bridge.refreshRuntime();
+      expect(f.bridge.listProjects().some(project => project.projectId === CLAUDE_UNSECTIONED_PROJECT_ID)).toBe(false);
+      sections.calls.length = 0;
+      const createdUnsectioned = await f.bridge.createSession(zahuoDir, "Explicit unsectioned", CLAUDE_UNSECTIONED_PROJECT_ID);
+      expect(sections.calls.some(call => call.method === "move_sessions")).toBe(false);
+      expect(createdUnsectioned).toMatchObject({
+        projectId: CLAUDE_UNSECTIONED_PROJECT_ID,
+        projectName: CLAUDE_UNSECTIONED_PROJECT_NAME,
+        cwd: zahuoDir,
+      });
     } finally { await f.close(); }
   });
 });
@@ -1596,6 +1682,200 @@ describe("Claude native relay", () => {
       f.native.sessions.push({ ...f.native.sessions[0], sessionId: "other", model: "historical-model" });
       await f.bridge.refreshRuntime();
       expect(await f.bridge.configuration("local-native")).toMatchObject({ model: "native-model", modelsComplete: false, availableModels: [{ value: "native-model", displayName: "native-model" }] });
+    } finally { await f.close(); }
+  });
+
+  it("resolves host defaultConfiguration() from the most recent active session or catalog defaults when zero sessions exist", async () => {
+    const f = await fixture();
+    try {
+      // Zero sessions and no model catalog yet.
+      f.native.sessions = [];
+      await f.bridge.refreshRuntime();
+      const emptyUncatalogued = await f.bridge.defaultConfiguration();
+      expect(emptyUncatalogued).toEqual({
+        sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
+        effort: "high",
+        nativePermissionMode: "default",
+        modelSource: "claude-desktop",
+        effortSource: "claude-desktop",
+        availableModels: [],
+        availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        modelsComplete: false,
+        appliesAfterTurn: false,
+      });
+
+      // Zero sessions with saved modelPicker catalog.
+      const primaryModel = "fixture-provider/model-primary";
+      const secondaryModel = "fixture-provider/model-secondary[1m]";
+      await writeFile(f.options.settingsPath, JSON.stringify({
+        modelPicker: {
+          options: [
+            { model: primaryModel, label: "Primary Saved Model" },
+            { model: secondaryModel, label: "Secondary Long Context" },
+          ],
+        },
+      }));
+      const emptyCatalogued = await f.bridge.defaultConfiguration();
+      expect(emptyCatalogued).toEqual({
+        sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
+        model: primaryModel,
+        modelDisplayName: "Primary Saved Model",
+        effort: "high",
+        nativePermissionMode: "default",
+        modelSource: "claude-desktop",
+        effortSource: "claude-desktop",
+        availableModels: [
+          { value: primaryModel, displayName: "Primary Saved Model" },
+          { value: secondaryModel, displayName: "Secondary Long Context" },
+        ],
+        availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        modelsComplete: true,
+        appliesAfterTurn: false,
+      });
+
+      // Active and archived sessions exist: picks most recent non-archived session and keeps appliesAfterTurn=false.
+      const secondaryAlias = `mythos-magpie-${magpieModelIdHash("fixture-provider/model-secondary")}[1m]`;
+      f.native.sessions = [
+        { sessionId: "older-active", cwd: "/project", model: primaryModel, effort: "low", permissionMode: "default", lastActivityAt: 100, turnRunning: false },
+        { sessionId: "recent-active", cwd: "/project", model: secondaryAlias, effort: "max", permissionMode: "acceptEdits", lastActivityAt: 500, turnRunning: true },
+        { sessionId: "newest-archived", cwd: "/project", model: primaryModel, effort: "medium", permissionMode: "plan", lastActivityAt: 900, isArchived: true, turnRunning: false },
+      ];
+      await f.bridge.refreshRuntime();
+      expect(await f.bridge.defaultConfiguration()).toEqual({
+        sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
+        model: secondaryModel,
+        modelDisplayName: "Secondary Long Context",
+        effort: "max",
+        nativePermissionMode: "acceptEdits",
+        modelSource: "claude-desktop",
+        effortSource: "claude-desktop",
+        availableModels: [
+          { value: primaryModel, displayName: "Primary Saved Model" },
+          { value: secondaryModel, displayName: "Secondary Long Context" },
+        ],
+        availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        modelsComplete: true,
+        appliesAfterTurn: false,
+      });
+    } finally { await f.close(); }
+  });
+
+  it("resolves real session models for retired Magpie synthetic hashes, [1m]-only picker entries, and unset/default native models", async () => {
+    const f = await fixture();
+    try {
+      const autoOpus1m = "auto/claude-opus-5-5[1m]";
+      const claudeOpus1m = "claude/claude-opus-5-5[1m]";
+      const retiredGeminiAlias = `mythos-magpie-${magpieModelIdHash("antigravity/gemini-4-argon")}[1m]`;
+      const retiredRouteAlias = "mythos-magpie-5277472942";
+      const standardOpusAlias = `mythos-magpie-${magpieModelIdHash("auto/claude-opus-5-5")}`;
+
+      await writeFile(f.options.settingsPath, JSON.stringify({
+        model: claudeOpus1m,
+        modelPicker: {
+          options: [
+            { model: autoOpus1m, label: "Claude Opus 5.5 · routing group · 1M" },
+            { model: claudeOpus1m, label: "Claude Opus 5.5 · Claude" },
+          ],
+        },
+      }));
+
+      f.native.sessions = [
+        { sessionId: "retired-gemini", cwd: "/project", model: retiredGeminiAlias, turnRunning: false, lastActivityAt: 400 },
+        { sessionId: "retired-route-opus", cwd: "/project", model: retiredRouteAlias, turnRunning: false, lastActivityAt: 300 },
+        { sessionId: "standard-opus", cwd: "/project", model: standardOpusAlias, turnRunning: false, lastActivityAt: 200 },
+        { sessionId: "unset-with-turns", cwd: "/project", model: "default", turnRunning: false, lastActivityAt: 150 },
+        { sessionId: "unset-empty", cwd: "/project", model: undefined, turnRunning: false, lastActivityAt: 100 },
+      ];
+      await f.bridge.refreshRuntime();
+
+      // 1. Non-[1m] synthetic hash matches [1m]-only saved picker option and strips trailing " · 1M".
+      expect(f.bridge.session("standard-opus")).toMatchObject({
+        model: standardOpusAlias,
+        modelDisplayName: "Claude Opus 5.5 · routing group",
+      });
+      expect(await f.bridge.configuration("standard-opus")).toMatchObject({
+        model: "auto/claude-opus-5-5",
+        modelDisplayName: "Claude Opus 5.5 · routing group",
+      });
+
+      // 2. Unset native.model with no turns falls back to settings.json default model instead of undefined / "默认模型".
+      expect(f.bridge.session("unset-empty")).toMatchObject({
+        model: claudeOpus1m,
+        modelDisplayName: "Claude Opus 5.5 · Claude",
+      });
+      expect(await f.bridge.configuration("unset-empty")).toMatchObject({
+        model: claudeOpus1m,
+        modelDisplayName: "Claude Opus 5.5 · Claude",
+      });
+
+      // 3. Retired opaque synthetic hash [1m] hydrates actual upstream model from transcript tail on configuration().
+      f.native.page = {
+        messages: [{
+          type: "assistant",
+          uuid: "msg-gemini",
+          message: { id: "msg-gemini", model: "antigravity/gemini-4-argon", usage: { input_tokens: 1_200, output_tokens: 80 } },
+        }],
+        hasMore: false,
+      };
+      const geminiConfig = await f.bridge.configuration("retired-gemini");
+      expect(geminiConfig).toMatchObject({
+        model: retiredGeminiAlias,
+        modelDisplayName: "Gemini 4 Argon · 1M",
+      });
+      expect(f.bridge.session("retired-gemini")).toMatchObject({
+        model: retiredGeminiAlias,
+        modelDisplayName: "Gemini 4 Argon · 1M",
+      });
+
+      // 4. Retired opaque synthetic hash whose transcript model matches a saved Anthropic slug resolves saved label
+      // even when the assistant message carries no token usage block.
+      f.native.page = {
+        messages: [
+          { type: "assistant", uuid: "sidechain-ignored", isSidechain: true, message: { id: "side", model: "openai/gpt-5-4" } },
+          { type: "assistant", uuid: "msg-opus", message: { id: "msg-opus", model: "claude/claude-opus-5-5" } },
+        ],
+        hasMore: false,
+      };
+      const opusConfig = await f.bridge.configuration("retired-route-opus");
+      expect(opusConfig).toMatchObject({
+        model: "claude/claude-opus-5-5",
+        modelDisplayName: "Claude Opus 5.5 · Claude",
+      });
+      expect(f.bridge.session("retired-route-opus")).toMatchObject({
+        model: retiredRouteAlias,
+        modelDisplayName: "Claude Opus 5.5 · Claude",
+      });
+
+      // 5. Session with native.model === "default" migrates model-less live rawMaxTokens when tail hydration discovers the model.
+      f.native.sessions.find(s => s.sessionId === "unset-with-turns")!.turnRunning = true;
+      f.native.contextUsage = { totalTokens: 98_000, rawMaxTokens: 196_000 };
+      f.native.page = {
+        messages: [{
+          type: "assistant",
+          uuid: "msg-sonnet",
+          message: { id: "msg-sonnet", model: "claude-sonnet-4-5" },
+        }],
+        hasMore: false,
+      };
+      const hydratedDefaultConfig = await f.bridge.configuration("unset-with-turns");
+      expect(hydratedDefaultConfig).toMatchObject({
+        model: "claude-sonnet-4-5",
+        modelDisplayName: "Claude Sonnet 4.5",
+        context: { totalTokens: 98_000, maxTokens: 196_000, percentage: 50, estimated: false },
+      });
+      expect(f.bridge.session("unset-with-turns")).toMatchObject({
+        model: "claude-sonnet-4-5",
+        modelDisplayName: "Claude Sonnet 4.5",
+      });
+
+      // 6. configureSession rejects unapplied setModel both on unset/default sessions and on retired-hash sessions
+      // whose transcript history already matches the requested saved model.
+      f.native.codeModels = [claudeOpus1m, "claude/claude-opus-5-5"];
+      f.native.applyModel = false;
+      await expect(f.bridge.configureSession({ sessionId: "unset-empty", model: claudeOpus1m }))
+        .rejects.toThrow(/did not apply/iu);
+      await expect(f.bridge.configureSession({ sessionId: "retired-route-opus", model: "claude/claude-opus-5-5" }))
+        .rejects.toThrow(/did not apply/iu);
     } finally { await f.close(); }
   });
 

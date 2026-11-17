@@ -53,22 +53,24 @@ export function SelectMenu<T extends string = string>({
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
+  const [activeValue, setActiveValue] = useState<T>();
   const selectedIndex = options.findIndex((option) => option.value === value);
-  const [activeIndex, setActiveIndex] = useState<number>(() => (
-    selectedIndex >= 0 ? selectedIndex : nextEnabledIndex(options, -1, 1)
-  ));
+  const selectedOption = options[selectedIndex];
+  const defaultIndex = selectedOption && !selectedOption.disabled
+    ? selectedIndex
+    : nextEnabledIndex(options, -1, 1);
+  const highlightedIndex = options.findIndex((option) => option.value === activeValue && !option.disabled);
+  const activeIndex = highlightedIndex >= 0 ? highlightedIndex : defaultIndex;
+  const activeOption = options[activeIndex];
+  const activeOptionValue = activeOption?.value;
 
   useEffect(() => {
     if (disabled && open) setOpen(false);
   }, [disabled, open]);
 
   useEffect(() => {
-    if (!open) return;
-    const nextIdx = selectedIndex >= 0 && !options[selectedIndex]?.disabled
-      ? selectedIndex
-      : nextEnabledIndex(options, -1, 1);
-    setActiveIndex(nextIdx);
-  }, [open, options, selectedIndex]);
+    if (open && activeValue !== activeOptionValue) setActiveValue(activeOptionValue);
+  }, [open, activeValue, activeOptionValue]);
 
   useEffect(() => {
     if (!open || typeof document === "undefined" || typeof document.addEventListener !== "function") return;
@@ -90,21 +92,9 @@ export function SelectMenu<T extends string = string>({
     }, 160);
   }, [open]);
 
-  const selectedOption = selectedIndex >= 0 ? options[selectedIndex] : undefined;
-  const activeOptionId = open && activeIndex >= 0 && !options[activeIndex]?.disabled
-    ? `${listboxId}-option-${activeIndex}`
-    : undefined;
-
-  function openMenuWithStep(step?: 1 | -1): void {
-    if (disabled || options.length === 0) return;
+  function openMenu(): void {
+    setActiveValue(options[defaultIndex]?.value);
     setOpen(true);
-    if (step) {
-      const base = selectedIndex >= 0 ? selectedIndex : (step === 1 ? -1 : 0);
-      const idx = selectedIndex >= 0 && !options[selectedIndex]?.disabled
-        ? selectedIndex
-        : nextEnabledIndex(options, base, step);
-      if (idx >= 0) setActiveIndex(idx);
-    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
@@ -116,44 +106,30 @@ export function SelectMenu<T extends string = string>({
       triggerRef.current?.focus?.();
       return;
     }
-    if (event.key === "ArrowDown") {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       if (!open) {
-        openMenuWithStep(1);
+        if (options.length > 0) openMenu();
       } else {
-        const nextIdx = nextEnabledIndex(options, activeIndex, 1);
-        if (nextIdx >= 0) setActiveIndex(nextIdx);
-      }
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      if (!open) {
-        openMenuWithStep(-1);
-      } else {
-        const nextIdx = nextEnabledIndex(options, activeIndex < 0 ? 0 : activeIndex, -1);
-        if (nextIdx >= 0) setActiveIndex(nextIdx);
+        setActiveValue(options[nextEnabledIndex(options, activeIndex, event.key === "ArrowDown" ? 1 : -1)]?.value);
       }
       return;
     }
     if (event.key === "Home" && open) {
       event.preventDefault();
-      const first = nextEnabledIndex(options, -1, 1);
-      if (first >= 0) setActiveIndex(first);
+      setActiveValue(options[nextEnabledIndex(options, -1, 1)]?.value);
       return;
     }
     if (event.key === "End" && open) {
       event.preventDefault();
-      const last = nextEnabledIndex(options, 0, -1);
-      if (last >= 0) setActiveIndex(last);
+      setActiveValue(options[nextEnabledIndex(options, 0, -1)]?.value);
       return;
     }
     if ((event.key === "Enter" || event.key === " ") && open) {
       event.preventDefault();
       event.stopPropagation();
-      const candidate = options[activeIndex];
-      if (candidate && !candidate.disabled) {
-        onChange(candidate.value);
+      if (activeOption) {
+        onChange(activeOption.value);
         setOpen(false);
         triggerRef.current?.focus?.();
       }
@@ -178,12 +154,13 @@ export function SelectMenu<T extends string = string>({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
-        aria-activedescendant={activeOptionId}
+        aria-activedescendant={open && activeOption ? `${listboxId}-option-${activeIndex}` : undefined}
         data-value={value}
         autoFocus={autoFocus}
         disabled={disabled}
         onClick={() => {
-          if (!disabled) setOpen((current) => !current);
+          if (open) setOpen(false);
+          else openMenu();
         }}
       >
         <span className="select-menu-trigger-copy">
@@ -213,7 +190,7 @@ export function SelectMenu<T extends string = string>({
                 data-option-value={option.value}
                 className={`select-menu-option${isSelected ? " is-selected" : ""}${index === activeIndex ? " is-focused" : ""}${option.disabled ? " is-disabled" : ""}`}
                 onMouseEnter={() => {
-                  if (!option.disabled) setActiveIndex(index);
+                  if (!option.disabled) setActiveValue(option.value);
                 }}
                 onClick={() => {
                   if (option.disabled) return;

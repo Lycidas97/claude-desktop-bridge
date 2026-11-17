@@ -137,4 +137,45 @@ describe("SelectMenu", () => {
     tree = draw({ ariaLabel: "模型", value: "fable", options, onChange });
     expect(elements(tree).some((el) => el.props.role === "listbox")).toBe(false);
   });
+
+  it("commits the keyboard-highlighted option after an equivalent options refresh", () => {
+    const props = {
+      ariaLabel: "模型",
+      value: "opus",
+      options: [
+        { value: "opus", label: "Opus" },
+        { value: "fable", label: "Fable" },
+      ],
+      onChange: vi.fn(),
+    };
+    let tree = draw(props);
+    elements(tree).find((el) => el.props.role === "combobox")!.props.onClick();
+    tree = draw(props);
+    tree.props.onKeyDown({ key: "ArrowDown", preventDefault: vi.fn(), stopPropagation: vi.fn() });
+
+    const refreshed = { ...props, options: props.options.map((option) => ({ ...option })) };
+    draw(refreshed);
+    tree = draw(refreshed);
+    tree.props.onKeyDown({ key: "Enter", preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    expect(props.onChange).toHaveBeenCalledExactlyOnceWith("fable");
+  });
+
+  it.each(["removed", "disabled"])("falls back when the reordered highlight is %s", (change) => {
+    const opus = { value: "opus", label: "Opus" };
+    const fable = { value: "fable", label: "Fable" };
+    const props = { value: "opus", options: [opus, fable], onChange: vi.fn() };
+    const key = (key: string) => ({ key, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    const activeId = (tree: ReturnType<typeof draw>) =>
+      elements(tree).find((el) => el.props.role === "combobox")!.props["aria-activedescendant"];
+
+    draw(props).props.onKeyDown(key("ArrowDown"));
+    draw(props).props.onKeyDown(key("ArrowDown"));
+    expect(activeId(draw({ ...props, options: [fable, opus] }))).toBe("test-select-listbox-option-0");
+
+    draw({ ...props, options: change === "removed" ? [opus] : [{ ...fable, disabled: true }, opus] });
+    const tree = draw({ ...props, options: [fable, opus] });
+    expect(activeId(tree)).toBe("test-select-listbox-option-1");
+    tree.props.onKeyDown(key("Enter"));
+    expect(props.onChange).toHaveBeenCalledExactlyOnceWith("opus");
+  });
 });

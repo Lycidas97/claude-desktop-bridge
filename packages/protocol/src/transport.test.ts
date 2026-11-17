@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   BridgeCrypto,
+  RelayTransport,
   TransportRouter,
   cryptoWithRelayEndpoint,
   relayPathForUrl,
@@ -95,6 +96,67 @@ const payload: BridgePayload = {
   method: "project.list",
   params: {},
 };
+
+describe("RelayTransport", () => {
+  it("reports a throwing message listener and keeps receiving WebSocket envelopes", async () => {
+    let ws!: FakeWebSocket;
+    class FakeWebSocket extends EventTarget {
+      static OPEN = 1;
+      readyState = FakeWebSocket.OPEN;
+      send = vi.fn<(data: string) => void>();
+
+      constructor() {
+        super();
+        ws = this;
+      }
+
+      close(): void {
+        this.dispatchEvent(new Event("close"));
+      }
+
+      receive(frame: ServerFrame): void {
+        this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
+      }
+    }
+
+    const { crypto: desktop, pairing } = await BridgeCrypto.createDesktop("wss://bridge.example/ws", "Mac");
+    const mobile = await BridgeCrypto.fromPairing(pairing);
+    const relay = new RelayTransport({
+      crypto: mobile,
+      role: "mobile",
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+      reconnect: false,
+    });
+    const first = await desktop.encrypt(payload, "desktop", "mobile");
+    const nextPayload = { ...payload, requestId: "next", idempotencyKey: "next" };
+    const next = await desktop.encrypt(nextPayload, "desktop", "mobile");
+    const failure = new Error("WebSocket message listener failed");
+    const onError = vi.fn();
+    const onMessage = vi.fn((message: DecryptedEnvelope) => {
+      if (message.header.id === first.id) throw failure;
+      relay.ack([message.header.id]);
+    });
+    relay.onError(onError);
+    relay.onMessage(onMessage);
+
+    try {
+      relay.connect();
+      ws.receive({ type: "ready", connectionId: "test", queued: 0, online: [], onlineDevices: [] });
+      ws.send.mockClear();
+      for (const envelope of [{ ...first, sentAt: first.sentAt + 1 }, first, first, next]) {
+        ws.receive({ type: "envelope", envelope });
+      }
+      const nextAck = JSON.stringify({ type: "ack", ids: [next.id] });
+      await vi.waitFor(() => expect(ws.send).toHaveBeenCalledWith(nextAck));
+
+      expect(ws.send.mock.calls).toEqual([[JSON.stringify({ type: "ack", ids: [first.id] })], [nextAck]]);
+      expect(onMessage.mock.calls.map(([message]) => message.payload)).toEqual([payload, nextPayload]);
+      expect(onError.mock.calls).toEqual([[failure]]);
+    } finally {
+      relay.close();
+    }
+  });
+});
 
 describe("BridgeTransport", () => {
   it("selects the lowest-priority candidate and delegates the protocol contract", async () => {

@@ -777,19 +777,21 @@ export class WebRtcTransport implements BridgeTransport {
       }
       return;
     }
+    let decrypted: DecryptedEnvelope;
     try {
       const selectedCrypto = await this.resolveCrypto?.(envelope) ?? this.crypto;
-      const decrypted = await selectedCrypto.decrypt(envelope);
-      if (decrypted.payload.kind === "peer-signal") return;
-      this.rememberDelivered(envelope.id);
-      this.incomingRoutes.set(envelope.id, {
-        deviceId: peer.deviceId,
-        connectionId: peer.connectionId,
-      });
-      for (const listener of this.messageListeners) listener(decrypted, envelope);
+      decrypted = await selectedCrypto.decrypt(envelope);
     } catch {
       // Invalid ciphertext cannot be turned into an application event.
+      return;
     }
+    if (decrypted.payload.kind === "peer-signal") return;
+    this.rememberDelivered(envelope.id);
+    this.incomingRoutes.set(envelope.id, {
+      deviceId: peer.deviceId,
+      connectionId: peer.connectionId,
+    });
+    for (const listener of this.messageListeners) listener(decrypted, envelope);
   }
 
   private async acceptChunk(

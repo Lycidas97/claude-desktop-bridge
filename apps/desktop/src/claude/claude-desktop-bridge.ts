@@ -234,7 +234,13 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private closed = false;
   private lastError = "Claude Desktop inspector 尚未连接";
   private gateway: ClaudeGatewayConfig | undefined;
-  private gatewayModelsCache: { gatewayKey: string; fetchedAt: number; ok: boolean; models: BridgeModelInfo[] } | undefined;
+  private gatewayModelsCache: {
+    gatewayKey: string;
+    fetchedAt: number;
+    ok: boolean;
+    source: "gateway" | "profile";
+    models: BridgeModelInfo[];
+  } | undefined;
   private models: BridgeModelInfo[] | undefined;
   private desktopPickerModels: BridgeModelInfo[] | undefined;
   private defaultModel: string | undefined;
@@ -512,15 +518,15 @@ export class ClaudeDesktopBridge extends EventEmitter {
       try {
         const fetched = await fetchClaudeGatewayModels(gateway, this.options.fetchImpl);
         discovered = fetched;
-        this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: true, models: fetched };
+        this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: true, source: "gateway", models: fetched };
       } catch {
         if (cached && cached.models.length > 0) {
           discovered = cached.models;
-          this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: false, models: cached.models };
+          this.gatewayModelsCache = { ...cached, fetchedAt: now, ok: false };
         } else {
           const offline = await offlineModels?.() ?? [];
           discovered = offline;
-          this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: false, models: offline };
+          this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: false, source: "profile", models: offline };
         }
       }
     }
@@ -1400,7 +1406,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
       const { gateway, profileModels } = titleGateway;
       const catalogModels = !this.options.magpieConnection?.isManual()
-        && this.gatewayModelsCache?.ok
+        && this.gatewayModelsCache?.source === "gateway"
         && this.gatewayModelsCache.gatewayKey === JSON.stringify(gateway)
         ? this.models
         : mergeModelCatalog(this.desktopPickerModels, profileModels);

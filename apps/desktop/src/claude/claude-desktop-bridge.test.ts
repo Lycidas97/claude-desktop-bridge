@@ -4768,9 +4768,15 @@ describe("manual session title persistence and automatic first-turn title genera
         ...(source === "host-url" ? { ANTHROPIC_BASE_URL: baseUrl } : {}),
       } }), { mode: 0o600 });
     }
+    let now = 1_000;
+    let desktopCatalogAvailable = false;
+    const desktopModelsUrl = `${baseUrl}/v1/models?limit=1000`;
     const fetchImpl = vi.fn<typeof fetch>(async (url) => {
       if (url === "https://manual.example.test/v1/models?limit=1000") {
         return Response.json({ data: [{ id: "manual-only-model" }] });
+      }
+      if (url === desktopModelsUrl && desktopCatalogAvailable) {
+        return Response.json({ data: [{ id: "host-only-model" }] });
       }
       if (url === `${baseUrl}/v1/messages`) {
         return Response.json({ content: [{ type: "text", text: "Desktop profile title" }] });
@@ -4786,23 +4792,37 @@ describe("manual session title persistence and automatic first-turn title genera
       }),
       fetchImpl, platform: "win32", environment: { APPDATA: appData, ...(source === "fixed" ? {} : { CLAUDE_CODE_HOST_CREDS_FILE: hostPath }) }, home: directory,
       scanCatalog: async () => ({ projects: [], sessions: [], observedAt: 0 }), refreshIntervalMs: 60_000, autoTitleGraceMs: 0,
+      now: () => now,
     });
+    async function expectTitleModel(requestId: string, model: string) {
+      fetchImpl.mockClear();
+      const session = await bridge.createSession("/new-project");
+      await bridge.startTurn({ ...input, sessionId: session.sessionId, requestId, idempotencyKey: requestId });
+      await vi.waitFor(() => expect(bridge.session(session.sessionId)?.title).toBe("Desktop profile title"));
+      expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"), requestId).toEqual([
+        [`${baseUrl}/v1/messages`, expect.objectContaining({
+          headers: expect.objectContaining({ "x-api-key": source === "fixed" ? "desktop-key" : "host-key" }),
+          body: expect.stringContaining(`"model":"${model}"`),
+        })],
+      ]);
+    }
     try {
       await bridge.initialize();
-      for (const mode of ["auto", "manual"]) {
-        if (mode === "manual") {
-          await bridge.saveMagpieConnection({ mode, baseUrl: "https://manual.example.test", authScheme: "x-api-key", apiKey: "manual-key" });
-        }
-        fetchImpl.mockClear();
-        const session = await bridge.createSession("/new-project");
-        await bridge.startTurn({ ...input, sessionId: session.sessionId, requestId: mode, idempotencyKey: mode });
-        await vi.waitFor(() => expect(bridge.session(session.sessionId)?.title).toBe("Desktop profile title"));
-        expect.soft(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"), mode).toEqual([
-          [`${baseUrl}/v1/messages`, expect.objectContaining({
-            headers: expect.objectContaining({ "x-api-key": source === "fixed" ? "desktop-key" : "host-key" }),
-            body: expect.stringContaining(`"model":"${source === "host-url" ? "claude-3-5-haiku-latest" : "desktop-profile-model"}"`),
-          })],
-        ]);
+      const offlineModel = source === "host-url" ? "claude-3-5-haiku-latest" : "desktop-profile-model";
+      await expectTitleModel("auto", offlineModel);
+      await bridge.saveMagpieConnection({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "x-api-key", apiKey: "manual-key" });
+      await expectTitleModel("manual", offlineModel);
+
+      if (source === "host-url") {
+        desktopCatalogAvailable = true;
+        await bridge.saveMagpieConnection({ mode: "auto" });
+        await expectTitleModel("after-fetch", "host-only-model");
+
+        desktopCatalogAvailable = false;
+        now += 65_000;
+        expect(await bridge.refreshRuntime()).toBe(true);
+        expect(fetchImpl).toHaveBeenLastCalledWith(desktopModelsUrl, expect.anything());
+        await expectTitleModel("after-failed-refresh", "host-only-model");
       }
     } finally {
       await bridge.close();

@@ -285,4 +285,77 @@ describe("ClientUpdaterController", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("defaults prerelease builds (-dev/-rc) to prerelease channel while respecting explicit user channel choices", async () => {
+    // (a) "-dev" initialVersion defaults to "prerelease"
+    const devUpdater = new ClientUpdaterController({
+      platform: "web",
+      initialVersion: "1.3.5-dev.27",
+    });
+    expect(devUpdater.getSnapshot().channel).toBe("prerelease");
+
+    // (b) clean semver initialVersion defaults to "stable"
+    const stableUpdater = new ClientUpdaterController({
+      platform: "web",
+      initialVersion: "1.3.5",
+    });
+    expect(stableUpdater.getSnapshot().channel).toBe("stable");
+
+    // (c) "0.0.0" build-time fallback resolving getAppInfo().versionName = "1.3.5-dev.27"
+    // switches to "prerelease" even after non-channel storage writes (etag/autoCheck).
+    const storage = createMemoryStorage();
+    const plugin: BridgeUpdaterNativePlugin = {
+      getAppInfo: vi.fn(async () => ({
+        versionName: "1.3.5-dev.27",
+        versionCode: 123,
+        packageName: "com.localbridge.mobile",
+        canInstallPackages: true,
+        arch: "arm64",
+      })),
+      fetchReleasesJson: vi.fn(async () => ({
+        status: 200,
+        etag: '"etag-dev"',
+        body: SAMPLE_RELEASES_JSON,
+      })),
+      downloadAndVerifyApk: vi.fn(),
+      installStagedApk: vi.fn(),
+      openExternalUrl: vi.fn(),
+      addListener: vi.fn(),
+    };
+    const fallbackUpdater = new ClientUpdaterController({
+      platform: "android",
+      initialVersion: "0.0.0",
+      plugin,
+      storage,
+    });
+    expect(fallbackUpdater.getSnapshot().channel).toBe("stable");
+    fallbackUpdater.setAutoCheck(true);
+    expect(JSON.parse(storage.getItem("bridge.client.updater.v1")!)).not.toHaveProperty("channel");
+
+    await fallbackUpdater.initializeStartup();
+    expect(fallbackUpdater.getSnapshot().currentVersion).toBe("1.3.5-dev.27");
+    expect(fallbackUpdater.getSnapshot().channel).toBe("prerelease");
+    expect(fallbackUpdater.getSnapshot().latestVersion).toBe("1.4.0-rc.1");
+    expect(JSON.parse(storage.getItem("bridge.client.updater.v1")!)).not.toHaveProperty("channel");
+
+    // Explicitly confirming the current channel ("prerelease") persists it as a user choice.
+    fallbackUpdater.setChannel("prerelease");
+    expect(JSON.parse(storage.getItem("bridge.client.updater.v1")!).channel).toBe("prerelease");
+
+    // (d) explicit user choice "stable" on a "-dev" version stays "stable" across startup & reload
+    fallbackUpdater.setChannel("stable");
+    expect(fallbackUpdater.getSnapshot().channel).toBe("stable");
+    expect(JSON.parse(storage.getItem("bridge.client.updater.v1")!).channel).toBe("stable");
+
+    const reloadedDevUpdater = new ClientUpdaterController({
+      platform: "android",
+      initialVersion: "1.3.5-dev.27",
+      plugin,
+      storage,
+    });
+    expect(reloadedDevUpdater.getSnapshot().channel).toBe("stable");
+    await reloadedDevUpdater.initializeStartup();
+    expect(reloadedDevUpdater.getSnapshot().channel).toBe("stable");
+    expect(reloadedDevUpdater.getSnapshot().latestVersion).toBe("1.3.3");
+  });
 });

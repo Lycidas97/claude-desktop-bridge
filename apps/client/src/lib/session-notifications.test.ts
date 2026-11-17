@@ -150,4 +150,30 @@ describe("session notifications", () => {
     await notifications.showSessionNotification({ hostId: "room", sessionId: "s1" }, "Desktop", "Suppressed");
     expect(webNotify).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps activeViewedSession race-safe across interleaved mounts and unmounts", async () => {
+    const notifications = await load();
+
+    // Interleaved switch to another session before the previous view unmounts
+    const disposeS1 = notifications.setActiveViewedSession({ hostId: "room", sessionId: "s1" });
+    expect(notifications.isActivelyViewingSession("room", "s1")).toBe(true);
+    const disposeS2 = notifications.setActiveViewedSession({ hostId: "room", sessionId: "s2" });
+    expect(notifications.isActivelyViewingSession("room", "s1")).toBe(false);
+    expect(notifications.isActivelyViewingSession("room", "s2")).toBe(true);
+
+    // Delayed cleanup from s1 must not clear s2
+    disposeS1();
+    expect(notifications.isActivelyViewingSession("room", "s2")).toBe(true);
+
+    // Interleaved remount of the same session ("room", "s2") before the older instance unmounts
+    const disposeS2Remount = notifications.setActiveViewedSession({ hostId: "room", sessionId: "s2" });
+    disposeS2();
+    expect(notifications.isActivelyViewingSession("room", "s2")).toBe(true);
+
+    // Active instance disposer clears once and is idempotent
+    disposeS2Remount();
+    expect(notifications.isActivelyViewingSession("room", "s2")).toBe(false);
+    disposeS2Remount();
+    expect(notifications.isActivelyViewingSession("room", "s2")).toBe(false);
+  });
 });

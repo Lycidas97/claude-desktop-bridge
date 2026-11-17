@@ -1,11 +1,15 @@
 import type { BridgeHostSnapshot, BridgePermissionInfo, BridgeProjectInfo, BridgeRequest, BridgeSessionInfo, BridgeSlashCommandCatalog } from "@bridge/protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useMobileBridge } from "./useMobileBridge.js";
+import { useMobileBridge, type BridgeMutableStore } from "./useMobileBridge.js";
+
+type HarnessStore = {
+  [K in keyof BridgeMutableStore]: K extends "setState" ? BridgeMutableStore[K] : { current: any };
+};
 
 const harness = vi.hoisted(() => ({
   state: undefined as any,
   stateReady: false,
-  refs: [] as Array<{ current: any }>,
+  refs: [] as Array<{ current: HarnessStore }>,
   requests: [] as BridgeRequest[],
   response: {} as Record<string, unknown>,
   error: undefined as { code: string; message: string } | undefined,
@@ -22,25 +26,36 @@ vi.mock("react", async (original) => ({
       harness.state,
       (updater: unknown) => {
         harness.state = typeof updater === "function" ? (updater as (prev: unknown) => unknown)(harness.state) : updater;
-        if (harness.refs[0]) harness.refs[0].current = harness.state;
+        if (harness.refs[0]?.current) harness.refs[0].current.stateRef.current = harness.state;
       },
     ];
   },
   useRef(initial: unknown) {
-    const index = harness.refs.length;
-    const ref = { current: initial as any };
-    if (index === 0 && harness.state !== undefined) ref.current = harness.state;
-    if (index === 1) ref.current = { encrypt: harness.encrypt, identity: { roomId: "room-a" } };
-    if (index === 3) ref.current = {
-      state: "connected",
-      sendEnvelope: async ({ request }: { request: BridgeRequest }) => {
-        harness.requests.push(request);
-        const pending = harness.refs[6]!.current.get(request.requestId);
-        clearTimeout(pending.timer);
-        harness.refs[6]!.current.delete(request.requestId);
-        pending.resolve({ kind: "response", requestId: request.requestId,
-          ...(harness.error ? { ok: false, error: harness.error } : { ok: true, result: harness.response }),
-        });
+    let current = initial as HarnessStore;
+    let seeded = false;
+    const ref = {
+      get current(): HarnessStore {
+        return current;
+      },
+      set current(value: HarnessStore) {
+        current = value;
+        if (!seeded && value) {
+          seeded = true;
+          if (harness.state !== undefined) value.stateRef.current = harness.state;
+          value.cryptoRef.current = { encrypt: harness.encrypt, identity: { roomId: "room-a" } };
+          value.socketRef.current = {
+            state: "connected",
+            sendEnvelope: async ({ request }: { request: BridgeRequest }) => {
+              harness.requests.push(request);
+              const pending = value.pendingResponsesRef.current.get(request.requestId);
+              clearTimeout(pending.timer);
+              value.pendingResponsesRef.current.delete(request.requestId);
+              pending.resolve({ kind: "response", requestId: request.requestId,
+                ...(harness.error ? { ok: false, error: harness.error } : { ok: true, result: harness.response }),
+              });
+            },
+          };
+        }
       },
     };
     harness.refs.push(ref);
@@ -74,7 +89,7 @@ describe("createSection", () => {
 
   it("rejects offline before encrypting or queuing a native creation", async () => {
     const bridge = useMobileBridge();
-    harness.refs[3]!.current.state = "closed";
+    harness.refs[0]!.current.socketRef.current.state = "closed";
     await expect(bridge.createSection("Research")).rejects.toThrow("电脑当前离线");
     expect(harness.encrypt).not.toHaveBeenCalled();
     expect(harness.requests).toEqual([]);
@@ -99,7 +114,7 @@ describe("loadSessionCommands", () => {
 
   it("rejects offline before encrypting or queuing a catalog request", async () => {
     const bridge = useMobileBridge();
-    harness.refs[3]!.current.state = "closed";
+    harness.refs[0]!.current.socketRef.current.state = "closed";
     await expect(bridge.loadSessionCommands("A")).rejects.toThrow("电脑当前离线");
     expect(harness.encrypt).not.toHaveBeenCalled();
     expect(harness.requests).toEqual([]);
@@ -143,7 +158,7 @@ describe("moveSessionSection", () => {
     harness.refs = []; harness.requests = []; harness.error = undefined;
     harness.encrypt.mockClear();
     const bridge = useMobileBridge();
-    harness.refs[3]!.current.state = "closed";
+    harness.refs[0]!.current.socketRef.current.state = "closed";
     await expect(bridge.moveSessionSection("desktop-1", "sec-misc")).rejects.toThrow("电脑当前离线");
     expect(harness.encrypt).not.toHaveBeenCalled();
     expect(harness.requests).toEqual([]);
@@ -166,7 +181,7 @@ describe("createDirectory", () => {
     harness.refs = []; harness.requests = []; harness.error = undefined;
     harness.encrypt.mockClear();
     const bridge = useMobileBridge();
-    harness.refs[3]!.current.state = "closed";
+    harness.refs[0]!.current.socketRef.current.state = "closed";
     await expect(bridge.createDirectory("/work/杂活", "sub")).rejects.toThrow("电脑当前离线");
     expect(harness.encrypt).not.toHaveBeenCalled();
     expect(harness.requests).toEqual([]);
@@ -221,7 +236,7 @@ describe("renameSection and deleteSection", () => {
     harness.error = undefined;
     harness.encrypt.mockClear();
     const bridge = useMobileBridge();
-    harness.refs[3]!.current.state = "closed";
+    harness.refs[0]!.current.socketRef.current.state = "closed";
     await expect(bridge.renameSection("section:sec-misc", "新名")).rejects.toThrow("电脑当前离线");
     await expect(bridge.deleteSection("section:sec-misc")).rejects.toThrow("电脑当前离线");
     expect(harness.encrypt).not.toHaveBeenCalled();
@@ -348,7 +363,7 @@ describe("RPC state projection & host summary sync", () => {
       }],
       snapshot,
     };
-    harness.refs[0]!.current = harness.state;
+    harness.refs[0]!.current.stateRef.current = harness.state;
 
     harness.response = { project: createdSection };
     await bridge.createSection("Research");
@@ -431,7 +446,7 @@ describe("RPC state projection & host summary sync", () => {
         latestSeq: 5,
       },
     };
-    harness.refs[0]!.current = harness.state;
+    harness.refs[0]!.current.stateRef.current = harness.state;
 
     harness.response = {};
     await bridge.resolvePermission("perm-1", "allow-once");
@@ -441,12 +456,12 @@ describe("RPC state projection & host summary sync", () => {
 
     // ALREADY_RESOLVED removes the stale permission, calls events.resume, and restores standby summary.
     let callCount = 0;
-    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+    harness.refs[0]!.current.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
       harness.requests.push(request);
       callCount += 1;
-      const pending = harness.refs[6]!.current.get(request.requestId);
+      const pending = harness.refs[0]!.current.pendingResponsesRef.current.get(request.requestId);
       clearTimeout(pending.timer);
-      harness.refs[6]!.current.delete(request.requestId);
+      harness.refs[0]!.current.pendingResponsesRef.current.delete(request.requestId);
       if (callCount === 1) {
         pending.resolve({
           kind: "response",
@@ -538,14 +553,14 @@ describe("RPC state projection & host summary sync", () => {
         latestSeq: 5,
       },
     };
-    harness.refs[0]!.current = harness.state;
+    harness.refs[0]!.current.stateRef.current = harness.state;
 
     let failEvidenceLoad = false;
-    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+    harness.refs[0]!.current.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
       harness.requests.push(request);
-      const pending = harness.refs[6]!.current.get(request.requestId);
+      const pending = harness.refs[0]!.current.pendingResponsesRef.current.get(request.requestId);
       clearTimeout(pending.timer);
-      harness.refs[6]!.current.delete(request.requestId);
+      harness.refs[0]!.current.pendingResponsesRef.current.delete(request.requestId);
       if (request.method === "session.open") {
         pending.resolve({
           kind: "response",
@@ -615,14 +630,14 @@ describe("uploadFile host-switch guard", () => {
   it("aborts cleanly when cryptoRef switches hosts mid-upload without writing or cancelling on the new host", async () => {
     const bridge = useMobileBridge();
     const newCrypto = { encrypt: vi.fn(), identity: { roomId: "room-b" } };
-    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+    harness.refs[0]!.current.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
       harness.requests.push(request);
-      const pending = harness.refs[6]!.current.get(request.requestId);
+      const pending = harness.refs[0]!.current.pendingResponsesRef.current.get(request.requestId);
       clearTimeout(pending.timer);
-      harness.refs[6]!.current.delete(request.requestId);
+      harness.refs[0]!.current.pendingResponsesRef.current.delete(request.requestId);
       if (request.method === "file.upload.open") {
         // Switch active host crypto immediately after open resolves.
-        harness.refs[1]!.current = newCrypto;
+        harness.refs[0]!.current.cryptoRef.current = newCrypto;
         pending.resolve({
           kind: "response",
           requestId: request.requestId,
@@ -642,7 +657,7 @@ describe("uploadFile host-switch guard", () => {
 
   it("rejects immediately if cryptoRef already changed before the first upload request", async () => {
     const bridge = useMobileBridge();
-    harness.refs[1]!.current = undefined;
+    harness.refs[0]!.current.cryptoRef.current = undefined;
     const file = new File(["hello"], "hello.txt", { type: "text/plain" });
     await expect(bridge.uploadFile("sess-1", file, () => undefined, new AbortController().signal)).rejects.toThrow("已切换电脑，上传已中断");
     expect(harness.requests).toEqual([]);
@@ -652,13 +667,13 @@ describe("uploadFile host-switch guard", () => {
   it("normalizes transport reset rejections and cancel-phase host switches to the host-switch error", async () => {
     const bridge = useMobileBridge();
     const newCrypto = { encrypt: vi.fn(), identity: { roomId: "room-b" } };
-    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+    harness.refs[0]!.current.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
       harness.requests.push(request);
-      const pending = harness.refs[6]!.current.get(request.requestId);
+      const pending = harness.refs[0]!.current.pendingResponsesRef.current.get(request.requestId);
       clearTimeout(pending.timer);
-      harness.refs[6]!.current.delete(request.requestId);
+      harness.refs[0]!.current.pendingResponsesRef.current.delete(request.requestId);
       if (request.method === "file.upload.open") {
-        harness.refs[1]!.current = newCrypto;
+        harness.refs[0]!.current.cryptoRef.current = newCrypto;
         pending.reject(new Error("连接已重置"));
         return;
       }
@@ -669,13 +684,13 @@ describe("uploadFile host-switch guard", () => {
 
     // Reset to host A and switch during final cleanup after commit succeeds.
     const hostACrypto = { encrypt: harness.encrypt, identity: { roomId: "room-a" } };
-    harness.refs[1]!.current = hostACrypto;
+    harness.refs[0]!.current.cryptoRef.current = hostACrypto;
     harness.requests = [];
-    harness.refs[3]!.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+    harness.refs[0]!.current.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
       harness.requests.push(request);
-      const pending = harness.refs[6]!.current.get(request.requestId);
+      const pending = harness.refs[0]!.current.pendingResponsesRef.current.get(request.requestId);
       clearTimeout(pending.timer);
-      harness.refs[6]!.current.delete(request.requestId);
+      harness.refs[0]!.current.pendingResponsesRef.current.delete(request.requestId);
       if (request.method === "file.upload.open") {
         pending.resolve({
           kind: "response",
@@ -702,7 +717,7 @@ describe("uploadFile host-switch guard", () => {
         return;
       }
       if (request.method === "file.upload.cancel") {
-        harness.refs[1]!.current = newCrypto;
+        harness.refs[0]!.current.cryptoRef.current = newCrypto;
         pending.reject(new Error("连接已重置"));
         return;
       }

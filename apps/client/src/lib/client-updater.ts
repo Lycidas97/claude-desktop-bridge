@@ -109,6 +109,7 @@ export class ClientUpdaterController {
   private currentVersion: string;
   private arch = "arm64";
   private channel: BridgeUpdateChannel = "stable";
+  private hasStoredChannel = false;
   private autoCheck = true;
   private dismissedVersion: string | undefined;
   private etag: string | undefined;
@@ -138,6 +139,7 @@ export class ClientUpdaterController {
   }) {
     this.platform = options.platform;
     this.currentVersion = options.initialVersion ?? defaultVersion();
+    this.channel = this.currentVersion.includes("-") ? "prerelease" : "stable";
     this.plugin = options.plugin ?? NativeBridgeUpdater;
     this.storage = options.storage;
     this.loadStorage();
@@ -159,7 +161,12 @@ export class ClientUpdaterController {
     if (this.platform !== "android") return;
     try {
       const info = await this.plugin.getAppInfo();
-      if (info.versionName) this.currentVersion = info.versionName;
+      if (info.versionName) {
+        this.currentVersion = info.versionName;
+        if (!this.hasStoredChannel) {
+          this.channel = info.versionName.includes("-") ? "prerelease" : "stable";
+        }
+      }
       if (info.arch) this.arch = info.arch;
       this.emit();
     } catch {
@@ -171,9 +178,12 @@ export class ClientUpdaterController {
   }
 
   setChannel(channel: BridgeUpdateChannel): void {
-    if (this.channel === channel) return;
+    const changed = this.channel !== channel;
     this.channel = channel;
+    if (!changed && this.hasStoredChannel) return;
+    this.hasStoredChannel = true;
     this.saveStorage();
+    if (!changed) return;
     if (this.cachedBody) {
       this.evaluateBody(this.cachedBody, false);
     }
@@ -421,6 +431,7 @@ export class ClientUpdaterController {
       const prefs = parsed as StoredPrefs;
       if (prefs.channel === "stable" || prefs.channel === "prerelease") {
         this.channel = prefs.channel;
+        this.hasStoredChannel = true;
       }
       if (typeof prefs.autoCheck === "boolean") {
         this.autoCheck = prefs.autoCheck;
@@ -443,7 +454,7 @@ export class ClientUpdaterController {
     if (!this.storage) return;
     try {
       const payload: StoredPrefs = {
-        channel: this.channel,
+        ...(this.hasStoredChannel ? { channel: this.channel } : {}),
         autoCheck: this.autoCheck,
         ...(this.dismissedVersion ? { dismissedVersion: this.dismissedVersion } : {}),
         ...(this.etag ? { etag: this.etag } : {}),

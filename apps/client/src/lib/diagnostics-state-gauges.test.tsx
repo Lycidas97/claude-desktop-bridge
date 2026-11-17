@@ -25,7 +25,7 @@ import {
   type DesktopConversationController,
 } from "../components/desktop/DesktopSessionConversation.js";
 import type { MediaRequest } from "./media-preview.js";
-import { useMobileBridge } from "../hooks/useMobileBridge.js";
+import { useMobileBridge, type BridgeMutableStore } from "../hooks/useMobileBridge.js";
 import { collectDiagnosticsStateSnapshot } from "./diagnostics.js";
 
 interface HookStore {
@@ -352,11 +352,10 @@ describe("Frontend pull-based diagnostics state gauges & redaction", () => {
       generatedAt: 100,
     };
 
-    // Populate sensitive runtime state directly on the hook's stateRef & pendingResponsesRef
-    const stateRef = store.slots[1] as { current: typeof bridge.state };
-    const cryptoRef = store.slots[2] as { current: unknown };
-    const pendingResponsesRef = store.slots[7] as { current: Map<string, unknown> };
-    cryptoRef.current = { identity: { roomId: "room-secret" } };
+    // Populate sensitive runtime state directly on the hook's named storeRef
+    const bridgeStore = (store.slots[1] as { current: BridgeMutableStore }).current;
+    const { stateRef, cryptoRef, pendingResponsesRef } = bridgeStore;
+    cryptoRef.current = { identity: { roomId: "room-secret" } } as BridgeMutableStore["cryptoRef"]["current"];
     const now = 50_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
     const timer = setTimeout(() => undefined, 60_000);

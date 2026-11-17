@@ -35,10 +35,18 @@ export function setSessionNotificationsEnabled(enabled: boolean): void {
 
 export function setActiveViewedSession(
   target: { hostId: string; sessionId: string } | undefined,
-): void {
-  activeViewedSession = target && target.hostId && target.sessionId
-    ? { hostId: target.hostId, sessionId: target.sessionId }
-    : undefined;
+): () => void {
+  if (!target || !target.hostId || !target.sessionId) {
+    activeViewedSession = undefined;
+    return () => undefined;
+  }
+  const current = { hostId: target.hostId, sessionId: target.sessionId };
+  activeViewedSession = current;
+  return () => {
+    if (activeViewedSession === current) {
+      activeViewedSession = undefined;
+    }
+  };
 }
 
 export function isActivelyViewingSession(hostId: string, sessionId?: string): boolean {

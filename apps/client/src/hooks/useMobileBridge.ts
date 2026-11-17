@@ -35,7 +35,7 @@ import {
   type EncryptedEnvelope,
   type PairingBundle,
 } from "@bridge/protocol";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { getActiveArtifactDownloadGauges } from "../lib/artifact-download.js";
 import {
   diagLog,
@@ -121,7 +121,6 @@ export {
   rebaseSnapshot,
   relayLinkAllowsSend,
   replaceActiveHostSnapshot,
-  snapshotWithClaudeDesktop,
   syncActiveHostRuntimeSummary,
   type ActiveHostState,
   type ApplyEvidencePageOptions,
@@ -143,41 +142,53 @@ export {
   type StoredHostSnapshotInput,
 } from "./bridge/bridge-reducers.js";
 
+export interface BridgeMutableStore extends BridgeTransportRefs {
+  openedSessionRef: MutableRefObject<string | undefined>;
+  handledCommandEvents: MutableRefObject<Set<string>>;
+  openingSessionsRef: MutableRefObject<Map<string, { socket: BridgeTransport | undefined; task: Promise<void> }>>;
+  loadingHistoryRef: MutableRefObject<Map<string, BridgeTransport | undefined>>;
+  transferGaugesRef: MutableRefObject<{ activeUploads: number; activeDownloads: number }>;
+}
+
 export function useMobileBridge() {
   const [state, setState] = useState<MobileBridgeState>(INITIAL_STATE);
-  const stateRef = useRef(state);
-  stateRef.current = state;
-  const cryptoRef = useRef<BridgeCrypto | undefined>(undefined);
-  const cryptoByRoomRef = useRef(new Map<string, BridgeCrypto>());
-  const socketRef = useRef<BridgeTransport | undefined>(undefined);
-  const connectionTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const pairingSyncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const pendingResponsesRef = useRef(new Map<string, PendingResponse>());
-  const envelopeRequestsRef = useRef(new Map<string, string>());
-  const desktopHomeRef = useRef<string | undefined>(undefined);
-  const linkGateRef = useRef<() => boolean>(() => true);
-  const sendAttemptedAtRef = useRef<number | undefined>(undefined);
-  const nativeRelayCapabilityRef = useRef<boolean | undefined>(undefined);
-  const payloadDeflateRef = useRef(false);
-  const pendingCompletionNotificationsRef = useRef(new Set<string>());
-
-  const transportRefs: BridgeTransportRefs = {
+  const storeRef = useRef<BridgeMutableStore | undefined>(undefined);
+  storeRef.current ??= {
     setState,
+    stateRef: { current: state },
+    cryptoRef: { current: undefined },
+    cryptoByRoomRef: { current: new Map() },
+    socketRef: { current: undefined },
+    connectionTimerRef: { current: undefined },
+    pairingSyncTimerRef: { current: undefined },
+    pendingResponsesRef: { current: new Map() },
+    envelopeRequestsRef: { current: new Map() },
+    desktopHomeRef: { current: undefined },
+    linkGateRef: { current: () => true },
+    sendAttemptedAtRef: { current: undefined },
+    nativeRelayCapabilityRef: { current: undefined },
+    payloadDeflateRef: { current: false },
+    pendingCompletionNotificationsRef: { current: new Set() },
+    openedSessionRef: { current: undefined },
+    handledCommandEvents: { current: new Set() },
+    openingSessionsRef: { current: new Map() },
+    loadingHistoryRef: { current: new Map() },
+    transferGaugesRef: { current: { activeUploads: 0, activeDownloads: 0 } },
+  };
+  const transportRefs = storeRef.current;
+  transportRefs.setState = setState;
+  transportRefs.stateRef.current = state;
+  const {
     stateRef,
     cryptoRef,
-    cryptoByRoomRef,
     socketRef,
-    connectionTimerRef,
-    pairingSyncTimerRef,
     pendingResponsesRef,
-    envelopeRequestsRef,
-    desktopHomeRef,
-    linkGateRef,
-    sendAttemptedAtRef,
-    nativeRelayCapabilityRef,
-    payloadDeflateRef,
-    pendingCompletionNotificationsRef,
-  };
+    openedSessionRef,
+    handledCommandEvents,
+    openingSessionsRef,
+    loadingHistoryRef,
+    transferGaugesRef,
+  } = transportRefs;
 
   const applyLanRelayAdvertisement = useCallback(
     (roomId: string, snapshot: BridgeHostSnapshot) => applyBridgeLanRelayAdvertisement(roomId, snapshot),
@@ -280,10 +291,6 @@ export function useMobileBridge() {
 
   const backToHosts = useCallback(() => backToBridgeHosts(transportRefs), []);
 
-  const openedSessionRef = useRef<string | undefined>(undefined);
-  const handledCommandEvents = useRef(new Set<string>());
-  const openingSessionsRef = useRef(new Map<string, { socket: BridgeTransport | undefined; task: Promise<void> }>());
-
   const artifactCtx = { setState, stateRef, cryptoRef, socketRef, sendRequest };
 
   const openSession = useCallback(
@@ -343,8 +350,6 @@ export function useMobileBridge() {
     [sendRequest],
   );
 
-  const loadingHistoryRef = useRef(new Map<string, BridgeTransport | undefined>());
-  const transferGaugesRef = useRef({ activeUploads: 0, activeDownloads: 0 });
   const loadOlderHistory = useCallback(
     (sessionId: string) => loadOlderBridgeHistory({ ...artifactCtx, loadingHistoryRef }, sessionId),
     [sendRequest],

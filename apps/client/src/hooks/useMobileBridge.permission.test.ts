@@ -1,10 +1,14 @@
 import type { BridgeEvent, BridgeRequest } from "@bridge/protocol";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { applyPermissionEvent, useMobileBridge } from "./useMobileBridge.js";
+import { applyPermissionEvent, useMobileBridge, type BridgeMutableStore } from "./useMobileBridge.js";
+
+type HarnessStore = {
+  [K in keyof BridgeMutableStore]: K extends "setState" ? BridgeMutableStore[K] : { current: any };
+};
 
 const harness = vi.hoisted(() => ({
   state: undefined as any,
-  refs: [] as Array<{ current: any }>,
+  refs: [] as Array<{ current: HarnessStore }>,
   requests: [] as BridgeRequest[],
   result: {} as Record<string, unknown>,
   error: undefined as { code: string; message: string } | undefined,
@@ -15,26 +19,42 @@ vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
   useState(initial: any) {
     harness.state = { ...initial, snapshot: harness.state.snapshot };
-    return [harness.state, (update: any) => { harness.state = typeof update === "function" ? update(harness.state) : update; }];
+    return [harness.state, (update: any) => {
+      harness.state = typeof update === "function" ? update(harness.state) : update;
+      if (harness.refs[0]?.current) harness.refs[0].current.stateRef.current = harness.state;
+    }];
   },
   useRef(initial: unknown) {
-    const index = harness.refs.length;
-    const ref = { current: initial as any };
-    if (index === 1) ref.current = { encrypt: async (request: BridgeRequest) => ({ id: request.requestId, sentAt: 1, request }) };
-    if (index === 3) ref.current = {
-      state: "connected",
-      sendEnvelope: async ({ request }: { request: BridgeRequest }) => {
-        harness.requests.push(request);
-        const pending = harness.refs[6]!.current.get(request.requestId);
-        clearTimeout(pending.timer);
-        harness.refs[6]!.current.delete(request.requestId);
-        if (request.method !== "events.resume") harness.beforeReply?.();
-        pending.resolve({
-          kind: "response", requestId: request.requestId,
-          ...(request.method === "events.resume"
-            ? { ok: true, result: { events: [] } }
-            : harness.error ? { ok: false, error: harness.error } : { ok: true, result: harness.result }),
-        });
+    let current = initial as HarnessStore;
+    let seeded = false;
+    const ref = {
+      get current(): HarnessStore {
+        return current;
+      },
+      set current(value: HarnessStore) {
+        current = value;
+        if (!seeded && value) {
+          seeded = true;
+          value.cryptoRef.current = {
+            encrypt: async (request: BridgeRequest) => ({ id: request.requestId, sentAt: 1, request }),
+          };
+          value.socketRef.current = {
+            state: "connected",
+            sendEnvelope: async ({ request }: { request: BridgeRequest }) => {
+              harness.requests.push(request);
+              const pending = value.pendingResponsesRef.current.get(request.requestId);
+              clearTimeout(pending.timer);
+              value.pendingResponsesRef.current.delete(request.requestId);
+              if (request.method !== "events.resume") harness.beforeReply?.();
+              pending.resolve({
+                kind: "response", requestId: request.requestId,
+                ...(request.method === "events.resume"
+                  ? { ok: true, result: { events: [] } }
+                  : harness.error ? { ok: false, error: harness.error } : { ok: true, result: harness.result }),
+              });
+            },
+          };
+        }
       },
     };
     harness.refs.push(ref);
@@ -133,8 +153,8 @@ describe("provider detection", () => {
     harness.result = { runtime: { state: "ready", detail: "Computer A" }, providers: [{ id: "A-only" }] };
     harness.beforeReply = () => {
       harness.state = { ...harness.state, snapshot: { ...harness.state.snapshot, host: { ...harness.state.snapshot.host, hostId: "computer-B" }, runtime: { state: "ready", detail: "Computer B" }, providers: [{ id: "B-only" }] } };
-      harness.refs[0]!.current = harness.state;
-      harness.refs[1]!.current = { ...harness.refs[1]!.current };
+      harness.refs[0]!.current.stateRef.current = harness.state;
+      harness.refs[0]!.current.cryptoRef.current = { ...harness.refs[0]!.current.cryptoRef.current };
     };
     await bridge.redetectProviders().catch(() => undefined);
     expect(harness.state.snapshot.host.hostId).toBe("computer-B");

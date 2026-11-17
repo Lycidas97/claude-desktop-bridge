@@ -12,8 +12,6 @@ import type {
   BridgeSessionInfo,
   BridgeSubagentSummary,
   BridgeTaskPlan,
-  BridgeTransportMetrics,
-  SocketState,
 } from "@bridge/protocol";
 import { parseSessionNotice, type SessionNotice } from "../components/conversation/SessionNoticeCard.js";
 import {
@@ -63,20 +61,6 @@ export function relativeTime(value: number): string {
   if (elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
   if (elapsed < 24 * 60 * 60_000) return `${Math.floor(elapsed / 3_600_000)} 小时前`;
   return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(value);
-}
-
-export function mobileConnectionLabel(
-  connection: SocketState,
-  desktopOnline: boolean,
-  metrics: BridgeTransportMetrics | undefined,
-  version: string | undefined,
-): string {
-  if (version?.startsWith("0.2.")) return "需要升级";
-  if (connection === "connecting" || connection === "reconnecting") return "正在重连";
-  if (connection !== "connected" || !desktopOnline) return "主机离线";
-  if (metrics?.path === "direct") return "直连";
-  if (metrics?.path === "public-relay") return "安全中继";
-  return "局域网连接";
 }
 
 const SYNTHETIC_MAGPIE_RE = /^(?:(?:mythos|claude)-magpie-|anthropic\/magpie-|magpie-)\d+/iu;

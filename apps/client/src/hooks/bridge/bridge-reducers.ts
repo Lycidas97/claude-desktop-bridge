@@ -690,7 +690,7 @@ export function hostSummary(
   };
 }
 
-export function hostWithRuntimeState(
+function hostWithRuntimeState(
   host: PairedHost,
   snapshot: BridgeHostSnapshot | undefined,
   permissions: BridgePermissionInfo[],
@@ -825,7 +825,7 @@ export function mergeBridgeEvents(current: BridgeEvent[], incoming: BridgeEvent[
     .slice(-2_000);
 }
 
-export function evidenceFromEvent(event: BridgeEvent): BridgeEvidenceBundle | undefined {
+function evidenceFromEvent(event: BridgeEvent): BridgeEvidenceBundle | undefined {
   if (!event.type.startsWith("evidence.")) return undefined;
   const value = event.data.evidence;
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -888,7 +888,7 @@ export function shouldPersistIncomingMessage(payload: BridgePayload, localTurns:
   return false;
 }
 
-export function mergeEvidence(
+function mergeEvidence(
   current: BridgeEvidenceBundle[],
   incoming: BridgeEvidenceBundle[],
 ): BridgeEvidenceBundle[] {
@@ -963,7 +963,7 @@ export function applyPermissionEvent(
   return current;
 }
 
-export function applyPromptEvent(
+function applyPromptEvent(
   current: BridgePendingPrompt[] | undefined,
   event: BridgeEvent,
 ): BridgePendingPrompt[] | undefined {
@@ -978,7 +978,7 @@ export function applyPromptEvent(
   return current;
 }
 
-export function applyUnseenPermissionEvents(
+function applyUnseenPermissionEvents(
   permissions: BridgePermissionInfo[],
   incoming: BridgeEvent[],
   seen: BridgeEvent[],

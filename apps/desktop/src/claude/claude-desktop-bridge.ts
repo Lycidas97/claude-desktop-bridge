@@ -18,7 +18,7 @@ import { extractToolCallDetailFromMessages, readSubagentToolCallDetail, summariz
 import { claudeRuntimePaths } from "../app/platform.js";
 import type { SessionEventLog, BridgeEventDraft } from "../controller/session-event-log.js";
 import type { EvidenceManager, ObservedDesktopTool } from "../evidence/evidence-manager.js";
-import { oldestLiveProcessStart, projectIdForCwd, scanClaudeCatalog, type ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
+import { findClaudeSessionTranscript, oldestLiveProcessStart, projectIdForCwd, type ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
 import {
   discoverClaudeGatewayConfig,
   discoverClaudeProjectDirectory,
@@ -218,7 +218,6 @@ export class ClaudeDesktopBridge extends EventEmitter {
     subagents: BridgeSubagentSummary[];
   } | undefined>>();
   private readonly backgroundTasksInFlight = new Map<string, Promise<BridgeBackgroundTask[]>>();
-  private catalogScanInFlight: Promise<ClaudeCatalogSnapshot> | undefined;
   private readonly permissionModeChanges = new Map<string, BridgeNativePermissionModeChange>();
   private readonly resolvingPermissions = new Set<string>();
   private readonly streams = new Map<string, string>();
@@ -816,13 +815,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async refreshDesktopConfiguration(sessionId: string): Promise<void> { await this.configuration(sessionId); }
 
-  private readCatalogSnapshot(): Promise<ClaudeCatalogSnapshot> {
-    if (this.catalogScanInFlight) return this.catalogScanInFlight;
-    const run = (this.options.scanCatalog?.() ?? scanClaudeCatalog(claudeRuntimePaths())).finally(() => {
-      if (this.catalogScanInFlight === run) this.catalogScanInFlight = undefined;
-    });
-    this.catalogScanInFlight = run;
-    return run;
+  private async readSessionTranscript(id: string) {
+    if (!this.options.scanCatalog) return findClaudeSessionTranscript(claudeRuntimePaths(), id);
+    const observed = (await this.options.scanCatalog()).sessions.find(session => session.desktopSessionId === id);
+    return observed?.transcriptPath
+      ? { transcriptPath: observed.transcriptPath, liveSince: oldestLiveProcessStart(observed.activeProcesses) }
+      : undefined;
   }
 
   private transcriptSubagents(sessionId: string) {
@@ -830,11 +828,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const existing = this.transcriptSubagentsInFlight.get(id);
     if (existing) return existing;
     const run = (async () => {
-      const observed = (await this.readCatalogSnapshot())
-        .sessions.find(session => session.desktopSessionId === id);
-      if (!observed?.transcriptPath) return undefined;
-      const liveSince = oldestLiveProcessStart(observed.activeProcesses);
-      return { transcriptPath: observed.transcriptPath, liveSince, subagents: await readClaudeTranscriptSubagents(observed.transcriptPath, liveSince) };
+      const local = await this.readSessionTranscript(id);
+      if (!local) return undefined;
+      return { ...local, subagents: await readClaudeTranscriptSubagents(local.transcriptPath, local.liveSince) };
     })().finally(() => {
       if (this.transcriptSubagentsInFlight.get(id) === run) this.transcriptSubagentsInFlight.delete(id);
     });
@@ -1055,12 +1051,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
   async readToolDetail(sessionId: string, toolUseId: string, agentId?: string): Promise<BridgeToolCallDetail> {
     const id = this.desktopId(sessionId);
     if (agentId !== undefined) {
-      const observed = (await this.readCatalogSnapshot())
-        .sessions.find(session => session.desktopSessionId === id);
-      if (!observed?.transcriptPath) throw new NativeCallError("Subagent transcript not found");
+      const local = await this.readSessionTranscript(id);
+      if (!local) throw new NativeCallError("Subagent transcript not found");
       const detail = await readSubagentToolCallDetail({
         sessionId,
-        transcriptPath: observed.transcriptPath,
+        transcriptPath: local.transcriptPath,
         agentId,
         toolUseId,
       });

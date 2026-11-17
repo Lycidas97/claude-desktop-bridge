@@ -3,7 +3,7 @@ import { rm, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { projectIdForCwd, scanClaudeCatalog } from "./claude-session-catalog.js";
+import { findClaudeSessionTranscript, projectIdForCwd, scanClaudeCatalog } from "./claude-session-catalog.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -36,6 +36,39 @@ afterEach(async () => {
 });
 
 describe("Claude session process catalog", () => {
+  it("resolves the selected fork transcript using its own process registration", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-fork-transcript-"));
+    directories.push(root);
+    const desktop = join(root, "desktop");
+    const profile = join(desktop, "profile", "account");
+    const paths = { sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"), desktopSessions: [desktop] };
+    const parent = "11111111-1111-4111-8111-111111111111";
+    const child = "22222222-2222-4222-8222-222222222222";
+    const parentId = `local_${parent}`;
+    const childId = `local_${child}`;
+    const parentTranscript = join(paths.projects, `${parent}.jsonl`);
+    const childTranscript = join(paths.projects, `${child}.jsonl`);
+    const startedAt = Date.parse("Thu Jan 1 10:00:00 2026");
+    await Promise.all([mkdir(profile, { recursive: true }), mkdir(paths.projects), mkdir(paths.sessions)]);
+    await Promise.all([
+      writeFile(join(profile, `${parentId}.json`), JSON.stringify({ sessionId: parentId, cliSessionId: parent, cwd: root })),
+      writeFile(join(profile, "fork-record.json"), JSON.stringify({ sessionId: childId, cliSessionId: child, cwd: root, forkedFromSessionId: parentId })),
+      writeFile(join(paths.sessions, "fork-writer.json"), JSON.stringify({ pid: 500, sessionId: child, cwd: root, startedAt: startedAt + 100 })),
+      writeFile(parentTranscript, ""),
+      writeFile(childTranscript, ""),
+    ]);
+    const processRow = `500 1 Thu Jan 1 10:00:00 2026 claude --input-format stream-json --output-format stream-json --resume ${parent} --fork-session\n`;
+    mockProcessTable(processRow);
+    expect(await findClaudeSessionTranscript(paths, parentId, "darwin")).toEqual({ transcriptPath: parentTranscript, liveSince: undefined });
+    mockProcessTable(processRow);
+    expect(await findClaudeSessionTranscript(paths, childId, "darwin")).toEqual({ transcriptPath: childTranscript, liveSince: startedAt });
+    mockProcessTable("");
+    expect(await findClaudeSessionTranscript(paths, childId, "darwin")).toEqual({ transcriptPath: childTranscript, liveSince: undefined });
+
+    await writeFile(join(profile, "archived-sessions.idx"), JSON.stringify({ archived: [childId] }));
+    expect(await findClaudeSessionTranscript(paths, childId, "darwin")).toBeUndefined();
+  });
+
   it.each(["claude-bridge", "claude-desktop-3p"])("restores verified %s registration after its executor is reparented", async (entrypoint) => {
     const root = await mkdtemp(join(tmpdir(), "bridge-process-orphan-"));
     directories.push(root);

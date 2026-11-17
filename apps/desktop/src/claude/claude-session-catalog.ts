@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { BridgeProjectInfo, BridgeSessionInfo } from "@bridge/protocol";
 import { diag } from "../app/diag.js";
 import {
+  findClaudeDesktopSessionForTranscript,
   listClaudeDesktopSessionState,
   type ClaudeDesktopProfile,
   type ClaudeSessionEffort,
@@ -232,10 +233,18 @@ async function listProcessSessions(platform = process.platform): Promise<Process
   return scan;
 }
 
-async function listActiveSessions(
-  path: string,
-  platform = process.platform,
-): Promise<Map<string, ActiveClaudeProcess[]>> {
+const inFlightActiveSessionScans = new Map<string, Promise<Map<string, ActiveClaudeProcess[]>>>();
+
+function listActiveSessions(path: string, platform: NodeJS.Platform): Promise<Map<string, ActiveClaudeProcess[]>> {
+  const key = JSON.stringify([platform, path]);
+  const existing = inFlightActiveSessionScans.get(key);
+  if (existing) return existing;
+  const run = listActiveSessionsOnce(path, platform).finally(() => { inFlightActiveSessionScans.delete(key); });
+  inFlightActiveSessionScans.set(key, run);
+  return run;
+}
+
+async function listActiveSessionsOnce(path: string, platform: NodeJS.Platform): Promise<Map<string, ActiveClaudeProcess[]>> {
   let names: string[];
   try {
     names = await readdir(path);
@@ -287,6 +296,19 @@ async function listActiveSessions(
     }
   }));
   return result;
+}
+
+export async function findClaudeSessionTranscript(
+  paths: ClaudeRuntimePaths,
+  desktopSessionId: string,
+  platform = process.platform,
+): Promise<{ transcriptPath: string; liveSince: number | undefined } | undefined> {
+  const session = await findClaudeDesktopSessionForTranscript(paths.desktopSessions, desktopSessionId);
+  if (!session) return undefined;
+  const processes = (await listActiveSessions(paths.sessions, platform)).get(session.cliSessionId) ?? [];
+  const cwd = processes.find(candidate => candidate.cwd)?.cwd ?? session.cwd;
+  const transcriptPath = await findClaudeTranscriptFile(paths.projects, session.cliSessionId, cwd);
+  return transcriptPath ? { transcriptPath, liveSince: oldestLiveProcessStart(processes) } : undefined;
 }
 
 /** Start of the oldest live process (0 when unknown); undefined when none is alive. */

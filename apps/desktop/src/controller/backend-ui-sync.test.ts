@@ -1,10 +1,9 @@
-import { EventEmitter } from "node:events";
 import { rm, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import type { BridgeDesktopRuntime, BridgeRequest } from "@bridge/protocol";
-import { DesktopController } from "./controller.js";
+import type { BridgeRequest } from "@bridge/protocol";
+import { createControllerFixture } from "./controller-fixture.js";
 import { fetchClaudeGatewayModels } from "../claude/claude-runtime-discovery.js";
 
 vi.mock("electron", () => ({ shell: {} }));
@@ -20,12 +19,6 @@ it("reports gateway discovery HTTP failure separately from an empty successful c
     vi.fn(async () => new Response("private error", { status: 503 })) as typeof fetch)).rejects.toThrow(/503/u);
 });
 
-function controller(fields: Record<string, unknown>) {
-  return Object.assign(Object.create(DesktopController.prototype), fields) as {
-    handleRequest(request: BridgeRequest, origin: "desktop" | "mobile"): Promise<unknown>;
-    desktopRuntimes(): BridgeDesktopRuntime[];
-  };
-}
 function request(method: BridgeRequest["method"], params: Record<string, unknown> = {}): BridgeRequest {
   return { kind: "request", requestId: "test", idempotencyKey: "test", method, params };
 }
@@ -33,7 +26,7 @@ function request(method: BridgeRequest["method"], params: Record<string, unknown
 it("lists one directory level and recents for local and paired requests", async () => {
   const root = await mkdtemp(join(tmpdir(), "bridge-ui-directory-")); roots.push(root);
   await mkdir(join(root, "child")); await mkdir(join(root, "child", "grandchild")); await writeFile(join(root, "file"), "not read");
-  const c = controller({ allSessions: () => [{ cwd: root }, { cwd: root }], allProjects: () => [{ cwd: join(root, "child") }] });
+  const c = createControllerFixture({ allSessions: () => [{ cwd: root }, { cwd: root }], allProjects: () => [{ cwd: join(root, "child") }] });
   for (const origin of ["desktop", "mobile"] as const) {
     expect(await c.handleRequest(request("directory.list", { path: root }), origin)).toEqual({ listing: {
       path: root, parentPath: dirname(root), directories: [{ name: "child", path: join(root, "child") }], recentPaths: [root, join(root, "child")],
@@ -45,7 +38,7 @@ it("lists one directory level and recents for local and paired requests", async 
 it("rejects retired defaults without writing configuration or broadcasting", async () => {
   const setHostPermissionMode = vi.fn(async () => 0), publish = vi.fn(async () => {});
   const config = { runtimePermissionModes: {}, defaultPermissionMode: "standard", devices: [] };
-  const c = controller({ config, repository: { save: vi.fn(async () => {}) }, eventLog: { append: vi.fn(async () => {}) },
+  const c = createControllerFixture({ config, repository: { save: vi.fn(async () => {}) }, eventLog: { append: vi.fn(async () => {}) },
     runtimeSessions: { setHostPermissionMode }, publish });
   await expect(c.handleRequest(request("permission.policy.configure", { scope: "host", runtimeId: "codex-desktop", mode: "full-access" }), "mobile"))
     .rejects.toMatchObject({ code: "UNSUPPORTED" });
@@ -56,10 +49,9 @@ it("rejects retired defaults without writing configuration or broadcasting", asy
 it("broadcasts changed Claude runtime status even when the session set is unchanged", async () => {
   const snapshot = { sessions: [], permissions: [], host: {}, runtime: { state: "unavailable" }, runtimes: [{ id: "claude-desktop" }] };
   const broadcast = vi.fn(async () => {});
-  const c = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
+  const c = createControllerFixture({
     snapshot: async () => snapshot, broadcast, eventLog: { append: vi.fn() },
-    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
-    lastPublishedPermissions: new Map(), claudePermissions: () => [],
+    claudePermissions: () => [],
   });
   await c.publish();
   broadcast.mockClear();
@@ -72,10 +64,9 @@ it("broadcasts changed Claude runtime status even when the session set is unchan
 it("broadcasts changed Magpie settings without depending on a changed session or detection timestamp", async () => {
   const snapshot = { sessions: [], permissions: [], magpie: { mode: "auto", keyConfigured: true } };
   const broadcast = vi.fn(async () => {});
-  const c = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
+  const c = createControllerFixture({
     snapshot: async () => snapshot, broadcast, eventLog: { append: vi.fn() },
-    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
-    lastPublishedPermissions: new Map(), claudePermissions: () => [],
+    claudePermissions: () => [],
   });
   await c.publish();
   broadcast.mockClear();
@@ -86,7 +77,7 @@ it("broadcasts changed Magpie settings without depending on a changed session or
 });
 
 it("rejects retired runtime policy requests", async () => {
-  const c = controller({ config: { devices: [] } });
+  const c = createControllerFixture({ config: { devices: [] } });
   await expect(c.handleRequest(request("permission.policy.configure", {
     scope: "host", runtimeId: "hermes-desktop", sessionId: "codex-desktop:task", mode: "full-access",
   }), "desktop")).rejects.toMatchObject({ code: "UNSUPPORTED" });

@@ -1,7 +1,6 @@
-import { EventEmitter } from "node:events";
 import type { BridgeSessionInfo } from "@bridge/protocol";
 import { expect, it, vi } from "vitest";
-import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
 
 vi.mock("electron", () => ({ shell: {} }));
 
@@ -12,9 +11,8 @@ it("publishes handoff control changes without rebroadcasting an unchanged catalo
     desktopHandoff: { state: "bridge", canReturn: false },
   };
   const snapshot = { sessions: [session], permissions: [], latestSeq: 0 };
-  const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
-    lastPublishedPermissions: new Map(), claudePermissions: () => [],
+  const controller = createControllerFixture({
+    claudePermissions: () => [],
     snapshot: async () => snapshot, broadcast: vi.fn(async () => {}),
     eventLog: { append: vi.fn(async () => undefined) },
   });

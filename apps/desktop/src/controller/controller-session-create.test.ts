@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BridgeProjectInfo, BridgeRequest, BridgeSessionConfiguration, BridgeSessionInfo } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
 import { ClaudeDesktopBridge, DEFAULT_CONFIGURATION_SESSION_ID, WorkspaceTrustRequiredError } from "../claude/claude-desktop-bridge.js";
 import { ConversationStateStore } from "./conversation-state-store.js";
 import { SessionEventLog } from "./session-event-log.js";
@@ -20,7 +20,7 @@ describe("section.create", () => {
   it("creates through the native broker and publishes the empty section", async () => {
     const createSection = vi.fn().mockResolvedValue(project);
     const publish = vi.fn().mockResolvedValue({ projects: [project] });
-    const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { capabilities: () => ["section.create"], createSection }, publish });
+    const controller = createControllerFixture({ broker: { capabilities: () => ["section.create"], createSection }, publish });
     await expect(controller.handleRequest(request("  Research  "), "mobile")).resolves.toEqual({ project });
     expect(createSection).toHaveBeenCalledExactlyOnceWith("Research");
     expect(publish).toHaveBeenCalledOnce();
@@ -28,27 +28,27 @@ describe("section.create", () => {
 
   it.each(["", "   ", "x".repeat(201), 42, null])("rejects an invalid name before native creation (%s)", async name => {
     const createSection = vi.fn();
-    const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { capabilities: () => ["section.create"], createSection } });
+    const controller = createControllerFixture({ broker: { capabilities: () => ["section.create"], createSection } });
     await expect(controller.handleRequest(request(name), "mobile")).rejects.toThrow(/name/u);
     expect(createSection).not.toHaveBeenCalled();
   });
 
   it("rejects a forced request when the desktop has no section capability", async () => {
     const createSection = vi.fn();
-    const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { capabilities: () => [], createSection } });
+    const controller = createControllerFixture({ broker: { capabilities: () => [], createSection } });
     await expect(controller.handleRequest(request("Research"), "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
     expect(createSection).not.toHaveBeenCalled();
   });
 
   it("propagates the native failure without publishing success", async () => {
     const publish = vi.fn();
-    const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { capabilities: () => ["section.create"], createSection: vi.fn().mockRejectedValue(new Error("Native section limit reached")) }, publish });
+    const controller = createControllerFixture({ broker: { capabilities: () => ["section.create"], createSection: vi.fn().mockRejectedValue(new Error("Native section limit reached")) }, publish });
     await expect(controller.handleRequest(request("Research"), "mobile")).rejects.toThrow("Native section limit reached");
     expect(publish).not.toHaveBeenCalled();
   });
 
   it("keeps empty native sections while filtering empty directory shortcuts", () => {
-    const controller = Object.assign(Object.create(DesktopController.prototype), {
+    const controller = createControllerFixture({
       broker: { listProjects: () => [project, { ...project, projectId: "directory", kind: "directory" }] }, allSessions: () => [],
     });
     expect(controller.allProjects()).toEqual([project]);
@@ -58,9 +58,7 @@ describe("section.create", () => {
 describe("session.create project identity", () => {
   it.each([undefined, "cg-server"])("forwards the optional selected project (%s)", async projectId => {
     const createSession = vi.fn(async () => ({ sessionId: "created" }));
-    const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { createSession } }) as {
-      handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown>;
-    };
+    const controller = createControllerFixture({ broker: { createSession } });
     await expect(controller.handleRequest({
       kind: "request", method: "session.create", requestId: "create", idempotencyKey: "create",
       params: { cwd: "/shared", title: "Grouped", ...(projectId ? { projectId } : {}) },
@@ -70,9 +68,7 @@ describe("session.create project identity", () => {
 
   it.each(["", "   ", 42, null])("rejects an explicitly invalid project before creating (%s)", async projectId => {
     const createSession = vi.fn();
-    const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { createSession } }) as {
-      handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown>;
-    };
+    const controller = createControllerFixture({ broker: { createSession } });
     await expect(controller.handleRequest({
       kind: "request", method: "session.create", requestId: "create", idempotencyKey: "create",
       params: { cwd: "/shared", projectId },
@@ -85,9 +81,7 @@ describe("session.create project identity", () => {
       .mockRejectedValueOnce(new WorkspaceTrustRequiredError(false))
       .mockRejectedValueOnce(new WorkspaceTrustRequiredError(true))
       .mockResolvedValueOnce({ sessionId: "trusted-session", cwd });
-    const controller = Object.assign(Object.create(DesktopController.prototype), { broker: { createSession } }) as {
-      handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown>;
-    };
+    const controller = createControllerFixture({ broker: { createSession } });
     const req = (trustWorkspace?: unknown): BridgeRequest => ({
       kind: "request", method: "session.create", requestId: "trust-req", idempotencyKey: "trust-req",
       params: { cwd, title: "Demo", ...(trustWorkspace !== undefined ? { trustWorkspace } : {}) },
@@ -128,7 +122,7 @@ describe("section.move", () => {
   it.each(["section-zahuo", null])("moves a session to %s, publishes and returns authoritative projects", async sectionId => {
     const moveSessionSection = vi.fn().mockResolvedValue(moved);
     const publish = vi.fn().mockResolvedValue({});
-    const controller = Object.assign(Object.create(DesktopController.prototype), {
+    const controller = createControllerFixture({
       broker: { capabilities: () => ["section.move"], moveSessionSection, listProjects: () => [section] },
       allSessions: () => [moved],
       publish,
@@ -149,7 +143,7 @@ describe("section.move", () => {
     { sessionId: "local-1", sectionId: 42 },
   ])("rejects invalid move parameters before touching broker (%j)", async params => {
     const moveSessionSection = vi.fn();
-    const controller = Object.assign(Object.create(DesktopController.prototype), {
+    const controller = createControllerFixture({
       broker: { capabilities: () => ["section.move"], moveSessionSection },
     });
     await expect(controller.handleRequest(request(params), "mobile")).rejects.toThrow();
@@ -158,7 +152,7 @@ describe("section.move", () => {
 
   it("rejects section.move when the desktop lacks section.move capability", async () => {
     const moveSessionSection = vi.fn();
-    const controller = Object.assign(Object.create(DesktopController.prototype), {
+    const controller = createControllerFixture({
       broker: { capabilities: () => [], moveSessionSection },
     });
     await expect(controller.handleRequest(request({ sessionId: "local-1", sectionId: null }), "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
@@ -178,7 +172,7 @@ describe("section.rename and section.delete", () => {
   it("renames a section, publishes and returns updated project, projects and sessions", async () => {
     const renameSection = vi.fn().mockResolvedValue(renamedProject);
     const publish = vi.fn().mockResolvedValue({});
-    const controller = Object.assign(Object.create(DesktopController.prototype), {
+    const controller = createControllerFixture({
       broker: { capabilities: () => ["section.rename"], renameSection, listProjects: () => [renamedProject] },
       allSessions: () => [session],
       publish,
@@ -200,7 +194,7 @@ describe("section.rename and section.delete", () => {
     const publish = vi.fn().mockResolvedValue({});
     const fallbackProject: BridgeProjectInfo = { projectId: "proj-colab", name: "colab-connect", cwd: "/work/杂活/colab-connect", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 1 };
     const ungroupedSession = { ...session, projectId: fallbackProject.projectId, projectName: fallbackProject.name };
-    const controller = Object.assign(Object.create(DesktopController.prototype), {
+    const controller = createControllerFixture({
       broker: { capabilities: () => ["section.delete"], deleteSection, listProjects: () => [fallbackProject] },
       allSessions: () => [ungroupedSession],
       publish,
@@ -219,7 +213,7 @@ describe("section.rename and section.delete", () => {
   it("rejects unsupported or malformed section.rename and section.delete requests", async () => {
     const renameSection = vi.fn();
     const deleteSection = vi.fn();
-    const unsupported = Object.assign(Object.create(DesktopController.prototype), {
+    const unsupported = createControllerFixture({
       broker: { capabilities: () => [], renameSection, deleteSection },
     });
     await expect(unsupported.handleRequest({
@@ -229,7 +223,7 @@ describe("section.rename and section.delete", () => {
       kind: "request", method: "section.delete", requestId: "d1", idempotencyKey: "d1", params: { sectionId: "s1" },
     }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
 
-    const capable = Object.assign(Object.create(DesktopController.prototype), {
+    const capable = createControllerFixture({
       broker: { capabilities: () => ["section.rename", "section.delete"], renameSection, deleteSection },
     });
     for (const badRename of [{ sectionId: "", name: "Next" }, { sectionId: "s1", name: "   " }, { sectionId: "s1", name: "x".repeat(201) }]) {
@@ -253,7 +247,7 @@ describe("directory.mkdir", () => {
   it("creates a single-level subdirectory inside an accessible parent and enters an existing real directory", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-mkdir-"));
     try {
-      const controller = Object.create(DesktopController.prototype) as { handleRequest(request: BridgeRequest, origin: "mobile"): Promise<{ path: string }> };
+      const controller = createControllerFixture({}) as { handleRequest(request: BridgeRequest, origin: "mobile"): Promise<{ path: string }> };
       const created = await controller.handleRequest(request(root, "  colab-connect  "), "mobile");
       expect(created.path).toBe(join(root, "colab-connect"));
       expect((await stat(created.path)).isDirectory()).toBe(true);
@@ -268,7 +262,7 @@ describe("directory.mkdir", () => {
   it.each(["", "   ", ".", "..", "a/b", "a\\b", "bad\0name", "x".repeat(256)])("rejects illegal single-level folder name (%j)", async name => {
     const root = await mkdtemp(join(tmpdir(), "bridge-mkdir-invalid-"));
     try {
-      const controller = Object.create(DesktopController.prototype) as { handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown> };
+      const controller = createControllerFixture({});
       await expect(controller.handleRequest(request(root, name), "mobile")).rejects.toThrow();
     } finally {
       await recycle(root, { recursive: true, force: true });
@@ -278,7 +272,7 @@ describe("directory.mkdir", () => {
   it("rejects inaccessible or relative parents and existing non-directory entries (files and symlinks)", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-mkdir-conflict-"));
     try {
-      const controller = Object.create(DesktopController.prototype) as { handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown> };
+      const controller = createControllerFixture({});
       await expect(controller.handleRequest(request("relative/parent", "demo"), "mobile")).rejects.toThrow("absolute");
       await expect(controller.handleRequest(request(join(root, "missing"), "demo"), "mobile")).rejects.toThrow();
 
@@ -303,7 +297,7 @@ describe("session.configuration __default__", () => {
     params: { sessionId, ...(includeBackgroundTasks !== undefined ? { includeBackgroundTasks } : {}) },
   });
 
-  it("dispatches __default__ via Object.create(DesktopController.prototype) without touching session-specific methods", async () => {
+  it("dispatches __default__ without touching session-specific methods", async () => {
     const expected: BridgeSessionConfiguration = {
       sessionId: DEFAULT_CONFIGURATION_SESSION_ID,
       model: "claude-opus-4-6",
@@ -320,9 +314,9 @@ describe("session.configuration __default__", () => {
     const defaultConfiguration = vi.fn().mockResolvedValue(expected);
     const configuration = vi.fn();
     const backgroundTaskDetails = vi.fn();
-    const controller = Object.assign(Object.create(DesktopController.prototype), {
+    const controller = createControllerFixture({
       broker: { defaultConfiguration, configuration, backgroundTaskDetails },
-    }) as { handleRequest(req: BridgeRequest, origin: "mobile"): Promise<unknown> };
+    });
 
     await expect(controller.handleRequest(request(DEFAULT_CONFIGURATION_SESSION_ID, true), "mobile")).resolves.toEqual({ configuration: expected });
     expect(defaultConfiguration).toHaveBeenCalledOnce();
@@ -373,7 +367,7 @@ describe("session.configuration __default__", () => {
     });
     await broker.initialize();
     try {
-      const controller = Object.assign(Object.create(DesktopController.prototype), { broker }) as {
+      const controller = createControllerFixture({ broker }) as {
         handleRequest(req: BridgeRequest, origin: "mobile"): Promise<{ configuration: BridgeSessionConfiguration }>;
       };
 

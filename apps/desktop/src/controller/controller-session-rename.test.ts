@@ -1,7 +1,6 @@
-import { EventEmitter } from "node:events";
-import type { BridgeRequest, BridgeSessionInfo, BridgeTurnState } from "@bridge/protocol";
+import type { BridgeRequest, BridgeSessionInfo, BridgeTurnState, DesktopControlSnapshot } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
 
 function fixture(turnState: BridgeTurnState = "running", sessionId = "native-1") {
   const session: BridgeSessionInfo = {
@@ -13,21 +12,20 @@ function fixture(turnState: BridgeTurnState = "running", sessionId = "native-1")
   const titles = new Map<string, string>();
   const row = () => ({ ...session, title: titles.get(sessionId) ?? session.title });
   const external = sessionId.includes(":");
-  const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
+  const setSessionTitle = vi.fn((id: string, title: string) => titles.set(id, title));
+  const controller = createControllerFixture({
     broker: {
       listSessions: () => external ? [] : [row()], session: () => row(),
       refreshDesktopConfiguration: vi.fn(async () => undefined), history: vi.fn(async () => ({ items: [] })),
-      rename: vi.fn(async (id: string, title: string) => { controller.conversationState.setSessionTitle(id, title); }),
+      rename: vi.fn(async (id: string, title: string) => { setSessionTitle(id, title); }),
     },
     runtimeSessions: external ? { listSessions: () => [row()], session: () => row(), history: vi.fn(async () => ({ items: [] })) } : undefined,
-    conversationState: { setSessionTitle: vi.fn((id: string, title: string) => titles.set(id, title)) },
-    sessionVisibility: new Map(), desktopArchiveRequests: new Map(),
-    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
-    lastPublishedPermissions: new Map(), claudePermissions: () => [],
+    conversationState: { setSessionTitle },
+    snapshot: async (): Promise<Pick<DesktopControlSnapshot, "sessions" | "permissions">> => ({ sessions: controller.allSessions(), permissions: [] }),
+    claudePermissions: () => [],
     eventLog: { latestSeq: () => 7, append: vi.fn() },
     broadcast: vi.fn(async () => undefined),
   });
-  controller.snapshot = async () => ({ sessions: controller.allSessions(), permissions: [] });
   const rename = (title: unknown, id = sessionId) => controller.handleRequest({
     kind: "request", method: "session.rename", requestId: "rename-1", idempotencyKey: "rename-1", params: { sessionId: id, title },
   } as BridgeRequest, "mobile");
@@ -44,9 +42,9 @@ describe("session.rename", () => {
     expect(controller.conversationState.setSessionTitle).toHaveBeenCalledExactlyOnceWith(session.sessionId, "手机显示名");
     expect(controller.broadcast).toHaveBeenCalledExactlyOnceWith({ kind: "snapshot", snapshot: { sessions: [{ ...session, title: "手机显示名" }], permissions: [] } }, true);
     expect(controller.eventLog.append).not.toHaveBeenCalled();
-    expect(await controller.handleRequest({ method: "session.list", params: { search: "手机显示名" } }, "mobile")).toEqual({ sessions: [{ ...session, title: "手机显示名" }] });
-    expect(await controller.handleRequest({ method: "session.list", params: { search: "原生标题" } }, "mobile")).toEqual({ sessions: [] });
-    expect(await controller.handleRequest({ method: "session.open", params: { sessionId: session.sessionId } }, "mobile")).toMatchObject({ session: { ...session, title: "手机显示名" } });
+    expect(await controller.handleRequest({ kind: "request", requestId: "listing", idempotencyKey: "listing", method: "session.list", params: { search: "手机显示名" } }, "mobile")).toEqual({ sessions: [{ ...session, title: "手机显示名" }] });
+    expect(await controller.handleRequest({ kind: "request", requestId: "listing", idempotencyKey: "listing", method: "session.list", params: { search: "原生标题" } }, "mobile")).toEqual({ sessions: [] });
+    expect(await controller.handleRequest({ kind: "request", requestId: "open", idempotencyKey: "open", method: "session.open", params: { sessionId: session.sessionId } }, "mobile")).toMatchObject({ session: { ...session, title: "手机显示名" } });
   });
 
   it.each(["codex-desktop:native-1", "hermes-desktop:native-1"])("rejects saved external runtime identity for %s", async id => {
@@ -85,7 +83,7 @@ describe("session.rename", () => {
     controller.conversationState.setSessionTitle.mockImplementation(() => { throw new Error("database write failed"); });
     await expect(rename("Name")).rejects.toThrow("database write failed");
     expect(controller.broadcast).not.toHaveBeenCalled();
-    expect(controller.allSessions()[0].title).toBe("原生标题");
+    expect(controller.allSessions()[0]?.title).toBe("原生标题");
   });
 
   it("does not publish a title when SDK persistence fails", async () => {
@@ -98,13 +96,13 @@ describe("session.rename", () => {
 
   it("rejects rename when persistent state is unavailable", async () => {
     const { controller, rename } = fixture();
-    controller.conversationState = undefined;
+    Object.assign(controller, { conversationState: undefined });
     await expect(rename("Name")).rejects.toThrow(/unavailable/u);
     expect(controller.broadcast).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("advertises rename only with persistent state (available=%s)", async available => {
-    const controller = Object.assign(Object.create(DesktopController.prototype), {
+    const controller = createControllerFixture({
       config: { devices: [], relayEndpoints: [], hostDeviceId: "host", desktopName: "test", relayUrl: "ws://localhost:1" },
       app: { getVersion: () => "test" }, conversationState: available ? {} : undefined,
       allProjects: () => [], allSessions: () => [], deviceSnapshots: () => [],

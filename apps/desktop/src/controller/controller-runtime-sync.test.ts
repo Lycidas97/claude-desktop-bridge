@@ -1,7 +1,7 @@
-import { EventEmitter } from "node:events";
 import type { BridgeSessionInfo, DesktopControlSnapshot } from "@bridge/protocol";
 import { expect, it, vi } from "vitest";
-import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
+import type { BridgeEventDraft } from "./session-event-log.js";
 
 function fixture() {
   const sessions: BridgeSessionInfo[] = Array.from({ length: 226 }, (_, index) => ({
@@ -13,11 +13,10 @@ function fixture() {
     state: "ready", detail: "Ready", activeTurns: 0, maxParallelTurns: 2,
     desktopIntegration: { state: "not-managed", detail: "Synthetic", enabled: false, canRestart: false },
   };
-  const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(),
-    lastPublishedPermissions: new Map(), claudePermissions: () => [],
+  const controller = createControllerFixture({
+    claudePermissions: () => [],
     snapshot: vi.fn(async () => ({ sessions: structuredClone(sessions), runtime, permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions" | "runtime">),
-    broadcast: vi.fn(async () => undefined), eventLog: { append: vi.fn(async () => undefined) },
+    broadcast: vi.fn(async () => undefined), eventLog: { append: vi.fn(async (_draft: BridgeEventDraft) => undefined) },
   });
   return { controller, sessions, runtime };
 }
@@ -34,7 +33,7 @@ it("sends six small session replacements instead of six catalogs for native runt
   }
   expect(controller.broadcast).not.toHaveBeenCalled();
   expect(controller.eventLog.append).toHaveBeenCalledTimes(6);
-  const events = controller.eventLog.append.mock.calls.map(([event]: [unknown]) => JSON.parse(JSON.stringify(event)));
+  const events = controller.eventLog.append.mock.calls.map(([event]) => JSON.parse(JSON.stringify(event)));
   expect(events[0].data).toMatchObject({ replaceSession: true, session: { sessionId: "synthetic-0", turnState: "running", mainTurnStopScope: "process" } });
   expect(events[5].data.session).toMatchObject({ turnState: "idle" });
   expect(events[5].data.session).not.toHaveProperty("mainTurnStopScope");

@@ -13,6 +13,8 @@ import "./mobile.css";
 
 installDiagnostics();
 
+if (!window.bridgeDesktop) document.documentElement.setAttribute("data-mobile-client", "");
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode><App /></StrictMode>,
 );

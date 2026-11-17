@@ -33,6 +33,12 @@
   --m-sheet-fill: #242426;
 }
 
+/* WebKit resets ancestor touch actions at scroll containers. Set a default
+   across the mobile document that local gesture surfaces can override. */
+:where([data-mobile-client], [data-mobile-client] *) {
+  touch-action: pan-x pan-y;
+}
+
 /* ---- App shell ---- */
 
 .mobile-app-shell {

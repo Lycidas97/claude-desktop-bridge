@@ -542,12 +542,14 @@ export class WebRtcTransport implements BridgeTransport {
       this.emitMetrics();
     };
     channel.onmessage = (event) => {
-      peer.receiveQueue = peer.receiveQueue.then(() => directMessageText(event.data))
+      const received = peer.receiveQueue.then(() => directMessageText(event.data))
         .then((raw) => {
           if (raw !== undefined) return this.handleDirectFrame(peer, raw);
           return undefined;
-        })
-        .catch((error) => this.emitError(error));
+        });
+      peer.receiveQueue = received.catch(() => undefined);
+      void received.catch((error) => this.emitError(error))
+        .catch((error: unknown) => console.error("WebRTC receive error reporting failed", error));
     };
     channel.onerror = () => {
       this.lastError = "WebRTC data channel failed; using Relay";

@@ -421,14 +421,20 @@ describe("WebRtcTransport", () => {
     mobile.close();
   });
 
-  it("reports a throwing message listener and keeps receiving direct envelopes", async () => {
+  it.each([false, true])("reports a throwing message listener and keeps receiving direct envelopes (onError throws=%s)", async (reporterThrows) => {
     const { desktop, mobile, mobileCrypto, network } = await transportPair();
     const payload = { kind: "request", requestId: "direct", idempotencyKey: "direct", method: "project.list", params: {} } satisfies BridgePayload;
     const first = await mobileCrypto.encrypt(payload, "mobile", "desktop");
     const nextPayload = { ...payload, requestId: "next", idempotencyKey: "next" };
     const next = await mobileCrypto.encrypt(nextPayload, "mobile", "desktop");
     const failure = new Error("Direct message listener failed");
-    const onError = vi.fn();
+    const reporterFailure = new Error("Direct error listener failed");
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onMetrics = vi.fn();
+    const onError = vi.fn(() => {
+      if (reporterThrows) throw reporterFailure;
+    });
+    desktop.onMetrics(onMetrics);
     const onMessage = vi.fn((message: DecryptedEnvelope) => {
       if (message.header.id === first.id) throw failure;
       desktop.ack([message.header.id]);
@@ -455,8 +461,14 @@ describe("WebRtcTransport", () => {
       expect(acknowledged).toEqual([first.id, next.id]);
       expect(onMessage.mock.calls.map(([message]) => message.payload)).toEqual([payload, nextPayload]);
       expect(onError.mock.calls).toEqual([[failure]]);
+      if (reporterThrows) {
+        expect(logError).toHaveBeenCalledWith(expect.any(String), reporterFailure);
+      } else {
+        expect(onMetrics).toHaveBeenLastCalledWith(expect.objectContaining({ lastError: failure.message }));
+      }
       expect(network.businessEnvelopeCount).toBe(0);
     } finally {
+      logError.mockRestore();
       desktop.close();
       mobile.close();
     }

@@ -328,14 +328,15 @@ export class BridgeSocket {
     }
     if (frame.type !== "envelope" && frame.type !== "envelope-chunk") return;
     // Keep payload delivery in arrival order across async digest/decrypt/inflate.
-    this.envelopeReceiveTail = this.envelopeReceiveTail.then(async () => {
+    const received = this.envelopeReceiveTail.then(async () => {
       const envelope = frame.type === "envelope" ? frame.envelope : await this.acceptChunk(frame.chunk);
       if (envelope) await this.deliverEnvelope(envelope);
-    }).catch((error: unknown) => {
+    });
+    this.envelopeReceiveTail = received.catch(() => undefined);
+    await received.catch((error: unknown) => {
       const normalized = error instanceof Error ? error : new Error(String(error));
       for (const listener of this.errorListeners) listener(normalized);
-    });
-    await this.envelopeReceiveTail;
+    }).catch((error: unknown) => console.error("WebSocket receive error reporting failed", error));
   }
 
   private async deliverEnvelope(envelope: EncryptedEnvelope): Promise<void> {

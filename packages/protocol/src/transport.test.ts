@@ -98,7 +98,7 @@ const payload: BridgePayload = {
 };
 
 describe("RelayTransport", () => {
-  it("reports a throwing message listener and keeps receiving WebSocket envelopes", async () => {
+  it.each([false, true])("reports a throwing message listener and keeps receiving WebSocket envelopes (onError throws=%s)", async (reporterThrows) => {
     let ws!: FakeWebSocket;
     class FakeWebSocket extends EventTarget {
       static OPEN = 1;
@@ -131,7 +131,13 @@ describe("RelayTransport", () => {
     const nextPayload = { ...payload, requestId: "next", idempotencyKey: "next" };
     const next = await desktop.encrypt(nextPayload, "desktop", "mobile");
     const failure = new Error("WebSocket message listener failed");
-    const onError = vi.fn();
+    const reporterFailure = new Error("WebSocket error listener failed");
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onMetrics = vi.fn();
+    const onError = vi.fn(() => {
+      if (reporterThrows) throw reporterFailure;
+    });
+    relay.onMetrics(onMetrics);
     const onMessage = vi.fn((message: DecryptedEnvelope) => {
       if (message.header.id === first.id) throw failure;
       relay.ack([message.header.id]);
@@ -152,7 +158,13 @@ describe("RelayTransport", () => {
       expect(ws.send.mock.calls).toEqual([[JSON.stringify({ type: "ack", ids: [first.id] })], [nextAck]]);
       expect(onMessage.mock.calls.map(([message]) => message.payload)).toEqual([payload, nextPayload]);
       expect(onError.mock.calls).toEqual([[failure]]);
+      if (reporterThrows) {
+        expect(logError).toHaveBeenCalledWith(expect.any(String), reporterFailure);
+      } else {
+        expect(onMetrics).toHaveBeenLastCalledWith(expect.objectContaining({ lastError: failure.message }));
+      }
     } finally {
+      logError.mockRestore();
       relay.close();
     }
   });

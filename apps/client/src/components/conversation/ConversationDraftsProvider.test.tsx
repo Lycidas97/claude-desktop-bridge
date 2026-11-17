@@ -410,6 +410,30 @@ describe("ConversationDraftsProvider", () => {
     });
   });
 
+  it("does not restore another window's cleared draft when saving a different session", () => {
+    vi.useFakeTimers();
+    const keyA = JSON.stringify(["host-a", "sess-A"]);
+    const keyB = JSON.stringify(["host-a", "sess-B"]);
+    stored.set(CONVERSATION_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      entries: [{ key: keyA, text: "旧草稿", updatedAt: 1 }],
+    }));
+    const first = renderProvider();
+    const firstStore = providerStore;
+    providerStore = createStore();
+    const second = renderProvider();
+    try {
+      first.session("host-a", "sess-B").setText("另一个会话的新草稿");
+      second.session("host-a", "sess-A").setText("");
+      vi.advanceTimersByTime(250);
+      expect(JSON.parse(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)!).entries).toMatchObject([
+        { key: keyB, text: "另一个会话的新草稿" },
+      ]);
+    } finally {
+      unmountStore(firstStore);
+    }
+  });
+
   it.each(["pagehide", "visibilitychange"])("flushes pending text immediately on %s", (event) => {
     vi.useFakeTimers();
     const page = new EventTarget();

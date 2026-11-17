@@ -315,6 +315,7 @@ export function ConversationView({
   const [fileDownloadBusy, setFileDownloadBusy] = useState(false);
   const [fileDownloadError, setFileDownloadError] = useState<string>();
   const [deleteSessionOpen, setDeleteSessionOpen] = useState(false);
+  const [deleteSessionError, setDeleteSessionError] = useState<string>();
   const [contextPopoverOpen, setContextPopoverOpen] = useState(false);
   const [compactBusy, setCompactBusy] = useState(false);
   const [resolvedEvidenceFileCount, setResolvedEvidenceFileCount] = useState<{
@@ -1479,7 +1480,7 @@ export function ConversationView({
       conversationDrafts.resetSession(hostId, session.sessionId);
       setDeleteSessionOpen(false);
       setInternalMenuOpen(false);
-    });
+    }, setDeleteSessionError);
   }
 
   return (
@@ -1812,7 +1813,7 @@ export function ConversationView({
           manualSections={manualSections}
           online={isOnline}
           busy={actionBusy}
-          error={deleteSessionOpen ? actionError : effectiveActionError}
+          error={deleteSessionOpen ? deleteSessionError : effectiveActionError}
           supportsRename={menuSupportsRename}
           supportsMoveSection={menuSupportsMoveSection}
           supportsFork={menuSupportsFork}
@@ -1898,6 +1899,7 @@ export function ConversationView({
           onArchive={menuSupportsVisibility && onArchiveSession ? runInternalArchive : undefined}
           onRequestDelete={menuSupportsVisibility && onDeleteSession ? () => {
             setActionError(undefined);
+            setDeleteSessionError(undefined);
             setDeleteSessionOpen(true);
           } : undefined}
           onCancelDelete={() => {

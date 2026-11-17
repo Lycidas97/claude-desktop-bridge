@@ -4,14 +4,18 @@ export function useSessionMenuAction() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
-  async function run(failureMessage: string, action: () => Promise<void>): Promise<void> {
+  async function run(
+    failureMessage: string,
+    action: () => Promise<void>,
+    setActionError: (error: string | undefined) => void = setError,
+  ): Promise<void> {
     if (busy) return;
     setBusy(true);
-    setError(undefined);
+    setActionError(undefined);
     try {
       await action();
     } catch (error) {
-      setError(error instanceof Error ? error.message : failureMessage);
+      setActionError(error instanceof Error ? error.message : failureMessage);
     } finally {
       setBusy(false);
     }

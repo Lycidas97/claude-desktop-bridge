@@ -408,12 +408,11 @@ describe("desktop session menu mutations", () => {
   const menuAction = (tree: ReactNode, label: string) =>
     elements(tree).find(element => element.type === SheetAction && element.props.label === label)!;
 
-  function openConversationMenu(onSelectSession = vi.fn()) {
+  function openConversationMenu(onSelectSession = vi.fn(), onRefreshSnapshot = vi.fn().mockResolvedValue(undefined)) {
     snapshot.host.capabilities = ["session.visibility.v1"];
     snapshot.runtime.desktopIntegration.state = "ready";
     const conversation = renderer(DesktopSessionConversation, {
-      session: snapshot.sessions[0]!, snapshot, events: [], apiRequest,
-      onRefreshSnapshot: vi.fn().mockResolvedValue(undefined), onSelectSession,
+      session: snapshot.sessions[0]!, snapshot, events: [], apiRequest, onRefreshSnapshot, onSelectSession,
     });
     elements(conversation.draw()).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
     return conversation;
@@ -460,6 +459,29 @@ describe("desktop session menu mutations", () => {
       [{ method: "session.archive", params: { sessionId: "A", archived: true } }],
     ]);
     expect(elements(conversation.draw()).some(element => element.type === Sheet)).toBe(false);
+  });
+
+  it("keeps a pending sync failure out of an unsubmitted delete confirmation", async () => {
+    let rejectRefresh!: (error: Error) => void;
+    const onRefreshSnapshot = vi.fn(() => new Promise<void>((_, reject) => { rejectRefresh = reject; }));
+    const conversation = openConversationMenu(undefined, onRefreshSnapshot);
+    await settle();
+    apiRequest.mockClear();
+
+    menuAction(conversation.draw(), "同步此会话").props.onClick();
+    expect(onRefreshSnapshot).toHaveBeenCalledOnce();
+    const deleteAction = menuAction(conversation.draw(), "删除会话");
+    expect(deleteAction.props.disabled).toBe(false);
+    deleteAction.props.onClick();
+
+    rejectRefresh(new Error("读取快照失败"));
+    await settle();
+
+    const confirmation = elements(conversation.draw()).find(element => element.type === ConfirmationDialog && element.props.open)!;
+    expect(apiRequest).not.toHaveBeenCalled();
+    expect(confirmation.props.error).toBeUndefined();
+    confirmation.props.onCancel();
+    expect(textContent(conversation.draw())).toContain("读取快照失败");
   });
 
   it("keeps the delete confirmation and draft after a rejected request", async () => {

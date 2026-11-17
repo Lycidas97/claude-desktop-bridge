@@ -232,8 +232,7 @@
 }
 
 .provider-settings-profile,
-.settings-flat-section,
-.settings-card-section {
+.settings-flat-section {
   min-width: 0;
   margin: 0;
   padding: 18px 0 4px;
@@ -245,8 +244,7 @@
 }
 
 .provider-settings-profile:last-child,
-.settings-flat-section:last-child,
-.settings-card-section:last-child {
+.settings-flat-section:last-child {
   border-bottom: 0;
 }
 
@@ -267,12 +265,6 @@
 
 .provider-settings-profile > header h3 {
   margin: 0;
-}
-
-.provider-status {
-  color: var(--muted);
-  font-size: calc(12.5px * var(--font-scale));
-  white-space: nowrap;
 }
 
 .settings-facts {
@@ -324,24 +316,15 @@
   background: color-mix(in srgb, var(--surface-2) 65%, transparent);
 }
 
-.settings-detection,
-.settings-model-list {
+.settings-detection {
   margin: 10px 0;
   font-size: calc(13px * var(--font-scale));
 }
 
-.settings-detection > summary,
-.settings-model-list > summary {
+.settings-detection > summary {
   padding: 6px 0;
   color: var(--muted);
   cursor: pointer;
-}
-
-.settings-model-list ul {
-  max-height: 240px;
-  padding-left: 20px;
-  overflow-y: auto;
-  overflow-wrap: anywhere;
 }
 
 .settings-notice {
@@ -625,14 +608,6 @@
   color: var(--muted);
   font-size: calc(12px * var(--font-scale));
   font-weight: 600;
-}
-
-.settings-section-content .host-permission-settings {
-  margin: 0;
-}
-
-.settings-section-content .permission-scope-segments {
-  flex-wrap: wrap;
 }
 
 .settings-section-content .mobile-settings-row > span,

@@ -160,6 +160,25 @@ describe("SelectMenu", () => {
     expect(props.onChange).toHaveBeenCalledExactlyOnceWith("fable");
   });
 
+  it("follows the controlled selection until the user moves the highlight", () => {
+    const props = {
+      value: "default",
+      options: [
+        { value: "default", label: "Default" },
+        { value: "plan", label: "Plan" },
+      ],
+      onChange: vi.fn(),
+    };
+    const key = (key: string) => ({ key, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    draw(props).props.onKeyDown(key("ArrowDown"));
+    draw(props);
+
+    const loaded = { ...props, value: "plan" };
+    draw(loaded);
+    draw(loaded).props.onKeyDown(key("Enter"));
+    expect(props.onChange).toHaveBeenCalledExactlyOnceWith("plan");
+  });
+
   it.each(["removed", "disabled"])("falls back when the reordered highlight is %s", (change) => {
     const opus = { value: "opus", label: "Opus" };
     const fable = { value: "fable", label: "Fable" };

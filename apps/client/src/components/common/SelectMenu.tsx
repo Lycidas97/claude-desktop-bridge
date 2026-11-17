@@ -62,15 +62,14 @@ export function SelectMenu<T extends string = string>({
   const highlightedIndex = options.findIndex((option) => option.value === activeValue && !option.disabled);
   const activeIndex = highlightedIndex >= 0 ? highlightedIndex : defaultIndex;
   const activeOption = options[activeIndex];
-  const activeOptionValue = activeOption?.value;
 
   useEffect(() => {
     if (disabled && open) setOpen(false);
   }, [disabled, open]);
 
   useEffect(() => {
-    if (open && activeValue !== activeOptionValue) setActiveValue(activeOptionValue);
-  }, [open, activeValue, activeOptionValue]);
+    if (open && activeValue !== undefined && highlightedIndex < 0) setActiveValue(undefined);
+  }, [open, activeValue, highlightedIndex]);
 
   useEffect(() => {
     if (!open || typeof document === "undefined" || typeof document.addEventListener !== "function") return;
@@ -93,7 +92,7 @@ export function SelectMenu<T extends string = string>({
   }, [open]);
 
   function openMenu(): void {
-    setActiveValue(options[defaultIndex]?.value);
+    setActiveValue(undefined);
     setOpen(true);
   }
 

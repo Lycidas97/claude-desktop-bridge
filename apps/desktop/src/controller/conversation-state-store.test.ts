@@ -174,34 +174,26 @@ describe("ConversationStateStore", () => {
     }
   });
 
-  it("persists session visibility markers across restarts", async () => {
-    const fixture = await createStore();
+  it("preserves historical session visibility rows when opening the database", async () => {
+    const { store, databasePath } = await createStore();
+    withDatabase(databasePath, (db) => db.exec(`
+      CREATE TABLE session_visibility (
+        session_id TEXT PRIMARY KEY,
+        visibility TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      ) STRICT;
+      INSERT INTO session_visibility VALUES ('native-1', 'archived', 10), ('native-2', 'deleted', 11);
+    `));
     try {
-      await fixture.store.initialize();
-
-      fixture.store.setSessionVisibility("session-1", "archived");
-      fixture.store.setSessionVisibility("codex-desktop:native-1", "deleted");
-      fixture.store.setSessionVisibility("junk", "nonsense" as never);
+      await store.initialize();
     } finally {
-      fixture.store.close();
+      store.close();
     }
-    const reopened = new ConversationStateStore({
-      databasePath: fixture.databasePath,
-    });
-    try {
-      await reopened.initialize();
-      const entries = reopened.listSessionVisibility();
-      expect(entries).toHaveLength(2);
-      expect(entries.find((entry) => entry.sessionId === "session-1")?.visibility).toBe("archived");
-      expect(entries.find((entry) => entry.sessionId === "codex-desktop:native-1")?.visibility).toBe("deleted");
-
-      // Upgrading archived -> deleted reuses the row; clearing removes it.
-      reopened.setSessionVisibility("session-1", "deleted");
-      expect(reopened.listSessionVisibility().find((entry) => entry.sessionId === "session-1")?.visibility).toBe("deleted");
-      reopened.setSessionVisibility("session-1", null);
-      expect(reopened.listSessionVisibility().map((entry) => entry.sessionId)).toEqual(["codex-desktop:native-1"]);
-    } finally {
-      reopened.close();
-    }
+    expect(withDatabase(databasePath, (db) => db.prepare(
+      "SELECT session_id, visibility, updated_at FROM session_visibility ORDER BY session_id",
+    ).all())).toEqual([
+      { session_id: "native-1", visibility: "archived", updated_at: 10 },
+      { session_id: "native-2", visibility: "deleted", updated_at: 11 },
+    ]);
   });
 });

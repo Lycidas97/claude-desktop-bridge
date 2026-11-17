@@ -353,7 +353,6 @@ describe("Round-4 Boundary 2A.1: Inspector checkbox toggle serialization & dedup
       lastPublishedSessionKey: "",
       lastPublishedSessions: new Map(),
       lastPublishedPermissions: new Map(),
-      sessionVisibility: new Map(),
       onlineDevices: new Set(),
       broadcast: vi.fn(async () => undefined),
     }) as DesktopController;

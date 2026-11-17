@@ -56,7 +56,7 @@ import {
   type DesktopMessageDeliveryHost,
   type DesktopTransportHost,
 } from "../transport/controller-transport.js";
-import type { ConversationStateStore, SessionVisibility } from "./conversation-state-store.js";
+import type { ConversationStateStore } from "./conversation-state-store.js";
 import {
   BridgeRequestError,
   dispatchControllerRequest,
@@ -101,7 +101,6 @@ export class DesktopController extends EventEmitter {
   private lastPublishedSessionKey = "";
   private lastPublishedSessions = new Map<string, string>();
   private lastPublishedPermissions = new Map<string, BridgePermissionInfo>();
-  private readonly sessionVisibility = new Map<string, { visibility: SessionVisibility; updatedAt: number }>();
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
   private publishInFlight = false;
   private publishPending = false;
@@ -153,11 +152,6 @@ export class DesktopController extends EventEmitter {
 
   async initialize(): Promise<void> {
     this.config = await this.repository.loadOrCreate();
-    if (this.conversationState) {
-      for (const row of this.conversationState.listSessionVisibility()) {
-        this.sessionVisibility.set(row.sessionId, { visibility: row.visibility, updatedAt: row.updatedAt });
-      }
-    }
     this.config.managedDesktopEnabled = false;
     this.config.launchAtLogin = await isLaunchAtLoginEnabled(this.app);
     await this.repository.save(this.config);
@@ -548,7 +542,6 @@ export class DesktopController extends EventEmitter {
           deviceCryptos: this.deviceCryptos?.size ?? 0,
           deflateDevices: this.deflateDevices?.size ?? 0,
           responseCacheEntries: this.responseCache?.size ?? 0,
-          sessionVisibilityOverrides: this.sessionVisibility?.size ?? 0,
           hasPendingPairing,
         },
         uploads: this.uploads?.diagnosticsGauges?.() ?? {
@@ -663,27 +656,16 @@ export class DesktopController extends EventEmitter {
       .sort((left, right) => right.lastActivityAt - left.lastActivityAt || left.projectId.localeCompare(right.projectId));
   }
 
-  private applySessionVisibility(sessions: BridgeSessionInfo[]): BridgeSessionInfo[] {
-    return sessions
-      .filter((session) => session.transport === "claude-desktop-native" || this.sessionVisibility.get(session.sessionId)?.visibility !== "deleted")
-      .map((session) => {
-        if (session.transport === "claude-desktop-native") return session;
-        const entry = this.sessionVisibility.get(session.sessionId);
-        return entry?.visibility === "archived" ? { ...session, archivedAt: entry.updatedAt } : session;
-      });
-  }
-
   private allSessions(): BridgeSessionInfo[] {
     const priority = (state: BridgeSessionInfo["turnState"]): number => (
       state === "waiting" ? 3 : state === "running" ? 2 : state === "queued" ? 1 : 0
     );
-    const sessions = this.broker.listSessions()
+    return this.broker.listSessions()
       .sort((left, right) => (
         priority(right.turnState) - priority(left.turnState)
         || right.lastActivityAt - left.lastActivityAt
         || left.sessionId.localeCompare(right.sessionId)
       ));
-    return this.applySessionVisibility(sessions);
   }
 
   private listedSessions(

@@ -7,6 +7,7 @@ import {
   type BridgeDeliveryState,
   type BridgeEvent,
   type BridgeEvidenceBundle,
+  type BridgeEvidenceDetailPage,
   type BridgeEvidencePage,
   type BridgeHistoryAttachment,
   type BridgeHistoryItem,
@@ -583,6 +584,7 @@ export function replaceActiveHostSnapshot(
 }
 
 export const HISTORY_PAGE_SIZE = 50;
+export const EVIDENCE_PAGE_SIZE = 30;
 export const LOCAL_EVIDENCE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export function isLoopbackRelay(value: string): boolean {
@@ -836,7 +838,7 @@ function evidenceFromEvent(event: BridgeEvent): BridgeEvidenceBundle | undefined
     !Array.isArray(evidence.tools) ||
     !Array.isArray(evidence.artifacts)
   ) return undefined;
-  return evidenceSummary(evidence as BridgeEvidenceBundle);
+  return evidence as BridgeEvidenceBundle;
 }
 
 export function previewFromResponse(response: BridgeResponse): BridgeArtifactPreview | undefined {
@@ -899,7 +901,21 @@ function mergeEvidence(
   ));
 }
 
-export function mergeHistoryPages(
+export function projectHistoryPage(
+  page: BridgeHistoryPage,
+  existingItems?: BridgeHistoryPage["items"],
+): SessionHistoryState {
+  return {
+    status: "ready",
+    items: existingItems ? mergeHistoryPages(page.items, existingItems) : page.items,
+    hasMore: page.hasMore,
+    ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+  };
+}
+
+export const REWOUND_HISTORY: SessionHistoryState = { status: "loading", items: [], hasMore: false };
+
+function mergeHistoryPages(
   olderItems: BridgeHistoryItem[],
   existingItems: BridgeHistoryItem[],
 ): BridgeHistoryItem[] {
@@ -1515,12 +1531,7 @@ export function applySessionResultToState(
   const histories = options.history
     ? {
         ...current.histories,
-        [options.history.sessionId]: {
-          status: "ready" as const,
-          items: options.history.page.items,
-          hasMore: options.history.page.hasMore,
-          ...(options.history.page.nextCursor ? { nextCursor: options.history.page.nextCursor } : {}),
-        },
+        [options.history.sessionId]: projectHistoryPage(options.history.page),
       }
     : current.histories;
   if (snapshot === current.snapshot && histories === current.histories) return current;
@@ -1648,13 +1659,15 @@ export function applyResponseToTurns(
 export function applyEvidenceEventToPages(
   evidence: Record<string, SessionEvidenceState>,
   event: BridgeEvent,
+  keyForSession?: (sessionId: string) => string,
 ): Record<string, SessionEvidenceState> {
   const item = evidenceFromEvent(event);
   if (!item) return evidence;
-  const existing = evidence[item.sessionId];
+  const key = keyForSession ? keyForSession(item.sessionId) : item.sessionId;
+  const existing = evidence[key];
   return {
     ...evidence,
-    [item.sessionId]: {
+    [key]: {
       status: "ready",
       items: mergeEvidence(existing?.items ?? [], [item]),
       hasMore: existing?.hasMore ?? false,
@@ -1698,6 +1711,21 @@ export function applyEvidencePageResult(
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     },
   };
+}
+
+export function projectLegacyEvidenceDetails(
+  evidenceId: string,
+  bundle: BridgeEvidenceBundle,
+  kind: BridgeEvidenceDetailPage["kind"],
+  cursor?: string,
+): BridgeEvidenceDetailPage {
+  const offset = cursor ? Number(cursor) : 0;
+  const end = offset + EVIDENCE_PAGE_SIZE;
+  const hasMore = end < bundle[kind].length;
+  const page = { evidenceId, hasMore, ...(hasMore ? { nextCursor: String(end) } : {}) };
+  return kind === "tools"
+    ? { ...page, kind, items: bundle.tools.slice(offset, end) }
+    : { ...page, kind, items: bundle.artifacts.slice(offset, end) };
 }
 
 /**

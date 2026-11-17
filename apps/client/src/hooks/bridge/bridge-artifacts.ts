@@ -18,10 +18,13 @@ import {
 } from "../../lib/artifact-download.js";
 import { uploadSessionFile, type UploadFileHandler } from "../../lib/file-upload.js";
 import {
+  EVIDENCE_PAGE_SIZE,
   HISTORY_PAGE_SIZE,
+  REWOUND_HISTORY,
   applyEvidencePageResult,
   applySessionResultToState,
-  mergeHistoryPages,
+  projectHistoryPage,
+  projectLegacyEvidenceDetails,
   type MobileBridgeState,
 } from "./bridge-reducers.js";
 
@@ -168,7 +171,7 @@ export function syncSessionCommandEvents(params: {
       void refreshSnapshot().then(() => openSession(sessionId)).catch(reason => setState(current => ({ ...current, error: reason instanceof Error ? reason.message : "新会话打开失败" })));
     } else if (event.type === "session.rewound" && event.sessionId) {
       const sessionId = event.sessionId;
-      setState(current => ({ ...current, histories: { ...current.histories, [sessionId]: { status: "loading", items: [], hasMore: false } } }));
+      setState(current => ({ ...current, histories: { ...current.histories, [sessionId]: REWOUND_HISTORY } }));
       if (sessionId === openedSessionRef.current) void openSession(sessionId);
     } else if (event.type === "session.compacted" && event.sessionId === openedSessionRef.current) {
       void openSession(event.sessionId!);
@@ -177,12 +180,15 @@ export function syncSessionCommandEvents(params: {
 }
 
 export async function loadOlderBridgeEvidence(
-  ctx: Pick<BridgeArtifactsContext, "setState" | "stateRef" | "sendRequest">,
+  ctx: BridgeArtifactsContext,
   sessionId: string,
 ): Promise<void> {
-  const { setState, stateRef, sendRequest } = ctx;
+  const { setState, stateRef, cryptoRef, socketRef, sendRequest } = ctx;
   const current = stateRef.current.evidence[sessionId];
   if (!current?.nextCursor || current.status === "loading") return;
+  const crypto = cryptoRef.current;
+  const socket = socketRef.current;
+  const isCurrent = () => cryptoRef.current === crypto && socketRef.current === socket;
   setState((stateValue) => ({
     ...stateValue,
     evidence: {
@@ -194,18 +200,18 @@ export async function loadOlderBridgeEvidence(
     const response = await sendRequest("evidence.list", {
       sessionId,
       cursor: current.nextCursor,
-      limit: 30,
+      limit: EVIDENCE_PAGE_SIZE,
     }, { wait: true, timeoutMs: 45_000 });
     if (!response?.ok) throw new Error(response?.error?.message ?? "成果加载失败");
     const result = response.result as { evidence?: BridgeEvidencePage };
     if (!result.evidence) throw new Error("电脑未返回成果证据");
     const page = result.evidence;
-    setState((stateValue) => ({
+    setState((stateValue) => isCurrent() ? {
       ...stateValue,
       evidence: applyEvidencePageResult(stateValue.evidence, sessionId, page),
-    }));
+    } : stateValue);
   } catch (error) {
-    setState((stateValue) => ({
+    setState((stateValue) => isCurrent() ? {
       ...stateValue,
       evidence: applyEvidencePageResult(stateValue.evidence, sessionId, undefined, {
         error: true,
@@ -213,7 +219,7 @@ export async function loadOlderBridgeEvidence(
         preserveCursorOnError: true,
       }),
       error: error instanceof Error ? error.message : "成果加载失败",
-    }));
+    } : stateValue);
   }
 }
 
@@ -227,18 +233,13 @@ export async function loadBridgeEvidenceDetails(
   const crypto = cryptoRef.current;
   const paged = stateRef.current.snapshot?.host.capabilities?.includes("evidence.details.v1");
   const response = await sendRequest(paged ? "evidence.details" : "evidence.get", {
-    evidenceId, ...(paged ? { kind, cursor, limit: 30 } : {}),
+    evidenceId, ...(paged ? { kind, cursor, limit: EVIDENCE_PAGE_SIZE } : {}),
   }, { wait: true, timeoutMs: 30_000, allowOffline: false });
   if (cryptoRef.current !== crypto) throw new Error("连接已切换，请重新打开成果");
   if (!response?.ok) throw new Error(response?.error?.message ?? "读取成果详情失败");
   if (paged) return (response.result as { page: BridgeEvidenceDetailPage }).page;
   const bundle = (response.result as { evidence: BridgeEvidenceBundle }).evidence;
-  const offset = cursor ? Number(cursor) : 0;
-  const hasMore = offset + 30 < bundle[kind].length;
-  const next = { evidenceId, hasMore, ...(hasMore ? { nextCursor: String(offset + 30) } : {}) };
-  return kind === "tools"
-    ? { ...next, kind, items: bundle.tools.slice(offset, offset + 30) }
-    : { ...next, kind, items: bundle.artifacts.slice(offset, offset + 30) };
+  return projectLegacyEvidenceDetails(evidenceId, bundle, kind, cursor);
 }
 
 export async function previewBridgeArtifact(
@@ -370,12 +371,7 @@ export async function loadOlderBridgeHistory(
         ...stateValue,
         histories: {
           ...stateValue.histories,
-          [sessionId]: {
-            status: "ready",
-            items: mergeHistoryPages(page.items, existingItems),
-            hasMore: page.hasMore,
-            ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-          },
+          [sessionId]: projectHistoryPage(page, existingItems),
         },
       };
     });

@@ -1,4 +1,3 @@
-import { evidenceSummary } from "@bridge/protocol";
 import type {
   BridgeArtifactManifest,
   BridgeArtifactPreview,
@@ -29,7 +28,15 @@ import type {
   LocalBridgeRequest,
 } from "@bridge/protocol";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { HISTORY_PAGE_SIZE, mergeHistoryPages } from "../../hooks/bridge/bridge-reducers.js";
+import {
+  EVIDENCE_PAGE_SIZE,
+  HISTORY_PAGE_SIZE,
+  REWOUND_HISTORY,
+  applyEvidenceEventToPages,
+  applyEvidencePageResult,
+  projectHistoryPage,
+  projectLegacyEvidenceDetails,
+} from "../../hooks/bridge/bridge-reducers.js";
 import type { SessionEvidenceState, SessionHistoryState } from "../../hooks/useMobileBridge.js";
 import { downloadBridgeArtifact, downloadBridgeSessionFile } from "../../lib/artifact-download.js";
 import {
@@ -172,6 +179,8 @@ function useDesktopConversationController(
   const openSeqRef = useRef(new Map<string, number>());
   const mountedCountsRef = useRef(new Map<string, number>());
   const handledEventsRef = useRef(new Set<string>());
+  // Retained objects keep their identity across buffer updates. A replacement is a new publication.
+  const consumedEvidenceRef = useRef(new WeakSet<BridgeEvent>());
   const eventHostByEventIdRef = useRef(new Map<string, string>());
 
   function filterEvents(
@@ -257,7 +266,7 @@ function useDesktopConversationController(
         }).then((response) => unwrap<{ history: BridgeHistoryPage }>(response)),
         request({
           method: "evidence.list",
-          params: { sessionId, limit: 30 },
+          params: { sessionId, limit: EVIDENCE_PAGE_SIZE },
         }).then((response) => (
           response.ok ? response.result as { evidence: BridgeEvidencePage } : undefined
         )).catch(() => undefined),
@@ -265,32 +274,11 @@ function useDesktopConversationController(
       if (openSeqRef.current.get(key) !== seq) return false;
       updateHistories((current) => ({
         ...current,
-        [key]: {
-          status: "ready",
-          items: result.history.items,
-          hasMore: result.history.hasMore,
-          ...(result.history.nextCursor ? { nextCursor: result.history.nextCursor } : {}),
-        },
+        [key]: projectHistoryPage(result.history),
       }));
-      updateEvidence((current) => {
-        const merged = new Map(
-          (current[key]?.items ?? []).map((item) => [item.id, item]),
-        );
-        for (const item of evidenceResult?.evidence.items ?? []) {
-          merged.set(item.id, evidenceSummary(item));
-        }
-        return {
-          ...current,
-          [key]: {
-            status: evidenceResult ? "ready" : merged.size > 0 ? "ready" : "error",
-            items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
-            hasMore: evidenceResult?.evidence.hasMore ?? false,
-            ...(evidenceResult?.evidence.nextCursor
-              ? { nextCursor: evidenceResult.evidence.nextCursor }
-              : {}),
-          },
-        };
-      });
+      updateEvidence((current) => applyEvidencePageResult(current, key, evidenceResult?.evidence, {
+        hasMoreOnError: false,
+      }));
       return true;
     } catch (failure) {
       if (openSeqRef.current.get(key) !== seq) return false;
@@ -304,14 +292,7 @@ function useDesktopConversationController(
           error: errorMessage,
         },
       }));
-      updateEvidence((current) => ({
-        ...current,
-        [key]: {
-          status: current[key]?.items.length ? "ready" : "error",
-          items: current[key]?.items ?? [],
-          hasMore: current[key]?.hasMore ?? false,
-        },
-      }));
+      updateEvidence((current) => applyEvidencePageResult(current, key));
       if (propagateError) {
         throw new Error(errorMessage);
       }
@@ -382,41 +363,15 @@ function useDesktopConversationController(
     if (!enabled) return;
     const hostId = input.snapshot.host.hostId;
     const hostEvents = filterEvents(input.events, hostId);
-    const incoming = hostEvents.flatMap((event): BridgeEvidenceBundle[] => {
-      if (!event.type.startsWith("evidence.")) return [];
-      const item = event.data.evidence as Partial<BridgeEvidenceBundle> | undefined;
-      if (
-        !item
-        || typeof item.id !== "string"
-        || typeof item.sessionId !== "string"
-        || !Array.isArray(item.tools)
-        || !Array.isArray(item.artifacts)
-      ) return [];
-      return [evidenceSummary(item as BridgeEvidenceBundle)];
-    });
-    if (incoming.length === 0) return;
-    updateEvidence((current) => {
-      const next = { ...current };
-      for (const item of incoming) {
-        const key = conversationDraftKey(hostId, item.sessionId);
-        const previous = next[key] ?? { status: "ready", items: [], hasMore: false };
-        const merged = new Map(previous.items.map((candidate) => [candidate.id, candidate]));
-        merged.set(item.id, item);
-        next[key] = {
-          ...previous,
-          status: "ready",
-          items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
-        };
-      }
-      return next;
-    });
-  }, [enabled, input.events, input.snapshot.host.hostId]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    const hostId = input.snapshot.host.hostId;
-    const hostEvents = filterEvents(input.events, hostId);
+    const keyForSession = (sessionId: string) => conversationDraftKey(hostId, sessionId);
     for (const event of hostEvents) {
+      if (event.type.startsWith("evidence.")) {
+        if (!consumedEvidenceRef.current.has(event)) {
+          consumedEvidenceRef.current.add(event);
+          updateEvidence((current) => applyEvidenceEventToPages(current, event, keyForSession));
+        }
+        continue;
+      }
       if (event.type !== "session.rewound" && event.type !== "session.compacted" && event.type !== "session.deleted") continue;
       const eventKey = `${hostId}:${event.eventId}`;
       if (handledEventsRef.current.has(eventKey)) continue;
@@ -432,7 +387,7 @@ function useDesktopConversationController(
         loadingHistoryRef.current.delete(key);
         updateHistories((current) => ({
           ...current,
-          [key]: { status: "loading", items: [], hasMore: false },
+          [key]: REWOUND_HISTORY,
         }));
         if ((mountedCountsRef.current.get(key) ?? 0) > 0) {
           void openSession(event.sessionId, hostId);
@@ -474,18 +429,10 @@ function useDesktopConversationController(
         params: { sessionId, cursor: requestedCursor, limit: HISTORY_PAGE_SIZE },
       }));
       if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
-      updateHistories((value) => {
-        const existingItems = value[key]?.items ?? current.items;
-        return {
-          ...value,
-          [key]: {
-            status: "ready",
-            items: mergeHistoryPages(result.history.items, existingItems),
-            hasMore: result.history.hasMore,
-            ...(result.history.nextCursor ? { nextCursor: result.history.nextCursor } : {}),
-          },
-        };
-      });
+      updateHistories((value) => ({
+        ...value,
+        [key]: projectHistoryPage(result.history, value[key]?.items ?? current.items),
+      }));
     } catch (failure) {
       if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
       updateHistories((value) => ({
@@ -520,28 +467,15 @@ function useDesktopConversationController(
     try {
       const result = unwrap<{ evidence: BridgeEvidencePage }>(await latestRef.current.apiRequest({
         method: "evidence.list",
-        params: { sessionId, cursor: requestedCursor, limit: 30 },
+        params: { sessionId, cursor: requestedCursor, limit: EVIDENCE_PAGE_SIZE },
       }));
       if (!loadingEvidenceRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
-      updateEvidence((value) => {
-        const existing = value[key]?.items ?? current.items;
-        const merged = new Map(existing.map((item) => [item.id, item]));
-        for (const item of result.evidence.items) merged.set(item.id, evidenceSummary(item));
-        return {
-          ...value,
-          [key]: {
-            status: "ready",
-            items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
-            hasMore: result.evidence.hasMore,
-            ...(result.evidence.nextCursor ? { nextCursor: result.evidence.nextCursor } : {}),
-          },
-        };
-      });
+      updateEvidence((value) => applyEvidencePageResult(value, key, result.evidence));
     } catch {
       if (!loadingEvidenceRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
-      updateEvidence((value) => ({
-        ...value,
-        [key]: { ...(value[key] ?? current), status: "error" },
+      updateEvidence((value) => applyEvidencePageResult(value, key, undefined, {
+        forceErrorStatus: true,
+        preserveCursorOnError: true,
       }));
     } finally {
       if ((openSeqRef.current.get(key) ?? 0) === startSeq) {
@@ -559,19 +493,14 @@ function useDesktopConversationController(
     if (snapshot.host.capabilities.includes("evidence.details.v1")) {
       return unwrap<{ page: BridgeEvidenceDetailPage }>(await apiRequest({
         method: "evidence.details",
-        params: { evidenceId, kind, ...(cursor ? { cursor } : {}), limit: 30 },
+        params: { evidenceId, kind, ...(cursor ? { cursor } : {}), limit: EVIDENCE_PAGE_SIZE },
       })).page;
     }
     const bundle = unwrap<{ evidence: BridgeEvidenceBundle }>(await apiRequest({
       method: "evidence.get",
       params: { evidenceId },
     })).evidence;
-    const offset = cursor ? Number(cursor) : 0;
-    const hasMore = offset + 30 < bundle[kind].length;
-    const next = { evidenceId, hasMore, ...(hasMore ? { nextCursor: String(offset + 30) } : {}) };
-    return kind === "tools"
-      ? { ...next, kind, items: bundle.tools.slice(offset, offset + 30) }
-      : { ...next, kind, items: bundle.artifacts.slice(offset, offset + 30) };
+    return projectLegacyEvidenceDetails(evidenceId, bundle, kind, cursor);
   }
 
   async function previewArtifact(

@@ -906,14 +906,19 @@ describe("desktop conversation parity", () => {
       { id: "m-2", sessionId: "A", role: "user", text: "Recent question", createdAt: 20, origin: "claude-desktop" },
       { id: "m-3", sessionId: "A", role: "assistant", text: "Recent answer", createdAt: 30, origin: "claude-desktop" },
     ];
-    apiRequest.mockImplementation(async ({ method }) => ({
-      kind: "response",
-      requestId: "page",
-      ok: true,
-      result: method === "session.open"
-        ? { history: { items: history, hasMore: true, nextCursor: "m-2" } }
-        : { evidence: { items: [], hasMore: false } },
-    }));
+    let finishEvidence!: () => void;
+    const firstEvidence = new Promise<void>((resolve) => { finishEvidence = resolve; });
+    apiRequest.mockImplementation(async ({ method }) => {
+      if (method === "evidence.list") await firstEvidence;
+      return {
+        kind: "response",
+        requestId: "page",
+        ok: true,
+        result: method === "session.open"
+          ? { history: { items: history, hasMore: true, nextCursor: "m-2" } }
+          : { evidence: { items: [], hasMore: false } },
+      };
+    });
     dashboard = renderer(DesktopDashboard, {
       themeControl: { theme: "dark", family: "apple", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
       agentVisibility: { enabled: ["claude-desktop"], setEnabled: vi.fn() },
@@ -923,6 +928,10 @@ describe("desktop conversation parity", () => {
     sessionsProps = child.props;
     sessions = renderer(child.type as (props: any) => ReactNode, sessionsProps);
     sessions.draw(); await settle(); tree = sessions.draw();
+    expect(apiRequest).toHaveBeenCalledWith({ method: "evidence.list", params: { sessionId: "A", limit: 30 } });
+    expect(elements(tree).some((element) => element.type === ConversationMessageItem)).toBe(false);
+    finishEvidence();
+    await settle(); tree = sessions.draw();
 
     expect(apiRequest).toHaveBeenCalledWith({ method: "session.open", params: { sessionId: "A", limit: 50 } });
     apiRequest.mockClear();
@@ -1139,6 +1148,62 @@ describe("desktop conversation parity", () => {
     confirm.props.onConfirm();
     await settle(); tree = sessions.draw();
     expect(apiRequest).toHaveBeenCalledWith({ method: "subagent.stop", params: { sessionId: "A", agentId: "agent-1" } });
+  });
+
+  it("keeps the projected evidence page unchanged through text deltas and merges the next evidence event", async () => {
+    await openSessions();
+    elements(tree).find((element) => element.type === "button" && textContent(element) === "成果")!.props.onClick();
+    const page = () => elements(tree).find((element) => element.type === EvidencePanel)!.props.state;
+    const evidence: BridgeEvent = {
+      eventId: "evidence-ready", seq: 1, timestamp: 10, sessionId: "A", origin: "claude-host", type: "evidence.ready",
+      data: { evidence: { id: "bundle", sessionId: "A", startedAt: 10, summary: "First", tools: [], artifacts: [] } },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [evidence] });
+    const firstPage = page();
+    expect(firstPage.items.map((item: { summary: string }) => item.summary)).toEqual(["First"]);
+
+    const delta: BridgeEvent = {
+      eventId: "delta", seq: 2, timestamp: 11, sessionId: "A", origin: "claude-host", type: "assistant.delta",
+      itemId: "assistant", data: { text: "Still writing" },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [evidence, delta] });
+    expect(page()).toBe(firstPage);
+
+    const update: BridgeEvent = {
+      ...evidence, eventId: "evidence-updated", seq: 3, timestamp: 12, type: "evidence.updated",
+      data: { evidence: { ...evidence.data.evidence as object, summary: "Updated" } },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [evidence, delta, update] });
+    expect(page().items.map((item: { summary: string }) => item.summary)).toEqual(["Updated"]);
+
+    const replacement: BridgeEvent = {
+      ...update,
+      data: { evidence: { ...update.data.evidence as object, summary: "Replacement" } },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [delta, replacement] });
+    expect(page().items.map((item: { summary: string }) => item.summary)).toEqual(["Replacement"]);
+  });
+
+  it("pages legacy artifact details and passes opaque cursors to capable hosts", async () => {
+    await openSessions();
+    elements(tree).find((element) => element.type === "button" && textContent(element) === "成果")!.props.onClick();
+    tree = sessions.draw();
+    const loadDetails = () => elements(tree).find((element) => element.type === EvidencePanel)!.props.onLoadDetails;
+    const artifacts = Array.from({ length: 32 }, (_, i) => ({ id: `artifact-${i}` }));
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "legacy", ok: true, result: { evidence: { artifacts, tools: [] } } });
+    await expect(loadDetails()("bundle", "artifacts", "30")).resolves.toEqual({
+      evidenceId: "bundle", kind: "artifacts", items: artifacts.slice(30), hasMore: false,
+    });
+    expect(apiRequest).toHaveBeenLastCalledWith({ method: "evidence.get", params: { evidenceId: "bundle" } });
+
+    snapshot.host.capabilities.push("evidence.details.v1");
+    tree = sessions.draw({ ...sessionsProps, snapshot });
+    const page = { evidenceId: "bundle", kind: "artifacts", items: [artifacts[0]], hasMore: true, nextCursor: "next" };
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "paged", ok: true, result: { page } });
+    await expect(loadDetails()("bundle", "artifacts", "opaque")).resolves.toEqual(page);
+    expect(apiRequest).toHaveBeenLastCalledWith({
+      method: "evidence.details", params: { evidenceId: "bundle", kind: "artifacts", cursor: "opaque", limit: 30 },
+    });
   });
 
   it("keeps onLoadBackgroundTasks stable across live conversation and evidence events without restarting polling", async () => {
@@ -2607,6 +2672,18 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     expect(convProviderValue().evidenceFor(firstId)?.items).toHaveLength(1);
 
     onEventListener?.({
+      seq: 98,
+      eventId: "ev-live-1",
+      sessionId: firstId,
+      origin: "claude-host",
+      type: "evidence.ready",
+      timestamp: 98,
+      data: { evidence: { id: "ev-live", sessionId: firstId, startedAt: 98, tools: [], artifacts: [] } },
+    });
+    dashTree = dash.draw();
+    expect(convProviderValue().evidenceFor(firstId)?.items).toHaveLength(2);
+
+    onEventListener?.({
       seq: 99,
       eventId: "ev-deleted-1",
       sessionId: firstId,
@@ -2619,6 +2696,18 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     await settle();
     dashTree = dash.draw();
     expect(convProviderValue().historyFor(firstId)).toBeUndefined();
+    expect(convProviderValue().evidenceFor(firstId)).toBeUndefined();
+
+    onEventListener?.({
+      seq: 100,
+      eventId: "ev-unrelated-delta",
+      sessionId: "another-session",
+      origin: "claude-host",
+      type: "assistant.delta",
+      timestamp: 100,
+      data: { text: "Unrelated progress" },
+    });
+    dashTree = dash.draw();
     expect(convProviderValue().evidenceFor(firstId)).toBeUndefined();
   });
 });

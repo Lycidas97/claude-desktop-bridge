@@ -540,6 +540,8 @@ describe("RPC state projection & host summary sync", () => {
     harness.store!.stateRef.current = harness.state;
 
     let failEvidenceLoad = false;
+    let finishEvidence!: () => void;
+    const firstEvidence = new Promise<void>((resolve) => { finishEvidence = resolve; });
     harness.store!.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
       harness.requests.push(request);
       const pending = harness.store!.pendingResponsesRef.current.get(request.requestId);
@@ -571,6 +573,7 @@ describe("RPC state projection & host summary sync", () => {
         return;
       }
       const cursor = request.params.cursor as string | undefined;
+      if (!cursor) await firstEvidence;
       pending.resolve({
         kind: "response",
         requestId: request.requestId,
@@ -584,9 +587,11 @@ describe("RPC state projection & host summary sync", () => {
     };
 
     await bridge.openSession("sess-1");
-    await vi.waitFor(() => expect(harness.state.evidence["sess-1"]?.status).toBe("ready"));
     expect(harness.state.snapshot.sessions[0]?.title).toBe("Opened");
     expect(harness.state.histories["sess-1"]?.items.map((item: { id: string }) => item.id)).toEqual(["h-1"]);
+    expect(harness.state.evidence["sess-1"]?.status).toBe("loading");
+    finishEvidence();
+    await vi.waitFor(() => expect(harness.state.evidence["sess-1"]?.status).toBe("ready"));
     expect(harness.state.evidence["sess-1"]).toMatchObject({
       status: "ready",
       hasMore: true,

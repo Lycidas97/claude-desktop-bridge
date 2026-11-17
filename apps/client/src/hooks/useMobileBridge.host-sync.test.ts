@@ -1426,6 +1426,24 @@ describe("desktop presence after a desktop restart", () => {
   });
 });
 
+describe("evidence pagination across hosts", () => {
+  it.each([true, false])("discards an older evidence response after switching hosts (success=%s)", async (ok) => {
+    const response = deferred<Record<string, unknown>>();
+    harness.respond = () => response.promise;
+    harness.state.evidence = { "shared-session": { status: "ready", items: [], hasMore: true, nextCursor: "A-cursor" } };
+    const loading = useMobileBridge().loadOlderEvidence("shared-session");
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+    switchHost("B");
+    const current = { status: "ready", items: [], hasMore: true, nextCursor: "B-cursor" };
+    harness.state.evidence["shared-session"] = current;
+    if (ok) response.resolve({ evidence: { sessionId: "shared-session", items: [], hasMore: false } });
+    else response.reject(new Error("Old host disconnected"));
+    await loading;
+    expect(harness.state.evidence["shared-session"]).toBe(current);
+    expect(harness.state.error).toBeUndefined();
+  });
+});
+
 describe("evidence detail loading", () => {
   it("requests one page without adding its contents to the global cache", async () => {
     harness.state.snapshot.host.capabilities = ["evidence.details.v1"];

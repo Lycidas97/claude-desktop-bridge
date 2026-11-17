@@ -4337,7 +4337,7 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("discovers configLibrary Magpie gateways, caches /v1/models across refreshes, and resolves Windows/Mac synthetic model labels", async () => {
+  it.each([false, true])("reads gateway and model settings once per refresh (Host credentials file: %s)", async (withHostCredentials) => {
     const root = await mkdtemp(join(tmpdir(), "bridge-magpie-runtime-"));
     const state = new ConversationStateStore({ databasePath: join(root, "state.sqlite") });
     await state.initialize();
@@ -4354,9 +4354,19 @@ describe("Claude native relay", () => {
     const localAppData = join(root, "AppData", "Local");
     const roamingAppData = join(root, "AppData", "Roaming");
     const configLib = join(localAppData, "Claude-3p", "configLibrary");
+    const metaPath = join(configLib, "_meta.json");
+    const activePath = join(configLib, "active.json");
+    const settingsPath = join(root, "settings.json");
+    const hostPath = join(localAppData, "Claude-3p", "host-creds-test.json");
+    const reads = vi.mocked(readFile);
+    const readCount = (target: string) => reads.mock.calls.filter(([path]) => path === target).length;
     await mkdir(configLib, { recursive: true });
-    await writeFile(join(configLib, "_meta.json"), JSON.stringify({ appliedId: "active" }));
-    await writeFile(join(configLib, "active.json"), JSON.stringify({
+    const hostBearer = "fixture-host-bearer";
+    if (withHostCredentials) {
+      await writeFile(hostPath, JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: hostBearer } }), { mode: 0o600 });
+    }
+    await writeFile(metaPath, JSON.stringify({ appliedId: "active" }));
+    await writeFile(activePath, JSON.stringify({
       inferenceProvider: "gateway",
       inferenceGatewayBaseUrl: "http://127.0.0.1:3425",
       inferenceGatewayAuthScheme: "bearer",
@@ -4387,7 +4397,7 @@ describe("Claude native relay", () => {
     }) as unknown as typeof fetch;
 
     const bridge = new ClaudeDesktopBridge({
-      settingsPath: join(root, "settings.json"),
+      settingsPath,
       eventLog,
       conversationState: state,
       inspector: native,
@@ -4401,7 +4411,10 @@ describe("Claude native relay", () => {
       refreshIntervalMs: 60_000,
     });
     try {
+      reads.mockClear();
       await bridge.initialize();
+      expect.soft([readCount(metaPath), readCount(activePath), readCount(settingsPath)], "initial offline refresh").toEqual([1, 1, 1]);
+      expect.soft(readCount(hostPath), "offline Host credentials reads").toBe(Number(withHostCredentials));
       // Even when initial /v1/models fails, snapshot.magpie is populated and offline configLibrary inferenceModels + humanized slug avoid raw IDs.
       expect(bridge.magpieSettings()).toEqual({
         magpie: { mode: "auto", baseUrl: "http://127.0.0.1:3425", authScheme: "bearer", keyConfigured: true },
@@ -4409,10 +4422,17 @@ describe("Claude native relay", () => {
       expect(bridge.session("mac-session")?.modelDisplayName).toBe("Claude Fable 5.2 · Offline");
       expect(bridge.session("win-session")?.modelDisplayName).toBeUndefined();
       expect(fetchImpl).toHaveBeenCalledTimes(1);
+      if (withHostCredentials) {
+        expect(fetchImpl).toHaveBeenLastCalledWith("http://127.0.0.1:3425/v1/models?limit=1000", expect.objectContaining({
+          headers: expect.objectContaining({ authorization: `Bearer ${hostBearer}` }),
+        }));
+      }
 
       // Background refresh within negative cache TTL does not hammer /v1/models.
       currentTime += 2_000;
-      await bridge.refreshRuntime();
+      reads.mockClear();
+      expect(await bridge.refreshRuntime()).toBe(true);
+      expect.soft([readCount(metaPath), readCount(activePath), readCount(settingsPath)], "cached refresh").toEqual([1, 1, 1]);
       expect(fetchImpl).toHaveBeenCalledTimes(1);
 
       // Explicit configuration() retries a failed initial fetch immediately and loads full Windows Magpie catalog.
@@ -4444,8 +4464,11 @@ describe("Claude native relay", () => {
       expect(fetchImpl).toHaveBeenCalledTimes(4);
 
       // Unsaved testMagpieConnection({ mode: "auto" }) uses full configLibrary gateway discovery even while saved mode is manual.
+      reads.mockClear();
       await bridge.saveMagpieConnection({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "bearer", apiKey: "manual-key" });
       expect(fetchImpl).toHaveBeenCalledTimes(5);
+      expect(fetchImpl).toHaveBeenLastCalledWith("https://manual.example.test/v1/models?limit=1000", expect.anything());
+      expect.soft([readCount(metaPath), readCount(activePath), readCount(settingsPath)], "manual refresh").toEqual([0, 0, 1]);
       await expect(bridge.testMagpieConnection({ mode: "auto" })).resolves.toEqual({
         models: { state: "ready", count: 4 },
         quota: { state: "available" },
@@ -4465,7 +4488,34 @@ describe("Claude native relay", () => {
         "magpie-5782219464.anthropic.claude-fable-5-2[1m]",
       ]);
       expect(updated.modelDisplayName).toBe("Claude Fable 5.2 · Claude Code");
+
+      // Removing the active gateway makes the next refresh use the same settings file for models and gateway credentials.
+      await writeFile(activePath, "{}");
+      await writeFile(settingsPath, JSON.stringify({
+        model: "saved-default",
+        modelPicker: { options: [{ model: "saved-first", label: "Saved first" }, { model: "saved-default", label: "Saved default" }] },
+        env: { ANTHROPIC_BASE_URL: "https://settings.example.test", ANTHROPIC_API_KEY: "settings-key", CLAUDE_CODE_HOST_AUTH_ENV_VAR: "ANTHROPIC_API_KEY" },
+      }));
+      native.sessions[0]!.model = "default";
+      reads.mockClear();
+      expect(await bridge.refreshRuntime()).toBe(true);
+      expect(fetchImpl).toHaveBeenLastCalledWith("https://settings.example.test/v1/models?limit=1000", expect.anything());
+      expect(bridge.magpieSettings()).toEqual({
+        magpie: { mode: "auto", baseUrl: "https://settings.example.test", authScheme: "x-api-key", keyConfigured: true },
+      });
+      expect(bridge.session("win-session")).toMatchObject({ model: "saved-default", modelDisplayName: "Saved default" });
+      expect.soft([readCount(metaPath), readCount(activePath), readCount(settingsPath)], "settings gateway refresh").toEqual([1, 1, 1]);
+      expect.soft(readCount(hostPath), "settings fallback Host credentials reads").toBe(Number(withHostCredentials));
+
+      await writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://disconnected.example.test" } }));
+      native.ready = false;
+      vi.spyOn(native, "connect").mockRejectedValueOnce(new Error("inspector offline"));
+      vi.mocked(fetchImpl).mockClear();
+      expect(await bridge.refreshRuntime()).toBe(false);
+      expect(bridge.magpieSettings().magpie?.baseUrl).toBe("https://disconnected.example.test");
+      expect(fetchImpl).not.toHaveBeenCalled();
     } finally {
+      reads.mockClear();
       await bridge.close();
       await eventLog.close();
       state.close();

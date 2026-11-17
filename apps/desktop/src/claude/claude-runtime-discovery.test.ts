@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  discoverClaudeGateway,
   discoverClaudeGatewayConfig,
   fetchClaudeGatewayModels,
   findClaudeFixedGateway,
@@ -200,6 +201,31 @@ describe("Claude gateway and model discovery", () => {
       authToken: "configlib-token",
       authScheme: "bearer",
     });
+  });
+
+  it("keeps Host credential completion separate from offline model eligibility and preserves ambient fallback", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-host-gateway-"));
+    directories.push(root);
+    const hostPath = join(root, "host-creds-test.json");
+    const library = join(root, "configLibrary");
+    const profile = join(library, "active.json");
+    await mkdir(library);
+    const authToken = "fixture-host-bearer";
+    await writeFile(hostPath, JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: authToken } }), { mode: 0o600 });
+    await writeFile(join(library, "_meta.json"), JSON.stringify({ appliedId: "active" }));
+    await writeFile(profile, JSON.stringify({
+      inferenceProvider: "gateway",
+      inferenceGatewayBaseUrl: "https://profile.example.test",
+      inferenceGatewayAuthScheme: "bearer",
+      inferenceModels: [{ name: "offline-model", labelOverride: "Offline model" }],
+    }), { mode: 0o600 });
+    const options = { roots: [root], environment: { ANTHROPIC_BASE_URL: "https://ambient.example.test" } };
+    const discovery = await discoverClaudeGateway(options);
+    expect(discovery.gateway).toEqual({ baseUrl: "https://profile.example.test", authToken, authScheme: "bearer" });
+    await expect(discovery.offlineModels?.()).resolves.toEqual([]);
+
+    await writeFile(profile, "{}");
+    await expect(discoverClaudeGatewayConfig(options)).resolves.toEqual({ baseUrl: "https://ambient.example.test", authToken });
   });
 
   it("computes Magpie 10-digit FNV-1a model hashes and disambiguates duplicate gateway display names", () => {

@@ -2,7 +2,7 @@ import { rm, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BRIDGE_HOOK_URL, readClaudeModelOptions, removeLegacyConnector, type ConnectorPaths } from "./connector.js";
+import { BRIDGE_HOOK_URL, claudeModelSettings, readClaudeConfig, removeLegacyConnector, type ConnectorPaths } from "./connector.js";
 
 let directory: string;
 let paths: ConnectorPaths;
@@ -22,29 +22,32 @@ afterEach(async () => {
 
 describe("saved Claude model directory", () => {
   it("projects only model and label, preserves order and context suffixes, and never rewrites settings", async () => {
-    const original = JSON.stringify({ env: { PRIVATE_ACCOUNT: "fixture-private-value" }, modelPicker: { options: [
+    const original = JSON.stringify({ model: " custom-a ", env: { PRIVATE_ACCOUNT: "fixture-private-value" }, modelPicker: { options: [
       { model: "custom-z[1m]", label: "Z large context", description: "private-account-description" },
       { model: "custom-a", label: "A", env: { PRIVATE_TOKEN: "fixture-private-token" } },
       null, { model: "missing-label" }, { model: 1, label: "invalid" },
     ] } });
     await writeFile(paths.claudeSettings, original);
-    expect(await readClaudeModelOptions(paths.claudeSettings)).toEqual([{ value: "custom-z[1m]", displayName: "Z large context" }, { value: "custom-a", displayName: "A" }]);
+    expect(claudeModelSettings(await readClaudeConfig(paths.claudeSettings))).toEqual({
+      models: [{ value: "custom-z[1m]", displayName: "Z large context" }, { value: "custom-a", displayName: "A" }],
+      defaultModel: "custom-a",
+    });
     expect(await readFile(paths.claudeSettings, "utf8")).toBe(original);
   });
 
   it("keeps private settings fragments out of parse errors", async () => {
     await writeFile(paths.claudeSettings, '{"env":private}');
-    const error = await readClaudeModelOptions(paths.claudeSettings).catch(error => error as Error);
+    const error = await readClaudeConfig(paths.claudeSettings).catch(error => error as Error);
     expect(error).toBeInstanceOf(Error);
     expect(String(error)).not.toContain('"env"');
     expect(String(error)).not.toContain("private");
   });
 
   it("reports missing or unusable directories without historical model guesses", async () => {
-    expect(await readClaudeModelOptions(paths.claudeSettings)).toBeUndefined();
+    expect(claudeModelSettings(await readClaudeConfig(paths.claudeSettings))).toEqual({});
     for (const settings of [{}, { modelPicker: { options: [] } }, { modelPicker: { options: [{ model: "no-label" }] } }]) {
       await writeFile(paths.claudeSettings, JSON.stringify(settings));
-      expect(await readClaudeModelOptions(paths.claudeSettings)).toBeUndefined();
+      expect(claudeModelSettings(await readClaudeConfig(paths.claudeSettings))).toEqual({});
     }
   });
 });

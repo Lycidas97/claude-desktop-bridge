@@ -20,7 +20,7 @@ import {
 } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LoadedDesktopConfig } from "../transport/config.js";
-import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
 
 vi.mock("electron", () => ({ shell: {} }));
 import { SessionEventLog } from "./session-event-log.js";
@@ -60,8 +60,8 @@ class LocalWebSocket extends EventTarget {
 }
 
 const controllers: Array<{
-  socket: { close(): void };
-  publishTimer?: ReturnType<typeof setTimeout>;
+  close(): Promise<void>;
+  publishTimer: ReturnType<typeof setTimeout> | undefined;
   eventLog: SessionEventLog;
   root: string;
 }> = [];
@@ -75,7 +75,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const controller of controllers.splice(0)) {
-    controller.socket.close();
+    await controller.close();
     if (controller.publishTimer) clearTimeout(controller.publishTimer);
     await controller.eventLog.close();
     await rm(controller.root, { recursive: true, force: true });
@@ -117,24 +117,19 @@ async function fixture(withWebRtc = false, claudeUnavailable = false) {
   // Synthetic business dependencies; initialization, snapshots, event logging and message delivery remain real.
   const runtimeSessions = Object.assign(new EventEmitter(), {
     initialize: vi.fn(async () => undefined), setHostPermissionModes: vi.fn(),
-    listSessions: () => [], listProjects: () => [], listPermissions: () => [],
+    listSessions: () => [], listProjects: () => [], listPermissions: (): BridgePermissionInfo[] => [],
     runtimes: () => [{ id: "codex-desktop", name: "Codex Desktop", state: "ready", detail: "Connected",
       capabilities: ["turn.start"], sessionIsolation: "independent", sessionCount: 0, updatedAt: 1 }],
   });
-  const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-    root, config, hostCrypto: host.crypto, relayConnectUrl: relayUrl,
+  const controller = createControllerFixture({
+    root, config, relayConnectUrl: relayUrl,
     ...(withWebRtc ? { RTCPeerConnectionImpl: vi.fn() } : {}),
-    connection: "idle", relayHealthy: false, lastSeenAt: 1,
-    deviceCryptos: new Map([[paired.pairing.deviceId, paired.desktopCrypto.withSenderDevice(config.hostDeviceId)]]),
-    onlineDevices: new Set<string>(), deflateDevices: new Set<string>(), responseCache: new Map(),
-    lastPublishedSessionKey: "", lastPublishedSessions: new Map<string, string>(), lastPublishedPermissions: new Map(),
-    sessionVisibility: new Map(),
     app: { getVersion: () => "synthetic", getLoginItemSettings: () => ({ openAtLogin: false }) },
     repository: { loadOrCreate: async () => config, save: vi.fn(async () => undefined) },
     broker: Object.assign(new EventEmitter(), {
       initialize: async () => undefined, refreshRuntime: vi.fn(async () => true), setDefaultPermissionMode: vi.fn(),
       listSessions: () => sessions, listProjects: () => [], runtimeStatus: () => ({ state: claudeUnavailable ? "unavailable" : "ready" }),
-      permissionsList: () => [], permissionResolutionInFlight: () => false, promptsList: () => [], capabilities: () => ["session.list", "session.history"], magpieSettings: async () => ({}),
+      permissionsList: (): BridgePermissionInfo[] => [], permissionResolutionInFlight: () => false, promptsList: () => [], capabilities: () => ["session.list", "session.history"], magpieSettings: async () => ({}),
     }),
     eventLog,
     ...(claudeUnavailable ? { runtimeSessions } : {}),
@@ -190,7 +185,7 @@ describe("controller transport publication", () => {
       params: { client: { capabilities: ["payload.deflate.v1"] } } };
     for (let attempt = 0; attempt < 2; attempt++) {
       const encrypted = await phone.encrypt(request, "mobile", "desktop", Date.now(), undefined, config.hostDeviceId, true);
-      await controller.receiveMessage(await controller.deviceCryptos.get(paired.pairing.deviceId).decrypt(encrypted), encrypted);
+      await controller.receiveMessage(await controller.deviceCryptos.get(paired.pairing.deviceId)!.decrypt(encrypted), encrypted);
     }
     const bootstrap = ws.sent.filter(frame => frame.type === "envelope");
     expect(bootstrap).toHaveLength(3);
@@ -265,7 +260,7 @@ describe("controller transport publication", () => {
     await vi.advanceTimersByTimeAsync(150);
     expect(published).toHaveBeenCalledOnce();
     expect(published.mock.calls[0]![0].transport).toMatchObject({ state: "connected", rttMs: 42 });
-    expect(controller.transportMetrics.rttMs).toBe(42);
+    expect(controller.transportMetrics?.rttMs).toBe(42);
   });
 
   it.each([
@@ -286,8 +281,8 @@ describe("controller transport publication", () => {
       controller.claudeDesktop.status = async () => { captured(); await blocked; return { state: "stopped" }; };
     } else if (boundary === "broadcast") {
       const broadcast = controller.broadcast.bind(controller);
-      vi.spyOn(controller, "broadcast").mockImplementation(async (...args: unknown[]) => {
-        if ((args[0] as BridgePayload).kind === "snapshot") { captured(); await blocked; }
+      vi.spyOn(controller, "broadcast").mockImplementation(async (...args) => {
+        if (args[0].kind === "snapshot") { captured(); await blocked; }
         return broadcast(...args);
       });
     } else {
@@ -402,7 +397,7 @@ describe("controller transport publication", () => {
     const { ws, controller, published } = await fixture();
     ws.receive({ type: "error", code: "SYNTHETIC_ERROR", message: "Local fixture error" });
     await vi.advanceTimersByTimeAsync(150);
-    expect(controller.transportMetrics.lastError).toBe("SYNTHETIC_ERROR: Local fixture error");
+    expect(controller.transportMetrics?.lastError).toBe("SYNTHETIC_ERROR: Local fixture error");
     expect(published).toHaveBeenCalledOnce();
     expect(published.mock.calls[0]![0].connection).toBe("connected");
   });
@@ -490,11 +485,11 @@ describe("controller transport publication", () => {
   });
 
   it("does not publish saved external-runtime permissions", async () => {
-    const { controller, eventLog } = await fixture(false, true);
+    const { controller, eventLog, runtimeSessions } = await fixture(false, true);
     const external: BridgePermissionInfo = { requestId: "external-owned", sessionId: "codex-desktop:external-session",
       toolUseId: "external-tool", toolName: "Bash", input: { command: "synthetic --never-executed" }, createdAt: 1, canAllowAlways: false };
     let permissions = [external];
-    controller.runtimeSessions.listPermissions = () => permissions;
+    runtimeSessions.listPermissions = () => permissions;
     expect((await controller.publish()).permissions).toEqual([]);
     const before = eventLog.latestSeq();
     permissions = [];
@@ -520,8 +515,8 @@ describe("controller transport publication", () => {
         .mockImplementationOnce(async () => { captured(); await blocked; return { state: "stopped" }; });
     } else {
       const broadcast = controller.broadcast.bind(controller);
-      vi.spyOn(controller, "broadcast").mockImplementation(async (...args: unknown[]) => {
-        if ((args[0] as BridgePayload).kind === "snapshot") { captured(); await blocked; }
+      vi.spyOn(controller, "broadcast").mockImplementation(async (...args) => {
+        if (args[0].kind === "snapshot") { captured(); await blocked; }
         return broadcast(...args);
       });
     }
@@ -741,7 +736,7 @@ describe("controller transport publication", () => {
   it("still sends durable events to paired phones while they are offline", async () => {
     const { ws, controller, paired, published } = await fixture();
     expect(controller.onlineDevices.size).toBe(0);
-    const payload = { kind: "event", event: {
+    const payload: BridgePayload = { kind: "event", event: {
       eventId: "offline-permission", seq: 1, timestamp: Date.now(), origin: "system",
       type: "permission.requested", data: { requestId: "synthetic-permission" },
     } };
@@ -763,7 +758,7 @@ describe("controller transport publication", () => {
       kind: "peer-signal", action: "ack", connectionId: "synthetic-direct", ids: ["direct-delivery"],
     }, "mobile", "desktop", Date.now(), undefined, config.hostDeviceId);
     const frames = vi.fn();
-    controller.socket.onFrame(frames);
+    controller.socket!.onFrame(frames);
     ws.receive({ type: "envelope", envelope: encrypted });
     await vi.waitFor(() => expect(frames).toHaveBeenCalledWith({
       type: "acknowledged", ids: ["direct-delivery"], byDeviceId: paired.pairing.deviceId,

@@ -9,7 +9,7 @@ import type {
 import { ClaudeDesktopBridge } from "../../apps/desktop/src/claude/claude-desktop-bridge.js";
 import { InspectorDisconnectedError } from "../../apps/desktop/src/claude/claude-desktop-inspector.js";
 import { ConversationStateStore } from "../../apps/desktop/src/controller/conversation-state-store.js";
-import { DesktopController } from "../../apps/desktop/src/controller/controller.js";
+import { createControllerFixture } from "../../apps/desktop/src/controller/controller-fixture.js";
 import { SessionEventLog } from "../../apps/desktop/src/controller/session-event-log.js";
 import { EvidenceManager } from "../../apps/desktop/src/evidence/evidence-manager.js";
 import { EvidenceStore } from "../../apps/desktop/src/evidence/evidence-store.js";
@@ -350,13 +350,12 @@ export async function startNativeApprovalHost(options: {
     : undefined;
   assistantMailCoordinator?.start();
   const mailSnapshot = () => assistantMailCoordinator?.snapshot();
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
-    routesToExternalRuntime: () => false,
-    broker, evidence, assistantMailCoordinator,
+  const controller = createControllerFixture({
+    broker, evidence, eventLog, assistantMailCoordinator,
     allSessions: () => broker.listSessions(), allProjects: () => broker.listProjects(),
     publish: async () => ({ assistantMail: mailSnapshot() }),
     config: { hostDeviceId: "synthetic-desktop", desktopName: "隔离电脑", devices: [{ deviceId: options.deviceId, name: "隔离手机", platform: "android", pairedAt: 1 }] },
-  }) as { handleRequest(request: BridgeRequest, origin: "mobile", deviceId: string): Promise<unknown> };
+  });
   let sequence = 0;
   function dialogs(after = 0) {
     return {
@@ -585,7 +584,7 @@ export async function startNativeApprovalHost(options: {
       return result;
     },
     async close() {
-      assistantMailCoordinator?.close();
+      await controller.close();
       await assistantMail?.service.close();
       await broker.close();
       await evidence.close();

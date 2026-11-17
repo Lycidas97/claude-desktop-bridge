@@ -11,6 +11,7 @@ import { AssistantMailStore } from "../../../../plugins/assistant-mail/store.js"
 import type { LoadedDesktopConfig } from "../transport/config.js";
 import { assistantMailSnapshot } from "./assistant-mail.js";
 import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
 
 vi.mock("electron", () => ({ shell: {} }));
 
@@ -344,14 +345,13 @@ describe("assistant native session binding", () => {
     expect(run.broker.startTurn).not.toHaveBeenCalled();
   });
 
-  it("handles Object.create(DesktopController.prototype) harnesses safely when assistantMailCoordinator is absent", async () => {
-    const bare = Object.assign(Object.create(DesktopController.prototype), {
+  it("rejects mail RPCs and preserves session operations without an assistant mail service", async () => {
+    const bare = createControllerFixture({
       broker: run.broker,
       eventLog: run.eventLog,
-      uploads: { close: vi.fn() },
       allSessions: () => run.sessions,
       allProjects: () => run.projects,
-    }) as ControllerInternals & { close(): Promise<void> };
+    });
     await expect(bare.handleRequest({ kind: "request", requestId: "1", idempotencyKey: "k1", method: "plugin.assistant-mail.list", params: {} }, "mobile"))
       .rejects.toMatchObject({ code: "UNSUPPORTED" });
     await expect(bare.handleRequest({ kind: "request", requestId: "2", idempotencyKey: "k2", method: "turn.start", params: { sessionId: "native-first", mailRefId: "m1" } }, "mobile"))

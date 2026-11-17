@@ -1,6 +1,6 @@
 import type { BridgeRequest } from "@bridge/protocol";
 import { expect, it, vi } from "vitest";
-import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
 
 it.each([
   ["turn.queue.steer", false], ["turn.queue.steer", true],
@@ -10,7 +10,7 @@ it.each([
   const operation = vi.fn(async () => ({ commandId: "queued-command", state }));
   const startTurn = vi.fn();
   const interruptTurn = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
+  const controller = createControllerFixture({
     broker: { steerQueuedTurn: operation, cancelQueuedTurn: operation, startTurn, interruptTurn },
   }) as { handleRequest(request: BridgeRequest, origin: "mobile"): Promise<unknown> };
   const request: BridgeRequest = { kind: "request", method, requestId: "queue-action", idempotencyKey: "queue-action", params: { sessionId: external ? "codex-desktop:saved" : "session", commandId: "queued-command" } };

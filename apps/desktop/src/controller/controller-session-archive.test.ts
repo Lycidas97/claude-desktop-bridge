@@ -1,11 +1,10 @@
-import { EventEmitter } from "node:events";
 import { rm, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { BridgeSessionInfo } from "@bridge/protocol";
+import type { BridgeMethod, BridgeSessionInfo } from "@bridge/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { listClaudeDesktopSessionState } from "../claude/claude-desktop-sessions.js";
-import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
 
 vi.mock("electron", () => ({ shell: {} }));
 
@@ -83,8 +82,7 @@ describe("Bridge archives through Claude Desktop native RPC", () => {
     const deleteSession = vi.fn(async (sessionId: string) => {
       sessions.splice(sessions.findIndex(session => session.sessionId === sessionId), 1);
     });
-    const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-      sessionVisibility: new Map(),
+    const controller = createControllerFixture({
       eventLog: { append: vi.fn(async () => undefined) },
       claudeDesktop: { status: vi.fn(() => { throw new Error("Archive must not require stopping Desktop"); }) },
       conversationState: { setSessionVisibility: vi.fn() },
@@ -92,7 +90,7 @@ describe("Bridge archives through Claude Desktop native RPC", () => {
     });
     return {
       dir, archive, deleteSession, controller,
-      request: (method: string, params: Record<string, unknown>) => controller.handleRequest(
+      request: (method: BridgeMethod, params: Record<string, unknown>) => controller.handleRequest(
         { kind: "request", requestId: "request", idempotencyKey: "key", method, params }, "mobile",
       ),
       session: (sessionId: string): BridgeSessionInfo | undefined => controller.allSessions()

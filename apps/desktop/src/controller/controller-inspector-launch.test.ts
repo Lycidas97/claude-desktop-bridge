@@ -1,7 +1,6 @@
-import { EventEmitter } from "node:events";
-import type { BridgeInspectorStatus, BridgeRequest, DesktopControlSnapshot } from "@bridge/protocol";
+import type { BridgeInspectorStatus, DesktopControlSnapshot } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { DesktopController } from "./controller.js";
+import { createControllerFixture } from "./controller-fixture.js";
 
 function createHarness(options: {
   initialAppState?: "stopped" | "running";
@@ -35,7 +34,7 @@ function createHarness(options: {
   const runtimeAttachSleep = vi.fn(async () => undefined);
   const broadcast = vi.fn(async () => undefined);
 
-  const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
+  const controller = createControllerFixture({
     config: {
       devices: [],
       relayEndpoints: [],
@@ -76,15 +75,8 @@ function createHarness(options: {
       permissionsList: () => [],
     },
     eventLog: { latestSeq: () => 0, append: vi.fn(async () => undefined) },
-    lastPublishedSessionKey: "",
-    lastPublishedSessions: new Map<string, string>(),
-    lastPublishedPermissions: new Map(),
-    sessionVisibility: new Map(),
-    onlineDevices: new Set<string>(),
     broadcast,
-  }) as Pick<DesktopController, "attachInspectorEnabler" | "launchDesktopApp" | "launchClaudeDesktop" | "snapshot"> & {
-    handleRequest(request: BridgeRequest, origin: "mobile" | "desktop"): Promise<unknown>;
-  };
+  });
 
   if (options.enableInspector) {
     controller.attachInspectorEnabler(options.enableInspector);

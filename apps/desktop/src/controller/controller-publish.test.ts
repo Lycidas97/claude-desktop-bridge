@@ -1,15 +1,14 @@
-import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { BridgeSessionInfo, DesktopControlSnapshot } from "@bridge/protocol";
+import type { BridgePayload, BridgeSessionInfo, DesktopControlSnapshot } from "@bridge/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { DesktopController } from "./controller.js";
-import { SessionEventLog } from "./session-event-log.js";
+import { createControllerFixture } from "./controller-fixture.js";
+import { SessionEventLog, type BridgeEventDraft } from "./session-event-log.js";
 
 describe("mobile snapshot publication", () => {
   it("broadcasts empty Section additions, renames and removals without session changes", async () => {
-    const { controller } = progressFixture();
+    const { controller, append } = progressFixture();
     const projects: DesktopControlSnapshot["projects"] = [];
     controller.snapshot.mockImplementation(async () => ({ sessions: [], permissions: [], projects: structuredClone(projects) }));
     await controller.publish();
@@ -27,7 +26,7 @@ describe("mobile snapshot publication", () => {
     projects.splice(0);
     await controller.publish();
     expect(controller.broadcast).toHaveBeenCalledExactlyOnceWith({ kind: "snapshot", snapshot: { sessions: [], permissions: [], projects: [] } }, true);
-    expect(controller.eventLog.append).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
   });
 
   it("broadcasts host capability changes even when sessions and projects are unchanged", async () => {
@@ -60,13 +59,11 @@ describe("mobile snapshot publication", () => {
       transport: "bridge-host", ownership: "BRIDGE_IDLE", turnState: "idle", pendingCount: 0,
       lastActivityAt: 1,
     };
-    const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-      lastPublishedSessionKey: "",
-      lastPublishedSessions: new Map<string, string>(),
-      lastPublishedPermissions: new Map(), claudePermissions: () => [],
+    const controller = createControllerFixture({
+      claudePermissions: () => [],
       snapshot: vi.fn(async () => ({ sessions: [{ ...session }], permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions">),
       broadcast: vi.fn(async () => undefined),
-      eventLog: { append: vi.fn(async () => undefined) },
+      eventLog: { append: vi.fn(async (_draft: BridgeEventDraft) => undefined) },
     });
     const localSnapshot = vi.fn();
     controller.on("snapshot", localSnapshot);
@@ -94,13 +91,11 @@ describe("mobile snapshot publication", () => {
       source: "desktop", transport: "bridge-host", ownership: "DESKTOP_OBSERVED", turnState: "idle",
       pendingCount: 0, lastActivityAt: 1, runningSubagents: { count: 2, lastUpdatedAt: 10 }, subagentStopScope: "task",
     };
-    const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-      lastPublishedSessionKey: "",
-      lastPublishedSessions: new Map<string, string>(),
-      lastPublishedPermissions: new Map(), claudePermissions: () => [],
+    const controller = createControllerFixture({
+      claudePermissions: () => [],
       snapshot: vi.fn(async () => ({ sessions: [{ ...session }], permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions">),
       broadcast: vi.fn(async () => undefined),
-      eventLog: { append: vi.fn(async () => undefined) },
+      eventLog: { append: vi.fn(async (_draft: BridgeEventDraft) => undefined) },
     });
     await controller.publish();
     controller.broadcast.mockClear();
@@ -112,8 +107,8 @@ describe("mobile snapshot publication", () => {
       sessionId: session.sessionId, itemId: "session:subagent-activity", origin: "system", type: "runtime.updated",
       data: { replaceSession: true, session },
     });
-    expect(controller.eventLog.append.mock.calls[0]![0].data.session).not.toHaveProperty("runningSubagents");
-    expect(controller.eventLog.append.mock.calls[0]![0].data.session).not.toHaveProperty("subagentStopScope");
+    expect(controller.eventLog.append.mock.calls[0]![0].data!.session).not.toHaveProperty("runningSubagents");
+    expect(controller.eventLog.append.mock.calls[0]![0].data!.session).not.toHaveProperty("subagentStopScope");
   });
 
   it("publishes a Desktop-owned turn ending as a replacement that clears its stop scope", async () => {
@@ -123,13 +118,11 @@ describe("mobile snapshot publication", () => {
       transport: "bridge-host", ownership: "DESKTOP_OBSERVED", turnState: "running", pendingCount: 0,
       lastActivityAt: 1, mainTurnStopScope: "process",
     };
-    const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-      lastPublishedSessionKey: "",
-      lastPublishedSessions: new Map<string, string>(),
-      lastPublishedPermissions: new Map(), claudePermissions: () => [],
+    const controller = createControllerFixture({
+      claudePermissions: () => [],
       snapshot: vi.fn(async () => ({ sessions: [{ ...session }], permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions">),
       broadcast: vi.fn(async () => undefined),
-      eventLog: { append: vi.fn(async () => undefined) },
+      eventLog: { append: vi.fn(async (_draft: BridgeEventDraft) => undefined) },
     });
     await controller.publish();
     controller.broadcast.mockClear();
@@ -141,7 +134,7 @@ describe("mobile snapshot publication", () => {
       sessionId: session.sessionId, itemId: "session:subagent-activity", origin: "system", type: "runtime.updated",
       data: { replaceSession: true, session },
     });
-    expect(controller.eventLog.append.mock.calls[0]![0].data.session).not.toHaveProperty("mainTurnStopScope");
+    expect(controller.eventLog.append.mock.calls[0]![0].data!.session).not.toHaveProperty("mainTurnStopScope");
   });
 
   it("publishes Desktop registration changes without requiring another session change", async () => {
@@ -153,13 +146,11 @@ describe("mobile snapshot publication", () => {
       desktopRegistration: { state: "waiting-transcript", detail: "Pending", updatedAt: 1 },
     };
     // Exercise publish in isolation; transport and native Desktop are unrelated to its change key.
-    const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-      lastPublishedSessionKey: "",
-      lastPublishedSessions: new Map<string, string>(),
-      lastPublishedPermissions: new Map(), claudePermissions: () => [],
+    const controller = createControllerFixture({
+      claudePermissions: () => [],
       snapshot: vi.fn(async () => ({ sessions: [{ ...session }], permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions">),
       broadcast: vi.fn(async () => undefined),
-      eventLog: { append: vi.fn(async () => undefined) },
+      eventLog: { append: vi.fn(async (_draft: BridgeEventDraft) => undefined) },
     });
     await controller.publish();
     controller.broadcast.mockClear();
@@ -178,9 +169,9 @@ describe("mobile snapshot publication", () => {
   });
 
   it("sends a small complete session replacement for subagent progress instead of the full catalog", async () => {
-    const { controller, sessions } = progressFixture();
+    const { controller, sessions, append } = progressFixture();
     await controller.publish();
-    expect(controller.eventLog.append).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
     const catalogBytes = Buffer.byteLength(JSON.stringify(controller.broadcast.mock.calls[0]![0]));
     controller.broadcast.mockClear();
 
@@ -188,18 +179,18 @@ describe("mobile snapshot publication", () => {
     sessions[0]!.lastActivityAt = 20;
     await controller.publish();
     expect(controller.broadcast).not.toHaveBeenCalled();
-    expect(controller.eventLog.append).toHaveBeenCalledExactlyOnceWith({
+    expect(append).toHaveBeenCalledExactlyOnceWith({
       sessionId: "session-0", itemId: "session:subagent-activity", origin: "system", type: "runtime.updated",
       data: { replaceSession: true, session: sessions[0] },
     });
-    expect(Buffer.byteLength(JSON.stringify(controller.eventLog.append.mock.calls[0]![0]))).toBeLessThan(catalogBytes / 100);
+    expect(Buffer.byteLength(JSON.stringify(append.mock.calls[0]![0]))).toBeLessThan(catalogBytes / 100);
 
     await controller.publish();
-    expect(controller.eventLog.append).toHaveBeenCalledOnce();
+    expect(append).toHaveBeenCalledOnce();
   });
 
   it("publishes independent session replacements for each changed session", async () => {
-    const { controller, sessions } = progressFixture();
+    const { controller, sessions, append } = progressFixture();
     sessions[1]!.runningSubagents = { count: 1, lastUpdatedAt: 10 };
     await controller.publish();
     controller.broadcast.mockClear();
@@ -207,33 +198,33 @@ describe("mobile snapshot publication", () => {
     sessions[1]!.runningSubagents!.lastUpdatedAt = 30;
     await controller.publish();
     expect(controller.broadcast).not.toHaveBeenCalled();
-    expect(controller.eventLog.append.mock.calls.map(([event]: [{ sessionId: string }]) => event.sessionId)).toEqual(["session-0", "session-1"]);
-    expect(controller.eventLog.append.mock.calls.map(([event]: [{ data: unknown }]) => event.data)).toEqual([
+    expect(append.mock.calls.map(([event]) => event.sessionId)).toEqual(["session-0", "session-1"]);
+    expect(append.mock.calls.map(([event]) => event.data)).toEqual([
       { replaceSession: true, session: sessions[0] },
       { replaceSession: true, session: sessions[1] },
     ]);
   });
 
   it("uses session replacements for both count changes and subsequent progress", async () => {
-    const { controller, sessions } = progressFixture();
+    const { controller, sessions, append } = progressFixture();
     await controller.publish();
     controller.broadcast.mockClear();
     sessions[0]!.runningSubagents = { count: 3, lastUpdatedAt: 20 };
     await controller.publish();
     expect(controller.broadcast).not.toHaveBeenCalled();
-    expect(controller.eventLog.append).toHaveBeenCalledExactlyOnceWith({
+    expect(append).toHaveBeenCalledExactlyOnceWith({
       sessionId: "session-0", itemId: "session:subagent-activity", origin: "system", type: "runtime.updated",
       data: { replaceSession: true, session: sessions[0] },
     });
     sessions[0]!.runningSubagents!.lastUpdatedAt = 30;
     await controller.publish();
     expect(controller.broadcast).not.toHaveBeenCalled();
-    expect(controller.eventLog.append).toHaveBeenCalledTimes(2);
-    expect(controller.eventLog.append.mock.calls[1]![0].data).toEqual({ replaceSession: true, session: sessions[0] });
+    expect(append).toHaveBeenCalledTimes(2);
+    expect(append.mock.calls[1]![0].data).toEqual({ replaceSession: true, session: sessions[0] });
   });
 
   it("includes progress in a simultaneous metadata snapshot without emitting an extra replacement", async () => {
-    const { controller, sessions } = progressFixture();
+    const { controller, sessions, append } = progressFixture();
     await controller.publish();
     controller.broadcast.mockClear();
     sessions[0]!.title = "Renamed";
@@ -242,19 +233,18 @@ describe("mobile snapshot publication", () => {
     expect(controller.broadcast).toHaveBeenCalledExactlyOnceWith({
       kind: "snapshot", snapshot: expect.objectContaining({ sessions }),
     }, true);
-    expect(controller.eventLog.append).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
     controller.broadcast.mockClear();
     await controller.publish();
     expect(controller.broadcast).not.toHaveBeenCalled();
-    expect(controller.eventLog.append).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
   });
 
   it("persists progress and completion replacements with the shared sequence across a restart", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-progress-events-"));
     const path = join(directory, "events.jsonl");
     const log = new SessionEventLog(path);
-    const { controller, sessions } = progressFixture();
-    controller.eventLog = log;
+    const { controller, sessions } = progressFixture(log);
     try {
       await log.append({ sessionId: "session-1", origin: "claude-host", type: "assistant.completed", data: { text: "Done" } });
       await controller.publish();
@@ -300,15 +290,14 @@ describe("mobile snapshot publication", () => {
     let entered!: () => void;
     const blocked = new Promise<void>(resolve => { resume = resolve; });
     const firstAppend = new Promise<void>(resolve => { entered = resolve; });
-    const { controller, sessions } = progressFixture();
-    sessions[1]!.runningSubagents = { count: 1, lastUpdatedAt: 10 };
-    sessions[1]!.subagentStopScope = "task";
-    controller.snapshot.mockImplementation(async () => ({ sessions: structuredClone(sessions), permissions: [], latestSeq: log.latestSeq() }));
-    controller.eventLog = { append: async (draft: Parameters<SessionEventLog["append"]>[0]) => {
+    const { controller, sessions } = progressFixture({ append: async draft => {
       const event = await log.append(draft);
       if (draft.sessionId === "session-0") { entered(); await blocked; }
       return event;
-    } };
+    } });
+    sessions[1]!.runningSubagents = { count: 1, lastUpdatedAt: 10 };
+    sessions[1]!.subagentStopScope = "task";
+    controller.snapshot.mockImplementation(async () => ({ sessions: structuredClone(sessions), permissions: [], latestSeq: log.latestSeq() }));
     const received = vi.fn();
     log.on("event", received);
     try {
@@ -345,7 +334,7 @@ describe("mobile snapshot publication", () => {
   });
 
   it("resets replacement tracking when a session disappears and returns with the same identity", async () => {
-    const { controller, sessions } = progressFixture();
+    const { controller, sessions, append } = progressFixture();
     await controller.publish();
     const removed = sessions.shift()!;
     await controller.publish();
@@ -353,16 +342,16 @@ describe("mobile snapshot publication", () => {
     expect(controller.lastPublishedSessions.has(removed.sessionId)).toBe(false);
     sessions.unshift(removed);
     await controller.publish();
-    expect(controller.broadcast.mock.calls.at(-1)![0].snapshot.sessions[0].runningSubagents).toEqual({ count: 2, lastUpdatedAt: 10 });
-    expect(controller.eventLog.append).not.toHaveBeenCalled();
+    expect(controller.broadcast.mock.calls.at(-1)![0].snapshot.sessions[0]!.runningSubagents).toEqual({ count: 2, lastUpdatedAt: 10 });
+    expect(append).not.toHaveBeenCalled();
     controller.broadcast.mockClear();
     await controller.publish();
     expect(controller.broadcast).not.toHaveBeenCalled();
-    expect(controller.eventLog.append).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
     removed.runningSubagents!.lastUpdatedAt = 20;
     await controller.publish();
     expect(controller.broadcast).not.toHaveBeenCalled();
-    expect(controller.eventLog.append).toHaveBeenCalledExactlyOnceWith({
+    expect(append).toHaveBeenCalledExactlyOnceWith({
       sessionId: removed.sessionId, itemId: "session:subagent-activity", origin: "system", type: "runtime.updated",
       data: { replaceSession: true, session: removed },
     });
@@ -370,20 +359,19 @@ describe("mobile snapshot publication", () => {
 
 });
 
-function progressFixture() {
+function progressFixture(eventLog?: { append(draft: BridgeEventDraft): Promise<unknown> }) {
   const sessions: BridgeSessionInfo[] = Array.from({ length: 140 }, (_, index) => ({
     sessionId: `session-${index}`, title: `Session ${index} ${"x".repeat(256)}`, cwd: "/tmp/project",
     projectId: "project", projectName: "Project", source: "desktop", transport: "bridge-host",
     ownership: "DESKTOP_OBSERVED", turnState: "idle", pendingCount: 0, lastActivityAt: 1,
     ...(index === 0 ? { runningSubagents: { count: 2, lastUpdatedAt: 10 } } : {}),
   }));
-  const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
-    lastPublishedSessionKey: "",
-    lastPublishedSessions: new Map<string, string>(),
-    lastPublishedPermissions: new Map(), claudePermissions: () => [],
+  const append = vi.fn(async (_draft: BridgeEventDraft) => undefined);
+  const controller = createControllerFixture({
+    claudePermissions: () => [],
     snapshot: vi.fn(async () => ({ sessions: structuredClone(sessions), permissions: [] }) satisfies Pick<DesktopControlSnapshot, "sessions" | "permissions">),
-    broadcast: vi.fn(async () => undefined),
-    eventLog: { append: vi.fn(async () => undefined) },
+    broadcast: vi.fn<(payload: Extract<BridgePayload, { kind: "snapshot" }>) => Promise<void>>(async () => undefined),
+    eventLog: eventLog ?? { append },
   });
-  return { controller, sessions };
+  return { controller, sessions, append };
 }

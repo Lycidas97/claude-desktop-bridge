@@ -87,7 +87,7 @@ export function useOptionalMagpieQuota(active = true): QuotaState | undefined {
   return state;
 }
 
-export function useMagpieQuota(): QuotaState {
+function useMagpieQuota(): QuotaState {
   const state = useOptionalMagpieQuota();
   if (!state) throw new Error("Magpie 额度组件需要 MagpieQuotaProvider");
   return state;

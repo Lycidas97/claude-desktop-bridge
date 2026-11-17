@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { basename } from "node:path";
-import type {
-  BridgeAttachment, BridgeBackgroundTask, BridgeEffort, BridgeHistoryItem, BridgeHistoryPage, BridgeModelInfo, BridgeNativeImageRef, BridgeNativePermissionMode, BridgeNativePermissionModeChange, BridgeOrigin,
-  BridgePendingPrompt, BridgePermissionDecision, BridgePermissionInfo, BridgePrAutoFixState, BridgePrAutoFixUpdate, BridgeProjectInfo, BridgePullRequest, BridgeRuntimeCapability,
-  BridgeRuntimeStatus, BridgeSDKPermissionMode, BridgeSessionCommandResult,
-  BridgeSessionConfiguration, BridgeSessionContextUsage, BridgeSessionInfo, BridgeSessionRewindPreview, BridgeSessionRewindResult, BridgeSessionRewindScope, BridgeSlashCommandCatalog, BridgeSubagentSummary, BridgeToolCallDetail,
+import {
+  CLAUDE_UNSECTIONED_PROJECT_ID,
+  CLAUDE_UNSECTIONED_PROJECT_NAME,
+  DEFAULT_CONFIGURATION_SESSION_ID,
+  type BridgeAttachment, type BridgeBackgroundTask, type BridgeEffort, type BridgeHistoryItem, type BridgeHistoryPage, type BridgeModelInfo, type BridgeNativeImageRef, type BridgeNativePermissionMode, type BridgeNativePermissionModeChange, type BridgeOrigin,
+  type BridgePendingPrompt, type BridgePermissionDecision, type BridgePermissionInfo, type BridgePrAutoFixState, type BridgePrAutoFixUpdate, type BridgeProjectInfo, type BridgePullRequest, type BridgeRuntimeCapability,
+  type BridgeRuntimeStatus, type BridgeSDKPermissionMode, type BridgeSessionCommandResult,
+  type BridgeSessionConfiguration, type BridgeSessionContextUsage, type BridgeSessionInfo, type BridgeSessionRewindPreview, type BridgeSessionRewindResult, type BridgeSessionRewindScope, type BridgeSlashCommandCatalog, type BridgeSubagentSummary, type BridgeToolCallDetail,
 } from "@bridge/protocol";
 import { diag, diagnostics } from "../app/diag.js";
 import { ClaudeDesktopInspector, InspectorDisconnectedError, NativeCallError, type NativeSectionCatalog } from "./claude-desktop-inspector.js";
@@ -61,11 +64,12 @@ import {
 import { NATIVE_PROMPTS, nativePendingPrompts, nativePullRequests, type NativePromptSession } from "./native-prompts.js";
 import { generateSessionTitle, resolveActiveClaudeGateway } from "./session-title-generator.js";
 
-export { nativeHistoryItems };
-
-export const CLAUDE_UNSECTIONED_PROJECT_ID = "claude-unsectioned";
-export const CLAUDE_UNSECTIONED_PROJECT_NAME = "未分组";
-export const DEFAULT_CONFIGURATION_SESSION_ID = "__default__";
+export {
+  CLAUDE_UNSECTIONED_PROJECT_ID,
+  CLAUDE_UNSECTIONED_PROJECT_NAME,
+  DEFAULT_CONFIGURATION_SESSION_ID,
+  nativeHistoryItems,
+};
 
 export class WorkspaceTrustRequiredError extends NativeCallError {
   constructor(readonly manual: boolean) {

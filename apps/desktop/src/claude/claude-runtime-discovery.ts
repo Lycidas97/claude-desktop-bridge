@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { BridgeEffort, BridgeModelInfo, BridgeRuntimeDetection } from "@bridge/protocol";
 import { claudeDesktopProfileDirectories } from "../app/platform.js";
@@ -39,44 +39,6 @@ export async function discoverClaudeProjectDirectory(cwd: string): Promise<Claud
       return projectCwd;
     }),
   };
-}
-
-function pathIsWithin(root: string, candidate: string): boolean {
-  const relation = relative(resolve(root), resolve(candidate));
-  return relation === "" || (
-    relation !== ".." &&
-    !relation.startsWith(`..${sep}`) &&
-    !isAbsolute(relation)
-  );
-}
-
-/**
- * PATH is ambient process state, not an explicit project selection. Avoid
- * probing privacy-protected folders while Bridge is only looking for a CLI.
- */
-export function isSafeForBackgroundRuntimeScan(
-  candidate: string,
-  home = homedir(),
-  platform = process.platform,
-): boolean {
-  if (platform !== "darwin") return true;
-  const protectedRoots = [
-    join(home, "Desktop"),
-    join(home, "Documents"),
-    join(home, "Downloads"),
-    join(home, "Movies"),
-    join(home, "Music"),
-    join(home, "Pictures"),
-    join(home, "Library", "CloudStorage"),
-    join(home, "Library", "Mobile Documents"),
-    "/Volumes",
-  ];
-  return !protectedRoots.some((root) => pathIsWithin(root, candidate));
-}
-
-async function isExecutable(path: string, platform = process.platform): Promise<boolean> {
-  return access(path, platform === "win32" ? constants.F_OK : constants.X_OK)
-    .then(() => true, () => false);
 }
 
 function credentialRoots(
@@ -130,79 +92,6 @@ export async function findClaudeHostCredentials(
   return candidates.sort((left, right) => right.mtimeMs - left.mtimeMs)[0]?.path;
 }
 
-export function applyClaudeHostCredentials(environment: NodeJS.ProcessEnv, path: string): void {
-  environment.CLAUDE_CODE_HOST_CREDS_FILE = path;
-  environment.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = "1";
-  environment.CLAUDE_CODE_HOST_AUTH_ENV_VAR = "ANTHROPIC_AUTH_TOKEN";
-  environment.CLAUDE_CODE_HOST_SESSION_ID ??= `bridge-${process.pid}`;
-  environment.CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH = "1";
-}
-
-async function bundledClaudeCandidates(home: string, platform = process.platform): Promise<string[]> {
-  if (platform !== "darwin") return [];
-  const roots = [
-    join(home, "Library", "Application Support", "Claude-3p", "claude-code"),
-    join(home, "Library", "Application Support", "Claude", "claude-code"),
-  ];
-  const candidates: string[] = [];
-  for (const root of roots) {
-    let versions: string[];
-    try {
-      versions = (await readdir(root)).sort((left, right) => (
-        right.localeCompare(left, undefined, { numeric: true })
-      ));
-    } catch {
-      continue;
-    }
-    for (const version of versions) {
-      candidates.push(join(root, version, "claude.app", "Contents", "MacOS", "claude"));
-    }
-  }
-  return candidates;
-}
-
-export async function findClaudeExecutable(
-  environment: NodeJS.ProcessEnv = process.env,
-  home = homedir(),
-  platform: NodeJS.Platform = process.platform,
-): Promise<string | undefined> {
-  const names = platform === "win32"
-    ? ["claude.exe", "claude.cmd", "claude.bat", "claude"]
-    : ["claude"];
-  const pathCandidates = (environment.PATH ?? "")
-    .split(platform === "win32" ? ";" : delimiter)
-    .filter(Boolean)
-    .flatMap((directory) => names.map((name) => join(directory, name)))
-    .filter((candidate) => isSafeForBackgroundRuntimeScan(candidate, home, platform));
-  const configured = [environment.BRIDGE_CLAUDE_PATH, environment.CLAUDE_CODE_EXECUTABLE]
-    .filter((value): value is string => Boolean(value));
-  const local = platform === "win32"
-    ? [
-        join(home, ".local", "bin", "claude.exe"),
-        join(home, ".local", "bin", "claude.cmd"),
-        join(home, ".local", "bin", "claude.bat"),
-      ]
-    : [join(home, ".local", "bin", "claude"), join(home, ".claude", "local", "claude")];
-  const bundled = await bundledClaudeCandidates(home, platform);
-  for (const candidate of [...configured, ...bundled, ...local, ...pathCandidates]) {
-    if (await isExecutable(candidate, platform)) return candidate;
-  }
-  return undefined;
-}
-
-export function buildClaudeRuntimeEnvironment(
-  environment: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-  const runtimeEnvironment: NodeJS.ProcessEnv = {
-    ...environment,
-    CLAUDE_CODE_ENTRYPOINT: "claude-bridge",
-    CLAUDE_AGENT_SDK_CLIENT_APP: "claude-bridge/0.6.0",
-    BRIDGE_SESSION_RUNTIME: "1",
-  };
-  delete runtimeEnvironment.CLAUDECODE;
-  return runtimeEnvironment;
-}
-
 export interface ClaudeRuntime {
   environment: NodeJS.ProcessEnv;
   executablePath?: string;
@@ -210,67 +99,6 @@ export interface ClaudeRuntime {
   credentialPath?: string;
   configSource?: BridgeRuntimeDetection["configSource"];
   version?: string;
-}
-
-export function hasClaudeRuntimeCredentials(runtime: ClaudeRuntime): boolean {
-  return Boolean(runtime.credentialPath || runtime.configSource?.type === "manual-gateway");
-}
-
-export async function prepareClaudeRuntime(
-  environment: NodeJS.ProcessEnv = process.env,
-  previous?: ClaudeRuntime,
-  platform: NodeJS.Platform = process.platform,
-  home = homedir(),
-): Promise<ClaudeRuntime> {
-  const prepared = buildClaudeRuntimeEnvironment(environment);
-  let credentialPath = await findClaudeHostCredentials(prepared, home, undefined, platform);
-  let configType: BridgeRuntimeDetection["configSource"]["type"] = credentialPath ? "host-credentials" : "none";
-  if (credentialPath) {
-    applyClaudeHostCredentials(prepared, credentialPath);
-  } else {
-    // Desktop passes fixed gateway keys directly; recent versions no longer
-    // materialize host-creds files for this credential source.
-    const fixed = await findClaudeFixedGateway(prepared, home, undefined, platform);
-    if (fixed) {
-      credentialPath = fixed.path;
-      configType = "fixed-gateway";
-      prepared.ANTHROPIC_BASE_URL = fixed.gateway.baseUrl;
-      prepared.ANTHROPIC_AUTH_TOKEN = fixed.gateway.authScheme === "bearer" ? fixed.gateway.authToken ?? "" : "";
-      prepared.ANTHROPIC_API_KEY = fixed.gateway.authScheme === "x-api-key" ? fixed.gateway.apiKey ?? "" : "";
-      prepared.CLAUDE_CODE_HOST_AUTH_ENV_VAR = fixed.gateway.authScheme === "bearer" ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY";
-      prepared.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = "1";
-      delete prepared.CLAUDE_CODE_HOST_CREDS_FILE;
-      delete prepared.CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH;
-    }
-  }
-  const executablePath = await findClaudeExecutable(prepared, home, platform);
-  let version: string | undefined;
-  if (executablePath && !version) {
-    try {
-      const result = await execFileAsync(executablePath, ["--version"], {
-        cwd: home,
-        env: prepared,
-        ...(platform === "win32" && /\.(?:cmd|bat)$/iu.test(executablePath) ? { shell: true } : {}),
-        timeout: 8_000,
-        maxBuffer: 64 * 1024,
-      });
-      version = result.stdout.trim().slice(0, 100) || undefined;
-    } catch {
-      version = undefined;
-    }
-  }
-  return {
-    environment: prepared,
-    configSource: {
-      type: configType === "none" && prepared.ANTHROPIC_BASE_URL ? "environment" : configType,
-      profile: credentialPath && /(?:^|[\\/])Claude-3p(?:[\\/]|$)/iu.test(credentialPath) ? "claude-3p"
-        : credentialPath && /(?:^|[\\/])(?:Claude|claude_[^\\/]+)(?:[\\/]|$)/iu.test(credentialPath) ? "claude" : "unknown",
-      ...(credentialPath ? { path: credentialPath } : {}),
-    },
-    ...(executablePath ? { executablePath } : {}),
-    ...(credentialPath ? { credentialPath } : {}),
-    ...(version ? { version } : {}),
-  };
 }
 
 export interface ClaudeGatewayConfig {
@@ -378,35 +206,7 @@ const KNOWN_UPSTREAM_MODEL_WORDS: Record<string, string> = {
   gemini: "Gemini",
 };
 
-export function humanizeMagpieAnthropicModel(rawModel: string | undefined): string | undefined {
-  const alias = parseMagpieSyntheticModelId(rawModel);
-  if (!alias) return rawModel?.trim() || undefined;
-  if (!alias.anthropicModel) return undefined;
-  const cleaned = alias.anthropicModel
-    .trim()
-    .replace(/^(?:us|eu|apac|au|global)\.anthropic\./iu, "")
-    .replace(/-v\d+:\d+$/iu, "")
-    .replace(/-(?:20\d{6}|latest)$/iu, "")
-    .replace(/(\d)-(\d)/gu, "$1.$2");
-  const label = cleaned
-    .split(/[-_]+/u)
-    .filter(Boolean)
-    .map((part) => KNOWN_UPSTREAM_MODEL_WORDS[part.toLowerCase()] ?? (/^[a-z]/iu.test(part) ? part[0]!.toUpperCase() + part.slice(1) : part))
-    .join(" ");
-  if (!label) return undefined;
-  return alias.longContext ? `${label} · 1M` : label;
-}
-
-export function humanizeUpstreamModelId(rawModel: string | undefined): string | undefined {
-  const trimmed = rawModel?.trim();
-  if (!trimmed || trimmed.toLowerCase() === "default" || trimmed === "<synthetic>") return undefined;
-  if (parseMagpieSyntheticModelId(trimmed)) return humanizeMagpieAnthropicModel(trimmed);
-  const longContext = /\[1m\]$/iu.test(trimmed);
-  const withoutContext = trimmed.replace(/\[1m\]$/iu, "").trim();
-  if (!withoutContext) return undefined;
-  const slug = withoutContext.includes("/")
-    ? withoutContext.slice(withoutContext.lastIndexOf("/") + 1)
-    : withoutContext;
+function formatModelSlugLabel(slug: string, longContext: boolean): string | undefined {
   const cleaned = slug
     .trim()
     .replace(/^(?:us|eu|apac|au|global)\.anthropic\./iu, "")
@@ -420,6 +220,25 @@ export function humanizeUpstreamModelId(rawModel: string | undefined): string | 
     .join(" ");
   if (!label) return undefined;
   return longContext ? `${label} · 1M` : label;
+}
+
+export function humanizeMagpieAnthropicModel(rawModel: string | undefined): string | undefined {
+  const alias = parseMagpieSyntheticModelId(rawModel);
+  if (!alias) return rawModel?.trim() || undefined;
+  return alias.anthropicModel ? formatModelSlugLabel(alias.anthropicModel, alias.longContext) : undefined;
+}
+
+export function humanizeUpstreamModelId(rawModel: string | undefined): string | undefined {
+  const trimmed = rawModel?.trim();
+  if (!trimmed || trimmed.toLowerCase() === "default" || trimmed === "<synthetic>") return undefined;
+  if (parseMagpieSyntheticModelId(trimmed)) return humanizeMagpieAnthropicModel(trimmed);
+  const longContext = /\[1m\]$/iu.test(trimmed);
+  const withoutContext = trimmed.replace(/\[1m\]$/iu, "").trim();
+  if (!withoutContext) return undefined;
+  const slug = withoutContext.includes("/")
+    ? withoutContext.slice(withoutContext.lastIndexOf("/") + 1)
+    : withoutContext;
+  return formatModelSlugLabel(slug, longContext);
 }
 
 interface GatewayModelsResponsePayload {
@@ -745,12 +564,4 @@ export async function fetchClaudeGatewayModels(
   }
   if (!Array.isArray(payload?.data)) throw new Error("Gateway model discovery returned invalid data");
   return parseClaudeGatewayModels(payload.data);
-}
-
-export async function discoverClaudeGatewayModels(
-  runtime: Pick<ClaudeRuntime, "credentialPath" | "environment"> | undefined,
-  fetchImpl: typeof fetch = fetch,
-  timeoutMs = GATEWAY_MODELS_TIMEOUT_MS,
-): Promise<BridgeModelInfo[]> {
-  return fetchClaudeGatewayModels(await resolveClaudeGatewayConfig(runtime), fetchImpl, timeoutMs);
 }

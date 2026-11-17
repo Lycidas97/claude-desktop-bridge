@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
@@ -181,10 +181,6 @@ export interface DesktopConfigDefaults {
   iceServers?: BridgeIceServer[];
   desktopName: string;
   diagnosticsEnabled?: boolean;
-}
-
-export function bridgeLocalToken(hostSecret: string): string {
-  return createHash("sha256").update("claude-bridge/local/v2\0").update(hostSecret).digest("base64url");
 }
 
 function assertDevice(device: StoredDeviceConfig): void {

@@ -1,18 +1,17 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   discoverClaudeGatewayConfig,
-  discoverClaudeGatewayModels,
+  fetchClaudeGatewayModels,
+  findClaudeFixedGateway,
   findClaudeHostCredentials,
-  findClaudeExecutable,
   humanizeMagpieAnthropicModel,
-  isSafeForBackgroundRuntimeScan,
+  humanizeUpstreamModelId,
   magpieModelIdHash,
   normalizeAnthropicModelSlug,
   parseMagpieSyntheticModelId,
-  prepareClaudeRuntime,
   parseClaudeGatewayModels,
   resolveClaudeGatewayConfig,
 } from "./claude-runtime-discovery.js";
@@ -23,70 +22,7 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
-describe("Claude runtime discovery privacy", () => {
-  it("does not automatically probe macOS privacy-protected user folders", () => {
-    if (process.platform === "win32") return;
-    const home = "/Users/test";
-    expect(isSafeForBackgroundRuntimeScan("/usr/local/bin/claude", home, "darwin")).toBe(true);
-    expect(isSafeForBackgroundRuntimeScan("/Users/test/.local/bin/claude", home, "darwin")).toBe(true);
-    expect(isSafeForBackgroundRuntimeScan("/Users/test/Documents/tools/claude", home, "darwin")).toBe(false);
-    expect(isSafeForBackgroundRuntimeScan("/Users/test/Desktop/claude", home, "darwin")).toBe(false);
-    expect(isSafeForBackgroundRuntimeScan("/Volumes/External/claude", home, "darwin")).toBe(false);
-    expect(isSafeForBackgroundRuntimeScan("/Users/test/Documents/tools/claude", home, "linux")).toBe(true);
-  });
-
-  it("skips protected PATH entries but honors an explicitly configured executable", async () => {
-    if (process.platform !== "darwin") return;
-    const home = await mkdtemp(join(tmpdir(), "bridge-runtime-home-"));
-    directories.push(home);
-    const executable = join(home, "Documents", "tools", "claude");
-    await mkdir(join(home, "Documents", "tools"), { recursive: true });
-    await writeFile(executable, "#!/bin/sh\nexit 0\n", "utf8");
-    await chmod(executable, 0o755);
-
-    await expect(findClaudeExecutable({ PATH: join(home, "Documents", "tools") }, home))
-      .resolves.toBeUndefined();
-    await expect(findClaudeExecutable({
-      PATH: join(home, "Documents", "tools"),
-      BRIDGE_CLAUDE_PATH: executable,
-    }, home)).resolves.toBe(executable);
-  });
-
-  it("runs the automatic version probe from home instead of the app launch directory", async () => {
-    if (process.platform === "win32") return;
-    const root = await mkdtemp(join(tmpdir(), "bridge-runtime-version-"));
-    directories.push(root);
-    const cwdReport = join(root, "cwd.txt");
-    const executable = join(root, "claude");
-    await writeFile(
-      executable,
-      `#!/bin/sh\npwd > ${JSON.stringify(cwdReport)}\necho bridge-test\n`,
-      "utf8",
-    );
-    await chmod(executable, 0o755);
-
-    await expect(prepareClaudeRuntime({
-      PATH: "",
-      BRIDGE_CLAUDE_PATH: executable,
-    }, undefined, process.platform, root)).resolves.toMatchObject({
-      executablePath: executable,
-      version: "bridge-test",
-    });
-    await expect(readFile(cwdReport, "utf8")).resolves.toBe(`${await realpath(root)}\n`);
-  });
-
-  it("discovers Windows CLI shims from a Windows-style PATH", async () => {
-    const home = await mkdtemp(join(tmpdir(), "bridge-runtime-windows-"));
-    directories.push(home);
-    const bin = join(home, "bin");
-    const executable = join(bin, "claude.cmd");
-    await mkdir(bin, { recursive: true });
-    await writeFile(executable, "@echo off\r\necho bridge-windows\r\n", "utf8");
-
-    await expect(findClaudeExecutable({ PATH: bin }, home, "win32"))
-      .resolves.toBe(executable);
-  });
-
+describe("Claude gateway and model discovery", () => {
   it("finds the newest Windows Host Credentials file under roaming AppData", async () => {
     const home = await mkdtemp(join(tmpdir(), "bridge-credentials-windows-"));
     directories.push(home);
@@ -139,10 +75,8 @@ describe("Claude runtime discovery privacy", () => {
       }), { status: 200 });
     }) as unknown as typeof fetch;
 
-    const models = await discoverClaudeGatewayModels(
-      { credentialPath, environment: {} },
-      fetchImpl,
-    );
+    const gateway = await resolveClaudeGatewayConfig({ credentialPath, environment: {} });
+    const models = await fetchClaudeGatewayModels(gateway, fetchImpl);
     expect(models).toEqual([
       {
         value: "gateway-model-alpha",
@@ -211,28 +145,14 @@ describe("Claude runtime discovery privacy", () => {
       ANTHROPIC_API_KEY: "stale-api-key",
       ANTHROPIC_AUTH_TOKEN: "stale-bearer",
     };
-    const runtime = await prepareClaudeRuntime(environment, undefined, platform, home);
-    expect(runtime.credentialPath).toBe(credentialPath);
-    expect(runtime.configSource).toEqual({ type: "fixed-gateway", profile: "claude-3p", path: credentialPath });
-    expect(runtime.environment.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:3425");
-    expect(runtime.environment.CLAUDE_CODE_HOST_CREDS_FILE).toBeUndefined();
-    expect(runtime.environment.CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH).toBeUndefined();
-    expect(runtime.environment.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBe("1");
-    expect(runtime.environment.CLAUDE_CODE_HOST_AUTH_ENV_VAR).toBe(
-      authScheme === "bearer" ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY",
-    );
-    await expect(resolveClaudeGatewayConfig(runtime)).resolves.toEqual({
+    const fixed = await findClaudeFixedGateway(environment, home, undefined, platform);
+    expect(fixed?.path).toBe(credentialPath);
+    expect(fixed?.gateway).toEqual({
       baseUrl: "http://127.0.0.1:3425",
       authScheme,
       ...(authScheme === "bearer" ? { authToken: "fixed-test-key" } : { apiKey: "fixed-test-key" }),
     });
-    expect(environment.ANTHROPIC_API_KEY).toBe("stale-api-key");
-
-    const hostPath = join(home, "host-creds-priority.json");
-    await writeFile(hostPath, "{}", { mode: 0o600 });
-    const withHost = await prepareClaudeRuntime({ ...environment, CLAUDE_CODE_HOST_CREDS_FILE: hostPath }, undefined, platform, home);
-    expect(withHost.credentialPath).toBe(hostPath);
-    expect(withHost.environment.CLAUDE_CODE_HOST_CREDS_FILE).toBe(hostPath);
+    await expect(resolveClaudeGatewayConfig({ credentialPath, environment: {} })).resolves.toEqual(fixed?.gateway);
   });
 
   it.each([
@@ -253,7 +173,7 @@ describe("Claude runtime discovery privacy", () => {
       inferenceGatewayApiKey: "fixed-test-key",
       ...override,
     }), { mode: 0o600 });
-    expect((await prepareClaudeRuntime({ PATH: "" }, undefined, "darwin", home)).credentialPath).toBeUndefined();
+    expect(await findClaudeFixedGateway({ PATH: "" }, home, undefined, "darwin")).toBeUndefined();
   });
 
   it("falls back to Claude-3p configLibrary when host-creds omits the gateway base URL", async () => {
@@ -416,5 +336,7 @@ describe("Claude runtime discovery privacy", () => {
     expect(humanizeMagpieAnthropicModel("magpie-2213244526.anthropic.claude-opus-4-7")).toBe("Claude Opus 4.7");
     expect(humanizeMagpieAnthropicModel("mythos-magpie-3436308304")).toBeUndefined();
     expect(humanizeMagpieAnthropicModel("claude-sonnet-4-5")).toBe("claude-sonnet-4-5");
+    expect(humanizeUpstreamModelId("claude/claude-opus-5-5[1m]")).toBe("Claude Opus 5.5 · 1M");
+    expect(humanizeUpstreamModelId("codex/gpt-6-1-sol")).toBe("GPT 6.1 Sol");
   });
 });

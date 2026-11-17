@@ -188,10 +188,6 @@ function indexClaudeProcesses(processes: Map<number, ProcessRow>, platform: Node
   return { sessions, forks, unassigned };
 }
 
-export function parseWindowsClaudeProcessSessions(stdout: string): Map<string, ActiveClaudeProcess[]> {
-  return indexClaudeProcesses(new Map(parseWindowsProcessRows(stdout).map((row) => [row.pid, row])), "win32").sessions;
-}
-
 async function listProcessSessions(platform = process.platform): Promise<ProcessScan | undefined> {
   if ((platform !== "darwin" && platform !== "win32") || process.env.BRIDGE_DISABLE_PROCESS_SCAN === "1") {
     return undefined;
@@ -291,21 +287,6 @@ async function listActiveSessions(
     }
   }));
   return result;
-}
-
-export async function scanClaudeProcesses(
-  paths: ClaudeRuntimePaths,
-  platform = process.platform,
-): Promise<Map<string, ActiveClaudeProcess[]>> {
-  return listActiveSessions(paths.sessions, platform);
-}
-
-export async function scanClaudeSessionProcesses(
-  paths: ClaudeRuntimePaths,
-  sessionId: string,
-  platform = process.platform,
-): Promise<ActiveClaudeProcess[]> {
-  return (await scanClaudeProcesses(paths, platform)).get(sessionId) ?? [];
 }
 
 /** Start of the oldest live process (0 when unknown); undefined when none is alive. */

@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import type { BridgeDesktopRuntime, BridgeRequest } from "@bridge/protocol";
 import { DesktopController } from "./controller.js";
-import { discoverClaudeGatewayModels } from "../claude/claude-runtime-discovery.js";
+import { fetchClaudeGatewayModels } from "../claude/claude-runtime-discovery.js";
 
 vi.mock("electron", () => ({ shell: {} }));
 
@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 it("reports gateway discovery HTTP failure separately from an empty successful catalog", async () => {
-  await expect(discoverClaudeGatewayModels({ environment: { ANTHROPIC_BASE_URL: "https://gateway.invalid" } },
+  await expect(fetchClaudeGatewayModels({ baseUrl: "https://gateway.invalid" },
     vi.fn(async () => new Response("private error", { status: 503 })) as typeof fetch)).rejects.toThrow(/503/u);
 });
 

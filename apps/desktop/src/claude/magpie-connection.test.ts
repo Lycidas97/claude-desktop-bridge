@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SafeStorageLike } from "../transport/config.js";
-import { hasClaudeRuntimeCredentials, resolveClaudeGatewayConfig, type ClaudeRuntime } from "./claude-runtime-discovery.js";
+import { resolveClaudeGatewayConfig, type ClaudeRuntime } from "./claude-runtime-discovery.js";
 import { MagpieConnectionRepository, testMagpieGateway } from "./magpie-connection.js";
 
 const roots: string[] = [];
@@ -75,7 +75,7 @@ describe("Magpie connection storage and authentication", () => {
     const runtime = repository.apply(automatic, repository.resolve({ ...manual, authScheme }));
     expect(runtime.credentialPath).toBeUndefined();
     expect(runtime.environment.CLAUDE_CODE_HOST_CREDS_FILE).toBeUndefined();
-    expect(hasClaudeRuntimeCredentials(runtime)).toBe(true);
+    expect(runtime.configSource?.type).toBe("manual-gateway");
     const gateway = await resolveClaudeGatewayConfig(runtime);
     const result = await testMagpieGateway(runtime, gateway, gatewayFetch as typeof fetch);
     expect(result).toEqual({ models: { state: "ready", count: 1 }, quota: { state: "available" } });

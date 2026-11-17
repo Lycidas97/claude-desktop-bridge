@@ -350,11 +350,3 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
 export async function listClaudeDesktopSessions(roots: string[]): Promise<ClaudeDesktopSession[]> {
   return (await listClaudeDesktopSessionState(roots)).sessions;
 }
-
-export async function findClaudeDesktopSessionId(
-  roots: string[],
-  cliSessionId: string,
-): Promise<string | undefined> {
-  const sessions = await listClaudeDesktopSessions(roots);
-  return sessions.find((session) => session.cliSessionId === cliSessionId)?.sessionId;
-}

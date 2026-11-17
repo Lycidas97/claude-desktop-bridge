@@ -2539,6 +2539,86 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("preserves full multi-thousand-character subagent reports without truncation over short native summaries", async () => {
+    const f = await fixture();
+    try {
+      const transcript = join(f.options.settingsPath, "..", "cli-session.jsonl");
+      const childDir = join(transcript.replace(/\.jsonl$/u, ""), "subagents");
+      await mkdir(childDir, { recursive: true });
+      const childPath = join(childDir, "agent-child-task.jsonl");
+      const fullReport = `## Subagent Audit Report 🧪\n\n${"- Verified invariant and full markdown detail line with emoji 🔍\n".repeat(180)}\n### Final Verdict\nPASS`;
+      expect([...fullReport].length).toBeGreaterThan(8_000);
+      await writeFile(transcript, `${JSON.stringify({ type: "user", uuid: "u1", message: { role: "user", content: "Audit" } })}\n`);
+      await writeFile(join(childDir, "agent-child-task.meta.json"), JSON.stringify({ toolUseId: "agent-call", agentType: "verifier", description: "Audit sources", finished: true }));
+      await writeFile(childPath, `${JSON.stringify({
+        type: "assistant",
+        timestamp: new Date(2_000).toISOString(),
+        message: { model: "codex/gpt-6.1-sol", role: "assistant", content: [{ type: "text", text: fullReport }], stop_reason: "end_turn" },
+      })}\n`);
+      f.options.scanCatalog.mockResolvedValue({
+        projects: [],
+        sessions: [{
+          ...f.bridge.session("local-native")!,
+          sessionId: "cli-session",
+          desktopSessionId: "local-native",
+          transcriptPath: transcript,
+          transcriptMtimeMs: 0,
+          processAlive: true,
+          desktopProcessAlive: true,
+          bridgeProcessAlive: false,
+          processOverlap: false,
+          activeTask: false,
+          activeProcesses: [{ startedAt: 1, processAlive: true, entrypoint: "claude-desktop-3p", source: "process" }],
+        }],
+        observedAt: 0,
+      });
+
+      const call = { type: "assistant", uuid: "call", message: { model: "parent-model", content: [{ type: "tool_use", id: "agent-call", name: "Agent", input: { description: "Audit sources" } }] } };
+      const shortNotification = { type: "system", subtype: "task_notification", task_id: "child-task", tool_use_id: "agent-call", status: "completed", summary: "Done", timestamp: 2_000 };
+      f.native.page.messages = [call, shortNotification];
+      const page = await f.bridge.history("local-native", "older-cursor");
+      const historySubagent = page.items.find(item => item.id === "agent-call")?.subagent;
+      expect(historySubagent).toMatchObject({
+        agentId: "child-task",
+        model: "codex/gpt-6.1-sol",
+        agentType: "verifier",
+        state: "completed",
+        latestText: "Done",
+        reportText: fullReport,
+      });
+
+      await f.message(shortNotification);
+      expect(f.eventLog.latestItem("local-native", "tool.completed", "agent-call")?.data.subagent).toMatchObject({
+        agentId: "child-task",
+        model: "codex/gpt-6.1-sol",
+        state: "completed",
+        reportText: fullReport,
+      });
+
+      // Resuming the same agentId under a new toolUseId keeps the running resume call separate from the completed call's report.
+      const resumeCall = { type: "assistant", uuid: "resume-msg", message: { model: "parent-model", content: [{ type: "tool_use", id: "resume-call", name: "Agent", input: { resume: "child-task", description: "Follow-up audit" } }] } };
+      const resumeStarted = { type: "system", subtype: "task_started", task_id: "child-task", tool_use_id: "resume-call", description: "Follow-up audit", timestamp: 3_000 };
+      f.native.page.messages = [call, shortNotification, resumeCall, resumeStarted];
+      const resumedPage = await f.bridge.history("local-native", "older-cursor");
+      expect(resumedPage.items.find(item => item.id === "agent-call")?.subagent).toMatchObject({
+        agentId: "child-task",
+        toolUseId: "agent-call",
+        state: "completed",
+        reportText: fullReport,
+      });
+      const runningResumed = resumedPage.items.find(item => item.id === "resume-call")?.subagent;
+      expect(runningResumed).toMatchObject({
+        agentId: "child-task",
+        toolUseId: "resume-call",
+        model: "codex/gpt-6.1-sol",
+        state: "running",
+      });
+      expect(runningResumed?.reportText).toBeUndefined();
+    } finally {
+      await f.close();
+    }
+  });
+
   it("projects native task-plan updates and wrap-up onto one stable card", () => {
     const tool = (id: string, name: string, input: unknown) => ({ type: "assistant", uuid: id, timestamp: 1, message: { content: [{ type: "tool_use", id, name, input }] } });
     const items = nativeHistoryItems("native", [

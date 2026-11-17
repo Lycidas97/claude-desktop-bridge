@@ -172,6 +172,21 @@ export function transcriptTurnBoundary<T extends TranscriptTurnNode>(
   return nodes.size > 0;
 }
 
+export function setBoundedCache<K, V>(
+  map: Map<K, V>,
+  key: K,
+  value: V,
+  maxEntries = 256,
+): void {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > maxEntries) {
+    const oldestKey = map.keys().next().value;
+    if (oldestKey === undefined) break;
+    map.delete(oldestKey);
+  }
+}
+
 function projectDirectoryName(cwd: string): string {
   return cwd.replace(/[:\\/]/gu, "-");
 }
@@ -199,7 +214,7 @@ export async function findClaudeTranscriptFile(
   ];
   for (const candidate of directCandidates) {
     if (await exists(candidate)) {
-      transcriptFilePathCache.set(cacheKey, candidate);
+      setBoundedCache(transcriptFilePathCache, cacheKey, candidate);
       return candidate;
     }
   }
@@ -215,7 +230,7 @@ export async function findClaudeTranscriptFile(
     const matches = await Promise.all(candidates.map(async (candidate) => await exists(candidate) ? candidate : undefined));
     const match = matches.find((candidate): candidate is string => candidate !== undefined);
     if (match) {
-      transcriptFilePathCache.set(cacheKey, match);
+      setBoundedCache(transcriptFilePathCache, cacheKey, match);
       return match;
     }
   }

@@ -150,7 +150,7 @@ export class DesktopUpdater {
   private readonly fetchImpl: typeof fetch;
   private canAutoRestart = false;
   private readonly linuxPackageFormat: "deb" | "rpm" | "zip";
-  private channel: BridgeUpdateChannel = "stable";
+  private channel: BridgeUpdateChannel;
   private autoCheck = true;
   private applyMode: BridgeUpdateApplyMode = "prompt";
   private etag: string | undefined;
@@ -182,6 +182,7 @@ export class DesktopUpdater {
     this.feedUrl = options.feedUrl?.trim() || DEFAULT_GITHUB_RELEASES_URL;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.linuxPackageFormat = options.linuxPackageFormat ?? detectLinuxPackageFormat();
+    this.channel = options.currentVersion.includes("-") ? "prerelease" : "stable";
   }
 
   async initialize(): Promise<void> {

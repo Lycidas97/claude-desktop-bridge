@@ -13,7 +13,6 @@ import { DesktopController } from "../../apps/desktop/src/controller/controller.
 import { SessionEventLog } from "../../apps/desktop/src/controller/session-event-log.js";
 import { EvidenceManager } from "../../apps/desktop/src/evidence/evidence-manager.js";
 import { EvidenceStore } from "../../apps/desktop/src/evidence/evidence-store.js";
-import { discoverSlashCommands } from "../../apps/desktop/src/claude/slash-command-catalog.js";
 import { magpieModelIdHash } from "../../apps/desktop/src/claude/claude-runtime-discovery.js";
 import { createNativeSectionFixture } from "./native-section-store.js";
 import { startAssistantMailFixture } from "./assistant-mail.js";
@@ -55,8 +54,7 @@ export async function startNativeApprovalHost(options: {
   await writeFile(join(commandCwd, "report.json"), "{\"source\":\"wrong project root\"}");
   await writeFile(join(harnessCwd, "report.json"), "{\"source\":\"worktree\",\"checked\":9}\n");
   await writeFile(join(harnessCwd, "说明 notes.md"), "# Worktree preview\n\nNative file routing verified.\n");
-  await mkdir(join(commandCwd, ".claude/commands/frontend"), { recursive: true });
-  await mkdir(join(commandHome, "skills/audit"), { recursive: true });
+  await mkdir(commandHome, { recursive: true });
   const savedModels = [
     { model: "synthetic-model", label: "隔离模型 · 标准", description: "Private fixture metadata" },
     { model: "synthetic-model-large[1m]", label: "隔离模型 · 长上下文" },
@@ -65,11 +63,6 @@ export async function startNativeApprovalHost(options: {
   ];
   const nativeModelIds = savedModels.map(option => `mythos-magpie-${magpieModelIdHash(option.model)}${/\[1m\]$/iu.test(option.model) ? "[1m]" : ""}`);
   await writeFile(settingsPath, JSON.stringify({ modelPicker: { options: savedModels } }));
-  await writeFile(join(commandHome, "skills/audit/SKILL.md"), "---\nname: inspect-changes\ndescription: 核对当前改动\nargument-hint: '[path]'\n---\nSynthetic fixture body; never sent to the model.\n");
-  await writeFile(join(commandCwd, ".claude/commands/frontend/component.md"), "---\ndescription: 检查组件结构\nargument-hint: '[component]'\n---\nSynthetic command body.\n");
-  for (const [name, description] of [["review", "审查当前改动"], ["report", "整理结果报告"], ...Array.from({ length: 12 }, (_, index) => [`tool-${String(index + 1).padStart(2, "0")}`, `示例工具 ${index + 1}`])]) {
-    await writeFile(join(commandCwd, `.claude/commands/${name}.md`), `---\ndescription: ${description}\nargument-hint: '[path]'\n---\nSynthetic command body.\n`);
-  }
   const native = {
     sessionId: options.sessionId, cwd: commandCwd, harnessCwd, title: options.title, model: nativeModelIds[0]!,
     turnRunning: false,
@@ -257,7 +250,19 @@ export async function startNativeApprovalHost(options: {
         const start = Math.max(0, end - Number(args[2]));
         return { messages: structuredClone(messages.slice(start, end)), hasMore: start > 0 };
       }
-      if (method === "getSupportedCommands") return discoverSlashCommands(commandCwd, commandHome);
+      if (method === "getSupportedCommands") return {
+        commands: [
+          { name: "frontend:component", description: "检查组件结构", argumentHint: "[component]" },
+          { name: "inspect-changes", description: "核对当前改动", argumentHint: "[path]" },
+          { name: "report", description: "整理结果报告", argumentHint: "[path]" },
+          { name: "review", description: "审查当前改动", argumentHint: "[path]" },
+          ...Array.from({ length: 12 }, (_, index) => ({
+            name: `tool-${String(index + 1).padStart(2, "0")}`,
+            description: `示例工具 ${index + 1}`,
+            argumentHint: "[path]",
+          })),
+        ],
+      };
       if (method === "canRewindTo") {
         const index = messages.findIndex(message => message.uuid === args[1] && message.type === "user");
         return index > 0 && messages.slice(0, index).some(message => message.type === "assistant");

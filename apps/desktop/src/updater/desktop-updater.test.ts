@@ -540,4 +540,78 @@ describe("DesktopUpdater & ZIP extraction", () => {
     expect(response.error?.code).toBe("UNSUPPORTED");
     expect(BridgeRequestError).toBeDefined();
   });
+
+  it("defaults unconfigured prerelease builds to prerelease channel while respecting release defaults and explicit saved stable channel", async () => {
+    const baseOptions = (userDataPath: string, currentVersion: string) => ({
+      platform: "darwin" as const,
+      arch: "arm64",
+      currentVersion,
+      isPackaged: true,
+      execPath: "/Applications/Bridge.app/Contents/MacOS/bridge",
+      userDataPath,
+      autoCheckAllowed: false,
+      isSystemIdle: () => true,
+      hasConnectedUi: () => false,
+      requestQuitAll: () => {},
+      onChanged: () => {},
+      fetchImpl: vi.fn(async () => Response.json([
+        {
+          tag_name: "1.3.5-dev.27",
+          prerelease: true,
+          html_url: "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/1.3.5-dev.27",
+          assets: [{ name: "Bridge-1.3.5-dev.27-arm64.dmg", size: 128, browser_download_url: "https://github.com/fixture/dev27.dmg" }],
+        },
+        {
+          tag_name: "v1.3.4",
+          prerelease: false,
+          html_url: "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.4",
+          assets: [{ name: "Bridge-1.3.4-arm64.dmg", size: 128, browser_download_url: "https://github.com/fixture/134.dmg" }],
+        },
+      ])),
+    });
+
+    // (a) Unconfigured prerelease build defaults to "prerelease" (including when updater-v1.json lacks channel)
+    const prereleaseDir = await makeTempDir();
+    const prereleaseUpdater = new DesktopUpdater(baseOptions(prereleaseDir, "1.3.5-dev.23"));
+    expect(prereleaseUpdater.snapshot().channel).toBe("prerelease");
+    await prereleaseUpdater.initialize();
+    expect(prereleaseUpdater.snapshot().channel).toBe("prerelease");
+    const checkedPrerelease = await prereleaseUpdater.handleRpc({ action: "check" }, "desktop");
+    expect(checkedPrerelease.channel).toBe("prerelease");
+    expect(checkedPrerelease.phase).toBe("available");
+    expect(checkedPrerelease.latestVersion).toBe("1.3.5-dev.27");
+    prereleaseUpdater.close();
+
+    const partialPrefsDir = await makeTempDir();
+    await writeFile(join(partialPrefsDir, "updater-v1.json"), JSON.stringify({ version: 1, autoCheck: false }));
+    const partialPrerelease = new DesktopUpdater(baseOptions(partialPrefsDir, "1.3.5-dev.23"));
+    await partialPrerelease.initialize();
+    expect(partialPrerelease.snapshot().channel).toBe("prerelease");
+    partialPrerelease.close();
+
+    // (b) Unconfigured release build defaults to "stable"
+    const releaseDir = await makeTempDir();
+    const releaseUpdater = new DesktopUpdater(baseOptions(releaseDir, "1.3.5"));
+    expect(releaseUpdater.snapshot().channel).toBe("stable");
+    await releaseUpdater.initialize();
+    expect(releaseUpdater.snapshot().channel).toBe("stable");
+    const checkedRelease = await releaseUpdater.handleRpc({ action: "check" }, "desktop");
+    expect(checkedRelease.channel).toBe("stable");
+    expect(checkedRelease.phase).toBe("up-to-date");
+    releaseUpdater.close();
+
+    // (c) Explicit saved "stable" on a prerelease build is respected
+    const explicitStableDir = await makeTempDir();
+    await writeFile(
+      join(explicitStableDir, "updater-v1.json"),
+      JSON.stringify({ version: 1, channel: "stable", autoCheck: true, applyMode: "prompt" }),
+    );
+    const explicitStableUpdater = new DesktopUpdater(baseOptions(explicitStableDir, "1.3.5-dev.23"));
+    await explicitStableUpdater.initialize();
+    expect(explicitStableUpdater.snapshot().channel).toBe("stable");
+    const checkedExplicitStable = await explicitStableUpdater.handleRpc({ action: "check" }, "desktop");
+    expect(checkedExplicitStable.channel).toBe("stable");
+    expect(checkedExplicitStable.phase).toBe("up-to-date");
+    explicitStableUpdater.close();
+  });
 });

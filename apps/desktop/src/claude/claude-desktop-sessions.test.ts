@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { claudeDesktopProfileForPath, findClaudeDesktopSessionId, listClaudeDesktopSessions, listClaudeDesktopSessionState } from "./claude-desktop-sessions.js";
+import { claudeDesktopProfileForPath, listClaudeDesktopSessions, listClaudeDesktopSessionState } from "./claude-desktop-sessions.js";
 
 const directories: string[] = [];
 
@@ -33,7 +33,6 @@ describe("Claude Desktop session catalog", () => {
       })),
     ]);
 
-    await expect(findClaudeDesktopSessionId([root], "cli-session")).resolves.toBe("local_current");
     const sessions = await listClaudeDesktopSessions([root]);
     expect(sessions).toHaveLength(2);
     expect(sessions[0]).toMatchObject({

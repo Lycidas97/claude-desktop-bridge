@@ -32,7 +32,6 @@ type Internals = {
   rememberDevice: DesktopController["rememberDevice"];
   responseCache: DesktopController["responseCache"];
   sendToDevice: DesktopController["sendToDevice"];
-  sessionVisibility: DesktopController["sessionVisibility"];
   socket: DesktopController["socket"];
   transportMetrics: DesktopController["transportMetrics"];
 };

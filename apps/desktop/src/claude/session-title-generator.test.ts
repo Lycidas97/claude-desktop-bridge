@@ -3,8 +3,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { magpieModelIdHash } from "./claude-runtime-discovery.js";
-import { MagpieConnectionRepository } from "./magpie-connection.js";
+import { discoverClaudeGatewayConfig, magpieModelIdHash } from "./claude-runtime-discovery.js";
 import {
   deriveFallbackSessionTitle,
   generateSessionTitle,
@@ -76,27 +75,11 @@ describe("resolveTitleGenerationModel", () => {
 });
 
 describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
-  it("resolves manual Magpie, configLibrary fixed gateway, and settingsPath API keys", async () => {
+  it("prefers a Desktop gateway, then a settings API key, then the environment", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-title-gateway-"));
     directories.push(root);
-
-    const storage = {
-      isEncryptionAvailable: () => true,
-      encryptString: (plain: string) => Buffer.from(plain, "utf8"),
-      decryptString: (cipher: Buffer) => cipher.toString("utf8"),
-    };
-    const manualRepo = new MagpieConnectionRepository(join(root, "magpie.json"), storage);
-    await manualRepo.save({
-      mode: "manual",
-      baseUrl: "https://magpie.example.test",
-      authScheme: "bearer",
-      apiKey: "manual-token",
-    });
-    await expect(resolveActiveClaudeGateway({ magpieConnection: manualRepo, allowAmbientDiscovery: false })).resolves.toEqual({
-      baseUrl: "https://magpie.example.test",
-      authToken: "manual-token",
-      authScheme: "bearer",
-    });
+    const settingsPath = join(root, "settings.json");
+    await writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_API_KEY: "settings-direct-key" } }));
 
     const platform = process.platform === "win32" ? "win32" : "darwin";
     const appData = platform === "win32" ? join(root, "AppData", "Roaming") : join(root, "Library", "Application Support");
@@ -111,26 +94,74 @@ describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
       inferenceGatewayApiKey: "fixed-key",
     }), { mode: 0o600 });
     await chmod(entryPath, 0o600);
-    await expect(resolveActiveClaudeGateway({
-      home: root,
-      platform,
-      environment: { APPDATA: appData },
-      allowAmbientDiscovery: true,
-    })).resolves.toEqual({
+    const environment = {
+      APPDATA: appData,
+      ANTHROPIC_BASE_URL: "https://ambient.example.test",
+      ANTHROPIC_AUTH_TOKEN: "test-ambient-auth",
+    };
+    const options = { home: root, platform, environment } as const;
+    const hostPath = join(root, "host-creds-test.json");
+    await writeFile(hostPath, JSON.stringify({ env: {
+      ANTHROPIC_BASE_URL: "https://host.example.test",
+      ANTHROPIC_API_KEY: "host-key",
+      CLAUDE_CODE_HOST_AUTH_ENV_VAR: "ANTHROPIC_API_KEY",
+    } }), { mode: 0o600 });
+    const withHost = { ...options, settingsPath, environment: { ...environment, CLAUDE_CODE_HOST_CREDS_FILE: hostPath } };
+    expect((await resolveActiveClaudeGateway(withHost))?.gateway).toEqual({
+      baseUrl: "https://host.example.test", apiKey: "host-key", authScheme: "x-api-key",
+    });
+    await writeFile(hostPath, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://host.example.test" } }));
+    expect((await resolveActiveClaudeGateway(withHost))?.gateway).toEqual({
       baseUrl: "https://fixed.example.test/v1",
       apiKey: "fixed-key",
       authScheme: "x-api-key",
     });
-
-    const settingsPath = join(root, "settings.json");
-    await writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_API_KEY: "settings-direct-key" } }));
-    await expect(resolveActiveClaudeGateway({
-      settingsPath,
-      allowAmbientDiscovery: false,
-    })).resolves.toEqual({
+    expect((await resolveActiveClaudeGateway({ ...options, roots: [], settingsPath }))?.gateway).toEqual({
       baseUrl: "https://api.anthropic.com",
       apiKey: "settings-direct-key",
       authScheme: "x-api-key",
+    });
+    expect((await resolveActiveClaudeGateway({ ...options, roots: [] }))?.gateway).toEqual({
+      baseUrl: environment.ANTHROPIC_BASE_URL,
+      authToken: environment.ANTHROPIC_AUTH_TOKEN,
+    });
+  });
+
+  it.each(["custom.example.test", ""])("skips invalid explicit gateway URL %j in settings and environment", async (baseUrl) => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-title-gateway-"));
+    directories.push(root);
+    const settingsPath = join(root, "settings.json");
+    await writeFile(settingsPath, JSON.stringify({ env: {
+      ANTHROPIC_BASE_URL: baseUrl,
+      ANTHROPIC_API_KEY: "settings-key",
+    } }));
+
+    const environment = { ANTHROPIC_BASE_URL: "https://ambient.example.test", ANTHROPIC_API_KEY: "ambient-key" };
+    expect.soft((await resolveActiveClaudeGateway({ roots: [], settingsPath, environment }))?.gateway).toEqual({
+      baseUrl: environment.ANTHROPIC_BASE_URL, apiKey: environment.ANTHROPIC_API_KEY,
+    });
+    await expect.soft(resolveActiveClaudeGateway({ roots: [], environment: {
+      ...environment, ANTHROPIC_BASE_URL: baseUrl,
+    } })).resolves.toBeUndefined();
+    expect((await resolveActiveClaudeGateway({ roots: [], environment: { ANTHROPIC_API_KEY: "ambient-key" } }))?.gateway).toEqual({
+      baseUrl: "https://api.anthropic.com", apiKey: "ambient-key", authScheme: "x-api-key",
+    });
+  });
+
+  it("preserves Desktop Host credentials completed by the environment after settings", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-title-gateway-"));
+    directories.push(root);
+    const hostPath = join(root, "host-creds-test.json");
+    await writeFile(hostPath, JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "host-title-token" } }), { mode: 0o600 });
+    const options = { roots: [root], environment: { ANTHROPIC_BASE_URL: "https://ambient.example.test" } };
+    const gateway = await discoverClaudeGatewayConfig(options);
+    expect(gateway).toEqual({ baseUrl: options.environment.ANTHROPIC_BASE_URL, authToken: "host-title-token" });
+    expect((await resolveActiveClaudeGateway(options))?.gateway).toEqual(gateway);
+
+    const settingsPath = join(root, "settings.json");
+    await writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_API_KEY: "settings-key" } }));
+    expect((await resolveActiveClaudeGateway({ ...options, settingsPath }))?.gateway).toEqual({
+      baseUrl: "https://api.anthropic.com", apiKey: "settings-key", authScheme: "x-api-key",
     });
   });
 

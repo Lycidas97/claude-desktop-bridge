@@ -33,6 +33,7 @@ import { AssistantMailProvider, useAssistantMail, type AssistantRequest } from "
 import { AssistantPage } from "./components/assistant/AssistantPage.js";
 import { MailReference } from "./components/assistant/MailReference.js";
 import { ConversationDraftsProvider, type ConversationDraftsHandle } from "./components/conversation/ConversationDraftsProvider.js";
+import { EvidencePanel } from "./components/evidence/EvidencePanel.js";
 import { ConversationView } from "./components/conversation/ConversationView.js";
 import { desktopRuntimeId } from "./lib/runtime-labels.js";
 
@@ -93,8 +94,17 @@ function MobileAssistantConversation({
       onRetry={mobile.retryConnection}
       history={mobile.state.histories[session.sessionId]}
       evidence={mobile.state.evidence[session.sessionId]}
-      artifactPreviews={mobile.state.artifactPreviews}
-      artifactTransfers={mobile.state.artifactTransfers}
+      renderEvidence={(panel) => (
+        <EvidencePanel
+          {...panel}
+          previews={mobile.state.artifactPreviews}
+          transfers={mobile.state.artifactTransfers}
+          onLoadMore={() => mobile.loadOlderEvidence(session.sessionId)}
+          onLoadDetails={mobile.loadEvidenceDetails}
+          onPreview={mobile.previewArtifact}
+          onDownload={mobile.downloadArtifact}
+        />
+      )}
       permissions={mobile.state.permissions.filter((permission) => sessions.some((candidate) => candidate.sessionId === permission.sessionId))}
       events={mobile.state.events}
       localTurns={mobile.state.localTurns}
@@ -104,10 +114,6 @@ function MobileAssistantConversation({
       resolveMailRefId={() => assistantMail?.referenceFor(session.sessionId)}
       onOpenSession={mobile.openSession}
       onLoadOlderHistory={mobile.loadOlderHistory}
-      onLoadOlderEvidence={mobile.loadOlderEvidence}
-      onLoadEvidenceDetails={mobile.loadEvidenceDetails}
-      onPreviewArtifact={mobile.previewArtifact}
-      onDownloadArtifact={mobile.downloadArtifact}
       onDownloadSessionFile={mobile.downloadSessionFile}
       onUploadFile={mobile.uploadFile}
       onSendTurn={mobile.sendTurn}
@@ -137,27 +143,23 @@ function MobileAssistantConversation({
         onLoadSessionPermissions: mobile.loadSessionPermissions,
         onSaveSessionPermissions: mobile.saveSessionPermissions,
       } : {})}
-      {...(canCommand || canRename ? {
-        onRenameSession: async (targetSessionId, title) => {
+      onPreviewRewind={mobile.previewRewind}
+      onRewindSession={mobile.rewindSession}
+      sessionMenu={{
+        rename: canCommand || canRename ? async (targetSessionId, title) => {
           if (canCommand && desktopRuntimeId(session) === "claude-desktop") {
             await mobile.runSessionCommand(targetSessionId, `/rename ${title.trim()}`);
           } else if (canRename) {
             await mobile.renameSession(targetSessionId, title.trim());
           }
-        },
-      } : {})}
-      onPreviewRewind={mobile.previewRewind}
-      onRewindSession={mobile.rewindSession}
-      onForkSession={mobile.forkSession}
-      {...(snapshot?.host.capabilities.includes("section.move.v1")
-        ? { onMoveSessionSection: mobile.moveSessionSection }
-        : {})}
-      {...(snapshot?.host.capabilities.includes("session.visibility.v1")
-        ? {
-            onArchiveSession: mobile.archiveSession,
-            onDeleteSession: mobile.deleteSession,
-          }
-        : {})}
+        } : undefined,
+        fork: mobile.forkSession,
+        move: snapshot?.host.capabilities.includes("section.move.v1") ? mobile.moveSessionSection : undefined,
+        ...(snapshot?.host.capabilities.includes("session.visibility.v1") ? {
+          archive: mobile.archiveSession,
+          delete: mobile.deleteSession,
+        } : {}),
+      }}
     />
   );
 }

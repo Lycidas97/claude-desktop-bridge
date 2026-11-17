@@ -49,18 +49,6 @@ export interface PairingBundle {
   singleUse: true;
 }
 
-export interface LegacyPairingBundle {
-  version: number;
-  roomId: string;
-  deviceId: string;
-  secret: string;
-  relayUrl: string;
-  desktopName: string;
-  createdAt: number;
-  expiresAt: number;
-  singleUse: true;
-}
-
 export interface StoredIdentity {
   version: number;
   hostId?: string;
@@ -283,16 +271,6 @@ export interface BridgeRuntimeHandoff {
   createdAt: number;
   updatedAt: number;
   expiresAt?: number;
-}
-
-export interface BridgeRuntimeHandoffPreview {
-  handoff: BridgeRuntimeHandoff;
-  objectiveDraft: string;
-  recentItemCount: number;
-  artifactCount: number;
-  gitBranch?: string;
-  workspaceDirty: boolean;
-  promptBytes: number;
 }
 
 export type BridgeProviderKind =

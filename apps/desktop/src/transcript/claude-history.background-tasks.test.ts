@@ -315,6 +315,77 @@ describe("background shells and agents", () => {
     ]);
   });
 
+  it("keeps the selected task when an unrelated sidechain tool result has a non-string ID", async () => {
+    const run = await session(shellLaunch);
+    await appendFile(run.transcript, jsonl([{
+      type: "user", uuid: "unrelated", isSidechain: true,
+      message: { content: [{ type: "tool_result", tool_use_id: { toString: null } }] },
+    }]));
+    expect(await tasks(run.transcript)).toEqual([
+      expect.objectContaining({ kind: "bash", taskId: "bsh01", state: "running" }),
+    ]);
+  });
+
+  it("retains the parent task when the child transcript disappears before open", async () => {
+    const run = await session([...shellLaunch, toolUse(20, "agent-call", "Agent", { description: "Inspect" }),
+      toolResult(21, "agent-call", "Async agent launched successfully. agentId: ag01", {})]);
+    const childDir = join(run.root, "session", "subagents");
+    await mkdir(childDir, { recursive: true });
+    const child = join(childDir, "agent-ag01.jsonl");
+    await writeFile(child, jsonl(finishedAgent(22)));
+    const readStream = vi.mocked(createReadStream).getMockImplementation()!;
+    await vi.mocked(createReadStream).withImplementation((path, options) =>
+      readStream(path === child ? join(childDir, "gone.jsonl") : path, options), async () => {
+      expect((await tasks(run.transcript)).map(task => [task.taskId, task.state])).toEqual([
+        ["ag01", "running"], ["bsh01", "running"],
+      ]);
+    });
+  });
+
+  it("returns no parent tasks when its transcript stream encounters a filesystem error", async () => {
+    const run = await session(shellLaunch);
+    await readClaudeTranscriptBranch(run.transcript);
+    const readStream = vi.mocked(createReadStream).getMockImplementation()!;
+    await vi.mocked(createReadStream).withImplementation((path, options) => {
+      const stream = readStream(path, options);
+      if (path === run.transcript) stream.once("open", () => {
+        stream.destroy(Object.assign(new Error("injected read failure"), { code: "EIO", errno: -5 }));
+      });
+      return stream;
+    }, async () => {
+      expect(await readClaudeTranscriptBackgroundTasks(run.transcript, [], 0)).toEqual([]);
+    });
+  });
+
+  it("reads a completed append after skipping a bad JSON row and a partial last row", async () => {
+    const run = await session(shellLaunch);
+    const completion = jsonl([notification(30, "bsh01", "completed")]);
+    const cut = Math.floor(completion.length / 2);
+    await appendFile(run.transcript, `{bad json}\n${completion.slice(0, cut)}`);
+    expect((await tasks(run.transcript))[0]).toMatchObject({ taskId: "bsh01", state: "running" });
+    await appendFile(run.transcript, completion.slice(cut));
+    expect((await tasks(run.transcript))[0]).toMatchObject({ taskId: "bsh01", state: "completed" });
+  });
+
+  it("surfaces an unexpected child row handler failure", async () => {
+    const run = await session(shellLaunch);
+    const childDir = join(run.root, "session", "subagents");
+    await mkdir(childDir, { recursive: true });
+    await writeFile(join(childDir, "agent-child.jsonl"), jsonl([{ faultProbe: true }]));
+    const failure = new TypeError("injected row handler failure");
+    const parse = JSON.parse;
+    const spy = vi.spyOn(JSON, "parse").mockImplementation((text: string) => {
+      const value = parse(text);
+      if (value?.faultProbe === true) Object.defineProperty(value, "timestamp", { get() { throw failure; } });
+      return value;
+    });
+    try {
+      await expect(tasks(run.transcript)).rejects.toBe(failure);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("coalesces concurrent parent/child transcript stream reads and caches unchanged branch DAGs", async () => {
     const run = await session(workflowLaunch);
     await writeWorkflowAgents(run.runDir);

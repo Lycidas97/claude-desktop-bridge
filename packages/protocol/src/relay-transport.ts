@@ -52,6 +52,11 @@ export class RelayTransport implements BridgeTransport {
     this.endpoint = options.crypto.identity.relayUrl;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
     this.socket = new BridgeSocket(options);
+    this.socket.onError((error) => {
+      this.lastError = error.message;
+      for (const listener of this.errorListeners) listener(error);
+      this.emitMetrics();
+    });
     this.socket.onState((state) => {
       if (state === "connected") {
         this.lastConnectedAt = Date.now();

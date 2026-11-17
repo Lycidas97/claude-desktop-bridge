@@ -5,6 +5,7 @@ export function ConfirmationDialog({
   open,
   title,
   description,
+  error,
   confirmLabel,
   busy = false,
   confirmDisabled = false,
@@ -15,6 +16,7 @@ export function ConfirmationDialog({
   open: boolean;
   title: string;
   description: string;
+  error?: string | undefined;
   confirmLabel: string;
   busy?: boolean;
   confirmDisabled?: boolean;
@@ -83,6 +85,7 @@ export function ConfirmationDialog({
       >
         <h2 id={titleId}>{title}</h2>
         <p id={descriptionId}>{description}</p>
+        {error && <p className="confirm-error" role="alert">{error}</p>}
         <div className="confirm-actions">
           <button type="button" className="secondary-button" onClick={onCancel} disabled={busy}>取消</button>
           <button type="button" className={danger ? "danger-button" : "primary-button"} onClick={onConfirm} disabled={busy || confirmDisabled}>

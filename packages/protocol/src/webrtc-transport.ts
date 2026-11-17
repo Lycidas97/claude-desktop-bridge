@@ -542,12 +542,14 @@ export class WebRtcTransport implements BridgeTransport {
       this.emitMetrics();
     };
     channel.onmessage = (event) => {
-      peer.receiveQueue = peer.receiveQueue.then(() => directMessageText(event.data))
+      const received = peer.receiveQueue.then(() => directMessageText(event.data))
         .then((raw) => {
           if (raw !== undefined) return this.handleDirectFrame(peer, raw);
           return undefined;
-        })
-        .catch((error) => this.emitError(error));
+        });
+      peer.receiveQueue = received.catch(() => undefined);
+      void received.catch((error) => this.emitError(error))
+        .catch((error: unknown) => console.error("WebRTC receive error reporting failed", error));
     };
     channel.onerror = () => {
       this.lastError = "WebRTC data channel failed; using Relay";
@@ -777,19 +779,21 @@ export class WebRtcTransport implements BridgeTransport {
       }
       return;
     }
+    let decrypted: DecryptedEnvelope;
     try {
       const selectedCrypto = await this.resolveCrypto?.(envelope) ?? this.crypto;
-      const decrypted = await selectedCrypto.decrypt(envelope);
-      if (decrypted.payload.kind === "peer-signal") return;
-      this.rememberDelivered(envelope.id);
-      this.incomingRoutes.set(envelope.id, {
-        deviceId: peer.deviceId,
-        connectionId: peer.connectionId,
-      });
-      for (const listener of this.messageListeners) listener(decrypted, envelope);
+      decrypted = await selectedCrypto.decrypt(envelope);
     } catch {
       // Invalid ciphertext cannot be turned into an application event.
+      return;
     }
+    if (decrypted.payload.kind === "peer-signal") return;
+    this.rememberDelivered(envelope.id);
+    this.incomingRoutes.set(envelope.id, {
+      deviceId: peer.deviceId,
+      connectionId: peer.connectionId,
+    });
+    for (const listener of this.messageListeners) listener(decrypted, envelope);
   }
 
   private async acceptChunk(

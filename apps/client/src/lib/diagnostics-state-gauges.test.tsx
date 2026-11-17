@@ -26,9 +26,11 @@ import {
 } from "../components/desktop/DesktopSessionConversation.js";
 import type { MediaRequest } from "./media-preview.js";
 import { useMobileBridge, type BridgeMutableStore } from "../hooks/useMobileBridge.js";
+import { captureBridgeStoreRef } from "../hooks/useMobileBridge.test-harness.js";
 import { collectDiagnosticsStateSnapshot } from "./diagnostics.js";
 
 interface HookStore {
+  bridgeStore?: BridgeMutableStore;
   slots: any[];
   index: number;
   memos: Array<{ value: unknown; deps: unknown[] | undefined }>;
@@ -92,7 +94,7 @@ vi.mock("react", async (original) => ({
   useRef(initial: unknown) {
     const store = runtime.currentStore!;
     const index = store.index++;
-    store.slots[index] ??= { current: initial };
+    store.slots[index] ??= captureBridgeStoreRef(initial, bridgeStore => { store.bridgeStore = bridgeStore; });
     return store.slots[index];
   },
   useCallback(fn: unknown, deps?: unknown[]) {
@@ -203,6 +205,7 @@ function renderStore<T>(store: HookStore, render: () => T): T {
 function unmountStore(store: HookStore): void {
   for (const effect of store.effects) effect.cleanup?.();
   store.effects = [];
+  delete store.bridgeStore;
   store.slots = [];
 }
 
@@ -352,9 +355,7 @@ describe("Frontend pull-based diagnostics state gauges & redaction", () => {
       generatedAt: 100,
     };
 
-    // Populate sensitive runtime state directly on the hook's named storeRef
-    const bridgeStore = (store.slots[1] as { current: BridgeMutableStore }).current;
-    const { stateRef, cryptoRef, pendingResponsesRef } = bridgeStore;
+    const { setState, stateRef, cryptoRef, pendingResponsesRef } = store.bridgeStore!;
     cryptoRef.current = { identity: { roomId: "room-secret" } } as BridgeMutableStore["cryptoRef"]["current"];
     const now = 50_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
@@ -442,7 +443,7 @@ describe("Frontend pull-based diagnostics state gauges & redaction", () => {
       },
       artifactPreviews: { "art-1": base64Preview },
     };
-    store.slots[0] = populatedState;
+    setState(populatedState);
     stateRef.current = populatedState;
 
     const uploadAbort = new AbortController();

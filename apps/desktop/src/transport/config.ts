@@ -43,12 +43,14 @@ export interface SecretProtector {
   unprotect(value: string): string;
 }
 
+class InvalidDesktopConfigError extends Error {}
+
 export function fileSecretProtector(): SecretProtector {
   return {
     available: () => true,
     protect: (value) => `file:${Buffer.from(value, "utf8").toString("base64")}`,
     unprotect: (value) => {
-      if (!value.startsWith("file:")) throw new Error("Unsupported secret protection format");
+      if (!value.startsWith("file:")) throw new InvalidDesktopConfigError("Unsupported secret protection format");
       return Buffer.from(value.slice(5), "base64").toString("utf8");
     },
   };
@@ -432,6 +434,21 @@ export class DesktopConfigRepository {
   ) {}
 
   async load(): Promise<LoadedDesktopConfig | undefined> {
+    return this.loadExisting(false);
+  }
+
+  async loadOrCreate(): Promise<LoadedDesktopConfig> {
+    let existing: LoadedDesktopConfig | undefined;
+    try {
+      existing = await this.loadExisting(true);
+    } catch (error) {
+      if (!(error instanceof InvalidDesktopConfigError)) throw error;
+      await rename(this.path, `${this.path}.v1-archive-${Date.now()}`);
+    }
+    return existing ?? this.regenerate(false);
+  }
+
+  private async loadExisting(classifyInvalid: boolean): Promise<LoadedDesktopConfig | undefined> {
     let raw: string;
     try {
       raw = await readFile(this.path, "utf8");
@@ -439,10 +456,17 @@ export class DesktopConfigRepository {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
-    const config = assertConfig(JSON.parse(raw));
-    const relayUrlOverride = config.version === 4 && config.relayUrlOverride
-      ? normalizeRelayUrl(config.relayUrlOverride)
-      : undefined;
+    let config: DesktopConfigFile;
+    let relayUrlOverride: string | undefined;
+    try {
+      config = assertConfig(JSON.parse(raw));
+      relayUrlOverride = config.version === CONFIG_VERSION && config.relayUrlOverride
+        ? normalizeRelayUrl(config.relayUrlOverride)
+        : undefined;
+    } catch (error) {
+      if (!classifyInvalid) throw error;
+      throw new InvalidDesktopConfigError("Desktop config is invalid", { cause: error });
+    }
     const savedEndpoint = config.version === 2
       ? undefined
       : selectBridgeEndpoint(config.relayEndpoints, config.activeEndpoint);
@@ -566,16 +590,6 @@ export class DesktopConfigRepository {
       activeEndpointMigrated
     ) await this.save(loaded);
     return loaded;
-  }
-
-  async loadOrCreate(): Promise<LoadedDesktopConfig> {
-    try {
-      const existing = await this.load();
-      if (existing) return existing;
-    } catch {
-      await rename(this.path, `${this.path}.v1-archive-${Date.now()}`).catch(() => undefined);
-    }
-    return this.regenerate(false);
   }
 
   async regenerate(launchAtLogin: boolean): Promise<LoadedDesktopConfig> {

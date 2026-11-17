@@ -1,5 +1,6 @@
 import { EventEmitter, once } from "node:events";
-import { rm, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { appendFile, rm, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import * as platform from "../app/platform.js";
 import { BridgeCrypto, isEncryptedEnvelope } from "@bridge/protocol";
 import { EvidenceManager } from "../evidence/evidence-manager.js";
 import { EvidenceStore } from "../evidence/evidence-store.js";
@@ -23,6 +24,11 @@ import { magpieModelIdHash } from "./claude-runtime-discovery.js";
 import { MagpieConnectionRepository } from "./magpie-connection.js";
 import type { ClaudeCatalogSnapshot } from "./claude-session-catalog.js";
 import { createNativeSectionFixture } from "../../../../scripts/fixtures/native-section-store.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...fs, readFile: vi.fn(fs.readFile) };
+});
 
 class NativeDesktop extends EventEmitter {
   ready = false;
@@ -167,7 +173,7 @@ function withDatabase<T>(databasePath: string, run: (db: DatabaseSync) => T): T 
   }
 }
 
-async function fixture(legacy = false, evidence?: ConstructorParameters<typeof ClaudeDesktopBridge>[0]["evidence"]) {
+async function fixture(legacy = false, evidence?: ConstructorParameters<typeof ClaudeDesktopBridge>[0]["evidence"], useRuntimeFiles = false) {
   const directory = await mkdtemp(join(tmpdir(), "bridge-native-"));
   const databasePath = join(directory, "state.sqlite");
   const state = new ConversationStateStore({ databasePath, sessionsPath: join(directory, "sessions.json"), queuePath: join(directory, "queue.json"), masterSecret: Buffer.alloc(32, 7).toString("base64url") });
@@ -203,11 +209,11 @@ async function fixture(legacy = false, evidence?: ConstructorParameters<typeof C
   await eventLog.initialize();
   const native = new NativeDesktop();
   const scanCatalog = vi.fn<() => Promise<ClaudeCatalogSnapshot>>().mockResolvedValue({ projects: [], sessions: [], observedAt: 0 });
-  const options = { eventLog, conversationState: state, inspector: native, scanCatalog, settingsPath: join(directory, "settings.json"), ...(evidence ? { evidence } : {}), refreshIntervalMs: 60_000 };
-  const bridge = new ClaudeDesktopBridge(options);
+  const options = { eventLog, conversationState: state, inspector: native, settingsPath: join(directory, "settings.json"), ...(evidence ? { evidence } : {}), refreshIntervalMs: 60_000 };
+  const bridge = new ClaudeDesktopBridge(useRuntimeFiles ? options : { ...options, scanCatalog });
   await bridge.initialize();
   return {
-    bridge, native, state, eventLog, options, directory, databasePath,
+    bridge, native, state, eventLog, options: { ...options, scanCatalog }, directory, databasePath,
     async message(message: Record<string, unknown>) {
       const changed = once(bridge, "changed");
       native.emit("event", { type: "message", sessionId: "local-native", message });
@@ -1889,6 +1895,40 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it.each([[4, 32], [16, 32], [16, 128]])("projects %i sessions with at most one pass over %i receipts", async (sessionCount, receiptCount) => {
+    const f = await fixture();
+    const native = new NativeDesktop();
+    const bridge = new ClaudeDesktopBridge({ ...f.options, inspector: native });
+    try {
+      native.sessions = Array.from({ length: sessionCount }, (_, index) => ({ ...native.sessions[0], sessionId: `local-${index}` }));
+      for (let index = 0; index < receiptCount; index++) {
+        f.state.saveNativeDesktopReceipt({
+          idempotencyKey: `key-${index}`, commandId: `command-${index}`, requestId: `request-${index}`, messageId: `message-${index}`,
+          sessionId: index === 3 ? "local-hidden" : `local-${index % 2}`,
+          state: index < 4 ? "queued" : index === 4 ? "dispatching" : "completed",
+        });
+      }
+      let reads = 0;
+      const receipts = f.state.listNativeDesktopReceipts().map(receipt => new Proxy(receipt, {
+        get(target, key, receiver) {
+          if (key === "sessionId" || key === "state") reads++;
+          return Reflect.get(target, key, receiver);
+        },
+      }));
+      vi.spyOn(f.state, "listNativeDesktopReceipts").mockReturnValue(receipts);
+      await bridge.initialize();
+      expect(f.state.nativeDesktopReceipt("key-4")?.state).toBe("uncertain");
+      reads = 0;
+      expect(await bridge.refreshRuntime()).toBe(true);
+      expect(bridge.listSessions()).toHaveLength(sessionCount);
+      expect(bridge.session("local-0")).toMatchObject({ pendingCount: 2, pendingCommandIds: ["command-0", "command-2"] });
+      expect(bridge.session("local-1")).toMatchObject({ pendingCount: 1, pendingCommandIds: ["command-1"] });
+      expect(bridge.session("local-2")).toMatchObject({ pendingCount: 0, pendingCommandIds: [] });
+      // Each receipt needs at most its state and session ID, independent of session count.
+      expect(reads).toBeLessThanOrEqual(2 * receiptCount);
+    } finally { await bridge.close(); await f.close(); }
+  });
+
   it("persists queued, started and correlated results on exact UUID history snapshots across restarts", async () => {
     const f = await fixture();
     let restarted: ClaudeDesktopBridge | undefined;
@@ -1900,8 +1940,10 @@ describe("Claude native relay", () => {
       expect(f.state.nativeDesktopReceipt("key")?.state).toBe("submitted");
       await f.message({ type: "command_lifecycle", command_uuid: first.messageId, state: "queued" });
       expect(f.state.nativeDesktopReceipt("key")?.state).toBe("queued");
+      expect(f.bridge.session("local-native")).toMatchObject({ pendingCount: 1, pendingCommandIds: [first.commandId] });
       expect((await f.bridge.history("local-native")).items[0]).toMatchObject({ delivery: "queued", commandId: first.commandId, requestId: first.requestId });
       await f.message({ type: "command_lifecycle", command_uuid: first.messageId, state: "started" });
+      expect(f.bridge.session("local-native")).toMatchObject({ pendingCount: 0, pendingCommandIds: [] });
       await f.message({ type: "user", uuid: first.messageId, message: { content: "hello" } });
       expect(f.eventLog.latestItem("local-native", "user.message.accepted", first.messageId)?.data.delivery).toBe("running");
       expect((await f.bridge.history("local-native")).items[0]?.delivery).toBe("running");
@@ -2242,6 +2284,48 @@ describe("Claude native relay", () => {
       expect(f.native.calls.some(call => call.method === "getAll")).toBe(false);
       expect(f.options.scanCatalog).not.toHaveBeenCalled();
     } finally { await f.close(); }
+  });
+
+  it("reads only the selected session metadata on sequential task polls", async () => {
+    const f = await fixture(false, undefined, true);
+    const paths = platform.claudeRuntimePaths("darwin", {}, f.directory);
+    const resolvePaths = vi.spyOn(platform, "claudeRuntimePaths").mockReturnValue(paths);
+    const reads = vi.mocked(readFile);
+    reads.mockClear();
+    vi.stubEnv("BRIDGE_DISABLE_PROCESS_SCAN", "1");
+    try {
+      const desktopRoot = paths.desktopSessions[0]!;
+      const sessionId = "local-native";
+      const sessionDir = join(desktopRoot, "profile", "account");
+      const target = join(sessionDir, `${sessionId}.json`);
+      const cwd = f.directory;
+      await Promise.all([mkdir(sessionDir, { recursive: true }), mkdir(paths.projects, { recursive: true })]);
+      await Promise.all([
+        writeFile(target, JSON.stringify({ sessionId, cliSessionId: "target-cli", cwd })),
+        ...Array.from({ length: 12 }, (_, index) => {
+          const otherId = `local_11111111-1111-4111-8111-${String(index).padStart(12, "0")}`;
+          return writeFile(join(sessionDir, `${otherId}.json`), JSON.stringify({ sessionId: otherId, cliSessionId: `other-${index}`, cwd }));
+        }),
+      ]);
+      const transcript = join(paths.projects, "target-cli.jsonl");
+      await writeFile(transcript, [
+        { type: "assistant", uuid: "use", timestamp: new Date(10_000).toISOString(), message: { content: [{ type: "tool_use", id: "agent", name: "Agent", input: { description: "Inspect", prompt: "Inspect" } }] } },
+        { type: "user", uuid: "result", parentUuid: "use", timestamp: new Date(11_000).toISOString(), message: { content: [{ type: "tool_result", tool_use_id: "agent", content: "Async agent launched successfully. agentId: ag-1" }] } },
+      ].map(row => JSON.stringify(row)).join("\n") + "\n");
+
+      expect(await f.bridge.backgroundTaskDetails(sessionId)).toMatchObject([{ id: "agent", state: "stopped" }]);
+      await appendFile(transcript, JSON.stringify({
+        type: "user", uuid: "done", parentUuid: "result", timestamp: new Date(12_000).toISOString(),
+        message: { role: "user", content: "<task-notification>\n<task-id>ag-1</task-id>\n<status>completed</status>\n</task-notification>" },
+      }) + "\n");
+      expect(await f.bridge.backgroundTaskDetails(sessionId)).toMatchObject([{ id: "agent", state: "completed" }]);
+      expect(reads.mock.calls.map(([path]) => path).filter(path => typeof path === "string" && path.startsWith(desktopRoot) && path.endsWith(".json"))).toEqual([target, target]);
+    } finally {
+      reads.mockClear();
+      resolvePaths.mockRestore();
+      vi.unstubAllEnvs();
+      await f.close();
+    }
   });
 
   it("keeps task detail reads optional and lets conversation opening finish independently", async () => {
@@ -4253,7 +4337,7 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
-  it("discovers configLibrary Magpie gateways, caches /v1/models across refreshes, and resolves Windows/Mac synthetic model labels", async () => {
+  it.each([false, true])("reads gateway and model settings once per refresh (Host credentials file: %s)", async (withHostCredentials) => {
     const root = await mkdtemp(join(tmpdir(), "bridge-magpie-runtime-"));
     const state = new ConversationStateStore({ databasePath: join(root, "state.sqlite") });
     await state.initialize();
@@ -4270,9 +4354,19 @@ describe("Claude native relay", () => {
     const localAppData = join(root, "AppData", "Local");
     const roamingAppData = join(root, "AppData", "Roaming");
     const configLib = join(localAppData, "Claude-3p", "configLibrary");
+    const metaPath = join(configLib, "_meta.json");
+    const activePath = join(configLib, "active.json");
+    const settingsPath = join(root, "settings.json");
+    const hostPath = join(localAppData, "Claude-3p", "host-creds-test.json");
+    const reads = vi.mocked(readFile);
+    const readCount = (target: string) => reads.mock.calls.filter(([path]) => path === target).length;
     await mkdir(configLib, { recursive: true });
-    await writeFile(join(configLib, "_meta.json"), JSON.stringify({ appliedId: "active" }));
-    await writeFile(join(configLib, "active.json"), JSON.stringify({
+    const hostBearer = "fixture-host-bearer";
+    if (withHostCredentials) {
+      await writeFile(hostPath, JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: hostBearer } }), { mode: 0o600 });
+    }
+    await writeFile(metaPath, JSON.stringify({ appliedId: "active" }));
+    await writeFile(activePath, JSON.stringify({
       inferenceProvider: "gateway",
       inferenceGatewayBaseUrl: "http://127.0.0.1:3425",
       inferenceGatewayAuthScheme: "bearer",
@@ -4303,7 +4397,7 @@ describe("Claude native relay", () => {
     }) as unknown as typeof fetch;
 
     const bridge = new ClaudeDesktopBridge({
-      settingsPath: join(root, "settings.json"),
+      settingsPath,
       eventLog,
       conversationState: state,
       inspector: native,
@@ -4317,7 +4411,10 @@ describe("Claude native relay", () => {
       refreshIntervalMs: 60_000,
     });
     try {
+      reads.mockClear();
       await bridge.initialize();
+      expect.soft([readCount(metaPath), readCount(activePath), readCount(settingsPath)], "initial offline refresh").toEqual([1, 1, 1]);
+      expect.soft(readCount(hostPath), "offline Host credentials reads").toBe(Number(withHostCredentials));
       // Even when initial /v1/models fails, snapshot.magpie is populated and offline configLibrary inferenceModels + humanized slug avoid raw IDs.
       expect(bridge.magpieSettings()).toEqual({
         magpie: { mode: "auto", baseUrl: "http://127.0.0.1:3425", authScheme: "bearer", keyConfigured: true },
@@ -4325,10 +4422,17 @@ describe("Claude native relay", () => {
       expect(bridge.session("mac-session")?.modelDisplayName).toBe("Claude Fable 5.2 · Offline");
       expect(bridge.session("win-session")?.modelDisplayName).toBeUndefined();
       expect(fetchImpl).toHaveBeenCalledTimes(1);
+      if (withHostCredentials) {
+        expect(fetchImpl).toHaveBeenLastCalledWith("http://127.0.0.1:3425/v1/models?limit=1000", expect.objectContaining({
+          headers: expect.objectContaining({ authorization: `Bearer ${hostBearer}` }),
+        }));
+      }
 
       // Background refresh within negative cache TTL does not hammer /v1/models.
       currentTime += 2_000;
-      await bridge.refreshRuntime();
+      reads.mockClear();
+      expect(await bridge.refreshRuntime()).toBe(true);
+      expect.soft([readCount(metaPath), readCount(activePath), readCount(settingsPath)], "cached refresh").toEqual([1, 1, 1]);
       expect(fetchImpl).toHaveBeenCalledTimes(1);
 
       // Explicit configuration() retries a failed initial fetch immediately and loads full Windows Magpie catalog.
@@ -4360,8 +4464,11 @@ describe("Claude native relay", () => {
       expect(fetchImpl).toHaveBeenCalledTimes(4);
 
       // Unsaved testMagpieConnection({ mode: "auto" }) uses full configLibrary gateway discovery even while saved mode is manual.
+      reads.mockClear();
       await bridge.saveMagpieConnection({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "bearer", apiKey: "manual-key" });
       expect(fetchImpl).toHaveBeenCalledTimes(5);
+      expect(fetchImpl).toHaveBeenLastCalledWith("https://manual.example.test/v1/models?limit=1000", expect.anything());
+      expect.soft([readCount(metaPath), readCount(activePath), readCount(settingsPath)], "manual refresh").toEqual([0, 0, 1]);
       await expect(bridge.testMagpieConnection({ mode: "auto" })).resolves.toEqual({
         models: { state: "ready", count: 4 },
         quota: { state: "available" },
@@ -4381,6 +4488,86 @@ describe("Claude native relay", () => {
         "magpie-5782219464.anthropic.claude-fable-5-2[1m]",
       ]);
       expect(updated.modelDisplayName).toBe("Claude Fable 5.2 · Claude Code");
+
+      // Removing the active gateway makes the next refresh use the same settings file for models and gateway credentials.
+      await writeFile(activePath, "{}");
+      await writeFile(settingsPath, JSON.stringify({
+        model: "saved-default",
+        modelPicker: { options: [{ model: "saved-first", label: "Saved first" }, { model: "saved-default", label: "Saved default" }] },
+        env: { ANTHROPIC_BASE_URL: "https://settings.example.test", ANTHROPIC_API_KEY: "settings-key", CLAUDE_CODE_HOST_AUTH_ENV_VAR: "ANTHROPIC_API_KEY" },
+      }));
+      native.sessions[0]!.model = "default";
+      reads.mockClear();
+      expect(await bridge.refreshRuntime()).toBe(true);
+      expect(fetchImpl).toHaveBeenLastCalledWith("https://settings.example.test/v1/models?limit=1000", expect.anything());
+      expect(bridge.magpieSettings()).toEqual({
+        magpie: { mode: "auto", baseUrl: "https://settings.example.test", authScheme: "x-api-key", keyConfigured: true },
+      });
+      expect(bridge.session("win-session")).toMatchObject({ model: "saved-default", modelDisplayName: "Saved default" });
+      expect.soft([readCount(metaPath), readCount(activePath), readCount(settingsPath)], "settings gateway refresh").toEqual([1, 1, 1]);
+      expect.soft(readCount(hostPath), "settings fallback Host credentials reads").toBe(Number(withHostCredentials));
+
+      await writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://disconnected.example.test" } }));
+      native.ready = false;
+      vi.spyOn(native, "connect").mockRejectedValueOnce(new Error("inspector offline"));
+      vi.mocked(fetchImpl).mockClear();
+      expect(await bridge.refreshRuntime()).toBe(false);
+      expect(bridge.magpieSettings().magpie?.baseUrl).toBe("https://disconnected.example.test");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      reads.mockClear();
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the saved Magpie gateway when a paused inspector refresh resumes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-magpie-save-"));
+    const state = new ConversationStateStore({ databasePath: join(root, "state.sqlite") });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(root, "events.jsonl"));
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    const magpieConnection = new MagpieConnectionRepository(join(root, "magpie-connection-v1.json"), {
+      isEncryptionAvailable: () => true,
+      encryptString: text => Buffer.from(text, "utf8"),
+      decryptString: buf => buf.toString("utf8"),
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async url => Response.json({
+      data: [{ id: "native-model", display_name: new URL(String(url)).hostname }],
+    }));
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath: join(root, "settings.json"), eventLog, conversationState: state, inspector: native,
+      magpieConnection, environment: {}, home: root, fetchImpl, refreshIntervalMs: 60_000,
+    });
+    const saveGateway = (baseUrl: string) => bridge.saveMagpieConnection({ mode: "manual", baseUrl, authScheme: "bearer", apiKey: "fixture-gateway-key" });
+    try {
+      await bridge.initialize();
+      await saveGateway("https://old.example.test");
+      expect(bridge.session("local-native")?.modelDisplayName).toBe("old.example.test");
+      fetchImpl.mockClear();
+
+      let resumeGetAll!: () => void;
+      const holdGetAll = new Promise<void>(resolve => { resumeGetAll = resolve; });
+      let enterGetAll!: () => void;
+      const getAllEntered = new Promise<void>(resolve => { enterGetAll = resolve; });
+      vi.spyOn(native, "call").mockImplementationOnce(async () => {
+        enterGetAll();
+        await holdGetAll;
+        return structuredClone(native.sessions);
+      });
+      const refresh = bridge.refreshRuntime();
+      try {
+        await getAllEntered;
+        await saveGateway("https://new.example.test");
+      } finally {
+        resumeGetAll();
+        expect(await refresh).toBe(true);
+      }
+      expect.soft(fetchImpl.mock.calls.map(([url]) => url)).toEqual(["https://new.example.test/v1/models?limit=1000"]);
+      expect(bridge.session("local-native")?.modelDisplayName).toBe("new.example.test");
     } finally {
       await bridge.close();
       await eventLog.close();
@@ -4417,7 +4604,7 @@ describe("manual session title persistence and automatic first-turn title genera
     }
   });
 
-  it("auto-titles a blank session non-blockingly on first turn via gateway /v1/messages at most once, and skips sidechats", async () => {
+  it("auto-titles the first turn asynchronously via the Desktop gateway with a manual Magpie gateway saved, and skips sidechats", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-"));
     const state = new ConversationStateStore({
       databasePath: join(directory, "state.sqlite"),
@@ -4433,26 +4620,34 @@ describe("manual session title persistence and automatic first-turn title genera
 
     let releaseTitleResponse!: (response: Response) => void;
     const fetchImpl = vi.fn<typeof fetch>((url) => {
-      if (String(url).endsWith("/v1/models?limit=1000")) {
-        return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+      if (url === "https://manual.example.test/v1/models?limit=1000") {
+        return Promise.resolve(Response.json({ data: [{ id: "manual-only-model" }] }));
       }
       return new Promise<Response>((resolve) => {
         releaseTitleResponse = resolve;
       });
     });
 
+    const titleToken = "fixture-title-key";
     await writeFile(join(directory, "settings.json"), JSON.stringify({
       env: {
         ANTHROPIC_BASE_URL: "https://gateway.example.test",
-        ANTHROPIC_AUTH_TOKEN: "test-gateway-token",
+        ANTHROPIC_AUTH_TOKEN: titleToken,
       },
     }));
 
+    const magpieConnection = new MagpieConnectionRepository(join(directory, "magpie.json"), {
+      isEncryptionAvailable: () => true,
+      encryptString: text => Buffer.from(text, "utf8"),
+      decryptString: buffer => buffer.toString("utf8"),
+    });
+    await magpieConnection.save({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "x-api-key", apiKey: "manual-key" });
     const bridge = new ClaudeDesktopBridge({
       settingsPath: join(directory, "settings.json"),
       eventLog,
       conversationState: state,
       inspector: native,
+      magpieConnection,
       fetchImpl,
       environment: {},
       home: directory,
@@ -4477,6 +4672,12 @@ describe("manual session title persistence and automatic first-turn title genera
       });
       expect(receipt.state).toBe("submitted");
       await vi.waitFor(() => expect(releaseTitleResponse).toBeTypeOf("function"));
+      expect.soft(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST")).toEqual([
+        ["https://gateway.example.test/v1/messages", expect.objectContaining({
+          headers: expect.objectContaining({ authorization: `Bearer ${titleToken}`, "x-api-key": titleToken }),
+          body: expect.stringContaining('"model":"claude-3-5-haiku-latest"'),
+        })],
+      ]);
       expect(bridge.session(blank.sessionId)?.title).toBe("Claude 会话");
 
       const changed = once(bridge, "changed");
@@ -4521,6 +4722,108 @@ describe("manual session title persistence and automatic first-turn title genera
       });
       await new Promise(resolve => setTimeout(resolve, 25));
       expect(native.calls.some(call => call.method === "updateSession" && call.args[0] === "side-1")).toBe(false);
+
+      await writeFile(join(directory, "settings.json"), "{}");
+      fetchImpl.mockClear().mockResolvedValue(Response.json({ content: [{ type: "text", text: "来自手动网关" }] }));
+      const noGateway = await bridge.createSession("/new-project");
+      const titleTask = vi.spyOn(bridge as unknown as { autoTitleSession(): Promise<void> }, "autoTitleSession");
+      await bridge.startTurn({ ...input, sessionId: noGateway.sessionId, text: "没有可用的 Desktop 网关" });
+      expect(titleTask).toHaveBeenCalledOnce();
+      await titleTask.mock.results[0]!.value;
+      expect.soft(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST")).toEqual([]);
+      expect(bridge.session(noGateway.sessionId)?.title).toBe("Claude 会话");
+    } finally {
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["fixed", "host-auth", "host-url"] as const)("uses the matching Desktop profile models for %s titles in both Magpie modes", async (source) => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-profile-"));
+    const state = new ConversationStateStore({ databasePath: join(directory, "state.sqlite") });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    const appData = join(directory, "AppData", "Roaming");
+    const library = join(appData, "Claude-3p", "configLibrary");
+    await mkdir(library, { recursive: true });
+    await writeFile(join(library, "_meta.json"), JSON.stringify({ appliedId: "active" }));
+    await writeFile(join(library, "active.json"), JSON.stringify({
+      inferenceProvider: "gateway",
+      inferenceGatewayBaseUrl: "https://desktop.example.test",
+      inferenceGatewayAuthScheme: "x-api-key",
+      inferenceGatewayApiKey: "desktop-key",
+      inferenceModels: [{ name: "desktop-profile-model", labelOverride: "Desktop profile model" }],
+    }), { mode: 0o600 });
+
+    const hostPath = join(appData, "Claude-3p", "host-creds-title.json");
+    const baseUrl = source === "host-url" ? "https://host.example.test" : "https://desktop.example.test";
+    if (source !== "fixed") {
+      await writeFile(hostPath, JSON.stringify({ env: {
+        ANTHROPIC_API_KEY: "host-key",
+        CLAUDE_CODE_HOST_AUTH_ENV_VAR: "ANTHROPIC_API_KEY",
+        ...(source === "host-url" ? { ANTHROPIC_BASE_URL: baseUrl } : {}),
+      } }), { mode: 0o600 });
+    }
+    let now = 1_000;
+    let desktopCatalogAvailable = false;
+    const desktopModelsUrl = `${baseUrl}/v1/models?limit=1000`;
+    const fetchImpl = vi.fn<typeof fetch>(async (url) => {
+      if (url === "https://manual.example.test/v1/models?limit=1000") {
+        return Response.json({ data: [{ id: "manual-only-model" }] });
+      }
+      if (url === desktopModelsUrl && desktopCatalogAvailable) {
+        return Response.json({ data: [{ id: "host-only-model" }] });
+      }
+      if (url === `${baseUrl}/v1/messages`) {
+        return Response.json({ content: [{ type: "text", text: "Desktop profile title" }] });
+      }
+      return new Response(null, { status: 503 });
+    });
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath: join(directory, "settings.json"), eventLog, conversationState: state, inspector: native,
+      magpieConnection: new MagpieConnectionRepository(join(directory, "magpie.json"), {
+        isEncryptionAvailable: () => true,
+        encryptString: text => Buffer.from(text, "utf8"),
+        decryptString: buffer => buffer.toString("utf8"),
+      }),
+      fetchImpl, platform: "win32", environment: { APPDATA: appData, ...(source === "fixed" ? {} : { CLAUDE_CODE_HOST_CREDS_FILE: hostPath }) }, home: directory,
+      scanCatalog: async () => ({ projects: [], sessions: [], observedAt: 0 }), refreshIntervalMs: 60_000, autoTitleGraceMs: 0,
+      now: () => now,
+    });
+    async function expectTitleModel(requestId: string, model: string) {
+      fetchImpl.mockClear();
+      const session = await bridge.createSession("/new-project");
+      await bridge.startTurn({ ...input, sessionId: session.sessionId, requestId, idempotencyKey: requestId });
+      await vi.waitFor(() => expect(bridge.session(session.sessionId)?.title).toBe("Desktop profile title"));
+      expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST"), requestId).toEqual([
+        [`${baseUrl}/v1/messages`, expect.objectContaining({
+          headers: expect.objectContaining({ "x-api-key": source === "fixed" ? "desktop-key" : "host-key" }),
+          body: expect.stringContaining(`"model":"${model}"`),
+        })],
+      ]);
+    }
+    try {
+      await bridge.initialize();
+      const offlineModel = source === "host-url" ? "claude-3-5-haiku-latest" : "desktop-profile-model";
+      await expectTitleModel("auto", offlineModel);
+      await bridge.saveMagpieConnection({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "x-api-key", apiKey: "manual-key" });
+      await expectTitleModel("manual", offlineModel);
+
+      if (source === "host-url") {
+        desktopCatalogAvailable = true;
+        await bridge.saveMagpieConnection({ mode: "auto" });
+        await expectTitleModel("after-fetch", "host-only-model");
+
+        desktopCatalogAvailable = false;
+        now += 65_000;
+        expect(await bridge.refreshRuntime()).toBe(true);
+        expect(fetchImpl).toHaveBeenLastCalledWith(desktopModelsUrl, expect.anything());
+        await expectTitleModel("after-failed-refresh", "host-only-model");
+      }
     } finally {
       await bridge.close();
       await eventLog.close();

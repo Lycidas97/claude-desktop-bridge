@@ -1,6 +1,7 @@
 import type { BridgeCrypto, BridgeEvent, BridgeHostSnapshot, BridgeRequest, BridgeResponse, BridgeSessionInfo, DecryptedEnvelope, EncryptedEnvelope, ServerFrame, SocketState } from "@bridge/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useMobileBridge, type BridgeMutableStore } from "./useMobileBridge.js";
+import { captureBridgeStoreRef } from "./useMobileBridge.test-harness.js";
 
 type HarnessStore = {
   [K in keyof BridgeMutableStore]: K extends "setState" ? BridgeMutableStore[K] : { current: any };
@@ -16,7 +17,7 @@ import { PROTOCOL_VERSION, BridgeCrypto as ActualBridgeCrypto, BridgeSocket } fr
 const harness = vi.hoisted(() => ({
   state: undefined as any,
   commitStateImmediately: true,
-  refs: [] as Array<{ current: HarnessStore }>,
+  store: undefined as HarnessStore | undefined,
   requests: [] as Array<{ host: string; request: BridgeRequest }>,
   respond: undefined as unknown as (request: BridgeRequest) => Promise<Record<string, unknown>>,
   cacheEncrypt: vi.fn(),
@@ -66,30 +67,16 @@ vi.mock("react", async (importOriginal) => ({
     harness.state = { ...initial, ...harness.state };
     return [harness.state, (update: any) => {
       harness.state = typeof update === "function" ? update(harness.state) : update;
-      if (harness.commitStateImmediately && harness.refs[0]?.current) {
-        harness.refs[0].current.stateRef.current = harness.state;
+      if (harness.commitStateImmediately && harness.store) {
+        harness.store.stateRef.current = harness.state;
       }
     }];
   },
-  useRef(initial: unknown) {
-    let current = initial as HarnessStore;
-    let seeded = false;
-    const ref = {
-      get current(): HarnessStore {
-        return current;
-      },
-      set current(value: HarnessStore) {
-        current = value;
-        if (!seeded && value) {
-          seeded = true;
-          value.cryptoRef.current = hostCrypto("A");
-          value.socketRef.current = socket("A");
-        }
-      },
-    };
-    harness.refs.push(ref);
-    return ref;
-  },
+  useRef: (initial: unknown) => captureBridgeStoreRef(initial, (store: HarnessStore) => {
+    harness.store = store;
+    store.cryptoRef.current = hostCrypto("A");
+    store.socketRef.current = socket("A");
+  }),
   useCallback: (callback: unknown) => callback,
   useEffect: () => undefined,
 }));
@@ -144,14 +131,14 @@ function socket(host: string) {
       harness.requests.push({ host, request });
       try {
         const result = await harness.respond(request);
-        const pending = harness.refs[0]!.current.pendingResponsesRef.current.get(request.requestId);
+        const pending = harness.store!.pendingResponsesRef.current.get(request.requestId);
         clearTimeout(pending.timer);
-        harness.refs[0]!.current.pendingResponsesRef.current.delete(request.requestId);
+        harness.store!.pendingResponsesRef.current.delete(request.requestId);
         pending.resolve({ kind: "response", requestId: request.requestId, ok: true, result } satisfies BridgeResponse);
       } catch (error) {
-        const pending = harness.refs[0]!.current.pendingResponsesRef.current.get(request.requestId);
+        const pending = harness.store!.pendingResponsesRef.current.get(request.requestId);
         clearTimeout(pending.timer);
-        harness.refs[0]!.current.pendingResponsesRef.current.delete(request.requestId);
+        harness.store!.pendingResponsesRef.current.delete(request.requestId);
         pending.reject(error);
       }
     },
@@ -159,17 +146,17 @@ function socket(host: string) {
 }
 
 function switchHost(host: string, replaceCrypto = true) {
-  if (replaceCrypto) harness.refs[0]!.current.cryptoRef.current = hostCrypto(host);
-  harness.refs[0]!.current.socketRef.current = socket(host);
+  if (replaceCrypto) harness.store!.cryptoRef.current = hostCrypto(host);
+  harness.store!.socketRef.current = socket(host);
   harness.state = { ...harness.state, activeHostId: host, desktopName: host, snapshot: snapshot(host), events: [], latestSeq: 0, histories: {}, evidence: {}, error: undefined };
-  harness.refs[0]!.current.stateRef.current = harness.state;
+  harness.store!.stateRef.current = harness.state;
 }
 
 beforeEach(() => {
   vi.stubGlobal("document", { visibilityState: "visible" });
   setActiveViewedSession(undefined);
   vi.mocked(ensureSessionNotificationPermission).mockClear();
-  harness.refs = [];
+  harness.store = undefined;
   harness.native = false;
   harness.notify.mockReset().mockResolvedValue(undefined);
   harness.commitStateImmediately = true;
@@ -234,7 +221,7 @@ describe("permission event ordering", () => {
     const bridge = useMobileBridge();
     await bridge.retryConnection();
     bootstrap();
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
+    harness.store!.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
     try {
       receive(runtime);
       if (path === "live") receive(requested("R", 1));
@@ -268,7 +255,7 @@ describe("permission event ordering", () => {
     const bridge = useMobileBridge();
     await bridge.retryConnection();
     bootstrap();
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
+    harness.store!.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
     try {
       receive(requested("R", 1));
       receive(runtime);
@@ -295,7 +282,7 @@ describe("permission event ordering", () => {
     vi.useFakeTimers();
     const bridge = useMobileBridge();
     harness.listMessages.mockResolvedValue([{ id: "newer" }, { id: "older" }]);
-    harness.refs[0]!.current.cryptoRef.current.decrypt = async (envelope: EncryptedEnvelope) => ({
+    harness.store!.cryptoRef.current.decrypt = async (envelope: EncryptedEnvelope) => ({
       header: { from: "desktop", sentAt: Date.now() },
       payload: { kind: "snapshot", snapshot: { ...snapshot("A"), latestSeq: envelope.id === "newer" ? 3 : 0 } },
     });
@@ -312,7 +299,7 @@ describe("permission event ordering", () => {
     const bridge = useMobileBridge();
     await bridge.retryConnection();
     bootstrap();
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
+    harness.store!.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
     try {
       receive(runtime);
       await bridge.refresh();
@@ -375,9 +362,9 @@ describe("payload compression negotiation", () => {
     live.host.capabilities = ["payload.deflate.v1"];
     harness.listMessages.mockResolvedValue([{ id: "cached-deflate" }]);
     const bridge = useMobileBridge();
-    harness.refs[0]!.current.cryptoRef.current.decrypt = async () => ({ header: { from: "desktop", sentAt: Date.now() }, payload: { kind: "snapshot", snapshot: live } });
+    harness.store!.cryptoRef.current.decrypt = async () => ({ header: { from: "desktop", sentAt: Date.now() }, payload: { kind: "snapshot", snapshot: live } });
     await bridge.retryConnection();
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
+    harness.store!.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
     try {
       expect(harness.state.snapshot.host.capabilities).toEqual(["payload.deflate.v1"]);
       await bridge.renameSession("target", "Before live handshake");
@@ -401,7 +388,7 @@ describe("payload compression negotiation", () => {
       await bridge.renameSession("target", "After renewed handshake");
       expect(harness.requestEncrypt.mock.calls.at(-1)![7]).toBe(true);
       await bridge.retryConnection();
-      harness.refs[0]!.current.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
+      harness.store!.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
       await bridge.renameSession("target", "New connection");
       expect(harness.requestEncrypt.mock.calls.at(-1)![7]).toBe(false);
     } finally { bridge.backToHosts(); vi.clearAllTimers(); }
@@ -415,7 +402,7 @@ describe("payload compression negotiation", () => {
     const live = snapshot("A");
     live.host.capabilities = deflate ? ["payload.deflate.v1"] : [];
     harness.respond = async request => request.method === "snapshot.get" ? { snapshot: live } : {};
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+    harness.store!.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
       harness.requests.push({ host: "A", request });
       harness.receive({ header: { sentAt: Date.now() }, payload: { kind: "response", requestId: request.requestId, ok: true, result: await harness.respond(request) } } as DecryptedEnvelope, { id: request.requestId } as EncryptedEnvelope);
     };
@@ -500,7 +487,7 @@ describe("session display-name renaming", () => {
     };
     harness.state.snapshot = { ...snapshot("A"), sessions: [session], latestSeq: 10 };
     harness.state.latestSeq = 10;
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
+    harness.store!.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
     const response = deferred<Record<string, unknown>>();
     harness.respond = async request => request.method === "session.rename" ? response.promise : {};
     const saving = bridge.renameSession(session.sessionId, "New name");
@@ -521,7 +508,7 @@ describe("session display-name renaming", () => {
 
   it("rejects an offline rename without queuing it", async () => {
     const bridge = useMobileBridge();
-    harness.refs[0]!.current.socketRef.current.state = "closed";
+    harness.store!.socketRef.current.state = "closed";
     await expect(bridge.renameSession("target", "New name")).rejects.toThrow("电脑当前离线");
     expect(harness.requests).toEqual([]);
     expect(harness.addOutbox).not.toHaveBeenCalled();
@@ -530,11 +517,11 @@ describe("session display-name renaming", () => {
   it("surfaces the server error and leaves the snapshot untouched", async () => {
     const before = harness.state.snapshot;
     const bridge = useMobileBridge();
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+    harness.store!.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
       harness.requests.push({ host: "A", request });
-      const pending = harness.refs[0]!.current.pendingResponsesRef.current.get(request.requestId);
+      const pending = harness.store!.pendingResponsesRef.current.get(request.requestId);
       clearTimeout(pending.timer);
-      harness.refs[0]!.current.pendingResponsesRef.current.delete(request.requestId);
+      harness.store!.pendingResponsesRef.current.delete(request.requestId);
       pending.resolve({ kind: "response", requestId: request.requestId, ok: false, error: { code: "INVALID_PARAMS", message: "会话名称过长" } });
     };
     await expect(bridge.renameSession("target", "New name")).rejects.toThrow("会话名称过长");
@@ -609,7 +596,7 @@ describe("main-turn completion notifications", () => {
     harness.state.snapshot = { ...nativeSnapshot(), latestSeq: 90 };
     harness.state.snapshot.sessions[0]!.title = "Synthetic task";
     harness.state.latestSeq = 90;
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
+    harness.store!.socketRef.current.sendEnvelope = socket("A").sendEnvelope;
     return bridge;
   }
 
@@ -805,8 +792,8 @@ describe("durable sends during transport failure", () => {
   it("keeps a persisted message queued without restoring the draft", async () => {
     const bridge = useMobileBridge();
     const send = vi.fn().mockRejectedValue(new Error("Socket is not connected"));
-    harness.refs[0]!.current.nativeRelayCapabilityRef.current = true;
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = send;
+    harness.store!.nativeRelayCapabilityRef.current = true;
+    harness.store!.socketRef.current.sendEnvelope = send;
     const receipt = await bridge.sendTurn("session-1", "Continue");
     expect(receipt).toEqual({ requestId: expect.any(String) });
     expect(harness.addOutbox).toHaveBeenCalledOnce();
@@ -825,7 +812,7 @@ describe("durable sends during transport failure", () => {
     const bridge = useMobileBridge();
     harness.addOutbox.mockRejectedValueOnce(new Error("Storage quota exceeded"));
     const send = vi.fn();
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = send;
+    harness.store!.socketRef.current.sendEnvelope = send;
     await expect(bridge.sendTurn("session-1", "Continue")).rejects.toThrow("Storage quota");
     expect(send).not.toHaveBeenCalled();
     expect(harness.state.localTurns).toEqual([]);
@@ -833,7 +820,7 @@ describe("durable sends during transport failure", () => {
 
   it("surfaces a transport failure for a non-durable action", async () => {
     const bridge = useMobileBridge();
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = vi.fn().mockRejectedValue(new Error("Socket is not connected"));
+    harness.store!.socketRef.current.sendEnvelope = vi.fn().mockRejectedValue(new Error("Socket is not connected"));
     await expect(bridge.interruptTurn("session-1")).rejects.toThrow("Socket is not connected");
     expect(harness.addOutbox).not.toHaveBeenCalled();
   });
@@ -854,7 +841,7 @@ describe("native submission responses", () => {
     const request: BridgeRequest = { kind: "request", method: "turn.start", requestId: "request", idempotencyKey: "key", params: { sessionId: "session-1", text: "Task", attachments: [{ id: "image", name: "photo.png", mimeType: "image/png", size: 8, data: btoa("picture") }] } };
     const cached = [{ id: "request", payload: request }, { id: "response", payload: { kind: "response", requestId: "request", ok: true, result: { state: "submitted", commandId: "command" } } }];
     harness.listMessages.mockResolvedValue(cached);
-    harness.refs[0]!.current.cryptoRef.current.decrypt = async (envelope: any) => ({ header: { from: envelope.id === "request" ? "mobile" : "desktop", sentAt: 1 }, payload: envelope.payload });
+    harness.store!.cryptoRef.current.decrypt = async (envelope: any) => ({ header: { from: envelope.id === "request" ? "mobile" : "desktop", sentAt: 1 }, payload: envelope.payload });
     await bridge.retryConnection();
     expect(harness.state.localTurns[0]).toMatchObject({ delivery: "submitted", commandId: "command", attachments: [{ id: "image", name: "photo.png", mimeType: "image/png", size: 8 }] });
     expect(harness.state.localTurns[0].attachments[0].data).toBeUndefined();
@@ -866,7 +853,7 @@ describe("native relay outbox", () => {
     harness.state.snapshot = nativeSnapshot();
     const bridge = useMobileBridge();
     const send = vi.fn().mockResolvedValue(undefined);
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = send;
+    harness.store!.socketRef.current.sendEnvelope = send;
     await bridge.sendTurn("session-1", "Saved until native handshake");
     expect(harness.addOutbox).toHaveBeenCalledOnce();
     expect(send).not.toHaveBeenCalled();
@@ -886,13 +873,13 @@ describe("native relay outbox", () => {
     const next = { ...base, id: "next-envelope", request: { ...request, requestId: "next", idempotencyKey: "next-key", params: { sessionId: "session-1", text: "Explicit native input", attachments: [] } } } as unknown as EncryptedEnvelope;
     vi.mocked(bridgeVault.listOutbox).mockResolvedValue([legacy, next]);
     harness.listMessages.mockResolvedValue([legacy]);
-    harness.refs[0]!.current.cryptoRef.current.decrypt = async (envelope: any) => ({ header: { from: "mobile", sentAt: envelope.sentAt }, payload: envelope.request });
+    harness.store!.cryptoRef.current.decrypt = async (envelope: any) => ({ header: { from: "mobile", sentAt: envelope.sentAt }, payload: envelope.request });
     await bridge.retryConnection();
     harness.state.localTurns[0].delivery = delivery;
     const send = vi.fn().mockResolvedValue(undefined);
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = send;
+    harness.store!.socketRef.current.sendEnvelope = send;
     const fresh = () => {
-      harness.refs[0]!.current.pendingResponsesRef.current.set("fresh", { resolve: vi.fn(), reject: vi.fn(), timer: setTimeout(() => {}, 10_000) });
+      harness.store!.pendingResponsesRef.current.set("fresh", { resolve: vi.fn(), reject: vi.fn(), timer: setTimeout(() => {}, 10_000) });
       harness.receive({ header: { sentAt: Date.now() }, payload: { kind: "response", requestId: "fresh", ok: true, result: { snapshot: nativeSnapshot() } } } as DecryptedEnvelope, { id: "fresh" } as EncryptedEnvelope);
     };
     fresh();
@@ -913,7 +900,7 @@ describe("native relay outbox", () => {
 
   it("rejects writable legacy Claude snapshots and allows Codex sends without native Claude capability", async () => {
     const bridge = useMobileBridge();
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = vi.fn().mockResolvedValue(undefined);
+    harness.store!.socketRef.current.sendEnvelope = vi.fn().mockResolvedValue(undefined);
     harness.state.snapshot.sessions = [{ ...nativeSnapshot().sessions[0], transport: "bridge-host", ownership: "BRIDGE_IDLE" }];
     await expect(bridge.sendTurn("session-1", "Keep draft")).rejects.toThrow("原生中转");
     expect(harness.addOutbox).not.toHaveBeenCalled();
@@ -945,10 +932,10 @@ describe("native relay connection boundaries", () => {
     cached.sessions[0] = { ...cached.sessions[0]!, transport: "bridge-host", ownership: "BRIDGE_IDLE" };
     harness.listMessages.mockResolvedValue([{ id: "cached-legacy" }]);
     const bridge = useMobileBridge();
-    harness.refs[0]!.current.cryptoRef.current.decrypt = async () => ({ header: { from: "desktop", sentAt: Date.now() }, payload: { kind: "snapshot", snapshot: cached } });
+    harness.store!.cryptoRef.current.decrypt = async () => ({ header: { from: "desktop", sentAt: Date.now() }, payload: { kind: "snapshot", snapshot: cached } });
     await bridge.retryConnection();
     const send = vi.fn().mockResolvedValue(undefined);
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = send;
+    harness.store!.socketRef.current.sendEnvelope = send;
     try {
       expect(harness.state.snapshot).toEqual(cached);
       await expect(bridge.sendTurn("session-1", "Keep draft")).rejects.toThrow("原生中转");
@@ -970,15 +957,15 @@ describe("native relay connection boundaries", () => {
     const decrypt = vi.fn(async (envelope: any) => envelope === cached
       ? { header: { from: "desktop", sentAt: Date.now() }, payload: { kind: "snapshot", snapshot: nativeSnapshot() } }
       : { header: { from: "mobile", sentAt: envelope.sentAt }, payload: envelope.request });
-    harness.refs[0]!.current.cryptoRef.current.decrypt = decrypt;
-    harness.refs[0]!.current.cryptoRef.current.encrypt = async (request: BridgeRequest) => ({ ...queuedTurn(request.requestId), request });
+    harness.store!.cryptoRef.current.decrypt = decrypt;
+    harness.store!.cryptoRef.current.encrypt = async (request: BridgeRequest) => ({ ...queuedTurn(request.requestId), request });
     await bridge.retryConnection();
     const send = vi.fn(async (envelope: typeof queued) => {
       if (envelope.request.method === "runtime.refresh" || envelope.request.method === "events.resume") {
         await socket("A").sendEnvelope(envelope);
       }
     });
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = send;
+    harness.store!.socketRef.current.sendEnvelope = send;
     try {
       const receipt = await bridge.sendTurn("session-1", "Saved from native cache");
       const saved = outbox[1]!;
@@ -1014,11 +1001,11 @@ describe("native relay connection boundaries", () => {
     const decrypt = vi.fn(async (envelope: any) => envelope === cached
       ? { header: { from: "desktop", sentAt: Date.now() }, payload: { kind: "snapshot", snapshot: nativeSnapshot() } }
       : { header: { from: "mobile", sentAt: envelope.sentAt }, payload: envelope.request });
-    harness.refs[0]!.current.cryptoRef.current.decrypt = decrypt;
-    harness.refs[0]!.current.cryptoRef.current.encrypt = async (request: BridgeRequest) => ({ ...queuedTurn(request.requestId), request });
+    harness.store!.cryptoRef.current.decrypt = decrypt;
+    harness.store!.cryptoRef.current.encrypt = async (request: BridgeRequest) => ({ ...queuedTurn(request.requestId), request });
     await bridge.retryConnection();
     const send = vi.fn().mockResolvedValue(undefined);
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = send;
+    harness.store!.socketRef.current.sendEnvelope = send;
     try {
       harness.receive({ header: { sentAt: Date.now() }, payload: { kind: "snapshot", snapshot: nativeSnapshot() } } as DecryptedEnvelope, { id: "first-live" } as EncryptedEnvelope);
       await vi.waitFor(() => expect(send).toHaveBeenCalledExactlyOnceWith(queued));
@@ -1065,13 +1052,13 @@ describe("native relay connection boundaries", () => {
     vi.mocked(bridgeVault.removeOutbox).mockImplementation(async ids => { outbox = outbox.filter(envelope => !(Array.isArray(ids) ? ids : [ids]).includes(envelope.id)); });
     const bridge = useMobileBridge();
     const decrypt = vi.fn(async (envelope: any) => ({ header: { from: "mobile", sentAt: envelope.sentAt }, payload: envelope.request }));
-    harness.refs[0]!.current.cryptoRef.current.decrypt = decrypt;
+    harness.store!.cryptoRef.current.decrypt = decrypt;
     await bridge.retryConnection();
     harness.state.localTurns[0].delivery = "uncertain";
     const legacyTurn = structuredClone(harness.state.localTurns[0]);
     const sending = deferred<void>();
     const send = vi.fn().mockResolvedValue(undefined).mockImplementationOnce(() => sending.promise);
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = send;
+    harness.store!.socketRef.current.sendEnvelope = send;
     const ready: ServerFrame = { type: "ready", connectionId: "live", queued: 0, online: ["desktop"], onlineDevices: [{ role: "desktop", deviceId: "desktop-A" }] };
     try {
       harness.receive({ header: { sentAt: Date.now() }, payload: { kind: "snapshot", snapshot: nativeSnapshot() } } as DecryptedEnvelope, { id: "verified-native" } as EncryptedEnvelope);
@@ -1122,7 +1109,7 @@ describe("queued-message steering requests", () => {
 
   it("rejects offline actions without saving something to replay later", async () => {
     const bridge = useMobileBridge();
-    harness.refs[0]!.current.socketRef.current.state = "closed";
+    harness.store!.socketRef.current.state = "closed";
     await expect(bridge.steerQueuedTurn("session-1", "queued")).rejects.toThrow("离线");
     expect(harness.requests).toEqual([]);
     expect(harness.addOutbox).not.toHaveBeenCalled();
@@ -1157,7 +1144,7 @@ describe("queued-message withdrawal requests", () => {
 
   it("rejects offline withdrawal without storing a future action", async () => {
     const bridge = useMobileBridge();
-    harness.refs[0]!.current.socketRef.current.state = "closed";
+    harness.store!.socketRef.current.state = "closed";
     await expect(bridge.cancelQueuedTurn("session-1", "queued")).rejects.toThrow("离线");
     expect(harness.requests).toEqual([]);
     expect(harness.addOutbox).not.toHaveBeenCalled();
@@ -1180,10 +1167,10 @@ describe("queued-message RPC boundaries", () => {
     const original = { commandId: "queued", requestId: "original", sessionId: "session-1", text: "Retained input", delivery: "queued" };
     harness.state.localTurns = [original];
     const send = vi.fn().mockRejectedValue(new Error("Connection closed before write"));
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = send;
+    harness.store!.socketRef.current.sendEnvelope = send;
     await expect(bridge[method]("session-1", "queued")).rejects.toThrow("Connection closed before write");
     expect(send).toHaveBeenCalledOnce();
-    expect(harness.refs[0]!.current.pendingResponsesRef.current.size).toBe(0);
+    expect(harness.store!.pendingResponsesRef.current.size).toBe(0);
     expect(harness.state.localTurns).toEqual([original]);
     expect(harness.addOutbox).not.toHaveBeenCalled();
     expect(harness.saveMessage).not.toHaveBeenCalled();
@@ -1192,16 +1179,16 @@ describe("queued-message RPC boundaries", () => {
   it.each(["steerQueuedTurn", "cancelQueuedTurn"] as const)("times out a lost %s response and does not replay the action on reconnect", async method => {
     vi.useFakeTimers();
     const bridge = useMobileBridge();
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => { harness.requests.push({ host: "A", request }); };
+    harness.store!.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => { harness.requests.push({ host: "A", request }); };
     const result = bridge[method]("session-1", "queued").then(() => "success", (error: Error) => error.message);
     await vi.advanceTimersByTimeAsync(0);
     expect(harness.requests).toHaveLength(1);
-    expect(harness.refs[0]!.current.pendingResponsesRef.current.size).toBe(1);
-    harness.refs[0]!.current.socketRef.current.state = "closed";
+    expect(harness.store!.pendingResponsesRef.current.size).toBe(1);
+    harness.store!.socketRef.current.state = "closed";
     await vi.advanceTimersByTimeAsync(20_001);
     expect(await result).toBe("电脑响应超时");
-    expect(harness.refs[0]!.current.pendingResponsesRef.current.size).toBe(0);
-    harness.refs[0]!.current.socketRef.current.state = "connected";
+    expect(harness.store!.pendingResponsesRef.current.size).toBe(0);
+    harness.store!.socketRef.current.state = "connected";
     await vi.advanceTimersByTimeAsync(0);
     expect(harness.requests).toHaveLength(1);
     expect(harness.addOutbox).not.toHaveBeenCalled();
@@ -1255,7 +1242,7 @@ describe("queue event synchronization", () => {
       snapshot: current, snapshotSeq: current.latestSeq, permissions: [], latestSeq: 10, events: [],
       localTurns: [{ requestId: "request-B", idempotencyKey: "key-B", sessionId: "session-1", text: "B", attachments: [], createdAt: 1, delivery: "local-saved" }],
     });
-    harness.refs[0]!.current.stateRef.current = harness.state;
+    harness.store!.stateRef.current = harness.state;
     return current;
   }
 
@@ -1343,7 +1330,7 @@ describe("subagent progress cache retention", () => {
     harness.listMessages.mockImplementation((roomId, limit) => vault.listMessages(roomId, limit));
     const bridge = useMobileBridge();
     const messages = new Map<string, DecryptedEnvelope>();
-    harness.refs[0]!.current.cryptoRef.current.decrypt = async (envelope: EncryptedEnvelope) => messages.get(envelope.id)!;
+    harness.store!.cryptoRef.current.decrypt = async (envelope: EncryptedEnvelope) => messages.get(envelope.id)!;
     await bridge.retryConnection();
     const initial = snapshot("A");
     initial.sessions = [{
@@ -1436,6 +1423,24 @@ describe("desktop presence after a desktop restart", () => {
     const bridge = useMobileBridge();
     await expect(bridge.refresh()).resolves.toBe(true);
     expect(harness.state.desktopOnline).toBe(true);
+  });
+});
+
+describe("evidence pagination across hosts", () => {
+  it.each([true, false])("discards an older evidence response after switching hosts (success=%s)", async (ok) => {
+    const response = deferred<Record<string, unknown>>();
+    harness.respond = () => response.promise;
+    harness.state.evidence = { "shared-session": { status: "ready", items: [], hasMore: true, nextCursor: "A-cursor" } };
+    const loading = useMobileBridge().loadOlderEvidence("shared-session");
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+    switchHost("B");
+    const current = { status: "ready", items: [], hasMore: true, nextCursor: "B-cursor" };
+    harness.state.evidence["shared-session"] = current;
+    if (ok) response.resolve({ evidence: { sessionId: "shared-session", items: [], hasMore: false } });
+    else response.reject(new Error("Old host disconnected"));
+    await loading;
+    expect(harness.state.evidence["shared-session"]).toBe(current);
+    expect(harness.state.error).toBeUndefined();
   });
 });
 
@@ -1625,7 +1630,7 @@ describe("host-bound synchronization", () => {
     switchHost("B");
     if (ok) response.resolve({ evidence: { items: [], hasMore: false } });
     else response.reject(new Error("old evidence request failed"));
-    await vi.waitFor(() => expect(harness.refs[0]!.current.pendingResponsesRef.current.size).toBe(0));
+    await vi.waitFor(() => expect(harness.store!.pendingResponsesRef.current.size).toBe(0));
     expect(harness.state.evidence).toEqual({});
     expect(harness.state.error).toBeUndefined();
   });
@@ -1762,7 +1767,7 @@ describe("session command control RPCs", () => {
     expect(harness.addOutbox).not.toHaveBeenCalled(); expect(harness.state.localTurns).toEqual([]);
   });
   it("rejects offline commands without creating an offline prompt", async () => {
-    const bridge = useMobileBridge(); harness.refs[0]!.current.socketRef.current.state = "closed";
+    const bridge = useMobileBridge(); harness.store!.socketRef.current.state = "closed";
     await expect(bridge.runSessionCommand("sdk-session", "/clear")).rejects.toThrow("离线");
     expect(harness.requests).toEqual([]); expect(harness.addOutbox).not.toHaveBeenCalled();
   });
@@ -1793,12 +1798,12 @@ it("keeps a completed command's returned session on its original computer after 
 describe("session.create workspace trust capability gating and error code preservation", () => {
   it("gates trustWorkspace on workspace.trust.v1 and preserves error.code on failed responses", async () => {
     const bridge = useMobileBridge();
-    harness.refs[0]!.current.stateRef.current = harness.state;
-    harness.refs[0]!.current.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
+    harness.store!.stateRef.current = harness.state;
+    harness.store!.socketRef.current.sendEnvelope = async ({ request }: { request: BridgeRequest }) => {
       harness.requests.push({ host: "A", request });
-      const pending = harness.refs[0]!.current.pendingResponsesRef.current.get(request.requestId);
+      const pending = harness.store!.pendingResponsesRef.current.get(request.requestId);
       clearTimeout(pending.timer);
-      harness.refs[0]!.current.pendingResponsesRef.current.delete(request.requestId);
+      harness.store!.pendingResponsesRef.current.delete(request.requestId);
       if (!request.params.trustWorkspace) {
         pending.resolve({
           kind: "response", requestId: request.requestId, ok: false,
@@ -1819,7 +1824,7 @@ describe("session.create workspace trust capability gating and error code preser
     expect(harness.requests[0]!.request.params).not.toHaveProperty("trustWorkspace");
 
     harness.state.snapshot.host.capabilities = ["workspace.trust.v1"];
-    harness.refs[0]!.current.stateRef.current = harness.state;
+    harness.store!.stateRef.current = harness.state;
     await expect(bridge.createSession("D:\\PARA", "PARA", "claude-desktop", undefined, true)).resolves.toMatchObject({
       sessionId: "trusted-1",
       cwd: "D:\\PARA",
@@ -1865,19 +1870,19 @@ describe("active-host state transitions", () => {
       pairingSync: { roomId: "A", desktopName: "Desktop A", stage: "connecting" as const, progress: 10 },
       error: "stale error",
     });
-    harness.refs[0]!.current.stateRef.current = harness.state;
+    harness.store!.stateRef.current = harness.state;
   }
 
   it("backToHosts clears transportMetrics, pendingOutbound, active-host data, and pending responses while preserving hosts", async () => {
     const bridge = useMobileBridge();
     seedActiveHostState();
     const rejected = vi.fn();
-    harness.refs[0]!.current.pendingResponsesRef.current.set("pending-1", {
+    harness.store!.pendingResponsesRef.current.set("pending-1", {
       resolve: vi.fn(),
       reject: rejected,
       timer: setTimeout(() => {}, 10_000),
     });
-    harness.refs[0]!.current.envelopeRequestsRef.current.set("env-1", "pending-1");
+    harness.store!.envelopeRequestsRef.current.set("env-1", "pending-1");
     const previousHosts = harness.state.hosts;
 
     bridge.backToHosts();
@@ -1905,8 +1910,8 @@ describe("active-host state transitions", () => {
     expect(harness.state.evidence).toEqual({});
     expect(harness.state.artifactPreviews).toEqual({});
     expect(harness.state.artifactTransfers).toEqual({});
-    expect(harness.refs[0]!.current.pendingResponsesRef.current.size).toBe(0);
-    expect(harness.refs[0]!.current.envelopeRequestsRef.current.size).toBe(0);
+    expect(harness.store!.pendingResponsesRef.current.size).toBe(0);
+    expect(harness.store!.envelopeRequestsRef.current.size).toBe(0);
     expect(rejected).toHaveBeenCalledOnce();
   });
 
@@ -2045,7 +2050,7 @@ describe("active-host state transitions", () => {
     const preservedHistory = harness.state.histories;
     const preservedTransfers = harness.state.artifactTransfers;
     const cryptoB = hostCrypto("B");
-    harness.refs[0]!.current.cryptoByRoomRef.current.set("B", cryptoB);
+    harness.store!.cryptoByRoomRef.current.set("B", cryptoB);
     try {
       await bridge.retryConnection();
       expect(harness.state.activeHostId).toBe("A");
@@ -2125,10 +2130,10 @@ describe("active-host state transitions", () => {
       hasMore: true,
       nextCursor: "cursor-1",
     };
-    harness.refs[0]!.current.stateRef.current = harness.state;
+    harness.store!.stateRef.current = harness.state;
 
     let firstSent = false;
-    harness.refs[0]!.current.socketRef.current = {
+    harness.store!.socketRef.current = {
       state: "connected",
       close() {},
       async sendEnvelope({ request }: { request: BridgeRequest }) {
@@ -2150,11 +2155,11 @@ describe("active-host state transitions", () => {
       const inflight = bridge.loadOlderHistory("session-1");
       expect(harness.state.histories["session-1"]?.status).toBe("loading");
       await vi.waitFor(() => expect(firstSent).toBe(true));
-      expect(harness.refs[0]!.current.pendingResponsesRef.current.size).toBe(1);
+      expect(harness.store!.pendingResponsesRef.current.size).toBe(1);
 
       await bridge.retryConnection();
       await inflight;
-      expect(harness.refs[0]!.current.pendingResponsesRef.current.size).toBe(0);
+      expect(harness.store!.pendingResponsesRef.current.size).toBe(0);
       expect(harness.state.histories["session-1"]).toMatchObject({
         status: "ready",
         hasMore: true,

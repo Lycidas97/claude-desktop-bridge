@@ -1,13 +1,14 @@
 import { readFile } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 import type { BridgeModelInfo } from "@bridge/protocol";
 import {
-  discoverClaudeGatewayConfig,
+  findClaudeFixedGateway,
+  findClaudeHostCredentials,
   magpieModelIdHash,
   parseMagpieSyntheticModelId,
   resolveClaudeGatewayConfig,
   type ClaudeGatewayConfig,
 } from "./claude-runtime-discovery.js";
-import type { MagpieConnectionRepository } from "./magpie-connection.js";
 
 const DEFAULT_TITLE_MODEL = "claude-3-5-haiku-latest";
 const DEFAULT_TITLE_TIMEOUT_MS = 8_000;
@@ -162,16 +163,15 @@ async function readSettingsDirectApiKey(settingsPath: string | undefined): Promi
     const parsed = JSON.parse(await readFile(settingsPath, "utf8")) as { env?: Record<string, unknown> };
     const env = parsed?.env;
     if (!env || typeof env !== "object" || Array.isArray(env)) return undefined;
-    const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" && env.ANTHROPIC_BASE_URL.trim()
-      ? env.ANTHROPIC_BASE_URL.trim()
-      : undefined;
+    const baseUrl = env.ANTHROPIC_BASE_URL;
     const authToken = typeof env.ANTHROPIC_AUTH_TOKEN === "string" && env.ANTHROPIC_AUTH_TOKEN.trim()
       ? env.ANTHROPIC_AUTH_TOKEN.trim()
       : undefined;
     const apiKey = typeof env.ANTHROPIC_API_KEY === "string" && env.ANTHROPIC_API_KEY.trim()
       ? env.ANTHROPIC_API_KEY.trim()
       : undefined;
-    if (baseUrl) {
+    if (baseUrl !== undefined) {
+      if (typeof baseUrl !== "string") return undefined;
       const resolved = await resolveClaudeGatewayConfig({
         environment: {
           ANTHROPIC_BASE_URL: baseUrl,
@@ -182,7 +182,7 @@ async function readSettingsDirectApiKey(settingsPath: string | undefined): Promi
             : {}),
         },
       });
-      if (resolved && (resolved.authToken || resolved.apiKey)) return resolved;
+      return resolved && (resolved.authToken || resolved.apiKey) ? resolved : undefined;
     }
     if (apiKey) {
       return { baseUrl: "https://api.anthropic.com", apiKey, authScheme: "x-api-key" };
@@ -193,42 +193,53 @@ async function readSettingsDirectApiKey(settingsPath: string | undefined): Promi
   return undefined;
 }
 
-export async function resolveActiveClaudeGateway(options: {
-  magpieConnection?: MagpieConnectionRepository;
+function titleMessagesEndpoint(baseUrl: string): string {
+  const trimmedBase = baseUrl.replace(/\/+$/u, "");
+  return `${trimmedBase.endsWith("/v1") ? trimmedBase : `${trimmedBase}/v1`}/messages`;
+}
+
+export async function resolveActiveClaudeGateway({
+  environment = process.env, home, platform, roots, settingsPath, allowAmbientDiscovery = true,
+}: {
   environment?: NodeJS.ProcessEnv;
   home?: string;
   platform?: NodeJS.Platform;
   roots?: string[];
   settingsPath?: string;
   allowAmbientDiscovery?: boolean;
-} = {}): Promise<ClaudeGatewayConfig | undefined> {
-  if (options.magpieConnection?.isManual()) {
-    const manual = await resolveClaudeGatewayConfig(options.magpieConnection.apply({ environment: {} }));
-    return manual && (manual.authToken || manual.apiKey) ? manual : undefined;
-  }
-
-  if (options.allowAmbientDiscovery !== false) {
-    const discovered = await discoverClaudeGatewayConfig({
-      ...(options.environment ? { environment: options.environment } : {}),
-      ...(options.home ? { home: options.home } : {}),
-      ...(options.platform ? { platform: options.platform } : {}),
-      ...(options.roots ? { roots: options.roots } : {}),
-      ...(options.settingsPath ? { settingsPath: options.settingsPath } : {}),
-    });
-    if (discovered && (discovered.authToken || discovered.apiKey)) return discovered;
-  }
-
-  const fromSettings = await readSettingsDirectApiKey(options.settingsPath);
-  if (fromSettings) return fromSettings;
-
-  if (options.allowAmbientDiscovery !== false) {
-    const env = options.environment ?? process.env;
-    const envApiKey = env.ANTHROPIC_API_KEY?.trim();
-    if (envApiKey) {
-      return { baseUrl: "https://api.anthropic.com", apiKey: envApiKey, authScheme: "x-api-key" };
+} = {}): Promise<{ gateway: ClaudeGatewayConfig; profileModels?: BridgeModelInfo[] } | undefined> {
+  const credentialPath = allowAmbientDiscovery
+    ? await findClaudeHostCredentials(environment, home, roots, platform)
+    : undefined;
+  if (credentialPath) {
+    const host = await resolveClaudeGatewayConfig({ credentialPath, environment: {} });
+    if (host && (host.authToken || host.apiKey)) {
+      const parent = dirname(credentialPath);
+      const profileRoot = basename(parent) === "configLibrary" ? dirname(parent) : parent;
+      const profile = await findClaudeFixedGateway(environment, home, [profileRoot], platform);
+      return {
+        gateway: host,
+        ...(profile && titleMessagesEndpoint(profile.gateway.baseUrl) === titleMessagesEndpoint(host.baseUrl)
+          ? { profileModels: profile.inferenceModels }
+          : {}),
+      };
     }
   }
-  return undefined;
+  if (allowAmbientDiscovery) {
+    const fixed = await findClaudeFixedGateway(environment, home, roots, platform);
+    if (fixed) return { gateway: fixed.gateway, profileModels: fixed.inferenceModels };
+  }
+
+  const fromSettings = await readSettingsDirectApiKey(settingsPath);
+  if (fromSettings) return { gateway: fromSettings };
+  if (!allowAmbientDiscovery) return undefined;
+
+  const fromEnvironment = await resolveClaudeGatewayConfig({ ...(credentialPath ? { credentialPath } : {}), environment });
+  if (fromEnvironment && (fromEnvironment.authToken || fromEnvironment.apiKey)) return { gateway: fromEnvironment };
+  const apiKey = environment.ANTHROPIC_API_KEY?.trim();
+  return apiKey && environment.ANTHROPIC_BASE_URL === undefined
+    ? { gateway: { baseUrl: "https://api.anthropic.com", apiKey, authScheme: "x-api-key" } }
+    : undefined;
 }
 
 export async function generateSessionTitle(options: {
@@ -251,8 +262,7 @@ export async function generateSessionTitle(options: {
     return fallback;
   }
 
-  const trimmedBase = options.gateway.baseUrl.replace(/\/+$/u, "");
-  const endpoint = `${trimmedBase.endsWith("/v1") ? trimmedBase : `${trimmedBase}/v1`}/messages`;
+  const endpoint = titleMessagesEndpoint(options.gateway.baseUrl);
   const headers: Record<string, string> = {
     "content-type": "application/json",
     accept: "application/json",

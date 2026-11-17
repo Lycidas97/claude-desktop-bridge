@@ -82,6 +82,7 @@ export class BridgeSocket {
   private messageListeners = new Set<MessageListener>();
   private stateListeners = new Set<StateListener>();
   private frameListeners = new Set<FrameListener>();
+  private errorListeners = new Set<(error: Error) => void>();
   private incomingTransfers = new Map<string, IncomingTransfer>();
   private deliveredIds = new Set<string>();
   private missingChunkRequests = new Map<string, {
@@ -287,6 +288,11 @@ export class BridgeSocket {
     return () => this.frameListeners.delete(listener);
   }
 
+  onError(listener: (error: Error) => void): () => void {
+    this.errorListeners.add(listener);
+    return () => this.errorListeners.delete(listener);
+  }
+
   private async handleMessage(raw: string): Promise<void> {
     let frame: ServerFrame;
     try {
@@ -322,11 +328,15 @@ export class BridgeSocket {
     }
     if (frame.type !== "envelope" && frame.type !== "envelope-chunk") return;
     // Keep payload delivery in arrival order across async digest/decrypt/inflate.
-    this.envelopeReceiveTail = this.envelopeReceiveTail.then(async () => {
+    const received = this.envelopeReceiveTail.then(async () => {
       const envelope = frame.type === "envelope" ? frame.envelope : await this.acceptChunk(frame.chunk);
       if (envelope) await this.deliverEnvelope(envelope);
     });
-    await this.envelopeReceiveTail;
+    this.envelopeReceiveTail = received.catch(() => undefined);
+    await received.catch((error: unknown) => {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      for (const listener of this.errorListeners) listener(normalized);
+    }).catch((error: unknown) => console.error("WebSocket receive error reporting failed", error));
   }
 
   private async deliverEnvelope(envelope: EncryptedEnvelope): Promise<void> {
@@ -334,18 +344,20 @@ export class BridgeSocket {
       this.ack([envelope.id]);
       return;
     }
+    let decrypted: DecryptedEnvelope;
     try {
       const selectedCrypto = await this.resolveCrypto?.(envelope) ?? this.crypto;
-      const decrypted = await selectedCrypto.decrypt(envelope);
-      this.deliveredIds.add(envelope.id);
-      if (this.deliveredIds.size > 2_048) {
-        const oldest = this.deliveredIds.values().next().value as string | undefined;
-        if (oldest) this.deliveredIds.delete(oldest);
-      }
-      for (const listener of this.messageListeners) listener(decrypted, envelope);
+      decrypted = await selectedCrypto.decrypt(envelope);
     } catch {
       // The relay cannot forge valid payloads. Invalid or cross-device ciphertext is ignored.
+      return;
     }
+    this.deliveredIds.add(envelope.id);
+    if (this.deliveredIds.size > 2_048) {
+      const oldest = this.deliveredIds.values().next().value as string | undefined;
+      if (oldest) this.deliveredIds.delete(oldest);
+    }
+    for (const listener of this.messageListeners) listener(decrypted, envelope);
   }
 
   private async acceptChunk(chunk: EncryptedEnvelopeChunk): Promise<EncryptedEnvelope | undefined> {

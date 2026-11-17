@@ -79,6 +79,7 @@ vi.mock("react", async (original) => ({
     return store.slots[index];
   },
   useMemo: (create: () => unknown) => create(),
+  useCallback: (callback: unknown) => callback,
   useId: () => "mock-id",
   useContext: (context: unknown) => contexts.current.get(context),
   useEffect: recordEffect,
@@ -401,6 +402,112 @@ describe("successful rewind completion", () => {
       expect(elements(tree).some(element => element.type === SessionRewindDialog)).toBe(false);
       expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "session.rewind", params: { sessionId: "A", messageId: "rewind-user", scope: "conversation" } });
     } finally { release(); await completion; }
+  });
+});
+
+describe("desktop session menu mutations", () => {
+  const menuAction = (tree: ReactNode, label: string) =>
+    elements(tree).find(element => element.type === SheetAction && element.props.label === label)!;
+
+  function openConversationMenu(onSelectSession = vi.fn(), onRefreshSnapshot = vi.fn().mockResolvedValue(undefined)) {
+    snapshot.host.capabilities = ["session.visibility.v1"];
+    snapshot.runtime.desktopIntegration.state = "ready";
+    const conversation = renderer(DesktopSessionConversation, {
+      session: snapshot.sessions[0]!, snapshot, events: [], apiRequest, onRefreshSnapshot, onSelectSession,
+    });
+    elements(conversation.draw()).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    return conversation;
+  }
+
+  it("selects the returned fork exactly once and dismisses the menu", async () => {
+    const onSelectSession = vi.fn();
+    const conversation = openConversationMenu(onSelectSession);
+    await settle();
+    apiRequest.mockClear().mockResolvedValueOnce({
+      kind: "response", requestId: "fork", ok: true,
+      result: { session: { ...snapshot.sessions[0]!, sessionId: "fork-A" } },
+    });
+
+    menuAction(conversation.draw(), "Fork 分支").props.onClick();
+    await settle();
+
+    expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "session.fork", params: { sessionId: "A" } });
+    expect(onSelectSession).toHaveBeenCalledExactlyOnceWith("fork-A");
+    expect(elements(conversation.draw()).some(element => element.type === Sheet)).toBe(false);
+  });
+
+  it("keeps the archive menu open with the error and dismisses it after a successful retry", async () => {
+    const conversation = openConversationMenu();
+    await settle();
+    apiRequest.mockClear().mockResolvedValueOnce({
+      kind: "response", requestId: "archive", ok: false, error: { code: "FAILED", message: "原生归档失败" },
+    });
+
+    menuAction(conversation.draw(), "归档会话").props.onClick();
+    await settle();
+
+    const failed = conversation.draw();
+    const sheet = elements(failed).find(element => element.type === Sheet)!;
+    expect(sheet?.props.busy).toBe(false);
+    expect(elements(sheet).some(element => element.props.role === "alert" && textContent(element).includes("原生归档失败"))).toBe(true);
+    expect(menuAction(failed, "归档会话").props.disabled).toBe(false);
+
+    menuAction(failed, "归档会话").props.onClick();
+    await settle();
+
+    expect(apiRequest.mock.calls).toEqual([
+      [{ method: "session.archive", params: { sessionId: "A", archived: true } }],
+      [{ method: "session.archive", params: { sessionId: "A", archived: true } }],
+    ]);
+    expect(elements(conversation.draw()).some(element => element.type === Sheet)).toBe(false);
+  });
+
+  it("keeps a pending sync failure out of an unsubmitted delete confirmation", async () => {
+    let rejectRefresh!: (error: Error) => void;
+    const onRefreshSnapshot = vi.fn(() => new Promise<void>((_, reject) => { rejectRefresh = reject; }));
+    const conversation = openConversationMenu(undefined, onRefreshSnapshot);
+    await settle();
+    apiRequest.mockClear();
+
+    menuAction(conversation.draw(), "同步此会话").props.onClick();
+    expect(onRefreshSnapshot).toHaveBeenCalledOnce();
+    const deleteAction = menuAction(conversation.draw(), "删除会话");
+    expect(deleteAction.props.disabled).toBe(false);
+    deleteAction.props.onClick();
+
+    rejectRefresh(new Error("读取快照失败"));
+    await settle();
+
+    const confirmation = elements(conversation.draw()).find(element => element.type === ConfirmationDialog && element.props.open)!;
+    expect(apiRequest).not.toHaveBeenCalled();
+    expect(confirmation.props.error).toBeUndefined();
+    confirmation.props.onCancel();
+    expect(textContent(conversation.draw())).toContain("读取快照失败");
+  });
+
+  it("keeps the delete confirmation and draft after a rejected request", async () => {
+    const conversation = openConversationMenu();
+    const confirmation = () => elements(conversation.draw()).find(element => element.type === ConfirmationDialog && element.props.open);
+    elements(conversation.draw()).find(element => element.type === SlashCommandInput)!.props.onChange("保留草稿");
+    menuAction(conversation.draw(), "删除会话").props.onClick();
+    await settle();
+    apiRequest.mockClear().mockResolvedValueOnce({
+      kind: "response", requestId: "delete", ok: false, error: { code: "FAILED", message: "原生删除失败" },
+    });
+
+    expect(apiRequest).not.toHaveBeenCalled();
+    expect(confirmation()).toBeDefined();
+    confirmation()!.props.onConfirm();
+    await settle();
+
+    expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "session.delete", params: { sessionId: "A" } });
+    expect(confirmation()?.props).toMatchObject({ open: true, busy: false, error: "原生删除失败" });
+    expect(elements(conversation.draw()).find(element => element.type === SlashCommandInput)!.props.value).toBe("保留草稿");
+
+    confirmation()!.props.onConfirm();
+    await settle();
+    expect(confirmation()).toBeUndefined();
+    expect(elements(conversation.draw()).find(element => element.type === SlashCommandInput)!.props.value).toBe("");
   });
 });
 
@@ -800,14 +907,19 @@ describe("desktop conversation parity", () => {
       { id: "m-2", sessionId: "A", role: "user", text: "Recent question", createdAt: 20, origin: "claude-desktop" },
       { id: "m-3", sessionId: "A", role: "assistant", text: "Recent answer", createdAt: 30, origin: "claude-desktop" },
     ];
-    apiRequest.mockImplementation(async ({ method }) => ({
-      kind: "response",
-      requestId: "page",
-      ok: true,
-      result: method === "session.open"
-        ? { history: { items: history, hasMore: true, nextCursor: "m-2" } }
-        : { evidence: { items: [], hasMore: false } },
-    }));
+    let finishEvidence!: () => void;
+    const firstEvidence = new Promise<void>((resolve) => { finishEvidence = resolve; });
+    apiRequest.mockImplementation(async ({ method }) => {
+      if (method === "evidence.list") await firstEvidence;
+      return {
+        kind: "response",
+        requestId: "page",
+        ok: true,
+        result: method === "session.open"
+          ? { history: { items: history, hasMore: true, nextCursor: "m-2" } }
+          : { evidence: { items: [], hasMore: false } },
+      };
+    });
     dashboard = renderer(DesktopDashboard, {
       themeControl: { theme: "dark", family: "apple", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
       agentVisibility: { enabled: ["claude-desktop"], setEnabled: vi.fn() },
@@ -817,6 +929,10 @@ describe("desktop conversation parity", () => {
     sessionsProps = child.props;
     sessions = renderer(child.type as (props: any) => ReactNode, sessionsProps);
     sessions.draw(); await settle(); tree = sessions.draw();
+    expect(apiRequest).toHaveBeenCalledWith({ method: "evidence.list", params: { sessionId: "A", limit: 30 } });
+    expect(elements(tree).some((element) => element.type === ConversationMessageItem)).toBe(false);
+    finishEvidence();
+    await settle(); tree = sessions.draw();
 
     expect(apiRequest).toHaveBeenCalledWith({ method: "session.open", params: { sessionId: "A", limit: 50 } });
     apiRequest.mockClear();
@@ -1035,6 +1151,90 @@ describe("desktop conversation parity", () => {
     expect(apiRequest).toHaveBeenCalledWith({ method: "subagent.stop", params: { sessionId: "A", agentId: "agent-1" } });
   });
 
+  it("keeps the projected evidence page unchanged through text deltas and merges the next evidence event", async () => {
+    await openSessions();
+    elements(tree).find((element) => element.type === "button" && textContent(element) === "成果")!.props.onClick();
+    const page = () => elements(tree).find((element) => element.type === EvidencePanel)!.props.state;
+    const evidence: BridgeEvent = {
+      eventId: "evidence-ready", seq: 1, timestamp: 10, sessionId: "A", origin: "claude-host", type: "evidence.ready",
+      data: { evidence: { id: "bundle", sessionId: "A", startedAt: 10, summary: "First", tools: [], artifacts: [] } },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [evidence] });
+    const firstPage = page();
+    expect(firstPage.items.map((item: { summary: string }) => item.summary)).toEqual(["First"]);
+
+    const delta: BridgeEvent = {
+      eventId: "delta", seq: 2, timestamp: 11, sessionId: "A", origin: "claude-host", type: "assistant.delta",
+      itemId: "assistant", data: { text: "Still writing" },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [evidence, delta] });
+    expect(page()).toBe(firstPage);
+
+    const update: BridgeEvent = {
+      ...evidence, eventId: "evidence-updated", seq: 3, timestamp: 12, type: "evidence.updated",
+      data: { evidence: { ...evidence.data.evidence as object, summary: "Updated" } },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [evidence, delta, update] });
+    expect(page().items.map((item: { summary: string }) => item.summary)).toEqual(["Updated"]);
+
+    const replacement: BridgeEvent = {
+      ...update,
+      data: { evidence: { ...update.data.evidence as object, summary: "Replacement" } },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [delta, replacement] });
+    expect(page().items.map((item: { summary: string }) => item.summary)).toEqual(["Replacement"]);
+  });
+
+  it("keeps live evidence that arrives while history is still opening", async () => {
+    let finishHistory!: (value: BridgeResponse) => void;
+    const openingHistory = new Promise<BridgeResponse>((resolve) => { finishHistory = resolve; });
+    const bundle = { id: "bundle", sessionId: "A", startedAt: 10, artifactCount: 0, tools: [], artifacts: [] };
+    apiRequest.mockImplementation(({ method }) => method === "session.open" ? openingHistory : Promise.resolve({
+      kind: "response", requestId: "evidence", ok: true,
+      result: { evidence: { items: [bundle], hasMore: true, nextCursor: "older" } },
+    }));
+    await openSessions();
+    elements(tree).find((element) => element.type === "button" && textContent(element) === "成果")!.props.onClick();
+    const page = () => elements(tree).find((element) => element.type === EvidencePanel)!.props.state;
+    const update: BridgeEvent = {
+      eventId: "update-while-opening", seq: 1, timestamp: 11, sessionId: "A", origin: "claude-host", type: "evidence.updated",
+      data: { evidence: { ...bundle, artifactCount: 1 } },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [update] });
+    expect(page().items[0].artifactCount).toBe(1);
+
+    finishHistory({ kind: "response", requestId: "history", ok: true, result: { history: { items: [], hasMore: false } } });
+    await settle();
+    const delta: BridgeEvent = {
+      eventId: "delta-after-opening", seq: 2, timestamp: 12, sessionId: "A", origin: "claude-host", type: "assistant.delta",
+      itemId: "assistant", data: { text: "Still writing" },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [update, delta] });
+    expect(page()).toMatchObject({ items: [expect.objectContaining({ artifactCount: 1 })], hasMore: true, nextCursor: "older" });
+  });
+
+  it("pages legacy artifact details and passes opaque cursors to capable hosts", async () => {
+    await openSessions();
+    elements(tree).find((element) => element.type === "button" && textContent(element) === "成果")!.props.onClick();
+    tree = sessions.draw();
+    const loadDetails = () => elements(tree).find((element) => element.type === EvidencePanel)!.props.onLoadDetails;
+    const artifacts = Array.from({ length: 32 }, (_, i) => ({ id: `artifact-${i}` }));
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "legacy", ok: true, result: { evidence: { artifacts, tools: [] } } });
+    await expect(loadDetails()("bundle", "artifacts", "30")).resolves.toEqual({
+      evidenceId: "bundle", kind: "artifacts", items: artifacts.slice(30), hasMore: false,
+    });
+    expect(apiRequest).toHaveBeenLastCalledWith({ method: "evidence.get", params: { evidenceId: "bundle" } });
+
+    snapshot.host.capabilities.push("evidence.details.v1");
+    tree = sessions.draw({ ...sessionsProps, snapshot });
+    const page = { evidenceId: "bundle", kind: "artifacts", items: [artifacts[0]], hasMore: true, nextCursor: "next" };
+    apiRequest.mockResolvedValueOnce({ kind: "response", requestId: "paged", ok: true, result: { page } });
+    await expect(loadDetails()("bundle", "artifacts", "opaque")).resolves.toEqual(page);
+    expect(apiRequest).toHaveBeenLastCalledWith({
+      method: "evidence.details", params: { evidenceId: "bundle", kind: "artifacts", cursor: "opaque", limit: 30 },
+    });
+  });
+
   it("keeps onLoadBackgroundTasks stable across live conversation and evidence events without restarting polling", async () => {
     vi.useFakeTimers();
     try {
@@ -1199,8 +1399,8 @@ describe("desktop conversation parity", () => {
     await elements(tree).find(element => element.type === SheetAction && element.props.label === "Fork 分支")!.props.onClick();
     await settle();
     tree = sessions.draw();
-    const dangerWarnings = elements(tree).filter(element => element.props.className === "session-channel-warning danger");
-    expect(dangerWarnings.some(element => textContent(element).includes("分支创建失败"))).toBe(true);
+    const menuSheet = elements(tree).find(element => element.type === Sheet && element.props.title === "Archived Fork")!;
+    expect(elements(menuSheet).some(element => element.props.role === "alert" && textContent(element).includes("分支创建失败"))).toBe(true);
     expect(elements(tree).some(element => typeof element.props.className === "string" && element.props.className.includes("desktop-channel-banner"))).toBe(false);
   });
 });
@@ -1622,6 +1822,27 @@ describe("unified desktop and assistant conversation composition", () => {
 });
 
 describe("desktop mobile-aligned session sidebar and permission dock", () => {
+  it("keeps the sidebar delete confirmation open on rejection and closes it after retry", async () => {
+    snapshot.host.capabilities.push("session.visibility.v1");
+    await openSessions();
+    elements(tree).find((element) => element.type === IconButton && element.props.label === `会话操作：${snapshot.sessions[0]!.title}`)!.props.onClick();
+    elements(sessions.draw()).find((element) => element.type === SheetAction && element.props.label === "删除会话")!.props.onClick();
+    const confirmation = () => elements(sessions.draw()).find((element) => element.type === ConfirmationDialog && element.props.open);
+    apiRequest.mockClear().mockResolvedValueOnce({
+      kind: "response", requestId: "delete", ok: false, error: { code: "FAILED", message: "侧栏删除失败" },
+    });
+
+    confirmation()!.props.onConfirm();
+    await settle();
+    expect(confirmation()?.props).toMatchObject({ open: true, busy: false, error: "侧栏删除失败" });
+    expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "session.delete", params: { sessionId: "A" } });
+
+    confirmation()!.props.onConfirm();
+    await settle();
+    expect(confirmation()).toBeUndefined();
+    expect(elements(sessions.draw()).some((element) => element.type === Sheet)).toBe(false);
+  });
+
   it("filters sessions across title, summary, cwd, and runtime and jumps to pending permissions", async () => {
     snapshot.sessions.push({
       ...snapshot.sessions[0]!,
@@ -2480,6 +2701,18 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     expect(convProviderValue().evidenceFor(firstId)?.items).toHaveLength(1);
 
     onEventListener?.({
+      seq: 98,
+      eventId: "ev-live-1",
+      sessionId: firstId,
+      origin: "claude-host",
+      type: "evidence.ready",
+      timestamp: 98,
+      data: { evidence: { id: "ev-live", sessionId: firstId, startedAt: 98, tools: [], artifacts: [] } },
+    });
+    dashTree = dash.draw();
+    expect(convProviderValue().evidenceFor(firstId)?.items).toHaveLength(2);
+
+    onEventListener?.({
       seq: 99,
       eventId: "ev-deleted-1",
       sessionId: firstId,
@@ -2488,10 +2721,31 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
       timestamp: Date.now(),
       data: {},
     });
+    onEventListener?.({
+      seq: 100,
+      eventId: "ev-late-update",
+      sessionId: firstId,
+      origin: "claude-host",
+      type: "evidence.updated",
+      timestamp: 100,
+      data: { evidence: { id: "ev-live", sessionId: firstId, startedAt: 98, tools: [], artifacts: [], artifactCount: 1 } },
+    });
     dashTree = dash.draw();
     await settle();
     dashTree = dash.draw();
     expect(convProviderValue().historyFor(firstId)).toBeUndefined();
+    expect(convProviderValue().evidenceFor(firstId)).toBeUndefined();
+
+    onEventListener?.({
+      seq: 101,
+      eventId: "ev-unrelated-delta",
+      sessionId: "another-session",
+      origin: "claude-host",
+      type: "assistant.delta",
+      timestamp: 101,
+      data: { text: "Unrelated progress" },
+    });
+    dashTree = dash.draw();
     expect(convProviderValue().evidenceFor(firstId)).toBeUndefined();
   });
 });

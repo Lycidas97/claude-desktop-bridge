@@ -1,4 +1,3 @@
-import { evidenceSummary } from "@bridge/protocol";
 import type {
   BridgeArtifactManifest,
   BridgeArtifactPreview,
@@ -29,7 +28,15 @@ import type {
   LocalBridgeRequest,
 } from "@bridge/protocol";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { HISTORY_PAGE_SIZE, mergeHistoryPages } from "../../hooks/bridge/bridge-reducers.js";
+import {
+  EVIDENCE_PAGE_SIZE,
+  HISTORY_PAGE_SIZE,
+  REWOUND_HISTORY,
+  applyEvidenceEventToPages,
+  applyEvidencePageResult,
+  projectHistoryPage,
+  projectLegacyEvidenceDetails,
+} from "../../hooks/bridge/bridge-reducers.js";
 import type { SessionEvidenceState, SessionHistoryState } from "../../hooks/useMobileBridge.js";
 import { downloadBridgeArtifact, downloadBridgeSessionFile } from "../../lib/artifact-download.js";
 import {
@@ -45,6 +52,7 @@ import {
   useConversationDrafts,
   type ConversationDraftsController,
 } from "../conversation/ConversationDraftsProvider.js";
+import { EvidencePanel } from "../evidence/EvidencePanel.js";
 import { ConversationView } from "../conversation/ConversationView.js";
 import type { SessionConfigurationChange } from "../session/SessionConfigurationDialog.js";
 
@@ -172,6 +180,9 @@ function useDesktopConversationController(
   const openSeqRef = useRef(new Map<string, number>());
   const mountedCountsRef = useRef(new Map<string, number>());
   const handledEventsRef = useRef(new Set<string>());
+  // Retained objects keep their identity across buffer updates. A replacement is a new publication.
+  const consumedEvidenceRef = useRef(new WeakSet<BridgeEvent>());
+  const deletedSessionKeysRef = useRef(new Set<string>());
   const eventHostByEventIdRef = useRef(new Map<string, string>());
 
   function filterEvents(
@@ -228,6 +239,7 @@ function useDesktopConversationController(
     openSeqRef.current.set(key, seq);
     loadingHistoryRef.current.delete(key);
     loadingEvidenceRef.current.delete(key);
+    const itemsAtRequestStart = new Set(evidenceRef.current[key]?.items);
 
     updateHistories((current) => ({
       ...current,
@@ -257,7 +269,7 @@ function useDesktopConversationController(
         }).then((response) => unwrap<{ history: BridgeHistoryPage }>(response)),
         request({
           method: "evidence.list",
-          params: { sessionId, limit: 30 },
+          params: { sessionId, limit: EVIDENCE_PAGE_SIZE },
         }).then((response) => (
           response.ok ? response.result as { evidence: BridgeEvidencePage } : undefined
         )).catch(() => undefined),
@@ -265,32 +277,12 @@ function useDesktopConversationController(
       if (openSeqRef.current.get(key) !== seq) return false;
       updateHistories((current) => ({
         ...current,
-        [key]: {
-          status: "ready",
-          items: result.history.items,
-          hasMore: result.history.hasMore,
-          ...(result.history.nextCursor ? { nextCursor: result.history.nextCursor } : {}),
-        },
+        [key]: projectHistoryPage(result.history),
       }));
-      updateEvidence((current) => {
-        const merged = new Map(
-          (current[key]?.items ?? []).map((item) => [item.id, item]),
-        );
-        for (const item of evidenceResult?.evidence.items ?? []) {
-          merged.set(item.id, evidenceSummary(item));
-        }
-        return {
-          ...current,
-          [key]: {
-            status: evidenceResult ? "ready" : merged.size > 0 ? "ready" : "error",
-            items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
-            hasMore: evidenceResult?.evidence.hasMore ?? false,
-            ...(evidenceResult?.evidence.nextCursor
-              ? { nextCursor: evidenceResult.evidence.nextCursor }
-              : {}),
-          },
-        };
-      });
+      updateEvidence((current) => applyEvidencePageResult(current, key, evidenceResult?.evidence, {
+        hasMoreOnError: false,
+        itemsAtRequestStart,
+      }));
       return true;
     } catch (failure) {
       if (openSeqRef.current.get(key) !== seq) return false;
@@ -304,14 +296,7 @@ function useDesktopConversationController(
           error: errorMessage,
         },
       }));
-      updateEvidence((current) => ({
-        ...current,
-        [key]: {
-          status: current[key]?.items.length ? "ready" : "error",
-          items: current[key]?.items ?? [],
-          hasMore: current[key]?.hasMore ?? false,
-        },
-      }));
+      updateEvidence((current) => applyEvidencePageResult(current, key));
       if (propagateError) {
         throw new Error(errorMessage);
       }
@@ -382,47 +367,23 @@ function useDesktopConversationController(
     if (!enabled) return;
     const hostId = input.snapshot.host.hostId;
     const hostEvents = filterEvents(input.events, hostId);
-    const incoming = hostEvents.flatMap((event): BridgeEvidenceBundle[] => {
-      if (!event.type.startsWith("evidence.")) return [];
-      const item = event.data.evidence as Partial<BridgeEvidenceBundle> | undefined;
-      if (
-        !item
-        || typeof item.id !== "string"
-        || typeof item.sessionId !== "string"
-        || !Array.isArray(item.tools)
-        || !Array.isArray(item.artifacts)
-      ) return [];
-      return [evidenceSummary(item as BridgeEvidenceBundle)];
-    });
-    if (incoming.length === 0) return;
-    updateEvidence((current) => {
-      const next = { ...current };
-      for (const item of incoming) {
-        const key = conversationDraftKey(hostId, item.sessionId);
-        const previous = next[key] ?? { status: "ready", items: [], hasMore: false };
-        const merged = new Map(previous.items.map((candidate) => [candidate.id, candidate]));
-        merged.set(item.id, item);
-        next[key] = {
-          ...previous,
-          status: "ready",
-          items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
-        };
-      }
-      return next;
-    });
-  }, [enabled, input.events, input.snapshot.host.hostId]);
-
-  useEffect(() => {
-    if (!enabled) return;
-    const hostId = input.snapshot.host.hostId;
-    const hostEvents = filterEvents(input.events, hostId);
+    const keyForSession = (sessionId: string) => conversationDraftKey(hostId, sessionId);
     for (const event of hostEvents) {
+      if (event.type.startsWith("evidence.")) {
+        if (!consumedEvidenceRef.current.has(event)) {
+          consumedEvidenceRef.current.add(event);
+          if (event.sessionId && deletedSessionKeysRef.current.has(keyForSession(event.sessionId))) continue;
+          updateEvidence((current) => applyEvidenceEventToPages(current, event, keyForSession));
+        }
+        continue;
+      }
       if (event.type !== "session.rewound" && event.type !== "session.compacted" && event.type !== "session.deleted") continue;
       const eventKey = `${hostId}:${event.eventId}`;
       if (handledEventsRef.current.has(eventKey)) continue;
       handledEventsRef.current.add(eventKey);
       if (!event.sessionId) continue;
       if (event.type === "session.deleted") {
+        deletedSessionKeysRef.current.add(keyForSession(event.sessionId));
         evictSessionState(event.sessionId, hostId);
         continue;
       }
@@ -432,7 +393,7 @@ function useDesktopConversationController(
         loadingHistoryRef.current.delete(key);
         updateHistories((current) => ({
           ...current,
-          [key]: { status: "loading", items: [], hasMore: false },
+          [key]: REWOUND_HISTORY,
         }));
         if ((mountedCountsRef.current.get(key) ?? 0) > 0) {
           void openSession(event.sessionId, hostId);
@@ -474,18 +435,10 @@ function useDesktopConversationController(
         params: { sessionId, cursor: requestedCursor, limit: HISTORY_PAGE_SIZE },
       }));
       if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
-      updateHistories((value) => {
-        const existingItems = value[key]?.items ?? current.items;
-        return {
-          ...value,
-          [key]: {
-            status: "ready",
-            items: mergeHistoryPages(result.history.items, existingItems),
-            hasMore: result.history.hasMore,
-            ...(result.history.nextCursor ? { nextCursor: result.history.nextCursor } : {}),
-          },
-        };
-      });
+      updateHistories((value) => ({
+        ...value,
+        [key]: projectHistoryPage(result.history, value[key]?.items ?? current.items),
+      }));
     } catch (failure) {
       if (!loadingHistoryRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
       updateHistories((value) => ({
@@ -520,28 +473,15 @@ function useDesktopConversationController(
     try {
       const result = unwrap<{ evidence: BridgeEvidencePage }>(await latestRef.current.apiRequest({
         method: "evidence.list",
-        params: { sessionId, cursor: requestedCursor, limit: 30 },
+        params: { sessionId, cursor: requestedCursor, limit: EVIDENCE_PAGE_SIZE },
       }));
       if (!loadingEvidenceRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
-      updateEvidence((value) => {
-        const existing = value[key]?.items ?? current.items;
-        const merged = new Map(existing.map((item) => [item.id, item]));
-        for (const item of result.evidence.items) merged.set(item.id, evidenceSummary(item));
-        return {
-          ...value,
-          [key]: {
-            status: "ready",
-            items: [...merged.values()].sort((left, right) => right.startedAt - left.startedAt),
-            hasMore: result.evidence.hasMore,
-            ...(result.evidence.nextCursor ? { nextCursor: result.evidence.nextCursor } : {}),
-          },
-        };
-      });
+      updateEvidence((value) => applyEvidencePageResult(value, key, result.evidence));
     } catch {
       if (!loadingEvidenceRef.current.has(key) || (openSeqRef.current.get(key) ?? 0) !== startSeq) return;
-      updateEvidence((value) => ({
-        ...value,
-        [key]: { ...(value[key] ?? current), status: "error" },
+      updateEvidence((value) => applyEvidencePageResult(value, key, undefined, {
+        forceErrorStatus: true,
+        preserveCursorOnError: true,
       }));
     } finally {
       if ((openSeqRef.current.get(key) ?? 0) === startSeq) {
@@ -559,19 +499,14 @@ function useDesktopConversationController(
     if (snapshot.host.capabilities.includes("evidence.details.v1")) {
       return unwrap<{ page: BridgeEvidenceDetailPage }>(await apiRequest({
         method: "evidence.details",
-        params: { evidenceId, kind, ...(cursor ? { cursor } : {}), limit: 30 },
+        params: { evidenceId, kind, ...(cursor ? { cursor } : {}), limit: EVIDENCE_PAGE_SIZE },
       })).page;
     }
     const bundle = unwrap<{ evidence: BridgeEvidenceBundle }>(await apiRequest({
       method: "evidence.get",
       params: { evidenceId },
     })).evidence;
-    const offset = cursor ? Number(cursor) : 0;
-    const hasMore = offset + 30 < bundle[kind].length;
-    const next = { evidenceId, hasMore, ...(hasMore ? { nextCursor: String(offset + 30) } : {}) };
-    return kind === "tools"
-      ? { ...next, kind, items: bundle.tools.slice(offset, offset + 30) }
-      : { ...next, kind, items: bundle.artifacts.slice(offset, offset + 30) };
+    return projectLegacyEvidenceDetails(evidenceId, bundle, kind, cursor);
   }
 
   async function previewArtifact(
@@ -1117,17 +1052,7 @@ export function DesktopSessionConversation({
   const conversationDrafts = externalDrafts ?? fallbackDrafts;
   const assistantMail = useAssistantMail();
 
-  const [actionBusy, setActionBusy] = useState(false);
-  const [actionError, setActionError] = useState<string>();
   const hostId = snapshot.host.hostId;
-  const sessionKey = conversationDraftKey(hostId, session.sessionId);
-  const previousKeyRef = useRef(sessionKey);
-
-  useEffect(() => {
-    if (previousKeyRef.current === sessionKey) return;
-    previousKeyRef.current = sessionKey;
-    setActionError(undefined);
-  }, [sessionKey]);
 
   useEffect(() => controller.mountSession(session.sessionId, hostId), [hostId, session.sessionId]);
 
@@ -1137,53 +1062,6 @@ export function DesktopSessionConversation({
     )) ?? [],
     [assistantMail?.cache.cards, session.sessionId, snapshot.assistantMail?.binding?.nativeSessionId],
   );
-
-  async function handleForkSession(targetSessionId: string): Promise<BridgeSessionInfo | undefined> {
-    if (actionBusy) return undefined;
-    setActionBusy(true);
-    setActionError(undefined);
-    try {
-      const created = await controller.forkSession(targetSessionId);
-      onForkCreated?.(targetSessionId, created);
-      await controller.onRefreshSnapshot();
-      await onSelectSession(created.sessionId);
-      return created;
-    } catch (failure) {
-      setActionError(failure instanceof Error ? failure.message : String(failure));
-      return undefined;
-    } finally {
-      setActionBusy(false);
-    }
-  }
-
-  async function handleArchiveSession(targetSessionId: string, archived: boolean): Promise<void> {
-    if (actionBusy) return;
-    setActionBusy(true);
-    setActionError(undefined);
-    try {
-      await controller.archiveSession(targetSessionId, archived);
-    } catch (failure) {
-      setActionError(failure instanceof Error ? failure.message : String(failure));
-    } finally {
-      setActionBusy(false);
-    }
-  }
-
-  async function handleDeleteSession(targetSessionId: string): Promise<void> {
-    if (actionBusy) return;
-    setActionBusy(true);
-    setActionError(undefined);
-    try {
-      await controller.deleteSession(targetSessionId);
-    } catch (failure) {
-      setActionError(failure instanceof Error ? failure.message : String(failure));
-      throw failure;
-    } finally {
-      setActionBusy(false);
-    }
-  }
-
-  const effectiveError = actionError ?? externalActionError;
   const canCommand = snapshot.host.capabilities.includes("session.command.v1");
   const canRename = snapshot.host.capabilities.includes("session.rename.v1");
 
@@ -1207,8 +1085,17 @@ export function DesktopSessionConversation({
       conversationDrafts={conversationDrafts}
       history={controller.historyFor(session.sessionId, hostId)}
       evidence={controller.evidenceFor(session.sessionId, hostId)}
-      artifactPreviews={controller.artifactPreviews}
-      artifactTransfers={controller.artifactTransfers}
+      renderEvidence={(panel) => (
+        <EvidencePanel
+          {...panel}
+          previews={controller.artifactPreviews}
+          transfers={controller.artifactTransfers}
+          onLoadMore={() => controller.loadOlderEvidence(session.sessionId, hostId)}
+          onLoadDetails={controller.loadEvidenceDetails}
+          onPreview={(artifactId) => controller.previewArtifact(artifactId, hostId)}
+          onDownload={(artifact) => controller.downloadArtifact(artifact, hostId)}
+        />
+      )}
       permissions={snapshot.permissions}
       events={controller.filterEvents(events, hostId)}
       mailCards={mailCards}
@@ -1217,10 +1104,6 @@ export function DesktopSessionConversation({
       onOpenSession={(targetSessionId) => controller.openSession(targetSessionId, hostId)}
       onRefresh={(targetSessionId = session.sessionId) => controller.refreshSession(targetSessionId, hostId)}
       onLoadOlderHistory={(targetSessionId) => controller.loadOlderHistory(targetSessionId, hostId)}
-      onLoadOlderEvidence={(targetSessionId) => controller.loadOlderEvidence(targetSessionId, hostId)}
-      onLoadEvidenceDetails={controller.loadEvidenceDetails}
-      onPreviewArtifact={(artifactId) => controller.previewArtifact(artifactId, hostId)}
-      onDownloadArtifact={(artifact) => controller.downloadArtifact(artifact, hostId)}
       onDownloadSessionFile={(targetSessionId, filePath) => controller.downloadSessionFile(targetSessionId, filePath, hostId)}
       onUploadFile={controller.uploadFile}
       onSendTurn={controller.sendTurn}
@@ -1238,22 +1121,23 @@ export function DesktopSessionConversation({
       onConfigureSession={controller.configureSession}
       onLoadSessionCommands={controller.loadSessionCommands}
       onRunSessionCommand={controller.runSessionCommand}
-      {...((canCommand && desktopRuntimeId(session) === "claude-desktop") || canRename
-        ? { onRenameSession: controller.renameSession }
-        : {})}
-      {...(snapshot.host.capabilities.includes("section.move.v1")
-        ? { onMoveSessionSection: controller.moveSessionSection }
-        : {})}
       onLoadSessionPermissions={controller.loadSessionPermissions}
       onSaveSessionPermissions={controller.saveSessionPermissions}
       onPreviewRewind={controller.previewRewind}
       onRewindSession={controller.rewindSession}
-      onForkSession={handleForkSession}
-      onArchiveSession={handleArchiveSession}
-      onDeleteSession={handleDeleteSession}
-      sessionActionBusy={actionBusy}
-      {...(effectiveError ? { sessionActionError: effectiveError } : {})}
-      onSessionActionBusyChange={setActionBusy}
+      sessionMenu={{
+        rename: ((canCommand && desktopRuntimeId(session) === "claude-desktop") || canRename) ? controller.renameSession : undefined,
+        move: snapshot.host.capabilities.includes("section.move.v1") ? controller.moveSessionSection : undefined,
+        async fork(targetSessionId) {
+          const created = await controller.forkSession(targetSessionId);
+          onForkCreated?.(targetSessionId, created);
+          await controller.onRefreshSnapshot();
+          return created;
+        },
+        archive: controller.archiveSession,
+        delete: controller.deleteSession,
+        error: externalActionError,
+      }}
     />
   );
 }

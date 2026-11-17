@@ -1,9 +1,6 @@
 import type {
-  BridgeArtifactManifest,
-  BridgeArtifactPreview,
   BridgeAttachment,
   BridgeBackgroundTask,
-  BridgeEvidenceDetailPage,
   BridgeEvent,
   BridgeHostSnapshot,
   BridgeMailCard,
@@ -12,7 +9,6 @@ import type {
   BridgePermissionRules,
   BridgePrAutoFixState,
   BridgePrAutoFixUpdate,
-  BridgeProjectInfo,
   BridgePullRequest,
   BridgeSDKPermissionMode,
   BridgeSessionCommandResult,
@@ -29,17 +25,13 @@ import {
   AlertTriangle,
   Archive,
   ChevronDown,
-  CornerUpLeft,
   FileText,
-  GitFork,
   Layers,
   LoaderCircle,
-  MessageSquare,
   MoreHorizontal,
-  PackageCheck,
   ShieldCheck,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import {
   isClaudeNativeRelay,
   type LocalTurn,
@@ -56,32 +48,27 @@ import {
   conversationTimeline,
   groupTimelineTools,
   runtimeSupports,
-  stoppableBridgeTask,
   type ConversationItem,
 } from "../../lib/conversation-timeline.js";
 import type { UploadFileHandler } from "../../lib/file-upload.js";
-import { mediaKind } from "../../lib/media-preview.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
-import { sessionActivity, sessionQueueLabel } from "../../lib/session-activity.js";
+import { sessionQueueLabel } from "../../lib/session-activity.js";
 import { useStreamEntrance } from "../../lib/stream-entrance.js";
 import { MailCard } from "../assistant/MailCard.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
 import { SelectMenu } from "../common/SelectMenu.js";
 import { Sheet, SheetAction } from "../common/Sheet.js";
-import { EvidenceInlineSummary, EvidencePanel } from "../evidence/EvidencePanel.js";
+import { EvidenceInlineSummary, type EvidencePanel } from "../evidence/EvidencePanel.js";
 import { countSessionOutputFiles } from "../evidence/FileChangesCard.js";
-import { useMediaPreview } from "../evidence/MediaPreviewProvider.js";
 import { MobileComposer } from "../mobile/MobileComposer.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
-import { SessionActionSheets } from "../session/SessionActionSheets.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
 } from "../session/SessionConfigurationDialog.js";
 import { SessionProfileSummary } from "../session/SessionProfileSummary.js";
-import { useSessionMenuAction } from "../session/useSessionMenuAction.js";
 import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "./BackgroundTasks.js";
 import { useConversationDrafts } from "./ConversationDraftsProvider.js";
 
@@ -98,9 +85,13 @@ import {
 } from "./PermissionPrompts.js";
 import { SessionCommandDialogs } from "./SessionCommandDialogs.js";
 import { SessionNoticeCard } from "./SessionNoticeCard.js";
-import { SessionPrActions, SessionPrBar } from "./SessionPrBar.js";
+import { SessionPrBar } from "./SessionPrBar.js";
 import { SessionRewindDialog } from "./SessionRewindDialog.js";
 import { SubagentCard } from "./SubagentCard.js";
+import { useConversationMenu, type ConversationMenuBindings } from "./useConversationMenu.js";
+import { useConversationScroll } from "./useConversationScroll.js";
+import { useConversationTasks } from "./useConversationTasks.js";
+import { useSessionFileDownload } from "./useSessionFileDownload.js";
 
 export interface ConversationViewProps {
   variant?: "mobile" | "desktop" | undefined;
@@ -125,16 +116,16 @@ export interface ConversationViewProps {
   onPermissionOpenChange?: ((open: boolean) => void) | undefined;
   configurationOpen?: boolean | undefined;
   onConfigurationOpenChange?: ((open: boolean) => void) | undefined;
-  onOpenSessionMenu?: (() => void) | undefined;
-  onRequestRename?: ((session: BridgeSessionInfo) => void) | undefined;
-  onRenameSession?: ((sessionId: string, title: string) => Promise<void>) | undefined;
+  sessionMenu?: ConversationMenuBindings | undefined;
   refreshing?: boolean | undefined;
   onRefresh?: ((sessionId?: string) => Promise<unknown>) | undefined;
   onRetry?: (() => Promise<void>) | undefined;
   history: SessionHistoryState | undefined;
   evidence: SessionEvidenceState | undefined;
-  artifactPreviews: Record<string, BridgeArtifactPreview>;
-  artifactTransfers: Record<string, number>;
+  renderEvidence(props: Pick<ComponentProps<typeof EvidencePanel>,
+    "variant" | "sessionId" | "cwd" | "state" | "conversationItems" | "fileChanges"
+    | "online" | "onRequestSessionFileDownload" | "onResolvedFileCountChange"
+  >): ReactNode;
   permissions: BridgePermissionInfo[];
   events: BridgeEvent[];
   localTurns?: LocalTurn[] | undefined;
@@ -144,10 +135,6 @@ export interface ConversationViewProps {
   resolveMailRefId?: (() => string | undefined) | undefined;
   onOpenSession(sessionId: string): Promise<void>;
   onLoadOlderHistory(sessionId: string): Promise<void>;
-  onLoadOlderEvidence(sessionId: string): Promise<void>;
-  onLoadEvidenceDetails?: ((evidenceId: string, kind: "tools" | "artifacts", cursor?: string) => Promise<BridgeEvidenceDetailPage>) | undefined;
-  onPreviewArtifact(artifactId: string): Promise<BridgeArtifactPreview>;
-  onDownloadArtifact(artifact: BridgeArtifactManifest): Promise<void>;
   onDownloadSessionFile?: ((sessionId: string, filePath: string) => Promise<void>) | undefined;
   onUploadFile?: UploadFileHandler | undefined;
   onSendTurn(
@@ -188,14 +175,6 @@ export interface ConversationViewProps {
     messageId: string,
     scope: BridgeSessionRewindScope,
   ) => Promise<BridgeSessionRewindResult>) | undefined;
-  onForkSession?: ((sessionId: string) => Promise<BridgeSessionInfo | undefined>) | undefined;
-  onMoveSessionSection?: ((
-    sessionId: string,
-    sectionId: string | null,
-  ) => Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] } | void>) | undefined;
-  onArchiveSession?: ((sessionId: string, archived: boolean) => Promise<void>) | undefined;
-  onDeleteSession?: ((sessionId: string) => Promise<void>) | undefined;
-  sessionActionError?: string | undefined;
 }
 
 export function ConversationView({
@@ -221,16 +200,13 @@ export function ConversationView({
   onPermissionOpenChange,
   configurationOpen: controlledConfigurationOpen,
   onConfigurationOpenChange,
-  onOpenSessionMenu,
-  onRequestRename,
-  onRenameSession,
+  sessionMenu,
   refreshing = false,
   onRefresh,
   onRetry,
   history,
   evidence,
-  artifactPreviews,
-  artifactTransfers,
+  renderEvidence,
   permissions,
   events,
   localTurns = [],
@@ -240,10 +216,6 @@ export function ConversationView({
   resolveMailRefId,
   onOpenSession,
   onLoadOlderHistory,
-  onLoadOlderEvidence,
-  onLoadEvidenceDetails,
-  onPreviewArtifact,
-  onDownloadArtifact,
   onDownloadSessionFile,
   onUploadFile,
   onSendTurn,
@@ -265,19 +237,14 @@ export function ConversationView({
   onSaveSessionPermissions,
   onPreviewRewind,
   onRewindSession,
-  onForkSession,
-  onMoveSessionSection,
-  onArchiveSession,
-  onDeleteSession,
-  sessionActionError,
 }: ConversationViewProps) {
   const isMobile = variant === "mobile";
-  const openMedia = useMediaPreview();
   const fallbackDrafts = useConversationDrafts(hostId);
   const conversationDrafts = externalDrafts ?? fallbackDrafts;
   const sessionDraft = conversationDrafts.session(hostId, session.sessionId, onUploadFile);
   const { draftKey, draft, promptReplies: sessionPromptReplies, queuedActions, fileUploads, updateDraft } = sessionDraft;
   const { text, attachments, sending, imageError } = draft;
+  const files = useSessionFileDownload(session.sessionId, isMobile, onDownloadSessionFile);
 
   const [internalSessionView, setInternalSessionView] = useState<"conversation" | "evidence">("conversation");
   const [internalForkChainOpen, setInternalForkChainOpen] = useState(
@@ -285,37 +252,8 @@ export function ConversationView({
   );
   const [internalPermissionOpen, setInternalPermissionOpen] = useState(false);
   const [internalConfigurationOpen, setInternalConfigurationOpen] = useState(false);
-  const { busy: actionBusy, setBusy: setActionBusy, error: actionError, setError: setActionError, run: runMenuAction } = useSessionMenuAction();
-  const [internalMenuOpen, setInternalMenuOpen] = useState(false);
-  const [moveMenuOpen, setMoveMenuOpen] = useState(false);
-  const [renameOpen, setRenameOpen] = useState(false);
-  const [renameTitle, setRenameTitle] = useState("");
-  const [internalRefreshing, setInternalRefreshing] = useState(false);
-  const [syncCheckTick, setSyncCheckTick] = useState(0);
-  const [syncFlash, setSyncFlash] = useState(false);
   const [rewindTarget, setRewindTarget] = useState<{ sessionId: string; messageId?: string }>();
-  const [stoppingSessionId, setStoppingSessionId] = useState<string>();
-  const [stopError, setStopError] = useState<string>();
-  const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
-  const [stopSubagentTarget, setStopSubagentTarget] = useState<{
-    sessionId: string;
-    agentId: string;
-    description: string;
-    scope: "task" | "process";
-  }>();
-  const [subagentStopBusy, setSubagentStopBusy] = useState(false);
-  const [backgroundTasksOpen, setBackgroundTasksOpen] = useState<{ focus?: ConversationItem }>();
-  const [backgroundTaskDetails, setBackgroundTaskDetails] = useState<{
-    key: string;
-    tasks: BridgeBackgroundTask[] | undefined;
-    error?: string;
-  }>();
   const [selectedNativePromptId, setSelectedNativePromptId] = useState<string>();
-  const [pendingFileDownload, setPendingFileDownload] = useState<string>();
-  const [fileDownloadBusy, setFileDownloadBusy] = useState(false);
-  const [fileDownloadError, setFileDownloadError] = useState<string>();
-  const [deleteSessionOpen, setDeleteSessionOpen] = useState(false);
-  const [deleteSessionError, setDeleteSessionError] = useState<string>();
   const [contextPopoverOpen, setContextPopoverOpen] = useState(false);
   const [compactBusy, setCompactBusy] = useState(false);
   const [resolvedEvidenceFileCount, setResolvedEvidenceFileCount] = useState<{
@@ -323,7 +261,6 @@ export function ConversationView({
     count: number;
   }>();
 
-  const streamRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const contextTriggerRef = useRef<HTMLButtonElement>(null);
@@ -331,7 +268,6 @@ export function ConversationView({
   const contextContainerRef = useRef<HTMLDivElement>(null);
   const announcedPermissionsRef = useRef(new Set<string>());
   const autoRetriedSessionRef = useRef<string | undefined>(undefined);
-  const syncPendingKeyRef = useRef<string | undefined>(undefined);
   const previousDraftKeyRef = useRef(draftKey);
 
   const effectiveSessionView = controlledSessionView ?? internalSessionView;
@@ -362,23 +298,12 @@ export function ConversationView({
     setInternalPermissionOpen(false);
     setInternalConfigurationOpen(false);
     setInternalForkChainOpen(Boolean(session.parentSessionId));
-    setBackgroundTasksOpen(undefined);
-    setStopSubagentTarget(undefined);
-    setPendingFileDownload(undefined);
-    setFileDownloadError(undefined);
-    setStopError(undefined);
-    setStopConfirmOpen(false);
-    setDeleteSessionOpen(false);
+    tasks.resetSelection();
+    files.resetSelection();
+    menu.resetSelection();
     setContextPopoverOpen(false);
     setCompactBusy(false);
     setResolvedEvidenceFileCount(undefined);
-    setInternalMenuOpen(false);
-    setMoveMenuOpen(false);
-    setRenameOpen(false);
-    setActionError(undefined);
-    syncPendingKeyRef.current = undefined;
-    setInternalRefreshing(false);
-    setSyncFlash(false);
   }, [draftKey, isMobile, session.parentSessionId, session.sidechat]);
 
   useEffect(() => {
@@ -416,28 +341,27 @@ export function ConversationView({
     };
   }, [contextPopoverOpen]);
 
-  useEffect(() => {
-    if (internalRefreshing || syncPendingKeyRef.current !== draftKey) return;
-    if (history?.status === "loading") return;
-    syncPendingKeyRef.current = undefined;
-    if (history?.status === "error") {
-      setActionError(history.error ?? "同步会话失败");
-    } else {
-      setSyncFlash(true);
-    }
-  }, [draftKey, history?.error, history?.status, internalRefreshing, syncCheckTick]);
-
-  useEffect(() => {
-    if (!syncFlash) return;
-    const timer = setTimeout(() => setSyncFlash(false), 2_400);
-    return () => clearTimeout(timer);
-  }, [syncFlash]);
-
   const runtimeId = desktopRuntimeId(session);
   const runtimeName = desktopRuntimeName(runtimeId);
   const isOnline = isMobile ? connection === "connected" && desktopOnline : desktopOnline;
   const isNativeReady = nativeReady ?? (connection === "connected" && desktopOnline);
-  const effectiveActionError = actionError ?? sessionActionError;
+  const menu = useConversationMenu({
+    hostId,
+    draftKey,
+    previousDraftKeyRef,
+    session,
+    snapshot,
+    history,
+    isMobile,
+    isOnline,
+    refreshing,
+    onRefresh,
+    onOpenSession,
+    onSelectSession,
+    onRunSessionCommand,
+    sessionMenu,
+    onDeleted: () => conversationDrafts.resetSession(hostId, session.sessionId),
+  });
 
   const commands = useSessionCommands({
     sessionId: session.sessionId,
@@ -450,17 +374,7 @@ export function ConversationView({
     onRun: onRunSessionCommand ? (value) => onRunSessionCommand(session.sessionId, value) : undefined,
     onModel: () => setConfigurationOpen(true),
     onRewind: () => setRewindTarget({ sessionId: session.sessionId }),
-    ...(onRequestRename
-      ? { onRename: () => onRequestRename(session) }
-      : (onRenameSession || onRunSessionCommand)
-        ? {
-            onRename: () => {
-              setRenameTitle(session.title);
-              setActionError(undefined);
-              setRenameOpen(true);
-            },
-          }
-        : {}),
+    ...(menu.onRename ? { onRename: menu.onRename } : {}),
     onSession: async (nextSessionId) => {
       await onSelectSession(nextSessionId);
     },
@@ -481,49 +395,6 @@ export function ConversationView({
   const rewindDisabled = isMobile
     ? connection !== "connected" || !desktopOnline
     : session.turnState === "running" || session.turnState === "waiting" || Boolean(session.pendingCount);
-
-  const taskHistoryReady = history?.status === "ready" || Boolean(history?.items.length);
-  useEffect(() => {
-    if (
-      !onLoadBackgroundTasks
-      || !visible
-      || effectiveSessionView !== "conversation"
-      || !isNativeReady
-      || runtimeId !== "claude-desktop"
-      || !taskHistoryReady
-    ) return;
-    let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = async () => {
-      try {
-        const tasks = await onLoadBackgroundTasks(session.sessionId);
-        if (active) setBackgroundTaskDetails({ key: draftKey, tasks });
-      } catch (error) {
-        if (active) {
-          setBackgroundTaskDetails((current) => ({
-            key: draftKey,
-            tasks: current && current.key === draftKey ? current.tasks : undefined,
-            error: error instanceof Error ? error.message : String(error),
-          }));
-        }
-      }
-      if (active) timer = setTimeout(() => void refresh(), 2_000);
-    };
-    void refresh();
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
-  }, [
-    draftKey,
-    effectiveSessionView,
-    isNativeReady,
-    onLoadBackgroundTasks,
-    runtimeId,
-    session.sessionId,
-    taskHistoryReady,
-    visible,
-  ]);
 
   useEffect(() => {
     if (!isMobile || !visible) return;
@@ -575,21 +446,17 @@ export function ConversationView({
   )), [timeline]);
   const streamEntering = useStreamEntrance(session.sessionId, timelineStreamKeys);
 
-  const selectedTaskDetails = backgroundTaskDetails?.key === draftKey ? backgroundTaskDetails : undefined;
-  const activityTasks = selectedTaskDetails?.tasks ?? session.backgroundTasks;
-  const activity = useMemo(() => sessionActivity(
+  const tasks = useConversationTasks({
+    draftKey,
     session,
-    selectedTaskDetails?.error ? items.map((item) => {
-      const subagent = item.subagent;
-      if (subagent?.state !== "running") return item;
-      const task = findBackgroundTask(activityTasks, subagent);
-      return task && task.state !== "running"
-        && (!subagent.workflowRunId || task.workflow?.agents.some((agent) => agent.agentId === subagent.agentId))
-        ? { ...item, subagent: { ...subagent, state: task.state } }
-        : item;
-    }) : items,
-    selectedTaskDetails?.error ? undefined : activityTasks,
-  ), [activityTasks, items, selectedTaskDetails?.error, session]);
+    sessions,
+    items,
+    pollEnabled: visible && effectiveSessionView === "conversation" && isNativeReady
+      && runtimeId === "claude-desktop" && (history?.status === "ready" || Boolean(history?.items.length)),
+    onLoadBackgroundTasks,
+    onInterruptTurn,
+    onStopSubagent,
+  });
 
   const sessionPermissions = useMemo(() => (
     isClaudeNativeRelay(snapshot) && session.transport === "claude-desktop-native"
@@ -698,34 +565,17 @@ export function ConversationView({
         setConfigurationOpen(false);
         return true;
       }
-      if (!onOpenSessionMenu && renameOpen) {
-        if (!actionBusy) {
-          setRenameOpen(false);
-          setInternalMenuOpen(false);
-        }
+      if (menu.closeOnBack()) return true;
+      if (files.pendingPath) {
+        files.closeDownload();
         return true;
       }
-      if (!onOpenSessionMenu && deleteSessionOpen) {
-        if (!actionBusy) setDeleteSessionOpen(false);
+      if (tasks.stopSubagentTarget) {
+        if (!tasks.subagentStopBusy) tasks.setStopSubagentTarget(undefined);
         return true;
       }
-      if (!onOpenSessionMenu && internalMenuOpen) {
-        if (!actionBusy) {
-          if (moveMenuOpen) setMoveMenuOpen(false);
-          else setInternalMenuOpen(false);
-        }
-        return true;
-      }
-      if (pendingFileDownload) {
-        if (!fileDownloadBusy) setPendingFileDownload(undefined);
-        return true;
-      }
-      if (stopSubagentTarget) {
-        if (!subagentStopBusy) setStopSubagentTarget(undefined);
-        return true;
-      }
-      if (backgroundTasksOpen) {
-        setBackgroundTasksOpen(undefined);
+      if (tasks.backgroundTasksOpen) {
+        tasks.setBackgroundTasksOpen(undefined);
         return true;
       }
       return false;
@@ -746,23 +596,18 @@ export function ConversationView({
       unregisterView();
     };
   }, [
-    backgroundTasksOpen,
+    tasks.backgroundTasksOpen,
     contextPopoverOpen,
-    deleteSessionOpen,
-    actionBusy,
     effectiveConfigurationOpen,
     effectivePermissionOpen,
     effectiveSessionView,
-    fileDownloadBusy,
-    internalMenuOpen,
+    files.busy,
     isMobile,
-    moveMenuOpen,
+    menu.closeOnBack,
     onBackToCatalog,
-    onOpenSessionMenu,
-    pendingFileDownload,
-    renameOpen,
-    stopSubagentTarget,
-    subagentStopBusy,
+    files.pendingPath,
+    tasks.stopSubagentTarget,
+    tasks.subagentStopBusy,
     visible,
   ]);
 
@@ -778,108 +623,14 @@ export function ConversationView({
     return () => window.removeEventListener("resize", resize);
   }, [draftKey, effectiveSessionView, text, visible]);
 
-  const firstHistoryKey = history?.items[0]?.id;
-  const historyCount = history?.items.length ?? 0;
-  const streamScrollState = useRef<{
-    sessionId?: string | undefined;
-    firstKey?: string | undefined;
-    firstHistoryKey?: string | undefined;
-    historyCount: number;
-    lastKey?: string | undefined;
-    anchorKey?: string | undefined;
-    anchorOffset: number;
-    scrollTop?: number | undefined;
-    pinnedToBottom: boolean;
-  }>({ historyCount: 0, anchorOffset: 0, pinnedToBottom: true });
-
-  function rememberStreamPosition(updateFollow = false): void {
-    const stream = streamRef.current;
-    if (!stream) return;
-    const top = stream.getBoundingClientRect().top;
-    const anchor = [...stream.querySelectorAll<HTMLElement>(":scope > [data-stream-key]")]
-      .find((element) => element.getBoundingClientRect().bottom > top);
-    streamScrollState.current = {
-      ...streamScrollState.current,
-      anchorKey: anchor?.dataset.streamKey,
-      anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0,
-      scrollTop: stream.scrollTop,
-      pinnedToBottom: updateFollow
-        ? stream.scrollHeight - stream.scrollTop - stream.clientHeight <= 4
-        : streamScrollState.current.pinnedToBottom,
-    };
-  }
-
-  useLayoutEffect(() => {
-    const stream = streamRef.current;
-    if (!stream) {
-      streamScrollState.current = { historyCount: 0, anchorOffset: 0, pinnedToBottom: true };
-      return;
-    }
-    const previous = streamScrollState.current;
-    const firstKey = timelineStreamKeys[0];
-    const lastKey = streamKeys.at(-1);
-    const entering = previous.sessionId !== session.sessionId || !previous.lastKey;
-    const scrolledUpSynchronously = (
-      previous.scrollTop !== undefined
-      && stream.scrollTop < previous.scrollTop - 4
-      && stream.scrollHeight - stream.scrollTop - stream.clientHeight > 4
-    );
-    const shouldFollowBottom = scrolledUpSynchronously ? false : previous.pinnedToBottom;
-    const historyPrepended = (
-      firstHistoryKey !== undefined
-      && previous.firstHistoryKey !== undefined
-      && firstHistoryKey !== previous.firstHistoryKey
-      && historyCount > previous.historyCount
-    );
-    if (entering) {
-      stream.scrollTop = stream.scrollHeight;
-    } else if ((firstKey !== previous.firstKey || historyPrepended) && previous.anchorKey) {
-      const anchor = [...stream.querySelectorAll<HTMLElement>(":scope > [data-stream-key]")]
-        .find((element) => element.dataset.streamKey === previous.anchorKey);
-      if (anchor) {
-        stream.scrollTop += anchor.getBoundingClientRect().top - stream.getBoundingClientRect().top - previous.anchorOffset;
-      } else if (shouldFollowBottom) {
-        stream.scrollTop = stream.scrollHeight;
-      }
-    } else if (shouldFollowBottom) {
-      stream.scrollTop = stream.scrollHeight;
-    }
-    streamScrollState.current = {
-      ...previous,
-      sessionId: session.sessionId,
-      firstKey,
-      firstHistoryKey,
-      historyCount,
-      lastKey,
-      pinnedToBottom: entering || shouldFollowBottom,
-    };
-    rememberStreamPosition();
-  }, [effectiveSessionView, firstHistoryKey, historyCount, session.sessionId, streamKeys, timelineStreamKeys]);
-
-  function loadOlderNearTop(): void {
-    const stream = streamRef.current;
-    if (!stream || !history?.hasMore || !history.nextCursor || history.status !== "ready" || history.error) return;
-    if (stream.scrollTop < 200) void onLoadOlderHistory(session.sessionId);
-  }
-
-  useEffect(() => {
-    if (effectiveSessionView === "conversation") loadOlderNearTop();
-  }, [effectiveSessionView, firstHistoryKey, history?.nextCursor, session.sessionId, timelineStreamKeys[0]]);
-
-  function openSessionFile(filePath: string): void {
-    const kind = mediaKind(filePath);
-    if (kind) {
-      openMedia({
-        name: filePath.split(/[\\/]/u).at(-1) || filePath,
-        kind,
-        sessionId: session.sessionId,
-        path: filePath,
-      });
-      return;
-    }
-    setFileDownloadError(undefined);
-    setPendingFileDownload(filePath);
-  }
+  const { streamRef, onScroll } = useConversationScroll({
+    sessionId: session.sessionId,
+    sessionView: effectiveSessionView,
+    history,
+    timelineStreamKeys,
+    streamKeys,
+    onLoadOlderHistory,
+  });
 
   async function sendMessage(): Promise<void> {
     await sessionDraft.submitMessage({
@@ -916,43 +667,10 @@ export function ConversationView({
     });
   }
 
-  async function stopTask(targetSessionId: string): Promise<void> {
-    if (stoppingSessionId) return;
-    setStoppingSessionId(targetSessionId);
-    setStopError(undefined);
-    try {
-      await onInterruptTurn(targetSessionId);
-    } catch (error) {
-      setStopError(error instanceof Error ? error.message : "任务停止失败");
-    } finally {
-      setStoppingSessionId(undefined);
-    }
-  }
-
-  async function stopSubagent(): Promise<void> {
-    if (!stopSubagentTarget || subagentStopBusy) return;
-    setSubagentStopBusy(true);
-    setStopError(undefined);
-    try {
-      await onStopSubagent?.(stopSubagentTarget.sessionId, stopSubagentTarget.agentId);
-    } catch (error) {
-      setStopError(error instanceof Error ? error.message : "子代理停止失败");
-    } finally {
-      setSubagentStopBusy(false);
-      setStopSubagentTarget(undefined);
-    }
-  }
-
   async function addImages(files: FileList | null): Promise<void> {
     await sessionDraft.addImages(files, fileRef.current);
   }
 
-  const selectedBusy = session.pendingCount > 0
-    || session.turnState === "running"
-    || session.turnState === "queued"
-    || session.turnState === "waiting";
-  const stopTarget = selectedBusy ? stoppableBridgeTask(sessions, session.sessionId) : undefined;
-  const stopping = Boolean(stopTarget && stoppingSessionId === stopTarget.sessionId);
   const hasDraft = Boolean(text.trim()) || (canAttachImages && attachments.length > 0) || fileUploads.files.length > 0;
 
   const evidenceSourceKey = useMemo(() => {
@@ -998,12 +716,12 @@ export function ConversationView({
     setContextPopoverOpen(false);
     contextTriggerRef.current?.focus();
     setCompactBusy(true);
-    setActionError(undefined);
+    menu.setError(undefined);
     try {
       await commands.execute("/compact", false);
     } catch (error) {
       if (previousDraftKeyRef.current === targetKey) {
-        setActionError(error instanceof Error ? error.message : "压缩上下文失败");
+        menu.setError(error instanceof Error ? error.message : "压缩上下文失败");
       }
     } finally {
       if (previousDraftKeyRef.current === targetKey) {
@@ -1014,10 +732,7 @@ export function ConversationView({
   const parentSession = session.parentSessionId
     ? sessions.find((candidate) => candidate.sessionId === session.parentSessionId)
     : undefined;
-  const backgroundTasks = activityTasks ?? [];
-  const runningBackgroundTasks = backgroundTasks.filter((task) => task.state === "running").length;
   const prSupported = Boolean(snapshot?.host.capabilities.includes("pr.autofix.v1"));
-  const visibilityAvailable = Boolean(snapshot?.host.capabilities.includes("session.visibility.v1"));
 
   const renderSubagent = (item: ConversationItem) => (
     <SubagentCard
@@ -1025,19 +740,19 @@ export function ConversationView({
       key={item.id}
       entering={streamEntering(item.id)}
       collapsible={false}
-      stopping={subagentStopBusy && stopSubagentTarget?.agentId === item.subagent!.agentId}
+      stopping={tasks.subagentStopBusy && tasks.stopSubagentTarget?.agentId === item.subagent!.agentId}
       {...(session.subagentStopScope === "process" && session.turnState === "running"
         ? { stopBlockedReason: "主对话运行中，需要先停止主对话" }
         : {})}
       {...(onStopSubagent && session.subagentStopScope ? {
-        onStop: () => setStopSubagentTarget({
+        onStop: () => tasks.setStopSubagentTarget({
           sessionId: session.sessionId,
           agentId: item.subagent!.agentId,
           description: item.subagent!.description,
           scope: session.subagentStopScope!,
         }),
       } : {})}
-      {...(onDownloadSessionFile ? { onFileClick: openSessionFile } : {})}
+      {...(onDownloadSessionFile ? { onFileClick: files.openFile } : {})}
     />
   );
 
@@ -1108,14 +823,14 @@ export function ConversationView({
           );
         }
         if (node.kind === "background-task") {
-          const task = findBackgroundTask(backgroundTasks, node.item.subagent!);
+          const task = findBackgroundTask(tasks.backgroundTasks, node.item.subagent!);
           return (
             <BackgroundTaskMarker
               key={`${session.sessionId}:${node.id}`}
               item={node.item}
               {...(task ? { task } : {})}
               entering={streamEntering(node.item.id)}
-              onOpen={() => setBackgroundTasksOpen({ focus: node.item })}
+              onOpen={() => tasks.setBackgroundTasksOpen({ focus: node.item })}
             />
           );
         }
@@ -1128,7 +843,7 @@ export function ConversationView({
               notice={item.sessionNotice}
               source={item.text}
               entering={streamEntering(item.id)}
-              {...(onDownloadSessionFile ? { onFileClick: openSessionFile } : {})}
+              {...(onDownloadSessionFile ? { onFileClick: files.openFile } : {})}
             />
           );
         }
@@ -1178,7 +893,7 @@ export function ConversationView({
             rewindDisabled={rewindDisabled}
             onRewind={(messageId) => setRewindTarget({ sessionId: session.sessionId, messageId })}
             onResolveUncertain={onResolveUncertain}
-            {...(onDownloadSessionFile ? { onFileClick: openSessionFile } : {})}
+            {...(onDownloadSessionFile ? { onFileClick: files.openFile } : {})}
             interactivePrompt={interactivePrompt}
           />
         );
@@ -1210,102 +925,34 @@ export function ConversationView({
     </>
   );
 
-  const evidenceBody = (
-    <EvidencePanel
-      variant={variant}
-      sessionId={session.sessionId}
-      cwd={session.cwd}
-      state={evidence}
-      conversationItems={items}
-      fileChanges={fileChangesSummary}
-      previews={artifactPreviews}
-      transfers={artifactTransfers}
-      online={isOnline}
-      onLoadMore={() => onLoadOlderEvidence(session.sessionId)}
-      {...(onLoadEvidenceDetails ? { onLoadDetails: onLoadEvidenceDetails } : {})}
-      onPreview={onPreviewArtifact}
-      onDownload={onDownloadArtifact}
-      {...(onDownloadSessionFile
-        ? {
-            onRequestSessionFileDownload: (filePath) => {
-              setFileDownloadError(undefined);
-              setPendingFileDownload(filePath);
-            },
-          }
-        : {})}
-      onResolvedFileCountChange={(count) => {
-        setResolvedEvidenceFileCount((previous) => (
-          previous?.sourceKey === evidenceSourceKey && previous.count === count
-            ? previous
-            : { sourceKey: evidenceSourceKey, count }
-        ));
-      }}
-    />
-  );
-
   const sharedDialogs = (
     <>
-      {backgroundTasksOpen && (
+      {tasks.backgroundTasksOpen && (
         <BackgroundTasksSheet
           supportsToolDetail={Boolean(snapshot?.host.capabilities.includes("transcript.toolDetail.v1"))}
           sessionId={session.sessionId}
-          tasks={backgroundTasks}
+          tasks={tasks.backgroundTasks}
           items={items}
-          {...(backgroundTasksOpen.focus ? { focus: backgroundTasksOpen.focus } : {})}
+          {...(tasks.backgroundTasksOpen.focus ? { focus: tasks.backgroundTasksOpen.focus } : {})}
           renderSubagent={renderSubagent}
-          onClose={() => setBackgroundTasksOpen(undefined)}
+          onClose={() => tasks.setBackgroundTasksOpen(undefined)}
         />
       )}
       <ConfirmationDialog
-        open={Boolean(stopSubagentTarget)}
-        title={stopSubagentTarget?.scope === "process" ? "结束这个会话的 Claude 进程？" : "停止这个子代理？"}
-        description={stopSubagentTarget?.scope === "process"
-          ? `这台电脑没有开启 Claude Desktop 托管，无法单独停止「${stopSubagentTarget.description}」。确认后会结束这个会话在电脑上的 Claude 进程，这个会话的所有后台任务都会停止。对话记录会保留。`
-          : `「${stopSubagentTarget?.description ?? ""}」会被停止，还没交回的结果不会再有。主对话不受影响。`}
-        confirmLabel={stopSubagentTarget?.scope === "process" ? "结束进程" : "停止子代理"}
+        open={Boolean(tasks.stopSubagentTarget)}
+        title={tasks.stopSubagentTarget?.scope === "process" ? "结束这个会话的 Claude 进程？" : "停止这个子代理？"}
+        description={tasks.stopSubagentTarget?.scope === "process"
+          ? `这台电脑没有开启 Claude Desktop 托管，无法单独停止「${tasks.stopSubagentTarget.description}」。确认后会结束这个会话在电脑上的 Claude 进程，这个会话的所有后台任务都会停止。对话记录会保留。`
+          : `「${tasks.stopSubagentTarget?.description ?? ""}」会被停止，还没交回的结果不会再有。主对话不受影响。`}
+        confirmLabel={tasks.stopSubagentTarget?.scope === "process" ? "结束进程" : "停止子代理"}
         danger
-        busy={subagentStopBusy}
+        busy={tasks.subagentStopBusy}
         onCancel={() => {
-          if (!subagentStopBusy) setStopSubagentTarget(undefined);
+          if (!tasks.subagentStopBusy) tasks.setStopSubagentTarget(undefined);
         }}
-        onConfirm={() => void stopSubagent()}
+        onConfirm={() => void tasks.stopSubagent()}
       />
-      <ConfirmationDialog
-        open={Boolean(pendingFileDownload)}
-        title={isMobile ? "确认下载远程文件到手机？" : "确认下载工作区文件？"}
-        description={pendingFileDownload
-          ? (isMobile
-              ? `即将从电脑工作区下载「${pendingFileDownload.split(/[\\/]/u).at(-1) || pendingFileDownload}」（${pendingFileDownload}）到手机端，是否继续？`
-              : `即将从工作区下载「${pendingFileDownload.split(/[\\/]/u).at(-1) || pendingFileDownload}」（${pendingFileDownload}），是否继续？`)
-          : ""}
-        confirmLabel="确认下载"
-        busy={fileDownloadBusy}
-        onCancel={() => {
-          if (!fileDownloadBusy) setPendingFileDownload(undefined);
-        }}
-        onConfirm={() => {
-          if (!pendingFileDownload || !onDownloadSessionFile || fileDownloadBusy) return;
-          const targetSessionId = session.sessionId;
-          const targetPath = pendingFileDownload;
-          setFileDownloadBusy(true);
-          setFileDownloadError(undefined);
-          void onDownloadSessionFile(targetSessionId, targetPath)
-            .then(() => {
-              setPendingFileDownload(undefined);
-            })
-            .catch((downloadError) => {
-              setPendingFileDownload(undefined);
-              setFileDownloadError(
-                downloadError instanceof Error
-                  ? downloadError.message
-                  : isMobile ? "远程文件下载失败" : "文件下载失败",
-              );
-            })
-            .finally(() => {
-              setFileDownloadBusy(false);
-            });
-        }}
-      />
+      {files.dialog}
       {rewindAvailable && rewindTarget?.sessionId === session.sessionId && (
         <SessionRewindDialog
           key={`${draftKey}:${rewindTarget.messageId ?? "latest"}`}
@@ -1329,9 +976,7 @@ export function ConversationView({
         onOpenSession={async (nextSessionId) => {
           await onSelectSession(nextSessionId);
         }}
-        {...(!onRequestRename && onRenameSession ? {
-          onRename: (title) => onRenameSession(session.sessionId, title),
-        } : {})}
+        {...(menu.commitRename ? { onRename: menu.commitRename } : {})}
         onLoadPermissions={() => onLoadSessionPermissions!(session.sessionId)}
         onSavePermissions={(mode, rules) => onSaveSessionPermissions!(session.sessionId, mode, rules)}
       />
@@ -1354,135 +999,6 @@ export function ConversationView({
   const effectiveNavigation = isMobile ? navigation : false;
   const MobileRoot = effectiveNavigation ? "main" : "section";
   const profileSummaryId = `${variant}-session-profile-summary`;
-  const manualSections = (snapshot?.projects ?? []).filter((project) => project.kind === "desktop-group");
-  const menuSupportsMoveSection = Boolean(
-    onMoveSessionSection
-    && snapshot?.host.capabilities.includes("section.move.v1")
-    && session.allowedActions?.canMoveSection,
-  );
-  const menuSupportsRename = Boolean(
-    onRenameSession
-      ? (
-          !snapshot
-          || snapshot.host.capabilities.includes("session.rename.v1")
-          || (snapshot.host.capabilities.includes("session.command.v1") && runtimeId === "claude-desktop")
-        )
-      : (
-          onRunSessionCommand
-          && snapshot?.host.capabilities.includes("session.command.v1")
-          && runtimeId === "claude-desktop"
-        ),
-  );
-  const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== session.title && !actionBusy);
-  const menuSupportsFork = Boolean(onForkSession && runtimeId === "claude-desktop");
-  const menuSupportsVisibility = isMobile || visibilityAvailable;
-  const canSyncSession = Boolean(onRefresh || !isMobile);
-  const effectiveRefreshing = refreshing || internalRefreshing;
-  const renameDialogRef = useRef<HTMLElement>(null);
-  const menuOpenerRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!renameOpen || typeof document === "undefined") return;
-    const dialog = renameDialogRef.current;
-    return () => {
-      const opener = menuOpenerRef.current;
-      const active = document.activeElement;
-      const focusReleased = !active || active === document.body || active === document.documentElement || Boolean(dialog?.contains(active));
-      if (opener && opener.isConnected && focusReleased) {
-        opener.focus();
-      }
-    };
-  }, [renameOpen]);
-
-  useEffect(() => {
-    if (!renameOpen || !actionBusy) return;
-    renameDialogRef.current?.focus();
-  }, [renameOpen, actionBusy]);
-
-  function closeInternalRename(): void {
-    if (actionBusy) return;
-    setRenameOpen(false);
-    setInternalMenuOpen(false);
-  }
-
-  function runInternalRename(): void | Promise<void> {
-    if (!renameCanSave || (!onRenameSession && !onRunSessionCommand)) return;
-    return runMenuAction("重命名会话失败", async () => {
-      if (onRenameSession) {
-        await onRenameSession(session.sessionId, renameTitle.trim());
-      } else {
-        await onRunSessionCommand!(session.sessionId, `/rename ${renameTitle.trim()}`);
-      }
-      setRenameOpen(false);
-      setInternalMenuOpen(false);
-    });
-  }
-
-  function runInternalMoveSection(sectionId: string | null): void | Promise<void> {
-    if (!onMoveSessionSection || !isOnline) return;
-    return runMenuAction("移动分组失败", async () => {
-      await onMoveSessionSection(session.sessionId, sectionId);
-      setMoveMenuOpen(false);
-      setInternalMenuOpen(false);
-    });
-  }
-
-  async function runInternalRefresh(): Promise<void> {
-    if (!canSyncSession || effectiveRefreshing || actionBusy) return;
-    const targetKey = draftKey;
-    setInternalRefreshing(true);
-    setActionError(undefined);
-    setSyncFlash(false);
-    if (!onRefresh) syncPendingKeyRef.current = targetKey;
-    try {
-      if (onRefresh) {
-        if (await onRefresh(session.sessionId)) {
-          if (previousDraftKeyRef.current === targetKey) setSyncFlash(true);
-        }
-      } else {
-        await onOpenSession(session.sessionId);
-      }
-    } catch (error) {
-      if (syncPendingKeyRef.current === targetKey) syncPendingKeyRef.current = undefined;
-      if (previousDraftKeyRef.current === targetKey) {
-        setActionError(error instanceof Error ? error.message : "同步会话失败");
-      }
-    } finally {
-      if (previousDraftKeyRef.current === targetKey) {
-        setInternalRefreshing(false);
-        setSyncCheckTick((value) => value + 1);
-      }
-    }
-  }
-
-  function runInternalFork(): void | Promise<void> {
-    if (!onForkSession) return;
-    return runMenuAction("Fork 分支创建失败", async () => {
-      const created = await onForkSession(session.sessionId);
-      if (!created) return;
-      setInternalMenuOpen(false);
-      await onSelectSession(created.sessionId);
-    });
-  }
-
-  function runInternalArchive(archived: boolean): void | Promise<void> {
-    if (!onArchiveSession) return;
-    return runMenuAction("归档设置失败", async () => {
-      await onArchiveSession(session.sessionId, archived);
-      setInternalMenuOpen(false);
-    });
-  }
-
-  function runInternalDelete(): void | Promise<void> {
-    if (!onDeleteSession) return;
-    return runMenuAction("删除会话失败", async () => {
-      await onDeleteSession(session.sessionId);
-      conversationDrafts.resetSession(hostId, session.sessionId);
-      setDeleteSessionOpen(false);
-      setInternalMenuOpen(false);
-    }, setDeleteSessionError);
-  }
-
   return (
     <MobileRoot className="mobile-workspace conversation-workspace">
       <MobilePageHeader
@@ -1548,30 +1064,19 @@ export function ConversationView({
                 </button>
               </nav>
             )}
-            {backgroundTasks.length > 0 && (
+            {tasks.backgroundTasks.length > 0 && (
               <IconButton
-                label={runningBackgroundTasks > 0 ? `后台任务，${runningBackgroundTasks} 个运行中` : "后台任务"}
+                label={tasks.runningBackgroundTasks > 0 ? `后台任务，${tasks.runningBackgroundTasks} 个运行中` : "后台任务"}
                 className="background-tasks-button"
-                onClick={() => setBackgroundTasksOpen({})}
+                onClick={() => tasks.setBackgroundTasksOpen({})}
               >
                 <Layers size={18} />
-                {runningBackgroundTasks > 0 && <span className="background-tasks-count">{runningBackgroundTasks}</span>}
+                {tasks.runningBackgroundTasks > 0 && <span className="background-tasks-count">{tasks.runningBackgroundTasks}</span>}
               </IconButton>
             )}
             <IconButton
               label="会话操作"
-              onClick={() => {
-                if (onOpenSessionMenu) {
-                  onOpenSessionMenu();
-                } else {
-                  if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
-                    menuOpenerRef.current = document.activeElement;
-                  }
-                  setActionError(undefined);
-                  setMoveMenuOpen(false);
-                  setInternalMenuOpen(true);
-                }
-              }}
+              onClick={menu.open}
             >
               <MoreHorizontal size={isMobile ? 22 : 18} />
             </IconButton>
@@ -1589,8 +1094,8 @@ export function ConversationView({
           {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
         />
       ) : null}
-      {selectedTaskDetails?.error && (
-        <p className="session-channel-warning" role="alert">后台任务：{selectedTaskDetails.error}</p>
+      {tasks.loadError && (
+        <p className="session-channel-warning" role="alert">后台任务：{tasks.loadError}</p>
       )}
       {session.archivedAt && (
         <div className="session-channel-warning">
@@ -1598,10 +1103,10 @@ export function ConversationView({
           <span><strong>此会话已归档</strong>会话保留全部历史，取消归档后回到会话列表。</span>
         </div>
       )}
-      {effectiveActionError && !internalMenuOpen && !renameOpen && (
+      {menu.error && (
         <div className="session-channel-warning danger">
           <AlertTriangle size={17} />
-          <span><strong>会话操作失败</strong>{effectiveActionError}</span>
+          <span><strong>会话操作失败</strong>{menu.error}</span>
         </div>
       )}
       {session.nativePermissionModeChange && session.nativePermissionModeChange.state !== "confirmed" && (
@@ -1621,14 +1126,14 @@ export function ConversationView({
               ? `${session.pendingCount} 条消息已到电脑，轮到后会自动执行，无需重复发送。`
               : `上次同步时有 ${session.pendingCount} 条消息排队，当前进度尚未确认。`}
           </span>
-          {canSyncSession && (
+          {menu.canSync && (
             <button
               type="button"
               className="secondary-button"
-              disabled={effectiveRefreshing || !isOnline}
-              onClick={() => void runInternalRefresh()}
+              disabled={menu.refreshing || !isOnline}
+              onClick={() => void menu.refresh()}
             >
-              {effectiveRefreshing ? "同步中" : "同步状态"}
+              {menu.refreshing ? "同步中" : "同步状态"}
             </button>
           )}
         </div>
@@ -1645,49 +1150,58 @@ export function ConversationView({
         />
       )}
       <ConfirmationDialog
-        open={stopConfirmOpen && Boolean(stopTarget)}
-        title={stopTarget && stopTarget.sessionId !== session.sessionId ? "停止阻塞任务？" : "停止当前任务？"}
-        description={`${stopTarget && stopTarget.sessionId !== session.sessionId ? `这个会话正在等待「${stopTarget.title}」。` : ""}${
-          stopTarget?.turnState === "running" || stopTarget?.turnState === "waiting"
+        open={tasks.stopConfirmOpen && Boolean(tasks.stopTarget)}
+        title={tasks.stopTarget && tasks.stopTarget.sessionId !== session.sessionId ? "停止阻塞任务？" : "停止当前任务？"}
+        description={`${tasks.stopTarget && tasks.stopTarget.sessionId !== session.sessionId ? `这个会话正在等待「${tasks.stopTarget.title}」。` : ""}${
+          tasks.stopTarget?.turnState === "running" || tasks.stopTarget?.turnState === "waiting"
             ? "正在生成的回复会中断，已产生的对话记录会保留。"
             : "排在最前面的一条指令会被取消。"
         }`}
         confirmLabel="停止"
         danger
-        busy={stopping}
-        onCancel={() => setStopConfirmOpen(false)}
+        busy={tasks.stopping}
+        onCancel={() => tasks.setStopConfirmOpen(false)}
         onConfirm={() => {
-          setStopConfirmOpen(false);
-          if (stopTarget) void stopTask(stopTarget.sessionId);
+          tasks.setStopConfirmOpen(false);
+          if (tasks.stopTarget) void tasks.stopTask(tasks.stopTarget.sessionId);
         }}
       />
-      {stopError && (
+      {tasks.stopError && (
         <div className="session-channel-warning danger">
           <AlertTriangle size={17} />
-          <span><strong>任务停止失败</strong>{stopError}</span>
+          <span><strong>任务停止失败</strong>{tasks.stopError}</span>
         </div>
       )}
-      {fileDownloadError && (
-        <div className="session-channel-warning danger" role="alert">
-          <AlertTriangle size={17} />
-          <span><strong>文件下载失败</strong>{fileDownloadError}</span>
-          <button type="button" className="secondary-button goal-action" onClick={() => setFileDownloadError(undefined)}>关闭</button>
-        </div>
-      )}
+      {files.warning}
       {effectiveSessionView === "conversation" ? (
         <section
           className={isMobile ? "conversation-stream" : "conversation-stream desktop-conversation-stream"}
           aria-live="polite"
           ref={streamRef}
-          onScroll={() => {
-            rememberStreamPosition(true);
-            loadOlderNearTop();
-          }}
+          onScroll={onScroll}
         >
           {streamBody}
         </section>
       ) : (
-        <section className={isMobile ? "mobile-evidence-view" : "mobile-evidence-view desktop-evidence-view"}>{evidenceBody}</section>
+        <section className={isMobile ? "mobile-evidence-view" : "mobile-evidence-view desktop-evidence-view"}>
+          {renderEvidence({
+            variant,
+            sessionId: session.sessionId,
+            cwd: session.cwd,
+            state: evidence,
+            conversationItems: items,
+            fileChanges: fileChangesSummary,
+            online: isOnline,
+            ...(onDownloadSessionFile ? { onRequestSessionFileDownload: files.requestDownload } : {}),
+            onResolvedFileCountChange: (count) => {
+              setResolvedEvidenceFileCount((previous) => (
+                previous?.sourceKey === evidenceSourceKey && previous.count === count
+                  ? previous
+                  : { sourceKey: evidenceSourceKey, count }
+              ));
+            },
+          })}
+        </section>
       )}
       <div className={`permission-dock-slot ${activePermission || activeNativePrompt || otherPermission || otherNativePrompt || (effectiveSessionView === "evidence" && sessionQuestions.length) ? "has-attention" : ""}`}>
         {activePermission ? (
@@ -1740,9 +1254,9 @@ export function ConversationView({
         canAttachImages,
         commandDraft,
         hasDraft,
-        stopTarget,
-        stopping,
-        activity,
+        stopTarget: tasks.stopTarget,
+        stopping: tasks.stopping,
+        activity: tasks.activity,
         turnUsage: latestTurnUsage,
         contextPopoverOpen,
         onToggleContextPopover: () => setContextPopoverOpen((current) => !current),
@@ -1761,7 +1275,7 @@ export function ConversationView({
         updateDraft,
         addImages,
         sendMessage,
-        onOpenStopConfirm: () => setStopConfirmOpen(true),
+        onOpenStopConfirm: () => tasks.setStopConfirmOpen(true),
         onRetry: onRetry ?? (async () => {}),
       })}
       {effectivePermissionOpen && (activePermission || activeNativePrompt) && (
@@ -1804,110 +1318,18 @@ export function ConversationView({
           )}
         </Sheet>
       )}
-      {!onOpenSessionMenu && (
-        <SessionActionSheets
-          menuSession={internalMenuOpen ? session : undefined}
-          renameSession={renameOpen ? session : undefined}
-          deleteSession={menuSupportsVisibility && onDeleteSession && deleteSessionOpen ? session : undefined}
-          moveMenuOpen={moveMenuOpen}
-          manualSections={manualSections}
-          online={isOnline}
-          busy={actionBusy}
-          error={deleteSessionOpen ? deleteSessionError : effectiveActionError}
-          supportsRename={menuSupportsRename}
-          supportsMoveSection={menuSupportsMoveSection}
-          supportsFork={menuSupportsFork}
-          renameTitle={renameTitle}
-          renameDialogRef={renameDialogRef}
-          leadingGroup={(
-            <div className="m-group">
-              <SheetAction
-                icon={effectiveSessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
-                label={effectiveSessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
-                disabled={actionBusy}
-                detail={effectiveSessionView === "evidence" ? "回到对话记录" : "文件变更、产物与图片"}
-                onClick={() => {
-                  setSessionView(effectiveSessionView === "evidence" ? "conversation" : "evidence");
-                  setInternalMenuOpen(false);
-                }}
-              />
-              {parentSession && (
-                <SheetAction
-                  icon={session.sidechat ? <CornerUpLeft size={19} /> : <GitFork size={19} />}
-                  label="主会话"
-                  disabled={actionBusy}
-                  detail={`来自：${parentSession.title}`}
-                  onClick={() => {
-                    setInternalMenuOpen(false);
-                    void onSelectSession(parentSession.sessionId);
-                  }}
-                />
-              )}
-            </div>
-          )}
-          prActions={!session.prs?.length && prSupported ? (
-            <SessionPrActions
-              key={`${hostId}:${session.sessionId}`}
-              session={session}
-              events={events}
-              onWriteBusyChange={setActionBusy}
-              supported
-              online={isNativeReady}
-              {...(onReadPrAutoFix ? { onRead: onReadPrAutoFix } : {})}
-              {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
-            />
-          ) : undefined}
-          onCloseMenu={() => {
-            if (!actionBusy) {
-              setMoveMenuOpen(false);
-              setInternalMenuOpen(false);
-            }
-          }}
-          onOpenMoveMenu={() => {
-            setActionError(undefined);
-            setMoveMenuOpen(true);
-          }}
-          onBackFromMoveMenu={() => {
-            setActionError(undefined);
-            setMoveMenuOpen(false);
-          }}
-          onMoveToSection={runInternalMoveSection}
-          onStartRename={() => {
-            setRenameTitle(session.title);
-            setActionError(undefined);
-            setRenameOpen(true);
-          }}
-          onChangeRenameTitle={(title) => {
-            setRenameTitle(title);
-            if (actionError) setActionError(undefined);
-          }}
-          onSubmitRename={runInternalRename}
-          onCloseRename={closeInternalRename}
-          onOpenConfiguration={canConfigure
-            ? () => {
-                setConfigurationOpen(true);
-                setInternalMenuOpen(false);
-              }
-            : undefined}
-          syncAction={canSyncSession ? {
-            refreshing: effectiveRefreshing,
-            syncFlash,
-            disabled: effectiveRefreshing || (!onRefresh && !isOnline),
-            onSync: runInternalRefresh,
-          } : undefined}
-          onFork={menuSupportsFork ? runInternalFork : undefined}
-          onArchive={menuSupportsVisibility && onArchiveSession ? runInternalArchive : undefined}
-          onRequestDelete={menuSupportsVisibility && onDeleteSession ? () => {
-            setActionError(undefined);
-            setDeleteSessionError(undefined);
-            setDeleteSessionOpen(true);
-          } : undefined}
-          onCancelDelete={() => {
-            if (!actionBusy) setDeleteSessionOpen(false);
-          }}
-          onConfirmDelete={runInternalDelete}
-        />
-      )}
+      {menu.renderSheets({
+        sessionView: effectiveSessionView,
+        evidenceCount,
+        parentSession,
+        onToggleView: () => setSessionView(effectiveSessionView === "evidence" ? "conversation" : "evidence"),
+        onConfigure: canConfigure ? () => setConfigurationOpen(true) : undefined,
+        prSupported,
+        events,
+        isNativeReady,
+        onReadPrAutoFix,
+        onSetPrAutoFix,
+      })}
       {sharedDialogs}
     </MobileRoot>
   );

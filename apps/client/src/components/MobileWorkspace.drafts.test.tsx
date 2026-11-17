@@ -69,6 +69,7 @@ vi.mock("react", async (original) => ({
     return hooks.slots[index];
   },
   useMemo: (create: () => unknown) => create(),
+  useCallback: (callback: unknown) => callback,
   useContext: () => undefined,
   useEffect(effect: () => (() => void) | void, deps?: unknown[]) {
     const index = hooks.effectIndex++;
@@ -254,16 +255,12 @@ describe("controlled ConversationView", () => {
       onSelectSession: vi.fn(),
       history: props.histories.B,
       evidence: props.evidence.B,
-      artifactPreviews: props.artifactPreviews,
-      artifactTransfers: props.artifactTransfers,
+      renderEvidence: () => null,
       permissions: props.permissions,
       events: props.events,
       localTurns: props.localTurns,
       onOpenSession: props.onOpenSession,
       onLoadOlderHistory: props.onLoadOlderHistory,
-      onLoadOlderEvidence: props.onLoadOlderEvidence,
-      onPreviewArtifact: props.onPreviewArtifact,
-      onDownloadArtifact: props.onDownloadArtifact,
       onSendTurn: props.onSendTurn,
       onInterruptTurn: props.onInterruptTurn,
       onResolveUncertain: props.onResolveUncertain,

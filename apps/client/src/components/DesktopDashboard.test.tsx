@@ -79,6 +79,7 @@ vi.mock("react", async (original) => ({
     return store.slots[index];
   },
   useMemo: (create: () => unknown) => create(),
+  useCallback: (callback: unknown) => callback,
   useId: () => "mock-id",
   useContext: (context: unknown) => contexts.current.get(context),
   useEffect: recordEffect,

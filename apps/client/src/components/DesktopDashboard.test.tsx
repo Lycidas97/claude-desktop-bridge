@@ -1184,6 +1184,34 @@ describe("desktop conversation parity", () => {
     expect(page().items.map((item: { summary: string }) => item.summary)).toEqual(["Replacement"]);
   });
 
+  it("keeps live evidence that arrives while history is still opening", async () => {
+    let finishHistory!: (value: BridgeResponse) => void;
+    const openingHistory = new Promise<BridgeResponse>((resolve) => { finishHistory = resolve; });
+    const bundle = { id: "bundle", sessionId: "A", startedAt: 10, artifactCount: 0, tools: [], artifacts: [] };
+    apiRequest.mockImplementation(({ method }) => method === "session.open" ? openingHistory : Promise.resolve({
+      kind: "response", requestId: "evidence", ok: true,
+      result: { evidence: { items: [bundle], hasMore: true, nextCursor: "older" } },
+    }));
+    await openSessions();
+    elements(tree).find((element) => element.type === "button" && textContent(element) === "成果")!.props.onClick();
+    const page = () => elements(tree).find((element) => element.type === EvidencePanel)!.props.state;
+    const update: BridgeEvent = {
+      eventId: "update-while-opening", seq: 1, timestamp: 11, sessionId: "A", origin: "claude-host", type: "evidence.updated",
+      data: { evidence: { ...bundle, artifactCount: 1 } },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [update] });
+    expect(page().items[0].artifactCount).toBe(1);
+
+    finishHistory({ kind: "response", requestId: "history", ok: true, result: { history: { items: [], hasMore: false } } });
+    await settle();
+    const delta: BridgeEvent = {
+      eventId: "delta-after-opening", seq: 2, timestamp: 12, sessionId: "A", origin: "claude-host", type: "assistant.delta",
+      itemId: "assistant", data: { text: "Still writing" },
+    };
+    tree = sessions.draw({ ...sessionsProps, events: [update, delta] });
+    expect(page()).toMatchObject({ items: [expect.objectContaining({ artifactCount: 1 })], hasMore: true, nextCursor: "older" });
+  });
+
   it("pages legacy artifact details and passes opaque cursors to capable hosts", async () => {
     await openSessions();
     elements(tree).find((element) => element.type === "button" && textContent(element) === "成果")!.props.onClick();
@@ -2692,6 +2720,15 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
       timestamp: Date.now(),
       data: {},
     });
+    onEventListener?.({
+      seq: 100,
+      eventId: "ev-late-update",
+      sessionId: firstId,
+      origin: "claude-host",
+      type: "evidence.updated",
+      timestamp: 100,
+      data: { evidence: { id: "ev-live", sessionId: firstId, startedAt: 98, tools: [], artifacts: [], artifactCount: 1 } },
+    });
     dashTree = dash.draw();
     await settle();
     dashTree = dash.draw();
@@ -2699,12 +2736,12 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     expect(convProviderValue().evidenceFor(firstId)).toBeUndefined();
 
     onEventListener?.({
-      seq: 100,
+      seq: 101,
       eventId: "ev-unrelated-delta",
       sessionId: "another-session",
       origin: "claude-host",
       type: "assistant.delta",
-      timestamp: 100,
+      timestamp: 101,
       data: { text: "Unrelated progress" },
     });
     dashTree = dash.draw();

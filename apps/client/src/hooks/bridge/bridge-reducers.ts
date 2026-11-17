@@ -893,9 +893,16 @@ export function shouldPersistIncomingMessage(payload: BridgePayload, localTurns:
 function mergeEvidence(
   current: BridgeEvidenceBundle[],
   incoming: BridgeEvidenceBundle[],
+  itemsAtRequestStart?: ReadonlySet<BridgeEvidenceBundle>,
 ): BridgeEvidenceBundle[] {
   const merged = new Map(current.map((item) => [item.id, item]));
   for (const item of incoming) merged.set(item.id, evidenceSummary(item));
+  if (itemsAtRequestStart) {
+    // A live publication replaces the summary object, even when the bundle ID stays the same.
+    for (const item of current) {
+      if (!itemsAtRequestStart.has(item)) merged.set(item.id, item);
+    }
+  }
   return [...merged.values()].sort((left, right) => (
     right.startedAt - left.startedAt || right.id.localeCompare(left.id)
   ));
@@ -1462,6 +1469,7 @@ export interface ProjectCatalogPatch {
 }
 
 export interface ApplyEvidencePageOptions {
+  itemsAtRequestStart?: ReadonlySet<BridgeEvidenceBundle> | undefined;
   mergeHasMore?: boolean | undefined;
   error?: boolean | undefined;
   hasMoreOnError?: boolean | undefined;
@@ -1706,7 +1714,7 @@ export function applyEvidencePageResult(
     ...evidence,
     [sessionId]: {
       status: "ready",
-      items: mergeEvidence(existing?.items ?? [], page.items),
+      items: mergeEvidence(existing?.items ?? [], page.items, options.itemsAtRequestStart),
       hasMore: options.mergeHasMore ? Boolean(existing?.hasMore || page.hasMore) : page.hasMore,
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     },

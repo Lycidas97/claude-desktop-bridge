@@ -181,6 +181,7 @@ function useDesktopConversationController(
   const handledEventsRef = useRef(new Set<string>());
   // Retained objects keep their identity across buffer updates. A replacement is a new publication.
   const consumedEvidenceRef = useRef(new WeakSet<BridgeEvent>());
+  const deletedSessionKeysRef = useRef(new Set<string>());
   const eventHostByEventIdRef = useRef(new Map<string, string>());
 
   function filterEvents(
@@ -237,6 +238,7 @@ function useDesktopConversationController(
     openSeqRef.current.set(key, seq);
     loadingHistoryRef.current.delete(key);
     loadingEvidenceRef.current.delete(key);
+    const itemsAtRequestStart = new Set(evidenceRef.current[key]?.items);
 
     updateHistories((current) => ({
       ...current,
@@ -278,6 +280,7 @@ function useDesktopConversationController(
       }));
       updateEvidence((current) => applyEvidencePageResult(current, key, evidenceResult?.evidence, {
         hasMoreOnError: false,
+        itemsAtRequestStart,
       }));
       return true;
     } catch (failure) {
@@ -368,6 +371,7 @@ function useDesktopConversationController(
       if (event.type.startsWith("evidence.")) {
         if (!consumedEvidenceRef.current.has(event)) {
           consumedEvidenceRef.current.add(event);
+          if (event.sessionId && deletedSessionKeysRef.current.has(keyForSession(event.sessionId))) continue;
           updateEvidence((current) => applyEvidenceEventToPages(current, event, keyForSession));
         }
         continue;
@@ -378,6 +382,7 @@ function useDesktopConversationController(
       handledEventsRef.current.add(eventKey);
       if (!event.sessionId) continue;
       if (event.type === "session.deleted") {
+        deletedSessionKeysRef.current.add(keyForSession(event.sessionId));
         evictSessionState(event.sessionId, hostId);
         continue;
       }

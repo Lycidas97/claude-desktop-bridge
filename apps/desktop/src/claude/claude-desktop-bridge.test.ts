@@ -4604,7 +4604,7 @@ describe("manual session title persistence and automatic first-turn title genera
     }
   });
 
-  it("auto-titles a blank session non-blockingly on first turn via gateway /v1/messages at most once, and skips sidechats", async () => {
+  it("auto-titles the first turn asynchronously via the Desktop gateway with a manual Magpie gateway saved, and skips sidechats", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-"));
     const state = new ConversationStateStore({
       databasePath: join(directory, "state.sqlite"),
@@ -4628,18 +4628,26 @@ describe("manual session title persistence and automatic first-turn title genera
       });
     });
 
+    const titleToken = "fixture-title-key";
     await writeFile(join(directory, "settings.json"), JSON.stringify({
       env: {
         ANTHROPIC_BASE_URL: "https://gateway.example.test",
-        ANTHROPIC_AUTH_TOKEN: "test-gateway-token",
+        ANTHROPIC_AUTH_TOKEN: titleToken,
       },
     }));
 
+    const magpieConnection = new MagpieConnectionRepository(join(directory, "magpie.json"), {
+      isEncryptionAvailable: () => true,
+      encryptString: text => Buffer.from(text, "utf8"),
+      decryptString: buffer => buffer.toString("utf8"),
+    });
+    await magpieConnection.save({ mode: "manual", baseUrl: "https://manual.example.test", authScheme: "x-api-key", apiKey: "manual-key" });
     const bridge = new ClaudeDesktopBridge({
       settingsPath: join(directory, "settings.json"),
       eventLog,
       conversationState: state,
       inspector: native,
+      magpieConnection,
       fetchImpl,
       environment: {},
       home: directory,
@@ -4664,6 +4672,11 @@ describe("manual session title persistence and automatic first-turn title genera
       });
       expect(receipt.state).toBe("submitted");
       await vi.waitFor(() => expect(releaseTitleResponse).toBeTypeOf("function"));
+      expect.soft(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST")).toEqual([
+        ["https://gateway.example.test/v1/messages", expect.objectContaining({
+          headers: expect.objectContaining({ authorization: `Bearer ${titleToken}`, "x-api-key": titleToken }),
+        })],
+      ]);
       expect(bridge.session(blank.sessionId)?.title).toBe("Claude 会话");
 
       const changed = once(bridge, "changed");
@@ -4708,6 +4721,16 @@ describe("manual session title persistence and automatic first-turn title genera
       });
       await new Promise(resolve => setTimeout(resolve, 25));
       expect(native.calls.some(call => call.method === "updateSession" && call.args[0] === "side-1")).toBe(false);
+
+      await writeFile(join(directory, "settings.json"), "{}");
+      fetchImpl.mockClear().mockResolvedValue(Response.json({ content: [{ type: "text", text: "来自手动网关" }] }));
+      const noGateway = await bridge.createSession("/new-project");
+      const titleTask = vi.spyOn(bridge as unknown as { autoTitleSession(): Promise<void> }, "autoTitleSession");
+      await bridge.startTurn({ ...input, sessionId: noGateway.sessionId, text: "没有可用的 Desktop 网关" });
+      expect(titleTask).toHaveBeenCalledOnce();
+      await titleTask.mock.results[0]!.value;
+      expect.soft(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST")).toEqual([]);
+      expect(bridge.session(noGateway.sessionId)?.title).toBe("Claude 会话");
     } finally {
       await bridge.close();
       await eventLog.close();

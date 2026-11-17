@@ -1387,21 +1387,20 @@ export class ClaudeDesktopBridge extends EventEmitter {
         this.options.magpieConnection || this.options.fetchImpl || this.options.environment || this.options.home,
       );
       const gateway = await resolveActiveClaudeGateway({
-        ...(this.options.magpieConnection ? { magpieConnection: this.options.magpieConnection } : {}),
         ...(this.options.environment ? { environment: this.options.environment } : {}),
         ...(this.options.home ? { home: this.options.home } : {}),
         ...(this.options.platform ? { platform: this.options.platform } : {}),
         settingsPath: this.options.settingsPath,
         allowAmbientDiscovery,
       });
-      if (this.isSessionUnavailableForAutoTitle(id)) return;
+      if (!gateway || this.isSessionUnavailableForAutoTitle(id)) return;
 
       const currentNative = this.native.get(id);
       const preferredModel = this.resolveSessionModel(id, currentNative?.model).configModel ?? currentNative?.model;
       const generatedTitle = await generateSessionTitle({
         text,
         hasAttachments,
-        ...(gateway ? { gateway } : {}),
+        gateway,
         ...(preferredModel ? { preferredModel } : {}),
         ...(this.models ? { catalogModels: this.models } : {}),
         ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),

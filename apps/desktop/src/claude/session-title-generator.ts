@@ -1,13 +1,13 @@
 import { readFile } from "node:fs/promises";
 import type { BridgeModelInfo } from "@bridge/protocol";
 import {
-  discoverClaudeGatewayConfig,
+  findClaudeFixedGateway,
+  findClaudeHostCredentials,
   magpieModelIdHash,
   parseMagpieSyntheticModelId,
   resolveClaudeGatewayConfig,
   type ClaudeGatewayConfig,
 } from "./claude-runtime-discovery.js";
-import type { MagpieConnectionRepository } from "./magpie-connection.js";
 
 const DEFAULT_TITLE_MODEL = "claude-3-5-haiku-latest";
 const DEFAULT_TITLE_TIMEOUT_MS = 8_000;
@@ -193,8 +193,9 @@ async function readSettingsDirectApiKey(settingsPath: string | undefined): Promi
   return undefined;
 }
 
-export async function resolveActiveClaudeGateway(options: {
-  magpieConnection?: MagpieConnectionRepository;
+export async function resolveActiveClaudeGateway({
+  environment = process.env, home, platform, roots, settingsPath, allowAmbientDiscovery = true,
+}: {
   environment?: NodeJS.ProcessEnv;
   home?: string;
   platform?: NodeJS.Platform;
@@ -202,33 +203,23 @@ export async function resolveActiveClaudeGateway(options: {
   settingsPath?: string;
   allowAmbientDiscovery?: boolean;
 } = {}): Promise<ClaudeGatewayConfig | undefined> {
-  if (options.magpieConnection?.isManual()) {
-    const manual = await resolveClaudeGatewayConfig(options.magpieConnection.apply({ environment: {} }));
-    return manual && (manual.authToken || manual.apiKey) ? manual : undefined;
-  }
-
-  if (options.allowAmbientDiscovery !== false) {
-    const discovered = await discoverClaudeGatewayConfig({
-      ...(options.environment ? { environment: options.environment } : {}),
-      ...(options.home ? { home: options.home } : {}),
-      ...(options.platform ? { platform: options.platform } : {}),
-      ...(options.roots ? { roots: options.roots } : {}),
-      ...(options.settingsPath ? { settingsPath: options.settingsPath } : {}),
-    });
-    if (discovered && (discovered.authToken || discovered.apiKey)) return discovered;
-  }
-
-  const fromSettings = await readSettingsDirectApiKey(options.settingsPath);
-  if (fromSettings) return fromSettings;
-
-  if (options.allowAmbientDiscovery !== false) {
-    const env = options.environment ?? process.env;
-    const envApiKey = env.ANTHROPIC_API_KEY?.trim();
-    if (envApiKey) {
-      return { baseUrl: "https://api.anthropic.com", apiKey: envApiKey, authScheme: "x-api-key" };
+  if (allowAmbientDiscovery) {
+    const credentialPath = await findClaudeHostCredentials(environment, home, roots, platform);
+    if (credentialPath) {
+      const host = await resolveClaudeGatewayConfig({ credentialPath, environment: {} });
+      if (host && (host.authToken || host.apiKey)) return host;
     }
+    const fixed = await findClaudeFixedGateway(environment, home, roots, platform);
+    if (fixed) return fixed.gateway;
   }
-  return undefined;
+
+  const fromSettings = await readSettingsDirectApiKey(settingsPath);
+  if (fromSettings || !allowAmbientDiscovery) return fromSettings;
+
+  const fromEnvironment = await resolveClaudeGatewayConfig({ environment });
+  if (fromEnvironment && (fromEnvironment.authToken || fromEnvironment.apiKey)) return fromEnvironment;
+  const apiKey = environment.ANTHROPIC_API_KEY?.trim();
+  return apiKey ? { baseUrl: "https://api.anthropic.com", apiKey, authScheme: "x-api-key" } : undefined;
 }
 
 export async function generateSessionTitle(options: {

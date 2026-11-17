@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { magpieModelIdHash } from "./claude-runtime-discovery.js";
-import { MagpieConnectionRepository } from "./magpie-connection.js";
 import {
   deriveFallbackSessionTitle,
   generateSessionTitle,
@@ -76,27 +75,11 @@ describe("resolveTitleGenerationModel", () => {
 });
 
 describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
-  it("resolves manual Magpie, configLibrary fixed gateway, and settingsPath API keys", async () => {
+  it("prefers a Desktop gateway, then a settings API key, then the environment", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-title-gateway-"));
     directories.push(root);
-
-    const storage = {
-      isEncryptionAvailable: () => true,
-      encryptString: (plain: string) => Buffer.from(plain, "utf8"),
-      decryptString: (cipher: Buffer) => cipher.toString("utf8"),
-    };
-    const manualRepo = new MagpieConnectionRepository(join(root, "magpie.json"), storage);
-    await manualRepo.save({
-      mode: "manual",
-      baseUrl: "https://magpie.example.test",
-      authScheme: "bearer",
-      apiKey: "manual-token",
-    });
-    await expect(resolveActiveClaudeGateway({ magpieConnection: manualRepo, allowAmbientDiscovery: false })).resolves.toEqual({
-      baseUrl: "https://magpie.example.test",
-      authToken: "manual-token",
-      authScheme: "bearer",
-    });
+    const settingsPath = join(root, "settings.json");
+    await writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_API_KEY: "settings-direct-key" } }));
 
     const platform = process.platform === "win32" ? "win32" : "darwin";
     const appData = platform === "win32" ? join(root, "AppData", "Roaming") : join(root, "Library", "Application Support");
@@ -111,26 +94,36 @@ describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
       inferenceGatewayApiKey: "fixed-key",
     }), { mode: 0o600 });
     await chmod(entryPath, 0o600);
-    await expect(resolveActiveClaudeGateway({
-      home: root,
-      platform,
-      environment: { APPDATA: appData },
-      allowAmbientDiscovery: true,
-    })).resolves.toEqual({
+    const environment = {
+      APPDATA: appData,
+      ANTHROPIC_BASE_URL: "https://ambient.example.test",
+      ANTHROPIC_AUTH_TOKEN: "test-ambient-auth",
+    };
+    const options = { home: root, platform, environment } as const;
+    const hostPath = join(root, "host-creds-test.json");
+    await writeFile(hostPath, JSON.stringify({ env: {
+      ANTHROPIC_BASE_URL: "https://host.example.test",
+      ANTHROPIC_API_KEY: "host-key",
+      CLAUDE_CODE_HOST_AUTH_ENV_VAR: "ANTHROPIC_API_KEY",
+    } }), { mode: 0o600 });
+    const withHost = { ...options, settingsPath, environment: { ...environment, CLAUDE_CODE_HOST_CREDS_FILE: hostPath } };
+    await expect(resolveActiveClaudeGateway(withHost)).resolves.toEqual({
+      baseUrl: "https://host.example.test", apiKey: "host-key", authScheme: "x-api-key",
+    });
+    await writeFile(hostPath, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://host.example.test" } }));
+    await expect(resolveActiveClaudeGateway(withHost)).resolves.toEqual({
       baseUrl: "https://fixed.example.test/v1",
       apiKey: "fixed-key",
       authScheme: "x-api-key",
     });
-
-    const settingsPath = join(root, "settings.json");
-    await writeFile(settingsPath, JSON.stringify({ env: { ANTHROPIC_API_KEY: "settings-direct-key" } }));
-    await expect(resolveActiveClaudeGateway({
-      settingsPath,
-      allowAmbientDiscovery: false,
-    })).resolves.toEqual({
+    await expect(resolveActiveClaudeGateway({ ...options, roots: [], settingsPath })).resolves.toEqual({
       baseUrl: "https://api.anthropic.com",
       apiKey: "settings-direct-key",
       authScheme: "x-api-key",
+    });
+    await expect(resolveActiveClaudeGateway({ ...options, roots: [] })).resolves.toEqual({
+      baseUrl: environment.ANTHROPIC_BASE_URL,
+      authToken: environment.ANTHROPIC_AUTH_TOKEN,
     });
   });
 

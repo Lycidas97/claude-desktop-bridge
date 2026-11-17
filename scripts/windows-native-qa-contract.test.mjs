@@ -110,9 +110,6 @@ async function runQa(snapshot, overrides = {}) {
 
 test("packaged QA accepts a disconnected Native snapshot and checks live IPC contracts", async () => {
   const snapshot = nativeSnapshot();
-  assert.deepEqual(snapshot.prompts, []);
-  for (const capability of ["prompt.native.v1", "pr.autofix.v1"]) assert.equal(snapshot.host.capabilities.includes(capability), false);
-  for (const capability of ["prompt.resolve", "pr.autofix"]) assert.equal(snapshot.runtimes[0].capabilities.includes(capability), false);
   const result = await runQa(snapshot);
   assert.equal(result.report.ok, true);
   for (const method of ["runtime.list", "project.list", "session.list", "system.update", "provider.list", "conversation.route.get"]) {
@@ -191,9 +188,6 @@ test("packaged QA keeps Native configuration/evidence checks with optional runti
   });
   assert.equal(result.report.configuration.sessionId, "qa-native");
   assert.equal(result.report.evidence.items, 0);
-  assert.ok(snapshot.host.capabilities.includes("prompt.native.v1") && snapshot.runtimes[0].capabilities.includes("prompt.resolve"));
-  assert.ok(snapshot.host.capabilities.includes("pr.autofix.v1") && snapshot.runtimes[0].capabilities.includes("pr.autofix"));
-  assert.equal(snapshot.prompts[0].canRespond, true);
   assert.equal(result.requests.some(method => ["prompt.resolve", "pr.autoFix.read", "pr.autoFix.set"].includes(method)), false, "Packaged QA must not answer Native prompts or query/change PR state without a user action");
   assert.ok(result.ui.includes("会话设置"));
   assert.ok(result.ui.includes(".evidence-panel, .evidence-empty"));

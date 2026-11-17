@@ -189,33 +189,33 @@ it("keeps a known selected profile actionable after a later check fails", async 
   expect(button("一键开启").props.disabled).toBe(false);
 });
 
-it("renders desktop updater controls and OS silent-restart boundary in about section", async () => {
+it("renders desktop updater controls and GitHub release download link in about section", async () => {
   props.snapshot = {
     ...props.snapshot,
-    host: { name: "Fixture", version: "1.3.2", capabilities: ["claude.native-relay.v1", "system.update.v1"] },
+    host: { name: "Fixture", version: "1.3.4", capabilities: ["claude.native-relay.v1", "system.update.v1"] },
     permissions: [],
     latestSeq: 0,
     runtimes: [{ id: "claude-desktop", state: "ready", capabilities: ["session.list", "session.history"] }],
     updater: {
       platform: "darwin",
       arch: "arm64",
-      currentVersion: "1.3.2",
+      currentVersion: "1.3.4",
       channel: "stable",
       autoCheck: true,
       applyMode: "prompt",
       canAutoRestart: false,
-      phase: "ready",
-      latestVersion: "1.3.3",
+      phase: "available",
+      latestVersion: "1.3.5",
+      releaseUrl: "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5",
     },
   } as unknown as DesktopControlSnapshot;
   draw();
   button("诊断与关于").props.onClick();
   draw();
-  expect(text()).toContain("已就绪");
+  expect(text()).toContain("发现 v1.3.5");
   expect(text()).toContain("版本更新");
-  expect(text()).toContain("macOS 未公证/DMG 包不支持后台静默覆盖系统目录");
-  expect(button("空闲静默重启").props.disabled).toBe(true);
-  expect(text()).toContain("打开安装包 (v1.3.3)");
+  expect(text()).toContain("前往下载 v1.3.5");
+  expect(text()).not.toContain("空闲静默重启");
 });
 
 it("passes the collected renderer diagnostics snapshot to exportDiagnostics while preserving diagnostic labels", async () => {

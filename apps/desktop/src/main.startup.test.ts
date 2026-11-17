@@ -11,7 +11,11 @@ const mocks = vi.hoisted(() => ({
     loadURL: ReturnType<typeof vi.fn>;
     show: ReturnType<typeof vi.fn>;
     setBackgroundColor: ReturnType<typeof vi.fn>;
-    webContents: { emit(event: string, ...args: unknown[]): boolean; executeJavaScript: ReturnType<typeof vi.fn> };
+    webContents: {
+      emit(event: string, ...args: unknown[]): boolean;
+      executeJavaScript: ReturnType<typeof vi.fn>;
+      setWindowOpenHandler: ReturnType<typeof vi.fn>;
+    };
   }>,
 }));
 vi.mock("./app/claude-desktop-developer-settings.js", () => ({ claudeDesktopDeveloperSettings: mocks.developerSettings }));
@@ -441,4 +445,17 @@ it("configures macOS hiddenInset titlebar and syncs nativeTheme + backgroundColo
   mainWin.webContents.emit("did-finish-load");
   await vi.waitFor(() => expect(nativeTheme.themeSource).toBe("dark"));
   expect(mainWin.setBackgroundColor).toHaveBeenLastCalledWith("#1c1c1e");
+
+  const { shell } = await import("electron");
+  const openHandler = mainWin.webContents.setWindowOpenHandler.mock.calls[0]?.[0] as
+    | ((details: { url: string }) => { action: string })
+    | undefined;
+  expect(openHandler).toBeTypeOf("function");
+  expect(openHandler!({ url: "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5" })).toEqual({ action: "deny" });
+  expect(openHandler!({ url: "HTTPS://github.com/Lycidas97/claude-desktop-bridge/releases" })).toEqual({ action: "deny" });
+  expect(openHandler!({ url: "http://insecure.invalid" })).toEqual({ action: "deny" });
+  expect(openHandler!({ url: "file:///etc/passwd" })).toEqual({ action: "deny" });
+  expect(shell.openExternal).toHaveBeenCalledTimes(2);
+  expect(shell.openExternal).toHaveBeenNthCalledWith(1, "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5");
+  expect(shell.openExternal).toHaveBeenNthCalledWith(2, "HTTPS://github.com/Lycidas97/claude-desktop-bridge/releases");
 });

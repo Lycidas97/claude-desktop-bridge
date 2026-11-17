@@ -5,7 +5,7 @@ import type {
   DesktopApi,
   DesktopControlSnapshot,
 } from "@bridge/protocol";
-import { Download, ExternalLink, LoaderCircle, RefreshCw, RotateCw } from "lucide-react";
+import { ExternalLink, LoaderCircle, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -13,24 +13,7 @@ import {
   type useClientUpdater,
 } from "../../lib/client-updater.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
-import { formatBytes } from "../../lib/media-preview.js";
 import "./updater.css";
-
-function progressPercent(downloaded?: number, total?: number): number | undefined {
-  if (downloaded === undefined || !total || total <= 0) return undefined;
-  return Math.min(100, Math.round((downloaded / total) * 100));
-}
-
-function osInstallBoundaryHint(updater: BridgeUpdaterSnapshot): string | undefined {
-  if (updater.canAutoRestart) return undefined;
-  if (updater.platform === "darwin") {
-    return "macOS 未公证/DMG 包不支持后台静默覆盖系统目录，下载完成后需在电脑上打开 DMG 替换应用。";
-  }
-  if (updater.platform === "linux") {
-    return "Linux 系统安装包需本机包管理权限，下载完成后请在电脑上完成安装。";
-  }
-  return "当前安装目录需要本机管理员权限确认，不支持免交互静默升级。";
-}
 
 function formatDesktopUpdaterPhase(updater: BridgeUpdaterSnapshot | undefined): string {
   if (!updater) return "未启用";
@@ -40,39 +23,17 @@ function formatDesktopUpdaterPhase(updater: BridgeUpdaterSnapshot | undefined): 
     case "up-to-date":
       return "已是最新";
     case "available":
-      return updater.latestVersion ? `发现 v${updater.latestVersion}` : "发现新版本";
-    case "downloading": {
-      const pct = progressPercent(updater.downloadedBytes, updater.totalBytes);
-      return pct !== undefined ? `正在下载 ${pct}%` : "正在下载…";
-    }
     case "ready":
-      if (updater.waitingForIdle) return `等待空闲重启 (v${updater.latestVersion ?? ""})`;
-      return updater.latestVersion ? `已就绪 v${updater.latestVersion}` : "安装包已就绪";
-    case "applying":
-      return "正在重启升级…";
+      return updater.latestVersion ? `发现 v${updater.latestVersion}` : "发现新版本";
     case "error":
-      return "检查或下载失败";
+      return "检查失败";
     default:
       return "待检查";
   }
 }
 
-function ProgressBar({ downloadedBytes, totalBytes }: { downloadedBytes?: number | undefined; totalBytes?: number | undefined }) {
-  const pct = progressPercent(downloadedBytes, totalBytes);
-  return (
-    <div className="updater-progress-wrap" role="status" aria-live="polite">
-      <div className="updater-progress-track">
-        <div
-          className="updater-progress-fill"
-          style={{ width: `${pct ?? 25}%` }}
-        />
-      </div>
-      <div className="updater-progress-meta">
-        <span>{formatBytes(downloadedBytes ?? 0)}{totalBytes ? ` / ${formatBytes(totalBytes)}` : ""}</span>
-        {pct !== undefined && <span>{pct}%</span>}
-      </div>
-    </div>
-  );
+function safeReleaseHref(url: string | undefined): string {
+  return url && /^https:\/\//iu.test(url) ? url : GITHUB_RELEASES_PAGE_URL;
 }
 
 export function DesktopUpdaterSection({
@@ -109,18 +70,15 @@ export function DesktopUpdaterSection({
     }
   }
 
-  const isWorking = Boolean(busyAction) || updater.phase === "checking" || updater.phase === "downloading" || updater.phase === "applying";
-  const applyButtonLabel = updater.canAutoRestart
-    ? `重启并升级${updater.latestVersion ? ` v${updater.latestVersion}` : ""}`
-    : updater.platform === "darwin"
-      ? `打开安装包${updater.latestVersion ? ` (v${updater.latestVersion})` : ""}`
-      : "在文件夹中显示安装包";
+  const isWorking = Boolean(busyAction) || updater.phase === "checking";
+  const hasAvailableUpdate = updater.phase === "available" || updater.phase === "ready";
+  const releaseHref = safeReleaseHref(updater.releaseUrl);
 
   return (
     <section className="provider-settings-profile" aria-label="版本更新">
       <div className="settings-section-heading">
         <h3>版本更新</h3>
-        <span className={updater.phase === "available" || updater.phase === "ready" ? "updater-badge-available" : undefined}>
+        <span className={hasAvailableUpdate ? "updater-badge-available" : undefined}>
           {formatDesktopUpdaterPhase(updater)}
         </span>
       </div>
@@ -157,41 +115,10 @@ export function DesktopUpdaterSection({
         </div>
       </div>
 
-      <div className="mobile-settings-row">
-        <span>下载完成后</span>
-        <div className="segmented" role="group" aria-label="下载完成后更新方式">
-          <button
-            type="button"
-            className={updater.applyMode === "prompt" || !updater.canAutoRestart ? "active" : ""}
-            aria-pressed={updater.applyMode === "prompt" || !updater.canAutoRestart}
-            disabled={isWorking}
-            onClick={() => void invokeUpdate({ action: "configure", applyMode: "prompt" })}
-          >
-            提示更新
-          </button>
-          <button
-            type="button"
-            className={updater.canAutoRestart && updater.applyMode === "silent-idle" ? "active" : ""}
-            aria-pressed={updater.canAutoRestart && updater.applyMode === "silent-idle"}
-            disabled={isWorking || !updater.canAutoRestart}
-            title={osInstallBoundaryHint(updater)}
-            onClick={() => void invokeUpdate({ action: "configure", applyMode: "silent-idle" })}
-          >
-            空闲静默重启
-          </button>
-        </div>
-      </div>
-
-      {!updater.canAutoRestart && (
-        <p className="settings-notice">{osInstallBoundaryHint(updater)}</p>
-      )}
       {updater.statusDetail && updater.phase !== "error" && (
         <p role="status" className="settings-notice">{updater.statusDetail}</p>
       )}
-      {updater.phase === "downloading" && (
-        <ProgressBar downloadedBytes={updater.downloadedBytes} totalBytes={updater.totalBytes} />
-      )}
-      {updater.releaseNotes && (updater.phase === "available" || updater.phase === "ready") && (
+      {updater.releaseNotes && hasAvailableUpdate && (
         <details className="settings-detection">
           <summary>v{updater.latestVersion} 更新说明</summary>
           <div className="updater-release-notes">{updater.releaseNotes}</div>
@@ -212,39 +139,27 @@ export function DesktopUpdaterSection({
           检查更新
         </button>
 
-        {updater.phase === "available" && updater.assetName && (
-          <button
-            type="button"
+        {hasAvailableUpdate ? (
+          <a
             className="primary-button"
-            disabled={isWorking}
-            onClick={() => void invokeUpdate({ action: "download" })}
+            href={releaseHref}
+            target="_blank"
+            rel="noopener noreferrer"
           >
-            <Download size={15} />
-            下载 v{updater.latestVersion}
-          </button>
-        )}
-
-        {updater.phase === "ready" && (
-          <button
-            type="button"
-            className="primary-button"
-            disabled={isWorking}
-            onClick={() => void invokeUpdate({ action: "apply" })}
+            <ExternalLink size={15} />
+            前往下载{updater.latestVersion ? ` v${updater.latestVersion}` : ""}
+          </a>
+        ) : (
+          <a
+            className="secondary-button"
+            href={releaseHref}
+            target="_blank"
+            rel="noopener noreferrer"
           >
-            <RotateCw size={15} />
-            {applyButtonLabel}
-          </button>
+            <ExternalLink size={15} />
+            GitHub Releases
+          </a>
         )}
-
-        <a
-          className="secondary-button"
-          href={updater.releaseUrl ?? GITHUB_RELEASES_PAGE_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <ExternalLink size={15} />
-          GitHub Releases
-        </a>
       </div>
     </section>
   );
@@ -269,7 +184,7 @@ export function RemoteDesktopUpdaterSection({
   const [error, setError] = useState("");
   const headingId = "remote-desktop-updater-title";
   const updater = remote.updater;
-  const isBusy = Boolean(busyAction) || updater?.phase === "checking" || updater?.phase === "downloading" || updater?.phase === "applying";
+  const isBusy = Boolean(busyAction) || updater?.phase === "checking";
 
   async function run(params: BridgeSystemUpdateParams) {
     if (!remote.connected || !remote.supported) return;
@@ -295,7 +210,7 @@ export function RemoteDesktopUpdaterSection({
         <span>更新状态</span>
         <span className={`mobile-settings-value ${updater?.phase === "available" || updater?.phase === "ready" ? "updater-badge-available" : ""}`}>
           {!remote.supported
-            ? "旧版桌面端不支持远程升级"
+            ? "旧版桌面端不支持远程检查"
             : !remote.connected
               ? "离线"
               : formatDesktopUpdaterPhase(updater)}
@@ -326,14 +241,6 @@ export function RemoteDesktopUpdaterSection({
       {updater?.statusDetail && updater.phase !== "error" && (
         <p className="mobile-settings-row detail-text" role="status">{updater.statusDetail}</p>
       )}
-      {updater && !updater.canAutoRestart && (updater.phase === "available" || updater.phase === "ready") && (
-        <p className="mobile-settings-row detail-text">{osInstallBoundaryHint(updater)}</p>
-      )}
-      {updater?.phase === "downloading" && (
-        <div className="mobile-settings-row">
-          <ProgressBar downloadedBytes={updater.downloadedBytes} totalBytes={updater.totalBytes} />
-        </div>
-      )}
       {(error || updater?.error) && (
         <p className="mobile-settings-row updater-error" role="alert">{error || updater?.error}</p>
       )}
@@ -348,37 +255,6 @@ export function RemoteDesktopUpdaterSection({
             {updater?.phase === "checking" || busyAction === "check" ? <LoaderCircle className="is-spinning" size={16} /> : <RefreshCw size={16} />}
             检查更新
           </button>
-          {updater?.phase === "ready" && updater.canAutoRestart ? (
-            <button
-              type="button"
-              className="primary-button"
-              disabled={!remote.connected || isBusy}
-              onClick={() => void run({ action: "apply" })}
-            >
-              <RotateCw size={16} />
-              重启并升级
-            </button>
-          ) : updater?.phase === "available" && updater.assetName && !updater.canAutoRestart ? (
-            <button
-              type="button"
-              className="primary-button"
-              disabled={!remote.connected || isBusy}
-              onClick={() => void run({ action: "download" })}
-            >
-              <Download size={16} />
-              下载更新
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="primary-button"
-              disabled={!remote.connected || isBusy || (updater !== undefined && !updater.canAutoRestart && updater.phase === "ready")}
-              onClick={() => void run({ action: updater?.canAutoRestart === false ? "download" : "apply" })}
-            >
-              <RotateCw size={16} />
-              {updater?.canAutoRestart === false ? "检查并下载" : "检查并升级"}
-            </button>
-          )}
         </div>
       )}
     </section>
@@ -390,7 +266,7 @@ export type ClientUpdaterHandle = ReturnType<typeof useClientUpdater>;
 export function MobileClientUpdaterSection({ updater }: { updater: ClientUpdaterHandle }) {
   const { state } = updater;
   const titleId = "mobile-client-updater-title";
-  const isBusy = state.phase === "checking" || state.phase === "downloading";
+  const isBusy = state.phase === "checking";
 
   return (
     <section className="mobile-settings-group" aria-labelledby={titleId}>
@@ -431,11 +307,6 @@ export function MobileClientUpdaterSection({ updater }: { updater: ClientUpdater
           {state.statusDetail && state.phase !== "error" && (
             <p className="mobile-settings-row detail-text" role="status">{state.statusDetail}</p>
           )}
-          {state.phase === "downloading" && (
-            <div className="mobile-settings-row">
-              <ProgressBar downloadedBytes={state.downloadedBytes} totalBytes={state.totalBytes} />
-            </div>
-          )}
           {state.error && <p className="mobile-settings-row updater-error" role="alert">{state.error}</p>}
           <div className="mobile-settings-row mobile-settings-actions">
             <button
@@ -447,19 +318,15 @@ export function MobileClientUpdaterSection({ updater }: { updater: ClientUpdater
               {state.phase === "checking" ? <LoaderCircle className="is-spinning" size={16} /> : <RefreshCw size={16} />}
               检查更新
             </button>
-            {(state.phase === "available" || state.phase === "ready" || state.phase === "awaiting-permission") && (
+            {state.phase === "available" && state.latestVersion && (
               <button
                 type="button"
                 className="primary-button"
                 disabled={isBusy}
-                onClick={() => updater.openPrompt()}
+                onClick={() => void updater.openReleasesPage()}
               >
-                <Download size={16} />
-                {state.phase === "awaiting-permission"
-                  ? "授权并继续安装"
-                  : state.phase === "ready"
-                    ? "立即安装"
-                    : `更新 v${state.latestVersion}`}
+                <ExternalLink size={16} />
+                前往下载 v{state.latestVersion}
               </button>
             )}
           </div>
@@ -487,15 +354,14 @@ export function MobileClientUpdateDialog({ updater }: { updater: ClientUpdaterHa
   const { state } = updater;
   const titleId = "mobile-client-update-dialog-title";
   const open = state.nativeSupported && state.promptOpen && Boolean(state.latestVersion);
-  const isDownloading = state.phase === "downloading";
 
   useEffect(() => {
     if (!open) return;
     return registerMobileBackHandler(() => {
-      if (!isDownloading) updater.dismissPrompt();
+      updater.dismissPrompt();
       return true;
     }, 220);
-  }, [open, isDownloading, updater]);
+  }, [open, updater]);
 
   if (!open) return null;
 
@@ -503,7 +369,7 @@ export function MobileClientUpdateDialog({ updater }: { updater: ClientUpdaterHa
     <div
       className="confirm-backdrop"
       onMouseDown={(event) => {
-        if (event.currentTarget === event.target && !isDownloading) updater.dismissPrompt();
+        if (event.currentTarget === event.target) updater.dismissPrompt();
       }}
     >
       <section
@@ -517,12 +383,6 @@ export function MobileClientUpdateDialog({ updater }: { updater: ClientUpdaterHa
         {state.releaseNotes && (
           <div className="updater-release-notes">{state.releaseNotes}</div>
         )}
-        {state.phase === "downloading" && (
-          <ProgressBar downloadedBytes={state.downloadedBytes} totalBytes={state.totalBytes} />
-        )}
-        {state.phase === "awaiting-permission" && state.statusDetail && (
-          <p className="detail-text" role="status">{state.statusDetail}</p>
-        )}
         {state.error && (
           <p className="inline-error" role="alert">{state.error}</p>
         )}
@@ -530,35 +390,23 @@ export function MobileClientUpdateDialog({ updater }: { updater: ClientUpdaterHa
           <button
             type="button"
             className="secondary-button"
-            disabled={isDownloading}
             onClick={() => updater.dismissPrompt()}
           >
             稍后
           </button>
-          {state.assetName ? (
-            <button
-              type="button"
-              className="primary-button"
-              disabled={isDownloading || state.phase === "checking"}
-              onClick={() => void updater.downloadAndInstall()}
-            >
-              {isDownloading
-                ? "正在下载…"
-                : state.phase === "awaiting-permission"
-                  ? "前往授权安装"
-                  : state.phase === "ready"
-                    ? "立即安装"
-                    : "下载并安装"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="primary-button"
-              onClick={() => void updater.openReleasesPage()}
-            >
-              前往 GitHub 下载
-            </button>
-          )}
+          <button
+            type="button"
+            className="primary-button"
+            disabled={state.phase === "checking"}
+            onClick={() => {
+              const targetUrl = state.releaseUrl;
+              updater.dismissPrompt();
+              void updater.openReleasesPage(targetUrl);
+            }}
+          >
+            <ExternalLink size={16} />
+            前往发布页下载
+          </button>
         </div>
       </section>
     </div>,

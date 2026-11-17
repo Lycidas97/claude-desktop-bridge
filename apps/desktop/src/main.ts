@@ -317,7 +317,7 @@ async function desktopMain(): Promise<void> {
         .catch(() => {});
     });
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-      if (url.startsWith("https://")) void shell.openExternal(url);
+      if (/^https:\/\//iu.test(url)) void shell.openExternal(url);
       return { action: "deny" };
     });
     mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());

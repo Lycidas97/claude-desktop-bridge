@@ -1,10 +1,18 @@
 import type { ReactElement, ReactNode } from "react";
-import type { BridgeUpdaterSnapshot } from "@bridge/protocol";
+import type { BridgeUpdaterSnapshot, DesktopApi, DesktopControlSnapshot } from "@bridge/protocol";
 import { beforeEach, expect, it, vi } from "vitest";
-import { MobileClientUpdateDialog, RemoteDesktopUpdaterSection, type RemoteDesktopUpdateControl } from "./UpdaterSections.js";
+import { GITHUB_RELEASES_PAGE_URL } from "../../lib/client-updater.js";
+import {
+  DesktopUpdaterSection,
+  MobileClientUpdateDialog,
+  MobileClientUpdaterSection,
+  RemoteDesktopUpdaterSection,
+  type ClientUpdaterHandle,
+  type RemoteDesktopUpdateControl,
+} from "./UpdaterSections.js";
 
 const hooks = vi.hoisted(() => ({ slots: [] as unknown[], index: 0, deps: undefined as unknown[] | undefined }));
-vi.mock("react", async original => ({
+vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useState(initial: unknown) {
     const index = hooks.index++;
@@ -30,81 +38,142 @@ function text(node: ReactNode): string {
   if (typeof node === "object" && "props" in node) return text((node as ReactElement<{ children?: ReactNode }>).props.children);
   return String(node);
 }
-function draw(remote: RemoteDesktopUpdateControl) {
+function drawRemote(remote: RemoteDesktopUpdateControl) {
   hooks.index = 0;
   return RemoteDesktopUpdaterSection({ remote });
 }
-const snapshot: BridgeUpdaterSnapshot = {
-  platform: "win32", arch: "x64", currentVersion: "1.3.2", channel: "stable", autoCheck: true,
-  applyMode: "prompt", canAutoRestart: true, phase: "downloading", downloadedBytes: 0, totalBytes: 512,
-};
-beforeEach(() => { hooks.slots = []; hooks.index = 0; hooks.deps = undefined; });
 
-it("keeps a newer ready host push when an older downloading RPC resolves later", async () => {
-  let reply!: (value: BridgeUpdaterSnapshot) => void;
-  const remote: RemoteDesktopUpdateControl = {
-    hostVersion: "1.3.2", connected: true, supported: true, updater: { ...snapshot, phase: "idle" },
-    onInvoke: vi.fn(() => new Promise<BridgeUpdaterSnapshot>(resolve => { reply = resolve; })),
-  };
-  const button = elements(draw(remote)).find(element => element.type === "button" && text(element).includes("检查更新"))!;
-  button.props.onClick();
-  const pushed = { ...remote, updater: { ...snapshot, phase: "ready" as const, latestVersion: "1.3.3" } };
-  draw(pushed);
-  reply(snapshot);
-  await new Promise<void>(resolve => queueMicrotask(resolve));
-  const result = draw(pushed);
-  expect(text(result)).toContain("已就绪 v1.3.3");
-  expect(text(result)).not.toContain("正在下载");
-  expect(elements(result).find(element => element.type === "button" && text(element).includes("重启并升级"))?.props.disabled).toBe(false);
+const baseUpdater: BridgeUpdaterSnapshot = {
+  platform: "win32",
+  arch: "x64",
+  currentVersion: "1.3.4",
+  channel: "stable",
+  autoCheck: true,
+  applyMode: "prompt",
+  canAutoRestart: false,
+  phase: "idle",
+};
+
+beforeEach(() => {
+  hooks.slots = [];
+  hooks.index = 0;
+  hooks.deps = undefined;
 });
 
-it("switches remote desktop update channel via single check+channel RPC and ignores no-op clicks", async () => {
-  const onInvoke = vi.fn().mockResolvedValue({ ...snapshot, phase: "up-to-date", channel: "prerelease" });
+it("renders DesktopUpdaterSection with browser-jump link when available and no silent-restart or duplicate links", () => {
+  const api = { request: vi.fn(), getSnapshot: vi.fn() } as unknown as DesktopApi;
+  const idleTree = DesktopUpdaterSection({
+    snapshot: { updater: { ...baseUpdater, phase: "up-to-date" } } as unknown as DesktopControlSnapshot,
+    api,
+    onSnapshot: vi.fn(),
+  });
+  const idleLinks = elements(idleTree).filter((el) => el.type === "a");
+  expect(idleLinks).toHaveLength(1);
+  expect(text(idleLinks[0])).toContain("GitHub Releases");
+  expect(idleLinks[0]!.props.href).toBe(GITHUB_RELEASES_PAGE_URL);
+  expect(text(idleTree)).not.toContain("空闲静默重启");
+  expect(text(idleTree)).not.toContain("下载完成后");
+
+  hooks.index = 0;
+  const availableTree = DesktopUpdaterSection({
+    snapshot: {
+      updater: {
+        ...baseUpdater,
+        phase: "available",
+        latestVersion: "1.3.5",
+        releaseUrl: "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5",
+        releaseNotes: "- Release 1.3.5 notes",
+      },
+    } as unknown as DesktopControlSnapshot,
+    api,
+    onSnapshot: vi.fn(),
+  });
+  const availableLinks = elements(availableTree).filter((el) => el.type === "a");
+  expect(availableLinks).toHaveLength(1);
+  expect(availableLinks[0]!.props.className).toBe("primary-button");
+  expect(availableLinks[0]!.props.href).toBe("https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5");
+  expect(availableLinks[0]!.props.target).toBe("_blank");
+  expect(text(availableLinks[0])).toContain("前往下载 v1.3.5");
+  expect(text(availableTree)).toContain("v1.3.5 更新说明");
+});
+
+it("keeps RemoteDesktopUpdaterSection strictly check-only with version, channel toggle, and single 检查更新 button", async () => {
+  let reply!: (value: BridgeUpdaterSnapshot) => void;
+  const onInvoke = vi.fn(() => new Promise<BridgeUpdaterSnapshot>((resolve) => { reply = resolve; }));
   const remote: RemoteDesktopUpdateControl = {
-    hostVersion: "1.3.5-dev.23",
+    hostVersion: "1.3.4",
     connected: true,
     supported: true,
-    updater: { ...snapshot, phase: "up-to-date", channel: "stable" },
+    updater: { ...baseUpdater, phase: "idle" },
     onInvoke,
   };
-  const tree = draw(remote);
-  const channelGroup = elements(tree).find(el => el.props["aria-label"] === "远端桌面更新通道")!;
-  const [stableBtn, prereleaseBtn] = elements(channelGroup).filter(el => el.type === "button");
-  expect(stableBtn!.props["aria-pressed"]).toBe(true);
-  expect(prereleaseBtn!.props["aria-pressed"]).toBe(false);
+  const initialTree = drawRemote(remote);
+  const actionButtons = elements(initialTree)
+    .filter((el) => el.type === "div" && String(el.props.className ?? "").includes("mobile-settings-actions"))
+    .flatMap((div) => elements(div).filter((el) => el.type === "button"));
+  expect(actionButtons.map((btn) => text(btn))).toEqual(["检查更新"]);
+  expect(text(initialTree)).not.toContain("检查并升级");
+  expect(text(initialTree)).not.toContain("检查并下载");
+  expect(text(initialTree)).not.toContain("下载更新");
+  expect(text(initialTree)).not.toContain("重启并升级");
 
-  // Clicking the active channel is a no-op
+  const channelGroup = elements(initialTree).find((el) => el.props["aria-label"] === "远端桌面更新通道")!;
+  const [stableBtn, prereleaseBtn] = elements(channelGroup).filter((el) => el.type === "button");
   stableBtn!.props.onClick();
   expect(onInvoke).not.toHaveBeenCalled();
 
-  // Clicking prerelease saves channel + runs check in one round-trip
   prereleaseBtn!.props.onClick();
   expect(onInvoke).toHaveBeenCalledExactlyOnceWith({ action: "check", channel: "prerelease" });
 
-  // Concise 5-char button copy on Windows vs macOS non-auto-restart
-  expect(elements(tree).some(el => el.type === "button" && text(el).includes("检查并升级"))).toBe(true);
-  const macAvailable = draw({
-    ...remote,
-    updater: { ...snapshot, platform: "darwin", canAutoRestart: false, phase: "available", assetName: "Bridge.dmg" },
-  });
-  expect(elements(macAvailable).some(el => el.type === "button" && text(el).includes("下载更新"))).toBe(true);
+  const pushed = { ...remote, updater: { ...baseUpdater, phase: "available" as const, channel: "prerelease" as const, latestVersion: "1.3.5-rc.1" } };
+  drawRemote(pushed);
+  reply(baseUpdater);
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  const result = drawRemote(pushed);
+  expect(text(result)).toContain("发现 v1.3.5-rc.1");
 });
 
-it("uses the shared byte formatter for sub-kilobyte progress", () => {
-  const tree = draw({ hostVersion: "1.3.2", connected: true, supported: true, updater: snapshot, onInvoke: vi.fn() });
-  const progress = elements(tree).find(element => typeof element.type === "function" && element.type.name === "ProgressBar")!;
-  const rendered = (progress.type as (props: unknown) => ReactNode)(progress.props);
-  expect(text(rendered)).toContain("0 B / 512 B");
-});
+it("opens the GitHub release page from MobileClientUpdaterSection and MobileClientUpdateDialog", () => {
+  const openReleasesPage = vi.fn(async () => {});
+  const dismissPrompt = vi.fn();
+  const handle = {
+    state: {
+      platform: "android",
+      nativeSupported: true,
+      currentVersion: "1.3.4",
+      arch: "arm64",
+      channel: "stable",
+      autoCheck: true,
+      phase: "available",
+      latestVersion: "1.3.5",
+      releaseUrl: "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5",
+      releaseNotes: "- Release 1.3.5",
+      promptOpen: true,
+    },
+    check: vi.fn(),
+    setChannel: vi.fn(),
+    setAutoCheck: vi.fn(),
+    dismissPrompt,
+    openPrompt: vi.fn(),
+    openReleasesPage,
+  } as unknown as ClientUpdaterHandle;
 
-it("disables the APK action while a channel check is still pending", () => {
+  const sectionTree = MobileClientUpdaterSection({ updater: handle });
+  const downloadBtn = elements(sectionTree).find((el) => el.type === "button" && text(el).includes("前往下载 v1.3.5"))!;
+  expect(downloadBtn).toBeDefined();
+  downloadBtn.props.onClick();
+  expect(openReleasesPage).toHaveBeenCalledOnce();
+
   vi.stubGlobal("document", { body: {} });
   try {
-    const tree = MobileClientUpdateDialog({ updater: {
-      state: { nativeSupported: true, promptOpen: true, latestVersion: "1.4.0-rc.1", currentVersion: "1.3.2", phase: "checking", assetName: "Bridge.apk" },
-      dismissPrompt: vi.fn(), downloadAndInstall: vi.fn(),
-    } as unknown as Parameters<typeof MobileClientUpdateDialog>[0]["updater"] });
-    const button = elements(tree).find(element => element.type === "button" && text(element).includes("下载并安装"))!;
-    expect(button.props.disabled).toBe(true);
-  } finally { vi.unstubAllGlobals(); }
+    hooks.index = 0;
+    const dialogTree = MobileClientUpdateDialog({ updater: handle });
+    const dialogJumpBtn = elements(dialogTree).find((el) => el.type === "button" && text(el).includes("前往发布页下载"))!;
+    expect(dialogJumpBtn.props.disabled).toBe(false);
+    dialogJumpBtn.props.onClick();
+    expect(dismissPrompt).toHaveBeenCalledOnce();
+    expect(openReleasesPage).toHaveBeenLastCalledWith("https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5");
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

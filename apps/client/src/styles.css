@@ -295,6 +295,7 @@ button:disabled {
   font-size: calc(14px * var(--font-scale));
   font-weight: 650;
   text-align: center;
+  text-decoration: none;
   text-wrap: balance;
   cursor: pointer;
   transition: background var(--t-fast) ease, border-color var(--t-fast) ease, color var(--t-fast) ease, transform var(--t-fast) var(--ease-out), box-shadow var(--t-fast) ease;

@@ -151,14 +151,6 @@ export class DesktopController extends EventEmitter {
     this.queuePublish();
   }
 
-  requestQuitForUpdate(): void {
-    this.emit("quit-for-update");
-  }
-
-  isIdleForUpdate(): boolean {
-    return this.broker.runtimeStatus().activeTurns === 0 && this.claudePermissions().length === 0;
-  }
-
   async initialize(): Promise<void> {
     this.config = await this.repository.loadOrCreate();
     if (this.conversationState) {
@@ -906,9 +898,6 @@ export class DesktopController extends EventEmitter {
           }),
         ]);
       }
-      this.updater?.notifyIdleStateChanged(
-        snapshot.runtime.activeTurns === 0 && snapshot.permissions.length === 0,
-      );
       return snapshot;
     } finally { published(); }
   }

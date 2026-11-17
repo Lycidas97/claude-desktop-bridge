@@ -481,6 +481,25 @@ async function verifyDesktopQuota(page, host, steps, directory, viewports) {
     await page.getByRole("heading", { name: heading, exact: true }).waitFor();
     assert.equal(await page.locator(".magpie-quota-board").count(), 0);
   }
+  const desktopUpdaterRegion = page.getByRole("region", { name: "版本更新", exact: true });
+  await desktopUpdaterRegion.getByRole("button", { name: "检查更新", exact: true }).waitFor();
+  await desktopUpdaterRegion.getByRole("link", { name: "GitHub Releases", exact: true }).waitFor();
+  assert.equal(await desktopUpdaterRegion.getByText("空闲静默重启").count(), 0);
+  assert.equal(await desktopUpdaterRegion.getByText("下载完成后").count(), 0);
+  await page.evaluate(() => {
+    window.settingsSnapshot.updater = {
+      ...window.settingsSnapshot.updater,
+      phase: "available",
+      latestVersion: "1.3.5",
+      releaseUrl: "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5",
+    };
+    window.receiveSettingsSnapshot(structuredClone(window.settingsSnapshot));
+  });
+  const jumpLink = desktopUpdaterRegion.getByRole("link", { name: "前往下载 v1.3.5", exact: true });
+  await jumpLink.waitFor();
+  assert.equal(await jumpLink.getAttribute("href"), "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5");
+  assert.equal(await jumpLink.getAttribute("target"), "_blank");
+  assert.equal(await desktopUpdaterRegion.getByRole("link", { name: "GitHub Releases", exact: true }).count(), 0);
   await page.getByRole("button", { name: "手机配对与设备", exact: true }).click();
   await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();
   steps.push("Leaving quota preserves developer tools, startup, appearance, diagnostics, updates and the device pairing entry");
@@ -1402,20 +1421,20 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           if (request.params?.channel === "stable" || request.params?.channel === "prerelease") {
             snapshot.updater = { ...snapshot.updater, channel: request.params.channel };
           }
+          if (typeof request.params?.autoCheck === "boolean") {
+            snapshot.updater = { ...snapshot.updater, autoCheck: request.params.autoCheck };
+          }
           if (action === "check") {
             const latestVersion = snapshot.updater?.channel === "prerelease"
               ? (host.prereleaseLatestVersion ?? "1.3.5-dev.27")
-              : "1.3.3";
-            const assetName = snapshot.updater?.platform === "darwin"
-              ? `Bridge-${latestVersion}-macos-arm64.dmg`
-              : `Bridge-${latestVersion}-windows-installer-ci.zip`;
-            snapshot.updater = { ...snapshot.updater, phase: "available", latestVersion, assetName, statusDetail: `发现新版本 v${latestVersion}` };
-          } else if (action === "download") {
-            const latestVersion = snapshot.updater?.latestVersion ?? "1.3.3";
-            snapshot.updater = { ...snapshot.updater, phase: "ready", latestVersion, statusDetail: `安装包 v${latestVersion} 已下载就绪` };
-          } else if (action === "apply") {
-            const latestVersion = snapshot.updater?.latestVersion ?? "1.3.3";
-            snapshot.updater = { ...snapshot.updater, phase: "applying", latestVersion, statusDetail: "正在后台静默升级并重启 Bridge 服务…" };
+              : "1.3.5";
+            snapshot.updater = {
+              ...snapshot.updater,
+              phase: "available",
+              latestVersion,
+              releaseUrl: `https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v${latestVersion}`,
+              statusDetail: `发现新版本 v${latestVersion}`,
+            };
           }
           result = snapshot.updater;
           await host.send({ kind: "snapshot", snapshot });
@@ -3067,9 +3086,15 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.getByRole("heading", { name: "远端桌面状态", exact: true }).waitFor();
   await page.getByRole("heading", { name: "版本与更新", exact: true }).waitFor();
   assert.ok((await page.locator(".mobile-settings-page").innerText()).includes("v1.1.1"));
-  await page.getByRole("button", { name: "检查并升级", exact: true }).click();
-  await eventually(() => host.requests.some(request => request.method === "system.update" && request.params.action === "apply"), true, "Mobile triggers encrypted system.update apply RPC");
-  await eventually(() => page.locator(".mobile-settings-page").innerText().then(t => t.includes("正在重启升级")), true, "Remote desktop status reflects applying phase over E2EE");
+  const remoteUpdaterRegion = page.getByRole("region", { name: "远端桌面状态", exact: true });
+  assert.deepEqual(
+    await remoteUpdaterRegion.locator(".mobile-settings-actions button").allInnerTexts(),
+    ["检查更新"],
+    "Remote desktop status exposes only 检查更新 without remote upgrade/download buttons",
+  );
+  await remoteUpdaterRegion.getByRole("button", { name: "检查更新", exact: true }).click();
+  await eventually(() => host.requests.some(request => request.method === "system.update" && request.params.action === "check"), true, "Mobile triggers encrypted system.update check RPC");
+  await eventually(() => page.locator(".mobile-settings-page").innerText().then(t => t.includes("发现 v1.3.5")), true, "Remote desktop status reflects available version over E2EE");
   async function assertUpdaterCards() {
     for (const title of ["远端桌面状态", "版本与更新"]) {
       const rows = await page.getByRole("region", { name: title, exact: true }).locator(":scope > :not(h2)").evaluateAll(elements => elements.map(element => {
@@ -3108,7 +3133,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     await assertUpdaterCards();
     await page.getByRole("region", { name: "远端桌面状态", exact: true }).screenshot({ path: resolve(directory, `settings-updater-error-${family}.png`) });
   }
-  steps.push("mobile Settings keeps updater details/actions, rejected RPC errors, and Web release fallback in continuous cards in Sunstone/Apple themes and triggers E2EE system.update upgrade");
+  steps.push("mobile Settings keeps updater details/actions, rejected RPC errors, and Web release fallback in continuous cards in Sunstone/Apple themes and triggers E2EE system.update check");
 }
 
 async function verifyNativeQueueActions(page, host, steps, directory) {
@@ -4510,7 +4535,7 @@ async function verifyRound5Ux(page, host, steps, directory, viewports, theme) {
   await openMobileDrawer(page);
   steps.push("BackgroundTasksSheet renders full 3,200+ char Markdown subagent report without clipping, scrolls cleanly to the final paragraph, and keeps 全部后台任务 pinned");
 
-  // (a) Remote Desktop Updater Channel (`稳定版` | `预发布`) & Balanced Concise Buttons (`检查并升级` vs `检查并下载`, 0 widow lines at 360px xlarge)
+  // (a) Remote Desktop Updater Channel (`稳定版` | `预发布`) & Check-Only Action (`检查更新` only, 0 widow lines at 360px xlarge)
   async function inspectActionButtons(container) {
     return container.locator("button").evaluateAll(buttons => buttons.map(btn => {
       const style = getComputedStyle(btn);
@@ -4562,9 +4587,10 @@ async function verifyRound5Ux(page, host, steps, directory, viewports, theme) {
   const channelGroup = remoteRegion.getByRole("group", { name: "远端桌面更新通道", exact: true });
   assert.equal(await channelGroup.getByRole("button", { name: "稳定版", exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await channelGroup.getByRole("button", { name: "预发布", exact: true }).getAttribute("aria-pressed"), "false");
-  await remoteRegion.getByRole("button", { name: "检查并下载", exact: true }).waitFor();
+  await remoteRegion.getByRole("button", { name: "检查更新", exact: true }).waitFor();
+  assert.equal(await remoteRegion.getByRole("button", { name: /检查并|升级|下载|重启/u }).count(), 0, "Remote desktop section has zero remote download/upgrade/restart buttons");
 
-  // Check macOS `检查并下载` under 360px + xlarge has textWrap: balance and zero 1-char widow lines
+  // Check `检查更新` under 360px + xlarge has textWrap: balance and zero 1-char widow lines
   await page.setViewportSize({ width: 360, height: 800 });
   await page.evaluate(() => {
     localStorage.setItem("bridge-font-size", "larger");
@@ -4573,13 +4599,13 @@ async function verifyRound5Ux(page, host, steps, directory, viewports, theme) {
     document.documentElement.style.setProperty("--font-scale", "1.3");
   });
   const macButtonsXlarge = await inspectActionButtons(remoteRegion.locator(".mobile-settings-actions"));
-  assert.deepEqual(macButtonsXlarge.map(b => b.label), ["检查更新", "检查并下载"]);
+  assert.deepEqual(macButtonsXlarge.map(b => b.label), ["检查更新"]);
   for (const btn of macButtonsXlarge) {
     assert.equal(btn.textWrap, "balance", `${btn.label} sets text-wrap: balance`);
     assert.equal(btn.lines.some(line => line.length === 1), false, `${btn.label} at 360px xlarge must not have a 1-char widow line (got ${JSON.stringify(btn.lines)})`);
   }
 
-  // Restore 390x844 normal scale, switch remote host to Windows (canAutoRestart: true), click `预发布` -> `发现 v1.3.5-dev.27`
+  // Restore 390x844 normal scale, switch remote host to Windows, click `预发布` -> `发现 v1.3.5-dev.27` while staying check-only
   await page.evaluate(() => {
     localStorage.removeItem("bridge-font-size");
     delete document.documentElement.dataset.fontSize;
@@ -4594,11 +4620,10 @@ async function verifyRound5Ux(page, host, steps, directory, viewports, theme) {
     channel: "stable",
     autoCheck: true,
     applyMode: "prompt",
-    canAutoRestart: true,
+    canAutoRestart: false,
     phase: "idle",
   };
   await host.send({ kind: "snapshot", snapshot: host.snapshot });
-  await remoteRegion.getByRole("button", { name: "检查并升级", exact: true }).waitFor();
 
   await channelGroup.getByRole("button", { name: "预发布", exact: true }).click();
   await eventually(
@@ -4609,7 +4634,7 @@ async function verifyRound5Ux(page, host, steps, directory, viewports, theme) {
   await remoteRegion.getByText("发现 v1.3.5-dev.27", { exact: true }).waitFor();
   assert.equal(await channelGroup.getByRole("button", { name: "预发布", exact: true }).getAttribute("aria-pressed"), "true");
   const winButtons390 = await inspectActionButtons(remoteRegion.locator(".mobile-settings-actions"));
-  assert.deepEqual(winButtons390.map(b => b.label), ["检查更新", "检查并升级"]);
+  assert.deepEqual(winButtons390.map(b => b.label), ["检查更新"]);
   for (const btn of winButtons390) {
     assert.equal(btn.textWrap, "balance", `${btn.label} sets text-wrap: balance`);
     assert.equal(btn.lines.length, 1, `${btn.label} renders on a clean single line at 390x844 (got ${JSON.stringify(btn.lines)})`);
@@ -4617,7 +4642,7 @@ async function verifyRound5Ux(page, host, steps, directory, viewports, theme) {
   await page.locator(".mobile-settings-content").evaluate(el => { el.scrollTop = 0; });
   await saveShot(page, "03-mobile-remote-updater-channel-buttons-dark.png");
 
-  // Check Windows `检查并升级` under 360px + xlarge has zero 1-char widow lines and zero horizontal overflow
+  // Check Windows `检查更新` under 360px + xlarge has zero 1-char widow lines and zero horizontal overflow
   await page.setViewportSize({ width: 360, height: 800 });
   await page.evaluate(() => {
     localStorage.setItem("bridge-font-size", "larger");
@@ -4626,12 +4651,13 @@ async function verifyRound5Ux(page, host, steps, directory, viewports, theme) {
     document.documentElement.style.setProperty("--font-scale", "1.3");
   });
   const winButtonsXlarge = await inspectActionButtons(remoteRegion.locator(".mobile-settings-actions"));
+  assert.deepEqual(winButtonsXlarge.map(b => b.label), ["检查更新"]);
   for (const btn of winButtonsXlarge) {
     assert.equal(btn.textWrap, "balance");
     assert.equal(btn.lines.some(line => line.length === 1), false, `${btn.label} at 360px xlarge must not have a 1-char widow line (got ${JSON.stringify(btn.lines)})`);
   }
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "360px xlarge Settings has 0px horizontal overflow");
-  steps.push("Remote desktop updater renders 更新通道 (稳定版 | 预发布), transitions 1.3.5-dev.23 -> 发现 v1.3.5-dev.27 via system.update check+channel, and keeps 检查并升级 / 检查并下载 balanced without 1-char widow lines");
+  steps.push("Remote desktop updater renders 更新通道 (稳定版 | 预发布), transitions 1.3.5-dev.23 -> 发现 v1.3.5-dev.27 via system.update check+channel, and keeps check-only 检查更新 without remote upgrade buttons or 1-char widow lines");
 }
 
 async function verifyAssistantMail(page, host, steps, directory, viewports) {

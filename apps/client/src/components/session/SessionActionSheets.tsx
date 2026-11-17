@@ -250,7 +250,7 @@ export function SessionActionSheets({
             </>
           )}
           {busy && <p className="m-sheet-note" role="status"><LoaderCircle className="is-spinning" size={15} />正在处理…</p>}
-          {error && <p className="m-sheet-note is-error" role="alert">{error}</p>}
+          {error && !deleteSession && <p className="m-sheet-note is-error" role="alert">{error}</p>}
         </Sheet>
       )}
 
@@ -329,6 +329,7 @@ export function SessionActionSheets({
               ? `从 Claude Desktop 中删除「${deleteSession.title}」会话及其对话记录？此操作不可恢复。`
               : `从 Bridge 列表中删除「${deleteSession.title}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`)
           : ""}
+        error={deleteSession ? error : undefined}
         confirmLabel="删除会话"
         danger
         busy={busy}

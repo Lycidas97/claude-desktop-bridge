@@ -934,7 +934,10 @@ export function DesktopSessions({
             }
           : undefined}
         onRequestDelete={rowMenuSession && visibilityAvailable
-          ? () => setRowDeleteSessionId(rowMenuSession.sessionId)
+          ? () => {
+              setRowActionError(undefined);
+              setRowDeleteSessionId(rowMenuSession.sessionId);
+            }
           : undefined}
         onCancelDelete={() => {
           if (!rowActionBusy) setRowDeleteSessionId(undefined);

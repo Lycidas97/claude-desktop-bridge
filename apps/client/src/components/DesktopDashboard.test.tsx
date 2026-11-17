@@ -404,6 +404,90 @@ describe("successful rewind completion", () => {
   });
 });
 
+describe("desktop session menu mutations", () => {
+  const menuAction = (tree: ReactNode, label: string) =>
+    elements(tree).find(element => element.type === SheetAction && element.props.label === label)!;
+
+  function openConversationMenu(onSelectSession = vi.fn()) {
+    snapshot.host.capabilities = ["session.visibility.v1"];
+    snapshot.runtime.desktopIntegration.state = "ready";
+    const conversation = renderer(DesktopSessionConversation, {
+      session: snapshot.sessions[0]!, snapshot, events: [], apiRequest,
+      onRefreshSnapshot: vi.fn().mockResolvedValue(undefined), onSelectSession,
+    });
+    elements(conversation.draw()).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    return conversation;
+  }
+
+  it("selects the returned fork exactly once and dismisses the menu", async () => {
+    const onSelectSession = vi.fn();
+    const conversation = openConversationMenu(onSelectSession);
+    await settle();
+    apiRequest.mockClear().mockResolvedValueOnce({
+      kind: "response", requestId: "fork", ok: true,
+      result: { session: { ...snapshot.sessions[0]!, sessionId: "fork-A" } },
+    });
+
+    menuAction(conversation.draw(), "Fork 分支").props.onClick();
+    await settle();
+
+    expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "session.fork", params: { sessionId: "A" } });
+    expect(onSelectSession).toHaveBeenCalledExactlyOnceWith("fork-A");
+    expect(elements(conversation.draw()).some(element => element.type === Sheet)).toBe(false);
+  });
+
+  it("keeps the archive menu open with the error and dismisses it after a successful retry", async () => {
+    const conversation = openConversationMenu();
+    await settle();
+    apiRequest.mockClear().mockResolvedValueOnce({
+      kind: "response", requestId: "archive", ok: false, error: { code: "FAILED", message: "原生归档失败" },
+    });
+
+    menuAction(conversation.draw(), "归档会话").props.onClick();
+    await settle();
+
+    const failed = conversation.draw();
+    const sheet = elements(failed).find(element => element.type === Sheet)!;
+    expect(sheet?.props.busy).toBe(false);
+    expect(elements(sheet).some(element => element.props.role === "alert" && textContent(element).includes("原生归档失败"))).toBe(true);
+    expect(menuAction(failed, "归档会话").props.disabled).toBe(false);
+
+    menuAction(failed, "归档会话").props.onClick();
+    await settle();
+
+    expect(apiRequest.mock.calls).toEqual([
+      [{ method: "session.archive", params: { sessionId: "A", archived: true } }],
+      [{ method: "session.archive", params: { sessionId: "A", archived: true } }],
+    ]);
+    expect(elements(conversation.draw()).some(element => element.type === Sheet)).toBe(false);
+  });
+
+  it("keeps the delete confirmation and draft after a rejected request", async () => {
+    const conversation = openConversationMenu();
+    const confirmation = () => elements(conversation.draw()).find(element => element.type === ConfirmationDialog && element.props.open);
+    elements(conversation.draw()).find(element => element.type === SlashCommandInput)!.props.onChange("保留草稿");
+    menuAction(conversation.draw(), "删除会话").props.onClick();
+    await settle();
+    apiRequest.mockClear().mockResolvedValueOnce({
+      kind: "response", requestId: "delete", ok: false, error: { code: "FAILED", message: "原生删除失败" },
+    });
+
+    expect(apiRequest).not.toHaveBeenCalled();
+    expect(confirmation()).toBeDefined();
+    confirmation()!.props.onConfirm();
+    await settle();
+
+    expect(apiRequest).toHaveBeenCalledExactlyOnceWith({ method: "session.delete", params: { sessionId: "A" } });
+    expect(confirmation()?.props).toMatchObject({ open: true, busy: false, error: "原生删除失败" });
+    expect(elements(conversation.draw()).find(element => element.type === SlashCommandInput)!.props.value).toBe("保留草稿");
+
+    confirmation()!.props.onConfirm();
+    await settle();
+    expect(confirmation()).toBeUndefined();
+    expect(elements(conversation.draw()).find(element => element.type === SlashCommandInput)!.props.value).toBe("");
+  });
+});
+
 describe("desktop session deletion confirmation", () => {
   it.each(["claude-desktop", "codex-desktop", "hermes-desktop", "dsh-desktop"] as const)("describes the actual deletion target for %s without deleting on review", async runtimeId => {
     snapshot.host.capabilities.push("session.visibility.v1");
@@ -1199,8 +1283,8 @@ describe("desktop conversation parity", () => {
     await elements(tree).find(element => element.type === SheetAction && element.props.label === "Fork 分支")!.props.onClick();
     await settle();
     tree = sessions.draw();
-    const dangerWarnings = elements(tree).filter(element => element.props.className === "session-channel-warning danger");
-    expect(dangerWarnings.some(element => textContent(element).includes("分支创建失败"))).toBe(true);
+    const menuSheet = elements(tree).find(element => element.type === Sheet && element.props.title === "Archived Fork")!;
+    expect(elements(menuSheet).some(element => element.props.role === "alert" && textContent(element).includes("分支创建失败"))).toBe(true);
     expect(elements(tree).some(element => typeof element.props.className === "string" && element.props.className.includes("desktop-channel-banner"))).toBe(false);
   });
 });

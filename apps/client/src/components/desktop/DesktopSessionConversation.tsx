@@ -1117,17 +1117,7 @@ export function DesktopSessionConversation({
   const conversationDrafts = externalDrafts ?? fallbackDrafts;
   const assistantMail = useAssistantMail();
 
-  const [actionBusy, setActionBusy] = useState(false);
-  const [actionError, setActionError] = useState<string>();
   const hostId = snapshot.host.hostId;
-  const sessionKey = conversationDraftKey(hostId, session.sessionId);
-  const previousKeyRef = useRef(sessionKey);
-
-  useEffect(() => {
-    if (previousKeyRef.current === sessionKey) return;
-    previousKeyRef.current = sessionKey;
-    setActionError(undefined);
-  }, [sessionKey]);
 
   useEffect(() => controller.mountSession(session.sessionId, hostId), [hostId, session.sessionId]);
 
@@ -1137,53 +1127,6 @@ export function DesktopSessionConversation({
     )) ?? [],
     [assistantMail?.cache.cards, session.sessionId, snapshot.assistantMail?.binding?.nativeSessionId],
   );
-
-  async function handleForkSession(targetSessionId: string): Promise<BridgeSessionInfo | undefined> {
-    if (actionBusy) return undefined;
-    setActionBusy(true);
-    setActionError(undefined);
-    try {
-      const created = await controller.forkSession(targetSessionId);
-      onForkCreated?.(targetSessionId, created);
-      await controller.onRefreshSnapshot();
-      await onSelectSession(created.sessionId);
-      return created;
-    } catch (failure) {
-      setActionError(failure instanceof Error ? failure.message : String(failure));
-      return undefined;
-    } finally {
-      setActionBusy(false);
-    }
-  }
-
-  async function handleArchiveSession(targetSessionId: string, archived: boolean): Promise<void> {
-    if (actionBusy) return;
-    setActionBusy(true);
-    setActionError(undefined);
-    try {
-      await controller.archiveSession(targetSessionId, archived);
-    } catch (failure) {
-      setActionError(failure instanceof Error ? failure.message : String(failure));
-    } finally {
-      setActionBusy(false);
-    }
-  }
-
-  async function handleDeleteSession(targetSessionId: string): Promise<void> {
-    if (actionBusy) return;
-    setActionBusy(true);
-    setActionError(undefined);
-    try {
-      await controller.deleteSession(targetSessionId);
-    } catch (failure) {
-      setActionError(failure instanceof Error ? failure.message : String(failure));
-      throw failure;
-    } finally {
-      setActionBusy(false);
-    }
-  }
-
-  const effectiveError = actionError ?? externalActionError;
   const canCommand = snapshot.host.capabilities.includes("session.command.v1");
   const canRename = snapshot.host.capabilities.includes("session.rename.v1");
 
@@ -1248,12 +1191,15 @@ export function DesktopSessionConversation({
       onSaveSessionPermissions={controller.saveSessionPermissions}
       onPreviewRewind={controller.previewRewind}
       onRewindSession={controller.rewindSession}
-      onForkSession={handleForkSession}
-      onArchiveSession={handleArchiveSession}
-      onDeleteSession={handleDeleteSession}
-      sessionActionBusy={actionBusy}
-      {...(effectiveError ? { sessionActionError: effectiveError } : {})}
-      onSessionActionBusyChange={setActionBusy}
+      onForkSession={async (targetSessionId) => {
+        const created = await controller.forkSession(targetSessionId);
+        onForkCreated?.(targetSessionId, created);
+        await controller.onRefreshSnapshot();
+        return created;
+      }}
+      onArchiveSession={controller.archiveSession}
+      onDeleteSession={controller.deleteSession}
+      sessionActionError={externalActionError}
     />
   );
 }

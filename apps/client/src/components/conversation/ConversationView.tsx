@@ -81,6 +81,7 @@ import {
   type SessionConfigurationChange,
 } from "../session/SessionConfigurationDialog.js";
 import { SessionProfileSummary } from "../session/SessionProfileSummary.js";
+import { useSessionMenuAction } from "../session/useSessionMenuAction.js";
 import { BackgroundTaskMarker, BackgroundTasksSheet, findBackgroundTask } from "./BackgroundTasks.js";
 import { useConversationDrafts } from "./ConversationDraftsProvider.js";
 
@@ -187,16 +188,14 @@ export interface ConversationViewProps {
     messageId: string,
     scope: BridgeSessionRewindScope,
   ) => Promise<BridgeSessionRewindResult>) | undefined;
-  onForkSession?: ((sessionId: string) => Promise<BridgeSessionInfo | void | undefined>) | undefined;
+  onForkSession?: ((sessionId: string) => Promise<BridgeSessionInfo | undefined>) | undefined;
   onMoveSessionSection?: ((
     sessionId: string,
     sectionId: string | null,
   ) => Promise<{ session?: BridgeSessionInfo; projects?: BridgeProjectInfo[] } | void>) | undefined;
   onArchiveSession?: ((sessionId: string, archived: boolean) => Promise<void>) | undefined;
   onDeleteSession?: ((sessionId: string) => Promise<void>) | undefined;
-  sessionActionBusy?: boolean | undefined;
   sessionActionError?: string | undefined;
-  onSessionActionBusyChange?: ((busy: boolean) => void) | undefined;
 }
 
 export function ConversationView({
@@ -270,9 +269,7 @@ export function ConversationView({
   onMoveSessionSection,
   onArchiveSession,
   onDeleteSession,
-  sessionActionBusy: controlledActionBusy,
   sessionActionError,
-  onSessionActionBusyChange,
 }: ConversationViewProps) {
   const isMobile = variant === "mobile";
   const openMedia = useMediaPreview();
@@ -288,8 +285,7 @@ export function ConversationView({
   );
   const [internalPermissionOpen, setInternalPermissionOpen] = useState(false);
   const [internalConfigurationOpen, setInternalConfigurationOpen] = useState(false);
-  const [internalActionBusy, setInternalActionBusy] = useState(false);
-  const [internalActionError, setInternalActionError] = useState<string>();
+  const { busy: actionBusy, setBusy: setActionBusy, error: actionError, setError: setActionError, run: runMenuAction } = useSessionMenuAction();
   const [internalMenuOpen, setInternalMenuOpen] = useState(false);
   const [moveMenuOpen, setMoveMenuOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -357,11 +353,6 @@ export function ConversationView({
     if (onConfigurationOpenChange) onConfigurationOpenChange(next);
     else setInternalConfigurationOpen(next);
   }
-  const effectiveActionBusy = controlledActionBusy ?? internalActionBusy;
-  function setActionBusy(next: boolean): void {
-    if (onSessionActionBusyChange) onSessionActionBusyChange(next);
-    else setInternalActionBusy(next);
-  }
 
   useEffect(() => {
     if (previousDraftKeyRef.current === draftKey) return;
@@ -383,7 +374,7 @@ export function ConversationView({
     setInternalMenuOpen(false);
     setMoveMenuOpen(false);
     setRenameOpen(false);
-    setInternalActionError(undefined);
+    setActionError(undefined);
     syncPendingKeyRef.current = undefined;
     setInternalRefreshing(false);
     setSyncFlash(false);
@@ -429,7 +420,7 @@ export function ConversationView({
     if (history?.status === "loading") return;
     syncPendingKeyRef.current = undefined;
     if (history?.status === "error") {
-      setInternalActionError(history.error ?? "同步会话失败");
+      setActionError(history.error ?? "同步会话失败");
     } else {
       setSyncFlash(true);
     }
@@ -445,7 +436,7 @@ export function ConversationView({
   const runtimeName = desktopRuntimeName(runtimeId);
   const isOnline = isMobile ? connection === "connected" && desktopOnline : desktopOnline;
   const isNativeReady = nativeReady ?? (connection === "connected" && desktopOnline);
-  const effectiveActionError = sessionActionError ?? internalActionError;
+  const effectiveActionError = actionError ?? sessionActionError;
 
   const commands = useSessionCommands({
     sessionId: session.sessionId,
@@ -464,7 +455,7 @@ export function ConversationView({
         ? {
             onRename: () => {
               setRenameTitle(session.title);
-              setInternalActionError(undefined);
+              setActionError(undefined);
               setRenameOpen(true);
             },
           }
@@ -707,18 +698,18 @@ export function ConversationView({
         return true;
       }
       if (!onOpenSessionMenu && renameOpen) {
-        if (!effectiveActionBusy) {
+        if (!actionBusy) {
           setRenameOpen(false);
           setInternalMenuOpen(false);
         }
         return true;
       }
       if (!onOpenSessionMenu && deleteSessionOpen) {
-        if (!effectiveActionBusy) setDeleteSessionOpen(false);
+        if (!actionBusy) setDeleteSessionOpen(false);
         return true;
       }
       if (!onOpenSessionMenu && internalMenuOpen) {
-        if (!effectiveActionBusy) {
+        if (!actionBusy) {
           if (moveMenuOpen) setMoveMenuOpen(false);
           else setInternalMenuOpen(false);
         }
@@ -757,7 +748,7 @@ export function ConversationView({
     backgroundTasksOpen,
     contextPopoverOpen,
     deleteSessionOpen,
-    effectiveActionBusy,
+    actionBusy,
     effectiveConfigurationOpen,
     effectivePermissionOpen,
     effectiveSessionView,
@@ -1006,12 +997,12 @@ export function ConversationView({
     setContextPopoverOpen(false);
     contextTriggerRef.current?.focus();
     setCompactBusy(true);
-    setInternalActionError(undefined);
+    setActionError(undefined);
     try {
       await commands.execute("/compact", false);
     } catch (error) {
       if (previousDraftKeyRef.current === targetKey) {
-        setInternalActionError(error instanceof Error ? error.message : "压缩上下文失败");
+        setActionError(error instanceof Error ? error.message : "压缩上下文失败");
       }
     } finally {
       if (previousDraftKeyRef.current === targetKey) {
@@ -1381,7 +1372,7 @@ export function ConversationView({
           && runtimeId === "claude-desktop"
         ),
   );
-  const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== session.title && !effectiveActionBusy);
+  const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== session.title && !actionBusy);
   const menuSupportsFork = Boolean(onForkSession && runtimeId === "claude-desktop");
   const menuSupportsVisibility = isMobile || visibilityAvailable;
   const canSyncSession = Boolean(onRefresh || !isMobile);
@@ -1403,21 +1394,19 @@ export function ConversationView({
   }, [renameOpen]);
 
   useEffect(() => {
-    if (!renameOpen || !effectiveActionBusy) return;
+    if (!renameOpen || !actionBusy) return;
     renameDialogRef.current?.focus();
-  }, [renameOpen, effectiveActionBusy]);
+  }, [renameOpen, actionBusy]);
 
   function closeInternalRename(): void {
-    if (effectiveActionBusy) return;
+    if (actionBusy) return;
     setRenameOpen(false);
     setInternalMenuOpen(false);
   }
 
-  async function runInternalRename(): Promise<void> {
+  function runInternalRename(): void | Promise<void> {
     if (!renameCanSave || (!onRenameSession && !onRunSessionCommand)) return;
-    setActionBusy(true);
-    setInternalActionError(undefined);
-    try {
+    return runMenuAction("重命名会话失败", async () => {
       if (onRenameSession) {
         await onRenameSession(session.sessionId, renameTitle.trim());
       } else {
@@ -1425,33 +1414,23 @@ export function ConversationView({
       }
       setRenameOpen(false);
       setInternalMenuOpen(false);
-    } catch (error) {
-      setInternalActionError(error instanceof Error ? error.message : "重命名会话失败");
-    } finally {
-      setActionBusy(false);
-    }
+    });
   }
 
-  async function runInternalMoveSection(sectionId: string | null): Promise<void> {
-    if (!onMoveSessionSection || effectiveActionBusy || !isOnline) return;
-    setActionBusy(true);
-    setInternalActionError(undefined);
-    try {
+  function runInternalMoveSection(sectionId: string | null): void | Promise<void> {
+    if (!onMoveSessionSection || !isOnline) return;
+    return runMenuAction("移动分组失败", async () => {
       await onMoveSessionSection(session.sessionId, sectionId);
       setMoveMenuOpen(false);
       setInternalMenuOpen(false);
-    } catch (error) {
-      setInternalActionError(error instanceof Error ? error.message : "移动分组失败");
-    } finally {
-      setActionBusy(false);
-    }
+    });
   }
 
   async function runInternalRefresh(): Promise<void> {
-    if (!canSyncSession || effectiveRefreshing || effectiveActionBusy) return;
+    if (!canSyncSession || effectiveRefreshing || actionBusy) return;
     const targetKey = draftKey;
     setInternalRefreshing(true);
-    setInternalActionError(undefined);
+    setActionError(undefined);
     setSyncFlash(false);
     if (!onRefresh) syncPendingKeyRef.current = targetKey;
     try {
@@ -1465,7 +1444,7 @@ export function ConversationView({
     } catch (error) {
       if (syncPendingKeyRef.current === targetKey) syncPendingKeyRef.current = undefined;
       if (previousDraftKeyRef.current === targetKey) {
-        setInternalActionError(error instanceof Error ? error.message : "同步会话失败");
+        setActionError(error instanceof Error ? error.message : "同步会话失败");
       }
     } finally {
       if (previousDraftKeyRef.current === targetKey) {
@@ -1475,51 +1454,32 @@ export function ConversationView({
     }
   }
 
-  async function runInternalFork(): Promise<void> {
-    if (!onForkSession || effectiveActionBusy) return;
-    setActionBusy(true);
-    setInternalActionError(undefined);
-    try {
+  function runInternalFork(): void | Promise<void> {
+    if (!onForkSession) return;
+    return runMenuAction("Fork 分支创建失败", async () => {
       const created = await onForkSession(session.sessionId);
+      if (!created) return;
       setInternalMenuOpen(false);
-      if (created && typeof created === "object" && "sessionId" in created) {
-        await onSelectSession(created.sessionId);
-      }
-    } catch (error) {
-      setInternalActionError(error instanceof Error ? error.message : "Fork 分支创建失败");
-    } finally {
-      setActionBusy(false);
-    }
+      await onSelectSession(created.sessionId);
+    });
   }
 
-  async function runInternalArchive(archived: boolean): Promise<void> {
-    if (!onArchiveSession || effectiveActionBusy) return;
-    setActionBusy(true);
-    setInternalActionError(undefined);
-    try {
+  function runInternalArchive(archived: boolean): void | Promise<void> {
+    if (!onArchiveSession) return;
+    return runMenuAction("归档设置失败", async () => {
       await onArchiveSession(session.sessionId, archived);
       setInternalMenuOpen(false);
-    } catch (error) {
-      setInternalActionError(error instanceof Error ? error.message : "归档设置失败");
-    } finally {
-      setActionBusy(false);
-    }
+    });
   }
 
-  async function runInternalDelete(): Promise<void> {
-    if (!onDeleteSession || effectiveActionBusy) return;
-    setActionBusy(true);
-    setInternalActionError(undefined);
-    try {
+  function runInternalDelete(): void | Promise<void> {
+    if (!onDeleteSession) return;
+    return runMenuAction("删除会话失败", async () => {
       await onDeleteSession(session.sessionId);
       conversationDrafts.resetSession(hostId, session.sessionId);
       setDeleteSessionOpen(false);
       setInternalMenuOpen(false);
-    } catch (error) {
-      setInternalActionError(error instanceof Error ? error.message : "删除会话失败");
-    } finally {
-      setActionBusy(false);
-    }
+    });
   }
 
   return (
@@ -1606,7 +1566,7 @@ export function ConversationView({
                   if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
                     menuOpenerRef.current = document.activeElement;
                   }
-                  setInternalActionError(undefined);
+                  setActionError(undefined);
                   setMoveMenuOpen(false);
                   setInternalMenuOpen(true);
                 }
@@ -1851,8 +1811,8 @@ export function ConversationView({
           moveMenuOpen={moveMenuOpen}
           manualSections={manualSections}
           online={isOnline}
-          busy={effectiveActionBusy}
-          error={effectiveActionError}
+          busy={actionBusy}
+          error={deleteSessionOpen ? actionError : effectiveActionError}
           supportsRename={menuSupportsRename}
           supportsMoveSection={menuSupportsMoveSection}
           supportsFork={menuSupportsFork}
@@ -1863,7 +1823,7 @@ export function ConversationView({
               <SheetAction
                 icon={effectiveSessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
                 label={effectiveSessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
-                disabled={effectiveActionBusy}
+                disabled={actionBusy}
                 detail={effectiveSessionView === "evidence" ? "回到对话记录" : "文件变更、产物与图片"}
                 onClick={() => {
                   setSessionView(effectiveSessionView === "evidence" ? "conversation" : "evidence");
@@ -1874,7 +1834,7 @@ export function ConversationView({
                 <SheetAction
                   icon={session.sidechat ? <CornerUpLeft size={19} /> : <GitFork size={19} />}
                   label="主会话"
-                  disabled={effectiveActionBusy}
+                  disabled={actionBusy}
                   detail={`来自：${parentSession.title}`}
                   onClick={() => {
                     setInternalMenuOpen(false);
@@ -1897,28 +1857,28 @@ export function ConversationView({
             />
           ) : undefined}
           onCloseMenu={() => {
-            if (!effectiveActionBusy) {
+            if (!actionBusy) {
               setMoveMenuOpen(false);
               setInternalMenuOpen(false);
             }
           }}
           onOpenMoveMenu={() => {
-            setInternalActionError(undefined);
+            setActionError(undefined);
             setMoveMenuOpen(true);
           }}
           onBackFromMoveMenu={() => {
-            setInternalActionError(undefined);
+            setActionError(undefined);
             setMoveMenuOpen(false);
           }}
           onMoveToSection={runInternalMoveSection}
           onStartRename={() => {
             setRenameTitle(session.title);
-            setInternalActionError(undefined);
+            setActionError(undefined);
             setRenameOpen(true);
           }}
           onChangeRenameTitle={(title) => {
             setRenameTitle(title);
-            if (internalActionError) setInternalActionError(undefined);
+            if (actionError) setActionError(undefined);
           }}
           onSubmitRename={runInternalRename}
           onCloseRename={closeInternalRename}
@@ -1936,9 +1896,12 @@ export function ConversationView({
           } : undefined}
           onFork={menuSupportsFork ? runInternalFork : undefined}
           onArchive={menuSupportsVisibility && onArchiveSession ? runInternalArchive : undefined}
-          onRequestDelete={menuSupportsVisibility && onDeleteSession ? () => setDeleteSessionOpen(true) : undefined}
+          onRequestDelete={menuSupportsVisibility && onDeleteSession ? () => {
+            setActionError(undefined);
+            setDeleteSessionOpen(true);
+          } : undefined}
           onCancelDelete={() => {
-            if (!effectiveActionBusy) setDeleteSessionOpen(false);
+            if (!actionBusy) setDeleteSessionOpen(false);
           }}
           onConfirmDelete={runInternalDelete}
         />

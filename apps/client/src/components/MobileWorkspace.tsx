@@ -79,6 +79,7 @@ import {
 } from "./session/SessionConfigurationDialog.js";
 import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
 import { useProjectSessionGroups } from "./session/useProjectSessionGroups.js";
+import { useSessionMenuAction } from "./session/useSessionMenuAction.js";
 import { useSessionSectionDrag } from "./session/useSessionSectionDrag.js";
 
 // Keep MediaPreviewProvider import reference visible if QA scripts inspect MobileWorkspace.tsx.
@@ -311,8 +312,7 @@ export function MobileWorkspace({
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameTitle, setRenameTitle] = useState("");
   const [deleteSessionConfirmOpen, setDeleteSessionConfirmOpen] = useState(false);
-  const [sessionActionBusy, setSessionActionBusy] = useState(false);
-  const [sessionActionError, setSessionActionError] = useState<string>();
+  const { busy: sessionActionBusy, setBusy: setSessionActionBusy, error: sessionActionError, setError: setSessionActionError, run: runMenuAction } = useSessionMenuAction();
   const [forkChainOpen, setForkChainOpen] = useState(() => (
     Boolean(selectedSessionId && sessions.find((session) => session.sessionId === selectedSessionId)?.parentSessionId)
   ));
@@ -711,24 +711,16 @@ export function MobileWorkspace({
   }
 
   async function archiveSessionById(sessionId: string, archived: boolean): Promise<void> {
-    if (!onArchiveSession || sessionActionBusy) return;
-    setSessionActionBusy(true);
-    setSessionActionError(undefined);
-    try {
+    if (!onArchiveSession) return;
+    await runMenuAction("归档设置失败", async () => {
       await onArchiveSession(sessionId, archived);
       setMenuSessionId(undefined);
-    } catch (error) {
-      setSessionActionError(error instanceof Error ? error.message : "归档设置失败");
-    } finally {
-      setSessionActionBusy(false);
-    }
+    });
   }
 
   async function moveSessionToSection(sessionId: string, sectionId: string | null): Promise<void> {
-    if (!onMoveSessionSection || sessionActionBusy || !online) return;
-    setSessionActionBusy(true);
-    setSessionActionError(undefined);
-    try {
+    if (!onMoveSessionSection || !online) return;
+    await runMenuAction("移动分组失败", async () => {
       const updated = await onMoveSessionSection(sessionId, sectionId);
       const targetProjectId = sectionId ?? updated.session?.projectId ?? CLAUDE_UNSECTIONED_PROJECT_ID;
       if (targetProjectId) {
@@ -736,11 +728,7 @@ export function MobileWorkspace({
       }
       setMoveMenuSessionId(undefined);
       setMenuSessionId(undefined);
-    } catch (error) {
-      setSessionActionError(error instanceof Error ? error.message : "移动分组失败");
-    } finally {
-      setSessionActionBusy(false);
-    }
+    });
   }
 
   const sessionDrag = useSessionSectionDrag({
@@ -767,9 +755,7 @@ export function MobileWorkspace({
 
   async function renameSession(): Promise<void> {
     if (!menuSession || (!onRenameSession && !onRunSessionCommand) || !renameCanSave) return;
-    setSessionActionBusy(true);
-    setSessionActionError(undefined);
-    try {
+    await runMenuAction("重命名会话失败", async () => {
       if (onRunSessionCommand && snapshot?.host.capabilities.includes("session.command.v1") && desktopRuntimeId(menuSession) === "claude-desktop") {
         await onRunSessionCommand(menuSession.sessionId, `/rename ${renameTitle.trim()}`);
       } else {
@@ -777,50 +763,33 @@ export function MobileWorkspace({
       }
       setRenameOpen(false);
       setMenuSessionId(undefined);
-    } catch (error) {
-      setSessionActionError(error instanceof Error ? error.message : "重命名会话失败");
-    } finally {
-      setSessionActionBusy(false);
-    }
+    });
   }
 
   async function deleteSessionById(sessionId: string): Promise<void> {
-    if (!onDeleteSession || sessionActionBusy) return;
-    setSessionActionBusy(true);
-    setSessionActionError(undefined);
-    try {
+    if (!onDeleteSession) return;
+    await runMenuAction("删除会话失败", async () => {
       await onDeleteSession(sessionId);
       conversationDrafts.resetSession(activeHostId, sessionId);
       setDeleteSessionConfirmOpen(false);
       setMenuSessionId(undefined);
-    } catch (error) {
-      setSessionActionError(error instanceof Error ? error.message : "删除会话失败");
-    } finally {
-      setSessionActionBusy(false);
-    }
+    });
   }
 
   async function forkSessionById(sessionId: string): Promise<void> {
-    if (!onForkSession || sessionActionBusy) return;
-    setSessionActionBusy(true);
-    setSessionActionError(undefined);
-    try {
+    if (!onForkSession) return;
+    await runMenuAction("Fork 分支创建失败", async () => {
       const created = await onForkSession(sessionId);
-      if (created) {
-        setExpandedForkParents((current) => new Set([
-          ...current,
-          ...getSessionAncestorIds(sessions, sessionId),
-          sessionId,
-        ]));
-        setCollapsedProjectIds((current) => expandProject(current, created.projectId));
-        setMenuSessionId(undefined);
-        await selectSession(created.sessionId);
-      }
-    } catch (error) {
-      setSessionActionError(error instanceof Error ? error.message : "Fork 分支创建失败");
-    } finally {
-      setSessionActionBusy(false);
-    }
+      if (!created) return;
+      setExpandedForkParents((current) => new Set([
+        ...current,
+        ...getSessionAncestorIds(sessions, sessionId),
+        sessionId,
+      ]));
+      setCollapsedProjectIds((current) => expandProject(current, created.projectId));
+      setMenuSessionId(undefined);
+      await selectSession(created.sessionId);
+    });
   }
 
   const evidenceCount = (selectedEvidence?.items.length ?? 0) + menuFileChangesCount;
@@ -931,7 +900,10 @@ export function MobileWorkspace({
         } : undefined}
         onFork={menuSession && menuSupportsFork ? () => forkSessionById(menuSession.sessionId) : undefined}
         onArchive={menuSession && onArchiveSession ? (archived) => archiveSessionById(menuSession.sessionId, archived) : undefined}
-        onRequestDelete={onDeleteSession ? () => setDeleteSessionConfirmOpen(true) : undefined}
+        onRequestDelete={onDeleteSession ? () => {
+          setSessionActionError(undefined);
+          setDeleteSessionConfirmOpen(true);
+        } : undefined}
         onCancelDelete={() => {
           if (!sessionActionBusy) setDeleteSessionConfirmOpen(false);
         }}

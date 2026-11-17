@@ -315,16 +315,17 @@ test('Desktop startup leaves relay diagnostics to the configured Native connecti
     loader: 'tsx', jsxFactory: 'jsx',
   });
   for (const desktop of [true, false]) {
-    const probes = [], timers = [];
+    const probes = [], timers = [], attributes = new Map();
     vm.runInNewContext(code.replace(/^import .*;\r?\n/gmu, ''), {
       window: desktop ? { bridgeDesktop: {} } : {}, navigator: {},
-      document: { documentElement: { setAttribute() {} }, getElementById: () => ({}) },
+      document: { documentElement: { setAttribute: (name, value) => attributes.set(name, value) }, getElementById: () => ({}) },
       jsx: () => ({}), StrictMode: {}, App: {}, createRoot: () => ({ render() {} }),
       installDiagnostics() {}, installSpecularHighlight() {},
       setTimeout(callback) { timers.push(callback); },
       runRelayConnectivityProbe(...args) { probes.push(args); return Promise.resolve(); },
     });
     for (const callback of timers) await callback();
+    assert.equal(attributes.get('data-mobile-client'), desktop ? undefined : '');
     assert.equal(probes.length, desktop ? 0 : 1, desktop
       ? 'Desktop startup must not probe the compiled public relay'
       : 'Mobile startup behavior remains unchanged');

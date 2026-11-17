@@ -225,8 +225,54 @@ export class EvidenceManager {
   private readonly active = new Map<string, ActiveEvidence>();
   private readonly rootOwners = new Map<string, number>();
   private readonly transfers = new Map<string, TransferRecord>();
+  private inFlightPreviewRenders = 0;
 
   constructor(private readonly options: EvidenceManagerOptions) {}
+
+  diagnosticsGauges(): {
+    inFlightPreviewRenders: number;
+    cachedPreviews: number;
+    storedBundles: number;
+    storedBlobs: number;
+    storedBlobBytes: number;
+    activeCaptures: number;
+    activeToolOutputBytes: number;
+    activeTransfers: number;
+    retainedTransfers: number;
+    retainedTransferBytes: number;
+  } {
+    const now = Date.now();
+    let activeTransfers = 0;
+    let retainedTransferBytes = 0;
+    for (const transfer of this.transfers.values()) {
+      retainedTransferBytes += transfer.bytes.byteLength;
+      if (transfer.info.expiresAt > now) {
+        activeTransfers += 1;
+      }
+    }
+    let activeToolOutputBytes = 0;
+    for (const active of this.active.values()) {
+      activeToolOutputBytes += active.toolOutputBytes;
+    }
+    const storeGauges = this.options.store.diagnosticsGauges?.() ?? {
+      cachedPreviews: 0,
+      storedBundles: 0,
+      storedBlobs: 0,
+      storedBlobBytes: 0,
+    };
+    return {
+      inFlightPreviewRenders: this.inFlightPreviewRenders,
+      cachedPreviews: storeGauges.cachedPreviews,
+      storedBundles: storeGauges.storedBundles,
+      storedBlobs: storeGauges.storedBlobs,
+      storedBlobBytes: storeGauges.storedBlobBytes,
+      activeCaptures: this.active.size,
+      activeToolOutputBytes,
+      activeTransfers,
+      retainedTransfers: this.transfers.size,
+      retainedTransferBytes,
+    };
+  }
 
   async initialize(): Promise<void> {
     await this.options.store.initialize();
@@ -692,9 +738,17 @@ export class EvidenceManager {
     }
     const bytes = await this.ensureArtifactSnapshot(artifactId);
     if (artifact.manifest.previewMode === "image") {
-      const rendered = this.options.previewRenderer
-        ? await this.options.previewRenderer.image(bytes, artifact.manifest.mimeType)
-        : { bytes, mimeType: artifact.manifest.mimeType };
+      let rendered: { bytes: Buffer; mimeType: string };
+      if (this.options.previewRenderer) {
+        this.inFlightPreviewRenders += 1;
+        try {
+          rendered = await this.options.previewRenderer.image(bytes, artifact.manifest.mimeType);
+        } finally {
+          this.inFlightPreviewRenders -= 1;
+        }
+      } else {
+        rendered = { bytes, mimeType: artifact.manifest.mimeType };
+      }
       await this.options.store.cachePreview(artifactId, rendered.bytes, rendered.mimeType);
       return {
         artifactId,
@@ -708,7 +762,13 @@ export class EvidenceManager {
     }
     if (artifact.manifest.previewMode === "html-screenshot") {
       if (!this.options.previewRenderer) throw new Error("HTML preview is unavailable");
-      const rendered = await this.options.previewRenderer.html(bytes);
+      this.inFlightPreviewRenders += 1;
+      let rendered: { bytes: Buffer; mimeType: string };
+      try {
+        rendered = await this.options.previewRenderer.html(bytes);
+      } finally {
+        this.inFlightPreviewRenders -= 1;
+      }
       await this.options.store.cachePreview(artifactId, rendered.bytes, rendered.mimeType);
       return {
         artifactId,

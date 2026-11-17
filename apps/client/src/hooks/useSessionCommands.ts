@@ -31,11 +31,19 @@ export function useSessionCommands({ sessionId, sessionKey = sessionId, enabled,
   const activeKey = useRef(sessionKey);
   activeKey.current = sessionKey;
   const currentCatalog = catalog?.key === sessionKey ? catalog?.value : undefined;
-  useEffect(() => { setDialog(undefined); }, [sessionKey]);
+  useEffect(() => {
+    activeKey.current = sessionKey;
+    setDialog(undefined);
+    return () => {
+      activeKey.current = undefined;
+    };
+  }, [sessionKey]);
 
   async function load(): Promise<BridgeSlashCommandCatalog> {
     const next = await onLoad!();
-    setCatalog({ key: sessionKey, value: next });
+    if (sessionKey !== undefined && activeKey.current === sessionKey) {
+      setCatalog({ key: sessionKey, value: next });
+    }
     return next;
   }
 
@@ -57,7 +65,7 @@ export function useSessionCommands({ sessionId, sessionKey = sessionId, enabled,
     if (!supported || !onRun) throw new Error("当前电脑版本不支持会话命令，请更新 Bridge");
     if (hasAttachments) throw new Error("命令不能附带图片或文件，请先移除附件");
     const result = await onRun(text);
-    if (activeKey.current !== sessionKey) return true;
+    if (sessionKey === undefined || activeKey.current !== sessionKey) return true;
     if (result.catalog) setCatalog({ key: sessionKey, value: result.catalog });
     if (result.action === "model") onModel();
     else if (result.action === "rewind" && onRewind) onRewind();

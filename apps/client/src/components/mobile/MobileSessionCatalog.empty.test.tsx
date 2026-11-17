@@ -3,8 +3,11 @@ import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MobileWorkspace } from "../MobileWorkspace.js";
 import { EmptyState } from "../common/EmptyState.js";
+import { NewChatCanvas } from "../session/NewChatCanvas.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
-import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
+import { SectionCreateDialog } from "../session/SectionCreateDialog.js";
+import { SessionActionSheets } from "../session/SessionActionSheets.js";
+import { MobileSessionCatalog } from "./MobileSessionCatalog.js";
 
 const hooks = vi.hoisted(() => ({
   slots: [] as any[],
@@ -61,7 +64,11 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Record<string, any>>;
   return [element, ...elements(
-    element.type === EmptyState || element.type === ProjectGroupHeader
+    element.type === EmptyState
+      || element.type === ProjectGroupHeader
+      || element.type === MobileSessionCatalog
+      || element.type === SectionCreateDialog
+      || element.type === SessionActionSheets
       ? (element.type as (props: any) => ReactNode)(element.props)
       : element.props.children,
   )];
@@ -186,10 +193,6 @@ describe("MobileSessionCatalog empty states", () => {
       onCreateSession: vi.fn(),
       onLoadSessionConfiguration: vi.fn(),
       onConfigureSession: vi.fn(),
-      onPreviewProviderSwitch: vi.fn(),
-      onCommitProviderSwitch: vi.fn(),
-      onCancelProviderSwitch: vi.fn(),
-      onRefreshProviders: vi.fn(),
       onDesktopAppAction: vi.fn(),
       onRefresh: vi.fn(),
       onBackToHosts: vi.fn(),
@@ -225,13 +228,13 @@ describe("MobileSessionCatalog empty states", () => {
     expect(elements(box).find((el) => el.type === "button")).toBeUndefined();
   });
 
-  it("shows ready empty state and opens SessionCreateDialog from primary button when Desktop is online with 0 sessions", () => {
+  it("shows ready empty state and opens unified NewChatCanvas from primary button when Desktop is online with 0 sessions", () => {
     const box = emptyStateBox()!;
     expect(elements(box).find((el) => el.type === "strong")?.props.children).toBe("暂无会话");
     expect(elements(box).find((el) => el.type === "span")?.props.children).toBe(
       "当前电脑上尚未创建会话，可随时开始新的对话。",
     );
-    expect(elements(tree).some((el) => el.type === SessionCreateDialog)).toBe(false);
+    expect(elements(tree).some((el) => el.type === NewChatCanvas)).toBe(false);
 
     const createButton = elements(box).find((el) => el.type === "button")!;
     expect(createButton.props.className).toContain("primary-button");
@@ -239,7 +242,7 @@ describe("MobileSessionCatalog empty states", () => {
     createButton.props.onClick();
     draw();
 
-    expect(elements(tree).some((el) => el.type === SessionCreateDialog)).toBe(true);
+    expect(elements(tree).some((el) => el.type === NewChatCanvas)).toBe(true);
   });
 
   it.each(["directory", "desktop-group"] as const)("preselects the clicked %s project when groups share a directory", kind => {
@@ -260,12 +263,15 @@ describe("MobileSessionCatalog empty states", () => {
     createButton!.props.onClick();
     draw();
 
-    expect(elements(tree).find(el => el.type === SessionCreateDialog)?.props.initialProjectId).toBe("target-project");
-    expect(elements(tree).filter(el => el.props.className === "project-group-header")).toHaveLength(2);
+    const canvas = elements(tree).find(el => el.type === NewChatCanvas)!;
+    expect(canvas?.props.initialProjectId).toBe("target-project");
+    canvas.props.onBack();
+    draw();
+    expect(elements(tree).filter(el => String(el.props.className).includes("project-group-header"))).toHaveLength(2);
     expect(props.onOpenSession).not.toHaveBeenCalled();
   });
 
-  it("opens creation for a collapsed empty Desktop group without expanding it", () => {
+  it("keeps an empty Desktop group collapsed by default and opens unified NewChatCanvas without expanding it", () => {
     props = {
       ...props,
       snapshot: makeSnapshot({
@@ -273,16 +279,42 @@ describe("MobileSessionCatalog empty states", () => {
       }),
     };
     draw();
-    elements(tree).find(el => el.props.className === "project-group-open")!.props.onClick();
-    draw();
     expect(elements(tree).find(el => el.props.className === "project-group-open")?.props["aria-expanded"]).toBe(false);
     const createButton = elements(tree).find(el => el.props.label === "新建会话：Empty");
     expect(createButton).toBeDefined();
     createButton!.props.onClick();
     draw();
 
-    expect(elements(tree).find(el => el.type === SessionCreateDialog)?.props.initialProjectId).toBe("empty-section");
+    const canvas = elements(tree).find(el => el.type === NewChatCanvas)!;
+    expect(canvas?.props.initialProjectId).toBe("empty-section");
+    canvas.props.onBack();
+    draw();
     expect(elements(tree).find(el => el.props.className === "project-group-open")?.props["aria-expanded"]).toBe(false);
+  });
+
+  it("groups claude-unsectioned under 未分组 without section-manage menu and opens NewChatCanvas for it", () => {
+    props = {
+      ...props,
+      snapshot: makeSnapshot({
+        projects: [
+          { projectId: "sec-chores", name: "杂活", kind: "desktop-group", cwd: "/Users/demo/work/杂活", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 20 },
+          { projectId: "claude-unsectioned", name: "未分组", cwd: "/Users/demo/work/杂活", sessionCount: 1, runningCount: 0, pendingCount: 0, lastActivityAt: 15 },
+        ],
+        sessions: [
+          { ...baseSession, sessionId: "s-sec", projectId: "sec-chores", projectName: "杂活", cwd: "/Users/demo/work/杂活" },
+          { ...baseSession, sessionId: "s-unsec", projectId: "claude-unsectioned", projectName: "未分组", cwd: "/Users/demo/work/杂活" },
+        ],
+      }),
+    };
+    draw();
+    const headers = elements(tree).filter(el => el.type === ProjectGroupHeader);
+    expect(headers.map(h => h.props.title)).toEqual(["杂活", "未分组"]);
+    expect(elements(tree).find(el => el.props.label === "管理分组：未分组")).toBeUndefined();
+    const unsectionedCreate = elements(tree).find(el => el.props.label === "新建会话：未分组")!;
+    expect(unsectionedCreate).toBeDefined();
+    unsectionedCreate.props.onClick();
+    draw();
+    expect(elements(tree).find(el => el.type === NewChatCanvas)?.props.initialProjectId).toBe("claude-unsectioned");
   });
 
   it.each([
@@ -313,7 +345,7 @@ describe("MobileSessionCatalog empty states", () => {
     const box = emptyStateBox()!;
     expect(elements(box).find((el) => el.type === "strong")?.props.children).toBe("暂无活跃会话");
     expect(textContent(elements(box).find((el) => el.type === "button"))).toBe("新建会话");
-    expect(elements(tree).some((el) => el.type === "strong" && el.props.children === "已归档会话")).toBe(true);
+    expect(elements(tree).some((el) => el.type === "strong" && el.props.children === "已归档")).toBe(true);
     expect(elements(tree).some(el => el.props.label?.startsWith("新建会话："))).toBe(false);
   });
 

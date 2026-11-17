@@ -1,24 +1,70 @@
-import type { BridgeSessionInfo } from "@bridge/protocol";
+import type { BridgeSDKPermissionMode, BridgeSessionInfo } from "@bridge/protocol";
 import { Fragment } from "react";
-import { activeSessionBadgeLabel, formatSessionModelLabel } from "../../lib/conversation-timeline.js";
-import { NATIVE_MODE_LABELS } from "../conversation/PermissionPrompts.js";
+import { formatSessionModelLabel } from "../../lib/conversation-timeline.js";
 
-export function SessionProfileSummary({ session, showActivity = false, id }: { session: BridgeSessionInfo; showActivity?: boolean; id?: string }) {
+export const HEADER_MODE_LABELS: Record<BridgeSDKPermissionMode, string> = {
+  default: "Manual",
+  auto: "Auto",
+  bypassPermissions: "Bypass",
+  acceptEdits: "Accept Edits",
+  plan: "Plan",
+  dontAsk: "Don't Ask",
+};
+
+const EFFORT_LABELS: Record<string, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "XHigh",
+  max: "Max",
+};
+
+export function formatSessionEffortLabel(effort: string | undefined): string | undefined {
+  const trimmed = effort?.trim();
+  if (!trimmed) return undefined;
+  return EFFORT_LABELS[trimmed.toLowerCase()] ?? `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
+}
+
+export function SessionProfileSummary({
+  session,
+  id,
+}: {
+  session: BridgeSessionInfo;
+  showActivity?: boolean | undefined;
+  id?: string | undefined;
+}) {
+  const modelText = formatSessionModelLabel(session);
+  const effortLabel = formatSessionEffortLabel(session.effort ?? session.reasoningEffort);
+  const modeLabel = session.nativePermissionMode ? HEADER_MODE_LABELS[session.nativePermissionMode] : undefined;
+  const metaParts: Array<{ text: string; bypass?: boolean }> = [
+    ...(effortLabel ? [{ text: effortLabel }] : []),
+    ...(modeLabel
+      ? [{ text: modeLabel, ...(session.nativePermissionMode === "bypassPermissions" ? { bypass: true } : {}) }]
+      : []),
+  ];
+
   return (
-    <span className="session-profile-summary" id={id}>
-      {[
-        { text: showActivity ? activeSessionBadgeLabel(session) : undefined },
-        { text: formatSessionModelLabel(session), model: true },
-        { text: session.nativePermissionMode ? NATIVE_MODE_LABELS[session.nativePermissionMode] : undefined },
-        { text: session.effort ? `reasoning ${session.effort}` : undefined },
-      ].filter(part => part.text).map((part, index) => (
-        <Fragment key={index}>
-          {index > 0 && " "}
-          <span className={`session-profile-part${part.model ? " is-model" : ""}`}>
-            {index > 0 && "· "}{part.text}
+    <span className={`session-profile-summary${metaParts.length > 0 ? " has-meta" : ""}`} id={id}>
+      <span className="session-profile-line is-model-line">
+        <span className="session-profile-part is-model">{modelText}</span>
+      </span>
+      {metaParts.length > 0 && (
+        <>
+          <span className="session-profile-sep is-line-sep"> · </span>
+          <span className="session-profile-line is-meta-line">
+            {metaParts.map((part, index) => (
+              <Fragment key={index}>
+                {index > 0 && <span className="session-profile-sep"> · </span>}
+                <span
+                  className={`session-profile-part${part.bypass ? " is-bypass" : ""}`}
+                >
+                  {part.text}
+                </span>
+              </Fragment>
+            ))}
           </span>
-        </Fragment>
-      ))}
+        </>
+      )}
     </span>
   );
 }

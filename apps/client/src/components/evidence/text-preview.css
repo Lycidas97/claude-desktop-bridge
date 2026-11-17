@@ -1,11 +1,11 @@
 .text-preview-tabs { display: flex; gap: 4px; }
-.text-preview-tabs button { min-height: 36px; padding: 6px 14px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.text-preview-tabs button { min-height: 36px; padding: 6px 14px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: calc(12px * var(--font-scale)); cursor: pointer; }
 .text-preview-tabs button[aria-selected="true"] { border-color: var(--line); background: var(--surface); color: var(--text); }
 .text-preview-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.text-preview-format { padding: 8px 4px; color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+.text-preview-format { padding: 8px 4px; color: var(--muted); font-family: var(--font-mono); font-size: calc(12px * var(--font-scale)); }
 .media-viewer-viewport.text { background: var(--bg); }
 .text-preview-markdown { max-width: 880px; margin: 0 auto; padding: 8px; }
-.text-preview-source { width: max-content; min-width: 100%; margin: 0; color: var(--text); font-family: var(--font-mono); font-size: 12px; line-height: 1.7; white-space: pre; tab-size: 4; }
+.text-preview-source { width: max-content; min-width: 100%; margin: 0; color: var(--text); font-family: var(--font-mono); font-size: calc(12px * var(--font-scale)); line-height: 1.7; white-space: pre; tab-size: 4; }
 .text-preview-source code { font: inherit; }
 .text-preview-source .hljs-comment, .text-preview-source .hljs-quote { color: var(--muted); font-style: italic; }
 .text-preview-source .hljs-keyword, .text-preview-source .hljs-selector-tag, .text-preview-source .hljs-doctag, .text-preview-source .hljs-meta { color: var(--accent-ink); }

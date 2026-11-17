@@ -1,3 +1,33 @@
+## 1.3.5
+
+- Unify conversation rendering across mobile, desktop and Assistant workspaces
+  on a shared `ConversationView`, a full-pane `NewChatCanvas` (inline directory,
+  Desktop Section with inline section creation, optional custom session title,
+  model, effort, permission mode and automatic first-turn session title
+  generation) and shared session action, rename and section-create dialogs.
+- Organize sessions into a three-level nested branch and sidechat tree, group
+  unsectioned sessions under `未分组` whenever Desktop Sections are present, add
+  bold section headers and dividers, and support cross-platform session-to-section
+  drag-and-drop (pointer drag on desktop, long-press drag with edge auto-scroll
+  on mobile) with full desktop sidebar menu parity.
+- Streamline mobile navigation into a two-layer home catalog (with a top-bar
+  Assistant capsule) and conversation view with hardware Back support. Add custom
+  `SelectMenu` controls, a macOS `hiddenInset` theme-synced titlebar, two-axis
+  dynamic typography and OS `textZoom` layout reflow (`data-effective-scale`), a
+  two-line non-truncating session header for effort and permission mode,
+  per-session persistent `localStorage` drafts and reverse-chronological
+  (`lastUpdatedAt` descending) session output files.
+- Discover Magpie `Claude-3p/configLibrary` gateways and `/v1/models` catalogs
+  across macOS and Windows (standard and MSIX installs), resolve actual session
+  models from transcript tails when Desktop reports retired synthetic hashes,
+  and refresh Magpie quotas on mobile cold start with cache fallback.
+- Add remote one-tap Claude Desktop launch and port `9229` debugger activation,
+  wake-resilient mobile task completion and permission/question notifications,
+  full subagent report projection with scrollable detail sheets, pull-based
+  bounded state and memory diagnostics, and lightweight GitHub Releases
+  browser-jump update checks without in-app installer downloads or remote
+  auto-updates.
+
 ## 1.3.4
 
 - Add an assistant workspace on mobile and desktop, bind it to an existing native

@@ -29,6 +29,22 @@ const DEFAULT_DIAG_SERVICE_ORIGIN = String(
 let nextSeq = 1;
 const entries: DiagnosticLogEntry[] = [];
 const listeners = new Set<() => void>();
+const stateProviders = new Map<string, () => Record<string, unknown>>();
+const SAFE_GAUGE_TOKENS = new Set([
+  "idle",
+  "connecting",
+  "connected",
+  "reconnecting",
+  "closed",
+  "error",
+  "direct",
+  "public-relay",
+  "lan-relay",
+  "ready",
+  "working",
+  "unavailable",
+  "auth-required",
+]);
 let installed = false;
 let latestBridgeStateSummary: Record<string, unknown> = {};
 let dialogOpen = false;
@@ -48,10 +64,6 @@ function notify(): void {
       // Ignore listener errors.
     }
   }
-}
-
-export function isDiagEnabled(): boolean {
-  return diagEnabled;
 }
 
 export function setDiagEnabled(enabled: boolean): void {
@@ -75,10 +87,6 @@ export function setDiagEnabled(enabled: boolean): void {
     }, true);
   }
   notify();
-}
-
-export function isDiagDialogOpen(): boolean {
-  return dialogOpen;
 }
 
 export function setDiagDialogOpen(open: boolean): void {
@@ -123,6 +131,104 @@ export function diagLog(
 export function setDiagBridgeStateSummary(summary: Record<string, unknown>): void {
   latestBridgeStateSummary = summary;
   if (diagEnabled || dialogOpen) notify();
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function sanitizeGaugeValue(value: unknown): unknown {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "boolean" || value === null) return value;
+  if (typeof value === "string") return SAFE_GAUGE_TOKENS.has(value) ? value : undefined;
+  if (isPlainRecord(value)) return sanitizeGaugeRecord(value);
+  return undefined;
+}
+
+function sanitizeGaugeRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(key)) continue;
+    const clean = sanitizeGaugeValue(value);
+    if (clean !== undefined) sanitized[key] = clean;
+  }
+  return sanitized;
+}
+
+export function registerDiagnosticsStateProvider(
+  namespace: string,
+  collect: () => Record<string, unknown>,
+): () => void {
+  if (typeof namespace !== "string" || !/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(namespace)) {
+    throw new Error("Invalid diagnostics state provider namespace");
+  }
+  stateProviders.set(namespace, collect);
+  return () => {
+    if (stateProviders.get(namespace) === collect) {
+      stateProviders.delete(namespace);
+    }
+  };
+}
+
+export function collectDiagnosticsStateSnapshot(): Record<string, unknown> {
+  const snapshot: Record<string, unknown> = {};
+  for (const [namespace, collect] of stateProviders.entries()) {
+    try {
+      const raw = collect();
+      if (isPlainRecord(raw)) {
+        snapshot[namespace] = sanitizeGaugeRecord(raw);
+      }
+    } catch {
+      snapshot[namespace] = { collectionFailed: true };
+    }
+  }
+  return snapshot;
+}
+
+export function estimateArtifactPreviewBytes(preview: {
+  encoding?: string | undefined;
+  mimeType?: string | undefined;
+  data?: string | undefined;
+}): number {
+  if (typeof preview.data !== "string") return 0;
+  if (preview.encoding === "base64") {
+    const mimeLen = typeof preview.mimeType === "string" ? preview.mimeType.length : 0;
+    return preview.data.length + (mimeLen > 0 ? mimeLen + 13 : 0);
+  }
+  return new TextEncoder().encode(preview.data).byteLength;
+}
+
+function readRendererMemory(): {
+  usedJSHeapSize: number;
+  totalJSHeapSize: number;
+  jsHeapSizeLimit: number;
+} | null {
+  if (typeof performance === "undefined") return null;
+  const memory = (performance as unknown as {
+    memory?: {
+      usedJSHeapSize?: unknown;
+      totalJSHeapSize?: unknown;
+      jsHeapSizeLimit?: unknown;
+    };
+  }).memory;
+  if (
+    !memory
+    || typeof memory.usedJSHeapSize !== "number"
+    || typeof memory.totalJSHeapSize !== "number"
+    || typeof memory.jsHeapSizeLimit !== "number"
+    || !Number.isFinite(memory.usedJSHeapSize)
+    || !Number.isFinite(memory.totalJSHeapSize)
+    || !Number.isFinite(memory.jsHeapSizeLimit)
+  ) {
+    return null;
+  }
+  return {
+    usedJSHeapSize: memory.usedJSHeapSize,
+    totalJSHeapSize: memory.totalJSHeapSize,
+    jsHeapSizeLimit: memory.jsHeapSizeLimit,
+  };
 }
 
 export function getDiagEntries(): readonly DiagnosticLogEntry[] {
@@ -575,34 +681,74 @@ function formatTimestamp(ms: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
-export async function buildDiagnosticReportText(desktopSnapshot?: DesktopControlSnapshot): Promise<string> {
+export async function collectRendererDiagnosticsSnapshot(
+  desktopSnapshot?: DesktopControlSnapshot,
+): Promise<Record<string, unknown>> {
   const idbSummary = desktopSnapshot ? undefined : await inspectIndexedDbSummary();
-  const header = {
+  const stateGauges = collectDiagnosticsStateSnapshot();
+  const currentEntries = [...entries];
+  const errorCount = currentEntries.filter((entry) => entry.level === "error").length;
+  const warnCount = currentEntries.filter((entry) => entry.level === "warn").length;
+  return {
+    schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     buildTag: BUILD_DIAG_TAG,
     diagRecordingEnabled: diagEnabled,
-    location: typeof window !== "undefined" ? window.location.href : "",
     platform: Capacitor.getPlatform(),
     isNative: Capacitor.isNativePlatform(),
     onLine: typeof navigator !== "undefined" ? navigator.onLine : undefined,
     visibilityState: typeof document !== "undefined" ? document.visibilityState : undefined,
-    userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+    rendererMemory: readRendererMemory(),
     bridgeState: desktopSnapshot ? {
-      connection: desktopSnapshot.connection, desktopName: desktopSnapshot.host.name, desktopOnline: desktopSnapshot.host.online,
-      latestSeq: desktopSnapshot.latestSeq, runtime: desktopSnapshot.runtime, transportMetrics: desktopSnapshot.transport,
+      connection: desktopSnapshot.connection,
+      desktopName: desktopSnapshot.host.name,
+      desktopOnline: desktopSnapshot.host.online,
+      latestSeq: desktopSnapshot.latestSeq,
+      runtime: desktopSnapshot.runtime,
+      transportMetrics: desktopSnapshot.transport,
     } : latestBridgeStateSummary,
+    stateGauges,
     ...(idbSummary ? { indexedDb: idbSummary } : {}),
+    eventLog: {
+      enabled: diagEnabled,
+      count: currentEntries.length,
+      errorCount,
+      warnCount,
+      entries: currentEntries,
+    },
+  };
+}
+
+export async function buildDiagnosticReportText(desktopSnapshot?: DesktopControlSnapshot): Promise<string> {
+  const snapshot = await collectRendererDiagnosticsSnapshot(desktopSnapshot);
+  const { eventLog, ...header } = snapshot as {
+    eventLog: {
+      enabled: boolean;
+      count: number;
+      errorCount: number;
+      warnCount: number;
+      entries: DiagnosticLogEntry[];
+    };
+    [key: string]: unknown;
   };
 
-  const logLines = entries.map((e) => (
+  const logLines = eventLog.entries.map((e) => (
     `[${formatTimestamp(e.at)}] #${e.seq} [${e.level.toUpperCase()}] [${e.tag}] ${e.message}${e.detail ? ` | ${e.detail}` : ""}`
   ));
 
   return [
     desktopSnapshot ? "=== Bridge Desktop Diagnostic Report ===" : "=== Claude Desktop Bridge Mobile Diagnostic Report ===",
-    JSON.stringify(header, null, 2),
+    JSON.stringify({
+      ...header,
+      eventLog: {
+        enabled: eventLog.enabled,
+        count: eventLog.count,
+        errorCount: eventLog.errorCount,
+        warnCount: eventLog.warnCount,
+      },
+    }, null, 2),
     "",
-    `=== Event Log (${entries.length} entries, on-demand recording: ${diagEnabled ? "ON" : "OFF"}) ===`,
+    `=== Event Log (${eventLog.count} entries, on-demand recording: ${eventLog.enabled ? "ON" : "OFF"}) ===`,
     ...(logLines.length > 0 ? logLines : ["(按需诊断记录当前未开启；点击上方「开启按需记录」后再复现问题即可采集完整事件流)"]),
     "",
   ].join("\n");

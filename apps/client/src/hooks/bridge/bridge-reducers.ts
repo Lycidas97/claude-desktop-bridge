@@ -16,6 +16,7 @@ import {
   type BridgePendingPrompt,
   type BridgePermissionInfo,
   type BridgePrAutoFixState,
+  type BridgeProjectInfo,
   type BridgeProviderProfile,
   type BridgeResponse,
   type BridgeRuntimeGoalInfo,
@@ -125,6 +126,7 @@ export interface PendingResponse {
   resolve(response: BridgeResponse): void;
   reject(error: Error): void;
   timer: ReturnType<typeof setTimeout>;
+  startedAt?: number;
 }
 
 export interface PairingConnectionPhase {
@@ -156,30 +158,429 @@ export interface MobileBridgeState {
   error: string | undefined;
 }
 
-export const INITIAL_STATE: MobileBridgeState = {
-  loading: true,
-  hosts: [],
+export type ActiveHostState = Omit<MobileBridgeState, "loading" | "hosts" | "pairingSync">;
+
+/** Empty baseline for every active-host field; clone via {@link freshActiveHostState} before mutating or storing in React state. */
+export const EMPTY_ACTIVE_HOST_STATE: Readonly<ActiveHostState> = Object.freeze({
   activeHostId: undefined,
   desktopName: undefined,
   connection: "idle",
   desktopOnline: false,
   snapshot: undefined,
   snapshotSeq: 0,
-  permissions: [],
+  permissions: Object.freeze([]) as unknown as BridgePermissionInfo[],
   focusSessionId: undefined,
-  histories: {},
-  evidence: {},
-  artifactPreviews: {},
-  artifactTransfers: {},
-  events: [],
-  localTurns: [],
+  histories: Object.freeze({}) as Record<string, SessionHistoryState>,
+  evidence: Object.freeze({}) as Record<string, SessionEvidenceState>,
+  artifactPreviews: Object.freeze({}) as Record<string, BridgeArtifactPreview>,
+  artifactTransfers: Object.freeze({}) as Record<string, number>,
+  events: Object.freeze([]) as unknown as BridgeEvent[],
+  localTurns: Object.freeze([]) as unknown as LocalTurn[],
   latestSeq: 0,
   connectionIssue: undefined,
   transportMetrics: undefined,
   pendingOutbound: 0,
-  pairingSync: undefined,
   error: undefined,
+});
+
+/** Return fresh mutable collections matching {@link EMPTY_ACTIVE_HOST_STATE}. */
+export function freshActiveHostState(): ActiveHostState {
+  return {
+    ...EMPTY_ACTIVE_HOST_STATE,
+    permissions: [],
+    histories: {},
+    evidence: {},
+    artifactPreviews: {},
+    artifactTransfers: {},
+    events: [],
+    localTurns: [],
+  };
+}
+
+export const INITIAL_STATE: MobileBridgeState = {
+  loading: true,
+  hosts: [],
+  ...freshActiveHostState(),
+  pairingSync: undefined,
 };
+
+export interface StoredHostSnapshotInput {
+  snapshot?: BridgeHostSnapshot;
+  snapshotSeq: number;
+  permissions: BridgePermissionInfo[];
+  events: BridgeEvent[];
+  evidence: Record<string, SessionEvidenceState>;
+  artifactPreviews: Record<string, BridgeArtifactPreview>;
+  localTurns: LocalTurn[];
+  latestSeq: number;
+}
+
+export interface BeginHostSessionOptions {
+  focusSessionId?: string | undefined;
+  preserveCurrentHost?: boolean | undefined;
+  loading?: boolean | undefined;
+}
+
+export interface ClearActiveHostOverrides {
+  loading?: boolean | undefined;
+  hosts?: PairedHost[] | undefined;
+  connection?: SocketState | undefined;
+  pairingSync?: PairingSyncState | undefined;
+  error?: string | undefined;
+}
+
+export interface HydrateStoredHostOptions {
+  rejectedRequestIds?: ReadonlySet<string> | undefined;
+  pendingOutbound?: number | undefined;
+}
+
+export interface ReplaceActiveHostSnapshotOptions {
+  loading?: boolean | undefined;
+  desktopOnline?: boolean | undefined;
+  hosts?: PairedHost[] | undefined;
+  pairingSync?: PairingSyncState | undefined;
+  error?: string | undefined;
+  clearError?: boolean | undefined;
+}
+
+const DELIVERY_RANK: Record<BridgeDeliveryState, number> = {
+  "local-saved": 0,
+  "relay-received": 1,
+  "uncertain": 2,
+  "host-received": 3,
+  "submitted": 4,
+  "waiting-confirmation": 5,
+  "session-received": 6,
+  "queued": 7,
+  "running": 8,
+  "completed": 9,
+  "failed": 9,
+  "cancelled": 9,
+};
+
+const TERMINAL_DELIVERY = new Set<BridgeDeliveryState>(["completed", "failed", "cancelled"]);
+
+function pickWinningTurn(current: LocalTurn, incoming: LocalTurn): LocalTurn {
+  if (current.lastEventSeq !== undefined && incoming.lastEventSeq !== undefined) {
+    if (current.lastEventSeq !== incoming.lastEventSeq) {
+      return incoming.lastEventSeq > current.lastEventSeq ? incoming : current;
+    }
+    return DELIVERY_RANK[incoming.delivery] > DELIVERY_RANK[current.delivery] ? incoming : current;
+  }
+  if (current.lastEventSeq !== undefined || incoming.lastEventSeq !== undefined) {
+    const sequenced = current.lastEventSeq !== undefined ? current : incoming;
+    const unsequenced = sequenced === current ? incoming : current;
+    // A synchronous terminal RPC result (no event seq) cannot regress back to an in-flight event.
+    if (TERMINAL_DELIVERY.has(unsequenced.delivery) && !TERMINAL_DELIVERY.has(sequenced.delivery)) {
+      return unsequenced;
+    }
+    // An explicit post-send event (including host-received -> uncertain) beats an unsequenced cached receipt.
+    if (sequenced.delivery === "uncertain") {
+      return sequenced;
+    }
+    return DELIVERY_RANK[unsequenced.delivery] > DELIVERY_RANK[sequenced.delivery]
+      ? unsequenced
+      : sequenced;
+  }
+  return DELIVERY_RANK[incoming.delivery] > DELIVERY_RANK[current.delivery] ? incoming : current;
+}
+
+function mergeTurnRecord(current: LocalTurn, incoming: LocalTurn): LocalTurn {
+  const winner = pickWinningTurn(current, incoming);
+  const fallback = winner === incoming ? current : incoming;
+  const maxSeq = winner.delivery === fallback.delivery
+    ? Math.max(current.lastEventSeq ?? -1, incoming.lastEventSeq ?? -1)
+    : (winner.lastEventSeq ?? -1);
+  const { error: _fallbackError, lastEventSeq: _fallbackSeq, ...fallbackMeta } = fallback;
+  const { error: _winnerError, lastEventSeq: _winnerSeq, ...winnerRest } = winner;
+  return {
+    ...fallbackMeta,
+    ...winnerRest,
+    ...(winner.commandId || fallback.commandId ? { commandId: winner.commandId ?? fallback.commandId } : {}),
+    ...(winner.turnId || fallback.turnId ? { turnId: winner.turnId ?? fallback.turnId } : {}),
+    ...(winner.messageId || fallback.messageId ? { messageId: winner.messageId ?? fallback.messageId } : {}),
+    ...(maxSeq >= 0 ? { lastEventSeq: maxSeq } : {}),
+    ...(winner.error ? { error: winner.error } : {}),
+  };
+}
+
+function mergeHydratedLocalTurns(
+  currentTurns: LocalTurn[],
+  storedTurns: LocalTurn[],
+  rejectedRequestIds: ReadonlySet<string> | undefined,
+  events: BridgeEvent[],
+): LocalTurn[] {
+  const applyRejected = (turn: LocalTurn): LocalTurn => (
+    rejectedRequestIds?.has(turn.requestId) &&
+    (turn.delivery === "local-saved" || turn.delivery === "relay-received")
+      ? {
+          ...turn,
+          delivery: "uncertain",
+          error: "这条消息未能送达当前连接，请确认后重试。",
+        }
+      : turn
+  );
+  const merged = new Map<string, LocalTurn>();
+  for (const turn of storedTurns.map(applyRejected)) {
+    const existing = merged.get(turn.requestId);
+    merged.set(turn.requestId, existing ? mergeTurnRecord(existing, turn) : turn);
+  }
+  for (const turn of currentTurns.map(applyRejected)) {
+    const existing = merged.get(turn.requestId);
+    merged.set(turn.requestId, existing ? mergeTurnRecord(existing, turn) : turn);
+  }
+  let result = [...merged.values()];
+  for (const event of events) {
+    result = applyEventToTurns(result, event);
+  }
+  return result;
+}
+
+function mergeHydratedEvidenceMap(
+  current: Record<string, SessionEvidenceState>,
+  stored: Record<string, SessionEvidenceState>,
+): Record<string, SessionEvidenceState> {
+  const sessionIds = new Set([...Object.keys(stored), ...Object.keys(current)]);
+  const next: Record<string, SessionEvidenceState> = {};
+  for (const sessionId of sessionIds) {
+    const live = current[sessionId];
+    const cached = stored[sessionId];
+    if (!cached) {
+      if (live) next[sessionId] = live;
+      continue;
+    }
+    if (!live) {
+      next[sessionId] = cached;
+      continue;
+    }
+    // Preserve hydrated full evidence details already loaded in `live`, only filling missing items from vault cache.
+    const byId = new Map<string, BridgeEvidenceBundle>(
+      mergeEvidence([], cached.items).map((item) => [item.id, item]),
+    );
+    for (const item of live.items) {
+      byId.set(item.id, item);
+    }
+    const items = [...byId.values()].sort((left, right) => (
+      right.startedAt - left.startedAt || right.id.localeCompare(left.id)
+    ));
+    const nextCursor = live.nextCursor ?? cached.nextCursor;
+    next[sessionId] = {
+      ...live,
+      items,
+      hasMore: live.hasMore || cached.hasMore,
+      ...(nextCursor ? { nextCursor } : {}),
+    };
+  }
+  return next;
+}
+
+/** Clear all active-host state fields while keeping global host list and explicit overrides. */
+export function clearActiveHostState(
+  current: MobileBridgeState,
+  overrides: ClearActiveHostOverrides = {},
+): MobileBridgeState {
+  return {
+    ...current,
+    ...freshActiveHostState(),
+    loading: overrides.loading ?? current.loading,
+    hosts: overrides.hosts ?? current.hosts,
+    connection: overrides.connection ?? "idle",
+    pairingSync: "pairingSync" in overrides ? overrides.pairingSync : undefined,
+    error: overrides.error,
+  };
+}
+
+function recoverInterruptedPageState<
+  T extends { status: "idle" | "loading" | "ready" | "error"; items: unknown[]; nextCursor?: string },
+>(pages: Record<string, T>): Record<string, T> {
+  let changed = false;
+  const next: Record<string, T> = {};
+  for (const [sessionId, entry] of Object.entries(pages)) {
+    if (entry.status !== "loading") {
+      next[sessionId] = entry;
+      continue;
+    }
+    changed = true;
+    if (entry.items.length > 0) {
+      next[sessionId] = { ...entry, status: "ready" };
+    } else if (entry.nextCursor) {
+      next[sessionId] = { ...entry, status: "idle" };
+    }
+    // Omit empty initial loading entries (no items, no cursor) so initial session open can re-trigger on reconnect.
+  }
+  return changed ? next : pages;
+}
+
+/** Transition active host session state to `"connecting"`, optionally preserving live state for the same host. */
+export function beginHostSessionState(
+  current: MobileBridgeState,
+  roomId: string,
+  desktopName: string,
+  options: BeginHostSessionOptions = {},
+): MobileBridgeState {
+  const keepCurrentHost = Boolean(options.preserveCurrentHost) && current.activeHostId === roomId;
+  const loading = options.loading ?? false;
+  if (keepCurrentHost) {
+    return {
+      ...current,
+      loading,
+      activeHostId: roomId,
+      desktopName: desktopName || current.desktopName,
+      connection: "connecting",
+      desktopOnline: false,
+      focusSessionId: options.focusSessionId ?? current.focusSessionId,
+      histories: recoverInterruptedPageState(current.histories),
+      evidence: recoverInterruptedPageState(current.evidence),
+      connectionIssue: undefined,
+      transportMetrics: undefined,
+      error: undefined,
+    };
+  }
+  return {
+    ...clearActiveHostState(current, {
+      loading,
+      connection: "connecting",
+      pairingSync: current.pairingSync,
+    }),
+    activeHostId: roomId,
+    desktopName,
+    focusSessionId: options.focusSessionId,
+  };
+}
+
+/** Merge decrypted vault state onto the active host without regressing newer live data or marking desktop online. */
+export function hydrateStoredHostState(
+  current: MobileBridgeState,
+  roomId: string,
+  stored: StoredHostSnapshotInput,
+  options: HydrateStoredHostOptions = {},
+): MobileBridgeState {
+  if (current.activeHostId !== undefined && current.activeHostId !== roomId) {
+    return current;
+  }
+  const events = mergeBridgeEvents(current.events, stored.events);
+  const useStoredSnapshot = Boolean(stored.snapshot) && (
+    !current.snapshot ||
+    stored.snapshotSeq > current.snapshotSeq ||
+    (current.snapshotSeq === 0 && current.events.length === 0 && stored.snapshot!.latestSeq >= current.snapshot.latestSeq)
+  );
+  const hasLiveSnapshotOrEvents = current.snapshotSeq > 0 || current.events.length > 0;
+  let snapshot = current.snapshot;
+  let snapshotSeq = current.snapshotSeq;
+  let permissions = current.permissions;
+  if (useStoredSnapshot && stored.snapshot) {
+    const rebased = rebaseSnapshot(
+      stored.snapshot,
+      events,
+      hasLiveSnapshotOrEvents ? current.permissions : stored.permissions,
+    );
+    snapshot = rebased.snapshot;
+    snapshotSeq = stored.snapshotSeq;
+    permissions = rebased.permissions;
+  } else if (snapshot) {
+    const hasNewerEvents = events.some((event) => event.seq > snapshotSeq);
+    if (hasNewerEvents) {
+      const rebased = rebaseSnapshot(
+        snapshot,
+        events,
+        hasLiveSnapshotOrEvents ? current.permissions : stored.permissions,
+      );
+      snapshot = rebased.snapshot;
+      permissions = rebased.permissions;
+    }
+  } else {
+    permissions = hasLiveSnapshotOrEvents ? current.permissions : stored.permissions;
+    const seen = new Set(current.events.map((event) => event.eventId));
+    for (const event of events) {
+      if (hasLiveSnapshotOrEvents && seen.has(event.eventId)) continue;
+      if (!hasLiveSnapshotOrEvents) continue;
+      permissions = applyPermissionEvent(permissions, event);
+    }
+  }
+  const localTurns = mergeHydratedLocalTurns(
+    current.localTurns,
+    stored.localTurns,
+    options.rejectedRequestIds,
+    events,
+  );
+  const evidence = mergeHydratedEvidenceMap(current.evidence, stored.evidence);
+  const artifactPreviews = {
+    ...stored.artifactPreviews,
+    ...current.artifactPreviews,
+  };
+  const latestSeq = Math.max(
+    current.latestSeq,
+    stored.latestSeq,
+    snapshotSeq,
+    ...events.map((event) => event.seq),
+  );
+  const hosts = snapshot
+    ? current.hosts.map((host) => (
+        host.roomId === roomId
+          ? hostWithRuntimeState(host, snapshot, permissions)
+          : host
+      ))
+    : current.hosts;
+  return {
+    ...current,
+    snapshot,
+    snapshotSeq,
+    permissions,
+    events,
+    evidence,
+    artifactPreviews,
+    localTurns,
+    latestSeq,
+    pendingOutbound: options.pendingOutbound ?? current.pendingOutbound,
+    hosts,
+  };
+}
+
+/** Apply a newer decrypted/verified snapshot to the active host, rebasing over local events and updating host summary. */
+export function replaceActiveHostSnapshot(
+  current: MobileBridgeState,
+  roomId: string,
+  snapshot: BridgeHostSnapshot,
+  options: ReplaceActiveHostSnapshotOptions = {},
+): MobileBridgeState {
+  const isStaleSnapshot = Boolean(current.snapshot) && snapshot.latestSeq < current.snapshotSeq;
+  const hasMetadataOverrides =
+    options.loading !== undefined ||
+    options.desktopOnline !== undefined ||
+    options.hosts !== undefined ||
+    "pairingSync" in options ||
+    options.clearError ||
+    "error" in options;
+  if (isStaleSnapshot && !hasMetadataOverrides) {
+    return current;
+  }
+  const rebased = isStaleSnapshot
+    ? {
+        snapshot: current.snapshot!,
+        permissions: current.permissions,
+        latestSeq: Math.max(current.latestSeq, current.snapshotSeq),
+      }
+    : rebaseSnapshot(snapshot, current.events, current.permissions);
+  const baseHosts = options.hosts ?? current.hosts;
+  const nextSnapshotSeq = isStaleSnapshot ? current.snapshotSeq : snapshot.latestSeq;
+  return {
+    ...current,
+    ...(options.loading !== undefined ? { loading: options.loading } : {}),
+    ...(options.desktopOnline !== undefined ? { desktopOnline: options.desktopOnline } : {}),
+    ...("pairingSync" in options ? { pairingSync: options.pairingSync } : {}),
+    ...(options.clearError ? { error: undefined } : "error" in options ? { error: options.error } : {}),
+    snapshot: rebased.snapshot,
+    snapshotSeq: nextSnapshotSeq,
+    permissions: rebased.permissions,
+    desktopName: rebased.snapshot.host.name,
+    latestSeq: Math.max(current.latestSeq, rebased.latestSeq),
+    hosts: baseHosts.map((host) => (
+      host.roomId === roomId
+        ? hostWithRuntimeState(host, rebased.snapshot, rebased.permissions)
+        : host
+    )),
+  };
+}
 
 export const HISTORY_PAGE_SIZE = 50;
 export const LOCAL_EVIDENCE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -259,8 +660,8 @@ export function hostStatus(
   if (permissions.length > 0 || snapshot?.prompts?.length) return "attention";
   if (!snapshot) return "offline";
   if (
-    snapshot.runtime.activeTurns > 0 ||
-    snapshot.sessions.some((session) => session.turnState === "running")
+    (snapshot.runtime?.activeTurns ?? 0) > 0 ||
+    (snapshot.sessions ?? []).some((session) => session.turnState === "running")
   ) return "running";
   return "standby";
 }
@@ -282,14 +683,14 @@ export function hostSummary(
       host.relayEndpoints.every((endpoint) => isLoopbackRelay(endpoint.url))
     ),
     status: hostStatus(snapshot, permissions),
-    activeTurns: snapshot?.runtime.activeTurns ?? 0,
+    activeTurns: snapshot?.runtime?.activeTurns ?? 0,
     path: activeEndpoint?.kind ?? "lan-relay",
-    ...(snapshot ? { lastSeenAt: snapshot.host.lastSeenAt } : {}),
+    ...(snapshot?.host?.lastSeenAt !== undefined ? { lastSeenAt: snapshot.host.lastSeenAt } : {}),
     ...((permissions[0] ?? snapshot?.prompts?.[0]) ? { attentionSessionId: (permissions[0] ?? snapshot?.prompts?.[0])!.sessionId } : {}),
   };
 }
 
-export function hostWithRuntimeState(
+function hostWithRuntimeState(
   host: PairedHost,
   snapshot: BridgeHostSnapshot | undefined,
   permissions: BridgePermissionInfo[],
@@ -297,15 +698,15 @@ export function hostWithRuntimeState(
   const { attentionSessionId: _attentionSessionId, ...base } = host;
   const visibleActiveTurns = snapshot
     ? Math.max(
-        snapshot.runtime.activeTurns,
-        snapshot.sessions.filter((session) => session.turnState === "running" || session.turnState === "waiting").length,
+        snapshot.runtime?.activeTurns ?? 0,
+        (snapshot.sessions ?? []).filter((session) => session.turnState === "running" || session.turnState === "waiting").length,
       )
     : host.activeTurns;
   return {
     ...base,
     status: hostStatus(snapshot, permissions),
     activeTurns: visibleActiveTurns,
-    ...(snapshot ? { lastSeenAt: snapshot.host.lastSeenAt } : {}),
+    ...(snapshot?.host?.lastSeenAt !== undefined ? { lastSeenAt: snapshot.host.lastSeenAt } : {}),
     ...((permissions[0] ?? snapshot?.prompts?.[0]) ? { attentionSessionId: (permissions[0] ?? snapshot?.prompts?.[0])!.sessionId } : {}),
   };
 }
@@ -424,7 +825,7 @@ export function mergeBridgeEvents(current: BridgeEvent[], incoming: BridgeEvent[
     .slice(-2_000);
 }
 
-export function evidenceFromEvent(event: BridgeEvent): BridgeEvidenceBundle | undefined {
+function evidenceFromEvent(event: BridgeEvent): BridgeEvidenceBundle | undefined {
   if (!event.type.startsWith("evidence.")) return undefined;
   const value = event.data.evidence;
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -487,7 +888,7 @@ export function shouldPersistIncomingMessage(payload: BridgePayload, localTurns:
   return false;
 }
 
-export function mergeEvidence(
+function mergeEvidence(
   current: BridgeEvidenceBundle[],
   incoming: BridgeEvidenceBundle[],
 ): BridgeEvidenceBundle[] {
@@ -562,7 +963,7 @@ export function applyPermissionEvent(
   return current;
 }
 
-export function applyPromptEvent(
+function applyPromptEvent(
   current: BridgePendingPrompt[] | undefined,
   event: BridgeEvent,
 ): BridgePendingPrompt[] | undefined {
@@ -577,7 +978,7 @@ export function applyPromptEvent(
   return current;
 }
 
-export function applyUnseenPermissionEvents(
+function applyUnseenPermissionEvents(
   permissions: BridgePermissionInfo[],
   incoming: BridgeEvent[],
   seen: BridgeEvent[],
@@ -1022,4 +1423,311 @@ export function applyEventsToSnapshot(
     snapshot: snapshotWithPermissions(current, currentPermissions),
     permissions: currentPermissions,
   };
+}
+
+export interface ApplySessionResultOptions {
+  sessions?: BridgeSessionInfo[] | undefined;
+  history?: {
+    sessionId: string;
+    page: BridgeHistoryPage;
+  } | undefined;
+  titleOnly?: boolean | undefined;
+  prepend?: boolean | undefined;
+  syncHostSummary?: boolean | undefined;
+}
+
+export interface ProjectCatalogPatch {
+  upsertProject?: BridgeProjectInfo | undefined;
+  project?: BridgeProjectInfo | undefined;
+  projects?: BridgeProjectInfo[] | undefined;
+  deletedProjectId?: string | undefined;
+  session?: BridgeSessionInfo | undefined;
+  sessions?: BridgeSessionInfo[] | undefined;
+}
+
+export interface ApplyEvidencePageOptions {
+  mergeHasMore?: boolean | undefined;
+  error?: boolean | undefined;
+  hasMoreOnError?: boolean | undefined;
+  forceErrorStatus?: boolean | undefined;
+  preserveCursorOnError?: boolean | undefined;
+}
+
+export interface ApplyIncomingEventsOptions {
+  roomId?: string | undefined;
+  cursor?: number | undefined;
+}
+
+/**
+ * Recomputes the paired-host list entry for the active (or specified) host from
+ * the current snapshot and permissions so card summaries stay aligned with
+ * incremental RPC or event updates.
+ */
+export function syncActiveHostRuntimeSummary(
+  current: MobileBridgeState,
+  roomId: string | undefined = current.activeHostId,
+): MobileBridgeState {
+  if (!roomId || !current.hosts.some((host) => host.roomId === roomId)) return current;
+  return {
+    ...current,
+    hosts: current.hosts.map((host) => host.roomId === roomId
+      ? hostWithRuntimeState(host, current.snapshot, current.permissions)
+      : host),
+  };
+}
+
+/**
+ * Applies a session-level RPC result (single session metadata/title/fork,
+ * full `session.list` replacement, and/or initial `session.open` history page)
+ * and optionally syncs the active host runtime summary.
+ */
+export function applySessionResultToState(
+  current: MobileBridgeState,
+  session?: BridgeSessionInfo,
+  options: ApplySessionResultOptions = {},
+): MobileBridgeState {
+  let snapshot = current.snapshot;
+  if (snapshot) {
+    if (Array.isArray(options.sessions)) {
+      snapshot = { ...snapshot, sessions: options.sessions };
+    } else if (session) {
+      if (options.titleOnly) {
+        let matched = false;
+        const sessions = snapshot.sessions.map((candidate) => {
+          if (candidate.sessionId !== session.sessionId) return candidate;
+          matched = true;
+          return { ...candidate, title: session.title };
+        });
+        if (matched) snapshot = { ...snapshot, sessions };
+      } else if (options.prepend) {
+        snapshot = {
+          ...snapshot,
+          sessions: [
+            session,
+            ...snapshot.sessions.filter((candidate) => candidate.sessionId !== session.sessionId),
+          ],
+        };
+      } else {
+        snapshot = applySessionToSnapshot(snapshot, session);
+      }
+    }
+  }
+  const histories = options.history
+    ? {
+        ...current.histories,
+        [options.history.sessionId]: {
+          status: "ready" as const,
+          items: options.history.page.items,
+          hasMore: options.history.page.hasMore,
+          ...(options.history.page.nextCursor ? { nextCursor: options.history.page.nextCursor } : {}),
+        },
+      }
+    : current.histories;
+  if (snapshot === current.snapshot && histories === current.histories) return current;
+  const next: MobileBridgeState = {
+    ...current,
+    snapshot,
+    histories,
+  };
+  return options.syncHostSummary === false ? next : syncActiveHostRuntimeSummary(next);
+}
+
+/**
+ * Applies project/section catalog mutations (`section.create`,
+ * `section.assignSession`, `section.rename`, `section.delete`) to the active
+ * snapshot and syncs the active host runtime summary.
+ */
+export function applyProjectCatalogPatchToState(
+  current: MobileBridgeState,
+  patch: ProjectCatalogPatch,
+): MobileBridgeState {
+  if (!current.snapshot) return current;
+  let snapshot = current.snapshot;
+  if (patch.session) {
+    snapshot = applySessionToSnapshot(snapshot, patch.session) ?? snapshot;
+  }
+  if (Array.isArray(patch.sessions)) {
+    snapshot = { ...snapshot, sessions: patch.sessions };
+  }
+  let projects = snapshot.projects;
+  let projectsChanged = false;
+  if (Array.isArray(patch.projects)) {
+    projects = patch.projects;
+    projectsChanged = true;
+  } else if (patch.upsertProject) {
+    const upsertProject = patch.upsertProject;
+    projects = [upsertProject, ...projects.filter((item) => item.projectId !== upsertProject.projectId)];
+    projectsChanged = true;
+  } else if (patch.project) {
+    const updated = patch.project;
+    projects = projects.map((item) => {
+      if (item.projectId !== updated.projectId) return item;
+      projectsChanged = true;
+      return updated;
+    });
+  } else if (patch.deletedProjectId) {
+    const nextProjects = projects.filter((item) => item.projectId !== patch.deletedProjectId);
+    if (nextProjects.length !== projects.length) {
+      projects = nextProjects;
+      projectsChanged = true;
+    }
+  }
+  if (projectsChanged) {
+    snapshot = { ...snapshot, projects };
+  }
+  if (snapshot === current.snapshot) return current;
+  return syncActiveHostRuntimeSummary({
+    ...current,
+    snapshot,
+  });
+}
+
+/**
+ * Removes a resolved (or `ALREADY_RESOLVED`) permission request from both the
+ * active permission list and snapshot, then updates the active host summary.
+ */
+export function dismissResolvedPermissionInState(
+  current: MobileBridgeState,
+  requestId: string,
+): MobileBridgeState {
+  const permissions = current.permissions.filter((permission) => permission.requestId !== requestId);
+  const removedFromSnapshot = current.snapshot?.permissions.some((permission) => permission.requestId === requestId) ?? false;
+  if (permissions.length === current.permissions.length && !removedFromSnapshot) return current;
+  const snapshot = snapshotWithPermissions(current.snapshot, permissions);
+  return syncActiveHostRuntimeSummary({
+    ...current,
+    snapshot,
+    permissions,
+  });
+}
+
+/**
+ * Projects a desktop RPC response onto matching optimistic `localTurns` records
+ * without mutating the input array when no `requestId` matches.
+ */
+export function applyResponseToTurns(
+  turns: LocalTurn[],
+  response: BridgeResponse,
+): LocalTurn[] {
+  const index = turns.findIndex((turn) => turn.requestId === response.requestId);
+  if (index < 0) return turns;
+  const localTurns = [...turns];
+  const turn = localTurns[index]!;
+  if (response.ok) {
+    const result = response.result as { commandId?: unknown; state?: unknown } | undefined;
+    const terminalDelivery: BridgeDeliveryState | undefined = result?.state === "completed"
+      ? "completed"
+      : result?.state === "failed"
+        ? "failed"
+        : result?.state === "cancelled"
+          ? "cancelled"
+          : undefined;
+    localTurns[index] = {
+      ...turn,
+      delivery: terminalDelivery ?? (result?.state === "submitted"
+        ? mergeAcceptedDelivery(turn.delivery, "submitted")
+        : turn.delivery === "local-saved" || turn.delivery === "relay-received"
+          ? "host-received"
+          : turn.delivery),
+      ...(typeof result?.commandId === "string" ? { commandId: result.commandId } : {}),
+    };
+  } else {
+    localTurns[index] = {
+      ...turn,
+      delivery: "failed",
+      error: response.error?.message ?? "请求失败",
+    };
+  }
+  return localTurns;
+}
+
+/**
+ * Merges an `evidence.*` bridge event summary into the per-session evidence
+ * map, preserving existing pagination state.
+ */
+export function applyEvidenceEventToPages(
+  evidence: Record<string, SessionEvidenceState>,
+  event: BridgeEvent,
+): Record<string, SessionEvidenceState> {
+  const item = evidenceFromEvent(event);
+  if (!item) return evidence;
+  const existing = evidence[item.sessionId];
+  return {
+    ...evidence,
+    [item.sessionId]: {
+      status: "ready",
+      items: mergeEvidence(existing?.items ?? [], [item]),
+      hasMore: existing?.hasMore ?? false,
+      ...(existing?.nextCursor ? { nextCursor: existing.nextCursor } : {}),
+    },
+  };
+}
+
+/**
+ * Applies a fetched/cached `BridgeEvidencePage` (or error/missing page
+ * fallback) to `evidence[sessionId]`.
+ */
+export function applyEvidencePageResult(
+  evidence: Record<string, SessionEvidenceState>,
+  sessionId: string,
+  page?: BridgeEvidencePage,
+  options: ApplyEvidencePageOptions = {},
+): Record<string, SessionEvidenceState> {
+  const existing = evidence[sessionId];
+  if (!page || options.error) {
+    const items = existing?.items ?? [];
+    const status: SessionEvidenceState["status"] =
+      options.forceErrorStatus || items.length === 0 ? "error" : "ready";
+    const nextCursor = options.preserveCursorOnError ? existing?.nextCursor : undefined;
+    return {
+      ...evidence,
+      [sessionId]: {
+        status,
+        items,
+        hasMore: options.hasMoreOnError ?? (existing?.hasMore ?? false),
+        ...(nextCursor ? { nextCursor } : {}),
+      },
+    };
+  }
+  return {
+    ...evidence,
+    [sessionId]: {
+      status: "ready",
+      items: mergeEvidence(existing?.items ?? [], page.items),
+      hasMore: options.mergeHasMore ? Boolean(existing?.hasMore || page.hasMore) : page.hasMore,
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    },
+  };
+}
+
+/**
+ * Applies one or more ordered incoming bridge events (live push or
+ * `events.resume` catch-up) onto permissions, snapshot, evidence, optimistic
+ * turns, cursor, and active host runtime summary.
+ */
+export function applyIncomingEventsToState(
+  current: MobileBridgeState,
+  events: BridgeEvent[],
+  options: ApplyIncomingEventsOptions = {},
+): MobileBridgeState {
+  if (events.length === 0 && (options.cursor ?? 0) <= current.latestSeq) return current;
+  let localTurns = current.localTurns;
+  let evidence = current.evidence;
+  for (const event of events) {
+    localTurns = applyEventToTurns(localTurns, event);
+    evidence = applyEvidenceEventToPages(evidence, event);
+  }
+  const applied = applyEventsToSnapshot(current.snapshot, events, current.permissions);
+  const permissions = applyUnseenPermissionEvents(current.permissions, events, current.events, current.snapshotSeq);
+  const snapshot = snapshotWithPermissions(applied.snapshot, permissions);
+  const maxEventSeq = events.reduce((max, event) => Math.max(max, event.seq), 0);
+  return syncActiveHostRuntimeSummary({
+    ...current,
+    snapshot,
+    permissions,
+    events: mergeBridgeEvents(current.events, events),
+    evidence,
+    localTurns,
+    latestSeq: Math.max(current.latestSeq, maxEventSeq, options.cursor ?? 0),
+  }, options.roomId ?? current.activeHostId);
 }

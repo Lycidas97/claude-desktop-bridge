@@ -63,11 +63,23 @@ it("does not approve an unrelated executable beside Bridge in a shared directory
   expect((await readWindowsInspectorConnections()).clients[0]?.approved).toBe(false);
 });
 
-it("uses PID, creation time and MSIX executable path as the persistent process identity", async () => {
+it("uses PID, creation time and MSIX or Claude-3p executable path as the persistent process identity", async () => {
   const path = "C:\\Program Files\\WindowsApps\\Claude_5.11492.5.0_x64__publisher\\app\\claude.exe";
   mocks.run.mockResolvedValueOnce({ stdout: JSON.stringify([{ pid: 42, launched: "2026-11-15T00:00:00.000Z", path }]) });
   expect(await windowsInspectorProcesses()).toEqual([{ pid: 42, identity: `42:2026-11-15T00:00:00.000Z:${path}` }]);
+  expect(script(0)).toContain("claude-3p.exe");
   expect(script(0)).toContain("--type=");
+});
+
+it("clicks the debugger menu cleanly when GetForegroundWindow returns 0 without attempting to restore HWND 0", async () => {
+  mocks.run.mockResolvedValueOnce({ stdout: '{"target":123,"previous":0}' });
+  mocks.run.mockResolvedValueOnce({ stdout: "clicked" });
+  mocks.run.mockResolvedValueOnce({ stdout: "" });
+  expect(await windowsInspectorMenu(42, true)).toBe("clicked");
+  expect(mocks.run).toHaveBeenCalledTimes(3);
+  expect(script(1)).toContain("SetForegroundWindow([IntPtr]123)");
+  expect(script(2)).toContain("Key(0x1B, 0x01)");
+  expect(script(2)).not.toContain("SetForegroundWindow([IntPtr]0)");
 });
 
 it("only probes for a window before the action, without activating or consuming a menu action", async () => {

@@ -502,6 +502,32 @@ export class EvidenceStore {
     `).run(blobKey, mimeType, Date.now(), artifactId);
   }
 
+  diagnosticsGauges(): {
+    cachedPreviews: number;
+    storedBundles: number;
+    storedBlobs: number;
+    storedBlobBytes: number;
+  } {
+    if (!this.database) {
+      return { cachedPreviews: 0, storedBundles: 0, storedBlobs: 0, storedBlobBytes: 0 };
+    }
+    const previewsRow = this.database
+      .prepare("SELECT COUNT(*) AS count FROM evidence_artifacts WHERE preview_blob_key IS NOT NULL")
+      .get() as SqlRow | undefined;
+    const bundlesRow = this.database
+      .prepare("SELECT COUNT(*) AS count FROM evidence_bundles")
+      .get() as SqlRow | undefined;
+    const blobsRow = this.database
+      .prepare("SELECT COUNT(*) AS count, COALESCE(SUM(byte_size), 0) AS bytes FROM evidence_blobs")
+      .get() as SqlRow | undefined;
+    return {
+      cachedPreviews: Number(previewsRow?.count ?? 0),
+      storedBundles: Number(bundlesRow?.count ?? 0),
+      storedBlobs: Number(blobsRow?.count ?? 0),
+      storedBlobBytes: Number(blobsRow?.bytes ?? 0),
+    };
+  }
+
   async prune(now = Date.now()): Promise<void> {
     if (!this.database) return;
     const rows = this.db.prepare(`

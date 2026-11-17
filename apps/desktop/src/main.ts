@@ -1,14 +1,15 @@
 import { spawn } from "node:child_process";
-import { mkdir, open, writeFile } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { BridgeDesktopRuntimeId, BridgeEvent, DesktopControlSnapshot, LocalBridgeRequest } from "@bridge/protocol";
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, protocol, shell, systemPreferences, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, protocol, shell, systemPreferences, Tray } from "electron";
 import { connectDesktopService, serveDesktopService } from "./app/service-connection.js";
 import { createServiceRuntime } from "./app/service-runtime.js";
 import { ServiceResources } from "./app/service-resources.js";
 import { MemoryRecorder } from "./app/memory-recorder.js";
 import { claudeDesktopDeveloperSettings } from "./app/claude-desktop-developer-settings.js";
+import { parseWindowThemeColor } from "./app/platform.js";
 
 protocol.registerSchemesAsPrivileged([{
   scheme: "bridge-artifact",
@@ -34,6 +35,13 @@ function reportStartup(stage: string): void {
       process.stderr.write(`Bridge startup display failed: ${String(error)}\n`);
     });
   }
+}
+
+function applyWindowThemeColor(win: BrowserWindow, rawColor: string | null | undefined): void {
+  const parsed = parseWindowThemeColor(rawColor);
+  if (!parsed) return;
+  nativeTheme.themeSource = parsed.themeSource;
+  if (!win.isDestroyed()) win.setBackgroundColor(parsed.backgroundColor);
 }
 
 async function serviceMain(): Promise<void> {
@@ -256,25 +264,60 @@ async function desktopMain(): Promise<void> {
       return quitDesktopAppWithConfirmation(runtimeId);
     });
     handle("bridge:request", (request: LocalBridgeRequest) => controller.call("dispatchLocal", request));
-    handle("bridge:export-diagnostics", async () => {
+    handle("bridge:export-diagnostics", async (rendererDiagnostics?: unknown) => {
+      if (
+        rendererDiagnostics !== undefined && (
+          typeof rendererDiagnostics !== "object"
+          || rendererDiagnostics === null
+          || Array.isArray(rendererDiagnostics)
+          || (Object.getPrototypeOf(rendererDiagnostics) !== Object.prototype && Object.getPrototypeOf(rendererDiagnostics) !== null)
+        )
+      ) {
+        throw new Error("rendererDiagnostics must be a plain object");
+      }
       const result = await dialog.showSaveDialog({
         title: "导出 Bridge 诊断", defaultPath: `bridge-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
         filters: [{ name: "JSON", extensions: ["json"] }],
       });
       if (result.canceled || !result.filePath) return { saved: false };
-      await writeFile(result.filePath, `${JSON.stringify(await controller.call("diagnostics"), null, 2)}\n`, "utf8");
+      const combined = {
+        ...await controller.call("diagnostics"),
+        ...(rendererDiagnostics ? { renderer: rendererDiagnostics } : {}),
+      };
+      const handle = await open(result.filePath, "w", 0o600);
+      try {
+        await handle.chmod(0o600);
+        await handle.writeFile(`${JSON.stringify(combined, null, 2)}\n`, "utf8");
+      } finally {
+        await handle.close();
+      }
       return { saved: true, path: result.filePath };
     });
 
     mainWindow = new BrowserWindow({
       width: 1180, height: 780, minWidth: 860, minHeight: 620,
       show: !process.argv.includes("--hidden") && !(process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin),
-      backgroundColor: "#f5f6f7", title: "Bridge",
+      backgroundColor: nativeTheme.shouldUseDarkColors ? "#191816" : "#faf9f5",
+      title: "Bridge",
+      ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 16, y: 16 } } : {}),
       webPreferences: { preload: join(__dirname, "preload.cjs"), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
     });
     mainWindow.removeMenu();
+    mainWindow.webContents.on("did-change-theme-color", (_event, color) => {
+      if (mainWindow) applyWindowThemeColor(mainWindow, color);
+    });
+    mainWindow.webContents.on("did-finish-load", () => {
+      const target = mainWindow;
+      if (!target || target.isDestroyed()) return;
+      void target.webContents
+        .executeJavaScript("document.querySelector('meta[name=\"theme-color\"]')?.getAttribute('content') ?? null")
+        .then((color: unknown) => {
+          if (typeof color === "string") applyWindowThemeColor(target, color);
+        })
+        .catch(() => {});
+    });
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-      if (url.startsWith("https://")) void shell.openExternal(url);
+      if (/^https:\/\//iu.test(url)) void shell.openExternal(url);
       return { action: "deny" };
     });
     mainWindow.webContents.on("will-navigate", (event) => event.preventDefault());

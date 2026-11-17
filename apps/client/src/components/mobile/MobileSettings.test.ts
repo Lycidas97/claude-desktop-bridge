@@ -72,7 +72,10 @@ describe("mobile client updater and remote desktop updater sections", () => {
     expect(html).toContain("远端桌面状态");
     expect(html).toContain("v1.3.2");
     expect(html).toContain("发现 v1.3.3");
-    expect(html).toContain("检查并升级桌面端");
+    expect(html).toContain('aria-label="远端桌面更新通道"');
+    expect(html).toContain("检查更新");
+    expect(html).not.toContain("检查并升级");
+    expect(html).not.toContain("检查并下载");
     expect(html).toContain("版本与更新");
     expect(html).toContain("查看 GitHub Releases");
   });

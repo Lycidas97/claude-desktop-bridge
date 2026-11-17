@@ -11,15 +11,15 @@ const resources = vi.hoisted(() => {
     assistantMail: { ...resource(), on: vi.fn() }, mailOptions: vi.fn(), controllerOptions: vi.fn(),
     mailTools: { close: vi.fn(async () => {}) }, serveMailTools: vi.fn(),
     broker: resource(), nativeOptions: vi.fn(),
-    controller: { ...resource(), attachUpdater: vi.fn(async () => {}), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
+    controller: { ...resource(), attachUpdater: vi.fn(async () => {}), attachInspectorEnabler: vi.fn(), pauseForSleep: vi.fn(), reconnect: vi.fn(async () => {}), updateInspectorStatus: vi.fn() },
     updater: { initialize: vi.fn(async () => {}), close: vi.fn() },
     cleanupRtc: vi.fn(),
     version: "1.3.4",
     repositoryDefaults: vi.fn(),
     diagnosticsEnabled: false,
     diagnostics: { start: vi.fn(), setEnabled: vi.fn(), close: vi.fn() },
-    inspector: { start: vi.fn(async () => {}), close: vi.fn(), notificationFailed: vi.fn() },
-    inspectorOptions: undefined as undefined | { onUpdate(status: BridgeInspectorStatus): void; onAlert(alert: BridgeInspectorAlert): string | undefined; startup?: (listening: boolean) => Promise<BridgeInspectorStatus["startup"]> },
+    inspector: { start: vi.fn(async () => {}), enableNow: vi.fn(async () => ({ state: "listening", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [] })), close: vi.fn(), notificationFailed: vi.fn() },
+    inspectorOptions: undefined as undefined | { onUpdate(status: BridgeInspectorStatus): void; onAlert(alert: BridgeInspectorAlert): string | undefined; startup?: (listening: boolean) => Promise<BridgeInspectorStatus["startup"]>; enableStartup?: (isListening: () => Promise<boolean>) => Promise<BridgeInspectorStatus["startup"]> },
     notificationSupported: vi.fn(() => true), showNotification: vi.fn(),
     notifications: [] as Array<{ options: { title: string; body: string }; emit(event: string, ...args: unknown[]): boolean }>,
   };
@@ -188,7 +188,11 @@ it("disables real Native menu automation for a custom inspector origin", async (
   vi.stubEnv("BRIDGE_CLAUDE_INSPECTOR_URL", "http://127.0.0.1:19321");
   const { createServiceRuntime } = await import("./service-runtime.js");
   const runtime = await createServiceRuntime({ userDataPath: "/test/bridge" });
-  try { expect(resources.inspectorOptions!.startup).toBeUndefined(); }
+  try {
+    expect(resources.inspectorOptions!.startup).toBeUndefined();
+    expect(resources.inspectorOptions!.enableStartup).toBeUndefined();
+    expect(resources.controller.attachInspectorEnabler).not.toHaveBeenCalled();
+  }
   finally { await runtime.close(); vi.unstubAllEnvs(); }
 });
 

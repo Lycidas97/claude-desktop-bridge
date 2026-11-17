@@ -12,6 +12,10 @@ import { setDiagDialogOpen } from "../../lib/diagnostics.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
+import {
+  resolveClaudeRemoteActivationDetail,
+  resolveClaudeRemoteActivationStatus,
+} from "../mobile/MobileInspectorCallout.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 import { RemoteDesktopUpdaterSection, type RemoteDesktopUpdateControl } from "../updater/UpdaterSections.js";
 import { RelaySettings } from "./RelaySettings.js";
@@ -60,9 +64,23 @@ export function MobileHostDetails({
   const [error, setError] = useState("");
   const [desktopAction, setDesktopAction] = useState<{ runtimeId: BridgeDesktopRuntimeId; action: "launch" | "quit" }>();
   const [desktopActionError, setDesktopActionError] = useState<{ runtimeId: BridgeDesktopRuntimeId; message: string }>();
+  const [attemptedClaudeEnable, setAttemptedClaudeEnable] = useState(false);
   const [quitDesktopTarget, setQuitDesktopTarget] = useState<BridgeDesktopRuntimeId>();
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const claudeStatus = resolveClaudeRemoteActivationStatus(snapshot);
+
+  useEffect(() => {
+    setAttemptedClaudeEnable(false);
+    setDesktopActionError(undefined);
+  }, [activeHostId]);
+
+  useEffect(() => {
+    if (!claudeStatus.nativeUnavailable) {
+      setAttemptedClaudeEnable(false);
+      setDesktopActionError((previous) => (previous?.runtimeId === "claude-desktop" ? undefined : previous));
+    }
+  }, [claudeStatus.nativeUnavailable]);
 
   useEffect(() => registerMobileBackHandler(() => {
     if (!removing) onBack();
@@ -104,8 +122,14 @@ export function MobileHostDetails({
     if (action === "quit") setQuitDesktopTarget(undefined);
     setDesktopAction({ runtimeId, action });
     setDesktopActionError(undefined);
+    if (runtimeId === "claude-desktop" && action === "launch") {
+      setAttemptedClaudeEnable(true);
+    }
     try {
       await onDesktopAppAction(runtimeId, action);
+      if (action === "launch") {
+        await onRefresh();
+      }
     } catch (actionError) {
       setDesktopActionError({
         runtimeId,
@@ -196,39 +220,63 @@ export function MobileHostDetails({
 
       <section className="mobile-settings-group" aria-labelledby="host-desktop-apps-title">
         <h2 id="host-desktop-apps-title">桌面应用控制</h2>
-        {desktopApps.map((desktopApp) => (
-          <section className={`mobile-desktop-control ${desktopApp.state}`} key={desktopApp.id}>
-            <div className="mobile-desktop-control-copy">
-              <i aria-hidden="true" />
-              <span>
-                <strong>{desktopApp.name}</strong>
-                <small className={desktopActionError?.runtimeId === desktopApp.id ? "desktop-app-error" : undefined}>
-                  {desktopActionError?.runtimeId === desktopApp.id ? desktopActionError.message : desktopApp.detail}
-                </small>
-              </span>
-            </div>
-            <div className="mobile-desktop-control-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={Boolean(desktopAction) || removing || !desktopOnline || !desktopApp.canLaunch}
-                onClick={() => void runDesktopAppAction(desktopApp.id, "launch")}
-              >
-                <Play size={15} />
-                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "launch" ? "启动中" : "启动"}
-              </button>
-              <button
-                type="button"
-                className="danger-button"
-                disabled={Boolean(desktopAction) || removing || !desktopOnline || !desktopApp.canQuit}
-                onClick={() => setQuitDesktopTarget(desktopApp.id)}
-              >
-                <Power size={15} />
-                {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "quit" ? "退出中" : "退出"}
-              </button>
-            </div>
-          </section>
-        ))}
+        {desktopApps.map((desktopApp) => {
+          const isClaude = desktopApp.id === "claude-desktop";
+          const canActivateClaude = isClaude && desktopOnline && Boolean(snapshot) && claudeStatus.nativeUnavailable && !claudeStatus.cannotActivate;
+          const canLaunchButton = isClaude
+            ? (desktopApp.canLaunch || canActivateClaude)
+            : desktopApp.canLaunch;
+          const isLaunchingThis = desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "launch";
+          const launchLabel = isLaunchingThis
+            ? (isClaude && desktopApp.state === "running" ? "正在开启…" : "启动中")
+            : isClaude
+              ? (desktopApp.state === "stopped" ? "启动 Claude" : claudeStatus.nativeUnavailable ? "开启调试端口" : "启动")
+              : "启动";
+          const effectiveDetail = desktopActionError?.runtimeId === desktopApp.id
+            ? desktopActionError.message
+            : (isClaude && desktopOnline && snapshot && claudeStatus.nativeUnavailable
+                ? resolveClaudeRemoteActivationDetail(snapshot, { attempted: attemptedClaudeEnable })
+                : desktopApp.detail);
+          return (
+            <section className={`mobile-desktop-control ${desktopApp.state}`} key={desktopApp.id}>
+              <div className="mobile-desktop-control-copy">
+                <i aria-hidden="true" />
+                <span>
+                  <strong>{desktopApp.name}</strong>
+                  <small className={desktopActionError?.runtimeId === desktopApp.id ? "desktop-app-error" : undefined}>
+                    {effectiveDetail}
+                  </small>
+                </span>
+              </div>
+              <div className="mobile-desktop-control-actions">
+                <button
+                  type="button"
+                  className={isClaude && claudeStatus.nativeUnavailable && desktopOnline ? "primary-button" : "secondary-button"}
+                  disabled={Boolean(desktopAction) || removing || !desktopOnline || !canLaunchButton}
+                  onClick={() => void runDesktopAppAction(desktopApp.id, "launch")}
+                >
+                  {isLaunchingThis ? <LoaderCircle size={15} className="is-spinning" /> : <Play size={15} />}
+                  {launchLabel}
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={Boolean(desktopAction) || removing || !desktopOnline || !desktopApp.canQuit}
+                  onClick={() => setQuitDesktopTarget(desktopApp.id)}
+                >
+                  <Power size={15} />
+                  {desktopAction?.runtimeId === desktopApp.id && desktopAction.action === "quit" ? "退出中" : "退出"}
+                </button>
+              </div>
+            </section>
+          );
+        })}
+        <div className="mobile-settings-row">
+          <span>9229 调试端口</span>
+          <span className="mobile-settings-value">
+            {desktopOnline && snapshot ? claudeStatus.portLabel : "等待连接"}
+          </span>
+        </div>
       </section>
 
       {permissionSettings}

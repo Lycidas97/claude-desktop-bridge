@@ -1,3 +1,7 @@
+export const CLAUDE_UNSECTIONED_PROJECT_ID = "claude-unsectioned";
+export const CLAUDE_UNSECTIONED_PROJECT_NAME = "未分组";
+export const DEFAULT_CONFIGURATION_SESSION_ID = "__default__";
+
 export * from "./assistant-mail.js";
 export * from "./crypto.js";
 export * from "./desktop-ipc.js";

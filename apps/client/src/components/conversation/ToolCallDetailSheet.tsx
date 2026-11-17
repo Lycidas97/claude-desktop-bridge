@@ -2,13 +2,14 @@ import type { BridgeToolCallDetail, BridgeToolCallStatus, BridgeToolResultOmitte
 import { AlertCircle, Check, ChevronRight, LoaderCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ConversationItem } from "../../lib/conversation-timeline.js";
+import { registerDiagnosticsStateProvider } from "../../lib/diagnostics.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { MessageCopyButton } from "../common/MessageCopyButton.js";
 import { useMediaRequest } from "../evidence/MediaPreviewProvider.js";
 import { Sheet } from "../common/Sheet.js";
 import "./ToolCallDetailSheet.css";
 
-const MAX_CACHED_TOOL_DETAILS = 200;
+const MAX_CACHED_TOOL_DETAILS = 128;
 const toolDetailCache = new Map<string, BridgeToolCallDetail>();
 const inFlightToolDetails = new Map<string, Promise<BridgeToolCallDetail>>();
 
@@ -16,6 +17,22 @@ export function clearToolCallDetailCache(): void {
   toolDetailCache.clear();
   inFlightToolDetails.clear();
 }
+
+registerDiagnosticsStateProvider("toolDetailCache", () => {
+  let estimatedJsonCodeUnits = 0;
+  for (const detail of toolDetailCache.values()) {
+    try {
+      estimatedJsonCodeUnits += JSON.stringify(detail).length;
+    } catch {
+      // Ignore unserializable values.
+    }
+  }
+  return {
+    cachedEntries: toolDetailCache.size,
+    inFlightEntries: inFlightToolDetails.size,
+    estimatedJsonCodeUnits,
+  };
+});
 
 function detailCacheKey(hostId: string | undefined, sessionId: string, toolUseId: string, agentId?: string): string {
   return `${hostId ?? "local"}\0${sessionId}\0${agentId ?? ""}\0${toolUseId}`;

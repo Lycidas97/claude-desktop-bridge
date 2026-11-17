@@ -17,6 +17,7 @@ import {
   isNonTurnUserRecord,
   isRecord,
   resolveTranscriptParentUuid,
+  setBoundedCache,
   textFromContent,
   toolUses,
   transcriptTurnBoundary,
@@ -93,7 +94,6 @@ export interface ClaudeHistoryReadResult {
 }
 
 export interface ClaudeHistoryReadOptions {
-  includeBranch?: boolean;
   beforeCursor?: string;
   before?: { createdAt: number; id: string };
   chronological?: boolean;
@@ -828,11 +828,7 @@ async function parseTranscript(
       });
     }
   }
-  if (transcriptSnapshotCache.size > 128) {
-    const oldestKey = transcriptSnapshotCache.keys().next().value;
-    if (typeof oldestKey === "string") transcriptSnapshotCache.delete(oldestKey);
-  }
-  transcriptSnapshotCache.set(path, {
+  setBoundedCache(transcriptSnapshotCache, path, {
     signature: cacheSignature,
     allMessages: messages,
     userMessages,
@@ -858,53 +854,14 @@ async function parseTranscript(
   };
 }
 
-export async function parseClaudeTranscript(
-  path: string,
-  options: ClaudeHistoryReadOptions = {},
-): Promise<ClaudeHistoryReadResult & { nextCursor?: string }> {
-  const {
-    userMessages: _userMessages,
-    branch: _branch,
-    atTurnBoundary: _atTurnBoundary,
-    pendingBackgroundShellTaskIds: _pendingBackgroundShellTaskIds,
-    pendingUserMessageId: _pendingUserMessageId,
-    peerInputs: _peerInputs,
-    terminalUuid: _terminalUuid,
-    ...result
-  } = await parseClaudeTranscriptSnapshot(path, options);
-  return { ...result, ...(options.includeBranch && _branch ? { branch: _branch } : {}) };
-}
-
-export async function readClaudeTranscriptUserMessages(
-  path: string,
-  limit = 200,
-): Promise<ClaudeHistoryMessage[]> {
-  return (await parseClaudeTranscriptSnapshot(path, {}, limit)).userMessages;
-}
-
-export async function isClaudeTranscriptAtTurnBoundary(path: string): Promise<boolean> {
-  const snapshot = await parseClaudeTranscriptSnapshot(path, { limit: 1 });
-  return snapshot.available ? Boolean(snapshot.atTurnBoundary) : false;
-}
-
-export async function readClaudeSessionHistory(
-  projectsRoot: string,
-  sessionId: string,
-  cwd?: string,
-  options: ClaudeHistoryReadOptions = {},
-): Promise<ClaudeHistoryReadResult & { nextCursor?: string }> {
-  const path = await findClaudeTranscriptFile(projectsRoot, sessionId, cwd);
-  if (!path) return { available: false, messages: [], truncated: false };
-  return parseClaudeTranscript(path, options);
-}
-
 export async function readClaudeSessionHistoryPage(
   projectsRoot: string,
   sessionId: string,
   cwd?: string,
   options: ClaudeHistoryReadOptions = {},
 ): Promise<BridgeHistoryPage> {
-  const result = await readClaudeSessionHistory(projectsRoot, sessionId, cwd, options);
+  const path = await findClaudeTranscriptFile(projectsRoot, sessionId, cwd);
+  const result = path ? await parseClaudeTranscriptSnapshot(path, options) : { messages: [], nextCursor: undefined };
   return {
     sessionId,
     items: result.messages.map((message) => ({

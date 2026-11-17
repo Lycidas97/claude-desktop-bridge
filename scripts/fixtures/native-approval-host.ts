@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
-  BridgePendingPrompt, BridgePermissionInfo, BridgePermissionResolution, BridgePullRequest, BridgeRequest, BridgeSDKPermissionMode,
+  BridgeAssistantMailSnapshot, BridgePendingPrompt, BridgePermissionInfo, BridgePermissionResolution, BridgePullRequest, BridgeRequest, BridgeSDKPermissionMode,
 } from "../../packages/protocol/src/index.js";
 import { ClaudeDesktopBridge } from "../../apps/desktop/src/claude/claude-desktop-bridge.js";
 import { InspectorDisconnectedError } from "../../apps/desktop/src/claude/claude-desktop-inspector.js";
@@ -13,11 +13,10 @@ import { DesktopController } from "../../apps/desktop/src/controller/controller.
 import { SessionEventLog } from "../../apps/desktop/src/controller/session-event-log.js";
 import { EvidenceManager } from "../../apps/desktop/src/evidence/evidence-manager.js";
 import { EvidenceStore } from "../../apps/desktop/src/evidence/evidence-store.js";
-import { discoverSlashCommands } from "../../apps/desktop/src/claude/slash-command-catalog.js";
 import { magpieModelIdHash } from "../../apps/desktop/src/claude/claude-runtime-discovery.js";
 import { createNativeSectionFixture } from "./native-section-store.js";
 import { startAssistantMailFixture } from "./assistant-mail.js";
-import { assistantMailSnapshot } from "../../apps/desktop/src/controller/assistant-mail.js";
+import { AssistantMailCoordinator } from "../../apps/desktop/src/controller/assistant-mail.js";
 
 interface NativeApprovalResult {
   requestId: string;
@@ -45,7 +44,7 @@ export async function startNativeApprovalHost(options: {
   onModelChanged?(model: string): void;
   sections?: boolean;
   assistantMail?: boolean;
-  onMailChanged?(snapshot: ReturnType<typeof assistantMailSnapshot>): void;
+  onMailChanged?(snapshot: BridgeAssistantMailSnapshot): void;
 }) {
   const commandCwd = join(options.directory, "command-project");
   const commandHome = join(options.directory, "command-personal");
@@ -55,8 +54,7 @@ export async function startNativeApprovalHost(options: {
   await writeFile(join(commandCwd, "report.json"), "{\"source\":\"wrong project root\"}");
   await writeFile(join(harnessCwd, "report.json"), "{\"source\":\"worktree\",\"checked\":9}\n");
   await writeFile(join(harnessCwd, "说明 notes.md"), "# Worktree preview\n\nNative file routing verified.\n");
-  await mkdir(join(commandCwd, ".claude/commands/frontend"), { recursive: true });
-  await mkdir(join(commandHome, "skills/audit"), { recursive: true });
+  await mkdir(commandHome, { recursive: true });
   const savedModels = [
     { model: "synthetic-model", label: "隔离模型 · 标准", description: "Private fixture metadata" },
     { model: "synthetic-model-large[1m]", label: "隔离模型 · 长上下文" },
@@ -65,11 +63,6 @@ export async function startNativeApprovalHost(options: {
   ];
   const nativeModelIds = savedModels.map(option => `mythos-magpie-${magpieModelIdHash(option.model)}${/\[1m\]$/iu.test(option.model) ? "[1m]" : ""}`);
   await writeFile(settingsPath, JSON.stringify({ modelPicker: { options: savedModels } }));
-  await writeFile(join(commandHome, "skills/audit/SKILL.md"), "---\nname: inspect-changes\ndescription: 核对当前改动\nargument-hint: '[path]'\n---\nSynthetic fixture body; never sent to the model.\n");
-  await writeFile(join(commandCwd, ".claude/commands/frontend/component.md"), "---\ndescription: 检查组件结构\nargument-hint: '[component]'\n---\nSynthetic command body.\n");
-  for (const [name, description] of [["review", "审查当前改动"], ["report", "整理结果报告"], ...Array.from({ length: 12 }, (_, index) => [`tool-${String(index + 1).padStart(2, "0")}`, `示例工具 ${index + 1}`])]) {
-    await writeFile(join(commandCwd, `.claude/commands/${name}.md`), `---\ndescription: ${description}\nargument-hint: '[path]'\n---\nSynthetic command body.\n`);
-  }
   const native = {
     sessionId: options.sessionId, cwd: commandCwd, harnessCwd, title: options.title, model: nativeModelIds[0]!,
     turnRunning: false,
@@ -121,7 +114,7 @@ export async function startNativeApprovalHost(options: {
   const unsupportedMethods = new Set<string>();
   const inspector = Object.assign(new EventEmitter(), {
     ready: true,
-    supports: (method: string) => !unsupportedMethods.has(method) && ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", "getPrOverview", "getPrChecks", "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getGitInfo", ...Object.values(nativeDialogs).map(dialog => dialog.method), ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
+    supports: (method: string) => !unsupportedMethods.has(method) && ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", "updateSession", "getPrOverview", "getPrChecks", "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getGitInfo", ...Object.values(nativeDialogs).map(dialog => dialog.method), ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
     async prPreferences(id: string) {
       return id === options.sessionId ? { ...preferences, nextOwnPrArmed: nextPrBranch !== undefined } : undefined;
     },
@@ -220,12 +213,28 @@ export async function startNativeApprovalHost(options: {
         nativeSessions.unshift(created);
         return structuredClone(created);
       }
+      if (method === "updateSession") {
+        const target = nativeSessions.find(candidate => candidate.sessionId === args[0]);
+        if (target && args[1] && typeof args[1] === "object") {
+          Object.assign(target, args[1]);
+        }
+        return;
+      }
       if (method === "sendMessage") {
-        assert.equal(args[0], options.sessionId);
-        assert.equal(typeof args[7], "string");
-        queued.add(args[7] as string);
-        messages.push({ type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } });
-        return reportQueued ? { delivered: true, queued: true } : { delivered: true };
+        const target = nativeSessions.find(candidate => candidate.sessionId === args[0]);
+        assert.ok(target, "sendMessage must target an existing native session");
+        const textArg = typeof args[1] === "string" ? args[1].trim() : "";
+        const renameMatch = /^\/rename\s+([\s\S]+)$/iu.exec(textArg);
+        if (renameMatch?.[1]?.trim()) {
+          target.title = renameMatch[1].trim();
+        }
+        if (args[0] === options.sessionId) {
+          assert.equal(typeof args[7], "string");
+          queued.add(args[7] as string);
+          messages.push({ type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } });
+          return reportQueued ? { delivered: true, queued: true } : { delivered: true };
+        }
+        return { delivered: true };
       }
       if (["promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage"].includes(method)) {
         assert.equal(args[0], options.sessionId);
@@ -241,7 +250,19 @@ export async function startNativeApprovalHost(options: {
         const start = Math.max(0, end - Number(args[2]));
         return { messages: structuredClone(messages.slice(start, end)), hasMore: start > 0 };
       }
-      if (method === "getSupportedCommands") return discoverSlashCommands(commandCwd, commandHome);
+      if (method === "getSupportedCommands") return {
+        commands: [
+          { name: "frontend:component", description: "检查组件结构", argumentHint: "[component]" },
+          { name: "inspect-changes", description: "核对当前改动", argumentHint: "[path]" },
+          { name: "report", description: "整理结果报告", argumentHint: "[path]" },
+          { name: "review", description: "审查当前改动", argumentHint: "[path]" },
+          ...Array.from({ length: 12 }, (_, index) => ({
+            name: `tool-${String(index + 1).padStart(2, "0")}`,
+            description: `示例工具 ${index + 1}`,
+            argumentHint: "[path]",
+          })),
+        ],
+      };
       if (method === "canRewindTo") {
         const index = messages.findIndex(message => message.uuid === args[1] && message.type === "user");
         return index > 0 && messages.slice(0, index).some(message => message.type === "assistant");
@@ -319,14 +340,19 @@ export async function startNativeApprovalHost(options: {
   }) });
   await evidence.initialize();
   const assistantMail = options.assistantMail ? await startAssistantMailFixture(join(options.directory, "mail")) : undefined;
-  let mailChangeToken = randomUUID();
-  const mailSnapshot = () => assistantMail ? assistantMailSnapshot(assistantMail.service, broker.listSessions(), broker.capabilities().includes("turn.start"), mailChangeToken) : undefined;
-  const mailChanged = () => { mailChangeToken = randomUUID(); options.onMailChanged?.(mailSnapshot()!); };
-  assistantMail?.service.on("mail", mailChanged);
-  assistantMail?.service.on("changed", mailChanged);
+  const assistantMailCoordinator = assistantMail
+    ? new AssistantMailCoordinator(assistantMail.service, {
+        allSessions: () => broker.listSessions(),
+        allProjects: () => broker.listProjects(),
+        canStartTurn: () => broker.capabilities().includes("turn.start"),
+        onChanged: snapshot => options.onMailChanged?.(snapshot),
+      })
+    : undefined;
+  assistantMailCoordinator?.start();
+  const mailSnapshot = () => assistantMailCoordinator?.snapshot();
   const controller = Object.assign(Object.create(DesktopController.prototype), {
     routesToExternalRuntime: () => false,
-    broker, evidence, assistantMail: assistantMail?.service,
+    broker, evidence, assistantMailCoordinator,
     allSessions: () => broker.listSessions(), allProjects: () => broker.listProjects(),
     publish: async () => ({ assistantMail: mailSnapshot() }),
     config: { hostDeviceId: "synthetic-desktop", desktopName: "隔离电脑", devices: [{ deviceId: options.deviceId, name: "隔离手机", platform: "android", pairedAt: 1 }] },
@@ -416,6 +442,12 @@ export async function startNativeApprovalHost(options: {
         trustCapable: caps.includes("workspace.trust"),
         runtimeCapabilities: caps,
       };
+    },
+    async seedSessions(entries: Array<Record<string, unknown>>) {
+      for (const entry of entries) {
+        nativeSessions.push({ ...native, pendingToolPermissions: [], ...entry } as typeof native & { forkedFromSessionId?: string });
+      }
+      await broker.refreshRuntime();
     },
     createSection: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
     controllerRequest: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
@@ -553,8 +585,7 @@ export async function startNativeApprovalHost(options: {
       return result;
     },
     async close() {
-      assistantMail?.service.off("mail", mailChanged);
-      assistantMail?.service.off("changed", mailChanged);
+      assistantMailCoordinator?.close();
       await assistantMail?.service.close();
       await broker.close();
       await evidence.close();

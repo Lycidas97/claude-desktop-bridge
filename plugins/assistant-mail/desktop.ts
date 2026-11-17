@@ -73,6 +73,13 @@ export class AssistantMailService extends EventEmitter {
     };
   }
 
+  diagnosticsGauges(): { configured: boolean; unreadCount: number } {
+    return {
+      configured: Boolean(this.account),
+      unreadCount: this.store.unreadCount(),
+    };
+  }
+
   async enable(input: { host: string; port?: number; user: string; password: string }): Promise<void> {
     if (!this.credentials.supported) throw new Error("mail_credentials_unsupported");
     const account = parseAccount({ host: input.host, port: input.port ?? 993, user: input.user });

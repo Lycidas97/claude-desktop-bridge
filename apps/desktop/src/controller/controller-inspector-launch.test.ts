@@ -1,0 +1,236 @@
+import { EventEmitter } from "node:events";
+import type { BridgeInspectorStatus, BridgeRequest, DesktopControlSnapshot } from "@bridge/protocol";
+import { describe, expect, it, vi } from "vitest";
+import { DesktopController } from "./controller.js";
+
+function createHarness(options: {
+  initialAppState?: "stopped" | "running";
+  initialInspector?: BridgeInspectorStatus;
+  enableInspector?: () => Promise<BridgeInspectorStatus>;
+  runtimeStates?: Array<"unavailable" | "ready" | "working">;
+}) {
+  let appState: "stopped" | "running" = options.initialAppState ?? "stopped";
+  let runtimeIndex = 0;
+  const states = options.runtimeStates ?? ["ready"];
+  const launch = vi.fn(async (_opts?: { activate?: boolean }) => {
+    appState = "running";
+    return { state: appState, detail: "Claude Desktop 正在运行。", canLaunch: false, canQuit: true };
+  });
+  const refreshRuntime = vi.fn(async () => {
+    if (runtimeIndex + 1 < states.length) runtimeIndex += 1;
+    return states[runtimeIndex] !== "unavailable";
+  });
+  const claudeDesktop = {
+    definition: { id: "claude-desktop" as const, displayName: "Claude Desktop" },
+    status: vi.fn(async () => ({
+      state: appState,
+      detail: appState === "running" ? "Claude Desktop 正在运行。" : "Claude Desktop 已退出。",
+      canLaunch: appState === "stopped",
+      canQuit: appState === "running",
+    })),
+    launch,
+    quit: vi.fn(),
+  };
+
+  const runtimeAttachSleep = vi.fn(async () => undefined);
+  const broadcast = vi.fn(async () => undefined);
+
+  const controller = Object.assign(Object.create(DesktopController.prototype), new EventEmitter(), {
+    config: {
+      devices: [],
+      relayEndpoints: [],
+      hostDeviceId: "host-1",
+      pairingEpoch: 1,
+      desktopName: "Mac Studio",
+      relayUrl: "ws://127.0.0.1:8787",
+      launchAtLogin: false,
+      managedDesktopEnabled: false,
+    },
+    app: { getVersion: () => "1.3.5" },
+    inspectorStatus: options.initialInspector,
+    runtimeAttachSleep,
+    claudeDesktop,
+    desktopAppControls: new Map([["claude-desktop", claudeDesktop]]),
+    broker: {
+      refreshRuntime,
+      runtimeStatus: () => {
+        const state = states[runtimeIndex]!;
+        return {
+          state,
+          detail: state === "ready" ? "已连接" : "Claude Desktop inspector 尚未连接",
+          activeTurns: 0,
+          maxParallelTurns: 0,
+          desktopIntegration: {
+            state: state === "ready" ? "ready" as const : "disconnected" as const,
+            detail: state === "ready" ? "已连接" : "Claude Desktop inspector 尚未连接",
+            enabled: true,
+            canRestart: false,
+          },
+        };
+      },
+      capabilities: () => ["session.list"],
+      listSessions: () => [],
+      listProjects: () => [],
+      magpieSettings: async () => ({}),
+      promptsList: () => [],
+      permissionsList: () => [],
+    },
+    eventLog: { latestSeq: () => 0, append: vi.fn(async () => undefined) },
+    lastPublishedSessionKey: "",
+    lastPublishedSessions: new Map<string, string>(),
+    lastPublishedPermissions: new Map(),
+    sessionVisibility: new Map(),
+    onlineDevices: new Set<string>(),
+    broadcast,
+  }) as Pick<DesktopController, "attachInspectorEnabler" | "launchDesktopApp" | "launchClaudeDesktop" | "snapshot"> & {
+    handleRequest(request: BridgeRequest, origin: "mobile" | "desktop"): Promise<unknown>;
+  };
+
+  if (options.enableInspector) {
+    controller.attachInspectorEnabler(options.enableInspector);
+  }
+  return { controller, launch, refreshRuntime, broadcast, runtimeAttachSleep };
+}
+
+describe("DesktopController launchDesktopApp + explicit inspector enablement", () => {
+  it("launches/activates Claude Desktop, enables port 9229, retries broker attach, and broadcasts ready snapshot", async () => {
+    const enableInspector = vi.fn<() => Promise<BridgeInspectorStatus>>(async () => ({
+      platform: "darwin",
+      state: "listening",
+      port: 9229,
+      pollIntervalMs: 3_000,
+      clients: [],
+      alerts: [],
+      startup: { state: "attempted", recordedAt: 100, detail: "已通过原生菜单请求开启主进程调试。" },
+    }));
+    const { controller, launch, refreshRuntime, broadcast, runtimeAttachSleep } = createHarness({
+      initialInspector: {
+        platform: "darwin",
+        state: "closed",
+        port: 9229,
+        pollIntervalMs: 3_000,
+        clients: [],
+        alerts: [],
+      },
+      enableInspector,
+      runtimeStates: ["unavailable", "unavailable", "ready"],
+    });
+
+    const result = await controller.handleRequest({
+      kind: "request",
+      requestId: "req-launch",
+      idempotencyKey: "idem-launch",
+      method: "desktop.app.launch",
+      params: { runtimeId: "claude-desktop" },
+    }, "mobile");
+
+    expect(result).toEqual({
+      desktopApps: [expect.objectContaining({ id: "claude-desktop", state: "running" })],
+    });
+    expect(launch).toHaveBeenCalledExactlyOnceWith({ activate: true });
+    expect(enableInspector).toHaveBeenCalledOnce();
+    expect(refreshRuntime).toHaveBeenCalledTimes(2);
+    expect(runtimeAttachSleep).toHaveBeenCalledExactlyOnceWith(500);
+
+    const snapshot = await controller.snapshot();
+    expect(snapshot.claudeInspector).toMatchObject({ state: "listening", port: 9229 });
+    expect(snapshot.runtime.desktopIntegration.state).toBe("ready");
+    expect(broadcast).toHaveBeenCalledWith({
+      kind: "snapshot",
+      snapshot: expect.objectContaining({
+        claudeInspector: expect.objectContaining({ state: "listening" }),
+      }),
+    });
+  });
+
+  it("preserves desktop.app.launch compatibility without throwing when OS permission blocks port 9229", async () => {
+    const enableInspector = vi.fn<() => Promise<BridgeInspectorStatus>>(async () => ({
+      platform: "darwin",
+      state: "closed",
+      port: 9229,
+      pollIntervalMs: 3_000,
+      clients: [],
+      alerts: [],
+      startup: {
+        state: "accessibility-required",
+        detail: "请在系统设置 › 隐私与安全性 › 辅助功能中添加并开启 /Applications/Bridge.app。授权后 Bridge 会自动继续。",
+      },
+    }));
+    const { controller, refreshRuntime, runtimeAttachSleep } = createHarness({
+      initialInspector: { platform: "darwin", state: "closed", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [] },
+      enableInspector,
+      runtimeStates: ["unavailable"],
+    });
+
+    const snapshot: DesktopControlSnapshot = await controller.launchDesktopApp("claude-desktop");
+    expect(snapshot.claudeDesktop.state).toBe("running");
+    expect(snapshot.claudeInspector?.state).toBe("closed");
+    expect(snapshot.claudeInspector?.startup).toMatchObject({
+      state: "accessibility-required",
+      detail: expect.stringContaining("/Applications/Bridge.app"),
+    });
+    // Does not spin-retry broker attach when port 9229 is still closed.
+    expect(refreshRuntime).toHaveBeenCalledOnce();
+    expect(runtimeAttachSleep).not.toHaveBeenCalled();
+  });
+
+  it("skips menu automation when port 9229 is already listening", async () => {
+    const enableInspector = vi.fn<() => Promise<BridgeInspectorStatus>>();
+    const { controller, launch } = createHarness({
+      initialInspector: { platform: "win32", state: "listening", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [] },
+      enableInspector,
+      runtimeStates: ["ready"],
+    });
+
+    await controller.launchClaudeDesktop();
+    expect(launch).toHaveBeenCalledExactlyOnceWith();
+    expect(enableInspector).not.toHaveBeenCalled();
+  });
+
+  it("exposes canLaunch: true when Claude Desktop is already running with port 9229 closed so UI buttons can trigger explicit enablement", async () => {
+    const enableInspector = vi.fn<() => Promise<BridgeInspectorStatus>>(async () => ({
+      platform: "darwin",
+      state: "listening",
+      port: 9229,
+      pollIntervalMs: 3_000,
+      clients: [],
+      alerts: [],
+      startup: { state: "attempted", recordedAt: 200, detail: "已通过原生菜单请求开启主进程调试。" },
+    }));
+    const { controller, launch } = createHarness({
+      initialAppState: "running",
+      initialInspector: { platform: "darwin", state: "closed", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [] },
+      enableInspector,
+      runtimeStates: ["unavailable", "ready"],
+    });
+
+    const before = await controller.snapshot();
+    expect(before.claudeDesktop).toMatchObject({ state: "running", canLaunch: true, canQuit: true });
+    expect(before.desktopApps?.[0]).toMatchObject({ id: "claude-desktop", state: "running", canLaunch: true, canQuit: true });
+    await expect(controller.handleRequest({
+      kind: "request",
+      requestId: "status-1",
+      idempotencyKey: "status-1",
+      method: "claude.desktop.status",
+      params: {},
+    }, "mobile")).resolves.toEqual({
+      claudeDesktop: expect.objectContaining({ state: "running", canLaunch: true }),
+    });
+    await expect(controller.handleRequest({
+      kind: "request",
+      requestId: "status-2",
+      idempotencyKey: "status-2",
+      method: "desktop.app.status",
+      params: {},
+    }, "mobile")).resolves.toEqual({
+      desktopApps: [expect.objectContaining({ id: "claude-desktop", state: "running", canLaunch: true })],
+    });
+
+    const after = await controller.launchDesktopApp("claude-desktop");
+    expect(launch).toHaveBeenCalledExactlyOnceWith({ activate: true });
+    expect(enableInspector).toHaveBeenCalledOnce();
+    expect(after.claudeInspector?.state).toBe("listening");
+    expect(after.claudeDesktop).toMatchObject({ state: "running", canLaunch: false, canQuit: true });
+    expect(after.desktopApps?.[0]).toMatchObject({ id: "claude-desktop", state: "running", canLaunch: false, canQuit: true });
+  });
+});

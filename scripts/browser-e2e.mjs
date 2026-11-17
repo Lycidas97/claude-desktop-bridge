@@ -47,7 +47,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-diagnostics", "desktop-quota", "mobile-safe-area", "assistant-mail"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
@@ -85,6 +85,34 @@ async function syncNativeSections(host) {
   if (host.snapshot.runtimes?.[0]) host.snapshot.runtimes[0].capabilities = runtimeCapabilities;
 }
 
+async function openMobileDrawer(page) {
+  await page.locator('.mobile-home-catalog, .m-header button[aria-label="返回会话列表"], .m-header button[aria-label="返回"], button[aria-label="返回对话"]').filter({ visible: true }).first().waitFor();
+  if (await page.locator(".mobile-home-catalog").filter({ visible: true }).count() > 0) return;
+  const backToChat = page.getByRole("button", { name: "返回对话", exact: true }).filter({ visible: true });
+  if (await backToChat.count() > 0) await backToChat.first().click();
+  await page.locator(".m-header:visible").getByRole("button", { name: /^(?:返回会话列表|返回)$/u }).first().click();
+  await page.locator(".mobile-home-catalog").filter({ visible: true }).waitFor();
+}
+
+async function openMobileSession(page, targetSessionId = sessionId) {
+  await openMobileDrawer(page);
+  await page.locator(`.mobile-home-catalog [data-session-id="${targetSessionId}"] .session-row-hit`).click();
+}
+
+async function selectCustomOption(page, triggerLocator, value) {
+  await triggerLocator.click();
+  const listbox = page.getByRole("listbox");
+  await listbox.waitFor();
+  const options = listbox.getByRole("option");
+  const idx = await options.evaluateAll((els, target) => els.findIndex((el) => el.getAttribute("data-option-value") === target), String(value));
+  assert.ok(idx >= 0, `Custom select option "${value}" must exist`);
+  await options.nth(idx).click();
+}
+
+async function customSelectValue(triggerLocator) {
+  return triggerLocator.getAttribute("data-value");
+}
+
 async function verifySessionCatalog(page, host, steps, directory, viewports) {
   await page.emulateMedia({ reducedMotion: "reduce" });
   const axeSource = await readFile(resolve(root, "node_modules/axe-core/axe.min.js"), "utf8");
@@ -99,7 +127,55 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
     viewports.push({ page: name, ...page.viewportSize() });
     await page.screenshot({ path: resolve(directory, `${name}.png`), fullPage: true });
   }
+  await openMobileDrawer(page);
   await capture("mobile-catalog");
+  const savedMobileSnapshot = structuredClone(host.snapshot);
+  for (const session of host.snapshot.sessions) {
+    session.turnState = "running";
+    session.ownership = "DESKTOP_NATIVE_RUNNING";
+  }
+  const collapsedGroups = page.locator(".mobile-home-catalog .project-group:not(.expanded):not(.archived-group) .project-group-open");
+  while (await collapsedGroups.count() > 0) {
+    await collapsedGroups.first().click();
+  }
+  await page.locator(".mobile-home-catalog .mobile-fork-toggle").first().click();
+  await page.locator('.mobile-home-catalog [data-session-id="browser-e2e-fork"]').waitFor();
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await page.locator('.mobile-home-catalog .session-row-v2.has-forks .session-state-dot.running').first().waitFor();
+  await page.locator('.mobile-home-catalog [data-session-id="browser-e2e-fork"] .session-state-dot.running').waitFor();
+  for (const font of ["standard", "large", "larger"]) {
+    await page.evaluate((nextFont) => {
+      document.documentElement.dataset.fontSize = nextFont;
+      document.documentElement.dataset.effectiveScale = nextFont === "larger" ? "xlarge" : nextFont === "large" ? "large" : "normal";
+      const scale = nextFont === "larger" ? "1.25" : nextFont === "large" ? "1.125" : "1";
+      document.documentElement.style.setProperty("--font-scale", scale);
+    }, font);
+    const mobileAlign = await page.evaluate(() => {
+      const midY = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.top + r.height / 2;
+      };
+      const forkedRow = document.querySelector(".mobile-home-catalog .session-row-v2.has-forks");
+      const plainRow = document.querySelector('.mobile-home-catalog [data-session-id="browser-e2e-fork"]');
+      return {
+        forkedChevronDelta: Math.abs(midY(forkedRow.querySelector(".session-family-chevron")) - midY(forkedRow.querySelector(".session-row-action"))),
+        forkedBadgesDelta: Math.abs(midY(forkedRow.querySelector(".session-row-badges")) - midY(forkedRow.querySelector(".session-row-action"))),
+        plainBadgesDelta: Math.abs(midY(plainRow.querySelector(".session-row-badges")) - midY(plainRow.querySelector(".session-row-action"))),
+      };
+    });
+    assert.ok(mobileAlign.forkedChevronDelta <= 1.5, `Mobile ${font} forked chevron aligns with action: ${JSON.stringify(mobileAlign)}`);
+    assert.ok(mobileAlign.forkedBadgesDelta <= 1.5, `Mobile ${font} forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);
+    assert.ok(mobileAlign.plainBadgesDelta <= 1.5, `Mobile ${font} non-forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);
+  }
+  await page.locator(".mobile-home-catalog .session-row-v2.has-forks .session-family-chevron").first().click();
+  await page.evaluate(() => {
+    document.documentElement.dataset.fontSize = "standard";
+    document.documentElement.dataset.effectiveScale = "normal";
+    document.documentElement.style.setProperty("--font-scale", "1");
+  });
+  host.snapshot.sessions = savedMobileSnapshot.sessions;
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await eventually(() => page.locator(`[data-session-id="${sessionId}"] .session-state-dot.running`).count(), 0, "Restore idle catalog state");
   await page.getByRole("button", { name: "调整顺序", exact: true }).click();
   await page.getByRole("dialog", { name: "项目顺序" }).waitFor();
   await capture("mobile-project-order");
@@ -128,16 +204,22 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   await page.setViewportSize({ width: 1200, height: 800 });
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   const sidebar = page.locator(".desktop-session-sidebar");
-  const headers = sidebar.locator(".project-group-toggle-copy strong");
+  const headers = sidebar.locator('.project-group-open[aria-controls^="desktop-project-"] .project-group-toggle-copy strong');
   await sidebar.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  assert.equal(await sidebar.locator('.project-group-open[aria-controls="desktop-archived-sessions"] .project-group-toggle-copy strong').textContent(), "已归档");
   const initialOrder = await headers.allTextContents();
   assert.equal(initialOrder.length, 2);
   const selected = sidebar.locator(".session-row-v2.active");
   assert.equal(await selected.count(), 1, "Desktop highlights the selected shared row");
   assert.notEqual(await selected.evaluate(element => getComputedStyle(element).backgroundColor), "rgba(0, 0, 0, 0)");
   await sidebar.locator(".mobile-fork-toggle").click();
-  await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').waitFor();
-  assert.match(await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').innerText(), /已归档/u);
+  await sidebar.locator('[data-session-id="browser-e2e-fork"]').waitFor();
+  assert.equal(await sidebar.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0, "Archived sidechats do not appear inline under active parent branches");
+  const desktopArchivedToggle = sidebar.locator('.project-group-open[aria-controls="desktop-archived-sessions"]');
+  await desktopArchivedToggle.click();
+  await sidebar.locator('#desktop-archived-sessions [data-session-id="browser-e2e-btw-archived"]').waitFor();
+  assert.match(await sidebar.locator('#desktop-archived-sessions [data-session-id="browser-e2e-btw-archived"]').innerText(), /已归档/u);
+  await desktopArchivedToggle.click();
   await sidebar.locator('[data-session-id="browser-e2e-fork"] .session-row-hit').click();
   assert.equal(await sidebar.locator('[data-session-id="browser-e2e-fork"]').evaluate(element => element.classList.contains("active")), true);
   const savedCatalog = await page.evaluate(() => structuredClone(window.__catalogSnapshot));
@@ -180,17 +262,31 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
     window.__updateCatalog(snapshot);
   }, sessionId);
   await sidebar.locator(`[data-session-id="${sessionId}"]`).getByLabel("2 条排队消息", { exact: true }).waitFor();
-  assert.match(await sidebar.locator(`[data-session-id="${sessionId}"]`).innerText(), /桌面运行中/u);
-  const runningBadge = await sidebar.locator(`[data-session-id="${sessionId}"] .session-row-status.running`).boundingBox();
+  assert.doesNotMatch(await sidebar.locator(`[data-session-id="${sessionId}"]`).innerText(), /桌面运行中/u);
+  const runningDot = await sidebar.locator(`[data-session-id="${sessionId}"] .session-state-dot.running`).boundingBox();
   const pendingBadge = await sidebar.locator(`[data-session-id="${sessionId}"]`).getByLabel("2 条排队消息", { exact: true }).boundingBox();
-  assert.ok(Math.abs(runningBadge.y - pendingBadge.y) < 2, "Running status and pending count stay on the same row");
+  assert.ok(Math.abs((runningDot.y + runningDot.height / 2) - (pendingBadge.y + pendingBadge.height / 2)) < 4, "Running dot and pending count stay on the same row");
   await capture("desktop-catalog");
   steps.push("mobile/Desktop share family rows; Desktop retains archived sidechats, selection and fork navigation");
 
-  await sidebar.getByRole("button", { name: "全部折叠", exact: true }).click();
+  const activeGroupToggles = sidebar.locator(".project-group:not(.archived-group) .project-group-open");
+  const toggleCount = await activeGroupToggles.count();
+  for (let index = 0; index < toggleCount; index += 1) {
+    if ((await activeGroupToggles.nth(index).getAttribute("aria-expanded")) === "true") {
+      await activeGroupToggles.nth(index).click();
+    }
+  }
   assert.equal(await sidebar.locator("[data-session-id]").count(), 0);
-  await sidebar.getByRole("button", { name: "全部展开", exact: true }).click();
-  const orderTrigger = sidebar.getByRole("button", { name: "调整项目顺序", exact: true });
+  for (let index = 0; index < toggleCount; index += 1) {
+    if ((await activeGroupToggles.nth(index).getAttribute("aria-expanded")) === "false") {
+      await activeGroupToggles.nth(index).click();
+    }
+  }
+  await page.getByRole("button", { name: "收起侧栏", exact: true }).click();
+  await sidebar.waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "展开侧栏", exact: true }).click();
+  await sidebar.waitFor({ state: "visible" });
+  const orderTrigger = sidebar.getByRole("button", { name: "调整顺序", exact: true });
   await orderTrigger.focus();
   await orderTrigger.press("Enter");
   const orderDialog = page.getByRole("dialog", { name: "项目顺序" });
@@ -230,7 +326,7 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
     window.__updateCatalog(snapshot);
   }, initialOrder[0]);
   assert.deepEqual(await headers.allTextContents(), manualOrder, "Activity does not move fixed projects");
-  await sidebar.getByRole("button", { name: "调整项目顺序", exact: true }).click();
+  await sidebar.getByRole("button", { name: "调整顺序", exact: true }).click();
   await orderDialog.getByRole("button", { name: "按最近活动重排", exact: true }).click();
   await orderDialog.getByRole("button", { name: "关闭", exact: true }).click();
   await eventually(async () => (await headers.allTextContents())[0], initialOrder[0], "Explicit activity reorder moves the newest project first");
@@ -251,8 +347,9 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
     }, state);
     await sidebar.getByText(state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop", { exact: true }).waitFor();
     await sidebar.locator(".session-catalog-empty-action").click();
-    await page.getByRole("dialog", { name: "新建会话" }).waitFor();
-    await page.getByRole("dialog", { name: "新建会话" }).getByRole("button", { name: "关闭", exact: true }).click();
+    await page.locator(".new-chat-canvas").getByRole("button", { name: "选择文件夹", exact: true }).click();
+    await page.getByRole("dialog", { name: "选择文件夹" }).waitFor();
+    await page.getByRole("dialog", { name: "选择文件夹" }).getByRole("button", { name: "关闭", exact: true }).click();
     await capture(`desktop-empty-${state}`);
   }
   steps.push("Desktop distinguishes disconnected/ready empty catalogs and opens creation from both");
@@ -384,7 +481,26 @@ async function verifyDesktopQuota(page, host, steps, directory, viewports) {
     await page.getByRole("heading", { name: heading, exact: true }).waitFor();
     assert.equal(await page.locator(".magpie-quota-board").count(), 0);
   }
-  await page.getByRole("button", { name: "设备", exact: true }).click();
+  const desktopUpdaterRegion = page.getByRole("region", { name: "版本更新", exact: true });
+  await desktopUpdaterRegion.getByRole("button", { name: "检查更新", exact: true }).waitFor();
+  await desktopUpdaterRegion.getByRole("link", { name: "GitHub Releases", exact: true }).waitFor();
+  assert.equal(await desktopUpdaterRegion.getByText("空闲静默重启").count(), 0);
+  assert.equal(await desktopUpdaterRegion.getByText("下载完成后").count(), 0);
+  await page.evaluate(() => {
+    window.settingsSnapshot.updater = {
+      ...window.settingsSnapshot.updater,
+      phase: "available",
+      latestVersion: "1.3.5",
+      releaseUrl: "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5",
+    };
+    window.receiveSettingsSnapshot(structuredClone(window.settingsSnapshot));
+  });
+  const jumpLink = desktopUpdaterRegion.getByRole("link", { name: "前往下载 v1.3.5", exact: true });
+  await jumpLink.waitFor();
+  assert.equal(await jumpLink.getAttribute("href"), "https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v1.3.5");
+  assert.equal(await jumpLink.getAttribute("target"), "_blank");
+  assert.equal(await desktopUpdaterRegion.getByRole("link", { name: "GitHub Releases", exact: true }).count(), 0);
+  await page.getByRole("button", { name: "手机配对与设备", exact: true }).click();
   await page.getByRole("button", { name: "添加手机", exact: true }).waitFor();
   steps.push("Leaving quota preserves developer tools, startup, appearance, diagnostics, updates and the device pairing entry");
 
@@ -406,25 +522,404 @@ async function verifyDesktopQuota(page, host, steps, directory, viewports) {
   await page.getByText("电脑连接后读取额度", { exact: true }).waitFor();
   assert.equal(requests.length, beforeDisabled, "Missing quota capability prevents requests across navigation");
   await page.setViewportSize({ width: 860, height: 620 });
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Six settings groups fit a compact desktop");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Seven settings groups fit a compact desktop");
   viewports.push({ page: "desktop-quota-disabled", ...page.viewportSize() });
   await page.screenshot({ path: resolve(directory, "desktop-quota-disabled.png"), fullPage: true });
   steps.push("First-read errors are visible; absent capability disables refresh and makes no request, including after returning to quota");
 }
 
+async function verifyDesktopConversation(page, host, steps, directory, viewports) {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const axeSource = await readFile(resolve(root, "node_modules/axe-core/axe.min.js"), "utf8");
+  const photoBase64 = await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 360;
+    canvas.height = 240;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#2c6873";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 72px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("D1", 180, 120);
+    return canvas.toDataURL("image/png").split(",")[1];
+  });
+  const imageBytes = Buffer.from(photoBase64, "base64");
+  const imageMsgId = "desktop-native-img";
+  host.nativeImages.set(`${imageMsgId}:0`, imageBytes);
+  const binaryPayload = "desktop-workspace-binary-payload-v1";
+  await writeFile(resolve(host.nativeApproval.harnessCwd, "bundle.zip"), binaryPayload);
+
+  const now = Date.now();
+  const toolUse = (id, input, name) => ({ type: "assistant", uuid: id, timestamp: now - 40_000, message: { content: [{ type: "tool_use", id, name, input }] } });
+  const toolDone = (id, content) => ({ type: "user", uuid: `${id}-result`, timestamp: now - 39_000, message: { content: [{ type: "tool_result", tool_use_id: id, content }] } });
+  for (const message of [
+    toolUse("desktop-plan-1", {
+      scope: "first_task",
+      items: [
+        { content: "提取共享对话叶子", status: "completed" },
+        { content: "对齐桌面对话能力", status: "in_progress" },
+      ],
+    }, "mcp__ccd_turn__update_plan"),
+    toolUse("desktop-tool-read", { file_path: "/fixture/DesktopSessionsPane.tsx" }, "Read"),
+    toolDone("desktop-tool-read", "Read ok"),
+    toolUse("desktop-tool-bash", { command: "git status --short" }, "Bash"),
+    toolDone("desktop-tool-bash", "clean worktree"),
+    {
+      type: "assistant",
+      uuid: "desktop-assistant-reply",
+      timestamp: now - 30_000,
+      message: {
+        id: "desktop-assistant-reply",
+        content: [{ type: "text", text: "桌面端已接入共享叶子组件，可下载构建产物 [安装包下载](bundle.zip)。" }],
+      },
+    },
+    {
+      type: "system",
+      subtype: "task_started",
+      task_id: "desktop-bg-subagent",
+      tool_use_id: "desktop-bg-call",
+      description: "Verify desktop parity",
+      timestamp: now - 20_000,
+    },
+  ]) {
+    await host.nativeApproval.message(message);
+  }
+  const queuedSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("桌面排队待处理消息"), { pushEvents: false });
+  const subagentInfo = host.history.find(item => item.subagent?.agentId === "desktop-bg-subagent")?.subagent;
+  const backgroundTasks = [{
+    id: "desktop-bg-call",
+    kind: "subagent",
+    taskId: "desktop-bg-subagent",
+    toolUseId: "desktop-bg-call",
+    description: "Verify desktop parity",
+    state: "running",
+    startedAt: now - 20_000,
+    updatedAt: now - 10_000,
+    subagent: subagentInfo,
+  }];
+  const nativeConfiguration = host.nativeApproval.configuration;
+  host.nativeApproval.configuration = async request => {
+    const result = await nativeConfiguration(request);
+    if (request.params.includeBackgroundTasks) {
+      result.session.backgroundTasks = structuredClone(backgroundTasks);
+    }
+    return result;
+  };
+
+  const toDesktopSnapshot = current => ({
+    ...structuredClone(current),
+    connection: "connected",
+    launchAtLogin: false,
+    diagnosticsEnabled: false,
+    managedDesktopEnabled: false,
+    claudeDesktop: { state: "running", detail: "隔离 Native 宿主", canLaunch: false, canQuit: true },
+  });
+  await page.exposeFunction("desktopBridgeRequest", input => host.desktopRequest(input));
+  await page.exposeFunction("desktopBridgeGetSnapshot", () => toDesktopSnapshot(host.snapshot));
+  host.onDesktopPayload = async payload => {
+    if (payload.kind === "snapshot") {
+      await page.evaluate(next => window.__desktopReceiveSnapshot?.(next), toDesktopSnapshot(payload.snapshot)).catch(() => {});
+    } else if (payload.kind === "event") {
+      await page.evaluate(event => window.__desktopReceiveEvent?.(event), payload.event).catch(() => {});
+    }
+  };
+  await page.addInitScript(initialSnapshot => {
+    window.__desktopSnapshot = initialSnapshot;
+    window.bridgeDesktop = {
+      getSnapshot: () => window.desktopBridgeGetSnapshot(),
+      onSnapshot: receive => {
+        window.__desktopReceiveSnapshot = next => {
+          window.__desktopSnapshot = next;
+          receive(structuredClone(next));
+        };
+        return () => { delete window.__desktopReceiveSnapshot; };
+      },
+      onEvent: receive => {
+        window.__desktopReceiveEvent = event => receive(structuredClone(event));
+        return () => { delete window.__desktopReceiveEvent; };
+      },
+      request: input => window.desktopBridgeRequest(input),
+    };
+  }, toDesktopSnapshot(host.snapshot));
+
+  await page.setViewportSize({ width: 1280, height: 820 });
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  const sidebar = page.locator(".desktop-session-sidebar");
+  await sidebar.locator(`[data-session-id="${sessionId}"] .session-row-hit`).click();
+  await page.locator(".desktop-conversation .m-header").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  assert.equal(await page.locator(".composer-mode").count(), 0, "Desktop conversation does not reintroduce a composer mode selector");
+
+  const stream = page.locator(".desktop-conversation-stream");
+  const queuedBubble = stream.locator("article.conversation-item.user").filter({ hasText: "桌面排队待处理消息" });
+  await queuedBubble.getByRole("button", { name: "Send now", exact: true }).waitFor();
+  await page.getByRole("button", { name: "后台任务，1 个运行中", exact: true }).waitFor();
+  await page.waitForFunction(() => document.getAnimations().every(animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished"));
+  await page.evaluate(axeSource);
+  const axeIssues = await page.evaluate(async () => {
+    const wcag = await window.axe.run(document.querySelector(".desktop-conversation"), {
+      resultTypes: ["violations"],
+      runOnly: { type: "tag", values: ["wcag2a", "wcag2aa"] },
+    });
+    const contrast = await window.axe.run(document.querySelector(".desktop-conversation"), {
+      runOnly: { type: "rule", values: ["color-contrast"] },
+      resultTypes: ["violations", "incomplete"],
+    });
+    return [
+      ...wcag.violations.filter(item => ["serious", "critical"].includes(item.impact)).map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) })),
+      ...contrast.violations.map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) })),
+      ...contrast.incomplete.filter(item => item.nodes.some(node => [...node.any, ...node.all, ...node.none].some(check => check.data?.contrastRatio < 4.5))).map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) })),
+    ];
+  });
+  assert.deepEqual(axeIssues, [], "Desktop conversation WCAG 2A/2AA and color-contrast (including queued Send now button)");
+  viewports.push({ page: "desktop-conversation-parity", ...page.viewportSize() });
+  await page.screenshot({ path: resolve(directory, "desktop-conversation-parity.png"), fullPage: true });
+
+  await queuedBubble.getByRole("button", { name: "Send now", exact: true }).click();
+  await eventually(() => host.nativeApproval.calls.filter(call => call.method === "promoteQueuedMessage").length, 1, "Desktop Send now calls promoteQueuedMessage once");
+  assert.deepEqual(host.nativeApproval.calls.find(call => call.method === "promoteQueuedMessage").args, [sessionId, queuedSeed.receipt.messageId]);
+  await eventually(() => queuedBubble.getByRole("button", { name: "撤回", exact: true }).isEnabled(), true, "Cancel remains enabled after deferred Send now");
+  assert.equal(await queuedBubble.getByRole("button", { name: "Send now", exact: true }).isDisabled(), true, "Send now disables after promotion request");
+  await queuedBubble.getByRole("button", { name: "撤回", exact: true }).click();
+  await queuedBubble.getByRole("status").filter({ hasText: "已取消" }).waitFor();
+  assert.equal(await queuedBubble.getByRole("button", { name: "撤回", exact: true }).count(), 0);
+  steps.push("Desktop queued bubble renders WCAG-compliant Send now and 撤回 actions with status announcements");
+
+  await eventually(() => stream.locator(".task-plan-card").count(), 1, "Desktop stream renders TaskPlanCard");
+  assert.equal(await stream.locator(".task-plan-progress").innerText(), "1/2 已完成");
+  assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 0, "Desktop tool group does not eagerly fetch tool details");
+  await stream.locator(".conversation-tool-group summary").click();
+  await stream.locator(".conversation-tool-row").filter({ hasText: "git status --short" }).click();
+  const toolDialog = page.getByRole("dialog", { name: "Bash", exact: true });
+  await toolDialog.waitFor();
+  await eventually(async () => {
+    const content = await toolDialog.innerText();
+    return content.includes("已完成") && content.includes("git status --short") && content.includes("clean worktree");
+  }, true, "Desktop tool row lazily loads tool input and execution output");
+  assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 1);
+  await toolDialog.getByRole("button", { name: "关闭工具详情", exact: true }).click();
+  await toolDialog.waitFor({ state: "hidden" });
+
+  await stream.locator(".background-task-marker").click();
+  const taskSheet = page.getByRole("dialog").filter({ hasText: "Verify desktop parity" });
+  await taskSheet.waitFor();
+  await page.screenshot({ path: resolve(directory, "desktop-background-tasks.png"), fullPage: true });
+  await taskSheet.getByRole("button", { name: "关闭", exact: true }).click();
+  await taskSheet.waitFor({ state: "hidden" });
+
+  await page.evaluate(() => {
+    window.__desktopCopied = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async value => { window.__desktopCopied.push(value); } },
+    });
+  });
+  const assistantBubble = stream.locator("article.conversation-item.assistant").filter({ hasText: "桌面端已接入共享叶子组件" });
+  await assistantBubble.getByRole("button", { name: "复制这条回复", exact: true }).click();
+  await assistantBubble.getByRole("button", { name: "已复制", exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__desktopCopied), ["桌面端已接入共享叶子组件，可下载构建产物 [安装包下载](bundle.zip)。"]);
+  steps.push("Desktop conversation supports TaskPlanCard, lazy ToolCallDetailSheet, BackgroundTaskMarker sheet jump, and message copy");
+
+  await assistantBubble.getByRole("button", { name: "安装包下载", exact: true }).click();
+  const downloadConfirm = page.getByRole("alertdialog", { name: "确认下载工作区文件？", exact: true });
+  await downloadConfirm.waitFor();
+  const downloadEvent = page.waitForEvent("download");
+  await downloadConfirm.getByRole("button", { name: "确认下载", exact: true }).click();
+  const download = await downloadEvent;
+  assert.equal(download.suggestedFilename(), "bundle.zip");
+  assert.equal(await readFile(await download.path(), "utf8"), binaryPayload);
+  await downloadConfirm.waitFor({ state: "hidden" });
+  steps.push("Desktop non-media workspace path link confirms and completes chunked download via downloadBridgeSessionFile");
+
+  const imageAttachment = {
+    id: `native-image:${imageMsgId}:0`,
+    name: "image-1.png",
+    mimeType: "image/png",
+    size: imageBytes.length,
+    nativeImage: { messageUuid: imageMsgId, imageIndex: 0 },
+  };
+  host.history.push({
+    id: imageMsgId,
+    sessionId,
+    role: "user",
+    text: "桌面原生参考图消息",
+    createdAt: Date.now(),
+    origin: "claude-desktop",
+    delivery: "completed",
+    attachments: [imageAttachment],
+  });
+  await host.emit("user.message.accepted", {
+    text: "桌面原生参考图消息",
+    attachments: [imageAttachment],
+    delivery: "completed",
+    messageId: imageMsgId,
+  }, { itemId: imageMsgId });
+  const imageBubble = stream.locator("article.conversation-item.user").filter({ hasText: "桌面原生参考图消息" });
+  await imageBubble.locator(".conversation-image-preview").scrollIntoViewIfNeeded();
+  await eventually(() => imageBubble.locator("img").evaluate(node => node.complete && node.naturalWidth > 0), true, "Desktop lazy-loads native reference thumbnail");
+  await imageBubble.locator("img").click();
+  const mediaViewer = page.getByRole("dialog").last();
+  await mediaViewer.waitFor();
+  await eventually(() => mediaViewer.locator("img").evaluate(node => node.complete && node.naturalWidth > 0), true, "Desktop opens full native image in media viewer");
+  await mediaViewer.getByRole("button", { name: /关闭/u }).first().click();
+  steps.push("Desktop renders reference-based native image thumbnails and opens full-size media viewer");
+
+  host.events.length = 0;
+  host.history.length = 0;
+  const baseTime = Date.now();
+  for (let index = 0; index < 120; index += 1) {
+    host.history.push({
+      id: `desktop-history-${String(index).padStart(3, "0")}`,
+      sessionId,
+      role: index % 2 ? "assistant" : "user",
+      text: `桌面分页条目 ${String(index + 1).padStart(3, "0")}。${"用于验证桌面对话历史向前加载时保持阅读锚点不跳动。".repeat(3)}`,
+      createdAt: baseTime - (120 - index) * 1_000,
+      origin: "claude-desktop",
+    });
+  }
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  const openCountBefore = host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).length;
+  const historyCountBefore = host.requests.filter(request => request.method === "session.history").length;
+  await sidebar.locator(`[data-session-id="${sessionId}"] .session-row-hit`).click();
+  await page.locator(".desktop-conversation .m-header").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  await eventually(() => host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).length > openCountBefore, true, "Selecting session requests session.open");
+  assert.equal(host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).at(-1).params.limit, 50);
+  await eventually(() => stream.locator("article.conversation-item").count(), 50, "Desktop renders initial 50 history items");
+  await eventually(() => stream.evaluate(root => root.scrollHeight - root.clientHeight - root.scrollTop < 4), true, "Desktop pins initial session load to the bottom");
+
+  const captureTopAnchor = () => stream.evaluate(root => {
+    root.scrollTop = 0;
+    const rect = root.getBoundingClientRect();
+    const node = [...root.querySelectorAll(":scope > [data-stream-key]")].find(candidate => {
+      const bounds = candidate.getBoundingClientRect();
+      return bounds.bottom > rect.top + 1 && bounds.top < rect.bottom;
+    });
+    if (!node) throw new Error("Visible desktop stream anchor required");
+    const anchor = { key: node.getAttribute("data-stream-key"), offset: node.getBoundingClientRect().top - rect.top, height: root.scrollHeight };
+    for (let index = 0; index < 4; index += 1) root.dispatchEvent(new Event("scroll"));
+    return anchor;
+  });
+  const assertDesktopAnchor = async expected => {
+    await eventually(async () => {
+      const actual = await stream.evaluate((root, target) => {
+        const node = [...root.querySelectorAll(":scope > [data-stream-key]")].find(candidate => candidate.getAttribute("data-stream-key") === target.key);
+        return node ? node.getBoundingClientRect().top - root.getBoundingClientRect().top : null;
+      }, expected);
+      return actual !== null && Math.abs(actual - expected.offset) <= 4;
+    }, true, "Desktop history prepend preserves visible message anchor offset within 4px");
+  };
+
+  let releaseHistory;
+  host.historyGate = new Promise(resolveGate => { releaseHistory = resolveGate; });
+  const firstAnchor = await captureTopAnchor();
+  try {
+    await eventually(() => host.requests.filter(request => request.method === "session.history").length, historyCountBefore + 1, "Top scroll triggers one session.history request");
+    await stream.evaluate(root => { for (let index = 0; index < 4; index += 1) root.dispatchEvent(new Event("scroll")); });
+    assert.equal(host.requests.filter(request => request.method === "session.history").length, historyCountBefore + 1, "Duplicate top scrolls do not duplicate in-flight session.history");
+  } finally {
+    host.historyGate = undefined;
+    releaseHistory();
+  }
+  await eventually(() => stream.evaluate((root, height) => root.scrollHeight > height + 100, firstAnchor.height), true, "Older page prepends into desktop stream");
+  await assertDesktopAnchor(firstAnchor);
+  assert.ok(await stream.evaluate(root => root.scrollTop > 32), "Anchor compensation moves desktop scrollTop away from 0");
+
+  host.failHistoryOnce = true;
+  await captureTopAnchor();
+  await stream.getByRole("alert").filter({ hasText: "隔离历史请求失败" }).waitFor();
+  const retryAnchor = await stream.evaluate(root => {
+    const rect = root.getBoundingClientRect();
+    const node = [...root.querySelectorAll(":scope > [data-stream-key]")].find(candidate => candidate.getBoundingClientRect().bottom > rect.top + 1);
+    return { key: node.getAttribute("data-stream-key"), offset: node.getBoundingClientRect().top - rect.top };
+  });
+  await stream.getByRole("button", { name: "重试加载更早消息", exact: true }).click();
+  await stream.locator(".load-older-button").waitFor({ state: "hidden" });
+  await assertDesktopAnchor(retryAnchor);
+  const streamKeys = await stream.locator(":scope > [data-stream-key]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-stream-key")));
+  assert.equal(new Set(streamKeys).size, streamKeys.length, "Desktop paginated stream has no duplicate keys");
+  await page.screenshot({ path: resolve(directory, "desktop-history-pagination.png"), fullPage: true });
+  steps.push("Desktop top-scroll pagination loads 50-item pages via session.history, retains failed cursors for retry, and preserves reading position");
+
+  // Desktop 会话操作 Sheet: 同步此会话 + keyboard-accessible 删除会话 ConfirmationDialog focus trap & restore
+  if (!host.snapshot.host.capabilities.includes("session.visibility.v1")) {
+    host.snapshot.host.capabilities.push("session.visibility.v1");
+  }
+  await page.evaluate(next => window.__desktopReceiveSnapshot?.(next), toDesktopSnapshot(host.snapshot));
+
+  const menuTrigger = page.locator(".desktop-conversation .m-header").getByRole("button", { name: "会话操作", exact: true });
+  await menuTrigger.focus();
+  await page.keyboard.press("Enter");
+  const sessionMenuSheet = page.getByRole("dialog", { name: originalTitle, exact: true });
+  await sessionMenuSheet.waitFor();
+  const syncOpenCountBefore = host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).length;
+  await sessionMenuSheet.getByRole("button", { name: /同步此会话/u }).click();
+  await eventually(() => host.requests.filter(request => request.method === "session.open" && request.params.sessionId === sessionId).length, syncOpenCountBefore + 1, "Desktop 同步此会话 re-opens session transcript");
+  await sessionMenuSheet.getByRole("button", { name: /已同步/u }).waitFor();
+
+  const targetSession = host.snapshot.sessions.find(candidate => candidate.sessionId === sessionId);
+  targetSession.turnState = "idle";
+  targetSession.pendingCount = 0;
+  await page.evaluate(next => window.__desktopReceiveSnapshot?.(next), toDesktopSnapshot(host.snapshot));
+
+  const deleteActionButton = sessionMenuSheet.getByRole("button", { name: /删除会话/u });
+  await eventually(() => deleteActionButton.isEnabled(), true, "Idle desktop session enables 删除会话");
+  await deleteActionButton.focus();
+  await page.keyboard.press("Enter");
+  const deleteAlert = page.getByRole("alertdialog", { name: "删除会话", exact: true });
+  await deleteAlert.waitFor();
+  assert.equal(await deleteAlert.evaluate(node => node.contains(document.activeElement)), true, "Opening delete ConfirmationDialog moves focus into alertdialog");
+  await page.keyboard.press("Tab");
+  assert.equal(await deleteAlert.getByRole("button", { name: "删除会话", exact: true }).evaluate(node => node === document.activeElement), true, "Tab moves to confirm button inside alertdialog");
+  await page.keyboard.press("Tab");
+  assert.equal(await deleteAlert.getByRole("button", { name: "取消", exact: true }).evaluate(node => node === document.activeElement), true, "Tab wraps inside alertdialog");
+  await page.keyboard.press("Escape");
+  await deleteAlert.waitFor({ state: "hidden" });
+  assert.equal(await deleteActionButton.evaluate(node => node === document.activeElement), true, "Canceling delete ConfirmationDialog restores focus to 删除会话 menu item");
+  await page.keyboard.press("Escape");
+  await sessionMenuSheet.waitFor({ state: "hidden" });
+  assert.equal(await menuTrigger.evaluate(node => node === document.activeElement), true, "Closing 会话操作 Sheet restores focus to 会话操作 trigger");
+  steps.push("Desktop 会话操作 Sheet supports 同步此会话 and keyboard focus trap/restore across 删除会话 ConfirmationDialog");
+}
+
 async function verifyMobileSafeArea(page, steps, directory, viewports) {
   const emulation = await page.context().newCDPSession(page);
+  await page.setViewportSize({ width: 375, height: 640 });
+  viewports.push({ page: "会话", ...page.viewportSize() });
+  await openMobileSession(page);
+  const composer = page.locator(".mobile-composer");
+  await composer.waitFor();
+  const composerPaddings = [];
+  for (const bottom of [0, 48]) {
+    await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom, left: 0 } });
+    const metrics = await composer.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        padding: parseFloat(getComputedStyle(element).paddingBottom),
+        bottom: bounds.bottom,
+        viewport: innerHeight,
+        pageScroll: window.scrollY,
+        documentHeight: document.documentElement.scrollHeight,
+      };
+    });
+    assert.ok(metrics.padding >= bottom, `会话 composer bottom padding must cover ${bottom}px safe area (got ${metrics.padding}px)`);
+    assert.ok(metrics.bottom <= metrics.viewport, "会话 composer stays inside viewport");
+    assert.equal(metrics.pageScroll, 0, "会话 does not scroll the document");
+    assert.equal(metrics.documentHeight, metrics.viewport, "会话 does not grow the document");
+    composerPaddings.push(metrics.padding);
+  }
+  assert.ok(composerPaddings[1] > composerPaddings[0], "会话 composer padding grows with nonzero safe area");
+  await page.screenshot({ path: resolve(directory, "会话-safe-area.png"), fullPage: true });
+  steps.push(`会话: env(safe-area-inset-bottom) 0 → 48px changes composer padding ${composerPaddings[0]} → ${composerPaddings[1]}px`);
+
   for (const [tab, selector, height] of [
-    ["会话", ".host-detail", 240],
-    ["电脑", ".host-browser", 240],
-    ["设置", ".mobile-settings-content", 520],
+    ["电脑", ".host-browser", 190],
+    ["设置", ".mobile-settings-content", 460],
   ]) {
     await page.setViewportSize({ width: 375, height });
     viewports.push({ page: tab, ...page.viewportSize() });
-    if (tab !== "会话") {
-      await page.getByRole("button", { name: "菜单", exact: true }).click();
-      await page.getByRole("navigation", { name: "主要导航", exact: true }).getByRole("button", { name: tab, exact: true }).click();
-    }
+    await openMobileDrawer(page);
+    await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: tab, exact: true }).click();
     const content = page.locator(selector);
     await content.waitFor();
     const header = page.locator(".m-header:visible");
@@ -471,10 +966,10 @@ async function verifyMobileSafeArea(page, steps, directory, viewports) {
   await emulation.detach();
 }
 
-async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview, assistantMail = assistantMailPreview) {
+async function createMockHost(queued, failFirstRename, errors, native = false, nativeQueue = false, sections = sectionCreatePreview, assistantMail = assistantMailPreview, options = {}) {
   const now = Date.now();
   const clientRelayUrl = `${baseUrl.replace("http:", "ws:")}/ws`;
-  const { crypto, pairing } = await BridgeCrypto.createDesktop(clientRelayUrl, "Browser E2E 隔离电脑");
+  const { crypto, pairing } = await BridgeCrypto.createDesktop(clientRelayUrl, options.desktopName ?? "Browser E2E 隔离电脑");
   pairing.iceServers = [];
   pairing.serviceOrigin = baseUrl;
   const session = {
@@ -590,7 +1085,11 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
   const host = {
     socket, crypto, pairing, session, snapshot, events, history, requests, resumeBatches, nativeQueue, nativeTrace: [],
     nativeImages: new Map(), imageTransfers: new Map(), systemUpdateError: "",
-    send: (payload) => socket.send(payload, "mobile", { crypto, toDeviceId: pairing.deviceId }),
+    send: async (payload) => {
+      const sent = await socket.send(payload, "mobile", { crypto, toDeviceId: pairing.deviceId });
+      await host.onDesktopPayload?.(payload);
+      return sent;
+    },
     historyPage(cursor, limit = 50) {
       const end = cursor ? history.findIndex(item => item.id === cursor) : history.length;
       assert.ok(end >= 0, "History cursors must refer to the oldest item in the preceding page");
@@ -836,9 +1335,12 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     if (assistantMail) {
       snapshot.host.capabilities.push("plugin.assistant-mail.v1", "plugin.assistant-mail.manual-reference.v1");
       snapshot.assistantMail = host.nativeApproval.mailSnapshot();
-      host.mailOffline = true;
-      await host.nativeApproval.assistantMail.deliver(60);
-      host.mailOffline = false;
+      const initialMailCount = options.initialMailCount ?? 60;
+      if (initialMailCount > 0) {
+        host.mailOffline = true;
+        await host.nativeApproval.assistantMail.deliver(initialMailCount);
+        host.mailOffline = false;
+      }
     }
   }
   hosts.add(host);
@@ -848,19 +1350,14 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
     }
     if (frame.type === "error") errors.push(`mock relay: ${frame.code}: ${frame.message}`);
   });
-  socket.onMessage((message, encrypted) => {
-    void (async () => {
-      if (message.payload.kind !== "request") {
-        socket.ack([encrypted.id]);
-        return;
-      }
-      const request = message.payload;
-      requests.push(structuredClone(request));
-      let result;
-      let error;
-      let remoteCommand;
-      let remoteCommandCreated = false;
-      switch (request.method) {
+  host.handleRequest = async (rawRequest) => {
+    const request = { kind: "request", requestId: rawRequest.requestId ?? randomUUID(), ...rawRequest };
+    requests.push(structuredClone(request));
+    let result;
+    let error;
+    let remoteCommand;
+    let remoteCommandCreated = false;
+    switch (request.method) {
         case "runtime.refresh":
           if (host.nativeApproval) await syncNativeSections(host);
           result = { runtime: snapshot.runtime }; break;
@@ -921,10 +1418,23 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
             break;
           }
           const action = request.params?.action ?? "status";
+          if (request.params?.channel === "stable" || request.params?.channel === "prerelease") {
+            snapshot.updater = { ...snapshot.updater, channel: request.params.channel };
+          }
+          if (typeof request.params?.autoCheck === "boolean") {
+            snapshot.updater = { ...snapshot.updater, autoCheck: request.params.autoCheck };
+          }
           if (action === "check") {
-            snapshot.updater = { ...snapshot.updater, phase: "available", latestVersion: "1.3.3", assetName: "Bridge-1.3.3-windows-installer-ci.zip", statusDetail: "发现新版本 v1.3.3" };
-          } else if (action === "apply") {
-            snapshot.updater = { ...snapshot.updater, phase: "applying", latestVersion: "1.3.3", statusDetail: "正在后台静默升级并重启 Bridge 服务…" };
+            const latestVersion = snapshot.updater?.channel === "prerelease"
+              ? (host.prereleaseLatestVersion ?? "1.3.5-dev.27")
+              : "1.3.5";
+            snapshot.updater = {
+              ...snapshot.updater,
+              phase: "available",
+              latestVersion,
+              releaseUrl: `https://github.com/Lycidas97/claude-desktop-bridge/releases/tag/v${latestVersion}`,
+              statusDetail: `发现新版本 v${latestVersion}`,
+            };
           }
           result = snapshot.updater;
           await host.send({ kind: "snapshot", snapshot });
@@ -942,15 +1452,66 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           break;
         }
         case "session.commands": result = await host.nativeApproval.commands(request); break;
-        case "session.configuration":
+        case "session.command":
+          try {
+            result = await host.nativeApproval.controllerRequest(request);
+            if (host.sectionsEnabled) await syncNativeSections(host);
+            await host.send({ kind: "snapshot", snapshot });
+          } catch (failure) { error = { code: failure.code ?? "COMMAND_REJECTED", message: failure.message }; }
+          break;
+        case "desktop.app.launch":
+        case "claude.desktop.launch":
+          snapshot.claudeDesktop = { state: "running", detail: "Claude Desktop 正在运行。", canLaunch: false, canQuit: true };
+          snapshot.desktopApps = [{ id: "claude-desktop", name: "Claude Desktop", state: "running", detail: "Claude Desktop 正在运行。", canLaunch: false, canQuit: true }];
+          snapshot.claudeInspector = {
+            ...(snapshot.claudeInspector ?? { platform: "darwin", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [] }),
+            state: "listening",
+            startup: { state: "attempted", recordedAt: Date.now(), detail: "已通过原生菜单请求开启主进程调试。" },
+          };
+          snapshot.runtime = {
+            ...snapshot.runtime,
+            state: "ready",
+            detail: "隔离 Native 宿主",
+            desktopIntegration: { state: "ready", detail: "隔离 Native 宿主", enabled: true, canRestart: false },
+          };
+          result = request.method === "desktop.app.launch"
+            ? { desktopApps: snapshot.desktopApps }
+            : { claudeDesktop: snapshot.claudeDesktop };
+          await host.send({ kind: "snapshot", snapshot });
+          break;
+        case "session.configuration": {
           if (host.taskDetailsError && request.params.includeBackgroundTasks === true) {
             error = { code: "TASK_DETAILS_UNAVAILABLE", message: host.taskDetailsError };
             break;
           }
-          if (!host.nativeApproval && request.params.includeBackgroundTasks === true) {
+          if ((!host.nativeApproval || request.params.sessionId !== sessionId) && request.params.includeBackgroundTasks === true) {
             result = { session: snapshot.sessions.find(candidate => candidate.sessionId === request.params.sessionId) };
             break;
           }
+          if (!host.nativeApproval) {
+            error = { code: "UNSUPPORTED", message: "Configuration unavailable on non-native fixture" };
+            break;
+          }
+          let readResult;
+          try {
+            readResult = await host.nativeApproval.configuration(request);
+          } catch (failure) {
+            error = { code: "NOT_FOUND", message: failure.message };
+            break;
+          }
+          result = readResult?.session && request.params.sessionId === sessionId
+            ? {
+                ...readResult,
+                session: {
+                  ...readResult.session,
+                  allowedActions: session.allowedActions,
+                  ...host.nativeApproval.profile(),
+                  ...(readResult.session.backgroundTasks ? { backgroundTasks: readResult.session.backgroundTasks } : {}),
+                },
+              }
+            : readResult;
+          break;
+        }
         case "session.configure":
           result = await host.nativeApproval.configuration(request);
           Object.assign(session, host.nativeApproval.profile());
@@ -1045,6 +1606,14 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
             : await host.nativeApproval.files(request);
           break;
         case "session.rename":
+          if (host.sectionsEnabled && host.nativeApproval) {
+            try {
+              result = await host.nativeApproval.controllerRequest(request);
+              await syncNativeSections(host);
+              await host.send({ kind: "snapshot", snapshot });
+            } catch (failure) { error = { code: failure.code ?? "E2E_RENAME_FAILED", message: failure.message }; }
+            break;
+          }
           assert.equal(request.params.sessionId, sessionId);
           renameAttempts += 1;
           if (failFirstRename && renameAttempts === 1) {
@@ -1115,11 +1684,11 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
         default:
           throw new Error(`Unimplemented host RPC: ${request.method}`);
       }
-      await host.send({
-        kind: "response", requestId: request.requestId, ok: !error,
-        ...(error ? { error } : { result }),
-      });
-      socket.ack([encrypted.id]);
+    const response = {
+      kind: "response", requestId: request.requestId, ok: !error,
+      ...(error ? { error } : { result }),
+    };
+    const afterAck = async () => {
       if (request.method === "turn.start" && remotePreview && !error) {
         if (remoteCommandCreated) {
           await host.emit("turn.queued", {
@@ -1143,6 +1712,24 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           requestId: "browser-e2e-permission", decision: "allow-once",
         }, { turnId: "browser-e2e-turn" });
       }
+    };
+    return { response, afterAck };
+  };
+  host.desktopRequest = async (input) => {
+    const { response, afterAck } = await host.handleRequest(input);
+    await afterAck();
+    return response;
+  };
+  socket.onMessage((message, encrypted) => {
+    void (async () => {
+      if (message.payload.kind !== "request") {
+        socket.ack([encrypted.id]);
+        return;
+      }
+      const { response, afterAck } = await host.handleRequest(message.payload);
+      await host.send(response);
+      socket.ack([encrypted.id]);
+      await afterAck();
     })().catch((error) => errors.push(`mock host: ${error.stack}`));
   });
   await new Promise((ready, reject) => {
@@ -1160,9 +1747,12 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
 }
 
 async function openRename(page, entry) {
-  await (entry === "list"
-    ? page.locator(`[data-session-id="${sessionId}"]`).getByRole("button", { name: "会话操作", exact: true })
-    : page.getByRole("button", { name: "会话操作", exact: true })).click();
+  if (entry === "list") {
+    await openMobileDrawer(page);
+    await page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`).getByRole("button", { name: "会话操作", exact: true }).click();
+  } else {
+    await page.getByRole("button", { name: "会话操作", exact: true }).click();
+  }
   await page.getByRole("button", { name: "重命名", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "重命名会话", exact: true });
   await dialog.waitFor();
@@ -1170,13 +1760,14 @@ async function openRename(page, entry) {
 }
 
 async function verifyRename(page, host, entry, steps) {
-  const row = page.locator(`[data-session-id="${sessionId}"]`);
+  await openMobileDrawer(page);
+  const row = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
   const beforeTime = await row.locator("small").innerText();
-  const beforeBadge = await row.locator(".session-row-status:not([aria-label])").innerText();
-  const beforeOrder = await page.locator("[data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId));
+  const beforeStateDot = await row.locator(".session-state-dot").getAttribute("class");
+  const beforeOrder = await page.locator(".mobile-home-catalog [data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId));
   const beforeSession = structuredClone(host.session);
   if (entry === "chat") {
-    await row.getByRole("button").first().click();
+    await row.locator(".session-row-hit").click();
     await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
     await page.getByRole("status", { name: "消息排队状态" }).waitFor();
   }
@@ -1210,17 +1801,18 @@ async function verifyRename(page, host, entry, steps) {
   steps.push("failed RPC retains input; retry succeeds with a trimmed title");
 
   if (entry === "list") {
+    await openMobileDrawer(page);
     await eventually(() => row.locator("strong").innerText(), renamedTitle, "List title must update");
-    await row.getByRole("button").first().click();
+    await row.locator(".session-row-hit").click();
   }
   await page.getByRole("heading", { name: renamedTitle, exact: true }).waitFor();
   assert.match(await page.getByRole("status", { name: "消息排队状态" }).innerText(), /1 条消息已到电脑/u);
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   await eventually(() => row.locator("strong").innerText(), renamedTitle, "Renamed chat must update its list row");
   assert.equal(await row.locator("small").innerText(), beforeTime, "Rename must not change displayed activity time");
-  assert.equal(await row.locator(".session-row-status:not([aria-label])").innerText(), beforeBadge, "Rename must preserve queue state");
+  assert.equal(await row.locator(".session-state-dot").getAttribute("class"), beforeStateDot, "Rename must preserve queue state");
   assert.equal(await row.getByLabel(`${beforeSession.pendingCount} 条排队消息`, { exact: true }).innerText(), String(beforeSession.pendingCount), "Rename must preserve the independent pending count");
-  assert.deepEqual(await page.locator("[data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId)), beforeOrder, "Rename must not reorder sessions");
+  assert.deepEqual(await page.locator(".mobile-home-catalog [data-session-id]").evaluateAll((rows) => rows.map((item) => item.dataset.sessionId)), beforeOrder, "Rename must not reorder sessions");
   assert.deepEqual(host.session, { ...beforeSession, title: renamedTitle }, "Host rename changes only the title");
   assert.equal(host.requests.filter((request) => request.method.startsWith("turn.")).length, 0, "Rename must not alter queued turns");
   steps.push("list/header title updates; activity, order, and existing queue unchanged");
@@ -1244,11 +1836,12 @@ async function verifyRename(page, host, entry, steps) {
     await page.locator(".session-catalog-loading strong", { hasText: "暂无会话" }).waitFor();
     await page.locator(".session-catalog-loading span", { hasText: "当前电脑上尚未创建会话，可随时开始新的对话。" }).waitFor();
     await page.locator(".session-catalog-loading").getByRole("button", { name: "新建会话", exact: true }).click();
-    const createDialog = page.getByRole("dialog", { name: "新建会话" });
-    await createDialog.waitFor();
+    const newChatCanvas = page.locator(".new-chat-canvas");
+    await newChatCanvas.waitFor();
+    await newChatCanvas.getByRole("group", { name: "新建会话配置", exact: true }).waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-    await createDialog.getByRole("button", { name: "关闭", exact: true }).click();
-    await createDialog.waitFor({ state: "hidden" });
+    await newChatCanvas.getByRole("button", { name: "返回会话列表", exact: true }).click();
+    await newChatCanvas.waitFor({ state: "hidden" });
 
     await host.send({
       kind: "snapshot",
@@ -1270,13 +1863,15 @@ async function verifyRename(page, host, entry, steps) {
 }
 
 async function verifyDelivery(page, host, steps) {
-  const row = page.locator(`[data-session-id="${sessionId}"]`);
+  await openMobileDrawer(page);
+  const row = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
   const dialog = await openRename(page, "list");
   await dialog.getByRole("textbox", { name: "会话名称", exact: true }).fill(renamedTitle);
   await dialog.getByRole("button", { name: "保存", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
+  await openMobileDrawer(page);
   await eventually(() => row.locator("strong").innerText(), renamedTitle, "Display name must update before sending");
-  await row.getByRole("button").first().click();
+  await row.locator(".session-row-hit").click();
   await page.getByRole("heading", { name: renamedTitle, exact: true }).waitFor();
   await page.getByRole("textbox", { name: /^给 .+ 发指令$/u }).fill(userText);
   await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -1337,7 +1932,7 @@ async function verifySessionHeader(page, host, steps, directory) {
   const session = host.snapshot.sessions.find(session => session.sessionId === sessionId);
   const profile = { ...host.nativeApproval.profile(), modelDisplayName: "Claude Opus 5.5 · custom-model-identifier-with-a-long-unbroken-name-1234567890", effort: "high" };
   host.nativeApproval.profile = () => profile;
-  const modes = { default: "逐个确认", acceptEdits: "自动接受编辑", bypassPermissions: "完全授权", plan: "计划模式", auto: "自动模式", dontAsk: "不询问" };
+  const modes = { default: "Manual", acceptEdits: "Accept Edits", bypassPermissions: "Bypass", plan: "Plan", auto: "Auto", dontAsk: "Don't Ask" };
   const accessibility = await page.context().newCDPSession(page);
   async function accessibleProfile() {
     const { root } = await accessibility.send("DOM.getDocument");
@@ -1350,8 +1945,8 @@ async function verifySessionHeader(page, host, steps, directory) {
     profile.nativePermissionMode = mode;
     Object.assign(session, profile);
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
-    await eventually(() => page.locator(".m-header .session-profile-summary").innerText(), `${profile.modelDisplayName} · ${label} · reasoning high`, "The header shows the current mode with the complete model and effort");
-    await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · ${label} · reasoning high` }, "Mobile settings announce the current snapshot profile");
+    await eventually(() => page.locator(".m-header .session-profile-summary").textContent(), `${profile.modelDisplayName} · High · ${label}`, "The header shows the current mode with the complete model and effort");
+    await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${label}` }, "Mobile settings announce the current snapshot profile");
   }
   const notice = page.getByRole("status", { name: "Desktop 会话授权变更", exact: true });
   for (const state of ["requested", "not-applied", "confirmed"]) {
@@ -1359,32 +1954,39 @@ async function verifySessionHeader(page, host, steps, directory) {
     Object.assign(session, profile);
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
     await eventually(() => notice.count(), state === "confirmed" ? 0 : 1, `Permission notice state ${state}`);
-    assert.ok((await page.locator(".m-header .session-profile-summary").innerText()).includes("不询问"), "A requested mode never replaces the observed header mode");
+    assert.ok((await page.locator(".m-header .session-profile-summary").textContent()).includes("Don't Ask"), "A requested mode never replaces the observed header mode");
   }
-  async function checkWrapping(selector, surface, labels, requireMultipleLines = true) {
-    const layout = await page.locator(selector).evaluate((element, labels) => {
-      const range = document.createRange();
-      range.selectNodeContents(element);
+  async function checkWrapping(selector, surface, requiredParts = [], stackedSecondLine = true) {
+    const layout = await page.locator(selector).evaluate((element) => {
+      const modelLine = element.querySelector(".is-model-line");
+      const metaLine = element.querySelector(".is-meta-line");
       const rect = element.getBoundingClientRect();
-      const segments = labels.map(label => {
-        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-          const start = node.textContent.indexOf(label);
-          if (start < 0) continue;
-          const segment = document.createRange();
-          segment.setStart(node, start);
-          segment.setEnd(node, start + label.length);
-          return { label, lines: new Set([...segment.getClientRects()].map(rect => rect.top)).size };
-        }
-        return { label, lines: 0 };
-      });
-      return { whiteSpace: getComputedStyle(element).whiteSpace, lines: range.getClientRects().length, segments,
-        client: element.clientWidth, scroll: element.scrollWidth, left: rect.left, right: rect.right, width: innerWidth };
-    }, labels);
-    assert.equal(layout.whiteSpace, "normal", `${surface} wraps text`);
-    assert.ok((!requireMultipleLines || layout.lines > 1) && layout.scroll <= layout.client + 1, `${surface} retains every line without clipping: ${JSON.stringify(layout)}`);
-    assert.ok(layout.left >= 0 && layout.right <= layout.width + 1, `${surface} fits the viewport`);
-    for (const segment of layout.segments) assert.equal(segment.lines, 1, `${surface} keeps ${segment.label} on one line`);
+      const modelRect = modelLine?.getBoundingClientRect();
+      const metaRect = metaLine?.getBoundingClientRect();
+      const range = document.createRange();
+      if (modelLine) range.selectNodeContents(modelLine);
+      return {
+        modelWhiteSpace: modelLine ? getComputedStyle(modelLine).whiteSpace : "",
+        modelTextOverflow: modelLine ? getComputedStyle(modelLine).textOverflow : "",
+        modelLines: modelLine ? new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size : 0,
+        metaText: metaLine?.textContent ?? "",
+        metaClipped: metaLine ? metaLine.scrollWidth > metaLine.clientWidth + 1 : false,
+        stacked: modelRect && metaRect ? metaRect.top >= modelRect.bottom - 2 : false,
+        left: rect.left,
+        right: rect.right,
+        metaRight: metaRect ? metaRect.right : rect.right,
+        width: innerWidth,
+      };
+    });
+    assert.equal(layout.modelWhiteSpace, "nowrap", `${surface} keeps model line on one single line`);
+    assert.equal(layout.modelTextOverflow, "ellipsis", `${surface} truncates long model names cleanly with ellipsis`);
+    assert.equal(layout.modelLines, 1, `${surface} model line never wraps: ${JSON.stringify(layout)}`);
+    assert.equal(layout.metaClipped, false, `${surface} never truncates effort or permission mode: ${JSON.stringify(layout)}`);
+    for (const part of requiredParts) {
+      assert.ok(layout.metaText.includes(part), `${surface} keeps "${part}" visible in meta line: ${JSON.stringify(layout)}`);
+    }
+    assert.equal(layout.stacked, stackedSecondLine, `${surface} stackedSecondLine=${stackedSecondLine} mismatch: ${JSON.stringify(layout)}`);
+    assert.ok(layout.left >= 0 && layout.right <= layout.width + 1 && layout.metaRight <= layout.width + 1, `${surface} fits the viewport`);
   }
   for (const width of [375, 320]) {
     await page.setViewportSize({ width, height: 812 });
@@ -1394,7 +1996,7 @@ async function verifySessionHeader(page, host, steps, directory) {
         session.allowedActions.canConfigure = canConfigure;
         await host.send({ kind: "snapshot", snapshot: host.snapshot });
         await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Settings availability changes only the header action");
-        await checkWrapping(".m-header .session-profile-summary", `Mobile ${width}px ${font} configure=${canConfigure}`, ["不询问", "reasoning high"]);
+        await checkWrapping(".m-header .session-profile-summary", `Mobile ${width}px ${font} configure=${canConfigure}`, ["Don't Ask", "High"]);
       }
     }
   }
@@ -1425,9 +2027,9 @@ async function verifySessionHeader(page, host, steps, directory) {
     }, { canConfigure, mode, sessionId });
     await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Desktop retains a read-only header when settings are unavailable");
     const summary = page.locator(".desktop-conversation .session-profile-summary");
-    await eventually(() => summary.innerText(), `${profile.modelDisplayName} · ${modes[mode]} · reasoning high`, "Desktop receives updated mode without a configuration read");
-    if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · ${modes[mode]} · reasoning high` }, "Desktop settings announce the current snapshot profile");
-    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [modes[mode], "reasoning high"], false);
+    await eventually(() => summary.textContent(), `${profile.modelDisplayName} · High · ${modes[mode]}`, "Desktop receives updated mode without a configuration read");
+    if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${modes[mode]}` }, "Desktop settings announce the current snapshot profile");
+    await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [modes[mode], "High"], false);
   }
   await accessibility.detach();
   await page.screenshot({ path: resolve(directory, "desktop-header-readonly-larger.png"), fullPage: true });
@@ -1435,7 +2037,7 @@ async function verifySessionHeader(page, host, steps, directory) {
 }
 
 async function verifyNativeApprovals(page, host, steps, directory) {
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const slashInput = page.getByRole("combobox", { name: "给 Claude 发指令" });
   await slashInput.fill("/r");
@@ -1503,16 +2105,16 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     { question: "选择执行范围", multiSelect: false, options: [{ label: "仅本机", description: "使用隔离测试目录" }, { label: "稍后处理" }] },
     { question: "选择检查项目", multiSelect: true, options: [{ label: "稍后处理" }, { label: "类型检查" }, { label: "回归测试" }] },
   ] };
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   const question = await host.nativeApproval.open("AskUserQuestion", input);
   for (const event of await host.nativeApproval.message({ type: "assistant", uuid: "native-question-card", timestamp: Date.now(), message: { content: [
     { type: "tool_use", id: question.request.toolUseId, name: "AskUserQuestion", input },
   ] } })) await host.emit(event.type, event.data, { itemId: event.itemId });
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
-  const sessionRow = page.locator(`[data-session-id="${sessionId}"]`);
+  const sessionRow = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
   await sessionRow.getByText("待回答", { exact: true }).waitFor();
-  await page.getByText("有提问待你回答", { exact: true }).waitFor();
-  await sessionRow.getByRole("button").first().click();
+  await page.locator(".mobile-home-catalog").getByText("有提问待你回答", { exact: true }).waitFor();
+  await sessionRow.locator(".session-row-hit").click();
   const questionCard = page.locator(".conversation-stream .pending-question");
   await questionCard.waitFor();
   assert.equal(await page.getByRole("dialog", { name: "Claude 等待授权", exact: true }).count(), 0, "Questions are answered inline without another approval sheet");
@@ -1546,12 +2148,12 @@ async function verifyNativeApprovals(page, host, steps, directory) {
   assert.equal(await answeredQuestion.locator(".interactive-question-block").filter({ hasText: "选择检查项目" }).getByRole("button", { name: "稍后处理", exact: true }).getAttribute("class").then(value => value.includes("is-selected")), false);
   await page.screenshot({ path: resolve(directory, "native-question-answered.png"), fullPage: true });
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   await sessionRow.getByText("待回答", { exact: true }).waitFor({ state: "hidden" });
-  await sessionRow.getByRole("button").first().click();
+  await sessionRow.locator(".session-row-hit").click();
   await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reopened native history retains every selection");
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await eventually(() => answeredQuestion.locator(".interactive-option-button.is-selected").count(), 3, "Reloaded native history retains every selection");
   const resolutions = host.requests.filter((request) => request.method === "permission.resolve");
   assert.equal(resolutions.length, 3);
@@ -1562,7 +2164,7 @@ async function verifyNativeApprovals(page, host, steps, directory) {
   for (const mode of ["bypassPermissions", "auto"]) {
     await page.getByRole("button", { name: "会话设置", exact: true }).click();
     const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });
-    await configuration.getByLabel("Desktop 授权模式").selectOption(mode);
+    await selectCustomOption(page, configuration.getByLabel("Desktop 授权模式"), mode);
     await configuration.getByRole("button", { name: "保存配置", exact: true }).click();
     if (mode === "bypassPermissions") {
       await page.getByRole("alertdialog", { name: "启用完全授权", exact: true }).getByRole("button", { name: "启用完全授权", exact: true }).click();
@@ -1571,9 +2173,9 @@ async function verifyNativeApprovals(page, host, steps, directory) {
     assert.equal(host.nativeApproval.permissionMode(), mode);
     assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "setPermissionMode").at(-1).args, [sessionId, mode]);
     assert.equal(await page.getByRole("status", { name: "Desktop 会话授权变更", exact: true }).count(), 0, "Confirmed permission changes leave no persistent banner");
-    await eventually(async () => (await page.locator(".m-header .session-profile-summary").innerText()).includes(mode === "auto" ? "自动模式" : "完全授权"), true, "The updated Native snapshot reaches the header");
+    await eventually(async () => (await page.locator(".m-header .session-profile-summary").innerText()).includes(mode === "auto" ? "Auto" : "Bypass"), true, "The updated Native snapshot reaches the header");
     await page.getByRole("button", { name: "会话设置", exact: true }).click();
-    await eventually(() => configuration.getByLabel("Desktop 授权模式").inputValue(), mode, "Configuration reflects the native Desktop mode");
+    await eventually(() => customSelectValue(configuration.getByLabel("Desktop 授权模式")), mode, "Configuration reflects the native Desktop mode");
     await page.screenshot({ path: resolve(directory, `native-mode-${mode}.png`), fullPage: true });
     await configuration.getByRole("button", { name: "关闭", exact: true }).click();
     assert.equal(host.snapshot.host.defaultPermissionMode, undefined);
@@ -1625,7 +2227,7 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
     await host.nativeApproval.setPromptsPrPolicy({ applyPrWrites: true });
   }
 
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const kinds = ["refusal-fallback", "auto-mode-server-fallback", "lanyard-consent", "violin-bow", "cwd-trust"];
   const opened = [];
@@ -1680,7 +2282,7 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   await unavailableCard.getByText("请在电脑端处理", { exact: true }).waitFor();
   assert.equal(await unavailableCard.getByRole("button").count(), 0);
   const reachable = await host.syncNativeDialogs(await host.nativeApproval.openPrompt("cwd-trust"));
-  await page.getByRole("combobox", { name: "待处理提示", exact: true }).selectOption(reachable.prompt.promptId);
+  await selectCustomOption(page, page.getByRole("combobox", { name: "待处理提示", exact: true }), reachable.prompt.promptId);
   const reachableCard = page.getByRole("region", { name: reachable.prompt.title, exact: true });
   await reachableCard.getByRole("button", { name: "信任目录", exact: true }).click();
   await reachableCard.waitFor({ state: "hidden" });
@@ -1756,13 +2358,14 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   await desktop.setViewportSize({ width: 1200, height: 800 });
   await desktop.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await desktop.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
-  await desktop.locator(".desktop-conversation-heading").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
+  await desktop.locator(".desktop-conversation .m-header").getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   assert.equal(await desktop.locator(".session-pr-bar").count(), 0, "Desktop also omits the no-PR header");
-  await desktop.getByRole("button", { name: "PR Auto-fix", exact: true }).click();
-  const desktopMenu = desktop.getByRole("dialog", { name: "PR Auto-fix", exact: true });
+  const desktopMenuTrigger = desktop.locator(".desktop-conversation").getByRole("button", { name: "会话操作", exact: true });
+  await desktopMenuTrigger.click();
+  const desktopMenu = desktop.getByRole("dialog", { name: originalTitle, exact: true });
   const desktopOwn = desktopMenu.getByRole("checkbox", { name: "仅我的 PR", exact: true });
   await eventually(() => desktopOwn.isEnabled(), true, "Desktop actions read Native preferences");
-  assert.equal(await desktopMenu.getByText("PR Auto-fix", { exact: true }).count(), 1, "Desktop labels the feature once in the dialog heading");
+  assert.equal(await desktopMenu.getByText("PR Auto-fix", { exact: true }).count(), 1, "Desktop labels the feature once in the session actions sheet");
   assert.equal(await desktopMenu.getByRole("button", { name: "刷新 PR 状态", exact: true }).count(), 0);
   assert.equal(await desktopOwn.isChecked(), true, "Desktop sees the preference saved by the phone");
   assert.equal(await desktopMenu.getByRole("button", { name: "已布防下一个 PR", exact: true }).isDisabled(), true);
@@ -1778,7 +2381,7 @@ async function verifyNativePromptsPr(page, host, steps, directory) {
   assert.equal(await desktop.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await desktopMenu.getByRole("button", { name: "关闭", exact: true }).press("Escape");
   await desktopMenu.waitFor({ state: "hidden" });
-  assert.equal(await desktop.getByRole("button", { name: "PR Auto-fix", exact: true }).evaluate(button => button === document.activeElement), true, "Desktop action sheet restores keyboard focus");
+  assert.equal(await desktopMenuTrigger.evaluate(button => button === document.activeElement), true, "Desktop action sheet restores keyboard focus");
   assert.deepEqual(desktopErrors, []);
   await desktop.close();
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "getPrChecks").length, 0, "No-PR actions on either surface never request checks");
@@ -1862,7 +2465,7 @@ async function verifyNativeMessages(page, host, steps, directory) {
     { id: fiveId, sessionId, role: "user", text: "五图隔离消息", createdAt: Date.now(), origin: "claude-desktop", delivery: "queued", attachments },
     { id: correctedId, sessionId, role: "user", text: "终态纠正消息", createdAt: Date.now() + 1, origin: "claude-desktop", delivery: "queued" },
   );
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const five = page.locator("article.conversation-item.user").filter({ hasText: "五图隔离消息" });
   async function loadFiveThumbnails() {
@@ -1939,13 +2542,23 @@ async function verifyNativeMessages(page, host, steps, directory) {
   await eventually(async () => (await page.getByRole("button", { name: "会话设置", exact: true }).innerText()).includes("隔离模型 · 标准"), true, "Initial native alias snapshot uses its saved header label before opening configuration");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
   const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });
-  const modelSelect = configuration.locator("select").first();
-  await eventually(() => modelSelect.inputValue(), "synthetic-model", "Native alias selects the matching original model ID in the picker");
-  await eventually(() => modelSelect.locator("option").evaluateAll(options => options.filter(option => option.value.startsWith("synthetic-model")).map(option => ({ value: option.value, text: option.textContent }))), [
+  const modelSelect = configuration.getByRole("combobox", { name: "模型", exact: true });
+  await eventually(() => customSelectValue(modelSelect), "synthetic-model", "Native alias selects the matching original model ID in the picker");
+  await modelSelect.click();
+  const modelListbox = page.getByRole("listbox");
+  await modelListbox.waitFor();
+  await eventually(() => modelListbox.getByRole("option").evaluateAll(options => options
+    .map(option => ({
+      value: option.getAttribute("data-option-value") ?? "",
+      text: option.querySelector(".select-menu-option-label")?.textContent ?? option.textContent ?? "",
+    }))
+    .filter(option => option.value.startsWith("synthetic-model"))), [
     { value: "synthetic-model", text: "隔离模型 · 标准" },
     { value: "synthetic-model-large[1m]", text: "隔离模型 · 长上下文" },
   ], "Saved model labels and original IDs are shown in saved order");
-  await modelSelect.selectOption("synthetic-model-large[1m]");
+  const largeOptionIdx = await modelListbox.getByRole("option").evaluateAll(els => els.findIndex(el => el.getAttribute("data-option-value") === "synthetic-model-large[1m]"));
+  assert.ok(largeOptionIdx >= 0, "Long-context model option must exist");
+  await modelListbox.getByRole("option").nth(largeOptionIdx).click();
   await configuration.getByRole("button", { name: "保存配置", exact: true }).click();
   await configuration.waitFor({ state: "hidden" });
   assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "setModel").at(-1).args, [sessionId, "mythos-magpie-1826500494[1m]"]);
@@ -1955,9 +2568,8 @@ async function verifyNativeMessages(page, host, steps, directory) {
   steps.push("native internal aliases resolve to saved header labels before configuration, picker selection uses the canonical ID, and long-context selection keeps its full ID");
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  const row = page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first();
-  await page.getByRole("heading", { name: originalTitle, exact: true }).or(row).first().waitFor();
-  if (await row.isVisible()) await row.click();
+  await openMobileSession(page);
+  await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   await loadFiveThumbnails();
   await eventually(async () => (await page.getByRole("button", { name: "会话设置", exact: true }).innerText()).includes("隔离模型 · 长上下文"), true, "Reloaded native alias snapshot retains the saved header label");
   assert.match(await five.innerText(), /已完成/u);
@@ -1973,14 +2585,14 @@ async function verifyNativeMessages(page, host, steps, directory) {
 
   const geminiModel = ["antigravity", "gemini-4-argon"].join("/");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
-  await modelSelect.selectOption(geminiModel);
+  await selectCustomOption(page, modelSelect, geminiModel);
   await configuration.getByRole("button", { name: "保存配置", exact: true }).click();
   await configuration.waitFor({ state: "hidden" });
   assert.deepEqual(host.nativeApproval.calls.filter(call => call.method === "setModel").at(-1).args, [sessionId, ["mythos", "magpie", "1052229916"].join("-")]);
   await eventually(async () => (await page.getByRole("button", { name: "会话设置", exact: true }).innerText()).includes("Gemini 4 Argon · Antigravity · 1M"), true, "Native preferred 1M normalization succeeds and the header shows the actual context");
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
-  await eventually(() => modelSelect.inputValue(), `${geminiModel}[1m]`, "Reopening configuration selects the observed Gemini 1M variant");
-  assert.ok((await modelSelect.locator("option:checked").innerText()).includes("1M"));
+  await eventually(() => customSelectValue(modelSelect), `${geminiModel}[1m]`, "Reopening configuration selects the observed Gemini 1M variant");
+  assert.ok((await modelSelect.innerText()).includes("1M"));
   assert.equal((await configuration.innerText()).includes("Desktop did not apply"), false);
   await page.screenshot({ path: resolve(directory, "native-gemini-preferred-context.png"), fullPage: true });
   steps.push("Gemini saves through the real Native facade when Desktop prefers 1M, and reopening configuration shows its observed model and context without a false failure");
@@ -1994,7 +2606,7 @@ async function verifyHistoryPagination(page, host, steps, directory) {
     text: `历史条目 ${String(index + 1).padStart(3, "0")}。${"这段内容仅用于隔离分页与滚动位置验收。".repeat(3)}`,
     createdAt: now - (120 - index) * 1000, origin: "claude-desktop",
   });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const stream = page.locator(".conversation-stream");
   await eventually(() => stream.locator("article.conversation-item").count(), 50, "Opening a session renders the larger first page");
@@ -2112,19 +2724,20 @@ async function verifyHistoryPagination(page, host, steps, directory) {
 }
 
 async function verifyNativeCompaction(page, host, steps, directory) {
-  const row = page.locator(`[data-session-id="${sessionId}"]`);
-  await row.getByRole("button").first().click();
+  const row = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
+  await openMobileSession(page);
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: "compacting" } }));
   await eventually(() => page.locator(".session-activity-label").innerText(), "正在压缩上下文", "Native compaction replaces generic activity even with queued input");
   assert.equal(await page.locator(".session-activity-elapsed").count(), 0, "User turn age is not shown as compaction duration");
   await page.screenshot({ path: resolve(directory, "native-compaction.png"), fullPage: true });
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   await eventually(() => row.locator(".session-row-status:not([aria-label])").innerText(), "正在压缩上下文", "Catalog badge shares the observed compaction status");
   await page.reload({ waitUntil: "domcontentloaded" });
+  await openMobileDrawer(page);
   await row.waitFor();
   await eventually(() => row.locator(".session-row-status:not([aria-label])").innerText(), "正在压缩上下文", "Reconnect snapshot retains current compaction status");
   assert.equal(await row.getByLabel("1 条排队消息", { exact: true }).innerText(), "1", "Compaction retains the independent pending count after reconnect");
-  await row.getByRole("button").first().click();
+  await row.locator(".session-row-hit").click();
   await eventually(() => page.locator(".session-activity-label").innerText(), "正在压缩上下文", "Reopening a compacting session restores its activity line");
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "message", message: { type: "system", subtype: "status", status: null, compact_result: "success" } }));
   await eventually(() => page.locator(".session-activity.compacting").count(), 0, "Native status clear restores regular activity");
@@ -2167,7 +2780,8 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   host.session.runningSubagents = host.nativeApproval.session().runningSubagents;
   assert.deepEqual(host.session.runningSubagents, { count: 1, lastUpdatedAt: subagentStartAt });
   await host.emit("runtime.updated", { replaceSession: true, session: structuredClone(host.session) }, { itemId: "session:subagent-activity" });
-  const catalogRow = page.locator(`[data-session-id="${sessionId}"]`);
+  await openMobileDrawer(page);
+  const catalogRow = page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`);
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Catalog row dot reflects running background subagent when main turn is idle");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Catalog row badge displays running background subagent");
   host.history.push(...(await host.nativeApproval.history()).items);
@@ -2189,12 +2803,12 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     }
     return result;
   };
-  await catalogRow.getByRole("button").first().click();
+  await catalogRow.locator(".session-row-hit").click();
   await eventually(() => taskDetailsReads >= 2, true, "Native empty task details have been loaded and polled again");
   assert.ok((await page.locator(".session-activity-label").innerText()).includes("子代理运行中 · Run full local distributed CI"), "Native running metadata preserves activity when catalog transcript is unavailable");
   useTrayFixture = true;
   await page.getByRole("button", { name: "后台任务，1 个运行中", exact: true }).waitFor();
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   await eventually(() => catalogRow.locator(".session-state-dot.running").count(), 1, "Returning from detail keeps catalog row dot running");
   await eventually(() => catalogRow.locator(".session-row-status.running").innerText(), "后台子代理", "Returning from detail keeps catalog row badge synchronized");
   host.session.runningSubagents = { count: 1, lastUpdatedAt: Date.now() - 11 * 60_000 };
@@ -2219,7 +2833,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await eventually(() => catalogRow.locator(".session-state-dot.idle").count(), 1, "Completed background subagent restores idle catalog dot");
   await eventually(() => catalogRow.locator(".session-row-status").count(), 0, "Completed background subagent clears catalog badge");
   steps.push("session catalog state dot and status badge stay synchronized with active, stalled, and completed background subagents before opening and after returning from detail");
-  await catalogRow.getByRole("button").first().click();
+  await catalogRow.locator(".session-row-hit").click();
   const stream = page.locator(".conversation-stream");
   await stream.locator(".background-task-marker.is-completed").waitFor();
   await eventually(() => page.locator(".session-activity").count(), 0, "Settled task tray clears stale running subagent activity and timer");
@@ -2351,7 +2965,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
 
   await page.getByRole("button", { name: "会话设置", exact: true }).click();
   const configuration = page.getByRole("dialog", { name: originalTitle, exact: true });
-  await configuration.locator("select").first().selectOption("claude/claude-opus-5-5");
+  await selectCustomOption(page, configuration.getByRole("combobox", { name: "模型", exact: true }), "claude/claude-opus-5-5");
   await eventually(() => configuration.locator(".magpie-quota-model summary").innerText(), "单账号最高可用 73%", "Native Claude model picker shows the Magpie response");
   await configuration.locator(".magpie-quota-model summary").click();
   assert.ok((await configuration.innerText()).includes("隔离 Magpie 账号"));
@@ -2375,7 +2989,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   const target = stream.locator("article.conversation-item").filter({ hasText: "重写这条请求" });
   await target.getByRole("button", { name: "回退到这条消息之前", exact: true }).click();
   const rewind = page.getByRole("dialog", { name: "回退会话", exact: true });
-  await rewind.getByRole("combobox", { name: "回退范围", exact: true }).selectOption("both");
+  await selectCustomOption(page, rewind.getByRole("combobox", { name: "回退范围", exact: true }), "both");
   assert.ok((await rewind.innerText()).includes("report.json"));
   assert.equal(JSON.parse(await readFile(resolve(host.nativeApproval.harnessCwd, "report.json"), "utf8")).source, "worktree", "Dry-run leaves the actual fixture file intact");
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "rewindV2").length, 0);
@@ -2390,12 +3004,11 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     ["rewindFiles", [sessionId, "rewind-target", false, true]], ["rewindV2", [sessionId, "rewind-target"]],
   ]);
   await page.reload({ waitUntil: "domcontentloaded" });
-  const row = page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first();
-  await row.or(page.getByRole("heading", { name: originalTitle, exact: true })).first().waitFor();
-  if (await row.isVisible()) await row.click();
+  await openMobileSession(page);
   await page.getByText("保留的检查点回复", { exact: true }).waitFor();
-  assert.equal(await page.getByText("回退后应消失的回复", { exact: true }).count(), 0);
-  assert.equal(await page.getByText("重写这条请求", { exact: true }).count(), 0);
+  assert.equal(await stream.getByText("回退后应消失的回复", { exact: true }).count(), 0);
+  assert.equal(await stream.getByText("重写这条请求", { exact: true }).count(), 0);
+  assert.equal(await page.locator(".composer-form textarea").inputValue(), "重写这条请求");
   await page.screenshot({ path: resolve(directory, "native-rewind-reconnected.png"), fullPage: true });
   steps.push("confirmed rewind restores files before the conversation, prefill returns to the draft, and discarded messages stay absent after reconnect/replay");
 
@@ -2413,7 +3026,7 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.screenshot({ path: resolve(directory, "native-tool-names-completion-only.png"), fullPage: true });
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await eventually(async () => (await toolRows.locator("strong").allTextContents()).sort(), ["Bash", "Edit", "Read", "Write"], "Native history and replay keep one named row per original call after reload");
   assert.equal(host.requests.filter(request => request.method === "session.tool.detail").length, 0, "Timeline rendering never eagerly fetches full tool outputs");
   await stream.locator(".conversation-tool-group").last().locator("summary").click();
@@ -2463,21 +3076,26 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     assert.equal(host.nativeApproval.failedRewindReadbacks.filter(failed => failed === method).length, 1, "The intended post-success Native readback actually failed");
     await page.screenshot({ path: resolve(directory, `native-rewind-${method}-disconnected.png`), fullPage: true });
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+    await openMobileSession(page);
     await page.getByText(`${method} 保留的检查点`, { exact: true }).waitFor();
     assert.equal(await target.count(), 0, "Refreshed history and replay must not revive the successfully rewound target");
   }
   steps.push("successful Native rewind preserves prefill and closes confirmation when subsequent getSession or getTranscriptPage disconnects; each mutation executes once and discarded history stays absent after reload");
 
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
-  await page.getByRole("button", { name: "菜单", exact: true }).click();
-  await page.getByRole("navigation", { name: "主要导航", exact: true }).getByRole("button", { name: "设置", exact: true }).click();
+  await openMobileDrawer(page);
+  await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
   await page.getByRole("heading", { name: "远端桌面状态", exact: true }).waitFor();
   await page.getByRole("heading", { name: "版本与更新", exact: true }).waitFor();
   assert.ok((await page.locator(".mobile-settings-page").innerText()).includes("v1.1.1"));
-  await page.getByRole("button", { name: "检查并升级桌面端", exact: true }).click();
-  await eventually(() => host.requests.some(request => request.method === "system.update" && request.params.action === "apply"), true, "Mobile triggers encrypted system.update apply RPC");
-  await eventually(() => page.locator(".mobile-settings-page").innerText().then(t => t.includes("正在重启升级")), true, "Remote desktop status reflects applying phase over E2EE");
+  const remoteUpdaterRegion = page.getByRole("region", { name: "远端桌面状态", exact: true });
+  assert.deepEqual(
+    await remoteUpdaterRegion.locator(".mobile-settings-actions button").allInnerTexts(),
+    ["检查更新"],
+    "Remote desktop status exposes only 检查更新 without remote upgrade/download buttons",
+  );
+  await remoteUpdaterRegion.getByRole("button", { name: "检查更新", exact: true }).click();
+  await eventually(() => host.requests.some(request => request.method === "system.update" && request.params.action === "check"), true, "Mobile triggers encrypted system.update check RPC");
+  await eventually(() => page.locator(".mobile-settings-page").innerText().then(t => t.includes("发现 v1.3.5")), true, "Remote desktop status reflects available version over E2EE");
   async function assertUpdaterCards() {
     for (const title of ["远端桌面状态", "版本与更新"]) {
       const rows = await page.getByRole("region", { name: title, exact: true }).locator(":scope > :not(h2)").evaluateAll(elements => elements.map(element => {
@@ -2485,20 +3103,21 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
         const style = getComputedStyle(element);
         return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, background: style.backgroundColor,
           topRadius: [style.borderTopLeftRadius, style.borderTopRightRadius], bottomRadius: [style.borderBottomLeftRadius, style.borderBottomRightRadius],
-          topBorder: style.borderTopWidth, sideBorders: [style.borderLeftColor, style.borderRightColor] };
+          topBorder: style.borderTopWidth, bottomBorder: style.borderBottomWidth, sideBorderWidths: [style.borderLeftWidth, style.borderRightWidth] };
       }));
       assert.ok(rows.length >= 4, `${title} includes version, details, and actions`);
       for (const [index, row] of rows.entries()) {
-        assert.equal(row.left, rows[0].left, `${title} rows share the left card edge`);
-        assert.equal(row.right, rows[0].right, `${title} rows share the right card edge`);
-        assert.equal(row.background, rows[0].background, `${title} details stay inside the card background`);
-        assert.deepEqual(row.sideBorders, rows[0].sideBorders, `${title} rows share the card border color`);
+        assert.equal(row.left, rows[0].left, `${title} rows share the left hairline edge`);
+        assert.equal(row.right, rows[0].right, `${title} rows share the right hairline edge`);
+        assert.equal(row.background, rows[0].background, `${title} rows stay flat without boxed cards`);
+        assert.deepEqual(row.sideBorderWidths, ["0px", "0px"], `${title} rows have no vertical card borders`);
+        assert.deepEqual(row.topRadius, ["0px", "0px"], `${title} rows are cardless`);
+        assert.deepEqual(row.bottomRadius, ["0px", "0px"], `${title} rows are cardless`);
+        assert.equal(row.topBorder, "0px", `${title} rows use bottom hairlines only`);
+        assert.equal(row.bottomBorder, "1px", `${title} rows render 1px hairline dividers`);
         if (index > 0) {
-          assert.equal(row.top, rows[index - 1].bottom, `${title} has no gaps between rows`);
-          assert.deepEqual(row.topRadius, ["0px", "0px"], `${title} only rounds the first row's top corners`);
-          assert.equal(row.topBorder, "0px", `${title} inner rows do not start a separate box`);
+          assert.ok(Math.abs(row.top - rows[index - 1].bottom) <= 1, `${title} has no gaps between rows`);
         }
-        if (index < rows.length - 1) assert.deepEqual(row.bottomRadius, ["0px", "0px"], `${title} only rounds the last row's bottom corners`);
       }
     }
   }
@@ -2515,11 +3134,11 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
     await assertUpdaterCards();
     await page.getByRole("region", { name: "远端桌面状态", exact: true }).screenshot({ path: resolve(directory, `settings-updater-error-${family}.png`) });
   }
-  steps.push("mobile Settings keeps updater details/actions, rejected RPC errors, and Web release fallback in continuous cards in Sunstone/Apple themes and triggers E2EE system.update upgrade");
+  steps.push("mobile Settings keeps updater details/actions, rejected RPC errors, and Web release fallback in continuous cards in Sunstone/Apple themes and triggers E2EE system.update check");
 }
 
 async function verifyNativeQueueActions(page, host, steps, directory) {
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const composer = page.getByRole("combobox", { name: "给 Claude 发指令" });
   const draft = "保留草稿：queue actions must never submit this";
@@ -2627,7 +3246,7 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   const missedRekeyId = randomUUID();
   await host.syncNativeQueue(await host.nativeApproval.event({ type: "steers_rekeyed", rekeyedSteers: [{ from: rekeyedId, to: missedRekeyId }] }), { pushEvents: false });
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await eventually(() => localMessage.getAttribute("data-stream-key"), missedRekeyId, "Fresh history reconciles the cached UUID without its missing rekey event");
   assert.equal(await localMessage.count(), 1, "Stable receipt identity must collapse the old cached bubble and current native history");
   await composer.fill(draft);
@@ -2642,7 +3261,7 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   assert.equal(steered.receipt.queueMode, "steered");
   // A fresh page must recover native history/receipt controls without local turns or delivery events for this seed.
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByRole("heading", { name: originalTitle, exact: true }).waitFor();
   const steeredMessage = page.locator("article.conversation-item.user").filter({ hasText: "历史中的 steered 排队消息" });
   await steeredMessage.getByRole("status").filter({ hasText: /已排队|排队中/u }).waitFor();
@@ -2711,7 +3330,7 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   await receivedMessage.getByRole("button", { name: "回退到这条消息之前", exact: true }).click();
   const rewind = page.getByRole("dialog", { name: "回退会话", exact: true });
   await eventually(() => rewind.getByRole("button", { name: "确认回退", exact: true }).isEnabled(), true, "Native conversation rewind remains available while its file preview reports busy");
-  assert.equal(await rewind.getByRole("combobox", { name: "回退范围", exact: true }).inputValue(), "conversation");
+  assert.equal(await customSelectValue(rewind.getByRole("combobox", { name: "回退范围", exact: true })), "conversation");
   assert.ok((await rewind.innerText()).includes("停止当前任务"));
   await page.screenshot({ path: resolve(directory, "queue-running-rewind-preview.png"), fullPage: true });
   await rewind.getByRole("button", { name: "确认回退", exact: true }).click();
@@ -2727,7 +3346,7 @@ async function verifyNativeQueueActions(page, host, steps, directory) {
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "sendMessage").length, 4);
   assert.equal(host.nativeApproval.calls.filter(call => call.method === "interrupt").length, 0);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   await page.getByText("保留的原生回退锚点", { exact: true }).waitFor();
   assert.equal(await receivedMessage.count(), 0, "Replayed pre-rewind events cannot revive the discarded received message");
   await page.screenshot({ path: resolve(directory, "queue-running-rewind-complete.png"), fullPage: true });
@@ -2747,7 +3366,7 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
     await host.nativeApproval.message({ type: "user", uuid: `session-notice-history-${index}`, timestamp: Date.now() + index, message: { content: [{ type: "text", text }] } });
   }
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
-  await page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first().click();
+  await openMobileSession(page);
   const stream = page.locator(".conversation-stream");
   const notices = stream.locator(".session-notice");
   await eventually(() => notices.count(), 3, "Native history shows report, idle and Desktop CI notifications as compact events");
@@ -2788,63 +3407,93 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   await eventually(() => notices.count(), 4, "Live Native reports use the same compact presentation as history");
   host.history.splice(0, host.history.length, ...(await host.nativeApproval.history()).items);
   await page.reload({ waitUntil: "domcontentloaded" });
-  const row = page.locator(`[data-session-id="${sessionId}"]`).getByRole("button").first();
-  await row.or(page.getByRole("heading", { name: originalTitle, exact: true })).first().waitFor();
-  if (await row.isVisible()) await row.click();
+  await openMobileSession(page);
   await eventually(() => notices.count(), 4, "Reload merges Native history and live notices without duplicate cards");
   assert.equal(await ciNotice.count(), 1);
   assert.equal(await ciNotice.getAttribute("open"), null);
   assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "session.rewind", "permission.resolve"].includes(request.method)).length, 0);
   steps.push("Native report and idle notices stay compact in history, live updates and replay; original text remains readable, quoted examples keep user controls, and no Native mutation is sent");
 
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   const { untrustedDir, manualTrustDir } = host.nativeApproval;
-  const createDialog = page.locator(".session-create-dialog");
+  const newChatCanvas = page.locator(".new-chat-canvas");
+  const folderDialog = page.locator(".session-create-dialog");
   const chooseFolderByPath = async (targetDir) => {
-    await createDialog.getByRole("button", { name: "选择文件夹" }).click();
-    await createDialog.getByRole("button", { name: "浏览电脑文件夹", exact: true }).click();
-    await createDialog.getByRole("button", { name: "输入路径", exact: true }).click();
-    await createDialog.getByLabel("当前路径", { exact: true }).fill(targetDir);
-    await createDialog.getByLabel("当前路径", { exact: true }).press("Enter");
-    await createDialog.getByRole("button", { name: "使用此文件夹", exact: true }).click();
+    await newChatCanvas.getByRole("button", { name: "选择文件夹", exact: true }).click();
+    await folderDialog.waitFor();
+    const browseBtn = folderDialog.getByRole("button", { name: "浏览电脑文件夹", exact: true });
+    if (await browseBtn.isVisible()) {
+      await browseBtn.click();
+    }
+    await folderDialog.getByRole("button", { name: "输入路径", exact: true }).click();
+    await folderDialog.getByLabel("当前路径", { exact: true }).fill(targetDir);
+    await folderDialog.getByLabel("当前路径", { exact: true }).press("Enter");
+    await folderDialog.getByRole("button", { name: "使用此文件夹", exact: true }).click();
+    await folderDialog.waitFor({ state: "hidden" });
   };
 
-  await page.getByRole("button", { name: "新建会话", exact: true }).click();
+  await page.locator('.mobile-home-catalog button[aria-label^="新建会话："]').first().click();
+  await newChatCanvas.waitFor();
   await chooseFolderByPath(untrustedDir);
-  await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("受信任目录会话");
-  await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
+  await newChatCanvas.getByRole("button", { name: "创建空会话", exact: true }).click();
 
-  const trustAlert = createDialog.getByRole("alert");
+  const trustAlert = newChatCanvas.getByRole("alert");
   await eventually(() => trustAlert.innerText(), `该文件夹首次使用，是否信任并允许 Claude 访问「${untrustedDir}」？`, "Untrusted folder prompts for explicit confirmation without exposing EIPC text");
-  assert.equal((await createDialog.innerText()).includes("$eipc_message$"), false);
+  assert.equal((await newChatCanvas.innerText()).includes("$eipc_message$"), false);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: resolve(directory, "workspace-trust-confirm.png"), fullPage: true });
 
-  await createDialog.getByRole("button", { name: "信任并创建", exact: true }).click();
-  await createDialog.waitFor({ state: "hidden" });
-  await page.getByRole("heading", { name: "受信任目录会话", exact: true }).waitFor();
+  await newChatCanvas.getByRole("button", { name: "信任并创建", exact: true }).click();
+  await newChatCanvas.waitFor({ state: "hidden" });
+  await page.locator(".conversation-workspace").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
+  const firstCreatedId = host.snapshot.sessions.find((candidate) => candidate.cwd === untrustedDir)?.sessionId;
+  assert.ok(firstCreatedId, "Trusted session created");
   assert.deepEqual(
     host.nativeApproval.calls.filter(call => call.method === "saveTrust").map(call => call.args),
     [[untrustedDir]],
   );
 
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
+  await openMobileDrawer(page);
   host.nativeApproval.setTrustPolicy({ keepUntrustedAfterSave: true });
-  await page.getByRole("button", { name: "新建会话", exact: true }).click();
+  await page.locator('.mobile-home-catalog button[aria-label^="新建会话："]').first().click();
+  await newChatCanvas.waitFor();
   await chooseFolderByPath(manualTrustDir);
-  await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("手动信任兜底会话");
-  await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
-  await createDialog.getByRole("button", { name: "信任并创建", exact: true }).click();
+  await newChatCanvas.getByRole("button", { name: "创建空会话", exact: true }).click();
+  await newChatCanvas.getByRole("button", { name: "信任并创建", exact: true }).click();
   await eventually(() => trustAlert.innerText(), `请在电脑端 Claude 窗口打开并信任「${manualTrustDir}」后重试。`, "Manual fallback guides desktop GUI approval when saveTrust cannot satisfy trust");
   await page.screenshot({ path: resolve(directory, "workspace-trust-manual.png"), fullPage: true });
 
   host.nativeApproval.trustWorkspace(manualTrustDir);
-  await createDialog.getByRole("button", { name: "重试创建", exact: true }).click();
-  await createDialog.waitFor({ state: "hidden" });
-  await page.getByRole("heading", { name: "手动信任兜底会话", exact: true }).waitFor();
+  await newChatCanvas.getByRole("button", { name: "重试创建", exact: true }).click();
+  await newChatCanvas.waitFor({ state: "hidden" });
+  await page.locator(".conversation-workspace").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
+  const secondCreatedId = host.snapshot.sessions.find((candidate) => candidate.cwd === manualTrustDir)?.sessionId;
+  assert.ok(secondCreatedId, "Manual-trusted session created");
   assert.equal(host.requests.filter(request => request.method === "session.create").at(-1)?.params.trustWorkspace, undefined);
+
+  // Verify per-session persistent drafts survive session switching, Back to catalog, and full page reload without cross-talk.
+  const composerInput = page.locator(".composer-form textarea");
+  await composerInput.fill("Draft for Session B");
+  await openMobileDrawer(page);
+  await page.locator(`.mobile-home-catalog [data-session-id="${firstCreatedId}"] .session-row-hit`).click();
+  await composerInput.waitFor();
+  assert.equal(await composerInput.inputValue(), "");
+  await composerInput.fill("Draft for Session A");
+  await openMobileDrawer(page);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(".mobile-home-catalog").waitFor();
+  await page.locator(`.mobile-home-catalog [data-session-id="${firstCreatedId}"] .session-row-hit`).click();
+  await composerInput.waitFor();
+  assert.equal(await composerInput.inputValue(), "Draft for Session A", "Session A draft restored after reload");
+  await composerInput.fill("");
+  await openMobileDrawer(page);
+  await page.locator(`.mobile-home-catalog [data-session-id="${secondCreatedId}"] .session-row-hit`).click();
+  await composerInput.waitFor();
+  assert.equal(await composerInput.inputValue(), "Draft for Session B", "Session B draft restored without cross-talk after reload");
+  await composerInput.fill("");
+
   assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "session.rewind", "permission.resolve"].includes(request.method)).length, 0);
-  steps.push("untrusted folders sanitize WorkspaceTrustError into confirmation + saveTrust auto-retry, and degrade to manual desktop guidance + one-click retry when saveTrust is insufficient");
+  steps.push("untrusted folders sanitize WorkspaceTrustError into confirmation + saveTrust auto-retry, degrade to manual desktop guidance + one-click retry, and per-session drafts persist across reload");
 }
 
 function addScrollProjects(host, count) {
@@ -2858,7 +3507,9 @@ function addScrollProjects(host, count) {
 }
 
 async function verifyProjectGrouping(page, host, steps, directory) {
-  const groups = page.locator(".project-groups > .project-group:not(.archived-group)");
+  await openMobileDrawer(page);
+  const drawer = page.locator(".mobile-home-catalog");
+  const groups = drawer.locator(".project-groups > .project-group:not(.archived-group)");
   const headers = groups.locator(".project-group-open strong");
   const mainGroup = groups.filter({ has: page.locator(`[data-session-id="${sessionId}"]`) });
   const parent = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-parent");
@@ -2874,78 +3525,83 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   assert.equal(await mainGroup.locator('[data-session-id="browser-e2e-parent"]').count(), 1);
   assert.equal(await mainGroup.locator(".project-count-pill").innerText(), "2");
   const primaryForkToggle = mainGroup.locator(".mobile-fork-toggle");
-  const archiveEntry = page.locator(".archived-group .project-group-open");
+  const archiveEntry = drawer.locator(".archived-group .project-group-open");
   assert.equal(await primaryForkToggle.count(), 1);
   assert.equal((await primaryForkToggle.innerText()).trim(), "1 个 Fork 分支");
-  assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
-  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  assert.equal(await drawer.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
+  assert.equal(await drawer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
   await primaryForkToggle.click();
   await mainGroup.locator('[data-session-id="browser-e2e-fork"]').waitFor();
-  assert.equal(await primaryForkToggle.getAttribute("aria-expanded"), "true");
-  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  assert.equal(await primaryForkToggle.count(), 0, "Expanded fork tree omits the extra toggle header row");
+  assert.equal(await mainGroup.locator('[data-session-id="browser-e2e-parent"] .session-family-chevron').getAttribute("aria-expanded"), "true");
+  assert.equal(await drawer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
   assert.equal(await mainGroup.locator(".is-archived-fold").count(), 0);
   assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "1");
   await page.screenshot({ path: resolve(directory, "project-fork-expanded.png"), fullPage: true });
   steps.push("Native fixture projection groups linked worktrees under the repository; active forks exclude archived sidechats, which appear only in the archive area");
 
   const archivedSidechat = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-btw-archived");
-  const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
+  const search = drawer.getByPlaceholder("搜索项目或会话", { exact: true });
   await search.fill(archivedSidechat.title);
-  await eventually(() => page.locator("[data-session-id]").count(), 0, "Searching an archived sidechat cannot surface it as an active root");
+  await eventually(() => drawer.locator("[data-session-id]").count(), 0, "Searching an archived sidechat cannot surface it as an active root");
   assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "1");
   await search.fill(worktree.title);
   await eventually(() => headers.allTextContents(), ["claude-desktop-bridge"], "Searching the worktree title keeps its repository project");
-  assert.equal(await page.locator(`[data-session-id="${sessionId}"]`).count(), 1);
+  assert.equal(await drawer.locator(`[data-session-id="${sessionId}"]`).count(), 1);
   await search.fill("");
   await eventually(() => headers.allTextContents(), ["other-project", "claude-desktop-bridge"], "Clearing search restores saved project order");
   assert.equal(await page.evaluate(key => localStorage.getItem(key), orderKey), savedOrder);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  await openMobileDrawer(page);
+  await drawer.locator(`[data-session-id="${sessionId}"]`).waitFor();
   assert.deepEqual(await headers.allTextContents(), ["other-project", "claude-desktop-bridge"]);
   assert.equal(await page.evaluate(key => localStorage.getItem(key), orderKey), savedOrder);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Project list fits the phone viewport");
 
   await archiveEntry.click();
-  await page.locator('[data-session-id="browser-e2e-btw-archived"]').getByRole("button").first().click();
+  const archivedContainer = drawer.locator("#mobile-archived-sessions");
+  await archivedContainer.locator('[data-session-id="browser-e2e-btw-archived"] .session-row-hit').click();
   const parentChainButton = page.locator(".fork-chain-bar").getByRole("button", { name: "主会话：主会话", exact: true });
   await parentChainButton.waitFor();
   await parentChainButton.click();
   await page.getByRole("heading", { name: "主会话", exact: true }).waitFor();
-  await page.getByRole("button", { name: "会话操作", exact: true }).click();
-  await page.getByRole("button", { name: /分支 1/u }).waitFor();
+  assert.equal(await page.locator(".fork-chain-bar").count(), 0, "Parent session does not render outbound child fork chain bar");
+  await page.locator(".m-header:visible").getByRole("button", { name: "会话操作", exact: true }).click();
+  assert.equal(await page.getByRole("button", { name: /^(?:分支|侧聊|分支与侧聊)\s+\d+/u }).count(), 0, "Parent session menu does not duplicate child forks");
   await page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).click();
-  await page.getByRole("button", { name: "返回会话列表", exact: true }).click();
-  await page.getByRole("button", { name: "返回会话目录", exact: true }).click();
-  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  await openMobileDrawer(page);
+  if ((await archiveEntry.getAttribute("aria-expanded")) === "true") await archiveEntry.click();
+  await drawer.locator(`[data-session-id="${sessionId}"]`).waitFor();
 
   const forkSnapshot = host.snapshot.sessions.find(session => session.sessionId === "browser-e2e-fork");
   forkSnapshot.archivedAt = Date.now();
   await host.emit("session.archived", { archived: true, archivedAt: forkSnapshot.archivedAt }, { sessionId: "browser-e2e-fork" });
-  await eventually(() => primaryForkToggle.count(), 0, "Archiving the last active fork removes the parent's fork fold");
-  assert.equal(await mainGroup.locator(".mobile-fork-group").count(), 0);
+  await eventually(() => mainGroup.locator(".mobile-fork-group").count(), 0, "Archiving the last active fork removes the parent's fork fold");
+  assert.equal(await primaryForkToggle.count(), 0);
+  assert.equal(await mainGroup.locator('[data-session-id="browser-e2e-parent"] .session-family-chevron').count(), 0);
   assert.equal(await archiveEntry.locator(".project-count-pill").innerText(), "2");
   await archiveEntry.click();
-  await page.locator('[data-session-id="browser-e2e-fork"]').waitFor();
-  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
-  assert.deepEqual(await page.locator(".session-row-status").allTextContents(), ["已归档", "已归档"]);
-  const archiveSearch = page.getByPlaceholder("搜索「已归档会话」", { exact: true });
-  await archiveSearch.fill(forkSnapshot.title);
-  assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 1);
-  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
-  await archiveSearch.fill(archivedSidechat.title);
-  assert.equal(await page.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
-  assert.equal(await page.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
-  await archiveSearch.fill("");
+  await archivedContainer.locator('[data-session-id="browser-e2e-fork"]').waitFor();
+  assert.equal(await archivedContainer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
+  assert.deepEqual(await archivedContainer.locator(".session-row-status").allTextContents(), ["已归档", "已归档"]);
+  await search.fill(forkSnapshot.title);
+  assert.equal(await archivedContainer.locator('[data-session-id="browser-e2e-fork"]').count(), 1);
+  assert.equal(await archivedContainer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 0);
+  await search.fill(archivedSidechat.title);
+  assert.equal(await archivedContainer.locator('[data-session-id="browser-e2e-btw-archived"]').count(), 1);
+  assert.equal(await archivedContainer.locator('[data-session-id="browser-e2e-fork"]').count(), 0);
+  await search.fill("");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Archived sessions fit the phone viewport");
   await page.screenshot({ path: resolve(directory, "archived-sessions.png"), fullPage: true });
-  await page.getByRole("button", { name: "返回会话目录", exact: true }).click();
+  await archiveEntry.click();
   steps.push("archivedAt forks and sidechats remain searchable in the archive area with the correct count and archived badges; the active parent has no empty fold");
 
   assert.equal(host.requests.filter(request => request.method.startsWith("turn.")).length, 0);
   await writeFile(resolve(directory, "project-catalog.json"), JSON.stringify({ projects: host.snapshot.projects, sessions: host.snapshot.sessions }, null, 2));
   await page.screenshot({ path: resolve(directory, "project-list.png"), fullPage: true });
 
-  await page.locator(".project-order-bar button").click();
+  const openOrderSheet = () => drawer.getByRole("button", { name: "调整顺序", exact: true }).click();
+  await openOrderSheet();
   const orderSheet = page.getByRole("dialog", { name: "项目顺序" });
   await orderSheet.waitFor();
   await orderSheet.evaluate((el) => Promise.all(el.getAnimations().map((animation) => animation.finished)));
@@ -2983,7 +3639,7 @@ async function verifyProjectGrouping(page, host, steps, directory) {
   await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
   await eventually(() => headers.allTextContents(), ["claude-desktop-bridge", "other-project"], "Handle drag persists reordered projects");
 
-  await page.locator(".project-order-bar button").click();
+  await openOrderSheet();
   await orderSheet.waitFor();
   await orderSheet.evaluate((el) => Promise.all(el.getAnimations().map((animation) => animation.finished)));
   const targetRowText = orderSheet.locator(".project-order-row").nth(1).locator("strong");
@@ -3008,7 +3664,7 @@ async function verifyProjectGrouping(page, host, steps, directory) {
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
     await eventually(() => headers.count(), count, "Long project catalog arrives through the encrypted snapshot");
     await page.setViewportSize({ width, height: 568 });
-    await page.locator(".project-order-bar button").click();
+    await openOrderSheet();
     await orderSheet.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
     assert.equal(await orderRowTitles.count(), count);
     const body = orderSheet.locator(".m-sheet-body");
@@ -3017,7 +3673,7 @@ async function verifyProjectGrouping(page, host, steps, directory) {
     const bodyBox = await body.boundingBox();
     await page.mouse.move(bodyBox.x + 80, bodyBox.y + bodyBox.height / 2);
     await page.mouse.wheel(0, 10000);
-    await eventually(() => body.evaluate(el => el.scrollTop === el.scrollHeight - el.clientHeight), true, "Wheel reaches the bottom of the sheet body");
+    await eventually(() => body.evaluate(el => el.scrollTop > 0 && Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop) <= 1), true, "Wheel reaches the bottom of the sheet body");
     const geometry = await orderSheet.evaluate(el => {
       const body = el.querySelector(".m-sheet-body");
       const list = el.querySelector(".project-order-list");
@@ -3052,10 +3708,11 @@ async function verifyProjectGrouping(page, host, steps, directory) {
       assert.equal(await body.evaluate(el => el.scrollTop), 0, "A stationary edge handle press does not scroll");
       await page.mouse.up();
       assert.deepEqual(await orderRowTitles.allTextContents(), beforeClick, "A stationary handle click does not reorder");
-      await orderSheet.locator("select").waitFor();
-      assert.equal(await orderSheet.locator("select").inputValue(), String(edgeIndex), "Handle click still opens position selection");
+      const orderSelect = orderSheet.locator(".select-menu-trigger");
+      await orderSelect.waitFor();
+      assert.equal(await customSelectValue(orderSelect), String(edgeIndex), "Handle click still opens position selection");
       await orderSheet.getByRole("button", { name: "完成", exact: true }).click();
-      await page.locator(".project-order-bar button").click();
+      await openOrderSheet();
       await orderSheet.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
       const centerHandle = await orderSheet.locator(".project-order-handle").nth(1).boundingBox();
       await page.mouse.move(centerHandle.x + centerHandle.width / 2, centerHandle.y + centerHandle.height / 2);
@@ -3119,17 +3776,18 @@ async function verifyProjectGrouping(page, host, steps, directory) {
 }
 
 async function verifySectionManage(page, host, steps, directory) {
-  const groups = page.locator(".project-groups > .project-group:not(.archived-group)");
+  await openMobileDrawer(page);
+  const drawer = page.locator(".mobile-home-catalog");
+  const groups = drawer.locator(".project-groups > .project-group:not(.archived-group)");
   const headers = groups.locator(".project-group-open strong");
-  const search = page.getByPlaceholder("搜索项目或会话", { exact: true });
+  const search = drawer.getByPlaceholder("搜索项目或会话", { exact: true });
   const folderNames = host.snapshot.projects.filter(project => project.kind !== "desktop-group").map(project => project.name).sort();
   const { projectId: originalProjectId, projectName: originalProjectName } = host.snapshot.sessions.find(item => item.sessionId === "browser-e2e-misc-sub");
   assert.ok(folderNames.length > 0, "Section management starts with folder projects");
   assert.deepEqual((await headers.allTextContents()).sort(), folderNames);
 
   async function createSectionFromDirectory(name) {
-    await page.getByRole("button", { name: "目录选项", exact: true }).click();
-    await page.getByRole("button", { name: "新建 Section", exact: true }).click();
+    await drawer.getByRole("button", { name: "+ 分组", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "新建 Section" });
     await dialog.getByLabel("Section 名称").fill(name);
     await dialog.getByRole("button", { name: "创建 Section", exact: true }).click();
@@ -3148,27 +3806,30 @@ async function verifySectionManage(page, host, steps, directory) {
   );
 
   // Folder groups do not render custom section management actions; custom sections do.
-  assert.equal(await page.getByRole("button", { name: "管理分组：待办分组", exact: true }).count(), 1);
+  assert.equal(await drawer.getByRole("button", { name: "管理分组：待办分组", exact: true }).count(), 1);
   for (const name of folderNames) {
-    assert.equal(await page.getByRole("button", { name: `管理分组：${name}`, exact: true }).count(), 0);
+    assert.equal(await drawer.getByRole("button", { name: `管理分组：${name}`, exact: true }).count(), 0);
   }
 
-  // Toggle "隐藏空分组（2）" and verify persistence + search + auto-reveal on new section creation.
-  await page.getByRole("button", { name: "目录选项", exact: true }).click();
-  await page.getByRole("button", { name: "隐藏空分组（2）", exact: true }).click();
-  await eventually(
-    async () => (await headers.allTextContents()).sort(),
-    folderNames,
-    "Hiding empty sections removes empty desktop-group headers while preserving all folder groups",
-  );
+  // Empty manual groups collapse by default, except the just-created revealedEmptySectionKey; across reload all 0-session manual groups start collapsed.
+  assert.equal(await groups.filter({ hasText: "待办分组" }).locator(".project-group-open").getAttribute("aria-expanded"), "false");
+  assert.equal(await groups.filter({ hasText: "临时空组" }).locator(".project-group-open").getAttribute("aria-expanded"), "true");
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
-  assert.equal((await headers.allTextContents()).includes("临时空组"), false, "Hidden empty sections persist across reload");
+  await openMobileDrawer(page);
+  await drawer.locator(`[data-session-id="${sessionId}"]`).waitFor();
+  assert.equal(await groups.filter({ hasText: "待办分组" }).locator(".project-group-open").getAttribute("aria-expanded"), "false");
+  assert.equal(await groups.filter({ hasText: "临时空组" }).locator(".project-group-open").getAttribute("aria-expanded"), "false");
 
   await search.fill("临时空组");
   await eventually(() => headers.allTextContents(), ["临时空组"], "Search still surfaces matching empty custom sections");
+  assert.equal(await groups.filter({ hasText: "临时空组" }).locator(".project-group-open").getAttribute("aria-expanded"), "true");
   await search.fill("");
-  await eventually(() => (headers.allTextContents()).then(names => names.includes("临时空组")), false, "Clearing search hides empty sections again");
+  await eventually(
+    async () => (await headers.allTextContents()).includes("临时空组"),
+    true,
+    "Clearing search restores catalog groups",
+  );
+  assert.equal(await groups.filter({ hasText: "临时空组" }).locator(".project-group-open").getAttribute("aria-expanded"), "false");
 
   await createSectionFromDirectory("新建即现");
   await eventually(
@@ -3177,12 +3838,16 @@ async function verifySectionManage(page, host, steps, directory) {
       return names.includes("新建即现") && names.includes("待办分组") && names.includes("临时空组");
     },
     true,
-    "Creating a new section reveals empty sections automatically",
+    "Creating a new section reveals the newly created empty section",
   );
-  steps.push("empty custom sections can be hidden per host, remain searchable, persist across reloads, and reveal automatically when creating a new section");
+  assert.equal(await groups.filter({ hasText: "新建即现" }).locator(".project-group-open").getAttribute("aria-expanded"), "true");
+  await drawer.getByRole("button", { name: "管理分组：新建即现", exact: true }).click();
+  await page.getByRole("button", { name: "删除空分组", exact: true }).click();
+  await eventually(async () => (await headers.allTextContents()).includes("新建即现"), false, "Temporary section cleaned up");
+  steps.push("empty custom sections default to collapsed across reloads, remain searchable, and auto-expand the newly created section");
 
   // 1-tap delete on empty section ("删除空分组") without ConfirmationDialog.
-  await page.getByRole("button", { name: "管理分组：临时空组", exact: true }).click();
+  await drawer.getByRole("button", { name: "管理分组：临时空组", exact: true }).click();
   await page.getByRole("button", { name: "删除空分组", exact: true }).click();
   assert.equal(await page.getByRole("alertdialog").count(), 0, "Empty section deletion skips confirmation dialog");
   await eventually(
@@ -3192,7 +3857,7 @@ async function verifySectionManage(page, host, steps, directory) {
   );
 
   // Rename custom section ("待办分组" -> "重点推进").
-  await page.getByRole("button", { name: "管理分组：待办分组", exact: true }).click();
+  await drawer.getByRole("button", { name: "管理分组：待办分组", exact: true }).click();
   await page.getByRole("button", { name: "重命名分组", exact: true }).click();
   const renameDialog = page.getByRole("dialog", { name: "重命名分组" });
   await renameDialog.getByLabel("分组名称").fill("重点推进");
@@ -3209,7 +3874,7 @@ async function verifySectionManage(page, host, steps, directory) {
   steps.push("empty sections delete in one tap and custom sections rename via native section.rename");
 
   // Move a session into "重点推进", then verify non-empty delete requires confirmation and returns session to folder.
-  await page.locator('[data-session-id="browser-e2e-misc-sub"]').locator("..").getByRole("button", { name: "会话操作", exact: true }).click();
+  await drawer.locator('[data-session-id="browser-e2e-misc-sub"]').getByRole("button", { name: "会话操作", exact: true }).click();
   await page.getByRole("button", { name: /移动到分组/u }).click();
   await page.locator(".m-sheet").getByRole("button", { name: /重点推进/u }).click();
   await eventually(
@@ -3218,7 +3883,7 @@ async function verifySectionManage(page, host, steps, directory) {
     "Session moved into renamed section",
   );
 
-  await page.getByRole("button", { name: "管理分组：重点推进", exact: true }).click();
+  await drawer.getByRole("button", { name: "管理分组：重点推进", exact: true }).click();
   await page.getByRole("button", { name: "删除分组", exact: true }).click();
   const confirmDialog = page.getByRole("alertdialog");
   await confirmDialog.waitFor();
@@ -3233,7 +3898,7 @@ async function verifySectionManage(page, host, steps, directory) {
     "Confirmed non-empty section deletion removes custom section",
   );
   await eventually(
-    () => page.locator('[data-session-id="browser-e2e-misc-sub"]').count(),
+    () => drawer.locator('[data-session-id="browser-e2e-misc-sub"]').count(),
     1,
     "Session inside deleted section remains intact and returns to its folder group",
   );
@@ -3241,16 +3906,766 @@ async function verifySectionManage(page, host, steps, directory) {
   assert.equal(restoredSession.projectId, originalProjectId);
   assert.equal(restoredSession.projectName, originalProjectName);
   assert.equal(host.requests.some(request => request.method === "section.rename"), true);
-  assert.equal(host.requests.filter(request => request.method === "section.delete").length, 2);
+  assert.equal(host.requests.filter(request => request.method === "section.delete").length, 3);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Section manage UI fits 375px viewport");
   steps.push("deleting a non-empty section requires confirmation, calls native delete_section, and safely returns sessions to their folder project");
+}
+
+async function verifyRound4Boundaries(page, host, steps, directory, viewports, theme) {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const proofDir = process.env.ROUND4_VISUAL_PROOF_DIR && theme === (process.env.ROUND4_VISUAL_PROOF_THEME ?? "light")
+    ? resolve(process.env.ROUND4_VISUAL_PROOF_DIR)
+    : undefined;
+  if (proofDir) await mkdir(proofDir, { recursive: true });
+
+  async function saveShot(targetPage, fileName) {
+    await targetPage.waitForFunction(() => document.getAnimations().every(
+      animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished",
+    ));
+    await targetPage.screenshot({ path: resolve(directory, fileName), fullPage: false });
+    if (proofDir) {
+      await targetPage.screenshot({ path: resolve(proofDir, fileName), fullPage: false });
+    }
+    viewports.push({ page: fileName, ...targetPage.viewportSize() });
+  }
+
+  // 1. Mobile (390x844): create sections, test fast touch scroll vs 320ms long-press drag onto section!
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openMobileDrawer(page);
+  const drawer = page.locator(".mobile-home-catalog");
+  for (const sectionName of ["核心研发", "归档调研"]) {
+    await drawer.getByRole("button", { name: "+ 分组", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "新建 Section" });
+    await dialog.getByLabel("Section 名称").fill(sectionName);
+    await dialog.getByRole("button", { name: "创建 Section", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+  }
+  const coreSectionId = host.snapshot.projects.find(p => p.name === "核心研发")?.projectId;
+  const researchSectionId = host.snapshot.projects.find(p => p.name === "归档调研")?.projectId;
+  assert.ok(coreSectionId && researchSectionId, "Both manual sections created");
+
+  const mobileTargetRow = drawer.locator('[data-session-id="browser-e2e-misc-sub"]');
+  await mobileTargetRow.waitFor();
+  const rowBox = await mobileTargetRow.boundingBox();
+  const coreHeaderBox = await drawer.locator(`[data-drop-section-id="${coreSectionId}"]`).boundingBox();
+  assert.ok(rowBox && coreHeaderBox, "Mobile session row and target section bounding boxes exist");
+
+  // Fast touch scroll (>8px before 320ms) must NOT start drag
+  await page.evaluate(({ x, y }) => {
+    const row = document.querySelector('.mobile-home-catalog [data-session-id="browser-e2e-misc-sub"]');
+    row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 41, pointerType: "touch", isPrimary: true, button: 0, clientX: x, clientY: y }));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, cancelable: true, pointerId: 41, pointerType: "touch", isPrimary: true, clientX: x, clientY: y + 22 }));
+  }, { x: Math.round(rowBox.x + 60), y: Math.round(rowBox.y + rowBox.height / 2) });
+  await delay(350);
+  assert.equal(await page.locator(".session-drag-ghost").count(), 0, "Fast touch scroll never activates long-press drag");
+  await page.evaluate(({ x, y }) => {
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerId: 41, pointerType: "touch", isPrimary: true, clientX: x, clientY: y + 22 }));
+  }, { x: Math.round(rowBox.x + 60), y: Math.round(rowBox.y + rowBox.height / 2) });
+
+  // Real 320ms long-press hold -> activates drag ghost + highlights target section -> drop moves session!
+  const startX = Math.round(rowBox.x + 80);
+  const startY = Math.round(rowBox.y + rowBox.height / 2);
+  const dropX = Math.round(coreHeaderBox.x + 80);
+  const dropY = Math.round(coreHeaderBox.y + 18);
+  await page.evaluate(({ sx, sy }) => {
+    const row = document.querySelector('.mobile-home-catalog [data-session-id="browser-e2e-misc-sub"]');
+    row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 42, pointerType: "touch", isPrimary: true, button: 0, clientX: sx, clientY: sy }));
+  }, { sx: startX, sy: startY });
+  await delay(350);
+  await page.evaluate(({ dx, dy }) => {
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, cancelable: true, pointerId: 42, pointerType: "touch", isPrimary: true, clientX: dx, clientY: dy }));
+  }, { dx: dropX, dy: dropY });
+  await page.locator(".session-drag-ghost").waitFor();
+  await drawer.locator(`[data-drop-section-id="${coreSectionId}"].is-drop-target`).waitFor();
+  await saveShot(page, "03-mobile-longpress-drag.png");
+  await page.evaluate(({ dx, dy }) => {
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerId: 42, pointerType: "touch", isPrimary: true, clientX: dx, clientY: dy }));
+  }, { dx: dropX, dy: dropY });
+  await eventually(
+    () => host.snapshot.sessions.find(s => s.sessionId === "browser-e2e-misc-sub")?.projectId,
+    coreSectionId,
+    "Mobile long-press drop moves session into 核心研发",
+  );
+  assert.equal(await page.locator(".session-drag-ghost").count(), 0);
+  assert.equal(await page.evaluate(() => document.body.classList.contains("is-session-dragging")), false);
+  steps.push("Mobile fast touch scroll cancels cleanly while 320ms long-press drag highlights target section and moves session");
+
+  // 2. Mobile NewChatCanvas optional session title ("会话标题（留空自动生成）") + create empty session with explicit title!
+  await drawer.locator('button[aria-label^="新建会话"]').first().click();
+  const mobileNewChat = page.locator(".new-chat-canvas.is-mobile");
+  await mobileNewChat.waitFor();
+  const mobileTitleInput = mobileNewChat.getByLabel("会话标题", { exact: true });
+  assert.equal(await mobileTitleInput.getAttribute("placeholder"), "留空自动生成");
+  await selectCustomOption(page, mobileNewChat.getByRole("combobox", { name: "所属分组", exact: true }), coreSectionId);
+  await mobileTitleInput.fill("端到端可选自定义标题");
+  await saveShot(page, "04a-new-chat-title-mobile.png");
+  if (proofDir) {
+    await page.screenshot({ path: resolve(proofDir, "04-new-chat-title-mobile-desktop.png"), fullPage: false });
+  }
+  await mobileNewChat.getByRole("button", { name: "创建空会话", exact: true }).click();
+  const trustAndCreateBtn = mobileNewChat.getByRole("button", { name: "信任并创建", exact: true });
+  await Promise.race([
+    trustAndCreateBtn.waitFor({ timeout: 3_000 }).then(() => trustAndCreateBtn.click()),
+    eventually(
+      () => host.snapshot.sessions.some(s => s.title === "端到端可选自定义标题" && s.projectId === coreSectionId),
+      true,
+      "created directly",
+      3_000,
+    ),
+  ]).catch(() => {});
+  await eventually(
+    () => host.snapshot.sessions.some(s => s.title === "端到端可选自定义标题" && s.projectId === coreSectionId),
+    true,
+    "NewChatCanvas optional title persists onto newly created session in selected section",
+  );
+  await page.getByRole("heading", { name: "端到端可选自定义标题", exact: true }).waitFor();
+  await openMobileDrawer(page);
+  steps.push("Mobile NewChatCanvas renders optional 会话标题 input and creates an explicitly titled session in selected section");
+
+  // 3. Mobile 9229 Inspector Callout ("Claude 调试端口未开启" + "开启调试端口") & MobileSettings ("任务通知" + "9229 调试端口")
+  host.snapshot.claudeInspector = {
+    platform: "darwin",
+    state: "closed",
+    port: 9229,
+    pollIntervalMs: 3_000,
+    clients: [],
+    alerts: [],
+  };
+  host.snapshot.claudeDesktop = { state: "running", detail: "Claude Desktop 正在运行。", canLaunch: true, canQuit: true };
+  host.snapshot.desktopApps = [{ id: "claude-desktop", name: "Claude Desktop", state: "running", detail: "Claude Desktop 正在运行。", canLaunch: true, canQuit: true }];
+  host.snapshot.runtime = {
+    ...host.snapshot.runtime,
+    state: "unavailable",
+    detail: "Claude Desktop 9229 调试端口尚未开放",
+    desktopIntegration: { state: "disconnected", detail: "请开启主进程 9229 调试端口", enabled: true, canRestart: false },
+  };
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+
+  const callout = drawer.locator(".mobile-inspector-callout");
+  await callout.waitFor();
+  assert.match(await callout.innerText(), /Claude 调试端口未开启/u);
+  await saveShot(page, "05-mobile-inspector-callout.png");
+
+  // Open MobileSettings while port 9229 is closed so Settings shows BOTH "任务通知" toggle AND "Claude 调试端口 (9229)" + "开启调试端口"!
+  await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
+  const settingsContent = page.locator(".mobile-settings-content");
+  await settingsContent.getByText("Claude 调试端口 (9229)", { exact: true }).waitFor();
+  await settingsContent.getByText("任务通知", { exact: true }).first().waitFor();
+  const notifGroup = settingsContent.getByRole("group", { name: "任务通知开关", exact: true });
+  await notifGroup.getByRole("button", { name: "关闭", exact: true }).click();
+  assert.equal(await page.evaluate(() => localStorage.getItem("bridge-mobile-notifications:v1")), "0");
+  await notifGroup.getByRole("button", { name: "开启", exact: true }).click();
+  assert.equal(await page.evaluate(() => localStorage.getItem("bridge-mobile-notifications:v1")), "1");
+  await page.setViewportSize({ width: 390, height: 1180 });
+  await settingsContent.evaluate(el => { el.scrollTop = 0; });
+  await saveShot(page, "06-mobile-settings-notifications-inspector.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "MobileSettings fits 390px viewport");
+
+  // Return to 会话 catalog and click 开启调试端口 on MobileInspectorCallout -> triggers desktop.app.launch and clears callout!
+  await page.locator(".m-header:visible").getByRole("button", { name: /^(?:返回|返回会话列表)$/u }).first().click();
+  await callout.waitFor();
+  await callout.getByRole("button", { name: "开启调试端口", exact: true }).click();
+  await eventually(() => host.requests.some(r => r.method === "desktop.app.launch"), true, "Mobile callout triggers desktop.app.launch");
+  await eventually(() => callout.count(), 0, "Mobile callout disappears once port 9229 is listening and runtime is ready");
+  steps.push("Mobile inspector callout and MobileSettings 9229 + 任务通知 controls render and trigger remote activation cleanly");
+
+  // 4. Desktop (1280x820): sidebar ... menu (重命名 + 移动到分组), NewChatCanvas title, mouse drag + dynamic unsectioned drop zone!
+  const desktop = await page.context().newPage();
+  const desktopErrors = [];
+  desktop.on("pageerror", err => desktopErrors.push(err.message));
+  await desktop.exposeFunction("r4DesktopRequest", async (input) => {
+    const req = { kind: "request", requestId: randomUUID(), idempotencyKey: randomUUID(), ...input };
+    host.requests.push(structuredClone(req));
+    let res;
+    if (req.method === "session.open") {
+      res = {
+        session: host.snapshot.sessions.find(s => s.sessionId === req.params.sessionId),
+        history: { sessionId: req.params.sessionId, items: [], hasMore: false },
+        latestSeq: host.snapshot.latestSeq,
+      };
+    } else if (req.method === "evidence.list") {
+      res = { evidence: { sessionId: req.params.sessionId, items: [], hasMore: false } };
+    } else {
+      res = await host.nativeApproval.controllerRequest(req);
+      await syncNativeSections(host);
+    }
+    const nextSnap = {
+      ...host.snapshot,
+      connection: "connected",
+      launchAtLogin: false,
+      diagnosticsEnabled: false,
+      managedDesktopEnabled: false,
+      claudeDesktop: host.snapshot.claudeDesktop,
+      claudeInspector: host.snapshot.claudeInspector,
+    };
+    await desktop.evaluate(snap => window.__r4UpdateDesktop?.(snap), nextSnap);
+    return { kind: "response", requestId: req.requestId, ok: true, result: res };
+  });
+  await desktop.addInitScript((initialSnap) => {
+    window.__r4DesktopSnap = initialSnap;
+    window.__r4UpdateDesktop = (next) => {
+      window.__r4DesktopSnap = next;
+      window.__r4ReceiveSnap?.(structuredClone(next));
+    };
+    window.bridgeDesktop = {
+      getSnapshot: async () => structuredClone(window.__r4DesktopSnap),
+      onSnapshot: (cb) => {
+        window.__r4ReceiveSnap = cb;
+        return () => { delete window.__r4ReceiveSnap; };
+      },
+      onEvent: () => () => {},
+      request: input => window.r4DesktopRequest(input),
+    };
+  }, {
+    ...host.snapshot,
+    connection: "connected",
+    launchAtLogin: false,
+    diagnosticsEnabled: false,
+    managedDesktopEnabled: false,
+    claudeDesktop: host.snapshot.claudeDesktop,
+    claudeInspector: host.snapshot.claudeInspector,
+  });
+  await desktop.setViewportSize({ width: 1280, height: 820 });
+  await desktop.emulateMedia({ reducedMotion: "reduce" });
+  await desktop.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  const sidebar = desktop.locator(".desktop-session-sidebar");
+  await sidebar.locator('[data-session-id="browser-e2e-misc-sub"]').waitFor();
+
+  // Desktop NewChatCanvas optional title check + screenshot
+  await sidebar.getByRole("button", { name: "新建会话", exact: true }).click();
+  const desktopNewChat = desktop.locator(".new-chat-canvas.is-desktop");
+  await desktopNewChat.waitFor();
+  assert.equal(await desktopNewChat.getByLabel("会话标题", { exact: true }).getAttribute("placeholder"), "留空自动生成");
+  await saveShot(desktop, "04b-new-chat-title-desktop.png");
+
+  // Desktop sidebar ... menu -> hover row to reveal action button, verify 重命名 + 移动到分组, capture 01-desktop-sidebar-menu-move-rename.png!
+  const miscSubRow = sidebar.locator('[data-session-id="browser-e2e-misc-sub"]');
+  await miscSubRow.hover();
+  await miscSubRow.getByRole("button", { name: "会话操作：同步现有脚本配置", exact: true }).click();
+  const desktopSheet = desktop.locator(".m-sheet");
+  await desktopSheet.getByRole("button", { name: "重命名", exact: true }).waitFor();
+  await desktopSheet.getByRole("button", { name: /移动到分组/u }).waitFor();
+  await saveShot(desktop, "01-desktop-sidebar-menu-move-rename.png");
+
+  // Rename via Desktop sidebar ... menu
+  await desktopSheet.getByRole("button", { name: "重命名", exact: true }).click();
+  const desktopRenameModal = desktop.getByRole("dialog", { name: "重命名会话" });
+  await desktopRenameModal.getByLabel("会话名称").fill("桌面侧栏重命名会话");
+  await desktopRenameModal.getByRole("button", { name: "保存", exact: true }).click();
+  await desktopRenameModal.waitFor({ state: "detached" });
+  await eventually(
+    async () => (await sidebar.locator('[data-session-id="browser-e2e-misc-sub"]').innerText()).includes("桌面侧栏重命名会话"),
+    true,
+    "Desktop sidebar rename updates session row title via /rename",
+  );
+
+  // Move remaining unsectioned active sessions into 归档调研 so ALL active sessions are inside manual sections!
+  for (const unsec of host.snapshot.sessions.filter(s => !s.archivedAt && s.projectId === "claude-unsectioned")) {
+    const targetRow = sidebar.locator(`[data-session-id="${unsec.sessionId}"]`);
+    await targetRow.hover();
+    await targetRow.getByRole("button", { name: `会话操作：${unsec.title}`, exact: true }).click();
+    await desktop.locator(".m-sheet").getByRole("button", { name: /移动到分组/u }).click();
+    await desktop.locator(".m-sheet").getByRole("button", { name: /归档调研/u }).click();
+    await desktop.locator(".m-sheet").waitFor({ state: "detached" });
+  }
+  await eventually(
+    () => host.snapshot.sessions.filter(s => !s.archivedAt).every(s => s.projectId !== "claude-unsectioned"),
+    true,
+    "All active sessions are now in manual sections so dynamic unsectioned drop zone can be tested",
+  );
+
+  // Mouse drag session row in Desktop sidebar -> dynamic "拖到这里移出分组（未分组）" drop zone appears -> hover it, capture 02-desktop-drag-to-section.png, and drop!
+  const desktopDragRow = sidebar.locator('[data-session-id="browser-e2e-misc-sub"]');
+  const dRowBox = await desktopDragRow.boundingBox();
+  assert.ok(dRowBox, "Desktop draggable session row visible");
+  await desktop.mouse.move(Math.round(dRowBox.x + 70), Math.round(dRowBox.y + dRowBox.height / 2));
+  await desktop.mouse.down();
+  await desktop.mouse.move(Math.round(dRowBox.x + 85), Math.round(dRowBox.y + dRowBox.height / 2 + 16), { steps: 4 });
+
+  const unsectionedDropZone = sidebar.locator(".project-group-unsectioned-dropzone");
+  await unsectionedDropZone.waitFor();
+  assert.match(await unsectionedDropZone.innerText(), /拖到这里移出分组（未分组）/u);
+  const unsecBox = await unsectionedDropZone.boundingBox();
+  assert.ok(unsecBox, "Dynamic unsectioned drop zone bounding box exists");
+  await desktop.mouse.move(Math.round(unsecBox.x + unsecBox.width / 2), Math.round(unsecBox.y + unsecBox.height / 2), { steps: 6 });
+  await sidebar.locator(".project-group-unsectioned-dropzone.is-drop-target").waitFor();
+  await desktop.locator(".session-drag-ghost").waitFor();
+  await saveShot(desktop, "02-desktop-drag-to-section.png");
+  await desktop.mouse.up();
+
+  await eventually(
+    () => host.snapshot.sessions.find(s => s.sessionId === "browser-e2e-misc-sub")?.projectId,
+    "claude-unsectioned",
+    "Dropping onto dynamic unsectioned drop zone moves session out of manual section (null -> claude-unsectioned)",
+  );
+  assert.equal(await desktop.locator(".session-drag-ghost").count(), 0);
+  assert.deepEqual(desktopErrors, []);
+  await desktop.close();
+  steps.push("Desktop sidebar ... menu rename/move, NewChatCanvas title, and mouse drag onto dynamic unsectioned drop zone verified");
+
+  // 5. Extreme narrow viewport (320x568) + xlarge effective font scale (larger + 130% textZoom) + 200-char unbroken CJK/URL title + 4-level fork tree!
+  const longUnbrokenTitle = `超长无空格边界压测标题_${"https://claude.ai/very/long/unbroken/path/segment/9229/inspector/".repeat(3)}尾部校验`;
+  assert.ok(longUnbrokenTitle.length >= 200, "Boundary title is >= 200 chars");
+  await host.nativeApproval.seedSessions([
+    { sessionId: "r4-fork-root", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: longUnbrokenTitle, lastActivityAt: Date.now() + 500 },
+    { sessionId: "r4-fork-l1", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: `一级分支_${longUnbrokenTitle}`, forkedFromSessionId: "r4-fork-root", lastActivityAt: Date.now() + 400 },
+    { sessionId: "r4-fork-l2", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: `二级分支_${longUnbrokenTitle}`, forkedFromSessionId: "r4-fork-l1", lastActivityAt: Date.now() + 300 },
+    { sessionId: "r4-fork-l3", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: `三级分支_${longUnbrokenTitle}`, forkedFromSessionId: "r4-fork-l2", lastActivityAt: Date.now() + 200 },
+    { sessionId: "r4-fork-l4", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: `四级分支_${longUnbrokenTitle}`, forkedFromSessionId: "r4-fork-l3", lastActivityAt: Date.now() + 100 },
+  ]);
+  await syncNativeSections(host);
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.evaluate(() => {
+    localStorage.setItem("bridge-font-size", "larger");
+    document.documentElement.dataset.fontSize = "larger";
+    document.documentElement.dataset.effectiveScale = "xlarge";
+    document.documentElement.style.setProperty("--font-scale", "1.3");
+  });
+  await drawer.locator('[data-session-id="r4-fork-root"]').waitFor();
+  // Expand all 4 nested fork toggles!
+  for (let depth = 0; depth < 4; depth += 1) {
+    const collapsedForkToggle = drawer.locator('.mobile-fork-toggle[aria-expanded="false"]').first();
+    if (await collapsedForkToggle.count() > 0) {
+      await collapsedForkToggle.click();
+    }
+  }
+  await drawer.locator('[data-session-id="r4-fork-l4"]').waitFor();
+  await drawer.locator('[data-session-id="r4-fork-l4"]').scrollIntoViewIfNeeded();
+  const catalogOverflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+  assert.ok(
+    catalogOverflow.scrollWidth <= catalogOverflow.innerWidth,
+    `320x568 xlarge catalog must have 0px horizontal overflow (got scrollWidth=${catalogOverflow.scrollWidth} > innerWidth=${catalogOverflow.innerWidth})`,
+  );
+  await saveShot(page, "07-boundary-narrow-320px-xlarge.png");
+
+  // Also check 320x568 xlarge MobileSettings zero horizontal overflow!
+  await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
+  await page.locator(".mobile-settings-content").waitFor();
+  const settingsOverflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+  assert.ok(
+    settingsOverflow.scrollWidth <= settingsOverflow.innerWidth,
+    `320x568 xlarge MobileSettings must have 0px horizontal overflow (got scrollWidth=${settingsOverflow.scrollWidth} > innerWidth=${settingsOverflow.innerWidth})`,
+  );
+  steps.push("320x568 xlarge narrow viewport with 200+ char unbroken CJK/URL titles and 4-level expanded fork tree has 0px horizontal overflow");
+}
+
+async function verifyRound5Ux(page, host, steps, directory, viewports, theme) {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const proofDir = process.env.ROUND5_VISUAL_PROOF_DIR && theme === (process.env.ROUND5_VISUAL_PROOF_THEME ?? "dark")
+    ? resolve(process.env.ROUND5_VISUAL_PROOF_DIR)
+    : undefined;
+  if (proofDir) await mkdir(proofDir, { recursive: true });
+
+  async function saveShot(targetPage, fileName) {
+    await targetPage.waitForFunction(() => document.getAnimations().every(
+      animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished",
+    ));
+    await targetPage.screenshot({ path: resolve(directory, fileName), fullPage: false });
+    if (proofDir) {
+      await targetPage.screenshot({ path: resolve(proofDir, fileName), fullPage: false });
+    }
+    viewports.push({ page: fileName, ...targetPage.viewportSize() });
+  }
+
+  // (c) Mobile Top-Bar `助理` Capsule on single horizontal row (`unread === 0` -> `unread === 3`, plus 320px xlarge)
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openMobileDrawer(page);
+  const drawer = page.locator(".mobile-home-catalog");
+  const topbar = drawer.locator(".mobile-drawer-topbar");
+  const hostSwitcher = topbar.locator(".drawer-host-switcher");
+  const assistantCapsule = topbar.locator(".drawer-assistant-capsule");
+  const composeBtn = topbar.locator(".drawer-compose-button");
+  await assistantCapsule.waitFor();
+  assert.equal(await assistantCapsule.getAttribute("aria-label"), "助理", "Unread=0 assistant capsule uses concise aria-label");
+  assert.equal(await drawer.locator("button").filter({ hasText: "助理" }).count(), 1, "Zero standalone 助理 row outside .mobile-drawer-topbar");
+  assert.equal(
+    await topbar.evaluate(el => Boolean(el.nextElementSibling?.classList.contains("drawer-top-stack") && el.nextElementSibling.querySelector(".session-search"))),
+    true,
+    "Search bar sits immediately below .mobile-drawer-topbar with zero standalone 助理 row in between",
+  );
+  const [hostBox, assistantBox, composeBox] = await Promise.all([
+    hostSwitcher.boundingBox(),
+    assistantCapsule.boundingBox(),
+    composeBtn.boundingBox(),
+  ]);
+  assert.ok(hostBox && assistantBox && composeBox, "All 3 topbar controls have visible bounding boxes");
+  assert.ok(
+    Math.abs((hostBox.y + hostBox.height / 2) - (assistantBox.y + assistantBox.height / 2)) <= 2,
+    "Host switcher and 助理 capsule share the same horizontal row centerline",
+  );
+  assert.ok(
+    Math.abs((assistantBox.y + assistantBox.height / 2) - (composeBox.y + composeBox.height / 2)) <= 2,
+    "助理 capsule and compose button share the same horizontal row centerline",
+  );
+  assert.ok(hostBox.x + hostBox.width <= assistantBox.x + 1 && assistantBox.x + assistantBox.width <= composeBox.x + 1, "Topbar controls do not overlap");
+  await saveShot(page, "01-mobile-topbar-assistant-capsule-dark.png");
+
+  // Deliver 3 unread mails -> verify aria-label updates, badge stays inside capsule, and 320px + xlarge stays on one row with zero horizontal overflow
+  await host.nativeApproval.assistantMail.deliver(3);
+  await eventually(() => assistantCapsule.getAttribute("aria-label"), "助理，3 条未读", "Unread>0 assistant capsule updates aria-label");
+  const [capsuleWithUnreadBox, unreadBadgeBox] = await Promise.all([
+    assistantCapsule.boundingBox(),
+    assistantCapsule.locator(".desktop-nav-badge").boundingBox(),
+  ]);
+  assert.ok(
+    capsuleWithUnreadBox && unreadBadgeBox
+    && unreadBadgeBox.x >= capsuleWithUnreadBox.x
+    && unreadBadgeBox.x + unreadBadgeBox.width <= capsuleWithUnreadBox.x + capsuleWithUnreadBox.width,
+    "Unread count badge renders inline inside .drawer-assistant-capsule rather than overflowing viewport",
+  );
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.evaluate(() => {
+    localStorage.setItem("bridge-font-size", "larger");
+    document.documentElement.dataset.fontSize = "larger";
+    document.documentElement.dataset.effectiveScale = "xlarge";
+    document.documentElement.style.setProperty("--font-scale", "1.3");
+  });
+  const [narrowHostBox, narrowAssistantBox, narrowComposeBox] = await Promise.all([
+    hostSwitcher.boundingBox(),
+    assistantCapsule.boundingBox(),
+    composeBtn.boundingBox(),
+  ]);
+  assert.ok(narrowHostBox && narrowAssistantBox && narrowComposeBox);
+  assert.ok(Math.abs((narrowHostBox.y + narrowHostBox.height / 2) - (narrowAssistantBox.y + narrowAssistantBox.height / 2)) <= 2, "320px xlarge host + 助理 stay on one row");
+  assert.ok(Math.abs((narrowAssistantBox.y + narrowAssistantBox.height / 2) - (narrowComposeBox.y + narrowComposeBox.height / 2)) <= 2, "320px xlarge 助理 + compose stay on one row");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "320px xlarge Mobile Home has zero horizontal overflow");
+  await page.evaluate(() => {
+    localStorage.removeItem("bridge-font-size");
+    delete document.documentElement.dataset.fontSize;
+    delete document.documentElement.dataset.effectiveScale;
+    document.documentElement.style.removeProperty("--font-scale");
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  steps.push("Mobile top-bar 助理 capsule aligns with host switcher and compose button on one row (unread 0 and >0) with zero standalone row and 0px overflow at 320px xlarge");
+
+  // (b) NewChatCanvas `＋ 新建分组…` with 0 existing manual sections + preserved custom title & prompt draft
+  assert.equal(
+    host.snapshot.projects.filter(p => p.kind === "desktop-group").length,
+    0,
+    "Host starts with 0 manual sections before opening NewChatCanvas",
+  );
+  await composeBtn.click();
+  const mobileNewChat = page.locator(".new-chat-canvas.is-mobile");
+  await mobileNewChat.waitFor();
+  const titleInput = mobileNewChat.getByLabel("会话标题", { exact: true });
+  const promptInput = mobileNewChat.locator("textarea");
+  const sectionTrigger = mobileNewChat.getByRole("combobox", { name: "所属分组", exact: true });
+  await sectionTrigger.waitFor();
+  const customTitle = "第五轮架构验证会话";
+  const customPrompt = "请核查第五轮更新通道切换、子代理长报告滚动与新建分组保真";
+  await titleInput.fill(customTitle);
+  await promptInput.fill(customPrompt);
+  await sectionTrigger.click();
+  const listbox = page.getByRole("listbox");
+  await listbox.waitFor();
+  assert.deepEqual(
+    (await listbox.getByRole("option").allInnerTexts()).map(t => t.trim()),
+    ["未分组", "＋ 新建分组…"],
+    "0-section NewChatCanvas renders 未分组 + ＋ 新建分组…",
+  );
+  await saveShot(page, "04-new-chat-create-section-dropdown.png");
+  await listbox.getByRole("option", { name: "＋ 新建分组…", exact: true }).click();
+  const sectionDialog = page.getByRole("dialog", { name: "新建 Section" });
+  await sectionDialog.waitFor();
+  await sectionDialog.getByLabel("Section 名称").fill("第五轮新分组");
+  await sectionDialog.getByRole("button", { name: "创建 Section", exact: true }).click();
+  await sectionDialog.waitFor({ state: "detached" });
+  const createdSection = host.snapshot.projects.find(p => p.name === "第五轮新分组");
+  assert.ok(createdSection, "section.create created 第五轮新分组 on host");
+  await eventually(() => customSelectValue(sectionTrigger), createdSection.projectId, "Newly created section is auto-selected in 所属分组");
+  assert.match(await sectionTrigger.innerText(), /第五轮新分组/u);
+  assert.equal(await titleInput.inputValue(), customTitle, "Custom session title is 100% preserved across inline section creation");
+  assert.equal(await promptInput.inputValue(), customPrompt, "Prompt draft is 100% preserved across inline section creation");
+  await saveShot(page, "05-new-chat-section-created-modal.png");
+  await openMobileDrawer(page);
+  steps.push("NewChatCanvas exposes ＋ 新建分组… even with 0 existing manual sections, auto-selects 第五轮新分组, and preserves custom title & prompt draft");
+
+  // (d) Subagent Detail Sheet Full Scroll & Zero Clipping (~3,500+ char multi-paragraph Markdown reportText)
+  const finalParagraphText = "【最终结论段落】第五轮子代理完整回报已全部渲染完毕，末尾零截断。";
+  const reportParagraphs = Array.from({ length: 14 }, (_, idx) => (
+    `### 阶段审计第 ${idx + 1} 节：跨端状态收敛与滚动布局核查\n\n`
+    + `在第 ${idx + 1} 轮布局与协议联调中，已验证 \`.m-sheet-body\` 采用 \`grid-auto-rows: max-content\` 与 \`overflow-y: auto\`，避免隐式 \`auto\` 轨道把 \`overflow: hidden\` 的子代理卡片挤压裁切；同时后端 \`enrichNativeSubagentItems\` 完整保留多段 Markdown 回报全文（含代码块、列表与末尾总结）。\n\n`
+    + `- 检查路径：\`apps/desktop/src/claude/native-history-projection.ts\`（段落序号 #${idx + 1}）\n`
+    + `- 样式契约：\`apps/client/src/components/mobile/mobile.css\` 与 \`SubagentCard.tsx\` 静态流式展开`
+  ));
+  const longReportMarkdown = `## 第五轮子代理深度审计报告\n\n${reportParagraphs.join("\n\n")}\n\n${finalParagraphText}`;
+  assert.ok(longReportMarkdown.length >= 3_200, `Subagent reportText is ${longReportMarkdown.length} chars (>= 3,200)`);
+
+  const subagentStartAt = Date.now() - 45_000;
+  const subagentDoneAt = Date.now() - 3_000;
+  await host.nativeApproval.message({
+    type: "system",
+    subtype: "task_started",
+    task_id: "r5-long-subagent",
+    tool_use_id: "r5-long-subagent-call",
+    description: "审计第五轮架构收敛与子代理长报告滚动",
+    timestamp: subagentStartAt,
+  });
+  for (const event of await host.nativeApproval.message({
+    type: "system",
+    subtype: "task_notification",
+    task_id: "r5-long-subagent",
+    tool_use_id: "r5-long-subagent-call",
+    status: "completed",
+    usage: { tool_uses: 14 },
+    summary: longReportMarkdown,
+    timestamp: subagentDoneAt,
+  })) {
+    await host.emit(event.type, event.data, { ...(event.itemId ? { itemId: event.itemId } : {}), ...(event.turnId ? { turnId: event.turnId } : {}) });
+  }
+  const projectedHistory = (await host.nativeApproval.history()).items.map(item => (
+    item.subagent?.agentId === "r5-long-subagent"
+      ? {
+          ...item,
+          subagent: {
+            ...item.subagent,
+            agentType: "Explore",
+            model: "Claude Opus 4.7",
+            durationMs: 42_000,
+            recentTools: [
+              "Read · native-history-projection.ts",
+              "Read · transcript-subagents.ts",
+              "Edit · mobile.css",
+            ],
+            reportText: longReportMarkdown,
+          },
+        }
+      : item
+  ));
+  host.history.splice(0, host.history.length, ...projectedHistory);
+  const traySubagent = projectedHistory.find(item => item.subagent?.agentId === "r5-long-subagent")?.subagent;
+  assert.ok(traySubagent?.reportText?.includes(finalParagraphText), "Projected subagent item carries full 3,200+ char reportText");
+  const r5BackgroundTasks = [{
+    id: "r5-long-subagent-call",
+    kind: "subagent",
+    taskId: "r5-long-subagent",
+    toolUseId: "r5-long-subagent-call",
+    description: "审计第五轮架构收敛与子代理长报告滚动",
+    state: "completed",
+    startedAt: subagentStartAt,
+    updatedAt: subagentDoneAt,
+    subagent: { ...traySubagent, latestText: "已完成全部 14 节架构收敛与布局核查", reportText: undefined },
+  }];
+  const baseConfiguration = host.nativeApproval.configuration;
+  host.nativeApproval.configuration = async request => {
+    const result = await baseConfiguration(request);
+    if (request.params.includeBackgroundTasks) {
+      result.session.backgroundTasks = structuredClone(r5BackgroundTasks);
+    }
+    return result;
+  };
+
+  await openMobileSession(page, sessionId);
+  const completedMarker = page.locator(".conversation-stream .background-task-marker.is-completed");
+  await completedMarker.waitFor();
+  await eventually(
+    () => host.requests.some(r => r.method === "session.configuration" && r.params?.includeBackgroundTasks === true),
+    true,
+    "Background tasks tray loaded before opening focused Subagent Sheet",
+  );
+  await completedMarker.click();
+
+  const subagentDialog = page.getByRole("dialog", { name: "审计第五轮架构收敛与子代理长报告滚动", exact: true });
+  await subagentDialog.waitFor();
+  const sheetBody = subagentDialog.locator(".m-sheet-body");
+  const footerAllTasksBtn = subagentDialog.getByRole("button", { name: "全部后台任务", exact: true });
+  await footerAllTasksBtn.waitFor();
+
+  const initialScrollMetrics = await sheetBody.evaluate(el => {
+    const style = getComputedStyle(el);
+    const card = el.querySelector(".conversation-subagent-card");
+    const cardStyle = card ? getComputedStyle(card) : null;
+    return {
+      overflowY: style.overflowY,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      cardOverflow: cardStyle?.overflow,
+      cardMaxHeight: cardStyle?.maxHeight,
+      reportLength: el.querySelector(".subagent-report-section")?.textContent?.length ?? 0,
+    };
+  });
+  assert.equal(initialScrollMetrics.overflowY, "auto", ".m-sheet-body uses overflow-y: auto without clipping");
+  assert.equal(initialScrollMetrics.cardOverflow, "visible", "Static SubagentCard inside sheet is not overflow: hidden");
+  assert.equal(initialScrollMetrics.cardMaxHeight, "none", "Static SubagentCard inside sheet has max-height: none");
+  assert.ok(initialScrollMetrics.reportLength >= 3_000, `Full report rendered (${initialScrollMetrics.reportLength} chars)`);
+  assert.ok(
+    initialScrollMetrics.scrollHeight > initialScrollMetrics.clientHeight + 300,
+    `Sheet body overflows vertically for scrolling (${initialScrollMetrics.scrollHeight} > ${initialScrollMetrics.clientHeight})`,
+  );
+  const footerBoxBefore = await footerAllTasksBtn.boundingBox();
+  assert.ok(footerBoxBefore && footerBoxBefore.y + footerBoxBefore.height <= 844, "Footer 全部后台任务 button is visible before scrolling");
+
+  const bodyBox = await sheetBody.boundingBox();
+  assert.ok(bodyBox, "Sheet body has bounding box");
+  await page.mouse.move(Math.round(bodyBox.x + bodyBox.width / 2), Math.round(bodyBox.y + bodyBox.height / 2));
+  await page.mouse.wheel(0, 6_000);
+  await sheetBody.evaluate(el => { el.scrollTop = el.scrollHeight; });
+
+  await eventually(
+    () => sheetBody.evaluate(el => el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 2),
+    true,
+    "Scrolling .m-sheet-body reaches the bottom of the long report",
+  );
+  const finalPara = subagentDialog.getByText(finalParagraphText, { exact: true });
+  const [finalParaBox, bodyBoxAfter, footerBoxAfter] = await Promise.all([
+    finalPara.boundingBox(),
+    sheetBody.boundingBox(),
+    footerAllTasksBtn.boundingBox(),
+  ]);
+  assert.ok(finalParaBox && bodyBoxAfter && footerBoxAfter, "Final paragraph and pinned footer have bounding boxes after scroll");
+  assert.ok(
+    finalParaBox.y >= bodyBoxAfter.y && finalParaBox.y + finalParaBox.height <= bodyBoxAfter.y + bodyBoxAfter.height + 1,
+    "Very last paragraph of 3,200+ char subagent report is cleanly visible without clipping",
+  );
+  assert.ok(
+    Math.abs(footerBoxAfter.y - footerBoxBefore.y) <= 1 && footerBoxAfter.y + footerBoxAfter.height <= 844,
+    "Footer 全部后台任务 button stays pinned visible at the bottom during scroll",
+  );
+  await saveShot(page, "02-subagent-sheet-scrollable-report-dark.png");
+  await subagentDialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await subagentDialog.waitFor({ state: "detached" });
+  await openMobileDrawer(page);
+  steps.push("BackgroundTasksSheet renders full 3,200+ char Markdown subagent report without clipping, scrolls cleanly to the final paragraph, and keeps 全部后台任务 pinned");
+
+  // (a) Remote Desktop Updater Channel (`稳定版` | `预发布`) & Check-Only Action (`检查更新` only, 0 widow lines at 360px xlarge)
+  async function inspectActionButtons(container) {
+    return container.locator("button").evaluateAll(buttons => buttons.map(btn => {
+      const style = getComputedStyle(btn);
+      const walker = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT);
+      const lineChars = [];
+      let textNode = walker.nextNode();
+      while (textNode) {
+        const value = textNode.nodeValue ?? "";
+        for (let i = 0; i < value.length; i += 1) {
+          const ch = value[i];
+          if (!ch || !ch.trim()) continue;
+          const range = document.createRange();
+          range.setStart(textNode, i);
+          range.setEnd(textNode, i + 1);
+          const rect = range.getClientRects()[0];
+          if (!rect) continue;
+          const existing = lineChars.find(line => Math.abs(line.top - rect.top) <= 3);
+          if (existing) existing.text += ch;
+          else lineChars.push({ top: rect.top, text: ch });
+        }
+        textNode = walker.nextNode();
+      }
+      return {
+        label: (btn.textContent ?? "").trim(),
+        textWrap: style.textWrap,
+        lines: lineChars.map(line => line.text),
+      };
+    }));
+  }
+
+  host.prereleaseLatestVersion = "1.3.5-dev.27";
+  host.snapshot.host.version = "1.3.5-dev.23";
+  host.snapshot.updater = {
+    platform: "darwin",
+    arch: "arm64",
+    currentVersion: "1.3.5-dev.23",
+    channel: "stable",
+    autoCheck: true,
+    applyMode: "prompt",
+    canAutoRestart: false,
+    phase: "idle",
+  };
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+
+  await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
+  const remoteRegion = page.getByRole("region", { name: "远端桌面状态", exact: true });
+  await remoteRegion.waitFor();
+  await remoteRegion.getByText("v1.3.5-dev.23", { exact: true }).waitFor();
+  const channelGroup = remoteRegion.getByRole("group", { name: "远端桌面更新通道", exact: true });
+  assert.equal(await channelGroup.getByRole("button", { name: "稳定版", exact: true }).getAttribute("aria-pressed"), "true");
+  assert.equal(await channelGroup.getByRole("button", { name: "预发布", exact: true }).getAttribute("aria-pressed"), "false");
+  await remoteRegion.getByRole("button", { name: "检查更新", exact: true }).waitFor();
+  assert.equal(await remoteRegion.getByRole("button", { name: /检查并|升级|下载|重启/u }).count(), 0, "Remote desktop section has zero remote download/upgrade/restart buttons");
+
+  // Check `检查更新` under 360px + xlarge has textWrap: balance and zero 1-char widow lines
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.evaluate(() => {
+    localStorage.setItem("bridge-font-size", "larger");
+    document.documentElement.dataset.fontSize = "larger";
+    document.documentElement.dataset.effectiveScale = "xlarge";
+    document.documentElement.style.setProperty("--font-scale", "1.3");
+  });
+  const macButtonsXlarge = await inspectActionButtons(remoteRegion.locator(".mobile-settings-actions"));
+  assert.deepEqual(macButtonsXlarge.map(b => b.label), ["检查更新"]);
+  for (const btn of macButtonsXlarge) {
+    assert.equal(btn.textWrap, "balance", `${btn.label} sets text-wrap: balance`);
+    assert.equal(btn.lines.some(line => line.length === 1), false, `${btn.label} at 360px xlarge must not have a 1-char widow line (got ${JSON.stringify(btn.lines)})`);
+  }
+
+  // Restore 390x844 normal scale, switch remote host to Windows, click `预发布` -> `发现 v1.3.5-dev.27` while staying check-only
+  await page.evaluate(() => {
+    localStorage.removeItem("bridge-font-size");
+    delete document.documentElement.dataset.fontSize;
+    delete document.documentElement.dataset.effectiveScale;
+    document.documentElement.style.removeProperty("--font-scale");
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  host.snapshot.updater = {
+    platform: "win32",
+    arch: "x64",
+    currentVersion: "1.3.5-dev.23",
+    channel: "stable",
+    autoCheck: true,
+    applyMode: "prompt",
+    canAutoRestart: false,
+    phase: "idle",
+  };
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+
+  await channelGroup.getByRole("button", { name: "预发布", exact: true }).click();
+  await eventually(
+    () => host.requests.some(r => r.method === "system.update" && r.params?.action === "check" && r.params?.channel === "prerelease"),
+    true,
+    "Clicking 预发布 sends system.update { action: 'check', channel: 'prerelease' }",
+  );
+  await remoteRegion.getByText("发现 v1.3.5-dev.27", { exact: true }).waitFor();
+  assert.equal(await channelGroup.getByRole("button", { name: "预发布", exact: true }).getAttribute("aria-pressed"), "true");
+  const winButtons390 = await inspectActionButtons(remoteRegion.locator(".mobile-settings-actions"));
+  assert.deepEqual(winButtons390.map(b => b.label), ["检查更新"]);
+  for (const btn of winButtons390) {
+    assert.equal(btn.textWrap, "balance", `${btn.label} sets text-wrap: balance`);
+    assert.equal(btn.lines.length, 1, `${btn.label} renders on a clean single line at 390x844 (got ${JSON.stringify(btn.lines)})`);
+  }
+  await page.locator(".mobile-settings-content").evaluate(el => { el.scrollTop = 0; });
+  await saveShot(page, "03-mobile-remote-updater-channel-buttons-dark.png");
+
+  // Check Windows `检查更新` under 360px + xlarge has zero 1-char widow lines and zero horizontal overflow
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.evaluate(() => {
+    localStorage.setItem("bridge-font-size", "larger");
+    document.documentElement.dataset.fontSize = "larger";
+    document.documentElement.dataset.effectiveScale = "xlarge";
+    document.documentElement.style.setProperty("--font-scale", "1.3");
+  });
+  const winButtonsXlarge = await inspectActionButtons(remoteRegion.locator(".mobile-settings-actions"));
+  assert.deepEqual(winButtonsXlarge.map(b => b.label), ["检查更新"]);
+  for (const btn of winButtonsXlarge) {
+    assert.equal(btn.textWrap, "balance");
+    assert.equal(btn.lines.some(line => line.length === 1), false, `${btn.label} at 360px xlarge must not have a 1-char widow line (got ${JSON.stringify(btn.lines)})`);
+  }
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "360px xlarge Settings has 0px horizontal overflow");
+  steps.push("Remote desktop updater renders 更新通道 (稳定版 | 预发布), transitions 1.3.5-dev.23 -> 发现 v1.3.5-dev.27 via system.update check+channel, and keeps check-only 检查更新 without remote upgrade buttons or 1-char widow lines");
 }
 
 async function verifyAssistantMail(page, host, steps, directory, viewports) {
   const cards = () => page.locator('.assistant-mail-list > [data-mail-id]');
   async function openAssistant() {
-    await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).click();
-    await page.getByRole("button", { name: "助理", exact: true }).click();
+    await openMobileDrawer(page);
+    await page.locator(".mobile-home-catalog").getByRole("button", { name: /^助理(?:，\d+\+? 条未读)?$/u }).click();
   }
   async function capture(name) {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, `${name} fits the viewport`);
@@ -3323,13 +4738,13 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
   await evictStartupSnapshot();
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).waitFor();
+  await page.locator(".mobile-home-catalog").waitFor();
   await openAssistant();
   await eventually(() => cards().count(), 124, "Reload restores the separately encrypted aggregate while the host is offline");
   host.mailOffline = false;
   host.socket.connect();
   await eventually(() => page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).count(), 0, "Host reconnects before binding");
-  await page.getByLabel("助理会话", { exact: true }).selectOption(sessionId);
+  await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.locator('.assistant-view-tabs button[aria-pressed="true"]').getByText("对话", { exact: true }).waitFor();
   const assistantId = host.snapshot.assistantMail.binding.assistantId;
@@ -3337,13 +4752,26 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await eventually(() => page.locator(".conversation-loading").count(), 0, "Native history finishes loading");
   assert.equal(await page.getByText("这是一个空会话", { exact: true }).count(), 0);
   assert.equal(await page.locator('.conversation-stream .assistant-mail-preview').first().evaluate(element => getComputedStyle(element).webkitLineClamp), "3");
-  assert.equal(await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).count(), 1, "Embedded native view keeps one root navigation menu");
+  assert.equal(await page.getByRole("button", { name: "返回", exact: true }).filter({ visible: true }).count(), 1, "Embedded native view keeps one root back navigation control");
   assert.ok(await page.locator(".assistant-conversation .m-header").evaluate(header => (
     header.querySelector(".m-header-copy").getBoundingClientRect().left - header.getBoundingClientRect().left
       >= parseFloat(getComputedStyle(header).getPropertyValue("--m-gutter"))
   )), "Embedded header without a navigation button retains the mobile gutter");
   await capture("mobile-mail-timeline");
   assert.equal(host.requests.some(request => request.method === "turn.start"), false);
+  await page.locator(".assistant-conversation textarea").fill("手机跨页共享草稿");
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "邮件", exact: true }).click();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
+  assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "手机跨页共享草稿", "Mobile assistant draft survives 对话/邮件/设置 subview switches");
+  await openMobileSession(page, sessionId);
+  const mobileSessionComposer = page.locator(".mobile-tab-page:not([hidden]) textarea");
+  await mobileSessionComposer.waitFor();
+  assert.equal(await mobileSessionComposer.inputValue(), "手机跨页共享草稿", "Mobile 会话 and 助理 tabs share the bound session draft");
+  await mobileSessionComposer.fill("手机会话同步草稿");
+  await openAssistant();
+  assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "手机会话同步草稿", "Draft edited in mobile 会话 reflects back in 助理");
+  await page.locator(".assistant-conversation textarea").fill("");
 
   await page.getByRole("button", { name: "邮件", exact: true }).click();
   await original.getByRole("button", { name: "讨论此邮件", exact: true }).click();
@@ -3403,7 +4831,7 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   host.nativeApproval.assistantMail.service.setBinding({ assistantId, nativeSessionId: null, sectionId: null, previousSessionIds: [sessionId] });
   await page.getByText("原会话已归档或删除，请重新绑定。", { exact: true }).waitFor();
   assert.equal(host.snapshot.assistantMail.binding.assistantId, assistantId);
-  await page.getByLabel("助理会话", { exact: true }).selectOption(sessionId);
+  await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.locator(".assistant-conversation textarea").waitFor();
   assert.equal(await reference.count(), 0);
@@ -3434,7 +4862,7 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "");
   await page.getByRole("button", { name: "助理设置", exact: true }).click();
   await page.getByRole("button", { name: "更换会话", exact: true }).click();
-  await page.getByLabel("助理会话", { exact: true }).selectOption(sessionId);
+  await selectCustomOption(page, page.getByLabel("助理会话", { exact: true }), sessionId);
   host.mailPageFailure = true;
   await page.getByRole("button", { name: "绑定会话", exact: true }).click();
   await page.getByText("隔离邮件列表读取失败", { exact: true }).waitFor();
@@ -3449,7 +4877,7 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await page.getByText("电脑离线，显示已缓存邮件。", { exact: true }).waitFor();
   await evictStartupSnapshot();
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "菜单", exact: true }).filter({ visible: true }).waitFor();
+  await page.locator(".mobile-home-catalog").waitFor();
   await openAssistant();
   await page.getByText(`绑定会话：${sessionId}`, { exact: true }).waitFor();
   await eventually(() => cards().count(), 124, "Bound workspace and records survive without any ordinary snapshot");
@@ -3479,9 +4907,53 @@ async function verifyAssistantMail(page, host, steps, directory, viewports) {
   await page.getByRole("button", { name: "助理", exact: true }).click();
   await page.locator(".assistant-conversation textarea").waitFor();
   assert.equal(await page.locator(".assistant-conversation .desktop-session-sidebar").count(), 0);
+  assert.equal(await page.locator(".assistant-conversation .desktop-session-layout, .assistant-conversation .is-fixed-session").count(), 0, "Desktop AssistantPage mounts DesktopSessionConversation directly without DesktopSessions layout");
+  await page.locator(".assistant-conversation .desktop-conversation-stream [data-mail-id]").first().waitFor();
+  await page.locator(".assistant-conversation textarea").fill("桌面跨页共享草稿");
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "邮件", exact: true }).click();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "助理设置", exact: true }).click();
+  await page.locator(".assistant-view-tabs").getByRole("button", { name: "对话", exact: true }).click();
+  assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "桌面跨页共享草稿", "Desktop assistant draft survives 对话/邮件/设置 subview switches");
+  await page.locator(`.desktop-session-sidebar [data-session-id="${sessionId}"] .session-row-hit`).click();
+  const desktopSessionComposer = page.locator(".desktop-conversation .mobile-composer textarea");
+  await desktopSessionComposer.waitFor();
+  assert.equal(await desktopSessionComposer.inputValue(), "桌面跨页共享草稿", "Desktop 会话 and 助理 tabs share the bound session draft");
+  await desktopSessionComposer.fill("桌面会话同步草稿");
+  await page.locator(".desktop-session-sidebar").getByRole("button", { name: "助理", exact: true }).click();
+  assert.equal(await page.locator(".assistant-conversation textarea").inputValue(), "桌面会话同步草稿", "Draft edited in desktop 会话 reflects back in 助理");
+  await page.locator(".assistant-conversation textarea").fill("");
   await capture("desktop-conversation");
+
+  // Verify macOS hiddenInset drag region and collapsed-sidebar layout on Desktop AssistantPage across 对话 and 邮件 views
+  await page.evaluate(() => { document.documentElement.dataset.macDesktop = "true"; });
+  const dragStylesExpanded = await page.evaluate(() => ({
+    topBand: getComputedStyle(document.querySelector(".assistant-desktop-header-band")).webkitAppRegion,
+    embeddedSubheader: getComputedStyle(document.querySelector(".assistant-conversation .m-header.is-embedded")).webkitAppRegion,
+  }));
+  assert.equal(dragStylesExpanded.topBand, "drag", "Top AssistantPage header band owns macOS window drag");
+  assert.equal(dragStylesExpanded.embeddedSubheader, "none", "Mid-page bound conversation header is not marked draggable");
+
+  await page.getByRole("button", { name: "收起侧栏", exact: true }).click();
+  await page.setViewportSize({ width: 860, height: 620 });
+  const collapsedConvPadding = await page.locator(".assistant-conversation .m-header.is-embedded").evaluate(
+    el => getComputedStyle(el).paddingLeft,
+  );
+  assert.notEqual(collapsedConvPadding, "84px", "Mid-page bound conversation header does not inherit 84px traffic-light indent");
+
   await page.getByRole("button", { name: "邮件", exact: true }).click();
   await eventually(() => cards().count(), 50, "Desktop uses the same mail page and RPC");
+  const expandBtnBounds = await page.getByRole("button", { name: "展开侧栏", exact: true }).boundingBox();
+  const collapsedHeadingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
+  const collapsedMailBounds = await cards().first().boundingBox();
+  assert.ok(expandBtnBounds && collapsedHeadingBounds && collapsedMailBounds, "Collapsed macOS AssistantPage elements have bounding boxes");
+  assert.ok(expandBtnBounds.x >= 84, `展开侧栏 clears macOS traffic lights (x=${expandBtnBounds.x})`);
+  assert.ok(collapsedHeadingBounds.x >= expandBtnBounds.x + expandBtnBounds.width + 8, `助理 heading clears 展开侧栏 at 860px minWidth (heading.x=${collapsedHeadingBounds.x}, btnRight=${expandBtnBounds.x + expandBtnBounds.width})`);
+  assert.ok(Math.abs(collapsedHeadingBounds.x - collapsedMailBounds.x) < 1, "Collapsed macOS Desktop title aligns with the mail content column");
+
+  await page.getByRole("button", { name: "展开侧栏", exact: true }).click();
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.evaluate(() => { delete document.documentElement.dataset.macDesktop; });
+
   const headingBounds = await page.locator(".assistant-page .desktop-page-heading h1").boundingBox();
   const mailBounds = await cards().first().boundingBox();
   assert.ok(Math.abs(headingBounds.x - mailBounds.x) < 1, "Desktop title aligns with the mail content column");
@@ -3513,10 +4985,10 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "assistant-mail"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "assistant-mail"].includes(scenario), scenario === "native-queue-actions", scenario === "section-manage", scenario === "assistant-mail");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux", "desktop-conversation", "assistant-mail"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries", "round5-ux"].includes(scenario), ["assistant-mail", "round5-ux"].includes(scenario), scenario === "round5-ux" ? { desktopName: "LycidasdeMac-mini", initialMailCount: 0 } : {});
     if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (["project-grouping", "session-catalog"].includes(scenario)) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
-    if (scenario === "section-manage") await syncNativeSections(host);
+    if (["section-manage", "round4-boundaries", "round5-ux"].includes(scenario)) await syncNativeSections(host);
     context = await browser.newContext({
       viewport: { width: 375, height: 812 }, colorScheme: theme,
       serviceWorkers: "block",
@@ -3565,11 +5037,12 @@ async function runScenario(theme, scenario) {
     // Visiting the real pairing URL imports identity via the production hook and
     // stores it in this context's own IndexedDB; no vault or hook is replaced.
     await page.goto(buildPairingUrl(baseUrl, host.pairing), { waitUntil: "domcontentloaded" });
-    await page.locator(`[data-session-id="${sessionId}"]`).waitFor();
+    await page.locator(".mobile-home-catalog").waitFor();
+    await page.locator(`.mobile-home-catalog [data-session-id="${sessionId}"]`).waitFor({ state: "attached" });
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
     assert.equal(await page.locator("html").getAttribute("data-theme"), process.env.BRIDGE_QA_THEME ?? theme);
     assert.equal(await page.locator("html").getAttribute("data-theme-family"), process.env.BRIDGE_QA_THEME_FAMILY ?? "sunstone");
-    assert.equal(await page.locator("[data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the visible session rows");
+    assert.equal(await page.locator(".mobile-home-catalog [data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage", "round4-boundaries", "round5-ux"].includes(scenario) ? 3 : 2, "Pairing must synchronize the home catalog session rows");
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
@@ -3578,6 +5051,7 @@ async function runScenario(theme, scenario) {
     else if (scenario === "session-catalog") await verifySessionCatalog(page, host, steps, directory, viewports);
     else if (scenario === "desktop-diagnostics") await verifyDesktopDiagnostics(page, host, steps);
     else if (scenario === "desktop-quota") await verifyDesktopQuota(page, host, steps, directory, viewports);
+    else if (scenario === "desktop-conversation") await verifyDesktopConversation(page, host, steps, directory, viewports);
     else if (scenario === "native-approvals") await verifyNativeApprovals(page, host, steps, directory);
     else if (scenario === "native-prompts-pr") await verifyNativePromptsPr(page, host, steps, directory);
     else if (scenario === "native-messages") await verifyNativeMessages(page, host, steps, directory);
@@ -3588,9 +5062,11 @@ async function runScenario(theme, scenario) {
     else if (scenario === "native-session-notices") await verifyNativeSessionNotices(page, host, steps, directory);
     else if (scenario === "project-grouping") await verifyProjectGrouping(page, host, steps, directory);
     else if (scenario === "section-manage") await verifySectionManage(page, host, steps, directory);
+    else if (scenario === "round4-boundaries") await verifyRound4Boundaries(page, host, steps, directory, viewports, theme);
+    else if (scenario === "round5-ux") await verifyRound5Ux(page, host, steps, directory, viewports, theme);
     else if (scenario === "delivery-approval-reconnect") await verifyDelivery(page, host, steps);
     else await verifyRename(page, host, scenario === "rename-list" ? "list" : "chat", steps);
-    if (scenario !== "assistant-mail") assert.equal(host.requests.some(request => request.method.startsWith("plugin.assistant-mail.")), false, "Hosts without the capability receive no assistant mail RPC");
+    if (!["assistant-mail", "round5-ux"].includes(scenario)) assert.equal(host.requests.some(request => request.method.startsWith("plugin.assistant-mail.")), false, "Hosts without the capability receive no assistant mail RPC");
     assert.deepEqual(errors, [], "Browser runtime, console, network isolation, or host errors");
   } catch (error) {
     failure = error;

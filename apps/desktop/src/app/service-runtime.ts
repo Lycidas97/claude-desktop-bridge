@@ -34,7 +34,7 @@ import {
 } from "../transport/webrtc-runtime.js";
 import { ConversationStateStore } from "../controller/conversation-state-store.js";
 import { MagpieConnectionRepository } from "../claude/magpie-connection.js";
-import { DesktopUpdater, probeInstallDirectory } from "../updater/desktop-updater.js";
+import { DesktopUpdater } from "../updater/desktop-updater.js";
 import { ServiceResources } from "./service-resources.js";
 import { diagnostics } from "./diag.js";
 import type { MemoryRecorder } from "./memory-recorder.js";
@@ -203,25 +203,12 @@ export async function createServiceRuntime(options: {
         platform: process.platform,
         arch: process.arch,
         currentVersion: app.getVersion(),
-        isPackaged: app.isPackaged,
-        execPath: process.execPath,
         userDataPath,
         feedUrl: process.env.BRIDGE_UPDATER_FEED_URL,
         autoCheckAllowed:
           Boolean(process.env.BRIDGE_UPDATER_FEED_URL) ||
           (app.isPackaged && process.env.BRIDGE_UPDATER_DISABLE !== "1"),
-        isDirectoryWritable: (directory) => probeInstallDirectory(directory, (path) => shell.trashItem(path)),
-        isSystemIdle: () => controller.isIdleForUpdate(),
-        hasConnectedUi: () => options.hasConnectedUi?.() ?? false,
-        requestQuitAll: () => controller.requestQuitForUpdate(),
-        openLocalInstaller: async (filePath, revealOnly) => {
-          if (revealOnly) {
-            shell.showItemInFolder(filePath);
-            return;
-          }
-          const openError = await shell.openPath(filePath);
-          if (openError) throw new Error(openError);
-        },
+        openExternalUrl: (url) => shell.openExternal(url),
         onChanged: () => controller.notifyUpdaterChanged(),
       });
       await updater.initialize();
@@ -236,7 +223,10 @@ export async function createServiceRuntime(options: {
       }) } : {}),
     });
     const inspector = new ClaudeInspectorMonitor({
-      ...(!process.env.BRIDGE_CLAUDE_INSPECTOR_URL ? { startup: (listening: boolean) => inspectorStartup.check(listening) } : {}),
+      ...(!process.env.BRIDGE_CLAUDE_INSPECTOR_URL ? {
+        startup: (listening: boolean) => inspectorStartup.check(listening),
+        enableStartup: (isListening: () => Promise<boolean>) => inspectorStartup.enableExplicit(isListening),
+      } : {}),
       onUpdate: (status) => controller.updateInspectorStatus(status),
       onAlert: (alert) => {
         if (!Notification.isSupported()) return "系统通知不可用，请查看 Bridge 内的调试连接告警。";
@@ -249,6 +239,9 @@ export async function createServiceRuntime(options: {
         return undefined;
       },
     });
+    if (!process.env.BRIDGE_CLAUDE_INSPECTOR_URL) {
+      controller.attachInspectorEnabler(() => inspector.enableNow());
+    }
     resources.defer("Inspector monitor", () => inspector.close());
     await inspector.start();
     const onSuspend = () => controller.pauseForSleep();

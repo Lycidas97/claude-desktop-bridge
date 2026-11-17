@@ -46,7 +46,7 @@ export interface DesktopApi {
   launchDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot>;
   quitDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot>;
   request(request: LocalBridgeRequest): Promise<BridgeResponse>;
-  exportDiagnostics(): Promise<{ saved: boolean; path?: string }>;
+  exportDiagnostics(rendererDiagnostics?: Record<string, unknown>): Promise<{ saved: boolean; path?: string }>;
   onSnapshot(listener: (snapshot: DesktopControlSnapshot) => void): () => void;
   onEvent(listener: (event: BridgeEvent) => void): () => void;
 }

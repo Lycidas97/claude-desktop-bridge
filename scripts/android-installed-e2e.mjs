@@ -113,14 +113,19 @@ try {
     button.click();
   })()`);
 
+  async function waitForMobileCatalog() {
+    await androidPage.waitFor("Boolean(document.querySelector('.mobile-home-catalog'))", 30_000);
+  }
+
   if (smokePairingOnly) {
     await androidPage.waitFor(
       "Boolean(document.querySelector('.m-host-chip .m-status-dot.is-online')) && (['暂无会话', '暂无活跃会话', '未检测到 Claude Desktop'].includes(document.querySelector('.session-catalog-loading strong')?.textContent?.trim() ?? '') || Boolean(document.querySelector('.session-row-v2')))",
       30_000,
     );
+    await waitForMobileCatalog();
     await androidPage.screenshot(resolve(artifacts, "02-paired-smoke.png"));
     const renderedHostName = await androidPage.evaluate(
-      "document.querySelector('.m-host-name')?.textContent?.trim() ?? ''",
+      "document.querySelector('.mobile-home-catalog .m-host-name')?.textContent?.trim() ?? ''",
     );
     assert.equal(renderedHostName, pairingSnapshot.host.name, "Android WebView must render the paired Desktop host name");
     const pairedSnapshot = await desktopPage.evaluate(() => window.bridgeDesktop.getSnapshot());
@@ -139,14 +144,16 @@ try {
       artifacts,
     }, null, 2)}\n`);
   } else {
-  await androidPage.waitFor("Boolean(document.querySelector('.session-row-v2'))");
+  await androidPage.waitFor("Boolean(document.querySelector('.mobile-home-catalog .session-row-v2'))");
+  await waitForMobileCatalog();
   await androidPage.screenshot(resolve(artifacts, "02-session-list.png"));
   const selectedSession = await androidPage.evaluate(`(() => {
-    const rows = [...document.querySelectorAll('.session-row-v2')];
+    const rows = [...document.querySelectorAll('.mobile-home-catalog .session-row-v2')];
     const targetTitle = ${JSON.stringify(targetSessionTitle ?? "")};
     const row = targetTitle
       ? rows.find((candidate) => candidate.textContent.includes(targetTitle))
       : rows.find((candidate) => (
+          Boolean(candidate.querySelector('.session-state-dot.idle, .session-fork-icon.idle')) ||
           candidate.textContent.includes('待机') ||
           candidate.textContent.includes('桌面会话')
         ));
@@ -154,12 +161,16 @@ try {
       ? 'Requested Claude session was not found'
       : 'No idle Claude session is available for the proactive resume test');
     row.dataset.bridgeE2eSelected = 'true';
-    return { label: row.innerText, sessionId: row.dataset.sessionId };
+    return {
+      label: row.innerText,
+      sessionId: row.dataset.sessionId,
+      idle: Boolean(row.querySelector('.session-state-dot.idle, .session-fork-icon.idle')) || /待机|桌面会话/u.test(row.innerText),
+    };
   })()`);
   assert.ok(selectedSession.sessionId, "Selected row must expose its session id");
   if (targetSessionTitle) assert.match(selectedSession.label, new RegExp(targetSessionTitle, "u"));
-  else assert.match(selectedSession.label, /待机|桌面会话/u, "E2E must target an idle Claude session");
-  await androidPage.evaluate("document.querySelector('[data-bridge-e2e-selected=true]').click()");
+  else assert.equal(selectedSession.idle, true, "E2E must target an idle Claude session");
+  await androidPage.evaluate("document.querySelector('[data-bridge-e2e-selected=true] .session-row-hit').click()");
 
   await androidPage.waitFor("Boolean(document.querySelector('textarea[aria-label=\"给 Claude 发指令\"]'))", 10_000);
   await androidPage.evaluate(`(() => {

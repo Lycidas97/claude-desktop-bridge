@@ -1,4 +1,5 @@
 import type { BridgePermissionInfo, BridgeSessionInfo } from "@bridge/protocol";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -35,6 +36,19 @@ function row(tree: ReactNode, sessionId = "root") {
 
 function status(tree: ReactNode) {
   return elements(tree).find(element => String(element.props.className).startsWith("session-row-status"));
+}
+
+function hasNestedButtonHtml(html: string): boolean {
+  let depth = 0;
+  for (const match of html.matchAll(/<\/?button\b[^>]*>/giu)) {
+    if (match[0].startsWith("</")) {
+      depth = Math.max(0, depth - 1);
+    } else {
+      depth += 1;
+      if (depth > 1) return true;
+    }
+  }
+  return false;
 }
 
 describe("SessionFamilyList", () => {
@@ -78,41 +92,88 @@ describe("SessionFamilyList", () => {
     expect(row(render()).props.className).not.toContain("active");
   });
 
-  it("keeps fork expansion controlled and distinguishes forks from sidechats", () => {
+  it("renders inline parent chevron without nested buttons, summary toggle when collapsed, and direct tree children when expanded", () => {
     const families = groupProjectSessionFamilies([
       session,
       { ...session, sessionId: "fork", title: "Fork session", parentSessionId: "root", forkLabel: "experiment", lastActivityAt: 2 },
       { ...session, sessionId: "btw", title: "Sidechat", parentSessionId: "root", sidechat: true, lastActivityAt: 3 },
     ]);
+    const onSelectSession = vi.fn();
     const onToggleForkGroup = vi.fn();
-    const collapsed = render({ families, onToggleForkGroup });
+    expect(hasNestedButtonHtml("<button type=\"button\"><span><button type=\"button\">bad</button></span></button>")).toBe(true);
+    const collapsed = render({ families, onSelectSession, onToggleForkGroup });
+    const collapsedHtml = renderToStaticMarkup(collapsed);
+    expect(hasNestedButtonHtml(collapsedHtml)).toBe(false);
     expect(elements(collapsed).filter(element => element.props["data-session-id"])).toHaveLength(1);
+
+    const parentChevron = elements(row(collapsed, "root")).find(element => element.props.className === "session-family-chevron")!;
+    expect(parentChevron.props["aria-expanded"]).toBe(false);
+    expect(elements(parentChevron).some(element => element.type === ChevronRight)).toBe(true);
+    parentChevron.props.onClick();
+    expect(onToggleForkGroup).toHaveBeenCalledWith("root");
+    expect(onSelectSession).not.toHaveBeenCalled();
+
     const toggle = elements(collapsed).find(element => element.props.className === "mobile-fork-toggle")!;
     expect(toggle.props["aria-expanded"]).toBe(false);
     expect(elements(toggle).find(element => element.type === "span")?.props.children).toBe("2 个分支与侧聊");
+    expect(collapsedHtml).toContain("session-tree-elbow");
     toggle.props.onClick();
-    expect(onToggleForkGroup).toHaveBeenCalledWith("root");
-    const expanded = render({ families, expandedForkParents: new Set(["root"]) });
+    expect(onToggleForkGroup).toHaveBeenCalledTimes(2);
+
+    const expanded = render({ families, expandedForkParents: new Set(["root"]), onToggleForkGroup });
+    const expandedHtml = renderToStaticMarkup(expanded);
+    expect(hasNestedButtonHtml(expandedHtml)).toBe(false);
+    expect(elements(expanded).some(element => element.props.className === "mobile-fork-toggle")).toBe(false);
+    const expandedChevron = elements(row(expanded, "root")).find(element => element.props.className === "session-family-chevron")!;
+    expect(expandedChevron.props["aria-expanded"]).toBe(true);
+    expect(elements(expandedChevron).some(element => element.type === ChevronDown)).toBe(true);
     expect(elements(expanded).filter(element => element.props["data-session-id"]).map(element => element.props["data-session-id"])).toEqual(["root", "btw", "fork"]);
     expect(elements(row(expanded, "btw")).find(element => element.type === "em")?.props.children).toBe("/btw");
     expect(elements(row(expanded, "fork")).find(element => element.type === "em")?.props.children).toBe("experiment");
+    const branches = elements(expanded).filter(element => String(element.props.className).startsWith("session-fork-branch"));
+    expect(branches.map(element => element.props.className)).toEqual(["session-fork-branch", "session-fork-branch is-last"]);
+
+    const flatExpanded = render({
+      families: groupProjectSessionFamilies([
+        session,
+        { ...session, sessionId: "fork", title: "Fork session", parentSessionId: "root", forkLabel: "fork-1", lastActivityAt: 2 },
+        { ...session, sessionId: "btw", title: "Sidechat", parentSessionId: "root", sidechat: true, turnState: "running" as const, ownership: "DESKTOP_NATIVE_RUNNING" as const, lastActivityAt: 3 },
+      ]),
+      flat: true,
+      expandedForkParents: new Set(["root"]),
+    });
+    expect(elements(flatExpanded).some(element => element.props.className === "mobile-fork-toggle")).toBe(false);
+    expect(elements(row(flatExpanded, "btw")).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot running");
+    const btwBadges = elements(row(flatExpanded, "btw")).find(element => element.props.className === "session-row-badges")!;
+    expect(elements(btwBadges).some(element => element.props.className === "session-state-dot running")).toBe(true);
+    expect(elements(row(flatExpanded, "fork")).find(element => String(element.props.className).startsWith("session-state-dot"))?.props.className).toBe("session-state-dot idle");
+    expect(elements(row(flatExpanded, "btw")).find(element => element.type === "em")?.props.className).toContain("is-sr-only");
+    expect(elements(row(flatExpanded, "fork")).find(element => element.type === "em")?.props.className).toContain("is-sr-only");
+
+    const singleChildExpanded = render({
+      families: groupProjectSessionFamilies([
+        session,
+        { ...session, sessionId: "only-child", title: "Only child", parentSessionId: "root", lastActivityAt: 2 },
+      ]),
+      flat: true,
+      expandedForkParents: new Set(["root"]),
+    });
+    const onlyBranch = elements(singleChildExpanded).find(element => String(element.props.className).startsWith("session-fork-branch"))!;
+    expect(onlyBranch.props.className).toBe("session-fork-branch is-last is-only");
   });
 
-  it("separates inline archived forks from archived row mode and keeps live descendants reachable", () => {
+  it("excludes archived forks from active families while keeping live descendants reachable and rendering archived rows in archive mode", () => {
     const families = groupProjectSessionFamilies([
       session,
       { ...session, sessionId: "archived", title: "Archived sidechat", parentSessionId: "root", sidechat: true, archivedAt: 3 },
       { ...session, sessionId: "live", title: "Live descendant", parentSessionId: "archived", turnState: "running" as const, ownership: "DESKTOP_NATIVE_RUNNING" as const, lastActivityAt: 4 },
     ]);
-    const mobile = render({ families, expandedForkParents: new Set(["root"]) });
-    expect(row(mobile, "archived")).toBeUndefined();
-    expect(status(row(mobile, "live"))?.props.children).toBe("桌面运行中");
-    const inline = render({ families, includeArchivedInline: true, expandedForkParents: new Set(["root", "archived"]) });
-    expect(status(row(inline))).toBeUndefined();
-    expect(status(row(inline, "archived"))?.props.children).toBe("已归档");
-    expect(status(row(inline, "live"))?.props.children).toBe("桌面运行中");
+    const active = render({ families, expandedForkParents: new Set(["root"]) });
+    expect(row(active, "archived")).toBeUndefined();
+    expect(status(row(active, "live"))?.props.children).toBe("桌面运行中");
     const archivedList = render({ families, archivedList: true, expandedForkParents: new Set(["root", "archived"]) });
     expect(status(row(archivedList))?.props.children).toBe("已归档");
+    expect(status(row(archivedList, "archived"))?.props.children).toBe("已归档");
     expect(status(row(archivedList, "live"))?.props.children).toBe("已归档");
   });
 

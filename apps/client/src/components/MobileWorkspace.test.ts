@@ -21,8 +21,8 @@ import {
   ownershipLabel,
   restorableSessionId,
   formatSessionModelLabel,
+  sanitizeModelDisplayName,
   stoppableBridgeTask,
-  supportsProviderSwitching,
 } from "../lib/conversation-timeline.js";
 import { groupProjectSessionFamilies } from "../lib/project-groups.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
@@ -87,22 +87,22 @@ describe("mobile workspace directory", () => {
       themeControl: { theme: "dark", family: "apple", setTheme: vi.fn(), setFamily: vi.fn(), toggleTheme: vi.fn() },
       onOpenSession: vi.fn(), onLoadOlderHistory: vi.fn(), onLoadOlderEvidence: vi.fn(), onPreviewArtifact: vi.fn(), onDownloadArtifact: vi.fn(),
       onSendTurn: vi.fn(), onInterruptTurn: vi.fn(), onResolveUncertain: vi.fn(), onResolvePermission: vi.fn(), onCreateSession: vi.fn(),
-      onLoadSessionConfiguration: vi.fn(), onConfigureSession: vi.fn(), onPreviewProviderSwitch: vi.fn(), onCommitProviderSwitch: vi.fn(), onCancelProviderSwitch: vi.fn(),
-      onRefreshProviders: vi.fn(),
+      onLoadSessionConfiguration: vi.fn(), onConfigureSession: vi.fn(),
     onDesktopAppAction: vi.fn(), onRefresh: vi.fn(), onBackToHosts: vi.fn(), onRetry: vi.fn(),
     };
   }
 
-  it("opens on the directory with an archive page entry and closed action menus", () => {
+  it("lands directly on the full-screen Layer-1 Home Session List without auto-opening a conversation", () => {
     const props = workspaceProps();
     const html = renderToStaticMarkup(createElement(MobileWorkspace, props));
-    expect(html).toContain('<h1>会话</h1>');
-    expect(html).toContain('class="m-header is-title-hidden"');
-    expect(html).toContain('aria-label="当前电脑：My computer，查看电脑"');
+    expect(html).toContain('class="mobile-home-catalog is-flat-tree"');
+    expect(html).not.toContain("<h1>Visible session</h1>");
+    expect(html).not.toContain('aria-label="菜单"');
+    expect(html).toContain('aria-label="当前电脑：My computer，切换电脑"');
     expect(html).toContain('aria-label="新建会话"');
-    expect(html).toContain('aria-label="目录选项"');
+    expect(html).not.toContain('aria-label="目录选项"');
     expect(html).toContain("Visible session");
-    expect(html).toContain("已归档会话");
+    expect(html).toContain("已归档");
     expect(html).not.toContain("Archived session");
     expect(html).not.toContain("desktop-agents-drawer");
     expect(html).not.toContain('aria-label="强制同步"');
@@ -142,7 +142,8 @@ describe("mobile workspace directory", () => {
     const order = ["Newcomer", "Second", "First"].map((name) => html.indexOf(`<strong>${name}</strong>`));
     expect(order.every((position) => position >= 0)).toBe(true);
     expect([...order].sort((left, right) => left - right)).toEqual(order);
-    expect(html).toMatch(/class="project-order-bar"><span>项目顺序已固定<\/span><button[^>]*>.*调整顺序<\/button>/u);
+    expect(html).toContain('aria-label="调整顺序"');
+    expect(html).not.toContain("项目顺序已固定");
   });
 
   it.each([["starting", "正在启动"], ["submitted", "已提交，等待执行"]] as const)("labels %s sessions before execution in the directory", (executionStage, label) => {
@@ -215,7 +216,7 @@ describe("mobile workspace directory", () => {
     expect(archivedOnlyHtml).not.toContain("1 个已结束侧聊");
     expect(archivedOnlyHtml).not.toContain("1 个 /btw 侧聊");
     expect(archivedOnlyHtml).not.toContain(sidechatArchived.title);
-    expect(archivedOnlyHtml).toMatch(/已归档会话<\/strong><b class="project-count-pill">1<\/b>/u);
+    expect(archivedOnlyHtml).toMatch(/已归档<\/strong><b class="project-count-pill">1<\/b>/u);
 
     const allMixedSessions: BridgeSessionInfo[] = [
       session,
@@ -224,19 +225,30 @@ describe("mobile workspace directory", () => {
       { ...session, sessionId: "fork-archived", title: "历史实验分支", parentSessionId: session.sessionId, archivedAt: 120, lastActivityAt: 120 },
     ];
     const renderCatalog = (expandedForkParents: Set<string>, activeProjectId?: string, catalogSessions = allMixedSessions, projectSearch = "") => {
-      const activeList = catalogSessions.filter((candidate) => !candidate.archivedAt || Boolean(candidate.sidechat && candidate.parentSessionId === session.sessionId));
+      const query = projectSearch.trim().toLocaleLowerCase();
+      const isArchiveFocus = activeProjectId === "__archived__";
+      const matches = catalogSessions.filter(
+        (candidate) => !query || `${candidate.title}\n${candidate.projectName}\n${candidate.cwd}`.toLocaleLowerCase().includes(query),
+      );
+      const matchingActiveParents = new Map(
+        matches.filter((candidate) => !candidate.archivedAt).map((candidate) => [candidate.sessionId, candidate.projectId]),
+      );
+      const activeList = matches.filter(
+        (candidate) => !candidate.archivedAt || Boolean(candidate.sidechat && candidate.parentSessionId && matchingActiveParents.get(candidate.parentSessionId) === candidate.projectId),
+      );
       const archivedList = catalogSessions.filter((candidate) => Boolean(candidate.archivedAt));
       return renderToStaticMarkup(createElement(MobileSessionCatalog, {
+        open: true,
+        archivedExpanded: isArchiveFocus,
         desktopName: "My computer",
         connection: "connected",
         desktopOnline: true,
         snapshot: { ...snapshot, sessions: catalogSessions },
         sessions: catalogSessions,
         archivedSessions: archivedList,
-        activeParentProjects: new Map([[session.sessionId, session.projectId]]),
-        grouped: [{ project: snapshot.projects[0], sessions: activeList }],
-        groupedProjectIds: [session.projectId],
-        allProjectsCollapsed: false,
+        grouped: isArchiveFocus || (query && activeList.length === 0)
+          ? []
+          : [{ project: snapshot.projects[0], sessions: activeList }],
         collapsedProjectIds: new Set<string>(),
         expandedForkParents,
         projectOrder: [session.projectId],
@@ -244,16 +256,10 @@ describe("mobile workspace directory", () => {
         permissions: [],
         connectionIssue: undefined,
         transportMetrics: undefined,
-        pendingOutbound: 0,
-        activeProjectId,
-        search: "",
-        projectSearch,
+        search: projectSearch,
         directoryRef: { current: null },
         directoryScrollPositions: { current: new Map() },
-        directoryMenuOpen: false,
         projectOrderOpen: false,
-        refreshing: false,
-        syncFlash: false,
         sectionCreate: undefined,
         sectionCanCreate: false,
         sectionManage: {
@@ -278,32 +284,19 @@ describe("mobile workspace directory", () => {
           close: vi.fn(),
           renderDirectoryActions: vi.fn(() => null),
         },
-        createOpen: false,
-        createProjectId: "",
         sessionOverlays: null,
         onBackToHosts: vi.fn(),
         onRetry: vi.fn(),
-        onRefresh: vi.fn(),
         onCreateSection: undefined,
-        onBrowseDirectory: undefined,
-        onCreateDirectory: undefined,
-        onCreateSession: vi.fn(),
         selectSession: vi.fn(),
         setSearch: vi.fn(),
-        setProjectSearch: vi.fn(),
-        setDirectoryMenuOpen: vi.fn(),
         setProjectOrderOpen: vi.fn(),
-        setCollapsedProjectIds: vi.fn(),
         setSectionCreate: vi.fn(),
-        setCreateOpen: vi.fn(),
         onOpenSessionActions: vi.fn(),
         toggleProject: vi.fn(),
         toggleForkGroup: vi.fn(),
-        openProjectGroup: vi.fn(),
-        closeProjectGroup: vi.fn(),
         openCreateDialogForProject: vi.fn(),
         placeProjects: vi.fn(),
-        runRefresh: vi.fn(),
         closeSectionCreate: vi.fn(),
         createSection: vi.fn(),
       }));
@@ -325,7 +318,7 @@ describe("mobile workspace directory", () => {
       expect(archiveSearchHtml).toContain(`>${title}`);
       expect(archiveSearchHtml.match(/class="session-row-status [^"]+">已归档<\/span>/gu)).toHaveLength(1);
     }
-    expect(renderCatalog(new Set())).toMatch(/已归档会话<\/strong><b class="project-count-pill">2<\/b>/u);
+    expect(renderCatalog(new Set())).toMatch(/已归档<\/strong><b class="project-count-pill">2<\/b>/u);
     const archivedBranchesHtml = renderCatalog(new Set(), "__archived__");
     expect(archivedBranchesHtml).toContain(sidechatArchived.title);
     expect(archivedBranchesHtml).toContain("历史实验分支");
@@ -345,8 +338,9 @@ describe("mobile workspace directory", () => {
     expect(threeLevelActiveHtml).toContain(liveGrandchild.title);
     expect(threeLevelActiveHtml).not.toContain("1 个已结束侧聊");
     expect(threeLevelActiveHtml).not.toContain(sidechatArchived.title);
-    const liveRow = /data-session-id="live-fork"([\s\S]*?)<\/button>/u.exec(threeLevelActiveHtml)![1]!;
-    expect(liveRow).toContain("桌面运行中");
+    const liveRow = /data-session-id="live-fork"([\s\S]*?)<\/div>/u.exec(threeLevelActiveHtml)![1]!;
+    expect(liveRow).toContain("session-state-dot running");
+    expect(liveRow).not.toContain("桌面运行中");
     expect(liveRow).not.toContain("已归档");
     expect(threeLevelActiveHtml.match(/data-session-id="live-fork"/gu)).toHaveLength(1);
     const searchedLiveHtml = renderCatalog(new Set(), session.projectId, threeLevelSessions, liveGrandchild.title);
@@ -359,8 +353,10 @@ describe("mobile workspace directory", () => {
     const archivedParent: BridgeSessionInfo = { ...session, sessionId: "archived-parent", title: "已归档父会话", archivedAt: 50 };
     const archivedChild: BridgeSessionInfo = { ...session, sessionId: "btw-of-archived-parent", title: "btw: 归档父会话的侧聊", parentSessionId: "archived-parent", sidechat: true, archivedAt: 60 };
     expect(groupProjectSessionFamilies([archivedParent, archivedChild])[0]!.forks).toHaveLength(1);
+    const archivedCollapsedHtml = renderCatalog(new Set(), "__archived__", [archivedParent, archivedChild]);
+    expect(archivedCollapsedHtml).toContain("1 个 /btw 侧聊");
     const archivedPageHtml = renderCatalog(new Set(["archived-parent"]), "__archived__", [archivedParent, archivedChild]);
-    expect(archivedPageHtml).toContain("1 个 /btw 侧聊");
+    expect(archivedPageHtml).not.toContain("mobile-fork-toggle");
     expect(archivedPageHtml).toContain("btw: 归档父会话的侧聊");
     expect(archivedPageHtml).not.toContain("is-archived-fold");
 
@@ -421,7 +417,7 @@ describe("mobile workspace directory", () => {
         ] },
       }));
       expect(html).not.toContain('data-session-id="archived-sidechat"');
-      expect(html).toMatch(/已归档会话<\/strong><b class="project-count-pill">1<\/b>/u);
+      expect(html).toMatch(/已归档<\/strong><b class="project-count-pill">1<\/b>/u);
       if (withLiveDescendant) expect(html).toContain('data-session-id="live-grandchild"');
       else expect(html).toContain("没有匹配的会话");
     } finally {
@@ -445,7 +441,7 @@ describe("mobile workspace directory", () => {
           allowedActions: { canSend: true, canSteer: true, canInterrupt: false, canConfigure, canSwitchProvider: false, canContinueOfficial: false },
         }] },
       }));
-      expect(html.replace(/<[^>]+>/gu, "")).toContain("Claude Opus 5.5 custom model · 计划模式 · reasoning high");
+      expect(html.replace(/<[^>]+>/gu, "")).toContain("Claude Opus 5.5 custom model · High · Plan");
       expect(html.includes('aria-label="会话设置"')).toBe(canConfigure);
       expect(html).toContain("Desktop 未切换为「完全授权」");
     } finally { stateSpy.mockReset(); }
@@ -1148,11 +1144,22 @@ describe("formatSessionModelLabel", () => {
     expect(formatSessionModelLabel({
       ...baseSession,
       model: "mythos-magpie-1052229916[1m]",
-    })).toBe("默认模型 1M");
+    })).toBe("默认模型 · 1M");
     expect(formatSessionModelLabel({
       ...baseSession,
       model: "magpie-2213244526.anthropic.claude-opus-5-5[1m]",
-    })).toBe("opus 5 5 1M");
+    })).toBe("Claude Opus 5.5 · 1M");
+    expect(formatSessionModelLabel({
+      ...baseSession,
+      model: "magpie-5782219464.anthropic.claude-fable-5-2[1m]",
+      modelDisplayName: "magpie-5782219464.anthropic.claude-fable-5-2[1m]",
+    })).toBe("Claude Fable 5.2 · 1M");
+    expect(formatSessionModelLabel({
+      ...baseSession,
+      model: "mythos-magpie-3436308304",
+      modelDisplayName: "mythos-magpie-3436308304",
+    })).toBe("默认模型");
+    expect(sanitizeModelDisplayName("mythos-magpie-3436308304", "anthropic/claude-opus-4-7")).toBe("Claude Opus 4.7");
   });
 });
 
@@ -1267,20 +1274,6 @@ describe("provider switching presentation", () => {
     pendingCount: 0,
     activeProviderProfileId: "claude-official",
   };
-
-  it("keeps provider controls hidden when a V0.4 host has no capability", () => {
-    const legacy = {
-      host: { capabilities: [] },
-    } as unknown as BridgeHostSnapshot;
-    const current = {
-      host: {
-        capabilities: ["provider.profile.v1", "conversation.handoff.v1"],
-      },
-    } as unknown as BridgeHostSnapshot;
-
-    expect(supportsProviderSwitching(legacy)).toBe(false);
-    expect(supportsProviderSwitching(current)).toBe(false);
-  });
 
   it("aggregates file changes and keeps File change cards out of the timeline", () => {
     const items = [

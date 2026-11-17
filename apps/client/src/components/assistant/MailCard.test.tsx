@@ -20,6 +20,7 @@ describe("MailCard plain text rendering", () => {
       receivedAt, recordedAt: Date.parse("2026-11-14T10:45:00.000Z"),
     }) }));
 
+    expect(html).toContain('data-stream-key="mail:mail-1"');
     expect(html).toContain(`<time dateTime="${receivedAt}">${new Date(receivedAt).toLocaleString("zh-CN", {
       month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit",
     })}</time>`);

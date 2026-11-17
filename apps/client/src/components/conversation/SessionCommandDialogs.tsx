@@ -3,6 +3,7 @@ import { LoaderCircle, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { IconButton } from "../common/IconButton.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 
 const DIALOG_TITLES: Partial<Record<BridgeSessionCommandResult["action"], string>> = { help: "会话命令", permissions: "会话权限", resume: "恢复会话", rename: "重命名会话" };
 const MODE_LABELS: Record<BridgeSDKPermissionMode, string> = { default: "标准授权", acceptEdits: "自动接受编辑", plan: "计划模式", dontAsk: "仅允许已批准", auto: "自动判断", bypassPermissions: "完全授权" };
@@ -69,11 +70,15 @@ export function SessionPermissionsEditor({ onLoadPermissions, onSavePermissions,
     <div className="session-command-body">
     {loading ? <div className="session-configuration-loading"><LoaderCircle className="is-spinning" size={18} />正在读取会话权限</div> : permissions && <>
       <div className="session-permission-status">当前生效：{MODE_LABELS[permissions.mode]}</div>
-      <label className="session-model-field"><span>权限模式</span>
-        <select value={mode} disabled={!permissions.canConfigure || saving} onChange={event => setMode(event.target.value as BridgeSDKPermissionMode)}>
-          {MODES.map(value => <option key={value} value={value}>{MODE_LABELS[value]}</option>)}
-        </select>
-      </label>
+      <div className="session-model-field"><span>权限模式</span>
+        <SelectMenu<BridgeSDKPermissionMode>
+          ariaLabel="权限模式"
+          value={mode}
+          disabled={!permissions.canConfigure || saving}
+          options={MODES.map(value => ({ value, label: MODE_LABELS[value] }))}
+          onChange={nextMode => setMode(nextMode)}
+        />
+      </div>
       <fieldset className="session-permission-field"><legend>当前会话覆盖 · 每行一条规则</legend>
         {RULES.map(kind => <label className="session-model-field" key={kind}><span>{kind}</span>
           <textarea aria-label={`会话 ${kind} 规则`} rows={3} value={rules[kind]} disabled={!permissions.canConfigure || saving}

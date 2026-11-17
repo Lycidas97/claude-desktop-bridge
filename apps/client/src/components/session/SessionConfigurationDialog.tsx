@@ -3,13 +3,15 @@ import type {
   BridgeSessionConfiguration,
   BridgeSessionInfo,
 } from "@bridge/protocol";
-import { LoaderCircle, Settings2, ShieldCheck, X } from "lucide-react";
+import { LoaderCircle, Settings2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { MagpieModelQuota, useOptionalMagpieQuota } from "../../../../../plugins/magpie-quota/client.js";
 import { modelQuotaLabel } from "../../../../../plugins/magpie-quota/presentation.js";
+import { sanitizeModelDisplayName } from "../../lib/conversation-timeline.js";
 import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { IconButton } from "../common/IconButton.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { formatContextPercentage, formatContextTokens } from "../conversation/SessionActivityIndicator.js";
 
 const EFFORT_LABELS: Record<string, string> = {
@@ -23,25 +25,33 @@ const EFFORT_LABELS: Record<string, string> = {
   ultra: "超高",
 };
 
-function effortLabel(value: string): string {
+export function effortLabel(value: string): string {
   return EFFORT_LABELS[value] ?? value;
 }
 
 const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 /** The configured level if the model offers it, else the strongest offered level not above it. */
-function supportedEffort(effort: string, levels: readonly string[]): string {
+export function supportedEffort(effort: string, levels: readonly string[]): string {
   if (levels.includes(effort)) return effort;
   const rank = EFFORT_ORDER.indexOf(effort);
   return levels.filter((level) => EFFORT_ORDER.indexOf(level) <= rank).at(-1) ?? levels[0] ?? effort;
 }
 
+export const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ value: BridgeSDKPermissionMode; label: string }> = [
+  { value: "default", label: "默认" },
+  { value: "acceptEdits", label: "允许文件修改" },
+  { value: "plan", label: "计划模式" },
+  { value: "auto", label: "自动模式" },
+  { value: "dontAsk", label: "不询问" },
+  { value: "bypassPermissions", label: "完全授权" },
+];
+
 export interface SessionConfigurationChange {
   model?: string | null;
-  provider?: string | null;
   effort?: string | null;
   reasoningEffort?: string | null;
-  fast?: boolean | null;
+  permissionMode?: BridgeSDKPermissionMode | undefined;
 }
 
 export function SessionConfigurationDialog({
@@ -58,10 +68,8 @@ export function SessionConfigurationDialog({
   onClose(): void;
 }) {
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();
-  const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("medium");
-  const [fast, setFast] = useState(false);
   const [nativePermissionMode, setNativePermissionMode] = useState<BridgeSDKPermissionMode>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -81,10 +89,8 @@ export function SessionConfigurationDialog({
       .then((next) => {
         if (!active) return;
         setConfiguration(next);
-        setProvider(next.provider ?? next.availableProviders?.[0]?.value ?? "");
         setModel(next.model ?? next.availableModels[0]?.value ?? "");
         setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
-        setFast(next.fast ?? false);
         setNativePermissionMode(next.nativePermissionMode);
         setError(undefined);
       })
@@ -107,12 +113,7 @@ export function SessionConfigurationDialog({
     }, 150);
   }, [confirmFullAccess, saving]);
 
-  const modelOptions = useMemo(() => {
-    const all = configuration?.availableModels ?? [];
-    if (!provider) return all;
-    const scoped = all.filter((candidate) => !candidate.provider || candidate.provider === provider);
-    return scoped.length ? scoped : all;
-  }, [configuration, provider]);
+  const modelOptions = configuration?.availableModels ?? [];
   const selectedModel = useMemo(
     () => modelOptions.find((candidate) => candidate.value === model),
     [model, modelOptions],
@@ -124,25 +125,6 @@ export function SessionConfigurationDialog({
       : configuration?.availableEffortLevels ?? [];
   // Keep the session's own effort so a model that supports it gets it back; show and save what this one allows.
   const shownEffort = supportedEffort(effort, effortLevels);
-  const fastSupported = Boolean(configuration?.supportsFastMode && selectedModel?.supportsFast !== false);
-
-  function chooseModel(value: string): void {
-    setModel(value);
-    const nextModel = modelOptions.find((candidate) => candidate.value === value);
-    if (nextModel?.provider) setProvider(nextModel.provider);
-    if (nextModel?.supportsFast === false) setFast(false);
-  }
-
-  function chooseProvider(value: string): void {
-    setProvider(value);
-    const nextModels = (configuration?.availableModels ?? []).filter(
-      (candidate) => !candidate.provider || candidate.provider === value,
-    );
-    const nextModel = nextModels[0];
-    if (!nextModel) return;
-    setModel(nextModel.value);
-    if (nextModel.supportsFast === false) setFast(false);
-  }
 
   async function save(change: SessionConfigurationChange): Promise<void> {
     if (saving) return;
@@ -151,11 +133,9 @@ export function SessionConfigurationDialog({
     try {
       const next = await onSave(change);
       setConfiguration(next);
-      setProvider(next.provider ?? next.availableProviders?.[0]?.value ?? "");
       setModel(next.model ?? next.availableModels[0]?.value ?? "");
       setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
-      setFast(next.fast ?? false);
-        setNativePermissionMode(next.nativePermissionMode);
+      setNativePermissionMode(next.nativePermissionMode);
       if (change.model !== null) onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "会话配置保存失败");
@@ -168,9 +148,7 @@ export function SessionConfigurationDialog({
     return save({
       ...(modelOptions.length ? { model } : {}),
       ...(nativeRuntime ? {
-        ...(configuration?.availableProviders?.length ? { provider: provider || null } : {}),
         ...(effortLevels.length && selectedModel?.supportsEffort !== false ? { reasoningEffort: shownEffort } : {}),
-        ...(configuration?.supportsFastMode ? { fast: fastSupported ? fast : false } : {}),
         ...(claudeSession && nativePermissionMode ? { permissionMode: nativePermissionMode } : {}),
       } : { effort: selectedModel?.supportsEffort === false ? null : shownEffort }),
     });
@@ -201,6 +179,69 @@ export function SessionConfigurationDialog({
           </div>
         ) : (
           <>
+            {modelOptions.length > 0 && (
+              <div className="session-model-field">
+                <span>模型</span>
+                <SelectMenu
+                  ariaLabel="模型"
+                  value={model}
+                  disabled={!modelOptions.length}
+                  options={modelOptions.map((candidate) => ({
+                    value: candidate.value,
+                    label: sanitizeModelDisplayName(candidate.displayName, candidate.resolvedModel ?? candidate.value),
+                    meta: quota?.snapshot ? (modelQuotaLabel(quota.snapshot, candidate) || undefined) : undefined,
+                  }))}
+                  onChange={setModel}
+                />
+                <small>
+                  {selectedModel?.description
+                    || (!configuration?.modelsComplete
+                      ? "仅显示当前主机已发现的模型"
+                      : sanitizeModelDisplayName(model, selectedModel?.resolvedModel))}
+                </small>
+                {configuration && (
+                  <small>
+                    配置来源：{{ bridge: "当前会话", "claude-desktop": "Claude Desktop", project: "项目配置", default: "电脑默认" }[configuration.modelSource]}
+                  </small>
+                )}
+              </div>
+            )}
+            {quota && selectedModel && <MagpieModelQuota model={selectedModel} />}
+
+            {effortLevels.length > 0 && selectedModel?.supportsEffort !== false && (
+              <fieldset className="session-effort-field">
+                <legend>{nativeRuntime ? "思考强度" : "Effort"}</legend>
+                <div className="effort-segments">
+                  {effortLevels.map((level) => (
+                    <button
+                      type="button"
+                      className={shownEffort === level ? "active" : ""}
+                      aria-pressed={shownEffort === level}
+                      onClick={() => setEffort(level)}
+                      key={level}
+                    >
+                      {effortLabel(level)}
+                    </button>
+                  ))}
+                </div>
+                {effort && effort !== shownEffort && (
+                  <small>当前设置为「{effortLabel(effort)}」，这个模型不支持「{effortLabel(effort)}」，保存后改为「{effortLabel(shownEffort)}」。</small>
+                )}
+              </fieldset>
+            )}
+
+            {claudeSession && configuration?.nativePermissionMode && (
+              <div className="session-model-field">
+                <span>Desktop 授权模式</span>
+                <SelectMenu<BridgeSDKPermissionMode>
+                  ariaLabel="Desktop 授权模式"
+                  value={nativePermissionMode ?? configuration.nativePermissionMode}
+                  options={PERMISSION_MODE_OPTIONS}
+                  onChange={(nextMode) => setNativePermissionMode(nextMode)}
+                />
+              </div>
+            )}
+
             {configuration?.context && configuration.context.totalTokens > 0 && (() => {
               const context = configuration.context;
               const hasCapacity = typeof context.maxTokens === "number" && context.maxTokens > 0
@@ -232,81 +273,6 @@ export function SessionConfigurationDialog({
               );
             })()}
 
-            {configuration?.availableProviders?.length ? (
-              <label className="session-model-field">
-                <span>Provider</span>
-                <select value={provider} onChange={(event) => chooseProvider(event.target.value)}>
-                  {configuration.availableProviders.map((candidate) => (
-                    <option value={candidate.value} key={candidate.value}>{candidate.displayName}</option>
-                  ))}
-                </select>
-                <small>{provider || "跟随 Desktop 当前配置"}</small>
-              </label>
-            ) : null}
-
-            {modelOptions.length > 0 && <label className="session-model-field">
-              <span>模型</span>
-              <select value={model} disabled={!modelOptions.length} onChange={(event) => chooseModel(event.target.value)}>
-                {modelOptions.map((candidate) => (
-                  <option value={candidate.value} key={`${candidate.provider ?? ""}:${candidate.value}`}>
-                    {[candidate.displayName, quota?.snapshot && modelQuotaLabel(quota.snapshot, candidate)].filter(Boolean).join(" · ")}
-                  </option>
-                ))}
-              </select>
-              <small>{selectedModel?.description || (!configuration?.modelsComplete ? "仅显示当前主机已发现的模型" : model)}</small>
-              {configuration && <small>配置来源：{{ bridge: "当前会话", "claude-desktop": "Claude Desktop", project: "项目配置", default: "电脑默认" }[configuration.modelSource]}</small>}
-            </label>}
-            {quota && selectedModel && <MagpieModelQuota model={selectedModel} />}
-
-            {effortLevels.length > 0 && selectedModel?.supportsEffort !== false && (
-              <fieldset className="session-effort-field">
-                <legend>{nativeRuntime ? "思考强度" : "Effort"}</legend>
-                <div className="effort-segments">
-                  {effortLevels.map((level) => (
-                    <button
-                      type="button"
-                      className={shownEffort === level ? "active" : ""}
-                      aria-pressed={shownEffort === level}
-                      onClick={() => setEffort(level)}
-                      key={level}
-                    >
-                      {effortLabel(level)}
-                    </button>
-                  ))}
-                </div>
-                {effort && effort !== shownEffort && (
-                  <small>当前设置为「{effortLabel(effort)}」，这个模型不支持「{effortLabel(effort)}」，保存后改为「{effortLabel(shownEffort)}」。</small>
-                )}
-              </fieldset>
-            )}
-
-            {configuration?.supportsFastMode && (
-              <label className="session-fast-field">
-                <input
-                  type="checkbox"
-                  checked={fast}
-                  disabled={!fastSupported}
-                  onChange={(event) => setFast(event.target.checked)}
-                />
-                <span>快速模式</span>
-                {!fastSupported && <small>当前模型不支持</small>}
-              </label>
-            )}
-
-            {claudeSession && configuration?.nativePermissionMode && (
-              <label className="session-model-field">
-                <span>Desktop 授权模式</span>
-                <select aria-label="Desktop 授权模式" value={nativePermissionMode} onChange={event => setNativePermissionMode(event.target.value as BridgeSDKPermissionMode)}>
-                  <option value="default">默认</option>
-                  <option value="acceptEdits">允许文件修改</option>
-                  <option value="plan">计划模式</option>
-                  <option value="auto">自动模式</option>
-                  <option value="dontAsk">不询问</option>
-                  <option value="bypassPermissions">完全授权</option>
-                </select>
-              </label>
-            )}
-
             {appliesAfterTurn && <div className="session-configuration-notice">当前任务不会中断，修改从下一轮生效。</div>}
             {error && <div className="session-configuration-error" role="alert">{error}</div>}
 
@@ -319,7 +285,7 @@ export function SessionConfigurationDialog({
               <button
                 type="button"
                 className="primary-button"
-                disabled={saving || (!modelOptions.length && !effortLevels.length && !configuration?.supportsFastMode && !configuration?.nativePermissionMode)}
+                disabled={saving || (!modelOptions.length && !effortLevels.length && !configuration?.nativePermissionMode)}
                 onClick={() => {
                   if (claudeSession && nativePermissionMode === "bypassPermissions" && configuration?.nativePermissionMode !== "bypassPermissions") setConfirmFullAccess(true);
                   else void saveSelectedConfiguration();

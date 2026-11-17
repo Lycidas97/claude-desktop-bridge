@@ -2,6 +2,7 @@ import type { BridgeSessionCommandResult, BridgeSessionPermissions } from "@brid
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findSessionCommand, sessionCommandName, useSessionCommands } from "../../hooks/useSessionCommands.js";
+import { SelectMenu } from "../common/SelectMenu.js";
 import { SessionPermissionsEditor } from "./SessionCommandDialogs.js";
 
 const hooks = vi.hoisted(() => ({ slots: [] as any[], index: 0, dirty: false, effects: [] as Array<{ deps?: unknown[]; cleanup?: (() => void) | undefined }>, pending: [] as Array<() => void>, effectIndex: 0 }));
@@ -123,8 +124,9 @@ describe("SDK session permissions", () => {
 
   it("loads actual SDK mode and isolates override fields from inherited rules", async () => {
     await load();
-    expect(elements(tree).find(element => element.type === "select")!.props.value).toBe("acceptEdits");
-    expect(elements(tree).filter(element => element.type === "option").map(element => [element.props.value, element.props.children])).toEqual([
+    const modeMenu = elements(tree).find(element => element.type === SelectMenu)!;
+    expect(modeMenu.props.value).toBe("acceptEdits");
+    expect(modeMenu.props.options.map((opt: { value: string; label: string }) => [opt.value, opt.label])).toEqual([
       ["default", "标准授权"], ["acceptEdits", "自动接受编辑"], ["plan", "计划模式"], ["dontAsk", "仅允许已批准"], ["auto", "自动判断"], ["bypassPermissions", "完全授权"],
     ]);
     const body = elements(tree).find(element => element.props.className === "session-command-body")!;
@@ -140,7 +142,7 @@ describe("SDK session permissions", () => {
 
   it("saves all three overrides only after explicit confirmation", async () => {
     await load();
-    elements(tree).find(element => element.type === "select")!.props.onChange({ target: { value: "plan" } });
+    elements(tree).find(element => element.type === SelectMenu)!.props.onChange("plan");
     elements(tree).find(element => element.props["aria-label"] === "会话 ask 规则")!.props.onChange({ target: { value: "Edit\nBash(git:*)\n" } });
     tree = draw();
     expect(props.onSavePermissions).not.toHaveBeenCalled();
@@ -152,7 +154,7 @@ describe("SDK session permissions", () => {
   it("keeps the editor open and displays an SDK bypass error", async () => {
     props.onSavePermissions = vi.fn().mockRejectedValue(new Error("bypassPermissions was not enabled at startup"));
     await load();
-    elements(tree).find(element => element.type === "select")!.props.onChange({ target: { value: "bypassPermissions" } });
+    elements(tree).find(element => element.type === SelectMenu)!.props.onChange("bypassPermissions");
     tree = draw(); button("保存权限").props.onClick(); await settle(); tree = draw();
     expect(elements(tree).find(element => element.props.role === "alert")!.props.children).toContain("not enabled at startup");
     expect(props.onClose).not.toHaveBeenCalled();
@@ -161,7 +163,7 @@ describe("SDK session permissions", () => {
   it("shows an unavailable runtime as read-only", async () => {
     props.onLoadPermissions = vi.fn().mockResolvedValue({ ...permissions, canConfigure: false, unavailableReason: "SDK host 尚未启动" });
     await load();
-    expect(elements(tree).filter(element => element.type === "textarea" || element.type === "select").every(element => element.props.disabled)).toBe(true);
+    expect(elements(tree).filter(element => element.type === "textarea" || element.type === SelectMenu).every(element => element.props.disabled)).toBe(true);
     expect(button("保存权限").props.disabled).toBe(true);
   });
 });
@@ -231,7 +233,7 @@ describe("permission lifecycle edges", () => {
     const button = elements(tree).find(element => element.type === "button" && (element.props.children === label || (Array.isArray(element.props.children) && element.props.children.includes(label))))!;
     button.props.onClick();
   }
-  function mode(value: string) { elements(tree).find(element => element.type === "select")!.props.onChange({ target: { value } }); tree = draw(); }
+  function mode(value: string) { elements(tree).find(element => element.type === SelectMenu)!.props.onChange(value); tree = draw(); }
   function reopen() {
     hooks.effects.forEach(effect => effect.cleanup?.());
     hooks.slots = []; hooks.effects = []; hooks.pending = [];
@@ -272,7 +274,7 @@ describe("permission lifecycle edges", () => {
     click("取消");
     props.onLoadPermissions = vi.fn().mockResolvedValue({ ...initial, mode: "dontAsk", rules: { allow: ["Read", "Edit"], ask: [], deny: ["Bash(sudo:*)"] } });
     reopen(); await load();
-    expect(elements(tree).find(element => element.type === "select")!.props.value).toBe("dontAsk");
+    expect(elements(tree).find(element => element.type === SelectMenu)!.props.value).toBe("dontAsk");
     expect(elements(tree).filter(element => element.type === "textarea").map(element => element.props.value)).toEqual(["Read\nEdit", "", "Bash(sudo:*)"]);
     expect(props.onSavePermissions).not.toHaveBeenCalled();
   });
@@ -286,6 +288,6 @@ describe("permission lifecycle edges", () => {
     expect(props.onClose).toHaveBeenCalledOnce();
     resolve({ ...initial, mode: "plan" }); await settle(); tree = draw();
     expect(props.onClose).toHaveBeenCalledOnce();
-    expect(elements(tree).find(element => element.type === "select")!.props.value).toBe("acceptEdits");
+    expect(elements(tree).find(element => element.type === SelectMenu)!.props.value).toBe("acceptEdits");
   });
 });

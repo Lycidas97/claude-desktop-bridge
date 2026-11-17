@@ -64,7 +64,7 @@ import {
   type ControllerRpcHost,
 } from "./controller-rpc.js";
 import type { SessionEventLog } from "./session-event-log.js";
-import { assistantMailSnapshot, pauseAssistantBinding } from "./assistant-mail.js";
+import { AssistantMailCoordinator } from "./assistant-mail.js";
 import type { DesktopUpdater } from "../updater/desktop-updater.js";
 
 export { acceptsRelayDevice };
@@ -72,10 +72,17 @@ export { acceptsRelayDevice };
 export class DesktopController extends EventEmitter {
   private config: LoadedDesktopConfig | undefined;
   private inspectorStatus: BridgeInspectorStatus | undefined;
+  private inspectorEnabler: (() => Promise<BridgeInspectorStatus>) | undefined;
+  private runtimeAttachSleep: ((ms: number) => Promise<void>) | undefined;
+  private launchInFlight: Map<BridgeDesktopRuntimeId, Promise<DesktopControlSnapshot>> | undefined;
 
   updateInspectorStatus(status: BridgeInspectorStatus): void {
     this.inspectorStatus = status;
     this.queuePublish();
+  }
+
+  attachInspectorEnabler(enable: () => Promise<BridgeInspectorStatus>): void {
+    this.inspectorEnabler = enable;
   }
   private hostCrypto: BridgeCrypto | undefined;
   private socket: BridgeTransport | undefined;
@@ -90,14 +97,7 @@ export class DesktopController extends EventEmitter {
   private lastSeenAt = Date.now();
   private transportMetrics: BridgeTransportMetrics | undefined;
   private relayHealthy = false;
-  private assistantMailChangeToken = randomUUID();
-  private readonly onAssistantMailChanged = () => {
-    this.assistantMailChangeToken = randomUUID();
-    void this.eventLog.append({ origin: "system", type: "plugin.assistant-mail.changed", data: {
-      assistantMail: assistantMailSnapshot(this.assistantMail!, this.allSessions(), this.broker.capabilities().includes("turn.start"), this.assistantMailChangeToken),
-    } });
-    this.queuePublish();
-  };
+  readonly assistantMailCoordinator: AssistantMailCoordinator | undefined;
   private lastPublishedSessionKey = "";
   private lastPublishedSessions = new Map<string, string>();
   private lastPublishedPermissions = new Map<string, BridgePermissionInfo>();
@@ -125,6 +125,21 @@ export class DesktopController extends EventEmitter {
   ) {
     super();
     this.updater = updater;
+    this.assistantMailCoordinator = assistantMail
+      ? new AssistantMailCoordinator(assistantMail, {
+          allSessions: () => this.allSessions(),
+          allProjects: () => this.allProjects(),
+          canStartTurn: () => this.broker.capabilities().includes("turn.start"),
+          onChanged: (snapshot) => {
+            void this.eventLog.append({
+              origin: "system",
+              type: "plugin.assistant-mail.changed",
+              data: { assistantMail: snapshot },
+            });
+            this.queuePublish();
+          },
+        })
+      : undefined;
   }
 
   async attachUpdater(updater: DesktopUpdater): Promise<DesktopControlSnapshot> {
@@ -134,14 +149,6 @@ export class DesktopController extends EventEmitter {
 
   notifyUpdaterChanged(): void {
     this.queuePublish();
-  }
-
-  requestQuitForUpdate(): void {
-    this.emit("quit-for-update");
-  }
-
-  isIdleForUpdate(): boolean {
-    return this.broker.runtimeStatus().activeTurns === 0 && this.claudePermissions().length === 0;
   }
 
   async initialize(): Promise<void> {
@@ -185,13 +192,9 @@ export class DesktopController extends EventEmitter {
       void this.broadcast({ kind: "event", event }, !persistOffline);
       if (event.type !== "runtime.updated" || event.itemId !== "session:subagent-activity") this.queuePublish();
     });
-    this.assistantMail?.on("mail", this.onAssistantMailChanged);
-    this.assistantMail?.on("changed", this.onAssistantMailChanged);
+    this.assistantMailCoordinator?.start();
     this.broker.on("changed", () => {
-      const sessionId = this.assistantMail?.binding()?.nativeSessionId;
-      if (sessionId && this.allSessions().some(session => session.sessionId === sessionId && session.archivedAt)) {
-        pauseAssistantBinding(this.assistantMail, sessionId);
-      }
+      this.assistantMailCoordinator?.pauseIfArchived();
       this.queuePublish();
     });
     await this.broker.initialize();
@@ -252,7 +255,7 @@ export class DesktopController extends EventEmitter {
           "turn.queue.cancel.v1",
           "transcript.toolDetail.v1",
           "plugin.magpie-quota.v1",
-          ...(this.assistantMail ? ["plugin.assistant-mail.v1" as const, "plugin.assistant-mail.manual-reference.v1" as const] : []),
+          ...(this.assistantMailCoordinator ? AssistantMailCoordinator.CAPABILITIES : []),
           ...(this.updater ? ["system.update.v1" as const] : []),
         ],
       },
@@ -280,9 +283,9 @@ export class DesktopController extends EventEmitter {
       launchAtLogin: this.config.launchAtLogin,
       diagnosticsEnabled: diagnostics.enabled,
       managedDesktopEnabled: this.config.managedDesktopEnabled,
-      claudeDesktop: await this.claudeDesktop.status(),
+      claudeDesktop: await this.claudeDesktopStatus(),
       desktopApps: await this.desktopAppStatuses(),
-      ...(this.assistantMail ? { assistantMail: assistantMailSnapshot(this.assistantMail, this.allSessions(), this.broker.capabilities().includes("turn.start"), this.assistantMailChangeToken) } : {}),
+      ...(this.assistantMailCoordinator ? { assistantMail: this.assistantMailCoordinator.snapshot() } : {}),
       ...(this.updater ? { updater: this.updater.snapshot() } : {}),
       ...(this.inspectorStatus ? { claudeInspector: this.inspectorStatus } : {}),
       ...(currentPairing ? {
@@ -375,6 +378,25 @@ export class DesktopController extends EventEmitter {
     return this.quitDesktopApp("claude-desktop");
   }
 
+  private projectDesktopAppStatus(
+    id: BridgeDesktopRuntimeId,
+    status: DesktopControlSnapshot["claudeDesktop"],
+  ): DesktopControlSnapshot["claudeDesktop"] {
+    if (
+      id === "claude-desktop"
+      && status.state === "running"
+      && Boolean(this.inspectorEnabler)
+      && this.inspectorStatus?.state !== "listening"
+    ) {
+      return { ...status, canLaunch: true };
+    }
+    return status;
+  }
+
+  async claudeDesktopStatus(force = false): Promise<DesktopControlSnapshot["claudeDesktop"]> {
+    return this.projectDesktopAppStatus("claude-desktop", await this.claudeDesktop.status(force));
+  }
+
   async desktopAppStatuses(force = false): Promise<BridgeDesktopAppStatus[]> {
     const entries = [...(this.desktopAppControls?.entries() ?? [])];
     if (!entries.some(([id]) => id === "claude-desktop")) {
@@ -382,7 +404,7 @@ export class DesktopController extends EventEmitter {
     }
     return Promise.all(entries.map(async ([id, lifecycle]) => {
       try {
-        const status = await lifecycle.status(force);
+        const status = this.projectDesktopAppStatus(id, await lifecycle.status(force));
         return { id, name: lifecycle.definition.displayName, ...status };
       } catch (error) {
         return {
@@ -401,10 +423,52 @@ export class DesktopController extends EventEmitter {
     const lifecycle = this.desktopAppControls?.get(runtimeId)
       ?? (runtimeId === "claude-desktop" ? this.claudeDesktop : undefined);
     if (!lifecycle) throw new Error("未知 Desktop 应用");
-    await lifecycle.launch();
-    const snapshot = await this.publish();
-    await this.broadcast({ kind: "snapshot", snapshot });
-    return snapshot;
+    const inFlightMap = (this.launchInFlight ??= new Map());
+    const existing = inFlightMap.get(runtimeId);
+    if (existing) return existing;
+    const task = (async (): Promise<DesktopControlSnapshot> => {
+      const shouldEnableInspector = runtimeId === "claude-desktop"
+        && Boolean(this.inspectorEnabler)
+        && this.inspectorStatus?.state !== "listening";
+      await (shouldEnableInspector ? lifecycle.launch({ activate: true }) : lifecycle.launch());
+      if (shouldEnableInspector && this.inspectorEnabler) {
+        const inspectorStatus = await this.inspectorEnabler();
+        this.inspectorStatus = inspectorStatus;
+        if (this.broker?.refreshRuntime) {
+          await this.broker.refreshRuntime();
+          if (inspectorStatus.state === "listening") {
+            const sleep = this.runtimeAttachSleep
+              ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+              const state = this.broker.runtimeStatus?.().state;
+              if (state === "ready" || state === "working") break;
+              await sleep(500);
+              await this.broker.refreshRuntime();
+            }
+          }
+        }
+      } else if (
+        runtimeId === "claude-desktop"
+        && this.inspectorStatus?.state === "listening"
+        && this.broker?.refreshRuntime
+      ) {
+        const state = this.broker.runtimeStatus?.().state;
+        if (state !== "ready" && state !== "working") {
+          await this.broker.refreshRuntime();
+        }
+      }
+      const snapshot = await this.publish();
+      await this.broadcast({ kind: "snapshot", snapshot });
+      return snapshot;
+    })();
+    inFlightMap.set(runtimeId, task);
+    try {
+      return await task;
+    } finally {
+      if (inFlightMap.get(runtimeId) === task) {
+        inFlightMap.delete(runtimeId);
+      }
+    }
   }
 
   async quitDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot> {
@@ -435,6 +499,18 @@ export class DesktopController extends EventEmitter {
 
   diagnostics(): Record<string, unknown> {
     if (!this.config) throw new Error("Desktop controller is not initialized");
+    const now = Date.now();
+    const activeDevices = this.config.devices.filter((device) => !device.revokedAt).length;
+    const hasPendingPairing = Boolean(
+      (this.currentPairingDeviceId && this.config.devices.some((device) => (
+        device.deviceId === this.currentPairingDeviceId && !device.revokedAt && !device.pairedAt && device.expiresAt > now
+      )))
+      || this.config.devices.some((device) => !device.revokedAt && !device.pairedAt && device.expiresAt > now),
+    );
+    const mailGauges = this.assistantMail?.diagnosticsGauges?.() ?? {
+      configured: Boolean(this.assistantMail?.status?.().account),
+      unreadCount: 0,
+    };
     return {
       generatedAt: new Date().toISOString(),
       bridgeVersion: this.app.getVersion(),
@@ -455,17 +531,85 @@ export class DesktopController extends EventEmitter {
       counts: {
         projects: this.allProjects().length,
         sessions: this.allSessions().length,
-        devices: this.config.devices.filter((device) => !device.revokedAt).length,
+        devices: activeDevices,
         pendingPermissions: this.claudePermissions().length,
       },
       latestEventSeq: this.eventLog.latestSeq(),
+      processMemory: process.memoryUsage(),
+      traceRecorder: {
+        enabled: diagnostics.enabled,
+        ...diagnostics.snapshot(),
+      },
+      stateGauges: {
+        controller: {
+          devicesTotal: this.config.devices.length,
+          activeDevices,
+          onlineDevices: this.onlineDevices?.size ?? 0,
+          deviceCryptos: this.deviceCryptos?.size ?? 0,
+          deflateDevices: this.deflateDevices?.size ?? 0,
+          responseCacheEntries: this.responseCache?.size ?? 0,
+          sessionVisibilityOverrides: this.sessionVisibility?.size ?? 0,
+          hasPendingPairing,
+        },
+        uploads: this.uploads?.diagnosticsGauges?.() ?? {
+          activeSessions: 0,
+          retainedSessions: 0,
+          committedReceipts: 0,
+          bufferedChunks: 0,
+          bufferedBytes: 0,
+        },
+        broker: this.broker.diagnosticsGauges?.() ?? {
+          closed: false,
+          inspectorState: "disconnected",
+          pendingInspectorCalls: { count: 0, oldestMs: 0 },
+          inspectorEventStreamWaiting: false,
+          inspectorSupportedMethods: 0,
+          pendingEvents: 0,
+          nativeSessions: 0,
+          projectedSessions: 0,
+          activeTurns: 0,
+          permissions: 0,
+          resolvingPermissions: 0,
+          prompts: 0,
+          receipts: 0,
+          streams: 0,
+          inFlightTools: 0,
+          compactingSessions: 0,
+          cachedCatalogs: {
+            projectDirectories: 0,
+            sections: 0,
+            sectionAssignments: 0,
+            models: 0,
+            messageProjections: 0,
+            contextStates: 0,
+            backgroundTaskSessions: 0,
+            prPreferences: 0,
+          },
+        },
+        evidence: this.evidence?.diagnosticsGauges?.() ?? {
+          inFlightPreviewRenders: 0,
+          cachedPreviews: 0,
+          storedBundles: 0,
+          storedBlobs: 0,
+          storedBlobBytes: 0,
+          activeCaptures: 0,
+          activeToolOutputBytes: 0,
+          activeTransfers: 0,
+          retainedTransfers: 0,
+          retainedTransferBytes: 0,
+        },
+        assistantMail: {
+          available: Boolean(this.assistantMail),
+          configured: mailGauges.configured,
+          unreadCount: mailGauges.unreadCount,
+        },
+      },
       ...(this.memoryRecorder ? { memory: this.memoryRecorder.diagnostics() } : {}),
     };
   }
 
   async close(): Promise<void> {
-    this.assistantMail?.off("mail", this.onAssistantMailChanged);
-    this.assistantMail?.off("changed", this.onAssistantMailChanged);
+    this.assistantMailCoordinator?.close();
     this.uploads.close();
     this.socket?.close();
   }
@@ -719,6 +863,13 @@ export class DesktopController extends EventEmitter {
         prompts: snapshot.prompts,
         updater: snapshot.updater,
         assistantMail: snapshot.assistantMail,
+        ...(snapshot.claudeInspector ? {
+          claudeInspector: [
+            snapshot.claudeInspector.state,
+            snapshot.claudeInspector.startup?.state,
+            snapshot.claudeInspector.startup?.detail,
+          ],
+        } : {}),
         projects: snapshot.projects?.map(project => ({ projectId: project.projectId, name: project.name, kind: project.kind, cwd: project.cwd, runtimeId: project.runtimeId }))
           .sort((a, b) => a.projectId.localeCompare(b.projectId)),
       }) + "\n" + snapshot.sessions
@@ -747,9 +898,6 @@ export class DesktopController extends EventEmitter {
           }),
         ]);
       }
-      this.updater?.notifyIdleStateChanged(
-        snapshot.runtime.activeTurns === 0 && snapshot.permissions.length === 0,
-      );
       return snapshot;
     } finally { published(); }
   }

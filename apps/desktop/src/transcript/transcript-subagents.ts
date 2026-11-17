@@ -89,8 +89,23 @@ const subagentSummaryCache = new Map<string, {
   signature: string;
   summary: BridgeSubagentSummary;
 }>();
+const subagentSummaryInFlight = new Map<string, Promise<BridgeSubagentSummary | undefined>>();
 
-async function parseSingleSubagentFile(
+function parseSingleSubagentFile(
+  jsonlPath: string,
+  liveSince: number | undefined,
+): Promise<BridgeSubagentSummary | undefined> {
+  const flightKey = `${jsonlPath}\0${liveSince ?? "none"}`;
+  const existing = subagentSummaryInFlight.get(flightKey);
+  if (existing) return existing;
+  const run = parseSingleSubagentFileOnce(jsonlPath, liveSince).finally(() => {
+    if (subagentSummaryInFlight.get(flightKey) === run) subagentSummaryInFlight.delete(flightKey);
+  });
+  subagentSummaryInFlight.set(flightKey, run);
+  return run;
+}
+
+async function parseSingleSubagentFileOnce(
   jsonlPath: string,
   liveSince: number | undefined,
 ): Promise<BridgeSubagentSummary | undefined> {
@@ -128,9 +143,12 @@ async function parseSingleSubagentFile(
   let model: string | undefined;
   const structuredOutputIds = new Set<string>();
 
+  let stream: ReturnType<typeof createReadStream> | undefined;
+  let lines: ReturnType<typeof createInterface> | undefined;
   try {
-    const lines = createInterface({
-      input: createReadStream(jsonlPath, { encoding: "utf8" }),
+    stream = createReadStream(jsonlPath, { encoding: "utf8" });
+    lines = createInterface({
+      input: stream,
       crlfDelay: Infinity,
     });
     for await (const line of lines) {
@@ -189,6 +207,9 @@ async function parseSingleSubagentFile(
     }
   } catch {
     return undefined;
+  } finally {
+    lines?.close();
+    stream?.destroy();
   }
 
   const reportText = handbackReports.join("\n\n---\n\n");
@@ -256,8 +277,19 @@ interface ParentTranscriptTasks {
 }
 
 const parentSubagentCache = new Map<string, ParentTranscriptTasks & { signature: string }>();
+const parentSubagentInFlight = new Map<string, Promise<ParentTranscriptTasks>>();
 
-async function parseParentTranscriptSubagents(transcriptPath: string): Promise<ParentTranscriptTasks> {
+function parseParentTranscriptSubagents(transcriptPath: string): Promise<ParentTranscriptTasks> {
+  const existing = parentSubagentInFlight.get(transcriptPath);
+  if (existing) return existing;
+  const run = parseParentTranscriptSubagentsOnce(transcriptPath).finally(() => {
+    if (parentSubagentInFlight.get(transcriptPath) === run) parentSubagentInFlight.delete(transcriptPath);
+  });
+  parentSubagentInFlight.set(transcriptPath, run);
+  return run;
+}
+
+async function parseParentTranscriptSubagentsOnce(transcriptPath: string): Promise<ParentTranscriptTasks> {
   const fileStat = await stat(transcriptPath).catch(() => undefined);
   if (!fileStat) return { summaries: [], launches: [], compactedAt: 0, taskStates: new Map(), excludedTasks: new Set() };
   const cacheSignature = `${fileStat.mtimeMs}:${fileStat.size}`;
@@ -290,9 +322,12 @@ async function parseParentTranscriptSubagents(transcriptPath: string): Promise<P
   const backgroundCalls = new Map<string, { name: "Bash" | "Workflow"; description: string; inherited: boolean }>();
   const launches: Array<Omit<ParentBackgroundLaunch, "state" | "updatedAt"> & { inherited: boolean }> = [];
 
+  let stream: ReturnType<typeof createReadStream> | undefined;
+  let lines: ReturnType<typeof createInterface> | undefined;
   try {
-    const lines = createInterface({
-      input: createReadStream(transcriptPath, { encoding: "utf8" }),
+    stream = createReadStream(transcriptPath, { encoding: "utf8" });
+    lines = createInterface({
+      input: stream,
       crlfDelay: Infinity,
     });
     for await (const line of lines) {
@@ -483,6 +518,9 @@ async function parseParentTranscriptSubagents(transcriptPath: string): Promise<P
     }
   } catch {
     return { summaries: [], launches: [], compactedAt: 0, taskStates: new Map(), excludedTasks };
+  } finally {
+    lines?.close();
+    stream?.destroy();
   }
 
   const results: BridgeSubagentSummary[] = [];

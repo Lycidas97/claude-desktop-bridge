@@ -420,6 +420,12 @@ export function updateClaudeTaskPlan(previous: BridgeTaskPlan | undefined, id: s
     ? { ...previous, items, updatedAt: Math.max(at, previous.updatedAt + 1) } : previous;
 }
 
+const transcriptBranchCache = new Map<string, {
+  signature: string;
+  branch: { uuids: string[]; inheritedUuids: string[] };
+}>();
+const transcriptBranchInFlight = new Map<string, Promise<{ uuids: string[]; inheritedUuids: string[] }>>();
+
 export function parseClaudeTranscriptSnapshot(
   path: string,
   options: ClaudeHistoryReadOptions = {},
@@ -429,8 +435,29 @@ export function parseClaudeTranscriptSnapshot(
 }
 
 export async function readClaudeTranscriptBranch(path: string): Promise<{ uuids: string[]; inheritedUuids: string[] }> {
-  const result = await parseTranscript(path, {}, 0, true);
-  return { uuids: result.branch?.uuids ?? [], inheritedUuids: result.branch?.inheritedUuids ?? [] };
+  const fileStat = await stat(path).catch(() => undefined);
+  if (!fileStat) return { uuids: [], inheritedUuids: [] };
+  const branchSignature = `${fileStat.mtimeMs}:${fileStat.size}`;
+  const snapshotCached = transcriptSnapshotCache.get(path);
+  if (snapshotCached && snapshotCached.signature.startsWith(`${branchSignature}:`)) {
+    return { uuids: snapshotCached.branch.uuids, inheritedUuids: snapshotCached.branch.inheritedUuids };
+  }
+  const cached = transcriptBranchCache.get(path);
+  if (cached && cached.signature === branchSignature) return cached.branch;
+  const existing = transcriptBranchInFlight.get(path);
+  if (existing) return existing;
+  const run = (async () => {
+    const result = await parseTranscript(path, {}, 0, true);
+    const branch = { uuids: result.branch?.uuids ?? [], inheritedUuids: result.branch?.inheritedUuids ?? [] };
+    if (result.available) {
+      setBoundedCache(transcriptBranchCache, path, { signature: branchSignature, branch });
+    }
+    return branch;
+  })().finally(() => {
+    if (transcriptBranchInFlight.get(path) === run) transcriptBranchInFlight.delete(path);
+  });
+  transcriptBranchInFlight.set(path, run);
+  return run;
 }
 
 async function parseTranscript(
@@ -466,8 +493,11 @@ async function parseTranscript(
   let index = 0;
   let lastMainUuid: string | undefined;
   let inheritedHead: string | null | undefined;
+  let stream: ReturnType<typeof createReadStream> | undefined;
+  let lines: ReturnType<typeof createInterface> | undefined;
   try {
-    const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
+    stream = createReadStream(path, { encoding: "utf8" });
+    lines = createInterface({ input: stream, crlfDelay: Infinity });
     for await (const line of lines) {
       index += 1;
       let value: unknown;
@@ -617,6 +647,9 @@ async function parseTranscript(
     }
   } catch {
     return { available: false, messages: [], truncated: false, userMessages: [] };
+  } finally {
+    lines?.close();
+    stream?.destroy();
   }
 
   const terminal = [...nodes.values()]

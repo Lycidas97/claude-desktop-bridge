@@ -1,6 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
 import { afterEach, describe, expect, it } from "vitest";
 import { claudeDesktopProfileForPath, listClaudeDesktopSessions, listClaudeDesktopSessionState } from "./claude-desktop-sessions.js";
 
@@ -351,4 +354,97 @@ describe("Claude Desktop session catalog", () => {
     });
     expect(sessions.find((s) => s.cliSessionId === "cli-ungrouped")?.groupId).toBeUndefined();
   });
+
+  it("releases raw promptAppendSnapshot and reminder payloads while scanning desktop session files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-desktop-session-retention-"));
+    directories.push(root);
+    const sessionsDir = join(root, "Claude-3p", "claude-code-sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    const count = 16;
+    await Promise.all(Array.from({ length: count + 1 }, (_, index) => (
+      writeFile(join(sessionsDir, `local_${String(index).padStart(2, "0")}.json`), JSON.stringify({
+        sessionId: `local_${String(index).padStart(2, "0")}`,
+        cliSessionId: `cli-${index}`,
+        cwd: "/work/project",
+        title: `Session ${index}`,
+        lastFocusedAt: 1_000 + index,
+        promptAppendSnapshot: { append: "P".repeat(48_000), index },
+        pendingSystemReminder: "R".repeat(36_000),
+      }))
+    )));
+
+    const fsShim = join(root, "fs-promises-shim.mjs");
+    await writeFile(fsShim, [
+      "import * as actual from 'node:fs/promises';",
+      "export const readdir = actual.readdir;",
+      "export const stat = actual.stat;",
+      "export let onPause = null;",
+      "export function setPauseGate(fn) { onPause = fn; }",
+      "export async function readFile(path, encoding) {",
+      "  if (onPause && String(path).endsWith('local_16.json')) await onPause();",
+      "  return actual.readFile(path, encoding);",
+      "}",
+    ].join("\n"));
+
+    const entry = join(root, "retention-entry.mjs");
+    const modulePath = fileURLToPath(new URL("./claude-desktop-sessions.ts", import.meta.url));
+    await build({
+      stdin: {
+        contents: [
+          "import assert from 'node:assert/strict';",
+          "import { setImmediate } from 'node:timers/promises';",
+          `import { setPauseGate } from ${JSON.stringify(fsShim)};`,
+          `import { listClaudeDesktopSessionState } from ${JSON.stringify(modulePath)};`,
+          "const refs = [];",
+          "const realParse = JSON.parse;",
+          "JSON.parse = (text, reviver) => {",
+          "  const parsed = realParse(text, reviver);",
+          "  if (parsed && typeof parsed === 'object' && parsed.promptAppendSnapshot) {",
+          "    refs.push(new WeakRef(parsed.promptAppendSnapshot));",
+          "  }",
+          "  return parsed;",
+          "};",
+          "let entered;",
+          "let resume;",
+          "const reached = new Promise(resolve => { entered = resolve; });",
+          "const gate = new Promise(resolve => { resume = resolve; });",
+          "setPauseGate(async () => { entered(); await gate; });",
+          `const pending = listClaudeDesktopSessionState([${JSON.stringify(sessionsDir)}]);`,
+          "await reached;",
+          "const control = new WeakRef({ control: true });",
+          "for (let i = 0; i < 4; i += 1) { await setImmediate(); global.gc(); }",
+          "assert.equal(control.deref(), undefined, 'GC control must collect');",
+          "const retainedMidScan = refs.filter(ref => ref.deref() !== undefined).length;",
+          "resume();",
+          "const state = await pending;",
+          "for (let i = 0; i < 4; i += 1) { await setImmediate(); global.gc(); }",
+          "const retainedAfter = refs.filter(ref => ref.deref() !== undefined).length;",
+          "console.log(JSON.stringify({ total: state.sessions.length, seen: refs.length, retainedMidScan, retainedAfter }));",
+        ].join("\n"),
+        resolveDir: root,
+        loader: "js",
+      },
+      outfile: entry,
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      external: ["node:fs/promises"],
+      plugins: [{
+        name: "pause-fs-promises",
+        setup(buildApi) {
+          buildApi.onResolve({ filter: /^node:fs\/promises$/ }, (args) => (
+            args.importer === fsShim ? undefined : { path: fsShim }
+          ));
+        },
+      }],
+    });
+
+    const output = execFileSync(process.execPath, ["--expose-gc", entry], { encoding: "utf8", timeout: 15_000 });
+    expect(JSON.parse(output)).toEqual({
+      total: count + 1,
+      seen: count + 1,
+      retainedMidScan: 0,
+      retainedAfter: 0,
+    });
+  }, 30_000);
 });

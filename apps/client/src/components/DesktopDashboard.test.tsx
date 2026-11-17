@@ -1035,6 +1035,59 @@ describe("desktop conversation parity", () => {
     expect(apiRequest).toHaveBeenCalledWith({ method: "subagent.stop", params: { sessionId: "A", agentId: "agent-1" } });
   });
 
+  it("keeps onLoadBackgroundTasks stable across live conversation and evidence events without restarting polling", async () => {
+    vi.useFakeTimers();
+    try {
+      snapshot.host.capabilities.push("claude.native-relay.v1");
+      snapshot.runtime.desktopIntegration.state = "ready";
+      history = [{ id: "m1", sessionId: "A", role: "user", text: "Run checks", createdAt: 1, origin: "claude-desktop" }];
+      let backgroundTaskReads = 0;
+      apiRequest.mockImplementation(async ({ method, params }) => {
+        if (method === "session.configuration" && (params as { includeBackgroundTasks?: boolean })?.includeBackgroundTasks) {
+          backgroundTaskReads += 1;
+          return {
+            kind: "response",
+            requestId: `bg-${backgroundTaskReads}`,
+            ok: true,
+            result: { session: { ...snapshot.sessions[0]!, backgroundTasks: [] } },
+          };
+        }
+        return {
+          kind: "response",
+          requestId: "open",
+          ok: true,
+          result: method === "session.open"
+            ? { history: { items: history, hasMore: false } }
+            : { evidence: { items: [], hasMore: false } },
+        };
+      });
+      await openSessions();
+      await settle(); tree = sessions.draw();
+      expect(backgroundTaskReads).toBe(1);
+
+      const firstEvents: BridgeEvent[] = [
+        { eventId: "ev-1", seq: 1, timestamp: 2, sessionId: "A", origin: "claude-desktop", type: "tool.started", itemId: "t1", data: { toolName: "Bash", text: "npm test" } },
+      ];
+      tree = sessions.draw({ ...sessionsProps, snapshot, events: firstEvents });
+      await settle(); tree = sessions.draw();
+
+      const secondEvents: BridgeEvent[] = [
+        ...firstEvents,
+        { eventId: "ev-2", seq: 2, timestamp: 3, sessionId: "A", origin: "claude-desktop", type: "evidence.updated", itemId: "ev1", data: { evidence: { id: "ev1", sessionId: "A", startedAt: 2, tools: [], artifacts: [] } } },
+        { eventId: "ev-3", seq: 3, timestamp: 4, sessionId: "A", origin: "claude-desktop", type: "assistant.delta", itemId: "a1", data: { text: "Progress..." } },
+      ];
+      tree = sessions.draw({ ...sessionsProps, snapshot, events: secondEvents });
+      await settle(); tree = sessions.draw();
+
+      expect(backgroundTaskReads).toBe(1);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await settle(); tree = sessions.draw();
+      expect(backgroundTaskReads).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("confirms workspace non-media file downloads and surfaces transfer errors", async () => {
     const { downloadBridgeSessionFile } = await import("../lib/artifact-download.js");
     history = [{ id: "file-msg", sessionId: "A", role: "assistant", text: "See [bundle.bin](dist/bundle.bin)", createdAt: 1, origin: "claude-desktop" }];

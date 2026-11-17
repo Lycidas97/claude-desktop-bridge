@@ -336,4 +336,72 @@ describe("Claude session process catalog", () => {
       archivedBtwChildId,
     ]));
   });
+
+  it("coalesces concurrent catalog scans for the same runtime paths while keeping sequential scans fresh", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-catalog-coalesce-"));
+    directories.push(root);
+    const paths = {
+      sessions: join(root, "sessions"),
+      tasks: join(root, "tasks"),
+      projects: join(root, "projects"),
+      desktopSessions: [join(root, "desktop")],
+    };
+    const sessionId = "99999999-9999-4999-8999-999999999999";
+    const startedAt = Date.parse("Thu Jan 1 10:00:00 2026");
+    await Promise.all([mkdir(paths.sessions), mkdir(paths.desktopSessions[0]!)]);
+    await Promise.all([
+      writeFile(join(paths.sessions, "live.json"), JSON.stringify({
+        pid: process.pid,
+        sessionId,
+        cwd: root,
+        startedAt: startedAt + 100,
+        entrypoint: "claude-desktop-3p",
+      })),
+      writeFile(join(paths.desktopSessions[0]!, "local_live.json"), JSON.stringify({
+        sessionId: "local_live",
+        cliSessionId: sessionId,
+        cwd: root,
+        lastFocusedAt: 10,
+      })),
+    ]);
+
+    const psLine = `${process.pid} 1 Thu Jan 1 10:00:00 2026 claude --input-format stream-json --output-format stream-json --session-id ${sessionId}\n`;
+    const pendingPs: Array<() => void> = [];
+    let psCalls = 0;
+    let currentPsOutput = psLine;
+    const actualChildProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    vi.mocked(execFile).mockImplementation(((...args: unknown[]) => {
+      psCalls += 1;
+      const output = currentPsOutput;
+      const done = args.at(-1) as (error: null, stdout: string, stderr: string) => void;
+      pendingPs.push(() => done(null, output, ""));
+      return {} as ChildProcess;
+    }) as typeof execFile);
+    try {
+      const concurrent = [
+        scanClaudeCatalog(paths, "darwin"),
+        scanClaudeCatalog({ ...paths, desktopSessions: [...paths.desktopSessions] }, "darwin"),
+        scanClaudeCatalog(paths, "darwin"),
+      ];
+      await vi.waitFor(() => expect(pendingPs.length).toBeGreaterThan(0));
+      expect(psCalls).toBe(1);
+      while (pendingPs.length > 0) pendingPs.shift()!();
+      const results = await Promise.all(concurrent);
+      expect(psCalls).toBe(1);
+      for (const catalog of results) {
+        expect(catalog.sessions).toHaveLength(1);
+        expect(catalog.sessions[0]?.desktopProcessAlive).toBe(true);
+      }
+
+      currentPsOutput = "";
+      const sequentialPromise = scanClaudeCatalog(paths, "darwin");
+      await vi.waitFor(() => expect(pendingPs.length).toBeGreaterThan(0));
+      while (pendingPs.length > 0) pendingPs.shift()!();
+      const sequential = await sequentialPromise;
+      expect(psCalls).toBe(2);
+      expect(sequential.sessions[0]?.desktopProcessAlive).toBe(false);
+    } finally {
+      vi.mocked(execFile).mockImplementation(actualChildProcess.execFile);
+    }
+  });
 });

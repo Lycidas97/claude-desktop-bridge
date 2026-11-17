@@ -2315,6 +2315,46 @@ describe("Claude native relay", () => {
     } finally { await f.close(); }
   });
 
+  it("coalesces overlapping backgroundTaskDetails and subagent enrichment catalog reads while keeping subsequent reads fresh", async () => {
+    const f = await fixture();
+    try {
+      const transcript = join(f.options.settingsPath, "..", "coalesce-session.jsonl");
+      await writeFile(transcript, [
+        JSON.stringify({ type: "assistant", uuid: "a1", timestamp: new Date(10_000).toISOString(), isSidechain: false, message: { content: [{ type: "tool_use", id: "agent-1", name: "Agent", input: { description: "First agent", prompt: "Inspect" } }] } }),
+        JSON.stringify({ type: "user", uuid: "u1", parentUuid: "a1", timestamp: new Date(11_000).toISOString(), isSidechain: false, message: { content: [{ type: "tool_result", tool_use_id: "agent-1", content: "Async agent launched successfully. agentId: ag-1" }] } }),
+      ].join("\n") + "\n");
+      const observed = {
+        ...f.bridge.session("local-native")!, sessionId: "coalesce-cli", desktopSessionId: "local-native", transcriptPath: transcript,
+        transcriptMtimeMs: 0, processAlive: true, desktopProcessAlive: true, bridgeProcessAlive: false, processOverlap: false, activeTask: false,
+        activeProcesses: [{ startedAt: 1_000, processAlive: true, entrypoint: "claude-desktop-3p", source: "process" as const }],
+      };
+      let releaseCatalog!: () => void;
+      f.options.scanCatalog.mockClear();
+      f.options.scanCatalog.mockImplementationOnce(() => new Promise(resolve => {
+        releaseCatalog = () => resolve({ projects: [], sessions: [observed], observedAt: 0 });
+      }));
+      f.options.scanCatalog.mockResolvedValue({ projects: [], sessions: [{ ...observed, activeProcesses: [] }], observedAt: 1 });
+
+      const overlapping = [
+        f.bridge.backgroundTaskDetails("local-native"),
+        f.bridge.backgroundTaskDetails("local-native"),
+        f.bridge.backgroundTaskDetails("local-native"),
+        f.message({ type: "system", subtype: "task_started", task_id: "ag-1", tool_use_id: "agent-1", description: "First agent", timestamp: 11_000 }),
+      ] as const;
+      await vi.waitFor(() => expect(f.options.scanCatalog).toHaveBeenCalledTimes(1));
+      releaseCatalog();
+      const [first, second, third] = await Promise.all(overlapping);
+      expect(f.options.scanCatalog).toHaveBeenCalledTimes(1);
+      expect(first).toEqual(second);
+      expect(second).toEqual(third);
+      expect(first[0]).toMatchObject({ id: "agent-1", state: "running" });
+
+      const afterExit = await f.bridge.backgroundTaskDetails("local-native");
+      expect(f.options.scanCatalog).toHaveBeenCalledTimes(2);
+      expect(afterExit[0]).toMatchObject({ id: "agent-1", state: "stopped" });
+    } finally { await f.close(); }
+  });
+
   it("adds btw once to the native command menu and preserves native command metadata", async () => {
     const f = await fixture();
     try {

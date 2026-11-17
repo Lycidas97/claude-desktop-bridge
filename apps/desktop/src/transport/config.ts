@@ -432,6 +432,14 @@ export class DesktopConfigRepository {
   ) {}
 
   async load(): Promise<LoadedDesktopConfig | undefined> {
+    return this.loadExisting(false);
+  }
+
+  async loadOrCreate(): Promise<LoadedDesktopConfig> {
+    return (await this.loadExisting(true)) ?? this.regenerate(false);
+  }
+
+  private async loadExisting(archiveInvalid: boolean): Promise<LoadedDesktopConfig | undefined> {
     let raw: string;
     try {
       raw = await readFile(this.path, "utf8");
@@ -439,7 +447,14 @@ export class DesktopConfigRepository {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
-    const config = assertConfig(JSON.parse(raw));
+    let config: DesktopConfigFile;
+    try {
+      config = assertConfig(JSON.parse(raw));
+    } catch (error) {
+      if (!archiveInvalid) throw error;
+      await rename(this.path, `${this.path}.v1-archive-${Date.now()}`);
+      return undefined;
+    }
     const relayUrlOverride = config.version === 4 && config.relayUrlOverride
       ? normalizeRelayUrl(config.relayUrlOverride)
       : undefined;
@@ -566,16 +581,6 @@ export class DesktopConfigRepository {
       activeEndpointMigrated
     ) await this.save(loaded);
     return loaded;
-  }
-
-  async loadOrCreate(): Promise<LoadedDesktopConfig> {
-    try {
-      const existing = await this.load();
-      if (existing) return existing;
-    } catch {
-      await rename(this.path, `${this.path}.v1-archive-${Date.now()}`).catch(() => undefined);
-    }
-    return this.regenerate(false);
   }
 
   async regenerate(launchAtLogin: boolean): Promise<LoadedDesktopConfig> {

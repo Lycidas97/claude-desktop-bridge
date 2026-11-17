@@ -289,23 +289,28 @@ function parseConfigLibraryInferenceModels(rawModels: unknown): BridgeModelInfo[
   return results;
 }
 
+async function readGatewayJson(path: string): Promise<unknown> {
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
 export async function findClaudeFixedGateway(
   environment: NodeJS.ProcessEnv = process.env,
   home = homedir(),
   roots?: string[],
   platform: NodeJS.Platform = process.platform,
+  readJson = readGatewayJson,
 ): Promise<{ path: string; gateway: ClaudeGatewayConfig; inferenceModels: BridgeModelInfo[] } | undefined> {
   for (const root of roots ?? credentialRoots(home, environment, platform)) {
     let entry: ConfigLibraryEntryFile;
     let path: string;
     try {
       const library = join(root, "configLibrary");
-      const meta = JSON.parse(await readFile(join(library, "_meta.json"), "utf8")) as ConfigLibraryMetaFile;
+      const meta = await readJson(join(library, "_meta.json")) as ConfigLibraryMetaFile;
       const appliedId = nonEmptyString(meta?.appliedId);
       if (!appliedId || !/^[a-z0-9._-]+$/iu.test(appliedId)) continue;
       path = join(library, `${appliedId}.json`);
       if (!await protectedCredential(path, platform)) continue;
-      entry = JSON.parse(await readFile(path, "utf8")) as ConfigLibraryEntryFile;
+      entry = await readJson(path) as ConfigLibraryEntryFile;
     } catch {
       // A profile may have no saved gateway configuration.
       continue;
@@ -316,26 +321,52 @@ export async function findClaudeFixedGateway(
   return undefined;
 }
 
-export async function discoverClaudeGatewayConfig(options: {
+interface ClaudeGatewayDiscoveryOptions {
   environment?: NodeJS.ProcessEnv;
   home?: string;
   platform?: NodeJS.Platform;
   roots?: string[];
+}
+
+export interface ClaudeGatewayDiscovery {
+  gateway: ClaudeGatewayConfig | undefined;
+  offlineModels?: () => Promise<BridgeModelInfo[]>;
+}
+
+export async function discoverClaudeGatewayConfig({ settingsPath, ...options }: ClaudeGatewayDiscoveryOptions & {
   settingsPath?: string;
 } = {}): Promise<ClaudeGatewayConfig | undefined> {
+  return (await discoverClaudeGateway(options, settingsPath ? () => readGatewayJson(settingsPath) : undefined)).gateway;
+}
+
+export async function discoverClaudeGateway(
+  options: ClaudeGatewayDiscoveryOptions,
+  readSettings?: () => Promise<unknown>,
+): Promise<ClaudeGatewayDiscovery> {
   const environment = options.environment ?? process.env;
   const home = options.home ?? homedir();
   const platform = options.platform ?? process.platform;
-  const credentialPath = await findClaudeHostCredentials(environment, home, options.roots, platform);
+  const roots = options.roots ?? credentialRoots(home, environment, platform);
+  // Host credential completion and strict fixed-profile discovery can read the same configLibrary files.
+  const parsed = new Map<string, Promise<unknown>>();
+  const readJson = (path: string) => {
+    const existing = parsed.get(path);
+    if (existing) return existing;
+    const value = readGatewayJson(path);
+    parsed.set(path, value);
+    return value;
+  };
+  const findFixed = () => findClaudeFixedGateway(environment, home, roots, platform, readJson);
+  const credentialPath = await findClaudeHostCredentials(environment, home, roots, platform);
   if (credentialPath) {
-    const hostGateway = await resolveClaudeGatewayConfig({ credentialPath, environment: {} });
-    if (hostGateway) return hostGateway;
+    const gateway = await resolveClaudeGatewayConfig({ credentialPath, environment: {} }, readJson);
+    if (gateway) return { gateway, offlineModels: async () => (await findFixed())?.inferenceModels ?? [] };
   }
-  const fixed = await findClaudeFixedGateway(environment, home, options.roots, platform);
-  if (fixed) return fixed.gateway;
-  if (options.settingsPath) {
+  const fixed = await findFixed();
+  if (fixed) return { gateway: fixed.gateway, offlineModels: async () => fixed.inferenceModels };
+  if (readSettings) {
     try {
-      const parsed = JSON.parse(await readFile(options.settingsPath, "utf8")) as HostCredentialsFile;
+      const parsed = await readSettings() as HostCredentialsFile;
       if (parsed && typeof parsed.env === "object" && parsed.env !== null && !Array.isArray(parsed.env)) {
         const settingsEnv: NodeJS.ProcessEnv = {};
         for (const key of [
@@ -348,17 +379,18 @@ export async function discoverClaudeGatewayConfig(options: {
           if (value) settingsEnv[key] = value;
         }
         const settingsGateway = await resolveClaudeGatewayConfig({ environment: settingsEnv });
-        if (settingsGateway) return settingsGateway;
+        if (settingsGateway) return { gateway: settingsGateway };
       }
     } catch {
       // Optional settings.json may not exist or may be mid-edit.
     }
   }
-  return resolveClaudeGatewayConfig({ ...(credentialPath ? { credentialPath } : {}), environment });
+  return { gateway: await resolveClaudeGatewayConfig({ ...(credentialPath ? { credentialPath } : {}), environment }, readJson) };
 }
 
 export async function resolveClaudeGatewayConfig(
   runtime: Pick<ClaudeRuntime, "credentialPath" | "environment"> | undefined,
+  readJson = readGatewayJson,
 ): Promise<ClaudeGatewayConfig | undefined> {
   if (!runtime) return undefined;
   let baseUrl: string | undefined;
@@ -368,7 +400,7 @@ export async function resolveClaudeGatewayConfig(
 
   if (runtime.credentialPath) {
     try {
-      const parsed = JSON.parse(await readFile(runtime.credentialPath, "utf8")) as HostCredentialsFile & ConfigLibraryEntryFile;
+      const parsed = await readJson(runtime.credentialPath) as HostCredentialsFile & ConfigLibraryEntryFile;
       const directFixed = parseFixedGatewayEntry(parsed);
       if (directFixed) {
         baseUrl = directFixed.baseUrl;
@@ -392,12 +424,10 @@ export async function resolveClaudeGatewayConfig(
     const parentDir = dirname(runtime.credentialPath);
     const configLibraryDir = basename(parentDir) === "configLibrary" ? parentDir : join(parentDir, "configLibrary");
     try {
-      const meta = JSON.parse(await readFile(join(configLibraryDir, "_meta.json"), "utf8")) as ConfigLibraryMetaFile;
+      const meta = await readJson(join(configLibraryDir, "_meta.json")) as ConfigLibraryMetaFile;
       const appliedId = nonEmptyString(meta?.appliedId);
       if (appliedId && /^[a-z0-9._-]+$/iu.test(appliedId)) {
-        const entry = JSON.parse(
-          await readFile(join(configLibraryDir, `${appliedId}.json`), "utf8"),
-        ) as ConfigLibraryEntryFile;
+        const entry = await readJson(join(configLibraryDir, `${appliedId}.json`)) as ConfigLibraryEntryFile;
         if (entry?.inferenceProvider === "gateway") {
           baseUrl ??= nonEmptyString(entry.inferenceGatewayBaseUrl);
           if (entry.inferenceGatewayAuthScheme === "bearer" || entry.inferenceGatewayAuthScheme === "x-api-key") {

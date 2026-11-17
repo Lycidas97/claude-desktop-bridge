@@ -16,7 +16,7 @@ interface ClaudeConfig {
 
 export const BRIDGE_HOOK_URL = "http://127.0.0.1:8790/hooks/claude";
 
-async function readJson(path: string): Promise<ClaudeConfig> {
+export async function readClaudeConfig(path: string): Promise<ClaudeConfig> {
   try {
     return JSON.parse(await readFile(path, "utf8")) as ClaudeConfig;
   } catch (error) {
@@ -79,28 +79,25 @@ function removeBridgeHooks(config: ClaudeConfig): boolean {
   return changed;
 }
 
-/** Read the saved picker directory without exposing settings, descriptions or environment. */
-export async function readClaudeModelOptions(settingsPath: string): Promise<BridgeModelInfo[] | undefined> {
-  const settings = await readJson(settingsPath);
-  if (!isRecord(settings) || !isRecord(settings.modelPicker) || !Array.isArray(settings.modelPicker.options)) return undefined;
-  const models = settings.modelPicker.options.flatMap(option =>
-    isRecord(option) && typeof option.model === "string" && option.model.length > 0 && typeof option.label === "string" && option.label.length > 0
-      ? [{ value: option.model, displayName: option.label }] : []);
-  return models.length ? models : undefined;
-}
-
-/** Read the top-level default model from settings.json without exposing any other fields. */
-export async function readClaudeDefaultModel(settingsPath: string): Promise<string | undefined> {
-  const settings = await readJson(settingsPath);
-  if (!isRecord(settings) || typeof settings.model !== "string") return undefined;
-  const trimmed = settings.model.trim();
-  return trimmed && trimmed.toLowerCase() !== "default" ? trimmed : undefined;
+/** Project the saved picker and default model without exposing descriptions or environment. */
+export function claudeModelSettings(settings: unknown): { models?: BridgeModelInfo[]; defaultModel?: string } {
+  if (!isRecord(settings)) return {};
+  const models = isRecord(settings.modelPicker) && Array.isArray(settings.modelPicker.options)
+    ? settings.modelPicker.options.flatMap(option =>
+        isRecord(option) && typeof option.model === "string" && option.model.length > 0 && typeof option.label === "string" && option.label.length > 0
+          ? [{ value: option.model, displayName: option.label }] : [])
+    : [];
+  const model = typeof settings.model === "string" ? settings.model.trim() : "";
+  return {
+    ...(models.length ? { models } : {}),
+    ...(model && model.toLowerCase() !== "default" ? { defaultModel: model } : {}),
+  };
 }
 
 export async function removeLegacyConnector(paths: ConnectorPaths): Promise<boolean> {
   let changed = false;
   for (const path of [...paths.claudeDesktop, paths.claudeCode]) {
-    const config = await readJson(path);
+    const config = await readClaudeConfig(path);
     if (config.mcpServers?.["claude-bridge"] === undefined) continue;
     const mcpServers = { ...config.mcpServers };
     delete mcpServers["claude-bridge"];
@@ -109,7 +106,7 @@ export async function removeLegacyConnector(paths: ConnectorPaths): Promise<bool
     await writeJsonSafely(path, config);
     changed = true;
   }
-  const settings = await readJson(paths.claudeSettings);
+  const settings = await readClaudeConfig(paths.claudeSettings);
   if (removeBridgeHooks(settings)) {
     await writeJsonSafely(paths.claudeSettings, settings);
     changed = true;

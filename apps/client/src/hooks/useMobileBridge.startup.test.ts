@@ -2,10 +2,11 @@ import { BridgeCrypto, PROTOCOL_VERSION, type BridgeHostSnapshot, type BridgeReq
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeVault } from "../lib/vault.js";
 import { useMobileBridge, type BridgeMutableStore } from "./useMobileBridge.js";
+import { captureBridgeStoreRef } from "./useMobileBridge.test-harness.js";
 
 const harness = vi.hoisted(() => ({
   state: undefined as any,
-  refs: [] as Array<{ current: BridgeMutableStore | undefined }>,
+  store: undefined as BridgeMutableStore | undefined,
   effects: [] as Array<() => void | (() => void)>,
   cleanups: [] as Array<() => void>,
   hosts: [] as any[],
@@ -20,10 +21,10 @@ vi.mock("react", async original => ({
     harness.state = initial;
     return [initial, (update: any) => {
       harness.state = typeof update === "function" ? update(harness.state) : update;
-      if (harness.refs[0]?.current) harness.refs[0].current.stateRef.current = harness.state;
+      if (harness.store) harness.store.stateRef.current = harness.state;
     }];
   },
-  useRef(initial: any) { const ref = { current: initial }; harness.refs.push(ref); return ref; },
+  useRef: (initial: unknown) => captureBridgeStoreRef(initial, store => { harness.store = store; }),
   useCallback: (callback: unknown) => callback,
   useEffect(effect: () => void | (() => void)) { harness.effects.push(effect); },
 }));
@@ -116,7 +117,7 @@ function mount() {
 
 beforeEach(async () => {
   vi.useFakeTimers();
-  harness.state = undefined; harness.refs = []; harness.effects = []; harness.cleanups = [];
+  harness.state = undefined; harness.store = undefined; harness.effects = []; harness.cleanups = [];
   harness.hosts = []; harness.messages = []; harness.outbox = []; harness.requests = []; harness.native = false;
   vi.clearAllMocks(); LocalWebSocket.instances = [];
   const host = await BridgeCrypto.createHost("wss://synthetic.example/ws", "Synthetic desktop");

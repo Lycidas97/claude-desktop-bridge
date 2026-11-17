@@ -1153,6 +1153,7 @@
   font-size: var(--m-fs-footnote);
   font-weight: 600;
   letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
 }
 
 .mobile-settings-group > p:not(.mobile-settings-row, .inline-error),
@@ -1199,8 +1200,8 @@ label.mobile-settings-row { cursor: pointer; }
 button.mobile-settings-row:active { background: var(--surface-2); }
 .mobile-settings-row > div,
 .mobile-settings-row > span:not(.mobile-settings-value) { flex: 1; min-width: 0; }
-.mobile-settings-row strong { display: block; font-size: var(--m-fs-body); font-weight: 500; }
-.mobile-settings-row small { display: block; margin-top: 3px; color: var(--muted); font-size: var(--m-fs-footnote); line-height: 1.5; }
+.mobile-settings-row strong { display: block; font-size: var(--m-fs-body); font-weight: 500; overflow-wrap: anywhere; }
+.mobile-settings-row small { display: block; margin-top: 3px; color: var(--muted); font-size: var(--m-fs-footnote); line-height: 1.5; overflow-wrap: anywhere; }
 .mobile-settings-row > svg:first-child { flex: none; color: var(--muted); }
 .mobile-settings-row > svg:last-child { flex: none; color: var(--muted); }
 .mobile-settings-row .segmented { flex: 1; }
@@ -1527,20 +1528,27 @@ main.mobile-workspace .select-menu-option-meta,
 }
 
 /* Mobile Dynamic Type / Large-Font Reflow (data-effective-scale="large" | "xlarge") */
-:root[data-effective-scale="large"] .mobile-settings-row:has(.segmented),
-:root[data-effective-scale="xlarge"] .mobile-settings-row:has(.segmented),
-:root[data-font-size="large"] .mobile-settings-row:has(.segmented),
-:root[data-font-size="larger"] .mobile-settings-row:has(.segmented) {
+:root[data-effective-scale="large"] .mobile-settings-row:has(.segmented, .mobile-settings-inline-action, .mobile-settings-compact-btn),
+:root[data-effective-scale="xlarge"] .mobile-settings-row:has(.segmented, .mobile-settings-inline-action, .mobile-settings-compact-btn),
+:root[data-font-size="large"] .mobile-settings-row:has(.segmented, .mobile-settings-inline-action, .mobile-settings-compact-btn),
+:root[data-font-size="larger"] .mobile-settings-row:has(.segmented, .mobile-settings-inline-action, .mobile-settings-compact-btn) {
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
 }
 
-:root[data-effective-scale="large"] .mobile-settings-row:has(.segmented) > span,
-:root[data-effective-scale="xlarge"] .mobile-settings-row:has(.segmented) > span,
-:root[data-font-size="large"] .mobile-settings-row:has(.segmented) > span,
-:root[data-font-size="larger"] .mobile-settings-row:has(.segmented) > span {
+:root[data-effective-scale="large"] .mobile-settings-row:has(.segmented, .mobile-settings-inline-action, .mobile-settings-compact-btn) > span,
+:root[data-effective-scale="xlarge"] .mobile-settings-row:has(.segmented, .mobile-settings-inline-action, .mobile-settings-compact-btn) > span,
+:root[data-font-size="large"] .mobile-settings-row:has(.segmented, .mobile-settings-inline-action, .mobile-settings-compact-btn) > span,
+:root[data-font-size="larger"] .mobile-settings-row:has(.segmented, .mobile-settings-inline-action, .mobile-settings-compact-btn) > span {
   flex: none;
+}
+
+:root[data-effective-scale="large"] .mobile-settings-row .mobile-settings-inline-action,
+:root[data-effective-scale="xlarge"] .mobile-settings-row .mobile-settings-inline-action,
+:root[data-font-size="large"] .mobile-settings-row .mobile-settings-inline-action,
+:root[data-font-size="larger"] .mobile-settings-row .mobile-settings-inline-action {
+  justify-content: space-between;
 }
 
 :root[data-effective-scale="large"] .mobile-settings-row .segmented button,
@@ -1677,6 +1685,7 @@ main.mobile-workspace .select-menu-option-meta,
   font-size: calc(14.5px * var(--font-scale, 1));
   font-weight: 630;
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .mobile-inspector-callout-copy p {

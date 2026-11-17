@@ -78,6 +78,7 @@ export function MobileHostDetails({
   useEffect(() => {
     if (!claudeStatus.nativeUnavailable) {
       setAttemptedClaudeEnable(false);
+      setDesktopActionError((previous) => (previous?.runtimeId === "claude-desktop" ? undefined : previous));
     }
   }, [claudeStatus.nativeUnavailable]);
 

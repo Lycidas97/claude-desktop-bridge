@@ -14,8 +14,10 @@ const DEFAULT_TITLE_TIMEOUT_MS = 8_000;
 const MAX_GENERATED_TITLE_CHARS = 40;
 const MAX_FALLBACK_CLAUSE_CHARS = 24;
 const MAX_PROMPT_SOURCE_CHARS = 1_200;
+const MAX_FALLBACK_INPUT_CHARS = 16_000;
 
 const GENERIC_TITLE_RE = /^(?:claude\s*(?:会话|对话|session|chat)|new\s*(?:chat|session|conversation)|untitled(?:\s+(?:chat|session))?|新(?:建)?(?:会话|对话))$/iu;
+const NON_PROSE_SLASH_COMMAND_RE = /^\/(?:compact|clear|cost|context|doctor|help|login|logout|memory|model|permissions|rename|rewind|status|vim|btw)(?:\s|$)/iu;
 
 const TITLE_SYSTEM_PROMPT = [
   "Generate a concise plain-text session title summarizing the user's request.",
@@ -23,20 +25,29 @@ const TITLE_SYSTEM_PROMPT = [
   "Return ONLY a single-line title with no quotes, no markdown, and no trailing period.",
 ].join(" ");
 
+export function stripLoneSurrogates(value: string): string {
+  return value.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/gu, "");
+}
+
 function trimCodePoints(value: string, limit: number): string {
-  const chars = Array.from(value);
-  return chars.length > limit ? chars.slice(0, limit).join("").trimEnd() : value;
+  const wellFormed = stripLoneSurrogates(value);
+  const chars = Array.from(wellFormed);
+  return chars.length > limit ? chars.slice(0, limit).join("").trimEnd() : wellFormed;
 }
 
 export function sanitizeGeneratedTitle(raw: string | undefined): string | undefined {
   if (typeof raw !== "string") return undefined;
-  let cleaned = raw.replace(/[\r\n\t]+/gu, " ").replace(/\s+/gu, " ").trim();
-  if (!cleaned) return undefined;
-  cleaned = cleaned.replace(/^(?:title|session\s+title|标题|会话标题)\s*[:：-]\s*/iu, "");
+  const firstLine = stripLoneSurrogates(raw)
+    .split(/\r?\n/u)
+    .map(line => line.replace(/\s+/gu, " ").trim())
+    .find(line => line.length > 0 && !/^```/u.test(line));
+  if (!firstLine) return undefined;
+  let cleaned = firstLine.replace(/^(?:title|session\s+title|标题|会话标题)\s*[:：-]\s*/iu, "");
   for (let pass = 0; pass < 4; pass += 1) {
     const next = cleaned
       .replace(/^(?:[#>*`~-]+\s*)+/u, "")
-      .replace(/^(?:\*\*|__)(.+)(?:\*\*|__)$/u, "$1")
+      .replace(/\*\*(.+?)\*\*/gu, "$1")
+      .replace(/__(.+?)__/gu, "$1")
       .replace(/^["'“”‘’`「」『』《》*]+|["'“”‘’`「」『』《》*]+$/gu, "")
       .replace(/[.。；;，,、:：]+$/u, "")
       .replace(/\s+/gu, " ")
@@ -64,8 +75,11 @@ function stripLeadingFormatting(line: string): string {
 }
 
 export function deriveFallbackSessionTitle(text: string, hasAttachments = false): string | undefined {
-  const raw = typeof text === "string" ? text : "";
-  if (!raw.trim()) return hasAttachments ? "图片分析" : undefined;
+  const raw = typeof text === "string" ? trimCodePoints(text, MAX_FALLBACK_INPUT_CHARS) : "";
+  const trimmedRaw = raw.trim();
+  if (!trimmedRaw || NON_PROSE_SLASH_COMMAND_RE.test(trimmedRaw)) {
+    return hasAttachments ? "图片分析" : undefined;
+  }
 
   const withoutFences = raw
     .replace(/```[\s\S]*?```/gu, " ")
@@ -227,8 +241,12 @@ export async function generateSessionTitle(options: {
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<string | undefined> {
+  const rawTrimmed = typeof options.text === "string" ? stripLoneSurrogates(options.text).trim() : "";
+  if (NON_PROSE_SLASH_COMMAND_RE.test(rawTrimmed)) {
+    return options.hasAttachments ? "图片分析" : undefined;
+  }
   const fallback = deriveFallbackSessionTitle(options.text, options.hasAttachments);
-  const promptSource = trimCodePoints(options.text.trim(), MAX_PROMPT_SOURCE_CHARS);
+  const promptSource = trimCodePoints(rawTrimmed, MAX_PROMPT_SOURCE_CHARS);
   if (!promptSource || !options.gateway || (!options.gateway.authToken && !options.gateway.apiKey)) {
     return fallback;
   }

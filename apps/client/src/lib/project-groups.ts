@@ -51,6 +51,40 @@ export function orderProjects(projectIds: readonly string[], placed: readonly st
   ];
 }
 
+export function readStoredProjectOrder(storageKey: string): string[] {
+  try {
+    if (typeof localStorage === "undefined" || typeof localStorage.getItem !== "function") {
+      return [];
+    }
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    const valid: string[] = [];
+    for (const item of parsed) {
+      if (typeof item === "string" && item.length > 0 && !seen.has(item)) {
+        seen.add(item);
+        valid.push(item);
+      }
+    }
+    return valid;
+  } catch {
+    return [];
+  }
+}
+
+export function writeStoredProjectOrder(storageKey: string, order: readonly string[]): void {
+  try {
+    if (typeof localStorage === "undefined" || typeof localStorage.setItem !== "function") {
+      return;
+    }
+    localStorage.setItem(storageKey, JSON.stringify(order));
+  } catch {
+    // Ignore storage quota or private-mode restrictions so ordering never crashes rendering.
+  }
+}
+
 export function moveProject(order: readonly string[], projectId: string, index: number): string[] {
   const next = order.filter((candidate) => candidate !== projectId);
   next.splice(index, 0, projectId);

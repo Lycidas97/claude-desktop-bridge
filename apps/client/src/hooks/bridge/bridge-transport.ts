@@ -41,6 +41,7 @@ import {
   ensureSessionNotificationPermission,
   isActivelyViewingSession,
   isSessionNotificationsEnabled,
+  showBrowserDesktopOrWebNotification,
   showSessionNotification,
 } from "../../lib/session-notifications.js";
 import { bridgeVault } from "../../lib/vault.js";
@@ -672,8 +673,8 @@ export function notifyBridgeCompletedTurns(
         title,
         body,
       );
-    } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      new Notification(title, { body, icon: "/icon-192.png", tag: event.eventId });
+    } else {
+      showBrowserDesktopOrWebNotification(title, body, event.eventId);
     }
   }
 }
@@ -1362,29 +1363,23 @@ export async function startBridgeConnection(
             "Claude 正在等待你确认",
           );
         }
-      } else if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      } else {
         for (const permission of newPermissions) {
           if (isVisible && isActivelyViewingSession(roomId, permission.sessionId)) continue;
-          new Notification(
+          showBrowserDesktopOrWebNotification(
             sourceSessions?.find((session) => session.sessionId === permission.sessionId)?.title
               ?? crypto.identity.desktopName,
-            {
-              body: "Claude 正在等待你处理",
-              icon: "/icon-192.png",
-              tag: `perm:${permission.requestId}`,
-            },
+            "Claude 正在等待你处理",
+            `perm:${permission.requestId}`,
           );
         }
         for (const prompt of newPrompts) {
           if (isVisible && isActivelyViewingSession(roomId, prompt.sessionId)) continue;
-          new Notification(
+          showBrowserDesktopOrWebNotification(
             sourceSessions?.find((session) => session.sessionId === prompt.sessionId)?.title
               ?? crypto.identity.desktopName,
-            {
-              body: "Claude 正在等待你确认",
-              icon: "/icon-192.png",
-              tag: `prompt:${prompt.promptId}`,
-            },
+            "Claude 正在等待你确认",
+            `prompt:${prompt.promptId}`,
           );
         }
       }

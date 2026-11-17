@@ -42,12 +42,14 @@ export class MagpieConnectionRepository {
   }
 
   async initialize(): Promise<void> {
-    let file: Record<string, unknown>;
-    try { file = JSON.parse(await readFile(this.path, "utf8")) as Record<string, unknown>; }
+    let raw: unknown;
+    try { raw = JSON.parse(await readFile(this.path, "utf8")) as unknown; }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return;
       throw error;
     }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+    const file = raw as Record<string, unknown>;
     if (file.version !== 1) throw new Error("Magpie 接入配置版本无效");
     if (file.mode === "auto") { this.connection = { mode: "auto" }; return; }
     if (typeof file.protectedKey !== "string" || !file.protectedKey.startsWith("os:")) {

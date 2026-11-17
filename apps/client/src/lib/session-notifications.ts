@@ -104,24 +104,43 @@ export async function requestSessionNotificationPermission(): Promise<"granted" 
 export function ensureSessionNotificationPermission(): Promise<boolean> {
   if (!Capacitor.isNativePlatform()) return Promise.resolve(false);
   permissionPromise ??= (async () => {
-    let status = await LocalNotifications.checkPermissions();
-    if (
-      typeof document !== "undefined"
-      && document.visibilityState === "visible"
-      && (status.display === "prompt" || status.display === "prompt-with-rationale")
-    ) {
-      status = await LocalNotifications.requestPermissions();
-    }
-    if (status.display !== "granted") {
+    try {
+      let status = await LocalNotifications.checkPermissions();
+      if (
+        typeof document !== "undefined"
+        && document.visibilityState === "visible"
+        && (status.display === "prompt" || status.display === "prompt-with-rationale")
+      ) {
+        status = await LocalNotifications.requestPermissions();
+      }
+      if (status.display !== "granted") {
+        permissionPromise = undefined;
+        return false;
+      }
+      if (Capacitor.getPlatform() === "android") {
+        await LocalNotifications.createChannel({ id: CHANNEL_ID, name: "会话动态", importance: 4 });
+      }
+      return true;
+    } catch {
       permissionPromise = undefined;
       return false;
     }
-    if (Capacitor.getPlatform() === "android") {
-      await LocalNotifications.createChannel({ id: CHANNEL_ID, name: "会话动态", importance: 4 });
-    }
-    return true;
   })();
   return permissionPromise;
+}
+
+export function showBrowserDesktopOrWebNotification(
+  title: string,
+  body: string,
+  tag: string,
+): void {
+  if (typeof window !== "undefined" && window.bridgeDesktop) return;
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  try {
+    new Notification(title, { body, icon: "/icon-192.png", tag });
+  } catch {
+    // Android Chrome / restricted WebViews throw Illegal constructor on direct Notification().
+  }
 }
 
 export async function showSessionNotification(
@@ -131,40 +150,42 @@ export async function showSessionNotification(
 ): Promise<void> {
   if (!isSessionNotificationsEnabled()) return;
   if (Capacitor.isNativePlatform()) {
-    if (!await ensureSessionNotificationPermission()) return;
-    // One notification per session: a newer event replaces the previous one.
-    let hash = 0;
-    for (const char of `${target.hostId}:${target.sessionId ?? ""}`) {
-      hash = (Math.imul(hash, 31) + char.charCodeAt(0)) | 0;
+    try {
+      if (!await ensureSessionNotificationPermission()) return;
+      // One notification per session: a newer event replaces the previous one.
+      let hash = 0;
+      for (const char of `${target.hostId}:${target.sessionId ?? ""}`) {
+        hash = (Math.imul(hash, 31) + char.charCodeAt(0)) | 0;
+      }
+      const id = (hash & 0x7fffffff) || 1;
+      await LocalNotifications.schedule({
+        notifications: [{
+          id,
+          title,
+          body,
+          channelId: CHANNEL_ID,
+          isExactNotification: false,
+          autoCancel: true,
+          extra: target,
+        }],
+      });
+    } catch {
+      // Never leak unhandled rejections when Android notification scheduling fails.
     }
-    const id = (hash & 0x7fffffff) || 1;
-    await LocalNotifications.schedule({
-      notifications: [{
-        id,
-        title,
-        body,
-        channelId: CHANNEL_ID,
-        isExactNotification: false,
-        autoCancel: true,
-        extra: target,
-      }],
-    });
     return;
   }
-  if (typeof window !== "undefined" && window.bridgeDesktop) return;
-  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-    new Notification(title, {
-      body,
-      icon: "/icon-192.png",
-      tag: `${target.hostId}:${target.sessionId ?? ""}`,
-    });
-  }
+  showBrowserDesktopOrWebNotification(title, body, `${target.hostId}:${target.sessionId ?? ""}`);
 }
 
 export function onSessionNotificationTap(listener: (target: SessionNotificationTarget) => void): () => void {
   if (!Capacitor.isNativePlatform()) return () => undefined;
   const handle = LocalNotifications.addListener("localNotificationActionPerformed", ({ notification }) => {
-    listener(notification.extra as SessionNotificationTarget);
-  });
-  return () => void handle.then((registered) => registered.remove());
+    const extra = notification?.extra as Partial<SessionNotificationTarget> | undefined;
+    if (!extra || typeof extra !== "object" || typeof extra.hostId !== "string" || !extra.hostId) return;
+    listener({
+      hostId: extra.hostId,
+      ...(typeof extra.sessionId === "string" && extra.sessionId ? { sessionId: extra.sessionId } : {}),
+    });
+  }).catch(() => undefined);
+  return () => void handle.then((registered) => registered?.remove());
 }

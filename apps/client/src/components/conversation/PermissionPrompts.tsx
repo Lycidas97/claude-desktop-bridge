@@ -197,8 +197,9 @@ function inputText(input: Record<string, unknown>, ...keys: string[]): string | 
 }
 
 function truncate(value: string, max: number): string {
-  if (value.length <= max) return value;
-  return `${value.slice(0, max)}\n… 已省略 ${value.length - max} 个字符`;
+  const chars = Array.from(value);
+  if (chars.length <= max) return value;
+  return `${chars.slice(0, max).join("")}\n… 已省略 ${chars.length - max} 个字符`;
 }
 
 export function permissionPresentation(permission: BridgePermissionInfo): PermissionPresentation {

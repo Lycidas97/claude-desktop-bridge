@@ -416,21 +416,23 @@ export class ClientUpdaterController {
     try {
       const raw = this.storage.getItem(STORAGE_KEY);
       if (!raw) return;
-      const parsed = JSON.parse(raw) as StoredPrefs;
-      if (parsed.channel === "stable" || parsed.channel === "prerelease") {
-        this.channel = parsed.channel;
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      const prefs = parsed as StoredPrefs;
+      if (prefs.channel === "stable" || prefs.channel === "prerelease") {
+        this.channel = prefs.channel;
       }
-      if (typeof parsed.autoCheck === "boolean") {
-        this.autoCheck = parsed.autoCheck;
+      if (typeof prefs.autoCheck === "boolean") {
+        this.autoCheck = prefs.autoCheck;
       }
-      if (typeof parsed.dismissedVersion === "string") {
-        this.dismissedVersion = parsed.dismissedVersion;
+      if (typeof prefs.dismissedVersion === "string") {
+        this.dismissedVersion = prefs.dismissedVersion;
       }
-      if (typeof parsed.etag === "string") {
-        this.etag = parsed.etag;
+      if (typeof prefs.etag === "string") {
+        this.etag = prefs.etag;
       }
-      if (typeof parsed.cachedBody === "string") {
-        this.cachedBody = parsed.cachedBody;
+      if (typeof prefs.cachedBody === "string") {
+        this.cachedBody = prefs.cachedBody;
       }
     } catch {
       // Ignore corrupt storage
@@ -488,7 +490,12 @@ let sharedController: ClientUpdaterController | undefined;
 export function getSharedClientUpdater(): ClientUpdaterController {
   if (!sharedController) {
     const runtimePlatform = Capacitor.isNativePlatform() ? Capacitor.getPlatform() : "web";
-    const storage = typeof window !== "undefined" ? window.localStorage : undefined;
+    let storage: Storage | undefined;
+    try {
+      storage = typeof window !== "undefined" ? window.localStorage : undefined;
+    } catch {
+      storage = undefined;
+    }
     sharedController = new ClientUpdaterController({
       platform: runtimePlatform,
       ...(storage ? { storage } : {}),

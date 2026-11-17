@@ -215,6 +215,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private readonly tools = new Map<string, ObservedDesktopTool>();
   private readonly autoTitledSessions = new Set<string>();
   private readonly explicitlyTitledSessions = new Set<string>();
+  private readonly deletingSessions = new Set<string>();
   private readonly closeAbort = new AbortController();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private eventProjection: ReturnType<typeof setImmediate> | undefined;
@@ -670,6 +671,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async moveSessionSection(sessionId: string, sectionId: string | null): Promise<BridgeSessionInfo> {
     if (!this.capabilities().includes("section.move")) throw new NativeCallError("This Claude Desktop version does not support Sections");
+    if (!await this.refreshRuntime()) throw new NativeCallError(this.lastError);
+    if (!this.capabilities().includes("section.move")) throw new NativeCallError("This Claude Desktop version does not support Sections");
     const native = this.native.get(this.desktopId(sessionId))!;
     if (native.isArchived || native.scheduledTaskId) throw new NativeCallError("This session cannot be moved between Sections");
     if (sectionId !== null && !this.sectionCatalog?.sections.some(section => section.id === sectionId)) {
@@ -758,7 +761,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
     if (explicitTitle) {
       this.autoTitledSessions.add(result.sessionId);
       this.explicitlyTitledSessions.add(result.sessionId);
-      await this.inspector.call("updateSession", [result.sessionId, { title: explicitTitle }]);
+      if (this.inspector.supports("updateSession")) {
+        await this.inspector.call("updateSession", [result.sessionId, { title: explicitTitle }]);
+      }
     }
     await this.refreshRuntime();
     const session = this.session(result.sessionId);
@@ -782,12 +787,20 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    await this.inspector.call("delete", [this.desktopId(sessionId)]);
-    this.contextStates.delete(sessionId);
-    this.prPreferences.delete(sessionId);
-    this.autoTitledSessions.delete(sessionId);
-    this.explicitlyTitledSessions.delete(sessionId);
-    await this.refreshRuntime();
+    const id = this.desktopId(sessionId);
+    this.deletingSessions.add(id);
+    try {
+      await this.inspector.call("delete", [id]);
+      this.native.delete(id);
+      this.sessions.delete(sessionId);
+      this.contextStates.delete(sessionId);
+      this.prPreferences.delete(sessionId);
+      this.autoTitledSessions.delete(sessionId);
+      this.explicitlyTitledSessions.delete(sessionId);
+      await this.refreshRuntime();
+    } finally {
+      this.deletingSessions.delete(id);
+    }
   }
 
   async refreshDesktopConfiguration(sessionId: string): Promise<void> { await this.configuration(sessionId); }
@@ -1065,7 +1078,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
       return { action: "session", session: this.session(childId)! };
     }
     await this.startTurn(input);
-    return { action: "sent" };
+    const renamedSession = /^\/rename\s+\S/iu.test(input.text.trim()) ? this.session(input.sessionId) : undefined;
+    return { action: "sent", ...(renamedSession ? { session: renamedSession } : {}) };
   }
 
   async defaultConfiguration(): Promise<BridgeSessionConfiguration> {
@@ -1245,9 +1259,33 @@ export class ClaudeDesktopBridge extends EventEmitter {
     this.options.conversationState.saveNativeDesktopReceipt(receipt);
     this.projectSessions();
     await this.record({ sessionId: input.sessionId, turnId: receipt.messageId, origin: "claude-desktop", type: "message.delivery", data: { ...receipt, delivery: receipt.state } });
+    const trimmedInputText = input.text.trim();
+    const renameMatch = /^\/rename\s+([\s\S]+)$/iu.exec(trimmedInputText);
+    const renameTitle = renameMatch?.[1]?.trim();
+    if (renameTitle) {
+      this.autoTitledSessions.add(id);
+      this.explicitlyTitledSessions.add(id);
+      if (this.inspector.supports("updateSession") && !this.deletingSessions.has(id)) {
+        await this.serialized(async () => {
+          if (this.deletingSessions.has(id)) return;
+          let currentTitle = "";
+          if (this.inspector.supports("getSession")) {
+            const latest = record(await this.inspector.call("getSession", [id]));
+            currentTitle = typeof latest.title === "string" ? latest.title.trim() : "";
+          }
+          if (currentTitle !== renameTitle) {
+            await this.inspector.call("updateSession", [id, { title: renameTitle }]);
+          }
+        });
+      }
+      await this.refreshRuntime();
+    }
+    const isControlSlashCommand = /^\/(?:compact|clear|cost|context|doctor|help|login|logout|memory|model|permissions|rename|rewind|status|vim|btw)(?:\s|$)/iu.test(trimmedInputText);
     const nativeTarget = this.native.get(id);
     if (
       !this.closed
+      && !isControlSlashCommand
+      && !this.deletingSessions.has(id)
       && this.inspector.supports("updateSession")
       && !nativeTarget?.title?.trim()
       && nativeTarget?.spawnedFrom?.btw !== true
@@ -1276,17 +1314,26 @@ export class ClaudeDesktopBridge extends EventEmitter {
     });
   }
 
+  private isSessionUnavailableForAutoTitle(id: string): boolean {
+    return (
+      this.closed
+      || !this.inspector.ready
+      || !this.inspector.supports("updateSession")
+      || !this.native.has(id)
+      || this.deletingSessions.has(id)
+      || this.explicitlyTitledSessions.has(id)
+    );
+  }
+
   private async autoTitleSession(id: string, text: string, hasAttachments: boolean): Promise<void> {
     try {
       if (!await this.sleepAbortable(this.options.autoTitleGraceMs ?? 400)) return;
-      if (this.closed || !this.inspector.ready || !this.inspector.supports("updateSession") || this.explicitlyTitledSessions.has(id)) {
-        return;
-      }
+      if (this.isSessionUnavailableForAutoTitle(id)) return;
       if (this.inspector.supports("getSession")) {
         const precheck = nativeSession(await this.inspector.call("getSession", [id]));
         if (precheck.title?.trim() || precheck.spawnedFrom?.btw === true) return;
       }
-      if (this.closed || this.explicitlyTitledSessions.has(id)) return;
+      if (this.isSessionUnavailableForAutoTitle(id)) return;
 
       const allowAmbientDiscovery = Boolean(
         this.options.magpieConnection || this.options.fetchImpl || this.options.environment || this.options.home,
@@ -1299,7 +1346,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         settingsPath: this.options.settingsPath,
         allowAmbientDiscovery,
       });
-      if (this.closed || this.explicitlyTitledSessions.has(id)) return;
+      if (this.isSessionUnavailableForAutoTitle(id)) return;
 
       const currentNative = this.native.get(id);
       const preferredModel = this.resolveSessionModel(id, currentNative?.model).configModel ?? currentNative?.model;
@@ -1312,16 +1359,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
         ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
         signal: this.closeAbort.signal,
       });
-      if (!generatedTitle || this.closed || this.explicitlyTitledSessions.has(id)) return;
+      if (!generatedTitle || this.isSessionUnavailableForAutoTitle(id)) return;
 
       await this.serialized(async () => {
-        if (this.closed || !this.inspector.ready || !this.inspector.supports("updateSession") || this.explicitlyTitledSessions.has(id)) {
-          return;
-        }
+        if (this.isSessionUnavailableForAutoTitle(id)) return;
         const latest = nativeSession(await this.inspector.call("getSession", [id]));
-        if (this.closed || !this.inspector.ready || !this.inspector.supports("updateSession") || this.explicitlyTitledSessions.has(id)) {
-          return;
-        }
+        if (this.isSessionUnavailableForAutoTitle(id)) return;
         if (latest.title?.trim() || latest.spawnedFrom?.btw === true) {
           const before = JSON.stringify(this.session(id));
           await this.observeNativeSession(latest);
@@ -1331,6 +1374,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         }
         await this.inspector.call("updateSession", [id, { title: generatedTitle }]);
         const updated = nativeSession(await this.inspector.call("getSession", [id]));
+        if (this.isSessionUnavailableForAutoTitle(id)) return;
         await this.observeNativeSession(updated);
         this.projectSessions();
         this.emit("changed");

@@ -166,6 +166,7 @@ export function MobileComposer({
         />
         <SlashCommandInput
           key={draftKey}
+          sessionKey={draftKey}
           textareaRef={composerRef}
           {...(onLoadSessionCommands
             && snapshot?.host.capabilities.includes("session.commands.v1")

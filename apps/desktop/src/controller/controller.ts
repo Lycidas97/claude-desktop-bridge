@@ -74,6 +74,7 @@ export class DesktopController extends EventEmitter {
   private inspectorStatus: BridgeInspectorStatus | undefined;
   private inspectorEnabler: (() => Promise<BridgeInspectorStatus>) | undefined;
   private runtimeAttachSleep: ((ms: number) => Promise<void>) | undefined;
+  private launchInFlight: Map<BridgeDesktopRuntimeId, Promise<DesktopControlSnapshot>> | undefined;
 
   updateInspectorStatus(status: BridgeInspectorStatus): void {
     this.inspectorStatus = status;
@@ -430,39 +431,52 @@ export class DesktopController extends EventEmitter {
     const lifecycle = this.desktopAppControls?.get(runtimeId)
       ?? (runtimeId === "claude-desktop" ? this.claudeDesktop : undefined);
     if (!lifecycle) throw new Error("未知 Desktop 应用");
-    const shouldEnableInspector = runtimeId === "claude-desktop"
-      && Boolean(this.inspectorEnabler)
-      && this.inspectorStatus?.state !== "listening";
-    await (shouldEnableInspector ? lifecycle.launch({ activate: true }) : lifecycle.launch());
-    if (shouldEnableInspector && this.inspectorEnabler) {
-      const inspectorStatus = await this.inspectorEnabler();
-      this.inspectorStatus = inspectorStatus;
-      if (this.broker?.refreshRuntime) {
-        await this.broker.refreshRuntime();
-        if (inspectorStatus.state === "listening") {
-          const sleep = this.runtimeAttachSleep
-            ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-          for (let attempt = 0; attempt < 3; attempt += 1) {
-            const state = this.broker.runtimeStatus?.().state;
-            if (state === "ready" || state === "working") break;
-            await sleep(500);
-            await this.broker.refreshRuntime();
+    const inFlightMap = (this.launchInFlight ??= new Map());
+    const existing = inFlightMap.get(runtimeId);
+    if (existing) return existing;
+    const task = (async (): Promise<DesktopControlSnapshot> => {
+      const shouldEnableInspector = runtimeId === "claude-desktop"
+        && Boolean(this.inspectorEnabler)
+        && this.inspectorStatus?.state !== "listening";
+      await (shouldEnableInspector ? lifecycle.launch({ activate: true }) : lifecycle.launch());
+      if (shouldEnableInspector && this.inspectorEnabler) {
+        const inspectorStatus = await this.inspectorEnabler();
+        this.inspectorStatus = inspectorStatus;
+        if (this.broker?.refreshRuntime) {
+          await this.broker.refreshRuntime();
+          if (inspectorStatus.state === "listening") {
+            const sleep = this.runtimeAttachSleep
+              ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+              const state = this.broker.runtimeStatus?.().state;
+              if (state === "ready" || state === "working") break;
+              await sleep(500);
+              await this.broker.refreshRuntime();
+            }
           }
         }
+      } else if (
+        runtimeId === "claude-desktop"
+        && this.inspectorStatus?.state === "listening"
+        && this.broker?.refreshRuntime
+      ) {
+        const state = this.broker.runtimeStatus?.().state;
+        if (state !== "ready" && state !== "working") {
+          await this.broker.refreshRuntime();
+        }
       }
-    } else if (
-      runtimeId === "claude-desktop"
-      && this.inspectorStatus?.state === "listening"
-      && this.broker?.refreshRuntime
-    ) {
-      const state = this.broker.runtimeStatus?.().state;
-      if (state !== "ready" && state !== "working") {
-        await this.broker.refreshRuntime();
+      const snapshot = await this.publish();
+      await this.broadcast({ kind: "snapshot", snapshot });
+      return snapshot;
+    })();
+    inFlightMap.set(runtimeId, task);
+    try {
+      return await task;
+    } finally {
+      if (inFlightMap.get(runtimeId) === task) {
+        inFlightMap.delete(runtimeId);
       }
     }
-    const snapshot = await this.publish();
-    await this.broadcast({ kind: "snapshot", snapshot });
-    return snapshot;
   }
 
   async quitDesktopApp(runtimeId: BridgeDesktopRuntimeId): Promise<DesktopControlSnapshot> {

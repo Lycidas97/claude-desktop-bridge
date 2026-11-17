@@ -72,7 +72,7 @@ export function SessionRewindDialog({ messages, initialMessageId, disabled, onPr
           disabled={busy || disabled || targets.length === 0}
           options={[...targets].reverse().map(message => ({
             value: message.id,
-            label: message.text.replace(/\s+/gu, " ").slice(0, 100) || "图片或附件消息",
+            label: Array.from(message.text.replace(/\s+/gu, " ")).slice(0, 100).join("") || "图片或附件消息",
           }))}
           onChange={nextId => { setMessageId(nextId); setPreview(undefined); }}
         />

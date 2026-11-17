@@ -68,8 +68,10 @@ import {
   expandProject,
   getSessionAncestorIds,
   orderProjects,
+  readStoredProjectOrder,
   sortProjectSessionsByRecent,
   toggleCollapsedProject,
+  writeStoredProjectOrder,
 } from "../lib/project-groups.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../lib/runtime-labels.js";
 import { setActiveViewedSession } from "../lib/session-notifications.js";
@@ -292,9 +294,13 @@ export function MobileWorkspace({
   const [sessionActionError, setSessionActionError] = useState<string>();
   const [projectOrderOpen, setProjectOrderOpen] = useState(false);
   const projectOrderKey = `bridge-project-order:${activeHostId}`;
-  const [placedProjects, setPlacedProjects] = useState<string[]>(() => (
-    JSON.parse(localStorage.getItem(projectOrderKey) ?? "[]") as string[]
-  ));
+  const [placedProjectsState, setPlacedProjectsState] = useState<{ key: string; order: string[] }>(() => ({
+    key: projectOrderKey,
+    order: readStoredProjectOrder(projectOrderKey),
+  }));
+  const placedProjects = placedProjectsState.key === projectOrderKey
+    ? placedProjectsState.order
+    : readStoredProjectOrder(projectOrderKey);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
   const [forkChainOpen, setForkChainOpen] = useState(() => (
@@ -485,6 +491,7 @@ export function MobileWorkspace({
   const hasPortalOverlay = createOpen
     || Boolean(createDialogState)
     || Boolean(menuSession)
+    || renameOpen
     || deleteSessionConfirmOpen
     || Boolean(configurationSessionId)
     || Boolean(sectionCreate)
@@ -791,8 +798,8 @@ export function MobileWorkspace({
   }
 
   function placeProjects(order: string[]): void {
-    localStorage.setItem(projectOrderKey, JSON.stringify(order));
-    setPlacedProjects(order);
+    writeStoredProjectOrder(projectOrderKey, order);
+    setPlacedProjectsState({ key: projectOrderKey, order });
   }
 
   function toggleProject(projectId: string, isEmptyManualGroup = false): void {
@@ -864,6 +871,7 @@ export function MobileWorkspace({
     hostOnline: connection === "connected" && desktopOnline,
     capabilities: snapshot?.host.capabilities,
     manualSections,
+    sessions,
     scrollContainerRef: directoryRef,
     onMoveSessionSection: onMoveSessionSection ? moveSessionToSection : undefined,
   });
@@ -906,6 +914,7 @@ export function MobileWorkspace({
     setSessionActionError(undefined);
     try {
       await onDeleteSession(sessionId);
+      conversationDrafts.resetSession(activeHostId, sessionId);
       setDeleteSessionConfirmOpen(false);
       setMenuSessionId(undefined);
     } catch (error) {

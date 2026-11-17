@@ -121,7 +121,7 @@ export async function startNativeApprovalHost(options: {
   const unsupportedMethods = new Set<string>();
   const inspector = Object.assign(new EventEmitter(), {
     ready: true,
-    supports: (method: string) => !unsupportedMethods.has(method) && ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", "getPrOverview", "getPrChecks", "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getGitInfo", ...Object.values(nativeDialogs).map(dialog => dialog.method), ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
+    supports: (method: string) => !unsupportedMethods.has(method) && ["getAll", "getSession", "getTranscript", "getTranscriptPage", "getSupportedCommands", "respondToToolPermission", "setPermissionMode", "setModel", "setEffort", "canRewindTo", "rewindFiles", "rewindV2", "sendMessage", "promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage", "interrupt", "start", "updateSession", "getPrOverview", "getPrChecks", "setBoundPrAutoFix", "setAutoFixOwnPrsWanted", "armAutoFixOnNextPr", "getGitInfo", ...Object.values(nativeDialogs).map(dialog => dialog.method), ...(saveTrustSupported ? ["saveTrust"] : [])].includes(method),
     async prPreferences(id: string) {
       return id === options.sessionId ? { ...preferences, nextOwnPrArmed: nextPrBranch !== undefined } : undefined;
     },
@@ -220,12 +220,28 @@ export async function startNativeApprovalHost(options: {
         nativeSessions.unshift(created);
         return structuredClone(created);
       }
+      if (method === "updateSession") {
+        const target = nativeSessions.find(candidate => candidate.sessionId === args[0]);
+        if (target && args[1] && typeof args[1] === "object") {
+          Object.assign(target, args[1]);
+        }
+        return;
+      }
       if (method === "sendMessage") {
-        assert.equal(args[0], options.sessionId);
-        assert.equal(typeof args[7], "string");
-        queued.add(args[7] as string);
-        messages.push({ type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } });
-        return reportQueued ? { delivered: true, queued: true } : { delivered: true };
+        const target = nativeSessions.find(candidate => candidate.sessionId === args[0]);
+        assert.ok(target, "sendMessage must target an existing native session");
+        const textArg = typeof args[1] === "string" ? args[1].trim() : "";
+        const renameMatch = /^\/rename\s+([\s\S]+)$/iu.exec(textArg);
+        if (renameMatch?.[1]?.trim()) {
+          target.title = renameMatch[1].trim();
+        }
+        if (args[0] === options.sessionId) {
+          assert.equal(typeof args[7], "string");
+          queued.add(args[7] as string);
+          messages.push({ type: "user", uuid: args[7], timestamp: Date.now(), message: { content: args[1] } });
+          return reportQueued ? { delivered: true, queued: true } : { delivered: true };
+        }
+        return { delivered: true };
       }
       if (["promoteQueuedMessage", "sendSteeredNow", "cancelQueuedMessage"].includes(method)) {
         assert.equal(args[0], options.sessionId);
@@ -421,6 +437,12 @@ export async function startNativeApprovalHost(options: {
         trustCapable: caps.includes("workspace.trust"),
         runtimeCapabilities: caps,
       };
+    },
+    async seedSessions(entries: Array<Record<string, unknown>>) {
+      for (const entry of entries) {
+        nativeSessions.push({ ...native, pendingToolPermissions: [], ...entry } as typeof native & { forkedFromSessionId?: string });
+      }
+      await broker.refreshRuntime();
     },
     createSection: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),
     controllerRequest: (request: BridgeRequest) => controller.handleRequest(request, "mobile", options.deviceId),

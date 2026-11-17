@@ -49,13 +49,21 @@ export function pauseAssistantBinding(mail: AssistantMailService | undefined, se
     previousSessionIds: [...new Set([...binding.previousSessionIds, sessionId])] });
 }
 
+function sliceSurrogateSafeCodeUnits(text: string, maxUnits: number): string {
+  if (text.length <= maxUnits) return text;
+  const lastCode = text.charCodeAt(maxUnits - 1);
+  const safeEnd = lastCode >= 0xD800 && lastCode <= 0xDBFF ? maxUnits - 1 : maxUnits;
+  return text.slice(0, safeEnd);
+}
+
 export async function assistantMailPage(mail: AssistantMailService, options: Parameters<AssistantMailService["page"]>[0]): Promise<BridgeMailPage> {
   const page = mail.page(options);
   return {
     cards: await Promise.all(page.events.map(async event => {
       let preview: Pick<BridgeMailCard, "preview" | "previewError">;
       try {
-        preview = { preview: (await mail.readEvent(event.mailRefId))!.bodyText.slice(0, 240) };
+        const bodyText = (await mail.readEvent(event.mailRefId))!.bodyText;
+        preview = { preview: Array.from(bodyText).slice(0, 240).join("") };
       } catch (error) {
         if (!(error instanceof MailBodyParseError)) throw error;
         preview = { preview: "", previewError: "原文无法解析，预览不可用。" };
@@ -144,7 +152,7 @@ export class AssistantMailCoordinator {
       return {
         mailDetail: {
           mailRefId,
-          bodyText: detail.bodyText.slice(0, 256_000),
+          bodyText: sliceSurrogateSafeCodeUnits(detail.bodyText, 256_000),
           truncated: detail.bodyText.length > 256_000,
         } satisfies BridgeMailDetail,
       };

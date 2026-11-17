@@ -74,7 +74,13 @@ export function MobileSettings({
   const [claudeAttempted, setClaudeAttempted] = useState(false);
 
   const claudeStatus = resolveClaudeRemoteActivationStatus(claudeRuntime?.snapshot);
+  const claudeHostId = claudeRuntime?.snapshot?.host.hostId ?? claudeRuntime?.desktopName;
   const computerHeadingName = providers?.desktopName ?? quota?.desktopName ?? claudeRuntime?.desktopName;
+
+  useEffect(() => {
+    setClaudeError(undefined);
+    setClaudeAttempted(false);
+  }, [claudeHostId]);
 
   useEffect(() => {
     let active = true;

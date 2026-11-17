@@ -92,13 +92,35 @@ export function resolveTypographyScale(fontSize: FontSize, systemTextZoom: numbe
   };
 }
 
+function safeStorageGet(key: string): string | null {
+  try {
+    if (typeof localStorage === "undefined" || typeof localStorage.getItem !== "function") {
+      return null;
+    }
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key: string, value: string): void {
+  try {
+    if (typeof localStorage === "undefined" || typeof localStorage.setItem !== "function") {
+      return;
+    }
+    localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage quota or private-mode restrictions.
+  }
+}
+
 function initialFontSize(): FontSize {
-  const stored = localStorage.getItem(FONT_SIZE_KEY);
+  const stored = safeStorageGet(FONT_SIZE_KEY);
   return FONT_SIZES.find(size => size === stored) ?? "standard";
 }
 
 function initialTheme(): Theme {
-  const stored = localStorage.getItem(THEME_KEY);
+  const stored = safeStorageGet(THEME_KEY);
   if (stored === "light" || stored === "dark") return stored;
   // V0.8.0: dark is the flagship theme (Sunstone baseline); returning users
   // keep their stored choice, new users land on dark.
@@ -106,7 +128,7 @@ function initialTheme(): Theme {
 }
 
 function initialFamily(): ThemeFamily {
-  const stored = localStorage.getItem(FAMILY_KEY);
+  const stored = safeStorageGet(FAMILY_KEY);
   if (stored === "sunstone" || stored === "apple") return stored;
   return "sunstone";
 }
@@ -134,7 +156,7 @@ export function useTheme() {
     } else {
       root.style?.removeProperty?.("--font-scale");
     }
-    localStorage.setItem(FONT_SIZE_KEY, fontSize);
+    safeStorageSet(FONT_SIZE_KEY, fontSize);
   }, [appliedFontScale, effectiveScale, fontSize, systemTextZoom]);
 
   useEffect(() => {
@@ -171,8 +193,8 @@ export function useTheme() {
     ) {
       root.dataset.macDesktop = "true";
     }
-    localStorage.setItem(THEME_KEY, theme);
-    localStorage.setItem(FAMILY_KEY, family);
+    safeStorageSet(THEME_KEY, theme);
+    safeStorageSet(FAMILY_KEY, family);
     const color = META_THEME_COLOR[family][theme];
     let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
     if (!meta && document.head) {

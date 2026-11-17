@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
+import { registerMobileBackHandler } from "../../lib/mobile-back-navigation.js";
 
 export const UNSECTIONED_DROP_ID = "__unsectioned__";
 
@@ -31,6 +32,7 @@ export interface UseSessionSectionDragOptions {
   hostOnline: boolean;
   capabilities: readonly string[] | undefined;
   manualSections: readonly BridgeProjectInfo[];
+  sessions?: readonly BridgeSessionInfo[] | undefined;
   scrollContainerRef?: RefObject<HTMLElement | null> | undefined;
   onMoveSessionSection?: ((sessionId: string, sectionId: string | null) => Promise<void> | void) | undefined;
 }
@@ -147,17 +149,24 @@ export function useSessionSectionDrag(
       event.stopImmediatePropagation?.();
       cleanup();
     };
+    const handleNewPointerDown = () => {
+      // A fresh pointerdown means the user started a brand-new tap/click rather than
+      // a browser-synthesized post-drop click from the finished drag gesture.
+      cleanup();
+    };
     const cleanup = () => {
       if (timer !== undefined) {
         clearTimeout(timer);
         timer = undefined;
       }
       window.removeEventListener("click", handleCaptureClick, true);
+      window.removeEventListener("pointerdown", handleNewPointerDown, true);
       if (clickSuppressCleanupRef.current === cleanup) {
         clickSuppressCleanupRef.current = undefined;
       }
     };
     window.addEventListener("click", handleCaptureClick, true);
+    window.addEventListener("pointerdown", handleNewPointerDown, true);
     timer = setTimeout(cleanup, CLICK_SUPPRESS_WINDOW_MS);
     clickSuppressCleanupRef.current = cleanup;
   }
@@ -261,8 +270,12 @@ export function useSessionSectionDrag(
   ): void {
     if (typeof window === "undefined") return;
     if (!canMoveToSection(session)) return;
+    if (event.isPrimary === false) return;
     if (typeof event.button === "number" && event.button !== 0) return;
     if (isInteractiveDragExclusion(event.target)) return;
+    if (gestureRef.current && (gestureRef.current.active || gestureRef.current.pointerId !== event.pointerId)) {
+      if (gestureRef.current.active || gestureRef.current.pointerType !== "mouse") return;
+    }
 
     teardownGesture();
 
@@ -326,9 +339,13 @@ export function useSessionSectionDrag(
       const finalTarget = resolveDropSectionIdAtPoint(upEvent.clientX, upEvent.clientY) ?? gesture.hoveredTargetId;
       const originSectionId = gesture.originSectionId;
       const targetSessionId = gesture.session.sessionId;
+      const latestSession = latestRef.current.sessions
+        ? latestRef.current.sessions.find((candidate) => candidate.sessionId === targetSessionId)
+        : gesture.session;
+      const stillMovable = Boolean(latestSession && canMoveToSection(latestSession));
       installPostDropClickSuppressor();
       teardownGesture();
-      if (finalTarget && finalTarget !== originSectionId) {
+      if (stillMovable && finalTarget && finalTarget !== originSectionId) {
         const nextSectionId = finalTarget === UNSECTIONED_DROP_ID ? null : finalTarget;
         void latestRef.current.onMoveSessionSection?.(targetSessionId, nextSectionId);
       }
@@ -392,6 +409,24 @@ export function useSessionSectionDrag(
       teardownGesture();
     }
   }, [options.hostOnline]);
+
+  useEffect(() => {
+    const gesture = gestureRef.current;
+    if (!gesture || !options.sessions) return;
+    const latestSession = options.sessions.find((candidate) => candidate.sessionId === gesture.session.sessionId);
+    if (!latestSession || !canMoveToSection(latestSession)) {
+      teardownGesture();
+    }
+  }, [options.sessions, options.capabilities, options.manualSections]);
+
+  useEffect(() => {
+    if (!dragState) return;
+    return registerMobileBackHandler(() => {
+      if (!gestureRef.current && !dragState) return false;
+      teardownGesture();
+      return true;
+    }, 250);
+  }, [dragState]);
 
   useEffect(() => () => {
     clickSuppressCleanupRef.current?.();

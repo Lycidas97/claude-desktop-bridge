@@ -34,8 +34,10 @@ import {
   getSessionAncestorIds,
   groupProjectSessionFamilies,
   orderProjects,
+  readStoredProjectOrder,
   sortProjectSessionsByRecent,
   toggleCollapsedProject,
+  writeStoredProjectOrder,
 } from "../../lib/project-groups.js";
 import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
 import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
@@ -189,9 +191,13 @@ export function DesktopSessions({
   const desktopProjectListRef = useRef<HTMLDivElement>(null);
 
   const projectOrderKey = `bridge-project-order:${hostId}`;
-  const [placedProjects, setPlacedProjects] = useState<string[]>(() => (
-    JSON.parse(localStorage.getItem(projectOrderKey) ?? "[]") as string[]
-  ));
+  const [placedProjectsState, setPlacedProjectsState] = useState<{ key: string; order: string[] }>(() => ({
+    key: projectOrderKey,
+    order: readStoredProjectOrder(projectOrderKey),
+  }));
+  const placedProjects = placedProjectsState.key === projectOrderKey
+    ? placedProjectsState.order
+    : readStoredProjectOrder(projectOrderKey);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
   const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
   const handledResetEventsRef = useRef(new Set<string>());
@@ -375,8 +381,8 @@ export function DesktopSessions({
   );
 
   function placeProjects(order: string[]): void {
-    localStorage.setItem(projectOrderKey, JSON.stringify(order));
-    setPlacedProjects(order);
+    writeStoredProjectOrder(projectOrderKey, order);
+    setPlacedProjectsState({ key: projectOrderKey, order });
   }
 
   useEffect(() => {
@@ -580,6 +586,7 @@ export function DesktopSessions({
     hostOnline,
     capabilities: snapshot.host.capabilities,
     manualSections,
+    sessions: snapshot.sessions,
     scrollContainerRef: desktopProjectListRef,
     onMoveSessionSection: moveSessionToSection,
   });
@@ -1217,6 +1224,7 @@ export function DesktopSessions({
           setRowActionError(undefined);
           void controller.deleteSession(targetId)
             .then(() => {
+              conversationDrafts.resetSession(hostId, targetId);
               setRowDeleteSessionId(undefined);
               setRowMenuSessionId(undefined);
             })

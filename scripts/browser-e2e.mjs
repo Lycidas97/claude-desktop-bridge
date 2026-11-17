@@ -47,7 +47,7 @@ let baseUrl;
 let startNativeApprovalHost;
 let nativeFixtureSequence = 0;
 const nativeHosts = [];
-const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail"];
+const allScenarios = ["rename-list", "rename-chat", "delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-diagnostics", "desktop-quota", "desktop-conversation", "mobile-safe-area", "assistant-mail"];
 const scenarios = process.env.BRIDGE_E2E_SCENARIOS ? process.env.BRIDGE_E2E_SCENARIOS.split(",") : allScenarios;
 assert.ok(scenarios.every(scenario => allScenarios.includes(scenario)), "BRIDGE_E2E_SCENARIOS must name existing scenarios");
 const themes = process.env.BRIDGE_QA_THEME ? [process.env.BRIDGE_QA_THEME] : ["light", "dark"];
@@ -1417,6 +1417,33 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
           break;
         }
         case "session.commands": result = await host.nativeApproval.commands(request); break;
+        case "session.command":
+          try {
+            result = await host.nativeApproval.controllerRequest(request);
+            if (host.sectionsEnabled) await syncNativeSections(host);
+            await host.send({ kind: "snapshot", snapshot });
+          } catch (failure) { error = { code: failure.code ?? "COMMAND_REJECTED", message: failure.message }; }
+          break;
+        case "desktop.app.launch":
+        case "claude.desktop.launch":
+          snapshot.claudeDesktop = { state: "running", detail: "Claude Desktop 正在运行。", canLaunch: false, canQuit: true };
+          snapshot.desktopApps = [{ id: "claude-desktop", name: "Claude Desktop", state: "running", detail: "Claude Desktop 正在运行。", canLaunch: false, canQuit: true }];
+          snapshot.claudeInspector = {
+            ...(snapshot.claudeInspector ?? { platform: "darwin", port: 9229, pollIntervalMs: 3_000, clients: [], alerts: [] }),
+            state: "listening",
+            startup: { state: "attempted", recordedAt: Date.now(), detail: "已通过原生菜单请求开启主进程调试。" },
+          };
+          snapshot.runtime = {
+            ...snapshot.runtime,
+            state: "ready",
+            detail: "隔离 Native 宿主",
+            desktopIntegration: { state: "ready", detail: "隔离 Native 宿主", enabled: true, canRestart: false },
+          };
+          result = request.method === "desktop.app.launch"
+            ? { desktopApps: snapshot.desktopApps }
+            : { claudeDesktop: snapshot.claudeDesktop };
+          await host.send({ kind: "snapshot", snapshot });
+          break;
         case "session.configuration": {
           if (host.taskDetailsError && request.params.includeBackgroundTasks === true) {
             error = { code: "TASK_DETAILS_UNAVAILABLE", message: host.taskDetailsError };
@@ -1543,6 +1570,14 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
             : await host.nativeApproval.files(request);
           break;
         case "session.rename":
+          if (host.sectionsEnabled && host.nativeApproval) {
+            try {
+              result = await host.nativeApproval.controllerRequest(request);
+              await syncNativeSections(host);
+              await host.send({ kind: "snapshot", snapshot });
+            } catch (failure) { error = { code: failure.code ?? "E2E_RENAME_FAILED", message: failure.message }; }
+            break;
+          }
           assert.equal(request.params.sessionId, sessionId);
           renameAttempts += 1;
           if (failFirstRename && renameAttempts === 1) {
@@ -3834,6 +3869,353 @@ async function verifySectionManage(page, host, steps, directory) {
   steps.push("deleting a non-empty section requires confirmation, calls native delete_section, and safely returns sessions to their folder project");
 }
 
+async function verifyRound4Boundaries(page, host, steps, directory, viewports, theme) {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const proofDir = process.env.ROUND4_VISUAL_PROOF_DIR && theme === (process.env.ROUND4_VISUAL_PROOF_THEME ?? "light")
+    ? resolve(process.env.ROUND4_VISUAL_PROOF_DIR)
+    : undefined;
+  if (proofDir) await mkdir(proofDir, { recursive: true });
+
+  async function saveShot(targetPage, fileName) {
+    await targetPage.waitForFunction(() => document.getAnimations().every(
+      animation => animation.effect.getComputedTiming().iterations === Infinity || animation.playState === "finished",
+    ));
+    await targetPage.screenshot({ path: resolve(directory, fileName), fullPage: false });
+    if (proofDir) {
+      await targetPage.screenshot({ path: resolve(proofDir, fileName), fullPage: false });
+    }
+    viewports.push({ page: fileName, ...targetPage.viewportSize() });
+  }
+
+  // 1. Mobile (390x844): create sections, test fast touch scroll vs 320ms long-press drag onto section!
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openMobileDrawer(page);
+  const drawer = page.locator(".mobile-home-catalog");
+  for (const sectionName of ["核心研发", "归档调研"]) {
+    await drawer.getByRole("button", { name: "+ 分组", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "新建 Section" });
+    await dialog.getByLabel("Section 名称").fill(sectionName);
+    await dialog.getByRole("button", { name: "创建 Section", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+  }
+  const coreSectionId = host.snapshot.projects.find(p => p.name === "核心研发")?.projectId;
+  const researchSectionId = host.snapshot.projects.find(p => p.name === "归档调研")?.projectId;
+  assert.ok(coreSectionId && researchSectionId, "Both manual sections created");
+
+  const mobileTargetRow = drawer.locator('[data-session-id="browser-e2e-misc-sub"]');
+  await mobileTargetRow.waitFor();
+  const rowBox = await mobileTargetRow.boundingBox();
+  const coreHeaderBox = await drawer.locator(`[data-drop-section-id="${coreSectionId}"]`).boundingBox();
+  assert.ok(rowBox && coreHeaderBox, "Mobile session row and target section bounding boxes exist");
+
+  // Fast touch scroll (>8px before 320ms) must NOT start drag
+  await page.evaluate(({ x, y }) => {
+    const row = document.querySelector('.mobile-home-catalog [data-session-id="browser-e2e-misc-sub"]');
+    row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 41, pointerType: "touch", isPrimary: true, button: 0, clientX: x, clientY: y }));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, cancelable: true, pointerId: 41, pointerType: "touch", isPrimary: true, clientX: x, clientY: y + 22 }));
+  }, { x: Math.round(rowBox.x + 60), y: Math.round(rowBox.y + rowBox.height / 2) });
+  await delay(350);
+  assert.equal(await page.locator(".session-drag-ghost").count(), 0, "Fast touch scroll never activates long-press drag");
+  await page.evaluate(({ x, y }) => {
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerId: 41, pointerType: "touch", isPrimary: true, clientX: x, clientY: y + 22 }));
+  }, { x: Math.round(rowBox.x + 60), y: Math.round(rowBox.y + rowBox.height / 2) });
+
+  // Real 320ms long-press hold -> activates drag ghost + highlights target section -> drop moves session!
+  const startX = Math.round(rowBox.x + 80);
+  const startY = Math.round(rowBox.y + rowBox.height / 2);
+  const dropX = Math.round(coreHeaderBox.x + 80);
+  const dropY = Math.round(coreHeaderBox.y + 18);
+  await page.evaluate(({ sx, sy }) => {
+    const row = document.querySelector('.mobile-home-catalog [data-session-id="browser-e2e-misc-sub"]');
+    row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 42, pointerType: "touch", isPrimary: true, button: 0, clientX: sx, clientY: sy }));
+  }, { sx: startX, sy: startY });
+  await delay(350);
+  await page.evaluate(({ dx, dy }) => {
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, cancelable: true, pointerId: 42, pointerType: "touch", isPrimary: true, clientX: dx, clientY: dy }));
+  }, { dx: dropX, dy: dropY });
+  await page.locator(".session-drag-ghost").waitFor();
+  await drawer.locator(`[data-drop-section-id="${coreSectionId}"].is-drop-target`).waitFor();
+  await saveShot(page, "03-mobile-longpress-drag.png");
+  await page.evaluate(({ dx, dy }) => {
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerId: 42, pointerType: "touch", isPrimary: true, clientX: dx, clientY: dy }));
+  }, { dx: dropX, dy: dropY });
+  await eventually(
+    () => host.snapshot.sessions.find(s => s.sessionId === "browser-e2e-misc-sub")?.projectId,
+    coreSectionId,
+    "Mobile long-press drop moves session into 核心研发",
+  );
+  assert.equal(await page.locator(".session-drag-ghost").count(), 0);
+  assert.equal(await page.evaluate(() => document.body.classList.contains("is-session-dragging")), false);
+  steps.push("Mobile fast touch scroll cancels cleanly while 320ms long-press drag highlights target section and moves session");
+
+  // 2. Mobile NewChatCanvas optional session title ("会话标题（留空自动生成）") + create empty session with explicit title!
+  await drawer.locator('button[aria-label^="新建会话"]').first().click();
+  const mobileNewChat = page.locator(".new-chat-canvas.is-mobile");
+  await mobileNewChat.waitFor();
+  const mobileTitleInput = mobileNewChat.getByLabel("会话标题", { exact: true });
+  assert.equal(await mobileTitleInput.getAttribute("placeholder"), "留空自动生成");
+  await selectCustomOption(page, mobileNewChat.getByRole("combobox", { name: "所属分组", exact: true }), coreSectionId);
+  await mobileTitleInput.fill("端到端可选自定义标题");
+  await saveShot(page, "04a-new-chat-title-mobile.png");
+  if (proofDir) {
+    await page.screenshot({ path: resolve(proofDir, "04-new-chat-title-mobile-desktop.png"), fullPage: false });
+  }
+  await mobileNewChat.getByRole("button", { name: "创建空会话", exact: true }).click();
+  const trustAndCreateBtn = mobileNewChat.getByRole("button", { name: "信任并创建", exact: true });
+  await Promise.race([
+    trustAndCreateBtn.waitFor({ timeout: 3_000 }).then(() => trustAndCreateBtn.click()),
+    eventually(
+      () => host.snapshot.sessions.some(s => s.title === "端到端可选自定义标题" && s.projectId === coreSectionId),
+      true,
+      "created directly",
+      3_000,
+    ),
+  ]).catch(() => {});
+  await eventually(
+    () => host.snapshot.sessions.some(s => s.title === "端到端可选自定义标题" && s.projectId === coreSectionId),
+    true,
+    "NewChatCanvas optional title persists onto newly created session in selected section",
+  );
+  await page.getByRole("heading", { name: "端到端可选自定义标题", exact: true }).waitFor();
+  await openMobileDrawer(page);
+  steps.push("Mobile NewChatCanvas renders optional 会话标题 input and creates an explicitly titled session in selected section");
+
+  // 3. Mobile 9229 Inspector Callout ("Claude 调试端口未开启" + "开启调试端口") & MobileSettings ("任务通知" + "9229 调试端口")
+  host.snapshot.claudeInspector = {
+    platform: "darwin",
+    state: "closed",
+    port: 9229,
+    pollIntervalMs: 3_000,
+    clients: [],
+    alerts: [],
+  };
+  host.snapshot.claudeDesktop = { state: "running", detail: "Claude Desktop 正在运行。", canLaunch: true, canQuit: true };
+  host.snapshot.desktopApps = [{ id: "claude-desktop", name: "Claude Desktop", state: "running", detail: "Claude Desktop 正在运行。", canLaunch: true, canQuit: true }];
+  host.snapshot.runtime = {
+    ...host.snapshot.runtime,
+    state: "unavailable",
+    detail: "Claude Desktop 9229 调试端口尚未开放",
+    desktopIntegration: { state: "disconnected", detail: "请开启主进程 9229 调试端口", enabled: true, canRestart: false },
+  };
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+
+  const callout = drawer.locator(".mobile-inspector-callout");
+  await callout.waitFor();
+  assert.match(await callout.innerText(), /Claude 调试端口未开启/u);
+  await saveShot(page, "05-mobile-inspector-callout.png");
+
+  // Open MobileSettings while port 9229 is closed so Settings shows BOTH "任务通知" toggle AND "Claude 调试端口 (9229)" + "开启调试端口"!
+  await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
+  const settingsContent = page.locator(".mobile-settings-content");
+  await settingsContent.getByText("Claude 调试端口 (9229)", { exact: true }).waitFor();
+  await settingsContent.getByText("任务通知", { exact: true }).first().waitFor();
+  const notifGroup = settingsContent.getByRole("group", { name: "任务通知开关", exact: true });
+  await notifGroup.getByRole("button", { name: "关闭", exact: true }).click();
+  assert.equal(await page.evaluate(() => localStorage.getItem("bridge-mobile-notifications:v1")), "0");
+  await notifGroup.getByRole("button", { name: "开启", exact: true }).click();
+  assert.equal(await page.evaluate(() => localStorage.getItem("bridge-mobile-notifications:v1")), "1");
+  await page.setViewportSize({ width: 390, height: 1180 });
+  await settingsContent.evaluate(el => { el.scrollTop = 0; });
+  await saveShot(page, "06-mobile-settings-notifications-inspector.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "MobileSettings fits 390px viewport");
+
+  // Return to 会话 catalog and click 开启调试端口 on MobileInspectorCallout -> triggers desktop.app.launch and clears callout!
+  await page.locator(".m-header:visible").getByRole("button", { name: /^(?:返回|返回会话列表)$/u }).first().click();
+  await callout.waitFor();
+  await callout.getByRole("button", { name: "开启调试端口", exact: true }).click();
+  await eventually(() => host.requests.some(r => r.method === "desktop.app.launch"), true, "Mobile callout triggers desktop.app.launch");
+  await eventually(() => callout.count(), 0, "Mobile callout disappears once port 9229 is listening and runtime is ready");
+  steps.push("Mobile inspector callout and MobileSettings 9229 + 任务通知 controls render and trigger remote activation cleanly");
+
+  // 4. Desktop (1280x820): sidebar ... menu (重命名 + 移动到分组), NewChatCanvas title, mouse drag + dynamic unsectioned drop zone!
+  const desktop = await page.context().newPage();
+  const desktopErrors = [];
+  desktop.on("pageerror", err => desktopErrors.push(err.message));
+  await desktop.exposeFunction("r4DesktopRequest", async (input) => {
+    const req = { kind: "request", requestId: randomUUID(), idempotencyKey: randomUUID(), ...input };
+    host.requests.push(structuredClone(req));
+    let res;
+    if (req.method === "session.open") {
+      res = {
+        session: host.snapshot.sessions.find(s => s.sessionId === req.params.sessionId),
+        history: { sessionId: req.params.sessionId, items: [], hasMore: false },
+        latestSeq: host.snapshot.latestSeq,
+      };
+    } else if (req.method === "evidence.list") {
+      res = { evidence: { sessionId: req.params.sessionId, items: [], hasMore: false } };
+    } else {
+      res = await host.nativeApproval.controllerRequest(req);
+      await syncNativeSections(host);
+    }
+    const nextSnap = {
+      ...host.snapshot,
+      connection: "connected",
+      launchAtLogin: false,
+      diagnosticsEnabled: false,
+      managedDesktopEnabled: false,
+      claudeDesktop: host.snapshot.claudeDesktop,
+      claudeInspector: host.snapshot.claudeInspector,
+    };
+    await desktop.evaluate(snap => window.__r4UpdateDesktop?.(snap), nextSnap);
+    return { kind: "response", requestId: req.requestId, ok: true, result: res };
+  });
+  await desktop.addInitScript((initialSnap) => {
+    window.__r4DesktopSnap = initialSnap;
+    window.__r4UpdateDesktop = (next) => {
+      window.__r4DesktopSnap = next;
+      window.__r4ReceiveSnap?.(structuredClone(next));
+    };
+    window.bridgeDesktop = {
+      getSnapshot: async () => structuredClone(window.__r4DesktopSnap),
+      onSnapshot: (cb) => {
+        window.__r4ReceiveSnap = cb;
+        return () => { delete window.__r4ReceiveSnap; };
+      },
+      onEvent: () => () => {},
+      request: input => window.r4DesktopRequest(input),
+    };
+  }, {
+    ...host.snapshot,
+    connection: "connected",
+    launchAtLogin: false,
+    diagnosticsEnabled: false,
+    managedDesktopEnabled: false,
+    claudeDesktop: host.snapshot.claudeDesktop,
+    claudeInspector: host.snapshot.claudeInspector,
+  });
+  await desktop.setViewportSize({ width: 1280, height: 820 });
+  await desktop.emulateMedia({ reducedMotion: "reduce" });
+  await desktop.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  const sidebar = desktop.locator(".desktop-session-sidebar");
+  await sidebar.locator('[data-session-id="browser-e2e-misc-sub"]').waitFor();
+
+  // Desktop NewChatCanvas optional title check + screenshot
+  await sidebar.getByRole("button", { name: "新建会话", exact: true }).click();
+  const desktopNewChat = desktop.locator(".new-chat-canvas.is-desktop");
+  await desktopNewChat.waitFor();
+  assert.equal(await desktopNewChat.getByLabel("会话标题", { exact: true }).getAttribute("placeholder"), "留空自动生成");
+  await saveShot(desktop, "04b-new-chat-title-desktop.png");
+
+  // Desktop sidebar ... menu -> hover row to reveal action button, verify 重命名 + 移动到分组, capture 01-desktop-sidebar-menu-move-rename.png!
+  const miscSubRow = sidebar.locator('[data-session-id="browser-e2e-misc-sub"]');
+  await miscSubRow.hover();
+  await miscSubRow.getByRole("button", { name: "会话操作：同步现有脚本配置", exact: true }).click();
+  const desktopSheet = desktop.locator(".m-sheet");
+  await desktopSheet.getByRole("button", { name: "重命名", exact: true }).waitFor();
+  await desktopSheet.getByRole("button", { name: /移动到分组/u }).waitFor();
+  await saveShot(desktop, "01-desktop-sidebar-menu-move-rename.png");
+
+  // Rename via Desktop sidebar ... menu
+  await desktopSheet.getByRole("button", { name: "重命名", exact: true }).click();
+  const desktopRenameModal = desktop.getByRole("dialog", { name: "重命名会话" });
+  await desktopRenameModal.getByLabel("会话名称").fill("桌面侧栏重命名会话");
+  await desktopRenameModal.getByRole("button", { name: "保存", exact: true }).click();
+  await desktopRenameModal.waitFor({ state: "detached" });
+  await eventually(
+    async () => (await sidebar.locator('[data-session-id="browser-e2e-misc-sub"]').innerText()).includes("桌面侧栏重命名会话"),
+    true,
+    "Desktop sidebar rename updates session row title via /rename",
+  );
+
+  // Move remaining unsectioned active sessions into 归档调研 so ALL active sessions are inside manual sections!
+  for (const unsec of host.snapshot.sessions.filter(s => !s.archivedAt && s.projectId === "claude-unsectioned")) {
+    const targetRow = sidebar.locator(`[data-session-id="${unsec.sessionId}"]`);
+    await targetRow.hover();
+    await targetRow.getByRole("button", { name: `会话操作：${unsec.title}`, exact: true }).click();
+    await desktop.locator(".m-sheet").getByRole("button", { name: /移动到分组/u }).click();
+    await desktop.locator(".m-sheet").getByRole("button", { name: /归档调研/u }).click();
+    await desktop.locator(".m-sheet").waitFor({ state: "detached" });
+  }
+  await eventually(
+    () => host.snapshot.sessions.filter(s => !s.archivedAt).every(s => s.projectId !== "claude-unsectioned"),
+    true,
+    "All active sessions are now in manual sections so dynamic unsectioned drop zone can be tested",
+  );
+
+  // Mouse drag session row in Desktop sidebar -> dynamic "拖到这里移出分组（未分组）" drop zone appears -> hover it, capture 02-desktop-drag-to-section.png, and drop!
+  const desktopDragRow = sidebar.locator('[data-session-id="browser-e2e-misc-sub"]');
+  const dRowBox = await desktopDragRow.boundingBox();
+  assert.ok(dRowBox, "Desktop draggable session row visible");
+  await desktop.mouse.move(Math.round(dRowBox.x + 70), Math.round(dRowBox.y + dRowBox.height / 2));
+  await desktop.mouse.down();
+  await desktop.mouse.move(Math.round(dRowBox.x + 85), Math.round(dRowBox.y + dRowBox.height / 2 + 16), { steps: 4 });
+
+  const unsectionedDropZone = sidebar.locator(".project-group-unsectioned-dropzone");
+  await unsectionedDropZone.waitFor();
+  assert.match(await unsectionedDropZone.innerText(), /拖到这里移出分组（未分组）/u);
+  const unsecBox = await unsectionedDropZone.boundingBox();
+  assert.ok(unsecBox, "Dynamic unsectioned drop zone bounding box exists");
+  await desktop.mouse.move(Math.round(unsecBox.x + unsecBox.width / 2), Math.round(unsecBox.y + unsecBox.height / 2), { steps: 6 });
+  await sidebar.locator(".project-group-unsectioned-dropzone.is-drop-target").waitFor();
+  await desktop.locator(".session-drag-ghost").waitFor();
+  await saveShot(desktop, "02-desktop-drag-to-section.png");
+  await desktop.mouse.up();
+
+  await eventually(
+    () => host.snapshot.sessions.find(s => s.sessionId === "browser-e2e-misc-sub")?.projectId,
+    "claude-unsectioned",
+    "Dropping onto dynamic unsectioned drop zone moves session out of manual section (null -> claude-unsectioned)",
+  );
+  assert.equal(await desktop.locator(".session-drag-ghost").count(), 0);
+  assert.deepEqual(desktopErrors, []);
+  await desktop.close();
+  steps.push("Desktop sidebar ... menu rename/move, NewChatCanvas title, and mouse drag onto dynamic unsectioned drop zone verified");
+
+  // 5. Extreme narrow viewport (320x568) + xlarge effective font scale (larger + 130% textZoom) + 200-char unbroken CJK/URL title + 4-level fork tree!
+  const longUnbrokenTitle = `超长无空格边界压测标题_${"https://claude.ai/very/long/unbroken/path/segment/9229/inspector/".repeat(3)}尾部校验`;
+  assert.ok(longUnbrokenTitle.length >= 200, "Boundary title is >= 200 chars");
+  await host.nativeApproval.seedSessions([
+    { sessionId: "r4-fork-root", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: longUnbrokenTitle, lastActivityAt: Date.now() + 500 },
+    { sessionId: "r4-fork-l1", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: `一级分支_${longUnbrokenTitle}`, forkedFromSessionId: "r4-fork-root", lastActivityAt: Date.now() + 400 },
+    { sessionId: "r4-fork-l2", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: `二级分支_${longUnbrokenTitle}`, forkedFromSessionId: "r4-fork-l1", lastActivityAt: Date.now() + 300 },
+    { sessionId: "r4-fork-l3", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: `三级分支_${longUnbrokenTitle}`, forkedFromSessionId: "r4-fork-l2", lastActivityAt: Date.now() + 200 },
+    { sessionId: "r4-fork-l4", cwd: host.nativeApproval.cwd, harnessCwd: host.nativeApproval.cwd, title: `四级分支_${longUnbrokenTitle}`, forkedFromSessionId: "r4-fork-l3", lastActivityAt: Date.now() + 100 },
+  ]);
+  await syncNativeSections(host);
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.evaluate(() => {
+    localStorage.setItem("bridge-font-size", "larger");
+    document.documentElement.dataset.fontSize = "larger";
+    document.documentElement.dataset.effectiveScale = "xlarge";
+    document.documentElement.style.setProperty("--font-scale", "1.3");
+  });
+  await drawer.locator('[data-session-id="r4-fork-root"]').waitFor();
+  // Expand all 4 nested fork toggles!
+  for (let depth = 0; depth < 4; depth += 1) {
+    const collapsedForkToggle = drawer.locator('.mobile-fork-toggle[aria-expanded="false"]').first();
+    if (await collapsedForkToggle.count() > 0) {
+      await collapsedForkToggle.click();
+    }
+  }
+  await drawer.locator('[data-session-id="r4-fork-l4"]').waitFor();
+  await drawer.locator('[data-session-id="r4-fork-l4"]').scrollIntoViewIfNeeded();
+  const catalogOverflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+  assert.ok(
+    catalogOverflow.scrollWidth <= catalogOverflow.innerWidth,
+    `320x568 xlarge catalog must have 0px horizontal overflow (got scrollWidth=${catalogOverflow.scrollWidth} > innerWidth=${catalogOverflow.innerWidth})`,
+  );
+  await saveShot(page, "07-boundary-narrow-320px-xlarge.png");
+
+  // Also check 320x568 xlarge MobileSettings zero horizontal overflow!
+  await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: "设置", exact: true }).click();
+  await page.locator(".mobile-settings-content").waitFor();
+  const settingsOverflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+  assert.ok(
+    settingsOverflow.scrollWidth <= settingsOverflow.innerWidth,
+    `320x568 xlarge MobileSettings must have 0px horizontal overflow (got scrollWidth=${settingsOverflow.scrollWidth} > innerWidth=${settingsOverflow.innerWidth})`,
+  );
+  steps.push("320x568 xlarge narrow viewport with 200+ char unbroken CJK/URL titles and 4-level expanded fork tree has 0px horizontal overflow");
+}
+
 async function verifyAssistantMail(page, host, steps, directory, viewports) {
   const cards = () => page.locator('.assistant-mail-list > [data-mail-id]');
   async function openAssistant() {
@@ -4129,10 +4511,10 @@ async function runScenario(theme, scenario) {
   let host;
   let failure;
   try {
-    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-conversation", "assistant-mail"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "desktop-conversation", "assistant-mail"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), scenario === "section-manage", scenario === "assistant-mail");
+    host = await createMockHost(!["delivery-approval-reconnect", "native-approvals", "native-prompts-pr", "native-messages", "history-pagination", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "assistant-mail"].includes(scenario), scenario !== "delivery-approval-reconnect", errors, ["native-approvals", "native-prompts-pr", "native-messages", "native-boundaries", "native-compaction", "native-queue-actions", "native-session-notices", "project-grouping", "session-catalog", "section-manage", "round4-boundaries", "desktop-conversation", "assistant-mail"].includes(scenario), ["native-queue-actions", "desktop-conversation"].includes(scenario), ["section-manage", "round4-boundaries"].includes(scenario), scenario === "assistant-mail");
     if (["native-queue-actions", "native-compaction"].includes(scenario)) host.queueSeed = await host.syncNativeQueue(await host.nativeApproval.enqueue("历史中的原生排队消息"), { pushEvents: false });
     if (["project-grouping", "session-catalog"].includes(scenario)) Object.assign(host.snapshot, await host.nativeApproval.projectCatalog());
-    if (scenario === "section-manage") await syncNativeSections(host);
+    if (["section-manage", "round4-boundaries"].includes(scenario)) await syncNativeSections(host);
     context = await browser.newContext({
       viewport: { width: 375, height: 812 }, colorScheme: theme,
       serviceWorkers: "block",
@@ -4186,7 +4568,7 @@ async function runScenario(theme, scenario) {
     await eventually(() => host.requests.some((request) => request.method === "snapshot.get"), true, "Pairing requires an encrypted snapshot handshake");
     assert.equal(await page.locator("html").getAttribute("data-theme"), process.env.BRIDGE_QA_THEME ?? theme);
     assert.equal(await page.locator("html").getAttribute("data-theme-family"), process.env.BRIDGE_QA_THEME_FAMILY ?? "sunstone");
-    assert.equal(await page.locator(".mobile-home-catalog [data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage"].includes(scenario) ? 3 : 2, "Pairing must synchronize the home catalog session rows");
+    assert.equal(await page.locator(".mobile-home-catalog [data-session-id]").count(), ["project-grouping", "session-catalog", "section-manage", "round4-boundaries"].includes(scenario) ? 3 : 2, "Pairing must synchronize the home catalog session rows");
     assert.equal(await page.evaluate(() => Boolean(window.bridgeDesktop)), false, "Test must load the mobile App path");
     assert.equal(await page.evaluate(() => innerWidth), 375);
     steps.push("real App pairing and encrypted snapshot synchronize the session list at 375x812");
@@ -4206,6 +4588,7 @@ async function runScenario(theme, scenario) {
     else if (scenario === "native-session-notices") await verifyNativeSessionNotices(page, host, steps, directory);
     else if (scenario === "project-grouping") await verifyProjectGrouping(page, host, steps, directory);
     else if (scenario === "section-manage") await verifySectionManage(page, host, steps, directory);
+    else if (scenario === "round4-boundaries") await verifyRound4Boundaries(page, host, steps, directory, viewports, theme);
     else if (scenario === "delivery-approval-reconnect") await verifyDelivery(page, host, steps);
     else await verifyRename(page, host, scenario === "rename-list" ? "list" : "chat", steps);
     if (scenario !== "assistant-mail") assert.equal(host.requests.some(request => request.method.startsWith("plugin.assistant-mail.")), false, "Hosts without the capability receive no assistant mail RPC");

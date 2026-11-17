@@ -219,6 +219,7 @@ export function NewChatCanvas({
   const [choosingDirectory, setChoosingDirectory] = useState(false);
   const [error, setError] = useState<string>();
   const [trustState, setTrustState] = useState<{ mode: "confirm" | "manual"; withPrompt: boolean }>();
+  const promptComposingRef = useRef(false);
 
   const quota = useOptionalMagpieQuota(
     quotaRequested
@@ -836,12 +837,25 @@ export function NewChatCanvas({
             placeholder="输入首条指令发送，或直接创建空会话…"
             value={prompt}
             disabled={!connected || locked}
+            onCompositionStart={() => {
+              promptComposingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              promptComposingRef.current = false;
+            }}
             onChange={(event) => {
               setPrompt(event.target.value);
               if (error) setError(undefined);
             }}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              if (
+                !mobile
+                && event.key === "Enter"
+                && !event.shiftKey
+                && !promptComposingRef.current
+                && !event.nativeEvent.isComposing
+                && event.nativeEvent.keyCode !== 229
+              ) {
                 event.preventDefault();
                 void executeCreate(true, false);
               }

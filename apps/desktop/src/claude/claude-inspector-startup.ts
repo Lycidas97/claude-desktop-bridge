@@ -100,6 +100,8 @@ end run`, String(pid), press ? "press" : "probe"], { timeout: 5_000, maxBuffer: 
 
 export class ClaudeInspectorStartup {
   private records: Record<string, BridgeInspectorStartupStatus> | undefined;
+  private recordsCorrupted = false;
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: {
     recordPath: string;
@@ -114,6 +116,12 @@ export class ClaudeInspectorStartup {
     explicitPortIntervalMs?: number;
   }) {}
 
+  private serialized<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(task, task);
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
   private listProcesses(): Promise<InspectorDesktopProcess[]> {
     return (this.options.processes ?? (async () => process.platform === "win32"
       ? windowsInspectorProcesses()
@@ -123,23 +131,38 @@ export class ClaudeInspectorStartup {
     ))();
   }
 
-  private async ensureRecordsLoaded(): Promise<Record<string, BridgeInspectorStartupStatus>> {
+  private async ensureRecordsLoaded(allowReadFailure = false): Promise<Record<string, BridgeInspectorStartupStatus>> {
     if (!this.records) {
+      let rawText: string | undefined;
       try {
-        const value: unknown = JSON.parse(await readFile(this.options.recordPath, "utf8"));
-        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Inspector 启动记录格式无效");
-        this.records = Object.fromEntries(Object.entries(value).map(([identity, item]) => {
+        rawText = await readFile(this.options.recordPath, "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT" || allowReadFailure) {
+          this.records = {};
+          return this.records;
+        }
+        throw error;
+      }
+      try {
+        const value: unknown = JSON.parse(rawText);
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new SyntaxError("Inspector 启动记录格式无效");
+        this.records = Object.fromEntries(Object.entries(value).flatMap(([identity, item]): Array<[string, BridgeInspectorStartupStatus]> => {
           // Old records still consume the automatic attempt; their time is unknown.
-          if (typeof item === "string") return [identity, { state: "legacy", detail: item }];
+          if (typeof item === "string") return [[identity, { state: "legacy", detail: item }]];
           if (!item || typeof item !== "object" || Array.isArray(item)
             || !["attempted", "enabled", "already-open", "failed", "legacy"].includes(item.state)
             || typeof item.detail !== "string"
-            || (item.recordedAt === undefined ? item.state !== "legacy" : typeof item.recordedAt !== "number" || !Number.isFinite(item.recordedAt))) throw new Error("Inspector 启动记录格式无效");
-          return [identity, item as BridgeInspectorStartupStatus];
+            || (item.recordedAt === undefined ? item.state !== "legacy" : typeof item.recordedAt !== "number" || !Number.isFinite(item.recordedAt))) {
+            return [];
+          }
+          return [[identity, item as BridgeInspectorStartupStatus]];
         }));
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        this.recordsCorrupted = false;
+      } catch {
+        // Fail closed for passive check(false) so a corrupted file never re-opens a port the user closed;
+        // explicit enablement or an already-open port heals the record cleanly.
         this.records = {};
+        this.recordsCorrupted = true;
       }
     }
     return this.records;
@@ -149,9 +172,31 @@ export class ClaudeInspectorStartup {
     await writeFile(this.options.recordPath, `${JSON.stringify(this.records ?? {})}\n`, "utf8");
   }
 
-  async check(listening: boolean): Promise<BridgeInspectorStartupStatus | undefined> {
+  private async persistRecordsBestEffort(): Promise<void> {
+    try {
+      await this.persistRecords();
+    } catch {
+      // Keep in-memory state authoritative when userData is temporarily read-only.
+    }
+  }
+
+  check(listening: boolean): Promise<BridgeInspectorStartupStatus | undefined> {
+    return this.serialized(() => this.checkUnlocked(listening));
+  }
+
+  private async checkUnlocked(listening: boolean): Promise<BridgeInspectorStartupStatus | undefined> {
     const processes = await this.listProcesses();
     const loaded = await this.ensureRecordsLoaded();
+    if (this.recordsCorrupted) {
+      if (!listening) {
+        return {
+          state: "failed",
+          recordedAt: Date.now(),
+          detail: "调试启动记录损坏，已暂停被动自动开启；可手动点击开启调试端口恢复。",
+        };
+      }
+      this.recordsCorrupted = false;
+    }
     // Only current process identities are needed; a PID alone is not a launch identity.
     this.records = Object.fromEntries(processes.filter(process => Object.hasOwn(loaded, process.identity)).map(process => [process.identity, loaded[process.identity]!]));
     for (const process of processes) {
@@ -159,7 +204,7 @@ export class ClaudeInspectorStartup {
         const recordedAt = Date.now();
         if (listening) {
           this.records[process.identity] = { state: "already-open", recordedAt, detail: "首次发现时调试端口已开放，未执行自动开启。" };
-          await this.persistRecords();
+          await this.persistRecordsBestEffort();
           continue;
         }
         const accessibility = this.options.accessibility?.();
@@ -176,11 +221,11 @@ export class ClaudeInspectorStartup {
           await this.persistRecords();
           if (result === "ready" && await (this.options.menu ?? claudeInspectorMenu)(process.pid, true) === "enabled") {
             this.records[process.identity] = { state: "enabled", recordedAt, detail: "原生调试菜单已勾选，未重复操作。" };
-            await this.persistRecords();
+            await this.persistRecordsBestEffort();
           }
         } catch (error) {
           this.records[process.identity] = { state: "failed", recordedAt, detail: `自动开启失败：${error instanceof Error ? error.message : String(error)}` };
-          await this.persistRecords();
+          await this.persistRecordsBestEffort();
         }
       }
       if (!listening) return this.records[process.identity];
@@ -188,11 +233,16 @@ export class ClaudeInspectorStartup {
     return processes.length ? this.records[processes[0]!.identity] : undefined;
   }
 
-  async enableExplicit(isListening: () => Promise<boolean>): Promise<BridgeInspectorStartupStatus> {
+  enableExplicit(isListening: () => Promise<boolean>): Promise<BridgeInspectorStartupStatus> {
+    return this.serialized(() => this.enableExplicitUnlocked(isListening));
+  }
+
+  private async enableExplicitUnlocked(isListening: () => Promise<boolean>): Promise<BridgeInspectorStartupStatus> {
     if (process.env.BRIDGE_CLAUDE_INSPECTOR_URL) {
       return { state: "already-open", recordedAt: Date.now(), detail: "已配置自定义调试地址，未操作原生菜单。" };
     }
-    await this.ensureRecordsLoaded();
+    await this.ensureRecordsLoaded(true);
+    this.recordsCorrupted = false;
     if (await isListening()) {
       const processes = await this.listProcesses().catch(() => []);
       if (processes.length > 0) {
@@ -202,7 +252,7 @@ export class ClaudeInspectorStartup {
         const first = processes[0]!;
         if (!Object.hasOwn(this.records, first.identity)) {
           this.records[first.identity] = { state: "already-open", recordedAt: Date.now(), detail: "调试端口已开放。" };
-          await this.persistRecords();
+          await this.persistRecordsBestEffort();
         }
         return this.records[first.identity]!;
       }
@@ -218,7 +268,7 @@ export class ClaudeInspectorStartup {
       const processes = await this.listProcesses().catch(() => []);
       if (processes.some(proc => Object.hasOwn(this.records!, proc.identity))) {
         for (const proc of processes) delete this.records![proc.identity];
-        await this.persistRecords();
+        await this.persistRecordsBestEffort();
       }
       return {
         state: "accessibility-required",
@@ -256,7 +306,7 @@ export class ClaudeInspectorStartup {
             detail: `自动开启失败：${error instanceof Error ? error.message : String(error)}`,
           };
           this.records![proc.identity] = failure;
-          await this.persistRecords();
+          await this.persistRecordsBestEffort();
           return failure;
         }
         if (probe === "waiting") continue;
@@ -268,14 +318,14 @@ export class ClaudeInspectorStartup {
           detail: probe === "enabled" ? "原生调试菜单已勾选，未重复操作。" : "已通过原生菜单请求开启主进程调试。",
         };
         this.records![proc.identity] = status;
-        await this.persistRecords();
+        await this.persistRecordsBestEffort();
 
         if (probe === "ready") {
           try {
             if (await menu(proc.pid, true) === "enabled") {
               status = { state: "enabled", recordedAt, detail: "原生调试菜单已勾选，未重复操作。" };
               this.records![proc.identity] = status;
-              await this.persistRecords();
+              await this.persistRecordsBestEffort();
             }
           } catch (error) {
             const failure: BridgeInspectorStartupStatus = {
@@ -284,7 +334,7 @@ export class ClaudeInspectorStartup {
               detail: `自动开启失败：${error instanceof Error ? error.message : String(error)}`,
             };
             this.records![proc.identity] = failure;
-            await this.persistRecords();
+            await this.persistRecordsBestEffort();
             return failure;
           }
         }
@@ -301,7 +351,7 @@ export class ClaudeInspectorStartup {
           detail: "已请求开启原生调试菜单，但 9229 调试端口未开放；请在电脑端确认 Claude Desktop 窗口状态。",
         };
         this.records![proc.identity] = portFailure;
-        await this.persistRecords();
+        await this.persistRecordsBestEffort();
         return portFailure;
       }
       if (attempt + 1 < maxAttempts) await sleep(menuIntervalMs);

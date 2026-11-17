@@ -1522,6 +1522,7 @@ export function ConversationView({
     setInternalActionError(undefined);
     try {
       await onDeleteSession(session.sessionId);
+      conversationDrafts.resetSession(hostId, session.sessionId);
       setDeleteSessionOpen(false);
       setInternalMenuOpen(false);
     } catch (error) {

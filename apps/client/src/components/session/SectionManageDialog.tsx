@@ -71,9 +71,13 @@ export function useSectionManage({
   onDeleteSection,
 }: UseSectionManageOptions): SectionManageController {
   const hideStorageKey = `bridge-hide-empty-sections:${activeHostId}`;
-  const [hideEmptySections, setHideEmptySections] = useState(
-    () => localStorage.getItem(hideStorageKey) === "1",
-  );
+  const [hideEmptySections, setHideEmptySections] = useState(() => {
+    try {
+      return typeof localStorage !== "undefined" && localStorage.getItem(hideStorageKey) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [state, setState] = useState<SectionManageState>();
 
   const online = connection === "connected" && desktopOnline;
@@ -121,8 +125,14 @@ export function useSectionManage({
 
   function setPersistedHideEmpty(next: boolean): void {
     setHideEmptySections(next);
-    if (next) localStorage.setItem(hideStorageKey, "1");
-    else localStorage.removeItem(hideStorageKey);
+    try {
+      if (typeof localStorage !== "undefined") {
+        if (next) localStorage.setItem(hideStorageKey, "1");
+        else localStorage.removeItem(hideStorageKey);
+      }
+    } catch {
+      // Ignore storage quota or private-mode restrictions.
+    }
   }
 
   function revealEmptySections(): void {

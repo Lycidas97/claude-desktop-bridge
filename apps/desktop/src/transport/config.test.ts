@@ -1,8 +1,8 @@
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DesktopConfigRepository,
   fileSecretProtector,
@@ -13,6 +13,11 @@ import { probeRelayReady, relayReadyUrl } from "./controller-transport.js";
 import { DEFAULT_BRIDGE_ICE_SERVERS } from "@bridge/protocol";
 import { removeLegacyConnector } from "../claude/connector.js";
 import { localNetworkAddress } from "../app/platform.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...fs, rename: vi.fn(fs.rename) };
+});
 
 const directories: string[] = [];
 const protector: SecretProtector = {
@@ -172,6 +177,34 @@ describe("desktop configuration", () => {
     expect(safeProtector.unprotect(protectedValue)).toBe("evidence-master-key");
   });
 
+  it("keeps OS-protected evidence when safeStorage is unavailable and archives it in file-only mode", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const defaults = { relayUrl: "wss://relay.example/ws", desktopName: "Test PC" };
+    const file = fileSecretProtector();
+    const storage = {
+      isEncryptionAvailable: vi.fn(() => true),
+      encryptString: (value: string) => Buffer.from(value),
+      decryptString: (value: Buffer) => value.toString(),
+    };
+    const repository = new DesktopConfigRepository(path, file, defaults, safeStorageSecretProtector(storage));
+    const original = await repository.loadOrCreate();
+    const raw = await readFile(path, "utf8");
+
+    storage.isEncryptionAvailable.mockReturnValue(false);
+    await expect(repository.loadOrCreate()).rejects.toThrow("OS secret storage is unavailable");
+    expect(await readFile(path, "utf8")).toBe(raw);
+
+    const fileOnly = new DesktopConfigRepository(path, file, defaults);
+    const recovered = await fileOnly.loadOrCreate();
+    expect(recovered.roomId).not.toBe(original.roomId);
+    expect(await fileOnly.loadOrCreate()).toMatchObject({ roomId: recovered.roomId, evidenceKey: recovered.evidenceKey });
+    const archive = (await readdir(directory)).find((name) => name.startsWith("bridge-config.json.v1-archive-"));
+    expect(archive).toBeDefined();
+    expect(await readFile(join(directory, archive!), "utf8")).toBe(raw);
+  });
+
   it("keeps transport identities in the mode-0600 config and seals only the evidence key", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);
@@ -225,6 +258,38 @@ describe("desktop configuration", () => {
     expect(raw).not.toContain(created.evidenceKey);
     expect(raw).not.toContain("independent-device-secret");
     expect((await repository.load())?.devices[0]?.secret).toBe("independent-device-secret");
+  });
+
+  it("reports a V4 migration save failure without replacing the paired config", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const defaults = {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+      iceServers: [{ urls: "stun:stun.alioxis.com:3478" }, ...DEFAULT_BRIDGE_ICE_SERVERS],
+    };
+    const original = new DesktopConfigRepository(path, protector, defaults);
+    const created = await original.loadOrCreate();
+    created.devices.push({
+      deviceId: "phone-1", name: "Phone", platform: "android", secret: "phone-secret",
+      createdAt: 1_000, expiresAt: 2_000, pairedAt: 1_100,
+    });
+    await original.save(created);
+    const raw = await readFile(path, "utf8");
+    const upgraded = new DesktopConfigRepository(path, protector, {
+      ...defaults, iceServers: [...DEFAULT_BRIDGE_ICE_SERVERS],
+    });
+
+    const error = Object.assign(new Error("migration rename failed"), { code: "ENOSPC" });
+    vi.mocked(rename).mockRejectedValueOnce(error);
+    await expect(upgraded.loadOrCreate()).rejects.toBe(error);
+    expect(await readFile(path, "utf8")).toBe(raw);
+
+    await expect(upgraded.loadOrCreate()).resolves.toEqual({
+      ...created, iceServers: DEFAULT_BRIDGE_ICE_SERVERS,
+    });
+    expect(JSON.parse(await readFile(path, "utf8")).iceServers).toEqual(DEFAULT_BRIDGE_ICE_SERVERS);
   });
 
   it("persists the computer permission mode across restarts", async () => {
@@ -702,22 +767,70 @@ describe("desktop configuration", () => {
     expect((await repository.load())?.managedDesktopEnabled).toBe(false);
   });
 
-  it("archives a v1 config and requires one-time re-pairing", async () => {
+  it.each([
+    ["malformed JSON", "{"],
+    ["unsupported schema", JSON.stringify({ version: 1, pairing: {} })],
+  ])("archives a config with %s before creating a fresh one", async (_label, raw) => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
     directories.push(directory);
     const path = join(directory, "bridge-config.json");
-    await writeFile(path, JSON.stringify({ version: 1, pairing: {} }));
+    await writeFile(path, raw);
     const repository = new DesktopConfigRepository(path, protector, {
       relayUrl: "wss://relay.example/ws",
       desktopName: "Test PC",
     });
-    const created = await repository.loadOrCreate();
+    const error = Object.assign(new Error("config archive rename failed"), { code: "EACCES" });
+    vi.mocked(rename).mockRejectedValueOnce(error);
+    await expect(repository.loadOrCreate()).rejects.toBe(error);
+    expect(await readFile(path, "utf8")).toBe(raw);
 
+    const created = await repository.loadOrCreate();
     expect(created.protocolVersion).toBe(3);
     expect(created.configVersion).toBe(4);
     expect(created.devices).toEqual([]);
-    expect((await import("node:fs/promises").then(({ readdir }) => readdir(directory))))
-      .toEqual(expect.arrayContaining([expect.stringMatching(/^bridge-config\.json\.v1-archive-/u)]));
+    const archive = (await readdir(directory)).find((name) => name.startsWith("bridge-config.json.v1-archive-"));
+    expect(archive).toBeDefined();
+    expect(await readFile(join(directory, archive!), "utf8")).toBe(raw);
+  });
+
+  it("archives a V4 config with an invalid saved relay override", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    await repository.loadOrCreate();
+    const raw = JSON.stringify({
+      ...JSON.parse(await readFile(path, "utf8")), relayUrlOverride: "https://example.test",
+    });
+    await writeFile(path, raw);
+
+    await expect(repository.loadOrCreate()).resolves.toMatchObject({ relayUrl: "wss://relay.example/ws" });
+    const archive = (await readdir(directory)).find((name) => name.startsWith("bridge-config.json.v1-archive-"));
+    expect(archive).toBeDefined();
+    expect(await readFile(join(directory, archive!), "utf8")).toBe(raw);
+  });
+
+  it("archives a V4 config with an unknown secret protection format", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(path, fileSecretProtector(), {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    const original = await repository.loadOrCreate();
+    const raw = JSON.stringify({
+      ...JSON.parse(await readFile(path, "utf8")), protectedHostSecret: "unknown:fixture",
+    });
+    await writeFile(path, raw);
+
+    expect((await repository.loadOrCreate()).roomId).not.toBe(original.roomId);
+    const archive = (await readdir(directory)).find((name) => name.startsWith("bridge-config.json.v1-archive-"));
+    expect(archive).toBeDefined();
+    expect(await readFile(join(directory, archive!), "utf8")).toBe(raw);
   });
 
   it("only removes Bridge-owned MCP and HTTP hook entries", async () => {

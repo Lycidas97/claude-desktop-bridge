@@ -52,6 +52,7 @@ import {
   useConversationDrafts,
   type ConversationDraftsController,
 } from "../conversation/ConversationDraftsProvider.js";
+import { EvidencePanel } from "../evidence/EvidencePanel.js";
 import { ConversationView } from "../conversation/ConversationView.js";
 import type { SessionConfigurationChange } from "../session/SessionConfigurationDialog.js";
 
@@ -1084,8 +1085,17 @@ export function DesktopSessionConversation({
       conversationDrafts={conversationDrafts}
       history={controller.historyFor(session.sessionId, hostId)}
       evidence={controller.evidenceFor(session.sessionId, hostId)}
-      artifactPreviews={controller.artifactPreviews}
-      artifactTransfers={controller.artifactTransfers}
+      renderEvidence={(panel) => (
+        <EvidencePanel
+          {...panel}
+          previews={controller.artifactPreviews}
+          transfers={controller.artifactTransfers}
+          onLoadMore={() => controller.loadOlderEvidence(session.sessionId, hostId)}
+          onLoadDetails={controller.loadEvidenceDetails}
+          onPreview={(artifactId) => controller.previewArtifact(artifactId, hostId)}
+          onDownload={(artifact) => controller.downloadArtifact(artifact, hostId)}
+        />
+      )}
       permissions={snapshot.permissions}
       events={controller.filterEvents(events, hostId)}
       mailCards={mailCards}
@@ -1094,10 +1104,6 @@ export function DesktopSessionConversation({
       onOpenSession={(targetSessionId) => controller.openSession(targetSessionId, hostId)}
       onRefresh={(targetSessionId = session.sessionId) => controller.refreshSession(targetSessionId, hostId)}
       onLoadOlderHistory={(targetSessionId) => controller.loadOlderHistory(targetSessionId, hostId)}
-      onLoadOlderEvidence={(targetSessionId) => controller.loadOlderEvidence(targetSessionId, hostId)}
-      onLoadEvidenceDetails={controller.loadEvidenceDetails}
-      onPreviewArtifact={(artifactId) => controller.previewArtifact(artifactId, hostId)}
-      onDownloadArtifact={(artifact) => controller.downloadArtifact(artifact, hostId)}
       onDownloadSessionFile={(targetSessionId, filePath) => controller.downloadSessionFile(targetSessionId, filePath, hostId)}
       onUploadFile={controller.uploadFile}
       onSendTurn={controller.sendTurn}
@@ -1115,25 +1121,23 @@ export function DesktopSessionConversation({
       onConfigureSession={controller.configureSession}
       onLoadSessionCommands={controller.loadSessionCommands}
       onRunSessionCommand={controller.runSessionCommand}
-      {...((canCommand && desktopRuntimeId(session) === "claude-desktop") || canRename
-        ? { onRenameSession: controller.renameSession }
-        : {})}
-      {...(snapshot.host.capabilities.includes("section.move.v1")
-        ? { onMoveSessionSection: controller.moveSessionSection }
-        : {})}
       onLoadSessionPermissions={controller.loadSessionPermissions}
       onSaveSessionPermissions={controller.saveSessionPermissions}
       onPreviewRewind={controller.previewRewind}
       onRewindSession={controller.rewindSession}
-      onForkSession={async (targetSessionId) => {
-        const created = await controller.forkSession(targetSessionId);
-        onForkCreated?.(targetSessionId, created);
-        await controller.onRefreshSnapshot();
-        return created;
+      sessionMenu={{
+        rename: ((canCommand && desktopRuntimeId(session) === "claude-desktop") || canRename) ? controller.renameSession : undefined,
+        move: snapshot.host.capabilities.includes("section.move.v1") ? controller.moveSessionSection : undefined,
+        async fork(targetSessionId) {
+          const created = await controller.forkSession(targetSessionId);
+          onForkCreated?.(targetSessionId, created);
+          await controller.onRefreshSnapshot();
+          return created;
+        },
+        archive: controller.archiveSession,
+        delete: controller.deleteSession,
+        error: externalActionError,
       }}
-      onArchiveSession={controller.archiveSession}
-      onDeleteSession={controller.deleteSession}
-      sessionActionError={externalActionError}
     />
   );
 }

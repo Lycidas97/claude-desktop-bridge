@@ -64,6 +64,7 @@ import { useAssistantMail } from "./assistant/AssistantMailProvider.js";
 import { MailReference } from "./assistant/MailReference.js";
 import { SheetAction } from "./common/Sheet.js";
 import { useConversationDrafts } from "./conversation/ConversationDraftsProvider.js";
+import { EvidencePanel } from "./evidence/EvidencePanel.js";
 import { ConversationView } from "./conversation/ConversationView.js";
 import { SessionPrActions } from "./conversation/SessionPrBar.js";
 import { useMobileNav, type MobileTab } from "./mobile/MobileAppShell.js";
@@ -1059,24 +1060,35 @@ export function MobileWorkspace({
             onPermissionOpenChange={setPermissionOpen}
             configurationOpen={configurationSessionId === selectedSession.sessionId}
             onConfigurationOpenChange={(open) => setConfigurationSessionId(open ? selectedSession.sessionId : undefined)}
-            onOpenSessionMenu={() => {
-              setSessionActionError(undefined);
-              setMoveMenuSessionId(undefined);
-              setMenuSessionId(selectedSession.sessionId);
-            }}
-            onRequestRename={(target) => {
-              setMenuSessionId(target.sessionId);
-              setRenameTitle(target.title);
-              setSessionActionError(undefined);
-              setRenameOpen(true);
+            sessionMenu={{
+              open() {
+                setSessionActionError(undefined);
+                setMoveMenuSessionId(undefined);
+                setMenuSessionId(selectedSession.sessionId);
+              },
+              requestRename(target) {
+                setMenuSessionId(target.sessionId);
+                setRenameTitle(target.title);
+                setSessionActionError(undefined);
+                setRenameOpen(true);
+              },
             }}
             refreshing={refreshing}
             onRefresh={runRefresh}
             onRetry={onRetry}
             history={selectedHistory}
             evidence={selectedEvidence}
-            artifactPreviews={artifactPreviews}
-            artifactTransfers={artifactTransfers}
+            renderEvidence={(panel) => (
+              <EvidencePanel
+                {...panel}
+                previews={artifactPreviews}
+                transfers={artifactTransfers}
+                onLoadMore={() => onLoadOlderEvidence(selectedSession.sessionId)}
+                onLoadDetails={onLoadEvidenceDetails}
+                onPreview={onPreviewArtifact}
+                onDownload={onDownloadArtifact}
+              />
+            )}
             permissions={permissions}
             events={events}
             localTurns={localTurns}
@@ -1086,10 +1098,6 @@ export function MobileWorkspace({
             resolveMailRefId={() => assistantMail?.referenceFor(selectedSession.sessionId)}
             onOpenSession={onOpenSession}
             onLoadOlderHistory={onLoadOlderHistory}
-            onLoadOlderEvidence={onLoadOlderEvidence}
-            onLoadEvidenceDetails={onLoadEvidenceDetails}
-            onPreviewArtifact={onPreviewArtifact}
-            onDownloadArtifact={onDownloadArtifact}
             onDownloadSessionFile={onDownloadSessionFile}
             onUploadFile={onUploadFile}
             onSendTurn={onSendTurn}

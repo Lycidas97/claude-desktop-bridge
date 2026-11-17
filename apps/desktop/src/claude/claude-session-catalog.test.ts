@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { rm, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { rm, mkdir, mkdtemp, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -36,6 +36,36 @@ afterEach(async () => {
 });
 
 describe("Claude session process catalog", () => {
+  it("preserves transcript precedence for the same Desktop ID across profiles", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bridge-transcript-profiles-"));
+    directories.push(root);
+    const paths = {
+      sessions: join(root, "sessions"), tasks: join(root, "tasks"), projects: join(root, "projects"),
+      desktopSessions: [join(root, "Claude"), join(root, "Claude-3p")],
+    };
+    const sessionId = "local_11111111-1111-4111-8111-111111111111";
+    const priorTranscript = join(paths.projects, "prior-cli.jsonl");
+    const currentTranscript = join(paths.projects, "current-cli.jsonl");
+    await Promise.all([...paths.desktopSessions, paths.projects].map(path => mkdir(path)));
+    await Promise.all([
+      writeFile(join(paths.desktopSessions[0]!, `${sessionId}.json`), JSON.stringify({
+        sessionId, cliSessionId: "prior-cli", cwd: root, lastActivityAt: 2_000,
+      })),
+      writeFile(join(paths.desktopSessions[1]!, `${sessionId}.json`), JSON.stringify({
+        sessionId, cliSessionId: "current-cli", priorCliSessionIds: ["prior-cli"], cwd: root, lastActivityAt: 4_000,
+      })),
+      writeFile(priorTranscript, ""),
+      writeFile(currentTranscript, ""),
+    ]);
+    await Promise.all([utimes(priorTranscript, 1, 1), utimes(currentTranscript, 1, 1)]);
+    expect((await scanClaudeCatalog(paths, "linux")).sessions.find(session => session.desktopSessionId === sessionId)?.transcriptPath).toBe(currentTranscript);
+    expect(await findClaudeSessionTranscript(paths, sessionId, "linux")).toEqual({ transcriptPath: currentTranscript, liveSince: undefined });
+
+    await utimes(priorTranscript, 5, 5);
+    expect((await scanClaudeCatalog(paths, "linux")).sessions.find(session => session.desktopSessionId === sessionId)?.transcriptPath).toBe(priorTranscript);
+    expect(await findClaudeSessionTranscript(paths, sessionId, "linux")).toEqual({ transcriptPath: priorTranscript, liveSince: undefined });
+  });
+
   it("resolves the selected fork transcript using its own process registration", async () => {
     const root = await mkdtemp(join(tmpdir(), "bridge-fork-transcript-"));
     directories.push(root);

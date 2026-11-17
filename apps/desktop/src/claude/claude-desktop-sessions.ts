@@ -212,32 +212,45 @@ async function readArchivedDesktopIds(dirs: Set<string>): Promise<Set<string>> {
 
 const DESKTOP_SESSION_FILENAME = /^local_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.json$/iu;
 
-export async function findClaudeDesktopSessionForTranscript(
+type DesktopTranscriptSession = Pick<ClaudeDesktopSession, "cliSessionId" | "cwd" | "lastFocusedAt" | "createdAt" | "lastActivityAt">;
+
+function compareDesktopSessionRecency(left: DesktopTranscriptSession, right: DesktopTranscriptSession): number {
+  return Math.max(right.lastFocusedAt, right.lastActivityAt) - Math.max(left.lastFocusedAt, left.lastActivityAt);
+}
+
+export async function listClaudeDesktopSessionsForTranscript(
   roots: string[],
   sessionId: string,
-): Promise<{ cliSessionId: string; cwd: string } | undefined> {
+): Promise<DesktopTranscriptSession[]> {
   const filename = `${sessionId}.json`;
   const files = (await Promise.all(roots.map(root => collectSessionFiles(root, 3, name =>
     name === filename || name === "archived-sessions.idx" || (name.endsWith(".json") && !DESKTOP_SESSION_FILENAME.test(name))
   )))).flat();
   const indexes = files.filter(file => basename(file) === "archived-sessions.idx");
   const archived = await readArchivedDesktopIds(new Set(indexes.map(file => dirname(file))));
-  if (archived.has(sessionId)) return undefined;
-  const named = files.filter(file => basename(file) === filename);
-  // Use the identity in each record when the filename is nonstandard.
-  const other = files.filter(file => file.endsWith(".json") && basename(file) !== filename);
-  for (const file of named.concat(other)) {
+  if (archived.has(sessionId)) return [];
+  const sessions: DesktopTranscriptSession[] = [];
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
     let value: DesktopSessionFile | null;
     try {
       value = JSON.parse(await readFile(file, "utf8")) as DesktopSessionFile | null;
     } catch {
       continue;
     }
-    if (value?.sessionId === sessionId && typeof value.cliSessionId === "string" && typeof value.cwd === "string") {
-      return value.isArchived === true ? undefined : { cliSessionId: value.cliSessionId, cwd: value.cwd };
-    }
+    if (value?.sessionId !== sessionId || typeof value.cliSessionId !== "string") continue;
+    if (value.isArchived === true) return [];
+    if (typeof value.cwd !== "string") continue;
+    const createdAt = typeof value.createdAt === "number" ? value.createdAt : 0;
+    sessions.push({
+      cliSessionId: value.cliSessionId,
+      cwd: value.cwd,
+      createdAt,
+      lastFocusedAt: typeof value.lastFocusedAt === "number" ? value.lastFocusedAt : 0,
+      lastActivityAt: typeof value.lastActivityAt === "number" ? value.lastActivityAt : createdAt,
+    });
   }
-  return undefined;
+  return sessions.sort(compareDesktopSessionRecency);
 }
 
 export async function listClaudeDesktopSessionState(roots: string[]): Promise<ClaudeDesktopSessionState> {
@@ -402,10 +415,7 @@ export async function listClaudeDesktopSessionState(roots: string[]): Promise<Cl
     archivedCliSessionIds.delete(activeId);
   }
   return {
-    sessions: sessions.sort((left, right) => (
-      Math.max(right.lastFocusedAt, right.lastActivityAt)
-      - Math.max(left.lastFocusedAt, left.lastActivityAt)
-    )),
+    sessions: sessions.sort(compareDesktopSessionRecency),
     archivedSessions: archivedSessions.filter((session) => !activeCliSessionIds.has(session.cliSessionId)),
     metadataPaths,
     archivedCliSessionIds,

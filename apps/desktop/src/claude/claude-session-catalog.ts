@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import type { BridgeProjectInfo, BridgeSessionInfo } from "@bridge/protocol";
 import { diag } from "../app/diag.js";
 import {
-  findClaudeDesktopSessionForTranscript,
+  listClaudeDesktopSessionsForTranscript,
   listClaudeDesktopSessionState,
   type ClaudeDesktopProfile,
   type ClaudeSessionEffort,
@@ -303,12 +303,28 @@ export async function findClaudeSessionTranscript(
   desktopSessionId: string,
   platform = process.platform,
 ): Promise<{ transcriptPath: string; liveSince: number | undefined } | undefined> {
-  const session = await findClaudeDesktopSessionForTranscript(paths.desktopSessions, desktopSessionId);
-  if (!session) return undefined;
-  const processes = (await listActiveSessions(paths.sessions, platform)).get(session.cliSessionId) ?? [];
-  const cwd = processes.find(candidate => candidate.cwd)?.cwd ?? session.cwd;
-  const transcriptPath = await findClaudeTranscriptFile(paths.projects, session.cliSessionId, cwd);
-  return transcriptPath ? { transcriptPath, liveSince: oldestLiveProcessStart(processes) } : undefined;
+  const sessions = await listClaudeDesktopSessionsForTranscript(paths.desktopSessions, desktopSessionId);
+  if (!sessions.length) return undefined;
+  const activeSessions = await listActiveSessions(paths.sessions, platform);
+  const seen = new Set<string>();
+  let latestActivityAt = -Infinity;
+  let selected: { transcriptPath: string; liveSince: number | undefined } | undefined;
+  // Like the full catalog, deduplicate by metadata recency before ranking by transcript activity.
+  for (const session of sessions) {
+    if (seen.has(session.cliSessionId)) continue;
+    seen.add(session.cliSessionId);
+    const processes = activeSessions.get(session.cliSessionId) ?? [];
+    const cwd = processes.find(candidate => candidate.cwd)?.cwd ?? session.cwd;
+    const transcriptPath = await findClaudeTranscriptFile(paths.projects, session.cliSessionId, cwd);
+    const transcriptMtimeMs = sessions.length > 1 && transcriptPath
+      ? await stat(transcriptPath).then(metadata => metadata.mtimeMs, () => 0)
+      : 0;
+    const lastActivityAt = Math.max(session.lastActivityAt, session.createdAt, transcriptMtimeMs);
+    if (lastActivityAt <= latestActivityAt) continue;
+    latestActivityAt = lastActivityAt;
+    selected = transcriptPath ? { transcriptPath, liveSince: oldestLiveProcessStart(processes) } : undefined;
+  }
+  return selected;
 }
 
 /** Start of the oldest live process (0 when unknown); undefined when none is alive. */

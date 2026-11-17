@@ -528,7 +528,7 @@ export function EvidencePanel({
       {!online && <div className="evidence-offline">主机离线 · 已缓存预览仍可打开</div>}
 
       <header className="evidence-list-header">
-        <span className="evidence-list-heading">产出文件 · 按首次出现顺序（展示最新快照）</span>
+        <span className="evidence-list-heading">产出文件 · 按最近更新排序</span>
         <span className="evidence-list-count">共 {outputFiles.length} 个文件</span>
       </header>
 

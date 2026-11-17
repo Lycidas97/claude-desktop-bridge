@@ -25,18 +25,27 @@ const EFFORT_LABELS: Record<string, string> = {
   ultra: "超高",
 };
 
-function effortLabel(value: string): string {
+export function effortLabel(value: string): string {
   return EFFORT_LABELS[value] ?? value;
 }
 
 const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 /** The configured level if the model offers it, else the strongest offered level not above it. */
-function supportedEffort(effort: string, levels: readonly string[]): string {
+export function supportedEffort(effort: string, levels: readonly string[]): string {
   if (levels.includes(effort)) return effort;
   const rank = EFFORT_ORDER.indexOf(effort);
   return levels.filter((level) => EFFORT_ORDER.indexOf(level) <= rank).at(-1) ?? levels[0] ?? effort;
 }
+
+export const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ value: BridgeSDKPermissionMode; label: string }> = [
+  { value: "default", label: "默认" },
+  { value: "acceptEdits", label: "允许文件修改" },
+  { value: "plan", label: "计划模式" },
+  { value: "auto", label: "自动模式" },
+  { value: "dontAsk", label: "不询问" },
+  { value: "bypassPermissions", label: "完全授权" },
+];
 
 export interface SessionConfigurationChange {
   model?: string | null;
@@ -44,6 +53,7 @@ export interface SessionConfigurationChange {
   effort?: string | null;
   reasoningEffort?: string | null;
   fast?: boolean | null;
+  permissionMode?: BridgeSDKPermissionMode | undefined;
 }
 
 export function SessionConfigurationDialog({
@@ -289,14 +299,7 @@ export function SessionConfigurationDialog({
                 <SelectMenu<BridgeSDKPermissionMode>
                   ariaLabel="Desktop 授权模式"
                   value={nativePermissionMode ?? configuration.nativePermissionMode}
-                  options={[
-                    { value: "default", label: "默认" },
-                    { value: "acceptEdits", label: "允许文件修改" },
-                    { value: "plan", label: "计划模式" },
-                    { value: "auto", label: "自动模式" },
-                    { value: "dontAsk", label: "不询问" },
-                    { value: "bypassPermissions", label: "完全授权" },
-                  ]}
+                  options={PERMISSION_MODE_OPTIONS}
                   onChange={(nextMode) => setNativePermissionMode(nextMode)}
                 />
               </div>

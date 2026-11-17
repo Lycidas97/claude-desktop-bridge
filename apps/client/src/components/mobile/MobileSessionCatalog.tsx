@@ -70,7 +70,7 @@ export interface MobileSessionCatalogProps {
   assistantAvailable?: boolean | undefined;
   assistantUnreadCount?: number | undefined;
   themeControl?: ThemeControl | undefined;
-  onStartNewChat?: (() => void) | undefined;
+  onStartNewChat?: ((targetProjectId?: string, targetCwd?: string) => void) | undefined;
   selectedSessionId?: string | undefined;
   archivedExpanded?: boolean | undefined;
   onToggleArchived?: (() => void) | undefined;
@@ -420,7 +420,10 @@ export function MobileSessionCatalog({
                     <button
                       type="button"
                       className="primary-button session-catalog-empty-action"
-                      onClick={() => openCreateDialogForProject()}
+                      onClick={() => {
+                        if (onStartNewChat) onStartNewChat();
+                        else openCreateDialogForProject();
+                      }}
                     >
                       <Plus size={16} />
                       新建会话
@@ -502,7 +505,10 @@ export function MobileSessionCatalog({
                             label={`新建会话：${projectName}`}
                             className="session-row-action"
                             disabled={!snapshot || connection !== "connected" || !desktopOnline}
-                            onClick={() => openCreateDialogForProject(projectId)}
+                            onClick={() => {
+                              if (onStartNewChat) onStartNewChat(projectId);
+                              else openCreateDialogForProject(projectId);
+                            }}
                           >
                             <Plus size={16} />
                           </IconButton>

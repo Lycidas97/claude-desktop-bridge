@@ -33,10 +33,10 @@ export function SessionProfileSummary({
   showActivity?: boolean | undefined;
   id?: string | undefined;
 }) {
+  const modelText = formatSessionModelLabel(session);
   const effortLabel = formatSessionEffortLabel(session.effort ?? session.reasoningEffort);
   const modeLabel = session.nativePermissionMode ? HEADER_MODE_LABELS[session.nativePermissionMode] : undefined;
-  const parts: Array<{ text: string; model?: boolean; bypass?: boolean }> = [
-    { text: formatSessionModelLabel(session), model: true },
+  const metaParts: Array<{ text: string; bypass?: boolean }> = [
     ...(effortLabel ? [{ text: effortLabel }] : []),
     ...(modeLabel
       ? [{ text: modeLabel, ...(session.nativePermissionMode === "bypassPermissions" ? { bypass: true } : {}) }]
@@ -44,17 +44,27 @@ export function SessionProfileSummary({
   ];
 
   return (
-    <span className="session-profile-summary" id={id}>
-      {parts.map((part, index) => (
-        <Fragment key={index}>
-          {index > 0 && <span className="session-profile-sep"> · </span>}
-          <span
-            className={`session-profile-part${part.model ? " is-model" : ""}${part.bypass ? " is-bypass" : ""}`}
-          >
-            {part.text}
+    <span className={`session-profile-summary${metaParts.length > 0 ? " has-meta" : ""}`} id={id}>
+      <span className="session-profile-line is-model-line">
+        <span className="session-profile-part is-model">{modelText}</span>
+      </span>
+      {metaParts.length > 0 && (
+        <>
+          <span className="session-profile-sep is-line-sep"> · </span>
+          <span className="session-profile-line is-meta-line">
+            {metaParts.map((part, index) => (
+              <Fragment key={index}>
+                {index > 0 && <span className="session-profile-sep"> · </span>}
+                <span
+                  className={`session-profile-part${part.bypass ? " is-bypass" : ""}`}
+                >
+                  {part.text}
+                </span>
+              </Fragment>
+            ))}
           </span>
-        </Fragment>
-      ))}
+        </>
+      )}
     </span>
   );
 }

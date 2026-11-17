@@ -43,6 +43,7 @@ const hooks = vi.hoisted(() => ({
   slots: [] as any[], index: 0, dirty: false,
   effects: [] as Array<{ deps: unknown[] | undefined; cleanup: (() => void) | undefined }>,
   effectIndex: 0, pending: [] as Array<() => void>,
+  mountedChildIdentity: undefined as string | undefined,
   readers: [] as any[],
   mail: undefined as { cache: { cards: never[] }; referenceFor(sessionId: string): string | undefined } | undefined,
 }));
@@ -118,11 +119,18 @@ function expandStateful(node: ReactNode): ReactNode {
   if (Array.isArray(node)) return node.map(expandStateful);
   if (!node || typeof node !== "object" || !("props" in node)) return node;
   const element = node as ReactElement<Record<string, any>>;
-  if (element.type === ConversationView) {
-    return expandStateful(ConversationView(element.props as ComponentProps<typeof ConversationView>));
-  }
-  if (element.type === NewChatCanvas) {
-    return expandStateful(NewChatCanvas(element.props as ComponentProps<typeof NewChatCanvas>));
+  if (element.type === ConversationView || element.type === NewChatCanvas) {
+    const nextIdentity = element.type === ConversationView
+      ? "ConversationView"
+      : `NewChatCanvas:${String(element.key ?? "")}`;
+    if (hooks.mountedChildIdentity !== undefined && hooks.mountedChildIdentity !== nextIdentity) {
+      hooks.slots.length = hooks.index;
+      hooks.effects.splice(hooks.effectIndex).forEach((effect) => effect?.cleanup?.());
+    }
+    hooks.mountedChildIdentity = nextIdentity;
+    return element.type === ConversationView
+      ? expandStateful(ConversationView(element.props as ComponentProps<typeof ConversationView>))
+      : expandStateful(NewChatCanvas(element.props as ComponentProps<typeof NewChatCanvas>));
   }
   if (!("children" in element.props) || element.props.children === undefined) return element;
   return { ...element, props: { ...element.props, children: expandStateful(element.props.children) } };
@@ -175,7 +183,7 @@ function imageNames() {
 }
 
 beforeEach(() => {
-  hooks.slots = []; hooks.effects = []; hooks.pending = []; hooks.readers = []; hooks.mail = undefined; focusKey = 0;
+  hooks.slots = []; hooks.effects = []; hooks.pending = []; hooks.mountedChildIdentity = undefined; hooks.readers = []; hooks.mail = undefined; focusKey = 0;
   vi.stubGlobal("FileReader", DeferredFileReader);
   // Node's global localStorage has no storage file here; the workspace keeps project order in it.
   const stored = new Map<string, string>();
@@ -913,36 +921,248 @@ describe("background tasks", () => {
 });
 
 describe("mobile session creation", () => {
-  it("opens creation from an empty computer without historical projects", () => {
+  it("opens unified NewChatCanvas from an empty computer and opens folder picker when cwd is empty", () => {
     props = { ...props, snapshot: { ...props.snapshot!, sessions: [], projects: [] } };
     draw();
     const create = elements(tree).find(element => element.type === "button" && String(element.props.className).includes("session-catalog-empty-action"))!;
     expect(create.props.disabled).not.toBe(true);
     create.props.onClick(); draw();
-    expect(elements(tree).find(element => element.type === SessionCreateDialog)?.props.initialProjectId).toBeUndefined();
+    const emptyCreateBtn = elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!;
+    expect(emptyCreateBtn).toBeDefined();
+    emptyCreateBtn.props.onClick(); draw();
+    const picker = elements(tree).find(element => element.type === SessionCreateDialog)!;
+    expect(typeof picker.props.onPickDirectory).toBe("function");
+    expect(picker.props.initialProjectId).toBeUndefined();
   });
-  it("passes the selected logical project when two projects share a cwd", async () => {
-    props = { ...props, snapshot: { ...props.snapshot!,
-      projects: [
-        { ...props.snapshot!.projects[0]!, projectId: "project-1", name: "First project", sessionCount: 1 },
-        { ...props.snapshot!.projects[0]!, projectId: "project-2", name: "Second project", sessionCount: 1 },
-      ],
-      sessions: props.snapshot!.sessions.map((session, index) => ({ ...session,
-        projectId: `project-${index + 1}`, projectName: index === 0 ? "First project" : "Second project",
+
+  it("unifies project + and header compose into NewChatCanvas, applies Model/Effort/Permission before turn.start, and persists __new__ draft across Back", async () => {
+    const callOrder: string[] = [];
+    const createdSession: BridgeSessionInfo = {
+      ...props.snapshot!.sessions[0]!,
+      sessionId: "created-1",
+      title: "Created",
+      projectId: "project-2",
+      projectName: "Second project",
+      model: "claude-sonnet-4-6",
+      effort: "medium",
+      nativePermissionMode: "default",
+    };
+    props = {
+      ...props,
+      onLoadSessionConfiguration: vi.fn().mockImplementation(async (targetId: string) => ({
+        sessionId: targetId,
+        model: "claude-sonnet-4-6",
+        modelSource: "claude-desktop",
+        availableModels: [
+          { value: "claude-sonnet-4-6", displayName: "Sonnet 4.6" },
+          { value: "claude-opus-4-7", displayName: "Opus 4.7", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+        ],
+        effort: "medium",
+        reasoningEffort: "medium",
+        effortSource: "claude-desktop",
+        availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        nativePermissionMode: "default",
+        modelsComplete: true,
+        appliesAfterTurn: false,
       })),
-    } };
-    vi.mocked(props.onCreateSession).mockResolvedValue(undefined);
+      onCreateSession: vi.fn().mockImplementation(async (...args: unknown[]) => {
+        callOrder.push(`create:${String(args[0])}:${String(args[3])}`);
+        return createdSession;
+      }),
+      onConfigureSession: vi.fn().mockImplementation(async (sid: string, change: Record<string, unknown>) => {
+        callOrder.push(`configure:${sid}:${String(change.model)}:${String(change.effort)}:${String(change.permissionMode)}`);
+        return {
+          sessionId: sid,
+          model: String(change.model ?? "claude-opus-4-7"),
+          modelSource: "claude-desktop",
+          availableModels: [],
+          effort: String(change.effort ?? "xhigh"),
+          effortSource: "claude-desktop",
+          availableEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+          nativePermissionMode: "plan",
+          modelsComplete: true,
+          appliesAfterTurn: false,
+        };
+      }),
+      onSendTurn: vi.fn().mockImplementation(async (sid: string, textValue: string) => {
+        callOrder.push(`send:${sid}:${textValue}`);
+        return undefined;
+      }),
+      snapshot: {
+        ...props.snapshot!,
+        projects: [
+          { ...props.snapshot!.projects[0]!, projectId: "project-1", name: "First project", cwd: "/tmp/project-1", kind: "desktop-group", sessionCount: 1 },
+          { ...props.snapshot!.projects[0]!, projectId: "project-2", name: "Second project", cwd: "/tmp/project-2", kind: "desktop-group", sessionCount: 1 },
+          { ...props.snapshot!.projects[0]!, projectId: "claude-unsectioned", name: "未分组", cwd: "/tmp/project", sessionCount: 1 },
+        ],
+        sessions: [
+          ...props.snapshot!.sessions.map((session, index) => ({
+            ...session,
+            projectId: `project-${index + 1}`,
+            projectName: index === 0 ? "First project" : "Second project",
+            cwd: `/tmp/project-${index + 1}`,
+          })),
+          { ...props.snapshot!.sessions[0]!, sessionId: "unsec-1", projectId: "claude-unsectioned", projectName: "未分组", cwd: "/tmp/project" },
+        ],
+      },
+    };
     draw();
     backToCatalog();
-    elements(tree).find(element => element.type === IconButton && element.props.label === "新建会话：First project")!.props.onClick();
+    // Opening 新建会话：未分组 and re-picking the shared /tmp/project folder must preserve 未分组 ("") rather than hijacking First project!
+    elements(tree).find(element => element.type === IconButton && element.props.label === "新建会话：未分组")!.props.onClick();
+    await settle();
+    await settle();
     draw();
-    const dialog = elements(tree).find(element => element.type === SessionCreateDialog)!;
-    expect(dialog.props.snapshot.projects.map((project: { projectId: string }) => project.projectId)).toEqual(["project-1", "project-2"]);
-    expect(dialog.props.initialProjectId).toBe("project-1");
-    expect(dialog.props.connected).toBe(true);
-    await dialog.props.onCreate("/tmp/project", "Created", "claude-desktop", "project-2");
-    expect(props.onCreateSession).toHaveBeenCalledOnce();
-    expect(props.onCreateSession).toHaveBeenCalledWith("/tmp/project", "Created", "claude-desktop", "project-2");
+    const sectionMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "所属分组")!;
+    const dirPathText = () => String(elements(tree).find(element => element.type === "code" && element.props.className === "new-chat-dir-path")!.props.children);
+    expect(sectionMenu().props.value).toBe("");
+    // Header shows single clean 新建会话 title without duplicate hero h2 or redundant quick-section chips
+    const newChatHeader = elements(tree).find(element => element.type === MobilePageHeader && element.props.title === "新建会话")!;
+    expect(newChatHeader.props.titleHidden).toBeUndefined();
+    expect(elements(tree).some(element => element.type === "div" && element.props.className === "new-chat-quick-sections")).toBe(false);
+    // Changing 所属分组 BEFORE manually choosing a folder auto-updates selectedCwd to that group's cwd
+    sectionMenu().props.onChange("project-2");
+    draw();
+    expect(dirPathText()).toBe("/tmp/project-2");
+    sectionMenu().props.onChange("");
+    draw();
+    expect(dirPathText()).toBe("/tmp/project");
+
+    // Once user manually picks a folder via 工作目录, changing 所属分组 preserves the manually chosen folder!
+    elements(tree).find(element => element.type === "button" && element.props["aria-label"] === "选择文件夹")!.props.onClick();
+    draw();
+    const folderPicker = elements(tree).find(element => element.type === SessionCreateDialog)!;
+    folderPicker.props.onPickDirectory("/tmp/custom-picked");
+    folderPicker.props.onClose();
+    draw();
+    expect(sectionMenu().props.value).toBe("");
+    sectionMenu().props.onChange("project-1");
+    draw();
+    expect(dirPathText()).toBe("/tmp/custom-picked");
+
+    // Creating an empty session with unchanged defaults when created already matches sends zero redundant configure RPCs
+    elements(tree).find(element => element.type === "button" && String(element.props.className).includes("new-chat-empty-create-btn"))!.props.onClick();
+    await settle();
+    expect(props.onConfigureSession).not.toHaveBeenCalled();
+    callOrder.length = 0;
+
+    backToCatalog();
+    elements(tree).find(element => element.type === IconButton && element.props.label === "新建会话：First project")!.props.onClick();
+    await settle();
+
+    expect(props.onLoadSessionConfiguration).toHaveBeenCalledWith("__default__");
+    expect(sectionMenu().props.value).toBe("project-1");
+
+    // Type a draft in NewChatCanvas, back out to catalog, and reopen via top-right 新建会话 -> draft persists!
+    const newChatTextarea = () => elements(tree).find(element => element.type === "textarea" && element.props["aria-label"] === "给 Claude 发指令")!;
+    newChatTextarea().props.onChange({ target: { value: "跨入口保留的新建草稿" } });
+    draw();
+    expect(dispatchMobileBack()).toBe(true); draw();
+    elements(tree).find(element => element.type === IconButton && element.props.label === "新建会话")!.props.onClick();
+    await settle();
+    expect(newChatTextarea().props.value).toBe("跨入口保留的新建草稿");
+
+    // Select section project-2 (auto-updates cwd to /tmp/project-2), model Opus 4.7, effort 极高, and verify bypassPermissions confirmation guard + plan mode
+    sectionMenu().props.onChange("project-2"); draw();
+    expect(dirPathText()).toBe("/tmp/project-2");
+    const modelMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "模型")!;
+    modelMenu().props.onChange("claude-opus-4-7"); draw();
+    const effortBtn = elements(tree).find(element => element.type === "button" && element.props.children === "极高")!;
+    effortBtn.props.onClick(); draw();
+    const permissionMenu = () => elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "授权模式")!;
+    permissionMenu().props.onChange("bypassPermissions"); draw();
+    const confirmBypass = elements(tree).find(element => element.type === ConfirmationDialog && element.props.title === "启用完全授权")!;
+    expect(confirmBypass.props.open).toBe(true);
+    confirmBypass.props.onCancel(); draw();
+    expect(permissionMenu().props.value).toBe("default");
+    permissionMenu().props.onChange("plan"); draw();
+    expect(permissionMenu().props.value).toBe("plan");
+
+    await form().props.onSubmit({ preventDefault() {} });
+    await settle();
+
+    expect(props.onCreateSession).toHaveBeenCalledWith("/tmp/project-2", undefined, "claude-desktop", "project-2");
+    expect(callOrder).toEqual([
+      "create:/tmp/project-2:project-2",
+      "configure:created-1:claude-opus-4-7:xhigh:plan",
+      "send:created-1:跨入口保留的新建草稿",
+    ]);
+  });
+
+  it("halts automatic prompt send when requested permissionMode is not applied, and requires explicit 信任并创建 for WorkspaceTrustError", async () => {
+    const createdSession: BridgeSessionInfo = {
+      ...props.snapshot!.sessions[0]!,
+      sessionId: "created-unapplied",
+      title: "Unapplied",
+      nativePermissionMode: "default",
+    };
+    props = {
+      ...props,
+      snapshot: {
+        ...props.snapshot!,
+        host: { ...props.snapshot!.host, capabilities: ["claude.native-relay.v1", "workspace.trust.v1"] },
+        runtimes: [{
+          id: "claude-desktop",
+          name: "Claude Desktop",
+          state: "ready",
+          detail: "Ready",
+          capabilities: ["session.create", "workspace.trust", "session.configure"],
+          sessionIsolation: "independent",
+          sessionCount: 2,
+          updatedAt: 1,
+        }],
+        sessions: [props.snapshot!.sessions[0]!, createdSession],
+      },
+      onCreateSession: vi.fn()
+        .mockRejectedValueOnce(Object.assign(new Error("Untrusted"), { code: "WORKSPACE_TRUST_REQUIRED" }))
+        .mockRejectedValueOnce(Object.assign(new Error("Untrusted"), { code: "WORKSPACE_TRUST_REQUIRED" }))
+        .mockResolvedValueOnce(createdSession),
+      onConfigureSession: vi.fn().mockResolvedValue({
+        sessionId: "created-unapplied",
+        modelSource: "claude-desktop",
+        availableModels: [],
+        effortSource: "claude-desktop",
+        availableEffortLevels: ["low", "medium", "high"],
+        nativePermissionMode: "default",
+        modelsComplete: true,
+        appliesAfterTurn: false,
+      }),
+      onSendTurn: vi.fn(),
+    };
+    draw();
+    startNewChatFromDrawer();
+    const newChatTextarea = () => elements(tree).find(element => element.type === "textarea" && element.props["aria-label"] === "给 Claude 发指令")!;
+    newChatTextarea().props.onChange({ target: { value: "必须在计划模式下执行的敏感指令" } });
+    draw();
+    elements(tree).find(element => element.type === SelectMenu && element.props.ariaLabel === "授权模式")!.props.onChange("plan");
+    draw();
+
+    // First submit hits WORKSPACE_TRUST_REQUIRED; second plain submit must STILL NOT pass trustWorkspace=true!
+    await form().props.onSubmit({ preventDefault() {} });
+    await settle();
+    await form().props.onSubmit({ preventDefault() {} });
+    await settle();
+    expect(props.onCreateSession).toHaveBeenNthCalledWith(1, "/tmp/project", undefined, "claude-desktop", undefined);
+    expect(props.onCreateSession).toHaveBeenNthCalledWith(2, "/tmp/project", undefined, "claude-desktop", undefined);
+
+    const nodeText = (node: ReactNode): string => (
+      typeof node === "string" || typeof node === "number"
+        ? String(node)
+        : Array.isArray(node)
+          ? node.map(nodeText).join("")
+          : node && typeof node === "object" && "props" in node
+            ? nodeText((node as ReactElement<Record<string, any>>).props.children)
+            : ""
+    );
+
+    // Clicking explicit 信任并创建 passes trustWorkspace=true; unapplied permissionMode halts send and retains prompt in created session!
+    const trustBtn = elements(tree).find(element => element.type === "button" && nodeText(element).includes("信任并创建"))!;
+    await trustBtn.props.onClick();
+    await settle();
+    expect(props.onCreateSession).toHaveBeenNthCalledWith(3, "/tmp/project", undefined, "claude-desktop", undefined, true);
+    expect(props.onSendTurn).not.toHaveBeenCalled();
+    expect(input().props.value).toBe("必须在计划模式下执行的敏感指令");
+    expect(elements(tree).some(el => el.props.role === "alert" && nodeText(el).includes("所选授权模式未生效"))).toBe(true);
   });
 });
 

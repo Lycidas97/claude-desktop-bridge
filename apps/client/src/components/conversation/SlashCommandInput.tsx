@@ -151,7 +151,13 @@ export function SlashCommandInput({
           }
         }}
         onCompositionStart={() => { composing.current = true; }}
-        onCompositionEnd={() => { composing.current = false; }}
+        onCompositionEnd={(event) => {
+          composing.current = false;
+          const nextValue = event?.currentTarget?.value;
+          if (typeof nextValue === "string" && nextValue !== value) {
+            onChange(nextValue);
+          }
+        }}
         onKeyDown={(event) => {
           if (!open || composing.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
           if (!["Escape", "ArrowDown", "ArrowUp", "Enter", "Tab"].includes(event.key)) return;

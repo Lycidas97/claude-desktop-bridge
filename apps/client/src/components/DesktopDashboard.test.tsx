@@ -497,6 +497,9 @@ describe("desktop empty creation", () => {
     const create = elements(tree).find(element => element.type === IconButton && element.props.label === "新建会话")!;
     expect(create.props.disabled).not.toBe(true);
     create.props.onClick(); tree = sessions.draw();
+    expect(elements(tree).some(element => element.type === NewChatCanvas)).toBe(true);
+    elements(tree).find(element => element.type === "button" && element.props["aria-label"] === "选择文件夹")!.props.onClick();
+    tree = sessions.draw();
     expect(elements(tree).some(element => typeof element.type === "function" && element.type.name === "SessionCreateDialog")).toBe(true);
   });
 });
@@ -509,6 +512,9 @@ describe("desktop shared catalog", () => {
     expect(textContent(tree)).toContain(state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop");
     const empty = elements(tree).find(element => element.type === EmptyState)!;
     elements(empty).find(element => element.type === "button" && textContent(element).includes("新建会话"))!.props.onClick();
+    tree = sessions.draw();
+    expect(elements(tree).some(element => element.type === NewChatCanvas)).toBe(true);
+    elements(tree).find(element => element.type === "button" && element.props["aria-label"] === "选择文件夹")!.props.onClick();
     tree = sessions.draw();
     expect(elements(tree).some(element => typeof element.type === "function" && element.type.name === "SessionCreateDialog")).toBe(true);
   });
@@ -1738,7 +1744,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     expect(elements(tree).some((element) => element.props.className === "primary-button session-catalog-empty-action")).toBe(true);
     expect(elements(tree).some((element) => element.type === ProjectGroupHeader)).toBe(false);
     expect(elements(tree).some((element) => element.type === NewChatCanvas)).toBe(true);
-    expect(textContent(tree)).toContain("准备在哪个目录开始？");
+    expect(textContent(tree)).toContain("工作目录");
 
     // Desktop 会话操作 menu includes 同步此会话 via onOpenSession and pauses Sheet focus while delete ConfirmationDialog is open
     snapshot.host.capabilities.push("session.visibility.v1");
@@ -1780,12 +1786,16 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     elements(tree).find((element) => element.type === Sheet && element.props.title === activeTitle)!.props.onClose();
     tree = sessions.draw();
 
-    // Per-project 新建会话：<项目名> wires initialProjectId, onBrowseDirectory, and onCreateDirectory
+    // Per-project 新建会话：<项目名> opens unified NewChatCanvas with initialProjectId and wires directory browse/mkdir
     tree = sessions.draw();
     elements(tree).find((element) => element.type === IconButton && element.props.label === "新建会话：Project")!.props.onClick();
     tree = sessions.draw();
+    const projectCanvas = elements(tree).find((element) => element.type === NewChatCanvas)!;
+    expect(projectCanvas.props.initialProjectId).toBe("project");
+    elements(tree).find((element) => element.type === "button" && element.props["aria-label"] === "选择文件夹")!.props.onClick();
+    tree = sessions.draw();
     const createDialog = elements(tree).find((element) => element.type === SessionCreateDialog)!;
-    expect(createDialog.props.initialProjectId).toBe("project");
+    expect(typeof createDialog.props.onPickDirectory).toBe("function");
     apiRequest.mockResolvedValueOnce({
       kind: "response",
       requestId: "dir-list",
@@ -2188,7 +2198,7 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     tree = sessions.draw();
 
     // Directory pill without native chooseDirectory opens folder-picker dialog and returns cwd while keeping draft
-    elements(tree).find((element) => element.type === "button" && element.props.className === "new-chat-dir-pill")!.props.onClick();
+    elements(tree).find((element) => element.type === "button" && element.props["aria-label"] === "选择文件夹")!.props.onClick();
     tree = sessions.draw();
     const pickerDialog = elements(tree).find((element) => element.type === SessionCreateDialog)!;
     expect(typeof pickerDialog.props.onPickDirectory).toBe("function");
@@ -2198,9 +2208,10 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     expect(textContent(tree)).toContain("~/repo");
     expect(canvasTextarea().props.value).toBe("首条空目录指令");
 
-    // Clear cwd scenario via empty workspace and test SessionCreateDialog onCreated prompt handoff
+    // Clear cwd scenario via empty workspace and test directory picker + NewChatCanvas creation prompt handoff
     snapshot.projects = [];
-    await openSessions();
+    elements(tree).find((element) => element.type === IconButton && element.props.label === "新建会话")!.props.onClick();
+    tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot, projects: [], sessions: [] } });
     canvasTextarea().props.onChange({ target: { value: "弹窗接力指令" } });
     tree = sessions.draw();
     elements(tree).find((element) => element.type === "form" && element.props.className === "composer-form")!.props.onSubmit({
@@ -2208,7 +2219,11 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     });
     tree = sessions.draw();
     const createDialog = elements(tree).find((element) => element.type === SessionCreateDialog)!;
-    expect(createDialog.props.onPickDirectory).toBeUndefined();
+    expect(typeof createDialog.props.onPickDirectory).toBe("function");
+    createDialog.props.onPickDirectory("/Users/demo/repo");
+    createDialog.props.onClose();
+    tree = sessions.draw();
+    expect(canvasTextarea().props.value).toBe("弹窗接力指令");
 
     const createdSession: BridgeSessionInfo = {
       sessionId: "new-1",
@@ -2233,6 +2248,28 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
     };
     let rejectTurnStart!: (reason?: unknown) => void;
     apiRequest.mockImplementation((req: { method: string }) => {
+      if (req.method === "session.create") {
+        snapshot.projects = [{
+          projectId: "group-empty",
+          name: "reproAPA",
+          cwd: "",
+          kind: "desktop-group",
+          sessionCount: 0,
+          runningCount: 0,
+          pendingCount: 0,
+          lastActivityAt: 2,
+        }, {
+          projectId: "folder-1",
+          name: "repo",
+          cwd: "/Users/demo/repo",
+          sessionCount: 1,
+          runningCount: 0,
+          pendingCount: 0,
+          lastActivityAt: 10,
+        }];
+        snapshot.sessions = [createdSession];
+        return Promise.resolve({ kind: "response", requestId: "create-1", ok: true, result: { session: createdSession } });
+      }
       if (req.method === "turn.start") {
         return new Promise<BridgeResponse>((_, reject) => {
           rejectTurnStart = reject;
@@ -2247,28 +2284,10 @@ describe("desktop mobile-aligned session sidebar and permission dock", () => {
       return Promise.resolve({ kind: "response", requestId: "ok", ok: true, result: {} });
     });
 
-    snapshot.projects = [{
-      projectId: "group-empty",
-      name: "reproAPA",
-      cwd: "",
-      kind: "desktop-group",
-      sessionCount: 0,
-      runningCount: 0,
-      pendingCount: 0,
-      lastActivityAt: 2,
-    }, {
-      projectId: "folder-1",
-      name: "repo",
-      cwd: "/Users/demo/repo",
-      sessionCount: 1,
-      runningCount: 0,
-      pendingCount: 0,
-      lastActivityAt: 10,
-    }];
-    snapshot.sessions = [createdSession];
-
-    createDialog.props.onCreated(createdSession);
-    createDialog.props.onClose();
+    await elements(tree).find((element) => element.type === "form" && element.props.className === "composer-form")!.props.onSubmit({
+      preventDefault() {},
+    });
+    await settle();
     tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot } });
     await settle();
     tree = sessions.draw({ ...sessionsProps, snapshot: { ...snapshot } });

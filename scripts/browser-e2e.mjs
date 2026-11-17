@@ -129,6 +129,53 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
   }
   await openMobileDrawer(page);
   await capture("mobile-catalog");
+  const savedMobileSnapshot = structuredClone(host.snapshot);
+  for (const session of host.snapshot.sessions) {
+    session.turnState = "running";
+    session.ownership = "DESKTOP_NATIVE_RUNNING";
+  }
+  const collapsedGroups = page.locator(".mobile-home-catalog .project-group:not(.expanded):not(.archived-group) .project-group-open");
+  while (await collapsedGroups.count() > 0) {
+    await collapsedGroups.first().click();
+  }
+  await page.locator(".mobile-home-catalog .mobile-fork-toggle").first().click();
+  await page.locator('.mobile-home-catalog [data-session-id="browser-e2e-fork"]').waitFor();
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await page.locator('.mobile-home-catalog .session-row-v2.has-forks .session-state-dot.running').first().waitFor();
+  await page.locator('.mobile-home-catalog [data-session-id="browser-e2e-fork"] .session-state-dot.running').waitFor();
+  for (const font of ["standard", "large", "larger"]) {
+    await page.evaluate((nextFont) => {
+      document.documentElement.dataset.fontSize = nextFont;
+      document.documentElement.dataset.effectiveScale = nextFont === "larger" ? "xlarge" : nextFont === "large" ? "large" : "normal";
+      const scale = nextFont === "larger" ? "1.25" : nextFont === "large" ? "1.125" : "1";
+      document.documentElement.style.setProperty("--font-scale", scale);
+    }, font);
+    const mobileAlign = await page.evaluate(() => {
+      const midY = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.top + r.height / 2;
+      };
+      const forkedRow = document.querySelector(".mobile-home-catalog .session-row-v2.has-forks");
+      const plainRow = document.querySelector('.mobile-home-catalog [data-session-id="browser-e2e-fork"]');
+      return {
+        forkedChevronDelta: Math.abs(midY(forkedRow.querySelector(".session-family-chevron")) - midY(forkedRow.querySelector(".session-row-action"))),
+        forkedBadgesDelta: Math.abs(midY(forkedRow.querySelector(".session-row-badges")) - midY(forkedRow.querySelector(".session-row-action"))),
+        plainBadgesDelta: Math.abs(midY(plainRow.querySelector(".session-row-badges")) - midY(plainRow.querySelector(".session-row-action"))),
+      };
+    });
+    assert.ok(mobileAlign.forkedChevronDelta <= 1.5, `Mobile ${font} forked chevron aligns with action: ${JSON.stringify(mobileAlign)}`);
+    assert.ok(mobileAlign.forkedBadgesDelta <= 1.5, `Mobile ${font} forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);
+    assert.ok(mobileAlign.plainBadgesDelta <= 1.5, `Mobile ${font} non-forked dot aligns with action: ${JSON.stringify(mobileAlign)}`);
+  }
+  await page.locator(".mobile-home-catalog .session-row-v2.has-forks .session-family-chevron").first().click();
+  await page.evaluate(() => {
+    document.documentElement.dataset.fontSize = "standard";
+    document.documentElement.dataset.effectiveScale = "normal";
+    document.documentElement.style.setProperty("--font-scale", "1");
+  });
+  host.snapshot.sessions = savedMobileSnapshot.sessions;
+  await host.send({ kind: "snapshot", snapshot: host.snapshot });
+  await eventually(() => page.locator(`[data-session-id="${sessionId}"] .session-state-dot.running`).count(), 0, "Restore idle catalog state");
   await page.getByRole("button", { name: "调整顺序", exact: true }).click();
   await page.getByRole("dialog", { name: "项目顺序" }).waitFor();
   await capture("mobile-project-order");
@@ -300,8 +347,9 @@ async function verifySessionCatalog(page, host, steps, directory, viewports) {
     }, state);
     await sidebar.getByText(state === "ready" ? "暂无活跃会话" : "未检测到 Claude Desktop", { exact: true }).waitFor();
     await sidebar.locator(".session-catalog-empty-action").click();
-    await page.getByRole("dialog", { name: "新建会话" }).waitFor();
-    await page.getByRole("dialog", { name: "新建会话" }).getByRole("button", { name: "关闭", exact: true }).click();
+    await page.locator(".new-chat-canvas").getByRole("button", { name: "选择文件夹", exact: true }).click();
+    await page.getByRole("dialog", { name: "选择文件夹" }).waitFor();
+    await page.getByRole("dialog", { name: "选择文件夹" }).getByRole("button", { name: "关闭", exact: true }).click();
     await capture(`desktop-empty-${state}`);
   }
   steps.push("Desktop distinguishes disconnected/ready empty catalogs and opens creation from both");
@@ -1378,7 +1426,17 @@ async function createMockHost(queued, failFirstRename, errors, native = false, n
             result = { session: snapshot.sessions.find(candidate => candidate.sessionId === request.params.sessionId) };
             break;
           }
-          const readResult = await host.nativeApproval.configuration(request);
+          if (!host.nativeApproval) {
+            error = { code: "UNSUPPORTED", message: "Configuration unavailable on non-native fixture" };
+            break;
+          }
+          let readResult;
+          try {
+            readResult = await host.nativeApproval.configuration(request);
+          } catch (failure) {
+            error = { code: "NOT_FOUND", message: failure.message };
+            break;
+          }
           result = readResult?.session && request.params.sessionId === sessionId
             ? {
                 ...readResult,
@@ -1707,11 +1765,12 @@ async function verifyRename(page, host, entry, steps) {
     await page.locator(".session-catalog-loading strong", { hasText: "暂无会话" }).waitFor();
     await page.locator(".session-catalog-loading span", { hasText: "当前电脑上尚未创建会话，可随时开始新的对话。" }).waitFor();
     await page.locator(".session-catalog-loading").getByRole("button", { name: "新建会话", exact: true }).click();
-    const createDialog = page.getByRole("dialog", { name: "新建会话" });
-    await createDialog.waitFor();
+    const newChatCanvas = page.locator(".new-chat-canvas");
+    await newChatCanvas.waitFor();
+    await newChatCanvas.getByRole("group", { name: "新建会话配置", exact: true }).waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-    await createDialog.getByRole("button", { name: "关闭", exact: true }).click();
-    await createDialog.waitFor({ state: "hidden" });
+    await newChatCanvas.getByRole("button", { name: "返回会话列表", exact: true }).click();
+    await newChatCanvas.waitFor({ state: "hidden" });
 
     await host.send({
       kind: "snapshot",
@@ -1815,7 +1874,7 @@ async function verifySessionHeader(page, host, steps, directory) {
     profile.nativePermissionMode = mode;
     Object.assign(session, profile);
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
-    await eventually(() => page.locator(".m-header .session-profile-summary").innerText(), `${profile.modelDisplayName} · High · ${label}`, "The header shows the current mode with the complete model and effort");
+    await eventually(() => page.locator(".m-header .session-profile-summary").textContent(), `${profile.modelDisplayName} · High · ${label}`, "The header shows the current mode with the complete model and effort");
     await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${label}` }, "Mobile settings announce the current snapshot profile");
   }
   const notice = page.getByRole("status", { name: "Desktop 会话授权变更", exact: true });
@@ -1824,27 +1883,39 @@ async function verifySessionHeader(page, host, steps, directory) {
     Object.assign(session, profile);
     await host.send({ kind: "snapshot", snapshot: host.snapshot });
     await eventually(() => notice.count(), state === "confirmed" ? 0 : 1, `Permission notice state ${state}`);
-    assert.ok((await page.locator(".m-header .session-profile-summary").innerText()).includes("Don't Ask"), "A requested mode never replaces the observed header mode");
+    assert.ok((await page.locator(".m-header .session-profile-summary").textContent()).includes("Don't Ask"), "A requested mode never replaces the observed header mode");
   }
-  async function checkWrapping(selector, surface) {
+  async function checkWrapping(selector, surface, requiredParts = [], stackedSecondLine = true) {
     const layout = await page.locator(selector).evaluate((element) => {
-      const range = document.createRange();
-      range.selectNodeContents(element);
+      const modelLine = element.querySelector(".is-model-line");
+      const metaLine = element.querySelector(".is-meta-line");
       const rect = element.getBoundingClientRect();
+      const modelRect = modelLine?.getBoundingClientRect();
+      const metaRect = metaLine?.getBoundingClientRect();
+      const range = document.createRange();
+      if (modelLine) range.selectNodeContents(modelLine);
       return {
-        whiteSpace: getComputedStyle(element).whiteSpace,
-        textOverflow: getComputedStyle(element).textOverflow,
-        lines: new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size,
-        height: rect.height,
+        modelWhiteSpace: modelLine ? getComputedStyle(modelLine).whiteSpace : "",
+        modelTextOverflow: modelLine ? getComputedStyle(modelLine).textOverflow : "",
+        modelLines: modelLine ? new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size : 0,
+        metaText: metaLine?.textContent ?? "",
+        metaClipped: metaLine ? metaLine.scrollWidth > metaLine.clientWidth + 1 : false,
+        stacked: modelRect && metaRect ? metaRect.top >= modelRect.bottom - 2 : false,
         left: rect.left,
         right: rect.right,
+        metaRight: metaRect ? metaRect.right : rect.right,
         width: innerWidth,
       };
     });
-    assert.equal(layout.whiteSpace, "nowrap", `${surface} keeps profile summary on one single line`);
-    assert.equal(layout.textOverflow, "ellipsis", `${surface} truncates cleanly with ellipsis`);
-    assert.equal(layout.lines, 1, `${surface} never wraps onto a second line: ${JSON.stringify(layout)}`);
-    assert.ok(layout.left >= 0 && layout.right <= layout.width + 1, `${surface} fits the viewport`);
+    assert.equal(layout.modelWhiteSpace, "nowrap", `${surface} keeps model line on one single line`);
+    assert.equal(layout.modelTextOverflow, "ellipsis", `${surface} truncates long model names cleanly with ellipsis`);
+    assert.equal(layout.modelLines, 1, `${surface} model line never wraps: ${JSON.stringify(layout)}`);
+    assert.equal(layout.metaClipped, false, `${surface} never truncates effort or permission mode: ${JSON.stringify(layout)}`);
+    for (const part of requiredParts) {
+      assert.ok(layout.metaText.includes(part), `${surface} keeps "${part}" visible in meta line: ${JSON.stringify(layout)}`);
+    }
+    assert.equal(layout.stacked, stackedSecondLine, `${surface} stackedSecondLine=${stackedSecondLine} mismatch: ${JSON.stringify(layout)}`);
+    assert.ok(layout.left >= 0 && layout.right <= layout.width + 1 && layout.metaRight <= layout.width + 1, `${surface} fits the viewport`);
   }
   for (const width of [375, 320]) {
     await page.setViewportSize({ width, height: 812 });
@@ -1885,7 +1956,7 @@ async function verifySessionHeader(page, host, steps, directory) {
     }, { canConfigure, mode, sessionId });
     await eventually(() => page.getByRole("button", { name: "会话设置", exact: true }).count(), canConfigure ? 1 : 0, "Desktop retains a read-only header when settings are unavailable");
     const summary = page.locator(".desktop-conversation .session-profile-summary");
-    await eventually(() => summary.innerText(), `${profile.modelDisplayName} · High · ${modes[mode]}`, "Desktop receives updated mode without a configuration read");
+    await eventually(() => summary.textContent(), `${profile.modelDisplayName} · High · ${modes[mode]}`, "Desktop receives updated mode without a configuration read");
     if (canConfigure) await eventually(accessibleProfile, { name: "会话设置", description: `${profile.modelDisplayName} · High · ${modes[mode]}` }, "Desktop settings announce the current snapshot profile");
     await checkWrapping(".desktop-conversation .session-profile-summary", `Desktop configure=${canConfigure}`, [modes[mode], "High"], false);
   }
@@ -2864,8 +2935,9 @@ async function verifyNativeBoundaries(page, host, steps, directory) {
   await page.reload({ waitUntil: "domcontentloaded" });
   await openMobileSession(page);
   await page.getByText("保留的检查点回复", { exact: true }).waitFor();
-  assert.equal(await page.getByText("回退后应消失的回复", { exact: true }).count(), 0);
-  assert.equal(await page.getByText("重写这条请求", { exact: true }).count(), 0);
+  assert.equal(await stream.getByText("回退后应消失的回复", { exact: true }).count(), 0);
+  assert.equal(await stream.getByText("重写这条请求", { exact: true }).count(), 0);
+  assert.equal(await page.locator(".composer-form textarea").inputValue(), "重写这条请求");
   await page.screenshot({ path: resolve(directory, "native-rewind-reconnected.png"), fullPage: true });
   steps.push("confirmed rewind restores files before the conversation, prefill returns to the draft, and discarded messages stay absent after reconnect/replay");
 
@@ -3267,30 +3339,38 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
 
   await openMobileDrawer(page);
   const { untrustedDir, manualTrustDir } = host.nativeApproval;
-  const createDialog = page.locator(".session-create-dialog");
+  const newChatCanvas = page.locator(".new-chat-canvas");
+  const folderDialog = page.locator(".session-create-dialog");
   const chooseFolderByPath = async (targetDir) => {
-    await createDialog.getByRole("button", { name: "选择文件夹" }).click();
-    await createDialog.getByRole("button", { name: "浏览电脑文件夹", exact: true }).click();
-    await createDialog.getByRole("button", { name: "输入路径", exact: true }).click();
-    await createDialog.getByLabel("当前路径", { exact: true }).fill(targetDir);
-    await createDialog.getByLabel("当前路径", { exact: true }).press("Enter");
-    await createDialog.getByRole("button", { name: "使用此文件夹", exact: true }).click();
+    await newChatCanvas.getByRole("button", { name: "选择文件夹", exact: true }).click();
+    await folderDialog.waitFor();
+    const browseBtn = folderDialog.getByRole("button", { name: "浏览电脑文件夹", exact: true });
+    if (await browseBtn.isVisible()) {
+      await browseBtn.click();
+    }
+    await folderDialog.getByRole("button", { name: "输入路径", exact: true }).click();
+    await folderDialog.getByLabel("当前路径", { exact: true }).fill(targetDir);
+    await folderDialog.getByLabel("当前路径", { exact: true }).press("Enter");
+    await folderDialog.getByRole("button", { name: "使用此文件夹", exact: true }).click();
+    await folderDialog.waitFor({ state: "hidden" });
   };
 
   await page.locator('.mobile-home-catalog button[aria-label^="新建会话："]').first().click();
+  await newChatCanvas.waitFor();
   await chooseFolderByPath(untrustedDir);
-  await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("受信任目录会话");
-  await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
+  await newChatCanvas.getByRole("button", { name: "创建空会话", exact: true }).click();
 
-  const trustAlert = createDialog.getByRole("alert");
+  const trustAlert = newChatCanvas.getByRole("alert");
   await eventually(() => trustAlert.innerText(), `该文件夹首次使用，是否信任并允许 Claude 访问「${untrustedDir}」？`, "Untrusted folder prompts for explicit confirmation without exposing EIPC text");
-  assert.equal((await createDialog.innerText()).includes("$eipc_message$"), false);
+  assert.equal((await newChatCanvas.innerText()).includes("$eipc_message$"), false);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: resolve(directory, "workspace-trust-confirm.png"), fullPage: true });
 
-  await createDialog.getByRole("button", { name: "信任并创建", exact: true }).click();
-  await createDialog.waitFor({ state: "hidden" });
-  await page.getByRole("heading", { name: "受信任目录会话", exact: true }).waitFor();
+  await newChatCanvas.getByRole("button", { name: "信任并创建", exact: true }).click();
+  await newChatCanvas.waitFor({ state: "hidden" });
+  await page.locator(".conversation-workspace").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
+  const firstCreatedId = host.snapshot.sessions.find((candidate) => candidate.cwd === untrustedDir)?.sessionId;
+  assert.ok(firstCreatedId, "Trusted session created");
   assert.deepEqual(
     host.nativeApproval.calls.filter(call => call.method === "saveTrust").map(call => call.args),
     [[untrustedDir]],
@@ -3299,20 +3379,44 @@ async function verifyNativeSessionNotices(page, host, steps, directory) {
   await openMobileDrawer(page);
   host.nativeApproval.setTrustPolicy({ keepUntrustedAfterSave: true });
   await page.locator('.mobile-home-catalog button[aria-label^="新建会话："]').first().click();
+  await newChatCanvas.waitFor();
   await chooseFolderByPath(manualTrustDir);
-  await createDialog.getByLabel("会话名称（可选）", { exact: true }).fill("手动信任兜底会话");
-  await createDialog.getByRole("button", { name: "创建会话", exact: true }).click();
-  await createDialog.getByRole("button", { name: "信任并创建", exact: true }).click();
+  await newChatCanvas.getByRole("button", { name: "创建空会话", exact: true }).click();
+  await newChatCanvas.getByRole("button", { name: "信任并创建", exact: true }).click();
   await eventually(() => trustAlert.innerText(), `请在电脑端 Claude 窗口打开并信任「${manualTrustDir}」后重试。`, "Manual fallback guides desktop GUI approval when saveTrust cannot satisfy trust");
   await page.screenshot({ path: resolve(directory, "workspace-trust-manual.png"), fullPage: true });
 
   host.nativeApproval.trustWorkspace(manualTrustDir);
-  await createDialog.getByRole("button", { name: "重试创建", exact: true }).click();
-  await createDialog.waitFor({ state: "hidden" });
-  await page.getByRole("heading", { name: "手动信任兜底会话", exact: true }).waitFor();
+  await newChatCanvas.getByRole("button", { name: "重试创建", exact: true }).click();
+  await newChatCanvas.waitFor({ state: "hidden" });
+  await page.locator(".conversation-workspace").getByRole("heading", { name: "新建会话", exact: true }).waitFor();
+  const secondCreatedId = host.snapshot.sessions.find((candidate) => candidate.cwd === manualTrustDir)?.sessionId;
+  assert.ok(secondCreatedId, "Manual-trusted session created");
   assert.equal(host.requests.filter(request => request.method === "session.create").at(-1)?.params.trustWorkspace, undefined);
+
+  // Verify per-session persistent drafts survive session switching, Back to catalog, and full page reload without cross-talk.
+  const composerInput = page.locator(".composer-form textarea");
+  await composerInput.fill("Draft for Session B");
+  await openMobileDrawer(page);
+  await page.locator(`.mobile-home-catalog [data-session-id="${firstCreatedId}"] .session-row-hit`).click();
+  await composerInput.waitFor();
+  assert.equal(await composerInput.inputValue(), "");
+  await composerInput.fill("Draft for Session A");
+  await openMobileDrawer(page);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator(".mobile-home-catalog").waitFor();
+  await page.locator(`.mobile-home-catalog [data-session-id="${firstCreatedId}"] .session-row-hit`).click();
+  await composerInput.waitFor();
+  assert.equal(await composerInput.inputValue(), "Draft for Session A", "Session A draft restored after reload");
+  await composerInput.fill("");
+  await openMobileDrawer(page);
+  await page.locator(`.mobile-home-catalog [data-session-id="${secondCreatedId}"] .session-row-hit`).click();
+  await composerInput.waitFor();
+  assert.equal(await composerInput.inputValue(), "Draft for Session B", "Session B draft restored without cross-talk after reload");
+  await composerInput.fill("");
+
   assert.equal(host.requests.filter(request => ["turn.start", "turn.steer", "session.rewind", "permission.resolve"].includes(request.method)).length, 0);
-  steps.push("untrusted folders sanitize WorkspaceTrustError into confirmation + saveTrust auto-retry, and degrade to manual desktop guidance + one-click retry when saveTrust is insufficient");
+  steps.push("untrusted folders sanitize WorkspaceTrustError into confirmation + saveTrust auto-retry, degrade to manual desktop guidance + one-click retry, and per-session drafts persist across reload");
 }
 
 function addScrollProjects(host, count) {

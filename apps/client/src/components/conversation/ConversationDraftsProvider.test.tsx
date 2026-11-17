@@ -2,6 +2,7 @@ import type { BridgeHostSnapshot, BridgeSessionInfo, BridgeUploadedFile } from "
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CONVERSATION_DRAFTS_STORAGE_KEY,
   ConversationDraftsProvider,
   useConversationDrafts,
   type ConversationDraftsController,
@@ -182,6 +183,8 @@ describe("ConversationDraftsProvider", () => {
     return runWithStore(consumerStore, () => useConversationDrafts(hostId));
   }
 
+  let stored: Map<string, string>;
+
   beforeEach(() => {
     providerStore = createStore();
     consumerStore = createStore();
@@ -189,7 +192,13 @@ describe("ConversationDraftsProvider", () => {
     handle = {};
     runtime.contextValue = undefined;
     runtime.readers = [];
+    stored = new Map();
     vi.stubGlobal("FileReader", DeferredFileReader);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => stored.set(key, value),
+      removeItem: (key: string) => stored.delete(key),
+    });
   });
 
   afterEach(() => {
@@ -375,5 +384,83 @@ describe("ConversationDraftsProvider", () => {
     } finally {
       unmountStore(standaloneStore);
     }
+  });
+
+  it("persists per-session and __new__ drafts synchronously to localStorage across full app reload, clears on send/reset/clearHost, caps at 100 entries, and tolerates storage errors", async () => {
+    let drafts = renderConsumer();
+    drafts.session("host-a", "sess-A").setText("Draft for Session A");
+    drafts.session("host-a", "sess-B").setText("Draft for Session B");
+    drafts.session("host-a", "__new__").setText("新建会话草稿");
+    drafts.session("host-b", "sess-A").setText("Host B Session A");
+    expect(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)).toBeTruthy();
+
+    // Simulate full app exit and cold restart (unmounting both consumer & provider, keeping only localStorage).
+    unmountStore(consumerStore);
+    unmountStore(providerStore);
+    runtime.contextValue = undefined;
+    providerStore = createStore();
+    consumerStore = createStore();
+
+    drafts = renderConsumer();
+    expect(drafts.session("host-a", "sess-A").draft.text).toBe("Draft for Session A");
+    expect(drafts.session("host-a", "sess-B").draft.text).toBe("Draft for Session B");
+    expect(drafts.session("host-a", "__new__").draft.text).toBe("新建会话草稿");
+    expect(drafts.session("host-b", "sess-A").draft.text).toBe("Host B Session A");
+    expect(drafts.session("host-a", "sess-C").draft.text).toBe("");
+
+    // Sending Session A clears ONLY Session A in both RAM and localStorage.
+    await drafts.session("host-a", "sess-A").submitMessage({
+      session: makeSession("sess-A"),
+      snapshot,
+      canAttachImages: true,
+      executeCommand: async () => false,
+      sendTurn: async () => undefined,
+    });
+
+    unmountStore(consumerStore);
+    unmountStore(providerStore);
+    runtime.contextValue = undefined;
+    providerStore = createStore();
+    consumerStore = createStore();
+    drafts = renderConsumer();
+    expect(drafts.session("host-a", "sess-A").draft.text).toBe("");
+    expect(drafts.session("host-a", "sess-B").draft.text).toBe("Draft for Session B");
+    expect(drafts.session("host-a", "__new__").draft.text).toBe("新建会话草稿");
+    expect(drafts.session("host-b", "sess-A").draft.text).toBe("Host B Session A");
+
+    // resetSession and clearHost remove persisted entries cleanly; emptying all removes the storage key.
+    drafts.resetSession("host-a", "__new__");
+    drafts.session("host-a", "sess-B").setText("");
+    handle.clearHost?.("host-b");
+    expect(stored.has(CONVERSATION_DRAFTS_STORAGE_KEY)).toBe(false);
+
+    // LRU cap keeps the 100 most recently updated drafts.
+    drafts = renderConsumer();
+    for (let index = 0; index < 105; index += 1) {
+      drafts.session("host-a", `bulk-${index}`).setText(`draft-${index}`);
+    }
+    const parsedCap = JSON.parse(stored.get(CONVERSATION_DRAFTS_STORAGE_KEY)!) as { entries: Array<{ text: string }> };
+    expect(parsedCap.entries).toHaveLength(100);
+    expect(parsedCap.entries[0]?.text).toBe("draft-104");
+    expect(parsedCap.entries.some((entry) => entry.text === "draft-0")).toBe(false);
+
+    // Corrupt storage JSON & QuotaExceededError never crash rendering or typing.
+    stored.set(CONVERSATION_DRAFTS_STORAGE_KEY, "{not-valid-json");
+    unmountStore(consumerStore);
+    unmountStore(providerStore);
+    runtime.contextValue = undefined;
+    providerStore = createStore();
+    consumerStore = createStore();
+    drafts = renderConsumer();
+    expect(drafts.session("host-a", "sess-B").draft.text).toBe("");
+
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => { throw new Error("QuotaExceededError"); },
+      removeItem: () => { throw new Error("QuotaExceededError"); },
+    });
+    expect(() => drafts.session("host-a", "sess-quota").setText("仍能在内存中正常输入")).not.toThrow();
+    drafts = renderConsumer();
+    expect(drafts.session("host-a", "sess-quota").draft.text).toBe("仍能在内存中正常输入");
   });
 });

@@ -42,6 +42,7 @@ import {
   PackageCheck,
   RefreshCw,
   Settings2,
+  SquarePen,
   Trash2,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -267,6 +268,11 @@ export function MobileWorkspace({
   const [revealedEmptySectionKey, setRevealedEmptySectionKey] = useState<string>();
   const [expandedEmptyProjectIds, setExpandedEmptyProjectIds] = useState<Set<string>>(() => new Set());
   const [newChatMode, setNewChatMode] = useState(false);
+  const [newChatTarget, setNewChatTarget] = useState<{
+    key: number;
+    initialProjectId?: string | undefined;
+    initialCwd?: string | undefined;
+  }>();
   const [createDialogState, setCreateDialogState] = useState<NewChatDirectoryPickerRequest>();
   const conversationDrafts = useConversationDrafts(activeHostId);
   const assistantMail = useAssistantMail();
@@ -690,9 +696,18 @@ export function MobileWorkspace({
     await onOpenSession(sessionId);
   }
 
-  function startNewChat(): void {
+  function startNewChat(targetProjectId?: string, targetCwd?: string): void {
     autoOpenedSessionRef.current = undefined;
+    setNewChatTarget((previous) => ({
+      key: (previous?.key ?? 0) + 1,
+      ...(targetProjectId !== undefined ? { initialProjectId: targetProjectId } : {}),
+      ...(targetCwd !== undefined ? { initialCwd: targetCwd } : {}),
+    }));
     setNewChatMode(true);
+    setCreateOpen(false);
+    setCreateDialogState(undefined);
+    setMenuSessionId(undefined);
+    setMoveMenuSessionId(undefined);
     setHostSwitcherOpen(false);
     setSelectedSessionId(undefined);
     setForkChainOpen(false);
@@ -731,14 +746,31 @@ export function MobileWorkspace({
       });
   }
 
+  async function handleNewChatCreated(
+    created: BridgeSessionInfo,
+    options?: { initialPrompt?: string | undefined; configurationError?: string | undefined },
+  ): Promise<void> {
+    setCollapsedProjectIds((current) => expandProject(current, created.projectId));
+    if (search.trim()) setSearch("");
+    if (options?.configurationError) {
+      const targetDraft = conversationDrafts.session(activeHostId, created.sessionId, onUploadFile);
+      const pendingText = options.initialPrompt?.trim() ?? "";
+      targetDraft.updateDraft((current) => ({
+        ...current,
+        imageError: options.configurationError,
+        text: [pendingText, current.text].filter(Boolean).join("\n"),
+      }));
+    } else if (options?.initialPrompt?.trim()) {
+      deliverInitialPromptToSession(created, options.initialPrompt);
+    }
+    await Promise.resolve(onRefresh());
+    await selectSession(created.sessionId);
+  }
+
   async function quickStartSession(cwd: string, prompt: string, projectId?: string): Promise<void> {
     const created = await onCreateSession(cwd, undefined, "claude-desktop", projectId);
     if (!created) throw new Error("会话未创建，请重试。");
-    setCollapsedProjectIds((current) => expandProject(current, created.projectId));
-    if (search.trim()) setSearch("");
-    deliverInitialPromptToSession(created, prompt);
-    await Promise.resolve(onRefresh());
-    await selectSession(created.sessionId);
+    await handleNewChatCreated(created, { initialPrompt: prompt });
   }
 
   function placeProjects(order: string[]): void {
@@ -770,12 +802,7 @@ export function MobileWorkspace({
   }
 
   function openCreateDialogForProject(targetProjectId?: string): void {
-    const targetProject = targetProjectId
-      ? snapshot?.projects.find((project) => project.projectId === targetProjectId)
-      : undefined;
-    setCreateProjectId(targetProject?.projectId ?? "");
-    setCreateDialogState(undefined);
-    setCreateOpen(true);
+    startNewChat(targetProjectId);
   }
 
   function openDirectoryPickerFromCanvas(request?: NewChatDirectoryPickerRequest): void {
@@ -946,6 +973,13 @@ export function MobileWorkspace({
             <>
               {menuSession === selectedSession && (
                 <div className="m-group">
+                  <SheetAction
+                    icon={<SquarePen size={19} />}
+                    label="新建会话"
+                    detail="使用当前目录与分组"
+                    disabled={sessionActionBusy || !snapshot || connection !== "connected" || !desktopOnline}
+                    onClick={() => startNewChat(menuSession.projectId, menuSession.cwd)}
+                  />
                   <SheetAction
                     icon={sessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
                     label={sessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
@@ -1313,12 +1347,21 @@ export function MobileWorkspace({
         ) : (
           <main className="mobile-workspace new-chat-workspace">
             <NewChatCanvas
+              key={`${activeHostId ?? ""}:${newChatTarget?.key ?? 0}`}
               mobile
+              hostId={activeHostId}
               snapshot={snapshot}
               connected={connection === "connected" && desktopOnline}
+              conversationDrafts={conversationDrafts}
+              {...(newChatTarget?.initialProjectId !== undefined ? { initialProjectId: newChatTarget.initialProjectId } : {})}
+              {...(newChatTarget?.initialCwd !== undefined ? { initialCwd: newChatTarget.initialCwd } : {})}
               onBack={closeToCatalog}
               backLabel="返回会话列表"
               onOpenDirectoryPicker={openDirectoryPickerFromCanvas}
+              onLoadSessionConfiguration={onLoadSessionConfiguration}
+              onConfigureSession={onConfigureSession}
+              onCreateSession={onCreateSession}
+              onSessionCreated={handleNewChatCreated}
               onQuickStart={quickStartSession}
             />
           </main>

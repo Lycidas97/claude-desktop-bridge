@@ -228,7 +228,7 @@ describe("deduplicated chronological output-file evidence list", () => {
     draw();
     await settle();
     expect(loadDetails.mock.calls).toEqual([["evidence", "artifacts"]]);
-    expect(text()).toContain("产出文件 · 按首次出现顺序（展示最新快照）");
+    expect(text()).toContain("产出文件 · 按最近更新排序");
     expect(text()).toContain("共 30 个文件");
     expect(text()).toContain("file-first-0.txt");
     expect(text()).not.toContain("工具与命令");
@@ -246,7 +246,7 @@ describe("deduplicated chronological output-file evidence list", () => {
     expect(text()).toContain("file-second-0.txt");
   });
 
-  it("deduplicates repeated edits across turns in first-seen order while projecting latest snapshot", async () => {
+  it("deduplicates repeated edits across turns in latest-updated descending order while projecting latest snapshot", async () => {
     const turn2 = bundle({
       id: "turn-2",
       startedAt: 20,
@@ -279,7 +279,7 @@ describe("deduplicated chronological output-file evidence list", () => {
     const rowNames = elements()
       .filter((element) => element.props.className === "evidence-file-name")
       .map((element) => text(element.props.children));
-    expect(rowNames).toEqual(["alpha.ts", "beta.ts", "gamma.ts"]);
+    expect(rowNames).toEqual(["gamma.ts", "alpha.ts", "beta.ts"]);
     expect(text()).toContain("共 3 个文件");
     expect(loadDetails).not.toHaveBeenCalled();
 

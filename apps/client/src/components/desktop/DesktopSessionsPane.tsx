@@ -149,6 +149,7 @@ export function DesktopSessions({
   }
 
   function selectSessionFromSidebar(sessionId: string): void {
+    setNewChatTarget(undefined);
     setSelectedId(sessionId);
     if (activeTab !== "sessions") {
       onSelectTab?.("sessions");
@@ -157,6 +158,11 @@ export function DesktopSessions({
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [search, setSearch] = useState("");
+  const [newChatTarget, setNewChatTarget] = useState<{
+    key: number;
+    initialProjectId?: string | undefined;
+    initialCwd?: string | undefined;
+  }>();
   const [createDialogState, setCreateDialogState] = useState<NewChatDirectoryPickerRequest>();
   const [sectionCreate, setSectionCreate] = useState<{ name: string; busy: boolean; error: string }>();
   const [revealedEmptySectionKey, setRevealedEmptySectionKey] = useState<string>();
@@ -236,8 +242,21 @@ export function DesktopSessions({
     onDeleteSection: handleDeleteSection,
   });
 
+  function startNewChat(targetProjectId?: string, targetCwd?: string): void {
+    setCreateDialogState(undefined);
+    setRowMenuSessionId(undefined);
+    setNewChatTarget((previous) => ({
+      key: (previous?.key ?? 0) + 1,
+      ...(targetProjectId !== undefined ? { initialProjectId: targetProjectId } : {}),
+      ...(targetCwd !== undefined ? { initialCwd: targetCwd } : {}),
+    }));
+    if (activeTab !== "sessions") {
+      onSelectTab?.("sessions");
+    }
+  }
+
   function openCreateDialogForProject(targetProjectId?: string): void {
-    setCreateDialogState({ initialProjectId: targetProjectId ?? "" });
+    startNewChat(targetProjectId);
   }
 
   function openDirectoryPickerFromCanvas(request?: NewChatDirectoryPickerRequest): void {
@@ -489,12 +508,30 @@ export function DesktopSessions({
       });
   }
 
-  async function quickStartSession(cwd: string, prompt: string, projectId?: string): Promise<void> {
-    const created = await createSession(cwd, undefined, "claude-desktop", projectId);
+  async function handleNewChatCreated(
+    created: BridgeSessionInfo,
+    options?: { initialPrompt?: string | undefined; configurationError?: string | undefined },
+  ): Promise<void> {
+    setNewChatTarget(undefined);
     setCollapsedProjectIds((current) => expandProject(current, created.projectId));
     if (search.trim()) setSearch("");
-    deliverInitialPromptToSession(created, prompt);
+    if (options?.configurationError) {
+      const targetDraft = conversationDrafts.session(hostId, created.sessionId, controller.uploadFile);
+      const pendingText = options.initialPrompt?.trim() ?? "";
+      targetDraft.updateDraft((current) => ({
+        ...current,
+        imageError: options.configurationError,
+        text: [pendingText, current.text].filter(Boolean).join("\n"),
+      }));
+    } else if (options?.initialPrompt?.trim()) {
+      deliverInitialPromptToSession(created, options.initialPrompt);
+    }
     selectSessionFromSidebar(created.sessionId);
+  }
+
+  async function quickStartSession(cwd: string, prompt: string, projectId?: string): Promise<void> {
+    const created = await createSession(cwd, undefined, "claude-desktop", projectId);
+    await handleNewChatCreated(created, { initialPrompt: prompt });
   }
 
   function toggleProject(projectId: string, isEmptyGroup: boolean): void {
@@ -781,7 +818,7 @@ export function DesktopSessions({
         </div>
       ) : (
         <section className="desktop-conversation">
-          {selected ? (
+          {selected && !newChatTarget ? (
             <DesktopSessionConversation
               session={selected}
               snapshot={snapshot}
@@ -803,13 +840,23 @@ export function DesktopSessions({
             />
           ) : (
             <NewChatCanvas
+              key={`${hostId}:${newChatTarget?.key ?? 0}`}
+              hostId={hostId}
               snapshot={snapshot}
               connected={hostOnline}
               headerLeading={sidebarToggleButton}
+              conversationDrafts={conversationDrafts}
+              {...(selected && newChatTarget ? { onCancel: () => setNewChatTarget(undefined) } : {})}
+              {...(newChatTarget?.initialProjectId !== undefined ? { initialProjectId: newChatTarget.initialProjectId } : {})}
+              {...(newChatTarget?.initialCwd !== undefined ? { initialCwd: newChatTarget.initialCwd } : {})}
               {...(window.bridgeDesktop?.chooseDirectory
                 ? { onChooseDirectory: (path?: string) => window.bridgeDesktop!.chooseDirectory!(path) }
                 : {})}
               onOpenDirectoryPicker={openDirectoryPickerFromCanvas}
+              onLoadSessionConfiguration={controller.loadSessionConfiguration}
+              onConfigureSession={controller.configureSession}
+              onCreateSession={createSession}
+              onSessionCreated={handleNewChatCreated}
               onQuickStart={quickStartSession}
             />
           )}

@@ -104,7 +104,7 @@ export interface DeduplicateOutputFilesInput {
 /**
  * Deduplicates all output files across turn evidence manifests (including lazily
  * loaded `evidence.details` artifact pages) and transcript `fileChanges`:
- * - Ordered strictly by **first appearance** in the session (`01`, `02`, ... oldest first-seen to newest).
+ * - Ordered descending by **latest modification / appearance time** (`01` at the top is always the newest or most recently updated file).
  * - Projects the **latest snapshot** (`artifact`, `changeKind`, `size`, and cumulative `+additions -deletions`).
  */
 export function deduplicateSessionOutputFiles({
@@ -166,8 +166,14 @@ export function deduplicateSessionOutputFiles({
 
   events.sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
 
-  const entries: SessionOutputFileItem[] = [];
-  const byKey = new Map<string, SessionOutputFileItem>();
+  interface RankedOutputFileEntry {
+    item: SessionOutputFileItem;
+    lastUpdatedAt: number;
+    lastOrder: number;
+  }
+
+  const entries: RankedOutputFileEntry[] = [];
+  const byKey = new Map<string, RankedOutputFileEntry>();
 
   for (const event of events) {
     if (event.type === "artifact") {
@@ -180,29 +186,40 @@ export function deduplicateSessionOutputFiles({
         existing = byKey.get(previousKey);
         byKey.delete(previousKey);
         if (existing) {
-          existing.key = key;
+          existing.item.key = key;
           byKey.set(key, existing);
         }
       }
 
       if (existing) {
-        existing.name = artifact.name || splitFilePath(key).base || key;
-        existing.displayPath = key;
-        existing.filePath = artifact.relativePath || existing.filePath;
-        existing.kind = artifact.kind;
-        existing.changeKind = artifact.changeKind;
-        existing.size = artifact.size;
-        existing.artifact = artifact;
+        existing.item.name = artifact.name || splitFilePath(key).base || key;
+        existing.item.displayPath = key;
+        existing.item.filePath = artifact.relativePath || existing.item.filePath;
+        existing.item.kind = artifact.kind;
+        existing.item.changeKind = artifact.changeKind;
+        existing.item.size = artifact.size;
+        existing.item.artifact = artifact;
+        if (
+          event.timestamp > existing.lastUpdatedAt
+          || (event.timestamp === existing.lastUpdatedAt && event.order > existing.lastOrder)
+        ) {
+          existing.lastUpdatedAt = event.timestamp;
+          existing.lastOrder = event.order;
+        }
       } else {
-        const created: SessionOutputFileItem = {
-          key,
-          name: artifact.name || splitFilePath(key).base || key,
-          displayPath: key,
-          filePath: artifact.relativePath || artifact.name,
-          kind: artifact.kind,
-          changeKind: artifact.changeKind,
-          size: artifact.size,
-          artifact,
+        const created: RankedOutputFileEntry = {
+          item: {
+            key,
+            name: artifact.name || splitFilePath(key).base || key,
+            displayPath: key,
+            filePath: artifact.relativePath || artifact.name,
+            kind: artifact.kind,
+            changeKind: artifact.changeKind,
+            size: artifact.size,
+            artifact,
+          },
+          lastUpdatedAt: event.timestamp,
+          lastOrder: event.order,
         };
         entries.push(created);
         byKey.set(key, created);
@@ -219,7 +236,7 @@ export function deduplicateSessionOutputFiles({
       existing = byKey.get(oldKey);
       byKey.delete(oldKey);
       if (existing) {
-        existing.key = key;
+        existing.item.key = key;
         byKey.set(key, existing);
       }
     }
@@ -230,40 +247,55 @@ export function deduplicateSessionOutputFiles({
       : mapSummaryChangeKind(change.kind);
 
     if (existing) {
-      existing.name = change.movePath ? baseName : (existing.artifact?.name || baseName);
-      existing.displayPath = key;
-      if (!existing.artifact || change.movePath) {
-        existing.filePath = targetPath;
+      existing.item.name = change.movePath ? baseName : (existing.item.artifact?.name || baseName);
+      existing.item.displayPath = key;
+      if (!existing.item.artifact || change.movePath) {
+        existing.item.filePath = targetPath;
       }
-      if (!existing.artifact) {
-        existing.kind = inferArtifactKindFromPath(targetPath);
+      if (!existing.item.artifact) {
+        existing.item.kind = inferArtifactKindFromPath(targetPath);
       }
-      if (!event.cumulative || !existing.artifact || existing.changeKind === "observed") {
-        existing.changeKind = mappedKind;
+      if (!event.cumulative || !existing.item.artifact || existing.item.changeKind === "observed") {
+        existing.item.changeKind = mappedKind;
       }
-      existing.additions = event.cumulative
+      existing.item.additions = event.cumulative
         ? change.additions
-        : (existing.additions ?? 0) + change.additions;
-      existing.deletions = event.cumulative
+        : (existing.item.additions ?? 0) + change.additions;
+      existing.item.deletions = event.cumulative
         ? change.deletions
-        : (existing.deletions ?? 0) + change.deletions;
+        : (existing.item.deletions ?? 0) + change.deletions;
+      if (
+        !event.cumulative
+        && (event.timestamp > existing.lastUpdatedAt
+          || (event.timestamp === existing.lastUpdatedAt && event.order > existing.lastOrder))
+      ) {
+        existing.lastUpdatedAt = event.timestamp;
+        existing.lastOrder = event.order;
+      }
     } else {
-      const created: SessionOutputFileItem = {
-        key,
-        name: baseName,
-        displayPath: key,
-        filePath: targetPath,
-        kind: inferArtifactKindFromPath(targetPath),
-        changeKind: mappedKind,
-        additions: change.additions,
-        deletions: change.deletions,
+      const created: RankedOutputFileEntry = {
+        item: {
+          key,
+          name: baseName,
+          displayPath: key,
+          filePath: targetPath,
+          kind: inferArtifactKindFromPath(targetPath),
+          changeKind: mappedKind,
+          additions: change.additions,
+          deletions: change.deletions,
+        },
+        lastUpdatedAt: event.cumulative ? -1 : event.timestamp,
+        lastOrder: event.order,
       };
       entries.push(created);
       byKey.set(key, created);
     }
   }
 
-  return entries;
+  entries.sort(
+    (left, right) => right.lastUpdatedAt - left.lastUpdatedAt || right.lastOrder - left.lastOrder,
+  );
+  return entries.map((entry) => entry.item);
 }
 
 export function countSessionOutputFiles(input: DeduplicateOutputFilesInput): number {

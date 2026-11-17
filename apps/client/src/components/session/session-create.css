@@ -42,7 +42,7 @@
 .session-create-body { display: grid; min-height: 0; gap: 22px; overflow-y: auto; overscroll-behavior: contain; padding: 22px 24px; }
 .is-folder-picker .session-create-body { display: block; flex: 1; padding: 8px 24px 20px; }
 .session-create-dialog form input,
-.session-create-dialog form select { min-width: 0; height: 46px; font-family: inherit; font-size: calc(15px * var(--font-scale, 1)); border-radius: 10px; }
+.session-create-dialog form select { min-width: 0; min-height: 46px; height: auto; padding-block: 8px; font-family: inherit; font-size: calc(15px * var(--font-scale, 1)); border-radius: 10px; }
 .session-create-dialog label,
 .session-create-field-label { gap: 8px; color: var(--muted); font-size: calc(13px * var(--font-scale, 1)); font-weight: 500; }
 .session-create-folder { display: grid; min-width: 0; gap: 8px; }

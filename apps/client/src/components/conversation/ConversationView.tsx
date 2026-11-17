@@ -1569,11 +1569,13 @@ export function ConversationView({
               <button
                 type="button"
                 className={`mobile-evidence-toggle${effectiveSessionView === "evidence" ? " is-active" : ""}`}
+                aria-label={`成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
                 aria-pressed={effectiveSessionView === "evidence"}
                 onClick={() => setSessionView(effectiveSessionView === "evidence" ? "conversation" : "evidence")}
               >
                 <FileText size={13} aria-hidden="true" />
-                <span>成果{evidenceCount > 0 ? ` ${evidenceCount}` : ""}</span>
+                <span className="mobile-evidence-word">成果</span>
+                {evidenceCount > 0 && <b className="mobile-evidence-count">{evidenceCount}</b>}
               </button>
             ) : (
               <nav className="session-view-switch desktop-session-view-switch" aria-label="会话视图">

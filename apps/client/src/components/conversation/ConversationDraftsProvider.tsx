@@ -91,6 +91,114 @@ const EMPTY_DRAFT: ConversationDraftState = { text: "", attachments: [], sending
 const MAX_SINGLE_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 6 * 1024 * 1024;
 const HOST_SWITCH_UPLOAD_ERROR = "已切换电脑，上传已中断";
+export const CONVERSATION_DRAFTS_STORAGE_KEY = "bridge-conversation-drafts:v1";
+const MAX_PERSISTED_DRAFTS = 100;
+
+interface PersistedDraftEntry {
+  key: string;
+  text: string;
+  updatedAt: number;
+}
+
+function safeLocalStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    if (typeof window === "undefined" && descriptor?.get) {
+      return undefined;
+    }
+    const storage = descriptor?.value ?? (typeof window !== "undefined" ? window.localStorage : undefined);
+    if (
+      storage
+      && typeof storage.getItem === "function"
+      && typeof storage.setItem === "function"
+      && typeof storage.removeItem === "function"
+    ) {
+      return storage as Pick<Storage, "getItem" | "setItem" | "removeItem">;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function isValidDraftStorageKey(key: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(key);
+    if (!Array.isArray(parsed) || parsed.length !== 2) return false;
+    const [hostId, sessionId] = parsed;
+    return (hostId === null || typeof hostId === "string")
+      && typeof sessionId === "string"
+      && sessionId.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function readPersistedDrafts(): {
+  drafts: Record<string, ConversationDraftState>;
+  updatedAt: Map<string, number>;
+} {
+  const drafts: Record<string, ConversationDraftState> = {};
+  const updatedAt = new Map<string, number>();
+  const storage = safeLocalStorage();
+  if (!storage) return { drafts, updatedAt };
+  let raw: string | null = null;
+  try {
+    raw = storage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY);
+  } catch {
+    return { drafts, updatedAt };
+  }
+  if (!raw) return { drafts, updatedAt };
+  try {
+    const parsed = JSON.parse(raw) as { version?: unknown; entries?: unknown };
+    if (!Array.isArray(parsed?.entries)) return { drafts, updatedAt };
+    for (const candidate of parsed.entries as PersistedDraftEntry[]) {
+      if (
+        !candidate
+        || typeof candidate.key !== "string"
+        || !isValidDraftStorageKey(candidate.key)
+        || typeof candidate.text !== "string"
+        || candidate.text.length === 0
+      ) {
+        continue;
+      }
+      drafts[candidate.key] = { text: candidate.text, attachments: [], sending: false };
+      const stamp = typeof candidate.updatedAt === "number" && Number.isFinite(candidate.updatedAt)
+        ? candidate.updatedAt
+        : 0;
+      updatedAt.set(candidate.key, stamp);
+    }
+  } catch {
+    return { drafts, updatedAt };
+  }
+  return { drafts, updatedAt };
+}
+
+function writePersistedDrafts(
+  record: Record<string, ConversationDraftState>,
+  updatedAt: ReadonlyMap<string, number>,
+): void {
+  const storage = safeLocalStorage();
+  if (!storage) return;
+  const entries: PersistedDraftEntry[] = Object.entries(record)
+    .filter(([key, draft]) => draft.text.length > 0 && isValidDraftStorageKey(key))
+    .map(([key, draft]) => ({
+      key,
+      text: draft.text,
+      updatedAt: updatedAt.get(key) ?? 0,
+    }))
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, MAX_PERSISTED_DRAFTS);
+  try {
+    if (entries.length === 0) {
+      storage.removeItem(CONVERSATION_DRAFTS_STORAGE_KEY);
+    } else {
+      storage.setItem(CONVERSATION_DRAFTS_STORAGE_KEY, JSON.stringify({ version: 1, entries }));
+    }
+  } catch {
+    // Ignore storage quota or private-mode write restrictions so typing never throws.
+  }
+}
 
 export function conversationDraftKey(hostId: string | undefined, sessionId: string | undefined): string {
   return JSON.stringify([hostId, sessionId]);
@@ -116,7 +224,17 @@ function stripHostKeys<T>(record: Record<string, T>, hostId: string): Record<str
 const ConversationDraftsContext = createContext<ConversationDraftsController | undefined>(undefined);
 
 function useConversationDraftsController(activeHostId: string | undefined, enabled: boolean): ConversationDraftsController {
-  const [drafts, setDrafts] = useState<Record<string, ConversationDraftState>>({});
+  const updatedAtRef = useRef<Map<string, number>>(new Map());
+  const lastStampRef = useRef(0);
+  const [drafts, setDrafts] = useState<Record<string, ConversationDraftState>>(() => {
+    if (!enabled) return {};
+    const loaded = readPersistedDrafts();
+    updatedAtRef.current = loaded.updatedAt;
+    for (const stamp of loaded.updatedAt.values()) {
+      if (stamp > lastStampRef.current) lastStampRef.current = stamp;
+    }
+    return loaded.drafts;
+  });
   const [entries, setEntries] = useState<ConversationFileEntry[]>([]);
   const [promptReplies, setPromptReplies] = useState<Record<string, Record<string, string | null>>>({});
   const [promptErrors, setPromptErrors] = useState<Record<string, Record<string, string>>>({});
@@ -144,6 +262,16 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
       if (updated === previous) return current;
       const next = { ...current, [key]: updated };
       draftsRef.current = next;
+      if (enabled && updated.text !== previous.text) {
+        if (updated.text.length > 0) {
+          const stamp = Math.max(Date.now(), lastStampRef.current + 1);
+          lastStampRef.current = stamp;
+          updatedAtRef.current.set(key, stamp);
+        } else {
+          updatedAtRef.current.delete(key);
+        }
+        writePersistedDrafts(next, updatedAtRef.current);
+      }
       return next;
     });
   }
@@ -188,7 +316,27 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
 
   useEffect(() => {
     if (!enabled) return;
+    const flushPersisted = () => {
+      writePersistedDrafts(draftsRef.current, updatedAtRef.current);
+    };
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        flushPersisted();
+      }
+    };
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      window.addEventListener("pagehide", flushPersisted);
+    }
+    if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
     return () => {
+      if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
+        window.removeEventListener("pagehide", flushPersisted);
+      }
+      if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
       for (const record of controllersRef.current.values()) {
         record.reason = "unmount";
         record.controller.abort();
@@ -240,9 +388,15 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
     hostEpochRef.current.set(hostId, currentHostEpoch(hostId) + 1);
     abortHostUploads(hostId, "clear");
     updateEntries((current) => current.filter((entry) => entry.hostId !== hostId));
+    for (const key of [...updatedAtRef.current.keys()]) {
+      if (keyBelongsToHost(key, hostId)) updatedAtRef.current.delete(key);
+    }
     setDrafts((current) => {
       const next = stripHostKeys(current, hostId);
       draftsRef.current = next;
+      if (enabled && next !== current) {
+        writePersistedDrafts(next, updatedAtRef.current);
+      }
       return next;
     });
     setPromptReplies((current) => stripHostKeys(current, hostId));
@@ -259,11 +413,15 @@ function useConversationDraftsController(activeHostId: string | undefined, enabl
       controllersRef.current.delete(id);
     }
     updateEntries((current) => current.filter((entry) => entry.key !== key));
+    updatedAtRef.current.delete(key);
     setDrafts((current) => {
       if (!(key in current)) return current;
       const next = { ...current };
       delete next[key];
       draftsRef.current = next;
+      if (enabled) {
+        writePersistedDrafts(next, updatedAtRef.current);
+      }
       return next;
     });
     setPromptErrors((current) => {

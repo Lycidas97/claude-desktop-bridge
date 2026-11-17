@@ -86,7 +86,7 @@ describe("deduplicateSessionOutputFiles", () => {
     expect(normalizeOutputFileKey("C:\\work\\repo\\src\\index.ts", "c:\\work\\repo\\")).toBe("src/index.ts");
   });
 
-  it("orders strictly by first appearance while projecting latest snapshot and cumulative diff stats", () => {
+  it("orders descending by latest modification/appearance time while projecting latest snapshot and cumulative diff stats", () => {
     // Bundles arrive newest-first from evidence.list: turn 3, turn 2, turn 1.
     const bundles: BridgeEvidenceBundle[] = [
       bundle("turn-3", 300, [
@@ -130,10 +130,11 @@ describe("deduplicateSessionOutputFiles", () => {
       cwd: "/repo",
     });
 
+    // src/first.ts touched at 305 -> #1; docs/report.html created at 300 -> #2; src/second.ts created at 200 -> #3.
     expect(result.map((entry) => entry.key)).toEqual([
       "src/first.ts",
-      "src/second.ts",
       "docs/report.html",
+      "src/second.ts",
     ]);
     expect(result[0]).toMatchObject({
       key: "src/first.ts",
@@ -145,18 +146,18 @@ describe("deduplicateSessionOutputFiles", () => {
       artifact: { id: "snap-a-v2" },
     });
     expect(result[1]).toMatchObject({
-      key: "src/second.ts",
-      changeKind: "created",
-      artifact: { id: "snap-b-v1" },
-    });
-    expect(result[2]).toMatchObject({
       key: "docs/report.html",
       kind: "html",
       artifact: { id: "snap-c-v1" },
     });
+    expect(result[2]).toMatchObject({
+      key: "src/second.ts",
+      changeKind: "created",
+      artifact: { id: "snap-b-v1" },
+    });
   });
 
-  it("preserves original first-seen slot when a file is renamed in a later turn", () => {
+  it("moves a renamed file to the top when renamed in a later turn while deduplicating its previous path", () => {
     const bundles: BridgeEvidenceBundle[] = [
       bundle("turn-2", 200, [
         artifact("snap-renamed", "src/NewName.tsx", {
@@ -189,12 +190,12 @@ describe("deduplicateSessionOutputFiles", () => {
       bundles: [summaryOnly],
       detailArtifactsByBundleId: {
         "summary-1": [
-          artifact("d-1", "a.txt"),
-          artifact("d-2", "b.txt"),
+          artifact("d-1", "a.txt", { capturedAt: 110 }),
+          artifact("d-2", "b.txt", { capturedAt: 120 }),
         ],
       },
     });
-    expect(loaded.map((entry) => entry.key)).toEqual(["a.txt", "b.txt"]);
+    expect(loaded.map((entry) => entry.key)).toEqual(["b.txt", "a.txt"]);
     expect(countSessionOutputFiles({
       bundles: [summaryOnly],
       detailArtifactsByBundleId: {
@@ -203,7 +204,7 @@ describe("deduplicateSessionOutputFiles", () => {
     })).toBe(2);
   });
 
-  it("updates changeKind chronologically after an earlier snapshot (snapshot -> update and snapshot -> delete -> add)", () => {
+  it("updates changeKind chronologically and sorts most recently modified/recreated file first without letting cumulative fallback override real bundle timestamps", () => {
     const bundles: BridgeEvidenceBundle[] = [
       bundle("turn-1", 100, [
         artifact("snap-mod", "src/updated.ts", { changeKind: "created", size: 120 }),
@@ -247,18 +248,40 @@ describe("deduplicateSessionOutputFiles", () => {
     });
 
     expect(result[0]).toMatchObject({
-      key: "src/updated.ts",
-      changeKind: "modified",
-      additions: 5,
-      deletions: 2,
-      artifact: { id: "snap-mod" },
-    });
-    expect(result[1]).toMatchObject({
       key: "src/recreated.ts",
       changeKind: "created",
       additions: 12,
       deletions: 10,
       artifact: { id: "snap-recreated" },
     });
+    expect(result[1]).toMatchObject({
+      key: "src/updated.ts",
+      changeKind: "modified",
+      additions: 5,
+      deletions: 2,
+      artifact: { id: "snap-mod" },
+    });
+
+    // Fallback cumulative fileChanges must not override real bundle timestamps
+    const withCumulativeFallback = deduplicateSessionOutputFiles({
+      bundles: [
+        bundle("b-new", 500, [artifact("art-new", "src/newest.ts", { changeKind: "created", size: 90 })]),
+        bundle("b-old", 100, [artifact("art-old", "src/older.ts", { changeKind: "created", size: 70 })]),
+      ],
+      fileChanges: {
+        totalAdditions: 15,
+        totalDeletions: 2,
+        files: [
+          { path: "/repo/src/older.ts", kind: "update", additions: 10, deletions: 2 },
+          { path: "/repo/src/fallback-only.ts", kind: "add", additions: 5, deletions: 0 },
+        ],
+      },
+      cwd: "/repo",
+    });
+    expect(withCumulativeFallback.map((entry) => entry.key)).toEqual([
+      "src/newest.ts",
+      "src/older.ts",
+      "src/fallback-only.ts",
+    ]);
   });
 });

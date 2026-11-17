@@ -19,7 +19,11 @@ import { MediaPreviewProvider } from "./components/evidence/MediaPreviewProvider
 import { MobileAppShell, type MobileTab } from "./components/mobile/MobileAppShell.js";
 import { MobileHostDetails } from "./components/pairing/MobileHostDetails.js";
 import { MobilePageHeader } from "./components/mobile/MobilePageHeader.js";
-import { MobileQuotaPage } from "./components/mobile/MobileQuotaPage.js";
+import {
+  clearInitialRefreshedQuotaHost,
+  MobileQuotaPage,
+  shouldFallbackAutoQuotaRefresh,
+} from "./components/mobile/MobileQuotaPage.js";
 import { MobileSettings } from "./components/mobile/MobileSettings.js";
 import { ProviderSettings } from "./components/session/ProviderSettings.js";
 import { MobileClientUpdateDialog, type RemoteDesktopUpdateControl } from "./components/updater/UpdaterSections.js";
@@ -169,25 +173,43 @@ export function App() {
   const [focusRequest, setFocusRequest] = useState<{ sessionId: string; key: number }>();
   const [directoryRequest, setDirectoryRequest] = useState(0);
   const [draftsHandle] = useState<ConversationDraftsHandle>(() => ({}));
+  const [autoQuotaRefreshPending] = useState(() => ({ current: false }));
+  const markAutoQuotaRefresh = useCallback(() => {
+    autoQuotaRefreshPending.current = true;
+  }, [autoQuotaRefreshPending]);
   const handleFocusHandled = useCallback(() => setFocusRequest(undefined), []);
   const forgetHost = useCallback(async (roomId: string) => {
     await mobile.forgetHost(roomId);
     draftsHandle.clearHost?.(roomId);
+    clearInitialRefreshedQuotaHost(roomId);
   }, [draftsHandle, mobile.forgetHost]);
   // requestMedia is the hook's plain request function; its identity never changes.
   const request = mobile.requestMedia;
   const mailRequest = useCallback<AssistantRequest>((method, params) => request(method, params, { wait: true, allowOffline: false }), [request]);
   const loadMagpieQuota = useCallback<QuotaLoader>(async (options) => {
+    const requestedRefresh = options?.refresh ?? false;
+    const isAutoRefresh = requestedRefresh && autoQuotaRefreshPending.current;
+    if (requestedRefresh) autoQuotaRefreshPending.current = false;
     // Manual refresh has a shared 60 s desktop budget; ordinary reads still use 15 s.
-    const response = await request(MAGPIE_QUOTA_METHOD, { refresh: options?.refresh ?? false }, {
-      wait: true, allowOffline: false, timeoutMs: options?.refresh ? 75_000 : 30_000,
+    const response = await request(MAGPIE_QUOTA_METHOD, { refresh: requestedRefresh }, {
+      wait: true, allowOffline: false, timeoutMs: requestedRefresh ? 75_000 : 30_000,
     });
-    if (!response?.ok) throw new Error(response?.error?.message ?? "Magpie 额度读取失败");
+    if (!response?.ok) {
+      const message = response?.error?.message ?? "Magpie 额度读取失败";
+      if (isAutoRefresh && shouldFallbackAutoQuotaRefresh(message)) {
+        const fallback = await request(MAGPIE_QUOTA_METHOD, { refresh: false }, {
+          wait: true, allowOffline: false, timeoutMs: 30_000,
+        });
+        if (fallback?.ok) return fallback.result as QuotaSnapshot;
+      }
+      throw new Error(message);
+    }
     return response.result as QuotaSnapshot;
   }, [request]);
   // A computer without the plugin answers its method with an error, so ask only one that declares it.
   const quotaDeclared = Boolean(mobile.state.snapshot?.host.capabilities.includes("plugin.magpie-quota.v1"));
   const quotaEnabled = mobile.state.connection === "connected" && mobile.state.desktopOnline && quotaDeclared;
+  const quotaSourceKey = `${snapshot?.magpie?.mode ?? ""}|${snapshot?.magpie?.baseUrl ?? ""}|${snapshot?.magpie?.authScheme ?? ""}|${snapshot?.magpie?.keyConfigured ? 1 : 0}`;
   const closeQuota = useCallback(() => setQuotaOpen(false), []);
   const invokeRemoteUpdate = useCallback(async (params: BridgeSystemUpdateParams): Promise<BridgeUpdaterSnapshot> => {
     const response = await request("system.update", params as unknown as Record<string, unknown>, {
@@ -313,7 +335,7 @@ export function App() {
       }}
     >
       {/* One quota snapshot per computer, shared by the session form and the settings dashboard. */}
-      <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled} sourceKey={snapshot?.runtime.detection?.refreshedAt ?? 0}>
+      <MagpieQuotaProvider key={mobile.state.activeHostId ?? ""} loader={loadMagpieQuota} enabled={quotaEnabled} sourceKey={quotaSourceKey}>
       {mobile.state.activeHostId ? (
         <MediaPreviewProvider key={mobile.state.activeHostId} request={mobile.requestMedia} supportsFileStat={snapshot?.host.capabilities.includes("artifact.transfer.stat.v1") ?? false}>
           <div className="mobile-tab-page" hidden={tab !== "sessions"}>
@@ -502,7 +524,12 @@ export function App() {
           <div className="mobile-settings-content"><section className="mobile-settings-group mobile-provider-settings"><ProviderSettings key={mobile.state.activeHostId} {...(snapshot ? { snapshot } : {})} connected={mobile.state.connection === "connected" && mobile.state.desktopOnline} onRefresh={mobile.redetectProviders} /></section></div>
         </main>
       ) : quotaOpen && quotaDeclared ? (
-        <MobileQuotaPage desktopName={mobile.state.desktopName ?? "我的电脑"} onBack={closeQuota} />
+        <MobileQuotaPage
+          hostId={mobile.state.activeHostId}
+          desktopName={mobile.state.desktopName ?? "我的电脑"}
+          onBeforeAutoRefresh={markAutoQuotaRefresh}
+          onBack={closeQuota}
+        />
       ) : (
         <MobileSettings
           themeControl={themeControl}

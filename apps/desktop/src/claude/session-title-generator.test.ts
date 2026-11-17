@@ -98,7 +98,9 @@ describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
       authScheme: "bearer",
     });
 
-    const profileDir = join(root, "Library", "Application Support", "Claude-3p", "configLibrary");
+    const platform = process.platform === "win32" ? "win32" : "darwin";
+    const appData = platform === "win32" ? join(root, "AppData", "Roaming") : join(root, "Library", "Application Support");
+    const profileDir = join(appData, "Claude-3p", "configLibrary");
     await mkdir(profileDir, { recursive: true });
     await writeFile(join(profileDir, "_meta.json"), JSON.stringify({ appliedId: "gw-1" }));
     const entryPath = join(profileDir, "gw-1.json");
@@ -111,8 +113,8 @@ describe("resolveActiveClaudeGateway and generateSessionTitle", () => {
     await chmod(entryPath, 0o600);
     await expect(resolveActiveClaudeGateway({
       home: root,
-      platform: "darwin",
-      environment: {},
+      platform,
+      environment: { APPDATA: appData },
       allowAmbientDiscovery: true,
     })).resolves.toEqual({
       baseUrl: "https://fixed.example.test/v1",

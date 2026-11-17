@@ -41,6 +41,7 @@ import { SessionActionSheets } from "../session/SessionActionSheets.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
 import { useProjectSessionGroups } from "../session/useProjectSessionGroups.js";
+import { useSessionMenuAction } from "../session/useSessionMenuAction.js";
 import {
   SessionSectionDragGhost,
   UNSECTIONED_DROP_ID,
@@ -185,8 +186,7 @@ export function DesktopSessions({
   const [rowRenameSessionId, setRowRenameSessionId] = useState<string>();
   const [rowRenameTitle, setRowRenameTitle] = useState("");
   const [rowDeleteSessionId, setRowDeleteSessionId] = useState<string>();
-  const [rowActionBusy, setRowActionBusy] = useState(false);
-  const [rowActionError, setRowActionError] = useState<string>();
+  const { busy: rowActionBusy, error: rowActionError, setError: setRowActionError, run: runRowAction } = useSessionMenuAction();
   const desktopProjectListRef = useRef<HTMLDivElement>(null);
   const rowRenameDialogRef = useRef<HTMLElement>(null);
   const handledResetEventsRef = useRef(new Set<string>());
@@ -450,20 +450,14 @@ export function DesktopSessions({
   }
 
   async function moveSessionToSection(sessionId: string, sectionId: string | null): Promise<void> {
-    if (rowActionBusy || !hostOnline) return;
-    setRowActionBusy(true);
-    setRowActionError(undefined);
-    try {
+    if (!hostOnline) return;
+    await runRowAction("移动分组失败", async () => {
       const moved = await controller.moveSessionSection(sessionId, sectionId);
       const targetProjectId = sectionId ?? moved.session?.projectId ?? CLAUDE_UNSECTIONED_PROJECT_ID;
       setCollapsedProjectIds((current) => expandProject(current, targetProjectId));
       setRowMoveMenuSessionId(undefined);
       setRowMenuSessionId(undefined);
-    } catch (error) {
-      setRowActionError(error instanceof Error ? error.message : "移动分组失败");
-    } finally {
-      setRowActionBusy(false);
-    }
+    });
   }
 
   const sessionDrag = useSessionSectionDrag({
@@ -486,18 +480,12 @@ export function DesktopSessions({
       ? snapshot.sessions.find((candidate) => candidate.sessionId === rowRenameSessionId)
       : undefined;
     const trimmed = rowRenameTitle.trim();
-    if (!target || !trimmed || trimmed === target.title || rowActionBusy) return;
-    setRowActionBusy(true);
-    setRowActionError(undefined);
-    try {
+    if (!target || !trimmed || trimmed === target.title) return;
+    await runRowAction("重命名会话失败", async () => {
       await controller.renameSession(target.sessionId, trimmed);
       setRowRenameSessionId(undefined);
       setRowMenuSessionId(undefined);
-    } catch (error) {
-      setRowActionError(error instanceof Error ? error.message : "重命名会话失败");
-    } finally {
-      setRowActionBusy(false);
-    }
+    });
   }
 
   const sidebarToggleButton = (
@@ -898,63 +886,42 @@ export function DesktopSessions({
         onSubmitRename={submitRowRename}
         onCloseRename={closeRowRename}
         onFork={rowMenuSession && rowMenuSupportsFork
-          ? () => {
-              if (rowActionBusy) return;
+          ? () => runRowAction("Fork 分支创建失败", async () => {
               const sourceId = rowMenuSession.sessionId;
-              setRowActionBusy(true);
-              setRowActionError(undefined);
-              void controller.forkSession(sourceId)
-                .then(async (created) => {
-                  setExpandedForkParents((current) => new Set([
-                    ...current,
-                    ...getSessionAncestorIds(snapshot.sessions, sourceId),
-                    sourceId,
-                  ]));
-                  await onRefreshSnapshot();
-                  setRowMenuSessionId(undefined);
-                  selectSessionFromSidebar(created.sessionId);
-                })
-                .catch((error: unknown) => {
-                  setRowActionError(error instanceof Error ? error.message : "Fork 分支创建失败");
-                })
-                .finally(() => setRowActionBusy(false));
-            }
+              const created = await controller.forkSession(sourceId);
+              setExpandedForkParents((current) => new Set([
+                ...current,
+                ...getSessionAncestorIds(snapshot.sessions, sourceId),
+                sourceId,
+              ]));
+              await onRefreshSnapshot();
+              setRowMenuSessionId(undefined);
+              selectSessionFromSidebar(created.sessionId);
+            })
           : undefined}
         onArchive={rowMenuSession && visibilityAvailable
-          ? (archived) => {
-              if (rowActionBusy) return;
-              setRowActionBusy(true);
-              setRowActionError(undefined);
-              void controller.archiveSession(rowMenuSession.sessionId, archived)
-                .then(() => setRowMenuSessionId(undefined))
-                .catch((error: unknown) => {
-                  setRowActionError(error instanceof Error ? error.message : "归档设置失败");
-                })
-                .finally(() => setRowActionBusy(false));
-            }
+          ? (archived) => runRowAction("归档设置失败", async () => {
+              await controller.archiveSession(rowMenuSession.sessionId, archived);
+              setRowMenuSessionId(undefined);
+            })
           : undefined}
         onRequestDelete={rowMenuSession && visibilityAvailable
-          ? () => setRowDeleteSessionId(rowMenuSession.sessionId)
+          ? () => {
+              setRowActionError(undefined);
+              setRowDeleteSessionId(rowMenuSession.sessionId);
+            }
           : undefined}
         onCancelDelete={() => {
           if (!rowActionBusy) setRowDeleteSessionId(undefined);
         }}
         onConfirmDelete={() => {
-          if (!rowDeleteSession || rowActionBusy) return;
-          const targetId = rowDeleteSession.sessionId;
-          setRowActionBusy(true);
-          setRowActionError(undefined);
-          void controller.deleteSession(targetId)
-            .then(() => {
-              conversationDrafts.resetSession(hostId, targetId);
-              setRowDeleteSessionId(undefined);
-              setRowMenuSessionId(undefined);
-            })
-            .catch((error: unknown) => {
-              setRowDeleteSessionId(undefined);
-              setRowActionError(error instanceof Error ? error.message : "删除会话失败");
-            })
-            .finally(() => setRowActionBusy(false));
+          if (!rowDeleteSession) return;
+          return runRowAction("删除会话失败", async () => {
+            await controller.deleteSession(rowDeleteSession.sessionId);
+            conversationDrafts.resetSession(hostId, rowDeleteSession.sessionId);
+            setRowDeleteSessionId(undefined);
+            setRowMenuSessionId(undefined);
+          });
         }}
       />
 

@@ -40,7 +40,7 @@ import { SessionCommandDialogs } from "./conversation/SessionCommandDialogs.js";
 import { SessionConfigurationDialog } from "./session/SessionConfigurationDialog.js";
 import { SessionRewindDialog } from "./conversation/SessionRewindDialog.js";
 import { ConfirmationDialog } from "./common/ConfirmationDialog.js";
-import { Sheet } from "./common/Sheet.js";
+import { Sheet, SheetAction } from "./common/Sheet.js";
 
 const hooks = vi.hoisted(() => ({
   slots: [] as any[], index: 0, dirty: false,
@@ -683,6 +683,49 @@ describe("native relay composer", () => {
     expect(elements(tree).some(element => element.type === "button" && element.props.className === "permission-dock")).toBe(false);
   });
 
+});
+
+describe("mobile session actions", () => {
+  function openMenu() {
+    elements(conversationHeader().props.actions).find(element => element.type === IconButton && element.props.label === "会话操作")!.props.onClick();
+    draw();
+  }
+
+  it("opens the returned fork once and closes the action menu", async () => {
+    const created = { ...props.snapshot!.sessions[1]!, parentSessionId: "A" };
+    const onForkSession = vi.fn().mockResolvedValue(created);
+    props = { ...props, onForkSession, snapshot: { ...props.snapshot!, sessions: [props.snapshot!.sessions[0]!, created] } };
+    draw();
+    openMenu();
+    vi.mocked(props.onOpenSession).mockClear();
+
+    elements(tree).find(element => element.type === SheetAction && element.props.label === "Fork 分支")!.props.onClick();
+    await settle();
+
+    expect(onForkSession).toHaveBeenCalledExactlyOnceWith("A");
+    expect(props.onOpenSession).toHaveBeenCalledExactlyOnceWith("B");
+    expect(conversationHeader().props.title).toBe("Session B");
+    expect(elements(tree).some(element => element.type === Sheet && element.props.title === "Session A")).toBe(false);
+  });
+
+  it("shows an archive rejection and restores the action after the request settles", async () => {
+    const pending = deferred();
+    const onArchiveSession = vi.fn(() => pending.promise);
+    props = { ...props, onArchiveSession };
+    draw();
+    openMenu();
+    const archive = () => elements(tree).find(element => element.type === SheetAction && element.props.label === "归档会话");
+
+    archive()!.props.onClick();
+    draw();
+    expect(archive()?.props.disabled).toBe(true);
+    pending.reject(new Error("归档被拒绝"));
+    await settle();
+
+    expect(onArchiveSession).toHaveBeenCalledExactlyOnceWith("A", true);
+    expect(archive()?.props.disabled).toBe(false);
+    expect(elements(tree).some(element => element.props.role === "alert" && element.props.children === "归档被拒绝")).toBe(true);
+  });
 });
 
 describe("session back navigation", () => {

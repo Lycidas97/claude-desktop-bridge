@@ -370,6 +370,7 @@ button:disabled {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+.confirm-dialog .confirm-error { margin-top: 9px; color: var(--danger-ink); }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 22px; }
 
 .eyebrow,

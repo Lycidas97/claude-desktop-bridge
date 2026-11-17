@@ -23,7 +23,6 @@ const snapshot = {
 function html(desktopLocal = false, connected = true) {
   return renderToStaticMarkup(createElement(ProviderSettings, {
     snapshot, desktopLocal, connected, onRefresh: vi.fn(),
-    ...(desktopLocal ? { onSetApiKey: vi.fn(), onRemoveApiKey: vi.fn() } : {}),
   }));
 }
 

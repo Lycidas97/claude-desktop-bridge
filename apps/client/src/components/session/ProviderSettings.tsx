@@ -4,13 +4,11 @@ import { useEffect, useState } from "react";
 import { SelectMenu } from "../common/SelectMenu.js";
 import "./settings.css";
 
-export function ProviderSettings({ snapshot, connected = true, desktopLocal = false, onRefresh, onSetApiKey, onRemoveApiKey, onTestMagpieConnection, onSaveMagpieConnection }: {
+export function ProviderSettings({ snapshot, connected = true, desktopLocal = false, onRefresh, onTestMagpieConnection, onSaveMagpieConnection }: {
   snapshot?: BridgeHostSnapshot;
   connected?: boolean;
   desktopLocal?: boolean;
   onRefresh(): Promise<void>;
-  onSetApiKey?(value: string): Promise<void>;
-  onRemoveApiKey?(): Promise<void>;
   onTestMagpieConnection?: ((input: BridgeMagpieConnectionInput) => Promise<BridgeMagpieConnectionTestResult>) | undefined;
   onSaveMagpieConnection?: ((input: BridgeMagpieConnectionInput) => Promise<DesktopControlSnapshot>) | undefined;
 }) {
@@ -149,13 +147,6 @@ export function ProviderSettings({ snapshot, connected = true, desktopLocal = fa
           {magpieError && <p role="alert" className="inline-error">{magpieError}</p>}
         </div> : <p className="settings-notice">{desktopLocal ? "这台电脑暂不支持编辑 Magpie 连接，请更新电脑端 Bridge。" : "请在这台电脑的 Bridge 设置中管理 Magpie 连接。"}</p>}
       </section>}
-      {(snapshot.providers ?? []).filter(profile => !["claude-3p", "anthropic-api", "claude-official"].includes(profile.kind)).map(profile => (
-        <section className="provider-settings-profile" key={profile.id} aria-label={profile.name}>
-          <header><h3>{profile.name}</h3><span className="provider-status">{profile.status === "ready" ? "本地已就绪" : profile.configured ? "需要处理" : "未配置"}</span></header>
-          <p>{profile.detail || "使用原生应用中的账号配置。"}</p>
-          {profile.models.length > 0 && <details className="settings-model-list"><summary>查看模型</summary><ul>{profile.models.map(model => <li key={model.id}>{model.displayName || model.id}</li>)}</ul></details>}
-        </section>
-      ))}
     </>}
     {error && <p role="alert" className="inline-error">{error}</p>}
 

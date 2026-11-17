@@ -49,10 +49,8 @@ export const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ value: BridgeSDKPermission
 
 export interface SessionConfigurationChange {
   model?: string | null;
-  provider?: string | null;
   effort?: string | null;
   reasoningEffort?: string | null;
-  fast?: boolean | null;
   permissionMode?: BridgeSDKPermissionMode | undefined;
 }
 
@@ -70,10 +68,8 @@ export function SessionConfigurationDialog({
   onClose(): void;
 }) {
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();
-  const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("medium");
-  const [fast, setFast] = useState(false);
   const [nativePermissionMode, setNativePermissionMode] = useState<BridgeSDKPermissionMode>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -93,10 +89,8 @@ export function SessionConfigurationDialog({
       .then((next) => {
         if (!active) return;
         setConfiguration(next);
-        setProvider(next.provider ?? next.availableProviders?.[0]?.value ?? "");
         setModel(next.model ?? next.availableModels[0]?.value ?? "");
         setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
-        setFast(next.fast ?? false);
         setNativePermissionMode(next.nativePermissionMode);
         setError(undefined);
       })
@@ -119,12 +113,7 @@ export function SessionConfigurationDialog({
     }, 150);
   }, [confirmFullAccess, saving]);
 
-  const modelOptions = useMemo(() => {
-    const all = configuration?.availableModels ?? [];
-    if (!provider) return all;
-    const scoped = all.filter((candidate) => !candidate.provider || candidate.provider === provider);
-    return scoped.length ? scoped : all;
-  }, [configuration, provider]);
+  const modelOptions = configuration?.availableModels ?? [];
   const selectedModel = useMemo(
     () => modelOptions.find((candidate) => candidate.value === model),
     [model, modelOptions],
@@ -136,25 +125,6 @@ export function SessionConfigurationDialog({
       : configuration?.availableEffortLevels ?? [];
   // Keep the session's own effort so a model that supports it gets it back; show and save what this one allows.
   const shownEffort = supportedEffort(effort, effortLevels);
-  const fastSupported = Boolean(configuration?.supportsFastMode && selectedModel?.supportsFast !== false);
-
-  function chooseModel(value: string): void {
-    setModel(value);
-    const nextModel = modelOptions.find((candidate) => candidate.value === value);
-    if (nextModel?.provider) setProvider(nextModel.provider);
-    if (nextModel?.supportsFast === false) setFast(false);
-  }
-
-  function chooseProvider(value: string): void {
-    setProvider(value);
-    const nextModels = (configuration?.availableModels ?? []).filter(
-      (candidate) => !candidate.provider || candidate.provider === value,
-    );
-    const nextModel = nextModels[0];
-    if (!nextModel) return;
-    setModel(nextModel.value);
-    if (nextModel.supportsFast === false) setFast(false);
-  }
 
   async function save(change: SessionConfigurationChange): Promise<void> {
     if (saving) return;
@@ -163,11 +133,9 @@ export function SessionConfigurationDialog({
     try {
       const next = await onSave(change);
       setConfiguration(next);
-      setProvider(next.provider ?? next.availableProviders?.[0]?.value ?? "");
       setModel(next.model ?? next.availableModels[0]?.value ?? "");
       setEffort(next.reasoningEffort ?? next.effort ?? next.availableReasoningEfforts?.[0] ?? next.availableEffortLevels[0] ?? "medium");
-      setFast(next.fast ?? false);
-        setNativePermissionMode(next.nativePermissionMode);
+      setNativePermissionMode(next.nativePermissionMode);
       if (change.model !== null) onClose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "会话配置保存失败");
@@ -180,9 +148,7 @@ export function SessionConfigurationDialog({
     return save({
       ...(modelOptions.length ? { model } : {}),
       ...(nativeRuntime ? {
-        ...(configuration?.availableProviders?.length ? { provider: provider || null } : {}),
         ...(effortLevels.length && selectedModel?.supportsEffort !== false ? { reasoningEffort: shownEffort } : {}),
-        ...(configuration?.supportsFastMode ? { fast: fastSupported ? fast : false } : {}),
         ...(claudeSession && nativePermissionMode ? { permissionMode: nativePermissionMode } : {}),
       } : { effort: selectedModel?.supportsEffort === false ? null : shownEffort }),
     });
@@ -213,22 +179,6 @@ export function SessionConfigurationDialog({
           </div>
         ) : (
           <>
-            {configuration?.availableProviders?.length ? (
-              <div className="session-model-field">
-                <span>Provider</span>
-                <SelectMenu
-                  ariaLabel="Provider"
-                  value={provider}
-                  options={configuration.availableProviders.map((candidate) => ({
-                    value: candidate.value,
-                    label: candidate.displayName,
-                  }))}
-                  onChange={chooseProvider}
-                />
-                <small>{provider || "跟随 Desktop 当前配置"}</small>
-              </div>
-            ) : null}
-
             {modelOptions.length > 0 && (
               <div className="session-model-field">
                 <span>模型</span>
@@ -241,7 +191,7 @@ export function SessionConfigurationDialog({
                     label: sanitizeModelDisplayName(candidate.displayName, candidate.resolvedModel ?? candidate.value),
                     meta: quota?.snapshot ? (modelQuotaLabel(quota.snapshot, candidate) || undefined) : undefined,
                   }))}
-                  onChange={chooseModel}
+                  onChange={setModel}
                 />
                 <small>
                   {selectedModel?.description
@@ -278,19 +228,6 @@ export function SessionConfigurationDialog({
                   <small>当前设置为「{effortLabel(effort)}」，这个模型不支持「{effortLabel(effort)}」，保存后改为「{effortLabel(shownEffort)}」。</small>
                 )}
               </fieldset>
-            )}
-
-            {configuration?.supportsFastMode && (
-              <label className="session-fast-field">
-                <input
-                  type="checkbox"
-                  checked={fast}
-                  disabled={!fastSupported}
-                  onChange={(event) => setFast(event.target.checked)}
-                />
-                <span>快速模式</span>
-                {!fastSupported && <small>当前模型不支持</small>}
-              </label>
             )}
 
             {claudeSession && configuration?.nativePermissionMode && (
@@ -348,7 +285,7 @@ export function SessionConfigurationDialog({
               <button
                 type="button"
                 className="primary-button"
-                disabled={saving || (!modelOptions.length && !effortLevels.length && !configuration?.supportsFastMode && !configuration?.nativePermissionMode)}
+                disabled={saving || (!modelOptions.length && !effortLevels.length && !configuration?.nativePermissionMode)}
                 onClick={() => {
                   if (claudeSession && nativePermissionMode === "bypassPermissions" && configuration?.nativePermissionMode !== "bypassPermissions") setConfirmFullAccess(true);
                   else void saveSelectedConfiguration();

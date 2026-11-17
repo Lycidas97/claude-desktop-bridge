@@ -79,7 +79,6 @@ beforeEach(() => {
   hooks.slots = []; hooks.effects = []; hooks.pending = [];
   props = {
     snapshot: { ...host }, desktopLocal: true, onRefresh: vi.fn(),
-    onSetApiKey: vi.fn(), onRemoveApiKey: vi.fn(),
     onTestMagpieConnection: vi.fn().mockResolvedValue(ready),
     onSaveMagpieConnection: vi.fn(async (input: BridgeMagpieConnectionInput) => {
       const magpie: BridgeHostSnapshot["magpie"] = input.mode === "manual"
@@ -165,7 +164,6 @@ describe("Magpie connection settings", () => {
     expect(text()).toContain("保存后用于 Magpie 额度查询");
     expect(text()).not.toContain("下次启动 Bridge 执行器");
     expect(button("保存 Magpie 配置").props.disabled).toBe(true);
-    expect(props.onSetApiKey).not.toHaveBeenCalled();
   });
 
   it("restores the automatic source and sends no manual credentials", async () => {

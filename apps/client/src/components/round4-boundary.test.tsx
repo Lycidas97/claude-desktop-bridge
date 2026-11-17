@@ -145,9 +145,12 @@ import { SlashCommandInput } from "./conversation/SlashCommandInput.js";
 import { DesktopSessions } from "./desktop/DesktopSessionsPane.js";
 import { MobileWorkspace } from "./MobileWorkspace.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
+import { MobileSessionCatalog } from "./mobile/MobileSessionCatalog.js";
 import { NewChatCanvas } from "./session/NewChatCanvas.js";
 import { ProjectGroupHeader } from "./session/ProjectGroupHeader.js";
+import { SectionCreateDialog } from "./session/SectionCreateDialog.js";
 import { SectionManageDialog, useSectionManage } from "./session/SectionManageDialog.js";
+import { SessionActionSheets } from "./session/SessionActionSheets.js";
 import { SessionFamilyList } from "./session/SessionFamilyList.js";
 import {
   UNSECTIONED_DROP_ID,
@@ -188,6 +191,9 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
       || el.type === ProjectGroupHeader
       || el.type === SessionFamilyList
       || el.type === MobilePageHeader
+      || el.type === MobileSessionCatalog
+      || el.type === SectionCreateDialog
+      || el.type === SessionActionSheets
       || el.type === SheetAction;
     if (expand) {
       return [el, ...elements((el.type as (props: any) => ReactNode)(el.props))];

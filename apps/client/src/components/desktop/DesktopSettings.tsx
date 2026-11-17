@@ -501,8 +501,6 @@ export function DesktopSettings({
                   if (!response.ok) throw new Error(response.error?.message ?? "检测失败");
                   onSnapshot(await api.getSnapshot());
                 }}
-                onSetApiKey={async (value) => onSnapshot(await api.setAnthropicApiKey(value))}
-                onRemoveApiKey={async () => onSnapshot(await api.removeAnthropicApiKey())}
                 onTestMagpieConnection={api.testMagpieConnection ? (input) => api.testMagpieConnection!(input) : undefined}
                 onSaveMagpieConnection={api.saveMagpieConnection ? async (input) => {
                   const saved = await api.saveMagpieConnection!(input);

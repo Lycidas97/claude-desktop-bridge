@@ -9,7 +9,7 @@ import { useMediaRequest } from "../evidence/MediaPreviewProvider.js";
 import { Sheet } from "../common/Sheet.js";
 import "./ToolCallDetailSheet.css";
 
-const MAX_CACHED_TOOL_DETAILS = 200;
+const MAX_CACHED_TOOL_DETAILS = 128;
 const toolDetailCache = new Map<string, BridgeToolCallDetail>();
 const inFlightToolDetails = new Map<string, Promise<BridgeToolCallDetail>>();
 

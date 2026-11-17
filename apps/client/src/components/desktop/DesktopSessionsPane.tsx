@@ -10,14 +10,6 @@ import type {
 } from "@bridge/protocol";
 import {
   AlertTriangle,
-  Archive,
-  ArchiveRestore,
-  Check,
-  FilePenLine,
-  Folder,
-  FolderOpen,
-  FolderPlus,
-  GitFork,
   Mail,
   MoreHorizontal,
   PanelLeft,
@@ -25,7 +17,6 @@ import {
   Search,
   Settings2,
   SquarePen,
-  Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ThemeControl } from "../../hooks/useTheme.js";
@@ -33,26 +24,23 @@ import {
   expandProject,
   getSessionAncestorIds,
   groupProjectSessionFamilies,
-  orderProjects,
-  readStoredProjectOrder,
-  sortProjectSessionsByRecent,
-  toggleCollapsedProject,
-  writeStoredProjectOrder,
 } from "../../lib/project-groups.js";
-import { desktopRuntimeId, desktopRuntimeName } from "../../lib/runtime-labels.js";
+import { desktopRuntimeId } from "../../lib/runtime-labels.js";
 import { useAssistantMail } from "../assistant/AssistantMailProvider.js";
-import { ConfirmationDialog } from "../common/ConfirmationDialog.js";
 import { EmptyState } from "../common/EmptyState.js";
 import { IconButton } from "../common/IconButton.js";
-import { Sheet, SheetAction } from "../common/Sheet.js";
 import { ThemeMenu } from "../common/ThemeMenu.js";
 import { useConversationDrafts } from "../conversation/ConversationDraftsProvider.js";
 import { ProjectOrderSheet } from "../mobile/ProjectOrderSheet.js";
 import { NewChatCanvas, type NewChatDirectoryPickerRequest } from "../session/NewChatCanvas.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
+import { SectionCreateDialog, type SectionCreateState } from "../session/SectionCreateDialog.js";
 import { SectionManageDialog, useSectionManage } from "../session/SectionManageDialog.js";
+import { SessionActionSheets } from "../session/SessionActionSheets.js";
 import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
+import { CLAUDE_UNSECTIONED_PROJECT_ID } from "../session/session-constants.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
+import { useProjectSessionGroups } from "../session/useProjectSessionGroups.js";
 import {
   SessionSectionDragGhost,
   UNSECTIONED_DROP_ID,
@@ -145,14 +133,64 @@ export function DesktopSessions({
   const hostOnline = snapshot.connection === "connected" && !snapshot.host.version.startsWith("0.2.");
   const hostEvents = controller.filterEvents(events, hostId);
 
-  const activeSessions = useMemo(
-    () => snapshot.sessions.filter((session) => !session.archivedAt),
-    [snapshot.sessions],
-  );
+  const firstActiveId = snapshot.sessions.find((session) => !session.archivedAt)?.sessionId;
   const storedSelectedId = controller.selectedSessionFor(hostId);
   const selectedId = storedSelectedId !== undefined
     ? storedSelectedId
-    : (initialSessionId ?? activeSessions[0]?.sessionId);
+    : (initialSessionId ?? firstActiveId);
+
+  const {
+    search,
+    setSearch,
+    searchQuery,
+    archivedExpanded,
+    setArchivedExpanded,
+    revealedEmptySectionKey,
+    expandedEmptyProjectIds,
+    projectOrderOpen,
+    setProjectOrderOpen,
+    collapsedProjectIds,
+    setCollapsedProjectIds,
+    expandedForkParents,
+    setExpandedForkParents,
+    manualSections,
+    activeSessions,
+    projectsByActivity,
+    projectOrder,
+    grouped,
+    archivedSessions,
+    archivedFamilies,
+    placeProjects,
+    toggleProject,
+    toggleForkGroup,
+    registerCreatedSection,
+  } = useProjectSessionGroups({
+    hostId,
+    projects: snapshot.projects,
+    sessions: snapshot.sessions,
+    selectedSessionId: selectedId,
+  });
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [newChatTarget, setNewChatTarget] = useState<{
+    key: number;
+    initialProjectId?: string | undefined;
+    initialCwd?: string | undefined;
+  }>();
+  const [createDialogState, setCreateDialogState] = useState<NewChatDirectoryPickerRequest>();
+  const [sectionCreate, setSectionCreate] = useState<SectionCreateState>();
+  const [resetError, setResetError] = useState<string>();
+  const [rowMenuSessionId, setRowMenuSessionId] = useState<string>();
+  const [rowMoveMenuSessionId, setRowMoveMenuSessionId] = useState<string>();
+  const [rowRenameSessionId, setRowRenameSessionId] = useState<string>();
+  const [rowRenameTitle, setRowRenameTitle] = useState("");
+  const [rowDeleteSessionId, setRowDeleteSessionId] = useState<string>();
+  const [rowActionBusy, setRowActionBusy] = useState(false);
+  const [rowActionError, setRowActionError] = useState<string>();
+  const desktopProjectListRef = useRef<HTMLDivElement>(null);
+  const rowRenameDialogRef = useRef<HTMLElement>(null);
+  const handledResetEventsRef = useRef(new Set<string>());
+  const handledFocusKeyRef = useRef<number | undefined>(undefined);
 
   function setSelectedId(sessionId: string | undefined): void {
     setResetError(undefined);
@@ -166,42 +204,6 @@ export function DesktopSessions({
       onSelectTab?.("sessions");
     }
   }
-
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [search, setSearch] = useState("");
-  const [newChatTarget, setNewChatTarget] = useState<{
-    key: number;
-    initialProjectId?: string | undefined;
-    initialCwd?: string | undefined;
-  }>();
-  const [createDialogState, setCreateDialogState] = useState<NewChatDirectoryPickerRequest>();
-  const [sectionCreate, setSectionCreate] = useState<{ name: string; busy: boolean; error: string }>();
-  const [revealedEmptySectionKey, setRevealedEmptySectionKey] = useState<string>();
-  const [expandedEmptyProjectIds, setExpandedEmptyProjectIds] = useState<Set<string>>(() => new Set());
-  const [archivedExpanded, setArchivedExpanded] = useState(false);
-  const [projectOrderOpen, setProjectOrderOpen] = useState(false);
-  const [resetError, setResetError] = useState<string>();
-  const [rowMenuSessionId, setRowMenuSessionId] = useState<string>();
-  const [rowMoveMenuSessionId, setRowMoveMenuSessionId] = useState<string>();
-  const [rowRenameSessionId, setRowRenameSessionId] = useState<string>();
-  const [rowRenameTitle, setRowRenameTitle] = useState("");
-  const [rowDeleteSessionId, setRowDeleteSessionId] = useState<string>();
-  const [rowActionBusy, setRowActionBusy] = useState(false);
-  const [rowActionError, setRowActionError] = useState<string>();
-  const desktopProjectListRef = useRef<HTMLDivElement>(null);
-
-  const projectOrderKey = `bridge-project-order:${hostId}`;
-  const [placedProjectsState, setPlacedProjectsState] = useState<{ key: string; order: string[] }>(() => ({
-    key: projectOrderKey,
-    order: readStoredProjectOrder(projectOrderKey),
-  }));
-  const placedProjects = placedProjectsState.key === projectOrderKey
-    ? placedProjectsState.order
-    : readStoredProjectOrder(projectOrderKey);
-  const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
-  const [expandedForkParents, setExpandedForkParents] = useState<Set<string>>(() => new Set());
-  const handledResetEventsRef = useRef(new Set<string>());
-  const handledFocusKeyRef = useRef<number | undefined>(undefined);
 
   const handleRenameSection = useMemo(
     () => (snapshot.host.capabilities.includes("section.rename.v1")
@@ -302,29 +304,34 @@ export function DesktopSessions({
   const sectionCanCreate = Boolean(
     supportsCreateSection
     && sectionCreate?.name.trim()
-    && !sectionCreate?.busy,
+    && !sectionCreate.busy,
   );
 
   function closeSectionCreate(): void {
     if (!sectionCreate?.busy) setSectionCreate(undefined);
   }
 
+  async function createSectionFromName(
+    rawName: string,
+    options?: { clearSearch?: boolean | undefined },
+  ): Promise<BridgeProjectInfo> {
+    const { project } = unwrap<{ project?: BridgeProjectInfo }>(await apiRequest({
+      method: "section.create",
+      params: { name: rawName.trim() },
+    }));
+    if (!project) throw new Error("Section 未创建，请重试。");
+    sectionManage.revealEmptySections();
+    registerCreatedSection(project.projectId, options);
+    await onRefreshSnapshot();
+    return project;
+  }
+
   async function createSection(): Promise<void> {
     if (!sectionCanCreate || !sectionCreate) return;
     setSectionCreate({ ...sectionCreate, busy: true, error: "" });
     try {
-      const { project } = unwrap<{ project?: BridgeProjectInfo }>(await apiRequest({
-        method: "section.create",
-        params: { name: sectionCreate.name.trim() },
-      }));
-      if (!project) throw new Error("Section 未创建，请重试。");
-      sectionManage.revealEmptySections();
-      placeProjects([project.projectId, ...placedProjects.filter((id) => id !== project.projectId)]);
-      setCollapsedProjectIds((current) => expandProject(current, project.projectId));
-      setRevealedEmptySectionKey(project.projectId);
-      setSearch("");
+      await createSectionFromName(sectionCreate.name, { clearSearch: true });
       setSectionCreate(undefined);
-      await onRefreshSnapshot();
     } catch (reason) {
       setSectionCreate({
         ...sectionCreate,
@@ -360,85 +367,7 @@ export function DesktopSessions({
   }, [events, hostId, selectedId]);
 
   const selected = snapshot.sessions.find((session) => session.sessionId === selectedId);
-
-  const projectsByActivity = useMemo(() => {
-    const latest = new Map<string, number>(
-      snapshot.projects
-        .filter((project) => project.kind === "desktop-group")
-        .map((project) => [project.projectId, 0]),
-    );
-    for (const session of snapshot.sessions) {
-      if (!session.archivedAt) {
-        latest.set(session.projectId, Math.max(latest.get(session.projectId) ?? 0, session.lastActivityAt));
-      }
-    }
-    return [...latest.keys()].sort((left, right) => latest.get(right)! - latest.get(left)!);
-  }, [snapshot.projects, snapshot.sessions]);
-
-  const projectOrder = useMemo(
-    () => orderProjects(projectsByActivity, placedProjects),
-    [placedProjects, projectsByActivity],
-  );
-
-  function placeProjects(order: string[]): void {
-    writeStoredProjectOrder(projectOrderKey, order);
-    setPlacedProjectsState({ key: projectOrderKey, order });
-  }
-
-  useEffect(() => {
-    const unplaced = projectOrder.filter((projectId) => !placedProjects.includes(projectId));
-    if (unplaced.length) placeProjects([...unplaced, ...placedProjects]);
-  }, [placedProjects, projectOrder]);
-
-  const searchQuery = search.trim().toLocaleLowerCase();
-
-  const grouped = useMemo(() => {
-    const matches = snapshot.sessions.filter((session) => (
-      !searchQuery
-      || `${session.title}\n${session.currentSummary ?? ""}\n${session.projectName}\n${session.cwd}\n${desktopRuntimeName(desktopRuntimeId(session))}`
-        .toLocaleLowerCase()
-        .includes(searchQuery)
-    ));
-    const matchingActiveParents = new Map(
-      matches
-        .filter((candidate) => !candidate.archivedAt)
-        .map((candidate) => [candidate.sessionId, candidate.projectId]),
-    );
-    const filtered = matches.filter((candidate) => (
-      !candidate.archivedAt
-      || Boolean(
-        candidate.sidechat
-        && candidate.parentSessionId
-        && matchingActiveParents.get(candidate.parentSessionId) === candidate.projectId,
-      )
-    ));
-    const map = new Map<string, BridgeSessionInfo[]>(
-      snapshot.projects
-        .filter((project) => (
-          project.kind === "desktop-group"
-          && (!searchQuery || `${project.name}\n${project.cwd}`.toLocaleLowerCase().includes(searchQuery))
-        ))
-        .map((project) => [project.projectId, []]),
-    );
-    for (const session of filtered) {
-      const list = map.get(session.projectId) ?? [];
-      list.push(session);
-      map.set(session.projectId, list);
-    }
-    return projectOrder
-      .filter((projectId) => map.has(projectId))
-      .map((projectId) => ({
-        projectId,
-        project: snapshot.projects.find((candidate) => candidate.projectId === projectId),
-        sessions: sortProjectSessionsByRecent(map.get(projectId)!),
-      }));
-  }, [projectOrder, searchQuery, snapshot.projects, snapshot.sessions]);
-
   const visibilityAvailable = snapshot.host.capabilities.includes("session.visibility.v1");
-  const archivedSessions = useMemo(
-    () => sortProjectSessionsByRecent(snapshot.sessions.filter((candidate) => Boolean(candidate.archivedAt))),
-    [snapshot.sessions],
-  );
   const hasActiveSessions = activeSessions.length > 0;
 
   useEffect(() => {
@@ -446,40 +375,10 @@ export function DesktopSessions({
     setSelectedId(activeSessions[0]?.sessionId);
   }, [activeSessions, selectedId, snapshot.sessions]);
 
-  const autoExpandedForkKeysRef = useRef(new Set<string>());
   useEffect(() => {
-    const parentsToExpand: string[] = [];
-    for (const session of snapshot.sessions) {
-      if (!session.parentSessionId) continue;
-      const isSelected = session.sessionId === selectedId;
-      const isActive = session.turnState === "running" || session.turnState === "waiting" || session.turnState === "queued";
-      const selectedKey = `selected:${session.sessionId}`;
-      if (isSelected) {
-        if (!autoExpandedForkKeysRef.current.has(selectedKey)) {
-          autoExpandedForkKeysRef.current.add(selectedKey);
-          parentsToExpand.push(...getSessionAncestorIds(snapshot.sessions, session.sessionId));
-        }
-      } else {
-        autoExpandedForkKeysRef.current.delete(selectedKey);
-      }
-      const activeKey = `active:${session.sessionId}`;
-      if (isActive) {
-        if (!autoExpandedForkKeysRef.current.has(activeKey)) {
-          autoExpandedForkKeysRef.current.add(activeKey);
-          parentsToExpand.push(...getSessionAncestorIds(snapshot.sessions, session.sessionId));
-        }
-      } else {
-        autoExpandedForkKeysRef.current.delete(activeKey);
-      }
-    }
-    if (parentsToExpand.length > 0) {
-      setExpandedForkParents((current) => {
-        const next = new Set(current);
-        for (const parentId of parentsToExpand) next.add(parentId);
-        return next.size === current.size ? current : next;
-      });
-    }
-  }, [selectedId, snapshot.sessions]);
+    if (!rowRenameSessionId || !rowActionBusy) return;
+    rowRenameDialogRef.current?.focus();
+  }, [rowActionBusy, rowRenameSessionId]);
 
   async function createSession(
     cwd: string,
@@ -550,28 +449,13 @@ export function DesktopSessions({
     selectSessionFromSidebar(created.sessionId);
   }
 
-  async function quickStartSession(
-    cwd: string,
-    prompt: string,
-    projectId?: string,
-    title?: string,
-  ): Promise<void> {
-    const created = await createSession(cwd, title, "claude-desktop", projectId);
-    await handleNewChatCreated(created, { initialPrompt: prompt });
-  }
-
-  const manualSections = useMemo(
-    () => snapshot.projects.filter((project) => project.kind === "desktop-group"),
-    [snapshot.projects],
-  );
-
   async function moveSessionToSection(sessionId: string, sectionId: string | null): Promise<void> {
     if (rowActionBusy || !hostOnline) return;
     setRowActionBusy(true);
     setRowActionError(undefined);
     try {
       const moved = await controller.moveSessionSection(sessionId, sectionId);
-      const targetProjectId = sectionId ?? moved.session?.projectId ?? "claude-unsectioned";
+      const targetProjectId = sectionId ?? moved.session?.projectId ?? CLAUDE_UNSECTIONED_PROJECT_ID;
       setCollapsedProjectIds((current) => expandProject(current, targetProjectId));
       setRowMoveMenuSessionId(undefined);
       setRowMenuSessionId(undefined);
@@ -616,29 +500,6 @@ export function DesktopSessions({
     }
   }
 
-  function toggleProject(projectId: string, isEmptyGroup: boolean): void {
-    if (isEmptyGroup) {
-      const currentlyExpanded = projectId === revealedEmptySectionKey || expandedEmptyProjectIds.has(projectId);
-      if (currentlyExpanded) {
-        if (revealedEmptySectionKey === projectId) setRevealedEmptySectionKey(undefined);
-        setExpandedEmptyProjectIds((current) => {
-          if (!current.has(projectId)) return current;
-          const next = new Set(current);
-          next.delete(projectId);
-          return next;
-        });
-      } else {
-        setExpandedEmptyProjectIds((current) => new Set([...current, projectId]));
-      }
-      return;
-    }
-    setCollapsedProjectIds((current) => toggleCollapsedProject(current, projectId));
-  }
-
-  function toggleForkGroup(parentSessionId: string): void {
-    setExpandedForkParents((current) => toggleCollapsedProject(current, parentSessionId));
-  }
-
   const sidebarToggleButton = (
     <IconButton
       label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
@@ -655,10 +516,10 @@ export function DesktopSessions({
   const rowRenameSession = rowRenameSessionId
     ? snapshot.sessions.find((candidate) => candidate.sessionId === rowRenameSessionId)
     : undefined;
-  const rowMoveMenuOpen = Boolean(rowMenuSession && rowMoveMenuSessionId === rowMenuSession.sessionId);
-  const currentMenuSection = rowMenuSession
-    ? manualSections.find((project) => project.projectId === rowMenuSession.projectId)
+  const rowDeleteSession = rowDeleteSessionId
+    ? snapshot.sessions.find((candidate) => candidate.sessionId === rowDeleteSessionId)
     : undefined;
+  const rowMoveMenuOpen = Boolean(rowMenuSession && rowMoveMenuSessionId === rowMenuSession.sessionId);
   const rowMenuSupportsRename = Boolean(
     rowMenuSession && (
       (snapshot.host.capabilities.includes("session.command.v1") && desktopRuntimeId(rowMenuSession) === "claude-desktop")
@@ -670,22 +531,12 @@ export function DesktopSessions({
     && snapshot.host.capabilities.includes("section.move.v1")
     && rowMenuSession.allowedActions?.canMoveSection,
   );
-  const rowRenameCanSave = Boolean(
-    rowRenameSession
-    && rowRenameTitle.trim()
-    && rowRenameTitle.trim() !== rowRenameSession.title
-    && !rowActionBusy,
-  );
-  const rowDeleteSession = rowDeleteSessionId
-    ? snapshot.sessions.find((candidate) => candidate.sessionId === rowDeleteSessionId)
-    : undefined;
-  const rowMenuBusy = Boolean(
-    rowMenuSession
-    && (rowMenuSession.turnState === "running" || rowMenuSession.turnState === "queued" || rowMenuSession.turnState === "waiting"),
+  const rowMenuSupportsFork = Boolean(
+    rowMenuSession && desktopRuntimeId(rowMenuSession) === "claude-desktop",
   );
 
   const showProjectTree = hasActiveSessions || Boolean(searchQuery);
-  const hasRenderedUnsectionedGroup = grouped.some((group) => group.projectId === "claude-unsectioned");
+  const hasRenderedUnsectionedGroup = grouped.some((group) => group.projectId === CLAUDE_UNSECTIONED_PROJECT_ID);
   const showUnsectionedDropZone = Boolean(
     sessionDrag.dragState
     && sessionDrag.dragState.originSectionId !== UNSECTIONED_DROP_ID
@@ -818,7 +669,7 @@ export function DesktopSessions({
                   const sessionsId = `desktop-project-${encodeURIComponent(groupProjectId)}`;
                   const dropSectionId = project?.kind === "desktop-group"
                     ? groupProjectId
-                    : groupProjectId === "claude-unsectioned"
+                    : groupProjectId === CLAUDE_UNSECTIONED_PROJECT_ID
                       ? UNSECTIONED_DROP_ID
                       : undefined;
                   const dropState = sessionDrag.dropZoneState(dropSectionId);
@@ -891,41 +742,38 @@ export function DesktopSessions({
                     拖到这里移出分组（未分组）
                   </div>
                 )}
-                {!searchQuery && visibilityAvailable && archivedSessions.length > 0 && (() => {
-                  const archivedFamilies = groupProjectSessionFamilies(archivedSessions);
-                  return (
-                    <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
-                      <ProjectGroupHeader
-                        title="已归档"
-                        count={archivedFamilies.length}
-                        expanded={archivedExpanded}
-                        controlsId="desktop-archived-sessions"
-                        onToggle={() => setArchivedExpanded((current) => !current)}
-                      />
-                      {archivedExpanded && (
-                        <div id="desktop-archived-sessions">
-                          <SessionFamilyList
-                            families={archivedFamilies}
-                            projects={snapshot.projects}
-                            permissions={snapshot.permissions}
-                            expandedForkParents={expandedForkParents}
-                            selectedId={activeTab === "sessions" ? selectedId : undefined}
-                            archivedList
-                            flat
-                            actionLabel={(session) => `会话操作：${session.title}`}
-                            onSelectSession={selectSessionFromSidebar}
-                             onOpenSessionActions={(targetSessionId) => {
-                              setRowActionError(undefined);
-                              setRowMoveMenuSessionId(undefined);
-                              setRowMenuSessionId(targetSessionId);
-                            }}
-                            onToggleForkGroup={toggleForkGroup}
-                          />
-                        </div>
-                      )}
-                    </section>
-                  );
-                })()}
+                {!searchQuery && visibilityAvailable && archivedSessions.length > 0 && (
+                  <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
+                    <ProjectGroupHeader
+                      title="已归档"
+                      count={archivedFamilies.length}
+                      expanded={archivedExpanded}
+                      controlsId="desktop-archived-sessions"
+                      onToggle={() => setArchivedExpanded((current) => !current)}
+                    />
+                    {archivedExpanded && (
+                      <div id="desktop-archived-sessions">
+                        <SessionFamilyList
+                          families={archivedFamilies}
+                          projects={snapshot.projects}
+                          permissions={snapshot.permissions}
+                          expandedForkParents={expandedForkParents}
+                          selectedId={activeTab === "sessions" ? selectedId : undefined}
+                          archivedList
+                          flat
+                          actionLabel={(session) => `会话操作：${session.title}`}
+                          onSelectSession={selectSessionFromSidebar}
+                          onOpenSessionActions={(targetSessionId) => {
+                            setRowActionError(undefined);
+                            setRowMoveMenuSessionId(undefined);
+                            setRowMenuSessionId(targetSessionId);
+                          }}
+                          onToggleForkGroup={toggleForkGroup}
+                        />
+                      </div>
+                    )}
+                  </section>
+                )}
               </div>
             )}
           </div>
@@ -990,11 +838,15 @@ export function DesktopSessions({
                 ? { onChooseDirectory: (path?: string) => window.bridgeDesktop!.chooseDirectory!(path) }
                 : {})}
               onOpenDirectoryPicker={openDirectoryPickerFromCanvas}
+              {...(supportsCreateSection
+                ? {
+                    onCreateSection: (name: string) => createSectionFromName(name, { clearSearch: false }),
+                  }
+                : {})}
               onLoadSessionConfiguration={controller.loadSessionConfiguration}
               onConfigureSession={controller.configureSession}
               onCreateSession={createSession}
               onSessionCreated={handleNewChatCreated}
-              onQuickStart={quickStartSession}
             />
           )}
         </section>
@@ -1002,222 +854,92 @@ export function DesktopSessions({
 
       <SessionSectionDragGhost dragState={sessionDrag.dragState} manualSections={manualSections} />
 
-      {rowMenuSession && !rowRenameSession && (
-        <Sheet
-          manageFocus
-          focusPaused={Boolean(rowDeleteSession)}
-          eyebrow={rowMoveMenuOpen ? rowMenuSession.title : `${rowMenuSession.projectName} · ${desktopRuntimeName(desktopRuntimeId(rowMenuSession))}`}
-          title={rowMoveMenuOpen ? "移动到分组" : rowMenuSession.title}
-          busy={rowActionBusy}
-          onClose={() => {
-            if (!rowActionBusy) {
-              setRowMoveMenuSessionId(undefined);
-              setRowMenuSessionId(undefined);
-            }
-          }}
-          {...(rowMoveMenuOpen ? {
-            footer: (
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={rowActionBusy}
-                onClick={() => {
-                  setRowActionError(undefined);
-                  setRowMoveMenuSessionId(undefined);
-                }}
-              >
-                返回
-              </button>
-            ),
-          } : {})}
-        >
-          {rowMoveMenuOpen ? (
-            <>
-              {manualSections.length > 0 && (
-                <div className="m-group">
-                  {manualSections.map((section) => {
-                    const isCurrent = currentMenuSection?.projectId === section.projectId;
-                    return (
-                      <SheetAction
-                        key={section.projectId}
-                        icon={isCurrent ? <Check size={19} /> : <Folder size={19} />}
-                        label={section.name}
-                        detail={isCurrent ? "当前所在分组" : undefined}
-                        disabled={rowActionBusy || !hostOnline || isCurrent}
-                        onClick={() => void moveSessionToSection(rowMenuSession.sessionId, section.projectId)}
-                      />
-                    );
-                  })}
-                </div>
-              )}
-              {currentMenuSection && (
-                <div className="m-group">
-                  <SheetAction
-                    icon={<FolderOpen size={19} />}
-                    label="移出分组"
-                    disabled={rowActionBusy || !hostOnline}
-                    onClick={() => void moveSessionToSection(rowMenuSession.sessionId, null)}
-                  />
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="m-group">
-              {rowMenuSupportsRename && (
-                <SheetAction
-                  icon={<FilePenLine size={19} />}
-                  label="重命名"
-                  disabled={rowActionBusy || !hostOnline}
-                  onClick={() => {
-                    setRowRenameTitle(rowMenuSession.title);
-                    setRowActionError(undefined);
-                    setRowRenameSessionId(rowMenuSession.sessionId);
-                  }}
-                />
-              )}
-              {rowMenuSupportsMoveSection && (
-                <SheetAction
-                  icon={<Folder size={19} />}
-                  label="移动到分组"
-                  detail={currentMenuSection ? currentMenuSection.name : manualSections.length > 0 ? "未分组" : "暂无可用分组"}
-                  disabled={rowActionBusy || !hostOnline || (!currentMenuSection && manualSections.length === 0)}
-                  onClick={() => {
-                    setRowActionError(undefined);
-                    setRowMoveMenuSessionId(rowMenuSession.sessionId);
-                  }}
-                />
-              )}
-              {desktopRuntimeId(rowMenuSession) === "claude-desktop" && (
-                <SheetAction
-                  icon={<GitFork size={19} />}
-                  label="Fork 分支"
-                  disabled={rowActionBusy}
-                  onClick={() => {
-                    if (rowActionBusy) return;
-                    const sourceId = rowMenuSession.sessionId;
-                    setRowActionBusy(true);
-                    setRowActionError(undefined);
-                    void controller.forkSession(sourceId)
-                      .then(async (created) => {
-                        setExpandedForkParents((current) => new Set([
-                          ...current,
-                          ...getSessionAncestorIds(snapshot.sessions, sourceId),
-                          sourceId,
-                        ]));
-                        await onRefreshSnapshot();
-                        setRowMenuSessionId(undefined);
-                        selectSessionFromSidebar(created.sessionId);
-                      })
-                      .catch((error: unknown) => {
-                        setRowActionError(error instanceof Error ? error.message : "Fork 分支创建失败");
-                      })
-                      .finally(() => setRowActionBusy(false));
-                  }}
-                />
-              )}
-              {visibilityAvailable && (
-                <>
-                  <SheetAction
-                    icon={rowMenuSession.archivedAt ? <ArchiveRestore size={19} /> : <Archive size={19} />}
-                    label={rowMenuSession.archivedAt ? "恢复会话" : "归档会话"}
-                    disabled={rowActionBusy}
-                    onClick={() => {
-                      if (rowActionBusy) return;
-                      setRowActionBusy(true);
-                      setRowActionError(undefined);
-                      void controller.archiveSession(rowMenuSession.sessionId, !rowMenuSession.archivedAt)
-                        .then(() => setRowMenuSessionId(undefined))
-                        .catch((error: unknown) => {
-                          setRowActionError(error instanceof Error ? error.message : "归档设置失败");
-                        })
-                        .finally(() => setRowActionBusy(false));
-                    }}
-                  />
-                  <SheetAction
-                    icon={<Trash2 size={19} />}
-                    label="删除会话"
-                    danger
-                    disabled={rowActionBusy || rowMenuBusy}
-                    detail={rowMenuBusy ? "任务进行中，先停止再删除" : undefined}
-                    onClick={() => setRowDeleteSessionId(rowMenuSession.sessionId)}
-                  />
-                </>
-              )}
-              {!visibilityAvailable && desktopRuntimeId(rowMenuSession) !== "claude-desktop" && !rowMenuSupportsRename && !rowMenuSupportsMoveSection && (
-                <SheetAction
-                  icon={<FolderPlus size={19} />}
-                  label="打开此会话"
-                  onClick={() => {
-                    const targetId = rowMenuSession.sessionId;
-                    setRowMenuSessionId(undefined);
-                    selectSessionFromSidebar(targetId);
-                  }}
-                />
-              )}
-            </div>
-          )}
-          {rowActionError && <p className="m-sheet-note is-error" role="alert">{rowActionError}</p>}
-        </Sheet>
-      )}
-
-      {rowRenameSession && (
-        <div
-          className="modal-backdrop session-create-backdrop"
-          role="presentation"
-          onMouseDown={(event) => { if (event.target === event.currentTarget) closeRowRename(); }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.stopPropagation();
-              closeRowRename();
-            }
-          }}
-        >
-          <section className="create-session-dialog session-create-dialog" role="dialog" aria-modal="true" aria-label="重命名会话">
-            <header className="session-create-header"><h2>重命名会话</h2></header>
-            <form onSubmit={(event) => { event.preventDefault(); void submitRowRename(); }}>
-              <div className="session-create-body">
-                <label>
-                  <span>会话名称</span>
-                  <input
-                    aria-label="会话名称"
-                    value={rowRenameTitle}
-                    autoFocus
-                    required
-                    maxLength={200}
-                    disabled={rowActionBusy}
-                    onFocus={(event) => event.target.select()}
-                    onChange={(event) => {
-                      setRowRenameTitle(event.target.value);
-                      if (rowActionError) setRowActionError(undefined);
-                    }}
-                  />
-                </label>
-                {rowActionError && <p className="session-create-error" role="alert">{rowActionError}</p>}
-              </div>
-              <footer className="dialog-actions session-create-actions">
-                <button type="button" className="secondary-button" disabled={rowActionBusy} onClick={closeRowRename}>取消</button>
-                <button type="submit" className="primary-button" disabled={!rowRenameCanSave}>{rowActionBusy ? "正在保存…" : "保存"}</button>
-              </footer>
-            </form>
-          </section>
-        </div>
-      )}
-
-      <ConfirmationDialog
-        open={Boolean(rowDeleteSession)}
-        title="删除会话"
-        description={rowDeleteSession
-          ? (rowDeleteSession.transport === "claude-desktop-native"
-              ? `从 Claude Desktop 中删除「${rowDeleteSession.title}」会话？此操作不可恢复。`
-              : `从 Bridge 列表中删除「${rowDeleteSession.title}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`)
-          : ""}
-        confirmLabel="删除会话"
-        danger
+      <SessionActionSheets
+        menuSession={rowMenuSession}
+        renameSession={rowRenameSession}
+        deleteSession={rowDeleteSession}
+        moveMenuOpen={rowMoveMenuOpen}
+        manualSections={manualSections}
+        online={hostOnline}
         busy={rowActionBusy}
-        onCancel={() => {
+        error={rowActionError}
+        supportsRename={rowMenuSupportsRename}
+        renameDisabled={!hostOnline}
+        supportsMoveSection={rowMenuSupportsMoveSection}
+        supportsFork={rowMenuSupportsFork}
+        renameTitle={rowRenameTitle}
+        renameDialogRef={rowRenameDialogRef}
+        onCloseMenu={() => {
+          if (!rowActionBusy) {
+            setRowMoveMenuSessionId(undefined);
+            setRowMenuSessionId(undefined);
+          }
+        }}
+        onOpenMoveMenu={() => {
+          if (!rowMenuSession) return;
+          setRowActionError(undefined);
+          setRowMoveMenuSessionId(rowMenuSession.sessionId);
+        }}
+        onBackFromMoveMenu={() => {
+          setRowActionError(undefined);
+          setRowMoveMenuSessionId(undefined);
+        }}
+        onMoveToSection={(sectionId) => rowMenuSession && moveSessionToSection(rowMenuSession.sessionId, sectionId)}
+        onStartRename={() => {
+          if (!rowMenuSession) return;
+          setRowRenameTitle(rowMenuSession.title);
+          setRowActionError(undefined);
+          setRowRenameSessionId(rowMenuSession.sessionId);
+        }}
+        onChangeRenameTitle={(title) => {
+          setRowRenameTitle(title);
+          if (rowActionError) setRowActionError(undefined);
+        }}
+        onSubmitRename={submitRowRename}
+        onCloseRename={closeRowRename}
+        onFork={rowMenuSession && rowMenuSupportsFork
+          ? () => {
+              if (rowActionBusy) return;
+              const sourceId = rowMenuSession.sessionId;
+              setRowActionBusy(true);
+              setRowActionError(undefined);
+              void controller.forkSession(sourceId)
+                .then(async (created) => {
+                  setExpandedForkParents((current) => new Set([
+                    ...current,
+                    ...getSessionAncestorIds(snapshot.sessions, sourceId),
+                    sourceId,
+                  ]));
+                  await onRefreshSnapshot();
+                  setRowMenuSessionId(undefined);
+                  selectSessionFromSidebar(created.sessionId);
+                })
+                .catch((error: unknown) => {
+                  setRowActionError(error instanceof Error ? error.message : "Fork 分支创建失败");
+                })
+                .finally(() => setRowActionBusy(false));
+            }
+          : undefined}
+        onArchive={rowMenuSession && visibilityAvailable
+          ? (archived) => {
+              if (rowActionBusy) return;
+              setRowActionBusy(true);
+              setRowActionError(undefined);
+              void controller.archiveSession(rowMenuSession.sessionId, archived)
+                .then(() => setRowMenuSessionId(undefined))
+                .catch((error: unknown) => {
+                  setRowActionError(error instanceof Error ? error.message : "归档设置失败");
+                })
+                .finally(() => setRowActionBusy(false));
+            }
+          : undefined}
+        onRequestDelete={rowMenuSession && visibilityAvailable
+          ? () => setRowDeleteSessionId(rowMenuSession.sessionId)
+          : undefined}
+        onCancelDelete={() => {
           if (!rowActionBusy) setRowDeleteSessionId(undefined);
         }}
-        onConfirm={() => {
+        onConfirmDelete={() => {
           if (!rowDeleteSession || rowActionBusy) return;
           const targetId = rowDeleteSession.sessionId;
           setRowActionBusy(true);
@@ -1248,44 +970,14 @@ export function DesktopSessions({
           onClose={() => setProjectOrderOpen(false)}
         />
       )}
-      {sectionCreate && (
-        <div
-          className="modal-backdrop session-create-backdrop"
-          role="presentation"
-          onMouseDown={(event) => { if (event.target === event.currentTarget) closeSectionCreate(); }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.stopPropagation();
-              closeSectionCreate();
-            }
-          }}
-        >
-          <section className="create-session-dialog session-create-dialog section-create-dialog" role="dialog" aria-modal="true" aria-label="新建 Section">
-            <header className="session-create-header"><h2>新建 Section</h2></header>
-            <form onSubmit={(event) => { event.preventDefault(); void createSection(); }}>
-              <div className="session-create-body">
-                <label>
-                  <span>Section 名称</span>
-                  <input
-                    aria-label="Section 名称"
-                    value={sectionCreate.name}
-                    autoFocus
-                    required
-                    maxLength={200}
-                    disabled={sectionCreate.busy}
-                    onChange={(event) => setSectionCreate({ ...sectionCreate, name: event.target.value, error: "" })}
-                  />
-                </label>
-                {sectionCreate.error && <p className="session-create-error" role="alert">{sectionCreate.error}</p>}
-              </div>
-              <footer className="dialog-actions session-create-actions">
-                <button type="button" className="secondary-button" disabled={sectionCreate.busy} onClick={closeSectionCreate}>取消</button>
-                <button type="submit" className="primary-button" disabled={!sectionCanCreate}>{sectionCreate.busy ? "正在创建…" : "创建 Section"}</button>
-              </footer>
-            </form>
-          </section>
-        </div>
-      )}
+      <SectionCreateDialog
+        state={sectionCreate}
+        online={hostOnline}
+        canSubmit={sectionCanCreate}
+        onChangeName={(name) => sectionCreate && setSectionCreate({ ...sectionCreate, name, error: "" })}
+        onSubmit={createSection}
+        onClose={closeSectionCreate}
+      />
       <SectionManageDialog controller={sectionManage} manageFocus />
       {createDialogState && (
         <SessionCreateDialog

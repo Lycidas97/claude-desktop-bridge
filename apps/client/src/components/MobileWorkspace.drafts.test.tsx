@@ -27,7 +27,10 @@ import { MessageCopyButton } from "./common/MessageCopyButton.js";
 import { TaskPlanCard } from "./conversation/TaskPlanCard.js";
 import { SessionActivityIndicator } from "./conversation/SessionActivityIndicator.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
+import { MobileSessionCatalog } from "./mobile/MobileSessionCatalog.js";
 import { NewChatCanvas } from "./session/NewChatCanvas.js";
+import { SectionCreateDialog } from "./session/SectionCreateDialog.js";
+import { SessionActionSheets } from "./session/SessionActionSheets.js";
 import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
 import { SessionFamilyList } from "./session/SessionFamilyList.js";
 import { ProjectGroupHeader } from "./session/ProjectGroupHeader.js";
@@ -110,6 +113,9 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
       || element.type === ConversationToolGroup
       || element.type === ConversationMessageItem
       || element.type === ForkChainBar
+      || element.type === MobileSessionCatalog
+      || element.type === SectionCreateDialog
+      || element.type === SessionActionSheets
       ? (element.type as (props: any) => ReactNode)(element.props)
       : element.props.children,
   )];

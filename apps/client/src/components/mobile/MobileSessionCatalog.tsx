@@ -1,6 +1,4 @@
 import type {
-  BridgeDesktopRuntimeId,
-  BridgeDirectoryListing,
   BridgeHostSnapshot,
   BridgePermissionInfo,
   BridgeProjectInfo,
@@ -21,17 +19,14 @@ import {
 import type { ReactNode, RefObject } from "react";
 import type { MobileConnectionIssue, PairedHost } from "../../hooks/useMobileBridge.js";
 import type { ThemeControl } from "../../hooks/useTheme.js";
-import {
-  expandProject,
-  groupProjectSessionFamilies,
-} from "../../lib/project-groups.js";
+import { groupProjectSessionFamilies, type SessionFamily } from "../../lib/project-groups.js";
 import { EmptyState } from "../common/EmptyState.js";
 import { IconButton } from "../common/IconButton.js";
 import { ThemeMenu } from "../common/ThemeMenu.js";
-import type { NewChatDirectoryPickerRequest } from "../session/NewChatCanvas.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
+import { SectionCreateDialog, type SectionCreateState } from "../session/SectionCreateDialog.js";
 import { SectionManageDialog, type SectionManageController } from "../session/SectionManageDialog.js";
-import { SessionCreateDialog } from "../session/SessionCreateDialog.js";
+import { CLAUDE_UNSECTIONED_PROJECT_ID } from "../session/session-constants.js";
 import { SessionFamilyList } from "../session/SessionFamilyList.js";
 import {
   SessionSectionDragGhost,
@@ -82,15 +77,13 @@ export interface MobileSessionCatalogProps {
   onToggleArchived?: (() => void) | undefined;
   expandedEmptyProjectIds?: ReadonlySet<string> | undefined;
   revealedEmptySectionKey?: string | undefined;
-  createDialogState?: NewChatDirectoryPickerRequest | undefined;
-  onCloseCreateDialog?: (() => void) | undefined;
-  onDeliverInitialPrompt?: ((created: BridgeSessionInfo, prompt: string) => void) | undefined;
   desktopName: string;
   connection: SocketState;
   desktopOnline: boolean;
   snapshot: BridgeHostSnapshot | undefined;
   sessions: BridgeSessionInfo[];
   archivedSessions: BridgeSessionInfo[];
+  archivedFamilies?: readonly SessionFamily<BridgeSessionInfo>[] | undefined;
   grouped: Array<{ project: BridgeProjectInfo | undefined; sessions: BridgeSessionInfo[] }>;
   collapsedProjectIds: Set<string>;
   expandedForkParents: Set<string>;
@@ -104,31 +97,17 @@ export interface MobileSessionCatalogProps {
   directoryRef: RefObject<HTMLElement | null>;
   directoryScrollPositions: RefObject<Map<string, number>>;
   projectOrderOpen: boolean;
-  sectionCreate: { name: string; busy: boolean; error: string } | undefined;
+  sectionCreate: SectionCreateState | undefined;
   sectionCanCreate: boolean;
   sectionManage: SectionManageController;
-  createOpen: boolean;
-  createProjectId: string;
   sessionOverlays: ReactNode;
   onBackToHosts(): void;
   onRetry(): Promise<void>;
-  onRefresh(sessionId?: string): Promise<boolean>;
   onCreateSection: ((name: string) => Promise<BridgeProjectInfo | undefined>) | undefined;
-  onBrowseDirectory: ((path?: string) => Promise<BridgeDirectoryListing>) | undefined;
-  onCreateDirectory: ((parentPath: string, name: string) => Promise<string>) | undefined;
-  onCreateSession(
-    cwd: string,
-    title?: string,
-    runtimeId?: BridgeDesktopRuntimeId,
-    projectId?: string,
-    trustWorkspace?: boolean,
-  ): Promise<BridgeSessionInfo | undefined>;
   selectSession(sessionId: string): Promise<void>;
   setSearch(value: string): void;
   setProjectOrderOpen(open: boolean): void;
-  setCollapsedProjectIds(value: Set<string> | ((current: Set<string>) => Set<string>)): void;
-  setSectionCreate(value: { name: string; busy: boolean; error: string } | undefined): void;
-  setCreateOpen(open: boolean): void;
+  setSectionCreate(value: SectionCreateState | undefined): void;
   onOpenSessionActions(sessionId: string): void;
   toggleProject(projectId: string, isEmptyManualGroup?: boolean): void;
   toggleForkGroup(parentSessionId: string): void;
@@ -143,7 +122,6 @@ export interface MobileSessionCatalogProps {
 }
 
 export function MobileSessionCatalog({
-  open = false,
   onClose,
   hosts,
   activeHostId,
@@ -162,15 +140,13 @@ export function MobileSessionCatalog({
   onToggleArchived,
   expandedEmptyProjectIds,
   revealedEmptySectionKey,
-  createDialogState,
-  onCloseCreateDialog,
-  onDeliverInitialPrompt,
   desktopName,
   connection,
   desktopOnline,
   snapshot,
   sessions,
   archivedSessions,
+  archivedFamilies,
   grouped,
   collapsedProjectIds,
   expandedForkParents,
@@ -187,22 +163,14 @@ export function MobileSessionCatalog({
   sectionCreate,
   sectionCanCreate,
   sectionManage,
-  createOpen,
-  createProjectId,
   sessionOverlays,
   onBackToHosts,
   onRetry,
-  onRefresh,
   onCreateSection,
-  onBrowseDirectory,
-  onCreateDirectory,
-  onCreateSession,
   selectSession,
   setSearch,
   setProjectOrderOpen,
-  setCollapsedProjectIds,
   setSectionCreate,
-  setCreateOpen,
   onOpenSessionActions,
   toggleProject,
   toggleForkGroup,
@@ -216,19 +184,21 @@ export function MobileSessionCatalog({
   onActivateClaude,
 }: MobileSessionCatalogProps) {
   const searchQuery = search.trim().toLocaleLowerCase();
+  const online = connection === "connected" && desktopOnline;
   const supportsCreateSection = Boolean(onCreateSection && snapshot?.host.capabilities.includes("section.create.v1"));
   const hasActiveSessions = sessions.some((candidate) => !candidate.archivedAt);
-  const filteredArchivedSessions = searchQuery
-    ? archivedSessions.filter((candidate) => (
-        `${candidate.title}\n${candidate.currentSummary ?? ""}\n${candidate.projectName}\n${candidate.cwd}`
-          .toLocaleLowerCase()
-          .includes(searchQuery)
-      ))
-    : archivedSessions;
-  const archivedFamilies = groupProjectSessionFamilies(filteredArchivedSessions);
-  const effectiveCreateDialog = createDialogState ?? (createOpen ? { initialProjectId: createProjectId || undefined } : undefined);
+  const totalArchivedFamilies = archivedFamilies ?? groupProjectSessionFamilies(archivedSessions);
+  const visibleArchivedFamilies = searchQuery
+    ? groupProjectSessionFamilies(
+        archivedSessions.filter((candidate) => (
+          `${candidate.title}\n${candidate.currentSummary ?? ""}\n${candidate.projectName}\n${candidate.cwd}`
+            .toLocaleLowerCase()
+            .includes(searchQuery)
+        )),
+      )
+    : totalArchivedFamilies;
   const hasRenderedUnsectionedGroup = grouped.some(
-    (group) => (group.project?.projectId ?? group.sessions[0]?.projectId) === "claude-unsectioned",
+    (group) => (group.project?.projectId ?? group.sessions[0]?.projectId) === CLAUDE_UNSECTIONED_PROJECT_ID,
   );
   const showUnsectionedDropZone = Boolean(
     sessionDrag?.dragState
@@ -260,10 +230,32 @@ export function MobileSessionCatalog({
             <span className="m-host-name">{desktopName}</span>
             <ChevronDown size={14} aria-hidden="true" />
           </button>
+          {assistantAvailable && onSelectTab && (
+            <button
+              type="button"
+              className={`drawer-assistant-capsule${activeTab === "assistant" ? " active" : ""}`}
+              aria-label={assistantUnreadCount > 0 ? `助理，${assistantUnreadCount} 条未读` : "助理"}
+              aria-current={activeTab === "assistant" ? "page" : undefined}
+              onClick={() => {
+                onSelectTab("assistant");
+                onClose?.();
+              }}
+            >
+              <Mail size={15} className="drawer-assistant-icon" aria-hidden="true" />
+              <span className="drawer-assistant-title">助理</span>
+              {assistantUnreadCount > 0 && (
+                <span className="drawer-assistant-unread" aria-hidden="true">
+                  <i className="sidebar-unread-dot" />
+                  <b className="desktop-nav-badge">{assistantUnreadCount > 99 ? "99+" : assistantUnreadCount}</b>
+                </span>
+              )}
+              <span className="drawer-assistant-slot" aria-hidden="true" />
+            </button>
+          )}
           <IconButton
             label="新建会话"
             className="drawer-compose-button"
-            disabled={!snapshot || connection !== "connected" || !desktopOnline}
+            disabled={!snapshot || !online}
             onClick={() => {
               if (onStartNewChat) {
                 onStartNewChat();
@@ -321,28 +313,6 @@ export function MobileSessionCatalog({
         )}
 
         <div className="drawer-top-stack">
-          {assistantAvailable && onSelectTab && (
-            <button
-              type="button"
-              className={`sidebar-assistant-row${activeTab === "assistant" ? " active" : ""}`}
-              aria-current={activeTab === "assistant" ? "page" : undefined}
-              onClick={() => {
-                onSelectTab("assistant");
-                onClose?.();
-              }}
-            >
-              <span className="sidebar-assistant-main">
-                <Mail size={15} className="sidebar-assistant-icon" aria-hidden="true" />
-                <span className="sidebar-assistant-label">助理</span>
-              </span>
-              {assistantUnreadCount > 0 && (
-                <span className="sidebar-assistant-unread" aria-hidden="true">
-                  <i className="sidebar-unread-dot" />
-                  <b className="desktop-nav-badge">{assistantUnreadCount > 99 ? "99+" : assistantUnreadCount}</b>
-                </span>
-              )}
-            </button>
-          )}
           <label className="session-search">
             <Search size={15} />
             <input
@@ -366,7 +336,7 @@ export function MobileSessionCatalog({
                   <button
                     type="button"
                     className="sidebar-micro-action"
-                    disabled={connection !== "connected" || !desktopOnline}
+                    disabled={!online}
                     onClick={() => setSectionCreate({ name: "", busy: false, error: "" })}
                   >
                     + 分组
@@ -413,7 +383,7 @@ export function MobileSessionCatalog({
           {onActivateClaude && (
             <MobileInspectorCallout
               snapshot={snapshot}
-              connected={connection === "connected" && desktopOnline}
+              connected={online}
               onActivate={onActivateClaude}
             />
           )}
@@ -422,7 +392,7 @@ export function MobileSessionCatalog({
             <p className="m-sheet-note is-error sidebar-action-error" role="alert">{sessionActionError}</p>
           )}
 
-          {!snapshot && connection === "connected" && desktopOnline && (
+          {!snapshot && online && (
             <EmptyState
               icon={<LoaderCircle className="is-spinning" size={20} />}
               title="正在同步主机状态"
@@ -430,7 +400,7 @@ export function MobileSessionCatalog({
             />
           )}
 
-          {(snapshot ? (!hasActiveSessions && grouped.length === 0) || (Boolean(searchQuery) && grouped.length === 0) : connection !== "connected" || !desktopOnline) && (() => {
+          {(snapshot ? (!hasActiveSessions && grouped.length === 0) || (Boolean(searchQuery) && grouped.length === 0) : !online) && (() => {
             const claudeRuntime = snapshot?.runtimes?.find((candidate) => candidate.id === "claude-desktop");
             const claudeDesktopReady = claudeRuntime
               ? claudeRuntime.state === "ready"
@@ -440,7 +410,7 @@ export function MobileSessionCatalog({
                 <EmptyState title="没有匹配的会话" description="换一个关键词试试。" />
               );
             }
-            if (connection === "connected" && desktopOnline && claudeDesktopReady) {
+            if (online && claudeDesktopReady) {
               const canCreate = snapshot?.runtimes
                 ? claudeRuntime?.state === "ready" && claudeRuntime.capabilities.includes("session.create")
                 : claudeDesktopReady;
@@ -466,7 +436,7 @@ export function MobileSessionCatalog({
                 />
               );
             }
-            if (connection === "connected" && desktopOnline) {
+            if (online) {
               return (
                 <EmptyState
                   title="未检测到 Claude Desktop"
@@ -524,7 +494,7 @@ export function MobileSessionCatalog({
                 const sessionsId = `mobile-project-${encodeURIComponent(projectId)}`;
                 const dropSectionId = group.project?.kind === "desktop-group"
                   ? projectId
-                  : projectId === "claude-unsectioned"
+                  : projectId === CLAUDE_UNSECTIONED_PROJECT_ID
                     ? UNSECTIONED_DROP_ID
                     : undefined;
                 const dropState = sessionDrag?.dropZoneState(dropSectionId);
@@ -545,7 +515,7 @@ export function MobileSessionCatalog({
                           <IconButton
                             label={`新建会话：${projectName}`}
                             className="session-row-action"
-                            disabled={!snapshot || connection !== "connected" || !desktopOnline}
+                            disabled={!snapshot || !online}
                             onClick={() => {
                               if (onStartNewChat) onStartNewChat(projectId);
                               else openCreateDialogForProject(projectId);
@@ -605,18 +575,18 @@ export function MobileSessionCatalog({
                 <section className={`project-group archived-group ${archivedExpanded ? "expanded" : "collapsed"}`}>
                   <ProjectGroupHeader
                     title="已归档"
-                    count={archivedSessions.length}
+                    count={totalArchivedFamilies.length}
                     expanded={archivedExpanded}
                     controlsId="mobile-archived-sessions"
                     onToggle={() => onToggleArchived?.()}
                   />
                   {archivedExpanded && (
                     <div id="mobile-archived-sessions" className="session-rows">
-                      {archivedFamilies.length === 0 ? (
+                      {visibleArchivedFamilies.length === 0 ? (
                         <p className="empty-section-hint">没有匹配的已归档会话</p>
                       ) : (
                         <SessionFamilyList
-                          families={archivedFamilies}
+                          families={visibleArchivedFamilies}
                           projects={snapshot?.projects}
                           permissions={permissions}
                           expandedForkParents={expandedForkParents}
@@ -685,72 +655,15 @@ export function MobileSessionCatalog({
           onClose={() => setProjectOrderOpen(false)}
         />
       )}
-      {sectionCreate && (
-        <div
-          className="modal-backdrop session-create-backdrop"
-          role="presentation"
-          onMouseDown={(event) => { if (event.target === event.currentTarget) closeSectionCreate(); }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.stopPropagation();
-              closeSectionCreate();
-            }
-          }}
-        >
-          <section className="create-session-dialog session-create-dialog section-create-dialog" role="dialog" aria-modal="true" aria-label="新建 Section">
-            <header className="session-create-header"><h2>新建 Section</h2></header>
-            <form onSubmit={(event) => { event.preventDefault(); void createSection(); }}>
-              <div className="session-create-body">
-                <label>
-                  <span>Section 名称</span>
-                  <input
-                    aria-label="Section 名称"
-                    value={sectionCreate.name}
-                    autoFocus
-                    required
-                    maxLength={200}
-                    disabled={sectionCreate.busy}
-                    onChange={(event) => setSectionCreate({ ...sectionCreate, name: event.target.value, error: "" })}
-                  />
-                </label>
-                {sectionCreate.error && <p className="session-create-error" role="alert">{sectionCreate.error}</p>}
-                {(connection !== "connected" || !desktopOnline) && <p className="session-create-status" role="status">电脑已离线，连接后可创建 Section。</p>}
-              </div>
-              <footer className="dialog-actions session-create-actions">
-                <button type="button" className="secondary-button" disabled={sectionCreate.busy} onClick={closeSectionCreate}>取消</button>
-                <button type="submit" className="primary-button" disabled={!sectionCanCreate}>{sectionCreate.busy ? "正在创建…" : "创建 Section"}</button>
-              </footer>
-            </form>
-          </section>
-        </div>
-      )}
+      <SectionCreateDialog
+        state={sectionCreate}
+        online={online}
+        canSubmit={sectionCanCreate}
+        onChangeName={(name) => sectionCreate && setSectionCreate({ ...sectionCreate, name, error: "" })}
+        onSubmit={createSection}
+        onClose={closeSectionCreate}
+      />
       <SectionManageDialog controller={sectionManage} />
-      {effectiveCreateDialog && snapshot && (
-        <SessionCreateDialog
-          key={`${snapshot.host.hostId}:${effectiveCreateDialog.initialProjectId ?? ""}:${effectiveCreateDialog.initialCwd ?? ""}:${effectiveCreateDialog.onPickDirectory ? "pick" : "create"}`}
-          snapshot={snapshot}
-          connected={connection === "connected" && desktopOnline}
-          {...(effectiveCreateDialog.initialProjectId ? { initialProjectId: effectiveCreateDialog.initialProjectId } : {})}
-          {...(effectiveCreateDialog.initialCwd ? { initialCwd: effectiveCreateDialog.initialCwd } : {})}
-          {...(effectiveCreateDialog.onPickDirectory ? { onPickDirectory: effectiveCreateDialog.onPickDirectory } : {})}
-          {...(onBrowseDirectory ? { onBrowseDirectory } : {})}
-          {...(onCreateDirectory ? { onCreateDirectory } : {})}
-          onCreate={onCreateSession}
-          onCreated={(created) => {
-            const pendingPrompt = effectiveCreateDialog.pendingPrompt;
-            setCollapsedProjectIds((current) => expandProject(current, created.projectId));
-            onClose?.();
-            if (pendingPrompt?.trim()) {
-              onDeliverInitialPrompt?.(created, pendingPrompt);
-            }
-            void Promise.resolve(onRefresh()).then(() => selectSession(created.sessionId));
-          }}
-          onClose={() => {
-            if (onCloseCreateDialog) onCloseCreateDialog();
-            else setCreateOpen(false);
-          }}
-        />
-      )}
     </>
   );
 }

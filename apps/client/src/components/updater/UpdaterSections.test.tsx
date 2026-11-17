@@ -55,7 +55,39 @@ it("keeps a newer ready host push when an older downloading RPC resolves later",
   const result = draw(pushed);
   expect(text(result)).toContain("已就绪 v1.3.3");
   expect(text(result)).not.toContain("正在下载");
-  expect(elements(result).find(element => element.type === "button" && text(element).includes("重启升级"))?.props.disabled).toBe(false);
+  expect(elements(result).find(element => element.type === "button" && text(element).includes("重启并升级"))?.props.disabled).toBe(false);
+});
+
+it("switches remote desktop update channel via single check+channel RPC and ignores no-op clicks", async () => {
+  const onInvoke = vi.fn().mockResolvedValue({ ...snapshot, phase: "up-to-date", channel: "prerelease" });
+  const remote: RemoteDesktopUpdateControl = {
+    hostVersion: "1.3.5-dev.23",
+    connected: true,
+    supported: true,
+    updater: { ...snapshot, phase: "up-to-date", channel: "stable" },
+    onInvoke,
+  };
+  const tree = draw(remote);
+  const channelGroup = elements(tree).find(el => el.props["aria-label"] === "远端桌面更新通道")!;
+  const [stableBtn, prereleaseBtn] = elements(channelGroup).filter(el => el.type === "button");
+  expect(stableBtn!.props["aria-pressed"]).toBe(true);
+  expect(prereleaseBtn!.props["aria-pressed"]).toBe(false);
+
+  // Clicking the active channel is a no-op
+  stableBtn!.props.onClick();
+  expect(onInvoke).not.toHaveBeenCalled();
+
+  // Clicking prerelease saves channel + runs check in one round-trip
+  prereleaseBtn!.props.onClick();
+  expect(onInvoke).toHaveBeenCalledExactlyOnceWith({ action: "check", channel: "prerelease" });
+
+  // Concise 5-char button copy on Windows vs macOS non-auto-restart
+  expect(elements(tree).some(el => el.type === "button" && text(el).includes("检查并升级"))).toBe(true);
+  const macAvailable = draw({
+    ...remote,
+    updater: { ...snapshot, platform: "darwin", canAutoRestart: false, phase: "available", assetName: "Bridge.dmg" },
+  });
+  expect(elements(macAvailable).some(el => el.type === "button" && text(el).includes("下载更新"))).toBe(true);
 });
 
 it("uses the shared byte formatter for sub-kilobyte progress", () => {

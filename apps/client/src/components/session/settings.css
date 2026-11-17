@@ -395,6 +395,18 @@
   margin: 10px 0;
 }
 
+.settings-inline-actions button,
+.settings-inline-actions a {
+  padding-block: 6px;
+  text-align: center;
+  text-wrap: balance;
+}
+
+.settings-inline-actions button > svg,
+.settings-inline-actions a > svg {
+  flex-shrink: 0;
+}
+
 .mobile-provider-settings {
   padding: 16px;
 }

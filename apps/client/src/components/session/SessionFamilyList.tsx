@@ -5,6 +5,7 @@ import { activeSessionBadgeLabel, forkGroupToggleLabel, relativeTime, visibleSes
 import type { SessionFamily } from "../../lib/project-groups.js";
 import { backgroundSubagentBadge } from "../../lib/session-activity.js";
 import { IconButton } from "../common/IconButton.js";
+import "./session-section-drag.css";
 import type { SessionSectionDragController } from "./useSessionSectionDrag.js";
 
 type TreeConnectorVariant = "summary" | "branch" | "last" | "only";

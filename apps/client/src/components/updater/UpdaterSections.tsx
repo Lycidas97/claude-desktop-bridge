@@ -301,6 +301,28 @@ export function RemoteDesktopUpdaterSection({
               : formatDesktopUpdaterPhase(updater)}
         </span>
       </div>
+      {remote.supported && updater && (
+        <div className="mobile-settings-row">
+          <span>更新通道</span>
+          <div className="segmented" role="group" aria-label="远端桌面更新通道">
+            {(["stable", "prerelease"] as const).map((ch) => (
+              <button
+                type="button"
+                key={ch}
+                className={updater.channel === ch ? "active" : ""}
+                aria-pressed={updater.channel === ch}
+                disabled={!remote.connected || isBusy}
+                onClick={() => {
+                  if (updater.channel === ch) return;
+                  void run({ action: "check", channel: ch });
+                }}
+              >
+                {ch === "stable" ? "稳定版" : "预发布"}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {updater?.statusDetail && updater.phase !== "error" && (
         <p className="mobile-settings-row detail-text" role="status">{updater.statusDetail}</p>
       )}
@@ -334,7 +356,7 @@ export function RemoteDesktopUpdaterSection({
               onClick={() => void run({ action: "apply" })}
             >
               <RotateCw size={16} />
-              重启升级桌面端
+              重启并升级
             </button>
           ) : updater?.phase === "available" && updater.assetName && !updater.canAutoRestart ? (
             <button
@@ -344,7 +366,7 @@ export function RemoteDesktopUpdaterSection({
               onClick={() => void run({ action: "download" })}
             >
               <Download size={16} />
-              下载至远端电脑
+              下载更新
             </button>
           ) : (
             <button
@@ -354,7 +376,7 @@ export function RemoteDesktopUpdaterSection({
               onClick={() => void run({ action: updater?.canAutoRestart === false ? "download" : "apply" })}
             >
               <RotateCw size={16} />
-              {updater?.canAutoRestart === false ? "检查并下载" : "检查并升级桌面端"}
+              {updater?.canAutoRestart === false ? "检查并下载" : "检查并升级"}
             </button>
           )}
         </div>

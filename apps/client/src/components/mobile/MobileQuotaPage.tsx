@@ -44,7 +44,7 @@ export function MobileQuotaPage({
 
   useEffect(() => {
     if (!quota?.enabled || attemptedOpenRefreshRef.current) return;
-    const hostKey = hostId ?? "__default__";
+    const hostKey = hostId ?? "__fallback_host__";
     const needsFirstHostRefresh = !initialRefreshedQuotaHosts.has(hostKey);
     const needsUnsupportedRetry = quota.snapshot?.status === "unsupported";
     if (!needsFirstHostRefresh && !needsUnsupportedRetry) return;

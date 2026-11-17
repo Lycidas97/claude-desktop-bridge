@@ -34,7 +34,9 @@ import { EmptyState } from "./common/EmptyState.js";
 import { ProjectGroupHeader } from "./session/ProjectGroupHeader.js";
 import { SessionFamilyList } from "./session/SessionFamilyList.js";
 import { SessionProfileSummary } from "./session/SessionProfileSummary.js";
+import { SectionCreateDialog } from "./session/SectionCreateDialog.js";
 import { SectionManageDialog } from "./session/SectionManageDialog.js";
+import { SessionActionSheets } from "./session/SessionActionSheets.js";
 import { SessionCreateDialog } from "./session/SessionCreateDialog.js";
 import { MobilePageHeader } from "./mobile/MobilePageHeader.js";
 import { ProjectOrderSheet } from "./mobile/ProjectOrderSheet.js";
@@ -106,7 +108,9 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   const children = (
     element.type === EmptyState
     || element.type === ProjectGroupHeader
+    || element.type === SectionCreateDialog
     || element.type === SectionManageDialog
+    || element.type === SessionActionSheets
     || element.type === SessionFamilyList
     || element.type === SessionProfileSummary
     || element.type === ConversationMessageItem

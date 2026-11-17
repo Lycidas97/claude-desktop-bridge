@@ -27,12 +27,18 @@ import {
 } from "../mobile/MobileInspectorCallout.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
 import "./new-chat-canvas.css";
+import { SectionCreateDialog, type SectionCreateState } from "./SectionCreateDialog.js";
 import {
   PERMISSION_MODE_OPTIONS,
   effortLabel,
   supportedEffort,
   type SessionConfigurationChange,
 } from "./SessionConfigurationDialog.js";
+import {
+  CLAUDE_UNSECTIONED_PROJECT_ID,
+  CREATE_SECTION_OPTION_VALUE,
+  DEFAULT_CONFIGURATION_SESSION_ID,
+} from "./session-constants.js";
 
 export const NEW_CHAT_DRAFT_SESSION_ID = "__new__";
 const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -86,6 +92,7 @@ export interface NewChatCanvasProps {
   conversationDrafts?: ConversationDraftsController | undefined;
   onChooseDirectory?(initialPath?: string): Promise<string | undefined>;
   onOpenDirectoryPicker(request?: NewChatDirectoryPickerRequest): void;
+  onCreateSection?: ((name: string) => Promise<BridgeProjectInfo | undefined>) | undefined;
   onLoadSessionConfiguration?(sessionId: string): Promise<BridgeSessionConfiguration>;
   onConfigureSession?(sessionId: string, change: SessionConfigurationChange): Promise<BridgeSessionConfiguration>;
   onCreateSession?(
@@ -99,7 +106,6 @@ export interface NewChatCanvasProps {
     created: BridgeSessionInfo,
     options?: { initialPrompt?: string | undefined; configurationError?: string | undefined },
   ): Promise<void> | void;
-  onQuickStart?(cwd: string, prompt: string, projectId?: string, title?: string): Promise<void>;
   onActivateClaude?: (() => Promise<void>) | undefined;
 }
 
@@ -118,11 +124,11 @@ export function NewChatCanvas({
   conversationDrafts: externalDrafts,
   onChooseDirectory,
   onOpenDirectoryPicker,
+  onCreateSection,
   onLoadSessionConfiguration,
   onConfigureSession,
   onCreateSession,
   onSessionCreated,
-  onQuickStart,
   onActivateClaude,
 }: NewChatCanvasProps) {
   const runtimeId = "claude-desktop";
@@ -132,10 +138,40 @@ export function NewChatCanvas({
   const newChatDraft = drafts.session(effectiveHostId, NEW_CHAT_DRAFT_SESSION_ID);
   const prompt = typeof newChatDraft.draft.text === "string" ? newChatDraft.draft.text : "";
 
+  const [createdGroups, setCreatedGroups] = useState<BridgeProjectInfo[]>([]);
+  const syncedCreatedGroupIdsRef = useRef(new Set<string>());
+  const [sectionCreate, setSectionCreate] = useState<SectionCreateState>();
+
   const projects: readonly BridgeProjectInfo[] = (snapshot?.projects ?? []).filter(
     (project) => (project.runtimeId ?? runtimeId) === runtimeId,
   );
-  const manualGroups = projects.filter((project) => project.kind === "desktop-group");
+  const manualGroups = useMemo(() => {
+    const base = projects.filter((project) => project.kind === "desktop-group");
+    if (createdGroups.length === 0) return base;
+    const seenInSnapshot = new Set(base.map((project) => project.projectId));
+    for (const candidate of createdGroups) {
+      if (seenInSnapshot.has(candidate.projectId)) {
+        syncedCreatedGroupIdsRef.current.add(candidate.projectId);
+      }
+    }
+    const extras = createdGroups.filter(
+      (project) => !seenInSnapshot.has(project.projectId) && !syncedCreatedGroupIdsRef.current.has(project.projectId),
+    );
+    return extras.length > 0 ? [...extras, ...base] : base;
+  }, [createdGroups, projects]);
+
+  useEffect(() => {
+    if (createdGroups.length === 0) return;
+    const baseIds = new Set(
+      projects.filter((project) => project.kind === "desktop-group").map((project) => project.projectId),
+    );
+    if (createdGroups.some((candidate) => baseIds.has(candidate.projectId))) {
+      for (const candidate of createdGroups) {
+        if (baseIds.has(candidate.projectId)) syncedCreatedGroupIdsRef.current.add(candidate.projectId);
+      }
+      setCreatedGroups((current) => current.filter((candidate) => !baseIds.has(candidate.projectId)));
+    }
+  }, [createdGroups, projects]);
   const activeClaudeSessions = [...(snapshot?.sessions ?? [])]
     .filter((candidate) => !candidate.archivedAt && (candidate.runtimeId ?? runtimeId) === runtimeId)
     .sort((left, right) => right.lastActivityAt - left.lastActivityAt);
@@ -145,7 +181,8 @@ export function NewChatCanvas({
     .sort((left, right) => right.lastActivityAt - left.lastActivityAt)[0];
 
   const explicitTargetProject = initialProjectId !== undefined
-    ? projects.find((project) => project.projectId === initialProjectId)
+    ? (projects.find((project) => project.projectId === initialProjectId)
+      ?? manualGroups.find((project) => project.projectId === initialProjectId))
     : undefined;
   const explicitGroupSession = initialProjectId !== undefined
     ? activeClaudeSessions.find((candidate) => candidate.projectId === initialProjectId && Boolean(candidate.cwd?.trim()))
@@ -193,12 +230,10 @@ export function NewChatCanvas({
 
   const [configuration, setConfiguration] = useState<BridgeSessionConfiguration>();
   const [configLoading, setConfigLoading] = useState(false);
-  const [provider, setProvider] = useState<string>(() => referenceSession?.provider ?? "");
   const [model, setModel] = useState<string>(() => referenceSession?.model ?? "");
   const [effort, setEffort] = useState<string>(
     () => referenceSession?.reasoningEffort ?? referenceSession?.effort ?? "high",
   );
-  const [fast, setFast] = useState<boolean>(false);
   const [permissionMode, setPermissionMode] = useState<BridgeSDKPermissionMode>(
     () => referenceSession?.nativePermissionMode ?? "default",
   );
@@ -211,8 +246,6 @@ export function NewChatCanvas({
     model: false,
     effort: false,
     permission: false,
-    provider: false,
-    fast: false,
   });
 
   const [busy, setBusy] = useState(false);
@@ -242,6 +275,9 @@ export function NewChatCanvas({
         ? Boolean(runtime?.capabilities.includes("session.configure"))
         : snapshot.host.capabilities.includes("claude.native-relay.v1"))
     : true;
+  const canCreateSection = Boolean(
+    onCreateSection && snapshot?.host.capabilities.includes("section.create.v1"),
+  );
 
   const activeTrustMode = trustState?.mode === "confirm" && !canTrustWorkspace
     ? "manual"
@@ -253,7 +289,7 @@ export function NewChatCanvas({
     setConfigLoading(true);
     const loadConfig = async (): Promise<BridgeSessionConfiguration | undefined> => {
       try {
-        const primary = await Promise.resolve(onLoadSessionConfiguration("__default__"));
+        const primary = await Promise.resolve(onLoadSessionConfiguration(DEFAULT_CONFIGURATION_SESSION_ID));
         if (primary && typeof primary === "object" && Array.isArray(primary.availableModels)) {
           return primary;
         }
@@ -276,9 +312,6 @@ export function NewChatCanvas({
       .then((next) => {
         if (!active || !next) return;
         setConfiguration(next);
-        if (!userTouchedRef.current.provider) {
-          setProvider(next.provider ?? next.availableProviders?.[0]?.value ?? "");
-        }
         if (!userTouchedRef.current.model) {
           setModel(next.model ?? next.availableModels[0]?.value ?? referenceSession?.model ?? "");
         }
@@ -293,9 +326,6 @@ export function NewChatCanvas({
             ?? "high",
           );
         }
-        if (!userTouchedRef.current.fast) {
-          setFast(next.fast ?? false);
-        }
         if (!userTouchedRef.current.permission && next.nativePermissionMode) {
           setPermissionMode(next.nativePermissionMode);
         }
@@ -307,6 +337,14 @@ export function NewChatCanvas({
       active = false;
     };
   }, [connected, effectiveHostId, onLoadSessionConfiguration, referenceSession?.sessionId, runtimeAvailable]);
+
+  useEffect(() => {
+    if (!sectionCreate) return;
+    return registerMobileBackHandler(() => {
+      if (!sectionCreate.busy) setSectionCreate(undefined);
+      return true;
+    }, 160);
+  }, [sectionCreate]);
 
   useEffect(() => {
     if (!pendingBypassConfirm) return;
@@ -321,11 +359,7 @@ export function NewChatCanvas({
 
   const modelOptions = useMemo(() => {
     const all = configuration?.availableModels ?? [];
-    if (all.length > 0) {
-      if (!provider) return all;
-      const scoped = all.filter((candidate) => !candidate.provider || candidate.provider === provider);
-      return scoped.length > 0 ? scoped : all;
-    }
+    if (all.length > 0) return all;
     if (referenceSession?.model) {
       return [{
         value: referenceSession.model,
@@ -333,7 +367,7 @@ export function NewChatCanvas({
       }];
     }
     return [];
-  }, [configuration?.availableModels, provider, referenceSession?.model, referenceSession?.modelDisplayName]);
+  }, [configuration?.availableModels, referenceSession?.model, referenceSession?.modelDisplayName]);
 
   const selectedModel = useMemo(
     () => modelOptions.find((candidate) => candidate.value === model),
@@ -349,12 +383,11 @@ export function NewChatCanvas({
         : DEFAULT_EFFORT_LEVELS;
 
   const shownEffort = supportedEffort(effort, effortLevels);
-  const fastSupported = Boolean(configuration?.supportsFastMode && selectedModel?.supportsFast !== false);
 
   const groupUnavailable = Boolean(
     selectedProjectId && !manualGroups.some((project) => project.projectId === selectedProjectId),
   );
-  const locked = busy || choosingDirectory;
+  const locked = busy || choosingDirectory || Boolean(sectionCreate?.busy);
   const canSubmitBase = connected && runtimeAvailable && !groupUnavailable && !locked;
 
   const quickDirectoryProjects = useMemo(() => {
@@ -373,7 +406,13 @@ export function NewChatCanvas({
   const initialHostPermissionMode = configuration?.nativePermissionMode
     ?? referenceSession?.nativePermissionMode
     ?? "default";
-  const showSectionSelect = manualGroups.length > 0 || groupUnavailable;
+  const showSectionSelect = manualGroups.length > 0 || canCreateSection || groupUnavailable;
+  const sectionCanCreate = Boolean(
+    canCreateSection
+    && connected
+    && sectionCreate?.name.trim()
+    && !sectionCreate.busy,
+  );
 
   function setPrompt(value: string): void {
     newChatDraft.setText(value);
@@ -382,12 +421,6 @@ export function NewChatCanvas({
   function chooseModel(nextModelValue: string): void {
     userTouchedRef.current.model = true;
     setModel(nextModelValue);
-    const nextOption = modelOptions.find((candidate) => candidate.value === nextModelValue);
-    if (nextOption?.provider) {
-      userTouchedRef.current.provider = true;
-      setProvider(nextOption.provider);
-    }
-    if (nextOption?.supportsFast === false) setFast(false);
   }
 
   function choosePermissionMode(nextMode: BridgeSDKPermissionMode): void {
@@ -401,6 +434,29 @@ export function NewChatCanvas({
     }
     userTouchedRef.current.permission = true;
     setPermissionMode(nextMode);
+  }
+
+  async function submitCreateSection(): Promise<void> {
+    if (!sectionCanCreate || !sectionCreate || !onCreateSection) return;
+    setSectionCreate({ ...sectionCreate, busy: true, error: "" });
+    try {
+      const created = await onCreateSection(sectionCreate.name.trim());
+      if (!created) throw new Error("Section 未创建，请重试。");
+      setCreatedGroups((current) => [
+        created,
+        ...current.filter((candidate) => candidate.projectId !== created.projectId),
+      ]);
+      userTouchedRef.current.section = true;
+      setSelectedProjectId(created.projectId);
+      setError(undefined);
+      setSectionCreate(undefined);
+    } catch (reason) {
+      setSectionCreate({
+        ...sectionCreate,
+        busy: false,
+        error: reason instanceof Error ? reason.message : "Section 创建失败",
+      });
+    }
   }
 
   function applyChosenDirectory(rawPath: string, overrideProjectId?: string): void {
@@ -455,22 +511,14 @@ export function NewChatCanvas({
       desiredEffort && (createdEffort ? desiredEffort !== createdEffort : userTouchedRef.current.effort),
     );
     const needsPermission = Boolean(permissionMode && permissionMode !== createdPermission);
-    const needsProvider = Boolean(
-      configuration?.availableProviders?.length
-      && provider
-      && provider !== (created.provider ?? ""),
-    );
-    const needsFast = Boolean(configuration?.supportsFastMode && fastSupported && fast);
 
-    if (!needsModel && !needsEffort && !needsPermission && !needsProvider && !needsFast) {
+    if (!needsModel && !needsEffort && !needsPermission) {
       return undefined;
     }
 
     return {
       ...(needsModel ? { model } : {}),
-      ...(needsProvider ? { provider: provider || null } : {}),
       ...(needsEffort && desiredEffort ? { effort: desiredEffort } : {}),
-      ...(needsFast ? { fast: true } : {}),
       ...(needsPermission ? { permissionMode } : {}),
     };
   }
@@ -491,34 +539,11 @@ export function NewChatCanvas({
     }
 
     if (!onCreateSession) {
-      if (!onQuickStart || !withPrompt) {
-        onOpenDirectoryPicker({
-          initialProjectId: selectedProjectId || undefined,
-          initialCwd: trimmedCwd,
-          ...(withPrompt && trimmedPrompt ? { pendingPrompt: trimmedPrompt } : {}),
-        });
-        return;
-      }
-      setBusy(true);
-      setError(undefined);
-      try {
-        await onQuickStart(trimmedCwd, trimmedPrompt, selectedProjectId || undefined, trimmedTitle);
-        setSessionTitle("");
-        drafts.resetSession(effectiveHostId, NEW_CHAT_DRAFT_SESSION_ID);
-      } catch (reason) {
-        const { isTrust, code } = isWorkspaceTrustError(reason);
-        if (isTrust) {
-          setTrustState({
-            mode: code === "WORKSPACE_TRUST_REQUIRED" && canTrustWorkspace ? "confirm" : "manual",
-            withPrompt,
-          });
-        } else {
-          setTrustState(undefined);
-          setError(reason instanceof Error ? reason.message : "会话创建失败");
-        }
-      } finally {
-        setBusy(false);
-      }
+      onOpenDirectoryPicker({
+        initialProjectId: selectedProjectId || undefined,
+        initialCwd: trimmedCwd,
+        ...(withPrompt && trimmedPrompt ? { pendingPrompt: trimmedPrompt } : {}),
+      });
       return;
     }
 
@@ -582,11 +607,11 @@ export function NewChatCanvas({
   function resolveDefaultCwdForGroup(nextGroupId: string): string | undefined {
     if (!nextGroupId) {
       const unsectionedProject = projects.find(
-        (project) => project.projectId === "claude-unsectioned" || project.kind !== "desktop-group",
+        (project) => project.projectId === CLAUDE_UNSECTIONED_PROJECT_ID || project.kind !== "desktop-group",
       );
       if (unsectionedProject?.cwd?.trim()) return unsectionedProject.cwd.trim();
       return activeClaudeSessions.find(
-        (candidate) => candidate.projectId === "claude-unsectioned" && Boolean(candidate.cwd?.trim()),
+        (candidate) => candidate.projectId === CLAUDE_UNSECTIONED_PROJECT_ID && Boolean(candidate.cwd?.trim()),
       )?.cwd.trim();
     }
     const matched = manualGroups.find((project) => project.projectId === nextGroupId);
@@ -686,8 +711,14 @@ export function NewChatCanvas({
                     { value: "", label: "未分组" },
                     ...(groupUnavailable ? [{ value: selectedProjectId, label: "分组已不可用", disabled: true }] : []),
                     ...manualGroups.map((project) => ({ value: project.projectId, label: project.name })),
+                    ...(canCreateSection ? [{ value: CREATE_SECTION_OPTION_VALUE, label: "＋ 新建分组…" }] : []),
                   ]}
                   onChange={(nextGroupId) => {
+                    if (nextGroupId === CREATE_SECTION_OPTION_VALUE) {
+                      setError(undefined);
+                      setSectionCreate({ name: "", busy: false, error: "" });
+                      return;
+                    }
                     userTouchedRef.current.section = true;
                     setSelectedProjectId(nextGroupId);
                     setError(undefined);
@@ -893,6 +924,17 @@ export function NewChatCanvas({
           </div>
         </form>
       </footer>
+
+      <SectionCreateDialog
+        state={sectionCreate}
+        online={connected}
+        canSubmit={sectionCanCreate}
+        onChangeName={(name) => sectionCreate && setSectionCreate({ ...sectionCreate, name, error: "" })}
+        onSubmit={submitCreateSection}
+        onClose={() => {
+          if (!sectionCreate?.busy) setSectionCreate(undefined);
+        }}
+      />
 
       <ConfirmationDialog
         open={pendingBypassConfirm}

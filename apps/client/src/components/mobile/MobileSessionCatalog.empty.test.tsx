@@ -5,6 +5,9 @@ import { MobileWorkspace } from "../MobileWorkspace.js";
 import { EmptyState } from "../common/EmptyState.js";
 import { NewChatCanvas } from "../session/NewChatCanvas.js";
 import { ProjectGroupHeader } from "../session/ProjectGroupHeader.js";
+import { SectionCreateDialog } from "../session/SectionCreateDialog.js";
+import { SessionActionSheets } from "../session/SessionActionSheets.js";
+import { MobileSessionCatalog } from "./MobileSessionCatalog.js";
 
 const hooks = vi.hoisted(() => ({
   slots: [] as any[],
@@ -61,7 +64,11 @@ function elements(node: ReactNode): ReactElement<Record<string, any>>[] {
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Record<string, any>>;
   return [element, ...elements(
-    element.type === EmptyState || element.type === ProjectGroupHeader
+    element.type === EmptyState
+      || element.type === ProjectGroupHeader
+      || element.type === MobileSessionCatalog
+      || element.type === SectionCreateDialog
+      || element.type === SessionActionSheets
       ? (element.type as (props: any) => ReactNode)(element.props)
       : element.props.children,
   )];

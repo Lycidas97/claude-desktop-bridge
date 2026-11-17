@@ -28,24 +28,16 @@ import type {
 import {
   AlertTriangle,
   Archive,
-  ArchiveRestore,
-  Check,
   ChevronDown,
   CornerUpLeft,
-  FilePenLine,
   FileText,
-  Folder,
-  FolderOpen,
   GitFork,
   Layers,
   LoaderCircle,
   MessageSquare,
   MoreHorizontal,
   PackageCheck,
-  RefreshCw,
-  Settings2,
   ShieldCheck,
-  Trash2,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -60,7 +52,6 @@ import {
   aggregateFileChanges,
   canConfigureSession,
   canSendSession,
-  conciseModelName,
   conversationItems,
   conversationTimeline,
   groupTimelineTools,
@@ -84,6 +75,7 @@ import { countSessionOutputFiles } from "../evidence/FileChangesCard.js";
 import { useMediaPreview } from "../evidence/MediaPreviewProvider.js";
 import { MobileComposer } from "../mobile/MobileComposer.js";
 import { MobilePageHeader } from "../mobile/MobilePageHeader.js";
+import { SessionActionSheets } from "../session/SessionActionSheets.js";
 import {
   SessionConfigurationDialog,
   type SessionConfigurationChange,
@@ -1371,7 +1363,6 @@ export function ConversationView({
   const MobileRoot = effectiveNavigation ? "main" : "section";
   const profileSummaryId = `${variant}-session-profile-summary`;
   const manualSections = (snapshot?.projects ?? []).filter((project) => project.kind === "desktop-group");
-  const currentMenuSection = manualSections.find((project) => project.projectId === session.projectId);
   const menuSupportsMoveSection = Boolean(
     onMoveSessionSection
     && snapshot?.host.capabilities.includes("section.move.v1")
@@ -1393,7 +1384,6 @@ export function ConversationView({
   const renameCanSave = Boolean(renameTitle.trim() && renameTitle.trim() !== session.title && !effectiveActionBusy);
   const menuSupportsFork = Boolean(onForkSession && runtimeId === "claude-desktop");
   const menuSupportsVisibility = isMobile || visibilityAvailable;
-  const menuSessionBusy = session.turnState === "running" || session.turnState === "queued" || session.turnState === "waiting";
   const canSyncSession = Boolean(onRefresh || !isMobile);
   const effectiveRefreshing = refreshing || internalRefreshing;
   const renameDialogRef = useRef<HTMLElement>(null);
@@ -1853,269 +1843,104 @@ export function ConversationView({
           )}
         </Sheet>
       )}
-      {!onOpenSessionMenu && internalMenuOpen && !renameOpen && (
-        <Sheet
-          manageFocus
-          focusPaused={deleteSessionOpen || renameOpen}
-          eyebrow={moveMenuOpen ? session.title : `${session.projectName} · ${runtimeName}`}
-          title={moveMenuOpen ? "移动到分组" : session.title}
+      {!onOpenSessionMenu && (
+        <SessionActionSheets
+          menuSession={internalMenuOpen ? session : undefined}
+          renameSession={renameOpen ? session : undefined}
+          deleteSession={menuSupportsVisibility && onDeleteSession && deleteSessionOpen ? session : undefined}
+          moveMenuOpen={moveMenuOpen}
+          manualSections={manualSections}
+          online={isOnline}
           busy={effectiveActionBusy}
-          onClose={() => {
-            setMoveMenuOpen(false);
-            setInternalMenuOpen(false);
-          }}
-          {...(moveMenuOpen ? {
-            footer: (
-              <button
-                type="button"
-                className="secondary-button"
+          error={effectiveActionError}
+          supportsRename={menuSupportsRename}
+          supportsMoveSection={menuSupportsMoveSection}
+          supportsFork={menuSupportsFork}
+          renameTitle={renameTitle}
+          renameDialogRef={renameDialogRef}
+          leadingGroup={(
+            <div className="m-group">
+              <SheetAction
+                icon={effectiveSessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
+                label={effectiveSessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
                 disabled={effectiveActionBusy}
+                detail={effectiveSessionView === "evidence" ? "回到对话记录" : "文件变更、产物与图片"}
                 onClick={() => {
-                  setInternalActionError(undefined);
-                  setMoveMenuOpen(false);
+                  setSessionView(effectiveSessionView === "evidence" ? "conversation" : "evidence");
+                  setInternalMenuOpen(false);
                 }}
-              >
-                返回
-              </button>
-            ),
-          } : {})}
-        >
-          {moveMenuOpen ? (
-            <>
-              {manualSections.length > 0 && (
-                <div className="m-group">
-                  {manualSections.map((section) => {
-                    const isCurrent = currentMenuSection?.projectId === section.projectId;
-                    return (
-                      <SheetAction
-                        key={section.projectId}
-                        icon={isCurrent ? <Check size={19} /> : <Folder size={19} />}
-                        label={section.name}
-                        detail={isCurrent ? "当前所在分组" : undefined}
-                        disabled={effectiveActionBusy || !isOnline || isCurrent}
-                        onClick={() => void runInternalMoveSection(section.projectId)}
-                      />
-                    );
-                  })}
-                </div>
-              )}
-              {currentMenuSection && (
-                <div className="m-group">
-                  <SheetAction
-                    icon={<FolderOpen size={19} />}
-                    label="移出分组"
-                    disabled={effectiveActionBusy || !isOnline}
-                    onClick={() => void runInternalMoveSection(null)}
-                  />
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              <div className="m-group">
+              />
+              {parentSession && (
                 <SheetAction
-                  icon={effectiveSessionView === "evidence" ? <MessageSquare size={19} /> : <PackageCheck size={19} />}
-                  label={effectiveSessionView === "evidence" ? "返回对话" : `成果${evidenceCount > 0 ? ` ${evidenceCount}` : ""}`}
+                  icon={session.sidechat ? <CornerUpLeft size={19} /> : <GitFork size={19} />}
+                  label="主会话"
                   disabled={effectiveActionBusy}
-                  detail={effectiveSessionView === "evidence" ? "回到对话记录" : "文件变更、产物与图片"}
+                  detail={`来自：${parentSession.title}`}
                   onClick={() => {
-                    setSessionView(effectiveSessionView === "evidence" ? "conversation" : "evidence");
                     setInternalMenuOpen(false);
+                    void onSelectSession(parentSession.sessionId);
                   }}
                 />
-                {parentSession && (
-                  <SheetAction
-                    icon={session.sidechat ? <CornerUpLeft size={19} /> : <GitFork size={19} />}
-                    label="主会话"
-                    disabled={effectiveActionBusy}
-                    detail={`来自：${parentSession.title}`}
-                    onClick={() => {
-                      setInternalMenuOpen(false);
-                      void onSelectSession(parentSession.sessionId);
-                    }}
-                  />
-                )}
-              </div>
-              <div className="m-group">
-                {menuSupportsRename && (
-                  <SheetAction
-                    icon={<FilePenLine size={19} />}
-                    label="重命名"
-                    disabled={effectiveActionBusy}
-                    onClick={() => {
-                      setRenameTitle(session.title);
-                      setInternalActionError(undefined);
-                      setRenameOpen(true);
-                    }}
-                  />
-                )}
-                {menuSupportsMoveSection && (
-                  <SheetAction
-                    icon={<Folder size={19} />}
-                    label="移动到分组"
-                    detail={currentMenuSection ? currentMenuSection.name : manualSections.length > 0 ? "未分组" : "暂无可用分组"}
-                    disabled={effectiveActionBusy || !isOnline || (!currentMenuSection && manualSections.length === 0)}
-                    onClick={() => {
-                      setInternalActionError(undefined);
-                      setMoveMenuOpen(true);
-                    }}
-                  />
-                )}
-                {canConfigure && (
-                  <SheetAction
-                    icon={<Settings2 size={19} />}
-                    label="会话设置"
-                    detail={conciseModelName(session)}
-                    disabled={effectiveActionBusy}
-                    onClick={() => {
-                      setConfigurationOpen(true);
-                      setInternalMenuOpen(false);
-                    }}
-                  />
-                )}
-                {canSyncSession && (
-                  <SheetAction
-                    icon={effectiveRefreshing ? <LoaderCircle className="is-spinning" size={19} /> : syncFlash ? <Check size={19} /> : <RefreshCw size={19} />}
-                    label={effectiveRefreshing ? "正在同步" : syncFlash ? "已同步" : "同步此会话"}
-                    detail="重新读取电脑端的最新记录"
-                    disabled={effectiveActionBusy || effectiveRefreshing || (!onRefresh && !isOnline)}
-                    onClick={() => void runInternalRefresh()}
-                  />
-                )}
-              </div>
-              {!session.prs?.length && prSupported && (
-                <div className="m-group">
-                  <SessionPrActions
-                    key={`${hostId}:${session.sessionId}`}
-                    session={session}
-                    events={events}
-                    onWriteBusyChange={setActionBusy}
-                    supported
-                    online={isNativeReady}
-                    {...(onReadPrAutoFix ? { onRead: onReadPrAutoFix } : {})}
-                    {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
-                  />
-                </div>
               )}
-              {menuSupportsFork && (
-                <div className="m-group">
-                  <SheetAction
-                    icon={<GitFork size={19} />}
-                    label="Fork 分支"
-                    detail="复制完整对话为独立会话，原会话不变"
-                    disabled={effectiveActionBusy}
-                    onClick={() => void runInternalFork()}
-                  />
-                </div>
-              )}
-              {menuSupportsVisibility && (onArchiveSession || onDeleteSession) && (
-                <div className="m-group">
-                  {onArchiveSession && (
-                    <SheetAction
-                      icon={session.archivedAt ? <ArchiveRestore size={19} /> : <Archive size={19} />}
-                      label={session.archivedAt ? "恢复会话" : "归档会话"}
-                      detail={session.archivedAt ? "放回所属项目" : "从列表收起，历史保留"}
-                      disabled={effectiveActionBusy}
-                      onClick={() => void runInternalArchive(!session.archivedAt)}
-                    />
-                  )}
-                  {onDeleteSession && (
-                    <SheetAction
-                      icon={<Trash2 size={19} />}
-                      label="删除会话"
-                      detail={menuSessionBusy
-                        ? "任务进行中，先停止再删除"
-                        : session.transport === "claude-desktop-native" ? "删除 Claude Desktop 中的会话" : "仅从 Bridge 移除，Desktop 原会话保留"}
-                      danger
-                      disabled={effectiveActionBusy || menuSessionBusy}
-                      onClick={() => setDeleteSessionOpen(true)}
-                    />
-                  )}
-                </div>
-              )}
-            </>
+            </div>
           )}
-          {effectiveActionBusy && <p className="m-sheet-note" role="status"><LoaderCircle className="is-spinning" size={15} />正在处理…</p>}
-          {effectiveActionError && <p className="m-sheet-note is-error" role="alert">{effectiveActionError}</p>}
-        </Sheet>
-      )}
-      {!onOpenSessionMenu && renameOpen && (
-        <div
-          className="modal-backdrop session-create-backdrop"
-          role="presentation"
-          onMouseDown={(event) => { if (event.target === event.currentTarget) closeInternalRename(); }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.stopPropagation();
-              closeInternalRename();
-              return;
-            }
-            if (event.key === "Tab" && renameDialogRef.current) {
-              const focusables = [...renameDialogRef.current.querySelectorAll<HTMLElement>(
-                'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-              )];
-              if (focusables.length === 0) {
-                event.preventDefault();
-                renameDialogRef.current.focus();
-                return;
-              }
-              const first = focusables[0]!;
-              const last = focusables[focusables.length - 1]!;
-              const active = typeof document !== "undefined" ? document.activeElement : null;
-              if (event.shiftKey && (active === first || !renameDialogRef.current.contains(active))) {
-                event.preventDefault();
-                last.focus();
-              } else if (!event.shiftKey && (active === last || !renameDialogRef.current.contains(active))) {
-                event.preventDefault();
-                first.focus();
-              }
+          prActions={!session.prs?.length && prSupported ? (
+            <SessionPrActions
+              key={`${hostId}:${session.sessionId}`}
+              session={session}
+              events={events}
+              onWriteBusyChange={setActionBusy}
+              supported
+              online={isNativeReady}
+              {...(onReadPrAutoFix ? { onRead: onReadPrAutoFix } : {})}
+              {...(onSetPrAutoFix ? { onSet: onSetPrAutoFix } : {})}
+            />
+          ) : undefined}
+          onCloseMenu={() => {
+            if (!effectiveActionBusy) {
+              setMoveMenuOpen(false);
+              setInternalMenuOpen(false);
             }
           }}
-        >
-          <section
-            ref={renameDialogRef}
-            className="create-session-dialog session-create-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-label="重命名会话"
-            tabIndex={-1}
-          >
-            <header className="session-create-header"><h2>重命名会话</h2></header>
-            <form onSubmit={(event) => { event.preventDefault(); void runInternalRename(); }}>
-              <div className="session-create-body">
-                <label>
-                  <span>会话名称</span>
-                  <input
-                    value={renameTitle}
-                    autoFocus
-                    required
-                    disabled={effectiveActionBusy}
-                    onFocus={(event) => event.target.select()}
-                    onChange={(event) => setRenameTitle(event.target.value)}
-                  />
-                </label>
-                {effectiveActionError && <p className="session-create-error" role="alert">{effectiveActionError}</p>}
-              </div>
-              <footer className="dialog-actions session-create-actions">
-                <button type="button" className="secondary-button" disabled={effectiveActionBusy} onClick={closeInternalRename}>取消</button>
-                <button type="submit" className="primary-button" disabled={!renameCanSave}>{effectiveActionBusy ? "正在保存…" : "保存"}</button>
-              </footer>
-            </form>
-          </section>
-        </div>
-      )}
-      {!onOpenSessionMenu && menuSupportsVisibility && onDeleteSession && (
-        <ConfirmationDialog
-          open={deleteSessionOpen}
-          title="删除会话"
-          description={session.transport === "claude-desktop-native"
-            ? `从 Claude Desktop 中删除「${session.title}」会话及其对话记录？此操作不可恢复。`
-            : `从 Bridge 列表中删除「${session.title}」？对应 Desktop 应用中的原生会话与文件不受影响；Bridge 中的会话配置、排队与授权记录会被清除，此操作不可恢复。`}
-          confirmLabel="删除会话"
-          danger
-          busy={effectiveActionBusy}
-          onCancel={() => setDeleteSessionOpen(false)}
-          onConfirm={() => void runInternalDelete()}
+          onOpenMoveMenu={() => {
+            setInternalActionError(undefined);
+            setMoveMenuOpen(true);
+          }}
+          onBackFromMoveMenu={() => {
+            setInternalActionError(undefined);
+            setMoveMenuOpen(false);
+          }}
+          onMoveToSection={runInternalMoveSection}
+          onStartRename={() => {
+            setRenameTitle(session.title);
+            setInternalActionError(undefined);
+            setRenameOpen(true);
+          }}
+          onChangeRenameTitle={(title) => {
+            setRenameTitle(title);
+            if (internalActionError) setInternalActionError(undefined);
+          }}
+          onSubmitRename={runInternalRename}
+          onCloseRename={closeInternalRename}
+          onOpenConfiguration={canConfigure
+            ? () => {
+                setConfigurationOpen(true);
+                setInternalMenuOpen(false);
+              }
+            : undefined}
+          syncAction={canSyncSession ? {
+            refreshing: effectiveRefreshing,
+            syncFlash,
+            disabled: effectiveRefreshing || (!onRefresh && !isOnline),
+            onSync: runInternalRefresh,
+          } : undefined}
+          onFork={menuSupportsFork ? runInternalFork : undefined}
+          onArchive={menuSupportsVisibility && onArchiveSession ? runInternalArchive : undefined}
+          onRequestDelete={menuSupportsVisibility && onDeleteSession ? () => setDeleteSessionOpen(true) : undefined}
+          onCancelDelete={() => {
+            if (!effectiveActionBusy) setDeleteSessionOpen(false);
+          }}
+          onConfirmDelete={runInternalDelete}
         />
       )}
       {sharedDialogs}

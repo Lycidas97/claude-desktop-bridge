@@ -765,6 +765,26 @@ describe("desktop configuration", () => {
     expect(await readFile(join(directory, archive!), "utf8")).toBe(raw);
   });
 
+  it("archives a V4 config with an invalid saved relay override", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-config-"));
+    directories.push(directory);
+    const path = join(directory, "bridge-config.json");
+    const repository = new DesktopConfigRepository(path, protector, {
+      relayUrl: "wss://relay.example/ws",
+      desktopName: "Test PC",
+    });
+    await repository.loadOrCreate();
+    const raw = JSON.stringify({
+      ...JSON.parse(await readFile(path, "utf8")), relayUrlOverride: "https://example.test",
+    });
+    await writeFile(path, raw);
+
+    await expect(repository.loadOrCreate()).resolves.toMatchObject({ relayUrl: "wss://relay.example/ws" });
+    const archive = (await readdir(directory)).find((name) => name.startsWith("bridge-config.json.v1-archive-"));
+    expect(archive).toBeDefined();
+    expect(await readFile(join(directory, archive!), "utf8")).toBe(raw);
+  });
+
   it("only removes Bridge-owned MCP and HTTP hook entries", async () => {
     const directory = await mkdtemp(join(tmpdir(), "bridge-connector-"));
     directories.push(directory);

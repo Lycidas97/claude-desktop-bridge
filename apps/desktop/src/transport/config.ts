@@ -448,16 +448,17 @@ export class DesktopConfigRepository {
       throw error;
     }
     let config: DesktopConfigFile;
+    let relayUrlOverride: string | undefined;
     try {
       config = assertConfig(JSON.parse(raw));
+      relayUrlOverride = config.version === CONFIG_VERSION && config.relayUrlOverride
+        ? normalizeRelayUrl(config.relayUrlOverride)
+        : undefined;
     } catch (error) {
       if (!archiveInvalid) throw error;
       await rename(this.path, `${this.path}.v1-archive-${Date.now()}`);
       return undefined;
     }
-    const relayUrlOverride = config.version === 4 && config.relayUrlOverride
-      ? normalizeRelayUrl(config.relayUrlOverride)
-      : undefined;
     const savedEndpoint = config.version === 2
       ? undefined
       : selectBridgeEndpoint(config.relayEndpoints, config.activeEndpoint);

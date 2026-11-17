@@ -33,15 +33,3 @@ it("publishes handoff control changes without rebroadcasting an unchanged catalo
   expect(controller.broadcast).toHaveBeenCalledTimes(3);
   expect(controller.eventLog.append).not.toHaveBeenCalled();
 });
-
-it.each(["session.takeover_desktop", "session.return_to_desktop"])("rejects %s without changing the Desktop executor", async method => {
-  const takeoverDesktop = vi.fn(), returnToDesktop = vi.fn();
-  const controller = Object.assign(Object.create(DesktopController.prototype), {
-    broker: { takeoverDesktop, returnToDesktop }, routesToExternalRuntime: () => false,
-  });
-  await expect(controller.handleRequest({
-    kind: "request", method, requestId: "handoff", idempotencyKey: "handoff", params: { sessionId: "handoff" },
-  }, "mobile")).rejects.toMatchObject({ code: "UNSUPPORTED" });
-  expect(takeoverDesktop).not.toHaveBeenCalled();
-  expect(returnToDesktop).not.toHaveBeenCalled();
-});

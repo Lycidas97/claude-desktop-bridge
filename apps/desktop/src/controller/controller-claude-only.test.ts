@@ -31,7 +31,7 @@ describe("Claude-only request boundary", () => {
     for (const method of [
       "session.open", "session.history", "session.configuration", "session.configure", "session.rename",
       "session.archive", "session.delete", "session.fork", "session.commands", "session.command",
-      "session.rewind.preview", "turn.start", "turn.steer", "turn.interrupt", "turn.queue.cancel", "subagent.stop",
+      "session.rewind.preview", "session.rewind", "turn.start", "turn.steer", "turn.interrupt", "turn.queue.cancel", "subagent.stop",
     ] as const) {
       await expect(controller.handleRequest(request(method, { sessionId: `${runtimeId}:saved`, text: "synthetic" }), "desktop"))
         .rejects.toMatchObject({ code: "UNSUPPORTED" });

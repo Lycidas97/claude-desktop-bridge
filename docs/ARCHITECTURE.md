@@ -83,8 +83,10 @@ Claude 原生事件继续进入现有被动证据管线：记录轮次、工具�
 
 | 组件 | 职责 |
 |---|---|
-| `apps/desktop/src/claude/`（`claude-desktop-bridge.ts` 等） | 通过本机 inspector 转发 `LocalSessions` 调用、renderer 单队列事件与权限请求；`connector.ts` 负责移除 pre-1.3 旧连接配置 |
-| `apps/desktop/src/app/` | Electron 主进程/preload 入口、独立后台服务 IPC、跨平台路径与 `developer_settings.json` 授权 |
+| `apps/desktop/src/claude/` | 通过本机 inspector 转发 `LocalSessions` 调用、renderer 单队列事件与权限请求，探测 Desktop 私有能力，清理 pre-1.3 旧连接配置 |
+| `apps/desktop/src/main.ts`、`apps/desktop/src/preload.ts` | Electron 主进程与 preload 入口 |
+| `apps/desktop/src/app/` | 独立后台服务 IPC、跨平台路径与 `developer_settings.json` 授权 |
+| `apps/desktop/src/updater/` | Bridge 桌面应用更新检查 |
 | `apps/desktop/src/transcript/` | JSONL 对话历史、DAG 分支与 fork 边界、主会话上下文 token 估算及子代理扫描 |
 | `apps/desktop/src/controller/`（`ConversationStateStore` / `SessionEventLog`） | `DesktopController` 快照编排、无状态 RPC 分发、原生请求幂等收据与单调 `seq` 事件重放（不作为 Claude 历史回退源） |
 | `apps/desktop/src/evidence/`（`EvidenceManager` / `EvidenceStore` / `ArtifactPreview`） | 被动轮次证据采集、SQLite 清单与 AES-GCM 内容寻址快照、禁网隔离的 HTML/图片预览及分块传输 |
@@ -316,6 +318,29 @@ WebContents；动态 WebSocket 路径每次由 `/json/list` 获取。macOS 的�
 Bridge userData，跨后台重启尊重同进程手动关闭；自定义 inspector origin 禁用真实菜单动作。
 端口开放后现有 Bridge 刷新自行重连。未开启、接口缺失或断连时显示不可用，不启动 CLI/SDK
 Host、不切换 provider lane、不重启 Desktop。独立 Codex、Hermes、DSH 的发现与连接已移除。
+
+### Desktop 私有能力发现
+
+`LocalSessions` 承担会话执行、排队、历史、授权答复和配置写入。Bridge 将发现的
+renderer 方法与自身允许的方法取交集。以下适配也使用用户已授权的本机 inspector：
+
+- **会话分组**通过 Electron 主进程中已加载的 `ccd_sidebar` 与
+  `claudeCodeSessionManager` 按接口形状发现。Bridge 读取可见的手动分组及其会话归属，
+  并根据 Desktop 的功能开关和工具列表开放创建、移动、重命名与删除。变更由 Desktop 的分组工具执行。
+- **原生确认与 PR 自动修复**从已加载的 `claudeCodeSessionManager` 读取会话的
+  Auto-fix 偏好，以及与会话和待答提示匹配的 Lanyard 与 Violin Bow 选项。这两类提示
+  需具备对应的原生方法、选项与授权说明才可答复。答复与 Auto-fix 写入走 `LocalSessions`。
+- **模型切换**从同源 renderer 的 `/api/bootstrap` 提取 Code 模型 ID，用于匹配选中的模型。
+  原生 `setModel` 接收解析后的模型 ID，账号与原始 bootstrap 数据留在本机。
+
+这些探测提供已安装版本的能力与状态，授权仍由 Desktop 执行。手机通过既有业务 RPC
+提交操作，Relay 只转发密文。已安装 Desktop 的静态检查确认了分组接口形状，inspector
+契约测试使用合成模块验证发现和开关判断，浏览器 fixture 验证界面和业务调用转发。
+真实 Desktop 冒烟覆盖创建、投递、事件与历史。真实分组写入、原生确认和 PR 写入需在
+目标版本单独实测。
+[分组验证](https://github.com/Lycidas97/claude-desktop-bridge/pull/37) ·
+[原生确认与 PR 验证](https://github.com/Lycidas97/claude-desktop-bridge/pull/64) ·
+[实机冒烟范围](HOSTING-REFACTOR.md)
 
 ## 明确不做
 

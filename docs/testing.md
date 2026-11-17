@@ -7,31 +7,35 @@ without a cleanup preload. Validation requires `/usr/bin/trash` on macOS,
 
 | Command | Coverage |
 | --- | --- |
-| `npm test` | Desktop, client, protocol, relay, then `plugins/magpie-quota`; sequential Vitest runs, at most two workers each |
-| `npm run typecheck` | All workspace typechecks, then the quota plugin explicitly |
-| `npm run verify` | Typecheck, five test suites, then the full root build; stops at the first failing stage |
-| `npm run test:infra` | Small fixtures for runner failure propagation and recycle-bin behavior |
-| `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture |
+| `npm test` | Six sequential Vitest suites in the order listed under Reports, with at most two workers per suite |
+| `npm run typecheck` | Workspaces that define `typecheck`, followed by `plugins/magpie-quota` and `plugins/assistant-mail` |
+| `npm run verify` | Root typecheck, `npm test`, then the root build. Stops at the first failing stage |
+| `npm run test:infra` | Runner and cleanup behavior, packaged QA contracts, and release workflow checks |
+| `npm run test:browser` | Builds protocol and relay, then runs the self-contained browser fixture. `npm run test:browser:nobuild` reuses existing builds |
 | `npm run ci:run -- run test:desktop:service` | After a current Desktop build: real compiled Electron UI/service with isolated Native fixture; on macOS also verifies developer settings, real random TCP/lsof/proc_pidpath, ASAR helper, injected warning UI, and completed background scans after window close |
-| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser`, `test:desktop:service`) and `ssh win` (up to 4 parallel isolated slots `D:\work\ci-slot-<n>`: Windows tests, NSIS installer + packaged QA, and Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
+| `npm run ci:local` | Concurrent local distributed CI across Mac (`test:infra`, `audit:runtime`, `verify`, `test:browser:nobuild`, `test:desktop:service`) and `ssh win` (up to 4 parallel isolated slots `D:\work\ci-slot-<n>`: Windows `test:infra` and `npm test`, NSIS installer + packaged QA, and Android API 36 debug APK + DEX/cert + WHPX emulator WebView pairing smoke), recording a receipt in `<git-common-dir>/local-ci/` and publishing `ci/local-distributed = success` to `Lycidas97/claude-desktop-bridge` (`npm run ci:local -- --publish` publishes a saved receipt after `git push` or clean squash merge) |
 | `npm run ci:run -- run build -w @bridge/protocol` | Example of wrapping another npm command with scoped temporary cleanup and OS recycling |
 
-The quota plugin is outside the `apps/*` and `packages/*` workspaces; root test and
-typecheck include it explicitly. These commands do not enable real model sessions
-or the opt-in native WebRTC tests. Unit tests use their existing mocks and fixtures.
-Browser testing uses its own local fixture rather than a production service.
-Unit tests ignore the client's local env files and clear inherited `VITE_*` values;
-application build commands continue to use their configured build environment.
-CI tests the checked-out source under `apps/`, `packages/`, and the quota plugin.
-Snapshots under the ignored `output/` directory are not CI inputs; fixes must be
-integrated into the normal source before their candidates can be covered by CI.
+Both plugins sit outside the `apps/*` and `packages/*` workspaces. Root `npm test`
+and `npm run typecheck` include them explicitly. Workspace-only commands such as
+`npm run test:coverage` (which uses `-ws`) cover only workspaces. To run one
+plugin suite, use `npm run ci:run -- --prefix plugins/assistant-mail test` or
+`npm run ci:run -- --prefix plugins/magpie-quota test`.
+
+The unit and browser suites use mocks or isolated fixtures. Real model sessions
+and the opt-in native WebRTC check are outside those suites. Unit tests ignore the
+client's local env files and clear inherited `VITE_*` values. Application builds use
+their configured build environment. CI runs the checked-out source in `apps/`,
+`packages/`, and both plugins. Integrate fixes into source for CI coverage. Snapshots
+under the ignored `output/` directory are not CI inputs.
 
 ## Reports
 
 `npm test` writes `artifacts/tests/<suite>.xml` (JUnit), `<suite>.log` (stdout,
 stderr, and runner errors), and `summary.json`. The suite names are `desktop`,
-`client`, `protocol`, `relay`, and `quota`. A failed process, launch error, or missing
-or empty JUnit report fails the command. Later suites still run and retain evidence.
+`client`, `protocol`, `relay`, `quota`, and `assistant-mail` in execution order.
+A failed process, launch error, or missing or empty JUnit report fails the command.
+Later suites still run and retain evidence.
 A suite's previous JUnit report is sent to Trash before that suite starts, so it
 cannot satisfy the new run. Logs are replaced and `summary.json` is updated after
 each suite in deterministic order. Reports are local artifacts; avoid including them in source commits.
@@ -48,12 +52,12 @@ npm run test:browser
 ```
 
 Alternatively set `CHROME_PATH` to an installed Chrome/Chromium executable. The
-browser script owns fixture startup and shutdown; no separately running relay is
-required. Ten scenarios run in both themes at 375×812, giving 20 independent
-contexts: list/chat rename, delivery/approval/reconnect, Native approvals, Native
-messages, history pagination, Native boundaries, Native queue actions, Native
-session notices, and project grouping. The actual mobile App, hooks,
-crypto and local relay run normally. The Native fixture uses the real
+browser script owns fixture startup and shutdown, including the local relay.
+By default, it runs the scenario catalog in both light and dark themes, with a
+fresh context per scenario and theme. The base mobile viewport is 375×812.
+The browser suite covers mobile conversation and pairing, Desktop console, and
+assistant-mail flows. See the [scenario catalog](../scripts/browser-e2e.mjs).
+The actual App, hooks, crypto and local relay run normally. The Native fixture uses the real
 `ClaudeDesktopBridge`, controller and evidence transfers with synthetic LocalSessions,
 including permission IDs, image references, saved model labels and runtime aliases,
 worktree file paths, compact/sidechain filtering and task-plan updates.

@@ -84,7 +84,9 @@ Claude 原生事件继续进入现有被动证据管线：记录轮次、工具�
 | 组件 | 职责 |
 |---|---|
 | `apps/desktop/src/claude/` | 通过本机 inspector 转发 `LocalSessions` 调用、renderer 单队列事件与权限请求，探测 Desktop 私有能力，清理 pre-1.3 旧连接配置 |
-| `apps/desktop/src/app/`、`apps/desktop/src/updater/` | Electron 主进程/preload 入口、独立后台服务 IPC、跨平台路径、`developer_settings.json` 授权与 Bridge 桌面应用更新检查 |
+| `apps/desktop/src/main.ts`、`apps/desktop/src/preload.ts` | Electron 主进程与 preload 入口 |
+| `apps/desktop/src/app/` | 独立后台服务 IPC、跨平台路径与 `developer_settings.json` 授权 |
+| `apps/desktop/src/updater/` | Bridge 桌面应用更新检查 |
 | `apps/desktop/src/transcript/` | JSONL 对话历史、DAG 分支与 fork 边界、主会话上下文 token 估算及子代理扫描 |
 | `apps/desktop/src/controller/`（`ConversationStateStore` / `SessionEventLog`） | `DesktopController` 快照编排、无状态 RPC 分发、原生请求幂等收据与单调 `seq` 事件重放（不作为 Claude 历史回退源） |
 | `apps/desktop/src/evidence/`（`EvidenceManager` / `EvidenceStore` / `ArtifactPreview`） | 被动轮次证据采集、SQLite 清单与 AES-GCM 内容寻址快照、禁网隔离的 HTML/图片预览及分块传输 |

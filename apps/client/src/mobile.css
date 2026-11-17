@@ -33,6 +33,12 @@
   --m-sheet-fill: #242426;
 }
 
+/* WebKit resets ancestor touch actions at scroll containers. Set a default
+   across the mobile document that local gesture surfaces can override. */
+:where([data-mobile-client], [data-mobile-client] *) {
+  touch-action: pan-x pan-y;
+}
+
 /* ---- App shell ---- */
 
 .mobile-app-shell {
@@ -478,17 +484,6 @@
   font-weight: 620;
 }
 
-.mobile-drawer-dock .theme-menu-trigger {
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  min-height: 36px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-}
-
 .mobile-drawer-dock .theme-menu-anchor--right .theme-menu-panel {
   top: auto;
   right: 0;
@@ -512,7 +507,6 @@
 }
 
 .m-header.is-pushed,
-.m-header.has-menu,
 .m-header.has-leading {
   padding-left: max(4px, env(safe-area-inset-left));
 }
@@ -745,8 +739,6 @@
 .new-chat-canvas.is-mobile .m-header.is-title-hidden .session-profile-summary .session-profile-line.is-meta-line {
   font-size: calc(12px * var(--font-scale));
 }
-
-.m-host-chip > .m-host-status { flex: none; }
 .m-host-chip > svg { flex: none; color: var(--muted); }
 
 .m-status-dot {
@@ -1051,38 +1043,6 @@
   .project-order-ghost { --ghost-scale: 1; }
 }
 
-.m-field {
-  display: grid;
-  gap: 7px;
-}
-
-.m-field > span {
-  padding-left: 4px;
-  color: var(--muted);
-  font-size: var(--m-fs-footnote);
-  font-weight: 600;
-}
-
-.m-field input,
-.m-field select {
-  width: 100%;
-  min-height: 48px;
-  padding: 0 14px;
-  border: 1px solid var(--card-border);
-  border-radius: var(--m-r-control);
-  background: var(--card-fill);
-  color: var(--text);
-  font: inherit;
-  font-size: calc(16px * var(--font-scale));
-}
-
-.m-field input:focus,
-.m-field select:focus {
-  border-color: var(--accent);
-  outline: none;
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
 /* Permission and question prompts inside the sheet. */
 .m-sheet .permission-prompt {
   width: 100%;
@@ -1271,8 +1231,6 @@ button.mobile-settings-row:active { background: var(--surface-2); }
   text-wrap: balance;
 }
 .mobile-settings-actions button > svg { flex-shrink: 0; }
-.agent-settings input[type="checkbox"] { width: 20px; height: 20px; flex: none; accent-color: var(--accent); }
-.agent-settings label:has(input:disabled) { cursor: default; }
 
 .mobile-empty-directory { padding: 60px 12px; text-align: center; }
 .mobile-empty-directory h2 { font-size: var(--m-fs-title); }
@@ -1307,25 +1265,6 @@ button.mobile-settings-row:active { background: var(--surface-2); }
 .mobile-app-shell .relay-settings button { justify-self: stretch; min-height: var(--m-touch); border-radius: var(--m-r-control); }
 
 .mobile-app-shell .session-permission-field > p { margin: 0 0 12px; color: var(--muted); font-size: var(--m-fs-footnote); font-weight: 400; line-height: 1.6; }
-.host-permission-settings p.mobile-settings-row { color: var(--muted); font-size: var(--m-fs-footnote); line-height: 1.6; }
-.host-permission-settings .permission-scope-segments,
-.host-permission-settings .permission-mode-segments {
-  padding: 2px;
-  border-color: var(--card-border);
-  border-radius: calc(var(--r-btn) + 3px);
-}
-.host-permission-settings .permission-scope-segments {
-  grid-template-columns: none;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-}
-.host-permission-settings .permission-scope-segments button,
-.host-permission-settings .permission-mode-segments button {
-  min-height: var(--m-touch);
-  border-radius: var(--r-btn);
-  font-size: var(--m-fs-subhead);
-  font-weight: 560;
-}
 
 .mobile-app-shell .subagent-stop-button { min-height: var(--m-touch); padding: 0 14px; border-radius: var(--m-r-control); font-size: var(--m-fs-subhead); }
 .mobile-app-shell .subagent-control-note { font-size: var(--m-fs-footnote); }

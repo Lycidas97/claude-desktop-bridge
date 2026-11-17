@@ -70,6 +70,7 @@ async function runScenario(theme, scenario, mockHostRuntime) {
     if (["section-manage", "round4-boundaries", "round5-ux"].includes(scenario)) await syncNativeSections(host);
     context = await browser.newContext({
       viewport: { width: 375, height: 812 }, colorScheme: theme,
+      isMobile: scenario === "mobile-safe-area", hasTouch: scenario === "mobile-safe-area",
       serviceWorkers: "block",
     });
     await context.addInitScript(({ mode, family }) => {

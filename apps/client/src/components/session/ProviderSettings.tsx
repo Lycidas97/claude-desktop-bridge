@@ -135,7 +135,7 @@ export function ProviderSettings({ snapshot, connected = true, desktopLocal = fa
             <button type="button" className="secondary-button" disabled={!connected || busy || magpieIncomplete} onClick={() => void runMagpie("test")}>{magpieAction === "test" && <LoaderCircle className="is-spinning" size={16} />}测试连接</button>
             <button type="button" className="primary-button" disabled={!connected || busy || magpieIncomplete || !magpieDirty} onClick={() => void runMagpie("save")}>{magpieAction === "save" && <LoaderCircle className="is-spinning" size={16} />}保存 Magpie 配置</button>
           </div>
-          <p className="settings-notice">测试连接不会保存。保存后用于 Magpie 额度查询。</p>
+          <p className="settings-notice">测试连接不会保存。保存后仅用于查询 Magpie 额度与模型。</p>
           <div role="status" aria-live="polite" aria-atomic="true">
             {magpieAction && <p className="settings-notice">{magpieAction === "test" ? "正在测试 Magpie 连接…" : "正在保存 Magpie 配置…"}</p>}
             {magpieSaved && <p className="settings-notice">Magpie 配置已保存。</p>}

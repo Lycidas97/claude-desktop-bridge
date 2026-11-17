@@ -234,8 +234,15 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private closed = false;
   private lastError = "Claude Desktop inspector 尚未连接";
   private gateway: ClaudeGatewayConfig | undefined;
-  private gatewayModelsCache: { gatewayKey: string; fetchedAt: number; ok: boolean; models: BridgeModelInfo[] } | undefined;
+  private gatewayModelsCache: {
+    gatewayKey: string;
+    fetchedAt: number;
+    ok: boolean;
+    source: "gateway" | "profile";
+    models: BridgeModelInfo[];
+  } | undefined;
   private models: BridgeModelInfo[] | undefined;
+  private desktopPickerModels: BridgeModelInfo[] | undefined;
   private defaultModel: string | undefined;
   private snapshotQueue: Promise<unknown> = Promise.resolve();
 
@@ -393,14 +400,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
     };
   }
 
-  private savedModel(model: string): BridgeModelInfo | undefined {
-    return savedModelOption(this.models, model);
+  private savedModel(model: string, models = this.models): BridgeModelInfo | undefined {
+    return savedModelOption(models, model);
   }
 
-  private directModelDisplayName(model: string | undefined): string | undefined {
+  private directModelDisplayName(model: string | undefined, models = this.models): string | undefined {
     const trimmed = model?.trim();
     if (!trimmed || trimmed.toLowerCase() === "default") return undefined;
-    const saved = this.savedModel(trimmed);
+    const saved = this.savedModel(trimmed, models);
     if (saved) return saved.displayName;
     if (trimmed.includes("/") || /^(?:claude|gpt|gemini)-/iu.test(trimmed)) {
       return humanizeUpstreamModelId(trimmed);
@@ -411,6 +418,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private resolveSessionModel(
     sessionId: string | undefined,
     rawNativeModel: string | undefined,
+    models = this.models,
   ): {
     sessionModel?: string;
     configModel?: string;
@@ -423,8 +431,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
     const contextModel = rawContextModel && rawContextModel.toLowerCase() !== "default" ? rawContextModel : undefined;
 
     if (explicitNative) {
-      const saved = this.savedModel(explicitNative);
-      const directDisplay = this.directModelDisplayName(explicitNative);
+      const saved = this.savedModel(explicitNative, models);
+      const directDisplay = this.directModelDisplayName(explicitNative, models);
       if (directDisplay) {
         return {
           sessionModel: explicitNative,
@@ -437,7 +445,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
         const effectiveContext = /\[1m\]$/iu.test(explicitNative) && !/\[1m\]$/iu.test(contextModel)
           ? `${contextModel}[1m]`
           : contextModel;
-        const contextSaved = this.savedModel(effectiveContext);
+        const contextSaved = this.savedModel(effectiveContext, models);
         const contextDisplay = contextSaved?.displayName ?? humanizeUpstreamModelId(effectiveContext);
         return {
           sessionModel: explicitNative,
@@ -451,11 +459,11 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
     const fallbackRaw = (contextModel && !parseMagpieSyntheticModelId(contextModel) ? contextModel : undefined)
       ?? this.defaultModel
-      ?? this.models?.[0]?.value;
+      ?? models?.[0]?.value;
     if (!fallbackRaw) return {};
-    const saved = this.savedModel(fallbackRaw);
+    const saved = this.savedModel(fallbackRaw, models);
     const resolvedValue = saved?.value ?? fallbackRaw;
-    const displayName = saved?.displayName ?? this.directModelDisplayName(resolvedValue) ?? humanizeUpstreamModelId(resolvedValue);
+    const displayName = saved?.displayName ?? this.directModelDisplayName(resolvedValue, models) ?? humanizeUpstreamModelId(resolvedValue);
     return {
       sessionModel: resolvedValue,
       configModel: resolvedValue,
@@ -486,6 +494,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   ): Promise<void> {
     const settings = readSettings();
     const { models: saved, defaultModel } = claudeModelSettings(await settings);
+    this.desktopPickerModels = saved;
     this.defaultModel = defaultModel;
     if (!this.options.magpieConnection && !this.options.fetchImpl) {
       this.models = saved;
@@ -509,15 +518,15 @@ export class ClaudeDesktopBridge extends EventEmitter {
       try {
         const fetched = await fetchClaudeGatewayModels(gateway, this.options.fetchImpl);
         discovered = fetched;
-        this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: true, models: fetched };
+        this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: true, source: "gateway", models: fetched };
       } catch {
         if (cached && cached.models.length > 0) {
           discovered = cached.models;
-          this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: false, models: cached.models };
+          this.gatewayModelsCache = { ...cached, fetchedAt: now, ok: false };
         } else {
           const offline = await offlineModels?.() ?? [];
           discovered = offline;
-          this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: false, models: offline };
+          this.gatewayModelsCache = { gatewayKey, fetchedAt: now, ok: false, source: "profile", models: offline };
         }
       }
     }
@@ -1386,24 +1395,29 @@ export class ClaudeDesktopBridge extends EventEmitter {
       const allowAmbientDiscovery = Boolean(
         this.options.magpieConnection || this.options.fetchImpl || this.options.environment || this.options.home,
       );
-      const gateway = await resolveActiveClaudeGateway({
-        ...(this.options.magpieConnection ? { magpieConnection: this.options.magpieConnection } : {}),
+      const titleGateway = await resolveActiveClaudeGateway({
         ...(this.options.environment ? { environment: this.options.environment } : {}),
         ...(this.options.home ? { home: this.options.home } : {}),
         ...(this.options.platform ? { platform: this.options.platform } : {}),
         settingsPath: this.options.settingsPath,
         allowAmbientDiscovery,
       });
-      if (this.isSessionUnavailableForAutoTitle(id)) return;
+      if (!titleGateway || this.isSessionUnavailableForAutoTitle(id)) return;
 
-      const currentNative = this.native.get(id);
-      const preferredModel = this.resolveSessionModel(id, currentNative?.model).configModel ?? currentNative?.model;
+      const { gateway, profileModels } = titleGateway;
+      const catalogModels = !this.options.magpieConnection?.isManual()
+        && this.gatewayModelsCache?.source === "gateway"
+        && this.gatewayModelsCache.gatewayKey === JSON.stringify(gateway)
+        ? this.models
+        : mergeModelCatalog(this.desktopPickerModels, profileModels);
+      const nativeModel = this.native.get(id)?.model;
+      const preferredModel = this.resolveSessionModel(id, nativeModel, catalogModels ?? []).configModel ?? nativeModel;
       const generatedTitle = await generateSessionTitle({
         text,
         hasAttachments,
-        ...(gateway ? { gateway } : {}),
+        gateway,
         ...(preferredModel ? { preferredModel } : {}),
-        ...(this.models ? { catalogModels: this.models } : {}),
+        ...(catalogModels ? { catalogModels } : {}),
         ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
         signal: this.closeAbort.signal,
       });

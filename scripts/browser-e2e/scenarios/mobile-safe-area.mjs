@@ -4,11 +4,23 @@ import { openMobileDrawer, openMobileSession } from "../helpers.mjs";
 
 export async function verifyMobileSafeArea(page, steps, directory, viewports) {
   const emulation = await page.context().newCDPSession(page);
+  async function assertFixedMobileScale(screen) {
+    const { width, height } = page.viewportSize();
+    for (const scaleFactor of [1.8, 0.65]) {
+      await emulation.send("Input.synthesizePinchGesture", {
+        x: Math.floor(width / 2), y: Math.floor(height / 2), scaleFactor, gestureSourceType: "touch",
+      });
+      assert.equal(await page.evaluate(() => visualViewport.scale), 1, `${screen} keeps 1:1 page scale after a ${scaleFactor}× touch pinch`);
+    }
+    steps.push(`${screen}: spreading and pinching both leave the page at 1:1`);
+  }
+  await assertFixedMobileScale("会话列表");
   await page.setViewportSize({ width: 375, height: 640 });
   viewports.push({ page: "会话", ...page.viewportSize() });
   await openMobileSession(page);
   const composer = page.locator(".mobile-composer");
   await composer.waitFor();
+  await assertFixedMobileScale("会话");
   const composerPaddings = [];
   for (const bottom of [0, 48]) {
     await emulation.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, right: 0, bottom, left: 0 } });
@@ -42,6 +54,7 @@ export async function verifyMobileSafeArea(page, steps, directory, viewports) {
     await page.locator(".mobile-drawer-dock-nav").getByRole("button", { name: tab, exact: true }).click();
     const content = page.locator(selector);
     await content.waitFor();
+    if (tab === "设置") await assertFixedMobileScale(tab);
     const header = page.locator(".m-header:visible");
     const headerBefore = await header.boundingBox();
     const paddings = [];

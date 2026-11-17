@@ -128,7 +128,7 @@ async function fixture(withWebRtc = false, claudeUnavailable = false) {
     repository: { loadOrCreate: async () => config, save: vi.fn(async () => undefined) },
     broker: Object.assign(new EventEmitter(), {
       initialize: async () => undefined, refreshRuntime: vi.fn(async () => true), setDefaultPermissionMode: vi.fn(),
-      listSessions: () => sessions, listProjects: () => [], runtimeStatus: () => ({ state: claudeUnavailable ? "unavailable" : "ready" }),
+      listSessions: () => [...sessions], listProjects: () => [], runtimeStatus: () => ({ state: claudeUnavailable ? "unavailable" : "ready" }),
       permissionsList: (): BridgePermissionInfo[] => [], permissionResolutionInFlight: () => false, promptsList: () => [], capabilities: () => ["session.list", "session.history"], magpieSettings: async () => ({}),
     }),
     eventLog,

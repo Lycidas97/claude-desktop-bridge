@@ -118,26 +118,6 @@
   gap: 14px;
 }
 
-.new-chat-hero-heading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  margin-bottom: 2px;
-}
-
-.new-chat-spark {
-  display: inline-flex;
-  width: 32px;
-  height: 32px;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  border-radius: 10px;
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-}
-
 .new-chat-canvas-hero h2 {
   margin: 0;
   color: var(--text);

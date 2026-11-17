@@ -85,8 +85,7 @@ describe("Bridge archives through Claude Desktop native RPC", () => {
     const controller = createControllerFixture({
       eventLog: { append: vi.fn(async () => undefined) },
       claudeDesktop: { status: vi.fn(() => { throw new Error("Archive must not require stopping Desktop"); }) },
-      conversationState: { setSessionVisibility: vi.fn() },
-      broker: { listSessions: () => sessions, archive, deleteSession },
+      broker: { listSessions: () => [...sessions], archive, deleteSession },
     });
     return {
       dir, archive, deleteSession, controller,
@@ -120,36 +119,26 @@ describe("Bridge archives through Claude Desktop native RPC", () => {
       record(PARENT, { isArchived: true }),
       record(OLD_CHILD, { isArchived: true, forkedFromSessionId: `local_${PARENT}` }),
     ]);
-    run.controller.sessionVisibility.set(PARENT, { visibility: "archived", updatedAt: 10 });
     await run.request("session.archive", { sessionId: PARENT, archived: false });
     expect(run.archive.mock.calls).toEqual([[PARENT, false]]);
     expect(run.session(PARENT)).not.toHaveProperty("archivedAt");
     expect(run.session(OLD_CHILD)).toHaveProperty("archivedAt");
-    expect(run.controller.sessionVisibility.get(PARENT)).toEqual({ visibility: "archived", updatedAt: 10 });
-    expect(run.controller.conversationState.setSessionVisibility).not.toHaveBeenCalled();
   });
 
-  it("ignores old Bridge visibility without changing native archive state or old records", async () => {
-    const run = await harness([record(PARENT), record(CHILD), record(OLD_CHILD, { isArchived: true })]);
-    const nativeArchiveTime = run.session(OLD_CHILD)!.archivedAt;
-    run.controller.sessionVisibility.set(PARENT, { visibility: "deleted", updatedAt: 10 });
-    run.controller.sessionVisibility.set(CHILD, { visibility: "archived", updatedAt: 11 });
-    run.controller.sessionVisibility.set(OLD_CHILD, { visibility: "archived", updatedAt: 12 });
-    const oldVisibility = new Map(run.controller.sessionVisibility);
-    expect(run.session(PARENT)).toBeDefined();
-    expect(run.session(CHILD)).not.toHaveProperty("archivedAt");
-    expect(run.session(OLD_CHILD)?.archivedAt).toBe(nativeArchiveTime);
-    expect(run.controller.sessionVisibility).toEqual(oldVisibility);
-    expect(run.controller.conversationState.setSessionVisibility).not.toHaveBeenCalled();
+  it("lists active and archived sessions with the native archive state", async () => {
+    const run = await harness([record(PARENT), record(OLD_CHILD, { isArchived: true })]);
+    const { sessions } = await run.request("session.list", {}) as { sessions: BridgeSessionInfo[] };
+    expect(sessions.map(session => session.sessionId)).toEqual([PARENT, OLD_CHILD]);
+    expect(sessions[0]).not.toHaveProperty("archivedAt");
+    expect(sessions[1]?.archivedAt).toBe((await stat(join(run.dir, `local_${OLD_CHILD}.json`))).mtimeMs);
   });
 
-  it("deletes through Desktop without first archiving or writing a local tombstone", async () => {
+  it("deletes through Desktop without first archiving", async () => {
     const run = await harness([record(PARENT)]);
     await run.request("session.delete", { sessionId: PARENT });
     expect(run.archive).not.toHaveBeenCalled();
     expect(run.deleteSession).toHaveBeenCalledExactlyOnceWith(PARENT);
     expect(run.session(PARENT)).toBeUndefined();
-    expect(run.controller.conversationState.setSessionVisibility).not.toHaveBeenCalled();
     expect((await readJson(join(run.dir, `local_${PARENT}.json`))).isArchived).toBe(false);
   });
 
@@ -159,7 +148,7 @@ describe("Bridge archives through Claude Desktop native RPC", () => {
     await expect(run.request("session.delete", { sessionId: PARENT })).rejects.toThrow("Native delete unavailable");
     expect(run.archive).not.toHaveBeenCalled();
     expect(run.controller.eventLog.append).not.toHaveBeenCalled();
-    expect(run.controller.conversationState.setSessionVisibility).not.toHaveBeenCalled();
+    expect(run.session(PARENT)).toMatchObject({ sessionId: PARENT });
     expect(run.session(PARENT)).not.toHaveProperty("archivedAt");
   });
 });

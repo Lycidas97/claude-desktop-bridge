@@ -72,10 +72,16 @@ export { acceptsRelayDevice };
 export class DesktopController extends EventEmitter {
   private config: LoadedDesktopConfig | undefined;
   private inspectorStatus: BridgeInspectorStatus | undefined;
+  private inspectorEnabler: (() => Promise<BridgeInspectorStatus>) | undefined;
+  private runtimeAttachSleep: ((ms: number) => Promise<void>) | undefined;
 
   updateInspectorStatus(status: BridgeInspectorStatus): void {
     this.inspectorStatus = status;
     this.queuePublish();
+  }
+
+  attachInspectorEnabler(enable: () => Promise<BridgeInspectorStatus>): void {
+    this.inspectorEnabler = enable;
   }
   private hostCrypto: BridgeCrypto | undefined;
   private socket: BridgeTransport | undefined;
@@ -284,7 +290,7 @@ export class DesktopController extends EventEmitter {
       launchAtLogin: this.config.launchAtLogin,
       diagnosticsEnabled: diagnostics.enabled,
       managedDesktopEnabled: this.config.managedDesktopEnabled,
-      claudeDesktop: await this.claudeDesktop.status(),
+      claudeDesktop: await this.claudeDesktopStatus(),
       desktopApps: await this.desktopAppStatuses(),
       ...(this.assistantMailCoordinator ? { assistantMail: this.assistantMailCoordinator.snapshot() } : {}),
       ...(this.updater ? { updater: this.updater.snapshot() } : {}),
@@ -379,6 +385,25 @@ export class DesktopController extends EventEmitter {
     return this.quitDesktopApp("claude-desktop");
   }
 
+  private projectDesktopAppStatus(
+    id: BridgeDesktopRuntimeId,
+    status: DesktopControlSnapshot["claudeDesktop"],
+  ): DesktopControlSnapshot["claudeDesktop"] {
+    if (
+      id === "claude-desktop"
+      && status.state === "running"
+      && Boolean(this.inspectorEnabler)
+      && this.inspectorStatus?.state !== "listening"
+    ) {
+      return { ...status, canLaunch: true };
+    }
+    return status;
+  }
+
+  async claudeDesktopStatus(force = false): Promise<DesktopControlSnapshot["claudeDesktop"]> {
+    return this.projectDesktopAppStatus("claude-desktop", await this.claudeDesktop.status(force));
+  }
+
   async desktopAppStatuses(force = false): Promise<BridgeDesktopAppStatus[]> {
     const entries = [...(this.desktopAppControls?.entries() ?? [])];
     if (!entries.some(([id]) => id === "claude-desktop")) {
@@ -386,7 +411,7 @@ export class DesktopController extends EventEmitter {
     }
     return Promise.all(entries.map(async ([id, lifecycle]) => {
       try {
-        const status = await lifecycle.status(force);
+        const status = this.projectDesktopAppStatus(id, await lifecycle.status(force));
         return { id, name: lifecycle.definition.displayName, ...status };
       } catch (error) {
         return {
@@ -405,7 +430,36 @@ export class DesktopController extends EventEmitter {
     const lifecycle = this.desktopAppControls?.get(runtimeId)
       ?? (runtimeId === "claude-desktop" ? this.claudeDesktop : undefined);
     if (!lifecycle) throw new Error("未知 Desktop 应用");
-    await lifecycle.launch();
+    const shouldEnableInspector = runtimeId === "claude-desktop"
+      && Boolean(this.inspectorEnabler)
+      && this.inspectorStatus?.state !== "listening";
+    await (shouldEnableInspector ? lifecycle.launch({ activate: true }) : lifecycle.launch());
+    if (shouldEnableInspector && this.inspectorEnabler) {
+      const inspectorStatus = await this.inspectorEnabler();
+      this.inspectorStatus = inspectorStatus;
+      if (this.broker?.refreshRuntime) {
+        await this.broker.refreshRuntime();
+        if (inspectorStatus.state === "listening") {
+          const sleep = this.runtimeAttachSleep
+            ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            const state = this.broker.runtimeStatus?.().state;
+            if (state === "ready" || state === "working") break;
+            await sleep(500);
+            await this.broker.refreshRuntime();
+          }
+        }
+      }
+    } else if (
+      runtimeId === "claude-desktop"
+      && this.inspectorStatus?.state === "listening"
+      && this.broker?.refreshRuntime
+    ) {
+      const state = this.broker.runtimeStatus?.().state;
+      if (state !== "ready" && state !== "working") {
+        await this.broker.refreshRuntime();
+      }
+    }
     const snapshot = await this.publish();
     await this.broadcast({ kind: "snapshot", snapshot });
     return snapshot;
@@ -803,6 +857,13 @@ export class DesktopController extends EventEmitter {
         prompts: snapshot.prompts,
         updater: snapshot.updater,
         assistantMail: snapshot.assistantMail,
+        ...(snapshot.claudeInspector ? {
+          claudeInspector: [
+            snapshot.claudeInspector.state,
+            snapshot.claudeInspector.startup?.state,
+            snapshot.claudeInspector.startup?.detail,
+          ],
+        } : {}),
         projects: snapshot.projects?.map(project => ({ projectId: project.projectId, name: project.name, kind: project.kind, cwd: project.cwd, runtimeId: project.runtimeId }))
           .sort((a, b) => a.projectId.localeCompare(b.projectId)),
       }) + "\n" + snapshot.sessions

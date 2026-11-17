@@ -148,4 +148,39 @@ describe("background inspector monitor", () => {
     expect(onUpdate.mock.lastCall?.[0].state).toBe("unsupported");
     monitor.close();
   });
+
+  it("refreshes status immediately on enableNow and surfaces explicit startup state without waiting for the poll timer", async () => {
+    vi.useFakeTimers();
+    let listening = false;
+    const scan = vi.fn(async () => ({ listening, clients: [] }));
+    const startup = vi.fn(async () => ({ state: "already-open" as const, recordedAt: 10, detail: "旧记录" }));
+    const enableStartup = vi.fn(async (isListening: () => Promise<boolean>) => {
+      expect(await isListening()).toBe(false);
+      listening = true;
+      expect(await isListening()).toBe(true);
+      return { state: "attempted" as const, recordedAt: 20, detail: "已通过原生菜单请求开启主进程调试。" };
+    });
+    const onUpdate = vi.fn();
+    const monitor = new ClaudeInspectorMonitor({
+      scan,
+      startup,
+      enableStartup,
+      onAlert: () => undefined,
+      onUpdate,
+      platform: "darwin",
+    });
+    try {
+      await monitor.start();
+      expect(onUpdate.mock.lastCall?.[0]).toMatchObject({ state: "closed" });
+      const enabled = await monitor.enableNow();
+      expect(enableStartup).toHaveBeenCalledOnce();
+      expect(enabled).toMatchObject({
+        state: "listening",
+        startup: { state: "attempted", detail: "已通过原生菜单请求开启主进程调试。" },
+      });
+      expect(onUpdate.mock.lastCall?.[0]).toEqual(enabled);
+    } finally {
+      monitor.close();
+    }
+  });
 });

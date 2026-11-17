@@ -32,7 +32,6 @@ export async function windowsInspectorMenu(pid: number, press: boolean): Promise
     return "waiting";
   }
   if (!press) return "ready";
-  if (!previous) throw new Error("无法记录原前台窗口，未操作 Claude 菜单");
   try {
     const result = await windowsInspectorCommand(`${WINDOW_INPUT}
       Add-Type -AssemblyName UIAutomationClient
@@ -80,9 +79,9 @@ export async function windowsInspectorMenu(pid: number, press: boolean): Promise
         [InspectorWindow]::Key(0x1B, 0x01)
         Start-Sleep -Milliseconds 150
       }
-      if ([InspectorWindow]::GetForegroundWindow() -ne [IntPtr]${previous}) {
+      ${previous ? `if ([InspectorWindow]::GetForegroundWindow() -ne [IntPtr]${previous}) {
         if (![InspectorWindow]::SetForegroundWindow([IntPtr]${previous})) { throw '无法恢复原前台窗口，请手动切回' }
-      }
+      }` : ""}
     `);
   }
 }
@@ -97,7 +96,7 @@ export async function windowsInspectorCommand(script: string): Promise<string> {
 
 export async function windowsInspectorProcesses(): Promise<InspectorDesktopProcess[]> {
   const rows: unknown = JSON.parse(await windowsInspectorCommand(`
-    ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Filter "Name = 'claude.exe'" |
+    ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Filter "Name = 'claude.exe' OR Name = 'claude-3p.exe'" |
       Where-Object { $_.ExecutablePath -and $_.CommandLine -notmatch '(?:^|\\s)--type=' } |
       ForEach-Object { @{ pid = $_.ProcessId; launched = $_.CreationDate.ToUniversalTime().ToString('o'); path = $_.ExecutablePath } })
   `));

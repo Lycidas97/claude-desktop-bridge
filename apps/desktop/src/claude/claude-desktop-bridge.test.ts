@@ -55,6 +55,7 @@ class NativeDesktop extends EventEmitter {
   promptChoiceValues: string[] | undefined;
   applyPrSettings = true;
   promptResult = true;
+  ignoreStartTitle = false;
   async promptChoices() { return this.promptChoiceValues; }
   async prPreferences(sessionId: string) {
     const session = this.sessions.find(session => session.sessionId === sessionId);
@@ -136,12 +137,21 @@ class NativeDesktop extends EventEmitter {
       if (!this.keepUntrustedAfterSave) this.untrustedCwds.delete(String(args[0]));
       return;
     }
+    if (method === "updateSession" && session && args[1] && typeof args[1] === "object") {
+      Object.assign(session, args[1]);
+      return;
+    }
     if (method === "start") {
       const input = args[0] as Record<string, unknown>;
       if (this.untrustedCwds.has(String(input.cwd))) {
         throw new NativeCallError("Error invoking remote method '$eipc_message$d32c5f9b_$_claude.web_$_LocalSessions_$_start': WorkspaceTrustError: Workspace requires trust approval before starting a session. [ccdErrorCategory:trust_required]");
       }
-      this.sessions.push({ ...input, isRunning: false, turnRunning: false });
+      this.sessions.push({
+        ...input,
+        ...(this.ignoreStartTitle ? { title: "" } : {}),
+        isRunning: false,
+        turnRunning: false,
+      });
       return { sessionId: input.sessionId };
     }
     return undefined;
@@ -4256,6 +4266,266 @@ describe("Claude native relay", () => {
       await eventLog.close();
       state.close();
       await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("manual session title persistence and automatic first-turn title generation", () => {
+  it("persists an explicit user-provided title via updateSession when start(withoutFirstMessage) leaves native.title empty", async () => {
+    const f = await fixture();
+    try {
+      f.native.ignoreStartTitle = true;
+      const created = await f.bridge.createSession("/new-project", "  移动端远程控制重构  ");
+      expect(created.title).toBe("移动端远程控制重构");
+      expect(f.native.calls.find(call => call.method === "start")?.args[0]).toMatchObject({
+        cwd: "/new-project",
+        title: "移动端远程控制重构",
+        withoutFirstMessage: true,
+        message: "",
+      });
+      expect(f.native.calls.filter(call => call.method === "updateSession")).toEqual([
+        { method: "updateSession", args: [created.sessionId, { title: "移动端远程控制重构" }] },
+      ]);
+
+      // Subsequent first turn must NOT auto-title a manually titled session.
+      await f.bridge.startTurn({ ...input, sessionId: created.sessionId, idempotencyKey: "manual-1", text: "随便聊聊" });
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(f.native.calls.filter(call => call.method === "updateSession")).toHaveLength(1);
+      expect(f.bridge.session(created.sessionId)?.title).toBe("移动端远程控制重构");
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("auto-titles a blank session non-blockingly on first turn via gateway /v1/messages at most once, and skips sidechats", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-"));
+    const state = new ConversationStateStore({
+      databasePath: join(directory, "state.sqlite"),
+      sessionsPath: join(directory, "sessions.json"),
+      queuePath: join(directory, "queue.json"),
+      masterSecret: Buffer.alloc(32, 5).toString("base64url"),
+    });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    native.ignoreStartTitle = true;
+
+    let releaseTitleResponse!: (response: Response) => void;
+    const fetchImpl = vi.fn<typeof fetch>((url) => {
+      if (String(url).endsWith("/v1/models?limit=1000")) {
+        return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+      }
+      return new Promise<Response>((resolve) => {
+        releaseTitleResponse = resolve;
+      });
+    });
+
+    await writeFile(join(directory, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: "https://gateway.example.test",
+        ANTHROPIC_AUTH_TOKEN: "test-gateway-token",
+      },
+    }));
+
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath: join(directory, "settings.json"),
+      eventLog,
+      conversationState: state,
+      inspector: native,
+      fetchImpl,
+      environment: {},
+      home: directory,
+      scanCatalog: async () => ({ projects: [], sessions: [], observedAt: 0 }),
+      refreshIntervalMs: 60_000,
+      autoTitleGraceMs: 5,
+    });
+    await bridge.initialize();
+
+    try {
+      const blank = await bridge.createSession("/new-project", "   ");
+      expect(native.calls.find(call => call.method === "start")?.args[0]).not.toHaveProperty("title");
+      expect(blank.title).toBe("Claude 会话");
+
+      // startTurn resolves immediately without waiting for the background HTTP title request.
+      const receipt = await bridge.startTurn({
+        sessionId: blank.sessionId,
+        text: "请帮我实现新建会话自动生成标题与竞态保护",
+        requestId: "req-1",
+        idempotencyKey: "idem-1",
+        origin: "mobile",
+      });
+      expect(receipt.state).toBe("submitted");
+      await vi.waitFor(() => expect(releaseTitleResponse).toBeTypeOf("function"));
+      expect(bridge.session(blank.sessionId)?.title).toBe("Claude 会话");
+
+      const changed = once(bridge, "changed");
+      releaseTitleResponse(new Response(JSON.stringify({
+        content: [{ type: "text", text: '"自动生成会话标题"' }],
+      }), { status: 200 }));
+      await changed;
+
+      expect(bridge.session(blank.sessionId)?.title).toBe("自动生成会话标题");
+      expect(native.calls.filter(call => call.method === "updateSession")).toEqual([
+        { method: "updateSession", args: [blank.sessionId, { title: "自动生成会话标题" }] },
+      ]);
+
+      // A second turn on the same session never triggers another title generation request.
+      const messageCallsBefore = fetchImpl.mock.calls.filter(([url]) => String(url).endsWith("/v1/messages")).length;
+      await bridge.startTurn({
+        sessionId: blank.sessionId,
+        text: "继续补充边界测试",
+        requestId: "req-2",
+        idempotencyKey: "idem-2",
+        origin: "mobile",
+      });
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(fetchImpl.mock.calls.filter(([url]) => String(url).endsWith("/v1/messages"))).toHaveLength(messageCallsBefore);
+
+      // Sidechat (/btw) with empty title must never be auto-titled.
+      native.sessions.push({
+        sessionId: "side-1",
+        cwd: "/new-project",
+        title: "",
+        isRunning: false,
+        turnRunning: false,
+        spawnedFrom: { sessionId: blank.sessionId, btw: true },
+      });
+      await bridge.refreshRuntime();
+      await bridge.startTurn({
+        sessionId: "side-1",
+        text: "顺便问一下这个类型怎么写",
+        requestId: "req-side",
+        idempotencyKey: "idem-side",
+        origin: "mobile",
+      });
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(native.calls.some(call => call.method === "updateSession" && call.args[0] === "side-1")).toBe(false);
+    } finally {
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("never overwrites a title populated natively or via user rename while auto-title generation is in flight", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "bridge-autotitle-race-"));
+    const state = new ConversationStateStore({
+      databasePath: join(directory, "state.sqlite"),
+      sessionsPath: join(directory, "sessions.json"),
+      queuePath: join(directory, "queue.json"),
+      masterSecret: Buffer.alloc(32, 6).toString("base64url"),
+    });
+    await state.initialize();
+    const eventLog = new SessionEventLog(join(directory, "events.jsonl"));
+    await eventLog.initialize();
+    const native = new NativeDesktop();
+    native.ignoreStartTitle = true;
+
+    let releaseFetch!: (response: Response) => void;
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => { releaseFetch = resolve; }));
+    await writeFile(join(directory, "settings.json"), JSON.stringify({
+      env: { ANTHROPIC_API_KEY: "test-key" },
+    }));
+
+    const bridge = new ClaudeDesktopBridge({
+      settingsPath: join(directory, "settings.json"),
+      eventLog,
+      conversationState: state,
+      inspector: native,
+      fetchImpl,
+      environment: {},
+      home: directory,
+      scanCatalog: async () => ({ projects: [], sessions: [], observedAt: 0 }),
+      refreshIntervalMs: 60_000,
+      autoTitleGraceMs: 5,
+    });
+    await bridge.initialize();
+
+    try {
+      // Case 1: Native Desktop populates title while HTTP generation is in flight.
+      const s1 = await bridge.createSession("/race-1");
+      await bridge.startTurn({
+        sessionId: s1.sessionId,
+        text: "测试原生标题竞态保护",
+        requestId: "r1",
+        idempotencyKey: "k1",
+        origin: "mobile",
+      });
+      await vi.waitFor(() => expect(releaseFetch).toBeTypeOf("function"));
+      const target1 = native.sessions.find(item => item.sessionId === s1.sessionId)!;
+      target1.title = "原生自动生成标题";
+      releaseFetch(new Response(JSON.stringify({
+        content: [{ type: "text", text: "网关晚到的标题" }],
+      }), { status: 200 }));
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(native.calls.some(call => call.method === "updateSession" && call.args[0] === s1.sessionId)).toBe(false);
+      expect(bridge.session(s1.sessionId)?.title).toBe("原生自动生成标题");
+
+      // Case 2: Image-only fallback when no gateway is reachable.
+      fetchImpl.mockRejectedValueOnce(new Error("network offline"));
+      const s2 = await bridge.createSession("/race-2");
+      const changed = once(bridge, "changed");
+      await bridge.startTurn({
+        sessionId: s2.sessionId,
+        text: "",
+        attachments: [{ id: "img-1", name: "screen.png", mimeType: "image/png", size: 16, data: "AAAA" }],
+        requestId: "r2",
+        idempotencyKey: "k2",
+        origin: "mobile",
+      });
+      await changed;
+      expect(bridge.session(s2.sessionId)?.title).toBe("图片分析");
+
+      // Case 3: Concurrent rename() while autoTitleSession's final getSession read is already in flight.
+      fetchImpl.mockImplementationOnce(async () => new Response(JSON.stringify({
+        content: [{ type: "text", text: "过期的自动标题" }],
+      }), { status: 200 }));
+      const s3 = await bridge.createSession("/race-3");
+      let getSessionCountForS3 = 0;
+      let releaseFinalGetSession!: () => void;
+      let finalGetSessionEntered!: () => void;
+      const enteredFinalGetSession = new Promise<void>(resolve => { finalGetSessionEntered = resolve; });
+      const holdFinalGetSession = new Promise<void>(resolve => { releaseFinalGetSession = resolve; });
+      const originalCall = native.call.bind(native);
+      native.call = async (method, args = []) => {
+        if (method === "getSession" && args[0] === s3.sessionId) {
+          getSessionCountForS3 += 1;
+          // 1st getSession is pre-check; 2nd getSession is the final serialized re-check before updateSession!
+          if (getSessionCountForS3 === 2) {
+            const staleSnapshot = await originalCall(method, args);
+            finalGetSessionEntered();
+            await holdFinalGetSession;
+            return staleSnapshot;
+          }
+        }
+        return originalCall(method, args);
+      };
+
+      await bridge.startTurn({
+        sessionId: s3.sessionId,
+        text: "测试并发手动重命名不丢失",
+        requestId: "r3",
+        idempotencyKey: "k3",
+        origin: "mobile",
+      });
+      await enteredFinalGetSession;
+      const renamePromise = bridge.rename(s3.sessionId, "用户并发手动改名");
+      releaseFinalGetSession();
+      await renamePromise;
+      await new Promise(resolve => setTimeout(resolve, 25));
+      native.call = originalCall;
+
+      expect(native.calls.filter(call => call.method === "updateSession" && call.args[0] === s3.sessionId)).toEqual([
+        { method: "updateSession", args: [s3.sessionId, { title: "用户并发手动改名" }] },
+      ]);
+      expect(bridge.session(s3.sessionId)?.title).toBe("用户并发手动改名");
+    } finally {
+      await bridge.close();
+      await eventLog.close();
+      state.close();
+      await rm(directory, { recursive: true, force: true });
     }
   });
 });

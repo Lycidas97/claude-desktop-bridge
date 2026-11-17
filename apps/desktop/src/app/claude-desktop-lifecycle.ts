@@ -20,6 +20,8 @@ export interface ClaudeDesktopLifecycleOptions {
   executablePath?: string;
   applicationInstalled?(): Promise<boolean>;
   listMainProcessIds?(): Promise<number[]>;
+  listRunningExecutablePaths?(): Promise<string[]>;
+  openTarget?(target: string): Promise<void>;
   launchApplication?(): Promise<void>;
   signalProcess?(pid: number): void;
   sleep?(durationMs: number): Promise<void>;
@@ -88,17 +90,29 @@ async function applicationInstalled(
   return (await resolveInstalledTarget(definition, platform, environment, executablePath)) !== undefined;
 }
 
-function parseWindowsTasklist(stdout: string, executableName = "Claude.exe"): number[] {
-  const expected = executableName.toLowerCase();
+function parseWindowsTasklist(
+  stdout: string,
+  executableNames: string | readonly string[] = ["Claude.exe", "Claude-3p.exe"],
+): number[] {
+  const names = typeof executableNames === "string" ? [executableNames] : executableNames;
+  const expected = new Set(names.map((name) => name.toLowerCase()));
   return stdout.split(/\r?\n/u).flatMap((line) => {
     const match = /^"([^"]+)","(\d+)"/u.exec(line.trim());
-    if (!match || match[1]!.toLowerCase() !== expected) return [];
+    if (!match || !expected.has(match[1]!.toLowerCase())) return [];
     return [Number(match[2])];
   });
 }
 
 export function parseClaudeDesktopTasklist(stdout: string): number[] {
   return parseWindowsTasklist(stdout);
+}
+
+function win32ExecutableNames(definition: DesktopAppDefinition, executablePath?: string): string[] {
+  if (executablePath) return [windowsPath.basename(executablePath)];
+  return [...new Set([
+    definition.win32ExecutableName,
+    ...(definition.id === "claude-desktop" ? ["Claude-3p.exe"] : []),
+  ])];
 }
 
 async function listMainProcessIds(
@@ -108,13 +122,15 @@ async function listMainProcessIds(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<number[]> {
   if (platform === "win32") {
-    const executableName = windowsPath.basename(executablePath ?? definition.win32ExecutableName);
-    const { stdout } = await execFile(
-      "tasklist",
-      ["/FI", `IMAGENAME eq ${executableName}`, "/FO", "CSV", "/NH"],
-      { encoding: "utf8", windowsHide: true },
-    );
-    return parseWindowsTasklist(stdout, executableName);
+    const names = win32ExecutableNames(definition, executablePath);
+    const outputs = await Promise.all(names.map((executableName) => (
+      execFile(
+        "tasklist",
+        ["/FI", `IMAGENAME eq ${executableName}`, "/FO", "CSV", "/NH"],
+        { encoding: "utf8", windowsHide: true },
+      ).then(({ stdout }) => parseWindowsTasklist(stdout, executableName))
+    )));
+    return [...new Set(outputs.flat())];
   }
   const executables = desktopAppPathCandidates(definition, environment, homedir(), platform)
     .flatMap((bundle) => darwinExecutables(definition, bundle));
@@ -129,17 +145,109 @@ async function listMainProcessIds(
   });
 }
 
+async function queryWindowsRunningExecutablePaths(): Promise<string[]> {
+  const script = `
+    $ErrorActionPreference = 'Stop';
+    [Console]::OutputEncoding = [Text.Encoding]::UTF8;
+    ConvertTo-Json -Compress -InputObject @(
+      Get-CimInstance Win32_Process -Filter "Name = 'claude.exe' OR Name = 'claude-3p.exe'" |
+        Where-Object { $_.ExecutablePath -and $_.CommandLine -notmatch '(?:^|\\s)--type=' } |
+        ForEach-Object { $_.ExecutablePath }
+    )
+  `;
+  const { stdout } = await execFile(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    { encoding: "utf8", timeout: 5_000, maxBuffer: 1024 * 1024, windowsHide: true },
+  );
+  const parsed: unknown = JSON.parse(stdout.trim() || "[]");
+  return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+async function resolveRunningTarget(
+  definition: DesktopAppDefinition,
+  platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+  executablePath?: string,
+  listRunningExecutablePaths?: () => Promise<string[]>,
+): Promise<string | undefined> {
+  if (executablePath) return executablePath;
+  if (platform === "win32") {
+    const candidates = desktopAppPathCandidates(definition, environment, homedir(), platform);
+    const runningPaths = await (listRunningExecutablePaths ?? queryWindowsRunningExecutablePaths)().catch(() => []);
+    if (runningPaths.length > 0) {
+      const normalizedRunning = new Set(runningPaths.map((item) => windowsPath.normalize(item).toLowerCase()));
+      for (const candidate of candidates) {
+        if (!normalizedRunning.has(windowsPath.normalize(candidate).toLowerCase())) continue;
+        try {
+          await access(candidate);
+          return candidate;
+        } catch {
+          // Continue through matching candidate paths.
+        }
+      }
+      for (const runningPath of runningPaths) {
+        try {
+          await access(runningPath);
+          return runningPath;
+        } catch {
+          // MSIX package paths may require launching via candidate alias instead.
+        }
+      }
+    }
+    const names = win32ExecutableNames(definition);
+    for (const executableName of names) {
+      const { stdout } = await execFile(
+        "tasklist",
+        ["/FI", `IMAGENAME eq ${executableName}`, "/FO", "CSV", "/NH"],
+        { encoding: "utf8", windowsHide: true },
+      );
+      if (parseWindowsTasklist(stdout, executableName).length === 0) continue;
+      for (const candidate of candidates) {
+        if (windowsPath.basename(candidate).toLowerCase() !== executableName.toLowerCase()) continue;
+        try {
+          await access(candidate);
+          return candidate;
+        } catch {
+          // Continue through matching candidate paths.
+        }
+      }
+    }
+    return undefined;
+  }
+  const bundles = desktopAppPathCandidates(definition, environment, homedir(), platform);
+  const { stdout } = await execFile("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" });
+  const commands = stdout.split("\n")
+    .map((line) => /^\s*\d+\s+(.+)$/u.exec(line)?.[1]?.trim())
+    .filter((cmd): cmd is string => Boolean(cmd));
+  return bundles.find((bundle) => (
+    darwinExecutables(definition, bundle).some((executable) => (
+      commands.some((command) => command === executable || command.startsWith(`${executable} `))
+    ))
+  ));
+}
+
 async function launchApplication(
   definition: DesktopAppDefinition,
   platform = process.platform,
   environment: NodeJS.ProcessEnv = process.env,
   executablePath?: string,
+  preferRunning = false,
+  listRunningExecutablePaths?: () => Promise<string[]>,
+  openTarget?: (target: string) => Promise<void>,
 ): Promise<void> {
-  const target = await resolveInstalledTarget(definition, platform, environment, executablePath);
+  const target = (preferRunning
+    ? await resolveRunningTarget(definition, platform, environment, executablePath, listRunningExecutablePaths).catch(() => undefined)
+    : undefined)
+    ?? await resolveInstalledTarget(definition, platform, environment, executablePath);
   if (!target) {
     throw new Error(platform === "win32"
       ? `未找到 ${definition.displayName} 可执行文件。`
       : `未找到 ${definition.displayName} 应用。`);
+  }
+  if (openTarget) {
+    await openTarget(target);
+    return;
   }
   if (platform === "win32") {
     await new Promise<void>((resolve, reject) => {
@@ -200,10 +308,10 @@ export class ClaudeDesktopLifecycle {
     return value;
   }
 
-  async launch(): Promise<ClaudeDesktopAppStatus> {
+  async launch(options?: { activate?: boolean }): Promise<ClaudeDesktopAppStatus> {
     const current = await this.status(true);
     if (current.state === "unavailable") throw new Error(current.detail);
-    if (current.state === "running") return current;
+    if (current.state === "running" && !options?.activate) return current;
 
     const platform = this.options.platform ?? process.platform;
     const environment = this.options.environment ?? process.env;
@@ -212,8 +320,13 @@ export class ClaudeDesktopLifecycle {
       platform,
       environment,
       this.options.executablePath,
+      current.state === "running",
+      this.options.listRunningExecutablePaths,
+      this.options.openTarget,
     )))();
-    return this.waitForState("running", this.options.launchPollAttempts ?? 40);
+    return current.state === "running"
+      ? current
+      : this.waitForState("running", this.options.launchPollAttempts ?? 40);
   }
 
   async quit(): Promise<ClaudeDesktopAppStatus> {

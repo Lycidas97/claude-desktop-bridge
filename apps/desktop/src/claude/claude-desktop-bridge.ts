@@ -59,6 +59,7 @@ import {
 } from "./native-history-projection.js";
 
 import { NATIVE_PROMPTS, nativePendingPrompts, nativePullRequests, type NativePromptSession } from "./native-prompts.js";
+import { generateSessionTitle, resolveActiveClaudeGateway } from "./session-title-generator.js";
 
 export { nativeHistoryItems };
 
@@ -212,6 +213,9 @@ export class ClaudeDesktopBridge extends EventEmitter {
   private readonly streams = new Map<string, string>();
   private readonly compactingSessions = new Set<string>();
   private readonly tools = new Map<string, ObservedDesktopTool>();
+  private readonly autoTitledSessions = new Set<string>();
+  private readonly explicitlyTitledSessions = new Set<string>();
+  private readonly closeAbort = new AbortController();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private eventProjection: ReturnType<typeof setImmediate> | undefined;
   private pendingEvents = 0;
@@ -238,6 +242,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
     inspector?: InspectorTransport;
     scanCatalog?: () => Promise<ClaudeCatalogSnapshot>;
     refreshIntervalMs?: number;
+    autoTitleGraceMs?: number;
   }) {
     super();
     this.inspector = options.inspector ?? new ClaudeDesktopInspector(process.env.BRIDGE_CLAUDE_INSPECTOR_URL ? { origin: process.env.BRIDGE_CLAUDE_INSPECTOR_URL } : {});
@@ -277,6 +282,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.closeAbort.abort();
     clearTimeout(this.timer);
     clearImmediate(this.eventProjection);
     await this.inspector.close();
@@ -698,6 +704,7 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   async createSession(cwd: string, title?: string, projectId?: string, trustWorkspace?: boolean): Promise<BridgeSessionInfo> {
+    const explicitTitle = title?.trim() || undefined;
     const targetProjectId = projectId === CLAUDE_UNSECTIONED_PROJECT_ID ? undefined : projectId;
     if (targetProjectId && !await this.refreshRuntime()) throw new NativeCallError(this.lastError);
     const project = targetProjectId ? this.listProjects().find(project => project.projectId === targetProjectId) : undefined;
@@ -708,7 +715,13 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
     let raw: unknown;
     try {
-      raw = await this.inspector.call("start", [{ cwd, title, sessionId: `local_${randomUUID()}`, withoutFirstMessage: true, message: "" }]);
+      raw = await this.inspector.call("start", [{
+        cwd,
+        ...(explicitTitle ? { title: explicitTitle } : {}),
+        sessionId: `local_${randomUUID()}`,
+        withoutFirstMessage: true,
+        message: "",
+      }]);
     } catch (error) {
       if (isWorkspaceTrustError(error)) {
         throw new WorkspaceTrustRequiredError(Boolean(trustWorkspace) || !this.inspector.supports("saveTrust"));
@@ -717,6 +730,20 @@ export class ClaudeDesktopBridge extends EventEmitter {
     }
     const result = record(raw);
     if (typeof result.sessionId !== "string") throw new NativeCallError("Desktop did not return a session ID");
+    if (explicitTitle) {
+      this.autoTitledSessions.add(result.sessionId);
+      this.explicitlyTitledSessions.add(result.sessionId);
+      if (this.inspector.supports("updateSession")) {
+        let currentTitle = typeof result.title === "string" ? result.title.trim() : "";
+        if (!currentTitle && this.inspector.supports("getSession")) {
+          const created = record(await this.inspector.call("getSession", [result.sessionId]));
+          currentTitle = typeof created.title === "string" ? created.title.trim() : "";
+        }
+        if (currentTitle !== explicitTitle) {
+          await this.inspector.call("updateSession", [result.sessionId, { title: explicitTitle }]);
+        }
+      }
+    }
     if (project?.kind === "desktop-group") await this.inspector.assignSection!(result.sessionId, project.projectId);
     await this.refreshRuntime();
     const session = this.session(result.sessionId);
@@ -725,9 +752,14 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   async forkSession(sessionId: string, title?: string): Promise<BridgeSessionInfo> {
+    const explicitTitle = title?.trim() || undefined;
     const result = record(await this.inspector.call("forkSession", [this.desktopId(sessionId)]));
     if (typeof result.sessionId !== "string") throw new NativeCallError("Desktop did not return a fork ID");
-    if (title) await this.inspector.call("updateSession", [result.sessionId, { title }]);
+    if (explicitTitle) {
+      this.autoTitledSessions.add(result.sessionId);
+      this.explicitlyTitledSessions.add(result.sessionId);
+      await this.inspector.call("updateSession", [result.sessionId, { title: explicitTitle }]);
+    }
     await this.refreshRuntime();
     const session = this.session(result.sessionId);
     if (!session) throw new NativeCallError("Forked Desktop session is not yet available");
@@ -735,7 +767,12 @@ export class ClaudeDesktopBridge extends EventEmitter {
   }
 
   async rename(sessionId: string, title: string): Promise<void> {
-    await this.inspector.call("updateSession", [this.desktopId(sessionId), { title }]);
+    const id = this.desktopId(sessionId);
+    this.autoTitledSessions.add(id);
+    this.explicitlyTitledSessions.add(id);
+    await this.serialized(async () => {
+      await this.inspector.call("updateSession", [id, { title }]);
+    });
     await this.refreshRuntime();
   }
 
@@ -748,6 +785,8 @@ export class ClaudeDesktopBridge extends EventEmitter {
     await this.inspector.call("delete", [this.desktopId(sessionId)]);
     this.contextStates.delete(sessionId);
     this.prPreferences.delete(sessionId);
+    this.autoTitledSessions.delete(sessionId);
+    this.explicitlyTitledSessions.delete(sessionId);
     await this.refreshRuntime();
   }
 
@@ -1206,7 +1245,99 @@ export class ClaudeDesktopBridge extends EventEmitter {
     this.options.conversationState.saveNativeDesktopReceipt(receipt);
     this.projectSessions();
     await this.record({ sessionId: input.sessionId, turnId: receipt.messageId, origin: "claude-desktop", type: "message.delivery", data: { ...receipt, delivery: receipt.state } });
+    const nativeTarget = this.native.get(id);
+    if (
+      !this.closed
+      && this.inspector.supports("updateSession")
+      && !nativeTarget?.title?.trim()
+      && nativeTarget?.spawnedFrom?.btw !== true
+      && !this.autoTitledSessions.has(id)
+    ) {
+      this.autoTitledSessions.add(id);
+      void this.autoTitleSession(id, input.text, Boolean(input.attachments?.length));
+    }
     return receipt;
+  }
+
+  private sleepAbortable(ms: number): Promise<boolean> {
+    if (this.closed || this.closeAbort.signal.aborted) return Promise.resolve(false);
+    if (ms <= 0) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const onAbort = () => {
+        clearTimeout(handle);
+        resolve(false);
+      };
+      const handle = setTimeout(() => {
+        this.closeAbort.signal.removeEventListener("abort", onAbort);
+        resolve(!this.closed);
+      }, ms);
+      handle.unref?.();
+      this.closeAbort.signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  private async autoTitleSession(id: string, text: string, hasAttachments: boolean): Promise<void> {
+    try {
+      if (!await this.sleepAbortable(this.options.autoTitleGraceMs ?? 400)) return;
+      if (this.closed || !this.inspector.ready || !this.inspector.supports("updateSession") || this.explicitlyTitledSessions.has(id)) {
+        return;
+      }
+      if (this.inspector.supports("getSession")) {
+        const precheck = nativeSession(await this.inspector.call("getSession", [id]));
+        if (precheck.title?.trim() || precheck.spawnedFrom?.btw === true) return;
+      }
+      if (this.closed || this.explicitlyTitledSessions.has(id)) return;
+
+      const allowAmbientDiscovery = Boolean(
+        this.options.magpieConnection || this.options.fetchImpl || this.options.environment || this.options.home,
+      );
+      const gateway = await resolveActiveClaudeGateway({
+        ...(this.options.magpieConnection ? { magpieConnection: this.options.magpieConnection } : {}),
+        ...(this.options.environment ? { environment: this.options.environment } : {}),
+        ...(this.options.home ? { home: this.options.home } : {}),
+        ...(this.options.platform ? { platform: this.options.platform } : {}),
+        settingsPath: this.options.settingsPath,
+        allowAmbientDiscovery,
+      });
+      if (this.closed || this.explicitlyTitledSessions.has(id)) return;
+
+      const currentNative = this.native.get(id);
+      const preferredModel = this.resolveSessionModel(id, currentNative?.model).configModel ?? currentNative?.model;
+      const generatedTitle = await generateSessionTitle({
+        text,
+        hasAttachments,
+        ...(gateway ? { gateway } : {}),
+        ...(preferredModel ? { preferredModel } : {}),
+        ...(this.models ? { catalogModels: this.models } : {}),
+        ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
+        signal: this.closeAbort.signal,
+      });
+      if (!generatedTitle || this.closed || this.explicitlyTitledSessions.has(id)) return;
+
+      await this.serialized(async () => {
+        if (this.closed || !this.inspector.ready || !this.inspector.supports("updateSession") || this.explicitlyTitledSessions.has(id)) {
+          return;
+        }
+        const latest = nativeSession(await this.inspector.call("getSession", [id]));
+        if (this.closed || !this.inspector.ready || !this.inspector.supports("updateSession") || this.explicitlyTitledSessions.has(id)) {
+          return;
+        }
+        if (latest.title?.trim() || latest.spawnedFrom?.btw === true) {
+          const before = JSON.stringify(this.session(id));
+          await this.observeNativeSession(latest);
+          this.projectSessions();
+          if (JSON.stringify(this.session(id)) !== before) this.emit("changed");
+          return;
+        }
+        await this.inspector.call("updateSession", [id, { title: generatedTitle }]);
+        const updated = nativeSession(await this.inspector.call("getSession", [id]));
+        await this.observeNativeSession(updated);
+        this.projectSessions();
+        this.emit("changed");
+      });
+    } catch {
+      // Best-effort background auto-titling must never fail turns or leave unhandled rejections.
+    }
   }
 
   async steerQueuedTurn(sessionId: string, commandId: string): Promise<NativeDesktopReceipt> {

@@ -109,6 +109,8 @@ describe("Claude Desktop lifecycle", () => {
     });
     await lifecycle.launch();
     expect(launchApplication).toHaveBeenCalledTimes(1);
+    await lifecycle.launch({ activate: true });
+    expect(launchApplication).toHaveBeenCalledTimes(2);
   });
 
   it("gracefully terminates only the Claude Desktop main process", async () => {
@@ -159,12 +161,13 @@ describe("Claude Desktop lifecycle", () => {
     expect(signalProcess).toHaveBeenCalledOnce();
   });
 
-  it("parses tasklist CSV rows without treating the summary line as a process", () => {
+  it("parses tasklist CSV rows for both Claude.exe and Claude-3p.exe without treating the summary line as a process", () => {
     expect(parseClaudeDesktopTasklist([
       '"Claude.exe","9136","Console","1","123,456 K"',
+      '"Claude-3p.exe","9240","Console","1","98,304 K"',
       '"other.exe","42","Console","1","8,192 K"',
       "INFO: No tasks are running which match the specified criteria.",
-    ].join("\r\n"))).toEqual([9136]);
+    ].join("\r\n"))).toEqual([9136, 9240]);
   });
 
   it("resolves per-user and MSIX Windows Claude Desktop installs by probing candidates", async () => {
@@ -205,6 +208,34 @@ describe("Claude Desktop lifecycle", () => {
       throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
     });
     expect(findClaudeDesktopExecutable(env, "C:\\Users\\me", "win32")).toBeUndefined();
+  });
+
+  it("activates the running Claude-3p executable on Windows when both Claude and Claude-3p share Claude.exe", async () => {
+    const env = {
+      LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local",
+      ProgramFiles: "C:\\Program Files",
+      "ProgramFiles(x86)": "C:\\Program Files (x86)",
+    };
+    const standardExe = "C:\\Users\\me\\AppData\\Local\\Programs\\Claude\\Claude.exe";
+    const claude3pExe = "C:\\Users\\me\\AppData\\Local\\Programs\\Claude-3p\\Claude.exe";
+    vi.mocked(access).mockImplementation(async (candidate) => {
+      const target = String(candidate);
+      if (target !== standardExe && target !== claude3pExe) {
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      }
+    });
+    const openTarget = vi.fn(async () => undefined);
+    const lifecycle = new ClaudeDesktopLifecycle({
+      platform: "win32",
+      environment: env,
+      listMainProcessIds: async () => [7788],
+      listRunningExecutablePaths: async () => [claude3pExe],
+      openTarget,
+      cacheTtlMs: 0,
+    });
+
+    await expect(lifecycle.launch({ activate: true })).resolves.toMatchObject({ state: "running" });
+    expect(openTarget).toHaveBeenCalledExactlyOnceWith(claude3pExe);
   });
 
   it("does not expose controls when Claude Desktop is unavailable", async () => {

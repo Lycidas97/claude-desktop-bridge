@@ -146,6 +146,7 @@ export interface ControllerRpcHost {
   readonly assistantMailCoordinator?: AssistantMailCoordinator;
   snapshot(): Promise<DesktopControlSnapshot>;
   publish(): Promise<DesktopControlSnapshot>;
+  claudeDesktopStatus?(force?: boolean): Promise<DesktopControlSnapshot["claudeDesktop"]>;
   launchClaudeDesktop(): Promise<DesktopControlSnapshot>;
   quitClaudeDesktop(): Promise<DesktopControlSnapshot>;
   desktopAppStatuses(force?: boolean): Promise<BridgeDesktopAppStatus[]>;
@@ -191,7 +192,11 @@ async function dispatchControllerRequestInner(
     throw new BridgeRequestError("UNSUPPORTED", "当前仅支持 Claude Desktop，其他 Agent 适配已停用。");
   }
   if (request.method === "claude.desktop.status") {
-    return { claudeDesktop: await host.claudeDesktop.status(true) };
+    return {
+      claudeDesktop: host.claudeDesktopStatus
+        ? await host.claudeDesktopStatus(true)
+        : await host.claudeDesktop.status(true),
+    };
   }
   if (request.method === "claude.desktop.launch") {
     return { claudeDesktop: (await host.launchClaudeDesktop()).claudeDesktop };

@@ -236,7 +236,10 @@ export async function createServiceRuntime(options: {
       }) } : {}),
     });
     const inspector = new ClaudeInspectorMonitor({
-      ...(!process.env.BRIDGE_CLAUDE_INSPECTOR_URL ? { startup: (listening: boolean) => inspectorStartup.check(listening) } : {}),
+      ...(!process.env.BRIDGE_CLAUDE_INSPECTOR_URL ? {
+        startup: (listening: boolean) => inspectorStartup.check(listening),
+        enableStartup: (isListening: () => Promise<boolean>) => inspectorStartup.enableExplicit(isListening),
+      } : {}),
       onUpdate: (status) => controller.updateInspectorStatus(status),
       onAlert: (alert) => {
         if (!Notification.isSupported()) return "系统通知不可用，请查看 Bridge 内的调试连接告警。";
@@ -249,6 +252,9 @@ export async function createServiceRuntime(options: {
         return undefined;
       },
     });
+    if (!process.env.BRIDGE_CLAUDE_INSPECTOR_URL) {
+      controller.attachInspectorEnabler(() => inspector.enableNow());
+    }
     resources.defer("Inspector monitor", () => inspector.close());
     await inspector.start();
     const onSuspend = () => controller.pauseForSleep();
